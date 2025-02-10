@@ -6,7 +6,8 @@ BenchFlow is an AI benchmark runtime framework that allows you to integrate and 
 
 ## Table of Contents
 
-- [Installation Requirements](#installation-requirements)
+- [Installation](#installation)
+- [Quick Start](#quick-start)
 - [Agent Development Guide](#agent-development-guide)
   - [Step 1: Define Your Agent](#step-1-define-your-agent)
   - [Step 2: Test Your Agent](#step-2-test-your-agent)
@@ -19,7 +20,7 @@ BenchFlow is an AI benchmark runtime framework that allows you to integrate and 
 
 ---
 
-## Installation Requirements
+## Installation
 
 - **Python 3.11+**
 - Docker
@@ -37,11 +38,13 @@ pip install benchflow
 Supported Benchmarks:
 - WebArena
 - WebCanvas
-- SWEBench (coming in version 0.1.6)
+- SWE-Bench (coming in version 0.1.6)
 
 You can try our demo by running the following command:
 
 ```bash
+git clone https://github.com/benchflow-ai/benchflow.git
+cd benchflow
 pip install -e .
 ```
 
