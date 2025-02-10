@@ -42,7 +42,7 @@ class SwebenchBench(BaseBench):
                 "is_resolved": pass_rate > 0.99,
                 "score": pass_rate,
                 "message": {"details": result_data},
-                "log": result_data,
+                "log": json.dumps(result_data),
             }
         else:
             return {
