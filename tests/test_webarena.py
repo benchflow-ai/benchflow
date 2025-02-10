@@ -1,8 +1,7 @@
 import os
 
-from benchflow.agents.webarena_openai import WebarenaAgent
-
 from benchflow import load_benchmark
+from benchflow.agents.webarena_openai import WebarenaAgent
 
 bench = load_benchmark(benchmark_name="webarena")
 

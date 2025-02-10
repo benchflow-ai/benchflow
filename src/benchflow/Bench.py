@@ -1,13 +1,13 @@
 import base64
+import json
 import logging
+import signal
 import sys
 import time
 from typing import Any, Dict, List, Union
-import signal
 
 import requests
 from requests.exceptions import HTTPError
-import json
 
 from .BaseAgent import BaseAgent
 

@@ -1,8 +1,8 @@
 from .BaseAgent import BaseAgent
+from .BaseBench import BaseBench, BaseBenchConfig
 from .Bench import Bench
 from .BenchClient import BenchClient
 from .load_benchmark import load_benchmark
-from .BaseBench import BaseBench, BaseBenchConfig
 
 __version__ = "0.1.5"
 

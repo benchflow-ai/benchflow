@@ -1,13 +1,13 @@
 # base_bench.py
-import json
-import os
 import logging
+import os
 import sys
 import time
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 
 import docker
+
 
 class ColoredFormatter(logging.Formatter):
     def __init__(self):

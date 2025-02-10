@@ -5,6 +5,7 @@ from typing import Any, Dict
 
 from benchflow import BaseBench, BaseBenchConfig
 
+
 #------------------------------------------------------------------------------
 # Custom configuration: Define the environment variables and validation rules for WebCanvasBench
 #------------------------------------------------------------------------------

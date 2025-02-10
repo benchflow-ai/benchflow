@@ -1,12 +1,13 @@
-import requests
-import json
-import time
-import logging
-from typing import Dict, Any, List, Union
-from requests.exceptions import HTTPError
 import base64
+import json
+import logging
+from typing import Any, Dict, List, Union
+
+import requests
+from requests.exceptions import HTTPError
 
 from .BaseAgent import BaseAgent
+
 logger = logging.getLogger(__name__)
 
 def encode_base64(content: str) -> str:

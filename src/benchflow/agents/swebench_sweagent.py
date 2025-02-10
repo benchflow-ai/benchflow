@@ -1,9 +1,10 @@
 import json
+import logging
 import os
 import re
 import shutil
 import subprocess
-import logging
+
 from benchflow import BaseAgent
 
 

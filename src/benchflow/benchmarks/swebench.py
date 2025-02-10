@@ -1,7 +1,8 @@
-from typing import Dict, Any
 import json
 import os
-from datasets import load_dataset, Dataset
+from typing import Any, Dict
+
+from datasets import Dataset, load_dataset
 
 from benchflow import BaseBench, BaseBenchConfig
 

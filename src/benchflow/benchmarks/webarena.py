@@ -5,6 +5,7 @@ from typing import Any, Dict
 
 from benchflow import BaseBench, BaseBenchConfig
 
+
 # ------------------------------------------------------------------------------
 # WebArenaConfig: Define the configuration for WebArenaBench.
 # For WebArenaBench no extra environment variables are required.
