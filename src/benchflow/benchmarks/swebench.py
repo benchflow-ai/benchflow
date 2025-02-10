@@ -32,26 +32,32 @@ class SwebenchBench(BaseBench):
 
     def get_result(self, task_id: str) -> Dict[str, Any]:
         results_file = os.path.join(self.results_dir, f"self_model.{task_id}.json")
-        if os.path.exists(results_file):
+        model_prediction_file = os.path.join(self.log_files_dir, f"run_evaluation/{task_id}/self_model/{task_id}/patch.diff")
+        report_file = os.path.join(self.log_files_dir, f"run_evaluation/{task_id}/self_model/{task_id}/report.json")
+        try:
             with open(results_file, 'r') as f:
                 result_data = json.load(f)
             total_instances = result_data.get("total_instances", 1)
             resolved_instances = result_data.get("resolved_instances", 0)
             pass_rate = resolved_instances / total_instances if total_instances else 0
+            with open(model_prediction_file, 'r') as f:
+                model_prediction = f.read()
+            with open(report_file, 'r') as f:
+                report = json.load(f)
             return {
-                "is_resolved": pass_rate > 0.99,
-                "score": pass_rate,
-                "message": {"details": result_data},
-                "log": json.dumps(result_data),
-            }
-        else:
+                    "is_resolved": pass_rate > 0.99,
+                    "score": pass_rate,
+                    "message": {"details": result_data},
+                    "log": model_prediction + "\n" + json.dumps(report),
+                }
+        except Exception as e:
             return {
                 "is_resolved": False,
                 "score": 0,
-                "message": {"error": "No results found"},
-                "log": "No results found",
+                "message": {"error": str(e)},
+                "log": str(e),
             }
-
+        
     def get_all_tasks(self, split: str) -> Dict[str, Any]:
         try:
             dataset: Dataset = load_dataset("princeton-nlp/SWE-bench_Lite", split=split)
