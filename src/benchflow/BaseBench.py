@@ -133,6 +133,10 @@ class BaseBench(ABC):
             f"{self.log_files_dir}": {
                 'bind': f"{self.get_log_files_dir_in_container()}",
                 'mode': 'rw'
+            },
+            "/var/run/docker.sock": {
+                'bind': "/var/run/docker.sock",
+                'mode': 'rw'
             }
         }
     
