@@ -31,7 +31,7 @@ class Bench:
         
     def run(self, agents: Union[BaseAgent, List[BaseAgent]], 
             requirements_dir: str, 
-            install_sh: str = None, 
+            install_sh_dir: str = None, 
             api: Dict[str, str] = None, 
             require_gpu: bool = False, 
             params: Dict[str, Any] = {},
@@ -46,7 +46,7 @@ class Bench:
         results_ids = []
         try:
             for agent in agents:
-                agent_url = self._deploy_agent(agent, require_gpu, requirements_dir, install_sh, api)
+                agent_url = self._deploy_agent(agent, require_gpu, requirements_dir, install_sh_dir, api)
                 if not agent_url:
                     logger.error(f"Deployment failed on {agent.__class__.__name__}")
                     self._cleanup()
