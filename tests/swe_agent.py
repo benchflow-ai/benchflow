@@ -3,7 +3,7 @@ import os
 import re
 import shutil
 import subprocess
-
+import logging
 from benchflow import BaseAgent
 
 
@@ -16,8 +16,9 @@ class SWEAgent(BaseAgent):
         instance_id = self.env_info["instance_id"]
         shutil.rmtree("trajectories/root/", ignore_errors=True)
         cmd = f"sweagent run-batch --agent.model.name {self.model_name} --agent.model.per_instance_cost_limit 0.10 --instances.split test --instances.filter {instance_id}"
-
-        result = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True) 
+        result = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        logging.info("sweagent result: %s", result.stdout)
+        logging.error("sweagent error: %s", result.stderr)
         return self.parse_action(instance_id, result.stdout)
         
     def parse_action(self, instance_id: str, log_content: str) -> str:
