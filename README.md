@@ -50,17 +50,20 @@ pip install -e .
 
 Test Default WebArena Agent on WebArena:
 ```bash
-python tests/test_webarena.py
+cd tests
+python test_webarena.py
 ```
 
 Test Default WebCanvas Agent on WebCanvas:
 ```bash
-python tests/test_webcanvas.py
+cd tests
+python test_webcanvas.py
 ```
 
 Test Default SWEAgent on SWEBench:
 ```bash
-python tests/test_swebench.py
+cd tests
+python test_swebench.py
 ```
 
 ---
