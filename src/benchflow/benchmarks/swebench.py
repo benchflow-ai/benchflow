@@ -59,3 +59,6 @@ class SwebenchBench(BaseBench):
             return {"task_ids": dataset_ids, "error_message": None}
         except Exception as e:
             return {"task_ids": [], "error_message": str(e)}
+    
+    def cleanup(self):
+        pass
