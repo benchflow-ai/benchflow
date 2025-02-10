@@ -41,7 +41,7 @@ class SwebenchBench(BaseBench):
             return {
                 "is_resolved": pass_rate > 0.99,
                 "score": pass_rate,
-                "message": "Task runs successfully",
+                "message": {"details": result_data},
                 "log": result_data,
             }
         else:
