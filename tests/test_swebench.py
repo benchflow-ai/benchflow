@@ -1,6 +1,6 @@
 import os
 
-from benchflow.agents.swe_agent import SWEAgent
+from benchflow.agents.swebench_sweagent import SWEAgent
 
 from benchflow import load_benchmark
 
