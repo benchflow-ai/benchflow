@@ -1,6 +1,6 @@
 import os
 
-from webcanvas_openai import WebcanvasAgent
+from benchflow.agents.webcanvas_openai import WebcanvasAgent
 
 from benchflow import load_benchmark
 
