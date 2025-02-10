@@ -1,4 +1,4 @@
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 import json
 import os
 from datasets import load_dataset, Dataset
@@ -17,7 +17,7 @@ class SwebenchConfig(BaseBenchConfig):
         super().__init__(params)
 
 
-class SwebenchService(BaseBench):
+class SwebenchBench(BaseBench):
     def get_config(self, params: Dict[str, Any], task_id: str) -> BaseBenchConfig:
         return SwebenchConfig(params, task_id)
 

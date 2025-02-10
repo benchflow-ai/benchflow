@@ -1,4 +1,4 @@
 from .webcanvas import WebCanvasBench
 from .webarena import WebArenaBench
-
-__all__ = ["WebCanvasBench", "WebArenaBench"]
+from .swebench import SwebenchBench
+__all__ = ["WebCanvasBench", "WebArenaBench", "SwebenchBench"]
