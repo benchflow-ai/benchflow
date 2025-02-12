@@ -10,7 +10,7 @@ Run out-of-the-box evals or benchmarks on the cloud. Save weeks of setting up an
 ```python
                 from benchflow import load_benchmark, BaseAgent
 
-bench = load_benchmark(benchmark_name="cmu/webarena")
+                bench = load_benchmark(benchmark_name="cmu/webarena")
 
 class YourAgent(BaseAgent):
     pass
