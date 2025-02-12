@@ -8,7 +8,7 @@
 
 Run out-of-the-box evals or benchmarks on the cloud. Save weeks of setting up and development by using evals on our platform.
 ```python
-from benchflow import load_benchmark, BaseAgent
+                from benchflow import load_benchmark, BaseAgent
 
 bench = load_benchmark(benchmark_name="cmu/webarena")
 
