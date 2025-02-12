@@ -1,12 +1,12 @@
 <div align="center">
 
-# BenchFlow: AI Benchmark Runtime
+# BenchFlow
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](https://opensource.org/licenses/MIT)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/downloads/)
 [![Docker](https://img.shields.io/badge/docker-%230db7ed.svg?style=for-the-badge&logo=docker&logoColor=white)](https://www.docker.com/)
 
-Run out-of-the-box evals or benchmarks on the cloud. Save weeks of setting up and development by using evals on our platform.
+Agent benchmark runtime.
 ![image](https://github.com/user-attachments/assets/6f0a0bb8-1bae-4628-9757-6051e452c01b)
 
 </div>
