@@ -8,23 +8,7 @@
 
 BenchFlow is an AI benchmark runtime framework that allows you to integrate and evaluate AI tasks using Docker-based benchmarks. The latest version leverages a new **BaseBench** design to manage logs, results, and environment variable configurations consistently.
 
-<pre><code class="language-python">
-from benchflow import load_benchmark, BaseAgent
-
-bench = load_benchmark(benchmark_name="cmu/webarena")
-
-class YourAgent(BaseAgent):
-    pass
-
-your_agents = YourAgent()
-
-run_id = bench.run(
-    task_id=[1, 2, 3], 
-    agents=your_agents
-)
-
-result = bench.get_result(run_id)
-</code></pre>
+<img src="https://github.com/benchflow-ai/benchflow/raw/main/docs/images/example-code.png" alt="Example BenchFlow code" width="600"/>
 
 Run out-of-the-box evals or benchmarks on the cloud. Save weeks of setting up and development by using evals on our platform.
 
