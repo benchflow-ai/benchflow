@@ -7,28 +7,10 @@
 [![Docker](https://img.shields.io/badge/docker-%230db7ed.svg?style=for-the-badge&logo=docker&logoColor=white)](https://www.docker.com/)
 
 Run out-of-the-box evals or benchmarks on the cloud. Save weeks of setting up and development by using evals on our platform.
-
-```python
-from benchflow import load_benchmark, BaseAgent
-
-bench = load_benchmark(benchmark_name="cmu/webarena")
-
-class YourAgent(BaseAgent):
-    pass
-
-your_agents = YourAgent()
-
-run_id = bench.run(
-    task_id=[1, 2, 3], 
-    agents=your_agents
-)
-
-result = bench.get_result(run_id)
-```
-
-<img src="https://github.com/benchflow-ai/benchflow/raw/main/docs/images/example-code.png" alt="Example BenchFlow code" width="600"/>
+![image](https://github.com/user-attachments/assets/6f0a0bb8-1bae-4628-9757-6051e452c01b)
 
 </div>
+
 ## Overview
 
 BenchFlow is an AI benchmark runtime framework that allows you to integrate and evaluate AI tasks using Docker-based benchmarks. The latest version leverages a new **BaseBench** design to manage logs, results, and environment variable configurations consistently.
