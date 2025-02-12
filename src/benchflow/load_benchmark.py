@@ -1,4 +1,4 @@
-from .Bench import Bench
+from .BenchNew import Bench
 
 BENCHMARK_REGISTRY = {
     "webarena": "http://ec2-3-232-182-160.compute-1.amazonaws.com:12345",
@@ -6,11 +6,10 @@ BENCHMARK_REGISTRY = {
     "swebench": "http://ec2-3-232-182-160.compute-1.amazonaws.com:12345",
 }
 
-def load_benchmark(benchmark_name: str) -> Bench:
+def load_benchmark(benchmark_name: str, bf_token: str) -> Bench:
     """
     """
     if benchmark_name not in BENCHMARK_REGISTRY:
         raise ValueError(f"Unknown benchmark: {benchmark_name}")
     
-    benchmark = {"benchmark_name": benchmark_name, "benchmark_url": BENCHMARK_REGISTRY[benchmark_name]}
-    return Bench(benchmark)
+    return Bench(benchmark_name, bf_token)

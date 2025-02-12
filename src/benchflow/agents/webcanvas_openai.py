@@ -392,7 +392,7 @@ class WebcanvasAgent(BaseAgent):
 
             response = client.chat.completions.create(
                 messages=messages,
-                model="gpt-4o",
+                model="gpt-4o-mini",
                 temperature=0.9,
             )
             content = response.choices[0].message.content
