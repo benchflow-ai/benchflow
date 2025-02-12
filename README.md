@@ -26,6 +26,8 @@ run_id = bench.run(
 result = bench.get_result(run_id)
 ```
 
+<img src="https://github.com/benchflow-ai/benchflow/raw/main/docs/images/example-code.png" alt="Example BenchFlow code" width="600"/>
+
 </div>
 ## Overview
 
