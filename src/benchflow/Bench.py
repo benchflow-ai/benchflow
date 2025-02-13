@@ -25,10 +25,11 @@ class Bench:
         self.bf_token = bf_token
         project_dir = Path(__file__).parents[2]
         self.results_dir = project_dir / "results" / self.benchmark_name
+        print_logo()
 
     def run(self, task_ids: List[Union[str, int]], 
             agents: Union[BaseAgent, List[BaseAgent]], 
-            requirements_dir: str, 
+            requirements_txt: str, 
             install_sh: str = None, 
             api: Dict[str, str] = None, 
             require_gpu: bool = False, 
@@ -45,7 +46,7 @@ class Bench:
         results_ids = []
         try:
             for agent in agents:
-                result_id = self._send_tasks_to_bff(task_ids, agent, requirements_dir, install_sh, api, require_gpu, params)
+                result_id = self._send_tasks_to_bff(task_ids, agent, requirements_txt, install_sh, api, require_gpu, params)
                 if result_id:
                     results_ids.append(result_id)
 
@@ -56,32 +57,22 @@ class Bench:
             return results_ids
 
     def _send_tasks_to_bff(self, task_ids: List[str], agent: BaseAgent, 
-                           requirements_dir: str, install_sh_dir: str, 
+                           requirements_txt: str, install_sh: str, 
                            api: Dict[str, str], require_gpu: bool, 
                            params: Dict[str, Any]):
         logger.info(f"Sending tasks {task_ids} and setup scripts to BFF for agent {agent.__class__.__name__}")
 
         try:
-            with open(requirements_dir, 'r') as f:
+            with open(requirements_txt, 'r') as f:
                 requirements_txt = f.read()
-        except Exception as e:
-            logger.error(f"Failed to read requirements.txt: {str(e)}")
-            requirements_txt = ""
-
-        install_sh = None
-        if install_sh_dir:
-            try:
-                with open(install_sh_dir, 'r') as f:
+            install_sh = None
+            if install_sh:
+                with open(install_sh, 'r') as f:
                     install_sh = f.read()
-            except Exception as e:
-                logger.error(f"Failed to read install.sh: {str(e)}")
-                install_sh = ""
-
-        try:
             agent_code = self._get_agent_code(agent)
         except Exception as e:
             logger.error(f"Failed to get agent code: {str(e)}")
-            agent_code = ""
+            return None
 
         api['provider'] = api.get("provider", "")
         api['model'] = api.get("model", "")
@@ -110,8 +101,6 @@ class Bench:
             logger.info(f"Tasks {task_ids} started successfully, job_id: {job_id}")
             return job_id
         
-        except HTTPError as e:
-            logger.error(f"Task execution failed: {str(e)}")
         except Exception as e:
             logger.error(f"Task execution failed: {str(e)}")
         return None
@@ -154,6 +143,19 @@ class Bench:
     def _get_agent_code(self, agent: BaseAgent) -> str:
         agent_file = Path(sys.modules[agent.__class__.__module__].__file__)
         return agent_file.read_text()
+
+def print_logo() -> None:
+    logo = r"""
+
+██████╗ ███████╗███╗   ██╗ ██████╗██╗  ██╗███████╗██╗      ██████╗ ██╗    ██╗    
+██╔══██╗██╔════╝████╗  ██║██╔════╝██║  ██║██╔════╝██║     ██╔═══██╗██║    ██║    
+██████╔╝█████╗  ██╔██╗ ██║██║     ███████║█████╗  ██║     ██║   ██║██║ █╗ ██║    
+██╔══██╗██╔══╝  ██║╚██╗██║██║     ██╔══██║██╔══╝  ██║     ██║   ██║██║███╗██║    
+██████╔╝███████╗██║ ╚████║╚██████╗██║  ██║██║     ███████╗╚██████╔╝╚███╔███╔╝    
+╚═════╝ ╚══════╝╚═╝  ╚═══╝ ╚═════╝╚═╝  ╚═╝╚═╝     ╚══════╝ ╚═════╝  ╚══╝╚══╝     
+                                                                                 
+    """
+    print(logo)
 
 def spinner_animation(stop_event: threading.Event, start_time: float) -> None:
     spinner = ['|', '/', '-', '\\']

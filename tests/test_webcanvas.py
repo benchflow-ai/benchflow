@@ -15,12 +15,11 @@ params = {
 }
 
 run_ids = bench.run(
-    task_ids=[1],
+    task_ids=[0,1],
     agents=your_agents,
-    requirements_dir = "webcanvas_requirements.txt",
+    requirements_txt = "webcanvas_requirements.txt",
     api={"OPENAI_API_KEY": os.getenv("OPENAI_API_KEY")},
     params=params
 )
 
 results = bench.get_results(run_ids)
-print(results)
