@@ -1,4 +1,4 @@
-import base64
+import os
 import json
 import logging
 import sys
@@ -18,14 +18,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-def encode_base64(content: str) -> str:
-    return base64.b64encode(content.encode()).decode() if content else None
-
 class Bench:
     def __init__(self, benchmark_name: str, bf_token: str):
         self.benchmark_name = benchmark_name
         self.bff_url = f"https://staging.benchflow.ai"
         self.bf_token = bf_token
+        self.results_dir = f'results/{self.benchmark_name}/'
 
     def run(self, task_ids: List[Union[str, int]], 
             agents: Union[BaseAgent, List[BaseAgent]], 
@@ -106,7 +104,6 @@ class Bench:
             response = requests.post(f"{self.bff_url}/api/v1/jobs/{self.benchmark_name}/new", json=payload, headers=headers)
             response.raise_for_status()
 
-            print(response.json())
             task_info = response.json()
             job_id = task_info.get("jobId")
             logger.info(f"Tasks {task_ids} started successfully, job_id: {job_id}")
@@ -135,22 +132,21 @@ class Bench:
                     job = response.json().get('job')
                     if job.get('status') != 'in_progress':
                         if job.get('status') == 'done':
-                            outputs = [span.get('outputJSON')
-                                    for span in job.get('spans', [])
-                                    if span.get('outputJSON')]
-                            pretty_outputs = json.dumps(outputs, indent=4, ensure_ascii=False)
-                            results[job_id] = pretty_outputs
-                        logger.info(f"Job {job_id} is {job.get('status')}")
+                            spans = job.get('spans', {})
+                            outputs = [span.get('outputJSON') for span in spans if span.get('outputJSON')]
+                            results[job_id] = outputs
                         jobs.remove(job_id)
                 if jobs:
                     time.sleep(10)
         finally:
             stop_event.set()
             spinner_thread.join()
-            print()
-
-        print("All jobs completed.")
-        return [results[job_id] for job_id in job_ids if job_id in results]
+        os.makedirs(self.results_dir, exist_ok=True)
+        for job_id in job_ids:
+            with open(f'{self.results_dir}/{job_id}.json', 'w') as f:
+                json.dump(results[job_id], f)
+        logger.info(f"Results saved to {self.results_dir}")
+        return results
     
     def _get_agent_code(self, agent: BaseAgent) -> str:
         agent_file = sys.modules[agent.__class__.__module__].__file__
