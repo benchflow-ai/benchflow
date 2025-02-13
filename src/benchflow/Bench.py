@@ -1,4 +1,4 @@
-import os
+from pathlib import Path
 import json
 import logging
 import sys
@@ -23,7 +23,8 @@ class Bench:
         self.benchmark_name = benchmark_name
         self.bff_url = f"https://staging.benchflow.ai"
         self.bf_token = bf_token
-        self.results_dir = f'results/{self.benchmark_name}/'
+        project_dir = Path(__file__).parents[2]
+        self.results_dir = project_dir / "results" / self.benchmark_name
 
     def run(self, task_ids: List[Union[str, int]], 
             agents: Union[BaseAgent, List[BaseAgent]], 
@@ -141,17 +142,18 @@ class Bench:
         finally:
             stop_event.set()
             spinner_thread.join()
-        os.makedirs(self.results_dir, exist_ok=True)
+        
+        self.results_dir.mkdir(parents=True, exist_ok=True)
         for job_id in job_ids:
-            with open(f'{self.results_dir}/{job_id}.json', 'w') as f:
-                json.dump(results[job_id], f)
+            result_file = self.results_dir / f"{job_id}.json"
+            result_file.write_text(json.dumps(results[job_id]))
+            
         logger.info(f"Results saved to {self.results_dir}")
         return results
     
     def _get_agent_code(self, agent: BaseAgent) -> str:
-        agent_file = sys.modules[agent.__class__.__module__].__file__
-        with open(agent_file, 'r') as f:
-            return f.read()
+        agent_file = Path(sys.modules[agent.__class__.__module__].__file__)
+        return agent_file.read_text()
 
 def spinner_animation(stop_event: threading.Event, start_time: float) -> None:
     spinner = ['|', '/', '-', '\\']
