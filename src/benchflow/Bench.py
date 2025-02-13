@@ -2,6 +2,8 @@ import base64
 import json
 import logging
 import sys
+import time
+import threading
 from typing import Any, Dict, List, Union
 
 import requests
@@ -117,30 +119,56 @@ class Bench:
         return None
 
     def get_results(self, job_ids: List[str]):
-        print(job_ids)
-        results = []
-        for job_id in job_ids:
-            headers = {
-                "x-bf-api-key": self.bf_token
-            }
-            print(headers)
-            print(job_id)
-            try:
-                response = requests.get(f"{self.bff_url}/api/v1/jobs/{job_id}/", headers=headers)
-                response.raise_for_status()
+        results = {}
+        jobs = set(job_ids)
+        headers = {"x-bf-api-key": self.bf_token}
+        start_time = time.time()
+        stop_event = threading.Event()
+        spinner_thread = threading.Thread(target=spinner_animation, args=(stop_event, start_time))
+        spinner_thread.start()
 
-                result = response.json()
-                pretty_result = json.dumps(result, indent=4, ensure_ascii=False)
-                print(pretty_result)
-                results.append(result)
-            
-            except HTTPError as e:
-                logger.error(f"Failed to get results: {str(e)}")
-            except Exception as e:
-                logger.error(f"Failed to get results: {str(e)}")
-        return results
+        try:
+            while jobs:
+                for job_id in list(jobs):
+                    response = requests.get(f"{self.bff_url}/api/v1/jobs/{job_id}/", headers=headers)
+                    response.raise_for_status()
+                    job = response.json().get('job')
+                    if job.get('status') != 'in_progress':
+                        if job.get('status') == 'done':
+                            outputs = [span.get('outputJSON')
+                                    for span in job.get('spans', [])
+                                    if span.get('outputJSON')]
+                            pretty_outputs = json.dumps(outputs, indent=4, ensure_ascii=False)
+                            results[job_id] = pretty_outputs
+                        logger.info(f"Job {job_id} is {job.get('status')}")
+                        jobs.remove(job_id)
+                if jobs:
+                    time.sleep(10)
+        finally:
+            stop_event.set()
+            spinner_thread.join()
+            print()
+
+        print("All jobs completed.")
+        return [results[job_id] for job_id in job_ids if job_id in results]
     
     def _get_agent_code(self, agent: BaseAgent) -> str:
         agent_file = sys.modules[agent.__class__.__module__].__file__
         with open(agent_file, 'r') as f:
             return f.read()
+
+def spinner_animation(stop_event: threading.Event, start_time: float) -> None:
+    spinner = ['|', '/', '-', '\\']
+    spinner_index = 0
+    bar_len = 19
+    while not stop_event.is_set():
+        elapsed = int(time.time() - start_time)
+        ch = spinner[spinner_index % len(spinner)]
+        spinner_index += 1
+        fill = elapsed % (bar_len + 1)
+        bar = '[' + '#' * fill + '-' * (bar_len - fill) + ']'
+        sys.stdout.write(f"\rWaiting for results... {ch} {bar} Elapsed: {elapsed}s")
+        sys.stdout.flush()
+        time.sleep(0.1)
+    sys.stdout.write("\r" + " " * 80 + "\r")
+    sys.stdout.flush()

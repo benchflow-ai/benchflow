@@ -3,7 +3,8 @@ import os
 from benchflow import load_benchmark
 from benchflow.agents.swebench_sweagent import SWEAgent
 
-bench = load_benchmark(benchmark_name="swebench")
+
+bench = load_benchmark(benchmark_name="swebench", bf_token=os.getenv("BFF_TOKEN"))
 
 your_agents = SWEAgent()
 
@@ -17,3 +18,4 @@ run_ids = bench.run(
 )
 
 results = bench.get_results(run_ids)
+print(results)

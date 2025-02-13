@@ -3,7 +3,7 @@ import json
 from benchflow import load_benchmark
 from benchflow.agents.webcanvas_openai import WebcanvasAgent
 
-bench = load_benchmark(benchmark_name="webcanvas")
+bench = load_benchmark(benchmark_name="webcanvas", bf_token=os.getenv("BFF_TOKEN"))
 
 your_agents = WebcanvasAgent()
 
@@ -23,3 +23,4 @@ run_ids = bench.run(
 )
 
 results = bench.get_results(run_ids)
+print(results)
