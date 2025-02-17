@@ -1,4 +1,18 @@
-# Benchflow
+<div align="center">
+
+# BenchFlow
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](https://opensource.org/licenses/MIT)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/downloads/)
+[![Docker](https://img.shields.io/badge/docker-%230db7ed.svg?style=for-the-badge&logo=docker&logoColor=white)](https://www.docker.com/)
+
+Agent benchmark runtime to manage logs, results, and environment variable configurations consistently.
+
+![image](https://github.com/user-attachments/assets/6f0a0bb8-1bae-4628-9757-6051e452c01b)
+
+</div>
+
+## Overview
 
 Benchflow is an AI benchmark runtime platform designed to provide a unified environment for benchmarking and performance evaluation of your intelligent agents. It not only offers a wide range of easy-to-run benchmarks but also tracks the entire lifecycle of an agent—including recording prompts, execution times, costs, and various metrics—helping you quickly evaluate and optimize your agent's performance.
 
@@ -172,4 +186,16 @@ Benchflow provides a complete platform for testing and evaluating AI agents:
 
 For more detailed documentation and sample code, please visit the [Benchflow GitBook](https://benchflow.gitbook.io/benchflow).
 
+### BaseBenchConfig Class
+
+Used to define and validate the environment variables required for benchmark execution. Extend this class to customize the configuration by overriding `required_env`, `optional_env`, and `defaults`.
+
 ---
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).
+
+---
+
+By following these steps, you can quickly implement and integrate your own AI benchmarks using the latest version of **BaseBench**. If you have any questions or suggestions, please feel free to submit an issue or pull request.
