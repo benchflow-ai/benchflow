@@ -3,7 +3,7 @@ import os
 from benchflow import load_benchmark
 from benchflow.agents.webcanvas_openai import WebcanvasAgent
 
-bench = load_benchmark(benchmark_name="webcanvas", bf_token=os.getenv("BF_TOKEN"))
+bench = load_benchmark(benchmark_name="benchflow/Webcanvas", bf_token=os.getenv("BF_TOKEN"))
 
 your_agents = WebcanvasAgent()
 

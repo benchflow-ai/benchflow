@@ -1,6 +1,5 @@
 import os
 import json
-import subprocess
 from typing import Any, Dict
 from benchflow import BaseBench
 from benchflow.schemas import BenchArgs, BenchmarkResult

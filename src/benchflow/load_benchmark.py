@@ -1,5 +1,4 @@
 from .Bench import Bench
-from .benchmarks import __all__ as BENCHMARKS
 
 
 def load_benchmark(benchmark_name: str, bf_token: str) -> Bench:
@@ -11,4 +10,5 @@ def load_benchmark(benchmark_name: str, bf_token: str) -> Bench:
     bench = load_benchmark("benchflow/webarena", "your_bf_token")
     ```
     """
+    
     return Bench(benchmark_name, bf_token)
