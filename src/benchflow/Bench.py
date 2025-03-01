@@ -32,7 +32,7 @@ class Bench:
             install_sh: str = None, 
             api: Dict[str, str] = None, 
             require_gpu: bool = False, 
-            params: Dict[str, Any] = {}):
+            args: Dict[str, Any] = {}):
         
         if isinstance(task_ids, (str, int)):
             task_ids = [str(task_ids)]
@@ -45,7 +45,7 @@ class Bench:
         results_ids = []
         try:
             for agent in agents:
-                result_id = self._send_tasks_to_bff(task_ids, agent, requirements_txt, install_sh, api, require_gpu, params)
+                result_id = self._send_tasks_to_bff(task_ids, agent, requirements_txt, install_sh, api, require_gpu, args)
                 if result_id:
                     results_ids.append(result_id)
 
@@ -58,7 +58,7 @@ class Bench:
     def _send_tasks_to_bff(self, task_ids: List[str], agent: BaseAgent, 
                            requirements_txt: str, install_sh: str, 
                            api: Dict[str, str], require_gpu: bool, 
-                           params: Dict[str, Any]):
+                           args: Dict[str, Any]):
         logger.info(f"Sending tasks {task_ids} and setup scripts to BFF for agent {agent.__class__.__name__}")
 
         try:
@@ -77,7 +77,7 @@ class Bench:
         payload = {
             "task_ids": task_ids,
             "benchmark_name": self.benchmark_name,
-            "params": params,
+            "params": args,
             "require_gpu": require_gpu,
             "requirements": requirements_txt if requirements_txt else "",
             "install_sh": install_sh if install_sh else "",

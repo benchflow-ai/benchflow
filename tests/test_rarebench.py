@@ -8,14 +8,12 @@ bench = load_benchmark(benchmark_name="benchflow/Rarebench", bf_token=os.getenv(
 your_agents = RarebenchAgent()
 
 run_ids = bench.run(
-    task_ids=[0],
+    task_ids=["MME"],
     agents=your_agents,
     api={"provider": "openai", "model": "gpt-4o-mini", "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY")},
     requirements_txt="rarebench_requirements.txt",
-    params={
-        "TASK_TYPE": "diagnosis",
-        "DATASET_NAME": "LIRICAL",
-        "DATASET_TYPE": "PHENOTYPE",
+    args={
+        "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY"),
     },
 )
 

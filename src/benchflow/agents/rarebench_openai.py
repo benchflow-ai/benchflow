@@ -11,7 +11,7 @@ class RarebenchAgent(BaseAgent):
     def call_api(self, env_info: Dict[str, Any]) -> str:
         messages = [
                     {"role": "system", "content": env_info["system_prompt"]},
-                    {"role": "user", "content": env_info["user_prompt"]},
+                    {"role": "user", "content": env_info["prompt"]},
                 ]
         try:
             client = OpenAI(
@@ -24,7 +24,6 @@ class RarebenchAgent(BaseAgent):
                 temperature=0.9,
             )
             content = response.choices[0].message.content
-            action = self._extract_action(content)
-            return action
+            return content
         except Exception as e:
             raise
