@@ -5,7 +5,7 @@ from typing import Any, Dict, final
 import uvicorn
 from fastapi import FastAPI, HTTPException
 
-from benchflow.schemas.InputData import InputData
+from benchflow.schemas.InputData import TaskStepInputs
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +21,6 @@ class BaseAgent(ABC):
     def __init__(self):
         self.app = FastAPI()
         self.setup_routes()
-        self.env_info = None  # Maintain compatibility with old agent
 
     @final
     def setup_routes(self):
@@ -29,26 +28,18 @@ class BaseAgent(ABC):
         Setup the routes for the agent.
         """
         @self.app.post("/action")
-        async def take_action(feedback: InputData):
+        async def take_action(input_data: TaskStepInputs):
             try:
-                self.update_env_info(feedback.input_data)
-                action = self.call_api(feedback.input_data)
-                logger.info(f"[BaseAgent]: Got action from API: {action}")
-                return {"action": action}
+                response = self.call_api(input_data.task_step_inputs)
+                logger.info(f"[BaseAgent]: Got response from API: {response}")
+                return response
             except Exception as e:
-                logger.error(f"[BaseAgent]: Error getting action: {str(e)}")
+                logger.error(f"[BaseAgent]: Error getting response: {str(e)}")
                 raise HTTPException(status_code=500, detail=str(e))
         
         @self.app.get("/")
         async def root():
             return {"message": "Welcome to Benchmarkthing Agent API"}
-        
-    @final
-    def update_env_info(self, env_info: Dict[str, Any]) -> None:
-        """
-        Update the environment information.
-        """
-        self.env_info = env_info
 
     @final
     def run_with_endpoint(self, host: str, port: int):
@@ -59,14 +50,14 @@ class BaseAgent(ABC):
         uvicorn.run(self.app, host=host, port=port)
 
     @abstractmethod 
-    def call_api(self, env_info: Dict[str, Any]) -> str:
+    def call_api(self, task_step_inputs: Dict[str, Any]) -> str:
         """
-        You can get the request information from the env_info parameter.
-        The env_info is a dictionary that contains the keys provided by the benchmark client.
+        You can get the request information from the task_step_inputs parameter.
+        The task_step_inputs is a dictionary that contains the keys provided by the benchmark client.
         You need to refer to the benchmark documentation to get the keys.
 
         This method is called when the agent server receives a request from the benchmark client.
-        You need to implement this method to make your agent work and return the action to the benchmark client.
-        Your action could be a real action(e.g. click, scroll, etc) or just any prediction(e.g. code, text, etc) needed by the benchmark.
+        You need to implement this method to make your agent work and return the response to the benchmark client.
+        Your response could be a real action(e.g. click, scroll, etc) or just any prediction(e.g. code, text, etc) needed by the benchmark.
         """
         pass
