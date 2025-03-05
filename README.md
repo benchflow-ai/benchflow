@@ -1,196 +1,112 @@
 <div align="center">
-
-# BenchFlow
-
-![PyPI - License](https://img.shields.io/pypi/l/benchflow?style=plastic)
-![PyPI - Downloads](https://img.shields.io/pypi/dm/benchflow?style=plastic)
-![PyPI - Version](https://img.shields.io/pypi/v/benchflow?style=plastic)
-
-<!-- One linear -->
-
-
-![image](https://github.com/user-attachments/assets/6f0a0bb8-1bae-4628-9757-6051e452c01b)
-
+  <h1>BenchFlow</h1>
+  <p>
+    <img src="https://img.shields.io/pypi/l/benchflow?style=plastic" alt="PyPI - License">
+    <img src="https://img.shields.io/pypi/dm/benchflow?style=plastic" alt="PyPI - Downloads">
+    <img src="https://img.shields.io/pypi/v/benchflow?style=plastic" alt="PyPI - Version">
+  </p>
+  <p>
+    BenchFlow is an <span style="font-weight: bold;">Open-source Benchmark Hub</span> and <span style="font-weight: bold;"> Eval Infra</span> dedicated to both AI production and benchmark developers.
+  </p>
+  <img src="https://github.com/user-attachments/assets/6f0a0bb8-1bae-4628-9757-6051e452c01b" alt="BenchFlow Diagram">
 </div>
 
 ## Overview
 
-Benchflow is an open-source community dedicated to both AI production and benchmark developers. We act as a bridge, facilitating seamless integration and collaboration between the two, making it easier for you to work together.
-![image](docs/images/benchflow.png)
+![BenchFlow Overview](docs/images/benchflow.png)
 
-## Quick Start
+Within the dashed box, you will find the interfaces (`BaseAgent`, `BenchClient`) provided by BenchFlow. For benchmark users, you are required to extend and implement the [BaseAgent](./src/benchflow/BaseAgent.py) interface to interact with the benchmark. The `call_api` method supplies a `step_input` which provides the input for each step of a task (a task may have one or more steps).
 
-```bash
-pip install benchflow
-```
+## Quick Start For Benchmark Users
 
-## Introduction
+1. **Install BenchFlow**
 
-Benchflow caters to two primary roles:
+   ```bash
+   pip install benchflow
+   ```
 
-- **Agent Developer**: Test and evaluate your AI agent.
-- **Benchmark Developer**: Integrate and publish your custom-designed benchmarks.
+2. **Browse Benchmarks**
 
-### For Agent Developers
+   Find benchmarks tailored to your needs on our [Benchmark Hub](https://staging.benchflow.ai/dashboard/benchmarks).
 
-You can start testing your agent in just two steps:
+3. **Implement Your Agent**
 
-#### 1. Integrate Your Agent
+   Extend the [BaseAgent](./src/benchflow/BaseAgent.py) interface:
 
-In your agent code, inherit from the `BaseAgent` class provided by Benchflow and implement the necessary methods. For example:
+   ```python
+   def call_api(self, task_step_inputs: Dict[str, Any]) -> str:
+       pass
+   ```
 
-```python
-from benchflow import BaseAgent
+   *Optional:* You can include a `requirements.txt` file to install additional dependencies, such as `openai` and `requests`.
 
-class YourAgent(BaseAgent):
-    def call_api(self, *args, **kwargs):
-        # Define how to call your agent's API
-        pass
-```
+4. **Test Your Agent**
 
-#### 2. Run the Benchmark
+   Here is a quick example to run your agent:
 
-Load and run a benchmark using the provided Benchflow interface. For example:
+   ```python
+   import os
+   from benchflow import load_benchmark
+   from benchflow.agents.webarena_openai import WebarenaAgent
 
-```python
-import os
-from benchflow import load_benchmark
+   # The benchmark name follows the schema: org_name/benchmark_name.
+   # You can obtain the benchmark name from the Benchmark Hub.
+   bench = load_benchmark(benchmark_name="benchflow/webarena", bf_token=os.getenv("BF_TOKEN"))
 
-# Load the specified benchmark
-bench = load_benchmark("benchmark_name")
-your_agent = YourAgent()
+   your_agents = WebarenaAgent()
 
-# Run the benchmark
-run_ids = bench.run(
-    agents=your_agent,
-    requirements_dir="requirements.txt",
-    api={"OPENAI_API_KEY": os.getenv("OPENAI_API_KEY")},
-    params={}
-)
+   run_ids = bench.run(
+       task_ids=[0],
+       agents=your_agents,
+       api={"provider": "openai", "model": "gpt-4o-mini", "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY")},
+       requirements_txt="webarena_requirements.txt",
+       args={}
+   )
 
-# Retrieve the test results
-results = bench.get_results(run_ids)
-```
+   results = bench.get_results(run_ids)
+   ```
 
-### For Benchmark Developers
+## Quick Start for Benchmark Developers
 
-Integrating your benchmark into Benchflow involves three steps:
+1. **Install BenchFlow**
 
-#### 1. Create a Benchmark Client
+   Install BenchFlow via pip:
 
-Develop a Benchmark Client class that sets up the testing environment for the agent and parses its responses. For example:
+   ```bash
+   pip install benchflow
+   ```
 
-```python
-from benchflow import BenchClient
-from typing import Dict, Any
+2. **Embed `BaseClient` into Your Benchmark Evaluation Scripts**
 
-class YourBenchClient(BenchClient):
-    def __init__(self, agent_url: str):
-        super().__init__(agent_url)
+   Refer to this [example](https://github.com/BenchFlow-Hub/BF-MMLU-Pro/blob/e252ba159d9df26ae92d8c3f3570639874440757/evaluate_from_api.py#L199-L220) for how MMLU-Pro integrates `BaseClient`.
 
-    def prepare_environment(self, state_update: Dict) -> Dict:
-        """Prepare environment information for the agent during the benchmark."""
-        return {
-            "env_info": {
-                "info1": state_update['info1'],
-                "info2": state_update['info2']
-            }
-        }
+3. **Containerize Your Benchmark and Upload the Image to Dockerhub**
 
-    def parse_action(self, raw_action: str) -> str:
-        """Process the response returned by the agent."""
-        # Process the raw response and return the parsed action
-        return raw_action  # Modify as needed for your use case
-```
+   Ensure your benchmark can run in a single container without any additional steps. Below is an example Dockerfile for MMLU-Pro:
 
-#### 2. Encapsulate Your Benchmark Logic
+   ```Dockerfile
+   FROM python:3.11-slim
 
-Package your benchmark logic into a Docker image. The image should be configured to read necessary environment variables (such as `AGENT_URL`, `TEST_START_IDX`, etc.) and encapsulate the benchmark logic within the container.
+   COPY . /app
+   WORKDIR /app
+   COPY scripts/entrypoint.sh /app/entrypoint.sh
 
-#### 3. Upload Your Benchmark to Benchflow
+   RUN chmod +x /app/entrypoint.sh
+   RUN pip install -r requirements.txt
 
-Extend the `BaseBench` class provided by Benchflow to configure your benchmark and upload it to the platform. For example:
+   ENTRYPOINT ["/app/entrypoint.sh"]
+   ```
 
-```python
-from benchflow import BaseBench, BaseBenchConfig
-from typing import Dict, Any
+4. **Extend `BaseBench` to Run Your Benchmarks**
 
-class YourBenchConfig(BaseBenchConfig):
-    # Define required and optional environment variables
-    required_env = []
-    optional_env = ["INSTANCE_IDS", "MAX_WORKERS", "RUN_ID"]
+   See this [example](https://github.com/BenchFlow-Hub/BF-MMLU-Pro/blob/main/benchflow_interface.py) for how MMLU-Pro extends `BaseBench`.
 
-    def __init__(self, params: Dict[str, Any], task_id: str):
-        params.setdefault("INSTANCE_IDS", task_id)
-        params.setdefault("MAX_WORKERS", 1)
-        params.setdefault("RUN_ID", task_id)
-        super().__init__(params)
+5. **Upload Your Benchmark into BenchFlow**
 
-class YourBench(BaseBench):
-    def __init__(self):
-        super().__init__()
-
-    def get_config(self, params: Dict[str, Any], task_id: str) -> BaseBenchConfig:
-        """Return a benchmark configuration instance to validate input parameters."""
-        return YourBenchConfig(params, task_id)
-
-    def get_image_name(self) -> str:
-        """Return the Docker image name that runs the benchmark."""
-        return "your_docker_image_url"
-
-    def get_results_dir_in_container(self) -> str:
-        """Return the directory path inside the container where benchmark results are stored."""
-        return "/app/results"
-
-    def get_log_files_dir_in_container(self) -> str:
-        """Return the directory path inside the container where log files are stored."""
-        return "/app/log_files"
-
-    def get_result(self, task_id: str) -> Dict[str, Any]:
-        """
-        Read and parse the benchmark results.
-        For example, read a log file from the results directory and extract the average score and pass status.
-        """
-        # Implement your reading and parsing logic here
-        is_resolved = True  # Example value
-        score = 100        # Example value
-        log_content = "Benchmark run completed successfully."
-        return {
-            "is_resolved": is_resolved,
-            "score": score,
-            "message": {"details": "Task runs successfully."},
-            "log": log_content
-        }
-
-    def get_all_tasks(self, split: str) -> Dict[str, Any]:
-        """
-        Return a dictionary containing all task IDs, along with an optional error message.
-        """
-        task_ids = ["0", "1", "2"]  # Example task IDs
-        return {"task_ids": task_ids, "error_message": None}
-```
-
-## Examples
-
-Explore two example implementations to understand how to use Benchflow effectively, please visit [Examples](https://benchflow.gitbook.io/benchflow/getting-started/examples).
-## Summary
-
-Benchflow provides a complete platform for testing and evaluating AI agents:  
-- **For Agent Developers**: Simply extend `BaseAgent` and call the benchmark interface to quickly verify your agent’s performance.  
-- **For Benchmark Developers**: Follow the three-step process—creating a client, packaging your Docker image, and uploading your benchmark—to integrate your custom tests into the Benchflow platform.
-
-For more detailed documentation and sample code, please visit the [Benchflow GitBook](https://benchflow.gitbook.io/benchflow).
-
-### BaseBenchConfig Class
-
-Used to define and validate the environment variables required for benchmark execution. Extend this class to customize the configuration by overriding `required_env`, `optional_env`, and `defaults`.
+   Go to the Benchmark Hub and click on `+new benchmarks` to upload your benchmark Git repository. Make sure you place the `benchflow_interface.py` file at the root of your project.
 
 ---
 
 ## License
 
 This project is licensed under the [MIT License](LICENSE).
-
----
-
-By following these steps, you can quickly implement and integrate your own AI benchmarks using the latest version of **BaseBench**. If you have any questions or suggestions, please feel free to submit an issue or pull request.
