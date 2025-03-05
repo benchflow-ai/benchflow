@@ -6,7 +6,7 @@
     <img src="https://img.shields.io/pypi/v/benchflow?style=plastic" alt="PyPI - Version">
   </p>
   <p>
-    BenchFlow is an <span style="font-weight: bold;">Open-source Benchmark Hub</span> and <span style="font-weight: bold;"> Eval Infra</span> for AI production and benchmark developers.
+    BenchFlow is an <b>Open-source Benchmark Hub</b> and <b> Eval Infra</b> for AI production and benchmark developers.
   </p>
   <img src="https://github.com/user-attachments/assets/6f0a0bb8-1bae-4628-9757-6051e452c01b" alt="BenchFlow Diagram">
 </div>
