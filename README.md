@@ -23,6 +23,7 @@ Within the dashed box, you will find the interfaces ([**BaseAgent**](./src/bench
 
    ```bash
    git clone https://github.com/benchflow-ai/benchflow.git
+   cd benchflow
    pip install -e .
    ```
 
