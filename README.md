@@ -15,7 +15,7 @@
 
 ![BenchFlow Overview](docs/images/benchflow.png)
 
-Within the dashed box, you will find the interfaces (`BaseAgent`, `BenchClient`) provided by BenchFlow. For benchmark users, you are required to extend and implement the [BaseAgent](./src/benchflow/BaseAgent.py) interface to interact with the benchmark. The `call_api` method supplies a `step_input` which provides the input for each step of a task (a task may have one or more steps).
+Within the dashed box, you will find the interfaces ([**BaseAgent**](./src/benchflow/BaseAgent.py), [**BenchClient**](./src/benchflow/BenchClient.py)) provided by BenchFlow. For benchmark users, you are required to extend and implement the [**BaseAgent**](./src/benchflow/BaseAgent.py) interface to interact with the benchmark. The `call_api` method supplies a `step_input` which provides the input for each step of a task (a task may have one or more steps).
 
 ## Quick Start For Benchmark Users
 
@@ -28,11 +28,11 @@ Within the dashed box, you will find the interfaces (`BaseAgent`, `BenchClient`)
 
 2. **Browse Benchmarks**
 
-   Find benchmarks tailored to your needs on our [Benchmark Hub](https://staging.benchflow.ai/dashboard/benchmarks).
+   Find benchmarks tailored to your needs on our [**Benchmark Hub**](https://staging.benchflow.ai/dashboard/benchmarks).
 
 3. **Implement Your Agent**
 
-   Extend the [BaseAgent](./src/benchflow/BaseAgent.py) interface:
+   Extend the [**BaseAgent**](./src/benchflow/BaseAgent.py) interface:
 
    ```python
    def call_api(self, task_step_inputs: Dict[str, Any]) -> str:
@@ -77,9 +77,9 @@ Within the dashed box, you will find the interfaces (`BaseAgent`, `BenchClient`)
    pip install benchflow
    ```
 
-2. **Embed `BaseClient` into Your Benchmark Evaluation Scripts**
+2. **Embed [**`BaseClient`**](./src/benchflow/BaseClient.py) into Your Benchmark Evaluation Scripts**
 
-   Refer to this [example](https://github.com/BenchFlow-Hub/BF-MMLU-Pro/blob/e252ba159d9df26ae92d8c3f3570639874440757/evaluate_from_api.py#L199-L220) for how MMLU-Pro integrates `BaseClient`.
+   Refer to this [**example**](https://github.com/BenchFlow-Hub/BF-MMLU-Pro/blob/e252ba159d9df26ae92d8c3f3570639874440757/evaluate_from_api.py#L199-L220) for how MMLU-Pro integrates **`BaseClient`**.
 
 3. **Containerize Your Benchmark and Upload the Image to Dockerhub**
 
@@ -98,9 +98,9 @@ Within the dashed box, you will find the interfaces (`BaseAgent`, `BenchClient`)
    ENTRYPOINT ["/app/entrypoint.sh"]
    ```
 
-4. **Extend `BaseBench` to Run Your Benchmarks**
+4. **Extend [**`BaseBench`**](./src/benchflow/BaseBench.py) to Run Your Benchmarks**
 
-   See this [example](https://github.com/BenchFlow-Hub/BF-MMLU-Pro/blob/main/benchflow_interface.py) for how MMLU-Pro extends `BaseBench`.
+   See this [**example**](https://github.com/BenchFlow-Hub/BF-MMLU-Pro/blob/main/benchflow_interface.py) for how MMLU-Pro extends **`BaseBench`**
 
 5. **Upload Your Benchmark into BenchFlow**
 
