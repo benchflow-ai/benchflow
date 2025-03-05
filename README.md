@@ -22,7 +22,8 @@ Within the dashed box, you will find the interfaces (`BaseAgent`, `BenchClient`)
 1. **Install BenchFlow**
 
    ```bash
-   pip install benchflow
+   git clone https://github.com/benchflow-ai/benchflow.git
+   pip install -e .
    ```
 
 2. **Browse Benchmarks**
