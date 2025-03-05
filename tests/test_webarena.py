@@ -12,7 +12,7 @@ run_ids = bench.run(
     agents=your_agents,
     api={"provider": "openai", "model": "gpt-4o-mini", "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY")},
     requirements_txt="webarena_requirements.txt",
-    params={}
+    args={}
 )
 
 results = bench.get_results(run_ids)

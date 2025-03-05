@@ -5,8 +5,6 @@ from urllib.parse import urljoin
 
 import requests
 
-from benchflow.schemas.InputData import InputData
-
 logger = logging.getLogger(__name__)
 
 class BenchClient(ABC):
@@ -24,53 +22,48 @@ class BenchClient(ABC):
         logger.info(f"[{self.__class__.__name__}] Initialized with intelligence_url: {intelligence_url}")
 
     @final
-    def get_response(self, raw_input_data: Dict[str, Any]) -> Dict[str, Any]:
+    def get_response(self, raw_step_inputs: Dict[str, Any]) -> Dict[str, Any]:
         """
         Get the response from the agent. You should use this method to get the response from the agent.
         """
-        if raw_input_data is None:
-            raise ValueError("raw_input_data cannot be None")
+        if raw_step_inputs is None:
+            raise ValueError("raw_step_inputs cannot be None")
         
-        input_data = self.prepare_input(raw_input_data)
-        # old env_info will be deprecated, we use input_data instead
-        if input_data.get("env_info") is not None:
-            input_data = InputData(input_data=input_data["env_info"])
-        else:
-            input_data = InputData(input_data=input_data)
+        task_step_inputs = self.prepare_input(raw_step_inputs)
         
         for attempt in range(self.max_retry):
             try:
                 response = requests.post(
-                    urljoin(self.intelligence_url, "action"),
-                    json=input_data.model_dump()
+                    urljoin(self.intelligence_url, "response"),
+                    json=task_step_inputs
                 )
                 response.raise_for_status()
                 break
             except Exception as e:
                 if attempt == self.max_retry - 1:
-                    raise Exception(f"Failed to get action after {self.max_retry} attempts: {str(e)}")
+                    raise Exception(f"Failed to get response after {self.max_retry} attempts: {str(e)}")
                 logger.warning(f"Attempt {attempt + 1} failed, retrying...")
                 continue
 
         try:
-            raw_action = response.json()['action']
-            logger.info(f"[{self.__class__.__name__}] Received action: {raw_action}")
+            raw_response = response.json()
+            logger.info(f"[{self.__class__.__name__}] Received response: {raw_response}")
             
-            parsed_action = self.parse_response(raw_action)
-            parsed_action["raw_prediction"] = raw_action
+            parsed_response = self.parse_response(raw_response)
+            parsed_response["raw_response"] = raw_response
             
-            return parsed_action
+            return parsed_response
             
         except KeyError as e:
             raise ValueError(f"Invalid response format from agent: {str(e)}")
         except Exception as e:
-            raise Exception(f"Error parsing action: {str(e)}")
+            raise Exception(f"Error parsing response: {str(e)}")
     
     @abstractmethod
-    def prepare_input(self, raw_input_data: Dict[str, Any]) -> Dict[str, Any]:
+    def prepare_input(self, raw_step_inputs: Dict[str, Any]) -> Dict[str, Any]:
         """
         Input:
-            raw_input_data: Dict[str, Any]
+            raw_step_inputs: Dict[str, Any]
             For example, 
                 If your benchmark is a web agent benchmark, the raw_input_data could be the observation from the web page.
                 if your benchmark is a Q&A benchmark, the raw_input_data could be the question.

@@ -65,7 +65,7 @@ class BaseBench(ABC):
         args_config = self.get_args(task_id)
         arguments = args_config.get_args(arguments)
         arguments.update({
-            "AGENT_URL": agent_url,
+            "INTELLIGENCE_URL": agent_url,
             "TEST_START_IDX": str(task_id),
         })
 

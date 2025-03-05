@@ -2,11 +2,12 @@
 
 # BenchFlow
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](https://opensource.org/licenses/MIT)
-[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/downloads/)
-[![Docker](https://img.shields.io/badge/docker-%230db7ed.svg?style=for-the-badge&logo=docker&logoColor=white)](https://www.docker.com/)
+![PyPI - License](https://img.shields.io/pypi/l/benchflow?style=plastic)
+![PyPI - Downloads](https://img.shields.io/pypi/dm/benchflow?style=plastic)
+![PyPI - Version](https://img.shields.io/pypi/v/benchflow?style=plastic)
 
-Agent benchmark runtime to manage logs, results, and environment variable configurations consistently.
+<!-- One linear -->
+
 
 ![image](https://github.com/user-attachments/assets/6f0a0bb8-1bae-4628-9757-6051e452c01b)
 
@@ -14,16 +15,10 @@ Agent benchmark runtime to manage logs, results, and environment variable config
 
 ## Overview
 
-Benchflow is an AI benchmark runtime platform designed to provide a unified environment for benchmarking and performance evaluation of your intelligent agents. It not only offers a wide range of easy-to-run benchmarks but also tracks the entire lifecycle of an agent—including recording prompts, execution times, costs, and various metrics—helping you quickly evaluate and optimize your agent's performance.
+Benchflow is an open-source community dedicated to both AI production and benchmark developers. We act as a bridge, facilitating seamless integration and collaboration between the two, making it easier for you to work together.
+![image](docs/images/benchflow.png)
 
-## Feature Overview
-
-- **Easy-to-Run Benchmarks**: Comes with a large collection of built-in benchmarks that let you quickly verify your agent’s capabilities.
-- **Complete Lifecycle Tracking**: Automatically records prompts, responses, execution times, costs, and other performance metrics during agent invocations.
-- **Efficient Agent Evaluation**: Benchflow’s evaluation mechanism can deliver over a 3× speed improvement in assessments, helping you stand out from the competition.
-- **Benchmark Packaging**: Supports packaging benchmarks into standardized suites, making it easier for Benchmark Developers to integrate and release tests.
-
-## Installation
+## Quick Start
 
 ```bash
 pip install benchflow
