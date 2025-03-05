@@ -78,9 +78,9 @@ Within the dashed box, you will find the interfaces ([**BaseAgent**](./src/bench
    pip install benchflow
    ```
 
-2. **Embed [**`BaseClient`**](./src/benchflow/BaseClient.py) into Your Benchmark Evaluation Scripts**
+2. **Embed [**`BenchClient`**](./src/benchflow/BenchClient.py) into Your Benchmark Evaluation Scripts**
 
-   Refer to this [**example**](https://github.com/BenchFlow-Hub/BF-MMLU-Pro/blob/e252ba159d9df26ae92d8c3f3570639874440757/evaluate_from_api.py#L199-L220) for how MMLU-Pro integrates **`BaseClient`**.
+   Refer to this [**example**](https://github.com/BenchFlow-Hub/BF-MMLU-Pro/blob/e252ba159d9df26ae92d8c3f3570639874440757/evaluate_from_api.py#L199-L220) for how MMLU-Pro integrates **`BenchClient`**.
 
 3. **Containerize Your Benchmark and Upload the Image to Dockerhub**
 
