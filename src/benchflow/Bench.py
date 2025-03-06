@@ -87,7 +87,7 @@ class Bench:
 
         headers = {
             "x-bf-api-key": self.bf_token,
-            "x-bf-source": "python-sdk 0.1.8"
+            "x-bf-source": "python-sdk 0.1.9"
         }
 
         try:

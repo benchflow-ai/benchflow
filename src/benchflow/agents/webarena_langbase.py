@@ -35,8 +35,8 @@ class WebarenaAgent(BaseAgent):
                 f'Cannot find the action in "{response}"'
             )
  
-    def call_api(self, env_info) -> str:
-        message = self._construct_message(env_info)
+    def call_api(self, task_step_inputs) -> str:
+        message = self._construct_message(task_step_inputs)
         print(message)
         data = {
             'messages': [{'role': 'user', 'content': message}],

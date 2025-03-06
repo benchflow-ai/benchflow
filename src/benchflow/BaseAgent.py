@@ -30,7 +30,10 @@ class BaseAgent(ABC):
         @self.app.post("/action")
         async def take_action(input_data: TaskStepInputs):
             try:
-                response = self.call_api(input_data.task_step_inputs)
+                if input_data.task_step_inputs.get("env_info") is not None:
+                    response = self.call_api(input_data.task_step_inputs.get("env_info"))
+                else:
+                    response = self.call_api(input_data.task_step_inputs)
                 logger.info(f"[BaseAgent]: Got response from API: {response}")
                 return response
             except Exception as e:

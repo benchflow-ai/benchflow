@@ -14,9 +14,9 @@ class MMLUAgent(BaseAgent):
         self.api_key = os.getenv("OPENAI_API_KEY")
         print(self.api_key)
 
-    def call_api(self, env_info):
-        prompt = env_info["prompt"]
-        input_text = env_info["input_text"]
+    def call_api(self, task_step_inputs):
+        prompt = task_step_inputs["prompt"]
+        input_text = task_step_inputs["input_text"]
 
         try:
             logger.info("[UserAgent]: Calling OpenAI API")

@@ -13,8 +13,8 @@ class SWEAgent(BaseAgent):
         super().__init__()
         self.model_name = "gpt-4o"
         
-    def call_api(self, env_info) -> str:
-        instance_id = env_info["instance_id"]
+    def call_api(self, task_step_inputs) -> str:
+        instance_id = task_step_inputs["instance_id"]
         shutil.rmtree("trajectories/root/", ignore_errors=True)
         cmd = f"sweagent run-batch --agent.model.name {self.model_name} --agent.model.per_instance_cost_limit 0.10 --instances.split test --instances.filter {instance_id}"
         result = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)

@@ -51,16 +51,16 @@ class CRAGAgent(BaseAgent):
             "Answer:"
         )
 
-    def call_api(self, env_info: Dict[str, Any]) -> str:
+    def call_api(self, task_step_inputs: Dict[str, Any]) -> str:
         try:
             logger.info("[CRAGAgent]: Calling OpenAI API")
             client = OpenAI(api_key=self.api_key)
             
             messages = [
                 {"role": "system", "content": self.system_instruction},
-                {"role": "user", "content": self._construct_message(env_info)}
+                {"role": "user", "content": self._construct_message(task_step_inputs)}
             ]
-
+            
             response = client.chat.completions.create(
                 model="gpt-4o",
                 messages=messages,
