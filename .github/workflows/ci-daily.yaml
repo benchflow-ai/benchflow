@@ -35,4 +35,4 @@ jobs:
 
       - name: Run tests in parallel
         working-directory: tests
-        run: python ${{ matrix.test_file }}
+        run: uv run ${{ matrix.test_file }}
