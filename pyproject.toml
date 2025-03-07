@@ -11,6 +11,7 @@ dependencies = [
     "jinja2>=3.0.0",
     "json5>=0.9.15",
     "openai>=1.0.0",
+    "pytest>=8.3.5",
     "requests>=2.30.0",
     "ruff>=0.7.0",
     "uvicorn>=0.24.0",
