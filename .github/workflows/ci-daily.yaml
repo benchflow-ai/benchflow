@@ -1,0 +1,43 @@
+name: ci-daily
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  schedule:
+    - cron: '0 0 * * *'
+  workflow_dispatch: {}
+
+jobs:
+  parallel-tests:
+    runs-on: ubuntu-latest
+    env:
+      BF_TOKEN: ${{ secrets.BF_TOKEN }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      BROWSERBASE_API_KEY: ${{ secrets.BROWSERBASE_API_KEY }}
+      GRAPHQL_USERNAME: ${{ secrets.GRAPHQL_USERNAME }}
+      GRAPHQL_PASSWORD: ${{ secrets.GRAPHQL_PASSWORD }}
+
+    strategy:
+      matrix:
+        test_file: ["test_rarebench.py", "test_webarena.py", "test_webcanvas.py", "test_swebench.py"]
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: ".python-version"
+      
+      - name: Install the project
+        run: uv sync
+
+      - name: Run tests in parallel
+        working-directory: tests
+        run: uv run ${{ matrix.test_file }}
