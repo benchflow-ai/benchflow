@@ -1,0 +1,45 @@
+name: ci-daily
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  schedule:
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+    inputs:
+      test_file:
+        description: "Specify the test file to be run (for example: test_mmlupro.py). Leave it blank to run all test cases."
+        required: false
+        default: ""
+
+jobs:
+  parallel-tests:
+    runs-on: ubuntu-latest
+    environment: ci-daily
+
+    strategy:
+      matrix:
+        test_file: ${{ fromJson(github.event.inputs.test_file == '' 
+          ? '["test_rarebench.py", "test_webarena.py", "test_webcanvas.py", "test_swebench.py"]' 
+          : '["' + github.event.inputs.test_file + '"]') }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: ".python-version"
+      
+      - name: Install the project
+        run: uv sync
+
+      - name: Run tests in parallel
+        run: |
+          uv run pytest tests/${{ matrix.test_file }}
