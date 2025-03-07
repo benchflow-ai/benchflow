@@ -95,7 +95,7 @@ To be successful, it is very important to follow the following rules:
         user_msg_2 = {"role": "system", "name": "example_user", "content": self.example2_user}
         system_msg_3 = {"role": "system", "name": "example_assistant", "content": self.example2_assistant}
         user_msg_final = {"role": "user", "content": self._construct_message(task_step_inputs)}
-
+        
         messages = [
             system_msg_1,
             user_msg_1,

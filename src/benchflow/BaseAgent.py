@@ -5,8 +5,6 @@ from typing import Any, Dict, final
 import uvicorn
 from fastapi import FastAPI, HTTPException
 
-from benchflow.schemas.InputData import TaskStepInputs
-
 logger = logging.getLogger(__name__)
 
 class BaseAgent(ABC):
@@ -27,13 +25,15 @@ class BaseAgent(ABC):
         """
         Setup the routes for the agent.
         """
-        @self.app.post("/action")
-        async def take_action(input_data: TaskStepInputs):
+        @self.app.post("/response")
+        async def take_action(input_data: Dict[str, Any]):
             try:
-                if input_data.task_step_inputs.get("env_info") is not None:
-                    response = self.call_api(input_data.task_step_inputs.get("env_info"))
+                if input_data.get("env_info") is not None:
+                    response = self.call_api(input_data.get("env_info"))
+                elif input_data.get("input_data") is not None:
+                    response = self.call_api(input_data.get("input_data"))
                 else:
-                    response = self.call_api(input_data.task_step_inputs)
+                    response = self.call_api(input_data)
                 logger.info(f"[BaseAgent]: Got response from API: {response}")
                 return response
             except Exception as e:
