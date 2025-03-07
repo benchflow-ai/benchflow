@@ -12,7 +12,12 @@ on:
 jobs:
   parallel-tests:
     runs-on: ubuntu-latest
-    environment: ci-daily
+    env:
+      BF_TOKEN: ${{ secrets.BF_TOKEN }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      BROWSERBASE_API_KEY: ${{ secrets.BROWSERBASE_API_KEY }}
+      GRAPHQL_USERNAME: ${{ secrets.GRAPHQL_USERNAME }}
+      GRAPHQL_PASSWORD: ${{ secrets.GRAPHQL_PASSWORD }}
 
     strategy:
       matrix:
