@@ -26,3 +26,6 @@ def test_webarena_benchmark():
     results = bench.get_results(run_ids)
     
     assert results is not None
+
+if __name__ == "__main__":
+    test_webarena_benchmark()
