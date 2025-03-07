@@ -3,7 +3,6 @@ import os
 from benchflow import load_benchmark
 from benchflow.agents.crag_openai import CRAGAgent
 
-
 bench = load_benchmark(benchmark_name="CRAG", bf_token=os.getenv("BF_TOKEN"))
 
 your_agents = CRAGAgent()

@@ -3,6 +3,7 @@ import os
 from benchflow import load_benchmark
 from benchflow.agents.rarebench_openai import RarebenchAgent
 
+
 def test_rarebench_benchmark():
     bench = load_benchmark(benchmark_name="benchflow/Rarebench", bf_token=os.getenv("BF_TOKEN"))
 

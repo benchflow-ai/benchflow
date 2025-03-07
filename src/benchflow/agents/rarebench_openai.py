@@ -1,7 +1,10 @@
-from openai import OpenAI
 import os
+from typing import Any, Dict
+
+from openai import OpenAI
+
 from benchflow import BaseAgent
-from typing import Dict, Any
+
 
 class RarebenchAgent(BaseAgent):
     def __init__(self):
@@ -25,5 +28,5 @@ class RarebenchAgent(BaseAgent):
             )
             content = response.choices[0].message.content
             return content
-        except Exception as e:
+        except Exception:
             raise

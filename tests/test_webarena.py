@@ -3,6 +3,7 @@ import os
 from benchflow import load_benchmark
 from benchflow.agents.webarena_openai import WebarenaAgent
 
+
 def test_webarena_benchmark():
     bench = load_benchmark(
         benchmark_name="benchflow/webarena", 
