@@ -34,4 +34,6 @@ jobs:
         run: uv sync
 
       - name: Run tests in parallel
-        run: uv run pytest tests/${{ matrix.test_file }}
+        run: |
+          cd tests
+          uv run pytest ${{ matrix.test_file }}
