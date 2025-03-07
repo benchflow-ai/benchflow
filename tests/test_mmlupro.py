@@ -12,7 +12,7 @@ run_ids = bench.run(
     agents=your_agents,
     requirements_txt="mmlupro_requirements.txt",
     api={"OPENAI_API_KEY": os.getenv("OPENAI_API_KEY")},
-    params={}
+    args={}
 )
 
 results = bench.get_results(run_ids)
