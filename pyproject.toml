@@ -1,6 +1,6 @@
 [project]
 name = "benchflow"
-version = "0.1.9"
+version = "0.1.12"
 description = "A tool for easy benchmarking."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -11,6 +11,7 @@ dependencies = [
     "jinja2>=3.0.0",
     "json5>=0.9.15",
     "openai>=1.0.0",
+    "pytest>=8.3.5",
     "requests>=2.30.0",
     "ruff>=0.7.0",
     "uvicorn>=0.24.0",

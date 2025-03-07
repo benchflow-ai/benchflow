@@ -1,17 +1,20 @@
-from openai import OpenAI
 import os
+from typing import Any, Dict
+
+from openai import OpenAI
+
 from benchflow import BaseAgent
-from typing import Dict, Any
+
 
 class RarebenchAgent(BaseAgent):
     def __init__(self):
         super().__init__()
         self.api_key = os.getenv("OPENAI_API_KEY")
 
-    def call_api(self, env_info: Dict[str, Any]) -> str:
+    def call_api(self, task_step_inputs: Dict[str, Any]) -> str:
         messages = [
-                    {"role": "system", "content": env_info["system_prompt"]},
-                    {"role": "user", "content": env_info["prompt"]},
+                    {"role": "system", "content": task_step_inputs["system_prompt"]},
+                    {"role": "user", "content": task_step_inputs["prompt"]},
                 ]
         try:
             client = OpenAI(
@@ -25,5 +28,5 @@ class RarebenchAgent(BaseAgent):
             )
             content = response.choices[0].message.content
             return content
-        except Exception as e:
+        except Exception:
             raise

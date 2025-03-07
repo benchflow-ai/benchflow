@@ -88,14 +88,14 @@ To be successful, it is very important to follow the following rules:
             return match.group(1).strip()
         raise Exception(f'Cannot find the action in "{response}"')
 
-    def call_api(self, env_info):
+    def call_api(self, task_step_inputs):
         system_msg_1 = {"role": "system", "content": self.system_instruction}
         user_msg_1 = {"role": "system", "name": "example_user", "content": self.example1_user}
         system_msg_2 = {"role": "system", "name": "example_assistant", "content": self.example1_assistant}
         user_msg_2 = {"role": "system", "name": "example_user", "content": self.example2_user}
         system_msg_3 = {"role": "system", "name": "example_assistant", "content": self.example2_assistant}
-        user_msg_final = {"role": "user", "content": self._construct_message(env_info)}
-
+        user_msg_final = {"role": "user", "content": self._construct_message(task_step_inputs)}
+        
         messages = [
             system_msg_1,
             user_msg_1,
