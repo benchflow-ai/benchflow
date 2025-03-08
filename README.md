@@ -20,6 +20,8 @@ Within the dashed box, you will find the interfaces ([**BaseAgent**](./src/bench
 
 ## Quick Start For Benchmark Users
 
+Before you start, please get your `BF_TOKEN` on [BenchFlow.ai](https://staging.benchflow.ai/).
+
 1. **Install BenchFlow**
 
    ```bash
