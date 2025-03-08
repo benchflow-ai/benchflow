@@ -13,9 +13,12 @@
 
 ## Overview
 
-![BenchFlow Overview](docs/images/benchflow.png)
+<div align="center">
+   <video src="https://i9lzpmgwcq.ufs.sh/f/BUlkXI8aEg0SeZZ5NGdXjNY7HQZc6vGMX1mFund0zqIyOU9l" controls width="800"></video>
+</div>
 
 Within the dashed box, you will find the interfaces ([**BaseAgent**](./src/benchflow/BaseAgent.py), [**BenchClient**](./src/benchflow/BenchClient.py)) provided by BenchFlow. For benchmark users, you are required to extend and implement the [**BaseAgent**](./src/benchflow/BaseAgent.py) interface to interact with the benchmark. The `call_api` method supplies a `step_input` which provides the input for each step of a task (a task may have one or more steps).
+![BenchFlow Overview](docs/images/benchflow.png)
 
 ## Quick Start For Benchmark Users
 
@@ -40,7 +43,7 @@ Within the dashed box, you will find the interfaces ([**BaseAgent**](./src/bench
        pass
    ```
 
-   *Optional:* You can include a `requirements.txt` file to install additional dependencies, such as `openai` and `requests`.
+   _Optional:_ You can include a `requirements.txt` file to install additional dependencies, such as `openai` and `requests`.
 
 4. **Test Your Agent**
 
