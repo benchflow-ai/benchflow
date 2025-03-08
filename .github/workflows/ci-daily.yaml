@@ -2,7 +2,7 @@ name: ci-daily
 
 on:
   pull_request:
-    types: [opened, reopened]
+    types: [opened, reopened, synchronize, edited]
   schedule:
     - cron: '0 0 * * *'
 
