@@ -11,11 +11,11 @@
   <img src="https://github.com/user-attachments/assets/6f0a0bb8-1bae-4628-9757-6051e452c01b" alt="BenchFlow Diagram">
 </div>
 
-## Overview
-
 <div align="center">
    <video src="https://i9lzpmgwcq.ufs.sh/f/BUlkXI8aEg0SeZZ5NGdXjNY7HQZc6vGMX1mFund0zqIyOU9l" controls width="800"></video>
 </div>
+
+## Overview
 
 Within the dashed box, you will find the interfaces ([**BaseAgent**](./src/benchflow/BaseAgent.py), [**BenchClient**](./src/benchflow/BenchClient.py)) provided by BenchFlow. For benchmark users, you are required to extend and implement the [**BaseAgent**](./src/benchflow/BaseAgent.py) interface to interact with the benchmark. The `call_api` method supplies a `step_input` which provides the input for each step of a task (a task may have one or more steps).
 ![BenchFlow Overview](docs/images/benchflow.png)
