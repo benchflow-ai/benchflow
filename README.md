@@ -9,13 +9,13 @@
     BenchFlow is an <b>Open-source Benchmark Hub</b> and <b> Eval Infra</b> for AI production and benchmark developers.
   </p>
   <img src="https://github.com/user-attachments/assets/6f0a0bb8-1bae-4628-9757-6051e452c01b" alt="BenchFlow Diagram">
-</div>
-
-<div align="center">
    <video src="https://i9lzpmgwcq.ufs.sh/f/BUlkXI8aEg0SeZZ5NGdXjNY7HQZc6vGMX1mFund0zqIyOU9l" controls width="800"></video>
 </div>
 
+
 ## Overview
+
+https://github.com/user-attachments/assets/9e73f3ef-b04a-4fe4-bbd7-f2725302a068
 
 Within the dashed box, you will find the interfaces ([**BaseAgent**](./src/benchflow/BaseAgent.py), [**BenchClient**](./src/benchflow/BenchClient.py)) provided by BenchFlow. For benchmark users, you are required to extend and implement the [**BaseAgent**](./src/benchflow/BaseAgent.py) interface to interact with the benchmark. The `call_api` method supplies a `step_input` which provides the input for each step of a task (a task may have one or more steps).
 ![BenchFlow Overview](docs/images/benchflow.png)
