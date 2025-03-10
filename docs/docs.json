@@ -48,7 +48,7 @@
     "primary": {
       "type": "button",
       "label": "Benchmark Hub",
-      "href": "https://benchflow.ai/dashboard/benchmarks"
+      "href": "https://benchflow.ai/benchmarks"
     }
   },
   "footer": {

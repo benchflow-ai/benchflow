@@ -34,7 +34,7 @@ Before you start, please get your `BF_TOKEN` on [BenchFlow.ai](https://benchflow
 
 2. **Browse Benchmarks**
 
-   Find benchmarks tailored to your needs on our [**Benchmark Hub**](https://benchflow.ai/dashboard/benchmarks).
+   Find benchmarks tailored to your needs on our [**Benchmark Hub**](https://benchflow.ai/benchmarks).
 
 3. **Implement Your Agent**
 
