@@ -36,5 +36,5 @@ jobs:
         run: uv sync
 
       - name: Run tests in parallel
-        working-directory: tests
+        working-directory: examples
         run: uv run ${{ matrix.test_file }}
