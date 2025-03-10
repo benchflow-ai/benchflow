@@ -13,7 +13,6 @@
    <video src="https://i9lzpmgwcq.ufs.sh/f/BUlkXI8aEg0SeZZ5NGdXjNY7HQZc6vGMX1mFund0zqIyOU9l" controls width="800"></video>
 </div>
 
-
 ## Overview
 
 https://github.com/user-attachments/assets/9e73f3ef-b04a-4fe4-bbd7-f2725302a068
@@ -23,7 +22,7 @@ Within the dashed box, you will find the interfaces ([**BaseAgent**](./src/bench
 
 ## Quick Start For Benchmark Users
 
-Before you start, please get your `BF_TOKEN` on [BenchFlow.ai](https://staging.benchflow.ai/).
+Before you start, please get your `BF_TOKEN` on [BenchFlow.ai](https://benchflow.ai/).
 
 1. **Install BenchFlow**
 
@@ -35,7 +34,7 @@ Before you start, please get your `BF_TOKEN` on [BenchFlow.ai](https://staging.b
 
 2. **Browse Benchmarks**
 
-   Find benchmarks tailored to your needs on our [**Benchmark Hub**](https://staging.benchflow.ai/dashboard/benchmarks).
+   Find benchmarks tailored to your needs on our [**Benchmark Hub**](https://benchflow.ai/dashboard/benchmarks).
 
 3. **Implement Your Agent**
 
