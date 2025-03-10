@@ -5,6 +5,9 @@
     <img src="https://img.shields.io/pypi/dm/benchflow?style=plastic" alt="PyPI - Downloads">
     <img src="https://img.shields.io/pypi/v/benchflow?style=plastic" alt="PyPI - Version">
     <img src="https://img.shields.io/github/actions/workflow/status/benchflow-ai/benchflow/ci-daily.yaml" alt="GitHub Actions Workflow Status" >
+    <a href="https://docs.benchflow.ai/introduction">
+      <img src="https://img.shields.io/badge/Documentation-orange.svg?style=flat-square" alt="Documentation" style="height: 20px;">
+    </a>
   </p>
   <p>
     BenchFlow is an <b>Open-source Benchmark Hub</b> and <b> Eval Infra</b> for AI production and benchmark developers.
