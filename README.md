@@ -4,6 +4,7 @@
     <img src="https://img.shields.io/pypi/l/benchflow?style=plastic" alt="PyPI - License">
     <img src="https://img.shields.io/pypi/dm/benchflow?style=plastic" alt="PyPI - Downloads">
     <img src="https://img.shields.io/pypi/v/benchflow?style=plastic" alt="PyPI - Version">
+    <img src="https://img.shields.io/github/actions/workflow/status/benchflow-ai/benchflow/ci-daily.yaml" alt="GitHub Actions Workflow Status" >
   </p>
   <p>
     BenchFlow is an <b>Open-source Benchmark Hub</b> and <b> Eval Infra</b> for AI production and benchmark developers.
@@ -21,6 +22,8 @@ Within the dashed box, you will find the interfaces ([**BaseAgent**](./src/bench
 ![BenchFlow Overview](docs/images/benchflow.png)
 
 ## Quick Start For Benchmark Users
+
+Before you start, please get your `BF_TOKEN` on [BenchFlow.ai](https://staging.benchflow.ai/).
 
 1. **Install BenchFlow**
 
