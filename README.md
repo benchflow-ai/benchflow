@@ -4,9 +4,9 @@
     <img src="https://img.shields.io/pypi/l/benchflow?style=plastic" alt="PyPI - License">
     <img src="https://img.shields.io/pypi/dm/benchflow?style=plastic" alt="PyPI - Downloads">
     <img src="https://img.shields.io/pypi/v/benchflow?style=plastic" alt="PyPI - Version">
-    <img src="https://img.shields.io/github/actions/workflow/status/benchflow-ai/benchflow/ci-daily.yaml" alt="GitHub Actions Workflow Status" >
+    <img src="https://img.shields.io/github/actions/workflow/status/benchflow-ai/benchflow/ci-daily.yaml?style=plastic" alt="GitHub Actions Workflow Status" >
     <a href="https://docs.benchflow.ai/introduction">
-      <img src="https://img.shields.io/badge/Documentation-orange.svg?style=flat-square" alt="Documentation" style="height: 20px;">
+      <img src="https://img.shields.io/badge/Documentation-orange.svg?style=plastic" alt="Documentation" style="height: 20px;">
     </a>
   </p>
   <p>
