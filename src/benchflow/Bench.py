@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 class Bench:
     def __init__(self, benchmark_name: str, bf_token: str):
         self.benchmark_name = benchmark_name
-        self.bff_url = "https://staging.benchflow.ai"
+        self.bff_url = "https://benchflow.ai"
         self.bf_token = bf_token
         project_dir = Path(__file__).parents[2]
         self.results_dir = project_dir / "results" / self.benchmark_name
