@@ -1,5 +1,5 @@
 {
-  "$schema": "https://github.com/kk-xuhj/docs/blob/main/docs.json",
+  "$schema": "https://github.com/benchflow-ai/benchflow/blob/main/docs/docs.json",
   "theme": "mint",
   "name": "BenchFlow",
   "colors": {
