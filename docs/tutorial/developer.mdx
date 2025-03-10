@@ -31,8 +31,199 @@ We provide benchmark developers with two interfaces to interact with intelligenc
 
 ## Make your benchmark a client
 
+We go through the entire benchmark onboarding process by integrating **MMLU-Pro** into BenchFlow as an example.
+
+### Import BenchClient
+
+```python
+from benchflow import BenchClient
+```
+
 ### Extend BenchClient
 
 You need to implement two methods.&#x20;
-`parse_input` defines the type of data provided by the benchmark, and it returns a dictionary.
-`parse_response`
+`parse_input` defines the structure of data provided by the benchmark, and it returns a dictionary.
+`parse_response`is used to parse the raw response from the agent into a structured dictionary.
+
+```python
+class MMLUProClient(BenchClient):
+    def __init__(self, intelligence_url):
+        super().__init__(intelligence_url)
+```
+
+<Info>
+  The `intelligence_url` is an address used for communicating with the agent. Your evaluation script should provide an argument to accept this URL. We will explain the detail in subsequent steps.
+</Info>
+
+```python
+    def prepare_input(self, raw_step_inputs: Dict[str, Any]) -> Dict[str, Any]:
+        single_question = raw_step_inputs["entry"]
+        cot_examples_dict = raw_step_inputs["input_text"]
+        category = single_question["category"]
+        cot_examples = cot_examples_dict[category]
+        question = single_question["question"]
+        options = single_question["options"]
+        prompt = "The following are multiple choice questions (with answers) about {}. Think step by step and then output the answer in the format of \"The answer is (X)\" at the end.\n\n".format(category)
+        for example in cot_examples:
+            # format_example() is provide by MMLU-Pro
+            prompt += format_example(example["question"], example["options"], example["cot_content"])
+        input_text = format_example(question, options)
+        return {"prompt": prompt, "input_text": input_text, "entry": single_question, "cot_examples_dict": cot_examples_dict}
+```
+
+The` task_step_inputs` provided by MMLU-Pro consists of four fields, which are as follows:
+
+`  "prompt"`: prompt,
+`  "input_text"`: input\_text,
+`  "entry"`: single\_question,
+`  "cot_examples_dict"`: cot\_examples\_dict
+
+<Note>
+  Benchmark developers should clearly document in the README (model card) the keys and their meanings of the input data provided. This is essential for intelligence developers to benchmark.
+</Note>
+
+```python
+    def parse_response(self, raw_response: str) -> Dict[str, Any]:
+        # extract_answer() is provided by MMLU-Pro developer
+        pred = extract_answer(raw_response) 
+        return {"action": pred, "response": raw_response}
+```
+
+### Get response by get\_response
+
+Use `get_response`provided by BaseClient to get response from intelligence. This method first calls `parse_input`, then sends the input to intelligence. After receiving a response, it calls `parse_response` and returns its result.
+
+```python
+...
+test_df, dev_df = load_mmlu_pro()
+    if not subjects:
+        subjects = list(test_df.keys())
+    print("assigned subjects", subjects)
+    bench_client = MMLUClient(intelligence_url)
+    for subject in subjects:
+        test_data = test_df[subject]
+        for entry in tqdm(test_data):
+            label = entry["answer"]
+            category = subject
+            env = {
+              "entry": entry,
+              "input_text": dev_df
+            }
+            action = bench_client.get_response(env)
+...
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--intelligence_url", "-b", type=str, default=os.getenv("INTELLIGENCE_URL"))
+```
+
+<Check>
+  Ensure your script can retrieve the `intelligence_url` field from the command line. This field will be provided by BenchFlow via the `INTELLIGENCE_URL` environment variable.
+</Check>
+
+## Containerize your benchmark
+
+Package your benchmark as an image and provide an entry point to run the benchmark.
+
+<Check>
+  All parameters will be passed to the container as environment variables. When extending BaseBench, you can specify the names of the required and optional environment variables, allowing you to retrieve arguments directly from the environment in your script.
+</Check>
+
+## Run Your Benchmarks
+
+### Import BaseBench, BenchArgs and BenchmarkResults
+
+```python
+from benchflow import BaseBench
+from benchflow.schemas import BenchArgs, BenchmarkResult
+```
+
+### Implement your BaseBench
+
+BenchArgs automatically verify that intelligence has received all the required parameters using `pydantic`. You can also specify default values for optional arguments. Additionally, BenchFlow provides an environment variable called `INTELLIGENCE_URL`, which you can use in your evaluation script to access all the defined environment variables.
+
+```python
+class YourBench(BaseBench):
+  def get_args(task_id) -> BenchArgs:
+      arguments = {
+            "required": ["REQUIRED_ARG1", "REQUIRED_ARG1"],
+            "optional": [
+                {"OPTIONAL1": "default1"}
+            ]
+        }
+     return BenchArgs(arguments)
+     ...
+```
+
+Use `get_image_name` to get the image your uploaded to Dockerhub.
+
+```python
+def get_image_name(self) -> str:
+    return "username/image_name:tag"
+```
+
+Return the path within the container where the benchmark results are stored.
+
+```python
+def get_results_dir_in_container(self) -> str:
+    return "/app/results"
+```
+
+Return the path within the container where the benchmark logs are stored.
+
+```python
+def get_log_files_dir_in_container(self) -> str:
+    return "/app/results"
+```
+
+Return the whole task\_id for your benchmark.
+
+```python
+def get_all_tasks(self, split: str) -> Dict[str, Any]:
+    # It should return a str list including all task_id in benchmark.
+    # 
+    return {"task_ids":[], "error_message":}
+```
+
+<Note>
+  Many benchmarks do not include a `task_id` field. In such cases, you can either pass a line number or treat the entire benchmark as a single task. The classification of task IDs is flexible and is primarily used for parallel processing.
+</Note>
+
+<Note>
+  The `task_id` field is also passed to the evaluation environment as an environment variable named `TEST_START_ID`.
+</Note>
+
+&#x20; Parse and return your benchmark result
+
+```python
+def get_result(self, task_id: str) -> BenchmarkResult:
+    return BenchmarkResults(your_results_dict)
+     ...
+
+# An example for BenchmarkResult
+model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "is_resolved": True,
+                "log": {"trace": "trace message"},
+                "metrics": {
+                    "metric1": True,
+                    "metric2": 123,
+                    "metric3": 3.1415,
+                    "metric4": "OK"
+                },
+                "other": {
+                    "extra_info": "extra info",
+                    "error": "error message"
+                }
+            }
+        }
+    )
+```
+
+## Upload your benchmark to Benchmark Hub
+
+Here’s your checklist:
+
+1. **benchflow\_interface.py** - your implementation of BaseBench should be in this file and make sure your file is named correctly.
+
+2. **readme.md** – clearly document t**he keys and their meanings of the input data provided** and **all required and optional arguments for benchmarks.**
