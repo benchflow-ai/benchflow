@@ -3,9 +3,9 @@
   "theme": "mint",
   "name": "BenchFlow",
   "colors": {
-    "primary": "#000000",
-    "light": "#f1f5f9",
-    "dark": "#0f172a"
+      "primary": "#3B82F6",
+      "light": "#60A5FA",
+      "dark": "#1E3A8A"
   },
   "favicon": "/favicon.svg",
   "navigation": {
