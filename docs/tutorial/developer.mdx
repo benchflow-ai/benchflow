@@ -1,0 +1,38 @@
+---
+title: "Developer"
+description: "Detailed tutorial for benchmark developers."
+---
+
+## Build your benchmark with BenchFlow
+
+We provide benchmark developers with two interfaces to interact with intelligence: **BenchClient** and **BaseBench**.
+
+<CardGroup cols="2">
+  <Card title="BenchClient" icon="sparkles">
+    BenchClient make your benchmark as a client, which enables seamless interaction with the intelligence through HTTP. It should be embedded into the evaluation entrance.
+  </Card>
+
+  <Card title="BaseBench" icon="sparkles">
+    BaseBench is an interface for running, managing, and displaying benchmark results. All benchmark outputs are unified, enabling standardized visualization on BenchFlow.
+  </Card>
+</CardGroup>
+
+## Install benchflow sdk
+
+<CodeGroup>
+  ```bash uv
+  uv add benchflow
+  ```
+
+  ```bash pip
+  pip install benchflow
+  ```
+</CodeGroup>
+
+## Make your benchmark a client
+
+### Extend BenchClient
+
+You need to implement two methods.&#x20;
+`parse_input` defines the type of data provided by the benchmark, and it returns a dictionary.
+`parse_response`

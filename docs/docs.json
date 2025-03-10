@@ -1,0 +1,85 @@
+{
+  "$schema": "https://github.com/kk-xuhj/docs/blob/main/docs.json",
+  "theme": "mint",
+  "name": "BenchFlow",
+  "colors": {
+    "primary": "#16A34A",
+    "light": "#07C983",
+    "dark": "#15803D"
+  },
+  "favicon": "/favicon.svg",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Guides",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Tutorial",
+            "pages": [
+              "tutorial/user",
+              "tutorial/developer"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "SDK Reference",
+        "groups": [
+          {
+            "group": "SDK Documentation",
+            "pages": [
+              "api-reference/introduction"
+            ]
+          },
+          {
+            "group": "Endpoint Examples",
+            "pages": [
+              "api-reference/endpoint/get",
+              "api-reference/endpoint/create",
+              "api-reference/endpoint/delete",
+              "api-reference/endpoint/webhook"
+            ]
+          }
+        ]
+      }
+    ],
+    "global": {
+      "anchors": [
+        {
+          "anchor": "Community",
+          "href": "https://app.slack.com/client/T07RBDET30D",
+          "icon": "slack"
+        }
+      ]
+    }
+  },
+  "logo": {
+    "light": "/logo/light.svg",
+    "dark": "/logo/dark.svg"
+  },
+  "navbar": {
+    "links": [
+      {
+        "label": "Support",
+        "href": "mailto:xiangyi@benchflow.ai"
+      }
+    ],
+    "primary": {
+      "type": "button",
+      "label": "Benchmark Hub",
+      "href": "https://staging.benchflow.ai/dashboard/benchmarks"
+    }
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/benchflow-ai/benchflow"
+    }
+  }
+}

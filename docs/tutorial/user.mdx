@@ -1,0 +1,170 @@
+---
+title: "User"
+description: "Detail tutorial for benchmark users."
+---
+
+## Benchmark your intelligence
+
+**Intelligence** is any AI-related product (e.g.LLM models, AI agents ...).&#x20;
+
+Benchflow use the api provided by your intelligence to help you rapidly build a benchmark pipeline without any benchmark setup.
+
+## Install benchflow sdk
+
+<CodeGroup>
+  ```bash uv
+  uv add benchflow
+  ```
+
+  ```bash pip
+  pip install benchflow
+  ```
+</CodeGroup>
+
+## Implement the interface for api
+
+### Import the interface for api
+
+You need to implement the **BaseAgen**t interface provided by benchflow.
+
+```python
+from benchflow import BaseAgent
+```
+
+<Note>
+  Although this interface is named BaseAgent, **you don’t need to design an AI agent**; simply implementing the call\_api method is sufficient. We call it an “agent” because it serves as an agent to invoke your API.
+</Note>
+
+### Check the benchmark card
+
+Go to the Benchmark Hub and read **model card** about the benchmarks you want to test on, especially the **task\_step\_input** provided by the benchmark developer.
+
+<Check>
+  The **`task_step_input`** is a dictionary provided as input to the **`call_api`** method that contains all the benchmark dataset information. You will need to use it to test your intelligence.
+</Check>
+
+### Implement your call\_api function
+
+Here is a basic example about testing the OpenAI on a Q\&A benchmark. Suppose the model card specifies that the format of `task_step_inputs` is `{"question": "question text"}`.
+
+```python openai_caller.py
+from openai import OpenAI
+from benchflow import BaseAgent
+
+class YourCaller(BaseAgent):
+  def call_api(self, task_step_inputs: Dict[str, Any]) -> str:
+      messages = [
+        {"role": "user", "content": task_step_inputs['question']}
+      ]
+      client = OpenAI(
+         api_key=os.getenv("OPENAI_API_KEY"),
+      )
+      response = client.chat.completions.create(
+         messages=messages,
+         model="gpt-4o",
+         temperature=0.9,
+      )
+      content = response.choices[0].message.content
+      return content
+```
+
+<Note>
+  Please implement this interface in a separate file. In the future, we will support more flexible implementation approaches.
+</Note>
+
+## Run the benchmark
+
+### Create the environment for calling your api
+
+We require you to provide a Python-style **`requirements.txt`** file that lists all dependencies needed to call your API. For instance, in the **`openai_caller.py`** , your `requirements.txt` should include the following dependencies:
+
+```
+openai
+benchflow
+```
+
+### Get your BenchFlow token
+
+Kickstart your free BenchFlow trial on <a href="https://benchflow.ai" target="_blank" rel="noopener noreferrer">BenchFlow.ai</a> to unlock benchmarking insights.
+
+### Benchmark your intelligence
+
+Load your benchmark from benchmark hub.
+
+```python
+from benchflow import load_benchmark
+bench = load_benchmark("benchflow/webarena", bf_token=os.getenv(BF_TOKEN))
+```
+
+<Note>
+  The naming format for benchmarks is **`organization_name/benchmark_name`**
+</Note>
+
+Import your api caller (agent).
+
+```python
+from api_caller import YourCaller
+
+agent = YourCaller()
+```
+
+Start the benchmark tasks.
+
+```python
+# Refer to the fileds description below for more details
+run_ids = bench.run(
+        task_ids=[0],
+        agents=agent,
+        api={
+            "provider": "openai", 
+            "model": "gpt-4o-mini", 
+            "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY")
+        },
+        requirements_txt="webarena_requirements.txt",
+        args={}
+    )
+```
+
+<Accordion title="Fields Description" defaultOpen={false} icon="info" iconType="solid">
+  * **task\_ids:**
+
+    A list that specifies which task(s) to run. If you leave this list empty, the system defaults to running the full benchmark. For the precise format, please refer to the model card.
+
+  * **agents:**
+
+    An instance of your agent that implements the `call_api` method.&#x20;
+
+  * **api:**
+
+    A dictionary containing the API configuration details. **This should includes the provider name, model, and any necessary API keys.**&#x20;
+
+  * **requirements\_txt:**
+
+    A file path to your dependencies file formatted like a standard `requirements.txt`. This file should list all the Python dependencies needed for your API calls.
+
+  * **args:**
+
+    A dictionary for any **required** and **optional** arguments required by your benchmark. Please refer to the model card on the benchmark hub.
+</Accordion>
+
+### Get your results
+
+You can get your results from our sdk:
+
+```
+ results = bench.get_results(run_ids)
+```
+
+or download the results from [BenchFlow.ai dashborad](https://staging.benchflow.ai/dashboard/jobs).
+
+## Complex Examples
+
+<CardGroup cols={3}>
+  <Card title="Webarena" icon="sparkles" />
+
+  <Card title="Rarebench" icon="sparkles" />
+
+  <Card title="Webcanvas" icon="sparkles" />
+</CardGroup>
+
+##

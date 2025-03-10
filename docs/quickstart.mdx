@@ -1,0 +1,173 @@
+---
+title: 'Quickstart'
+description: 'Start your journey on BenchFlow!'
+---
+
+## Choose your role
+
+BenchFlow aims to be the bridge between benchmark users and benchmark developers. Please choose a role to start your BenchFlow journey.
+
+### For benchmark users
+
+<Steps>
+  <Step title="Install the benchflow sdk">
+    <CodeGroup>
+      ```bash pip
+      git clone https://github.com/benchflow-ai/benchflow.git
+      cd benchflow
+      pip install benchflow
+      ```
+
+      ```bash uv
+      git clone https://github.com/benchflow-ai/benchflow.git
+      cd benchflow
+      uv add --editable benchflow
+      ```
+    </CodeGroup>
+  </Step>
+
+  <Step title="Select your benchmarks">
+    Discover benchmarks tailored to your needs on <a href="https://staging.benchflow.ai/dashboard/benchmarks" target="_blank" rel="noopener noreferrer">Benchmark Hub</a>.
+  </Step>
+
+  <Step title="Implement your call_api">
+    Extend the <a href="https://github.com/benchflow-ai/benchflow/blob/main/src/benchflow/BaseAgent.py">BaseAgent</a> interface. `call_api` is used to call your intelligence (LLM, Agent ...)
+
+    ```python YourAgent.py
+    from benchflow import BaseAgent
+
+    class YourAgent(BaseAgent):
+      def call_api(self, task_step_inputs):
+        ...
+    ```
+  </Step>
+
+  <Step title="Run your benchmark">
+    Run your benchmark in a seperate script.
+
+    Kickstart your free BenchFlow trial on <a href="https://benchflow.ai" target="_blank" rel="noopener noreferrer">BenchFlow.ai</a> to unlock benchmarking insights.
+
+    ```python
+    from benchflow import load_benchmark
+    from YourAgent import YourAgent
+
+    benchmark_name="organization/selected_benchmark", 
+    bf_token=os.getenv("BF_TOKEN")
+    bench = load_benchmark(benchmark_name, bf_token)
+
+    your_agent = YourAgent()
+
+    run_ids = bench.run(
+        task_ids=[0],                   # Run the task with IDs
+        agents=your_agents,             # Your agent
+        api={                           # Your provider API configuration
+            "provider": "",
+            "model": "",
+            "OPENAI_API_KEY": "",
+        },
+        requirements_txt="requirements.txt",  # Extra dependencies
+        args={}                         # Arguments for your benchmarks
+    )
+
+    results = bench.get_results(run_ids)
+    ```
+  </Step>
+</Steps>
+
+### For benchmark developers
+
+<Steps>
+  <Step title="Install the benchflow sdk">
+    <CodeGroup>
+      ```bash pip
+      pip install benchflow
+      ```
+
+      ```bash uv
+      uv add benchflow
+      ```
+    </CodeGroup>
+  </Step>
+
+  <Step title="Make your benchmark a client">
+    ```python
+    from benchflow import BenchClient
+
+    class YourClient(BenchClient):
+      def prepare_input(self, raw_step_inputs: Dict[str, Any]) -> dict:
+        # Each benchmark should supply a dataset for task step as a dict. 
+        # For example, if your benchmark is a Q&A dataset, your returned dictionary should include at least a "question" key. 
+        # You can also include any additional fields contained in your dataset.
+        ...
+      
+      def parse_response(self, raw_response: str) -> Dict[str, Any]:
+        ...
+        
+    # Then you can use your Client in your evaluation script
+    # For example:
+    client = YourClient()
+
+    for steps in your_task_steps:
+      env = {"question": "question text", "hint": "hint"}
+      response = client.run_bench(env)
+
+    score = your_eval_method(response)
+    ```
+  </Step>
+
+  <Step title="Containerize your benchmark">
+    Package your benchmark as an image and provide an entry point to run the benchmark.&#x20;
+
+    <Check>
+      Please configure your Docker image to target the Linux platform. We plan to support additional platforms in future releases.
+    </Check>
+  </Step>
+
+  <Step title="Extend BaseBench to Run Your Benchmarks">
+    Implement your subclass in `benchflow_interface.py` and upload it to benchmark Hub.
+    There are 6 methods to be implemented.&#x20;
+
+    <Note>
+      5 of them are very simple and can often be implemented with just a return statement. The only one that might take a bit of time is the `get_result` method.
+    </Note>
+
+    ```python
+    from benchflow import BaseBench
+    from benchflow.schemas import BenchArgs, BenchmarkResult
+
+    class YourBench(BaseBench):
+      def get_args(task_id) -> BenchArgs:
+         ...
+      def get_image_name(self) -> str:
+         ...
+      def get_results_dir_in_container(self) -> str:
+         ...
+      def get_log_files_dir_in_container(self) -> str:
+         ...
+      def get_result(self, task_id: str) -> BenchmarkResult:
+         ...
+      def get_all_tasks(self, split: str) -> Dict[str, Any]:
+         ...
+    ```
+  </Step>
+
+  <Step title="Upload your benchmark to Benchmark Hub">
+    Here’s your checklist:
+
+    1. **benchflow\_interface.py** - ensure your file is named correctly.\*\*\*\*&#x20;
+
+    2. **readme.md** – This should showcase the field formats provided in the `prepare_input method`from Step 2, along with detailed descriptions.
+  </Step>
+</Steps>
+
+## Explore detailed integration process
+
+<CardGroup cols={2}>
+  <Card title="Benchmark Users" icon="users" iconType="regular" href="/tutorial/user">
+    Start your BenchFlow journey as Users.
+  </Card>
+
+  <Card title="Benchmark Developers" icon="laptop" iconType="regular" href="/tutorial/developers">
+    Start your BenchFlow journey as Developers
+  </Card>
+</CardGroup>
