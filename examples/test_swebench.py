@@ -20,7 +20,7 @@ def test_swebench_benchmark():
 
     results = bench.get_results(run_ids)
 
-    assert results is not None
+    assert len(results) > 0
 
 if __name__ == "__main__":
     test_swebench_benchmark()
