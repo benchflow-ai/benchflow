@@ -1,10 +1,10 @@
-from benchflow.agents.bird_openai import BridAgent
+from benchflow.agents.bird_openai import BirdAgent
 from benchflow import load_benchmark
 import os
 
 bench = load_benchmark(benchmark_name="benchflow/Bird", bf_token=os.getenv("BF_TOKEN"))
 
-your_agents = BridAgent()
+your_agents = BirdAgent()
 
 run_ids = bench.run(
     task_ids=["all"],

@@ -1,5 +1,5 @@
 from benchflow import load_benchmark
-from medqa_openai import MedQAAgent
+from benchflow.agents.medqa_openai import MedQAAgent
 import os
 
 

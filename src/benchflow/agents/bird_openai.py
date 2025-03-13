@@ -2,7 +2,7 @@ import os
 from openai import OpenAI
 from benchflow import BaseAgent
 
-class BridAgent(BaseAgent):
+class BirdAgent(BaseAgent):
     def __init__(self):
         super().__init__()
         self.api_key = os.getenv("OPENAI_API_KEY")
