@@ -1,21 +1,13 @@
 import json
-import logging
-import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List
+from .utils import print_logo, spinner_animation, check_arguments, logger, get_agent_code
 
 import requests
 
 from .BaseAgent import BaseAgent
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S"
-)
-logger = logging.getLogger(__name__)
 
 class Bench:
     def __init__(self, benchmark_name: str, bf_token: str):
@@ -26,22 +18,32 @@ class Bench:
         self.results_dir = project_dir / "results" / self.benchmark_name
         print_logo()
 
-    def run(self, task_ids: List[Union[str, int]], 
-            agents: Union[BaseAgent, List[BaseAgent]], 
-            requirements_txt: str, 
-            install_sh: str = None, 
-            api: Dict[str, str] = None, 
-            require_gpu: bool = False, 
+    def run(self, 
+            agents: BaseAgent | List[BaseAgent],
+            requirements_txt: str,
+            api: Dict[str, str],
+            task_ids: List[str] = None,
+            install_sh: str = None,
+            require_gpu: bool = False,
             args: Dict[str, Any] = {}):
-        
-        if isinstance(task_ids, (str, int)):
-            task_ids = [str(task_ids)]
-        else:
-            task_ids = [str(task) for task in task_ids]
+        """
+        Run the benchmark.
 
-        if isinstance(agents, BaseAgent):
-            agents = [agents]
-        
+        Args:
+            agents (BaseAgent | List[BaseAgent]): agents to run
+            requirements_txt (str): python style requirements.txt file
+            api (Dict[str, str]): api info for your intelligence provider
+            task_ids (List[str], optional): task ids to run. Defaults to None
+            install_sh (str, optional): install.sh file. Defaults to None
+            require_gpu (bool, optional): require gpu. Defaults to False
+            args (Dict[str, Any], optional): arguments for benchmark. Defaults to {}.
+
+        Returns:
+            List[str]: run ids
+        """
+
+        agents, task_ids, requirements_txt, install_sh = check_arguments(agents, requirements_txt, task_ids, api, install_sh)
+
         results_ids = []
         try:
             for agent in agents:
@@ -55,22 +57,13 @@ class Bench:
             logger.error(f"Error running benchmark: {str(e)}")
             return results_ids
 
-    def _send_tasks_to_bff(self, task_ids: List[str], agent: BaseAgent, 
+    def _send_tasks_to_bff(self, agent: BaseAgent, 
                            requirements_txt: str, install_sh: str, 
-                           api: Dict[str, str], require_gpu: bool, 
-                           args: Dict[str, Any]):
-        logger.info(f"Sending tasks {task_ids} and setup scripts to BFF for agent {agent.__class__.__name__}")
+                           api: Dict[str, str], require_gpu: bool,
+                           args: Dict[str, Any],
+                           task_ids: List[str]):
 
-        try:
-            with open(requirements_txt, 'r') as f:
-                requirements_txt = f.read()
-            if install_sh:
-                with open(install_sh, 'r') as f:
-                    install_sh = f.read()
-            agent_code = self._get_agent_code(agent)
-        except Exception as e:
-            logger.error(f"Failed to get agent code: {str(e)}")
-            return None
+        agent_code = get_agent_code(agent)
 
         api['provider'] = api.get("provider", "")
         api['model'] = api.get("model", "")
@@ -142,36 +135,4 @@ class Bench:
             result_file.write_text(json.dumps(results[job_id]))
             logger.info(f"Results saved to {result_file}")
         return results
-    
-    def _get_agent_code(self, agent: BaseAgent) -> str:
-        agent_file = Path(sys.modules[agent.__class__.__module__].__file__)
-        return agent_file.read_text()
 
-def print_logo() -> None:
-    logo = r"""
-
-██████╗ ███████╗███╗   ██╗ ██████╗██╗  ██╗███████╗██╗      ██████╗ ██╗    ██╗    
-██╔══██╗██╔════╝████╗  ██║██╔════╝██║  ██║██╔════╝██║     ██╔═══██╗██║    ██║    
-██████╔╝█████╗  ██╔██╗ ██║██║     ███████║█████╗  ██║     ██║   ██║██║ █╗ ██║    
-██╔══██╗██╔══╝  ██║╚██╗██║██║     ██╔══██║██╔══╝  ██║     ██║   ██║██║███╗██║    
-██████╔╝███████╗██║ ╚████║╚██████╗██║  ██║██║     ███████╗╚██████╔╝╚███╔███╔╝    
-╚═════╝ ╚══════╝╚═╝  ╚═══╝ ╚═════╝╚═╝  ╚═╝╚═╝     ╚══════╝ ╚═════╝  ╚══╝╚══╝     
-                                                                                 
-    """
-    print(logo)
-
-def spinner_animation(stop_event: threading.Event, start_time: float) -> None:
-    spinner = ['|', '/', '-', '\\']
-    spinner_index = 0
-    bar_len = 19
-    while not stop_event.is_set():
-        elapsed = int(time.time() - start_time)
-        ch = spinner[spinner_index % len(spinner)]
-        spinner_index += 1
-        fill = elapsed % (bar_len + 1)
-        bar = '[' + '#' * fill + '-' * (bar_len - fill) + ']'
-        sys.stdout.write(f"\rWaiting for results... {ch} {bar} Elapsed: {elapsed}s")
-        sys.stdout.flush()
-        time.sleep(0.1)
-    sys.stdout.write("\r" + " " * 80 + "\r")
-    sys.stdout.flush()

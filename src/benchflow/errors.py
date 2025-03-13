@@ -19,13 +19,11 @@ class BenchflowError(Exception):
         }
     
     def __str__(self) -> str:
-        return f"{self.code}: {self.message}, details={self.details})"
+        return f"{self.code}: {self.message}.\n\t{self.details}"
 
 class BenchmarkNotFoundError(BenchflowError):
     def __init__(self, benchmark_name: str, details=None):
-        template = f"Benchmark {benchmark_name} not found, 
-                    benchmark_name should be all lowercase and follow the format: 'organization/benchmark_name'. 
-                    Please check if the benchmark is available on https://www.benchflow.ai/dashboard/usages."
+        template = f"Benchmark {benchmark_name} not found, benchmark_name should be all lowercase and follow the format: 'organization/benchmark_name'. Please check if the benchmark is available on https://www.benchflow.ai/dashboard/usages."
         super().__init__("BENCHMARK_NOT_FOUND", template, details)
 
 class UnauthorizedError(BenchflowError):
@@ -65,11 +63,6 @@ class CallAPIExecutionError(BenchflowError):
     def __init__(self, details=None):
         template = "Error occurred while executing the API call"
         super().__init__("CALL_API_EXECUTION_ERROR", template, details)
-
-class MissingParameterError(BenchflowError):
-    def __init__(self, parameter_name: str, function_name: str, details=None):
-        template = f"Missing parameter: {parameter_name} in function: {function_name}"
-        super().__init__("MISSING_PARAMETER", template, details)
 
 class InvalidArgumentsError(BenchflowError):
     def __init__(self, argument, details=None):

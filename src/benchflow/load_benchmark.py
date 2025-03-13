@@ -10,5 +10,5 @@ def load_benchmark(benchmark_name: str, bf_token: str) -> Bench:
     bench = load_benchmark("benchflow/webarena", "your_bf_token")
     ```
     """
-    
+    # TODO: send benchmark_name to bff to get the benchmark in __init__
     return Bench(benchmark_name, bf_token)
