@@ -80,24 +80,15 @@ class Bench:
 
         headers = {
             "x-bf-api-key": self.bf_token,
-            "x-bf-source": "python-sdk 0.1.12"
+            "x-bf-source": "python-sdk 0.1.13"
         }
 
-        try:
-            response = requests.post(f"{self.bff_url}/api/v1/jobs/{self.benchmark_name}/new", json=payload, headers=headers)
-            response.raise_for_status()
+        response = requests.post(f"{self.bff_url}/api/v1/jobs/{self.benchmark_name}/new", json=payload, headers=headers)
+        response.raise_for_status()
 
-            task_info = response.json()
-            job_id = task_info.get("jobId")
-            logger.info(f"Tasks {task_ids} started successfully, job_id: {job_id}")
-            return job_id
-        
-        except requests.exceptions.HTTPError as http_err:
-            detail = http_err.response.json()
-            logger.error(f"Task execution failed: {str(http_err)}, detail: {detail}")
-        except Exception as e:
-            logger.error(f"Task execution failed: {str(e)}")
-        return None
+        task_info = response.json()
+        job_id = task_info.get("jobId")
+        logger.info(f"Tasks {task_ids} started successfully, job_id: {job_id}")
 
     def get_results(self, job_ids: List[str]):
         """

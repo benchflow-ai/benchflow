@@ -154,7 +154,7 @@ wheels = [
 
 [[package]]
 name = "benchflow"
-version = "0.1.12"
+version = "0.1.13"
 source = { editable = "." }
 dependencies = [
     { name = "datasets" },

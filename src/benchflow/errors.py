@@ -19,7 +19,7 @@ class BenchflowError(Exception):
         }
     
     def __str__(self) -> str:
-        return f"{self.code}: {self.message}.\n\t{self.details}"
+        return f"\n\t{self.code}: {self.message}.\n\t{self.details}"
 
 class BenchmarkNotFoundError(BenchflowError):
     def __init__(self, benchmark_name: str, details=None):

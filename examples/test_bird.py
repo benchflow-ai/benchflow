@@ -1,6 +1,7 @@
-from benchflow.agents.bird_openai import BirdAgent
-from benchflow import load_benchmark
 import os
+
+from benchflow import load_benchmark
+from benchflow.agents.bird_openai import BirdAgent
 
 bench = load_benchmark(benchmark_name="benchflow/Bird", bf_token=os.getenv("BF_TOKEN"))
 

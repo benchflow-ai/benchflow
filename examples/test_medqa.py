@@ -1,6 +1,7 @@
+import os
+
 from benchflow import load_benchmark
 from benchflow.agents.medqa_openai import MedQAAgent
-import os
 
 
 def test_medqa():

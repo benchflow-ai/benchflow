@@ -64,7 +64,7 @@ def check_arguments(agents: BaseAgent | List[BaseAgent],
         with open(requirements_txt, 'r') as f:
             requirements_txt = f.read()
     else:
-        raise InvalidArgumentsError(argument="requirements_txt", details=f"Requirements file {requirements_txt} not found")
+        raise InvalidArgumentsError(argument="requirements_txt", details=f"Requirements file {Path(requirements_txt).absolute()} not found")
 
     # install_sh check
     if install_sh:
