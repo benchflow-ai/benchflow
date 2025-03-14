@@ -103,7 +103,6 @@ def check_arguments(agents: "BaseAgent | List[BaseAgent]",
     # Validate each agent's code using the separated function
     for agent in agents:
         validate_agent_code(agent, allowed_packages, stdlib_modules)
-    exit()
 
     return agents, task_ids, requirements_content, install_sh_content
 
@@ -173,7 +172,6 @@ def validate_agent_code(agent, allowed_packages: set, stdlib_modules: set) -> No
             argument="agents",
             details="Agent code must not include executable calls like 'run_with_endpoint'."
         )
-
     # Parse the agent code using AST
     try:
         tree = ast.parse(agent_code)

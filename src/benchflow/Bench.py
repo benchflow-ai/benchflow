@@ -43,11 +43,10 @@ class Bench:
         """
 
         agents, task_ids, requirements_txt, install_sh = check_arguments(agents, requirements_txt, task_ids, api, install_sh)
-
         results_ids = []
         try:
             for agent in agents:
-                result_id = self._send_tasks_to_bff(task_ids, agent, requirements_txt, install_sh, api, require_gpu, args)
+                result_id = self._send_tasks_to_bff(agent, requirements_txt, install_sh, api, require_gpu, args, task_ids)
                 if result_id:
                     results_ids.append(result_id)
 
@@ -62,11 +61,9 @@ class Bench:
                            api: Dict[str, str], require_gpu: bool,
                            args: Dict[str, Any],
                            task_ids: List[str]):
-
-        agent_code = get_agent_code(agent)
-
         api['provider'] = api.get("provider", "")
         api['model'] = api.get("model", "")
+        agent_code = get_agent_code(agent)
         payload = {
             "task_ids": task_ids,
             "benchmark_name": self.benchmark_name,
@@ -82,13 +79,14 @@ class Bench:
             "x-bf-api-key": self.bf_token,
             "x-bf-source": "python-sdk 0.1.13"
         }
-
+        
         response = requests.post(f"{self.bff_url}/api/v1/jobs/{self.benchmark_name}/new", json=payload, headers=headers)
         response.raise_for_status()
 
         task_info = response.json()
         job_id = task_info.get("jobId")
         logger.info(f"Tasks {task_ids} started successfully, job_id: {job_id}")
+        return job_id
 
     def get_results(self, job_ids: List[str]):
         """
@@ -126,4 +124,3 @@ class Bench:
             result_file.write_text(json.dumps(results[job_id]))
             logger.info(f"Results saved to {result_file}")
         return results
-

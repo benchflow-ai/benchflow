@@ -14,12 +14,12 @@ def test_swebench_benchmark():
         agents=your_agents,
         install_sh="install_sweagent.sh",
         requirements_txt="sweagent_requirements.txt",
-        api={"OPENAI_API_KEY": os.getenv("OPENAI_API_KEY")},
+        api={"provider": "openai", "model": "gpt-4o-mini", "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY")},
         args={}
     )
 
     results = bench.get_results(run_ids)
-
+    
     assert len(results) > 0
 
 if __name__ == "__main__":
