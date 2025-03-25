@@ -1,5 +1,8 @@
 <div align="center">
   <h1>BenchFlow</h1>
+  <a href="https://discord.gg/mZ9Rc8q8W3" target="_blank">
+    <img src="https://img.shields.io/badge/Join%20our%20Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Join our Discord">
+  </a>
   <p>
     <img src="https://img.shields.io/pypi/l/benchflow?style=plastic" alt="PyPI - License">
     <img src="https://img.shields.io/pypi/dm/benchflow?style=plastic" alt="PyPI - Downloads">
