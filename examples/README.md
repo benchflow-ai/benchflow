@@ -1,14 +1,27 @@
 # BenchFlow Examples
 
-This directory contains example implementations for various benchmarks.
+This directory contains example implementations for various benchmarks, organized by benchmark type.
 
 ## Directory Structure
 
-- `medqa_multimodel/`: Implementation for testing multiple LLM models with the MedQA benchmark
-  - Supports Gemini 2.5, Claude 3.7, GPT-4o, and Llama 4 Maverick
-  - See `medqa_multimodel/README_medqa_multimodel.md` for details
+### Medical Benchmarks
+- `medqa/`: Examples for the MedQA benchmark
+  - `medqa_multimodel/`: Implementation for testing multiple LLM models (Gemini 2.5, Claude 3.7, GPT-4o, Llama 4 Maverick)
+  - Original OpenAI implementation and test scripts
 
-- Other examples for different benchmarks
+### Rare Disease Benchmarks
+- `rarebench/`: Examples for the RareBench benchmark
+
+### Other Benchmarks
+- `bird/`: Examples for the BIRD benchmark
+- `crag/`: Examples for the CRAG benchmark
+- `mmlupro/`: Examples for the MMLUPro benchmark
+- `swebench/`: Examples for the SWEBench benchmark
+- `webarena/`: Examples for the WebArena benchmark
+- `webcanvas/`: Examples for the WebCanvas benchmark
+
+### Common Utilities
+- `common/`: Shared utilities and scripts
 
 ## Running Examples
 
