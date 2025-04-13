@@ -1,18 +1,37 @@
 import os
-import sys
 import argparse
+from pathlib import Path
 from benchflow import load_benchmark
 
-# Import the agent implementations
-from examples.rarebench.rarebench_gemini import RareBenchGeminiAgent
-from examples.rarebench.rarebench_claude import RareBenchClaudeAgent
-from examples.rarebench.rarebench_gpt4o import RareBenchGPT4oAgent
-from examples.rarebench.rarebench_llama4 import RareBenchLlama4Agent
+# Check for .env file in the current directory
+def check_env_file():
+    env_path = Path('.env')
+    if not env_path.exists():
+        print("\nWARNING: No .env file found in the current directory.")
+        print("Please copy the .env.example file to .env and fill in your API keys:")
+        print("cp .env.example .env")
+        print("Then edit the .env file with your actual API keys.\n")
+    return env_path
+
+# Check for requirements file in the current directory
+def check_requirements_file():
+    req_path = Path('rarebench_requirements.txt')
+    if not req_path.exists():
+        print("\nWARNING: No rarebench_requirements.txt file found in the current directory.")
+        print("Please make sure the requirements file exists in the rarebench directory.\n")
+    return req_path
+
+# Import the agent implementations directly
+# Assuming this script is run from the rarebench folder
+from rarebench_gemini import RareBenchGeminiAgent
+from rarebench_claude import RareBenchClaudeAgent
+from rarebench_gpt4o import RareBenchGPT4oAgent
+from rarebench_llama4 import RareBenchLlama4Agent
 
 def load_env_vars():
     """Load environment variables from .env file if it exists."""
-    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', '.env')
-    if os.path.exists(env_path):
+    env_path = check_env_file()
+    if env_path.exists():
         print(f"Loading environment variables from {env_path}")
         with open(env_path) as f:
             for line in f:
@@ -85,11 +104,15 @@ def test_rarebench_model(model_name, task_id="MME"):
 
     # Run the benchmark
     print(f"Running RareBench benchmark with {model_name} for task_id: {task_id}")
+
+    # Get the path to the requirements file
+    requirements_path = check_requirements_file()
+
     run_ids = bench.run(
         task_ids=[task_id],
         agents=agent,
         api=api_config,
-        requirements_txt="rarebench_requirements.txt",
+        requirements_txt=str(requirements_path),
         args={
             "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY"),  # required for evaluation
         },
@@ -121,11 +144,11 @@ def test_all_models(task_id="MME"):
     print("\n=== Summary ===")
     for model, result in results.items():
         if result and isinstance(result, dict):
-            for job_id, tasks in result.items():
+            for run_id, tasks in result.items():
                 for task in tasks:
                     if task.get("metrics") and "score" in task.get("metrics", {}):
                         score = task["metrics"]["score"]
-                        print(f"{model}: Score: {score}")
+                        print(f"{model} (run {run_id}): Score: {score}")
 
     return results
 

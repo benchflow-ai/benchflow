@@ -19,6 +19,18 @@ This directory contains examples for running the RareBench benchmark with differ
 - `test_rarebench_multimodel.py`: Script to run the RareBench benchmark with multiple models
 - `test_rarebench.py`: Original script to run the RareBench benchmark with OpenAI
 
+## Setup
+
+1. **Create a `.env` file in this directory** by copying the provided template:
+
+```bash
+cp .env.example .env
+```
+
+Then edit the `.env` file to add your actual API keys.
+
+2. Make sure the `rarebench_requirements.txt` file is in this directory.
+
 ## Requirements
 
 - API keys for each model:
@@ -58,3 +70,9 @@ python test_rarebench_multimodel.py --model llama4
 # Run the benchmark with a specific task ID
 python test_rarebench_multimodel.py --model all --task_id MME
 ```
+
+## Notes
+
+- **Important**: The scripts must be run from the `examples/rarebench` directory.
+- Each model requires its corresponding API key to be set in the `.env` file.
+- The benchmark results will be displayed in the console and saved to the results directory.

@@ -1,18 +1,29 @@
 import os
-import sys
 import argparse
 import time
+from pathlib import Path
 
-# Import the agent implementations
-from examples.rarebench.rarebench_gemini import RareBenchGeminiAgent
-from examples.rarebench.rarebench_claude import RareBenchClaudeAgent
-from examples.rarebench.rarebench_gpt4o import RareBenchGPT4oAgent
-from examples.rarebench.rarebench_llama4 import RareBenchLlama4Agent
+# Check for .env file in the current directory
+def check_env_file():
+    env_path = Path('.env')
+    if not env_path.exists():
+        print("\nWARNING: No .env file found in the current directory.")
+        print("Please copy the .env.example file to .env and fill in your API keys:")
+        print("cp .env.example .env")
+        print("Then edit the .env file with your actual API keys.\n")
+    return env_path
+
+# Import the agent implementations directly
+# Assuming this script is run from the rarebench folder
+from rarebench_gemini import RareBenchGeminiAgent
+from rarebench_claude import RareBenchClaudeAgent
+from rarebench_gpt4o import RareBenchGPT4oAgent
+from rarebench_llama4 import RareBenchLlama4Agent
 
 def load_env_vars():
     """Load environment variables from .env file if it exists."""
-    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', '.env')
-    if os.path.exists(env_path):
+    env_path = check_env_file()
+    if env_path.exists():
         print(f"Loading environment variables from {env_path}")
         with open(env_path) as f:
             for line in f:

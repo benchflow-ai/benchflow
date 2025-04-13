@@ -1,16 +1,57 @@
 from benchflow import load_benchmark
 import os
 import argparse
+from pathlib import Path
 
-# Load environment variables from .env file
-from examples.medqa_multimodel.load_env import load_env_vars
+# Check for .env file in the current directory
+def check_env_file():
+    env_path = Path('.env')
+    if not env_path.exists():
+        print("\nWARNING: No .env file found in the current directory.")
+        print("Please copy the .env.example file to .env and fill in your API keys:")
+        print("cp .env.example .env")
+        print("Then edit the .env file with your actual API keys.\n")
+    return env_path
+
+# Check for requirements file in the current directory
+def check_requirements_file():
+    req_path = Path('medqa_multimodel_requirements.txt')
+    if not req_path.exists():
+        print("\nWARNING: No medqa_multimodel_requirements.txt file found in the current directory.")
+        print("Please make sure the requirements file exists in the medqa_multimodel directory.\n")
+    return req_path
+
+# Create a function to load environment variables
+def load_env_vars():
+    """Load environment variables from .env file if it exists."""
+    env_path = check_env_file()
+    if env_path.exists():
+        print(f"Loading environment variables from {env_path}")
+        with open(env_path) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                key, value = line.split('=', 1)
+                os.environ[key] = value
+
+    # Check if required API keys are available
+    print("Available API keys:")
+    for key in ["GEMINI_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "BF_TOKEN"]:
+        if os.getenv(key):
+            print(f"  {key}: ✓ Available")
+        else:
+            print(f"  {key}: ✗ Not available")
+
+# Load environment variables
 load_env_vars()
 
-# Import all the agent implementations
-from examples.medqa_multimodel.medqa_gemini import MedQAGeminiAgent
-from examples.medqa_multimodel.medqa_claude import MedQAClaudeAgent
-from examples.medqa_multimodel.medqa_gpt4o import MedQAGPT4oAgent
-from examples.medqa_multimodel.medqa_llama4 import MedQALlama4Agent
+# Import the agent implementations directly
+# Assuming this script is run from the medqa_multimodel folder
+from medqa_gemini import MedQAGeminiAgent
+from medqa_claude import MedQAClaudeAgent
+from medqa_gpt4o import MedQAGPT4oAgent
+from medqa_llama4 import MedQALlama4Agent
 
 def test_medqa_with_model(model_name, case_id="1"):
     """
@@ -76,11 +117,15 @@ def test_medqa_with_model(model_name, case_id="1"):
         raise ValueError(f"Unknown model name: {model_name}")
 
     # Run the benchmark
+
+    # Get the path to the requirements file
+    requirements_path = check_requirements_file()
+
     run_ids = bench.run(
         task_ids=["diagnosis"],  # choices: "diagnosis", "treatment", "prevention", "all"
         agents=agent,
         api=api_config,
-        requirements_txt="examples/medqa_multimodel/medqa_multimodel_requirements.txt",
+        requirements_txt=str(requirements_path),
         args={
             "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY"),  # required for llm as an evaluator
             "CASE_ID": case_id,  # use "all" to run all cases in diagnosis section

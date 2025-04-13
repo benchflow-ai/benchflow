@@ -17,15 +17,13 @@ This directory contains implementations for testing multiple LLM models with the
 pip install -r medqa_multimodel_requirements.txt
 ```
 
-2. Set up your environment variables:
+2. **Create a `.env` file in this directory** by copying the provided template:
 
 ```bash
-export BF_TOKEN="your_benchflow_token"
-export GEMINI_API_KEY="your_gemini_api_key"
-export ANTHROPIC_API_KEY="your_anthropic_api_key"
-export OPENAI_API_KEY="your_openai_api_key"
-export OPENROUTER_API_KEY="your_openrouter_api_key"
+cp .env.example .env
 ```
+
+Then edit the `.env` file to add your actual API keys.
 
 ## Running the Benchmark
 
@@ -51,6 +49,9 @@ python test_medqa_multimodel.py --model claude --case_id all
 
 ## Notes
 
+- **Important**: The scripts must be run from the `examples/medqa/medqa_multimodel` directory.
+- Each model requires its corresponding API key to be set in the `.env` file.
 - The OpenRouter implementation for Llama 4 Maverick uses the OpenAI SDK with a custom base URL.
 - All models use the same benchmark framework and evaluation criteria.
 - Results are returned in the same format for easy comparison.
+- The benchmark results will be displayed in the console and saved to the results directory.
