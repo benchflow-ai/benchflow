@@ -1,0 +1,8 @@
+openai
+anthropic
+google-generativeai
+tenacity
+inspect_ai==0.3.78
+tiktoken>=0.9.0
+google-genai
+google-cloud-aiplatform==1.38.1

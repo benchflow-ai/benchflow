@@ -1,0 +1,6 @@
+Model,Reasoning Effort,F1 Score,Avg Cost Per Paper (USD)
+gpt-4o-mini,default,0.5896,8.0122
+gpt-4o,default,0.7281,119.8741
+o1-mini,high,0.7752,71.7240
+o1,high,0.8416,830.1633
+o3-mini,high,0.8266,66.0362

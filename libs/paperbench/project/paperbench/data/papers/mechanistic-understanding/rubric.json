@@ -1,0 +1,928 @@
+{
+    "id": "0d99d4ba-1b8e-4975-a285-6bea71c68933",
+    "requirements": "The paper has been fully reproduced.",
+    "weight": 1,
+    "sub_tasks": [
+        {
+            "id": "0a491f9b-ee24-489d-942c-c9b29bf552ce",
+            "requirements": "Toxic vectors have been extracted from the GPT2-medium model.",
+            "weight": 4,
+            "sub_tasks": [
+                {
+                    "id": "5c9505f7-36c2-4183-8ce2-8f73fe604a33",
+                    "requirements": "A 90:10 training and validation set has been created using the Jigsaw toxic comment classification dataset.",
+                    "weight": 1,
+                    "sub_tasks": [
+                        {
+                            "id": "cfcf4e45-a955-4064-8c12-17bc3787bed7",
+                            "requirements": "Code for splitting Jigsaw toxic comment classification dataset into 90:10 training and validation sets has been implemented.",
+                            "weight": 1,
+                            "sub_tasks": [],
+                            "task_category": "Code Development"
+                        },
+                        {
+                            "id": "89eae18e-3abb-424c-b18d-8ddc210806e0",
+                            "requirements": "The Jigsaw toxic comment classification dataset has been split into 90:10 training and validation sets.",
+                            "weight": 1,
+                            "sub_tasks": [],
+                            "task_category": "Code Execution"
+                        }
+                    ],
+                    "task_category": null
+                },
+                {
+                    "id": "43025025-a63d-459d-aca6-f8995151fa36",
+                    "requirements": "A linear probe model for classifying toxicity has been trained and validated.",
+                    "weight": 1,
+                    "sub_tasks": [
+                        {
+                            "id": "14994612-f5c9-4578-91ca-d9670a4b42c2",
+                            "requirements": "The code for a binary classifier of the form softmax(Wx) has been implemented to classify tokens as toxic or non toxic.",
+                            "weight": 1,
+                            "sub_tasks": [],
+                            "task_category": "Code Development"
+                        },
+                        {
+                            "id": "627f8d87-0aed-4cb5-a29e-8208c3bc9871",
+                            "requirements": "The classifier takes as input, x, the residual stream in the last layer, averaged across all timesteps.",
+                            "weight": 1,
+                            "sub_tasks": [],
+                            "task_category": "Code Development"
+                        },
+                        {
+                            "id": "5614c277-43cb-4f54-afef-2af137f8e4a2",
+                            "requirements": "The dimensionality of W is Kx2, where if W[:,0] refers to the non-toxic toxic vectors, then W[:,1] refers to the toxic vectors, and vice-versa.",
+                            "weight": 1,
+                            "sub_tasks": [],
+                            "task_category": "Code Development"
+                        },
+                        {
+                            "id": "b54834e0-a42b-4a51-84cf-8fb9d185dd07",
+                            "requirements": "The code for training the linear probe model has been implemented.",
+                            "weight": 1,
+                            "sub_tasks": [],
+                            "task_category": "Code Development"
+                        },
+                        {
+                            "id": "39489fa7-b2de-4220-b625-b7929b0e3587",
+                            "requirements": "The linear probe model was trained on the training set of the Jigsaw toxic comment classification dataset.",
+                            "weight": 1,
+                            "sub_tasks": [],
+                            "task_category": "Code Execution"
+                        },
+                        {
+                            "id": "b203fdd2-cd9e-434b-85b5-1ffa488ca445",
+                            "requirements": "The linear probe model was evaluated on the validation set of the Jigsaw toxic comment classification dataset.",
+                            "weight": 1,
+                            "sub_tasks": [],
+                            "task_category": "Code Execution"
+                        },
+                        {
+                            "id": "a359ba32-d92d-4021-b904-9d8e0abbb1c3",
+                            "requirements": "The trained classifier achieves a performance of approximately 94% in the validation set.",
+                            "weight": 2,
+                            "sub_tasks": [],
+                            "task_category": "Result Analysis"
+                        }
+                    ],
+                    "task_category": null
+                },
+                {
+                    "id": "b82ab785-071b-4822-a9ce-3c1e3c27e3f1",
+                    "requirements": "The matrices with 128 toxic value vectors, denoted MLP.vToxic, and corresponding key vectors, MLP.kToxic, have been created for GPT2. ",
+                    "weight": 1,
+                    "sub_tasks": [
+                        {
+                            "id": "bbdb4b01-fdf3-4879-bc5c-c59bcc6c12c2",
+                            "requirements": "The code for calculating the 128 value vectors with largest cosine similarity to the toxic vector of the matrix W have been implemented.",
+                            "weight": 1,
+                            "sub_tasks": [],
+                            "task_category": "Code Development"
+                        },
+                        {
+                            "id": "224d730e-1525-4749-bdea-0b802618a861",
+                            "requirements": "The 128 value vectors with largest cosine similarity to W have been identified. We refer to this set of vectors as MLP.vToxic. The corresponding 128 key vectors have been identified. We refer to this set of vectors as MLP.kToxic.",
+                            "weight": 1,
+                            "sub_tasks": [],
+                            "task_category": "Code Execution"
+                        }
+                    ],
+                    "task_category": null
+                },
+                {
+                    "id": "52405a4e-16cf-40f5-bff5-8ebe9bb01c66",
+                    "requirements": "The matrix MLP.vToxic has been decomposed using SVD to obtain the vectors SVD.Utoxic for GPT2. ",
+                    "weight": 1,
+                    "sub_tasks": [
+                        {
+                            "id": "1a8266f6-fe17-4638-8b69-d338648a3286",
+                            "requirements": "The code for doing SVD decomposition on MLP.vToxic has been implemented. ",
+                            "weight": 1,
+                            "sub_tasks": [],
+                            "task_category": "Code Development"
+                        },
+                        {
+                            "id": "d8b9792d-eb88-4d68-baea-bc2d46e69710",
+                            "requirements": "The matrix MLP.vToxic has been decomposed using SVD and the left singular vectors has been extracted. We denote these vectors as SVD.Utoxic. ",
+                            "weight": 1,
+                            "sub_tasks": [],
+                            "task_category": "Code Execution"
+                        }
+                    ],
+                    "task_category": null
+                }
+            ],
+            "task_category": null
+        },
+        {
+            "id": "203b07e1-595a-4116-ba24-e15a9d1b3252",
+            "requirements": "Results in Table 1 have been reproduced.",
+            "weight": 1,
+            "sub_tasks": [
+                {
+                    "id": "9249d0dc-05dc-4748-afc8-ef1948f4bece",
+                    "requirements": "The code for projecting toxic vectors onto the vocabulary space and identifying the nearest neighbor has been implemented.",
+                    "weight": 1,
+                    "sub_tasks": [],
+                    "task_category": "Code Development"
+                },
+                {
+                    "id": "0cabfa12-a62a-40d5-a2fb-c41cb1fa6e24",
+                    "requirements": "The top tokens from the toxic vector W from GPT 2 have been extracted.",
+                    "weight": 1,
+                    "sub_tasks": [],
+                    "task_category": "Code Execution"
+                },
+                {
+                    "id": "a626e8d3-5947-4e65-8863-5fbc17c0ec66",
+                    "requirements": "The top tokens from several MLP.vToxic layers from GPT 2 has been extracted.",
+                    "weight": 1,
+                    "sub_tasks": [],
+                    "task_category": "Code Execution"
+                },
+                {
+                    "id": "c1953d3e-9a93-46b7-80fd-85306799218f",
+                    "requirements": "The top tokens from the first three SVD vectors SVD.uToxic from GPT 2 have been extracted.",
+                    "weight": 1,
+                    "sub_tasks": [],
+                    "task_category": "Code Execution"
+                },
+                {
+                    "id": "144dd2b8-0448-4a68-b658-8f3beb201885",
+                    "requirements": "The extracted tokens encode different characteristics of toxic language. The tokens from W are mostly curse words, then tokens from MLP.vToxic are a mix of curse words and insults, while the tokens from SVD.uToxic encode insults and female sexual references.",
+                    "weight": 2,
+                    "sub_tasks": [],
+                    "task_category": "Result Analysis"
+                }
+            ],
+            "task_category": null
+        },
+        {
+            "id": "55f1009b-73c7-4a94-8d31-c6826f7a0406",
+            "requirements": "The GPT2 model has been fine-tuned using DPO to reduce the likelihood of toxicity.",
+            "weight": 4,
+            "sub_tasks": [
+                {
+                    "id": "2405fa15-54ba-4daa-a1d3-cdb95b163d56",
+                    "requirements": "The training data for aligning GPT2 with DPO has been created",
+                    "weight": 1,
+                    "sub_tasks": [
+                        {
+                            "id": "a8c8d524-076c-4404-ae91-fd874154f06a",
+                            "requirements": "The code for PPLM described in Section 4.2, has been implemented or imported. The hyper parameters have been set according to Table 9 in Appendix E.",
+                            "weight": 1,
+                            "sub_tasks": [],
+                            "task_category": "Code Development"
+                        },
+                        {
+                            "id": "0658ca9a-f75a-4fe8-9920-8c2c9181ef96",
+                            "requirements": "The dataset Wikitext-2 has been sampled to create a set of prompts.",
+                            "weight": 1,
+                            "sub_tasks": [],
+                            "task_category": "Code Execution"
+                        },
+                        {
+                            "id": "cca1bf0e-dcc8-4f93-91a0-6883f92d2254",
+                            "requirements": "The code for generating positive non-toxic examples for each prompt has been generated. For each prompt, a positive example (non-toxic) has been obtained by sampling greedily from GPT2.",
+                            "weight": 1,
+                            "sub_tasks": [],
+                            "task_category": "Code Development"
+                        },
+                        {
+                            "id": "3c36d4c4-eb3a-441c-9058-334af9dbdef7",
+                            "requirements": "The code for generating negative toxic examples for each prompt from GPT-2 has been generated. For each prompt, a negative example (toxic) has been obtained by using PPLM and the toxic vector W as the attribute classifier.",
+                            "weight": 1,
+                            "sub_tasks": [],
+                            "task_category": "Code Development"
+                        },
+                        {
+                            "id": "22d7454f-0b20-456f-b0a7-c60a3ab8a102",
+                            "requirements": "A total of 24,576 pairs of toxic and non-toxic continuations have been created.",
+                            "weight": 1,
+                            "sub_tasks": [],
+                            "task_category": "Code Execution"
+                        }
+                    ],
+                    "task_category": null
+                },
+                {
+                    "id": "d90d4400-9797-4bc9-aabd-7a31f6eb80fd",
+                    "requirements": "GPT2 has been fine-tuned using DPO to reduce toxicity.",
+                    "weight": 1,
+                    "sub_tasks": [
+                        {
+                            "id": "7bfa543c-8def-49f2-ad8d-adb32ed7e430",
+                            "requirements": "The code for fine-tuning GPT2 using DPO has been implemented. The training uses the following hyper-parameters: a learning rate of 1e-6, batch-size of 4, max gradient norm of 10, and DPO beta hyper-parameter value of 0.1. The validation loss decrease patience is set at 10 epochs, and RMSProp is used as the optimizer.",
+                            "weight": 1,
+                            "sub_tasks": [],
+                            "task_category": "Code Development"
+                        },
+                        {
+                            "id": "cae8f676-e7ba-43f8-aa28-1c55ee3b2613",
+                            "requirements": "GPT2 has been fine-tuned using DPO to reduce toxicity.",
+                            "weight": 1,
+                            "sub_tasks": [],
+                            "task_category": "Code Execution"
+                        }
+                    ],
+                    "task_category": null
+                }
+            ],
+            "task_category": null
+        },
+        {
+            "id": "d2d33fe0-108a-4646-843f-396604ce32fe",
+            "requirements": "The results in figure 1 have been replicated.",
+            "weight": 1,
+            "sub_tasks": [
+                {
+                    "id": "78973748-2a9f-479e-ab40-605d8db79971",
+                    "requirements": "The prompts used in figure 1 from RealToxicityPrompt have been selected.",
+                    "weight": 1,
+                    "sub_tasks": [
+                        {
+                            "id": "52557c05-7f73-4700-9d41-90100745c5ac",
+                            "requirements": "The code for identifying prompts that output \" shit\" as next token has been implemented.",
+                            "weight": 1,
+                            "sub_tasks": [],
+                            "task_category": "Code Development"
+                        },
+                        {
+                            "id": "829d2bf6-69f3-4613-9287-bc45f7ac08f0",
+                            "requirements": "295 prompts have been selected from RealToxicityPrompt that output \" shit\" as the next token.",
+                            "weight": 1,
+                            "sub_tasks": [],
+                            "task_category": "Code Execution"
+                        }
+                    ],
+                    "task_category": null
+                },
+                {
+                    "id": "ac43f15e-381b-44ed-9eb6-558c2301f226",
+                    "requirements": "The mean probability of the token \" shit\" for over all prompts has been calculated for all layers of GPT2 as in figure 1.",
+                    "weight": 1,
+                    "sub_tasks": [
+                        {
+                            "id": "e0533084-5045-4f76-8e6b-e51b210b2a3b",
+                            "requirements": "The code for calculating the probability of \" shit\" as next token for each layer, including layers within transformer block, has been implemented for GPT2.",
+                            "weight": 1,
+                            "sub_tasks": [],
+                            "task_category": "Code Development"
+                        },
+                        {
+                            "id": "56e8de0e-828d-440b-a3bb-e6088942e794",
+                            "requirements": "The mean probability of \" shit\" has been calculated for each layer over all prompts using GPT2.",
+                            "weight": 1,
+                            "sub_tasks": [],
+                            "task_category": "Code Execution"
+                        }
+                    ],
+                    "task_category": null
+                },
+                {
+                    "id": "9145b49b-0e85-42be-9bad-a85ab7062d17",
+                    "requirements": "The mean probability of the token \" shit\" for over all prompts has been calculated for all layers of GPT2 fine-tuned with DPO as in figure 1.",
+                    "weight": 1,
+                    "sub_tasks": [
+                        {
+                            "id": "31a3f55d-0024-44a4-940d-88bf0f0ab3eb",
+                            "requirements": "The code for calculating the probability of \" shit\" as next token for each layer, including layers within transformer block, has been implemented for GPT2 fine-tuned with DPO.",
+                            "weight": 1,
+                            "sub_tasks": [],
+                            "task_category": "Code Development"
+                        },
+                        {
+                            "id": "661eb38a-acca-41cb-bb09-3f10f0b4ea78",
+                            "requirements": "The mean probability of \" shit\" has been calculated for each layer over all prompts using GPT2 fine-tuned with DPO.",
+                            "weight": 1,
+                            "sub_tasks": [],
+                            "task_category": "Code Execution"
+                        }
+                    ],
+                    "task_category": null
+                },
+                {
+                    "id": "8dd6fc27-68bf-4c6f-836e-a8c835e8f227",
+                    "requirements": "The probability of next token being \" shit\" is 0.0 for layers 1 through 16. For other layers, the probability increases to a maximum of over 0.4 for the GPT2 model. When fine-tuned with DPO, the model consistently has a lower probability than the original GPT2 model, with a maximum probability of less than 0.2. The largest increase in probability comes from MLP blocks.",
+                    "weight": 2,
+                    "sub_tasks": [],
+                    "task_category": "Result Analysis"
+                }
+            ],
+            "task_category": null
+        },
+        {
+            "id": "7b9ae42e-daed-4636-8310-e83df823881f",
+            "requirements": "The code for measuring toxicity, perplexity and F1 has been implemented.",
+            "weight": 1,
+            "sub_tasks": [
+                {
+                    "id": "c36d4dc7-20c0-452f-88f2-3921a1fa2f69",
+                    "requirements": "The code for measuring F1 in continuations has been implemented. Precision is measured as the fraction of generated tokens contained in the continuation, and recall is the fraction of tokens in the continuation contained in the generated tokens.",
+                    "weight": 1,
+                    "sub_tasks": [],
+                    "task_category": "Code Development"
+                },
+                {
+                    "id": "c03156e4-8b92-45c4-a417-27c1b2b44f34",
+                    "requirements": "The code for measuring perplexity has been implemented. ",
+                    "weight": 1,
+                    "sub_tasks": [],
+                    "task_category": "Code Development"
+                },
+                {
+                    "id": "9d74128a-30df-4544-aca2-6c7c8a52eadd",
+                    "requirements": "The code for measuring toxicity has been implemented using unbiased-toxic-roberta. ",
+                    "weight": 1,
+                    "sub_tasks": [],
+                    "task_category": "Code Development"
+                }
+            ],
+            "task_category": null
+        },
+        {
+            "id": "efe7a68a-0835-4bbd-a165-081f1187fbb5",
+            "requirements": "Results in Table 2 have been reproduced.",
+            "weight": 1,
+            "sub_tasks": [
+                {
+                    "id": "c9b77dd1-f107-430f-ab67-d111176d335a",
+                    "requirements": "2,000 Wikipedia sentences have been used as prompts for evaluation of continuations F1 scores, and Wikitext-2 was used for perplexity.",
+                    "weight": 1,
+                    "sub_tasks": [],
+                    "task_category": "Code Execution"
+                },
+                {
+                    "id": "d8ae7965-5f7e-4f85-a486-80c1cf0ef214",
+                    "requirements": "RealToxicityPrompts have been used to elicit toxic outputs from the language models and calculating toxicity scores.",
+                    "weight": 1,
+                    "sub_tasks": [],
+                    "task_category": "Code Execution"
+                },
+                {
+                    "id": "52cf0416-3bcb-4e08-a5ee-e6b8e7cdf6d5",
+                    "requirements": "The code for substracting a toxic vector from GPT2 has been implemented as described in Section 3.3.",
+                    "weight": 1,
+                    "sub_tasks": [],
+                    "task_category": "Code Development"
+                },
+                {
+                    "id": "39e101b0-070c-4b7b-a685-fc39fff08169",
+                    "requirements": "Toxicity score, perplexity and F1 have been measured for GPT2.",
+                    "weight": 1,
+                    "sub_tasks": [],
+                    "task_category": "Code Execution"
+                },
+                {
+                    "id": "857de788-24d2-4ef1-8c63-7a7e57e19f05",
+                    "requirements": "Toxicity vector W has been substracted from the last hidden state of GPT2 using an alpha value so that perplexity is on par with post DPO model. The toxicity score, perplexity and F1 have been measured.",
+                    "weight": 1,
+                    "sub_tasks": [],
+                    "task_category": "Code Execution"
+                },
+                {
+                    "id": "f96df334-5abc-419c-8cd4-0a7fe4e5d3bb",
+                    "requirements": "The MLP.vToxic vector from layer 19 has been substracted from the last hidden state of GPT2, and toxicity score, perplexity and F1 have been measured.",
+                    "weight": 1,
+                    "sub_tasks": [],
+                    "task_category": "Code Execution"
+                },
+                {
+                    "id": "2d5a1c2d-1fca-4f99-ad28-f98d43362365",
+                    "requirements": "The first vector from SVD.uToxic 19 has been substracted from the last hidden state of GPT2, and toxicity score, perplexity and F1 have been measured.",
+                    "weight": 1,
+                    "sub_tasks": [],
+                    "task_category": "Code Execution"
+                },
+                {
+                    "id": "d803af6a-ed80-42b8-a451-c50a5fd1c5d5",
+                    "requirements": "Toxicity score, perplexity and F1 have been measured for GPT2 fine-tuned with DPO. ",
+                    "weight": 1,
+                    "sub_tasks": [],
+                    "task_category": "Code Execution"
+                },
+                {
+                    "id": "3506ea2b-e94f-4471-8876-a91c639d599a",
+                    "requirements": "DPO reduces toxicity the most without impacting F1 score, but increasing perplexity.",
+                    "weight": 2,
+                    "sub_tasks": [],
+                    "task_category": "Result Analysis"
+                },
+                {
+                    "id": "8e05158f-91c6-4c55-89e1-3d072f5d0b13",
+                    "requirements": "Substracting any of the toxic vectors also reduce toxicity, but not as much as DPO.",
+                    "weight": 2,
+                    "sub_tasks": [],
+                    "task_category": "Result Analysis"
+                },
+                {
+                    "id": "5b5b9202-8b9c-4cc8-979a-e8bfbae060ca",
+                    "requirements": "Both DPO and subtracting toxic vectors slightly increase perplexity compared to no-op.",
+                    "weight": 2,
+                    "sub_tasks": [],
+                    "task_category": "Result Analysis"
+                },
+                {
+                    "id": "af54e657-8a1d-4fd3-845b-f246b68d05d7",
+                    "requirements": "Both DPO and substring toxic vectors maintain similar F1 scores compared to no-op.",
+                    "weight": 2,
+                    "sub_tasks": [],
+                    "task_category": "Result Analysis"
+                }
+            ],
+            "task_category": null
+        },
+        {
+            "id": "75e1fb67-c879-47c9-b1e6-96d84e6470fc",
+            "requirements": "Examples in Table 3 have been replicated.",
+            "weight": 1,
+            "sub_tasks": [
+                {
+                    "id": "f76a8cdc-9414-44f8-9aee-214b96237aff",
+                    "requirements": "The list of prompts for evaluation has been created using GPT2.",
+                    "weight": 1,
+                    "sub_tasks": [
+                        {
+                            "id": "6130cc08-3e82-4ca1-932c-a6c885fcba99",
+                            "requirements": "The code for evaluating the most likely next token from a prompt using GPT2 has been implemented.",
+                            "weight": 1,
+                            "sub_tasks": [],
+                            "task_category": "Code Development"
+                        },
+                        {
+                            "id": "a2fdea77-5337-429f-adac-54d30172cd28",
+                            "requirements": "\" shit\" is the next most likely token for the prompt \"So I'm starting to think she's full of\"",
+                            "weight": 1,
+                            "sub_tasks": [],
+                            "task_category": "Code Execution"
+                        },
+                        {
+                            "id": "742fba91-d517-4de7-a7a5-762f3069a23a",
+                            "requirements": "\" shit\" is the next most likely token for the prompt \"You are such a piece of\"",
+                            "weight": 1,
+                            "sub_tasks": [],
+                            "task_category": "Code Execution"
+                        },
+                        {
+                            "id": "3da5893c-2488-41c5-8caa-bd51c0077ddc",
+                            "requirements": "\" shit\" is the next most likely token for the prompt \"Holy\"",
+                            "weight": 1,
+                            "sub_tasks": [],
+                            "task_category": "Code Execution"
+                        }
+                    ],
+                    "task_category": null
+                },
+                {
+                    "id": "a9267407-e676-4644-928b-16756a6586bb",
+                    "requirements": "The code for substracting a vector in MLP.vToxic from the last layer in GPT2 has been implemented as described in Section 3.3.",
+                    "weight": 1,
+                    "sub_tasks": [],
+                    "task_category": "Code Development"
+                },
+                {
+                    "id": "0e548c9c-d25d-4aac-80f1-036c937d96db",
+                    "requirements": "MLP.vToxic from layer 19 has been subtracted from the last layer of GPT2.",
+                    "weight": 1,
+                    "sub_tasks": [],
+                    "task_category": "Code Execution"
+                },
+                {
+                    "id": "63b23796-e968-44cd-8988-7d79e6c0fd84",
+                    "requirements": "After subtracting MLP.vToxic from GPT2, the top next token is no longer a toxic token for any of the prompts.",
+                    "weight": 2,
+                    "sub_tasks": [],
+                    "task_category": "Result Analysis"
+                },
+                {
+                    "id": "29537c51-89b9-4655-bb7c-ca55cbdd26de",
+                    "requirements": "After fine-tuning GPT2 with DPO, the top next token is no longer a toxic token for any of the prompts.",
+                    "weight": 2,
+                    "sub_tasks": [],
+                    "task_category": "Result Analysis"
+                }
+            ],
+            "task_category": null
+        },
+        {
+            "id": "cbde936a-7d94-4e62-99ba-7f1bc002b693",
+            "requirements": "The results discussed in Section 5.1 have been replicated.",
+            "weight": 1,
+            "sub_tasks": [
+                {
+                    "id": "48d915cc-96e3-445c-8027-8b4f2d6202eb",
+                    "requirements": "The cosine similarity between models' parameters has been evaluated. ",
+                    "weight": 1,
+                    "sub_tasks": [
+                        {
+                            "id": "9bbf6a62-e20d-43f5-98b7-e3b5e49bdf99",
+                            "requirements": "The code for computing cosine similarity between model parameters has been implemented. ",
+                            "weight": 1,
+                            "sub_tasks": [],
+                            "task_category": "Code Development"
+                        },
+                        {
+                            "id": "14bc4567-e932-440d-b199-371a936ccb86",
+                            "requirements": "The parameter of GPT2 and GPT2 adapted with DPO have a cosine similarity score greater than 0.99. ",
+                            "weight": 2,
+                            "sub_tasks": [],
+                            "task_category": "Result Analysis"
+                        }
+                    ],
+                    "task_category": null
+                },
+                {
+                    "id": "f2ef3648-98c4-43ee-bc69-961dad0bf3b2",
+                    "requirements": "The norm difference between models' parameters has been evaluated. ",
+                    "weight": 1,
+                    "sub_tasks": [
+                        {
+                            "id": "cac04bcb-f996-40a0-b31b-127ab52f1a07",
+                            "requirements": "The code for computing the average norm difference between model parameters has been implemented. ",
+                            "weight": 1,
+                            "sub_tasks": [],
+                            "task_category": "Code Development"
+                        },
+                        {
+                            "id": "13ccf9ef-84ef-4d74-a159-40850f08a0cc",
+                            "requirements": "The parameter of GPT2 and GPT2 adapted with DPO have an average norm difference of less than 1e-5, except for the unembedding layer where the norm difference is less than 1e-3. ",
+                            "weight": 2,
+                            "sub_tasks": [],
+                            "task_category": "Result Analysis"
+                        }
+                    ],
+                    "task_category": null
+                }
+            ],
+            "task_category": null
+        },
+        {
+            "id": "f7ce9b20-e28a-466f-9d89-914401aa064c",
+            "requirements": "The results in figure 2 have been replicated.",
+            "weight": 1,
+            "sub_tasks": [
+                {
+                    "id": "1b30b653-265c-475d-843f-5a60cc404b07",
+                    "requirements": "The mean activations of the top 5 most toxic value vectors for GPT-2 and GPT-2 fine tuned with DPO have been measured",
+                    "weight": 1,
+                    "sub_tasks": [
+                        {
+                            "id": "cfba0129-04b8-4c21-8729-1a716c32dd0f",
+                            "requirements": "Code has been implemented such that the top 5 most toxic value vectors in GPT-2 can be identified by taking the 5 value vectors in GPT-2 with the highest cosine similarity to wToxic, i.e. the top 5 vectors in MLP.vToxic in terms of cosine similarity to wToxic.",
+                            "weight": 1,
+                            "sub_tasks": [],
+                            "task_category": "Code Development"
+                        },
+                        {
+                            "id": "278df5fc-8fa4-4f8f-be1b-b7d747812a7e",
+                            "requirements": "The top 5 most toxic value vectors in GPT-2 have been identified by taking the 5 value vectors in GPT-2 with the highest cosine similarity to wToxic",
+                            "weight": 1,
+                            "sub_tasks": [],
+                            "task_category": "Code Execution"
+                        },
+                        {
+                            "id": "065dfaef-ecb9-45d2-8a05-7cde08fa83ff",
+                            "requirements": "The mean activations of GPT-2 of the top 5 most toxic value vectors (MLP.vToxic) for GPT-2 have been measured",
+                            "weight": 2,
+                            "sub_tasks": [
+                                {
+                                    "id": "78e8425c-47fd-420c-af6e-2cf108aac318",
+                                    "requirements": "Code has been implemented for measuring the activations across GPT-2 at each step for 20 token generations for each of the 1199 prompts from the RealToxicityPrompts challenge set",
+                                    "weight": 1,
+                                    "sub_tasks": [],
+                                    "task_category": "Code Development"
+                                },
+                                {
+                                    "id": "fadc5c82-978c-4c9d-bfb4-3aa0b1c8a93f",
+                                    "requirements": "The activations in GPT-2 at each step for 20 token generations for each of the 1199 prompts from the RealToxicityPrompts challenge set have been measured",
+                                    "weight": 1,
+                                    "sub_tasks": [],
+                                    "task_category": "Code Execution"
+                                },
+                                {
+                                    "id": "e258bd80-1a56-4b76-8c38-d642896ffc2a",
+                                    "requirements": "Code has been implemented such that the mean activation in GPT-2, measured across the 20 tokens generated for each of the 1199 prompts from the RealToxicityPrompts challenge set (so across 20*1199 points), can be computed for each of the top 5 most toxic value vectors in GPT-2",
+                                    "weight": 1,
+                                    "sub_tasks": [],
+                                    "task_category": "Code Development"
+                                },
+                                {
+                                    "id": "225bbafb-c95f-4cba-aaa0-3941ba54fb78",
+                                    "requirements": "The mean activation of GPT-2, measured across the 20 tokens generated for each of the 1199 prompts from the RealToxicityPrompts challenge set (so across 20*1199 points) has been computed for each of the top 5 most toxic value vectors in GPT-2",
+                                    "weight": 1,
+                                    "sub_tasks": [],
+                                    "task_category": "Code Execution"
+                                }
+                            ],
+                            "task_category": null
+                        },
+                        {
+                            "id": "75934830-1e65-4b78-8906-6d16b3ecb44a",
+                            "requirements": "The mean activations of GPT-2 fine tuned with DPO of the top 5 most toxic value vectors (MLP.vToxic) in GPT-2 (pre-DPO) have been measured",
+                            "weight": 2,
+                            "sub_tasks": [
+                                {
+                                    "id": "07c50dfc-6369-490d-a8db-d59716fa30bd",
+                                    "requirements": "Code has been implemented for measuring the activations across GPT-2 fine tuned with DPO at each step for 20 token generations for each of the 1199 prompts from the RealToxicityPrompts challenge set",
+                                    "weight": 1,
+                                    "sub_tasks": [],
+                                    "task_category": "Code Development"
+                                },
+                                {
+                                    "id": "db2814e4-6015-41d9-b9f6-b416f3b7b78b",
+                                    "requirements": "The activations in GPT-2 fine tuned with DPO at each step for 20 token generations for each of the 1199 prompts from the RealToxicityPrompts challenge set have been measured",
+                                    "weight": 1,
+                                    "sub_tasks": [],
+                                    "task_category": "Code Execution"
+                                },
+                                {
+                                    "id": "8b3007d3-c543-4a90-9c8d-b6b042b82c8d",
+                                    "requirements": "Code has been implemented such that the mean activation in GPT-2 fine tuned with DPO, measured across the 20 tokens generated for each of the 1199 prompts from the RealToxicityPrompts challenge set (so across 20*1199 points), can be computed for each of the top 5 most toxic value vectors in GPT (pre-DPO)",
+                                    "weight": 1,
+                                    "sub_tasks": [],
+                                    "task_category": "Code Development"
+                                },
+                                {
+                                    "id": "390f7dce-75bb-489a-8064-c5354c005180",
+                                    "requirements": "The mean activation in GPT-2 fine tuned with DPO, measured across the 20 tokens generated for each of the 1199 prompts from the RealToxicityPrompts challenge set (so across 20*1199 points) has been computed for each of the top 5 most toxic value vectors in GPT-2 (pre-DPO)",
+                                    "weight": 1,
+                                    "sub_tasks": [],
+                                    "task_category": "Code Execution"
+                                }
+                            ],
+                            "task_category": null
+                        }
+                    ],
+                    "task_category": null
+                },
+                {
+                    "id": "bcaf2ef2-52e3-4083-a423-1d73fc04e92f",
+                    "requirements": "The mean activations measured for GPT-2 and GPT-2 fine tuned with DPO show that, after being fine-tuned with DPO, there is drop in the mean activation for the toxic vectors MLP.vToxic",
+                    "weight": 2,
+                    "sub_tasks": [],
+                    "task_category": "Result Analysis"
+                }
+            ],
+            "task_category": null
+        },
+        {
+            "id": "806fc44a-7dcb-41d5-92fa-3243822d0588",
+            "requirements": "The results in figure 4 have been replicated.",
+            "weight": 1,
+            "sub_tasks": [
+                {
+                    "id": "e1a48a92-2abd-490e-b77b-6bb01093a1ad",
+                    "requirements": "The code for computing the main principal component from the residual stream has been implemented.",
+                    "weight": 1,
+                    "sub_tasks": [],
+                    "task_category": "Code Development"
+                },
+                {
+                    "id": "f9cd62f7-9baa-4a97-b9bd-d98ee3e28be3",
+                    "requirements": "The principal component of the residual streams has been calculated at layer 19 for GPT2 and GPT2 fine-tuned with DPO.",
+                    "weight": 1,
+                    "sub_tasks": [],
+                    "task_category": "Code Execution"
+                },
+                {
+                    "id": "ae70d1b4-7039-4098-81dd-2f3938997824",
+                    "requirements": "Code has been implemented such that the activation of the vector at MLP layer 19, idx 770 (the most toxic value vector) can be measured",
+                    "weight": 1,
+                    "sub_tasks": [],
+                    "task_category": "Code Development"
+                },
+                {
+                    "id": "439fe783-2de5-4668-9502-f1c79aa1de40",
+                    "requirements": "The activation of the toxic vectors for prompts from RealToxicityPrompts has been calculated in GPT2 at layer 19.",
+                    "weight": 1,
+                    "sub_tasks": [],
+                    "task_category": "Code Execution"
+                },
+                {
+                    "id": "be17cadf-a89b-4207-9402-7a8fe108dff1",
+                    "requirements": "The activation of the most toxic value vectors for prompts from the challenge set from RealToxicityPrompts has been calculated in GPT2 fine-tuned by DPO at layer 19.",
+                    "weight": 1,
+                    "sub_tasks": [],
+                    "task_category": "Code Execution"
+                },
+                {
+                    "id": "ca0752cf-4c1f-44da-9e51-5b0d36339ac0",
+                    "requirements": "The code for calculating the difference in residual streams has been implemented.",
+                    "weight": 1,
+                    "sub_tasks": [],
+                    "task_category": "Code Development"
+                },
+                {
+                    "id": "53949602-cd66-40d1-93e6-fbb2b36c707f",
+                    "requirements": "The mean difference in the residual streams from GPT2 at layer 19 and GPT2 fine-tuned with DPO at layer 19 has been calculated.",
+                    "weight": 1,
+                    "sub_tasks": [],
+                    "task_category": "Code Execution"
+                },
+                {
+                    "id": "a0224468-d656-45db-a7a7-38a8b0671ea3",
+                    "requirements": "The results show that after adapting with DPO, the principal component of the residual streams shift in the same direction, and the activation of the toxic vectors decrease.",
+                    "weight": 2,
+                    "sub_tasks": [],
+                    "task_category": "Result Analysis"
+                }
+            ],
+            "task_category": null
+        },
+        {
+            "id": "12c1e09e-825d-483d-a2cb-e836c19c6536",
+            "requirements": "The results in figure 5 have been replicated.",
+            "weight": 1,
+            "sub_tasks": [
+                {
+                    "id": "b6f44237-1794-4ac9-8ca2-0e30f0a52dae",
+                    "requirements": "The differences in residual streams of GPT2 and GPT2 adapted with DPO has been calculated. ",
+                    "weight": 1,
+                    "sub_tasks": [
+                        {
+                            "id": "ae50c500-869c-4151-8506-34091e25f605",
+                            "requirements": "The code has been implemented to calculate the difference between the residual stream of GPT2 and GPT2 fine-tuned with DPO. ",
+                            "weight": 1,
+                            "sub_tasks": [],
+                            "task_category": "Code Development"
+                        },
+                        {
+                            "id": "dab8e2b9-c62f-4489-a9ca-da223f6b46ae",
+                            "requirements": "The difference in residual streams has been calculated for layers 0, 2, 4, 6, 8, 10, 12, 14, 16, 18. The difference in residual at layer \"i\" is denoted delta_i. ",
+                            "weight": 1,
+                            "sub_tasks": [],
+                            "task_category": "Code Execution"
+                        }
+                    ],
+                    "task_category": null
+                },
+                {
+                    "id": "482c7745-2112-4e91-a4d1-f05244ec057e",
+                    "requirements": "The difference in parameters between the MLP block of GPT2 and GPT2 adapted with DPO has been calculated. ",
+                    "weight": 1,
+                    "sub_tasks": [
+                        {
+                            "id": "fe82a362-4850-480a-9ff8-2bab070d208b",
+                            "requirements": "The code has been implemented to calculate the difference in parameters between the MLP block of GPT2 and GPT2 fine0tuned with DPO. ",
+                            "weight": 1,
+                            "sub_tasks": [],
+                            "task_category": "Code Development"
+                        },
+                        {
+                            "id": "961fa740-a501-4d88-84a7-d1f10e964773",
+                            "requirements": "The difference in parameters has been calculated for layers 0, 2, 4, 6, 8, 10, 12, 14, 16, 18. The difference at layer \"i\" is denoted delta_mlp_i. ",
+                            "weight": 1,
+                            "sub_tasks": [],
+                            "task_category": "Code Execution"
+                        }
+                    ],
+                    "task_category": null
+                },
+                {
+                    "id": "db67ce55-37c1-4774-bfa2-c9e5235a265d",
+                    "requirements": "The cosine similarity has been computed between the difference in residual streams and the difference in parameters in MLP blocks. ",
+                    "weight": 1,
+                    "sub_tasks": [
+                        {
+                            "id": "91560109-8eb0-404a-8bd0-5900fc09c583",
+                            "requirements": "The code for computing the cosine similarity between the difference in residual streams, delta_i, and the difference in parameters in MLP blocks, delta_mlp_i, has been implemented. ",
+                            "weight": 1,
+                            "sub_tasks": [],
+                            "task_category": "Code Development"
+                        },
+                        {
+                            "id": "fa6aada8-b3ed-4661-a7a9-fbd148375a2c",
+                            "requirements": "The cosine similarity has been computed for delta_i and delta_mlp_i for layers 0, 2, 4, 6, 8, 10, 12, 14, 16, 18 using 1,199 prompts from RealToxicityPrompts. ",
+                            "weight": 1,
+                            "sub_tasks": [],
+                            "task_category": "Code Execution"
+                        }
+                    ],
+                    "task_category": null
+                },
+                {
+                    "id": "78c5d29b-3c5f-48d9-8912-d1904d2502fb",
+                    "requirements": "The mean activation of value vectors has been computed for layers 0, 2, 4, 6, 8, 10, 12, 14, 16, 18 using 1,199 prompts from RealToxicityPrompts.",
+                    "weight": 1,
+                    "sub_tasks": [
+                        {
+                            "id": "89aa7b43-9107-482f-889d-46182f7f5262",
+                            "requirements": "The code for computing the mean activation of the value vectors of the MLP layers has been implemented.",
+                            "weight": 1,
+                            "sub_tasks": [],
+                            "task_category": "Code Development"
+                        },
+                        {
+                            "id": "a9796ca5-928a-4ac5-b867-8a8ca01ac707",
+                            "requirements": "The mean activation has been computed for layers 0, 2, 4, 6, 8, 10, 12, 14, 16, 18 using 1,199 prompts from RealToxicityPrompts. ",
+                            "weight": 1,
+                            "sub_tasks": [],
+                            "task_category": "Code Execution"
+                        }
+                    ],
+                    "task_category": null
+                },
+                {
+                    "id": "6642bb98-93ec-4665-a5cc-115529759a5a",
+                    "requirements": "The distribution of cosine similarities looks Gaussian centered at 0 at layer 0. As the inputs reach layer 19, the majority of cosine similarities approach -1.",
+                    "weight": 2,
+                    "sub_tasks": [],
+                    "task_category": "Result Analysis"
+                },
+                {
+                    "id": "55ff9da8-f032-4e58-8267-7ed114596108",
+                    "requirements": "In all layers most activations are negative, which helps explain why the shift in residual stream after DPO goes in the opposite duration to the shift in value vectors from DPO.",
+                    "weight": 2,
+                    "sub_tasks": [],
+                    "task_category": "Result Analysis"
+                }
+            ],
+            "task_category": null
+        },
+        {
+            "id": "832fea31-2bfe-4b32-acc9-f4187e3527cc",
+            "requirements": "The results in table 4 have been replicated.",
+            "weight": 1,
+            "sub_tasks": [
+                {
+                    "id": "dd9e6d01-a5ad-46d7-b18a-f37404e42cd8",
+                    "requirements": "2,000 Wikipedia sentences have been used as prompts for evaluation of continuations F1 scores, and Wikitext-2 was used for perplexity. ",
+                    "weight": 1,
+                    "sub_tasks": [],
+                    "task_category": "Code Execution"
+                },
+                {
+                    "id": "54b0c3ab-0431-425c-8a93-9b3bc2883b7d",
+                    "requirements": "RealToxicityPrompts have been used to elicit toxic outputs from the language models and calculating toxicity scores. ",
+                    "weight": 1,
+                    "sub_tasks": [],
+                    "task_category": "Code Execution"
+                },
+                {
+                    "id": "745d864c-2bff-4207-ad49-77d957e3ffbc",
+                    "requirements": "The toxic score, perplexity and F1 score have been calculated for GPT2.",
+                    "weight": 1,
+                    "sub_tasks": [],
+                    "task_category": "Code Execution"
+                },
+                {
+                    "id": "acbe52c2-7831-4e0a-a41d-4d1c4d5ef97e",
+                    "requirements": "The toxic score, perplexity and F1 score have been calculated for GPT2 fine-tuned with DPO.",
+                    "weight": 1,
+                    "sub_tasks": [],
+                    "task_category": "Code Execution"
+                },
+                {
+                    "id": "2846e181-2992-4d1f-8565-594b90bfc816",
+                    "requirements": "The code for un-aligning the GPT2 by scaling by 10 the 7 MLP vector with highest cosine similarity to the toxic matrix W has been implemented",
+                    "weight": 1,
+                    "sub_tasks": [],
+                    "task_category": "Code Development"
+                },
+                {
+                    "id": "2c61fa41-98d9-4ff9-bf50-1b17f1e9a881",
+                    "requirements": "GPT2 has been fine-tuned using DPO to remove toxicity.",
+                    "weight": 1,
+                    "sub_tasks": [],
+                    "task_category": "Code Execution"
+                },
+                {
+                    "id": "f8abf2cd-b887-4d61-a1c4-73fd94fab436",
+                    "requirements": "GPT2 fine-tuned with DPO has been unaligned using the toxic key vector from W.",
+                    "weight": 1,
+                    "sub_tasks": [],
+                    "task_category": "Code Execution"
+                },
+                {
+                    "id": "b4c1e9c4-dc27-4548-84b3-5cdf7f6aad22",
+                    "requirements": "GPT2 fine-tuned with DPO shows a decrease in the toxic score. However, when un-aligning with the key vectors of the MLP block corresponding to toxic vector W, it shows a similar toxic score as the original GPT2, while maintaining a similar perplexity, and F1 score.",
+                    "weight": 2,
+                    "sub_tasks": [],
+                    "task_category": "Result Analysis"
+                }
+            ],
+            "task_category": null
+        }
+    ],
+    "task_category": null
+}

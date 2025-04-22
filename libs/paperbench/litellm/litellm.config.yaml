@@ -1,0 +1,14 @@
+server:
+  host: "0.0.0.0"
+  port: 4000
+
+litellm_settings:
+  drop_params: true
+
+model_list:
+  - model_name: gemini-2.5-pro-preview-03-25
+    litellm_params:
+      model: vertex_ai/gemini-2.5-pro-preview-03-25
+      vertex_project: "benchflow-vertex"
+      vertex_location: "us-central1"
+      vertex_credentials: "/Users/hongjixu/Documents/repos/local/benchflow-vertex-183bfe073901.json"

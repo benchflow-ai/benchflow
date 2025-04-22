@@ -1,0 +1,16 @@
+{
+    "name": "Python 3.11 Dev Container",
+    "build": {
+      "dockerfile": "Dockerfile",
+      "context": ".."
+    },
+    "settings": {
+      "python.defaultInterpreterPath": "/usr/local/bin/python3.11"
+    },
+    "extensions": [
+      "ms-python.python"
+    ],
+    "postCreateCommand": "pip install --upgrade pip && pip install -r requirements.txt",
+    "remoteUser": "vscode"
+  }
+  

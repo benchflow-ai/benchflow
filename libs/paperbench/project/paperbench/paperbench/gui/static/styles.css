@@ -1,0 +1,119 @@
+h4 {
+    font-weight: normal;
+    cursor: pointer;
+    margin: 0 0 0 0;
+}
+
+p {
+    margin: 0;
+}
+
+pre {
+    white-space: pre-wrap;
+}
+
+.task {
+    border: 1px solid black;
+    padding: 10px;
+    margin: 10px;
+    border-radius: 5px;
+}
+
+.toggle-icon {
+    float: left;
+    margin-right: 10px;
+}
+
+.requirements {
+    display: inline-block;
+}
+
+.task-buttons {
+    margin: 5px 0px 5px 0px;
+}
+
+.task-content {
+    display: block;
+}
+
+.full-response {
+    background: white;
+    padding: 0px 10px;
+}
+
+/* Paper view: Purple gradient */
+.level-0 { background-color: #f0e6ff; }
+.level-1 { background-color: #e6d9ff; }
+.level-2 { background-color: #d9ccff; }
+.level-3 { background-color: #ccbfff; }
+.level-4 { background-color: #bfb3ff; }
+.level-5 { background-color: #b3a6ff; }
+.level-6 { background-color: #a699ff; }
+.level-7 { background-color: #9980ff; }
+.level-8 { background-color: #8c66ff; }
+.level-9 { background-color: #8000ff; }
+
+/* Run view: Score-based color gradient */
+.score-0-0 { background-color: #ffcccc; }
+.score-0-1 { background-color: #ffd9cc; }
+.score-0-2 { background-color: #ffe6cc; }
+.score-0-3 { background-color: #fff2cc; }
+.score-0-4 { background-color: #ffffcc; }
+.score-0-5 { background-color: #f2ffcc; }
+.score-0-6 { background-color: #e6ffcc; }
+.score-0-7 { background-color: #d9ffcc; }
+.score-0-8 { background-color: #ccffcc; }
+.score-0-9 { background-color: #c2ffcc; }
+.score-1-0 { background-color: #b8ffcc; }
+
+.task-category {
+    margin-left: 10px;
+    padding: 2px 5px;
+    border-radius: 3px;
+    border: 1px solid #ccc;
+}
+
+.task-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.move-buttons {
+    display: inline-block;
+    margin-right: 8px;
+}
+
+.move-btn {
+    padding: 0 4px;
+    margin: 0 2px;
+    font-size: 14px;
+    line-height: 1;
+    border: 1px solid #ccc;
+    background: #f5f5f5;
+    cursor: pointer;
+    border-radius: 3px;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    vertical-align: middle;
+}
+
+.move-btn:hover {
+    background: #e0e0e0;
+}
+
+.copy-id-btn {
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 2px 5px;
+    font-size: 16px;
+    margin-right: 5px;
+    opacity: 0.6;
+    transition: opacity 0.2s;
+}
+
+.copy-id-btn:hover {
+    opacity: 1;
+}

@@ -1,0 +1,47 @@
+# This is a ruff configuration that only automatically fixes things that are
+# likely to be correct and unlikely to be controversial
+# Please do not change this without talking to @shantanu
+
+lint.select = [
+    # "F401",  # unused-import
+    # "F541",  # f-string-missing-placeholders
+    "F632",  # is-literal
+    "F901",  # raise-not-implemented
+    "E703",  # useless-semicolon
+    # "E711",  # none-comparison
+    # "E712",  # true-false-comparison
+    # "E713",  # not-in-test
+    # "E714",  # not-is-test
+    # "W291",  # trailing-whitespace
+    "W292",  # missing-newline-at-end-of-file
+    "W293",  # blank-line-with-whitespace
+    "W605",  # invalid-escape-sequence
+    # "B009",  # get-attr-with-constant
+    # "B010",  # set-attr-with-constant
+    "B013",  # redundant-tuple-in-exception-handler
+    "B014",  # duplicate-handler-exception
+    # "C400",  # unnecessary-generator-list
+    # "C401",  # unnecessary-generator-set
+    # "C402",  # unnecessary-generator-dict
+    # "C403",  # unnecessary-list-comprehension-set
+    # "C404",  # unnecessary-list-comprehension-dict
+    # "C405",  # unnecessary-literal-set
+    # "C406",  # unnecessary-literal-dict
+    # "C408",  # unnecessary-collection-call
+    # "C409",  # unnecessary-literal-within-tuple-call
+    # "C410",  # unnecessary-literal-within-list-call
+    # "C411",  # unnecessary-list-call
+    # "C413",  # unnecessary-call-around-sorted
+    # "C414",  # unnecessary-double-cast-or-process
+    # "C415",  # unnecessary-subscript-reversal
+    # "C416",  # unnecessary-comprehension
+    # "C418",  # unnecessary-literal-within-dict-call
+    # "C419",  # unnecessary-comprehension-any-all
+    # "COM819",  # prohibited-trailing-comma
+]
+lint.ignore = [
+    "C408",  # unnecessary-collection-call
+]
+fix = true
+target-version = "py311"
+exclude = ["**/x/**", "**/*_pb2*.{py,pyi}", "*.ipynb"]

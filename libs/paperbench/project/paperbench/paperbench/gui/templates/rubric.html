@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% import "macros.html" as macros %}
+
+{% block content %}
+    {% set n_colors = 10 %}
+
+    {% macro render_task(node, level) %}
+    {% set color_class = 'level-' ~ (level % n_colors) %}
+    <div id="task-{{ node.id }}" class="task paper-view {{ color_class }}">
+        {{ macros.render_task_header(node, valid_task_categories, use_api, is_editable=true) }}
+        {{ macros.render_weight(node, is_editable=true) }}
+        <div class="task-content" style="display:block;">
+            {% if node.__class__.__name__ == 'GradedTaskNode' %}
+                <div class="graded-task-container">
+                    {{ macros.render_score_and_explanation(node) }}
+                </div>
+            {% endif %}
+            <div class="task-buttons">
+                <button class="copy-id-btn" onclick="copyTaskId('{{ node.id }}')" title="Copy task ID">📋</button>
+                <button onclick="addSubTask('{{ node.id }}')">Add sub-task</button>
+                <button onclick="deleteNode('{{ node.id }}')">Delete</button>
+                <button onclick="duplicateNode('{{ node.id }}')">Duplicate</button>
+                <button onclick="moveNodeToParent('{{ node.id }}')">Move</button>
+                <span class="move-buttons">
+                    <button class="move-btn" onclick="moveNode('{{ node.id }}', 'up')" title="Move Up">↑</button>
+                    <button class="move-btn" onclick="moveNode('{{ node.id }}', 'down')" title="Move Down">↓</button>
+                </span>
+            </div>
+            <div class="criteria-container">
+                {% if node.sub_tasks %}
+                    {% for child in node.sub_tasks %}
+                        {{ render_task(child, level + 1) }}
+                    {% endfor %}
+                {% endif %}
+            </div>
+        </div>
+    </div>
+    {% endmacro %}
+
+    {{ render_task(task_node, 0) }}
+{% endblock %}

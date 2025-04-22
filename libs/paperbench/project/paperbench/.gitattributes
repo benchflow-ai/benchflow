@@ -1,0 +1,11 @@
+data/papers/**/*.md filter=lfs diff=lfs merge=lfs -text
+data/papers/**/*.jpg filter=lfs diff=lfs merge=lfs -text
+data/papers/**/*.pdf filter=lfs diff=lfs merge=lfs -text
+data/papers/**/assets/*.png filter=lfs diff=lfs merge=lfs -text
+data/papers/**/assets/*.jpg filter=lfs diff=lfs merge=lfs -text
+data/scraping/conferences/* filter=lfs diff=lfs merge=lfs -text
+data/conferences/* filter=lfs diff=lfs merge=lfs -text
+judge_eval_results.zip filter=lfs diff=lfs merge=lfs -text
+results/**/*.csv filter=lfs diff=lfs merge=lfs -text
+results/**/* filter=lfs diff=lfs merge=lfs -text
+experiments/judge_max_depth/results.zip filter=lfs diff=lfs merge=lfs -text

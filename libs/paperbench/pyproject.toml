@@ -1,0 +1,168 @@
+# =============================================================
+# Ruff Configuration
+# =============================================================
+[tool.ruff]
+target-version = "py311"
+required-version = ">=0.9.2"
+
+extend-exclude = ["**/x/**", "**/*_pb2*.{py,pyi}", "*.ipynb", "**/proto/", "vendor_imports/**/*"]
+line-length = 100
+
+
+[tool.ruff.lint]
+# To customise ruff rules for your project, use the "extend", "extend-select" and "extend-ignore"
+# keys in your project configuration. This can let you inherit most of this configuration.
+select = [
+    "E", "F", "W", "B", "C4", "PIE", "NPY", "PLE", "I",
+    # grab bag of random things
+    "DTZ003", "DTZ004",
+    "G010",
+    "PLW0120", "PLW0129", "PLW0711", "PLW2101",
+    "SIM101", "SIM110", "SIM201", "SIM202", "SIM222", "SIM223",
+    "S506",
+    "RET501", "RET502",  # RET503 is also nice, but there's currently some noise
+    "RUF006", "RUF008", "RUF013", "RUF016", "RUF017", "RUF200",
+    "COM818", "COM819",
+    "PYI016", "PYI018", "PYI025", "PYI030",
+    "PERF102",
+    "UP001", "UP003", "UP004", "UP006", "UP007", "UP028", "UP034", "UP045",
+    "FURB132", "FURB148", "FURB163", "FURB181",
+    # "ASYNC",
+    "ASYNC251",
+    "TID251",
+    "PT008", "PT012", "PT010", "PT014",
+    "TC005",
+    "SIM210", "SIM211", "RUF007",
+    "ANN205", "ANN206",
+    # TODO: enable the commented out checks
+    # "ANN2",
+
+    # Blocked due to https://github.com/astral-sh/ruff/issues/8322 and to a lesser degree https://github.com/numpy/numpy/issues/7242
+    # "PLR6201",
+]
+ignore = [
+    "B905",   # TODO: a useful lint, but need ruff to release my autofix
+    "B028",   # TODO: looks useful, disabled to minimize code change in ruff 0.8.2 upgrade
+
+    "E2",     # leave it to black
+    "E3",     # leave it to black
+    "E402",   # a people usually know what they're doing
+    "E501",   # line too long. black does a good enough job
+    "E701",   # multiple statements on one line. black does a good enough job
+    "E711",   # comparison to None is commonly used with SQLAlchemy
+    "E731",   # lambda expression assignments. these are nice sometimes
+    "E741",   # variable names like "l". this isn't a huge problem
+    "B011",   # assert false. we don't use python -O
+    "B903",   # nice, but doesn't really change anything, maybe worth it if it gains an autofix
+    "C408",   # we often use dict with keyword args
+    "C409",   # https://github.com/astral-sh/ruff/issues/12912
+    "C419",   # https://github.com/astral-sh/ruff/issues/10838
+    "C420",   # interesting, but i think reads a little worse to most folks. fromkeys predates dict comprehensions
+    "UP035",  # not necessary
+    "UP038",  # slows down code
+    "NPY002", # useful in theory, but way too many existing hits in practice
+    "PIE790", # there's nothing wrong with pass
+    "SIM108",  # not convinced of the value
+    "ASYNC109",  # not convinced of the value
+    "ASYNC230",  # this is annoying, SSDs are fast
+]
+
+# A quick reminder on the semantics of "unfixable":
+# Not all lint errors can be automatically fixed. Additionally, in practice, some lint
+# errors that ruff can automatically fix are better fixed manually and we mark the fix as
+# "unsafe" or "unfixable" to indicate that.
+
+# Our pre-commit hooks only perform safe automatic fixes and do not report errors that do
+# not have a safe fix.
+# It is expected that projects that want strict configuration should run ruff in CI to catch the
+# errors that can't be automatically fixed. To do this, add a lint step to your project's
+# pipeline.yml.
+
+# Ruff is a little overly conservative about marking rules as unsafe, so we override it here.
+# At this point, we've done this for a long time without any issues
+extend-safe-fixes = ["ALL"]
+
+extend-unsafe-fixes = [
+    # Cases where the automatic fix might obscure the issue
+    "F601",
+    "F602",
+    "B018",
+    "SIM222",
+    "SIM223",
+    # "B905",
+    # Cases where the fix feels actually unsafe
+    # ...
+    # Cases where we mark the fix as unsafe to reduce noise (since autofixable lints are applied
+    # to a broader set of projects in pre-commit)
+    # "PLE4703",  # https://github.com/astral-sh/ruff/issues/10721
+]
+unfixable = [
+    # Cases where we basically never want the autofix
+    "F841",   # unused variable. ruff keeps the call, but mostly we want to get rid of it all
+]
+
+preview = true
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401", "F403"]
+"rcall_config.py" = ["F821"]
+
+[tool.ruff.lint.isort]
+# TODO consider enable this, disabled to minimize changes when moving off isort to ruff
+detect-same-package = false
+known-third-party = ["docker", "openai", "tenacity", "pydantic", "typing_extensions", "jupyter_client", "tqdm"]
+
+
+# =============================================================
+# Black Configuration
+# =============================================================
+[tool.black]
+target-version = ['py311']
+line-length = 100
+extend-exclude = '_pb2(_.*)?\.pyi?$|/migrations/'
+force-exclude = '_pb2(_.*)?\.pyi?$|/migrations/'
+# This is a ruff configuration that only automatically fixes things that are
+# likely to be correct and unlikely to be controversial
+# Please do not change this without talking to @shantanu
+lint.select = [
+    # "F401",  # unused-import
+    # "F541",  # f-string-missing-placeholders
+    "F632",  # is-literal
+    "F901",  # raise-not-implemented
+    "E703",  # useless-semicolon
+    # "E711",  # none-comparison
+    # "E712",  # true-false-comparison
+    # "E713",  # not-in-test
+    # "E714",  # not-is-test
+    # "W291",  # trailing-whitespace
+    "W292",  # missing-newline-at-end-of-file
+    "W293",  # blank-line-with-whitespace
+    "W605",  # invalid-escape-sequence
+    # "B009",  # get-attr-with-constant
+    # "B010",  # set-attr-with-constant
+    "B013",  # redundant-tuple-in-exception-handler
+    "B014",  # duplicate-handler-exception
+    # "C400",  # unnecessary-generator-list
+    # "C401",  # unnecessary-generator-set
+    # "C402",  # unnecessary-generator-dict
+    # "C403",  # unnecessary-list-comprehension-set
+    # "C404",  # unnecessary-list-comprehension-dict
+    # "C405",  # unnecessary-literal-set
+    # "C406",  # unnecessary-literal-dict
+    # "C408",  # unnecessary-collection-call
+    # "C409",  # unnecessary-literal-within-tuple-call
+    # "C410",  # unnecessary-literal-within-list-call
+    # "C411",  # unnecessary-list-call
+    # "C413",  # unnecessary-call-around-sorted
+    # "C414",  # unnecessary-double-cast-or-process
+    # "C415",  # unnecessary-subscript-reversal
+    # "C416",  # unnecessary-comprehension
+    # "C418",  # unnecessary-literal-within-dict-call
+    # "C419",  # unnecessary-comprehension-any-all
+    # "COM819",  # prohibited-trailing-comma
+]
+lint.ignore = [
+    "C408",  # unnecessary-collection-call
+]
+fix = true
+exclude = ["**/x/**", "**/*_pb2*.{py,pyi}", "*.ipynb"]

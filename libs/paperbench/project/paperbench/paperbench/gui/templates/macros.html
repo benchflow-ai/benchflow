@@ -1,0 +1,36 @@
+{% macro render_task_header(node, valid_task_categories, use_api, is_editable) %}
+<div class="task-header">
+    <span id="toggle-icon-{{ node.id }}" class="toggle-icon" onclick="toggleTask('{{ node.id }}')">&#9660;</span>
+    <h4 class="requirements" {% if is_editable %}contenteditable="true" onblur="updateRequirements('{{ node.id }}')"{% endif %} id="requirements-{{ node.id }}">
+        {{ node.requirements }}
+    </h4>
+    {% if node.sub_tasks|length == 0 %}
+        <select class="task-category" onchange="updateTaskCategory('{{ node.id }}', this.value)">
+            <option value="">Select category...</option>
+            {% for category in valid_task_categories %}
+                <option value="{{ category }}" {% if node.task_category == category %}selected{% endif %}>
+                    {{ category }}
+                </option>
+            {% endfor %}
+        </select>
+    {% endif %}
+</div>
+{% endmacro %}
+
+{% macro render_weight(node, is_editable) %}
+<div class="weight-container">
+    <p>Weight: <span {% if is_editable %}contenteditable="true" onblur="updateWeight('{{ node.id }}')"{% endif %} id="weight-{{ node.id }}">{{ node.weight }}</span></p>
+</div>
+{% endmacro %}
+
+{% macro render_score_and_explanation(node) %}
+{% if node.score is not none %}
+    {% if node.task_category is not none %}
+        <p><b>Score:</b> <span id="score-{{ node.id }}" contenteditable="true" onblur="updateScore('{{ node.id }}')">{{ node.score }}</span></p>
+        <p><b>Explanation:</b> <span id="explanation-{{ node.id }}" contenteditable="true" onblur="updateExplanation('{{ node.id }}')">{{ node.explanation }}</span></p>
+    {% else %}
+        <p><b>Score:</b> <span id="score-{{ node.id }}">{{ node.score }}</span></p>
+    {% endif %}
+{% endif %}
+
+{% endmacro %}

@@ -1,0 +1,1145 @@
+{
+    "id": "52126097-309b-4c66-a218-3f593f2ef7ac",
+    "requirements": "The core contributions of the paper have been reproduced.",
+    "weight": 1,
+    "score": 0.9099999999999999,
+    "valid_score": true,
+    "task_category": null,
+    "explanation": "Aggregated score from sub-tasks.",
+    "judge_metadata": null,
+    "sub_tasks": [
+        {
+            "id": "555ba3ec-7604-4807-8cc4-d5a3f002395c",
+            "requirements": "The datasets AQuA-RAT, StrategyQA, and SVAMP have been prepared for evaluation.",
+            "weight": 1,
+            "score": 1.0,
+            "valid_score": true,
+            "task_category": null,
+            "explanation": "Aggregated score from sub-tasks.",
+            "judge_metadata": null,
+            "sub_tasks": [
+                {
+                    "id": "43f23e0e-2c5b-4a2b-80ab-6cc9c62723f1",
+                    "requirements": "The test split of the AQuA-RAT dataset (254 samples) is available for use.",
+                    "weight": 1,
+                    "score": 1.0,
+                    "valid_score": true,
+                    "task_category": "Code Development",
+                    "explanation": "",
+                    "judge_metadata": null,
+                    "sub_tasks": []
+                },
+                {
+                    "id": "8006761a-19e1-4990-92fa-778b6ee89266",
+                    "requirements": "The test split of the StrategyQA dataset (687 samples) is available for use.",
+                    "weight": 1,
+                    "score": 1.0,
+                    "valid_score": true,
+                    "task_category": "Code Development",
+                    "explanation": "",
+                    "judge_metadata": null,
+                    "sub_tasks": []
+                },
+                {
+                    "id": "067da205-f599-4a40-92fe-4cfc3f635c41",
+                    "requirements": "The full SVAMP dataset (1000 samples including both the train and test split) is available for use.",
+                    "weight": 1,
+                    "score": 1.0,
+                    "valid_score": true,
+                    "task_category": "Code Development",
+                    "explanation": "",
+                    "judge_metadata": null,
+                    "sub_tasks": []
+                }
+            ]
+        },
+        {
+            "id": "077c4bb2-8c84-4367-83d3-14c2a7921d3a",
+            "requirements": "All Generators listed in Section 3.1 have been set up with the correct hyperparameters listed",
+            "weight": 1,
+            "score": 1.0,
+            "valid_score": true,
+            "task_category": null,
+            "explanation": "Aggregated score from sub-tasks.",
+            "judge_metadata": null,
+            "sub_tasks": [
+                {
+                    "id": "d4ba629a-c66f-49a1-8658-0c00f37bca8c",
+                    "requirements": "Obtained access to each generator model to perform inference",
+                    "weight": 5,
+                    "score": 1.0,
+                    "valid_score": true,
+                    "task_category": null,
+                    "explanation": "Aggregated score from sub-tasks.",
+                    "judge_metadata": null,
+                    "sub_tasks": [
+                        {
+                            "id": "5096c429-1bd2-45ef-acf9-edadd7c9286b",
+                            "requirements": "Inference can be performed on gpt-3.5-turbo (any version)",
+                            "weight": 1,
+                            "score": 1.0,
+                            "valid_score": true,
+                            "task_category": "Code Development",
+                            "explanation": "",
+                            "judge_metadata": null,
+                            "sub_tasks": []
+                        },
+                        {
+                            "id": "81246c81-3081-4734-8bdd-b6de2992105a",
+                            "requirements": "Inference can be performed on gpt-4o-mini (any version)",
+                            "weight": 1,
+                            "score": 1.0,
+                            "valid_score": true,
+                            "task_category": "Code Development",
+                            "explanation": "",
+                            "judge_metadata": null,
+                            "sub_tasks": []
+                        }
+                    ]
+                },
+                {
+                    "id": "7e05fd91-a2fa-47ce-918f-9626d9b23f75",
+                    "requirements": "All models use top-p=1",
+                    "weight": 1,
+                    "score": 1.0,
+                    "valid_score": true,
+                    "task_category": "Code Development",
+                    "explanation": "",
+                    "judge_metadata": null,
+                    "sub_tasks": []
+                },
+                {
+                    "id": "a560cc7a-6ad0-453b-8283-239b981d8754",
+                    "requirements": "All models generate up to 250 max new tokens on SVAMP, 400 on AQuA-RAT, and 450 on StrategyQA",
+                    "weight": 1,
+                    "score": 1.0,
+                    "valid_score": true,
+                    "task_category": "Code Development",
+                    "explanation": "",
+                    "judge_metadata": null,
+                    "sub_tasks": []
+                },
+                {
+                    "id": "b3a01489-d370-40df-b47f-b432645c78c5",
+                    "requirements": "All models use the correct k-shot prompt, depending on the dataset they are being evaluated on",
+                    "weight": 1,
+                    "score": 1.0,
+                    "valid_score": true,
+                    "task_category": null,
+                    "explanation": "Aggregated score from sub-tasks.",
+                    "judge_metadata": null,
+                    "sub_tasks": [
+                        {
+                            "id": "77d8f917-a53e-4374-8eaa-c24fa70186e2",
+                            "requirements": "All models use the 4-shot prompt provided in Table 21 of \"Chain-of-Thought Prompting Elicits Reasoning in Large Language Models\" when evaluated on AQuA-RAT",
+                            "weight": 1,
+                            "score": 1.0,
+                            "valid_score": true,
+                            "task_category": "Code Development",
+                            "explanation": "",
+                            "judge_metadata": null,
+                            "sub_tasks": []
+                        },
+                        {
+                            "id": "f4ea36de-ac1c-498b-a8db-7616907780cb",
+                            "requirements": "All models use the 6-shot prompt provided in Table 25 of \"Chain-of-Thought Prompting Elicits Reasoning in Large Language Models\" when evaluated on StrategyQA",
+                            "weight": 1,
+                            "score": 1.0,
+                            "valid_score": true,
+                            "task_category": "Code Development",
+                            "explanation": "",
+                            "judge_metadata": null,
+                            "sub_tasks": []
+                        },
+                        {
+                            "id": "9e88e0f1-e7ee-443c-b64a-e6d835e08f1d",
+                            "requirements": "All models use the 8-shot math prompt provided in Table 20 of \"Chain-of-Thought Prompting Elicits Reasoning in Large Language Models\" when evaluated on SVAMP",
+                            "weight": 1,
+                            "score": 1.0,
+                            "valid_score": true,
+                            "task_category": "Code Development",
+                            "explanation": "",
+                            "judge_metadata": null,
+                            "sub_tasks": []
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "id": "47565610-3a82-402b-9144-8a8a8d15a9b5",
+            "requirements": "All outlier removal methods have been set up correctly as specified in 4.2",
+            "weight": 1,
+            "score": 1.0,
+            "valid_score": true,
+            "task_category": null,
+            "explanation": "Aggregated score from sub-tasks.",
+            "judge_metadata": null,
+            "sub_tasks": [
+                {
+                    "id": "2c525d35-d28d-4d60-aedd-0b50162516bc",
+                    "requirements": "The K-nearest neighbour outlier removal method has been set up correctly",
+                    "weight": 1,
+                    "score": 1.0,
+                    "valid_score": true,
+                    "task_category": null,
+                    "explanation": "Aggregated score from sub-tasks.",
+                    "judge_metadata": null,
+                    "sub_tasks": [
+                        {
+                            "id": "50fe90ba-39a2-4b00-8e52-edb99448ca7b",
+                            "requirements": "The number of neighbours used is set to 5 (the \"n_neighbors\" argument is set to 6 if using the sklearn implementation of KNeighborsClassifier to return the 5 nearest neighbours, note 5 is the default value of this argument)",
+                            "weight": 1,
+                            "score": 1.0,
+                            "valid_score": true,
+                            "task_category": "Code Development",
+                            "explanation": "",
+                            "judge_metadata": null,
+                            "sub_tasks": []
+                        },
+                        {
+                            "id": "2d8d7041-be93-45ae-a6ac-80fa53a49199",
+                            "requirements": "The method uses the ball tree algorithm (the \"algorithm\" argument is set to \"ball_tree\" if using the sklearn implementation of KNeighborsClassifier)",
+                            "weight": 1,
+                            "score": 1.0,
+                            "valid_score": true,
+                            "task_category": "Code Development",
+                            "explanation": "",
+                            "judge_metadata": null,
+                            "sub_tasks": []
+                        },
+                        {
+                            "id": "796cdb25-0885-4219-a0f9-bdedb3e37a0d",
+                            "requirements": "Euclidean distance is used (the \"metric\" argument is set to \"minkowski\" if using the sklearn implementation of KNeighborsClassifier, note \"minkowski\" is the default value of this argument)",
+                            "weight": 1,
+                            "score": 1.0,
+                            "valid_score": true,
+                            "task_category": "Code Development",
+                            "explanation": "",
+                            "judge_metadata": null,
+                            "sub_tasks": []
+                        },
+                        {
+                            "id": "b63359fc-8d24-4473-bed3-d54fe1586b53",
+                            "requirements": "All input points are sorted by average distance to their neighbours, and the 10% of inputs to the KNN method with the largest average distances are filtered out",
+                            "weight": 1,
+                            "score": 1.0,
+                            "valid_score": true,
+                            "task_category": "Code Development",
+                            "explanation": "",
+                            "judge_metadata": null,
+                            "sub_tasks": []
+                        }
+                    ]
+                },
+                {
+                    "id": "9e89a99d-bf1f-438b-aed3-b32e996d0261",
+                    "requirements": "The isolation forest outlier removal method has been set up correctly",
+                    "weight": 1,
+                    "score": 1.0,
+                    "valid_score": true,
+                    "task_category": null,
+                    "explanation": "Aggregated score from sub-tasks.",
+                    "judge_metadata": null,
+                    "sub_tasks": [
+                        {
+                            "id": "53060482-d130-4c4d-ac1c-93e755c7db43",
+                            "requirements": "The number of base estimators in the ensemble is set to 200 (the \"n_estimators\" arg is set to 200 if using the sklearn implementation of IsolationForest\")",
+                            "weight": 1,
+                            "score": 1.0,
+                            "valid_score": true,
+                            "task_category": "Code Development",
+                            "explanation": "",
+                            "judge_metadata": null,
+                            "sub_tasks": []
+                        },
+                        {
+                            "id": "c5814593-5393-4a6d-80e7-5b85eac9e593",
+                            "requirements": "The threshold is determined as in the original paper (the \"contamination\" arg is set to \"auto\" if using the sklearn implementation of IsolationForest\")",
+                            "weight": 1,
+                            "score": 1.0,
+                            "valid_score": true,
+                            "task_category": "Code Development",
+                            "explanation": "",
+                            "judge_metadata": null,
+                            "sub_tasks": []
+                        },
+                        {
+                            "id": "4d197469-b5e8-4bff-bae7-211a4f83f140",
+                            "requirements": "The number of samples to draw from the training data to train each base estimator is set to min(256, n_samples) (the \"max_samples\" arg is set to \"auto\" if using the sklearn implementation of IsolationForest\")",
+                            "weight": 1,
+                            "score": 1.0,
+                            "valid_score": true,
+                            "task_category": "Code Development",
+                            "explanation": "",
+                            "judge_metadata": null,
+                            "sub_tasks": []
+                        }
+                    ]
+                },
+                {
+                    "id": "e9413c14-74e7-4351-9559-f8f440cb3b8d",
+                    "requirements": "The support vector machine outlier removal method has been set up correctly",
+                    "weight": 1,
+                    "score": 1.0,
+                    "valid_score": true,
+                    "task_category": null,
+                    "explanation": "Aggregated score from sub-tasks.",
+                    "judge_metadata": null,
+                    "sub_tasks": [
+                        {
+                            "id": "39c1c9c5-c0e1-4d3c-a5ce-5cf7e951b3e7",
+                            "requirements": "A linear kernel is used (the \"kernel\" arg is set to\"linear\" if using the sklearn implementation of OneClassSVM\")",
+                            "weight": 1,
+                            "score": 1.0,
+                            "valid_score": true,
+                            "task_category": "Code Development",
+                            "explanation": "",
+                            "judge_metadata": null,
+                            "sub_tasks": []
+                        },
+                        {
+                            "id": "32076d58-8586-4aac-9eb5-8a7570cc45cf",
+                            "requirements": "The upper bound on the fraction of training errors and the lower bound of the fraction of support vectors parameter is set to 0.01 (the \"nu\" arg is set to 0.01 if using the sklearn implementation of OneClassSVM)",
+                            "weight": 1,
+                            "score": 1.0,
+                            "valid_score": true,
+                            "task_category": "Code Development",
+                            "explanation": "",
+                            "judge_metadata": null,
+                            "sub_tasks": []
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "id": "6e00fcb6-a622-483c-9187-23e6f00114ab",
+            "requirements": "All Featurizers listed in Section 3.2 are set up with correct hyperparameters to generate embeddings.",
+            "weight": 1,
+            "score": 1.0,
+            "valid_score": true,
+            "task_category": null,
+            "explanation": "Aggregated score from sub-tasks.",
+            "judge_metadata": null,
+            "sub_tasks": [
+                {
+                    "id": "8519dd43-eaf9-42dd-b96e-cda00b737479",
+                    "requirements": "RoBERTa base (125 million parameters version) can be used to generate an embedding vector for an input string",
+                    "weight": 1,
+                    "score": 1.0,
+                    "valid_score": true,
+                    "task_category": "Code Development",
+                    "explanation": "",
+                    "judge_metadata": null,
+                    "sub_tasks": []
+                },
+                {
+                    "id": "0dffe1c8-da0c-4829-9bb6-033512baada3",
+                    "requirements": "SciBERT (110 million parameters version) can be used to generate an embedding vector for an input string",
+                    "weight": 1,
+                    "score": 1.0,
+                    "valid_score": true,
+                    "task_category": "Code Development",
+                    "explanation": "",
+                    "judge_metadata": null,
+                    "sub_tasks": []
+                }
+            ]
+        },
+        {
+            "id": "46b6e345-1846-4e51-a853-9fcd699b05fe",
+            "requirements": "All methods described in Section 4 have been implemented.",
+            "weight": 3,
+            "score": 1.0,
+            "valid_score": true,
+            "task_category": null,
+            "explanation": "Aggregated score from sub-tasks.",
+            "judge_metadata": null,
+            "sub_tasks": [
+                {
+                    "id": "51058f7d-01a5-4302-9981-2966b2b63a8d",
+                    "requirements": "The parsing extraction approach has been implemented to extract answers from a generated response (potentially containing reasoning), following the method used in the self-consistency paper.",
+                    "weight": 1,
+                    "score": 1.0,
+                    "valid_score": true,
+                    "task_category": null,
+                    "explanation": "Aggregated score from sub-tasks.",
+                    "judge_metadata": null,
+                    "sub_tasks": [
+                        {
+                            "id": "42296ab8-386b-4645-9fbf-4cd635f4fd81",
+                            "requirements": "For SVAMP, AQuA_RAT and StrategyQA, given a response, the full string answer after the model generates \"The answer is\" is parsed as the answer, after removing for whitespace, fullstops, and parentheses",
+                            "weight": 1,
+                            "score": 1.0,
+                            "valid_score": true,
+                            "task_category": "Code Development",
+                            "explanation": "",
+                            "judge_metadata": null,
+                            "sub_tasks": []
+                        },
+                        {
+                            "id": "be2d3c6c-efbd-477e-97fe-a616f6fc3bf1",
+                            "requirements": "When generating answers using the top prob method, only generations where an answer could be extracted should be considered when computing the various metrics in each of the experiments.",
+                            "weight": 1,
+                            "score": 1.0,
+                            "valid_score": true,
+                            "task_category": "Code Development",
+                            "explanation": "",
+                            "judge_metadata": null,
+                            "sub_tasks": []
+                        },
+                        {
+                            "id": "a09d85b6-e400-42bf-9958-def3b4311d9d",
+                            "requirements": "When generating answers for AQuA-RAT, only generations where an answer could be extracted should be considered when computing the various metrics in each of the experiments.",
+                            "weight": 1,
+                            "score": 1.0,
+                            "valid_score": true,
+                            "task_category": "Code Development",
+                            "explanation": "",
+                            "judge_metadata": null,
+                            "sub_tasks": []
+                        }
+                    ]
+                },
+                {
+                    "id": "3a530bb2-8dad-4413-93a9-aeb8c55cde80",
+                    "requirements": "Model answer generation using the top prob method is implemented.",
+                    "weight": 1,
+                    "score": 1.0,
+                    "valid_score": true,
+                    "task_category": null,
+                    "explanation": "Aggregated score from sub-tasks.",
+                    "judge_metadata": null,
+                    "sub_tasks": [
+                        {
+                            "id": "13a6fa19-3d02-4331-b64e-06930fd29626",
+                            "requirements": "Given a question, the model generates a single response using greedy decoding",
+                            "weight": 1,
+                            "score": 1.0,
+                            "valid_score": true,
+                            "task_category": "Code Development",
+                            "explanation": "",
+                            "judge_metadata": null,
+                            "sub_tasks": []
+                        },
+                        {
+                            "id": "463c7875-01e8-4e72-8e07-493ee968b0b3",
+                            "requirements": "The parsing extraction approach is applied to extract the models answer from the response",
+                            "weight": 1,
+                            "score": 1.0,
+                            "valid_score": true,
+                            "task_category": "Code Development",
+                            "explanation": "",
+                            "judge_metadata": null,
+                            "sub_tasks": []
+                        }
+                    ]
+                },
+                {
+                    "id": "f231fdf2-0f00-4a13-b848-c573d02abf5d",
+                    "requirements": "Model answer generation using the self-consistency baseline method is implemented.",
+                    "weight": 1,
+                    "score": 1.0,
+                    "valid_score": true,
+                    "task_category": null,
+                    "explanation": "Aggregated score from sub-tasks.",
+                    "judge_metadata": null,
+                    "sub_tasks": [
+                        {
+                            "id": "95520bb4-2c5d-4469-975a-569e1ab76cd4",
+                            "requirements": "Given a question, the model generates k=10 responses by sampling with temperature=0.8",
+                            "weight": 1,
+                            "score": 1.0,
+                            "valid_score": true,
+                            "task_category": "Code Development",
+                            "explanation": "",
+                            "judge_metadata": null,
+                            "sub_tasks": []
+                        },
+                        {
+                            "id": "9daf76c9-d2d0-4744-ba70-bbcf82550191",
+                            "requirements": "The parsing extraction approach is applied to extract the answer from each of the k responses",
+                            "weight": 1,
+                            "score": 1.0,
+                            "valid_score": true,
+                            "task_category": "Code Development",
+                            "explanation": "",
+                            "judge_metadata": null,
+                            "sub_tasks": []
+                        },
+                        {
+                            "id": "c08b029c-fa6d-475b-b201-6b43dcd14c5e",
+                            "requirements": "The final answer is selected as the modal answer from the k answers extracted from the k responses",
+                            "weight": 1,
+                            "score": 1.0,
+                            "valid_score": true,
+                            "task_category": "Code Development",
+                            "explanation": "",
+                            "judge_metadata": null,
+                            "sub_tasks": []
+                        }
+                    ]
+                },
+                {
+                    "id": "4e1ea019-9aff-4ca8-87ff-2a853ec4eb9c",
+                    "requirements": "All semantic self-consistency methods in Section 4.1 have been implemented.",
+                    "weight": 3,
+                    "score": 1.0,
+                    "valid_score": true,
+                    "task_category": null,
+                    "explanation": "Aggregated score from sub-tasks.",
+                    "judge_metadata": null,
+                    "sub_tasks": [
+                        {
+                            "id": "81b1a474-00b9-49ab-ac1d-79298f2f2f4d",
+                            "requirements": "Model answer generation using the Centroid Proximity Weighting method has been implemented as in Section 4.1.1.",
+                            "weight": 1,
+                            "score": 1.0,
+                            "valid_score": true,
+                            "task_category": null,
+                            "explanation": "Aggregated score from sub-tasks.",
+                            "judge_metadata": null,
+                            "sub_tasks": [
+                                {
+                                    "id": "b4ec7fec-fe79-4cfc-a15e-c2e43db21c2b",
+                                    "requirements": "Given a question, the model generates k=10 responses by sampling with temperature=0.8",
+                                    "weight": 1,
+                                    "score": 1.0,
+                                    "valid_score": true,
+                                    "task_category": "Code Development",
+                                    "explanation": "",
+                                    "judge_metadata": null,
+                                    "sub_tasks": []
+                                },
+                                {
+                                    "id": "abef3d1f-ac05-4b98-a4c4-cdf711863714",
+                                    "requirements": "The parsing extraction approach is applied to extract the answer from each of the k responses",
+                                    "weight": 1,
+                                    "score": 1.0,
+                                    "valid_score": true,
+                                    "task_category": "Code Development",
+                                    "explanation": "",
+                                    "judge_metadata": null,
+                                    "sub_tasks": []
+                                },
+                                {
+                                    "id": "a5c85099-0e2e-46c1-bd19-5bedb2d7886a",
+                                    "requirements": "An embedding is created for each of the k responses by passing it through the associated featurizer and getting the embedding at the first (\"[CLS]\") token",
+                                    "weight": 1,
+                                    "score": 1.0,
+                                    "valid_score": true,
+                                    "task_category": "Code Development",
+                                    "explanation": "",
+                                    "judge_metadata": null,
+                                    "sub_tasks": []
+                                },
+                                {
+                                    "id": "c2fd8c8a-e7c0-4fbd-8bf5-ef4c6108002a",
+                                    "requirements": "The centroid for the k embeddings is computed using euclidean distance",
+                                    "weight": 1,
+                                    "score": 1.0,
+                                    "valid_score": true,
+                                    "task_category": "Code Development",
+                                    "explanation": "",
+                                    "judge_metadata": null,
+                                    "sub_tasks": []
+                                },
+                                {
+                                    "id": "39f83549-039d-44b4-85d5-1d66e261baa9",
+                                    "requirements": "The normalized distance from each of the k embeddings to the centroid of the k embeddings is computed",
+                                    "weight": 1,
+                                    "score": 1.0,
+                                    "valid_score": true,
+                                    "task_category": "Code Development",
+                                    "explanation": "",
+                                    "judge_metadata": null,
+                                    "sub_tasks": []
+                                },
+                                {
+                                    "id": "77e2711a-6278-4798-978f-d79c3a337d9f",
+                                    "requirements": "Each of the k embeddings has an associated weight inversely proportional to their normalized distance to the centroid of all the embeddings. The weight for embedding i is computed as one divided by the normalized distance from embedding i to the centroid",
+                                    "weight": 1,
+                                    "score": 1.0,
+                                    "valid_score": true,
+                                    "task_category": "Code Development",
+                                    "explanation": "",
+                                    "judge_metadata": null,
+                                    "sub_tasks": []
+                                },
+                                {
+                                    "id": "89b080c5-7ddb-4115-ade2-5d5ce9ebed5c",
+                                    "requirements": "For each of the groups of embeddings with the same answer, the weights are summed together, and the final answer is selected as the answer that has the highest associated weight",
+                                    "weight": 1,
+                                    "score": 1.0,
+                                    "valid_score": true,
+                                    "task_category": "Code Development",
+                                    "explanation": "",
+                                    "judge_metadata": null,
+                                    "sub_tasks": []
+                                }
+                            ]
+                        },
+                        {
+                            "id": "e5733f9e-0436-4009-a923-bbfb17bdfd87",
+                            "requirements": "Model answer generation using the Semantic Consensus Weighting method has been implemented as in Section 4.1.2.",
+                            "weight": 1,
+                            "score": 1.0,
+                            "valid_score": true,
+                            "task_category": null,
+                            "explanation": "Aggregated score from sub-tasks.",
+                            "judge_metadata": null,
+                            "sub_tasks": [
+                                {
+                                    "id": "bd9fa816-1437-4f94-825b-d77b0f11af0c",
+                                    "requirements": "Given a question, the model generates k=10 responses by sampling with temperature=0.8",
+                                    "weight": 1,
+                                    "score": 1.0,
+                                    "valid_score": true,
+                                    "task_category": "Code Development",
+                                    "explanation": "",
+                                    "judge_metadata": null,
+                                    "sub_tasks": []
+                                },
+                                {
+                                    "id": "82b1a191-e41c-457b-af57-e036b6be7129",
+                                    "requirements": "The parsing extraction approach is applied to extract the answer from each of the k responses",
+                                    "weight": 1,
+                                    "score": 1.0,
+                                    "valid_score": true,
+                                    "task_category": "Code Development",
+                                    "explanation": "",
+                                    "judge_metadata": null,
+                                    "sub_tasks": []
+                                },
+                                {
+                                    "id": "c8acfeae-4a0f-4915-a8f0-e254fd9d664b",
+                                    "requirements": "An embedding is creating for each of the k responses by passing it through the associated featurizer and getting the embedding at the first (\"[CLS]\") token",
+                                    "weight": 1,
+                                    "score": 1.0,
+                                    "valid_score": true,
+                                    "task_category": "Code Development",
+                                    "explanation": "",
+                                    "judge_metadata": null,
+                                    "sub_tasks": []
+                                },
+                                {
+                                    "id": "db4e4076-436e-4a5a-b441-8d7d876b7f1a",
+                                    "requirements": "For each embedding, the cosine similarity between it and every other embedding is summed to produce a score for such embedding",
+                                    "weight": 1,
+                                    "score": 1.0,
+                                    "valid_score": true,
+                                    "task_category": "Code Development",
+                                    "explanation": "",
+                                    "judge_metadata": null,
+                                    "sub_tasks": []
+                                },
+                                {
+                                    "id": "e84e0360-1818-41c0-884a-8714732a11fd",
+                                    "requirements": "For each of the groups of embeddings with the same answer, the scores are summed together, and the final answer is selected as the answer that has the highest associated score",
+                                    "weight": 1,
+                                    "score": 1.0,
+                                    "valid_score": true,
+                                    "task_category": "Code Development",
+                                    "explanation": "",
+                                    "judge_metadata": null,
+                                    "sub_tasks": []
+                                }
+                            ]
+                        }
+                    ]
+                },
+                {
+                    "id": "aa33abd0-6426-4c69-8386-fc66c0ca141d",
+                    "requirements": "The 3 semantic outlier removal methods in Section 4.2 (KNN, Isolation Forest, SVM) have been implemented.",
+                    "weight": 3,
+                    "score": 1.0,
+                    "valid_score": true,
+                    "task_category": null,
+                    "explanation": "Aggregated score from sub-tasks.",
+                    "judge_metadata": null,
+                    "sub_tasks": [
+                        {
+                            "id": "c066870b-543b-4935-a936-3560101fbb13",
+                            "requirements": "Model answer generation with the k-Nearest Neighbours outlier removal method has been implemented. Given k generated samples for a question, the k-Nearest Neighbours method is applied to filter out some samples, then standard self-consistency is applied to the remaining samples to compute the final answer",
+                            "weight": 1,
+                            "score": 1.0,
+                            "valid_score": true,
+                            "task_category": "Code Development",
+                            "explanation": "",
+                            "judge_metadata": null,
+                            "sub_tasks": []
+                        },
+                        {
+                            "id": "0eb8c4c9-c562-4c74-8153-6632e91eccc6",
+                            "requirements": "Model answer generation with the Isolation Forest outlier removal method has been implemented. Given k generated samples for a question, the Isolation Forest method is applied to filter out some samples, then standard self-consistency is applied to the remaining samples to compute the final answer",
+                            "weight": 1,
+                            "score": 1.0,
+                            "valid_score": true,
+                            "task_category": "Code Development",
+                            "explanation": "",
+                            "judge_metadata": null,
+                            "sub_tasks": []
+                        },
+                        {
+                            "id": "eb67f3e3-fc60-4ba0-97cb-a1e97cdab8e5",
+                            "requirements": "Model answer generation with the SVM outlier removal method has been implemented. Given k generated samples for a question, the SVM method is applied to filter out some samples, then standard self-consistency is applied to the remaining samples to compute the final answer",
+                            "weight": 1,
+                            "score": 1.0,
+                            "valid_score": true,
+                            "task_category": "Code Development",
+                            "explanation": "",
+                            "judge_metadata": null,
+                            "sub_tasks": []
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "id": "5c35f29b-c49d-4d30-9fde-caf3b72de054",
+            "requirements": "The experiments and results of Section 5 have been reproduced.",
+            "weight": 3,
+            "score": 0.7000000000000001,
+            "valid_score": true,
+            "task_category": null,
+            "explanation": "Aggregated score from sub-tasks.",
+            "judge_metadata": null,
+            "sub_tasks": [
+                {
+                    "id": "64fcf768-e267-4ed7-8163-12652bd4eb6c",
+                    "requirements": "Evaluation code for Section 5.1 and Section 5.2 is correctly implemented.",
+                    "weight": 1,
+                    "score": 1.0,
+                    "valid_score": true,
+                    "task_category": null,
+                    "explanation": "Aggregated score from sub-tasks.",
+                    "judge_metadata": null,
+                    "sub_tasks": [
+                        {
+                            "id": "ba28ab4e-4b8b-4359-bbac-9bb8753e3d84",
+                            "requirements": "Code for model answer generation and grading is implemented correctly for the AQuA-RAT benchmark.",
+                            "weight": 1,
+                            "score": 1.0,
+                            "valid_score": true,
+                            "task_category": "Code Development",
+                            "explanation": "",
+                            "judge_metadata": null,
+                            "sub_tasks": []
+                        },
+                        {
+                            "id": "ad259ecf-0a1e-40a3-8d74-7b46f400301e",
+                            "requirements": "All evaluations on the AQuA-RAT benchmark use SciBERT as the featurizer to produce embeddings.",
+                            "weight": 1,
+                            "score": 1.0,
+                            "valid_score": true,
+                            "task_category": "Code Development",
+                            "explanation": "",
+                            "judge_metadata": null,
+                            "sub_tasks": []
+                        },
+                        {
+                            "id": "0b270d60-8ac8-4102-933d-cc9eddedd22d",
+                            "requirements": "Code for model answer generation and grading is implemented correctly for the SVAMP benchmark.",
+                            "weight": 1,
+                            "score": 1.0,
+                            "valid_score": true,
+                            "task_category": "Code Development",
+                            "explanation": "",
+                            "judge_metadata": null,
+                            "sub_tasks": []
+                        },
+                        {
+                            "id": "8028e26f-9cc7-482f-b648-02be6d130e53",
+                            "requirements": "All evaluations on the SVAMP benchmark use SciBERT as the featurizer to produce embeddings.",
+                            "weight": 1,
+                            "score": 1.0,
+                            "valid_score": true,
+                            "task_category": "Code Development",
+                            "explanation": "",
+                            "judge_metadata": null,
+                            "sub_tasks": []
+                        },
+                        {
+                            "id": "489ab4d9-1501-4f01-ad35-75f35f1f174b",
+                            "requirements": "Code for model answer generation and grading is implemented correctly for the StrategyQA benchmark.",
+                            "weight": 1,
+                            "score": 1.0,
+                            "valid_score": true,
+                            "task_category": "Code Development",
+                            "explanation": "",
+                            "judge_metadata": null,
+                            "sub_tasks": []
+                        },
+                        {
+                            "id": "1c671c6e-e97e-4897-82fd-ec21dc80e744",
+                            "requirements": "All evaluations on the StrategyQA benchmark use RoBERTa as the featurizer to produce embeddings.",
+                            "weight": 1,
+                            "score": 1.0,
+                            "valid_score": true,
+                            "task_category": "Code Development",
+                            "explanation": "",
+                            "judge_metadata": null,
+                            "sub_tasks": []
+                        }
+                    ]
+                },
+                {
+                    "id": "ccec14ef-916a-4606-a3c1-2d2e22002f63",
+                    "requirements": "All the experiments for Section 5.1 and Section 5.2 have been run.",
+                    "weight": 5,
+                    "score": 1.0,
+                    "valid_score": true,
+                    "task_category": null,
+                    "explanation": "Aggregated score from sub-tasks.",
+                    "judge_metadata": null,
+                    "sub_tasks": [
+                        {
+                            "id": "9d8bb6a7-080b-4e15-a710-dec1da026131",
+                            "requirements": "All models have been evaluated on the AQuA-RAT benchmark using top prob sampling.",
+                            "weight": 1,
+                            "score": 1.0,
+                            "valid_score": true,
+                            "task_category": "Code Execution",
+                            "explanation": "",
+                            "judge_metadata": null,
+                            "sub_tasks": []
+                        },
+                        {
+                            "id": "5e1af65d-a62a-4779-bb5f-196983a75c7e",
+                            "requirements": "All models have been evaluated on the AQuA-RAT benchmark using the self-consistency baseline.",
+                            "weight": 1,
+                            "score": 1.0,
+                            "valid_score": true,
+                            "task_category": "Code Execution",
+                            "explanation": "",
+                            "judge_metadata": null,
+                            "sub_tasks": []
+                        },
+                        {
+                            "id": "02b21e96-830c-4b3b-b399-018f569f4861",
+                            "requirements": "All models have been evaluated on the AQuA-RAT benchmark using the CPW method on SciBERT embeddings.",
+                            "weight": 1,
+                            "score": 1.0,
+                            "valid_score": true,
+                            "task_category": "Code Execution",
+                            "explanation": "",
+                            "judge_metadata": null,
+                            "sub_tasks": []
+                        },
+                        {
+                            "id": "0535160a-b056-4dfa-a29f-511f1abf6ff8",
+                            "requirements": "All models have been evaluated on the AQuA-RAT benchmark using the SCW method on SciBERT embeddings.",
+                            "weight": 1,
+                            "score": 1.0,
+                            "valid_score": true,
+                            "task_category": "Code Execution",
+                            "explanation": "",
+                            "judge_metadata": null,
+                            "sub_tasks": []
+                        },
+                        {
+                            "id": "838cb78c-aade-4c63-8790-35f316e21765",
+                            "requirements": "All models have been evaluated on the SVAMP benchmark using top prob sampling.",
+                            "weight": 1,
+                            "score": 1.0,
+                            "valid_score": true,
+                            "task_category": "Code Execution",
+                            "explanation": "",
+                            "judge_metadata": null,
+                            "sub_tasks": []
+                        },
+                        {
+                            "id": "860a913a-0f9c-4ea7-927d-bebb039b7cb3",
+                            "requirements": "All models have been evaluated on the SVAMP benchmark using the self-consistency baseline.",
+                            "weight": 1,
+                            "score": 1.0,
+                            "valid_score": true,
+                            "task_category": "Code Execution",
+                            "explanation": "",
+                            "judge_metadata": null,
+                            "sub_tasks": []
+                        },
+                        {
+                            "id": "20e068b7-9f3c-4df2-8c37-91e7640d33b4",
+                            "requirements": "All models have been evaluated on the SVAMP benchmark using the CPW method on SciBERT embeddings.",
+                            "weight": 1,
+                            "score": 1.0,
+                            "valid_score": true,
+                            "task_category": "Code Execution",
+                            "explanation": "",
+                            "judge_metadata": null,
+                            "sub_tasks": []
+                        },
+                        {
+                            "id": "e17cff0a-859f-4718-a752-8b0b73d37e47",
+                            "requirements": "All models have been evaluated on the SVAMP benchmark using the SCW method on SciBERT embeddings.",
+                            "weight": 1,
+                            "score": 1.0,
+                            "valid_score": true,
+                            "task_category": "Code Execution",
+                            "explanation": "",
+                            "judge_metadata": null,
+                            "sub_tasks": []
+                        },
+                        {
+                            "id": "e8174d6c-a1f7-4266-8e47-8369fde0461f",
+                            "requirements": "All models have been evaluated on the StrategyQA benchmark using top prob sampling.",
+                            "weight": 1,
+                            "score": 1.0,
+                            "valid_score": true,
+                            "task_category": "Code Execution",
+                            "explanation": "",
+                            "judge_metadata": null,
+                            "sub_tasks": []
+                        },
+                        {
+                            "id": "fbdcd693-b8d5-493f-8475-d05c390e27d1",
+                            "requirements": "All models have been evaluated on the StrategyQA benchmark using the self-consistency baseline.",
+                            "weight": 1,
+                            "score": 1.0,
+                            "valid_score": true,
+                            "task_category": "Code Execution",
+                            "explanation": "",
+                            "judge_metadata": null,
+                            "sub_tasks": []
+                        },
+                        {
+                            "id": "6b95e4e0-0339-4e5c-948a-698f6386f0f9",
+                            "requirements": "All models have been evaluated on the StrategyQA benchmark using the CPW method on RoBERTa embeddings.",
+                            "weight": 1,
+                            "score": 1.0,
+                            "valid_score": true,
+                            "task_category": "Code Execution",
+                            "explanation": "",
+                            "judge_metadata": null,
+                            "sub_tasks": []
+                        },
+                        {
+                            "id": "970e42e4-8be9-4d3b-a167-f7704065bd35",
+                            "requirements": "All models have been evaluated on the StrategyQA benchmark using the SCW method on RoBERTa embeddings.",
+                            "weight": 1,
+                            "score": 1.0,
+                            "valid_score": true,
+                            "task_category": "Code Execution",
+                            "explanation": "",
+                            "judge_metadata": null,
+                            "sub_tasks": []
+                        },
+                        {
+                            "id": "729f1e41-1435-4323-97d1-a1e6f2abac8d",
+                            "requirements": "All models have been evaluated on the AQuA-RAT benchmark using the Isolation Forest outlier removal method on SciBERT embeddings.",
+                            "weight": 1,
+                            "score": 1.0,
+                            "valid_score": true,
+                            "task_category": "Code Execution",
+                            "explanation": "",
+                            "judge_metadata": null,
+                            "sub_tasks": []
+                        },
+                        {
+                            "id": "866d7330-a9f7-4ee5-a2b2-f62ed843d522",
+                            "requirements": "All models have been evaluated on the AQuA-RAT benchmark using the KNN outlier removal method on SciBERT embeddings.",
+                            "weight": 1,
+                            "score": 1.0,
+                            "valid_score": true,
+                            "task_category": "Code Execution",
+                            "explanation": "",
+                            "judge_metadata": null,
+                            "sub_tasks": []
+                        },
+                        {
+                            "id": "8ac54105-5705-4e70-9fda-51c8363bdb44",
+                            "requirements": "All models have been evaluated on the AQuA-RAT benchmark using the One-class SVM outlier removal method on SciBERT embeddings.",
+                            "weight": 1,
+                            "score": 1.0,
+                            "valid_score": true,
+                            "task_category": "Code Execution",
+                            "explanation": "",
+                            "judge_metadata": null,
+                            "sub_tasks": []
+                        },
+                        {
+                            "id": "63aa239f-9288-462e-85f2-c4019768a6f7",
+                            "requirements": "All models have been evaluated on the SVAMP benchmark using the Isolation Forest outlier removal method on SciBERT embeddings.",
+                            "weight": 1,
+                            "score": 1.0,
+                            "valid_score": true,
+                            "task_category": "Code Execution",
+                            "explanation": "",
+                            "judge_metadata": null,
+                            "sub_tasks": []
+                        },
+                        {
+                            "id": "f9d830a5-dd0a-4b66-90d7-66fd1035ff29",
+                            "requirements": "All models have been evaluated on the SVAMP benchmark using the KNN outlier removal method on SciBERT embeddings.",
+                            "weight": 1,
+                            "score": 1.0,
+                            "valid_score": true,
+                            "task_category": "Code Execution",
+                            "explanation": "",
+                            "judge_metadata": null,
+                            "sub_tasks": []
+                        },
+                        {
+                            "id": "c5380fee-79a6-4d19-b0af-a67f252d73c7",
+                            "requirements": "All models have been evaluated on the SVAMP benchmark using the One-class SVM outlier removal method on SciBERT embeddings.",
+                            "weight": 1,
+                            "score": 1.0,
+                            "valid_score": true,
+                            "task_category": "Code Execution",
+                            "explanation": "",
+                            "judge_metadata": null,
+                            "sub_tasks": []
+                        },
+                        {
+                            "id": "77a472fc-c8c9-4316-93a0-ecaa32677a32",
+                            "requirements": "All models have been evaluated on the StrategyQA benchmark using the Isolation Forest outlier removal method on RoBERTa embeddings.",
+                            "weight": 1,
+                            "score": 1.0,
+                            "valid_score": true,
+                            "task_category": "Code Execution",
+                            "explanation": "",
+                            "judge_metadata": null,
+                            "sub_tasks": []
+                        },
+                        {
+                            "id": "e4829498-53f5-434e-a683-47cbc0aced86",
+                            "requirements": "All models have been evaluated on the StrategyQA benchmark using the KNN outlier removal method on RoBERTa embeddings.",
+                            "weight": 1,
+                            "score": 1.0,
+                            "valid_score": true,
+                            "task_category": "Code Execution",
+                            "explanation": "",
+                            "judge_metadata": null,
+                            "sub_tasks": []
+                        },
+                        {
+                            "id": "879fdf86-cc40-404e-93a9-20d80574f790",
+                            "requirements": "All models have been evaluated on the StrategyQA benchmark using the One-class SVM outlier removal method on RoBERTa embeddings.",
+                            "weight": 1,
+                            "score": 1.0,
+                            "valid_score": true,
+                            "task_category": "Code Execution",
+                            "explanation": "",
+                            "judge_metadata": null,
+                            "sub_tasks": []
+                        }
+                    ]
+                },
+                {
+                    "id": "3a1912e1-6b4d-4c33-bd8c-12788d199e1d",
+                    "requirements": "Results from Section 5.1 experiments are clearly reported in a way allowing comparison to Table 1 of the paper.",
+                    "weight": 1,
+                    "score": 1.0,
+                    "valid_score": true,
+                    "task_category": "Code Execution",
+                    "explanation": "",
+                    "judge_metadata": null,
+                    "sub_tasks": []
+                },
+                {
+                    "id": "7c58df6a-72c2-418d-89df-ac078abd5fb7",
+                    "requirements": "Results from Section 5.2 experiments are clearly reported in a way allowing comparison to Table 2 of the paper.",
+                    "weight": 1,
+                    "score": 1.0,
+                    "valid_score": true,
+                    "task_category": "Code Execution",
+                    "explanation": "",
+                    "judge_metadata": null,
+                    "sub_tasks": []
+                },
+                {
+                    "id": "c68c0cfa-50e4-43d2-a82b-ad79a8828b51",
+                    "requirements": "The reproduced results for Section 5.1 match the conclusions of the paper.",
+                    "weight": 2,
+                    "score": 0.2,
+                    "valid_score": true,
+                    "task_category": null,
+                    "explanation": "Aggregated score from sub-tasks.",
+                    "judge_metadata": null,
+                    "sub_tasks": [
+                        {
+                            "id": "10516a66-aec7-437c-9966-7dc0d7fcefc0",
+                            "requirements": "The SC baseline outperforms the top prob sampling baseline in all cases.",
+                            "weight": 1,
+                            "score": 1.0,
+                            "valid_score": true,
+                            "task_category": "Result Analysis",
+                            "explanation": "Result replicated",
+                            "judge_metadata": null,
+                            "sub_tasks": []
+                        },
+                        {
+                            "id": "e3023d1b-c9d1-4234-8855-d7ee84bf5243",
+                            "requirements": "Across models and datasets, the SCW method outperforms the SC baseline in almost all cases.",
+                            "weight": 1,
+                            "score": 0.0,
+                            "valid_score": true,
+                            "task_category": "Result Analysis",
+                            "explanation": "Result not replicated",
+                            "judge_metadata": null,
+                            "sub_tasks": []
+                        },
+                        {
+                            "id": "c042db31-9804-4360-9ec8-037e70847fc0",
+                            "requirements": "On average across models, CPW outperforms the SC baseline on the AQuA-RAT and SVAMP, but has a negative effect on StrategyQA.",
+                            "weight": 3,
+                            "score": 0.0,
+                            "valid_score": true,
+                            "task_category": "Result Analysis",
+                            "explanation": "Result not replicated",
+                            "judge_metadata": null,
+                            "sub_tasks": []
+                        }
+                    ]
+                },
+                {
+                    "id": "6a187551-ee46-4fa2-a14b-77f8e13db5ab",
+                    "requirements": "The reproduced results for Section 5.2 match the conclusions of the paper.",
+                    "weight": 2,
+                    "score": 0.0,
+                    "valid_score": true,
+                    "task_category": null,
+                    "explanation": "Aggregated score from sub-tasks.",
+                    "judge_metadata": null,
+                    "sub_tasks": [
+                        {
+                            "id": "5335dc2c-5cc8-4cfa-8bd5-e123af878f06",
+                            "requirements": "The One-class SVM outlier removal method outperforms the SC baseline on StrategyQA most of the time across all models.",
+                            "weight": 1,
+                            "score": 0.0,
+                            "valid_score": true,
+                            "task_category": "Result Analysis",
+                            "explanation": "Result not replicated",
+                            "judge_metadata": null,
+                            "sub_tasks": []
+                        },
+                        {
+                            "id": "2322564b-cb87-40b7-931b-1afc876baf55",
+                            "requirements": "gpt-4o-mini generally achieves a very small performance gain over the SC baseline for all removal methods in all 3 dataset settings",
+                            "weight": 1,
+                            "score": 0.0,
+                            "valid_score": true,
+                            "task_category": "Result Analysis",
+                            "explanation": "Result not replicated",
+                            "judge_metadata": null,
+                            "sub_tasks": []
+                        },
+                        {
+                            "id": "d5734891-24a1-4df0-82cf-483d1397eb46",
+                            "requirements": "GPT-3.5 generally has much higher performance relative to the SC baseline for all removal methods in all 3 dataset settings",
+                            "weight": 1,
+                            "score": 0.0,
+                            "valid_score": true,
+                            "task_category": "Result Analysis",
+                            "explanation": "Result not replicated",
+                            "judge_metadata": null,
+                            "sub_tasks": []
+                        }
+                    ]
+                }
+            ]
+        }
+    ]
+}

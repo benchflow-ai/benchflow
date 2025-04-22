@@ -1,0 +1,3 @@
+human:
+  start: human/start.sh
+  dockerfile: human/Dockerfile

@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+    <button onclick="toggleAllTasks('expand')">Expand All</button>
+    <button onclick="toggleAllTasks('collapse')">Collapse All</button>
+
+    {% if not use_api %}
+        <span class="api-key-warning"><b>Note:</b> Some features are disabled because the OpenAI API key is not set.</span>
+    {% endif %}
+
+    {% block content %}{% endblock %}
+    
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>

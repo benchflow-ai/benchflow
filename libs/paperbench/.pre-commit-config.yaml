@@ -1,0 +1,22 @@
+default_stages: [pre-commit, pre-push]
+
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.9.2
+    hooks:
+      - id: ruff
+        name: ruff (auto-fix)
+        args:
+          - --config=./.ruff_autofix_minimal.toml
+          - --unsafe-fixes
+          - --exit-non-zero-on-fix
+        exclude: (?x)^project/paperbench/
+      
+      - id: ruff
+        name: ruff (lint)
+        args:
+          - --fix
+          - --fix-only
+          - --exit-non-zero-on-fix
+        files: (?x)^project/(alcatraz|nanoeval)/
+
