@@ -19,3 +19,13 @@ done
 - [PaperBench](./project/paperbench/README.md)
 - SWELancer (Forthcoming)
 - MLE-bench (Forthcoming)
+
+## About This Repository
+This repository is part of the official [OpenAI preparedness evaluations](https://github.com/openai/preparedness/tree/main).
+It provides the implementation for several Preparedness evals that utilize nanoeval and alcatraz frameworks.
+
+### ⚠️ Note
+If you wish to run these evaluations as part of the OpenAI preparedness framework,
+please replace the paperbench directory in the original preparedness repo with the project/paperbench from this repository.
+
+This will allow you to seamlessly integrate the latest version of PaperBench into the OpenAI evaluation pipeline.
