@@ -3,7 +3,7 @@ name = "benchflow"
 version = "0.1.13"
 description = "A tool for easy benchmarking."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.8,<=3.11"
 dependencies = [
     "datasets>=2.0.0",
     "docker>=6.0.0",
