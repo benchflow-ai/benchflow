@@ -12,7 +12,15 @@
 
 
 
-![Group 1 (1)](./results/comparison_plot.png)
+
+
+https://github.com/user-attachments/assets/8ffcf31a-3f56-41d8-8c5c-f8e0f7d1ad6c
+
+
+
+
+
+
 
 ## Overview
 
@@ -22,6 +30,8 @@ PokemonGym is a platform that allows AI agents to play Pokemon Red through a ser
 - **[Server](./server/README.md)**: FastAPI server that controls Pokemon Red emulation and exposes game state via API
 - **[Agents](./agents/README.md)**: Implementation of AI and human agents that interact with the evaluator server
 - **[Results](./results/README.md)**: Evaluation results comparing different AI models playing Pokemon Red
+
+![Group 1 (1)](./results/comparison_plot.png)
 
 ## Quick Start
 
