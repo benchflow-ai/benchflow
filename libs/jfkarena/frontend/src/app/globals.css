@@ -1,0 +1,139 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: #ffffff;
+    --foreground: #11181c;
+
+    --card: #ffffff;
+    --card-foreground: #11181c;
+
+    --popover: #ffffff;
+    --popover-foreground: #11181c;
+
+    --primary: #0c0c0c;
+    --primary-foreground: #ffffff;
+
+    --secondary: #f1f5f9;
+    --secondary-foreground: #0c0c0c;
+
+    --muted: #f1f5f9;
+    --muted-foreground: #64748b;
+
+    --accent: #f8fafc;
+    --accent-foreground: #0c0c0c;
+
+    --destructive: #ef4444;
+    --destructive-foreground: #ffffff;
+
+    --border: #e2e8f0;
+    --input: #e2e8f0;
+    --ring: #94a3b8;
+
+    --radius: 0.5rem;
+  }
+
+  .dark {
+    --background: #0c0c0c;
+    --foreground: #ecedee;
+
+    --card: #0c0c0c;
+    --card-foreground: #ecedee;
+
+    --popover: #0c0c0c;
+    --popover-foreground: #ecedee;
+
+    --primary: #ffffff;
+    --primary-foreground: #0c0c0c;
+
+    --secondary: #1f1f1f;
+    --secondary-foreground: #ecedee;
+
+    --muted: #1f1f1f;
+    --muted-foreground: #94a3b8;
+
+    --accent: #1f1f1f;
+    --accent-foreground: #ecedee;
+
+    --destructive: #ef4444;
+    --destructive-foreground: #ecedee;
+
+    --border: #1f1f1f;
+    --input: #1f1f1f;
+    --ring: #1f1f1f;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-feature-settings:
+      'rlig' 1,
+      'calt' 1;
+  }
+}
+
+/* Add solid background to select dropdown */
+[role='listbox'] {
+  @apply bg-background border border-border shadow-md !important;
+}
+
+[role='option'] {
+  @apply hover:bg-accent hover:text-accent-foreground !important;
+}
+
+.glass-effect {
+  background: rgba(255, 255, 255, 0.7);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(0, 0, 0, 0.1);
+}
+
+.hover-effect {
+  transition: all 0.2s ease-in-out;
+}
+
+.hover-effect:hover {
+  transform: translateY(-1px);
+}
+
+.linear-gradient {
+  background: linear-gradient(to bottom right, #4f46e5, #7c3aed);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.button-gradient {
+  background: linear-gradient(to right, #4f46e5, #7c3aed);
+  transition: opacity 0.2s ease-in-out;
+}
+
+.button-gradient:hover {
+  opacity: 0.9;
+}
+
+@layer components {
+  .linear-input {
+    @apply w-full px-4 py-2 bg-accent rounded-md border border-border focus:outline-none focus:ring-2 focus:ring transition-all;
+  }
+
+  .linear-button {
+    @apply px-4 py-2 rounded-md font-medium transition-all hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  .linear-button-primary {
+    @apply linear-button button-gradient text-white;
+  }
+
+  .linear-button-secondary {
+    @apply linear-button bg-secondary text-secondary-foreground hover:bg-opacity-90;
+  }
+
+  .linear-card {
+    @apply glass-effect rounded-lg p-6 hover-effect;
+  }
+}
