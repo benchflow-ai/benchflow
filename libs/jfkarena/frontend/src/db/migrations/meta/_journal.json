@@ -1,0 +1,27 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1743066148685,
+      "tag": "0000_brave_dark_phoenix",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1743122780709,
+      "tag": "0001_hard_darkstar",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1743143983532,
+      "tag": "0002_aberrant_grey_gargoyle",
+      "breakpoints": true
+    }
+  ]
+}

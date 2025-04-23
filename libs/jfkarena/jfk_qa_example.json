@@ -1,0 +1,43 @@
+[
+    {
+      "query": "How much time does it take to drive from the airport to downtown Helsinki?",
+      "expected_answer": "It takes 25 minutes to drive from the airport to downtown Helsinki."
+    },
+    {
+      "query": "What was Slawson's initial belief regarding Oswald's departure from the Soviet Union?",
+      "expected_answer": "He believed that Oswald's departure was not unusual or suspicious, citing the Soviet Union's post-Stalin relaxation of emigration policies."
+    },
+    {
+      "query": "When and where was Joachim Joesten born?",
+      "expected_answer": "July 29, 1907, in Cologne, Germany."
+    },
+    {
+      "query": "Who was Yuri Nosenko?",
+      "expected_answer": "Yuri Nosenko was a Soviet KGB officer who defected to the U.S. in 1964."
+    },
+    {
+      "query": "What did LICRAFT-1's brother emphasize about his role?",
+      "expected_answer": "LICRAFT-1 should never be used for direct contact with CIA officers inside Cuba, no matter how much they were trusted."
+    },
+    {
+      "query": "What intelligence agency or entity requested that the CIA (KUBARK) not make contact with Frank Pilgrim?",
+      "expected_answer": "EMOTH."
+    },
+    {
+      "query": "What did Herbert Itkin claim about his recruitment by the CIA?",
+      "expected_answer": "He claimed to have been recruited by the CIA in an 'undercover capacity' in 1954."
+    },
+    {
+      "query": "What agencies were involved in investigating Peter Paul Gregory?",
+      "expected_answer": "FBI (Federal Bureau of Investigation) and I&N (Immigration and Naturalization Service)"
+    },
+    {
+      "query": "Why were certain individuals' CIA building passes being removed?",
+      "expected_answer": "They were being removed from the Interagency Defector Committee (IDC), possibly due to a change in their roles or security concerns"
+    },
+    {
+      "query": "Who were the two individuals named as responsible for permitting Oswald's return to the U.S.?",
+      "expected_answer": "Abram Chayes, and Llewellyn Thompson"
+    }
+  ]
+  
