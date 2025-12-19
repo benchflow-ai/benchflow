@@ -72,7 +72,7 @@ Before you start, please get your `BF_TOKEN` on [BenchFlow.ai](https://benchflow
        task_ids=[0],
        agents=your_agents,
        api={"provider": "openai", "model": "gpt-4o-mini", "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY")},
-       requirements_txt="webarena_requirements.txt",
+       requirements_txt="examples/webarena/webarena_requirements.txt",  # Path relative to your working directory
        args={}
    )
 

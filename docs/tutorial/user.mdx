@@ -116,11 +116,11 @@ run_ids = bench.run(
         task_ids=[0],
         agents=agent,
         api={
-            "provider": "openai", 
-            "model": "gpt-4o-mini", 
+            "provider": "openai",
+            "model": "gpt-4o-mini",
             "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY")
         },
-        requirements_txt="webarena_requirements.txt",
+        requirements_txt="path/to/your_requirements.txt",  # Path relative to your working directory
         args={}
     )
 ```

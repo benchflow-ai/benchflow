@@ -63,10 +63,35 @@ class Bench:
 
         try:
             with open(requirements_txt, 'r') as f:
-                requirements_txt = f.read()
-            if install_sh:
+                requirements_content = f.read()
+        except FileNotFoundError:
+            logger.error(
+                f"Requirements file not found: '{requirements_txt}'. "
+                f"Please ensure the file exists and the path is correct. "
+                f"Current working directory: {Path.cwd()}"
+            )
+            return None
+        except Exception as e:
+            logger.error(f"Failed to read requirements file: {str(e)}")
+            return None
+
+        install_sh_content = None
+        if install_sh:
+            try:
                 with open(install_sh, 'r') as f:
-                    install_sh = f.read()
+                    install_sh_content = f.read()
+            except FileNotFoundError:
+                logger.error(
+                    f"Install script not found: '{install_sh}'. "
+                    f"Please ensure the file exists and the path is correct. "
+                    f"Current working directory: {Path.cwd()}"
+                )
+                return None
+            except Exception as e:
+                logger.error(f"Failed to read install script: {str(e)}")
+                return None
+
+        try:
             agent_code = self._get_agent_code(agent)
         except Exception as e:
             logger.error(f"Failed to get agent code: {str(e)}")
@@ -79,8 +104,8 @@ class Bench:
             "benchmark_name": self.benchmark_name,
             "params": args,
             "require_gpu": require_gpu,
-            "requirements": requirements_txt if requirements_txt else "",
-            "install_sh": install_sh if install_sh else "",
+            "requirements": requirements_content if requirements_content else "",
+            "install_sh": install_sh_content if install_sh_content else "",
             "agent_code": agent_code if agent_code else "",
             "api": api
         }
