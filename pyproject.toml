@@ -1,20 +1,13 @@
 [project]
 name = "benchflow"
-version = "0.1.13"
-description = "A tool for easy benchmarking."
+version = "2.0.0"
+description = "ACP-native agent benchmarking framework. Superset of Harbor."
 readme = "README.md"
-requires-python = ">=3.8,<=3.11"
+requires-python = ">=3.12"
 dependencies = [
-    "datasets>=2.0.0",
-    "docker>=6.0.0",
-    "fastapi>=0.100.0",
-    "jinja2>=3.1.6",
-    "json5>=0.9.15",
-    "openai>=1.0.0",
-    "pytest>=8.3.5",
-    "requests>=2.30.0",
-    "ruff>=0.7.0",
-    "uvicorn>=0.24.0",
+    "harbor @ git+https://github.com/benchflow-ai/harbor.git",
+    "httpx>=0.27.0",
+    "anyio>=4.0",
 ]
 authors = [
     { name = "Hongji Xu", email = "kirk@benchflow.ai" },
@@ -30,9 +23,21 @@ license = { text = "MIT" }
 
 classifiers = [
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24.0",
+    "ruff>=0.7.0",
+]
+
+[project.scripts]
+benchflow = "benchflow.cli.main:app"
 
 [project.urls]
 Homepage = "https://github.com/benchflow-ai/benchflow"
@@ -41,3 +46,12 @@ Homepage = "https://github.com/benchflow-ai/benchflow"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.ruff]
+target-version = "py312"

@@ -1,9 +1,19 @@
-from .BaseAgent import BaseAgent
-from .BaseBench import BaseBench
-from .Bench import Bench
-from .BenchClient import BenchClient
-from .load_benchmark import load_benchmark
+"""benchflow — ACP-native agent benchmarking framework.
 
-__version__ = "0.1.12"
+Superset of Harbor. Re-exports Harbor's full API and adds:
+- ACP client for multi-turn agent communication
+- Trajectory capture (HTTP proxy, OTel collector, ACP native)
+- SDK for programmatic usage
+"""
 
-__all__ = ["Bench", "BaseAgent", "BenchClient", "load_benchmark", "BaseBench"]
+__version__ = "2.0.0"
+
+# Re-export Harbor's public API
+from harbor import *  # noqa: F401, F403
+
+# benchflow's additions
+from benchflow.acp.client import ACPClient  # noqa: F401
+from benchflow.acp.session import ACPSession  # noqa: F401
+from benchflow.trajectories.otel import OTelCollector  # noqa: F401
+from benchflow.trajectories.proxy import TrajectoryProxy  # noqa: F401
+from benchflow.trajectories.types import Trajectory  # noqa: F401
