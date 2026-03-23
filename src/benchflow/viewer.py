@@ -126,10 +126,26 @@ def render_turn(events: list[dict], turn_number: int, prompt: str = "") -> str:
 
 
 def render_trial(trial_dir: Path, prompts: list[str] | None = None) -> str:
-    """Render a full trial (multiple turns) as HTML."""
+    """Render a full trial (multiple turns) as HTML.
+
+    Auto-detects format:
+    - turn*.txt → Claude Code stream-json
+    - trajectory/acp_trajectory.jsonl → ACP session events
+    - prompts.json → used for prompt labels if available
+    """
+    # Try loading prompts from prompts.json if not provided
+    if prompts is None and (trial_dir / "prompts.json").exists():
+        prompts = json.loads((trial_dir / "prompts.json").read_text())
+
+    # Auto-detect format
     turn_files = sorted(trial_dir.glob("turn*.txt"))
+    acp_traj = trial_dir / "trajectory" / "acp_trajectory.jsonl"
+
+    if not turn_files and acp_traj.exists():
+        return _render_acp_trajectory(trial_dir, acp_traj, prompts)
+
     if not turn_files:
-        return "<p>No turn files found</p>"
+        return "<p>No trajectory files found</p>"
 
     # Default prompts
     if prompts is None:
@@ -212,6 +228,95 @@ body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; 
 {_join_with_divider(all_blocks)}
 </body>
 </html>"""
+
+
+def _render_acp_trajectory(
+    trial_dir: Path, acp_path: Path, prompts: list[str] | None
+) -> str:
+    """Render an ACP trajectory JSONL file as HTML."""
+    events = [
+        json.loads(line) for line in acp_path.read_text().splitlines() if line.strip()
+    ]
+
+    # Load result.json for metadata
+    result_data = {}
+    result_path = trial_dir / "result.json"
+    if result_path.exists():
+        result_data = json.loads(result_path.read_text())
+
+    blocks = []
+
+    # Show prompts
+    for i, prompt in enumerate(prompts or []):
+        blocks.append(
+            f'<div class="step prompt">'
+            f'<div class="step-header"><span class="label prompt">PROMPT {i + 1}</span></div>'
+            f'<div class="msg">{html.escape(prompt[:500])}</div>'
+            f"</div>"
+        )
+
+    # Show events
+    for event in events:
+        etype = event.get("type", "")
+        if etype == "tool_call":
+            kind = html.escape(event.get("kind", ""))
+            title = html.escape(event.get("title", ""))
+            status = event.get("status", "")
+            blocks.append(
+                f'<div class="step agent">'
+                f'<div class="tool"><span class="tool-name">{kind}</span> {title}</div>'
+                f'<div class="metrics">{status}</div>'
+                f"</div>"
+            )
+        elif etype == "agent_message":
+            text = html.escape(event.get("text", ""))
+            blocks.append(
+                f'<div class="step agent"><div class="msg">{text[:500]}</div></div>'
+            )
+        elif etype == "agent_thought":
+            text = html.escape(event.get("text", ""))
+            blocks.append(
+                f'<div class="step agent"><div class="thinking">{text[:500]}</div></div>'
+            )
+
+    # Result summary
+    if result_data:
+        agent = html.escape(result_data.get("agent_name", "?"))
+        rewards = result_data.get("rewards", {})
+        n_tools = result_data.get("n_tool_calls", 0)
+        n_prompts = result_data.get("n_prompts", 0)
+        blocks.append(
+            f'<div class="step result">'
+            f'<div class="step-header"><span class="label result">RESULT</span></div>'
+            f'<div class="msg">Agent: {agent} | Rewards: {rewards} | '
+            f"Tool calls: {n_tools} | Prompts: {n_prompts}</div>"
+            f"</div>"
+        )
+
+    return f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>benchflow — {html.escape(trial_dir.name)}</title>
+<style>
+* {{ margin: 0; padding: 0; box-sizing: border-box; }}
+body {{ font-family: -apple-system, sans-serif; background: #0d1117; color: #c9d1d9; padding: 20px; max-width: 960px; margin: 0 auto; }}
+.header {{ border-bottom: 1px solid #30363d; padding-bottom: 16px; margin-bottom: 24px; }}
+.header h1 {{ font-size: 20px; color: #f0f6fc; }}
+.step {{ margin-bottom: 4px; padding: 10px 14px; border-radius: 6px; }}
+.step.prompt {{ background: #0d1f3c; border: 1px solid #1f3a5f; margin-bottom: 12px; }}
+.step.agent {{ background: #161b22; border: 1px solid #30363d; }}
+.step.result {{ background: #1a2f1a; border: 1px solid #238636; margin-top: 12px; }}
+.step-header {{ margin-bottom: 6px; }}
+.label {{ padding: 2px 8px; border-radius: 4px; font-weight: 600; font-size: 11px; text-transform: uppercase; }}
+.label.prompt {{ background: #1f3a5f; color: #58a6ff; }}
+.label.result {{ background: #1a2f1a; color: #3fb950; }}
+.msg {{ font-size: 14px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }}
+.thinking {{ font-size: 13px; color: #8b949e; font-style: italic; padding: 8px; background: #0d1117; border-radius: 4px; border-left: 3px solid #484f58; }}
+.tool {{ margin-bottom: 4px; }}
+.tool-name {{ background: #2d333b; color: #f0883e; padding: 2px 8px; border-radius: 4px; font-family: monospace; font-size: 13px; font-weight: 600; }}
+.metrics {{ font-size: 11px; color: #484f58; margin-top: 4px; }}
+</style></head><body>
+<div class="header"><h1>{html.escape(trial_dir.name)}</h1></div>
+{"".join(blocks)}
+</body></html>"""
 
 
 def _join_with_divider(blocks: list[str]) -> str:
