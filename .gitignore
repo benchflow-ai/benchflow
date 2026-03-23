@@ -174,7 +174,7 @@ cython_debug/
 results/
 
 .DS_Store
-# benchflow runtime output
+# benchflow
+.ref/
 trials/
 jobs/
-.terminal-bench-tasks/
