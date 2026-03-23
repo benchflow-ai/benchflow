@@ -1,0 +1,638 @@
+{
+  "benchmark": "terminal-bench-2.0",
+  "agent": "claude-agent-acp v0.22.2 (Claude Code v2.1.76)",
+  "model": "claude-sonnet-4-6 (default)",
+  "mode": "single-turn",
+  "total_tasks": 89,
+  "passed": 52,
+  "failed": 23,
+  "errored": 14,
+  "score_all": "52/89",
+  "score_excl_errors": "52/75",
+  "official_reference": "59.1% (Anthropic release), 59.55% (tbench.ai)",
+  "results": [
+    {
+      "task": "adaptive-rejection-sampler",
+      "reward": 1.0,
+      "n_tool_calls": 12,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "bn-fit-modify",
+      "reward": 1.0,
+      "n_tool_calls": 26,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "break-filter-js-from-html",
+      "reward": 1.0,
+      "n_tool_calls": 14,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "build-cython-ext",
+      "reward": 1.0,
+      "n_tool_calls": 52,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "build-pmars",
+      "reward": 1.0,
+      "n_tool_calls": 15,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "build-pov-ray",
+      "reward": 1.0,
+      "n_tool_calls": 28,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "caffe-cifar-10",
+      "reward": null,
+      "n_tool_calls": 0,
+      "error": "ACP error -32603: Internal error: The Claude Agent process exited unexpectedly. Please start a new session.",
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "cancel-async-tasks",
+      "reward": 0.0,
+      "n_tool_calls": 1,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "chess-best-move",
+      "reward": 0.0,
+      "n_tool_calls": 3,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "circuit-fibsqrt",
+      "reward": 1.0,
+      "n_tool_calls": 10,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "cobol-modernization",
+      "reward": 1.0,
+      "n_tool_calls": 22,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "code-from-image",
+      "reward": 1.0,
+      "n_tool_calls": 3,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "compile-compcert",
+      "reward": null,
+      "n_tool_calls": 0,
+      "error": "Agent timed out after 2400.0s",
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "configure-git-webserver",
+      "reward": 1.0,
+      "n_tool_calls": 11,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "constraints-scheduling",
+      "reward": 1.0,
+      "n_tool_calls": 4,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "count-dataset-tokens",
+      "reward": 0.0,
+      "n_tool_calls": 10,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "crack-7z-hash",
+      "reward": 1.0,
+      "n_tool_calls": 28,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "custom-memory-heap-crash",
+      "reward": 1.0,
+      "n_tool_calls": 15,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "db-wal-recovery",
+      "reward": 1.0,
+      "n_tool_calls": 8,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "distribution-search",
+      "reward": 1.0,
+      "n_tool_calls": 3,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "dna-assembly",
+      "reward": null,
+      "n_tool_calls": 0,
+      "error": "Agent timed out after 1800.0s",
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "dna-insert",
+      "reward": 1.0,
+      "n_tool_calls": 12,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "extract-elf",
+      "reward": 1.0,
+      "n_tool_calls": 8,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "extract-moves-from-video",
+      "reward": 0.0,
+      "n_tool_calls": 0,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "feal-differential-cryptanalysis",
+      "reward": 1.0,
+      "n_tool_calls": 7,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "feal-linear-cryptanalysis",
+      "reward": 1.0,
+      "n_tool_calls": 9,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "filter-js-from-html",
+      "reward": 0.0,
+      "n_tool_calls": 1,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "financial-document-processor",
+      "reward": 0.0,
+      "n_tool_calls": 24,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "fix-code-vulnerability",
+      "reward": 1.0,
+      "n_tool_calls": 20,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "fix-git",
+      "reward": 0.0,
+      "n_tool_calls": 3,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "fix-ocaml-gc",
+      "reward": 1.0,
+      "n_tool_calls": 27,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "gcode-to-text",
+      "reward": 1.0,
+      "n_tool_calls": 19,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "git-leak-recovery",
+      "reward": 1.0,
+      "n_tool_calls": 7,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "git-multibranch",
+      "reward": 1.0,
+      "n_tool_calls": 32,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "gpt2-codegolf",
+      "reward": null,
+      "n_tool_calls": 0,
+      "error": "Agent install failed (rc=124): \nDiagnostics: OS:\nPRETTY_NAME=\"Ubuntu 24.04.3 LTS\"\nNAME=\"Ubuntu\"\nNode:\nv22.22.1\nAgent:\n",
+      "agent": ""
+    },
+    {
+      "task": "headless-terminal",
+      "reward": 1.0,
+      "n_tool_calls": 8,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "hf-model-inference",
+      "reward": 1.0,
+      "n_tool_calls": 10,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "install-windows-3.11",
+      "reward": 0.0,
+      "n_tool_calls": 67,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "kv-store-grpc",
+      "reward": 1.0,
+      "n_tool_calls": 10,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "large-scale-text-editing",
+      "reward": 1.0,
+      "n_tool_calls": 8,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "largest-eigenval",
+      "reward": null,
+      "n_tool_calls": 0,
+      "error": "Agent timed out after 900.0s",
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "llm-inference-batching-scheduler",
+      "reward": 1.0,
+      "n_tool_calls": 20,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "log-summary-date-ranges",
+      "reward": 1.0,
+      "n_tool_calls": 5,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "mailman",
+      "reward": 0.0,
+      "n_tool_calls": 56,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "make-doom-for-mips",
+      "reward": null,
+      "n_tool_calls": 0,
+      "error": "Agent timed out after 900.0s",
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "make-mips-interpreter",
+      "reward": null,
+      "n_tool_calls": 0,
+      "error": "Container process closed stdout",
+      "agent": ""
+    },
+    {
+      "task": "mcmc-sampling-stan",
+      "reward": 1.0,
+      "n_tool_calls": 21,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "merge-diff-arc-agi-task",
+      "reward": 1.0,
+      "n_tool_calls": 19,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "model-extraction-relu-logits",
+      "reward": 0.0,
+      "n_tool_calls": 9,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "modernize-scientific-stack",
+      "reward": 1.0,
+      "n_tool_calls": 5,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "mteb-leaderboard",
+      "reward": 0.0,
+      "n_tool_calls": 53,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "mteb-retrieve",
+      "reward": 0.0,
+      "n_tool_calls": 3,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "multi-source-data-merger",
+      "reward": 1.0,
+      "n_tool_calls": 7,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "nginx-request-logging",
+      "reward": 1.0,
+      "n_tool_calls": 8,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "openssl-selfsigned-cert",
+      "reward": 1.0,
+      "n_tool_calls": 5,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "overfull-hbox",
+      "reward": 1.0,
+      "n_tool_calls": 31,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "password-recovery",
+      "reward": 1.0,
+      "n_tool_calls": 65,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "path-tracing",
+      "reward": null,
+      "n_tool_calls": 0,
+      "error": "Container process closed stdout",
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "path-tracing-reverse",
+      "reward": null,
+      "n_tool_calls": 0,
+      "error": "Agent install failed (rc=124): \nDiagnostics: OS:\nPRETTY_NAME=\"Ubuntu 24.04.3 LTS\"\nNAME=\"Ubuntu\"\nNode:\nv22.22.1\nAgent:\n",
+      "agent": ""
+    },
+    {
+      "task": "polyglot-c-py",
+      "reward": 0.0,
+      "n_tool_calls": 4,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "polyglot-rust-c",
+      "reward": 0.0,
+      "n_tool_calls": 4,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "portfolio-optimization",
+      "reward": 1.0,
+      "n_tool_calls": 11,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "protein-assembly",
+      "reward": 0.0,
+      "n_tool_calls": 73,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "prove-plus-comm",
+      "reward": null,
+      "n_tool_calls": 0,
+      "error": "Container process closed stdout",
+      "agent": ""
+    },
+    {
+      "task": "pypi-server",
+      "reward": 1.0,
+      "n_tool_calls": 11,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "pytorch-model-cli",
+      "reward": 1.0,
+      "n_tool_calls": 28,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "pytorch-model-recovery",
+      "reward": 1.0,
+      "n_tool_calls": 4,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "qemu-alpine-ssh",
+      "reward": 1.0,
+      "n_tool_calls": 47,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "qemu-startup",
+      "reward": 1.0,
+      "n_tool_calls": 45,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "query-optimize",
+      "reward": 1.0,
+      "n_tool_calls": 13,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "raman-fitting",
+      "reward": 0.0,
+      "n_tool_calls": 19,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "regex-chess",
+      "reward": null,
+      "n_tool_calls": 0,
+      "error": "Agent timed out after 3600.0s",
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "regex-log",
+      "reward": 1.0,
+      "n_tool_calls": 1,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "reshard-c4-data",
+      "reward": 1.0,
+      "n_tool_calls": 38,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "rstan-to-pystan",
+      "reward": 0.0,
+      "n_tool_calls": 21,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "sam-cell-seg",
+      "reward": 0.0,
+      "n_tool_calls": 21,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "sanitize-git-repo",
+      "reward": 0.0,
+      "n_tool_calls": 35,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "schemelike-metacircular-eval",
+      "reward": 1.0,
+      "n_tool_calls": 21,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "sparql-university",
+      "reward": 0.0,
+      "n_tool_calls": 2,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "sqlite-db-truncate",
+      "reward": 1.0,
+      "n_tool_calls": 8,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "sqlite-with-gcov",
+      "reward": 0.0,
+      "n_tool_calls": 13,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "torch-pipeline-parallelism",
+      "reward": 0.0,
+      "n_tool_calls": 9,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "torch-tensor-parallelism",
+      "reward": 1.0,
+      "n_tool_calls": 1,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "train-fasttext",
+      "reward": null,
+      "n_tool_calls": 0,
+      "error": "Separator is not found, and chunk exceed the limit",
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "tune-mjcf",
+      "reward": 1.0,
+      "n_tool_calls": 17,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "video-processing",
+      "reward": 0.0,
+      "n_tool_calls": 50,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "vulnerable-secret",
+      "reward": 1.0,
+      "n_tool_calls": 15,
+      "error": null,
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "winning-avg-corewars",
+      "reward": null,
+      "n_tool_calls": 0,
+      "error": "Agent timed out after 3600.0s",
+      "agent": "@zed-industries/claude-agent-acp"
+    },
+    {
+      "task": "write-compressor",
+      "reward": null,
+      "n_tool_calls": 0,
+      "error": "Agent install failed (rc=124): \nDiagnostics: OS:\nPRETTY_NAME=\"Ubuntu 24.04.3 LTS\"\nNAME=\"Ubuntu\"\nNode:\nv22.22.1\nAgent:\n",
+      "agent": ""
+    }
+  ]
+}
