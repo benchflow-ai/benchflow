@@ -101,6 +101,7 @@ class ContainerProcess:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=proc_env,
+            limit=1024 * 1024,  # 1MB line buffer (default 64KB too small for large tool results)
         )
         logger.info(
             f"Container process started (pid={self._process.pid}, "
