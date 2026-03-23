@@ -328,13 +328,13 @@ class SDK:
             session = await acp_client.session_new(cwd=agent_cwd)
             logger.info(f"Session: {session.session_id}")
 
-            # Set model via ACP config (env var ANTHROPIC_MODEL is ignored by claude-agent-acp)
+            # Set model via ACP (env var ANTHROPIC_MODEL is ignored by claude-agent-acp)
             if model:
                 try:
-                    await acp_client.config_update("model", model)
+                    await acp_client.set_model(model)
                     logger.info(f"Model set to: {model}")
                 except Exception as e:
-                    logger.warning(f"Failed to set model via ACP config: {e}")
+                    logger.warning(f"Failed to set model via ACP: {e}")
 
             # 4. Send prompts (multi-turn)
             timeout = task.config.agent.timeout_sec
