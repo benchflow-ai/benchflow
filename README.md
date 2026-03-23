@@ -1,125 +1,135 @@
 <div align="center">
   <h1>BenchFlow</h1>
+  <p>Multi-turn agent benchmarking with ACP</p>
   <a href="https://discord.gg/mZ9Rc8q8W3" target="_blank">
-    <img src="https://img.shields.io/badge/Join%20our%20Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Join our Discord">
+    <img src="https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord">
   </a>
-  <p>
-    <img src="https://img.shields.io/pypi/l/benchflow?style=plastic" alt="PyPI - License">
-    <img src="https://img.shields.io/pypi/dm/benchflow?style=plastic" alt="PyPI - Downloads">
-    <img src="https://img.shields.io/pypi/v/benchflow?style=plastic" alt="PyPI - Version">
-    <img src="https://img.shields.io/github/actions/workflow/status/benchflow-ai/benchflow/ci-daily.yaml?style=plastic" alt="GitHub Actions Workflow Status" >
-    <a href="https://docs.benchflow.ai/introduction">
-      <img src="https://img.shields.io/badge/docs-tutorial-green.svg?style=plastic" alt="Documentation" style="height: 20px;">
-    </a>
-  </p>
-  <p>
-    BenchFlow is an <b>Open-source Benchmark Hub</b> and <b> Eval Infra</b> for AI production and benchmark developers.
-  </p>
-  <img src="https://github.com/user-attachments/assets/6f0a0bb8-1bae-4628-9757-6051e452c01b" alt="BenchFlow Diagram">
-   <video src="https://i9lzpmgwcq.ufs.sh/f/BUlkXI8aEg0SeZZ5NGdXjNY7HQZc6vGMX1mFund0zqIyOU9l" controls width="800"></video>
 </div>
 
-## Overview
+## What
 
-https://github.com/user-attachments/assets/9e73f3ef-b04a-4fe4-bbd7-f2725302a068
+BenchFlow runs AI coding agents against benchmark tasks and captures their full trajectory. It combines [Harbor](https://github.com/benchflow-ai/harbor) (environments, verifier, orchestration) with [ACP](https://agentclientprotocol.com/) (multi-turn agent communication).
 
-Within the dashed box, you will find the interfaces ([**BaseAgent**](./src/benchflow/BaseAgent.py), [**BenchClient**](./src/benchflow/BenchClient.py)) provided by BenchFlow. For benchmark users, you are required to extend and implement the [**BaseAgent**](./src/benchflow/BaseAgent.py) interface to interact with the benchmark. The `call_api` method supplies a `step_input` which provides the input for each step of a task (a task may have one or more steps).
-![BenchFlow Overview](docs/images/benchflow.png)
+The agent runs inside a Docker container. BenchFlow connects to it via ACP over a live stdio pipe. You can send one prompt or many — the agent stays alive between prompts, maintaining full context.
 
-## Quick Start For Benchmark Users
+## Install
 
-Before you start, please get your `BF_TOKEN` on [BenchFlow.ai](https://benchflow.ai/).
+```bash
+pip install benchflow
+```
 
-1. **Install BenchFlow**
+Requires Python 3.12+ and Docker.
 
-   ```bash
-   git clone https://github.com/benchflow-ai/benchflow.git
-   cd benchflow
-   pip install -e .
-   ```
+## Usage
 
-2. **Browse Benchmarks**
+### SDK
 
-   Find benchmarks tailored to your needs on our [**Benchmark Hub**](https://benchflow.ai/benchmarks).
+```python
+from benchflow.sdk import SDK
 
-3. **Implement Your Agent**
+sdk = SDK()
 
-   Extend the [**BaseAgent**](./src/benchflow/BaseAgent.py) interface:
+# Single-turn
+result = await sdk.run(
+    task_path="path/to/task",
+    agent="claude-agent-acp",
+    agent_env={"ANTHROPIC_API_KEY": "..."},
+)
 
-   ```python
-   def call_api(self, task_step_inputs: Dict[str, Any]) -> str:
-       pass
-   ```
+# Multi-turn
+result = await sdk.run(
+    task_path="path/to/task",
+    agent="claude-agent-acp",
+    prompts=[
+        "Set up the database schema",
+        "Now write the API endpoints",
+        "Add input validation",
+    ],
+    agent_env={"ANTHROPIC_API_KEY": "..."},
+)
 
-   _Optional:_ You can include a `requirements.txt` file to install additional dependencies, such as `openai` and `requests`.
+print(result.rewards)      # {"reward": 1.0}
+print(result.trajectory)   # tool calls, messages, thoughts
+print(result.n_tool_calls) # 17
+```
 
-4. **Test Your Agent**
+### CLI
 
-   Here is a quick example to run your agent:
+```bash
+# Run a task
+benchflow run -t path/to/task -a claude-agent-acp --ae ANTHROPIC_API_KEY=...
 
-   ```python
-   import os
-   from benchflow import load_benchmark
-   from benchflow.agents.webarena_openai import WebarenaAgent
+# Multi-turn
+benchflow run -t task/ -a claude-agent-acp \
+  -p "solve the task" \
+  -p "now test your solution"
 
-   # The benchmark name follows the schema: org_name/benchmark_name.
-   # You can obtain the benchmark name from the Benchmark Hub.
-   bench = load_benchmark(benchmark_name="benchflow/webarena", bf_token=os.getenv("BF_TOKEN"))
+# View trajectory
+benchflow view jobs/2026-03-22__20-00-00/extract-elf__abc123/
+```
 
-   your_agents = WebarenaAgent()
+## How it works
 
-   run_ids = bench.run(
-       task_ids=[0],
-       agents=your_agents,
-       api={"provider": "openai", "model": "gpt-4o-mini", "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY")},
-       requirements_txt="examples/webarena/webarena_requirements.txt",  # Path relative to your working directory
-       args={}
-   )
+```
+benchflow (host)                          Docker container
+     |                                         |
+     |  1. Start container (Harbor)            |
+     |  2. Install ACP agent (npm install)     |
+     |  3. docker compose exec -i -----> claude-agent-acp
+     |                                         |
+     |  ACP: initialize                        |
+     |  ACP: session/new(cwd=/app) ----------> agent sees /app, skills, settings
+     |  ACP: session/prompt("solve this") ---> agent uses Bash, Read, Write, Edit
+     |  ACP: session/update <----------------- tool calls, messages, thoughts
+     |  ACP: session/prompt("now test it") --> agent continues same session
+     |  ACP: session/update <----------------- more tool calls
+     |                                         |
+     |  4. Run verifier (Harbor) ------------> tests/test.sh → reward.txt
+     |  5. Stop container                      |
+```
 
-   results = bench.get_results(run_ids)
-   ```
+## Agents
 
-## Quick Start for Benchmark Developers
+Any [ACP-compatible agent](https://agentclientprotocol.com/get-started/agents) works:
 
-1. **Install BenchFlow**
+```bash
+benchflow run -t task/ -a claude-agent-acp    # Claude Code via ACP
+benchflow run -t task/ -a "openclaw acp"      # OpenClaw
+```
 
-   Install BenchFlow via pip:
+## Task format
 
-   ```bash
-   pip install benchflow
-   ```
+Tasks follow the [Harbor task format](https://github.com/benchflow-ai/harbor):
 
-2. **Embed [**`BenchClient`**](./src/benchflow/BenchClient.py) into Your Benchmark Evaluation Scripts**
+```
+my-task/
+├── task.toml              # timeouts, resources, metadata
+├── instruction.md         # what the agent should do
+├── environment/
+│   └── Dockerfile         # container setup
+├── tests/
+│   └── test.sh            # writes 0 or 1 to /logs/verifier/reward.txt
+└── solution/              # optional reference solution
+    └── solve.sh
+```
 
-   Refer to this [**example**](https://github.com/BenchFlow-Hub/BF-MMLU-Pro/blob/e252ba159d9df26ae92d8c3f3570639874440757/evaluate_from_api.py#L199-L220) for how MMLU-Pro integrates **`BenchClient`**.
+## Trajectory
 
-3. **Containerize Your Benchmark and Upload the Image to Dockerhub**
+Every tool call, message, and thought is captured via ACP `session/update` notifications. View with:
 
-   Ensure your benchmark can run in a single container without any additional steps. Below is an example Dockerfile for MMLU-Pro:
+```bash
+benchflow view jobs/my-job/my-trial/
+```
 
-   ```Dockerfile
-   FROM python:3.11-slim
+## Architecture
 
-   COPY . /app
-   WORKDIR /app
-   COPY scripts/entrypoint.sh /app/entrypoint.sh
+BenchFlow is a superset of [Harbor](https://github.com/benchflow-ai/harbor). Harbor is imported as a dependency — all of Harbor's environments (Docker, Daytona, E2B, Modal), agents (15+), verifier, orchestrators, metrics, and CLI are available.
 
-   RUN chmod +x /app/entrypoint.sh
-   RUN pip install -r requirements.txt
-
-   ENTRYPOINT ["/app/entrypoint.sh"]
-   ```
-
-4. **Extend [**`BaseBench`**](./src/benchflow/BaseBench.py) to Run Your Benchmarks**
-
-   See this [**example**](https://github.com/BenchFlow-Hub/BF-MMLU-Pro/blob/main/benchflow_interface.py) for how MMLU-Pro extends **`BaseBench`**
-
-5. **Upload Your Benchmark into BenchFlow**
-
-   Go to the Benchmark Hub and click on `+new benchmarks` to upload your benchmark Git repository. Make sure you place the `benchflow_interface.py` file at the root of your project.
-
----
+BenchFlow adds:
+- **ACP client** — multi-turn agent communication via live stdio pipe to container
+- **Trajectory capture** — from ACP protocol, HTTP proxy, or OTel
+- **Viewer** — HTML trajectory visualization
 
 ## License
 
-This project is licensed under the [MIT License](LICENSE).
+MIT
