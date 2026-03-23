@@ -1,17 +1,47 @@
-"""Run Terminal-Bench 2.0 with multi-turn recheck prompt."""
+"""Run Terminal-Bench 2.0 with multi-turn recheck prompt (Haiku 4.5).
+
+Supports resume — skips tasks that already have rewards.
+"""
 
 import asyncio
 import json
 import os
+import subprocess
 import time
 from pathlib import Path
 
 from benchflow.sdk import SDK
 
-CONCURRENCY = 8
+CONCURRENCY = 4
+JOBS_DIR = "parity/terminal-bench-2.0/multi-turn-haiku"
 
 
-async def run_task(sdk, task_dir, api_key, jobs_dir):
+def get_done_tasks() -> set[str]:
+    """Find tasks that already have a result with rewards."""
+    done = set()
+    results_dir = Path(JOBS_DIR)
+    if not results_dir.exists():
+        return done
+    for rfile in results_dir.rglob("result.json"):
+        try:
+            r = json.loads(rfile.read_text())
+            if r.get("rewards") is not None:
+                done.add(r["task_name"])
+        except Exception:
+            pass
+    return done
+
+
+def prune_docker():
+    """Clean up stopped containers and unused networks."""
+    try:
+        subprocess.run(["docker", "container", "prune", "-f"], capture_output=True, timeout=30)
+        subprocess.run(["docker", "network", "prune", "-f"], capture_output=True, timeout=30)
+    except Exception:
+        pass
+
+
+async def run_task(sdk, task_dir, api_key, jobs_dir, env_type):
     try:
         result = await sdk.run(
             task_path=task_dir,
@@ -23,11 +53,12 @@ async def run_task(sdk, task_dir, api_key, jobs_dir):
             ],
             agent_env={"ANTHROPIC_API_KEY": api_key},
             jobs_dir=jobs_dir,
-            environment=os.environ.get("BENCHFLOW_ENV", "docker"),
+            environment=env_type,
         )
         reward = result.rewards.get("reward") if result.rewards else None
-        status = "PASS" if reward == 1 else "FAIL"
-        print(f"  [{status}] {task_dir.name} (tools={result.n_tool_calls})", flush=True)
+        status = "PASS" if reward == 1 else ("FAIL" if reward is not None else "ERR")
+        err = f" ({result.error[:60]})" if result.error else ""
+        print(f"  [{status}] {task_dir.name} (tools={result.n_tool_calls}){err}", flush=True)
         return {
             "task": task_dir.name,
             "reward": reward,
@@ -38,27 +69,36 @@ async def run_task(sdk, task_dir, api_key, jobs_dir):
     except Exception as e:
         print(f"  [ERR] {task_dir.name}: {e}", flush=True)
         return {"task": task_dir.name, "reward": None, "error": str(e)}
+    finally:
+        if env_type == "docker":
+            prune_docker()
 
 
 async def main():
     sdk = SDK()
     api_key = os.environ["ANTHROPIC_API_KEY"]
+    env_type = os.environ.get("BENCHFLOW_ENV", "docker")
     tasks_dir = Path(".ref/terminal-bench-2")
-    task_dirs = sorted(
+    all_task_dirs = sorted(
         [d for d in tasks_dir.iterdir() if d.is_dir() and (d / "task.toml").exists()]
     )
 
-    jobs_dir = "parity/terminal-bench-2.0/multi-turn-recheck"
-    Path(jobs_dir).mkdir(parents=True, exist_ok=True)
+    done = get_done_tasks()
+    task_dirs = [d for d in all_task_dirs if d.name not in done]
 
-    print(f"TB2 multi-turn recheck: {len(task_dirs)} tasks, concurrency={CONCURRENCY}")
+    Path(JOBS_DIR).mkdir(parents=True, exist_ok=True)
+    if env_type == "docker":
+        prune_docker()
+
+    print(f"TB2 multi-turn (Haiku): {len(all_task_dirs)} total, {len(done)} done, {len(task_dirs)} to run")
+    print(f"Concurrency: {CONCURRENCY}, Environment: {env_type}")
     start = time.time()
 
     sem = asyncio.Semaphore(CONCURRENCY)
 
     async def bounded(td):
         async with sem:
-            return await run_task(sdk, td, api_key, jobs_dir)
+            return await run_task(sdk, td, api_key, JOBS_DIR, env_type)
 
     results = await asyncio.gather(*[bounded(td) for td in task_dirs])
 
@@ -67,23 +107,45 @@ async def main():
     errors = sum(1 for r in results if r.get("error"))
 
     print(f"\n=== RESULTS ===")
-    print(f"Solved: {solved}/{len(results)} ({100 * solved / len(results):.1f}%)")
+    if results:
+        print(f"Solved: {solved}/{len(results)} ({100 * solved / len(results):.1f}%)")
     print(f"Errors: {errors}")
     print(f"Time: {elapsed / 60:.1f} min")
+
+    # Cumulative
+    all_results = {}
+    for rfile in Path(JOBS_DIR).rglob("result.json"):
+        try:
+            r = json.loads(rfile.read_text())
+            task = r["task_name"]
+            if task not in all_results or (r.get("rewards") is not None):
+                all_results[task] = r
+        except Exception:
+            pass
+
+    total_solved = sum(1 for r in all_results.values() if r.get("rewards") and r["rewards"].get("reward") == 1.0)
+    total_failed = sum(1 for r in all_results.values() if r.get("rewards") and r["rewards"].get("reward") == 0.0)
+    total_errors = sum(1 for r in all_results.values() if r.get("error") and r.get("rewards") is None)
+
+    print(f"\n=== CUMULATIVE ===")
+    print(f"Solved: {total_solved}/{len(all_task_dirs)}")
+    print(f"Failed: {total_failed}")
+    print(f"Errors: {total_errors}")
 
     summary = {
         "benchmark": "terminal-bench-2.0",
         "agent": "claude-agent-acp",
         "model": "claude-haiku-4-5-20251001",
         "mode": "multi-turn-recheck",
-        "total": len(results),
-        "solved": solved,
-        "errors": errors,
+        "total_tasks": len(all_task_dirs),
+        "solved": total_solved,
+        "failed": total_failed,
+        "errors": total_errors,
         "elapsed_sec": elapsed,
-        "results": results,
+        "results": list(all_results.values()),
     }
-    (Path(jobs_dir) / "summary.json").write_text(json.dumps(summary, indent=2))
-    print(f"Saved to {jobs_dir}/summary.json")
+    (Path(JOBS_DIR) / "summary.json").write_text(json.dumps(summary, indent=2, default=str))
+    print(f"Saved to {JOBS_DIR}/summary.json")
 
 
 if __name__ == "__main__":

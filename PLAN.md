@@ -28,9 +28,12 @@
 
 ## Next Steps
 
-### Retry Docker Errors (quick win)
-- [ ] Retry 5 tasks that fail on Daytona npm install using Docker: path-tracing-reverse, gpt2-codegolf, write-compressor, caffe-cifar-10, prove-plus-comm
-- Expected: some may pass, reducing error count
+### Retry Docker Errors — Done
+- [x] All 5 tasks retried on Docker with Haiku 4.5
+- prove-plus-comm: **PASS** (WORKDIR fix worked)
+- path-tracing-reverse, gpt2-codegolf: FAIL (task too hard for Haiku)
+- write-compressor, caffe-cifar-10: Timeout (genuine model limitation)
+- **0 infra errors remaining** — all errors are now timeouts or task difficulty
 
 ### Step 2: TB2 Multi-Turn Run
 - [ ] Run all 89 tasks with recheck prompt
