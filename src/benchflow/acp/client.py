@@ -195,6 +195,17 @@ class ACPClient:
             )
         return self._session
 
+    async def config_update(self, config_id: str, value: str) -> dict:
+        """Update a session configuration option (e.g. model)."""
+        if not self._session:
+            raise RuntimeError("No active session — call session_new() first")
+        params = {
+            "sessionId": self._session.session_id,
+            "configId": config_id,
+            "value": value,
+        }
+        return await self._send_request("session/config/update", params)
+
     async def prompt(self, text: str) -> PromptResult:
         """Send a prompt to the agent and wait for completion."""
         if not self._session:

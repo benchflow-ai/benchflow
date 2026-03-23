@@ -1,10 +1,10 @@
-"""ACP transport over a live stdio pipe to a container process."""
+"""ACP transport over a live stdio pipe to a sandbox process."""
 
 import json
 import logging
 from typing import Any
 
-from benchflow.container import ContainerProcess
+from benchflow.process import LiveProcess
 
 from .transport import Transport
 
@@ -12,15 +12,15 @@ logger = logging.getLogger(__name__)
 
 
 class ContainerTransport(Transport):
-    """ACP transport that speaks to an agent running inside a Docker container.
+    """ACP transport that speaks to an agent running inside a sandbox.
 
-    Uses ContainerProcess to maintain a live stdin/stdout connection
-    via `docker compose exec -i`.
+    Uses a LiveProcess (DockerProcess or DaytonaProcess) to maintain a live
+    stdin/stdout connection.
     """
 
     def __init__(
         self,
-        container_process: ContainerProcess,
+        container_process: LiveProcess,
         command: str,
         env: dict[str, str] | None = None,
         cwd: str | None = None,
@@ -31,7 +31,7 @@ class ContainerTransport(Transport):
         self._cwd = cwd
 
     async def start(self) -> None:
-        """Start the agent process inside the container."""
+        """Start the agent process inside the sandbox."""
         await self._cp.start(
             command=self._command,
             env=self._env,

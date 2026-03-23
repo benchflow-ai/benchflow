@@ -101,7 +101,7 @@ class ContainerProcess:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=proc_env,
-            limit=1024 * 1024,  # 1MB line buffer (default 64KB too small for large tool results)
+            limit=10 * 1024 * 1024,  # 10MB line buffer (default 64KB too small for large tool results)
         )
         logger.info(
             f"Container process started (pid={self._process.pid}, "
@@ -114,7 +114,21 @@ class ContainerProcess:
             raise RuntimeError("Process not started")
         line = await self._process.stdout.readline()
         if not line:
-            raise ConnectionError("Container process closed stdout")
+            # Process died — try to capture stderr for diagnostics
+            stderr_text = ""
+            if self._process.stderr:
+                try:
+                    stderr_bytes = await asyncio.wait_for(
+                        self._process.stderr.read(8192), timeout=2
+                    )
+                    stderr_text = stderr_bytes.decode(errors="replace").strip()
+                except Exception:
+                    pass
+            rc = self._process.returncode
+            msg = f"Container process closed stdout (rc={rc})"
+            if stderr_text:
+                msg += f"\nstderr: {stderr_text[:1000]}"
+            raise ConnectionError(msg)
         return line
 
     async def writeline(self, data: str) -> None:

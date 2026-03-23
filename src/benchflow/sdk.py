@@ -1,13 +1,13 @@
-"""benchflow SDK — unified run() that uses ACP inside Harbor containers.
+"""benchflow SDK — unified run() that uses ACP inside Harbor environments.
 
 One execution path:
-1. Start Harbor Docker environment
-2. Install ACP agent in container
+1. Start Harbor environment (Docker or Daytona)
+2. Install ACP agent in sandbox
 3. Connect via live stdio pipe (ContainerTransport)
 4. ACP: initialize → session/new → session/prompt (multi-turn)
 5. Capture trajectory from session/update notifications
 6. Run Harbor verifier
-7. Stop container
+7. Stop environment
 """
 
 import asyncio
@@ -17,53 +17,66 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from harbor.environments.docker.docker import DockerEnvironment
 from harbor.models.task.task import Task
 from harbor.models.trial.paths import TrialPaths
 from harbor.verifier.verifier import Verifier
 
 from benchflow.acp.client import ACPClient
 from benchflow.acp.container_transport import ContainerTransport
-from benchflow.container import ContainerProcess
+from benchflow.process import DockerProcess, DaytonaProcess, LiveProcess
 
 logger = logging.getLogger(__name__)
 
 # Node.js install prefix — shared by all npm-based agents
+# Uses set -o pipefail so piped command failures are caught.
+# Handles: missing node, old node (<22), Ubuntu, Debian slim.
 _NODE_INSTALL = (
-    "command -v node >/dev/null 2>&1 || ("
-    "  apt-get update -qq >/dev/null 2>&1 && "
-    "  apt-get install -y -qq curl >/dev/null 2>&1 && "
-    "  curl -fsSL https://deb.nodesource.com/setup_22.x | bash - >/dev/null 2>&1 && "
-    "  apt-get install -y -qq nodejs >/dev/null 2>&1"
-    ")"
+    "set -o pipefail; "
+    "NODE_OK=0; "
+    "if command -v node >/dev/null 2>&1; then "
+    "  NODE_VER=$(node -e 'console.log(process.versions.node.split(\".\")[0])' 2>/dev/null || echo 0); "
+    "  [ \"$NODE_VER\" -ge 22 ] 2>/dev/null && NODE_OK=1; "
+    "fi; "
+    "if [ \"$NODE_OK\" = 0 ]; then "
+    "  apt-get update -qq && "
+    "  apt-get install -y -qq curl ca-certificates && "
+    "  curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && "
+    "  apt-get install -y -qq nodejs; "
+    "fi >/dev/null 2>&1"
 )
 
 # Agent install commands — must handle bare containers
+# Each ends with a verification that the binary exists.
 AGENT_INSTALLERS: dict[str, str] = {
     "claude-agent-acp": (
         f"{_NODE_INSTALL} && "
-        "command -v claude-agent-acp >/dev/null 2>&1 || "
-        "npm install -g @zed-industries/claude-agent-acp@latest 2>&1 | tail -3"
+        "( command -v claude-agent-acp >/dev/null 2>&1 || "
+        "npm install -g @zed-industries/claude-agent-acp@latest >/dev/null 2>&1 ) && "
+        "command -v claude-agent-acp >/dev/null 2>&1"
     ),
     "pi-acp": (
         f"{_NODE_INSTALL} && "
-        "command -v pi-acp >/dev/null 2>&1 || "
-        "npm install -g pi-acp@latest 2>&1 | tail -3"
+        "( command -v pi-acp >/dev/null 2>&1 || "
+        "npm install -g pi-acp@latest >/dev/null 2>&1 ) && "
+        "command -v pi-acp >/dev/null 2>&1"
     ),
     "openclaw": (
         f"{_NODE_INSTALL} && "
-        "command -v openclaw >/dev/null 2>&1 || "
-        "npm install -g openclaw@latest 2>&1 | tail -3"
+        "( command -v openclaw >/dev/null 2>&1 || "
+        "npm install -g openclaw@latest >/dev/null 2>&1 ) && "
+        "command -v openclaw >/dev/null 2>&1"
     ),
     "codex-acp": (
         f"{_NODE_INSTALL} && "
-        "command -v codex-acp >/dev/null 2>&1 || "
-        "npm install -g @zed-industries/codex-acp@latest 2>&1 | tail -3"
+        "( command -v codex-acp >/dev/null 2>&1 || "
+        "npm install -g @zed-industries/codex-acp@latest >/dev/null 2>&1 ) && "
+        "command -v codex-acp >/dev/null 2>&1"
     ),
     "gemini": (
         f"{_NODE_INSTALL} && "
-        "command -v gemini >/dev/null 2>&1 || "
-        "npm install -g @google/gemini-cli@latest 2>&1 | tail -3"
+        "( command -v gemini >/dev/null 2>&1 || "
+        "npm install -g @google/gemini-cli@latest >/dev/null 2>&1 ) && "
+        "command -v gemini >/dev/null 2>&1"
     ),
 }
 
@@ -75,6 +88,47 @@ AGENT_LAUNCH: dict[str, str] = {
     "codex-acp": "codex-acp",
     "gemini": "gemini --acp",
 }
+
+
+def _create_environment(
+    environment_type: str,
+    task: Task,
+    task_path: Path,
+    trial_name: str,
+    trial_paths: TrialPaths,
+) -> Any:
+    """Create a Harbor environment (Docker or Daytona)."""
+    if environment_type == "docker":
+        from harbor.environments.docker.docker import DockerEnvironment
+        return DockerEnvironment(
+            environment_dir=task.paths.environment_dir,
+            environment_name=task_path.name,
+            session_id=trial_name,
+            trial_paths=trial_paths,
+            task_env_config=task.config.environment,
+        )
+    elif environment_type == "daytona":
+        from harbor.environments.daytona import DaytonaEnvironment
+        return DaytonaEnvironment(
+            environment_dir=task.paths.environment_dir,
+            environment_name=task_path.name,
+            session_id=trial_name,
+            trial_paths=trial_paths,
+            task_env_config=task.config.environment,
+        )
+    else:
+        raise ValueError(f"Unknown environment_type: {environment_type!r} (use 'docker' or 'daytona')")
+
+
+def _create_live_process(environment_type: str, env: Any) -> LiveProcess:
+    """Create the appropriate LiveProcess for ACP communication."""
+    if environment_type == "docker":
+        return DockerProcess.from_harbor_env(env)
+    elif environment_type == "daytona":
+        # DaytonaProcess.from_harbor_env is async, handle in caller
+        raise ValueError("Use await DaytonaProcess.from_harbor_env(env) directly")
+    else:
+        raise ValueError(f"Unknown environment_type: {environment_type!r}")
 
 
 class RunResult:
@@ -143,8 +197,9 @@ class SDK:
         job_name: str | None = None,
         trial_name: str | None = None,
         jobs_dir: str | Path = "jobs",
+        environment: str = "docker",
     ) -> RunResult:
-        """Run a task with an ACP agent inside a Docker container.
+        """Run a task with an ACP agent inside a sandbox.
 
         Args:
             task_path: Path to Harbor-format task directory
@@ -155,6 +210,7 @@ class SDK:
             job_name: Job name. Auto-generated if not provided.
             trial_name: Custom trial name. Auto-generated if not provided.
             jobs_dir: Directory for job output (Harbor convention).
+            environment: Environment type — "docker" or "daytona".
 
         Returns:
             RunResult with rewards, trajectory, and metadata.
@@ -174,6 +230,10 @@ class SDK:
         agent_env = dict(agent_env or {})
         if model:
             agent_env.setdefault("ANTHROPIC_MODEL", model)
+        # Increase output token limit to avoid truncation errors
+        agent_env.setdefault("CLAUDE_CODE_MAX_OUTPUT_TOKENS", "128000")
+        # Disable telemetry/non-essential traffic in container
+        agent_env.setdefault("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
 
         # Resolve agent launch command
         agent_launch = AGENT_LAUNCH.get(agent, agent)
@@ -186,14 +246,8 @@ class SDK:
             # Replace None entries with instruction
             prompts = [p if p is not None else instruction for p in prompts]
 
-        # Create Harbor Docker environment
-        env = DockerEnvironment(
-            environment_dir=task.paths.environment_dir,
-            environment_name=task_path.name,
-            session_id=trial_name,
-            trial_paths=trial_paths,
-            task_env_config=task.config.environment,
-        )
+        # Create Harbor environment
+        env = _create_environment(environment, task, task_path, trial_name, trial_paths)
 
         acp_client: ACPClient | None = None
         trajectory: list[dict] = []
@@ -203,8 +257,8 @@ class SDK:
         rewards = None
 
         try:
-            # 1. Start container
-            logger.info(f"Starting environment: {task_path.name}")
+            # 1. Start environment
+            logger.info(f"Starting {environment} environment: {task_path.name}")
             await env.start(force_build=False)
 
             # Upload task files
@@ -213,29 +267,54 @@ class SDK:
             if (task_path / "solution").is_dir():
                 await env.upload_dir(task_path / "solution", "/solution")
 
-            # 2. Install agent in container
-            agent_base = agent.split()[
-                0
-            ]  # "claude-agent-acp" from "claude-agent-acp --flag"
+            # 2. Install agent in sandbox
+            agent_base = agent.split()[0]
             if agent_base in AGENT_INSTALLERS:
-                logger.info(f"Installing {agent_base} in container...")
+                logger.info(f"Installing {agent_base} in sandbox...")
                 install_result = await env.exec(
                     AGENT_INSTALLERS[agent_base],
-                    timeout_sec=300,
+                    timeout_sec=900,
                 )
                 if install_result.return_code != 0:
+                    diag = await env.exec(
+                        "echo 'OS:' && cat /etc/os-release 2>/dev/null | head -2; "
+                        "echo 'Node:' && node --version 2>&1; "
+                        f"echo 'Agent:' && which {agent_base} 2>&1",
+                        timeout_sec=10,
+                    )
                     raise RuntimeError(
                         f"Agent install failed (rc={install_result.return_code}): "
-                        f"{install_result.stdout}"
+                        f"{install_result.stdout}\n"
+                        f"Diagnostics: {diag.stdout}"
                     )
 
-            # 3. Connect ACP via live container pipe
-            cp = ContainerProcess.from_harbor_env(env)
+            # Detect sandbox working directory (from Dockerfile WORKDIR)
+            cwd_result = await env.exec("pwd", timeout_sec=10)
+            agent_cwd = cwd_result.stdout.strip() if cwd_result.return_code == 0 else "/app"
+            logger.info(f"Agent cwd: {agent_cwd}")
+
+            # 3. Connect ACP via live stdio pipe
+            # For non-Docker envs, resolve full path to agent binary
+            # since SSH sessions may have different PATH
+            if environment != "docker":
+                which_result = await env.exec(f"which {agent_launch.split()[0]}", timeout_sec=10)
+                if which_result.return_code == 0 and which_result.stdout.strip():
+                    full_path = which_result.stdout.strip()
+                    parts = agent_launch.split()
+                    parts[0] = full_path
+                    agent_launch = " ".join(parts)
+                    logger.info(f"Resolved agent path: {agent_launch}")
+
+            if environment == "docker":
+                live_proc = DockerProcess.from_harbor_env(env)
+            else:
+                live_proc = await DaytonaProcess.from_harbor_env(env)
+
             transport = ContainerTransport(
-                container_process=cp,
+                container_process=live_proc,
                 command=agent_launch,
                 env=agent_env,
-                cwd="/app",
+                cwd=agent_cwd,
             )
             acp_client = ACPClient(transport)
             await acp_client.connect()
@@ -246,8 +325,16 @@ class SDK:
             )
             logger.info(f"ACP agent: {agent_name}")
 
-            session = await acp_client.session_new(cwd="/app")
+            session = await acp_client.session_new(cwd=agent_cwd)
             logger.info(f"Session: {session.session_id}")
+
+            # Set model via ACP config (env var ANTHROPIC_MODEL is ignored by claude-agent-acp)
+            if model:
+                try:
+                    await acp_client.config_update("model", model)
+                    logger.info(f"Model set to: {model}")
+                except Exception as e:
+                    logger.warning(f"Failed to set model via ACP config: {e}")
 
             # 4. Send prompts (multi-turn)
             timeout = task.config.agent.timeout_sec
@@ -299,6 +386,8 @@ class SDK:
             )
 
             # 6. Verify
+            # Ensure verifier output directory exists locally (Daytona doesn't mount it)
+            trial_paths.verifier_dir.mkdir(parents=True, exist_ok=True)
             logger.info("Running verifier...")
             verifier = Verifier(
                 task=task,
@@ -312,6 +401,9 @@ class SDK:
         except asyncio.TimeoutError:
             error = f"Agent timed out after {timeout}s"
             logger.error(error)
+        except ConnectionError as e:
+            error = str(e)
+            logger.error(f"Agent connection lost: {error}")
         except Exception as e:
             error = str(e)
             logger.error(f"Run failed: {e}")
