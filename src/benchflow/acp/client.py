@@ -4,10 +4,8 @@ import asyncio
 import logging
 from typing import Any
 
-from harbor.environments.base import BaseEnvironment
-
 from .session import ACPSession
-from .transport import SSETransport, StdioTransport, Transport
+from .transport import StdioTransport, Transport
 from .types import (
     InitializeParams,
     InitializeResult,
@@ -52,10 +50,6 @@ class ACPClient:
                 env=env,
                 cwd=cwd,
             )
-        elif transport_type == "sse":
-            if not url:
-                raise ValueError("url required for SSE transport")
-            transport = SSETransport(url=url)
         else:
             raise ValueError(f"Unknown transport type: {transport_type}")
         return cls(transport)
@@ -162,115 +156,16 @@ class ACPClient:
             }
             await self._transport.send(response)
 
-        elif method == "fs/read_text_file":
-            await self._handle_fs_read(req_id, params)
-
-        elif method == "fs/write_text_file":
-            await self._handle_fs_write(req_id, params)
-
-        elif method in (
-            "terminal/create",
-            "terminal/output",
-            "terminal/wait_for_exit",
-            "terminal/kill",
-            "terminal/release",
-        ):
-            await self._handle_terminal(req_id, method, params)
-
         else:
-            # Unknown method — return method not found
-            response = {
-                "jsonrpc": "2.0",
-                "id": req_id,
-                "error": {"code": -32601, "message": f"Method not found: {method}"},
-            }
-            await self._transport.send(response)
-
-    async def _handle_fs_read(self, req_id: Any, params: dict) -> None:
-        """Handle fs/read_text_file from agent — proxy to environment if available."""
-        if self._environment:
-            path = params.get("path", "")
-            result = await self._environment.exec(f"cat {path}")
-            response = {
-                "jsonrpc": "2.0",
-                "id": req_id,
-                "result": {"path": path, "contents": result.stdout or ""},
-            }
-        else:
-            response = {
-                "jsonrpc": "2.0",
-                "id": req_id,
-                "error": {"code": -32002, "message": "No environment available"},
-            }
-        await self._transport.send(response)
-
-    async def _handle_fs_write(self, req_id: Any, params: dict) -> None:
-        """Handle fs/write_text_file from agent."""
-        if self._environment:
-            import tempfile
-            from pathlib import Path
-
-            path = params.get("path", "")
-            contents = params.get("contents", "")
-            # Write to temp file on host, then upload to container
-            with tempfile.NamedTemporaryFile(
-                mode="w", suffix=".tmp", delete=False
-            ) as tmp:
-                tmp.write(contents)
-                tmp_path = tmp.name
-            try:
-                # Ensure parent dir exists in container
-                parent = "/".join(path.split("/")[:-1])
-                if parent:
-                    await self._environment.exec(f"mkdir -p {parent}")
-                await self._environment.upload_file(tmp_path, path)
-            finally:
-                Path(tmp_path).unlink(missing_ok=True)
-            response = {
-                "jsonrpc": "2.0",
-                "id": req_id,
-                "result": {"path": path},
-            }
-        else:
-            response = {
-                "jsonrpc": "2.0",
-                "id": req_id,
-                "error": {"code": -32002, "message": "No environment available"},
-            }
-        await self._transport.send(response)
-
-    async def _handle_terminal(self, req_id: Any, method: str, params: dict) -> None:
-        """Handle terminal operations from agent."""
-        if method == "terminal/create" and self._environment:
-            command = params.get("command", "bash")
-            args = params.get("args", [])
-            full_cmd = " ".join([command, *args]) if args else command
-            result = await self._environment.exec(full_cmd, cwd=params.get("cwd"))
-            # Return a synthetic terminal id and output
-            response = {
-                "jsonrpc": "2.0",
-                "id": req_id,
-                "result": {
-                    "terminalId": f"term_{self._next_id()}",
-                    "output": result.stdout or "",
-                    "exitStatus": {"exitCode": result.return_code},
-                },
-            }
-        else:
+            # Unknown method — return empty result (agent handles tools internally)
             response = {
                 "jsonrpc": "2.0",
                 "id": req_id,
                 "result": {},
             }
-        await self._transport.send(response)
+            await self._transport.send(response)
 
     # --- Public API ---
-
-    _environment: BaseEnvironment | None = None
-
-    def set_environment(self, environment: BaseEnvironment) -> None:
-        """Set the environment for proxying agent fs/terminal requests."""
-        self._environment = environment
 
     async def connect(self) -> None:
         """Start the transport."""

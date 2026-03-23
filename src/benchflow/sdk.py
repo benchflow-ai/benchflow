@@ -28,17 +28,52 @@ from benchflow.container import ContainerProcess
 
 logger = logging.getLogger(__name__)
 
-# Agent install commands — must handle bare containers (no curl, no node)
+# Node.js install prefix — shared by all npm-based agents
+_NODE_INSTALL = (
+    "command -v node >/dev/null 2>&1 || ("
+    "  apt-get update -qq >/dev/null 2>&1 && "
+    "  apt-get install -y -qq curl >/dev/null 2>&1 && "
+    "  curl -fsSL https://deb.nodesource.com/setup_22.x | bash - >/dev/null 2>&1 && "
+    "  apt-get install -y -qq nodejs >/dev/null 2>&1"
+    ")"
+)
+
+# Agent install commands — must handle bare containers
 AGENT_INSTALLERS: dict[str, str] = {
     "claude-agent-acp": (
-        "command -v claude-agent-acp >/dev/null 2>&1 || ("
-        "  apt-get update -qq >/dev/null 2>&1 && "
-        "  apt-get install -y -qq curl >/dev/null 2>&1 && "
-        "  curl -fsSL https://deb.nodesource.com/setup_22.x | bash - >/dev/null 2>&1 && "
-        "  apt-get install -y -qq nodejs >/dev/null 2>&1 && "
-        "  npm install -g @zed-industries/claude-agent-acp@latest 2>&1 | tail -3"
-        ")"
+        f"{_NODE_INSTALL} && "
+        "command -v claude-agent-acp >/dev/null 2>&1 || "
+        "npm install -g @zed-industries/claude-agent-acp@latest 2>&1 | tail -3"
     ),
+    "pi-acp": (
+        f"{_NODE_INSTALL} && "
+        "command -v pi-acp >/dev/null 2>&1 || "
+        "npm install -g pi-acp@latest 2>&1 | tail -3"
+    ),
+    "openclaw": (
+        f"{_NODE_INSTALL} && "
+        "command -v openclaw >/dev/null 2>&1 || "
+        "npm install -g openclaw@latest 2>&1 | tail -3"
+    ),
+    "codex-acp": (
+        f"{_NODE_INSTALL} && "
+        "command -v codex-acp >/dev/null 2>&1 || "
+        "npm install -g @zed-industries/codex-acp@latest 2>&1 | tail -3"
+    ),
+    "gemini": (
+        f"{_NODE_INSTALL} && "
+        "command -v gemini >/dev/null 2>&1 || "
+        "npm install -g @google/gemini-cli@latest 2>&1 | tail -3"
+    ),
+}
+
+# ACP launch commands — how to start each agent after install
+AGENT_LAUNCH: dict[str, str] = {
+    "claude-agent-acp": "claude-agent-acp",
+    "pi-acp": "pi-acp",
+    "openclaw": "openclaw acp",
+    "codex-acp": "codex-acp",
+    "gemini": "gemini --acp",
 }
 
 
@@ -103,6 +138,7 @@ class SDK:
         agent: str = "claude-agent-acp",
         prompts: list[str] | None = None,
         *,
+        model: str | None = None,
         agent_env: dict[str, str] | None = None,
         job_name: str | None = None,
         trial_name: str | None = None,
@@ -112,8 +148,9 @@ class SDK:
 
         Args:
             task_path: Path to Harbor-format task directory
-            agent: ACP agent command (e.g. "claude-agent-acp", "openclaw acp")
+            agent: ACP agent name or command (e.g. "claude-agent-acp", "openclaw")
             prompts: List of prompts to send. Default: [instruction.md content]
+            model: Model to use (e.g. "claude-haiku-4-5-20251001"). Passed as ANTHROPIC_MODEL.
             agent_env: Environment variables for the agent (API keys etc.)
             job_name: Job name. Auto-generated if not provided.
             trial_name: Custom trial name. Auto-generated if not provided.
@@ -132,6 +169,14 @@ class SDK:
         trial_dir = job_dir / trial_name
         trial_paths = TrialPaths(trial_dir)
         started_at = datetime.now()
+
+        # Resolve agent env — add model if specified
+        agent_env = dict(agent_env or {})
+        if model:
+            agent_env.setdefault("ANTHROPIC_MODEL", model)
+
+        # Resolve agent launch command
+        agent_launch = AGENT_LAUNCH.get(agent, agent)
 
         # Default prompts: task instruction
         instruction = (task_path / "instruction.md").read_text().strip()
@@ -188,8 +233,8 @@ class SDK:
             cp = ContainerProcess.from_harbor_env(env)
             transport = ContainerTransport(
                 container_process=cp,
-                command=agent,
-                env=agent_env or {},
+                command=agent_launch,
+                env=agent_env,
                 cwd="/app",
             )
             acp_client = ACPClient(transport)
@@ -282,7 +327,7 @@ class SDK:
             except Exception as e:
                 logger.warning(f"Cleanup failed: {e}")
 
-        return RunResult(
+        result = RunResult(
             task_name=task_path.name,
             trial_name=trial_name,
             rewards=rewards,
@@ -294,3 +339,25 @@ class SDK:
             started_at=started_at,
             finished_at=datetime.now(),
         )
+
+        # Save result.json and prompts.json
+        trial_dir.mkdir(parents=True, exist_ok=True)
+        (trial_dir / "result.json").write_text(
+            json.dumps(
+                {
+                    "task_name": result.task_name,
+                    "trial_name": result.trial_name,
+                    "rewards": result.rewards,
+                    "agent_name": result.agent_name,
+                    "n_tool_calls": result.n_tool_calls,
+                    "n_prompts": result.n_prompts,
+                    "error": result.error,
+                    "started_at": str(result.started_at),
+                    "finished_at": str(result.finished_at),
+                },
+                indent=2,
+            )
+        )
+        (trial_dir / "prompts.json").write_text(json.dumps(prompts, indent=2))
+
+        return result

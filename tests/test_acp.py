@@ -73,6 +73,6 @@ class TestACPClient:
         with pytest.raises(ValueError, match="command required"):
             ACPClient.from_config(transport_type="stdio")
 
-    def test_from_config_missing_url(self) -> None:
-        with pytest.raises(ValueError, match="url required"):
+    def test_from_config_unknown_transport(self) -> None:
+        with pytest.raises(ValueError, match="Unknown transport"):
             ACPClient.from_config(transport_type="sse")
