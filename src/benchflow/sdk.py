@@ -104,8 +104,9 @@ class SDK:
         prompts: list[str] | None = None,
         *,
         agent_env: dict[str, str] | None = None,
+        job_name: str | None = None,
         trial_name: str | None = None,
-        trials_dir: str | Path = "trials",
+        jobs_dir: str | Path = "jobs",
     ) -> RunResult:
         """Run a task with an ACP agent inside a Docker container.
 
@@ -114,8 +115,9 @@ class SDK:
             agent: ACP agent command (e.g. "claude-agent-acp", "openclaw acp")
             prompts: List of prompts to send. Default: [instruction.md content]
             agent_env: Environment variables for the agent (API keys etc.)
+            job_name: Job name. Auto-generated if not provided.
             trial_name: Custom trial name. Auto-generated if not provided.
-            trials_dir: Directory for trial output.
+            jobs_dir: Directory for job output (Harbor convention).
 
         Returns:
             RunResult with rewards, trajectory, and metadata.
@@ -124,8 +126,10 @@ class SDK:
 
         task_path = Path(task_path)
         task = Task(task_path)
+        job_name = job_name or datetime.now().strftime("%Y-%m-%d__%H-%M-%S")
         trial_name = trial_name or f"{task_path.name}__{uuid4().hex[:8]}"
-        trial_dir = Path(trials_dir) / trial_name
+        job_dir = Path(jobs_dir) / job_name
+        trial_dir = job_dir / trial_name
         trial_paths = TrialPaths(trial_dir)
         started_at = datetime.now()
 
