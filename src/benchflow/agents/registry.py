@@ -8,6 +8,7 @@ Each agent has:
 """
 
 from dataclasses import dataclass, field
+from pathlib import Path
 
 
 # Node.js bootstrap — handles missing node, old node (<22), Ubuntu + Debian slim
@@ -26,6 +27,9 @@ _NODE_INSTALL = (
     "  apt-get install -y -qq nodejs; "
     "fi >/dev/null 2>&1"
 )
+
+# Path to the openclaw ACP shim script
+_OPENCLAW_SHIM = (Path(__file__).parent / "openclaw_acp_shim.py").read_text()
 
 
 @dataclass
@@ -70,20 +74,28 @@ AGENTS: dict[str, AgentConfig] = {
         protocol="acp",
         requires_env=["ANTHROPIC_API_KEY"],
     ),
-    # openclaw's ACP bridge requires sessions bound to chat threads via the gateway.
-    # session/new succeeds but session/prompt returns ACP_SESSION_INIT_FAILED because
-    # the gateway's agent has no ACP metadata for standalone sessions.
-    # Needs openclaw to add headless/standalone ACP mode.
     "openclaw": AgentConfig(
         name="openclaw",
-        description="OpenClaw via ACP (incompatible — needs headless ACP mode)",
+        description="OpenClaw agent via ACP shim (wraps openclaw agent --local)",
         install_cmd=(
             f"{_NODE_INSTALL} && "
             "( command -v openclaw >/dev/null 2>&1 || "
             "npm install -g openclaw@latest >/dev/null 2>&1 ) && "
-            "command -v openclaw >/dev/null 2>&1"
+            "command -v openclaw >/dev/null 2>&1 && "
+            # Ensure python3 for shim
+            "( command -v python3 >/dev/null 2>&1 || "
+            "(apt-get update -qq && apt-get install -y -qq python3 >/dev/null 2>&1) ) && "
+            # Configure: auto-approve tools
+            "mkdir -p ~/.openclaw && "
+            'echo \'{"version":1,"defaults":{"allow_all":true}}\''
+            " > ~/.openclaw/exec-approvals.json && "
+            # Deploy ACP shim
+            "cat > /usr/local/bin/openclaw-acp-shim <<'SHIMEOF'\n"
+            + _OPENCLAW_SHIM +
+            "\nSHIMEOF\n"
+            "chmod +x /usr/local/bin/openclaw-acp-shim"
         ),
-        launch_cmd="openclaw acp",
+        launch_cmd="python3 /usr/local/bin/openclaw-acp-shim",
         protocol="acp",
         requires_env=["ANTHROPIC_API_KEY"],
     ),

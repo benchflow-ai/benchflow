@@ -195,6 +195,19 @@ class ACPClient:
             )
         return self._session
 
+    async def session_load(self, session_id: str, cwd: str = "/app") -> ACPSession:
+        """Load an existing session (used by agents like openclaw that need pre-created sessions)."""
+        params = {"sessionId": session_id, "cwd": cwd, "mcpServers": []}
+        result = await self._send_request("session/load", params)
+        loaded_id = result.get("sessionId", session_id)
+        self._session = ACPSession(loaded_id)
+        if self._initialize_result:
+            self._session.agent_info = self._initialize_result.agent_info
+            self._session.agent_capabilities = (
+                self._initialize_result.agent_capabilities
+            )
+        return self._session
+
     async def set_model(self, model_id: str) -> dict:
         """Set the model for the current session."""
         if not self._session:

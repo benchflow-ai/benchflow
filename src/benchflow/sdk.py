@@ -262,8 +262,17 @@ class SDK:
             )
             logger.info(f"ACP agent: {agent_name}")
 
-            session = await acp_client.session_new(cwd=agent_cwd)
-            logger.info(f"Session: {session.session_id}")
+            # Create session — use session/load for agents that support it
+            # (e.g., openclaw needs pre-warmed sessions via loadSession)
+            caps = init_result.agent_capabilities
+            if caps and caps.load_session:
+                session = await acp_client.session_load(
+                    session_id="benchflow", cwd=agent_cwd
+                )
+                logger.info(f"Session (loaded): {session.session_id}")
+            else:
+                session = await acp_client.session_new(cwd=agent_cwd)
+                logger.info(f"Session: {session.session_id}")
 
             # Set model via ACP (env var ANTHROPIC_MODEL is ignored by claude-agent-acp)
             if model:
