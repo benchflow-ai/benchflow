@@ -10,7 +10,7 @@
 
 BenchFlow runs AI coding agents against benchmark tasks and captures their full trajectory. It combines [Harbor](https://github.com/benchflow-ai/harbor) (environments, verifier, orchestration) with [ACP](https://agentclientprotocol.com/) (multi-turn agent communication).
 
-The agent runs inside a Docker container. BenchFlow connects to it via ACP over a live stdio pipe. You can send one prompt or many — the agent stays alive between prompts, maintaining full context.
+The agent runs inside a sandboxed environment (Docker or Daytona). BenchFlow connects to it via ACP over a live stdio pipe. You can send one prompt or many — the agent stays alive between prompts, maintaining full context.
 
 ## Install
 
@@ -18,86 +18,143 @@ The agent runs inside a Docker container. BenchFlow connects to it via ACP over 
 pip install benchflow
 ```
 
-Requires Python 3.12+ and Docker.
+Requires Python 3.12+ and Docker (or a Daytona API key for cloud sandboxes).
 
-## Usage
-
-### SDK
-
-```python
-from benchflow.sdk import SDK
-
-sdk = SDK()
-
-# Single-turn
-result = await sdk.run(
-    task_path="path/to/task",
-    agent="claude-agent-acp",
-    agent_env={"ANTHROPIC_API_KEY": "..."},
-)
-
-# Multi-turn
-result = await sdk.run(
-    task_path="path/to/task",
-    agent="claude-agent-acp",
-    prompts=[
-        "Set up the database schema",
-        "Now write the API endpoints",
-        "Add input validation",
-    ],
-    agent_env={"ANTHROPIC_API_KEY": "..."},
-)
-
-print(result.rewards)      # {"reward": 1.0}
-print(result.trajectory)   # tool calls, messages, thoughts
-print(result.n_tool_calls) # 17
-```
-
-### CLI
+## Quick Start
 
 ```bash
-# Run a task
-benchflow run -t path/to/task -a claude-agent-acp --ae ANTHROPIC_API_KEY=...
+source .env  # ANTHROPIC_API_KEY (auto-inherited by SDK)
 
-# Multi-turn
-benchflow run -t task/ -a claude-agent-acp \
-  -p "solve the task" \
-  -p "now test your solution"
+# Run a single task
+benchflow run -t path/to/task -a claude-agent-acp -e daytona
+
+# Run a full benchmark (89 tasks, 64 concurrent)
+benchflow job -t .ref/terminal-bench-2 -e daytona -c 64
+
+# List available agents
+benchflow agents
+
+# View results
+benchflow metrics jobs/
+benchflow view jobs/my-job/my-trial/
+```
+
+## SDK
+
+```python
+import asyncio
+from benchflow import SDK, Job, JobConfig, collect_metrics
+
+async def main():
+    sdk = SDK()
+
+    # Single task — API keys auto-inherited from os.environ
+    result = await sdk.run(
+        task_path="path/to/task",
+        agent="claude-agent-acp",
+        model="claude-haiku-4-5-20251001",
+        environment="daytona",  # or "docker"
+    )
+    print(result.rewards)       # {"reward": 1.0}
+    print(result.n_tool_calls)  # 17
+
+    # Multi-turn — None = use task's instruction.md
+    result = await sdk.run(
+        task_path="path/to/task",
+        agent="claude-agent-acp",
+        prompts=[
+            None,
+            "Review your solution. Check for errors, test it, and fix any issues.",
+        ],
+        environment="daytona",
+    )
+
+    # Job — run a full benchmark with concurrency and retries
+    job = Job(
+        tasks_dir="path/to/tasks",
+        jobs_dir="jobs/tb2",
+        config=JobConfig(
+            agent="claude-agent-acp",
+            model="claude-haiku-4-5-20251001",
+            environment="daytona",
+            concurrency=64,
+        ),
+    )
+    result = await job.run()
+    print(f"{result.passed}/{result.total} ({result.score:.1%})")
+
+    # Metrics — aggregate results from a jobs directory
+    metrics = collect_metrics("jobs/tb2", benchmark="TB2")
+    print(metrics.summary())
+
+asyncio.run(main())
+```
+
+## CLI
+
+```bash
+# Run a single task
+benchflow run -t task/ -a claude-agent-acp -m claude-haiku-4-5-20251001 -e daytona
+
+# Run a benchmark job
+benchflow job -t tasks/ -a claude-agent-acp -c 64 -e daytona --retries 1
+
+# List agents
+benchflow agents
+
+# View metrics
+benchflow metrics jobs/tb2/ --json
+benchflow metrics jobs/tb2/
 
 # View trajectory
-benchflow view jobs/2026-03-22__20-00-00/extract-elf__abc123/
-```
-
-## How it works
-
-```
-benchflow (host)                          Docker container
-     |                                         |
-     |  1. Start container (Harbor)            |
-     |  2. Install ACP agent (npm install)     |
-     |  3. docker compose exec -i -----> claude-agent-acp
-     |                                         |
-     |  ACP: initialize                        |
-     |  ACP: session/new(cwd=/app) ----------> agent sees /app, skills, settings
-     |  ACP: session/prompt("solve this") ---> agent uses Bash, Read, Write, Edit
-     |  ACP: session/update <----------------- tool calls, messages, thoughts
-     |  ACP: session/prompt("now test it") --> agent continues same session
-     |  ACP: session/update <----------------- more tool calls
-     |                                         |
-     |  4. Run verifier (Harbor) ------------> tests/test.sh → reward.txt
-     |  5. Stop container                      |
+benchflow view jobs/tb2/my-trial/
 ```
 
 ## Agents
 
-Any [ACP-compatible agent](https://agentclientprotocol.com/get-started/agents) works:
+Any [ACP-compatible agent](https://agentclientprotocol.com/get-started/agents) works. Registered agents are auto-installed in sandboxes:
+
+| Agent | Description | Status |
+|-------|-------------|--------|
+| `claude-agent-acp` | Claude Code via ACP | Tested |
+| `pi-acp` | Pi coding agent via ACP | Tested |
+| `codex-acp` | OpenAI Codex via ACP | Registered |
+| `gemini` | Google Gemini CLI via ACP | Registered |
+| `openclaw` | OpenClaw via ACP | Incompatible (needs gateway) |
 
 ```bash
-benchflow run -t task/ -a claude-agent-acp    # Claude Code via ACP
-benchflow run -t task/ -a "openclaw acp"      # OpenClaw
+benchflow run -t task/ -a pi-acp -e daytona
 ```
 
-## Task format
+## Environments
+
+| Environment | Concurrency | Notes |
+|-------------|-------------|-------|
+| `docker` | ~4 | Local Docker. Limited by network exhaustion. |
+| `daytona` | 64+ | Cloud sandboxes. Requires `DAYTONA_API_KEY`. |
+
+## How it Works
+
+```
+benchflow (host)                          Sandbox (Docker/Daytona)
+     |                                         |
+     |  1. Start environment (Harbor)          |
+     |  2. Install ACP agent (npm)             |
+     |  3. stdio pipe (exec/SSH) --------> claude-agent-acp
+     |                                         |
+     |  ACP: initialize                        |
+     |  ACP: session/new(cwd) --------------> agent sees workspace, skills
+     |  ACP: session/set_model(haiku) ------> model configured
+     |  ACP: session/prompt("solve this") --> agent uses Bash, Read, Write
+     |  ACP: session/update <---------------- tool calls, messages, thoughts
+     |  ACP: session/prompt("test it") -----> same session, full context
+     |  ACP: session/update <---------------- more tool calls
+     |                                         |
+     |  4. Run verifier (Harbor) -----------> tests/test.sh → reward.txt
+     |  5. Stop environment                    |
+```
+
+## Task Format
 
 Tasks follow the [Harbor task format](https://github.com/benchflow-ai/harbor):
 
@@ -106,29 +163,46 @@ my-task/
 ├── task.toml              # timeouts, resources, metadata
 ├── instruction.md         # what the agent should do
 ├── environment/
-│   └── Dockerfile         # container setup
+│   └── Dockerfile         # sandbox setup
 ├── tests/
-│   └── test.sh            # writes 0 or 1 to /logs/verifier/reward.txt
+│   └── test.sh            # verifier → reward.txt
 └── solution/              # optional reference solution
-    └── solve.sh
 ```
 
-## Trajectory
+## Results
 
-Every tool call, message, and thought is captured via ACP `session/update` notifications. View with:
+Every run produces structured output:
 
-```bash
-benchflow view jobs/my-job/my-trial/
 ```
+jobs/{job_name}/{trial_name}/
+├── result.json              # rewards, agent, timing
+├── prompts.json             # prompts sent
+├── trajectory/
+│   └── acp_trajectory.jsonl # tool calls + agent thoughts
+└── verifier/
+    ├── reward.txt           # reward value
+    └── ctrf.json            # test results
+```
+
+## Benchmark Results
+
+| Benchmark | Model | Score | Reference |
+|-----------|-------|-------|-----------|
+| TB2 single-turn | Sonnet 4.6 | **58.4%** (52/89) | 59.1% (Anthropic) |
+| TB2 multi-turn | Haiku 4.5 | **37.1%** (33/89) | 27.5% (tbench.ai) |
+
+See [docs/parity/RESULTS.md](docs/parity/RESULTS.md) for full analysis.
 
 ## Architecture
 
-BenchFlow is a superset of [Harbor](https://github.com/benchflow-ai/harbor). Harbor is imported as a dependency — all of Harbor's environments (Docker, Daytona, E2B, Modal), agents (15+), verifier, orchestrators, metrics, and CLI are available.
+BenchFlow is a superset of [Harbor](https://github.com/benchflow-ai/harbor). Harbor provides environments (Docker, Daytona), verifier, task format, and orchestration. BenchFlow adds:
 
-BenchFlow adds:
-- **ACP client** — multi-turn agent communication via live stdio pipe to container
-- **Trajectory capture** — from ACP protocol, HTTP proxy, or OTel
+- **ACP client** — multi-turn agent communication via live stdio pipe
+- **Job orchestration** — concurrency, retries, resume, metrics
+- **Multi-agent registry** — auto-install agents in sandboxes
+- **Trajectory capture** — from ACP protocol
 - **Viewer** — HTML trajectory visualization
+- **CLI** — `run`, `job`, `agents`, `metrics`, `view`
 
 ## License
 
