@@ -70,13 +70,13 @@ AGENTS: dict[str, AgentConfig] = {
         protocol="acp",
         requires_env=["ANTHROPIC_API_KEY"],
     ),
-    # NOTE: openclaw's ACP bridge requires sessions spawned via its own gateway
-    # (openclaw acp spawn), not via the standard ACP session/new protocol.
-    # Until openclaw supports standalone ACP session creation, it cannot be used
-    # as a drop-in ACP agent. Keeping the registration for future compatibility.
+    # openclaw's ACP bridge requires sessions bound to chat threads via the gateway.
+    # session/new succeeds but session/prompt returns ACP_SESSION_INIT_FAILED because
+    # the gateway's agent has no ACP metadata for standalone sessions.
+    # Needs openclaw to add headless/standalone ACP mode.
     "openclaw": AgentConfig(
         name="openclaw",
-        description="OpenClaw agent via ACP (requires gateway — not yet compatible)",
+        description="OpenClaw via ACP (incompatible — needs headless ACP mode)",
         install_cmd=(
             f"{_NODE_INSTALL} && "
             "( command -v openclaw >/dev/null 2>&1 || "
