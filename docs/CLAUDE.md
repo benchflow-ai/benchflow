@@ -116,7 +116,6 @@ jobs/{job_name}/{trial_name}/
 
 ## Key docs
 
-- `PLAN.md` — project roadmap and status
+- `STATUS.md` — project status, issues, roadmap (single source of truth)
 - `docs/parity/RESULTS.md` — benchmark results vs official numbers
-- `docs/GAP_ANALYSIS.md` — feature gaps and testing findings
 - `docs/dogfood/DOGFOOD.md` — end-to-end test prompt
