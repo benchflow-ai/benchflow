@@ -13,6 +13,7 @@ One execution path:
 import asyncio
 import json
 import logging
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -169,8 +170,11 @@ class SDK:
         trial_paths = TrialPaths(trial_dir)
         started_at = datetime.now()
 
-        # Resolve agent env — add model if specified
+        # Resolve agent env — auto-inherit API keys from os.environ
         agent_env = dict(agent_env or {})
+        for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY"):
+            if key in os.environ:
+                agent_env.setdefault(key, os.environ[key])
         if model:
             agent_env.setdefault("ANTHROPIC_MODEL", model)
         # Increase output token limit to avoid truncation errors
