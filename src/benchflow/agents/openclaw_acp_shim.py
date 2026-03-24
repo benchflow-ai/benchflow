@@ -4,12 +4,16 @@
 openclaw's native ACP bridge requires a gateway with chat-thread sessions.
 This shim instead speaks ACP on stdio and internally calls `openclaw agent --local`
 for each prompt, making openclaw work as a standalone ACP agent.
+
+Key: openclaw always uses ~/.openclaw/workspace as its CWD. On session/new,
+we symlink that to the task's actual working directory.
 """
 
 import json
+import os
 import subprocess
 import sys
-import os
+from pathlib import Path
 
 
 def send(msg):
@@ -28,9 +32,28 @@ def recv():
         return json.loads(line)
 
 
+def setup_workspace(cwd: str):
+    """Point openclaw's workspace at the task directory."""
+    home = os.environ.get("HOME", os.path.expanduser("~"))
+    oc_workspace = Path(home) / ".openclaw" / "workspace"
+
+    # Remove existing workspace (file, dir, or symlink)
+    if oc_workspace.is_symlink() or oc_workspace.exists():
+        if oc_workspace.is_symlink():
+            oc_workspace.unlink()
+        elif oc_workspace.is_dir():
+            import shutil
+            shutil.rmtree(oc_workspace)
+
+    # Symlink to task cwd
+    oc_workspace.parent.mkdir(parents=True, exist_ok=True)
+    oc_workspace.symlink_to(cwd)
+
+
 def main():
     session_id = None
     cwd = "/app"
+    model = os.environ.get("ANTHROPIC_MODEL", "")
 
     while True:
         try:
@@ -58,6 +81,7 @@ def main():
 
         elif method == "session/new":
             cwd = params.get("cwd", "/app")
+            setup_workspace(cwd)
             session_id = "openclaw-shim"
             send({
                 "jsonrpc": "2.0",
@@ -66,7 +90,14 @@ def main():
             })
 
         elif method == "session/set_model":
-            # Model is set via ANTHROPIC_MODEL env var which openclaw reads
+            model = params.get("modelId", model)
+            # Set model in openclaw config
+            if model:
+                subprocess.run(
+                    ["openclaw", "config", "set", "agents.defaults.model",
+                     f"anthropic/{model}"],
+                    capture_output=True, timeout=10,
+                )
             send({"jsonrpc": "2.0", "id": req_id, "result": {}})
 
         elif method == "session/prompt":
@@ -86,31 +117,34 @@ def main():
                     capture_output=True,
                     text=True,
                     timeout=920,
-                    cwd=cwd,
                     env={**os.environ},
                 )
 
-                # Parse response for tool calls
+                # Parse response
+                agent_text = ""
                 try:
                     response = json.loads(result.stdout)
                     agent_text = response.get("payloads", [{}])[0].get("text", "")
                 except (json.JSONDecodeError, IndexError, KeyError):
-                    agent_text = result.stdout[:1000] if result.stdout else "No response"
+                    agent_text = result.stdout[:2000] if result.stdout else ""
+
+                if not agent_text and result.stderr:
+                    agent_text = f"[stderr] {result.stderr[:500]}"
 
                 # Emit text update
-                send({
-                    "jsonrpc": "2.0",
-                    "method": "session/update",
-                    "params": {
-                        "sessionId": session_id,
-                        "update": {
-                            "sessionUpdate": "text_update",
-                            "text": agent_text,
+                if agent_text:
+                    send({
+                        "jsonrpc": "2.0",
+                        "method": "session/update",
+                        "params": {
+                            "sessionId": session_id,
+                            "update": {
+                                "sessionUpdate": "text_update",
+                                "text": agent_text,
+                            },
                         },
-                    },
-                })
+                    })
 
-                # Send prompt response
                 send({
                     "jsonrpc": "2.0",
                     "id": req_id,
@@ -135,7 +169,6 @@ def main():
             send({"jsonrpc": "2.0", "id": req_id, "result": {}})
 
         elif method == "session/request_permission":
-            # Auto-approve
             options = params.get("options", [])
             option_id = options[0].get("optionId", "default") if options else "default"
             send({
@@ -145,7 +178,6 @@ def main():
             })
 
         else:
-            # Unknown method
             if req_id:
                 send({"jsonrpc": "2.0", "id": req_id, "result": {}})
 

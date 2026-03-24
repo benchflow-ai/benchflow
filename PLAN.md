@@ -34,7 +34,10 @@
 ### Multi-Agent Testing — Done
 - **claude-agent-acp**: TB2-14 = 4/14 (28.6%), 0 errors, 12.7min
 - **pi-acp**: TB2-14 = 7/14 (50.0%), 2 timeouts, 60.7min — outperformed claude on same tasks/model
-- **openclaw**: Incompatible — ACP bridge needs sessions via gateway `/acp spawn`, not standard `session/new`
+- **openclaw**: Working via ACP shim — reward 1.0 on log-summary-date-ranges (Haiku 4.5)
+  - openclaw's native ACP bridge is incompatible (needs gateway chat sessions)
+  - Solution: ACP shim wraps `openclaw agent --local` + workspace symlink to task dir
+  - Tool calls happen internally (not visible via ACP updates), but tasks are solved
 - **codex-acp**: Not tested (needs OPENAI_API_KEY)
 - **gemini**: Not tested (needs GOOGLE_API_KEY)
 

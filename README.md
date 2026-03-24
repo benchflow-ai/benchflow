@@ -120,7 +120,7 @@ Any [ACP-compatible agent](https://agentclientprotocol.com/get-started/agents) w
 | `pi-acp` | Pi coding agent via ACP | Tested |
 | `codex-acp` | OpenAI Codex via ACP | Registered |
 | `gemini` | Google Gemini CLI via ACP | Registered |
-| `openclaw` | OpenClaw via ACP | Incompatible (needs gateway) |
+| `openclaw` | OpenClaw via ACP shim | Tested (reward 1.0) |
 
 ```bash
 benchflow run -t task/ -a pi-acp -e daytona

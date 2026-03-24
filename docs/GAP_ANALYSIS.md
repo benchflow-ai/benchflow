@@ -10,7 +10,7 @@ Findings from dogfood testing on 2026-03-23/24.
 |-------|--------|-------|-------|
 | claude-agent-acp | PASS (1.0) | 5-6 | Works reliably |
 | pi-acp | PASS (1.0) | 6 | Works after install fix |
-| openclaw | INCOMPATIBLE | 0 | ACP bridge needs sessions via gateway's `/acp spawn`, not standard `session/new` |
+| openclaw | PASS (1.0) | 0* | Via ACP shim. *Tool calls internal to openclaw, not visible via ACP. |
 | codex-acp | Not tested | — | Needs OPENAI_API_KEY |
 | gemini | Not tested | — | Needs GOOGLE_API_KEY |
 
@@ -63,8 +63,8 @@ pi-acp outperformed claude-agent-acp on the same 14-task subset with the same mo
 
 ## Gaps Remaining
 
-### Must Fix
-- **openclaw**: ACP bridge requires sessions spawned via openclaw's gateway (`/acp spawn`), not the standard ACP `session/new`. This is an architectural mismatch — openclaw is not a standalone ACP agent. Kept in registry but marked incompatible.
+### Fixed
+- **openclaw**: Native ACP bridge incompatible (needs gateway chat sessions). Fixed via ACP shim that wraps `openclaw agent --local` + workspace symlink. Reward 1.0 on log-summary-date-ranges.
 - **Task filtering**: Job should accept `tasks: list[str]` or `task_glob: str` parameter
 
 ### Should Fix
