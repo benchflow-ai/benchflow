@@ -43,7 +43,12 @@ def recv():
 
 
 def setup_workspace(cwd: str):
-    """Point openclaw's workspace at the task directory."""
+    """Point openclaw's workspace at the task directory and load skills.
+
+    openclaw discovers skills from <workspace>/skills/ (not .claude/skills/).
+    SkillsBench tasks bake skills into ~/.claude/skills/ via Dockerfile.
+    We symlink/copy them to <workspace>/skills/ so openclaw can find them.
+    """
     home = os.environ.get("HOME", os.path.expanduser("~"))
     oc_workspace = Path(home) / ".openclaw" / "workspace"
 
@@ -55,6 +60,27 @@ def setup_workspace(cwd: str):
 
     oc_workspace.parent.mkdir(parents=True, exist_ok=True)
     oc_workspace.symlink_to(cwd)
+
+    # Load skills: check common skill locations and copy to <workspace>/skills/
+    workspace_skills = Path(cwd) / "skills"
+    if not workspace_skills.exists():
+        # Search for skills in known locations
+        skill_sources = [
+            Path(cwd) / ".claude" / "skills",      # SkillsBench Claude format
+            Path(home) / ".claude" / "skills",      # Home dir Claude skills
+            Path(cwd) / ".codex" / "skills",        # Codex format
+            Path(cwd) / ".agents" / "skills",       # Generic agent skills
+        ]
+        for src in skill_sources:
+            if src.is_dir() and any(src.iterdir()):
+                # Copy skills to workspace/skills/ for openclaw discovery
+                workspace_skills.mkdir(parents=True, exist_ok=True)
+                for skill_dir in src.iterdir():
+                    if skill_dir.is_dir() and (skill_dir / "SKILL.md").exists():
+                        dest = workspace_skills / skill_dir.name
+                        if not dest.exists():
+                            shutil.copytree(skill_dir, dest)
+                break  # Use first source found
 
 
 def find_session_jsonl() -> Path | None:
