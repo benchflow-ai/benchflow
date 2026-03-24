@@ -103,7 +103,12 @@ def find_session_jsonl() -> Path | None:
 
 
 def parse_session_jsonl(path: Path, session_id: str) -> list[dict]:
-    """Parse openclaw session JSONL and convert to ACP session/update events."""
+    """Parse openclaw session JSONL and convert to ACP session/update events.
+
+    openclaw JSONL format uses {type: "message", message: {role, content}} entries.
+    Roles: "user", "assistant", "toolResult"
+    Content blocks: text, tool_use, thinking (in assistant messages)
+    """
     updates = []
     try:
         with open(path) as f:
@@ -116,99 +121,103 @@ def parse_session_jsonl(path: Path, session_id: str) -> list[dict]:
                 except json.JSONDecodeError:
                     continue
 
-                role = entry.get("role", "")
-                content = entry.get("content", "")
+                # openclaw format: {type: "message", message: {role, content}}
+                if entry.get("type") != "message":
+                    continue
 
-                if role == "assistant":
-                    # Parse assistant content blocks
-                    if isinstance(content, list):
-                        for block in content:
-                            block_type = block.get("type", "")
+                msg = entry.get("message", {})
+                role = msg.get("role", "")
+                content = msg.get("content", [])
 
-                            if block_type == "text":
-                                updates.append({
-                                    "jsonrpc": "2.0",
-                                    "method": "session/update",
-                                    "params": {
-                                        "sessionId": session_id,
-                                        "update": {
-                                            "sessionUpdate": "text_update",
-                                            "text": block.get("text", ""),
-                                        },
+                if role == "assistant" and isinstance(content, list):
+                    for block in content:
+                        block_type = block.get("type", "")
+
+                        if block_type == "text":
+                            updates.append({
+                                "jsonrpc": "2.0",
+                                "method": "session/update",
+                                "params": {
+                                    "sessionId": session_id,
+                                    "update": {
+                                        "sessionUpdate": "text_update",
+                                        "text": block.get("text", ""),
                                     },
-                                })
-
-                            elif block_type == "tool_use":
-                                updates.append({
-                                    "jsonrpc": "2.0",
-                                    "method": "session/update",
-                                    "params": {
-                                        "sessionId": session_id,
-                                        "update": {
-                                            "type": "tool_call",
-                                            "tool_call_id": block.get("id", ""),
-                                            "kind": "other",
-                                            "title": block.get("name", "tool"),
-                                            "status": "completed",
-                                            "content": [
-                                                {
-                                                    "type": "content",
-                                                    "content": {
-                                                        "type": "text",
-                                                        "text": json.dumps(
-                                                            block.get("input", {})
-                                                        )[:500],
-                                                    },
-                                                }
-                                            ],
-                                        },
-                                    },
-                                })
-
-                            elif block_type == "thinking":
-                                updates.append({
-                                    "jsonrpc": "2.0",
-                                    "method": "session/update",
-                                    "params": {
-                                        "sessionId": session_id,
-                                        "update": {
-                                            "type": "agent_thought",
-                                            "text": block.get("thinking", ""),
-                                        },
-                                    },
-                                })
-
-                    elif isinstance(content, str) and content:
-                        updates.append({
-                            "jsonrpc": "2.0",
-                            "method": "session/update",
-                            "params": {
-                                "sessionId": session_id,
-                                "update": {
-                                    "sessionUpdate": "text_update",
-                                    "text": content,
                                 },
-                            },
-                        })
+                            })
 
-                elif role == "tool":
-                    # Tool result
-                    tool_id = entry.get("tool_use_id", "")
-                    result_content = content
+                        elif block_type == "tool_use":
+                            updates.append({
+                                "jsonrpc": "2.0",
+                                "method": "session/update",
+                                "params": {
+                                    "sessionId": session_id,
+                                    "update": {
+                                        "sessionUpdate": "tool_call",
+                                        "toolCallId": block.get("id", ""),
+                                        "kind": "other",
+                                        "title": block.get("name", "tool"),
+                                        "status": "completed",
+                                        "content": [
+                                            {
+                                                "type": "content",
+                                                "content": {
+                                                    "type": "text",
+                                                    "text": json.dumps(
+                                                        block.get("input", {})
+                                                    )[:500],
+                                                },
+                                            }
+                                        ],
+                                    },
+                                },
+                            })
+
+                        elif block_type == "thinking":
+                            updates.append({
+                                "jsonrpc": "2.0",
+                                "method": "session/update",
+                                "params": {
+                                    "sessionId": session_id,
+                                    "update": {
+                                        "sessionUpdate": "agent_thought",
+                                        "text": block.get("thinking", ""),
+                                    },
+                                },
+                            })
+
+                elif role == "toolResult":
+                    tool_id = msg.get("toolCallId", "")
+                    tool_name = msg.get("toolName", "")
+                    result_text = ""
                     if isinstance(content, list):
-                        result_content = " ".join(
+                        result_text = " ".join(
                             b.get("text", "") for b in content
                             if isinstance(b, dict) and b.get("type") == "text"
                         )
+                    elif isinstance(content, str):
+                        result_text = content
+
                     updates.append({
                         "jsonrpc": "2.0",
                         "method": "session/update",
                         "params": {
                             "sessionId": session_id,
                             "update": {
-                                "type": "tool_result",
-                                "tool_call_id": tool_id,
-                                "content": str(result_content)[:1000],
+                                "type": "tool_call",
+                                "toolCallId": tool_id,
+                                "kind": "other",
+                                "title": tool_name,
+                                "status": "completed",
+                                "content": [
+                                    {
+                                        "type": "content",
+                                        "content": {
+                                            "type": "text",
+                                            "text": result_text[:1000],
+                                        },
+                                    }
+                                ],
                             },
                         },
                     })
@@ -287,7 +296,47 @@ def main():
                 )
 
                 # Parse openclaw's session JSONL for full trajectory
-                session_jsonl = find_session_jsonl()
+                # Extract session ID from JSON output (may be multi-line)
+                oc_session_id = None
+                try:
+                    # openclaw --json output can be multi-line pretty-printed
+                    stdout = result.stdout.strip()
+                    if stdout:
+                        response_data = json.loads(stdout)
+                        oc_session_id = response_data.get("meta", {}).get(
+                            "agentMeta", {}
+                        ).get("sessionId")
+                except (json.JSONDecodeError, KeyError, TypeError):
+                    # Try finding sessionId in raw output
+                    import re
+                    m = re.search(r'"sessionId"\s*:\s*"([^"]+)"', result.stdout or "")
+                    if m:
+                        oc_session_id = m.group(1)
+
+                # Find session JSONL: try specific ID first, then most recent
+                session_jsonl = None
+                home = os.environ.get("HOME", os.path.expanduser("~"))
+                sessions_dir = Path(home) / ".openclaw" / "agents" / "main" / "sessions"
+
+                if oc_session_id:
+                    specific = sessions_dir / f"{oc_session_id}.jsonl"
+                    if specific.exists():
+                        session_jsonl = specific
+
+                if not session_jsonl:
+                    session_jsonl = find_session_jsonl()
+
+                # Fallback: scan directory for most recent JSONL
+                if not session_jsonl and sessions_dir.exists():
+                    for jf in sorted(
+                        sessions_dir.glob("*.jsonl"),
+                        key=lambda f: f.stat().st_mtime,
+                        reverse=True,
+                    ):
+                        if jf.name not in ("sessions.json",) and not jf.name.endswith(".lock"):
+                            session_jsonl = jf
+                            break
+
                 if session_jsonl:
                     updates = parse_session_jsonl(session_jsonl, session_id)
                     for update in updates:
