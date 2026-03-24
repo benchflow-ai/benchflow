@@ -23,71 +23,14 @@ from harbor.verifier.verifier import Verifier
 
 from benchflow.acp.client import ACPClient
 from benchflow.acp.container_transport import ContainerTransport
+from benchflow.agents.registry import AGENTS, get_agent
 from benchflow.process import DockerProcess, DaytonaProcess, LiveProcess
 
 logger = logging.getLogger(__name__)
 
-# Node.js install prefix — shared by all npm-based agents
-# Uses set -o pipefail so piped command failures are caught.
-# Handles: missing node, old node (<22), Ubuntu, Debian slim.
-_NODE_INSTALL = (
-    "set -o pipefail; "
-    "NODE_OK=0; "
-    "if command -v node >/dev/null 2>&1; then "
-    "  NODE_VER=$(node -e 'console.log(process.versions.node.split(\".\")[0])' 2>/dev/null || echo 0); "
-    "  [ \"$NODE_VER\" -ge 22 ] 2>/dev/null && NODE_OK=1; "
-    "fi; "
-    "if [ \"$NODE_OK\" = 0 ]; then "
-    "  apt-get update -qq && "
-    "  apt-get install -y -qq curl ca-certificates && "
-    "  curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && "
-    "  apt-get install -y -qq nodejs; "
-    "fi >/dev/null 2>&1"
-)
-
-# Agent install commands — must handle bare containers
-# Each ends with a verification that the binary exists.
-AGENT_INSTALLERS: dict[str, str] = {
-    "claude-agent-acp": (
-        f"{_NODE_INSTALL} && "
-        "( command -v claude-agent-acp >/dev/null 2>&1 || "
-        "npm install -g @zed-industries/claude-agent-acp@latest >/dev/null 2>&1 ) && "
-        "command -v claude-agent-acp >/dev/null 2>&1"
-    ),
-    "pi-acp": (
-        f"{_NODE_INSTALL} && "
-        "( command -v pi-acp >/dev/null 2>&1 || "
-        "npm install -g pi-acp@latest >/dev/null 2>&1 ) && "
-        "command -v pi-acp >/dev/null 2>&1"
-    ),
-    "openclaw": (
-        f"{_NODE_INSTALL} && "
-        "( command -v openclaw >/dev/null 2>&1 || "
-        "npm install -g openclaw@latest >/dev/null 2>&1 ) && "
-        "command -v openclaw >/dev/null 2>&1"
-    ),
-    "codex-acp": (
-        f"{_NODE_INSTALL} && "
-        "( command -v codex-acp >/dev/null 2>&1 || "
-        "npm install -g @zed-industries/codex-acp@latest >/dev/null 2>&1 ) && "
-        "command -v codex-acp >/dev/null 2>&1"
-    ),
-    "gemini": (
-        f"{_NODE_INSTALL} && "
-        "( command -v gemini >/dev/null 2>&1 || "
-        "npm install -g @google/gemini-cli@latest >/dev/null 2>&1 ) && "
-        "command -v gemini >/dev/null 2>&1"
-    ),
-}
-
-# ACP launch commands — how to start each agent after install
-AGENT_LAUNCH: dict[str, str] = {
-    "claude-agent-acp": "claude-agent-acp",
-    "pi-acp": "pi-acp",
-    "openclaw": "openclaw acp",
-    "codex-acp": "codex-acp",
-    "gemini": "gemini --acp",
-}
+# Backwards compat — expose install/launch dicts from registry
+AGENT_INSTALLERS = {name: a.install_cmd for name, a in AGENTS.items()}
+AGENT_LAUNCH = {name: a.launch_cmd for name, a in AGENTS.items()}
 
 
 def _create_environment(

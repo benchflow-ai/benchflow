@@ -41,37 +41,46 @@ def prune_docker():
         pass
 
 
-async def run_task(sdk, task_dir, api_key, jobs_dir, env_type):
-    try:
-        result = await sdk.run(
-            task_path=task_dir,
-            agent="claude-agent-acp",
-            model="claude-haiku-4-5-20251001",
-            prompts=[
-                None,  # instruction.md
-                "Review your solution. Check for errors, test it, and fix any issues.",
-            ],
-            agent_env={"ANTHROPIC_API_KEY": api_key},
-            jobs_dir=jobs_dir,
-            environment=env_type,
-        )
-        reward = result.rewards.get("reward") if result.rewards else None
-        status = "PASS" if reward == 1 else ("FAIL" if reward is not None else "ERR")
-        err = f" ({result.error[:60]})" if result.error else ""
-        print(f"  [{status}] {task_dir.name} (tools={result.n_tool_calls}){err}", flush=True)
-        return {
-            "task": task_dir.name,
-            "reward": reward,
-            "n_tool_calls": result.n_tool_calls,
-            "n_prompts": result.n_prompts,
-            "error": result.error,
-        }
-    except Exception as e:
-        print(f"  [ERR] {task_dir.name}: {e}", flush=True)
-        return {"task": task_dir.name, "reward": None, "error": str(e)}
-    finally:
-        if env_type == "docker":
-            prune_docker()
+async def run_task(sdk, task_dir, api_key, jobs_dir, env_type, max_retries=3):
+    for attempt in range(1, max_retries + 1):
+        try:
+            result = await sdk.run(
+                task_path=task_dir,
+                agent="claude-agent-acp",
+                model="claude-haiku-4-5-20251001",
+                prompts=[
+                    None,  # instruction.md
+                    "Review your solution. Check for errors, test it, and fix any issues.",
+                ],
+                agent_env={"ANTHROPIC_API_KEY": api_key},
+                jobs_dir=jobs_dir,
+                environment=env_type,
+            )
+            # Retry on install failures (Daytona npm timeouts)
+            if result.error and "install failed" in result.error and attempt < max_retries:
+                print(f"  [RETRY {attempt}/{max_retries}] {task_dir.name}: install failed, retrying...", flush=True)
+                continue
+
+            reward = result.rewards.get("reward") if result.rewards else None
+            status = "PASS" if reward == 1 else ("FAIL" if reward is not None else "ERR")
+            err = f" ({result.error[:60]})" if result.error else ""
+            print(f"  [{status}] {task_dir.name} (tools={result.n_tool_calls}){err}", flush=True)
+            return {
+                "task": task_dir.name,
+                "reward": reward,
+                "n_tool_calls": result.n_tool_calls,
+                "n_prompts": result.n_prompts,
+                "error": result.error,
+            }
+        except Exception as e:
+            if attempt < max_retries and "install" in str(e).lower():
+                print(f"  [RETRY {attempt}/{max_retries}] {task_dir.name}: {e}", flush=True)
+                continue
+            print(f"  [ERR] {task_dir.name}: {e}", flush=True)
+            return {"task": task_dir.name, "reward": None, "error": str(e)}
+        finally:
+            if env_type == "docker":
+                prune_docker()
 
 
 async def main():

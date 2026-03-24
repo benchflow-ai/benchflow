@@ -1,0 +1,186 @@
+"""Metrics collection and aggregation for benchmark runs.
+
+Computes pass rates, tool usage stats, timing, and error breakdowns
+from trial results.
+"""
+
+import json
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+
+@dataclass
+class TaskMetrics:
+    """Metrics for a single task."""
+
+    task_name: str
+    reward: float | None = None
+    n_tool_calls: int = 0
+    n_prompts: int = 0
+    error: str | None = None
+    duration_sec: float = 0.0
+    agent_name: str = ""
+
+    @property
+    def passed(self) -> bool:
+        return self.reward == 1.0
+
+    @property
+    def failed(self) -> bool:
+        return self.reward is not None and self.reward != 1.0
+
+    @property
+    def errored(self) -> bool:
+        return self.reward is None and self.error is not None
+
+
+@dataclass
+class BenchmarkMetrics:
+    """Aggregated metrics for a benchmark run."""
+
+    benchmark: str
+    agent: str
+    model: str
+    tasks: list[TaskMetrics] = field(default_factory=list)
+
+    @property
+    def total(self) -> int:
+        return len(self.tasks)
+
+    @property
+    def passed(self) -> int:
+        return sum(1 for t in self.tasks if t.passed)
+
+    @property
+    def failed(self) -> int:
+        return sum(1 for t in self.tasks if t.failed)
+
+    @property
+    def errored(self) -> int:
+        return sum(1 for t in self.tasks if t.errored)
+
+    @property
+    def score(self) -> float:
+        """Pass rate over all tasks."""
+        return self.passed / self.total if self.total > 0 else 0.0
+
+    @property
+    def score_excl_errors(self) -> float:
+        """Pass rate excluding errored tasks."""
+        completed = self.passed + self.failed
+        return self.passed / completed if completed > 0 else 0.0
+
+    @property
+    def avg_tool_calls(self) -> float:
+        """Average tool calls per completed task."""
+        completed = [t for t in self.tasks if not t.errored]
+        return sum(t.n_tool_calls for t in completed) / len(completed) if completed else 0.0
+
+    @property
+    def avg_duration(self) -> float:
+        """Average duration per completed task (seconds)."""
+        completed = [t for t in self.tasks if not t.errored and t.duration_sec > 0]
+        return sum(t.duration_sec for t in completed) / len(completed) if completed else 0.0
+
+    @property
+    def error_breakdown(self) -> dict[str, int]:
+        """Categorize errors."""
+        breakdown: dict[str, int] = {}
+        for t in self.tasks:
+            if not t.errored:
+                continue
+            err = t.error or ""
+            if "timed out" in err:
+                key = "timeout"
+            elif "install" in err:
+                key = "install_failure"
+            elif "closed stdout" in err:
+                key = "pipe_closed"
+            elif "ACP error" in err:
+                key = "acp_error"
+            else:
+                key = "other"
+            breakdown[key] = breakdown.get(key, 0) + 1
+        return breakdown
+
+    def summary(self) -> dict[str, Any]:
+        """Export as summary dict."""
+        return {
+            "benchmark": self.benchmark,
+            "agent": self.agent,
+            "model": self.model,
+            "total": self.total,
+            "passed": self.passed,
+            "failed": self.failed,
+            "errored": self.errored,
+            "score": f"{self.score:.1%}",
+            "score_excl_errors": f"{self.score_excl_errors:.1%}",
+            "avg_tool_calls": round(self.avg_tool_calls, 1),
+            "avg_duration_sec": round(self.avg_duration, 1),
+            "error_breakdown": self.error_breakdown,
+            "passed_tasks": sorted(t.task_name for t in self.tasks if t.passed),
+            "failed_tasks": sorted(t.task_name for t in self.tasks if t.failed),
+            "errored_tasks": sorted(t.task_name for t in self.tasks if t.errored),
+        }
+
+
+def collect_metrics(
+    results_dir: str | Path,
+    benchmark: str = "",
+    agent: str = "",
+    model: str = "",
+) -> BenchmarkMetrics:
+    """Collect metrics from a results directory.
+
+    Reads all result.json files, picks the best result per task
+    (rewards > no rewards, higher reward preferred).
+    """
+    results_dir = Path(results_dir)
+    best: dict[str, dict] = {}
+
+    for rfile in results_dir.rglob("result.json"):
+        try:
+            r = json.loads(rfile.read_text())
+            task = r["task_name"]
+            if task not in best:
+                best[task] = r
+            elif r.get("rewards") is not None and best[task].get("rewards") is None:
+                best[task] = r
+            elif (
+                r.get("rewards") and best[task].get("rewards")
+                and r["rewards"].get("reward", 0) > best[task]["rewards"].get("reward", 0)
+            ):
+                best[task] = r
+        except Exception:
+            pass
+
+    tasks = []
+    for task_name, r in sorted(best.items()):
+        reward = r.get("rewards", {}).get("reward") if r.get("rewards") else None
+        # Calculate duration
+        duration = 0.0
+        try:
+            from datetime import datetime
+            started = datetime.fromisoformat(r["started_at"])
+            finished = datetime.fromisoformat(r["finished_at"])
+            duration = (finished - started).total_seconds()
+        except Exception:
+            pass
+
+        tasks.append(TaskMetrics(
+            task_name=task_name,
+            reward=reward,
+            n_tool_calls=r.get("n_tool_calls", 0),
+            n_prompts=r.get("n_prompts", 0),
+            error=r.get("error"),
+            duration_sec=duration,
+            agent_name=r.get("agent_name", ""),
+        ))
+
+    return BenchmarkMetrics(
+        benchmark=benchmark,
+        agent=agent,
+        model=model,
+        tasks=tasks,
+    )
