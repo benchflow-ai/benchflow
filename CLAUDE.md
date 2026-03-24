@@ -117,6 +117,6 @@ jobs/{job_name}/{trial_name}/
 ## Key docs
 
 - `STATUS.md` — project status, issues, roadmap
-- `skills/benchflow/SKILL.md` — comprehensive usage guide (run, job, metrics, create-task)
-- `tests/dogfood/DOGFOOD.md` — end-to-end test prompt
+- `skills/benchflow/SKILL.md` — main skill (run, job, metrics, create-task, smoke-test, dogfood)
+- `skills/benchflow/references/` — detailed guides (create-task, smoke-test, dogfood)
 - `scripts/parity/` — benchmark run scripts and results data

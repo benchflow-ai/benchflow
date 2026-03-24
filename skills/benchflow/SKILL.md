@@ -132,6 +132,14 @@ Opens HTML viewer at `http://localhost:8888`.
 
 See `skills/benchflow/references/create-task.md` for the full guide.
 
+### `smoke-test` — verify system works
+
+See `skills/benchflow/references/smoke-test.md` for quick and full smoke tests.
+
+### `dogfood` — end-to-end testing prompt
+
+See `skills/benchflow/references/dogfood.md` for the full dogfood script.
+
 Quick structure:
 ```
 my-task/
