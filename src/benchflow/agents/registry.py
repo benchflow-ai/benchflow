@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 # Node.js bootstrap — handles missing node, old node (<22), Ubuntu + Debian slim
 _NODE_INSTALL = (
     "set -o pipefail; "
+    "export DEBIAN_FRONTEND=noninteractive; "
     "NODE_OK=0; "
     "if command -v node >/dev/null 2>&1; then "
     "  NODE_VER=$(node -e 'console.log(process.versions.node.split(\".\")[0])' 2>/dev/null || echo 0); "
