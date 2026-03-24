@@ -72,7 +72,7 @@ print(f'{result.passed}/{result.total}')
 
 # CLI
 benchflow run -t .ref/terminal-bench-2/log-summary-date-ranges -a claude-agent-acp
-benchflow view jobs/tb2-run/
+benchflow view jobs/tb2-run/<trial-name>/
 ```
 
 ## Testing

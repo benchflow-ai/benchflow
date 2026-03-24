@@ -101,11 +101,12 @@ All 0 infra errors, trajectories have real tool calls, scores match expected ran
 - [ ] Agent/model version matrix
 
 ### CLI & SDK Polish
-- [ ] `benchflow agents list` — CLI command to list agents
+- [x] `benchflow agents` — list registered agents
+- [x] `benchflow job` / `benchflow metrics` — CLI commands
+- [x] Viewer: prints URL when serving
+- [x] YAML job config: `Job.from_yaml()`, `benchflow job --config`
 - [ ] `benchflow jobs list` — show past job results
 - [ ] Task filtering: `Job(tasks=[...])` or `task_glob` parameter
-- [ ] Viewer: print URL when serving
-- [ ] YAML job config for reproducible runs
 
 ### Multi-Agent Expansion
 - [ ] codex-acp: test with OPENAI_API_KEY

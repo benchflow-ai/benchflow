@@ -42,7 +42,9 @@ Prompts: `[instruction, "Review your solution. Check for errors, test it, and fi
 | Avg tool calls | 45 |
 | Wall time | 62 min (concurrency 64) |
 
-**Parity check**: tbench.ai shows Claude Code + Haiku 4.5 at 27.53% (Claude Code v2.0.31, Nov 2025). Our 37.1% with Claude Code v2.1.76 shows ~10pp improvement from 5 months of Claude Code updates.
+**Parity check**: tbench.ai shows Claude Code + Haiku 4.5 at 27.53% (Claude Code v2.0.31, single-turn, Nov 2025). Our 37.1% with Claude Code v2.1.76 is ~10pp higher.
+
+**Caveat**: This comparison has confounding variables — our run is multi-turn (recheck prompt) while tbench.ai is single-turn, and we use a newer Claude Code version (v2.1.76 vs v2.0.31). The ~10pp delta cannot be attributed solely to Claude Code updates. A single-turn Haiku run on benchflow is needed to isolate the variables.
 
 ### Comparison
 

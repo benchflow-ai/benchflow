@@ -64,16 +64,6 @@ def _create_environment(
         raise ValueError(f"Unknown environment_type: {environment_type!r} (use 'docker' or 'daytona')")
 
 
-def _create_live_process(environment_type: str, env: Any) -> LiveProcess:
-    """Create the appropriate LiveProcess for ACP communication."""
-    if environment_type == "docker":
-        return DockerProcess.from_harbor_env(env)
-    elif environment_type == "daytona":
-        # DaytonaProcess.from_harbor_env is async, handle in caller
-        raise ValueError("Use await DaytonaProcess.from_harbor_env(env) directly")
-    else:
-        raise ValueError(f"Unknown environment_type: {environment_type!r}")
-
 
 class RunResult:
     """Result of a benchflow run."""
@@ -81,7 +71,7 @@ class RunResult:
     def __init__(
         self,
         task_name: str,
-        trial_name: str,
+        trial_name: str = "",
         rewards: dict[str, float | int] | None = None,
         trajectory: list[dict[str, Any]] | None = None,
         agent_name: str = "",
@@ -134,7 +124,7 @@ class SDK:
         self,
         task_path: str | Path,
         agent: str = "claude-agent-acp",
-        prompts: list[str] | None = None,
+        prompts: list[str | None] | None = None,
         *,
         model: str | None = None,
         agent_env: dict[str, str] | None = None,
@@ -149,7 +139,7 @@ class SDK:
             task_path: Path to Harbor-format task directory
             agent: ACP agent name or command (e.g. "claude-agent-acp", "openclaw")
             prompts: List of prompts to send. Default: [instruction.md content]
-            model: Model to use (e.g. "claude-haiku-4-5-20251001"). Passed as ANTHROPIC_MODEL.
+            model: Model to use (e.g. "claude-haiku-4-5-20251001"). Set via ACP session/set_model.
             agent_env: Environment variables for the agent (API keys etc.)
             job_name: Job name. Auto-generated if not provided.
             trial_name: Custom trial name. Auto-generated if not provided.
@@ -353,7 +343,7 @@ class SDK:
             logger.error(f"Agent connection lost: {error}")
         except Exception as e:
             error = str(e)
-            logger.error(f"Run failed: {e}")
+            logger.error("Run failed", exc_info=True)
 
         finally:
             if acp_client:

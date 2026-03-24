@@ -93,14 +93,20 @@ benchflow view jobs/tb2-haiku/task-name__abc123/
 ## 7. Multi-Agent Comparison
 
 ```python
-# Run same tasks with different agents
-for agent in ["claude-agent-acp", "pi-acp"]:
-    job = Job(
-        tasks_dir=".ref/terminal-bench-2",
-        jobs_dir=f"jobs/tb2-{agent}",
-        config=JobConfig(agent=agent, environment="daytona", concurrency=64),
-    )
-    result = await job.run()
+import asyncio
+from benchflow import Job, JobConfig
+
+async def main():
+    for agent in ["claude-agent-acp", "pi-acp"]:
+        job = Job(
+            tasks_dir=".ref/terminal-bench-2",
+            jobs_dir=f"jobs/tb2-{agent}",
+            config=JobConfig(agent=agent, environment="daytona", concurrency=64),
+        )
+        result = await job.run()
+        print(f"{agent}: {result.passed}/{result.total}")
+
+asyncio.run(main())
 ```
 
 ## 8. Output Structure

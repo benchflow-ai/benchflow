@@ -23,9 +23,9 @@ Findings from dogfood testing on 2026-03-23/24.
 
 pi-acp outperformed claude-agent-acp on the same 14-task subset with the same model (Haiku 4.5). pi-acp passed cancel-async-tasks, bn-fit-modify, adaptive-rejection-sampler, and distribution-search where claude failed. pi-acp had 2 timeouts (write-compressor, circuit-fibsqrt) vs claude's 0, but took 5x longer overall.
 
-### SkillsBench-5 (Haiku 4.5, Daytona, claude-agent-acp)
+### SkillsBench Smoke Test (Haiku 4.5, Daytona, claude-agent-acp)
 
-- 2/4 passed (50%), 0 errors
+- 2/4 passed (50%), 0 errors (1 of 5 tasks had a broken symlink)
 - SkillsBench tasks build from Dockerfile on Daytona (no prebuilt images)
 - Build time adds ~30-60s per task but works
 - Partial rewards work (dialogue-parser got 0.333)

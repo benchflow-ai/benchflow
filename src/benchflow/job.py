@@ -71,7 +71,6 @@ class JobResult:
     failed: int = 0
     errored: int = 0
     elapsed_sec: float = 0.0
-    results: dict[str, RunResult] = field(default_factory=dict)
 
     @property
     def score(self) -> float:
