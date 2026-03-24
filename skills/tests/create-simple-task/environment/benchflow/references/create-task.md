@@ -98,7 +98,6 @@ The verifier runs after the agent finishes. It must write a reward to `/logs/ver
 
 ```bash
 #!/bin/bash
-set -e
 
 REWARD_FILE="/logs/verifier/reward.txt"
 mkdir -p "$(dirname "$REWARD_FILE")"

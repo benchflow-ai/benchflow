@@ -90,7 +90,7 @@ pytest tests/     # unit tests (no Docker needed)
 ```
 
 Real e2e tests require Daytona or Docker + ANTHROPIC_API_KEY.
-Dogfood script: `docs/dogfood/DOGFOOD.md`
+Dogfood script: `tests/dogfood/DOGFOOD.md`
 
 ## Harbor dependency
 
@@ -116,6 +116,7 @@ jobs/{job_name}/{trial_name}/
 
 ## Key docs
 
-- `STATUS.md` — project status, issues, roadmap (single source of truth)
-- `docs/parity/RESULTS.md` — benchmark results vs official numbers
-- `docs/dogfood/DOGFOOD.md` — end-to-end test prompt
+- `STATUS.md` — project status, issues, roadmap
+- `skills/benchflow/SKILL.md` — comprehensive usage guide (run, job, metrics, create-task)
+- `tests/dogfood/DOGFOOD.md` — end-to-end test prompt
+- `scripts/parity/` — benchmark run scripts and results data

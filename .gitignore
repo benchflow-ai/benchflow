@@ -170,11 +170,9 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 
-# Results
-results/
-
 .DS_Store
 # benchflow
 .ref/
 trials/
 jobs/
+dogfood/
