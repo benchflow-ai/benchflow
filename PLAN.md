@@ -57,6 +57,26 @@
   - `benchflow-knowledge`: reward 1.0 (6/6) — agent read skills, answered all questions correctly
 - Skills baked into Dockerfiles via `COPY skills /root/.claude/skills/`, auto-discovered by Claude Code
 
+### Code Review Fixes — Done
+- `asyncio.gather` with `return_exceptions=True` — one crash no longer kills entire job
+- Removed per-task `_prune_docker()` — was racing with container setup at concurrency > 1
+- Added logging to silent exception blocks in job.py and metrics.py
+- Simplified job counting — normalize all results to dicts, eliminated dead RunResult branches
+- YAML job config: `Job.from_yaml()` supports benchflow-native and Harbor-compatible formats
+- CLI: `benchflow job --config/-f` for YAML configs
+- 45 unit tests (23 new): metrics, job counting, YAML parsing
+
+### Smoke Tests — Done
+Post-fix validation (Haiku 4.5, Daytona, concurrency 64):
+
+| Run | Passed | Total | Score | Errors |
+|-----|--------|-------|-------|--------|
+| TB2 single-turn | 2 | 5 | 40% | 0 |
+| TB2 multi-turn | 2+ | 5 | 40%+ | 0 |
+| SkillsBench | 2 | 4 | 50% | 0 |
+
+All 0 infra errors, trajectories have real tool calls, scores match expected range for Haiku.
+
 ---
 
 ## Next Steps

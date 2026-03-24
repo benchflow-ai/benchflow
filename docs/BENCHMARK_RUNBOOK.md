@@ -1,141 +1,123 @@
 # Benchmark Runbook
 
-Instructions for running full benchmark suites with benchflow.
+Run full benchmark suites with benchflow.
 
 ## Prerequisites
 
 ```bash
-cd /Users/lixiangyi/benchflow/benchflow
-export $(cat .env | xargs)  # ANTHROPIC_API_KEY
-docker ps  # Docker must be running
+source .env  # ANTHROPIC_API_KEY, DAYTONA_API_KEY
+pip install -e .
 ```
 
-## 1. Download tasks
+## 1. Task Sources
 
-### Terminal-Bench 2.0 (89 tasks)
+Tasks are in `.ref/`:
+- `.ref/terminal-bench-2/` — 89 tasks (TB2)
+- `.ref/skillsbench/tasks/` — 87 tasks (SkillsBench)
+
+## 2. Run via YAML Config
 
 ```bash
-cd .ref
-git clone --depth=1 https://github.com/laude-institute/terminal-bench-2.git
-cd ..
+# TB2 single-turn (Haiku, Daytona, concurrency 64)
+benchflow job -f examples/configs/tb2-haiku.yaml
+
+# TB2 multi-turn with recheck prompt
+benchflow job -f examples/configs/tb2-multiturn.yaml
+
+# SkillsBench
+benchflow job -f examples/configs/skillsbench.yaml
 ```
 
-Tasks at: `.ref/terminal-bench-2/`
-
-### SkillsBench (77 self-contained tasks)
-
-```bash
-cd .ref
-git clone https://github.com/benchflow-ai/skillsbench.git
-cd ..
-```
-
-Tasks at: `.ref/skillsbench/tasks/`
-
-Exclude tasks needing external API keys: `scheduling-email-assistant`, `mhc-layer-impl`
-
-## 2. Run Terminal-Bench 2.0
-
-### Single-turn (baseline)
+## 3. Run via SDK
 
 ```python
-import asyncio, json, os
-from pathlib import Path
-from benchflow.sdk import SDK
+import asyncio
+from benchflow import Job, JobConfig
 
-sdk = SDK()
-api_key = os.environ["ANTHROPIC_API_KEY"]
-tasks_dir = Path(".ref/terminal-bench-2")
-task_dirs = sorted([d for d in tasks_dir.iterdir() if d.is_dir() and (d / "task.toml").exists()])
-
-results = []
-for task_dir in task_dirs:
-    result = await sdk.run(
-        task_path=task_dir,
-        agent="claude-agent-acp",
-        model="claude-haiku-4-5-20251001",
-        agent_env={"ANTHROPIC_API_KEY": api_key},
-        jobs_dir="parity/terminal-bench-2.0/single-turn",
+async def main():
+    job = Job(
+        tasks_dir=".ref/terminal-bench-2",
+        jobs_dir="jobs/tb2-haiku",
+        config=JobConfig(
+            agent="claude-agent-acp",
+            model="claude-haiku-4-5-20251001",
+            environment="daytona",
+            concurrency=64,
+        ),
     )
-    results.append({"task": result.task_name, "reward": result.rewards, "error": result.error,
-                     "n_tool_calls": result.n_tool_calls, "agent": result.agent_name})
-    print(f"{result.task_name}: {result.rewards} {'ERROR: ' + result.error if result.error else ''}")
+    result = await job.run()
+    print(f"{result.passed}/{result.total} ({result.score:.1%})")
 
-# Save summary
-with open("parity/terminal-bench-2.0/single-turn/summary.json", "w") as f:
-    json.dump({"results": results, "total": len(results),
-               "solved": sum(1 for r in results if r["reward"] and r["reward"].get("reward") == 1)}, f, indent=2)
+asyncio.run(main())
 ```
 
-### Multi-turn with recheck prompt
-
-Same as above but with:
+Multi-turn:
 ```python
-result = await sdk.run(
-    task_path=task_dir,
+config=JobConfig(
     agent="claude-agent-acp",
     model="claude-haiku-4-5-20251001",
+    environment="daytona",
+    concurrency=64,
     prompts=[None, "Review your solution. Check for errors, test it, and fix any issues."],
-    agent_env={"ANTHROPIC_API_KEY": api_key},
-    jobs_dir="parity/terminal-bench-2.0/multi-turn-recheck",
 )
 ```
 
-### Oracle control (should be 89/89)
+## 4. Analyze Results
 
-```python
-result = await sdk.run(
-    task_path=task_dir,
-    agent="claude-agent-acp",  # Not actually used — oracle runs solution/solve.sh
-    prompts=["chmod +x /solution/solve.sh && /solution/solve.sh"],
-    agent_env={"ANTHROPIC_API_KEY": api_key},
-    jobs_dir="parity/terminal-bench-2.0/oracle",
-)
+```bash
+benchflow metrics jobs/tb2-haiku/
+benchflow metrics jobs/tb2-haiku/ --json
 ```
 
-Note: Oracle doesn't need ACP — it's a shell command. But running through benchflow validates the full pipeline.
+Or via SDK:
+```python
+from benchflow import collect_metrics
+metrics = collect_metrics("jobs/tb2-haiku", benchmark="TB2", agent="claude-agent-acp")
+print(metrics.summary())
+```
 
-## 3. Run SkillsBench
+## 5. View Trajectories
+
+```bash
+benchflow view jobs/tb2-haiku/task-name__abc123/
+```
+
+## 6. Expected Costs
+
+| Benchmark | Tasks | Model | Approx Cost |
+|-----------|-------|-------|-------------|
+| TB2 single-turn | 89 | Haiku 4.5 | ~$5 |
+| TB2 multi-turn | 89 | Haiku 4.5 | ~$9 |
+| SkillsBench | 87 | Haiku 4.5 | ~$5 |
+
+## 7. Multi-Agent Comparison
 
 ```python
-tasks_dir = Path(".ref/skillsbench/tasks")
-exclude = {"scheduling-email-assistant", "mhc-layer-impl"}
-task_dirs = sorted([d for d in tasks_dir.iterdir()
-                    if d.is_dir() and (d / "task.toml").exists() and d.name not in exclude])
-
-for task_dir in task_dirs:
-    result = await sdk.run(
-        task_path=task_dir,
-        agent="claude-agent-acp",
-        model="claude-haiku-4-5-20251001",
-        agent_env={"ANTHROPIC_API_KEY": api_key},
-        jobs_dir="parity/skillsbench",
+# Run same tasks with different agents
+for agent in ["claude-agent-acp", "pi-acp"]:
+    job = Job(
+        tasks_dir=".ref/terminal-bench-2",
+        jobs_dir=f"jobs/tb2-{agent}",
+        config=JobConfig(agent=agent, environment="daytona", concurrency=64),
     )
+    result = await job.run()
 ```
 
-## 4. Expected costs
-
-- Haiku 4.5: ~$0.03-0.05 per task
-- Terminal-Bench 89 tasks × 2 runs = ~$9
-- SkillsBench 77 tasks = ~$4
-- Total: ~$15
-
-## 5. Output
+## 8. Output Structure
 
 ```
-parity/
-├── terminal-bench-2.0/
-│   ├── single-turn/          # 89 trial dirs + summary.json
-│   ├── multi-turn-recheck/   # 89 trial dirs + summary.json
-│   └── oracle/               # 89 trial dirs + summary.json (control)
-├── skillsbench/              # 77 trial dirs + summary.json
-└── PARITY.md                 # written analysis comparing results
+jobs/{job-name}/
+├── {task}__abc123/
+│   ├── result.json
+│   ├── prompts.json
+│   ├── trajectory/acp_trajectory.jsonl
+│   └── verifier/reward.txt
+└── summary.json
 ```
 
-## 6. Analysis
+## Notes
 
-Compare:
-- Single-turn vs multi-turn accuracy on Terminal-Bench
-- Does the "recheck" prompt help?
-- Which task categories benefit most from multi-turn?
-- Oracle should be 100% — any failures = framework bug
+- API keys are auto-inherited from environment — no need to pass `agent_env`
+- Jobs resume automatically — re-running skips completed tasks
+- Use `environment="daytona"` for concurrency > 4 (Docker has network exhaustion issues)
+- Model is set via ACP `session/set_model`, not env var
