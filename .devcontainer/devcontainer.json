@@ -1,0 +1,37 @@
+{
+  "name": "BenchFlow Dev",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "args": {
+      "TZ": "${localEnv:TZ:America/New_York}",
+      "CLAUDE_CODE_VERSION": "latest"
+    }
+  },
+  "runArgs": ["--init"],
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "anthropic.claude-code",
+        "ms-python.python",
+        "charliermarsh.ruff"
+      ],
+      "settings": {
+        "terminal.integrated.defaultProfile.linux": "zsh",
+        "remote.autoForwardPorts": false
+      }
+    }
+  },
+  "remoteUser": "node",
+  "mounts": [
+    "source=benchflow-bashhistory-${devcontainerId},target=/commandhistory,type=volume",
+    "source=${localEnv:HOME}/.claude,target=/home/node/.claude,type=bind",
+    "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind"
+  ],
+  "containerEnv": {
+    "CLAUDE_CONFIG_DIR": "/home/node/.claude"
+  },
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=delegated",
+  "workspaceFolder": "/workspace",
+  "postCreateCommand": "pip install -e . 2>/dev/null; [ -f .env ] && echo 'Keys loaded from .env' || echo 'No .env found — create one with ANTHROPIC_API_KEY and DAYTONA_API_KEY'",
+  "forwardPorts": [8888]
+}
