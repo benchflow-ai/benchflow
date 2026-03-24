@@ -111,10 +111,20 @@ All 0 infra errors, trajectories have real tool calls, scores match expected ran
 - [ ] `benchflow jobs list` — show past job results
 - [ ] Task filtering: `Job(tasks=[...])` or `task_glob` parameter
 
+### Skills Support (next feature)
+- [ ] SDK-level skills loading — detect skills in task env, copy to agent-specific paths
+- [ ] Skills finding — discover skills from registry, symlinks, or task config
+- [ ] Skills for all agents: claude (~/.claude/skills/), openclaw (~/.openclaw/workspace/.claude/skills/), codex (~/.codex/skills/), gemini (~/.gemini/skills/)
+- Harbor's approach: `skills_dir` in EnvironmentConfig, each agent copies to its own config dir
+
 ### Multi-Agent Expansion
 - [ ] codex-acp: test with OPENAI_API_KEY
 - [ ] gemini: test with GOOGLE_API_KEY
-- [ ] openclaw: track upstream for standalone ACP session support
+- [x] openclaw: working via ACP shim with trajectory parsing
+
+### LLM Provider Support
+- [ ] OpenRouter — route to any model via OPENROUTER_API_KEY
+- [ ] Google Vertex AI — enterprise Gemini/Claude access
 
 ### Future Infrastructure
 - [ ] Daytona snapshots — pre-bake agent to eliminate install time
