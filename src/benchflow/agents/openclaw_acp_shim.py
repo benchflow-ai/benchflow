@@ -133,7 +133,7 @@ def parse_session_jsonl(path: Path, session_id: str) -> list[dict]:
                     for block in content:
                         block_type = block.get("type", "")
 
-                        if block_type == "text":
+                        if block_type in ("text",):
                             updates.append({
                                 "jsonrpc": "2.0",
                                 "method": "session/update",
@@ -146,7 +146,7 @@ def parse_session_jsonl(path: Path, session_id: str) -> list[dict]:
                                 },
                             })
 
-                        elif block_type == "tool_use":
+                        elif block_type in ("tool_use", "toolCall"):
                             updates.append({
                                 "jsonrpc": "2.0",
                                 "method": "session/update",
@@ -164,7 +164,7 @@ def parse_session_jsonl(path: Path, session_id: str) -> list[dict]:
                                                 "content": {
                                                     "type": "text",
                                                     "text": json.dumps(
-                                                        block.get("input", {})
+                                                        block.get("input", block.get("arguments", {}))
                                                     )[:500],
                                                 },
                                             }
@@ -187,8 +187,9 @@ def parse_session_jsonl(path: Path, session_id: str) -> list[dict]:
                             })
 
                 elif role == "toolResult":
+                    # Emit as tool_call_update (status=completed) to update
+                    # the tool_call record created by the tool_use block
                     tool_id = msg.get("toolCallId", "")
-                    tool_name = msg.get("toolName", "")
                     result_text = ""
                     if isinstance(content, list):
                         result_text = " ".join(
@@ -204,10 +205,8 @@ def parse_session_jsonl(path: Path, session_id: str) -> list[dict]:
                         "params": {
                             "sessionId": session_id,
                             "update": {
-                                "type": "tool_call",
+                                "sessionUpdate": "tool_call_update",
                                 "toolCallId": tool_id,
-                                "kind": "other",
-                                "title": tool_name,
                                 "status": "completed",
                                 "content": [
                                     {

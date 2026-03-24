@@ -80,6 +80,18 @@ class ACPSession:
             if content.get("type") == "text":
                 self.message_chunks.append(content.get("text", ""))
 
+        elif update_type == "text_update":
+            # Used by openclaw shim — full text (not chunked)
+            text = update.get("text", "")
+            if text:
+                self.message_chunks.append(text)
+
+        elif update_type == "agent_thought":
+            # Used by openclaw shim — full thought (not chunked)
+            text = update.get("text", "")
+            if text:
+                self.thought_chunks.append(text)
+
         elif update_type == "agent_thought_chunk":
             content = update.get("content", {})
             if content.get("type") == "text":
