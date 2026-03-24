@@ -35,9 +35,15 @@ benchflow SDK.run()
 Agents registered in `src/benchflow/agents/registry.py`:
 - `claude-agent-acp` — Claude Code via ACP (primary, tested)
 - `pi-acp` — Pi coding agent via ACP (tested, needs `@mariozechner/pi-coding-agent`)
-- `openclaw` — OpenClaw (incompatible — needs gateway session lifecycle)
+- `openclaw` — OpenClaw via ACP shim (tested). Skills: `.claude/skills/` → `<workspace>/skills/`
 - `codex-acp` — OpenAI Codex (needs OPENAI_API_KEY, untested)
 - `gemini` — Gemini CLI (needs GOOGLE_API_KEY, untested)
+
+### Skill loading
+SkillsBench tasks bake skills via `COPY skills /root/.claude/skills` in Dockerfiles.
+- claude-agent-acp / pi-acp: auto-discover `~/.claude/skills/`
+- openclaw: shim copies from `.claude/skills/` → `<workspace>/skills/` for native discovery
+- Skills must load from environment, never injected into prompts
 
 ## How to run
 

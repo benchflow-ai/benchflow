@@ -64,7 +64,7 @@ pi-acp outperformed claude-agent-acp on the same 14-task subset with the same mo
 ## Gaps Remaining
 
 ### Fixed
-- **openclaw**: Native ACP bridge incompatible (needs gateway chat sessions). Fixed via ACP shim that wraps `openclaw agent --local` + workspace symlink. Reward 1.0 on log-summary-date-ranges.
+- **openclaw**: Native ACP bridge incompatible (needs gateway chat sessions, [known upstream bug](https://github.com/openclaw/openclaw/issues/48362)). Fixed via ACP shim that wraps `openclaw agent --local`. Workspace symlink + skill copying enables task execution and skill discovery. Reward 1.0 on TB2 log-summary-date-ranges.
 - **Task filtering**: Job should accept `tasks: list[str]` or `task_glob: str` parameter
 
 ### Should Fix
