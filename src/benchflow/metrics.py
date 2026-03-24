@@ -5,9 +5,12 @@ from trial results.
 """
 
 import json
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -152,8 +155,8 @@ def collect_metrics(
                 and r["rewards"].get("reward", 0) > best[task]["rewards"].get("reward", 0)
             ):
                 best[task] = r
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Skipping corrupt result file {rfile}: {e}")
 
     tasks = []
     for task_name, r in sorted(best.items()):

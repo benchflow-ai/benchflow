@@ -10,12 +10,15 @@ A Job is a collection of trials (task × agent × attempt). Jobs support:
 import asyncio
 import json
 import logging
+import os
 import subprocess
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
+
+import yaml
 
 from benchflow.sdk import SDK, RunResult
 
@@ -93,6 +96,10 @@ class Job:
         )
         result = await job.run()
         print(result.score)
+
+    Or from YAML:
+        job = Job.from_yaml("experiments/tb2.yaml")
+        result = await job.run()
     """
 
     def __init__(
@@ -110,6 +117,115 @@ class Job:
         self._on_result = on_result
         self._sdk = SDK()
 
+    @classmethod
+    def from_yaml(cls, path: str | Path, **kwargs) -> "Job":
+        """Create a Job from a YAML config file.
+
+        Supports both benchflow-native and Harbor-compatible YAML formats.
+
+        benchflow format:
+            tasks_dir: path/to/tasks
+            jobs_dir: jobs/my-run
+            agent: claude-agent-acp
+            model: claude-haiku-4-5-20251001
+            environment: daytona
+            concurrency: 64
+            max_retries: 1
+            prompts:
+              - null
+              - "Review your solution and fix any issues."
+
+        Harbor-compatible format:
+            jobs_dir: jobs
+            n_attempts: 1
+            orchestrator:
+              n_concurrent_trials: 4
+            environment:
+              type: docker
+              env:
+                - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+            agents:
+              - name: claude-agent-acp
+                model_name: anthropic/claude-haiku-4-5-20251001
+            datasets:
+              - path: path/to/tasks
+        """
+        path = Path(path)
+        with open(path) as f:
+            raw = yaml.safe_load(f)
+
+        # Detect format: Harbor uses "agents" + "datasets", benchflow uses "agent"
+        if "agents" in raw or "datasets" in raw:
+            return cls._from_harbor_yaml(raw, path.parent, **kwargs)
+        return cls._from_native_yaml(raw, path.parent, **kwargs)
+
+    @classmethod
+    def _from_native_yaml(cls, raw: dict, base_dir: Path, **kwargs) -> "Job":
+        """Parse benchflow-native YAML."""
+        tasks_dir = base_dir / raw["tasks_dir"]
+        jobs_dir = base_dir / raw.get("jobs_dir", "jobs")
+
+        # Parse prompts — YAML null becomes Python None
+        prompts = raw.get("prompts")
+
+        config = JobConfig(
+            agent=raw.get("agent", "claude-agent-acp"),
+            model=raw.get("model", "claude-haiku-4-5-20251001"),
+            environment=raw.get("environment", "docker"),
+            concurrency=raw.get("concurrency", 4),
+            prompts=prompts,
+            retry=RetryConfig(max_retries=raw.get("max_retries", 2)),
+        )
+        return cls(tasks_dir=tasks_dir, jobs_dir=jobs_dir, config=config, **kwargs)
+
+    @classmethod
+    def _from_harbor_yaml(cls, raw: dict, base_dir: Path, **kwargs) -> "Job":
+        """Parse Harbor-compatible YAML."""
+        # Agent
+        agents = raw.get("agents", [{}])
+        agent_cfg = agents[0] if agents else {}
+        agent_name = agent_cfg.get("name", "claude-agent-acp")
+
+        # Model — Harbor uses "anthropic/model-name" format
+        model = agent_cfg.get("model_name", "")
+        if "/" in model:
+            model = model.split("/", 1)[1]
+        model = model or "claude-haiku-4-5-20251001"
+
+        # Environment
+        env_cfg = raw.get("environment", {})
+        environment = env_cfg.get("type", "docker")
+
+        # Agent env vars from environment.env
+        agent_env: dict[str, str] = {}
+        for entry in env_cfg.get("env", []):
+            if "=" in entry:
+                k, v = entry.split("=", 1)
+                # Expand ${VAR} references
+                v = os.path.expandvars(v)
+                agent_env[k] = v
+
+        # Datasets
+        datasets = raw.get("datasets", [{}])
+        tasks_dir = base_dir / datasets[0].get("path", "tasks")
+
+        # Orchestrator
+        orch = raw.get("orchestrator", {})
+        concurrency = orch.get("n_concurrent_trials", 4)
+
+        jobs_dir = base_dir / raw.get("jobs_dir", "jobs")
+        max_retries = raw.get("n_attempts", 1) - 1  # Harbor n_attempts includes first try
+
+        config = JobConfig(
+            agent=agent_name,
+            model=model,
+            environment=environment,
+            concurrency=concurrency,
+            agent_env=agent_env,
+            retry=RetryConfig(max_retries=max(0, max_retries)),
+        )
+        return cls(tasks_dir=tasks_dir, jobs_dir=jobs_dir, config=config, **kwargs)
+
     def _get_task_dirs(self) -> list[Path]:
         """Get all valid task directories."""
         return sorted(
@@ -126,8 +242,8 @@ class Job:
                 task = r["task_name"]
                 if r.get("rewards") is not None:
                     completed[task] = r
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Skipping corrupt result file {rfile}: {e}")
         return completed
 
     def _prune_docker(self):
@@ -164,7 +280,6 @@ class Job:
             if attempt <= cfg.retry.max_retries:
                 logger.info(f"Retrying {task_dir.name} (attempt {attempt + 1}): {result.error[:60]}")
 
-        self._prune_docker()
         return last_result
 
     async def run(self) -> JobResult:
@@ -197,13 +312,27 @@ class Job:
                     self._on_result(td.name, result)
                 return td.name, result
 
-        pairs = await asyncio.gather(*[bounded(td) for td in remaining])
+        results_or_errors = await asyncio.gather(
+            *[bounded(td) for td in remaining],
+            return_exceptions=True,
+        )
         elapsed = time.time() - start
 
-        # Merge with previously completed
-        all_results = {}
+        # Separate successful results from unexpected exceptions
+        pairs: list[tuple[str, RunResult]] = []
+        for i, r in enumerate(results_or_errors):
+            if isinstance(r, BaseException):
+                task_name = remaining[i].name
+                logger.error(f"[ERR] {task_name}: unexpected exception: {r}")
+                pairs.append((task_name, RunResult(
+                    task_name=task_name, error=f"Unexpected: {r}",
+                )))
+            else:
+                pairs.append(r)
+
+        # Merge with previously completed — normalize everything to dicts
+        all_results: dict[str, dict] = {}
         for task, data in completed.items():
-            # Convert dict to minimal RunResult-like for counting
             all_results[task] = data
         for name, result in pairs:
             all_results[name] = {
@@ -213,26 +342,20 @@ class Job:
                 "n_tool_calls": result.n_tool_calls,
             }
 
-        # Count
+        # Count — all values are dicts now, no type branching needed
+        def _reward(r: dict) -> float | None:
+            rewards = r.get("rewards")
+            return rewards.get("reward") if rewards else None
+
         job_result = JobResult(
             job_name=self._job_name,
             config=cfg,
             total=len(task_dirs),
-            passed=sum(
-                1 for r in all_results.values()
-                if isinstance(r, dict) and r.get("rewards") and r["rewards"].get("reward") == 1.0
-                or isinstance(r, RunResult) and r.rewards and r.rewards.get("reward") == 1.0
-            ),
-            failed=sum(
-                1 for r in all_results.values()
-                if isinstance(r, dict) and r.get("rewards") and r["rewards"].get("reward") == 0.0
-                or isinstance(r, RunResult) and r.rewards and r.rewards.get("reward") == 0.0
-            ),
-            errored=sum(
-                1 for r in all_results.values()
-                if isinstance(r, dict) and r.get("error") and r.get("rewards") is None
-                or isinstance(r, RunResult) and r.error and r.rewards is None
-            ),
+            passed=sum(1 for r in all_results.values() if _reward(r) == 1.0),
+            failed=sum(1 for r in all_results.values()
+                       if _reward(r) is not None and _reward(r) != 1.0),
+            errored=sum(1 for r in all_results.values()
+                        if r.get("error") and r.get("rewards") is None),
             elapsed_sec=elapsed,
         )
 

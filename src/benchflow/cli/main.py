@@ -89,9 +89,13 @@ def run(
 @app.command()
 def job(
     tasks_dir: Annotated[
-        Path,
+        Path | None,
         typer.Option("--tasks-dir", "-t", help="Directory of tasks to run"),
-    ],
+    ] = None,
+    config_file: Annotated[
+        Path | None,
+        typer.Option("--config", "-f", help="YAML config file (Harbor or benchflow format)"),
+    ] = None,
     agent: Annotated[
         str,
         typer.Option("--agent", "-a", help="Agent name from registry"),
@@ -117,20 +121,30 @@ def job(
         typer.Option("--jobs-dir", "-o", help="Output directory for results"),
     ] = "jobs",
 ) -> None:
-    """Run all tasks in a directory with concurrency and retries."""
+    """Run all tasks in a directory with concurrency and retries.
+
+    Use --config/-f for YAML config, or --tasks-dir/-t for direct invocation.
+    """
     from benchflow.job import Job, JobConfig, RetryConfig
 
-    j = Job(
-        tasks_dir=str(tasks_dir),
-        jobs_dir=jobs_dir,
-        config=JobConfig(
-            agent=agent,
-            model=model or "claude-haiku-4-5-20251001",
-            environment=environment,
-            concurrency=concurrency,
-            retry=RetryConfig(max_retries=max_retries),
-        ),
-    )
+    if config_file:
+        j = Job.from_yaml(config_file)
+    elif tasks_dir:
+        j = Job(
+            tasks_dir=str(tasks_dir),
+            jobs_dir=jobs_dir,
+            config=JobConfig(
+                agent=agent,
+                model=model or "claude-haiku-4-5-20251001",
+                environment=environment,
+                concurrency=concurrency,
+                retry=RetryConfig(max_retries=max_retries),
+            ),
+        )
+    else:
+        console.print("[red]Either --tasks-dir or --config is required[/red]")
+        raise typer.Exit(1)
+
     result = asyncio.run(j.run())
 
     console.print(

@@ -2,17 +2,21 @@
 
 
 def test_harbor_reexports():
-    """All Harbor classes should be importable from benchflow."""
+    """Harbor classes should be importable from benchflow."""
     from benchflow import (
         BaseEnvironment,
-        Job,
         TaskConfig,
     )
 
-    # These should be Harbor's classes
-    assert Job.__module__.startswith("harbor")
     assert TaskConfig.__module__.startswith("harbor")
     assert BaseEnvironment.__module__.startswith("harbor")
+
+
+def test_benchflow_job_shadows_harbor():
+    """benchflow.Job is benchflow's own Job, not Harbor's."""
+    from benchflow import Job
+
+    assert Job.__module__ == "benchflow.job"
 
 
 def test_benchflow_additions():
