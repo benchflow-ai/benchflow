@@ -32,6 +32,6 @@
   },
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=delegated",
   "workspaceFolder": "/workspace",
-  "postCreateCommand": "pip install -e . 2>/dev/null; [ -f .env ] && echo 'Keys loaded from .env' || echo 'No .env found — create one with ANTHROPIC_API_KEY and DAYTONA_API_KEY'",
+  "postCreateCommand": "python3 -m venv .venv && .venv/bin/pip install -e . 2>/dev/null; [ -f .env ] && echo 'Keys loaded from .env' || echo 'No .env found — create one with ANTHROPIC_API_KEY and DAYTONA_API_KEY'",
   "forwardPorts": [8888]
 }
