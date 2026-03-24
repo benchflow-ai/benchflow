@@ -37,7 +37,7 @@ pi-acp outperformed claude-agent-acp on the same 14-task subset with the same mo
 2. **pi-acp install** — Install command only installed the ACP wrapper, not the underlying `pi` agent. Added `@mariozechner/pi-coding-agent` to install chain.
 
 ### Known Issues
-3. **openclaw crashes** — `openclaw acp` subcommand exits immediately. Likely upstream package issue. Needs investigation or removal from registry.
+3. **openclaw incompatible** — ACP bridge requires sessions via gateway's `/acp spawn`, not standard ACP `session/new`. Architectural mismatch, not a bug we can fix.
 4. **No task filtering on Job** — `Job(tasks_dir=...)` runs ALL tasks. No way to pass a task list or glob filter. Workaround: symlink directory.
 5. **Viewer doesn't print URL** — `benchflow view` starts serving but doesn't print which port. Must check with `lsof`.
 6. **hello-world has no prebuilt image** — Running hello-world on Daytona triggers a full Docker build (~5min). Only TB2 tasks have prebuilt images.

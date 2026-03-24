@@ -8,69 +8,90 @@ benchflow = Harbor (environments, verifier, orchestration) + ACP (multi-turn age
 
 ```
 benchflow SDK.run()
-  → Harbor DockerEnvironment.start()
-  → Install ACP agent in container (npm)
-  → ContainerProcess: docker compose exec -i (live stdio pipe)
-  → ACP: initialize → session/new(cwd=/app) → session/prompt (loop)
-  → Agent runs tools on container filesystem
+  → Harbor Environment.start() (Docker or Daytona)
+  → Install ACP agent in sandbox (npm)
+  → LiveProcess: Docker exec or Daytona SSH (live stdio pipe)
+  → ACP: initialize → session/new(cwd) → session/set_model → session/prompt (loop)
+  → Agent runs tools on sandbox filesystem
   → Harbor Verifier: tests/test.sh → reward.txt
-  → DockerEnvironment.stop()
+  → Environment.stop()
 ```
 
 ## Key files
 
 - `src/benchflow/sdk.py` — SDK.run() orchestrates everything
-- `src/benchflow/container.py` — live stdio pipe to Docker container process
+- `src/benchflow/job.py` — Job orchestration with concurrency, retries, resume
+- `src/benchflow/metrics.py` — collect_metrics() for aggregating results
+- `src/benchflow/process.py` — LiveProcess abstraction (DockerProcess, DaytonaProcess)
+- `src/benchflow/agents/registry.py` — agent configs (install, launch, env requirements)
 - `src/benchflow/acp/client.py` — ACP JSON-RPC client
 - `src/benchflow/acp/container_transport.py` — ACP transport over container pipe
 - `src/benchflow/acp/session.py` — tracks tool calls, messages, thoughts
-- `src/benchflow/viewer.py` — HTML trajectory viewer for humans
-- `src/benchflow/trajectories/` — proxy, otel, atif, claude_code converter
+- `src/benchflow/viewer.py` — HTML trajectory viewer
 - `src/benchflow/cli/main.py` — benchflow run, benchflow view
 
 ## Supported agents
 
-Agents in `AGENT_INSTALLERS` (sdk.py) are auto-installed in containers:
-- `claude-agent-acp` — Claude Code via ACP (primary)
-- `pi-acp` — Pi agent
-- `openclaw` — OpenClaw
-- `codex-acp` — OpenAI Codex (needs OPENAI_API_KEY)
-- `gemini` — Gemini CLI (needs Google key)
+Agents registered in `src/benchflow/agents/registry.py`:
+- `claude-agent-acp` — Claude Code via ACP (primary, tested)
+- `pi-acp` — Pi coding agent via ACP (tested, needs `@mariozechner/pi-coding-agent`)
+- `openclaw` — OpenClaw (incompatible — needs gateway session lifecycle)
+- `codex-acp` — OpenAI Codex (needs OPENAI_API_KEY, untested)
+- `gemini` — Gemini CLI (needs GOOGLE_API_KEY, untested)
 
 ## How to run
 
 ```bash
-export $(cat .env | xargs)  # ANTHROPIC_API_KEY
+source .env  # ANTHROPIC_API_KEY, DAYTONA_API_KEY
 
-# SDK
-uv run python -c "
+# SDK — API keys auto-inherited from environment
+python -c "
 import asyncio
-from benchflow.sdk import SDK
-result = asyncio.run(SDK().run('.ref/harbor/examples/tasks/hello-world',
+from benchflow import SDK
+result = asyncio.run(SDK().run(
+    '.ref/terminal-bench-2/log-summary-date-ranges',
     agent='claude-agent-acp',
     model='claude-haiku-4-5-20251001',
-    agent_env={'ANTHROPIC_API_KEY': '...'}))
-print(result)
+    environment='daytona',
+))
+print(result.rewards)
+"
+
+# Job — run multiple tasks with concurrency
+python -c "
+import asyncio
+from benchflow import Job, JobConfig
+result = asyncio.run(Job(
+    tasks_dir='.ref/terminal-bench-2',
+    jobs_dir='jobs/tb2-run',
+    config=JobConfig(agent='claude-agent-acp', model='claude-haiku-4-5-20251001',
+                     environment='daytona', concurrency=64),
+).run())
+print(f'{result.passed}/{result.total}')
 "
 
 # CLI
-benchflow run -t .ref/harbor/examples/tasks/hello-world -a claude-agent-acp
+benchflow run -t .ref/terminal-bench-2/log-summary-date-ranges -a claude-agent-acp
+benchflow view jobs/tb2-run/
 ```
 
 ## Testing
 
+Use Haiku 4.5 (`claude-haiku-4-5-20251001`) for all testing/dogfood runs.
+
 ```bash
-uv run pytest tests/     # unit tests (no Docker needed)
+pytest tests/     # unit tests (no Docker needed)
 ```
 
-Real e2e tests require Docker + ANTHROPIC_API_KEY.
+Real e2e tests require Daytona or Docker + ANTHROPIC_API_KEY.
+Dogfood script: `docs/dogfood/DOGFOOD.md`
 
 ## Harbor dependency
 
 benchflow imports Harbor as a library: `harbor @ git+https://github.com/benchflow-ai/harbor.git`
 
-Harbor provides: DockerEnvironment, Task, TaskConfig, TrialPaths, Verifier, and all models.
-benchflow re-exports everything: `from benchflow import Job, Trial, TaskConfig` works.
+Harbor provides: DockerEnvironment, DaytonaEnvironment, Task, TaskConfig, TrialPaths, Verifier, and all models.
+benchflow re-exports everything: `from benchflow import Job, JobConfig, SDK, collect_metrics` works.
 
 ## Output structure
 
@@ -79,10 +100,17 @@ jobs/{job_name}/{trial_name}/
 ├── result.json           # rewards, agent info, timing
 ├── prompts.json          # prompts sent to agent
 ├── trajectory/
-│   └── acp_trajectory.jsonl  # ACP session/update events
-├── agent/                # Harbor agent logs
+│   └── acp_trajectory.jsonl  # ACP tool calls + agent thoughts
 ├── verifier/
-│   ├── reward.txt        # 0 or 1
+│   ├── reward.txt        # float reward
+│   ├── test-stdout.txt   # verifier output
 │   └── ctrf.json         # pytest results
-└── artifacts/
+└── summary.json          # job-level aggregates (at job_name level)
 ```
+
+## Key docs
+
+- `PLAN.md` — project roadmap and status
+- `docs/parity/RESULTS.md` — benchmark results vs official numbers
+- `docs/GAP_ANALYSIS.md` — feature gaps and testing findings
+- `docs/dogfood/DOGFOOD.md` — end-to-end test prompt

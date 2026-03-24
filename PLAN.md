@@ -2,67 +2,94 @@
 
 ## Completed
 
-### Code (pushed to `main`)
+### Infrastructure (pushed to `main`)
 - Harbor superset: import harbor as dependency, re-export everything
 - ACP client: initialize, session/new, session/prompt, session/config/update, permission auto-approve
 - Container transport: live stdio pipe via Docker compose exec or Daytona SSH
 - SDK.run(): Harbor env (Docker or Daytona) + ACP agent + Harbor verifier
 - Multi-turn: multiple prompts to same ACP session
 - Multi-agent registry: claude-agent-acp, pi-acp, openclaw, codex-acp, gemini
-- Model config: set via ACP `session/config/update` (env var ignored by claude-agent-acp)
+- Model config: set via ACP `session/set_model` (env var ignored by claude-agent-acp)
 - Result persistence: result.json, prompts.json, acp_trajectory.jsonl per trial
-- Viewer: benchflow view renders HTML
-- CLI: benchflow run, benchflow view
+- Viewer: `benchflow view` renders HTML trajectory viewer
+- CLI: `benchflow run`, `benchflow view`
 - Trajectory capture: ACP native
 - Daytona environment support (DaytonaProcess via SSH, LiveProcess abstraction)
-- Bug fixes: pipefail, node version check, dynamic WORKDIR, 10MB buffer, token limit, stderr capture
+- Job orchestration: concurrency, retries (`RetryConfig`), resume, `summary.json`
+- Metrics: `collect_metrics()` — pass rates, tool calls, timing, error breakdowns
+- Auto-env: SDK auto-inherits API keys from `os.environ`
+- Bug fixes: pipefail, DEBIAN_FRONTEND, node version check, dynamic WORKDIR, 10MB buffer, token limit, stderr capture
 
 ### TB2 Single-Turn (Step 1) — Done
 - **52/89 (58.4%)** with Sonnet 4.6 via claude-agent-acp (Claude Code v2.1.76)
-- Parity: official Anthropic reports 59.1%, tbench.ai shows 59.55% — **within ~1%**
-- 14 errors: 9 timeouts (model limitation), 5 Daytona npm install bottleneck
-- Discovery: claude-agent-acp ignores ANTHROPIC_MODEL env var, defaults to Sonnet 4.6
-- Fixed: model now set via ACP config/update protocol
+- Parity: official 59.1%, tbench.ai 59.55% — **within ~1%, pipeline validated**
+- 14 errors: 9 timeouts, 5 Daytona install (fixed with DEBIAN_FRONTEND)
+
+### TB2 Multi-Turn (Step 2) — Done
+- **33/89 (37.1%)** with Haiku 4.5, multi-turn recheck prompt
+- Reference: tbench.ai Haiku 4.5 = 27.5% (Claude Code v2.0.31) — our newer v2.1.76 is ~10pp better
+- 9 errors: all timeouts, 0 install failures
+- Prompts: `[instruction, "Review your solution. Check for errors, test it, and fix any issues."]`
+
+### Multi-Agent Testing — Done
+- **claude-agent-acp**: TB2-14 = 4/14 (28.6%), 0 errors, 12.7min
+- **pi-acp**: TB2-14 = 7/14 (50.0%), 2 timeouts, 60.7min — outperformed claude on same tasks/model
+- **openclaw**: Incompatible — ACP bridge needs sessions via gateway `/acp spawn`, not standard `session/new`
+- **codex-acp**: Not tested (needs OPENAI_API_KEY)
+- **gemini**: Not tested (needs GOOGLE_API_KEY)
+
+### SkillsBench Smoke Test — Done
+- 2/4 passed (50%) with Haiku 4.5 on Daytona
+- Skills auto-loaded: Dockerfiles copy skills to `~/.claude/skills/`, Claude Code discovers them
+- Partial rewards work (dialogue-parser got 0.333)
+- Dockerfile builds on Daytona work (~30-60s extra per task, no prebuilt images)
+
+### Dogfood — Done
+- All SDK features tested end-to-end: SDK.run(), Job, collect_metrics, list_agents, viewer
+- Concurrency 64 validated on Daytona
+- Docs: `docs/dogfood/DOGFOOD.md`, `docs/GAP_ANALYSIS.md`
 
 ---
 
 ## Next Steps
 
-### Retry Docker Errors — Done
-- [x] All 5 tasks retried on Docker with Haiku 4.5
-- prove-plus-comm: **PASS** (WORKDIR fix worked)
-- path-tracing-reverse, gpt2-codegolf: FAIL (task too hard for Haiku)
-- write-compressor, caffe-cifar-10: Timeout (genuine model limitation)
-- **0 infra errors remaining** — all errors are now timeouts or task difficulty
+### Step 3: SkillsBench Full Run
+- [ ] Run all 87 tasks with claude-agent-acp + Haiku 4.5 on Daytona
+- [ ] Run 20-task subset with pi-acp for comparison
+- [ ] Compare with reference trajectories / official scores
+- Smoke test done, skills loading confirmed, Dockerfile builds work
 
-### Step 2: TB2 Multi-Turn Run
-- [ ] Run all 89 tasks with recheck prompt
-- [ ] Prompts: [instruction, "Review your solution. Check for errors, test it, and fix any issues."]
-- [ ] Compare single-turn vs multi-turn delta
-- [ ] Environment: Daytona, concurrency 4
-- [ ] Model: Sonnet 4.6 (default) — or set to Haiku via config/update if we want Haiku numbers
-
-### Step 3-4: SkillsBench
-- [ ] Sanity check: 20 random tasks
-- [ ] Full run: all self-contained tasks (~85 tasks)
-- [ ] Compare with reference trajectories
+### Step 4: TB2 Multi-Turn with Sonnet
+- [ ] Run all 89 tasks with Sonnet 4.6 + recheck prompt
+- [ ] Compare: single-turn Sonnet (58.4%) vs multi-turn Sonnet (?)
+- [ ] This is the number that matters for parity — Haiku multi-turn was just validation
 
 ### Step 5: Parity Report
-- [ ] Write `parity/PARITY.md`:
-  - TB2 scores vs tbench.ai leaderboard
-  - Agent/model version matrix
-  - Error analysis
-  - Multi-turn improvement (if run)
+- [ ] Update `docs/parity/RESULTS.md` with:
   - SkillsBench results
+  - Multi-turn Sonnet results
+  - Multi-agent comparison table
+  - Full error analysis across all runs
+- [ ] Agent/model version matrix
 
-### Multi-Agent Testing
-- [ ] pi-acp on hello-world + TB2 subset
-- [ ] openclaw on hello-world + TB2 subset
+### CLI & SDK Polish
+- [ ] `benchflow agents list` — CLI command to list agents
+- [ ] `benchflow jobs list` — show past job results
+- [ ] Task filtering: `Job(tasks=[...])` or `task_glob` parameter
+- [ ] Viewer: print URL when serving
+- [ ] YAML job config for reproducible runs
+
+### Multi-Agent Expansion
+- [ ] codex-acp: test with OPENAI_API_KEY
+- [ ] gemini: test with GOOGLE_API_KEY
+- [ ] openclaw: track upstream for standalone ACP session support
 
 ### Future Infrastructure
 - [ ] Daytona snapshots — pre-bake agent to eliminate install time
-- [ ] Haiku run — verify model selection works via config/update
-- [ ] Higher concurrency on Daytona (no Docker network exhaustion)
+- [ ] Prebuilt images for SkillsBench — speed up from ~90s to ~30s per task
+- [ ] ATIF export for trajectory interop
+- [ ] MCP pass-through to agents
+- [ ] E2B/Modal environment backends
 
 ---
 
@@ -77,6 +104,8 @@
 | ACP protocol SDK | 0.16.1 |
 | TB2 task count | 89 |
 | SkillsBench task count | 87 |
-| Our TB2 score (Sonnet 4.6) | 52/89 = 58.4% |
-| Official TB2 score (Sonnet 4.6) | 59.1% |
-| Parity gap | ~0.7% |
+| Our TB2 score (Sonnet 4.6, single-turn) | 52/89 = 58.4% |
+| Our TB2 score (Haiku 4.5, multi-turn) | 33/89 = 37.1% |
+| Official TB2 (Sonnet 4.6) | 59.1% |
+| Official TB2 (Haiku 4.5, old CC) | 27.5% |
+| Daytona max concurrency tested | 64 |
