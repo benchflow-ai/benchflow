@@ -49,6 +49,14 @@
 - Concurrency 64 validated on Daytona
 - Docs: `docs/dogfood/DOGFOOD.md`, `docs/GAP_ANALYSIS.md`
 
+### Skills & Skill Validation — Done
+- Created `skills/benchflow-run/` — skill for running benchmarks (SDK, Job, metrics)
+- Created `skills/benchflow-create-task/` — skill for creating Harbor-format tasks
+- Validation tasks eval'd through benchflow (Haiku 4.5, Daytona):
+  - `create-simple-task`: reward 1.0 — agent read skill, created valid task with all files
+  - `benchflow-knowledge`: reward 1.0 (6/6) — agent read skills, answered all questions correctly
+- Skills baked into Dockerfiles via `COPY skills /root/.claude/skills/`, auto-discovered by Claude Code
+
 ---
 
 ## Next Steps

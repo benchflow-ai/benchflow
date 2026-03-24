@@ -193,6 +193,23 @@ jobs/{job_name}/{trial_name}/
 
 See [docs/parity/RESULTS.md](docs/parity/RESULTS.md) for full analysis.
 
+## Skills
+
+BenchFlow ships skills that teach agents how to use the framework. Place them in `~/.claude/skills/` (or bake into task Dockerfiles) for auto-discovery:
+
+| Skill | Purpose |
+|-------|---------|
+| `skills/benchflow-run/` | Run benchmarks — SDK, Job, multi-turn, metrics |
+| `skills/benchflow-create-task/` | Create Harbor-format benchmark tasks |
+
+To bake skills into a task environment:
+
+```dockerfile
+COPY skills /root/.claude/skills
+```
+
+Validation tasks in `skills/tests/` confirm agents can use the skills correctly (both eval'd at reward 1.0 with Haiku 4.5).
+
 ## Architecture
 
 BenchFlow is a superset of [Harbor](https://github.com/benchflow-ai/harbor). Harbor provides environments (Docker, Daytona), verifier, task format, and orchestration. BenchFlow adds:
@@ -201,6 +218,7 @@ BenchFlow is a superset of [Harbor](https://github.com/benchflow-ai/harbor). Har
 - **Job orchestration** — concurrency, retries, resume, metrics
 - **Multi-agent registry** — auto-install agents in sandboxes
 - **Trajectory capture** — from ACP protocol
+- **Skills** — teach agents to use BenchFlow itself
 - **Viewer** — HTML trajectory visualization
 - **CLI** — `run`, `job`, `agents`, `metrics`, `view`
 
