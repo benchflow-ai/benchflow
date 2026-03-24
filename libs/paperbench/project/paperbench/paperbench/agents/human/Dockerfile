@@ -1,1 +1,0 @@
-# Human agents do not have a Dockerfile, but a file is required by the registry.

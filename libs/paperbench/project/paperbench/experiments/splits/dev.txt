@@ -1,2 +1,0 @@
-semantic-self-consistency
-self-expansion
