@@ -60,6 +60,8 @@ AGENTS: dict[str, AgentConfig] = {
         description="Pi agent via ACP",
         install_cmd=(
             f"{_NODE_INSTALL} && "
+            "( command -v pi >/dev/null 2>&1 || "
+            "npm install -g @mariozechner/pi-coding-agent@latest >/dev/null 2>&1 ) && "
             "( command -v pi-acp >/dev/null 2>&1 || "
             "npm install -g pi-acp@latest >/dev/null 2>&1 ) && "
             "command -v pi-acp >/dev/null 2>&1"
