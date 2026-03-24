@@ -12,7 +12,7 @@ from pathlib import Path
 
 from benchflow.sdk import SDK
 
-CONCURRENCY = 4
+CONCURRENCY = 64
 JOBS_DIR = "docs/parity/terminal-bench-2.0/multi-turn-haiku"
 
 
