@@ -178,7 +178,10 @@ results/
 .ref/
 trials/
 jobs/
-parity/terminal-bench-2.0/
-parity/skillsbench/
-parity/daytona-test/
-parity/debug/
+# benchflow run outputs (large per-trial results with trajectories)
+/parity/
+/dogfood/
+# Ignore trial result dirs anywhere (but not the scripts/summaries)
+**/terminal-bench-2.0/single-turn/
+**/terminal-bench-2.0/multi-turn*/
+**/skillsbench/results/

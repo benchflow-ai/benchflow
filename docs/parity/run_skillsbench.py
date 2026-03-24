@@ -47,7 +47,7 @@ async def main():
         ]
     )
 
-    jobs_dir = "parity/skillsbench"
+    jobs_dir = "docs/parity/skillsbench"
     Path(jobs_dir).mkdir(parents=True, exist_ok=True)
 
     print(f"SkillsBench: {len(task_dirs)} tasks, concurrency={CONCURRENCY}")

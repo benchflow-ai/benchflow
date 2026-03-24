@@ -16,7 +16,7 @@ from pathlib import Path
 from benchflow.sdk import SDK
 
 CONCURRENCY = 4
-JOBS_DIR = "parity/terminal-bench-2.0/single-turn"
+JOBS_DIR = "docs/parity/terminal-bench-2.0/single-turn"
 
 
 def get_done_tasks() -> set[str]:

@@ -13,7 +13,7 @@ from pathlib import Path
 from benchflow.sdk import SDK
 
 CONCURRENCY = 4
-JOBS_DIR = "parity/terminal-bench-2.0/multi-turn-haiku"
+JOBS_DIR = "docs/parity/terminal-bench-2.0/multi-turn-haiku"
 
 
 def get_done_tasks() -> set[str]:
