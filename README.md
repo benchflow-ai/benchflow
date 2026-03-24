@@ -224,4 +224,4 @@ BenchFlow is a superset of [Harbor](https://github.com/benchflow-ai/harbor). Har
 
 ## License
 
-MIT
+Apache License 2.0 — see [LICENSE](LICENSE).

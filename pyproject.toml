@@ -19,13 +19,13 @@ maintainers = [
     { name = "Xiangyi Li", email = "xiangyi@benchflow.ai" },
 ]
 
-license = { text = "MIT" }
+license = { text = "Apache-2.0" }
 
 classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
-    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: Apache Software License",
     "Operating System :: OS Independent",
 ]
 
