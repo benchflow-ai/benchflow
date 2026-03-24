@@ -10,7 +10,7 @@ Findings from dogfood testing on 2026-03-23/24.
 |-------|--------|-------|-------|
 | claude-agent-acp | PASS (1.0) | 5-6 | Works reliably |
 | pi-acp | PASS (1.0) | 6 | Works after install fix |
-| openclaw | CRASH | 0 | `Process closed stdout (rc=None)` — upstream broken |
+| openclaw | INCOMPATIBLE | 0 | ACP bridge needs sessions via gateway's `/acp spawn`, not standard `session/new` |
 | codex-acp | Not tested | — | Needs OPENAI_API_KEY |
 | gemini | Not tested | — | Needs GOOGLE_API_KEY |
 
@@ -64,7 +64,7 @@ pi-acp outperformed claude-agent-acp on the same 14-task subset with the same mo
 ## Gaps Remaining
 
 ### Must Fix
-- **openclaw**: Either fix install or remove from registry and document as unsupported
+- **openclaw**: ACP bridge requires sessions spawned via openclaw's gateway (`/acp spawn`), not the standard ACP `session/new`. This is an architectural mismatch — openclaw is not a standalone ACP agent. Kept in registry but marked incompatible.
 - **Task filtering**: Job should accept `tasks: list[str]` or `task_glob: str` parameter
 
 ### Should Fix
