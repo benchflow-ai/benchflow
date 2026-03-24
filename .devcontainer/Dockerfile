@@ -43,6 +43,10 @@ RUN install -m 0755 -d /etc/apt/keyrings && \
 # uv for Python
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
 
+# Ensure npm-global dir exists and is writable by node user
+RUN mkdir -p /usr/local/share/npm-global && \
+  chown -R node:node /usr/local/share/npm-global
+
 USER node
 
 ENV NPM_CONFIG_PREFIX=/usr/local/share/npm-global
