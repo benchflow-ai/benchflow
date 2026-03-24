@@ -1,0 +1,19 @@
+version = "1.0"
+
+[metadata]
+author_name = "benchflow"
+difficulty = "easy"
+category = "benchflow-skill-validation"
+tags = ["benchflow", "knowledge", "skill-test"]
+
+[verifier]
+timeout_sec = 30.0
+
+[agent]
+timeout_sec = 120.0
+
+[environment]
+build_timeout_sec = 300.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 5120
