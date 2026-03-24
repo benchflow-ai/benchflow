@@ -178,10 +178,3 @@ results/
 .ref/
 trials/
 jobs/
-# benchflow run outputs (large per-trial results with trajectories)
-/parity/
-/dogfood/
-# Ignore trial result dirs anywhere (but not the scripts/summaries)
-**/terminal-bench-2.0/single-turn/
-**/terminal-bench-2.0/multi-turn*/
-**/skillsbench/results/
