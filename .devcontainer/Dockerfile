@@ -4,10 +4,14 @@ ARG TZ
 ENV TZ="$TZ"
 ARG CLAUDE_CODE_VERSION=latest
 
-# System tools
+# System tools + playwright deps (for browser plugin)
 RUN apt-get update && apt-get install -y --no-install-recommends \
   less git procps sudo fzf zsh man-db unzip gnupg2 gh jq nano vim \
   python3 python3-pip python3-venv \
+  # Playwright/Chromium deps
+  libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 \
+  libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 libgbm1 libpango-1.0-0 \
+  libcairo2 libasound2 libxshmfence1 \
   && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 ARG USERNAME=node
@@ -53,8 +57,12 @@ RUN sh -c "$(wget -O- https://github.com/deluan/zsh-in-docker/releases/download/
   -a "export PROMPT_COMMAND='history -a' && export HISTFILE=/commandhistory/.bash_history" \
   -x
 
-# Claude Code
-RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
+# Bun (needed for discord plugin and other MCP servers)
+RUN curl -fsSL https://bun.sh/install | bash
+ENV PATH=$PATH:/home/node/.bun/bin
+
+# Claude Code + Gemini CLI
+RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} @google/gemini-cli
 
 USER root
 RUN echo "node ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/node-all && \
