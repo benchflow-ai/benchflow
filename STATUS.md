@@ -38,21 +38,31 @@
 
 ### P1 — Fix Soon
 - **Harbor private attributes** — `process.py` accesses `env._sandbox`, `env._strategy`. Fragile.
-- **Harbor unpinned** — `pyproject.toml` pins to git HEAD. Should pin to commit/tag.
 - **API keys in `ps aux`** — Docker exec `-e K=V` visible in process list.
 
 ### P2 — Backlog
 - **No integration tests** — SDK.run(), Job.run() have zero coverage.
 - **Job resume no config scoping** — same jobs_dir + different config silently skips tasks.
-- **No timeout on initialize/session_new** — can hang if agent stuck.
 - **`from harbor import *`** — namespace collision risk (benchflow.Job shadows harbor.Job).
+
+### Fixed (2026-03-24)
+- ~~**Harbor unpinned**~~ — Pinned to commit `6c2c293`.
+- ~~**No timeout on initialize/session_new**~~ — 60s timeout on both.
+- **UTF-8 decode crash** in ContainerTransport — now uses `errors="replace"`.
+- **Timeout variable scoping** in SDK.run() — defined before try block.
+- **Permission handler fragility** — falls back to first option.
+- **Job.run() race condition** — now passes job_name to SDK.run().
+- **Notification handler crashes** — wrapped in try/except.
+- **Viewer JSON parsing** — tolerates corrupted trajectory files.
+- **ToolCallStatus enum** — catches invalid status strings.
+- **Dead code cleanup** — removed container.py, unused ACPClient fields.
 
 ---
 
 ## Roadmap
 
 ### Next Up
-- **Skills support (SDK-level)** — detect and copy skills to agent-specific paths at runtime
+- ~~**Skills support (SDK-level)**~~ — ✅ Done. `skills_dir` param in SDK.run(), Job, CLI.
 - **YAML config parity with Harbor** — agent params, environment config, dataset config
 - **Registry architecture** — agent shims as first-class registry entries
 
@@ -91,5 +101,5 @@ Future smoke tests must verify:
 | TB2 tasks | 89 |
 | SkillsBench tasks | 87 |
 | Max Daytona concurrency tested | 64 |
-| Unit tests | 45 |
+| Unit tests | 56 |
 | Working agents | 3 (claude, pi-acp, openclaw) |

@@ -159,20 +159,25 @@ def render_trial(trial_dir: Path, prompts: list[str] | None = None) -> str:
         prompts.append("")
 
     # Extract session info from first turn
-    first_events = [
-        json.loads(line)
-        for line in turn_files[0].read_text().splitlines()
-        if line.strip()
-    ]
+    def _parse_jsonl(text: str) -> list[dict]:
+        events = []
+        for line in text.splitlines():
+            if not line.strip():
+                continue
+            try:
+                events.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+        return events
+
+    first_events = _parse_jsonl(turn_files[0].read_text())
     sys_event = next((e for e in first_events if e.get("type") == "system"), {})
     total_cost = 0
     total_turns_count = 0
 
     all_blocks = []
     for i, tf in enumerate(turn_files):
-        events = [
-            json.loads(line) for line in tf.read_text().splitlines() if line.strip()
-        ]
+        events = _parse_jsonl(tf.read_text())
         all_blocks.append(render_turn(events, i + 1, prompts[i]))
         for e in events:
             if e.get("type") == "result":

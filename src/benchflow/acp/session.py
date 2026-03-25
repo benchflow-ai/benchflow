@@ -70,10 +70,12 @@ class ACPSession:
             tc_id = update.get("toolCallId", "")
             record = self._tool_call_map.get(tc_id)
             if record:
-                record.update_status(
-                    ToolCallStatus(update.get("status", "in_progress")),
-                    update.get("content"),
-                )
+                try:
+                    status = ToolCallStatus(update.get("status", "in_progress"))
+                except ValueError:
+                    logger.warning(f"Unknown tool call status: {update.get('status')}")
+                    status = ToolCallStatus.IN_PROGRESS
+                record.update_status(status, update.get("content"))
 
         elif update_type == "agent_message_chunk":
             content = update.get("content", {})

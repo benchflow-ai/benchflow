@@ -51,6 +51,10 @@ def run(
         list[str] | None,
         typer.Option("--ae", help="Agent env var (KEY=VALUE)"),
     ] = None,
+    skills_dir: Annotated[
+        Path | None,
+        typer.Option("--skills-dir", "-s", help="Skills directory to deploy into sandbox"),
+    ] = None,
 ) -> None:
     """Run a single task with an ACP agent."""
     from benchflow.sdk import SDK
@@ -73,6 +77,7 @@ def run(
             agent_env=parsed_env,
             jobs_dir=jobs_dir,
             environment=environment,
+            skills_dir=str(skills_dir) if skills_dir else None,
         )
     )
 
@@ -120,6 +125,10 @@ def job(
         str,
         typer.Option("--jobs-dir", "-o", help="Output directory for results"),
     ] = "jobs",
+    skills_dir: Annotated[
+        Path | None,
+        typer.Option("--skills-dir", "-s", help="Skills directory to deploy into sandbox"),
+    ] = None,
 ) -> None:
     """Run all tasks in a directory with concurrency and retries.
 
@@ -139,6 +148,7 @@ def job(
                 environment=environment,
                 concurrency=concurrency,
                 retry=RetryConfig(max_retries=max_retries),
+                skills_dir=str(skills_dir) if skills_dir else None,
             ),
         )
     else:

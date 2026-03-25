@@ -105,3 +105,28 @@ datasets:
     assert cfg.agent == "pi-acp"
     assert cfg.environment == "docker"
     assert cfg.concurrency == 4
+
+
+def test_native_yaml_with_skills_dir(tmp_path):
+    """Test that skills_dir is parsed from native YAML."""
+    tasks = tmp_path / "tasks" / "task-a"
+    tasks.mkdir(parents=True)
+    (tasks / "task.toml").write_text('version = "1.0"')
+    skills = tmp_path / "my-skills"
+    skills.mkdir()
+
+    config = tmp_path / "config.yaml"
+    config.write_text("""
+tasks_dir: tasks
+agent: claude-agent-acp
+skills_dir: my-skills
+""")
+
+    job = Job.from_yaml(config)
+    assert job._config.skills_dir == str(tmp_path / "my-skills")
+
+
+def test_native_yaml_without_skills_dir(native_yaml):
+    """Test that skills_dir defaults to None."""
+    job = Job.from_yaml(native_yaml)
+    assert job._config.skills_dir is None

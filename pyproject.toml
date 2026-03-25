@@ -5,7 +5,7 @@ description = "ACP-native agent benchmarking framework. Superset of Harbor."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "harbor @ git+https://github.com/benchflow-ai/harbor.git",
+    "harbor @ git+https://github.com/benchflow-ai/harbor.git@6c2c2938512fbb8165a597349759b2e4c50ec13e",
     "httpx>=0.27.0",
     "anyio>=4.0",
 ]

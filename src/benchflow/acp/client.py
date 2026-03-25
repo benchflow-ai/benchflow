@@ -27,8 +27,6 @@ class ACPClient:
         self._request_id = 100000  # High start to avoid collision with agent IDs
         self._session: ACPSession | None = None
         self._initialize_result: InitializeResult | None = None
-        self._pending_requests: dict[int | str, asyncio.Future] = {}
-        self._listener_task: asyncio.Task | None = None
 
     @classmethod
     def from_config(
@@ -102,13 +100,19 @@ class ACPClient:
 
             # It's a notification (no id)
             if "method" in msg and "id" not in msg:
-                await self._handle_notification(msg)
+                try:
+                    await self._handle_notification(msg)
+                except Exception as e:
+                    logger.warning(f"Error handling notification {msg.get('method')}: {e}")
                 continue
 
             # It's a request from the agent (has id + method)
             if "method" in msg and "id" in msg:
                 logger.debug(f"ACPClient handling agent request: {msg.get('method')}")
-                await self._handle_agent_request(msg)
+                try:
+                    await self._handle_agent_request(msg)
+                except Exception as e:
+                    logger.warning(f"Error handling agent request {msg.get('method')}: {e}")
                 continue
 
             logger.debug(f"ACPClient ignoring unknown message: {msg}")
@@ -132,17 +136,17 @@ class ACPClient:
             # Auto-approve all permissions in benchmark mode
             # claude-agent-acp expects: outcome.outcome="selected", outcome.optionId
             options = params.get("options", [])
-            # Pick the most permissive option
-            option_id = "bypassPermissions"
+            # Pick the most permissive option available
+            option_id = options[0].get("optionId", "default") if options else "default"
             for opt in options:
                 if opt.get("optionId") == "bypassPermissions":
                     option_id = "bypassPermissions"
                     break
                 if opt.get("kind") == "allow_always":
-                    option_id = opt.get("optionId", "acceptEdits")
+                    option_id = opt.get("optionId", option_id)
                     break
                 if opt.get("kind") == "allow_once":
-                    option_id = opt.get("optionId", "default")
+                    option_id = opt.get("optionId", option_id)
 
             response = {
                 "jsonrpc": "2.0",

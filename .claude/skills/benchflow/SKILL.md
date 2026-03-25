@@ -140,6 +140,15 @@ See `skills/benchflow/references/smoke-test.md` for quick and full smoke tests.
 
 See `skills/benchflow/references/dogfood.md` for the full dogfood script.
 
+### `review` — code review and fix workflow
+
+See `skills/benchflow/references/review-and-test.md` for the council review workflow:
+1. Launch 4 subagent reviewers in parallel (SDK, ACP, Process, Tests)
+2. Synthesize findings, prioritize by severity
+3. Fix bugs, run tests
+4. Smoke test on SkillsBench tasks
+5. Post progress to Discord
+
 Quick structure:
 ```
 my-task/
@@ -205,14 +214,39 @@ Use `daytona` for benchmarks. Docker is limited by network exhaustion.
 
 ## Skills in tasks
 
-SkillsBench tasks bake skills into Docker images:
+Two approaches for deploying skills:
+
+### Baked into Docker image (existing tasks)
 ```dockerfile
 COPY skills /root/.claude/skills
 ```
 
-- `claude-agent-acp` / `pi-acp`: auto-discover `~/.claude/skills/`
+### Runtime deployment via `--skills-dir` (new)
+```bash
+benchflow run -t task-dir -a claude-agent-acp --skills-dir skills/ -e daytona
+```
+
+SDK:
+```python
+result = await sdk.run(
+    task_path="task-dir",
+    agent="claude-agent-acp",
+    skills_dir="skills/",  # uploaded to /skills, symlinked to agent paths
+    environment="daytona",
+)
+```
+
+YAML config:
+```yaml
+tasks_dir: path/to/tasks
+skills_dir: skills/
+agent: claude-agent-acp
+```
+
+Skills are uploaded to `/skills/` in the sandbox and symlinked to:
+- `~/.claude/skills/` (claude-agent-acp, pi-acp)
+- `~/.gemini/skills/` (gemini)
 - `openclaw`: shim copies from `.claude/skills/` → `<workspace>/skills/`
-- Skills must load from the environment, never injected into prompts
 
 ## Output structure
 
