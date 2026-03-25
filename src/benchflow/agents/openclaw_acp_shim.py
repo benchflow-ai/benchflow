@@ -268,9 +268,16 @@ def main():
         elif method == "session/set_model":
             model = params.get("modelId", "")
             if model:
+                # Infer provider prefix if not already present
+                if "/" not in model:
+                    if "gemini" in model.lower():
+                        model = f"google/{model}"
+                    elif "gpt" in model.lower() or model.startswith("o1") or model.startswith("o3"):
+                        model = f"openai/{model}"
+                    else:
+                        model = f"anthropic/{model}"
                 subprocess.run(
-                    ["openclaw", "config", "set", "agents.defaults.model",
-                     f"anthropic/{model}"],
+                    ["openclaw", "config", "set", "agents.defaults.model", model],
                     capture_output=True, timeout=10,
                 )
             send({"jsonrpc": "2.0", "id": req_id, "result": {}})
@@ -293,6 +300,20 @@ def main():
                     timeout=920,
                     env={**os.environ},
                 )
+
+                # Surface stderr as agent thought (for debugging)
+                if result.stderr and result.stderr.strip():
+                    send({
+                        "jsonrpc": "2.0",
+                        "method": "session/update",
+                        "params": {
+                            "sessionId": session_id,
+                            "update": {
+                                "sessionUpdate": "agent_thought",
+                                "text": f"[openclaw stderr]\n{result.stderr[:2000]}",
+                            },
+                        },
+                    })
 
                 # Parse openclaw's session JSONL for full trajectory
                 # Extract session ID from JSON output (may be multi-line)
