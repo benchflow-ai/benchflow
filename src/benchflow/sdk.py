@@ -404,6 +404,21 @@ class SDK:
         error = None
         rewards = None
         timeout = task.config.agent.timeout_sec  # Define before try for except block
+        timing: dict[str, float] = {}
+
+        # Write config.json at trial start (for reproducibility)
+        config_data = {
+            "task_path": str(task_path),
+            "agent": agent,
+            "model": model,
+            "environment": environment,
+            "skills_dir": str(skills_dir) if skills_dir else None,
+            "sandbox_user": sandbox_user,
+            "context_root": str(context_root) if context_root else None,
+            "timeout_sec": timeout,
+            "started_at": str(started_at),
+        }
+        (trial_dir / "config.json").write_text(json.dumps(config_data, indent=2))
 
         try:
             # Default prompts: task instruction
@@ -419,13 +434,17 @@ class SDK:
 
             # 1. Start environment
             logger.info(f"Starting {environment} environment: {task_path.name}")
+            t_env_start = datetime.now()
             await env.start(force_build=False)
+            timing["environment_setup"] = (datetime.now() - t_env_start).total_seconds()
 
             # Upload task files
             if (task_path / "instruction.md").exists():
                 await env.upload_file(task_path / "instruction.md", "/instruction.md")
             if (task_path / "solution").is_dir():
                 await env.upload_dir(task_path / "solution", "/solution")
+
+            t_agent_setup = datetime.now()
 
             # Oracle mode: run solution/solve.sh directly, skip ACP
             if agent == "oracle":
@@ -585,6 +604,9 @@ class SDK:
                     except Exception as e:
                         logger.warning(f"Failed to set model via ACP: {e}")
 
+                timing["agent_setup"] = (datetime.now() - t_agent_setup).total_seconds()
+                t_agent_exec = datetime.now()
+
                 # 4. Send prompts (multi-turn)
                 for i, prompt in enumerate(prompts):
                     logger.info(f"Prompt {i + 1}/{len(prompts)}: {prompt[:80]}...")
@@ -620,6 +642,13 @@ class SDK:
                         "text": session.full_thought,
                     })
 
+            if agent != "oracle" and "agent_setup" not in timing:
+                timing["agent_setup"] = (datetime.now() - t_agent_setup).total_seconds()
+            if agent == "oracle":
+                timing["agent_execution"] = (datetime.now() - t_agent_setup).total_seconds()
+            elif "agent_execution" not in timing:
+                timing["agent_execution"] = (datetime.now() - t_agent_exec).total_seconds()
+
             # Save trajectory (both oracle and ACP paths)
             traj_dir = trial_dir / "trajectory"
             traj_dir.mkdir(parents=True, exist_ok=True)
@@ -628,9 +657,9 @@ class SDK:
             )
 
             # 6. Verify
-            # Ensure verifier output directory exists locally (Daytona doesn't mount it)
             trial_paths.verifier_dir.mkdir(parents=True, exist_ok=True)
             logger.info("Running verifier...")
+            t_verify = datetime.now()
             verifier = Verifier(
                 task=task,
                 trial_paths=trial_paths,
@@ -638,6 +667,7 @@ class SDK:
             )
             verifier_result = await verifier.verify()
             rewards = verifier_result.rewards
+            timing["verifier"] = (datetime.now() - t_verify).total_seconds()
             logger.info(f"Rewards: {rewards}")
 
         except asyncio.TimeoutError:
@@ -674,7 +704,11 @@ class SDK:
             finished_at=datetime.now(),
         )
 
-        # Save result.json and prompts.json
+        # Finalize timing
+        timing["total"] = (result.finished_at - result.started_at).total_seconds()
+        timing = {k: round(v, 1) for k, v in timing.items()}
+
+        # Save result.json, prompts.json, timing.json
         trial_dir.mkdir(parents=True, exist_ok=True)
         (trial_dir / "result.json").write_text(
             json.dumps(
@@ -688,10 +722,12 @@ class SDK:
                     "error": result.error,
                     "started_at": str(result.started_at),
                     "finished_at": str(result.finished_at),
+                    "timing": timing,
                 },
                 indent=2,
             )
         )
+        (trial_dir / "timing.json").write_text(json.dumps(timing, indent=2))
         (trial_dir / "prompts.json").write_text(json.dumps(prompts, indent=2))
 
         return result
