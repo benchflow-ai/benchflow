@@ -446,6 +446,10 @@ class SDK:
 
             t_agent_setup = datetime.now()
 
+            # Run pre-agent hooks (e.g. start claw-* services) — needed by BOTH oracle and ACP
+            for hook in (pre_agent_hooks or []):
+                await hook(env)
+
             # Oracle mode: run solution/solve.sh directly, skip ACP
             if agent == "oracle":
                 logger.info("Oracle mode: running solution/solve.sh")
@@ -521,9 +525,6 @@ class SDK:
                     else:
                         logger.info("Skills already injected via Dockerfile")
 
-                # 2c. Run pre-agent hooks (e.g. start background services)
-                for hook in (pre_agent_hooks or []):
-                    await hook(env)
 
                 # 2d. Set up sandbox user (non-root agent execution)
                 if sandbox_user:
