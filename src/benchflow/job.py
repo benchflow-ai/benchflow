@@ -309,6 +309,17 @@ class Job:
         completed = self._get_completed_tasks()
         remaining = [d for d in task_dirs if d.name not in completed]
 
+        # Warn if resuming with different config than completed tasks
+        if completed:
+            sample = next(iter(completed.values()))
+            prev_agent = sample.get("agent_name", "")
+            if prev_agent and prev_agent != self._config.agent:
+                logger.warning(
+                    f"Resuming with agent={self._config.agent!r} but "
+                    f"completed tasks used agent={prev_agent!r}. "
+                    f"Use a different jobs_dir to avoid mixing results."
+                )
+
         self._jobs_dir.mkdir(parents=True, exist_ok=True)
         self._prune_docker()
 
