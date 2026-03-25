@@ -139,3 +139,42 @@ def get_agent(name: str) -> AgentConfig:
 def list_agents() -> list[AgentConfig]:
     """List all registered agents."""
     return list(AGENTS.values())
+
+
+def register_agent(
+    name: str,
+    install_cmd: str,
+    launch_cmd: str,
+    *,
+    protocol: str = "acp",
+    requires_env: list[str] | None = None,
+    description: str = "",
+) -> AgentConfig:
+    """Register a custom agent at runtime.
+
+    Usage:
+        from benchflow.agents.registry import register_agent
+
+        register_agent(
+            name="my-agent",
+            install_cmd="npm install -g my-agent",
+            launch_cmd="my-agent --acp",
+            requires_env=["MY_API_KEY"],
+        )
+
+    Returns the created AgentConfig.
+    """
+    config = AgentConfig(
+        name=name,
+        install_cmd=install_cmd,
+        launch_cmd=launch_cmd,
+        protocol=protocol,
+        requires_env=requires_env or [],
+        description=description,
+    )
+    AGENTS[name] = config
+    # Update backwards-compat dicts
+    from benchflow.sdk import AGENT_INSTALLERS, AGENT_LAUNCH
+    AGENT_INSTALLERS[name] = install_cmd
+    AGENT_LAUNCH[name] = launch_cmd
+    return config

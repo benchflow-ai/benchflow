@@ -58,6 +58,18 @@ class JobConfig:
     prompts: list[str | None] | None = None
     agent_env: dict[str, str] = field(default_factory=dict)
     retry: RetryConfig = field(default_factory=RetryConfig)
+    skills_dir: str | None = None
+    sandbox_user: str | None = None
+    context_root: str | None = None
+
+    def __post_init__(self):
+        from benchflow.agents.registry import AGENTS
+        if self.agent not in AGENTS:
+            available = ", ".join(sorted(AGENTS.keys()))
+            logger.warning(
+                f"Unknown agent {self.agent!r} — not in registry. "
+                f"Available: {available}. Will attempt to use as raw command."
+            )
 
 
 @dataclass
@@ -174,6 +186,7 @@ class Job:
             concurrency=raw.get("concurrency", 4),
             prompts=prompts,
             retry=RetryConfig(max_retries=raw.get("max_retries", 2)),
+            skills_dir=str(base_dir / raw["skills_dir"]) if raw.get("skills_dir") else None,
         )
         return cls(tasks_dir=tasks_dir, jobs_dir=jobs_dir, config=config, **kwargs)
 
@@ -215,6 +228,10 @@ class Job:
         jobs_dir = base_dir / raw.get("jobs_dir", "jobs")
         max_retries = raw.get("n_attempts", 1) - 1  # Harbor n_attempts includes first try
 
+        # Skills dir (shared with benchflow-native format)
+        skills_dir_raw = raw.get("skills_dir")
+        skills_dir = str(base_dir / skills_dir_raw) if skills_dir_raw else None
+
         config = JobConfig(
             agent=agent_name,
             model=model,
@@ -222,6 +239,7 @@ class Job:
             concurrency=concurrency,
             agent_env=agent_env,
             retry=RetryConfig(max_retries=max(0, max_retries)),
+            skills_dir=skills_dir,
         )
         return cls(tasks_dir=tasks_dir, jobs_dir=jobs_dir, config=config, **kwargs)
 
@@ -252,8 +270,8 @@ class Job:
         try:
             subprocess.run(["docker", "container", "prune", "-f"], capture_output=True, timeout=30)
             subprocess.run(["docker", "network", "prune", "-f"], capture_output=True, timeout=30)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Docker prune failed: {e}")
 
     async def _run_task(self, task_dir: Path) -> RunResult:
         """Run a single task with retries."""
@@ -267,8 +285,12 @@ class Job:
                 model=cfg.model,
                 prompts=cfg.prompts,
                 agent_env=cfg.agent_env,
+                job_name=self._job_name,
                 jobs_dir=str(self._jobs_dir),
                 environment=cfg.environment,
+                skills_dir=cfg.skills_dir,
+                sandbox_user=cfg.sandbox_user,
+                context_root=cfg.context_root,
             )
             last_result = result
 

@@ -48,7 +48,7 @@ class ContainerTransport(Transport):
         """Receive a JSON-RPC message from the agent."""
         while True:
             line = await self._cp.readline()
-            text = line.decode().strip()
+            text = line.decode(errors="replace").strip()
             if not text:
                 continue
             try:
