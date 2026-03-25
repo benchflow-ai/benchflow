@@ -581,6 +581,11 @@ class SDK:
                         f"cp -aL /root/.local/bin/. /home/{sandbox_user}/.local/bin/ 2>/dev/null || true; fi && "
                         "if [ -d /root/.nvm ]; then "
                         f"cp -a /root/.nvm/. /home/{sandbox_user}/.nvm/ 2>/dev/null || true; fi && "
+                        # Copy agent config dirs (openclaw, gemini, etc.)
+                        "if [ -d /root/.openclaw ]; then "
+                        f"cp -a /root/.openclaw/. /home/{sandbox_user}/.openclaw/ 2>/dev/null || true; fi && "
+                        "if [ -d /root/.gemini ]; then "
+                        f"cp -a /root/.gemini/. /home/{sandbox_user}/.gemini/ 2>/dev/null || true; fi && "
                         "if [ -d /skills ]; then "
                         f"chmod -R a+rX /skills && "
                         f"ln -sf /skills /home/{sandbox_user}/.claude/skills && "
