@@ -543,6 +543,15 @@ class SDK:
                             f"Diagnostics: {diag.stdout}"
                         )
 
+                # 2a-2. Write codex auth.json if needed (env vars aren't enough for codex-acp)
+                if "codex" in agent and agent_env.get("OPENAI_API_KEY"):
+                    await env.exec(
+                        "mkdir -p /root/.codex && "
+                        f'echo \'{{"OPENAI_API_KEY": "{agent_env["OPENAI_API_KEY"]}"}}\' > /root/.codex/auth.json',
+                        timeout_sec=10,
+                    )
+                    logger.info("Codex auth.json written")
+
                 # 2b. Deploy skills into sandbox (runtime fallback if no Dockerfile injection)
                 if skills_dir:
                     env_dir = task_path / "environment"
