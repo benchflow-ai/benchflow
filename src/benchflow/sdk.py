@@ -219,6 +219,49 @@ def _patch_harbor_dind() -> None:
 _patch_harbor_dind()
 
 
+async def _scrape_agent_trajectory(env: Any, agent: str, sandbox_user: str | None) -> list[dict]:
+    """Fallback: read agent-native trajectory files from the container."""
+    home = f"/home/{sandbox_user}" if sandbox_user else "/root"
+
+    # Gemini CLI: writes ~/.gemini/sessions/*/gemini-cli.trajectory.json
+    if "gemini" in agent:
+        result = await env.exec(
+            f"cat $(find {home}/.gemini -name 'gemini-cli.trajectory.json' 2>/dev/null | head -1) 2>/dev/null",
+            timeout_sec=10,
+        )
+        if result.return_code == 0 and result.stdout and result.stdout.strip():
+            try:
+                return _parse_gemini_trajectory(json.loads(result.stdout))
+            except (json.JSONDecodeError, Exception) as e:
+                logger.warning(f"Failed to parse gemini trajectory: {e}")
+
+    return []
+
+
+def _parse_gemini_trajectory(data: dict) -> list[dict]:
+    """Convert gemini-cli.trajectory.json → ACP trajectory event format."""
+    events = []
+    for msg in data.get("messages", []):
+        if msg.get("type") == "user":
+            continue
+        for tc in msg.get("toolCalls", []):
+            events.append({
+                "type": "tool_call",
+                "tool_call_id": tc.get("id", ""),
+                "kind": tc.get("name", ""),
+                "title": tc.get("args", {}).get("command", tc.get("name", "")),
+                "status": "completed" if tc.get("status") == "success" else "failed",
+                "content": tc.get("result", []),
+            })
+        content = msg.get("content", "")
+        if content:
+            events.append({"type": "agent_message", "text": content})
+        for thought in msg.get("thoughts", []):
+            if thought:
+                events.append({"type": "agent_thought", "text": thought})
+    return events
+
+
 # Backwards compat — expose install/launch dicts from registry
 AGENT_INSTALLERS = {name: a.install_cmd for name, a in AGENTS.items()}
 AGENT_LAUNCH = {name: a.launch_cmd for name, a in AGENTS.items()}
@@ -652,6 +695,14 @@ class SDK:
                 timing["agent_execution"] = (datetime.now() - t_agent_setup).total_seconds()
             elif "agent_execution" not in timing:
                 timing["agent_execution"] = (datetime.now() - t_agent_exec).total_seconds()
+
+            # Fallback: scrape agent-native trajectory if ACP captured nothing
+            if not trajectory and agent != "oracle":
+                scraped = await _scrape_agent_trajectory(env, agent, sandbox_user)
+                if scraped:
+                    trajectory = scraped
+                    n_tool_calls = sum(1 for e in trajectory if e.get("type") == "tool_call")
+                    logger.info(f"Scraped {len(trajectory)} events from agent-native trajectory")
 
             # Save trajectory (both oracle and ACP paths)
             traj_dir = trial_dir / "trajectory"
