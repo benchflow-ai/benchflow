@@ -33,11 +33,12 @@ benchflow SDK.run()
 ## Supported agents
 
 Agents registered in `src/benchflow/agents/registry.py`:
-- `claude-agent-acp` — Claude Code via ACP (primary, tested)
+- `claude-agent-acp` — Claude Code via ACP (primary, tested on Daytona)
 - `pi-acp` — Pi coding agent via ACP (tested, needs `@mariozechner/pi-coding-agent`)
 - `openclaw` — OpenClaw via ACP shim (tested). Skills: `.claude/skills/` → `<workspace>/skills/`
-- `codex-acp` — OpenAI Codex (needs OPENAI_API_KEY, untested)
-- `gemini` — Gemini CLI (needs GOOGLE_API_KEY, untested)
+- `openclaw-gemini` — OpenClaw with Google Gemini model (tested, needs GEMINI_API_KEY)
+- `gemini` — Gemini CLI via ACP (tested on Daytona, trajectory capture working)
+- `codex-acp` — OpenAI Codex via ACP. Needs standard OPENAI_API_KEY (not project keys `sk-proj-`). Auth fails with project keys — use `sk-...` format.
 
 ### Skill loading
 SkillsBench tasks bake skills via `COPY skills /root/.claude/skills` in Dockerfiles.
