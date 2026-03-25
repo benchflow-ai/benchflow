@@ -427,184 +427,200 @@ class SDK:
             if (task_path / "solution").is_dir():
                 await env.upload_dir(task_path / "solution", "/solution")
 
-            # 2. Install agent in sandbox
-            agent_base = agent.split()[0]
-            if agent_base in AGENT_INSTALLERS:
-                logger.info(f"Installing {agent_base} in sandbox...")
-                install_result = await env.exec(
-                    AGENT_INSTALLERS[agent_base],
-                    timeout_sec=900,
-                )
-                if install_result.return_code != 0:
-                    diag = await env.exec(
-                        "echo 'OS:' && cat /etc/os-release 2>/dev/null | head -2; "
-                        "echo 'Node:' && node --version 2>&1; "
-                        f"echo 'Agent:' && which {agent_base} 2>&1",
-                        timeout_sec=10,
-                    )
-                    raise RuntimeError(
-                        f"Agent install failed (rc={install_result.return_code}): "
-                        f"{install_result.stdout}\n"
-                        f"Diagnostics: {diag.stdout}"
-                    )
+            # Oracle mode: run solution/solve.sh directly, skip ACP
+            if agent == "oracle":
+                logger.info("Oracle mode: running solution/solve.sh")
+                agent_name = "oracle"
+                if not (task_path / "solution" / "solve.sh").exists():
+                    raise FileNotFoundError(f"Oracle requires solution/solve.sh: {task_path}")
 
-            # 2b. Deploy skills into sandbox (runtime fallback if no Dockerfile injection)
-            if skills_dir:
-                # Check if Dockerfile injection already handled it
-                env_dir = task_path / "environment"
-                dockerfile = env_dir / "Dockerfile"
-                already_injected = (
-                    dockerfile.exists()
-                    and "COPY _deps/skills /skills/" in dockerfile.read_text()
+                oracle_result = await env.exec(
+                    "chmod +x /solution/solve.sh && "
+                    "/solution/solve.sh > /logs/agent/oracle.txt 2>&1",
+                    timeout_sec=timeout,
                 )
-                if not already_injected:
-                    skills_path = Path(skills_dir)
-                    if skills_path.is_dir():
-                        logger.info(f"Deploying skills via runtime upload from {skills_path}")
-                        await env.upload_dir(skills_path, "/skills")
-                        await env.exec(
-                            "mkdir -p /root/.claude /root/.gemini && "
-                            "ln -sf /skills /root/.claude/skills && "
-                            "ln -sf /skills /root/.gemini/skills",
+                # Save oracle stdout to trial dir
+                oracle_log = trial_dir / "agent" / "oracle.txt"
+                oracle_log.parent.mkdir(parents=True, exist_ok=True)
+                oracle_log.write_text(oracle_result.stdout or "")
+                if oracle_result.return_code != 0:
+                    logger.warning(
+                        f"Oracle solve.sh exited with rc={oracle_result.return_code}"
+                    )
+                trajectory.append({
+                    "type": "oracle",
+                    "command": "solution/solve.sh",
+                    "return_code": oracle_result.return_code,
+                    "stdout": (oracle_result.stdout or "")[:2000],
+                })
+
+            else:
+                # --- ACP agent path ---
+
+                # 2. Install agent in sandbox
+                agent_base = agent.split()[0]
+                if agent_base in AGENT_INSTALLERS:
+                    logger.info(f"Installing {agent_base} in sandbox...")
+                    install_result = await env.exec(
+                        AGENT_INSTALLERS[agent_base],
+                        timeout_sec=900,
+                    )
+                    if install_result.return_code != 0:
+                        diag = await env.exec(
+                            "echo 'OS:' && cat /etc/os-release 2>/dev/null | head -2; "
+                            "echo 'Node:' && node --version 2>&1; "
+                            f"echo 'Agent:' && which {agent_base} 2>&1",
                             timeout_sec=10,
                         )
-                        logger.info("Skills deployed to /skills and symlinked")
+                        raise RuntimeError(
+                            f"Agent install failed (rc={install_result.return_code}): "
+                            f"{install_result.stdout}\n"
+                            f"Diagnostics: {diag.stdout}"
+                        )
+
+                # 2b. Deploy skills into sandbox (runtime fallback if no Dockerfile injection)
+                if skills_dir:
+                    env_dir = task_path / "environment"
+                    dockerfile = env_dir / "Dockerfile"
+                    already_injected = (
+                        dockerfile.exists()
+                        and "COPY _deps/skills /skills/" in dockerfile.read_text()
+                    )
+                    if not already_injected:
+                        skills_path = Path(skills_dir)
+                        if skills_path.is_dir():
+                            logger.info(f"Deploying skills via runtime upload from {skills_path}")
+                            await env.upload_dir(skills_path, "/skills")
+                            await env.exec(
+                                "mkdir -p /root/.claude /root/.gemini && "
+                                "ln -sf /skills /root/.claude/skills && "
+                                "ln -sf /skills /root/.gemini/skills",
+                                timeout_sec=10,
+                            )
+                            logger.info("Skills deployed to /skills and symlinked")
+                        else:
+                            logger.warning(f"Skills dir not found: {skills_path}")
                     else:
-                        logger.warning(f"Skills dir not found: {skills_path}")
+                        logger.info("Skills already injected via Dockerfile")
+
+                # 2c. Run pre-agent hooks (e.g. start background services)
+                for hook in (pre_agent_hooks or []):
+                    await hook(env)
+
+                # 2d. Set up sandbox user (non-root agent execution)
+                if sandbox_user:
+                    logger.info(f"Setting up sandbox user: {sandbox_user}")
+                    await env.exec(
+                        f"id -u {sandbox_user} >/dev/null 2>&1 || "
+                        f"useradd -m -s /bin/bash {sandbox_user} && "
+                        f"mkdir -p /home/{sandbox_user}/.local/bin "
+                        f"/home/{sandbox_user}/.claude /home/{sandbox_user}/.gemini && "
+                        "if [ -d /root/.local/bin ]; then "
+                        f"cp -aL /root/.local/bin/. /home/{sandbox_user}/.local/bin/ 2>/dev/null || true; fi && "
+                        "if [ -d /root/.nvm ]; then "
+                        f"cp -a /root/.nvm/. /home/{sandbox_user}/.nvm/ 2>/dev/null || true; fi && "
+                        "if [ -d /skills ]; then "
+                        f"chmod -R a+rX /skills && "
+                        f"ln -sf /skills /home/{sandbox_user}/.claude/skills && "
+                        f"ln -sf /skills /home/{sandbox_user}/.gemini/skills; fi && "
+                        f"chown -R {sandbox_user}:{sandbox_user} /home/{sandbox_user}",
+                        timeout_sec=30,
+                    )
+                    logger.info(f"Sandbox user {sandbox_user} ready")
+
+                # Detect sandbox working directory
+                cwd_result = await env.exec("pwd", timeout_sec=10)
+                agent_cwd = cwd_result.stdout.strip() if cwd_result.return_code == 0 else "/app"
+                if sandbox_user:
+                    agent_cwd = f"/home/{sandbox_user}"
+                logger.info(f"Agent cwd: {agent_cwd}")
+
+                # 3. Connect ACP via live stdio pipe
+                if environment != "docker":
+                    which_result = await env.exec(f"which {agent_launch.split()[0]}", timeout_sec=10)
+                    if which_result.return_code == 0 and which_result.stdout.strip():
+                        full_path = which_result.stdout.strip()
+                        parts = agent_launch.split()
+                        parts[0] = full_path
+                        agent_launch = " ".join(parts)
+                        logger.info(f"Resolved agent path: {agent_launch}")
+
+                if sandbox_user:
+                    import shlex
+                    inner = f"export HOME=/home/{sandbox_user} && cd /home/{sandbox_user} && {agent_launch}"
+                    agent_launch = f"gosu {sandbox_user} bash -c {shlex.quote(inner)}"
+                    logger.info(f"Agent sandboxed as: {sandbox_user}")
+
+                if environment == "docker":
+                    live_proc = DockerProcess.from_harbor_env(env)
                 else:
-                    logger.info("Skills already injected via Dockerfile")
+                    live_proc = await DaytonaProcess.from_harbor_env(env)
 
-            # 2c. Run pre-agent hooks (e.g. start background services)
-            for hook in (pre_agent_hooks or []):
-                await hook(env)
-
-            # 2d. Set up sandbox user (non-root agent execution)
-            if sandbox_user:
-                logger.info(f"Setting up sandbox user: {sandbox_user}")
-                await env.exec(
-                    f"id -u {sandbox_user} >/dev/null 2>&1 || "
-                    f"useradd -m -s /bin/bash {sandbox_user} && "
-                    f"mkdir -p /home/{sandbox_user}/.local/bin "
-                    f"/home/{sandbox_user}/.claude /home/{sandbox_user}/.gemini && "
-                    # Copy agent binaries to user home
-                    "if [ -d /root/.local/bin ]; then "
-                    f"cp -aL /root/.local/bin/. /home/{sandbox_user}/.local/bin/ 2>/dev/null || true; fi && "
-                    # Copy nvm if present
-                    "if [ -d /root/.nvm ]; then "
-                    f"cp -a /root/.nvm/. /home/{sandbox_user}/.nvm/ 2>/dev/null || true; fi && "
-                    # Symlink skills into user home
-                    "if [ -d /skills ]; then "
-                    f"chmod -R a+rX /skills && "
-                    f"ln -sf /skills /home/{sandbox_user}/.claude/skills && "
-                    f"ln -sf /skills /home/{sandbox_user}/.gemini/skills; fi && "
-                    f"chown -R {sandbox_user}:{sandbox_user} /home/{sandbox_user}",
-                    timeout_sec=30,
+                transport = ContainerTransport(
+                    container_process=live_proc,
+                    command=agent_launch,
+                    env=agent_env,
+                    cwd=agent_cwd,
                 )
-                logger.info(f"Sandbox user {sandbox_user} ready")
+                acp_client = ACPClient(transport)
+                await acp_client.connect()
 
-            # Detect sandbox working directory (from Dockerfile WORKDIR)
-            cwd_result = await env.exec("pwd", timeout_sec=10)
-            agent_cwd = cwd_result.stdout.strip() if cwd_result.return_code == 0 else "/app"
-            if sandbox_user:
-                agent_cwd = f"/home/{sandbox_user}"
-            logger.info(f"Agent cwd: {agent_cwd}")
-
-            # 3. Connect ACP via live stdio pipe
-            # For non-Docker envs, resolve full path to agent binary
-            # since SSH sessions may have different PATH
-            if environment != "docker":
-                which_result = await env.exec(f"which {agent_launch.split()[0]}", timeout_sec=10)
-                if which_result.return_code == 0 and which_result.stdout.strip():
-                    full_path = which_result.stdout.strip()
-                    parts = agent_launch.split()
-                    parts[0] = full_path
-                    agent_launch = " ".join(parts)
-                    logger.info(f"Resolved agent path: {agent_launch}")
-
-            # Wrap agent command with gosu for sandbox user
-            if sandbox_user:
-                import shlex
-                inner = f"export HOME=/home/{sandbox_user} && cd /home/{sandbox_user} && {agent_launch}"
-                agent_launch = f"gosu {sandbox_user} bash -c {shlex.quote(inner)}"
-                logger.info(f"Agent sandboxed as: {sandbox_user}")
-
-            if environment == "docker":
-                live_proc = DockerProcess.from_harbor_env(env)
-            else:
-                live_proc = await DaytonaProcess.from_harbor_env(env)
-
-            transport = ContainerTransport(
-                container_process=live_proc,
-                command=agent_launch,
-                env=agent_env,
-                cwd=agent_cwd,
-            )
-            acp_client = ACPClient(transport)
-            await acp_client.connect()
-
-            init_result = await asyncio.wait_for(
-                acp_client.initialize(), timeout=60,
-            )
-            agent_name = (
-                init_result.agent_info.name if init_result.agent_info else agent
-            )
-            logger.info(f"ACP agent: {agent_name}")
-
-            session = await asyncio.wait_for(
-                acp_client.session_new(cwd=agent_cwd), timeout=60,
-            )
-            logger.info(f"Session: {session.session_id}")
-
-            # Set model via ACP (env var ANTHROPIC_MODEL is ignored by claude-agent-acp)
-            if model:
-                try:
-                    await acp_client.set_model(model)
-                    logger.info(f"Model set to: {model}")
-                except Exception as e:
-                    logger.warning(f"Failed to set model via ACP: {e}")
-
-            # 4. Send prompts (multi-turn)
-            for i, prompt in enumerate(prompts):
-                logger.info(f"Prompt {i + 1}/{len(prompts)}: {prompt[:80]}...")
-                prompt_result = await asyncio.wait_for(
-                    acp_client.prompt(prompt),
-                    timeout=timeout,
+                init_result = await asyncio.wait_for(
+                    acp_client.initialize(), timeout=60,
                 )
-                logger.info(
-                    f"  → {prompt_result.stop_reason.value}, "
-                    f"{len(session.tool_calls)} total tool calls"
+                agent_name = (
+                    init_result.agent_info.name if init_result.agent_info else agent
                 )
+                logger.info(f"ACP agent: {agent_name}")
 
-            n_tool_calls = len(session.tool_calls)
+                session = await asyncio.wait_for(
+                    acp_client.session_new(cwd=agent_cwd), timeout=60,
+                )
+                logger.info(f"Session: {session.session_id}")
 
-            # 5. Capture trajectory
-            for tc in session.tool_calls:
-                trajectory.append(
-                    {
+                if model:
+                    try:
+                        await acp_client.set_model(model)
+                        logger.info(f"Model set to: {model}")
+                    except Exception as e:
+                        logger.warning(f"Failed to set model via ACP: {e}")
+
+                # 4. Send prompts (multi-turn)
+                for i, prompt in enumerate(prompts):
+                    logger.info(f"Prompt {i + 1}/{len(prompts)}: {prompt[:80]}...")
+                    prompt_result = await asyncio.wait_for(
+                        acp_client.prompt(prompt),
+                        timeout=timeout,
+                    )
+                    logger.info(
+                        f"  → {prompt_result.stop_reason.value}, "
+                        f"{len(session.tool_calls)} total tool calls"
+                    )
+
+                n_tool_calls = len(session.tool_calls)
+
+                # 5. Capture trajectory
+                for tc in session.tool_calls:
+                    trajectory.append({
                         "type": "tool_call",
                         "tool_call_id": tc.tool_call_id,
                         "kind": tc.kind,
                         "title": tc.title,
                         "status": tc.status.value,
                         "content": tc.content,
-                    }
-                )
-            if session.full_message:
-                trajectory.append(
-                    {
+                    })
+                if session.full_message:
+                    trajectory.append({
                         "type": "agent_message",
                         "text": session.full_message,
-                    }
-                )
-            if session.full_thought:
-                trajectory.append(
-                    {
+                    })
+                if session.full_thought:
+                    trajectory.append({
                         "type": "agent_thought",
                         "text": session.full_thought,
-                    }
-                )
+                    })
 
-            # Save trajectory
+            # Save trajectory (both oracle and ACP paths)
             traj_dir = trial_dir / "trajectory"
             traj_dir.mkdir(parents=True, exist_ok=True)
             (traj_dir / "acp_trajectory.jsonl").write_text(
