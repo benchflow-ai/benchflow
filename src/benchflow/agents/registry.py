@@ -99,6 +99,34 @@ AGENTS: dict[str, AgentConfig] = {
         protocol="acp",
         requires_env=["ANTHROPIC_API_KEY"],
     ),
+    "openclaw-gemini": AgentConfig(
+        name="openclaw-gemini",
+        description="OpenClaw agent using Google Gemini API (via ACP shim)",
+        install_cmd=(
+            f"{_NODE_INSTALL} && "
+            "( command -v openclaw >/dev/null 2>&1 || "
+            "npm install -g openclaw@latest >/dev/null 2>&1 ) && "
+            "command -v openclaw >/dev/null 2>&1 && "
+            "( command -v python3 >/dev/null 2>&1 || "
+            "(apt-get update -qq && apt-get install -y -qq python3 >/dev/null 2>&1) ) && "
+            # Configure: auto-approve tools + Gemini model
+            "mkdir -p ~/.openclaw && "
+            'echo \'{"version":1,"defaults":{"allow_all":true}}\''
+            " > ~/.openclaw/exec-approvals.json && "
+            # Write openclaw.json with Gemini config
+            'cat > ~/.openclaw/openclaw.json <<\'CFGEOF\'\n'
+            '{"agents":{"defaults":{"model":{"primary":"google/gemini-3.1-flash-lite-preview"}}}}\n'
+            "CFGEOF\n"
+            # Deploy ACP shim
+            "cat > /usr/local/bin/openclaw-acp-shim <<'SHIMEOF'\n"
+            + _OPENCLAW_SHIM +
+            "\nSHIMEOF\n"
+            "chmod +x /usr/local/bin/openclaw-acp-shim"
+        ),
+        launch_cmd="python3 /usr/local/bin/openclaw-acp-shim",
+        protocol="acp",
+        requires_env=["GEMINI_API_KEY"],
+    ),
     "codex-acp": AgentConfig(
         name="codex-acp",
         description="OpenAI Codex agent via ACP",

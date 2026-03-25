@@ -416,7 +416,7 @@ class SDK:
 
         # Resolve agent env — auto-inherit API keys from os.environ
         agent_env = dict(agent_env or {})
-        for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY"):
+        for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY"):
             if key in os.environ:
                 agent_env.setdefault(key, os.environ[key])
         if model:
