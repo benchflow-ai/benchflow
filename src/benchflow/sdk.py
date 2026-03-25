@@ -453,15 +453,14 @@ class SDK:
                 if not (task_path / "solution" / "solve.sh").exists():
                     raise FileNotFoundError(f"Oracle requires solution/solve.sh: {task_path}")
 
+                # Run solve.sh — output goes to /logs/agent/oracle.txt inside
+                # the container (bind-mounted to trial_dir/agent/oracle.txt).
+                # We don't write from the host to avoid root-ownership issues.
                 oracle_result = await env.exec(
                     "chmod +x /solution/solve.sh && "
-                    "/solution/solve.sh > /logs/agent/oracle.txt 2>&1",
+                    "/solution/solve.sh 2>&1 | tee /logs/agent/oracle.txt",
                     timeout_sec=timeout,
                 )
-                # Save oracle stdout to trial dir
-                oracle_log = trial_dir / "agent" / "oracle.txt"
-                oracle_log.parent.mkdir(parents=True, exist_ok=True)
-                oracle_log.write_text(oracle_result.stdout or "")
                 if oracle_result.return_code != 0:
                     logger.warning(
                         f"Oracle solve.sh exited with rc={oracle_result.return_code}"
