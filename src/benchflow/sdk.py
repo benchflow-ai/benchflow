@@ -363,6 +363,14 @@ class SDK:
         trial_paths = TrialPaths(trial_dir)
         started_at = datetime.now()
 
+        # Pre-create trial directory tree so Docker doesn't create them as root.
+        # Harbor's DockerEnvironment bind-mounts these subdirs into the container;
+        # if they don't exist, Docker creates them owned by root, causing
+        # PermissionError when SDK.run() writes artifacts after env.stop().
+        trial_dir.mkdir(parents=True, exist_ok=True)
+        for subdir in ("agent", "verifier", "artifacts", "trajectory"):
+            (trial_dir / subdir).mkdir(exist_ok=True)
+
         # Resolve agent env — auto-inherit API keys from os.environ
         agent_env = dict(agent_env or {})
         for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY"):
