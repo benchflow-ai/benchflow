@@ -69,13 +69,22 @@ class ACPSession:
         elif update_type == "tool_call_update":
             tc_id = update.get("toolCallId", "")
             record = self._tool_call_map.get(tc_id)
-            if record:
-                try:
-                    status = ToolCallStatus(update.get("status", "in_progress"))
-                except ValueError:
-                    logger.warning(f"Unknown tool call status: {update.get('status')}")
-                    status = ToolCallStatus.IN_PROGRESS
-                record.update_status(status, update.get("content"))
+            if not record:
+                # Auto-create record for agents that skip the initial tool_call
+                # notification (e.g. Gemini CLI sends only tool_call_update)
+                record = ToolCallRecord(
+                    tool_call_id=tc_id,
+                    title=update.get("title", ""),
+                    kind=update.get("kind", "tool"),
+                )
+                self.tool_calls.append(record)
+                self._tool_call_map[tc_id] = record
+            try:
+                status = ToolCallStatus(update.get("status", "in_progress"))
+            except ValueError:
+                logger.warning(f"Unknown tool call status: {update.get('status')}")
+                status = ToolCallStatus.IN_PROGRESS
+            record.update_status(status, update.get("content"))
 
         elif update_type == "agent_message_chunk":
             content = update.get("content", {})
