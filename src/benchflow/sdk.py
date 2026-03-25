@@ -575,11 +575,15 @@ class SDK:
                 else:
                     live_proc = await DaytonaProcess.from_harbor_env(env)
 
+                # Agent log captures non-JSON stdout (debug output, errors)
+                agent_log = trial_dir / "agent" / f"{agent.replace('-', '_')}.txt"
+
                 transport = ContainerTransport(
                     container_process=live_proc,
                     command=agent_launch,
                     env=agent_env,
                     cwd=agent_cwd,
+                    agent_log_path=agent_log,
                 )
                 acp_client = ACPClient(transport)
                 await acp_client.connect()
