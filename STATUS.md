@@ -113,3 +113,50 @@ Future smoke tests must verify:
 | Max Daytona concurrency tested | 64 |
 | Unit tests | 66 |
 | Working agents | 3 (claude, pi-acp, openclaw) |
+
+---
+
+## Auto Research — Weekend Investigation
+
+Exploration area: using benchflow's infrastructure (sandboxed execution, multi-agent, GEPA optimization) for automated research workflows.
+
+### Key References
+
+- **AI-Readiness Scorecard** ([sshh12/coding-agents-workshop](https://github.com/sshh12/coding-agents-workshop/blob/main/scorecard.md)) — Self-assessment framework for how well a codebase works with AI agents. Three dimensions: rules/config, file organization, test/verification. Scores 0-3 per dimension. Could be used to evaluate benchflow's own agent-friendliness and to score research repos before agents work on them.
+
+- **Awesome Auto Research Tools** ([handsome-rich/Awesome-Auto-Research-Tools](https://github.com/handsome-rich/Awesome-Auto-Research-Tools)) — Curated list of 30+ platforms across 5 categories:
+
+### Relevant Tools for benchflow Integration
+
+**End-to-end research systems (highest relevance):**
+- **ARIS** — Autonomous ML research using Claude Code with cross-model review loops. Closest to what benchflow + GEPA already does.
+- **AI-Scientist-v2** (Sakana) — Agentic tree search for research. Generated first AI-written paper accepted at a workshop via peer review.
+- **autoresearch** (Karpathy) — 630-line agent that reads its own training script, forms hypotheses, modifies code, runs experiments. Minimal and inspirational.
+- **Agent Laboratory** — Specialized agents for literature review + experimentation.
+- **claude-scholar** — Semi-automated: ideation → coding → experiments → writing → publication.
+
+**Research skills (directly usable):**
+- **AI-Research-SKILLs** — 86 skills across 22 categories for the full AI research lifecycle. Could be loaded as Agent Skills via benchflow's `skills_dir`.
+- **claude-scientific-skills** — 170+ scientific skills (bio, chem, medicine, materials). Same skills format.
+
+**Experiment infrastructure (complementary):**
+- **AIDE** — AI-Driven Exploration in code space. Strong Kaggle results. Could inform GEPA's search strategy.
+- **MLE-agent** — ML engineering companion with auto-debugging. Relevant for automated experiment pipelines.
+
+### How This Maps to benchflow
+
+| Auto Research Step | benchflow Equivalent | Gap |
+|---|---|---|
+| Literature review | Not built | Could use PaperQA2 or OpenScholar as MCP server |
+| Hypothesis generation | GEPA proposer | Already works for skill improvement; extend to research hypotheses |
+| Experiment execution | SDK.run() + Job | ✅ Already handles sandboxed agent execution |
+| Result analysis | collect_metrics() | ✅ Aggregation works; need richer analysis |
+| Paper writing | Not built | Could use agent with LaTeX skills |
+| Peer review | Not built | Multi-agent review loop (ARIS-style) |
+
+### Proposed Weekend Experiments
+
+1. **Vibe research loop** — Give an agent a research question + benchflow skills. Agent forms hypothesis → writes experiment code → runs via benchflow → analyzes results → iterates. Test on a simple ML task.
+2. **AI-Research-SKILLs integration** — Download the 86 research skills, deploy via `skills_dir`, test if agents can use them for structured research.
+3. **Cross-agent research review** — Run same research task on claude + gemini + openclaw, compare approaches (multi-agent comparison already supported by benchflow Job).
+4. **Agent-readiness scoring** — Apply the coding-agents-workshop scorecard to benchflow and smolclaws repos, identify improvements.
