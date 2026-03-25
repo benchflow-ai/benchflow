@@ -45,7 +45,7 @@
 - **Job resume no config scoping** — same jobs_dir + different config silently skips tasks.
 - **`from harbor import *`** — namespace collision risk (benchflow.Job shadows harbor.Job).
 
-### Fixed (2026-03-24)
+### Fixed (2026-03-24/25)
 - ~~**Harbor unpinned**~~ — Pinned to commit `6c2c293`.
 - ~~**No timeout on initialize/session_new**~~ — 60s timeout on both.
 - **UTF-8 decode crash** in ContainerTransport — now uses `errors="replace"`.
@@ -56,6 +56,16 @@
 - **Viewer JSON parsing** — tolerates corrupted trajectory files.
 - **ToolCallStatus enum** — catches invalid status strings.
 - **Dead code cleanup** — removed container.py, unused ACPClient fields.
+- **#86** — context_root, sandbox_user, pre_agent_hooks, skills_dir Dockerfile injection, DinD path translation.
+- **#88** — Pre-create trial dirs to avoid root ownership PermissionError.
+- **#89** — Oracle agent support (run solution/solve.sh directly).
+- **#90** — Per-phase timing.json, config.json, agent stdout/stderr capture.
+- **#91** — Oracle writes agent/oracle.txt inside container (avoids root-ownership).
+- **#92** — pre_agent_hooks run before oracle/ACP branch.
+- **#94** — Scrape agent-native trajectory as fallback + auto-create tool call records for Gemini.
+- **openclaw-gemini** agent variant + GEMINI_API_KEY forwarding.
+- **register_agent()** API for custom agents at runtime.
+- **Sandbox user** copies .openclaw/ and .gemini/ config dirs.
 
 ---
 
@@ -101,5 +111,5 @@ Future smoke tests must verify:
 | TB2 tasks | 89 |
 | SkillsBench tasks | 87 |
 | Max Daytona concurrency tested | 64 |
-| Unit tests | 56 |
+| Unit tests | 66 |
 | Working agents | 3 (claude, pi-acp, openclaw) |
