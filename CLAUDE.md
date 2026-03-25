@@ -38,7 +38,7 @@ Agents registered in `src/benchflow/agents/registry.py`:
 - `openclaw` — OpenClaw via ACP shim (tested). Skills: `.claude/skills/` → `<workspace>/skills/`
 - `openclaw-gemini` — OpenClaw with Google Gemini model (tested, needs GEMINI_API_KEY)
 - `gemini` — Gemini CLI via ACP (tested on Daytona, trajectory capture working)
-- `codex-acp` — OpenAI Codex via ACP. Needs standard OPENAI_API_KEY (not project keys `sk-proj-`). Auth fails with project keys — use `sk-...` format.
+- `codex-acp` — OpenAI Codex via ACP (tested on Daytona, needs OPENAI_API_KEY)
 
 ### Skill loading
 SkillsBench tasks bake skills via `COPY skills /root/.claude/skills` in Dockerfiles.
