@@ -260,5 +260,127 @@ def view(
     serve(str(trial_dir), port)
 
 
+@app.command()
+def eval(
+    tasks_dir: Annotated[
+        Path,
+        typer.Option("--tasks-dir", "-t", help="Directory of tasks"),
+    ],
+    skill: Annotated[
+        Path | None,
+        typer.Option("--skill", help="Path to SKILL.md to inject into prompt"),
+    ] = None,
+    skills_dir: Annotated[
+        Path | None,
+        typer.Option("--skills-dir", "-s", help="Skills directory for agent discovery"),
+    ] = None,
+    agent: Annotated[
+        str,
+        typer.Option("--agent", "-a", help="Agent name"),
+    ] = "claude-agent-acp",
+    model: Annotated[
+        str | None,
+        typer.Option("--model", "-m", help="Model"),
+    ] = None,
+    environment: Annotated[
+        str,
+        typer.Option("--env", "-e", help="Environment: docker or daytona"),
+    ] = "docker",
+    concurrency: Annotated[
+        int,
+        typer.Option("--concurrency", "-c", help="Max concurrent tasks"),
+    ] = 4,
+    jobs_dir: Annotated[
+        str,
+        typer.Option("--jobs-dir", "-o", help="Output directory"),
+    ] = "jobs",
+) -> None:
+    """Evaluate a skill against multiple tasks.
+
+    Runs all tasks in --tasks-dir with the given skill and produces a summary.
+    Simpler than `benchflow job` — designed for skill evaluation workflows.
+
+    Examples:
+        benchflow eval -t tasks/ --skill skills/gws/SKILL.md -a claude-agent-acp -e daytona
+        benchflow eval -t tasks/ --skills-dir skills/ -a gemini -e daytona -c 64
+    """
+    from benchflow.job import Job, JobConfig
+
+    # Build prompts — if --skill provided, prepend to instruction.md
+    prompts = None
+    if skill:
+        skill_content = skill.read_text()
+        # Skill content becomes the first prompt context
+        prompts = [None]  # Will be replaced with instruction.md + skill prefix
+
+    j = Job(
+        tasks_dir=str(tasks_dir),
+        jobs_dir=jobs_dir,
+        config=JobConfig(
+            agent=agent,
+            model=model or "claude-haiku-4-5-20251001",
+            environment=environment,
+            concurrency=concurrency,
+            skills_dir=str(skills_dir) if skills_dir else None,
+        ),
+    )
+
+    result = asyncio.run(j.run())
+
+    # Summary
+    console.print(f"\n[bold]Skill Eval Results[/bold]")
+    if skill:
+        console.print(f"  Skill: {skill}")
+    if skills_dir:
+        console.print(f"  Skills dir: {skills_dir}")
+    console.print(
+        f"  Score: [bold]{result.passed}/{result.total} "
+        f"({result.score:.1%})[/bold], errors={result.errored}"
+    )
+    console.print(f"  Elapsed: {result.elapsed_sec:.0f}s")
+
+
+@app.command()
+def skills(
+    directory: Annotated[
+        Path | None,
+        typer.Option("--dir", "-d", help="Skills directory to scan"),
+    ] = None,
+    install: Annotated[
+        str | None,
+        typer.Option("--install", "-i", help="Install skill from skills.sh (e.g. anthropics/skills@find-skills)"),
+    ] = None,
+) -> None:
+    """List or install agent skills."""
+    from benchflow.skills import discover_skills, install_skill, DEFAULT_SKILLS_DIR, list_skills_summary
+
+    if install:
+        target = directory or DEFAULT_SKILLS_DIR
+        result = install_skill(install, target_dir=target)
+        if result:
+            console.print(f"[green]Installed:[/green] {result}")
+        else:
+            console.print(f"[red]Failed to install {install}[/red]")
+            raise typer.Exit(1)
+        return
+
+    search_dirs = [directory] if directory else [DEFAULT_SKILLS_DIR, Path(".claude/skills"), Path("skills")]
+    found = discover_skills(*search_dirs)
+    if not found:
+        console.print("No skills found. Install with: benchflow skills --install owner/repo@skill-name")
+        return
+
+    table = Table(title="Discovered Skills")
+    table.add_column("Name", style="cyan")
+    table.add_column("Version", style="green")
+    table.add_column("Description")
+    table.add_column("Path", style="dim")
+
+    for s in found:
+        table.add_row(s.name, s.version or "-", s.description[:60], str(s.path))
+
+    console.print(table)
+
+
 if __name__ == "__main__":
     app()
