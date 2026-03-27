@@ -42,6 +42,8 @@ class AgentConfig:
     protocol: str = "acp"  # "acp" or "cli"
     requires_env: list[str] = field(default_factory=list)
     description: str = ""
+    skill_paths: list[str] = field(default_factory=list)
+    install_timeout: int = 900  # seconds
 
 
 # Agent registry — all supported agents
@@ -49,6 +51,7 @@ AGENTS: dict[str, AgentConfig] = {
     "claude-agent-acp": AgentConfig(
         name="claude-agent-acp",
         description="Claude Code via ACP (Anthropic's Agent Client Protocol)",
+        skill_paths=["$HOME/.claude/skills"],
         install_cmd=(
             f"{_NODE_INSTALL} && "
             "( command -v claude-agent-acp >/dev/null 2>&1 || "
@@ -62,6 +65,7 @@ AGENTS: dict[str, AgentConfig] = {
     "pi-acp": AgentConfig(
         name="pi-acp",
         description="Pi agent via ACP",
+        skill_paths=["$HOME/.pi/agent/skills", "$HOME/.agents/skills"],
         install_cmd=(
             f"{_NODE_INSTALL} && "
             "( command -v pi >/dev/null 2>&1 || "
@@ -77,6 +81,7 @@ AGENTS: dict[str, AgentConfig] = {
     "openclaw": AgentConfig(
         name="openclaw",
         description="OpenClaw agent via ACP shim (wraps openclaw agent --local)",
+        skill_paths=["$HOME/.claude/skills", "$WORKSPACE/skills"],
         install_cmd=(
             f"{_NODE_INSTALL} && "
             "( command -v openclaw >/dev/null 2>&1 || "
@@ -102,6 +107,7 @@ AGENTS: dict[str, AgentConfig] = {
     "openclaw-gemini": AgentConfig(
         name="openclaw-gemini",
         description="OpenClaw agent using Google Gemini API (via ACP shim)",
+        skill_paths=["$HOME/.claude/skills", "$WORKSPACE/skills"],
         install_cmd=(
             f"{_NODE_INSTALL} && "
             "( command -v openclaw >/dev/null 2>&1 || "
@@ -130,6 +136,7 @@ AGENTS: dict[str, AgentConfig] = {
     "codex-acp": AgentConfig(
         name="codex-acp",
         description="OpenAI Codex agent via ACP",
+        skill_paths=["$HOME/.agents/skills"],
         install_cmd=(
             f"{_NODE_INSTALL} && "
             "( command -v codex-acp >/dev/null 2>&1 || "
@@ -143,6 +150,7 @@ AGENTS: dict[str, AgentConfig] = {
     "gemini": AgentConfig(
         name="gemini",
         description="Google Gemini CLI via ACP",
+        skill_paths=["$HOME/.gemini/skills"],
         install_cmd=(
             f"{_NODE_INSTALL} && "
             "( command -v gemini >/dev/null 2>&1 || "
@@ -177,6 +185,8 @@ def register_agent(
     protocol: str = "acp",
     requires_env: list[str] | None = None,
     description: str = "",
+    skill_paths: list[str] | None = None,
+    install_timeout: int = 900,
 ) -> AgentConfig:
     """Register a custom agent at runtime.
 
@@ -188,6 +198,7 @@ def register_agent(
             install_cmd="npm install -g my-agent",
             launch_cmd="my-agent --acp",
             requires_env=["MY_API_KEY"],
+            skill_paths=["$HOME/.my-agent/skills"],
         )
 
     Returns the created AgentConfig.
@@ -199,6 +210,8 @@ def register_agent(
         protocol=protocol,
         requires_env=requires_env or [],
         description=description,
+        skill_paths=skill_paths or [],
+        install_timeout=install_timeout,
     )
     AGENTS[name] = config
     # Update backwards-compat dicts

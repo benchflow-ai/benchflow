@@ -524,12 +524,19 @@ class SDK:
 
                 # 2. Install agent in sandbox
                 agent_base = agent.split()[0]
+                agent_cfg = AGENTS.get(agent_base)
                 if agent_base in AGENT_INSTALLERS:
-                    logger.info(f"Installing {agent_base} in sandbox...")
+                    install_timeout = agent_cfg.install_timeout if agent_cfg else 900
+                    logger.info(f"Installing {agent_base} in sandbox (timeout={install_timeout}s)...")
                     install_result = await env.exec(
                         AGENT_INSTALLERS[agent_base],
-                        timeout_sec=900,
+                        timeout_sec=install_timeout,
                     )
+                    # Persist install logs for debugging
+                    install_log = trial_dir / "agent" / "install-stdout.txt"
+                    install_log.parent.mkdir(parents=True, exist_ok=True)
+                    install_log.write_text(install_result.stdout or "")
+
                     if install_result.return_code != 0:
                         diag = await env.exec(
                             "echo 'OS:' && cat /etc/os-release 2>/dev/null | head -2; "
@@ -540,8 +547,14 @@ class SDK:
                         raise RuntimeError(
                             f"Agent install failed (rc={install_result.return_code}): "
                             f"{install_result.stdout}\n"
-                            f"Diagnostics: {diag.stdout}"
+                            f"Diagnostics: {diag.stdout}\n"
+                            f"Install log: {install_log}"
                         )
+
+                    # Verify binary actually works
+                    verify = await env.exec(f"{agent_base} --version 2>&1 || {agent_base} --help 2>&1 | head -1", timeout_sec=10)
+                    if verify.return_code == 0:
+                        logger.info(f"Agent verified: {verify.stdout.strip()[:80]}")
 
                 # 2a-2. Write codex auth.json if needed (env vars aren't enough for codex-acp)
                 if "codex" in agent and agent_env.get("OPENAI_API_KEY"):
@@ -590,15 +603,9 @@ class SDK:
                         f"cp -aL /root/.local/bin/. /home/{sandbox_user}/.local/bin/ 2>/dev/null || true; fi && "
                         "if [ -d /root/.nvm ]; then "
                         f"cp -a /root/.nvm/. /home/{sandbox_user}/.nvm/ 2>/dev/null || true; fi && "
-                        # Copy agent config dirs (openclaw, gemini, etc.)
-                        "if [ -d /root/.openclaw ]; then "
-                        f"cp -a /root/.openclaw/. /home/{sandbox_user}/.openclaw/ 2>/dev/null || true; fi && "
-                        "if [ -d /root/.gemini ]; then "
-                        f"cp -a /root/.gemini/. /home/{sandbox_user}/.gemini/ 2>/dev/null || true; fi && "
-                        "if [ -d /skills ]; then "
-                        f"chmod -R a+rX /skills && "
-                        f"ln -sf /skills /home/{sandbox_user}/.claude/skills && "
-                        f"ln -sf /skills /home/{sandbox_user}/.gemini/skills; fi && "
+                        # Copy all agent config + baked skills dirs to sandbox user
+                        "for d in .claude .gemini .openclaw .pi .agents .codex; do "
+                        f"if [ -d /root/$d ]; then cp -a /root/$d/. /home/{sandbox_user}/$d/ 2>/dev/null || true; fi; done && "
                         f"chown -R {sandbox_user}:{sandbox_user} /home/{sandbox_user}",
                         timeout_sec=30,
                     )
@@ -610,6 +617,19 @@ class SDK:
                 if sandbox_user:
                     agent_cwd = f"/home/{sandbox_user}"
                 logger.info(f"Agent cwd: {agent_cwd}")
+
+                # 2e. Distribute skills to agent's specific discovery paths
+                task_skills_dir = task.config.environment.skills_dir
+                effective_skills = "/skills" if skills_dir else task_skills_dir
+                if effective_skills and agent_cfg and agent_cfg.skill_paths:
+                    home = f"/home/{sandbox_user}" if sandbox_user else "/root"
+                    parts = []
+                    for sp in agent_cfg.skill_paths:
+                        expanded = sp.replace("$HOME", home).replace("$WORKSPACE", agent_cwd)
+                        parts.append(f"mkdir -p '{expanded}' && cp -r '{effective_skills}'/. '{expanded}'/ 2>/dev/null")
+                    if parts:
+                        await env.exec(" && ".join(parts) + " || true", timeout_sec=15)
+                        logger.info(f"Skills distributed to {len(parts)} paths for {agent_base}")
 
                 # 3. Connect ACP via live stdio pipe
                 if environment != "docker":
