@@ -298,6 +298,25 @@ def _create_environment(
 
 
 
+class AgentInstallError(RuntimeError):
+    """Agent installation failed in the sandbox."""
+    def __init__(self, agent: str, return_code: int, stdout: str, diagnostics: str, log_path: str = ""):
+        self.agent = agent
+        self.return_code = return_code
+        self.stdout = stdout
+        self.diagnostics = diagnostics
+        self.log_path = log_path
+        super().__init__(f"Agent {agent} install failed (rc={return_code})")
+
+
+class AgentTimeoutError(RuntimeError):
+    """Agent execution timed out."""
+    def __init__(self, agent: str, timeout_sec: float):
+        self.agent = agent
+        self.timeout_sec = timeout_sec
+        super().__init__(f"Agent {agent} timed out after {timeout_sec}s")
+
+
 class RunResult:
     """Result of a benchflow run."""
 
@@ -544,11 +563,12 @@ class SDK:
                             f"echo 'Agent:' && which {agent_base} 2>&1",
                             timeout_sec=10,
                         )
-                        raise RuntimeError(
-                            f"Agent install failed (rc={install_result.return_code}): "
-                            f"{install_result.stdout}\n"
-                            f"Diagnostics: {diag.stdout}\n"
-                            f"Install log: {install_log}"
+                        raise AgentInstallError(
+                            agent=agent_base,
+                            return_code=install_result.return_code,
+                            stdout=install_result.stdout or "",
+                            diagnostics=diag.stdout or "",
+                            log_path=str(install_log),
                         )
 
                     # Verify binary actually works
