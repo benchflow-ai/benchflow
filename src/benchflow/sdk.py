@@ -555,6 +555,8 @@ class SDK:
                     verify = await env.exec(f"{agent_base} --version 2>&1 || {agent_base} --help 2>&1 | head -1", timeout_sec=10)
                     if verify.return_code == 0:
                         logger.info(f"Agent verified: {verify.stdout.strip()[:80]}")
+                    else:
+                        logger.warning(f"Agent binary check failed (rc={verify.return_code}): {verify.stdout.strip()[:80]}")
 
                 # 2a-2. Write codex auth.json if needed (env vars aren't enough for codex-acp)
                 if "codex" in agent and agent_env.get("OPENAI_API_KEY"):
@@ -605,7 +607,8 @@ class SDK:
                         f"cp -a /root/.nvm/. /home/{sandbox_user}/.nvm/ 2>/dev/null || true; fi && "
                         # Copy all agent config + baked skills dirs to sandbox user
                         "for d in .claude .gemini .openclaw .pi .agents .codex; do "
-                        f"if [ -d /root/$d ]; then cp -a /root/$d/. /home/{sandbox_user}/$d/ 2>/dev/null || true; fi; done && "
+                        f"if [ -d /root/$d ]; then mkdir -p /home/{sandbox_user}/$d && "
+                        f"cp -a /root/$d/. /home/{sandbox_user}/$d/ 2>/dev/null || true; fi; done && "
                         f"chown -R {sandbox_user}:{sandbox_user} /home/{sandbox_user}",
                         timeout_sec=30,
                     )
@@ -628,7 +631,7 @@ class SDK:
                         expanded = sp.replace("$HOME", home).replace("$WORKSPACE", agent_cwd)
                         parts.append(f"mkdir -p '{expanded}' && cp -r '{effective_skills}'/. '{expanded}'/ 2>/dev/null")
                     if parts:
-                        await env.exec(" && ".join(parts) + " || true", timeout_sec=15)
+                        await env.exec("; ".join(parts), timeout_sec=15)
                         logger.info(f"Skills distributed to {len(parts)} paths for {agent_base}")
 
                 # 3. Connect ACP via live stdio pipe
