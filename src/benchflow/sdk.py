@@ -487,6 +487,20 @@ class SDK:
             if (task_path / "solution").is_dir():
                 await env.upload_dir(task_path / "solution", "/solution")
 
+            # Distribute skills from task.toml skills_dir to all agent discovery paths
+            task_skills_dir = task.config.environment.skills_dir
+            if task_skills_dir:
+                await env.exec(
+                    f"if [ -d {task_skills_dir} ]; then "
+                    "mkdir -p /root/.claude/skills /root/.gemini/skills $HOME/.agents/skills && "
+                    f"cp -r {task_skills_dir}/* /root/.claude/skills/ 2>/dev/null; "
+                    f"cp -r {task_skills_dir}/* /root/.gemini/skills/ 2>/dev/null; "
+                    f"cp -r {task_skills_dir}/* $HOME/.agents/skills/ 2>/dev/null; "
+                    "true; fi",
+                    timeout_sec=10,
+                )
+                logger.info(f"Skills distributed from task.toml skills_dir={task_skills_dir}")
+
             t_agent_setup = datetime.now()
 
             # Run pre-agent hooks (e.g. start claw-* services) — needed by BOTH oracle and ACP
