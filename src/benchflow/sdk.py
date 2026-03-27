@@ -114,22 +114,20 @@ def stage_dockerfile_deps(
     dockerfile_path.write_text("\n".join(new_lines))
 
 
-_AGENT_SKILL_PATHS = [
-    "/root/.gemini/skills",
-    "/root/.claude/skills",
-]
-
-
-def _inject_skills_into_dockerfile(task_path: Path, skills_dir: Path) -> None:
+def _inject_skills_into_dockerfile(task_path: Path, skills_dir: Path, agent: str = "") -> None:
     """Inject skills into the task's Dockerfile (baked into image).
 
-    Copies skills_dir into environment/_deps/skills/ and appends COPY + symlink
-    lines to the Dockerfile. This is more reliable than runtime upload since
-    skills are part of the image.
+    Copies skills_dir into environment/_deps/skills/ and appends COPY to /skills/.
+    Agent-specific symlinks are created at runtime by _distribute_skills().
     """
     env_dir = task_path / "environment"
     dockerfile_path = env_dir / "Dockerfile"
     if not dockerfile_path.exists() or not skills_dir.is_dir():
+        return
+
+    content = dockerfile_path.read_text()
+    # Idempotent — don't double-inject
+    if "# Skills directory (injected by benchflow)" in content:
         return
 
     dest = env_dir / "_deps" / "skills"
@@ -142,13 +140,39 @@ def _inject_skills_into_dockerfile(task_path: Path, skills_dir: Path) -> None:
         "# Skills directory (injected by benchflow --skills-dir)",
         "COPY _deps/skills /skills/",
     ]
-    for agent_path in _AGENT_SKILL_PATHS:
-        parent = str(Path(agent_path).parent)
-        lines.append(f"RUN mkdir -p {parent} && ln -sf /skills {agent_path}")
-
-    content = dockerfile_path.read_text()
     dockerfile_path.write_text(content + "\n".join(lines) + "\n")
     logger.info(f"Skills injected into Dockerfile: {len(list(skills_dir.iterdir()))} items")
+
+
+async def _distribute_skills(
+    env: Any,
+    source_dir: str,
+    agent: str,
+    cwd: str,
+    sandbox_user: str | None,
+) -> None:
+    """Copy skills from source_dir to the running agent's discovery paths.
+
+    Uses AgentConfig.skill_paths to determine where to copy. Expands:
+    - $HOME → /home/{sandbox_user} or /root
+    - $WORKSPACE → agent's working directory (cwd)
+    """
+    agent_base = agent.split()[0]
+    agent_cfg = AGENTS.get(agent_base)
+    if not agent_cfg or not agent_cfg.skill_paths:
+        logger.debug(f"No skill_paths configured for agent {agent}")
+        return
+
+    home = f"/home/{sandbox_user}" if sandbox_user else "/root"
+    parts = []
+    for path in agent_cfg.skill_paths:
+        expanded = path.replace("$HOME", home).replace("$WORKSPACE", cwd)
+        parts.append(f"mkdir -p '{expanded}' && cp -r '{source_dir}'/. '{expanded}'/ 2>/dev/null")
+
+    if parts:
+        cmd = " && ".join(parts) + " || true"
+        await env.exec(cmd, timeout_sec=15)
+        logger.info(f"Skills distributed to {len(agent_cfg.skill_paths)} paths for {agent_base}")
 
 
 def _detect_dind_mount() -> tuple[str, str] | None:
@@ -487,19 +511,16 @@ class SDK:
             if (task_path / "solution").is_dir():
                 await env.upload_dir(task_path / "solution", "/solution")
 
-            # Distribute skills from task.toml skills_dir to all agent discovery paths
+            # Resolve effective skills source (CLI/SDK > task.toml > Dockerfile COPY)
             task_skills_dir = task.config.environment.skills_dir
-            if task_skills_dir:
-                await env.exec(
-                    f"if [ -d {task_skills_dir} ]; then "
-                    "mkdir -p /root/.claude/skills /root/.gemini/skills $HOME/.agents/skills && "
-                    f"cp -r {task_skills_dir}/* /root/.claude/skills/ 2>/dev/null; "
-                    f"cp -r {task_skills_dir}/* /root/.gemini/skills/ 2>/dev/null; "
-                    f"cp -r {task_skills_dir}/* $HOME/.agents/skills/ 2>/dev/null; "
-                    "true; fi",
-                    timeout_sec=10,
-                )
-                logger.info(f"Skills distributed from task.toml skills_dir={task_skills_dir}")
+            effective_skills_source = None
+            if skills_dir:
+                effective_skills_source = "/skills"  # CLI injected via Dockerfile or uploaded
+                logger.info(f"Skills source: CLI --skills-dir (overrides task.toml)")
+            elif task_skills_dir:
+                effective_skills_source = task_skills_dir  # path inside container
+                logger.info(f"Skills source: task.toml skills_dir={task_skills_dir}")
+            # else: Dockerfile COPY is the default — skills already at agent paths, no action
 
             t_agent_setup = datetime.now()
 
@@ -566,30 +587,17 @@ class SDK:
                     )
                     logger.info("Codex auth.json written")
 
-                # 2b. Deploy skills into sandbox (runtime fallback if no Dockerfile injection)
+                # 2b. Deploy skills — runtime upload if needed, then distribute to agent
                 if skills_dir:
-                    env_dir = task_path / "environment"
-                    dockerfile = env_dir / "Dockerfile"
-                    already_injected = (
-                        dockerfile.exists()
-                        and "COPY _deps/skills /skills/" in dockerfile.read_text()
-                    )
-                    if not already_injected:
+                    # Upload from host if not already in container
+                    check = await env.exec("test -d /skills", timeout_sec=5)
+                    if check.return_code != 0:
                         skills_path = Path(skills_dir)
                         if skills_path.is_dir():
-                            logger.info(f"Deploying skills via runtime upload from {skills_path}")
+                            logger.info(f"Uploading skills from host: {skills_path}")
                             await env.upload_dir(skills_path, "/skills")
-                            await env.exec(
-                                "mkdir -p /root/.claude /root/.gemini && "
-                                "ln -sf /skills /root/.claude/skills && "
-                                "ln -sf /skills /root/.gemini/skills",
-                                timeout_sec=10,
-                            )
-                            logger.info("Skills deployed to /skills and symlinked")
                         else:
                             logger.warning(f"Skills dir not found: {skills_path}")
-                    else:
-                        logger.info("Skills already injected via Dockerfile")
 
 
                 # 2d. Set up sandbox user (non-root agent execution)
@@ -604,15 +612,9 @@ class SDK:
                         f"cp -aL /root/.local/bin/. /home/{sandbox_user}/.local/bin/ 2>/dev/null || true; fi && "
                         "if [ -d /root/.nvm ]; then "
                         f"cp -a /root/.nvm/. /home/{sandbox_user}/.nvm/ 2>/dev/null || true; fi && "
-                        # Copy agent config dirs (openclaw, gemini, etc.)
-                        "if [ -d /root/.openclaw ]; then "
-                        f"cp -a /root/.openclaw/. /home/{sandbox_user}/.openclaw/ 2>/dev/null || true; fi && "
-                        "if [ -d /root/.gemini ]; then "
-                        f"cp -a /root/.gemini/. /home/{sandbox_user}/.gemini/ 2>/dev/null || true; fi && "
-                        "if [ -d /skills ]; then "
-                        f"chmod -R a+rX /skills && "
-                        f"ln -sf /skills /home/{sandbox_user}/.claude/skills && "
-                        f"ln -sf /skills /home/{sandbox_user}/.gemini/skills; fi && "
+                        # Copy agent config + baked skills dirs to sandbox user
+                        "for d in .claude .gemini .openclaw .pi .agents; do "
+                        f"if [ -d /root/$d ]; then cp -a /root/$d/. /home/{sandbox_user}/$d/ 2>/dev/null || true; fi; done && "
                         f"chown -R {sandbox_user}:{sandbox_user} /home/{sandbox_user}",
                         timeout_sec=30,
                     )
@@ -624,6 +626,12 @@ class SDK:
                 if sandbox_user:
                     agent_cwd = f"/home/{sandbox_user}"
                 logger.info(f"Agent cwd: {agent_cwd}")
+
+                # 2e. Distribute skills to agent's discovery paths
+                if effective_skills_source:
+                    await _distribute_skills(
+                        env, effective_skills_source, agent, agent_cwd, sandbox_user,
+                    )
 
                 # 3. Connect ACP via live stdio pipe
                 if environment != "docker":
