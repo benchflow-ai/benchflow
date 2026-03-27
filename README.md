@@ -106,6 +106,13 @@ benchflow agents
 benchflow metrics jobs/tb2/ --json
 benchflow metrics jobs/tb2/
 
+# Evaluate a skill against tasks
+benchflow eval -t tasks/ --skills-dir skills/ -a claude-agent-acp -e daytona
+
+# List/install skills
+benchflow skills
+benchflow skills --install owner/repo@skill-name
+
 # View trajectory
 benchflow view jobs/tb2/my-trial/
 ```

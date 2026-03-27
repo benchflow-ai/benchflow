@@ -155,10 +155,12 @@ await sdk.run(..., sandbox_user="agent")
 ```
 
 - **Requires gosu** in the container (`apt-get install -y gosu`)
+- **Auto-creates user** via `useradd -m -s /bin/bash {sandbox_user}` if not exists
 - **Name must match** `^[a-z_][a-z0-9_-]*$` (lowercase, underscores, hyphens)
 - **Agent cwd** changes to `/home/{sandbox_user}` (not the container's WORKDIR)
 - Agent config dirs (`.claude`, `.gemini`, `.openclaw`, `.pi`, `.agents`, `.codex`) are copied from root
 - Install runs as root, agent runs as sandbox_user via gosu
+- Custom agents: must support ACP — see [ACP spec](https://agentclientprotocol.com/)
 
 ## Errors
 
