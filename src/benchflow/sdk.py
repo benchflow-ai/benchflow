@@ -581,9 +581,10 @@ class SDK:
 
                 # 2a-2. Write codex auth.json if needed (env vars aren't enough for codex-acp)
                 if "codex" in agent and agent_env.get("OPENAI_API_KEY"):
+                    auth_json = json.dumps({"OPENAI_API_KEY": agent_env["OPENAI_API_KEY"]})
+                    escaped = shlex.quote(auth_json)
                     await env.exec(
-                        "mkdir -p /root/.codex && "
-                        f'echo \'{{"OPENAI_API_KEY": "{agent_env["OPENAI_API_KEY"]}"}}\' > /root/.codex/auth.json',
+                        f"mkdir -p /root/.codex && echo {escaped} > /root/.codex/auth.json",
                         timeout_sec=10,
                     )
                     logger.info("Codex auth.json written")
@@ -616,8 +617,7 @@ class SDK:
 
                 # 2d. Set up sandbox user (non-root agent execution)
                 if sandbox_user:
-                    import re as _re
-                    if not _re.match(r'^[a-z_][a-z0-9_-]*$', sandbox_user):
+                    if not re.match(r'^[a-z_][a-z0-9_-]*$', sandbox_user):
                         raise ValueError(f"Invalid sandbox_user: {sandbox_user!r} (must be alphanumeric)")
                     logger.info(f"Setting up sandbox user: {sandbox_user}")
                     await env.exec(

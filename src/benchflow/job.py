@@ -313,7 +313,7 @@ class Job:
         if completed:
             # Check config.json (written by SDK.run) for the registry agent name
             sample_dir = next(
-                (self._jobs_dir / d for d in self._jobs_dir.iterdir() if d.is_dir()),
+                (d for d in self._jobs_dir.iterdir() if d.is_dir()),
                 None,
             )
             prev_agent = ""

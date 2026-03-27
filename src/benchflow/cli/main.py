@@ -268,7 +268,7 @@ def eval(
     ],
     skill: Annotated[
         Path | None,
-        typer.Option("--skill", help="Path to SKILL.md to inject into prompt"),
+        typer.Option("--skill", help="Path to SKILL.md (parent dir used as skills_dir)"),
     ] = None,
     skills_dir: Annotated[
         Path | None,
