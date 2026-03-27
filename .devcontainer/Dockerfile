@@ -65,6 +65,20 @@ RUN sh -c "$(wget -O- https://github.com/deluan/zsh-in-docker/releases/download/
 RUN curl -fsSL https://bun.sh/install | bash
 ENV PATH=$PATH:/home/node/.bun/bin
 
+# Google Cloud SDK (for gcloud auth, accessing Google Docs/Drive)
+RUN curl -sSL https://sdk.cloud.google.com | bash -s -- --disable-prompts --install-dir=/home/node
+ENV PATH=$PATH:/home/node/google-cloud-sdk/bin
+
+# Google Workspace CLI (for accessing Google Docs, Sheets, Drive)
+RUN ARCH=$(uname -m) && \
+  if [ "$ARCH" = "aarch64" ]; then GWS_ARCH="aarch64-unknown-linux-gnu"; \
+  else GWS_ARCH="x86_64-unknown-linux-gnu"; fi && \
+  curl -sSL "https://github.com/googleworkspace/cli/releases/latest/download/google-workspace-cli-${GWS_ARCH}.tar.gz" | \
+  tar xz -C /tmp && \
+  mv /tmp/google-workspace-cli-*/gws /home/node/.local/bin/gws-cli && \
+  chmod +x /home/node/.local/bin/gws-cli && \
+  rm -rf /tmp/google-workspace-cli-*
+
 # Claude Code + Gemini CLI
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} @google/gemini-cli
 
