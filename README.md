@@ -114,13 +114,14 @@ benchflow view jobs/tb2/my-trial/
 
 Any [ACP-compatible agent](https://agentclientprotocol.com/get-started/agents) works. Registered agents are auto-installed in sandboxes:
 
-| Agent | Description | Status |
-|-------|-------------|--------|
-| `claude-agent-acp` | Claude Code via ACP | Tested |
-| `pi-acp` | Pi coding agent via ACP | Tested |
-| `codex-acp` | OpenAI Codex via ACP | Registered |
-| `gemini` | Google Gemini CLI via ACP | Registered |
-| `openclaw` | OpenClaw via ACP shim | Tested (reward 1.0) |
+| Agent | Description | Requires | Status |
+|-------|-------------|----------|--------|
+| `claude-agent-acp` | Claude Code via ACP | ANTHROPIC_API_KEY | Tested |
+| `pi-acp` | Pi coding agent via ACP | ANTHROPIC_API_KEY | Tested |
+| `openclaw` | OpenClaw via ACP shim | ANTHROPIC_API_KEY | Tested |
+| `openclaw-gemini` | OpenClaw with Gemini | GEMINI_API_KEY | Tested |
+| `codex-acp` | OpenAI Codex via ACP | OPENAI_API_KEY | Tested |
+| `gemini` | Google Gemini CLI via ACP | GOOGLE_API_KEY | Tested |
 
 ```bash
 benchflow run -t task/ -a pi-acp -e daytona
@@ -175,8 +176,13 @@ Every run produces structured output:
 
 ```
 jobs/{job_name}/{trial_name}/
-├── result.json              # rewards, agent, timing
+├── config.json              # SDK.run() parameters (agent, model, environment)
+├── result.json              # rewards, agent, timing breakdown
+├── timing.json              # {environment_setup, agent_setup, agent_execution, verifier, total}
 ├── prompts.json             # prompts sent
+├── agent/
+│   ├── install-stdout.txt   # agent install output
+│   └── {agent_name}.txt     # agent stderr/debug output
 ├── trajectory/
 │   └── acp_trajectory.jsonl # tool calls + agent thoughts
 └── verifier/
