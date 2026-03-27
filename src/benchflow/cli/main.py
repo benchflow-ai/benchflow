@@ -306,12 +306,8 @@ def eval(
     """
     from benchflow.job import Job, JobConfig
 
-    # Build prompts — if --skill provided, prepend to instruction.md
-    prompts = None
-    if skill:
-        skill_content = skill.read_text()
-        # Skill content becomes the first prompt context
-        prompts = [None]  # Will be replaced with instruction.md + skill prefix
+    # Use --skill as skills_dir if --skills-dir not provided
+    effective_skills = str(skills_dir) if skills_dir else (str(skill.parent) if skill else None)
 
     j = Job(
         tasks_dir=str(tasks_dir),
@@ -321,7 +317,7 @@ def eval(
             model=model or "claude-haiku-4-5-20251001",
             environment=environment,
             concurrency=concurrency,
-            skills_dir=str(skills_dir) if skills_dir else None,
+            skills_dir=effective_skills,
         ),
     )
 

@@ -119,25 +119,6 @@ def install_skill(spec: str, target_dir: Path | None = None) -> Path | None:
         return None
 
 
-def load_skills_for_agent(
-    skills_dir: Path,
-    agent: str,
-) -> dict[str, Path]:
-    """Map discovered skills to agent-specific discovery paths.
-
-    Returns dict of {agent_path: skills_dir} for symlinking.
-    """
-    agent_paths = {
-        "claude-agent-acp": Path("/root/.claude/skills"),
-        "pi-acp": Path("/root/.claude/skills"),
-        "openclaw": Path("/root/.claude/skills"),  # shim copies to workspace
-        "openclaw-gemini": Path("/root/.claude/skills"),
-        "gemini": Path("/root/.gemini/skills"),
-        "codex-acp": Path("/root/.codex/skills"),
-    }
-    target = agent_paths.get(agent, Path("/root/.claude/skills"))
-    return {str(target): skills_dir}
-
 
 def list_skills_summary(skills: list[SkillInfo]) -> str:
     """Format skills list for display."""

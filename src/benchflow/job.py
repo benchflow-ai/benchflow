@@ -311,8 +311,20 @@ class Job:
 
         # Warn if resuming with different config than completed tasks
         if completed:
-            sample = next(iter(completed.values()))
-            prev_agent = sample.get("agent_name", "")
+            # Check config.json (written by SDK.run) for the registry agent name
+            sample_dir = next(
+                (self._jobs_dir / d for d in self._jobs_dir.iterdir() if d.is_dir()),
+                None,
+            )
+            prev_agent = ""
+            if sample_dir:
+                for cfg_file in sample_dir.rglob("config.json"):
+                    try:
+                        cfg = json.loads(cfg_file.read_text())
+                        prev_agent = cfg.get("agent", "")
+                        break
+                    except Exception:
+                        pass
             if prev_agent and prev_agent != self._config.agent:
                 logger.warning(
                     f"Resuming with agent={self._config.agent!r} but "

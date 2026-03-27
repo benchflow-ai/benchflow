@@ -507,6 +507,7 @@ class SDK:
                 await env.upload_dir(task_path / "solution", "/solution")
 
             t_agent_setup = datetime.now()
+            t_agent_exec = t_agent_setup  # fallback if exception before ACP prompt
 
             # Run pre-agent hooks (e.g. start claw-* services) — needed by BOTH oracle and ACP
             for hook in (pre_agent_hooks or []):
@@ -615,6 +616,9 @@ class SDK:
 
                 # 2d. Set up sandbox user (non-root agent execution)
                 if sandbox_user:
+                    import re as _re
+                    if not _re.match(r'^[a-z_][a-z0-9_-]*$', sandbox_user):
+                        raise ValueError(f"Invalid sandbox_user: {sandbox_user!r} (must be alphanumeric)")
                     logger.info(f"Setting up sandbox user: {sandbox_user}")
                     await env.exec(
                         f"id -u {sandbox_user} >/dev/null 2>&1 || "
@@ -810,7 +814,7 @@ class SDK:
             trajectory=trajectory,
             agent_name=agent_name,
             n_tool_calls=n_tool_calls,
-            n_prompts=len(prompts),
+            n_prompts=len(prompts) if prompts else 0,
             error=error,
             started_at=started_at,
             finished_at=datetime.now(),
