@@ -37,7 +37,23 @@ class LiveProcess(ABC):
         """Read one line from stdout."""
         if not self._process or not self._process.stdout:
             raise RuntimeError("Process not started")
-        line = await self._process.stdout.readline()
+        try:
+            line = await self._process.stdout.readline()
+        except (ValueError, asyncio.LimitOverrunError) as e:
+            # Buffer overflow — line exceeds _BUFFER_LIMIT.
+            # Drain the buffer and skip to next newline.
+            reader = self._process.stdout
+            skipped = len(reader._buffer)
+            reader._buffer.clear()
+            reader._maybe_resume_transport()
+            # Try to consume remaining bytes up to next newline
+            try:
+                await asyncio.wait_for(reader.readuntil(b"\n"), timeout=5)
+            except Exception:
+                pass
+            logger.warning(f"Skipped oversized line ({skipped} bytes): {e}")
+            # Return empty line — caller will retry readline
+            return b""
         if not line:
             stderr_text = ""
             if self._process and self._process.stderr:
