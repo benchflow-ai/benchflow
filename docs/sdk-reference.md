@@ -162,6 +162,50 @@ await sdk.run(..., sandbox_user="agent")
 - Install runs as root, agent runs as sandbox_user via gosu
 - Custom agents: must support ACP — see [ACP spec](https://agentclientprotocol.com/)
 
+## Environments
+
+| Environment | Concurrency | Setup |
+|-------------|-------------|-------|
+| `docker` (default) | ~4 | Docker must be running locally |
+| `daytona` | 64+ | Set `DAYTONA_API_KEY` from [daytona.io](https://app.daytona.io). No other config needed. |
+
+## Pre-agent Hooks
+
+Async callables that run after env setup but before agent launch. Use for starting background services.
+
+```python
+# Built-in: auto-detect and start claw-* services from Dockerfile
+from benchflow import detect_services_from_dockerfile, build_service_hooks
+
+services = detect_services_from_dockerfile("task-dir")  # reads Dockerfile for claw-*
+hooks = build_service_hooks(services)                    # builds async start + health check
+
+await sdk.run(task_path="task-dir", pre_agent_hooks=hooks)
+```
+
+```python
+# Custom hook
+async def my_hook(env):
+    await env.exec("my-service start &", timeout_sec=10)
+    await env.exec("curl -sf http://localhost:8080/health", timeout_sec=30)
+
+await sdk.run(task_path="task-dir", pre_agent_hooks=[my_hook])
+```
+
+Note: `pre_agent_hooks` is SDK-only. Not available via Job or CLI.
+
+See `examples/smolclaws_eval.py` for a complete example.
+
+## context_root
+
+Set this when your task's Dockerfile uses COPY instructions that reference files outside the `environment/` directory (relative to the repo root). Without it, the Docker build context won't find those files.
+
+```python
+# Dockerfile has: COPY packages/my-lib /app
+# packages/my-lib lives at repo root, not inside environment/
+await sdk.run(task_path="tasks/my-task", context_root="/path/to/repo")
+```
+
 ## Errors
 
 ```python
