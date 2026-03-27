@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -669,7 +670,6 @@ class SDK:
                         logger.info(f"Resolved agent path: {agent_launch}")
 
                 if sandbox_user:
-                    import shlex
                     inner = f"export HOME=/home/{sandbox_user} && cd /home/{sandbox_user} && {agent_launch}"
                     agent_launch = f"gosu {sandbox_user} bash -c {shlex.quote(inner)}"
                     logger.info(f"Agent sandboxed as: {sandbox_user}")
