@@ -218,7 +218,7 @@ Validation tasks in `skills/tests/` confirm agents can use the skills correctly 
 
 ## Architecture
 
-BenchFlow is a superset of [Harbor](https://github.com/benchflow-ai/harbor). Harbor provides environments (Docker, Daytona), verifier, task format, and orchestration. BenchFlow adds:
+BenchFlow provides:
 
 - **ACP client** — multi-turn agent communication via live stdio pipe
 - **Job orchestration** — concurrency, retries, resume, metrics
@@ -227,6 +227,20 @@ BenchFlow is a superset of [Harbor](https://github.com/benchflow-ai/harbor). Har
 - **Skills** — teach agents to use BenchFlow itself
 - **Viewer** — HTML trajectory visualization
 - **CLI** — `run`, `job`, `agents`, `metrics`, `view`
+
+## Citation
+
+If you use BenchFlow in academic work, please cite:
+
+```bibtex
+@software{BenchFlow_Team_BenchFlow_2026,
+author = {{BenchFlow Team}},
+month = mar,
+title = {{BenchFlow: Multi-turn agent benchmarking with ACP}},
+url = {https://github.com/benchflow-ai/benchflow},
+year = {2026}
+}
+```
 
 ## License
 

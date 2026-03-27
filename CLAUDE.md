@@ -1,6 +1,6 @@
 # benchflow
 
-Multi-turn agent benchmarking. Harbor + ACP.
+Multi-turn agent benchmarking with ACP.
 
 ## Key files
 

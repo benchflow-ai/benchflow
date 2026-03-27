@@ -1,6 +1,6 @@
 """benchflow — ACP-native agent benchmarking framework.
 
-Superset of Harbor. Re-exports Harbor's full API and adds:
+Re-exports environment APIs and adds:
 - ACP client for multi-turn agent communication
 - Trajectory capture (HTTP proxy, OTel collector, ACP native)
 - SDK for programmatic usage
