@@ -76,7 +76,18 @@ class StdioTransport(Transport):
         if not self._process or not self._process.stdout:
             raise RuntimeError("Transport not started")
         while True:
-            line = await self._process.stdout.readline()
+            try:
+                line = await self._process.stdout.readline()
+            except (ValueError, asyncio.LimitOverrunError) as e:
+                reader = self._process.stdout
+                reader._buffer.clear()
+                reader._maybe_resume_transport()
+                try:
+                    await asyncio.wait_for(reader.readuntil(b"\n"), timeout=5)
+                except Exception:
+                    pass
+                logger.warning(f"Skipped oversized line: {e}")
+                continue
             if not line:
                 raise ConnectionError("Agent process closed stdout")
             text = line.decode().strip()
