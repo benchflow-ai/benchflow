@@ -378,6 +378,49 @@ def skills(
     console.print(table)
 
 
+tasks_app = typer.Typer(help="Task authoring commands")
+app.add_typer(tasks_app, name="tasks")
+
+
+@tasks_app.command("init")
+def tasks_init(
+    name: Annotated[str, typer.Argument(help="Task name")],
+    parent_dir: Annotated[
+        Path,
+        typer.Option("--dir", "-p", help="Parent directory (default: tasks/)"),
+    ] = Path("tasks"),
+    no_pytest: Annotated[bool, typer.Option("--no-pytest", help="Skip pytest template")] = False,
+    no_solution: Annotated[bool, typer.Option("--no-solution", help="Skip solution template")] = False,
+) -> None:
+    """Scaffold a new benchmark task."""
+    from benchflow.tasks import init_task
+    try:
+        task_dir = init_task(name, parent_dir=parent_dir, no_pytest=no_pytest, no_solution=no_solution)
+        console.print(f"[green]Created:[/green] {task_dir}/")
+        console.print(f"  task.toml, instruction.md, environment/Dockerfile, tests/test.sh")
+        if not no_solution:
+            console.print(f"  solution/solve.sh")
+    except FileExistsError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1)
+
+
+@tasks_app.command("check")
+def tasks_check(
+    task_dir: Annotated[Path, typer.Argument(help="Path to task directory")],
+) -> None:
+    """Validate a task directory structure."""
+    from benchflow.tasks import check_task
+    issues = check_task(task_dir)
+    if not issues:
+        console.print(f"[green]✓[/green] {task_dir.name} — valid")
+    else:
+        console.print(f"[red]✗[/red] {task_dir.name} — {len(issues)} issue(s):")
+        for issue in issues:
+            console.print(f"  [yellow]→[/yellow] {issue}")
+        raise typer.Exit(1)
+
+
 @app.command()
 def cleanup(
     dry_run: Annotated[
