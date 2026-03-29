@@ -300,8 +300,8 @@ def _create_environment(
             session_id=trial_name,
             trial_paths=trial_paths,
             task_env_config=task.config.environment,
-            auto_stop_interval_mins=15,
-            auto_delete_interval_mins=5,
+            auto_stop_interval_mins=1440,
+            auto_delete_interval_mins=1440,  # TODO: make configurable via SDK.run() params
         )
     else:
         raise ValueError(f"Unknown environment_type: {environment_type!r} (use 'docker' or 'daytona')")
