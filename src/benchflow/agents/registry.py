@@ -44,6 +44,7 @@ class AgentConfig:
     description: str = ""
     skill_paths: list[str] = field(default_factory=list)
     install_timeout: int = 900  # seconds
+    default_model: str = ""  # default model ID when --model is omitted
 
 
 # Agent registry — all supported agents
@@ -80,7 +81,7 @@ AGENTS: dict[str, AgentConfig] = {
     ),
     "openclaw": AgentConfig(
         name="openclaw",
-        description="OpenClaw agent via ACP shim (wraps openclaw agent --local)",
+        description="OpenClaw agent via ACP shim — model set at runtime via --model",
         skill_paths=["$HOME/.claude/skills", "$WORKSPACE/skills"],
         install_cmd=(
             f"{_NODE_INSTALL} && "
@@ -90,7 +91,7 @@ AGENTS: dict[str, AgentConfig] = {
             # Ensure python3 for shim
             "( command -v python3 >/dev/null 2>&1 || "
             "(apt-get update -qq && apt-get install -y -qq python3 >/dev/null 2>&1) ) && "
-            # Configure: auto-approve tools
+            # Configure: auto-approve tools (no model — set at runtime via ACP set_model)
             "mkdir -p ~/.openclaw && "
             'echo \'{"version":1,"defaults":{"allow_all":true}}\''
             " > ~/.openclaw/exec-approvals.json && "
@@ -102,36 +103,7 @@ AGENTS: dict[str, AgentConfig] = {
         ),
         launch_cmd="python3 /usr/local/bin/openclaw-acp-shim",
         protocol="acp",
-        requires_env=["ANTHROPIC_API_KEY"],
-    ),
-    "openclaw-gemini": AgentConfig(
-        name="openclaw-gemini",
-        description="OpenClaw agent using Google Gemini API (via ACP shim)",
-        skill_paths=["$HOME/.claude/skills", "$WORKSPACE/skills"],
-        install_cmd=(
-            f"{_NODE_INSTALL} && "
-            "( command -v openclaw >/dev/null 2>&1 || "
-            "npm install -g openclaw@latest >/dev/null 2>&1 ) && "
-            "command -v openclaw >/dev/null 2>&1 && "
-            "( command -v python3 >/dev/null 2>&1 || "
-            "(apt-get update -qq && apt-get install -y -qq python3 >/dev/null 2>&1) ) && "
-            # Configure: auto-approve tools + Gemini model
-            "mkdir -p ~/.openclaw && "
-            'echo \'{"version":1,"defaults":{"allow_all":true}}\''
-            " > ~/.openclaw/exec-approvals.json && "
-            # Write openclaw.json with Gemini config
-            'cat > ~/.openclaw/openclaw.json <<\'CFGEOF\'\n'
-            '{"agents":{"defaults":{"model":{"primary":"google/gemini-3.1-flash-lite-preview"}}}}\n'
-            "CFGEOF\n"
-            # Deploy ACP shim
-            "cat > /usr/local/bin/openclaw-acp-shim <<'SHIMEOF'\n"
-            + _OPENCLAW_SHIM +
-            "\nSHIMEOF\n"
-            "chmod +x /usr/local/bin/openclaw-acp-shim"
-        ),
-        launch_cmd="python3 /usr/local/bin/openclaw-acp-shim",
-        protocol="acp",
-        requires_env=["GEMINI_API_KEY"],
+        requires_env=[],  # inferred from --model at runtime
     ),
     "codex-acp": AgentConfig(
         name="codex-acp",
@@ -164,12 +136,38 @@ AGENTS: dict[str, AgentConfig] = {
 }
 
 
-def get_agent(name: str) -> AgentConfig:
-    """Get agent config by name. Raises KeyError if not found."""
+# Backward-compat aliases: old name → (agent, default_model)
+_AGENT_ALIASES: dict[str, tuple[str, str]] = {
+    "openclaw-gemini": ("openclaw", "google/gemini-3.1-flash-lite-preview"),
+}
+
+
+def infer_env_key_for_model(model: str) -> str | None:
+    """Infer the required API key environment variable from a model ID."""
+    m = model.lower()
+    if "gemini" in m:
+        return "GEMINI_API_KEY"
+    if "gpt" in m or m.startswith("o1") or m.startswith("o3"):
+        return "OPENAI_API_KEY"
+    if "claude" in m or "haiku" in m or "sonnet" in m or "opus" in m:
+        return "ANTHROPIC_API_KEY"
+    return None
+
+
+def get_agent(name: str) -> tuple[AgentConfig, str]:
+    """Get agent config by name, resolving aliases.
+
+    Returns (config, model) where model is non-empty only for alias lookups.
+    Raises KeyError if not found.
+    """
+    if name in _AGENT_ALIASES:
+        real_name, default_model = _AGENT_ALIASES[name]
+        config = AGENTS[real_name]
+        return config, default_model
     if name not in AGENTS:
-        available = ", ".join(sorted(AGENTS.keys()))
+        available = ", ".join(sorted(list(AGENTS.keys()) + list(_AGENT_ALIASES.keys())))
         raise KeyError(f"Unknown agent: {name!r}. Available: {available}")
-    return AGENTS[name]
+    return AGENTS[name], ""
 
 
 def list_agents() -> list[AgentConfig]:

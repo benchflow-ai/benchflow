@@ -50,9 +50,10 @@ def test_register_agent():
     )
 
     assert "test-custom-agent" in AGENTS
-    cfg = get_agent("test-custom-agent")
+    cfg, alias_model = get_agent("test-custom-agent")
     assert cfg.launch_cmd == "test-agent --acp"
     assert cfg.requires_env == ["TEST_KEY"]
+    assert alias_model == ""
 
     # Cleanup
     del AGENTS["test-custom-agent"]
