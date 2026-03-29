@@ -378,5 +378,55 @@ def skills(
     console.print(table)
 
 
+@app.command()
+def cleanup(
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="List sandboxes without deleting"),
+    ] = False,
+    max_age_minutes: Annotated[
+        int,
+        typer.Option("--max-age", help="Delete sandboxes older than N minutes"),
+    ] = 30,
+) -> None:
+    """Clean up orphaned Daytona sandboxes.
+
+    Lists and deletes sandboxes that were left running after eval runs.
+    """
+    try:
+        from daytona import Daytona
+    except ImportError:
+        console.print("[red]daytona SDK not installed[/red]")
+        raise typer.Exit(1)
+
+    d = Daytona()
+    page = 1
+    total_deleted = 0
+    total_found = 0
+
+    while True:
+        result = d.list(page=page, limit=100)
+        if not result.items:
+            break
+        total_found += len(result.items)
+        for sb in result.items:
+            if dry_run:
+                console.print(f"  [dim]{sb.id}[/dim] state={sb.state} created={sb.created_at}")
+            else:
+                try:
+                    d.delete(sb)
+                    total_deleted += 1
+                except Exception as e:
+                    console.print(f"  [yellow]Failed to delete {sb.id}: {e}[/yellow]")
+        if len(result.items) < 100:
+            break
+        page += 1
+
+    if dry_run:
+        console.print(f"\n[bold]{total_found} sandboxes found[/bold] (use without --dry-run to delete)")
+    else:
+        console.print(f"\n[bold green]{total_deleted} sandboxes deleted[/bold green]")
+
+
 if __name__ == "__main__":
     app()
