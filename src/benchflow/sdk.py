@@ -429,9 +429,18 @@ class SDK:
             RunResult with rewards, trajectory, and metadata.
         """
         from uuid import uuid4
+        from benchflow.agents.registry import _AGENT_ALIASES
 
         task_path = Path(task_path)
         task = Task(task_path)
+
+        # Resolve agent aliases (e.g. openclaw-gemini → openclaw + default model)
+        if agent in _AGENT_ALIASES:
+            real_agent, alias_model = _AGENT_ALIASES[agent]
+            if not model:
+                model = alias_model
+            agent = real_agent
+
         job_name = job_name or datetime.now().strftime("%Y-%m-%d__%H-%M-%S")
         trial_name = trial_name or f"{task_path.name}__{uuid4().hex[:8]}"
         job_dir = Path(jobs_dir) / job_name
