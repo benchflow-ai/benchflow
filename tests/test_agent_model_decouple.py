@@ -65,6 +65,12 @@ class TestInferEnvKey:
     def test_unknown_model_returns_none(self):
         assert infer_env_key_for_model("some-custom-model") is None
 
+    def test_vertex_model_returns_none(self):
+        assert infer_env_key_for_model("vertex-ai/claude-sonnet-4-6") is None
+
+    def test_bedrock_model_returns_none(self):
+        assert infer_env_key_for_model("bedrock/claude-sonnet-4-6") is None
+
 
 class TestNoOpenclawGeminiEntry:
     """openclaw-gemini should not exist as a direct registry entry."""

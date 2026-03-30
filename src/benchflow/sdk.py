@@ -456,14 +456,34 @@ class SDK:
         for subdir in ("agent", "verifier", "artifacts", "trajectory"):
             (trial_dir / subdir).mkdir(exist_ok=True)
 
-        # Resolve agent env — auto-inherit API keys from os.environ
+        # Resolve agent env — auto-inherit API keys + cloud config from os.environ
         agent_env = dict(agent_env or {})
-        for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY"):
+        for key in (
+            # API keys
+            "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY",
+            # Vertex AI / GCP (for claude-code, openclaw with Vertex)
+            "CLAUDE_CODE_USE_VERTEX", "ANTHROPIC_VERTEX_PROJECT_ID",
+            "CLOUD_ML_REGION", "ANTHROPIC_VERTEX_REGION",
+            "GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION",
+            "GOOGLE_GENAI_USE_VERTEXAI",
+            # AWS Bedrock (passthrough only — not tested)
+            # "CLAUDE_CODE_USE_BEDROCK", "ANTHROPIC_BEDROCK_BASE_URL",
+            # "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
+            # "AWS_REGION", "AWS_DEFAULT_REGION",
+        ):
             if key in os.environ:
                 agent_env.setdefault(key, os.environ[key])
         # Mirror GEMINI_API_KEY as GOOGLE_API_KEY (some agents expect one or the other)
         if "GEMINI_API_KEY" in agent_env and "GOOGLE_API_KEY" not in agent_env:
             agent_env["GOOGLE_API_KEY"] = agent_env["GEMINI_API_KEY"]
+        # Handle GOOGLE_APPLICATION_CREDENTIALS — store path for file upload to sandbox
+        _gac_local_path: str | None = None
+        if "GOOGLE_APPLICATION_CREDENTIALS" in agent_env:
+            _gac_local_path = agent_env["GOOGLE_APPLICATION_CREDENTIALS"]
+            agent_env["GOOGLE_APPLICATION_CREDENTIALS"] = "/tmp/gcp-credentials.json"
+        elif "GOOGLE_APPLICATION_CREDENTIALS" in os.environ:
+            _gac_local_path = os.environ["GOOGLE_APPLICATION_CREDENTIALS"]
+            agent_env["GOOGLE_APPLICATION_CREDENTIALS"] = "/tmp/gcp-credentials.json"
         if model:
             agent_env.setdefault("ANTHROPIC_MODEL", model)
             # Validate required API key for the chosen model
@@ -539,6 +559,10 @@ class SDK:
                 await env.upload_file(task_path / "instruction.md", "/instruction.md")
             if (task_path / "solution").is_dir():
                 await env.upload_dir(task_path / "solution", "/solution")
+
+            # Upload GCP credentials file for Vertex AI
+            if _gac_local_path and Path(_gac_local_path).exists():
+                await env.upload_file(_gac_local_path, "/tmp/gcp-credentials.json")
 
             t_agent_setup = datetime.now()
             t_agent_exec = t_agent_setup  # fallback if exception before ACP prompt

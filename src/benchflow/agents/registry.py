@@ -143,8 +143,14 @@ _AGENT_ALIASES: dict[str, tuple[str, str]] = {
 
 
 def infer_env_key_for_model(model: str) -> str | None:
-    """Infer the required API key environment variable from a model ID."""
+    """Infer the required API key environment variable from a model ID.
+
+    Returns None for Vertex/Bedrock models (they use cloud credentials, not API keys).
+    """
     m = model.lower()
+    # Vertex AI and Bedrock use cloud credentials, not API keys
+    if m.startswith("vertex-ai/") or m.startswith("bedrock/"):
+        return None
     if "gemini" in m:
         return "GEMINI_API_KEY"
     if "gpt" in m or m.startswith("o1") or m.startswith("o3"):
