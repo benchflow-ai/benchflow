@@ -16,7 +16,7 @@ from harbor import *  # noqa: F401, F403
 # benchflow's additions
 from benchflow.acp.client import ACPClient  # noqa: F401
 from benchflow.acp.session import ACPSession  # noqa: F401
-from benchflow.agents.registry import AGENTS, get_agent, list_agents, register_agent  # noqa: F401
+from benchflow.agents.registry import AGENTS, get_agent, list_agents, register_agent, infer_env_key_for_model  # noqa: F401
 from benchflow.job import Job, JobConfig, JobResult, RetryConfig  # noqa: F401
 from benchflow.metrics import BenchmarkMetrics, collect_metrics  # noqa: F401
 from benchflow.sdk import SDK, RunResult, AgentInstallError, AgentTimeoutError, stage_dockerfile_deps  # noqa: F401

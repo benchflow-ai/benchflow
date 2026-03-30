@@ -267,6 +267,13 @@ def _parse_gemini_trajectory(data: dict) -> list[dict]:
 AGENT_INSTALLERS = {name: a.install_cmd for name, a in AGENTS.items()}
 AGENT_LAUNCH = {name: a.launch_cmd for name, a in AGENTS.items()}
 
+# Register aliases so AGENT_INSTALLERS/AGENT_LAUNCH resolve them too
+from benchflow.agents.registry import _AGENT_ALIASES
+for alias, (real_name, _) in _AGENT_ALIASES.items():
+    if real_name in AGENTS:
+        AGENT_INSTALLERS[alias] = AGENTS[real_name].install_cmd
+        AGENT_LAUNCH[alias] = AGENTS[real_name].launch_cmd
+
 
 def _create_environment(
     environment_type: str,
@@ -293,8 +300,8 @@ def _create_environment(
             session_id=trial_name,
             trial_paths=trial_paths,
             task_env_config=task.config.environment,
-            auto_stop_interval_mins=15,
-            auto_delete_interval_mins=5,
+            auto_stop_interval_mins=1440,
+            auto_delete_interval_mins=1440,  # TODO: make configurable via SDK.run() params
         )
     else:
         raise ValueError(f"Unknown environment_type: {environment_type!r} (use 'docker' or 'daytona')")
@@ -329,7 +336,9 @@ class RunResult:
         trial_name: str = "",
         rewards: dict[str, float | int] | None = None,
         trajectory: list[dict[str, Any]] | None = None,
+        agent: str = "",
         agent_name: str = "",
+        model: str = "",
         n_tool_calls: int = 0,
         n_prompts: int = 0,
         error: str | None = None,
@@ -340,7 +349,9 @@ class RunResult:
         self.trial_name = trial_name
         self.rewards = rewards
         self.trajectory = trajectory or []
-        self.agent_name = agent_name
+        self.agent = agent  # harness name (e.g. "openclaw")
+        self.agent_name = agent_name  # ACP-reported name
+        self.model = model  # model ID (e.g. "google/gemini-3.1-flash-lite-preview")
         self.n_tool_calls = n_tool_calls
         self.n_prompts = n_prompts
         self.error = error
@@ -418,9 +429,18 @@ class SDK:
             RunResult with rewards, trajectory, and metadata.
         """
         from uuid import uuid4
+        from benchflow.agents.registry import _AGENT_ALIASES
 
         task_path = Path(task_path)
         task = Task(task_path)
+
+        # Resolve agent aliases (e.g. openclaw-gemini → openclaw + default model)
+        if agent in _AGENT_ALIASES:
+            real_agent, alias_model = _AGENT_ALIASES[agent]
+            if not model:
+                model = alias_model
+            agent = real_agent
+
         job_name = job_name or datetime.now().strftime("%Y-%m-%d__%H-%M-%S")
         trial_name = trial_name or f"{task_path.name}__{uuid4().hex[:8]}"
         job_dir = Path(jobs_dir) / job_name
@@ -441,8 +461,19 @@ class SDK:
         for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY"):
             if key in os.environ:
                 agent_env.setdefault(key, os.environ[key])
+        # Mirror GEMINI_API_KEY as GOOGLE_API_KEY (some agents expect one or the other)
+        if "GEMINI_API_KEY" in agent_env and "GOOGLE_API_KEY" not in agent_env:
+            agent_env["GOOGLE_API_KEY"] = agent_env["GEMINI_API_KEY"]
         if model:
             agent_env.setdefault("ANTHROPIC_MODEL", model)
+            # Validate required API key for the chosen model
+            from benchflow.agents.registry import infer_env_key_for_model
+            required_key = infer_env_key_for_model(model)
+            if required_key and required_key not in agent_env:
+                raise ValueError(
+                    f"{required_key} required for model {model!r} but not set. "
+                    f"Export it or pass via agent_env."
+                )
         # Increase output token limit to avoid truncation errors
         agent_env.setdefault("CLAUDE_CODE_MAX_OUTPUT_TOKENS", "128000")
         # Disable telemetry/non-essential traffic in container
@@ -814,7 +845,9 @@ class SDK:
             trial_name=trial_name,
             rewards=rewards,
             trajectory=trajectory,
+            agent=agent,
             agent_name=agent_name,
+            model=model or "",
             n_tool_calls=n_tool_calls,
             n_prompts=len(prompts) if prompts else 0,
             error=error,
@@ -834,7 +867,9 @@ class SDK:
                     "task_name": result.task_name,
                     "trial_name": result.trial_name,
                     "rewards": result.rewards,
+                    "agent": result.agent,
                     "agent_name": result.agent_name,
+                    "model": result.model,
                     "n_tool_calls": result.n_tool_calls,
                     "n_prompts": result.n_prompts,
                     "error": result.error,
