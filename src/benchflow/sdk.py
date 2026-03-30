@@ -466,10 +466,10 @@ class SDK:
             "CLOUD_ML_REGION", "ANTHROPIC_VERTEX_REGION",
             "GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION",
             "GOOGLE_GENAI_USE_VERTEXAI",
-            # AWS Bedrock
-            "CLAUDE_CODE_USE_BEDROCK", "ANTHROPIC_BEDROCK_BASE_URL",
-            "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
-            "AWS_REGION", "AWS_DEFAULT_REGION",
+            # AWS Bedrock (passthrough only — not tested)
+            # "CLAUDE_CODE_USE_BEDROCK", "ANTHROPIC_BEDROCK_BASE_URL",
+            # "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
+            # "AWS_REGION", "AWS_DEFAULT_REGION",
         ):
             if key in os.environ:
                 agent_env.setdefault(key, os.environ[key])
