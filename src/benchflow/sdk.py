@@ -646,12 +646,15 @@ class SDK:
                     else:
                         logger.warning(f"Agent binary check failed (rc={verify.return_code}): {_vout[:80]}")
 
+                # Home directory for credential writes — must match where the agent runs
+                cred_home = f"/home/{sandbox_user}" if sandbox_user else "/root"
+
                 # 2a-2. Write codex auth.json if needed (env vars aren't enough for codex-acp)
                 if "codex" in agent and agent_env.get("OPENAI_API_KEY"):
                     auth_json = json.dumps({"OPENAI_API_KEY": agent_env["OPENAI_API_KEY"]})
                     escaped = shlex.quote(auth_json)
                     await env.exec(
-                        f"mkdir -p /root/.codex && echo {escaped} > /root/.codex/auth.json",
+                        f"mkdir -p {cred_home}/.codex && echo {escaped} > {cred_home}/.codex/auth.json",
                         timeout_sec=10,
                     )
                     logger.info("Codex auth.json written")
@@ -660,13 +663,11 @@ class SDK:
                 adc_json = agent_env.get("GOOGLE_APPLICATION_CREDENTIALS_JSON")
                 if adc_json:
                     escaped = shlex.quote(adc_json)
-                    adc_target = "/root/.config/gcloud/application_default_credentials.json"
+                    adc_target = f"{cred_home}/.config/gcloud/application_default_credentials.json"
                     await env.exec(
-                        f"mkdir -p /root/.config/gcloud && echo {escaped} > {adc_target} && "
-                        f"export GOOGLE_APPLICATION_CREDENTIALS={adc_target}",
+                        f"mkdir -p {cred_home}/.config/gcloud && echo {escaped} > {adc_target}",
                         timeout_sec=10,
                     )
-                    # Also set GOOGLE_APPLICATION_CREDENTIALS so the agent process can find it
                     agent_env.setdefault("GOOGLE_APPLICATION_CREDENTIALS", adc_target)
                     logger.info("GCP ADC credentials written to container")
 
