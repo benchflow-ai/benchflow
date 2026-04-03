@@ -83,6 +83,22 @@ def setup_workspace(cwd: str):
                 break  # Use first source found
 
 
+def setup_gcloud_adc():
+    """Write ADC credentials from env var to disk and enable google plugin for Vertex AI."""
+    adc_json = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS_JSON")
+    if not adc_json:
+        return
+    adc_path = Path.home() / ".config" / "gcloud" / "application_default_credentials.json"
+    adc_path.parent.mkdir(parents=True, exist_ok=True)
+    adc_path.write_text(adc_json)
+    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(adc_path)
+    # Enable the google plugin so openclaw recognizes google-vertex/ models
+    subprocess.run(
+        ["openclaw", "plugins", "enable", "google"],
+        capture_output=True, timeout=10,
+    )
+
+
 def find_session_jsonl() -> Path | None:
     """Find the most recent openclaw session JSONL file."""
     home = os.environ.get("HOME", os.path.expanduser("~"))
@@ -228,6 +244,7 @@ def parse_session_jsonl(path: Path, session_id: str) -> list[dict]:
 
 
 def main():
+    setup_gcloud_adc()
     session_id = "openclaw-shim"
     cwd = "/app"
 

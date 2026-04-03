@@ -6,6 +6,7 @@ from benchflow.agents.registry import (
     _AGENT_ALIASES,
     get_agent,
     infer_env_key_for_model,
+    is_vertex_model,
 )
 
 
@@ -62,8 +63,44 @@ class TestInferEnvKey:
     def test_o3_model(self):
         assert infer_env_key_for_model("o3-mini") == "OPENAI_API_KEY"
 
+    def test_vertex_gemini_returns_none(self):
+        """google-vertex/ models use ADC, not API keys."""
+        assert infer_env_key_for_model("google-vertex/gemini-2.5-flash") is None
+
+    def test_vertex_claude_returns_none(self):
+        """anthropic-vertex/ models use ADC, not API keys."""
+        assert infer_env_key_for_model("anthropic-vertex/claude-sonnet-4-6") is None
+
+    def test_vertex_zai_returns_none(self):
+        assert infer_env_key_for_model("vertex-zai/glm-5-maas") is None
+
     def test_unknown_model_returns_none(self):
         assert infer_env_key_for_model("some-custom-model") is None
+
+
+class TestIsVertexModel:
+    """is_vertex_model — single source of truth for vertex prefixes."""
+
+    def test_google_vertex(self):
+        assert is_vertex_model("google-vertex/gemini-2.5-flash") is True
+
+    def test_anthropic_vertex(self):
+        assert is_vertex_model("anthropic-vertex/claude-sonnet-4-6") is True
+
+    def test_vertex_zai(self):
+        assert is_vertex_model("vertex-zai/glm-5-maas") is True
+
+    def test_plain_gemini_is_not_vertex(self):
+        assert is_vertex_model("google/gemini-3.1-pro") is False
+
+    def test_plain_claude_is_not_vertex(self):
+        assert is_vertex_model("claude-sonnet-4-6") is False
+
+    def test_infer_env_key_delegates(self):
+        """infer_env_key_for_model uses is_vertex_model internally."""
+        assert infer_env_key_for_model("vertex-zai/glm-5-maas") is None
+        assert infer_env_key_for_model("google-vertex/gemini-2.5-flash") is None
+        assert infer_env_key_for_model("anthropic-vertex/claude-sonnet-4-6") is None
 
 
 class TestNoOpenclawGeminiEntry:

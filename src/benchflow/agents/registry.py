@@ -142,8 +142,15 @@ _AGENT_ALIASES: dict[str, tuple[str, str]] = {
 }
 
 
+def is_vertex_model(model: str) -> bool:
+    """True if the model uses Vertex AI (GCP ADC auth, not API keys)."""
+    return model.lower().startswith(("google-vertex/", "anthropic-vertex/", "vertex-zai/"))
+
+
 def infer_env_key_for_model(model: str) -> str | None:
     """Infer the required API key environment variable from a model ID."""
+    if is_vertex_model(model):
+        return None  # Vertex AI uses ADC, not API keys
     m = model.lower()
     if "gemini" in m:
         return "GEMINI_API_KEY"

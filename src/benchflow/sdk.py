@@ -458,12 +458,29 @@ class SDK:
 
         # Resolve agent env — auto-inherit API keys from os.environ
         agent_env = dict(agent_env or {})
-        for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY"):
+        for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY", "GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION"):
             if key in os.environ:
                 agent_env.setdefault(key, os.environ[key])
         # Mirror GEMINI_API_KEY as GOOGLE_API_KEY (some agents expect one or the other)
         if "GEMINI_API_KEY" in agent_env and "GOOGLE_API_KEY" not in agent_env:
             agent_env["GOOGLE_API_KEY"] = agent_env["GEMINI_API_KEY"]
+        # Inject ADC credentials and defaults for Vertex AI models
+        if model:
+            from benchflow.agents.registry import is_vertex_model
+            if is_vertex_model(model):
+                adc_path = Path.home() / ".config/gcloud/application_default_credentials.json"
+                if not adc_path.exists():
+                    raise ValueError(
+                        f"Vertex AI model {model!r} requires ADC credentials. "
+                        f"Run: gcloud auth application-default login"
+                    )
+                agent_env.setdefault("GOOGLE_APPLICATION_CREDENTIALS_JSON", adc_path.read_text())
+                agent_env.setdefault("GOOGLE_CLOUD_LOCATION", "global")
+                if "GOOGLE_CLOUD_PROJECT" not in agent_env:
+                    raise ValueError(
+                        f"GOOGLE_CLOUD_PROJECT required for Vertex AI model {model!r}. "
+                        f"Export it or pass via --ae GOOGLE_CLOUD_PROJECT=<project>"
+                    )
         if model:
             agent_env.setdefault("ANTHROPIC_MODEL", model)
             # Validate required API key for the chosen model
