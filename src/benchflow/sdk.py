@@ -475,7 +475,8 @@ class SDK:
                         f"Export it or pass via --ae GOOGLE_CLOUD_PROJECT=<project>"
                     )
         if model:
-            agent_env.setdefault("ANTHROPIC_MODEL", model)
+            from benchflow.agents.providers import strip_provider_prefix
+            agent_env.setdefault("ANTHROPIC_MODEL", strip_provider_prefix(model))
             # Inject custom provider env vars so the shim can configure itself
             # (the shim runs in the container where benchflow may not be installed)
             from benchflow.agents.providers import find_provider, resolve_base_url
@@ -638,10 +639,11 @@ class SDK:
 
                     # Verify binary actually works
                     verify = await env.exec(f"{agent_base} --version 2>&1 || {agent_base} --help 2>&1 | head -1", timeout_sec=10)
+                    _vout = (verify.stdout or "").strip()
                     if verify.return_code == 0:
-                        logger.info(f"Agent verified: {verify.stdout.strip()[:80]}")
+                        logger.info(f"Agent verified: {_vout[:80]}")
                     else:
-                        logger.warning(f"Agent binary check failed (rc={verify.return_code}): {verify.stdout.strip()[:80]}")
+                        logger.warning(f"Agent binary check failed (rc={verify.return_code}): {_vout[:80]}")
 
                 # 2a-2. Write codex auth.json if needed (env vars aren't enough for codex-acp)
                 if "codex" in agent and agent_env.get("OPENAI_API_KEY"):
@@ -652,6 +654,20 @@ class SDK:
                         timeout_sec=10,
                     )
                     logger.info("Codex auth.json written")
+
+                # 2a-3. Write GCP ADC credentials to disk for Vertex AI models
+                adc_json = agent_env.get("GOOGLE_APPLICATION_CREDENTIALS_JSON")
+                if adc_json:
+                    escaped = shlex.quote(adc_json)
+                    adc_target = "/root/.config/gcloud/application_default_credentials.json"
+                    await env.exec(
+                        f"mkdir -p /root/.config/gcloud && echo {escaped} > {adc_target} && "
+                        f"export GOOGLE_APPLICATION_CREDENTIALS={adc_target}",
+                        timeout_sec=10,
+                    )
+                    # Also set GOOGLE_APPLICATION_CREDENTIALS so the agent process can find it
+                    agent_env.setdefault("GOOGLE_APPLICATION_CREDENTIALS", adc_target)
+                    logger.info("GCP ADC credentials written to container")
 
                 # 2b. Deploy skills into sandbox (runtime fallback if no Dockerfile injection)
                 if skills_dir:
@@ -704,7 +720,8 @@ class SDK:
 
                 # Detect sandbox working directory
                 cwd_result = await env.exec("pwd", timeout_sec=10)
-                agent_cwd = cwd_result.stdout.strip() if cwd_result.return_code == 0 else "/app"
+                agent_cwd = (cwd_result.stdout or "").strip() if cwd_result.return_code == 0 else "/app"
+                agent_cwd = agent_cwd or "/app"
                 if sandbox_user:
                     agent_cwd = f"/home/{sandbox_user}"
                 logger.info(f"Agent cwd: {agent_cwd}")
@@ -725,7 +742,7 @@ class SDK:
                 # 3. Connect ACP via live stdio pipe
                 if environment != "docker":
                     which_result = await env.exec(f"which {agent_launch.split()[0]}", timeout_sec=10)
-                    if which_result.return_code == 0 and which_result.stdout.strip():
+                    if which_result.return_code == 0 and (which_result.stdout or "").strip():
                         full_path = which_result.stdout.strip()
                         parts = agent_launch.split()
                         parts[0] = full_path
@@ -769,9 +786,13 @@ class SDK:
                 logger.info(f"Session: {session.session_id}")
 
                 if model:
+                    from benchflow.agents.providers import strip_provider_prefix
+                    acp_model_id = strip_provider_prefix(model)
                     try:
-                        await acp_client.set_model(model)
-                        logger.info(f"Model set to: {model}")
+                        await asyncio.wait_for(
+                            acp_client.set_model(acp_model_id), timeout=60,
+                        )
+                        logger.info(f"Model set to: {acp_model_id} (from {model})")
                     except Exception as e:
                         logger.warning(f"Failed to set model via ACP: {e}")
 

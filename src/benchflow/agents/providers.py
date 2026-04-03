@@ -21,12 +21,22 @@ class ProviderConfig:
     """Configuration for a custom LLM provider."""
 
     name: str
-    base_url: str  # may contain {placeholders} expanded via url_params
-    api_protocol: str  # "openai-completions" | "anthropic-messages"
+    base_url: str  # primary endpoint; may contain {placeholders} expanded via url_params
+    api_protocol: str  # protocol for base_url: "openai-completions" | "anthropic-messages"
     auth_type: str  # "api_key" | "adc"
     auth_env: str | None = None  # env var holding the API key (None for ADC)
     url_params: dict[str, str] = field(default_factory=dict)  # {placeholder: ENV_VAR}
     models: list[dict] = field(default_factory=list)  # model metadata for agents
+    # Multi-protocol support: {protocol: base_url} for providers with multiple APIs.
+    # base_url + api_protocol is the primary; endpoints adds alternatives.
+    endpoints: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def all_endpoints(self) -> dict[str, str]:
+        """Merged view: endpoints dict with base_url/api_protocol as fallback."""
+        merged = {self.api_protocol: self.base_url}
+        merged.update(self.endpoints)
+        return merged
 
 
 # ── Provider registry ──
@@ -54,6 +64,10 @@ PROVIDERS: dict[str, ProviderConfig] = {
         api_protocol="openai-completions",
         auth_type="api_key",
         auth_env="ZAI_API_KEY",
+        endpoints={
+            "openai-completions": "https://api.z.ai/api/paas/v4",
+            "anthropic-messages": "https://api.z.ai/api/anthropic",
+        },
         models=[
             {
                 "id": "glm-5",
@@ -110,13 +124,23 @@ def find_provider(model: str) -> tuple[str, ProviderConfig] | None:
     return name, cfg
 
 
-def resolve_base_url(provider: ProviderConfig, env: dict[str, str]) -> str:
+def resolve_base_url(
+    provider: ProviderConfig,
+    env: dict[str, str],
+    protocol: str | None = None,
+) -> str:
     """Expand {placeholders} in a provider's base_url using env vars.
+
+    If *protocol* is given and the provider has an ``endpoints`` entry for it,
+    that URL is used instead of the primary ``base_url``.
 
     Raises KeyError if a required env var is missing.
     """
+    url = provider.base_url
+    if protocol and provider.endpoints.get(protocol):
+        url = provider.endpoints[protocol]
     if not provider.url_params:
-        return provider.base_url
+        return url
     replacements = {}
     for placeholder, env_var in provider.url_params.items():
         value = env.get(env_var)
@@ -126,7 +150,24 @@ def resolve_base_url(provider: ProviderConfig, env: dict[str, str]) -> str:
                 f"{{{placeholder}}} in base_url, but it is not set."
             )
         replacements[placeholder] = value
-    return provider.base_url.format_map(replacements)
+    return url.format_map(replacements)
+
+
+def strip_provider_prefix(model: str) -> str:
+    """Strip the provider prefix from a model ID.
+
+    "anthropic-vertex/claude-sonnet-4-6" → "claude-sonnet-4-6"
+    "zai/glm-5" → "glm-5"
+    "claude-sonnet-4-6" → "claude-sonnet-4-6"  (no prefix = unchanged)
+    """
+    result = find_provider(model)
+    if result:
+        prefix = f"{result[0]}/"
+        return model[len(prefix):]
+    # Not a known provider — still strip unknown prefix if present
+    if "/" in model:
+        return model.split("/", 1)[1]
+    return model
 
 
 def resolve_auth_env(model: str) -> str | None:

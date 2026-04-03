@@ -12,6 +12,7 @@ from benchflow.agents.providers import (
     find_provider,
     resolve_base_url,
     resolve_auth_env,
+    strip_provider_prefix,
 )
 
 
@@ -71,6 +72,8 @@ class TestBuiltinProviders:
         p = PROVIDERS["zai"]
         assert p.base_url == "https://api.z.ai/api/paas/v4"
         assert p.api_protocol == "openai-completions"
+        assert "anthropic-messages" in p.endpoints
+        assert p.endpoints["anthropic-messages"] == "https://api.z.ai/api/anthropic"
         assert p.auth_type == "api_key"
         assert p.auth_env == "ZAI_API_KEY"
 
@@ -172,6 +175,18 @@ class TestResolveBaseUrl:
         with pytest.raises((KeyError, ValueError)):
             resolve_base_url(p, {})
 
+    def test_protocol_selects_endpoint(self):
+        """resolve_base_url with protocol= picks from endpoints dict."""
+        p = PROVIDERS["zai"]
+        assert resolve_base_url(p, {}, protocol="anthropic-messages") == "https://api.z.ai/api/anthropic"
+        assert resolve_base_url(p, {}, protocol="openai-completions") == "https://api.z.ai/api/paas/v4"
+
+    def test_protocol_fallback_to_base_url(self):
+        """Unknown protocol falls back to primary base_url."""
+        p = PROVIDERS["zai"]
+        assert resolve_base_url(p, {}) == "https://api.z.ai/api/paas/v4"
+        assert resolve_base_url(p, {}, protocol="unknown") == "https://api.z.ai/api/paas/v4"
+
 
 # ── resolve_auth_env: which env var does this provider need? ──
 
@@ -243,3 +258,23 @@ class TestProviderModels:
             for m in cfg.models:
                 assert "id" in m, f"Provider {key!r} model missing 'id'"
                 assert "name" in m, f"Provider {key!r} model missing 'name'"
+
+
+# ── strip_provider_prefix ──
+
+
+class TestStripProviderPrefix:
+    def test_known_provider(self):
+        assert strip_provider_prefix("zai/glm-5") == "glm-5"
+
+    def test_vertex_provider(self):
+        assert strip_provider_prefix("anthropic-vertex/claude-sonnet-4-6") == "claude-sonnet-4-6"
+
+    def test_nested_prefix(self):
+        assert strip_provider_prefix("vertex-zai/zai-org/glm-5-maas") == "zai-org/glm-5-maas"
+
+    def test_no_prefix(self):
+        assert strip_provider_prefix("claude-sonnet-4-6") == "claude-sonnet-4-6"
+
+    def test_unknown_prefix(self):
+        assert strip_provider_prefix("unknown-provider/some-model") == "some-model"
