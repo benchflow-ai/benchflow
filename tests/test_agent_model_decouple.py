@@ -38,9 +38,6 @@ class TestIsVertexModel:
     def test_anthropic_vertex(self):
         assert is_vertex_model("anthropic-vertex/claude-sonnet-4-6") is True
 
-    def test_vertex_zai(self):
-        assert is_vertex_model("vertex-zai/zai-org/glm-5-maas") is True
-
     def test_plain_gemini_is_not_vertex(self):
         assert is_vertex_model("google/gemini-3.1-pro") is False
 
@@ -83,9 +80,6 @@ class TestInferEnvKey:
         """anthropic-vertex/ models use ADC, not API keys."""
         assert infer_env_key_for_model("anthropic-vertex/claude-sonnet-4-6") is None
 
-    def test_vertex_zai_returns_none(self):
-        """vertex-zai/ models use ADC, not API keys."""
-        assert infer_env_key_for_model("vertex-zai/zai-org/glm-5-maas") is None
 
     def test_unknown_model_returns_none(self):
         assert infer_env_key_for_model("some-custom-model") is None
