@@ -267,13 +267,6 @@ def _parse_gemini_trajectory(data: dict) -> list[dict]:
 AGENT_INSTALLERS = {name: a.install_cmd for name, a in AGENTS.items()}
 AGENT_LAUNCH = {name: a.launch_cmd for name, a in AGENTS.items()}
 
-# Register aliases so AGENT_INSTALLERS/AGENT_LAUNCH resolve them too
-from benchflow.agents.registry import _AGENT_ALIASES
-for alias, (real_name, _) in _AGENT_ALIASES.items():
-    if real_name in AGENTS:
-        AGENT_INSTALLERS[alias] = AGENTS[real_name].install_cmd
-        AGENT_LAUNCH[alias] = AGENTS[real_name].launch_cmd
-
 
 def _create_environment(
     environment_type: str,
@@ -429,17 +422,8 @@ class SDK:
             RunResult with rewards, trajectory, and metadata.
         """
         from uuid import uuid4
-        from benchflow.agents.registry import _AGENT_ALIASES
-
         task_path = Path(task_path)
         task = Task(task_path)
-
-        # Resolve agent aliases (e.g. openclaw-gemini → openclaw + default model)
-        if agent in _AGENT_ALIASES:
-            real_agent, alias_model = _AGENT_ALIASES[agent]
-            if not model:
-                model = alias_model
-            agent = real_agent
 
         job_name = job_name or datetime.now().strftime("%Y-%m-%d__%H-%M-%S")
         trial_name = trial_name or f"{task_path.name}__{uuid4().hex[:8]}"

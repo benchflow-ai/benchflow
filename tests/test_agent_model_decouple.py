@@ -3,20 +3,14 @@
 import pytest
 from benchflow.agents.registry import (
     AGENTS,
-    _AGENT_ALIASES,
     get_agent,
     infer_env_key_for_model,
     is_vertex_model,
 )
 
 
-class TestAgentAliases:
-    """openclaw-gemini alias resolves correctly."""
-
-    def test_openclaw_gemini_alias_resolves(self):
-        config, model = get_agent("openclaw-gemini")
-        assert config.name == "openclaw"
-        assert model == "google/gemini-3.1-flash-lite-preview"
+class TestGetAgent:
+    """get_agent resolves agents correctly."""
 
     def test_openclaw_direct(self):
         config, model = get_agent("openclaw")
@@ -31,9 +25,27 @@ class TestAgentAliases:
         with pytest.raises(KeyError, match="Unknown agent"):
             get_agent("nonexistent-agent")
 
-    def test_unknown_agent_error_lists_aliases(self):
-        with pytest.raises(KeyError, match="openclaw-gemini"):
-            get_agent("nonexistent-agent")
+    def test_no_openclaw_gemini_entry(self):
+        assert "openclaw-gemini" not in AGENTS
+
+
+class TestIsVertexModel:
+    """is_vertex_model — single source of truth for vertex prefixes."""
+
+    def test_google_vertex(self):
+        assert is_vertex_model("google-vertex/gemini-2.5-flash") is True
+
+    def test_anthropic_vertex(self):
+        assert is_vertex_model("anthropic-vertex/claude-sonnet-4-6") is True
+
+    def test_vertex_zai(self):
+        assert is_vertex_model("vertex-zai/zai-org/glm-5-maas") is True
+
+    def test_plain_gemini_is_not_vertex(self):
+        assert is_vertex_model("google/gemini-3.1-pro") is False
+
+    def test_plain_claude_is_not_vertex(self):
+        assert is_vertex_model("claude-sonnet-4-6") is False
 
 
 class TestInferEnvKey:
@@ -72,45 +84,16 @@ class TestInferEnvKey:
         assert infer_env_key_for_model("anthropic-vertex/claude-sonnet-4-6") is None
 
     def test_vertex_zai_returns_none(self):
-        assert infer_env_key_for_model("vertex-zai/glm-5-maas") is None
+        """vertex-zai/ models use ADC, not API keys."""
+        assert infer_env_key_for_model("vertex-zai/zai-org/glm-5-maas") is None
 
     def test_unknown_model_returns_none(self):
         assert infer_env_key_for_model("some-custom-model") is None
 
-
-class TestIsVertexModel:
-    """is_vertex_model — single source of truth for vertex prefixes."""
-
-    def test_google_vertex(self):
-        assert is_vertex_model("google-vertex/gemini-2.5-flash") is True
-
-    def test_anthropic_vertex(self):
-        assert is_vertex_model("anthropic-vertex/claude-sonnet-4-6") is True
-
-    def test_vertex_zai(self):
-        assert is_vertex_model("vertex-zai/glm-5-maas") is True
-
-    def test_plain_gemini_is_not_vertex(self):
-        assert is_vertex_model("google/gemini-3.1-pro") is False
-
-    def test_plain_claude_is_not_vertex(self):
-        assert is_vertex_model("claude-sonnet-4-6") is False
-
-    def test_infer_env_key_delegates(self):
-        """infer_env_key_for_model uses is_vertex_model internally."""
-        assert infer_env_key_for_model("vertex-zai/glm-5-maas") is None
-        assert infer_env_key_for_model("google-vertex/gemini-2.5-flash") is None
-        assert infer_env_key_for_model("anthropic-vertex/claude-sonnet-4-6") is None
-
-
-class TestNoOpenclawGeminiEntry:
-    """openclaw-gemini should not exist as a direct registry entry."""
-
-    def test_no_direct_entry(self):
-        assert "openclaw-gemini" not in AGENTS
-
-    def test_is_alias(self):
-        assert "openclaw-gemini" in _AGENT_ALIASES
+    def test_infer_delegates_to_is_vertex(self):
+        """All vertex prefixes return None via is_vertex_model."""
+        for prefix in ("google-vertex/", "anthropic-vertex/", "vertex-zai/"):
+            assert infer_env_key_for_model(f"{prefix}any-model") is None
 
 
 class TestResultMetadata:

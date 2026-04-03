@@ -99,6 +99,131 @@ def setup_gcloud_adc():
     )
 
 
+def _get_adc_token() -> str:
+    """Get a bearer token from ADC credentials (stdlib only, no google-auth dep).
+
+    Supports both service-account keys (JWT → token exchange) and
+    authorized-user credentials (refresh_token → token exchange).
+    """
+    import base64
+    import hashlib
+    import hmac
+    import time
+    import urllib.request
+    import urllib.parse
+
+    adc_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+    if not adc_path or not Path(adc_path).exists():
+        # Fallback to default ADC location
+        adc_path = str(Path.home() / ".config" / "gcloud" / "application_default_credentials.json")
+    with open(adc_path) as f:
+        creds = json.load(f)
+
+    cred_type = creds.get("type", "")
+
+    if cred_type == "authorized_user":
+        # Refresh token flow
+        data = urllib.parse.urlencode({
+            "client_id": creds["client_id"],
+            "client_secret": creds["client_secret"],
+            "refresh_token": creds["refresh_token"],
+            "grant_type": "refresh_token",
+        }).encode()
+        req = urllib.request.Request(
+            "https://oauth2.googleapis.com/token",
+            data=data,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read())["access_token"]
+
+    elif cred_type == "service_account":
+        # JWT → access token flow (RS256)
+        # Requires PyJWT or manual RSA — use subprocess openssl as fallback
+        now = int(time.time())
+        header = base64.urlsafe_b64encode(json.dumps(
+            {"alg": "RS256", "typ": "JWT"}
+        ).encode()).rstrip(b"=")
+        payload = base64.urlsafe_b64encode(json.dumps({
+            "iss": creds["client_email"],
+            "scope": "https://www.googleapis.com/auth/cloud-platform",
+            "aud": "https://oauth2.googleapis.com/token",
+            "iat": now,
+            "exp": now + 3600,
+        }).encode()).rstrip(b"=")
+        signing_input = header + b"." + payload
+
+        # Sign with openssl (available in most containers)
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".pem", delete=False) as kf:
+            kf.write(creds["private_key"])
+            key_path = kf.name
+        try:
+            result = subprocess.run(
+                ["openssl", "dgst", "-sha256", "-sign", key_path],
+                input=signing_input,
+                capture_output=True, timeout=10,
+            )
+            signature = base64.urlsafe_b64encode(result.stdout).rstrip(b"=")
+        finally:
+            os.unlink(key_path)
+
+        jwt_token = (signing_input + b"." + signature).decode()
+        data = urllib.parse.urlencode({
+            "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+            "assertion": jwt_token,
+        }).encode()
+        req = urllib.request.Request(
+            "https://oauth2.googleapis.com/token",
+            data=data,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read())["access_token"]
+
+    else:
+        raise ValueError(f"Unsupported ADC credential type: {cred_type!r}")
+
+
+def setup_vertex_zai(project_id: str):
+    """Configure openclaw custom provider for Vertex AI OpenAI-compatible models (e.g. GLM-5).
+
+    Writes ~/.openclaw/openclaw.json with a 'vertex-zai' provider that points
+    at Vertex AI's OpenAI-compatible endpoint, authenticated with an ADC bearer token.
+    """
+    token = _get_adc_token()
+
+    config = {
+        "models": {
+            "providers": {
+                "vertex-zai": {
+                    "baseUrl": (
+                        f"https://aiplatform.googleapis.com/v1/projects/"
+                        f"{project_id}/locations/global/endpoints/openapi"
+                    ),
+                    "api": "openai-completions",
+                    "apiKey": token,
+                    "models": [
+                        {
+                            "id": "zai-org/glm-5-maas",
+                            "name": "GLM-5 (Vertex AI)",
+                            "reasoning": True,
+                            "input": ["text"],
+                            "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+                            "contextWindow": 200000,
+                            "maxTokens": 131072,
+                        }
+                    ],
+                }
+            }
+        },
+    }
+
+    config_path = Path.home() / ".openclaw" / "openclaw.json"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(json.dumps(config, indent=2))
+
+
 def find_session_jsonl() -> Path | None:
     """Find the most recent openclaw session JSONL file."""
     home = os.environ.get("HOME", os.path.expanduser("~"))
@@ -285,6 +410,12 @@ def main():
         elif method == "session/set_model":
             model = params.get("modelId", "")
             if model:
+                # Configure custom provider for vertex-zai/ models (e.g. GLM-5)
+                if model.lower().startswith("vertex-zai/"):
+                    project_id = os.environ.get("GOOGLE_CLOUD_PROJECT", "")
+                    if project_id:
+                        setup_vertex_zai(project_id)
+
                 # Infer provider prefix if not already present
                 if "/" not in model:
                     if "gemini" in model.lower():

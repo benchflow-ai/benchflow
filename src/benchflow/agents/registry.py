@@ -136,12 +136,6 @@ AGENTS: dict[str, AgentConfig] = {
 }
 
 
-# Backward-compat aliases: old name → (agent, default_model)
-_AGENT_ALIASES: dict[str, tuple[str, str]] = {
-    "openclaw-gemini": ("openclaw", "google/gemini-3.1-flash-lite-preview"),
-}
-
-
 def is_vertex_model(model: str) -> bool:
     """True if the model uses Vertex AI (GCP ADC auth, not API keys)."""
     return model.lower().startswith(("google-vertex/", "anthropic-vertex/", "vertex-zai/"))
@@ -162,19 +156,16 @@ def infer_env_key_for_model(model: str) -> str | None:
 
 
 def get_agent(name: str) -> tuple[AgentConfig, str]:
-    """Get agent config by name, resolving aliases.
+    """Get agent config by name.
 
-    Returns (config, model) where model is non-empty only for alias lookups.
+    Returns (config, default_model) where default_model comes from config.default_model.
     Raises KeyError if not found.
     """
-    if name in _AGENT_ALIASES:
-        real_name, default_model = _AGENT_ALIASES[name]
-        config = AGENTS[real_name]
-        return config, default_model
     if name not in AGENTS:
-        available = ", ".join(sorted(list(AGENTS.keys()) + list(_AGENT_ALIASES.keys())))
+        available = ", ".join(sorted(AGENTS.keys()))
         raise KeyError(f"Unknown agent: {name!r}. Available: {available}")
-    return AGENTS[name], ""
+    config = AGENTS[name]
+    return config, config.default_model
 
 
 def list_agents() -> list[AgentConfig]:
