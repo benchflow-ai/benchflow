@@ -442,7 +442,16 @@ class SDK:
 
         # Resolve agent env — auto-inherit API keys from os.environ
         agent_env = dict(agent_env or {})
-        for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY", "GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION"):
+        # Built-in keys + any auth_env from custom providers
+        _auto_inherit = {"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY",
+                         "GEMINI_API_KEY", "GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION"}
+        from benchflow.agents.providers import PROVIDERS
+        for cfg in PROVIDERS.values():
+            if cfg.auth_env:
+                _auto_inherit.add(cfg.auth_env)
+            for env_var in cfg.url_params.values():
+                _auto_inherit.add(env_var)
+        for key in _auto_inherit:
             if key in os.environ:
                 agent_env.setdefault(key, os.environ[key])
         # Mirror GEMINI_API_KEY as GOOGLE_API_KEY (some agents expect one or the other)
@@ -467,6 +476,26 @@ class SDK:
                     )
         if model:
             agent_env.setdefault("ANTHROPIC_MODEL", model)
+            # Inject custom provider env vars so the shim can configure itself
+            # (the shim runs in the container where benchflow may not be installed)
+            from benchflow.agents.providers import find_provider, resolve_base_url
+            _prov = find_provider(model)
+            if _prov:
+                _prov_name, _prov_cfg = _prov
+                try:
+                    agent_env.setdefault("BENCHFLOW_PROVIDER_BASE_URL",
+                                         resolve_base_url(_prov_cfg, agent_env))
+                except KeyError:
+                    pass  # URL params missing — will fail later with clear error
+                agent_env.setdefault("BENCHFLOW_PROVIDER_PROTOCOL", _prov_cfg.api_protocol)
+                if _prov_cfg.models:
+                    agent_env.setdefault("BENCHFLOW_PROVIDER_MODELS",
+                                         json.dumps(_prov_cfg.models))
+                # Resolve API key for the provider
+                if _prov_cfg.auth_type == "api_key" and _prov_cfg.auth_env:
+                    _key = agent_env.get(_prov_cfg.auth_env, "")
+                    if _key:
+                        agent_env.setdefault("BENCHFLOW_PROVIDER_API_KEY", _key)
             # Validate required API key for the chosen model
             from benchflow.agents.registry import infer_env_key_for_model
             required_key = infer_env_key_for_model(model)

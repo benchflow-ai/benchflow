@@ -138,13 +138,25 @@ AGENTS: dict[str, AgentConfig] = {
 
 def is_vertex_model(model: str) -> bool:
     """True if the model uses Vertex AI (GCP ADC auth, not API keys)."""
-    return model.lower().startswith(("google-vertex/", "anthropic-vertex/", "vertex-zai/"))
+    from benchflow.agents.providers import find_provider
+    result = find_provider(model)
+    if result:
+        _, cfg = result
+        return cfg.auth_type == "adc"
+    return False
 
 
 def infer_env_key_for_model(model: str) -> str | None:
     """Infer the required API key environment variable from a model ID."""
+    # Check custom providers first
+    from benchflow.agents.providers import resolve_auth_env
+    custom = resolve_auth_env(model)
+    if custom is not None:
+        return custom
+    # ADC-based providers and built-in Vertex prefixes
     if is_vertex_model(model):
-        return None  # Vertex AI uses ADC, not API keys
+        return None
+    # Fallback heuristics for well-known model names
     m = model.lower()
     if "gemini" in m:
         return "GEMINI_API_KEY"

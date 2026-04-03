@@ -185,43 +185,93 @@ def _get_adc_token() -> str:
         raise ValueError(f"Unsupported ADC credential type: {cred_type!r}")
 
 
-def setup_vertex_zai(project_id: str):
-    """Configure openclaw custom provider for Vertex AI OpenAI-compatible models (e.g. GLM-5).
+def setup_custom_provider(provider_name: str, base_url: str, api_key: str,
+                          api_protocol: str = "openai-completions",
+                          models: list[dict] | None = None):
+    """Configure an openclaw custom provider in ~/.openclaw/openclaw.json.
 
-    Writes ~/.openclaw/openclaw.json with a 'vertex-zai' provider that points
-    at Vertex AI's OpenAI-compatible endpoint, authenticated with an ADC bearer token.
+    This is the generic replacement for per-provider setup functions.
+    Any OpenAI-compatible or Anthropic-compatible endpoint can be registered.
     """
-    token = _get_adc_token()
-
-    config = {
-        "models": {
-            "providers": {
-                "vertex-zai": {
-                    "baseUrl": (
-                        f"https://aiplatform.googleapis.com/v1/projects/"
-                        f"{project_id}/locations/global/endpoints/openapi"
-                    ),
-                    "api": "openai-completions",
-                    "apiKey": token,
-                    "models": [
-                        {
-                            "id": "zai-org/glm-5-maas",
-                            "name": "GLM-5 (Vertex AI)",
-                            "reasoning": True,
-                            "input": ["text"],
-                            "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
-                            "contextWindow": 200000,
-                            "maxTokens": 131072,
-                        }
-                    ],
-                }
-            }
-        },
-    }
-
     config_path = Path.home() / ".openclaw" / "openclaw.json"
     config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(json.dumps(config, indent=2))
+
+    # Merge with existing config so multiple providers can coexist
+    existing = {}
+    if config_path.exists():
+        try:
+            existing = json.loads(config_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    providers = existing.setdefault("models", {}).setdefault("providers", {})
+    providers[provider_name] = {
+        "baseUrl": base_url,
+        "api": api_protocol,
+        "apiKey": api_key,
+        "models": models or [],
+    }
+
+    config_path.write_text(json.dumps(existing, indent=2))
+
+
+def _find_and_setup_provider(model: str) -> bool:
+    """If model matches a custom provider, configure it and return True."""
+    # Import here — this shim is deployed as a standalone script in the container,
+    # but benchflow is installed in the container's Python path during agent install.
+    try:
+        from benchflow.agents.providers import PROVIDERS, find_provider, resolve_base_url
+    except ImportError:
+        # Fallback: providers module not available in container.
+        # Check BENCHFLOW_PROVIDER_* env vars set by the SDK.
+        base_url = os.environ.get("BENCHFLOW_PROVIDER_BASE_URL")
+        api_key = os.environ.get("BENCHFLOW_PROVIDER_API_KEY")
+        api_protocol = os.environ.get("BENCHFLOW_PROVIDER_PROTOCOL", "openai-completions")
+        models_json = os.environ.get("BENCHFLOW_PROVIDER_MODELS", "[]")
+        # If no explicit API key, try ADC (for Vertex AI providers)
+        if base_url and not api_key:
+            try:
+                api_key = _get_adc_token()
+            except Exception:
+                pass
+        if base_url and api_key:
+            provider_name = model.split("/")[0] if "/" in model else "custom"
+            try:
+                models = json.loads(models_json)
+            except json.JSONDecodeError:
+                models = []
+            setup_custom_provider(provider_name, base_url, api_key, api_protocol, models)
+            return True
+        return False
+
+    result = find_provider(model)
+    if result is None:
+        return False
+
+    provider_name, cfg = result
+    env = dict(os.environ)
+
+    # Resolve base URL (expands {project_id} etc.)
+    try:
+        base_url = resolve_base_url(cfg, env)
+    except KeyError:
+        return False
+
+    # Resolve auth
+    if cfg.auth_type == "adc":
+        try:
+            api_key = _get_adc_token()
+        except Exception:
+            return False
+    elif cfg.auth_env:
+        api_key = env.get(cfg.auth_env, "")
+        if not api_key:
+            return False
+    else:
+        return False
+
+    setup_custom_provider(provider_name, base_url, api_key, cfg.api_protocol, cfg.models)
+    return True
 
 
 def find_session_jsonl() -> Path | None:
@@ -410,14 +460,11 @@ def main():
         elif method == "session/set_model":
             model = params.get("modelId", "")
             if model:
-                # Configure custom provider for vertex-zai/ models (e.g. GLM-5)
-                if model.lower().startswith("vertex-zai/"):
-                    project_id = os.environ.get("GOOGLE_CLOUD_PROJECT", "")
-                    if project_id:
-                        setup_vertex_zai(project_id)
+                # Check if model uses a custom provider from the registry
+                _provider = _find_and_setup_provider(model)
 
                 # Infer provider prefix if not already present
-                if "/" not in model:
+                if "/" not in model and not _provider:
                     if "gemini" in model.lower():
                         model = f"google/{model}"
                     elif "gpt" in model.lower() or model.startswith("o1") or model.startswith("o3"):
