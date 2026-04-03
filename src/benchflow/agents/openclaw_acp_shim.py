@@ -215,63 +215,70 @@ def setup_custom_provider(provider_name: str, base_url: str, api_key: str,
     config_path.write_text(json.dumps(existing, indent=2))
 
 
-def _find_and_setup_provider(model: str) -> bool:
-    """If model matches a custom provider, configure it and return True."""
-    # Import here — this shim is deployed as a standalone script in the container,
-    # but benchflow is installed in the container's Python path during agent install.
+def _find_and_setup_provider(model: str) -> str | None:
+    """If model matches a custom provider, configure it and return the provider name.
+
+    Returns the registered provider name (e.g. "google-vertex", "custom") so the
+    caller can prefix the model for openclaw, or None if no provider was set up.
+
+    Resolution order:
+    1. If benchflow is importable, try find_provider(model) for prefix-based match.
+    2. Fall back to BENCHFLOW_PROVIDER_* env vars injected by the SDK.
+       This handles stripped model names (no prefix) where the SDK already
+       resolved the provider and passed config via env vars.
+    """
+    # 1. Try benchflow provider registry (prefix-based match)
     try:
-        from benchflow.agents.providers import PROVIDERS, find_provider, resolve_base_url
+        from benchflow.agents.providers import find_provider, resolve_base_url
+
+        result = find_provider(model)
+        if result is not None:
+            provider_name, cfg = result
+            env = dict(os.environ)
+            try:
+                base_url = resolve_base_url(cfg, env)
+            except KeyError:
+                pass  # fall through to env var path
+            else:
+                if cfg.auth_type == "adc":
+                    try:
+                        api_key = _get_adc_token()
+                    except Exception:
+                        return None
+                elif cfg.auth_env:
+                    api_key = env.get(cfg.auth_env, "")
+                    if not api_key:
+                        return None
+                else:
+                    return None
+                setup_custom_provider(provider_name, base_url, api_key, cfg.api_protocol, cfg.models)
+                return provider_name
     except ImportError:
-        # Fallback: providers module not available in container.
-        # Check BENCHFLOW_PROVIDER_* env vars set by the SDK.
-        base_url = os.environ.get("BENCHFLOW_PROVIDER_BASE_URL")
-        api_key = os.environ.get("BENCHFLOW_PROVIDER_API_KEY")
-        api_protocol = os.environ.get("BENCHFLOW_PROVIDER_PROTOCOL", "openai-completions")
-        models_json = os.environ.get("BENCHFLOW_PROVIDER_MODELS", "[]")
-        # If no explicit API key, try ADC (for Vertex AI providers)
-        if base_url and not api_key:
-            try:
-                api_key = _get_adc_token()
-            except Exception:
-                pass
-        if base_url and api_key:
-            provider_name = model.split("/")[0] if "/" in model else "custom"
-            try:
-                models = json.loads(models_json)
-            except json.JSONDecodeError:
-                models = []
-            setup_custom_provider(provider_name, base_url, api_key, api_protocol, models)
-            return True
-        return False
+        pass
 
-    result = find_provider(model)
-    if result is None:
-        return False
-
-    provider_name, cfg = result
-    env = dict(os.environ)
-
-    # Resolve base URL (expands {project_id} etc.)
-    try:
-        base_url = resolve_base_url(cfg, env)
-    except KeyError:
-        return False
-
-    # Resolve auth
-    if cfg.auth_type == "adc":
+    # 2. Fall back to BENCHFLOW_PROVIDER_* env vars set by the SDK.
+    #    This is the primary path for stripped model names (e.g. "claude-sonnet-4-6"
+    #    from "anthropic-vertex/claude-sonnet-4-6") where the SDK already resolved
+    #    the provider config.
+    base_url = os.environ.get("BENCHFLOW_PROVIDER_BASE_URL")
+    api_key = os.environ.get("BENCHFLOW_PROVIDER_API_KEY")
+    api_protocol = os.environ.get("BENCHFLOW_PROVIDER_PROTOCOL", "openai-completions")
+    models_json = os.environ.get("BENCHFLOW_PROVIDER_MODELS", "[]")
+    # If no explicit API key, try ADC (for Vertex AI providers)
+    if base_url and not api_key:
         try:
             api_key = _get_adc_token()
         except Exception:
-            return False
-    elif cfg.auth_env:
-        api_key = env.get(cfg.auth_env, "")
-        if not api_key:
-            return False
-    else:
-        return False
-
-    setup_custom_provider(provider_name, base_url, api_key, cfg.api_protocol, cfg.models)
-    return True
+            pass
+    if base_url and api_key:
+        provider_name = model.split("/")[0] if "/" in model else "custom"
+        try:
+            models = json.loads(models_json)
+        except json.JSONDecodeError:
+            models = []
+        setup_custom_provider(provider_name, base_url, api_key, api_protocol, models)
+        return provider_name
+    return None
 
 
 def find_session_jsonl() -> Path | None:
@@ -460,17 +467,33 @@ def main():
         elif method == "session/set_model":
             model = params.get("modelId", "")
             if model:
-                # Check if model uses a custom provider from the registry
-                _provider = _find_and_setup_provider(model)
+                # The SDK strips provider prefixes before set_model and passes
+                # the original provider name via BENCHFLOW_PROVIDER_NAME env var.
+                #
+                # Openclaw natively supports google-vertex/ and anthropic/ prefixes
+                # (via the google plugin enabled at startup). Custom providers like
+                # zai/ and other custom providers need explicit registration via openclaw.json.
+                provider_name = os.environ.get("BENCHFLOW_PROVIDER_NAME", "")
 
-                # Infer provider prefix if not already present
-                if "/" not in model and not _provider:
+                # Native Vertex providers — openclaw handles these via google plugin
+                if provider_name in ("google-vertex", "anthropic-vertex"):
+                    # Reconstruct the full model name openclaw expects
+                    if "/" not in model:
+                        model = f"{provider_name}/{model}"
+                # Custom providers — register in openclaw.json
+                elif provider_name:
+                    _provider_name = _find_and_setup_provider(model)
+                    if _provider_name and "/" not in model:
+                        model = f"{_provider_name}/{model}"
+                # No provider — infer standard prefix from model name
+                elif "/" not in model:
                     if "gemini" in model.lower():
                         model = f"google/{model}"
                     elif "gpt" in model.lower() or model.startswith("o1") or model.startswith("o3"):
                         model = f"openai/{model}"
                     else:
                         model = f"anthropic/{model}"
+
                 subprocess.run(
                     ["openclaw", "config", "set", "agents.defaults.model", model],
                     capture_output=True, timeout=10,

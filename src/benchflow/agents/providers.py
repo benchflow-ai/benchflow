@@ -80,27 +80,6 @@ PROVIDERS: dict[str, ProviderConfig] = {
             },
         ],
     ),
-    "vertex-zai": ProviderConfig(
-        name="vertex-zai",
-        base_url=(
-            "https://aiplatform.googleapis.com/v1/projects/"
-            "{project_id}/locations/global/endpoints/openapi"
-        ),
-        api_protocol="openai-completions",
-        auth_type="adc",
-        url_params={"project_id": "GOOGLE_CLOUD_PROJECT"},
-        models=[
-            {
-                "id": "zai-org/glm-5-maas",
-                "name": "GLM-5 (Vertex AI)",
-                "reasoning": True,
-                "input": ["text"],
-                "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
-                "contextWindow": 200000,
-                "maxTokens": 131072,
-            },
-        ],
-    ),
 }
 
 
@@ -108,7 +87,7 @@ def find_provider(model: str) -> tuple[str, ProviderConfig] | None:
     """Find the custom provider for a model ID based on its prefix.
 
     Returns (provider_name, config) or None if no custom provider matches.
-    Matches longest prefix first to handle nested prefixes (e.g. vertex-zai/ vs vertex/).
+    Matches longest prefix first to handle nested prefixes (e.g. google-vertex/ vs google/).
     """
     m = model.lower()
     # Sort by prefix length descending so longer prefixes match first

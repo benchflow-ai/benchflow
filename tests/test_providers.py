@@ -65,9 +65,6 @@ class TestBuiltinProviders:
     def test_zai_exists(self):
         assert "zai" in PROVIDERS
 
-    def test_vertex_zai_exists(self):
-        assert "vertex-zai" in PROVIDERS
-
     def test_zai_config(self):
         p = PROVIDERS["zai"]
         assert p.base_url == "https://api.z.ai/api/paas/v4"
@@ -76,13 +73,6 @@ class TestBuiltinProviders:
         assert p.endpoints["anthropic-messages"] == "https://api.z.ai/api/anthropic"
         assert p.auth_type == "api_key"
         assert p.auth_env == "ZAI_API_KEY"
-
-    def test_vertex_zai_config(self):
-        p = PROVIDERS["vertex-zai"]
-        assert "aiplatform.googleapis.com" in p.base_url
-        assert p.auth_type == "adc"
-        assert p.auth_env is None
-        assert "project_id" in p.url_params
 
     def test_all_providers_have_name_matching_key(self):
         for key, cfg in PROVIDERS.items():
@@ -114,11 +104,6 @@ class TestFindProvider:
         assert name == "zai"
         assert cfg.auth_env == "ZAI_API_KEY"
 
-    def test_vertex_zai_prefix(self):
-        name, cfg = find_provider("vertex-zai/zai-org/glm-5-maas")
-        assert name == "vertex-zai"
-        assert cfg.auth_type == "adc"
-
     def test_case_insensitive(self):
         name, _ = find_provider("ZAI/glm-5")
         assert name == "zai"
@@ -128,12 +113,6 @@ class TestFindProvider:
 
     def test_no_prefix_returns_none(self):
         assert find_provider("glm-5") is None
-
-    def test_longest_prefix_wins(self):
-        """vertex-zai/ should match before a hypothetical 'vertex/' provider."""
-        name, _ = find_provider("vertex-zai/zai-org/glm-5-maas")
-        assert name == "vertex-zai"
-
 
 # ── resolve_base_url: template expansion ──
 
@@ -153,7 +132,7 @@ class TestResolveBaseUrl:
 
     def test_project_id_expansion(self):
         p = ProviderConfig(
-            name="vertex-zai",
+            name="test-vertex",
             base_url="https://aiplatform.googleapis.com/v1/projects/{project_id}/locations/global/endpoints/openapi",
             api_protocol="openai-completions",
             auth_type="adc",
@@ -166,7 +145,7 @@ class TestResolveBaseUrl:
 
     def test_missing_env_var_raises(self):
         p = ProviderConfig(
-            name="vertex-zai",
+            name="test-vertex",
             base_url="https://example.com/{project_id}",
             api_protocol="openai-completions",
             auth_type="adc",
@@ -197,10 +176,6 @@ class TestResolveAuthEnv:
     def test_zai_model(self):
         assert resolve_auth_env("zai/glm-5") == "ZAI_API_KEY"
 
-    def test_vertex_zai_returns_none(self):
-        """Vertex models use ADC, no API key env var."""
-        assert resolve_auth_env("vertex-zai/zai-org/glm-5-maas") is None
-
     def test_unknown_model_returns_none(self):
         """Models without a custom provider fall through to None."""
         assert resolve_auth_env("some-unknown/model") is None
@@ -216,11 +191,6 @@ class TestRegistryIntegration:
         """infer_env_key_for_model should return ZAI_API_KEY for zai/ models."""
         from benchflow.agents.registry import infer_env_key_for_model
         assert infer_env_key_for_model("zai/glm-5") == "ZAI_API_KEY"
-
-    def test_is_vertex_model_vertex_zai(self):
-        """vertex-zai/ should still be recognized as vertex."""
-        from benchflow.agents.registry import is_vertex_model
-        assert is_vertex_model("vertex-zai/zai-org/glm-5-maas") is True
 
     def test_is_vertex_model_zai_direct(self):
         """zai/ (direct API) is NOT vertex."""
@@ -246,10 +216,6 @@ class TestProviderModels:
         p = PROVIDERS["zai"]
         assert hasattr(p, "models") and len(p.models) > 0
 
-    def test_vertex_zai_has_models(self):
-        p = PROVIDERS["vertex-zai"]
-        assert hasattr(p, "models") and len(p.models) > 0
-
     def test_model_has_required_fields(self):
         """Each model entry should have at least id and name."""
         for key, cfg in PROVIDERS.items():
@@ -271,10 +237,43 @@ class TestStripProviderPrefix:
         assert strip_provider_prefix("anthropic-vertex/claude-sonnet-4-6") == "claude-sonnet-4-6"
 
     def test_nested_prefix(self):
-        assert strip_provider_prefix("vertex-zai/zai-org/glm-5-maas") == "zai-org/glm-5-maas"
+        assert strip_provider_prefix("google-vertex/gemini-3-flash") == "gemini-3-flash"
 
     def test_no_prefix(self):
         assert strip_provider_prefix("claude-sonnet-4-6") == "claude-sonnet-4-6"
 
     def test_unknown_prefix(self):
         assert strip_provider_prefix("unknown-provider/some-model") == "some-model"
+
+
+# ── Shim provider fallback: stripped model + BENCHFLOW_PROVIDER_* env vars ──
+
+
+class TestShimProviderFallback:
+    """The openclaw shim must resolve providers from env vars when model is stripped.
+
+    SDK strips provider prefix before ACP set_model (e.g. "anthropic-vertex/claude-sonnet-4-6"
+    → "claude-sonnet-4-6"). The shim's _find_and_setup_provider() must fall through from
+    find_provider() (returns None for stripped names) to BENCHFLOW_PROVIDER_* env vars.
+    """
+
+    def test_stripped_model_not_found_by_find_provider(self):
+        """find_provider returns None for stripped model names — confirms the shim
+        cannot rely on it alone and must fall back to env vars."""
+        # These are what set_model receives after stripping
+        assert find_provider("claude-sonnet-4-6") is None
+        assert find_provider("gemini-3-flash-preview") is None
+        assert find_provider("glm-5") is None
+
+    def test_full_model_found_by_find_provider(self):
+        """find_provider works with full prefixed names — the pre-strip path."""
+        assert find_provider("anthropic-vertex/claude-sonnet-4-6") is not None
+        assert find_provider("google-vertex/gemini-3-flash-preview") is not None
+        assert find_provider("zai/glm-5") is not None
+
+    def test_sdk_injects_provider_env_for_all_known_providers(self):
+        """Every registered provider with a base_url should result in
+        BENCHFLOW_PROVIDER_BASE_URL being injectable by the SDK."""
+        for name, cfg in PROVIDERS.items():
+            assert cfg.base_url, f"Provider {name!r} has no base_url"
+            assert cfg.api_protocol, f"Provider {name!r} has no api_protocol"

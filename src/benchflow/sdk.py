@@ -483,6 +483,7 @@ class SDK:
             _prov = find_provider(model)
             if _prov:
                 _prov_name, _prov_cfg = _prov
+                agent_env.setdefault("BENCHFLOW_PROVIDER_NAME", _prov_name)
                 try:
                     agent_env.setdefault("BENCHFLOW_PROVIDER_BASE_URL",
                                          resolve_base_url(_prov_cfg, agent_env))
