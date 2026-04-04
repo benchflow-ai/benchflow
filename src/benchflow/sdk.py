@@ -27,6 +27,7 @@ from harbor.verifier.verifier import Verifier
 
 from benchflow.acp.client import ACPClient
 from benchflow.acp.container_transport import ContainerTransport
+from benchflow.acp.session import ACPSession
 from benchflow.agents.registry import AGENTS, get_agent
 from benchflow.process import DockerProcess, DaytonaProcess, LiveProcess
 
@@ -218,6 +219,36 @@ def _patch_harbor_dind() -> None:
 
 # Apply DinD patch once at import time
 _patch_harbor_dind()
+
+
+def _capture_session_trajectory(session: ACPSession | None) -> list[dict]:
+    """Extract trajectory data from an ACP session.
+
+    Safe to call even if the session is None or in a partial state (e.g. after timeout).
+    """
+    if session is None:
+        return []
+    trajectory: list[dict] = []
+    for tc in session.tool_calls:
+        trajectory.append({
+            "type": "tool_call",
+            "tool_call_id": tc.tool_call_id,
+            "kind": tc.kind,
+            "title": tc.title,
+            "status": tc.status.value,
+            "content": tc.content,
+        })
+    if session.full_message:
+        trajectory.append({
+            "type": "agent_message",
+            "text": session.full_message,
+        })
+    if session.full_thought:
+        trajectory.append({
+            "type": "agent_thought",
+            "text": session.full_thought,
+        })
+    return trajectory
 
 
 async def _scrape_agent_trajectory(env: Any, agent: str, sandbox_user: str | None) -> list[dict]:
@@ -527,6 +558,7 @@ class SDK:
 
         acp_client: ACPClient | None = None
         trajectory: list[dict] = []
+        partial_trajectory = False
         agent_name = ""
         n_tool_calls = 0
         error = None
@@ -816,25 +848,7 @@ class SDK:
                 n_tool_calls = len(session.tool_calls)
 
                 # 5. Capture trajectory
-                for tc in session.tool_calls:
-                    trajectory.append({
-                        "type": "tool_call",
-                        "tool_call_id": tc.tool_call_id,
-                        "kind": tc.kind,
-                        "title": tc.title,
-                        "status": tc.status.value,
-                        "content": tc.content,
-                    })
-                if session.full_message:
-                    trajectory.append({
-                        "type": "agent_message",
-                        "text": session.full_message,
-                    })
-                if session.full_thought:
-                    trajectory.append({
-                        "type": "agent_thought",
-                        "text": session.full_thought,
-                    })
+                trajectory = _capture_session_trajectory(session)
 
             if agent != "oracle" and "agent_setup" not in timing:
                 timing["agent_setup"] = (datetime.now() - t_agent_setup).total_seconds()
@@ -850,13 +864,6 @@ class SDK:
                     trajectory = scraped
                     n_tool_calls = sum(1 for e in trajectory if e.get("type") == "tool_call")
                     logger.info(f"Scraped {len(trajectory)} events from agent-native trajectory")
-
-            # Save trajectory (both oracle and ACP paths)
-            traj_dir = trial_dir / "trajectory"
-            traj_dir.mkdir(parents=True, exist_ok=True)
-            (traj_dir / "acp_trajectory.jsonl").write_text(
-                "\n".join(json.dumps(e, default=str) for e in trajectory)
-            )
 
             # 6. Verify
             trial_paths.verifier_dir.mkdir(parents=True, exist_ok=True)
@@ -883,6 +890,17 @@ class SDK:
             logger.error("Run failed", exc_info=True)
 
         finally:
+            # Capture partial trajectory from session if not already captured
+            if not trajectory and acp_client:
+                try:
+                    trajectory = _capture_session_trajectory(acp_client.session)
+                    n_tool_calls = sum(1 for e in trajectory if e.get("type") == "tool_call")
+                    if trajectory:
+                        partial_trajectory = True
+                        logger.info(f"Captured {len(trajectory)} partial trajectory events")
+                except Exception as e:
+                    logger.warning(f"Partial trajectory capture failed: {e}")
+
             if acp_client:
                 try:
                     await acp_client.close()
@@ -892,6 +910,13 @@ class SDK:
                 await env.stop(delete=True)
             except Exception as e:
                 logger.warning(f"Cleanup failed: {e}")
+
+        # Save trajectory (both success and error/timeout paths)
+        traj_dir = trial_dir / "trajectory"
+        traj_dir.mkdir(parents=True, exist_ok=True)
+        (traj_dir / "acp_trajectory.jsonl").write_text(
+            "\n".join(json.dumps(e, default=str) for e in trajectory)
+        )
 
         result = RunResult(
             task_name=task_path.name,
@@ -926,6 +951,7 @@ class SDK:
                     "n_tool_calls": result.n_tool_calls,
                     "n_prompts": result.n_prompts,
                     "error": result.error,
+                    "partial_trajectory": partial_trajectory,
                     "started_at": str(result.started_at),
                     "finished_at": str(result.finished_at),
                     "timing": timing,
