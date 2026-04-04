@@ -567,6 +567,12 @@ class SDK:
         timing: dict[str, float] = {}
 
         # Write config.json at trial start (for reproducibility)
+        # Include non-secret agent_env keys so --ae flags are recorded.
+        _secret_substrings = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIALS")
+        recorded_env = {
+            k: v for k, v in agent_env.items()
+            if not any(s in k.upper() for s in _secret_substrings)
+        }
         config_data = {
             "task_path": str(task_path),
             "agent": agent,
@@ -577,6 +583,7 @@ class SDK:
             "context_root": str(context_root) if context_root else None,
             "timeout_sec": timeout,
             "started_at": str(started_at),
+            "agent_env": recorded_env,
         }
         (trial_dir / "config.json").write_text(json.dumps(config_data, indent=2))
 
@@ -673,6 +680,11 @@ class SDK:
 
                 # Home directory for credential writes — must match where the agent runs
                 cred_home = f"/home/{sandbox_user}" if sandbox_user else "/root"
+
+                # NOTE: We only support API-key auth (OPENAI_API_KEY, ANTHROPIC_API_KEY,
+                # ADC, etc.). "Bring your own subscription" flows (e.g. `codex auth login`,
+                # `claude login` with a Pro/Max plan) are not supported — that would
+                # require injecting OAuth session tokens into the sandbox.
 
                 # 2a-2. Write codex auth.json if needed (env vars aren't enough for codex-acp)
                 if "codex" in agent and agent_env.get("OPENAI_API_KEY"):
@@ -811,6 +823,16 @@ class SDK:
                     acp_client.session_new(cwd=agent_cwd), timeout=60,
                 )
                 logger.info(f"Session: {session.session_id}")
+
+                # TODO: Add normalized --reasoning flag (none/low/medium/high) that maps
+                # to each provider's native format:
+                #   - OpenAI:  reasoning.effort = "none"/"low"/"medium"/"high"
+                #   - Anthropic: thinking.budget_tokens = integer
+                #   - Gemini: thinking_config.thinking_budget = integer
+                # Mapping table would live in providers.py on ProviderConfig. SDK builds
+                # native params and extends ACP set_model with a modelConfig dict. Shims
+                # pass modelConfig through without per-shim logic.
+                # For now, use --ae (e.g. --ae OPENAI_REASONING_EFFORT=high) as escape hatch.
 
                 if model:
                     from benchflow.agents.providers import strip_provider_prefix
