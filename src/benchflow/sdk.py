@@ -670,15 +670,6 @@ class SDK:
                             log_path=str(install_log),
                         )
 
-                    # Verify binary actually works (don't pass agent_env —
-                    # GOOGLE_APPLICATION_CREDENTIALS_JSON is a multi-KB blob
-                    # that can exceed command-line limits on Daytona direct sandbox)
-                    verify = await env.exec(f"{agent_base} --version 2>&1 || {agent_base} --help 2>&1 | head -1", timeout_sec=30)
-                    _vout = (verify.stdout or "").strip()
-                    if verify.return_code == 0:
-                        logger.info(f"Agent verified: {_vout[:80]}")
-                    else:
-                        logger.warning(f"Agent binary check failed (rc={verify.return_code}): {_vout[:80]}")
 
                 # Home directory for credential writes — must match where the agent runs
                 cred_home = f"/home/{sandbox_user}" if sandbox_user else "/root"
