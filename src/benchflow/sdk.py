@@ -670,8 +670,10 @@ class SDK:
                             log_path=str(install_log),
                         )
 
-                    # Verify binary actually works
-                    verify = await env.exec(f"{agent_base} --version 2>&1 || {agent_base} --help 2>&1 | head -1", timeout_sec=10, env=agent_env)
+                    # Verify binary actually works (don't pass agent_env —
+                    # GOOGLE_APPLICATION_CREDENTIALS_JSON is a multi-KB blob
+                    # that can exceed command-line limits on Daytona direct sandbox)
+                    verify = await env.exec(f"{agent_base} --version 2>&1 || {agent_base} --help 2>&1 | head -1", timeout_sec=30)
                     _vout = (verify.stdout or "").strip()
                     if verify.return_code == 0:
                         logger.info(f"Agent verified: {_vout[:80]}")
