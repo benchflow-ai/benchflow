@@ -671,7 +671,7 @@ class SDK:
                         )
 
                     # Verify binary actually works
-                    verify = await env.exec(f"{agent_base} --version 2>&1 || {agent_base} --help 2>&1 | head -1", timeout_sec=10)
+                    verify = await env.exec(f"{agent_base} --version 2>&1 || {agent_base} --help 2>&1 | head -1", timeout_sec=10, env=agent_env)
                     _vout = (verify.stdout or "").strip()
                     if verify.return_code == 0:
                         logger.info(f"Agent verified: {_vout[:80]}")
