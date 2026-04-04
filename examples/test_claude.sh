@@ -4,12 +4,12 @@
 # Prerequisites:
 #   - gcloud ADC configured + GOOGLE_CLOUD_PROJECT set (for Vertex Sonnet)
 #   - ZAI_API_KEY set (for Z.AI GLM-5)
-#   - Docker running
+#   - Docker running, or DAYTONA_API_KEY + DAYTONA_API_URL set for --daytona
 #
 # Usage:
 #   bash examples/test_claude.sh              # run all
 #   bash examples/test_claude.sh zai-glm5     # run one
-#   bash examples/test_claude.sh sonnet zai-glm5  # run subset
+#   bash examples/test_claude.sh --daytona    # use Daytona
 
 set -euo pipefail
 
@@ -24,10 +24,38 @@ if [ -f "$REPO_ROOT/.env" ]; then
 fi
 
 TASK="examples/hello-world-task"
+ENV="${ENV:-docker}"
+ARGS=()
+for arg in "$@"; do
+  case "$arg" in --daytona) ENV="daytona" ;; *) ARGS+=("$arg") ;; esac
+done
+set -- "${ARGS[@]+"${ARGS[@]}"}"
+
 AGENT="claude-agent-acp"
-ENV="docker"
 JOBS_DIR="jobs/test-claude"
 PROJECT="${GOOGLE_CLOUD_PROJECT:-skillsbench}"
+
+# ── Helpers ──
+
+show_failure() {
+  local dir="$1"
+  local latest
+  latest=$(ls -td "$dir"/*/ 2>/dev/null | head -1)
+  if [ -z "$latest" ]; then return; fi
+  local agent_log
+  agent_log=$(ls -t "$latest"/agent/*.txt 2>/dev/null | head -1)
+  if [ -n "$agent_log" ]; then
+    echo "  Last 20 lines of $agent_log:"
+    tail -20 "$agent_log" | sed 's/^/    /'
+  fi
+  if [ -f "$latest/result.json" ]; then
+    local err
+    err=$(python3 -c "import json,sys; r=json.load(open('$latest/result.json')); print(r.get('error',''))" 2>/dev/null)
+    if [ -n "$err" ]; then
+      echo "  Error: $err"
+    fi
+  fi
+}
 
 # ── Model definitions ──
 declare -A MODELS
@@ -44,6 +72,17 @@ EXTRA_ARGS=(
 )
 
 # ── Pre-flight checks ──
+
+if [ "$ENV" = "daytona" ]; then
+  if [ -z "${DAYTONA_API_KEY:-}" ]; then
+    echo "ERROR: DAYTONA_API_KEY not set (check .env)"
+    exit 1
+  fi
+  if [ -z "${DAYTONA_API_URL:-}" ]; then
+    echo "ERROR: DAYTONA_API_URL not set (check .env)"
+    exit 1
+  fi
+fi
 
 check_vertex() {
   local label="$1"
@@ -81,9 +120,10 @@ else
   SELECTED=("sonnet" "zai-glm5")
 fi
 
-echo "=== claude-agent-acp provider sweep ==="
+echo "=== $AGENT provider sweep ==="
 echo "Task:   $TASK"
 echo "Agent:  $AGENT"
+echo "Env:    $ENV"
 echo "Models: ${SELECTED[*]}"
 echo ""
 
@@ -121,6 +161,7 @@ for label in "${SELECTED[@]}"; do
     PASS=$((PASS + 1))
   else
     echo "FAIL: $label"
+    show_failure "$JOBS_DIR"
     FAIL=$((FAIL + 1))
   fi
   echo ""
