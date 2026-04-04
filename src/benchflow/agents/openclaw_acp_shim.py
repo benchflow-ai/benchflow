@@ -83,6 +83,24 @@ def setup_workspace(cwd: str):
                 break  # Use first source found
 
 
+def setup_openai_auth():
+    """Write OPENAI_API_KEY into openclaw's native auth store if present."""
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        return
+    agent_dir = Path.home() / ".openclaw" / "agents" / "main" / "agent"
+    auth_path = agent_dir / "auth-profiles.json"
+    existing = {}
+    if auth_path.exists():
+        try:
+            existing = json.loads(auth_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            pass
+    existing["openai"] = {"apiKey": api_key}
+    agent_dir.mkdir(parents=True, exist_ok=True)
+    auth_path.write_text(json.dumps(existing))
+
+
 def setup_gcloud_adc():
     """Write ADC credentials from env var to disk and enable google plugin for Vertex AI."""
     adc_json = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS_JSON")
@@ -213,6 +231,16 @@ def setup_custom_provider(provider_name: str, base_url: str, api_key: str,
     }
 
     config_path.write_text(json.dumps(existing, indent=2))
+
+
+def _infer_provider_prefix(model: str) -> str:
+    """Infer the openclaw provider prefix from a bare model name."""
+    m = model.lower()
+    if "gemini" in m:
+        return "google"
+    if "gpt" in m or m.startswith(("o1", "o3")):
+        return "openai"
+    return "anthropic"
 
 
 def _find_and_setup_provider(model: str) -> str | None:
@@ -426,6 +454,7 @@ def parse_session_jsonl(path: Path, session_id: str) -> list[dict]:
 
 
 def main():
+    setup_openai_auth()
     setup_gcloud_adc()
     session_id = "openclaw-shim"
     cwd = "/app"
@@ -487,12 +516,7 @@ def main():
                         model = f"{_provider_name}/{model}"
                 # No provider — infer standard prefix from model name
                 elif "/" not in model:
-                    if "gemini" in model.lower():
-                        model = f"google/{model}"
-                    elif "gpt" in model.lower() or model.startswith("o1") or model.startswith("o3"):
-                        model = f"openai/{model}"
-                    else:
-                        model = f"anthropic/{model}"
+                    model = f"{_infer_provider_prefix(model)}/{model}"
 
                 subprocess.run(
                     ["openclaw", "config", "set", "agents.defaults.model", model],

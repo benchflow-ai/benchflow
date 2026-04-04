@@ -277,3 +277,74 @@ class TestShimProviderFallback:
         for name, cfg in PROVIDERS.items():
             assert cfg.base_url, f"Provider {name!r} has no base_url"
             assert cfg.api_protocol, f"Provider {name!r} has no api_protocol"
+
+
+# ── Shim helper functions ──
+
+
+class TestInferProviderPrefix:
+    """Tests for _infer_provider_prefix() in the openclaw ACP shim."""
+
+    @pytest.fixture(autouse=True)
+    def _import(self):
+        from benchflow.agents.openclaw_acp_shim import _infer_provider_prefix
+        self.infer = _infer_provider_prefix
+
+    @pytest.mark.parametrize("model,expected", [
+        ("gpt-4o", "openai"),
+        ("gpt-4o-mini", "openai"),
+        ("o1-preview", "openai"),
+        ("o3-mini", "openai"),
+        ("gemini-3-flash", "google"),
+        ("gemini-2.5-pro", "google"),
+        ("claude-sonnet-4-6", "anthropic"),
+        ("claude-haiku-4-5-20251001", "anthropic"),
+        ("some-unknown-model", "anthropic"),  # default
+    ])
+    def test_infer(self, model, expected):
+        assert self.infer(model) == expected
+
+
+class TestSetupOpenaiAuth:
+    """Tests for setup_openai_auth() writing to openclaw's auth-profiles.json."""
+
+    @pytest.fixture()
+    def home_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        return tmp_path
+
+    def _auth_path(self, home_dir):
+        return home_dir / ".openclaw" / "agents" / "main" / "agent" / "auth-profiles.json"
+
+    def test_writes_key(self, home_dir, monkeypatch):
+        import json
+        from benchflow.agents.openclaw_acp_shim import setup_openai_auth
+
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-123")
+        setup_openai_auth()
+
+        auth = json.loads(self._auth_path(home_dir).read_text())
+        assert auth["openai"]["apiKey"] == "sk-test-123"
+
+    def test_no_key_is_noop(self, home_dir, monkeypatch):
+        from benchflow.agents.openclaw_acp_shim import setup_openai_auth
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        setup_openai_auth()
+
+        assert not self._auth_path(home_dir).exists()
+
+    def test_preserves_existing_providers(self, home_dir, monkeypatch):
+        import json
+        from benchflow.agents.openclaw_acp_shim import setup_openai_auth
+
+        path = self._auth_path(home_dir)
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({"anthropic": {"apiKey": "ant-key"}}))
+
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-456")
+        setup_openai_auth()
+
+        auth = json.loads(path.read_text())
+        assert auth["anthropic"]["apiKey"] == "ant-key"
+        assert auth["openai"]["apiKey"] == "sk-test-456"
