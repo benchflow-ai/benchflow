@@ -1,4 +1,8 @@
-"""ATIF trajectory model — Agent Trajectory Interchange Format."""
+"""ATIF trajectory model — Agent Trajectory Interchange Format.
+
+Status: backlog — implemented but not wired into SDK trajectory capture yet.
+See STATUS.md "Later" section (ATIF export).
+"""
 
 from typing import Any, Literal
 

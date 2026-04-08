@@ -348,7 +348,7 @@ def skills(
     ] = None,
 ) -> None:
     """List or install agent skills."""
-    from benchflow.skills import discover_skills, install_skill, DEFAULT_SKILLS_DIR, list_skills_summary
+    from benchflow.skills import discover_skills, install_skill, DEFAULT_SKILLS_DIR
 
     if install:
         target = directory or DEFAULT_SKILLS_DIR

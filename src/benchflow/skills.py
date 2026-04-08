@@ -117,16 +117,3 @@ def install_skill(spec: str, target_dir: Path | None = None) -> Path | None:
     except Exception as e:
         logger.error(f"Skill install failed: {e}")
         return None
-
-
-
-def list_skills_summary(skills: list[SkillInfo]) -> str:
-    """Format skills list for display."""
-    if not skills:
-        return "No skills found."
-    lines = []
-    for s in skills:
-        desc = f" — {s.description[:60]}" if s.description else ""
-        ver = f" v{s.version}" if s.version else ""
-        lines.append(f"  {s.name}{ver}{desc}")
-    return "\n".join(lines)
