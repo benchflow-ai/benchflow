@@ -522,6 +522,21 @@ def main():
                     ["openclaw", "config", "set", "agents.defaults.model", model],
                     capture_output=True, timeout=10,
                 )
+
+            # Apply model generation parameters from env vars
+            _PARAM_MAP = {
+                "BENCHFLOW_MODEL_TEMPERATURE": "agents.defaults.params.temperature",
+                "BENCHFLOW_MODEL_TOP_P": "agents.defaults.params.topP",
+                "BENCHFLOW_MODEL_MAX_TOKENS": "agents.defaults.params.maxTokens",
+            }
+            for env_key, config_path in _PARAM_MAP.items():
+                val = os.environ.get(env_key)
+                if val:
+                    subprocess.run(
+                        ["openclaw", "config", "set", config_path, val],
+                        capture_output=True, timeout=10,
+                    )
+
             send({"jsonrpc": "2.0", "id": req_id, "result": {}})
 
         elif method == "session/prompt":

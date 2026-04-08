@@ -78,6 +78,15 @@ PROVIDERS: dict[str, ProviderConfig] = {
                 "contextWindow": 200000,
                 "maxTokens": 131072,
             },
+            {
+                "id": "glm-5.1",
+                "name": "GLM-5.1",
+                "reasoning": True,
+                "input": ["text"],
+                "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+                "contextWindow": 200000,
+                "maxTokens": 131072,
+            },
         ],
     ),
 }

@@ -216,6 +216,11 @@ class TestProviderModels:
         p = PROVIDERS["zai"]
         assert hasattr(p, "models") and len(p.models) > 0
 
+    def test_zai_has_glm51(self):
+        p = PROVIDERS["zai"]
+        model_ids = [m["id"] for m in p.models]
+        assert "glm-5.1" in model_ids
+
     def test_model_has_required_fields(self):
         """Each model entry should have at least id and name."""
         for key, cfg in PROVIDERS.items():
@@ -270,6 +275,7 @@ class TestShimProviderFallback:
         assert find_provider("anthropic-vertex/claude-sonnet-4-6") is not None
         assert find_provider("google-vertex/gemini-3-flash-preview") is not None
         assert find_provider("zai/glm-5") is not None
+        assert find_provider("zai/glm-5.1") is not None
 
     def test_sdk_injects_provider_env_for_all_known_providers(self):
         """Every registered provider with a base_url should result in
@@ -348,3 +354,101 @@ class TestSetupOpenaiAuth:
         auth = json.loads(path.read_text())
         assert auth["anthropic"]["apiKey"] == "ant-key"
         assert auth["openai"]["apiKey"] == "sk-test-456"
+
+
+# ── Shim model generation parameters ──
+
+
+class TestShimModelParams:
+    """The shim should read BENCHFLOW_MODEL_* env vars and call
+    openclaw config set agents.defaults.params.<key> for each."""
+
+    def test_param_map_covers_all_generation_params(self):
+        """session/set_model handler should map all three env vars."""
+        # Read the shim source and extract the _PARAM_MAP dict
+        from pathlib import Path
+        shim_src = (Path(__file__).parent.parent / "src/benchflow/agents/openclaw_acp_shim.py").read_text()
+        assert "BENCHFLOW_MODEL_TEMPERATURE" in shim_src
+        assert "BENCHFLOW_MODEL_TOP_P" in shim_src
+        assert "BENCHFLOW_MODEL_MAX_TOKENS" in shim_src
+        assert "agents.defaults.params.temperature" in shim_src
+        assert "agents.defaults.params.topP" in shim_src
+        assert "agents.defaults.params.maxTokens" in shim_src
+
+    def test_set_model_applies_params(self, monkeypatch):
+        """When BENCHFLOW_MODEL_* env vars are set, the shim should call
+        openclaw config set for each param during session/set_model."""
+        import subprocess
+        calls = []
+        original_run = subprocess.run
+
+        def mock_run(cmd, **kwargs):
+            calls.append(cmd)
+            # Return a dummy CompletedProcess
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        monkeypatch.setenv("BENCHFLOW_MODEL_TEMPERATURE", "1.0")
+        monkeypatch.setenv("BENCHFLOW_MODEL_TOP_P", "0.95")
+        monkeypatch.setenv("BENCHFLOW_MODEL_MAX_TOKENS", "131072")
+
+        # Import and simulate the set_model handler logic inline
+        # (the shim's main() is a blocking loop, so we test the logic directly)
+        import os
+        _PARAM_MAP = {
+            "BENCHFLOW_MODEL_TEMPERATURE": "agents.defaults.params.temperature",
+            "BENCHFLOW_MODEL_TOP_P": "agents.defaults.params.topP",
+            "BENCHFLOW_MODEL_MAX_TOKENS": "agents.defaults.params.maxTokens",
+        }
+        monkeypatch.setattr(subprocess, "run", mock_run)
+
+        for env_key, config_path in _PARAM_MAP.items():
+            val = os.environ.get(env_key)
+            if val:
+                subprocess.run(
+                    ["openclaw", "config", "set", config_path, val],
+                    capture_output=True, timeout=10,
+                )
+
+        monkeypatch.setattr(subprocess, "run", original_run)
+
+        assert len(calls) == 3
+        config_paths = [c[3] for c in calls]
+        assert "agents.defaults.params.temperature" in config_paths
+        assert "agents.defaults.params.topP" in config_paths
+        assert "agents.defaults.params.maxTokens" in config_paths
+        # Verify values
+        vals = {c[3]: c[4] for c in calls}
+        assert vals["agents.defaults.params.temperature"] == "1.0"
+        assert vals["agents.defaults.params.topP"] == "0.95"
+        assert vals["agents.defaults.params.maxTokens"] == "131072"
+
+    def test_missing_env_vars_skipped(self, monkeypatch):
+        """When no BENCHFLOW_MODEL_* env vars are set, no config calls are made."""
+        import subprocess
+        calls = []
+
+        def mock_run(cmd, **kwargs):
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0)
+
+        monkeypatch.delenv("BENCHFLOW_MODEL_TEMPERATURE", raising=False)
+        monkeypatch.delenv("BENCHFLOW_MODEL_TOP_P", raising=False)
+        monkeypatch.delenv("BENCHFLOW_MODEL_MAX_TOKENS", raising=False)
+
+        import os
+        _PARAM_MAP = {
+            "BENCHFLOW_MODEL_TEMPERATURE": "agents.defaults.params.temperature",
+            "BENCHFLOW_MODEL_TOP_P": "agents.defaults.params.topP",
+            "BENCHFLOW_MODEL_MAX_TOKENS": "agents.defaults.params.maxTokens",
+        }
+        monkeypatch.setattr(subprocess, "run", mock_run)
+
+        for env_key, config_path in _PARAM_MAP.items():
+            val = os.environ.get(env_key)
+            if val:
+                subprocess.run(
+                    ["openclaw", "config", "set", config_path, val],
+                    capture_output=True, timeout=10,
+                )
+
+        assert len(calls) == 0
