@@ -11,7 +11,7 @@
 - Result persistence: result.json, prompts.json, acp_trajectory.jsonl per trial
 - Metrics: `collect_metrics()` with pass rates, tool calls, timing, error breakdowns
 - Skills: benchflow-run, benchflow-create-task (eval'd at reward 1.0)
-- 45 unit tests
+- Unit tests (no Docker needed)
 
 ### Agents
 
@@ -37,42 +37,19 @@
 ## Open Issues
 
 ### P1 — Fix Soon
-- **Harbor private attributes** — `process.py` accesses `env._sandbox`, `env._strategy`. Fragile.
+- **Harbor private attributes** — `process.py` accesses `env._sandbox`, `env._strategy`, `env._docker_compose_paths`. No public APIs exist in Harbor. Blocked on upstream.
 - **API keys in `ps aux`** — Docker exec `-e K=V` visible in process list.
 
 ### P2 — Backlog
 - **No integration tests** — SDK.run(), Job.run() have zero coverage.
-- **Job resume no config scoping** — same jobs_dir + different config silently skips tasks.
+- **Job resume config scoping** — warns on agent mismatch, but other config fields (model, concurrency) still unscoped.
 - **`from harbor import *`** — namespace collision risk (benchflow.Job shadows harbor.Job).
-
-### Fixed (2026-03-24/25)
-- ~~**Harbor unpinned**~~ — Pinned to commit `6c2c293`.
-- ~~**No timeout on initialize/session_new**~~ — 60s timeout on both.
-- **UTF-8 decode crash** in ContainerTransport — now uses `errors="replace"`.
-- **Timeout variable scoping** in SDK.run() — defined before try block.
-- **Permission handler fragility** — falls back to first option.
-- **Job.run() race condition** — now passes job_name to SDK.run().
-- **Notification handler crashes** — wrapped in try/except.
-- **Viewer JSON parsing** — tolerates corrupted trajectory files.
-- **ToolCallStatus enum** — catches invalid status strings.
-- **Dead code cleanup** — removed container.py, unused ACPClient fields.
-- **#86** — context_root, sandbox_user, pre_agent_hooks, skills_dir Dockerfile injection, DinD path translation.
-- **#88** — Pre-create trial dirs to avoid root ownership PermissionError.
-- **#89** — Oracle agent support (run solution/solve.sh directly).
-- **#90** — Per-phase timing.json, config.json, agent stdout/stderr capture.
-- **#91** — Oracle writes agent/oracle.txt inside container (avoids root-ownership).
-- **#92** — pre_agent_hooks run before oracle/ACP branch.
-- **#94** — Scrape agent-native trajectory as fallback + auto-create tool call records for Gemini.
-- **openclaw-gemini** agent variant + GEMINI_API_KEY forwarding.
-- **register_agent()** API for custom agents at runtime.
-- **Sandbox user** copies .openclaw/ and .gemini/ config dirs.
 
 ---
 
 ## Roadmap
 
 ### Next Up
-- ~~**Skills support (SDK-level)**~~ — ✅ Done. `skills_dir` param in SDK.run(), Job, CLI.
 - **YAML config parity with Harbor** — agent params, environment config, dataset config
 - **Registry architecture** — agent shims as first-class registry entries
 
@@ -82,7 +59,7 @@
 - Multi-agent comparison (20+ tasks, all 3 agents)
 
 ### Later
-- OpenRouter / Vertex AI provider support
+- OpenRouter provider support
 - Daytona snapshots (pre-bake agent, eliminate install time)
 - Prebuilt SkillsBench images
 - ATIF export, MCP pass-through
@@ -100,63 +77,3 @@ Future smoke tests must verify:
 4. Multi-agent — same tasks on claude-agent-acp, pi-acp, openclaw
 5. Errors — 0 infra errors
 
----
-
-## Key Facts
-
-| Fact | Value |
-|------|-------|
-| claude-agent-acp | v0.22.2 (Claude Code v2.1.76) |
-| Default model | Sonnet 4.6 (set via ACP session/set_model) |
-| TB2 tasks | 89 |
-| SkillsBench tasks | 87 |
-| Max Daytona concurrency tested | 64 |
-| Unit tests | 66 |
-| Working agents | 3 (claude, pi-acp, openclaw) |
-
----
-
-## Auto Research — Weekend Investigation
-
-Exploration area: using benchflow's infrastructure (sandboxed execution, multi-agent, GEPA optimization) for automated research workflows.
-
-### Key References
-
-- **AI-Readiness Scorecard** ([sshh12/coding-agents-workshop](https://github.com/sshh12/coding-agents-workshop/blob/main/scorecard.md)) — Self-assessment framework for how well a codebase works with AI agents. Three dimensions: rules/config, file organization, test/verification. Scores 0-3 per dimension. Could be used to evaluate benchflow's own agent-friendliness and to score research repos before agents work on them.
-
-- **Awesome Auto Research Tools** ([handsome-rich/Awesome-Auto-Research-Tools](https://github.com/handsome-rich/Awesome-Auto-Research-Tools)) — Curated list of 30+ platforms across 5 categories:
-
-### Relevant Tools for benchflow Integration
-
-**End-to-end research systems (highest relevance):**
-- **ARIS** — Autonomous ML research using Claude Code with cross-model review loops. Closest to what benchflow + GEPA already does.
-- **AI-Scientist-v2** (Sakana) — Agentic tree search for research. Generated first AI-written paper accepted at a workshop via peer review.
-- **autoresearch** (Karpathy) — 630-line agent that reads its own training script, forms hypotheses, modifies code, runs experiments. Minimal and inspirational.
-- **Agent Laboratory** — Specialized agents for literature review + experimentation.
-- **claude-scholar** — Semi-automated: ideation → coding → experiments → writing → publication.
-
-**Research skills (directly usable):**
-- **AI-Research-SKILLs** — 86 skills across 22 categories for the full AI research lifecycle. Could be loaded as Agent Skills via benchflow's `skills_dir`.
-- **claude-scientific-skills** — 170+ scientific skills (bio, chem, medicine, materials). Same skills format.
-
-**Experiment infrastructure (complementary):**
-- **AIDE** — AI-Driven Exploration in code space. Strong Kaggle results. Could inform GEPA's search strategy.
-- **MLE-agent** — ML engineering companion with auto-debugging. Relevant for automated experiment pipelines.
-
-### How This Maps to benchflow
-
-| Auto Research Step | benchflow Equivalent | Gap |
-|---|---|---|
-| Literature review | Not built | Could use PaperQA2 or OpenScholar as MCP server |
-| Hypothesis generation | GEPA proposer | Already works for skill improvement; extend to research hypotheses |
-| Experiment execution | SDK.run() + Job | ✅ Already handles sandboxed agent execution |
-| Result analysis | collect_metrics() | ✅ Aggregation works; need richer analysis |
-| Paper writing | Not built | Could use agent with LaTeX skills |
-| Peer review | Not built | Multi-agent review loop (ARIS-style) |
-
-### Proposed Weekend Experiments
-
-1. **Vibe research loop** — Give an agent a research question + benchflow skills. Agent forms hypothesis → writes experiment code → runs via benchflow → analyzes results → iterates. Test on a simple ML task.
-2. **AI-Research-SKILLs integration** — Download the 86 research skills, deploy via `skills_dir`, test if agents can use them for structured research.
-3. **Cross-agent research review** — Run same research task on claude + gemini + openclaw, compare approaches (multi-agent comparison already supported by benchflow Job).
-4. **Agent-readiness scoring** — Apply the coding-agents-workshop scorecard to benchflow and smolclaws repos, identify improvements.
