@@ -137,7 +137,7 @@ class OTelCollector:
             try:
                 await writer.wait_closed()
             except Exception:
-                pass
+                logger.debug("Writer close failed during OTel connection teardown")
 
     def _process_otlp_json(self, body: bytes, headers: dict[str, str]) -> None:
         """Process OTLP/HTTP JSON payload."""

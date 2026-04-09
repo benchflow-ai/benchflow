@@ -8,6 +8,10 @@ dependencies = [
     "harbor @ git+https://github.com/benchflow-ai/harbor.git@6c2c2938512fbb8165a597349759b2e4c50ec13e",
     "httpx>=0.27.0",
     "anyio>=4.0",
+    "pydantic>=2.0",
+    "pyyaml>=6.0",
+    "rich>=13.0",
+    "typer>=0.9",
 ]
 authors = [
     { name = "Hongji Xu", email = "kirk@benchflow.ai" },

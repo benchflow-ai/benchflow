@@ -176,6 +176,7 @@ def _detect_dind_mount() -> tuple[str, str] | None:
                 best = (mount["Source"], dest)
         return best
     except Exception:
+        logger.debug("DinD mount detection failed", exc_info=True)
         return None
 
 

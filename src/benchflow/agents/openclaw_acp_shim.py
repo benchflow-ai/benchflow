@@ -18,11 +18,14 @@ Key details:
 """
 
 import json
+import logging
 import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 def send(msg):
@@ -94,7 +97,7 @@ def setup_openai_auth():
         try:
             existing = json.loads(auth_path.read_text())
         except (json.JSONDecodeError, OSError):
-            pass
+            logger.debug("Could not read existing auth config at %s", auth_path)
     existing["openai"] = {"apiKey": api_key}
     agent_dir.mkdir(parents=True, exist_ok=True)
     auth_path.write_text(json.dumps(existing))
@@ -217,7 +220,7 @@ def setup_custom_provider(provider_name: str, base_url: str, api_key: str,
         try:
             existing = json.loads(config_path.read_text())
         except (json.JSONDecodeError, OSError):
-            pass
+            logger.debug("Could not read existing provider config at %s", config_path)
 
     providers = existing.setdefault("models", {}).setdefault("providers", {})
     providers[provider_name] = {
@@ -269,6 +272,7 @@ def _find_and_setup_provider(model: str) -> str | None:
                     try:
                         api_key = _get_adc_token()
                     except Exception:
+                        logger.debug("ADC token acquisition failed for %s", provider_name, exc_info=True)
                         return None
                 elif cfg.auth_env:
                     api_key = env.get(cfg.auth_env, "")
@@ -279,7 +283,7 @@ def _find_and_setup_provider(model: str) -> str | None:
                 setup_custom_provider(provider_name, base_url, api_key, cfg.api_protocol, cfg.models)
                 return provider_name
     except ImportError:
-        pass
+        logger.debug("benchflow.agents.providers not available, using env var fallback")
 
     # 2. Fall back to BENCHFLOW_PROVIDER_* env vars set by the SDK.
     #    This is the primary path for stripped model names (e.g. "claude-sonnet-4-6"
@@ -294,7 +298,7 @@ def _find_and_setup_provider(model: str) -> str | None:
         try:
             api_key = _get_adc_token()
         except Exception:
-            pass
+            logger.debug("ADC token fallback failed", exc_info=True)
     if base_url and api_key:
         provider_name = model.split("/")[0] if "/" in model else "custom"
         try:
@@ -445,7 +449,7 @@ def parse_session_jsonl(path: Path, session_id: str) -> list[dict]:
                     })
 
     except Exception:
-        pass
+        logger.debug("Failed to parse session JSONL for trajectory", exc_info=True)
 
     return updates
 

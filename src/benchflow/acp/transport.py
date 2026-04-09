@@ -85,7 +85,7 @@ class StdioTransport(Transport):
                 try:
                     await asyncio.wait_for(reader.readuntil(b"\n"), timeout=5)
                 except Exception:
-                    pass
+                    logger.debug("Could not find next newline after buffer overflow")
                 logger.warning(f"Skipped oversized line: {e}")
                 continue
             if not line:

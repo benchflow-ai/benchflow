@@ -50,7 +50,7 @@ class LiveProcess(ABC):
             try:
                 await asyncio.wait_for(reader.readuntil(b"\n"), timeout=5)
             except Exception:
-                pass
+                logger.debug("Could not find next newline after buffer overflow")
             logger.warning(f"Skipped oversized line ({skipped} bytes): {e}")
             # Return empty line — caller will retry readline
             return b""
@@ -63,7 +63,7 @@ class LiveProcess(ABC):
                     )
                     stderr_text = stderr_bytes.decode(errors="replace").strip()
                 except Exception:
-                    pass
+                    logger.debug("Could not read stderr from closed process")
             rc = self._process.returncode if self._process else None
             msg = f"Process closed stdout (rc={rc})"
             if stderr_text:
@@ -148,7 +148,7 @@ class DockerProcess(LiveProcess):
                 if r.returncode == 0 and r.stdout.strip():
                     proc_env["DOCKER_HOST"] = r.stdout.strip()
             except Exception:
-                pass
+                logger.debug("Could not inspect docker context", exc_info=True)
         return proc_env
 
     _ENV_PATH = "/tmp/.benchflow_env"

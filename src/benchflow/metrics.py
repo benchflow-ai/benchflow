@@ -160,8 +160,8 @@ def collect_metrics(
             started = datetime.fromisoformat(r["started_at"])
             finished = datetime.fromisoformat(r["finished_at"])
             duration = (finished - started).total_seconds()
-        except Exception:
-            pass
+        except (KeyError, ValueError):
+            logger.debug("Could not compute duration for task %s", task_name)
 
         tasks.append(TaskMetrics(
             task_name=task_name,

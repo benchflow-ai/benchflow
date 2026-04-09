@@ -169,7 +169,7 @@ class TrajectoryProxy:
             try:
                 await writer.wait_closed()
             except Exception:
-                pass
+                logger.debug("Writer close failed during connection teardown")
 
     async def _handle_regular(
         self,
@@ -193,7 +193,7 @@ class TrajectoryProxy:
         resp_body: dict[str, Any] = {}
         try:
             resp_body = resp.json()
-        except Exception:
+        except (json.JSONDecodeError, ValueError):
             resp_body = {"raw": resp.text[:10000]}
 
         self._record_exchange(
@@ -299,7 +299,7 @@ def _parse_sse_events(chunk: bytes) -> list[dict[str, Any]]:
             try:
                 events.append(json.loads(data))
             except json.JSONDecodeError:
-                pass
+                logger.debug("Skipping malformed SSE event")
     return events
 
 
@@ -357,7 +357,7 @@ def _reconstruct_response(events: list[dict[str, Any]]) -> dict[str, Any]:
                 try:
                     block["input"] = json.loads(block["input"])
                 except json.JSONDecodeError:
-                    pass
+                    logger.debug("Could not parse tool_use input as JSON, keeping as string")
         return {
             "content": content,
             "model": model,

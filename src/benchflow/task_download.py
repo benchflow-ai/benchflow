@@ -1,8 +1,11 @@
 """Download benchmark task repos if not present under .ref/."""
 
+import logging
 import shutil
 import subprocess
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 TASK_REPOS = {
     "skillsbench": {
@@ -41,7 +44,7 @@ def ensure_tasks(benchmark: str) -> Path:
     if target.exists() and any(target.iterdir()):
         return target
 
-    print(f"Downloading {benchmark} tasks from {info['repo']}...")
+    logger.info("Downloading %s tasks from %s...", benchmark, info["repo"])
     target.parent.mkdir(parents=True, exist_ok=True)
     clone_dir = target.parent / "_clone"
 
@@ -59,5 +62,5 @@ def ensure_tasks(benchmark: str) -> Path:
         if clone_dir.exists():
             shutil.rmtree(clone_dir, ignore_errors=True)
 
-    print(f"Downloaded {sum(1 for d in target.iterdir() if d.is_dir())} tasks to {target}")
+    logger.info("Downloaded %d tasks to %s", sum(1 for d in target.iterdir() if d.is_dir()), target)
     return target

@@ -345,8 +345,8 @@ class Job:
                         cfg = json.loads(cfg_file.read_text())
                         prev_agent = cfg.get("agent", "")
                         break
-                    except Exception:
-                        pass
+                    except (json.JSONDecodeError, OSError):
+                        logger.debug("Could not read %s", cfg_file)
             if prev_agent and prev_agent != self._config.agent:
                 logger.warning(
                     f"Resuming with agent={self._config.agent!r} but "
