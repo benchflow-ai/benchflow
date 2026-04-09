@@ -17,6 +17,7 @@ import os
 import re
 import shlex
 import shutil
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Coroutine
@@ -687,24 +688,32 @@ class SDK:
                 # require injecting OAuth session tokens into the sandbox.
 
                 # 2a-2. Write codex auth.json if needed (env vars aren't enough for codex-acp)
+                # Uses upload_file instead of echo to avoid leaking secrets in ps aux.
                 if "codex" in agent and agent_env.get("OPENAI_API_KEY"):
                     auth_json = json.dumps({"OPENAI_API_KEY": agent_env["OPENAI_API_KEY"]})
-                    escaped = shlex.quote(auth_json)
-                    await env.exec(
-                        f"mkdir -p {cred_home}/.codex && echo {escaped} > {cred_home}/.codex/auth.json",
-                        timeout_sec=10,
-                    )
+                    await env.exec(f"mkdir -p {cred_home}/.codex", timeout_sec=10)
+                    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+                        f.write(auth_json)
+                        tmp_path = f.name
+                    try:
+                        await env.upload_file(tmp_path, f"{cred_home}/.codex/auth.json")
+                    finally:
+                        os.unlink(tmp_path)
                     logger.info("Codex auth.json written")
 
                 # 2a-3. Write GCP ADC credentials to disk for Vertex AI models
+                # Uses upload_file instead of echo to avoid leaking secrets in ps aux.
                 adc_json = agent_env.get("GOOGLE_APPLICATION_CREDENTIALS_JSON")
                 if adc_json:
-                    escaped = shlex.quote(adc_json)
                     adc_target = f"{cred_home}/.config/gcloud/application_default_credentials.json"
-                    await env.exec(
-                        f"mkdir -p {cred_home}/.config/gcloud && echo {escaped} > {adc_target}",
-                        timeout_sec=10,
-                    )
+                    await env.exec(f"mkdir -p {cred_home}/.config/gcloud", timeout_sec=10)
+                    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+                        f.write(adc_json)
+                        tmp_path = f.name
+                    try:
+                        await env.upload_file(tmp_path, adc_target)
+                    finally:
+                        os.unlink(tmp_path)
                     agent_env.setdefault("GOOGLE_APPLICATION_CREDENTIALS", adc_target)
                     logger.info("GCP ADC credentials written to container")
 

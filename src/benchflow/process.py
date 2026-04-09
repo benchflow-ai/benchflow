@@ -11,6 +11,7 @@ import asyncio
 import logging
 import os
 import shlex
+import tempfile
 from abc import ABC, abstractmethod
 from typing import Any
 
@@ -139,9 +140,26 @@ class DockerProcess(LiveProcess):
         cmd.extend(["exec", "-i", "-T"])
         if cwd:
             cmd.extend(["-w", cwd])
+
+        # Write env vars to a temp file instead of passing as -e K=V args
+        # (which are visible in ps aux).
+        env_file_path = None
         if env:
-            for k, v in env.items():
-                cmd.extend(["-e", f"{k}={v}"])
+            f = tempfile.NamedTemporaryFile(
+                mode="w", suffix=".env", prefix="benchflow_", delete=False,
+            )
+            try:
+                os.chmod(f.name, 0o600)
+                for k, v in env.items():
+                    f.write(f"{k}={v}\n")
+                f.close()
+                env_file_path = f.name
+                cmd.extend(["--env-file", env_file_path])
+            except BaseException:
+                f.close()
+                os.unlink(f.name)
+                raise
+
         cmd.extend([self._service, "bash", "-c", command])
 
         proc_env = os.environ.copy()
@@ -158,19 +176,23 @@ class DockerProcess(LiveProcess):
             except Exception:
                 pass
 
-        logger.debug(f"DockerProcess: {' '.join(cmd)}")
-        self._process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=proc_env,
-            limit=_BUFFER_LIMIT,
-        )
-        logger.info(
-            f"Docker process started (pid={self._process.pid}, "
-            f"project={self._project_name})"
-        )
+        try:
+            logger.debug(f"DockerProcess: {' '.join(cmd)}")
+            self._process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=proc_env,
+                limit=_BUFFER_LIMIT,
+            )
+            logger.info(
+                f"Docker process started (pid={self._process.pid}, "
+                f"project={self._project_name})"
+            )
+        finally:
+            if env_file_path:
+                os.unlink(env_file_path)
 
 
 class DaytonaProcess(LiveProcess):
@@ -229,9 +251,13 @@ class DaytonaProcess(LiveProcess):
             inner_parts = ["docker", "compose", "exec", "-i", "-T"]
             if cwd:
                 inner_parts.extend(["-w", cwd])
+            # Write env vars to a temp file on the remote VM instead of passing
+            # as -e K=V args (which are visible in ps aux on the remote host).
+            remote_env_path = None
             if env:
-                for k, v in env.items():
-                    inner_parts.extend(["-e", f"{k}={v}"])
+                remote_env_path = f"/tmp/benchflow_env_$$.env"
+                env_lines = "\n".join(f"{k}={v}" for k, v in env.items())
+                inner_parts.extend(["--env-file", remote_env_path])
             inner_parts.extend(["main", "bash", "-c", shlex.quote(command)])
             inner_cmd = " ".join(inner_parts)
 
@@ -239,17 +265,37 @@ class DaytonaProcess(LiveProcess):
                 remote_cmd = f"{self._compose_cmd_prefix} {inner_cmd}"
             else:
                 remote_cmd = inner_cmd
+
+            if remote_env_path:
+                # Write env file, set trap for cleanup, then run the command
+                write_cmd = (
+                    f"umask 077 && cat > {remote_env_path} <<'__BENCHFLOW_ENV__'\n"
+                    f"{env_lines}\n__BENCHFLOW_ENV__"
+                )
+                remote_cmd = f"{write_cmd}\ntrap 'rm -f {remote_env_path}' EXIT\n{remote_cmd}"
         else:
-            # Direct sandbox — run command via SSH
-            # Build env string for the command (avoid shell builtins that vary by shell)
+            # Direct sandbox — run command via SSH.
+            # Write env vars to a file on the remote host and source it,
+            # instead of passing as `env K=V` args visible in ps aux.
             env_prefix = ""
+            remote_env_path = None
             if env:
-                env_parts = [f"{k}={shlex.quote(v)}" for k, v in env.items()]
-                env_prefix = "env " + " ".join(env_parts) + " "
+                remote_env_path = f"/tmp/benchflow_env_$$.env"
+                env_lines = "\n".join(
+                    f"export {k}={shlex.quote(v)}" for k, v in env.items()
+                )
+                env_prefix = f". {remote_env_path} && "
             if cwd:
                 remote_cmd = f"cd {shlex.quote(cwd)} && {env_prefix}{command}"
             else:
                 remote_cmd = f"{env_prefix}{command}"
+
+            if remote_env_path:
+                write_cmd = (
+                    f"umask 077 && cat > {remote_env_path} <<'__BENCHFLOW_ENV__'\n"
+                    f"{env_lines}\n__BENCHFLOW_ENV__"
+                )
+                remote_cmd = f"{write_cmd}\ntrap 'rm -f {remote_env_path}' EXIT\n{remote_cmd}"
 
         cmd = [
             "ssh",
