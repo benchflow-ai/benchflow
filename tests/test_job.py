@@ -58,18 +58,16 @@ class TestJobResult:
 
 
 class TestJobCounting:
-    """Test the counting logic used in Job.run() — extracted as pure functions."""
+    """Test the counting logic used in Job.run() — calls the real extract_reward."""
 
     def _count(self, all_results: dict[str, dict]) -> dict:
-        """Replicate the counting logic from job.py."""
-        def _reward(r: dict) -> float | None:
-            rewards = r.get("rewards")
-            return rewards.get("reward") if rewards else None
+        """Same counting logic as job.py, using the shared extract_reward."""
+        from benchflow._scoring import extract_reward
 
         return {
-            "passed": sum(1 for r in all_results.values() if _reward(r) == 1.0),
+            "passed": sum(1 for r in all_results.values() if extract_reward(r) == 1.0),
             "failed": sum(1 for r in all_results.values()
-                         if _reward(r) is not None and _reward(r) != 1.0),
+                         if extract_reward(r) is not None and extract_reward(r) != 1.0),
             "errored": sum(1 for r in all_results.values()
                           if r.get("error") and r.get("rewards") is None),
         }

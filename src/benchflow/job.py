@@ -18,6 +18,16 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
+from benchflow._scoring import (
+    ACP_ERROR,
+    INSTALL_FAILED,
+    PIPE_CLOSED,
+    classify_error,
+    extract_reward,
+    pass_rate,
+    pass_rate_excl_errors,
+)
+
 import yaml
 
 from benchflow.sdk import SDK, RunResult
@@ -36,13 +46,14 @@ class RetryConfig:
 
     def should_retry(self, error: str | None) -> bool:
         """Check if an error is retryable."""
-        if not error:
+        category = classify_error(error)
+        if not category:
             return False
-        if self.retry_on_install and "install failed" in error:
+        if self.retry_on_install and category == INSTALL_FAILED:
             return True
-        if self.retry_on_pipe and "closed stdout" in error:
+        if self.retry_on_pipe and category == PIPE_CLOSED:
             return True
-        if self.retry_on_acp and "ACP error" in error:
+        if self.retry_on_acp and category == ACP_ERROR:
             return True
         return False
 
@@ -87,13 +98,12 @@ class JobResult:
     @property
     def score(self) -> float:
         """Pass rate over all tasks."""
-        return self.passed / self.total if self.total > 0 else 0.0
+        return pass_rate(passed=self.passed, total=self.total)
 
     @property
     def score_excl_errors(self) -> float:
         """Pass rate excluding errored tasks."""
-        completed = self.passed + self.failed
-        return self.passed / completed if completed > 0 else 0.0
+        return pass_rate_excl_errors(passed=self.passed, failed=self.failed)
 
 
 class Job:
@@ -387,17 +397,13 @@ class Job:
             }
 
         # Count — all values are dicts now, no type branching needed
-        def _reward(r: dict) -> float | None:
-            rewards = r.get("rewards")
-            return rewards.get("reward") if rewards else None
-
         job_result = JobResult(
             job_name=self._job_name,
             config=cfg,
             total=len(task_dirs),
-            passed=sum(1 for r in all_results.values() if _reward(r) == 1.0),
+            passed=sum(1 for r in all_results.values() if extract_reward(r) == 1.0),
             failed=sum(1 for r in all_results.values()
-                       if _reward(r) is not None and _reward(r) != 1.0),
+                       if extract_reward(r) is not None and extract_reward(r) != 1.0),
             errored=sum(1 for r in all_results.values()
                         if r.get("error") and r.get("rewards") is None),
             elapsed_sec=elapsed,
