@@ -183,6 +183,10 @@ dependencies = [
     { name = "anyio" },
     { name = "harbor" },
     { name = "httpx" },
+    { name = "pydantic" },
+    { name = "pyyaml" },
+    { name = "rich" },
+    { name = "typer" },
 ]
 
 [package.optional-dependencies]
@@ -197,9 +201,13 @@ requires-dist = [
     { name = "anyio", specifier = ">=4.0" },
     { name = "harbor", git = "https://github.com/benchflow-ai/harbor.git?rev=6c2c2938512fbb8165a597349759b2e4c50ec13e" },
     { name = "httpx", specifier = ">=0.27.0" },
+    { name = "pydantic", specifier = ">=2.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.24.0" },
+    { name = "pyyaml", specifier = ">=6.0" },
+    { name = "rich", specifier = ">=13.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.7.0" },
+    { name = "typer", specifier = ">=0.9" },
 ]
 provides-extras = ["dev"]
 

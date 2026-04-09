@@ -115,6 +115,10 @@ benchflow skills --install owner/repo@skill-name
 
 # View trajectory
 benchflow view jobs/tb2/my-trial/
+
+# Create/validate tasks
+benchflow tasks init my-task     # scaffold a new task directory
+benchflow tasks check tasks/my-task/  # validate task structure
 ```
 
 ## Agents

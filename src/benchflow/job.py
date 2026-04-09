@@ -59,12 +59,17 @@ class RetryConfig:
         return False
 
 
+# Defaults: works out-of-the-box with `claude login` (subscription auth, no API key needed)
+DEFAULT_AGENT = "claude-agent-acp"
+DEFAULT_MODEL = "claude-haiku-4-5-20251001"
+
+
 @dataclass
 class JobConfig:
     """Configuration for a benchmark job."""
 
-    agent: str = "claude-agent-acp"
-    model: str = "claude-haiku-4-5-20251001"
+    agent: str = DEFAULT_AGENT
+    model: str = DEFAULT_MODEL
     environment: str = "docker"
     concurrency: int = 4
     prompts: list[str | None] | None = None
@@ -196,8 +201,8 @@ class Job:
         sandbox_user = raw.get("sandbox_user")
 
         config = JobConfig(
-            agent=raw.get("agent", "claude-agent-acp"),
-            model=raw.get("model", "claude-haiku-4-5-20251001"),
+            agent=raw.get("agent", DEFAULT_AGENT),
+            model=raw.get("model", DEFAULT_MODEL),
             environment=raw.get("environment", "docker"),
             concurrency=raw.get("concurrency", 4),
             prompts=prompts,
@@ -215,13 +220,13 @@ class Job:
         # Agent
         agents = raw.get("agents", [{}])
         agent_cfg = agents[0] if agents else {}
-        agent_name = agent_cfg.get("name", "claude-agent-acp")
+        agent_name = agent_cfg.get("name", DEFAULT_AGENT)
 
         # Model — Harbor uses "anthropic/model-name" format
         model = agent_cfg.get("model_name", "")
         if "/" in model:
             model = model.split("/", 1)[1]
-        model = model or "claude-haiku-4-5-20251001"
+        model = model or DEFAULT_MODEL
 
         # Environment
         env_cfg = raw.get("environment", {})

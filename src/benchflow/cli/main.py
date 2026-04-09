@@ -9,6 +9,8 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from benchflow.job import DEFAULT_AGENT, DEFAULT_MODEL
+
 console = Console()
 
 app = typer.Typer(
@@ -27,7 +29,7 @@ def run(
     agent: Annotated[
         str,
         typer.Option("--agent", "-a", help="Agent name from registry"),
-    ] = "claude-agent-acp",
+    ] = DEFAULT_AGENT,
     model: Annotated[
         str | None,
         typer.Option("--model", "-m", help="Model to use"),
@@ -103,7 +105,7 @@ def job(
     agent: Annotated[
         str,
         typer.Option("--agent", "-a", help="Agent name from registry"),
-    ] = "claude-agent-acp",
+    ] = DEFAULT_AGENT,
     model: Annotated[
         str | None,
         typer.Option("--model", "-m", help="Model to use"),
@@ -143,7 +145,7 @@ def job(
             jobs_dir=jobs_dir,
             config=JobConfig(
                 agent=agent,
-                model=model or "claude-haiku-4-5-20251001",
+                model=model or DEFAULT_MODEL,
                 environment=environment,
                 concurrency=concurrency,
                 retry=RetryConfig(max_retries=max_retries),
@@ -281,7 +283,7 @@ def eval(
     agent: Annotated[
         str,
         typer.Option("--agent", "-a", help="Agent name"),
-    ] = "claude-agent-acp",
+    ] = DEFAULT_AGENT,
     model: Annotated[
         str | None,
         typer.Option("--model", "-m", help="Model"),
@@ -318,7 +320,7 @@ def eval(
         jobs_dir=jobs_dir,
         config=JobConfig(
             agent=agent,
-            model=model or "claude-haiku-4-5-20251001",
+            model=model or DEFAULT_MODEL,
             environment=environment,
             concurrency=concurrency,
             skills_dir=effective_skills,
