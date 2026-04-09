@@ -43,6 +43,31 @@ class CredentialFile:
 
 
 @dataclass
+class HostAuthFile:
+    """A single file to copy from the host into the container."""
+
+    host_path: str  # Path on host, e.g. "~/.claude/.credentials.json"
+    container_path: str  # Destination in container (may use {home} placeholder)
+
+
+@dataclass
+class SubscriptionAuth:
+    """Host CLI login credentials that can substitute for an API key.
+
+    When the user has logged in via the agent CLI (e.g. ``claude login``),
+    BenchFlow detects the auth files on the host, copies them into the
+    container, and skips the API key requirement.
+
+    ``detect_file`` is checked to determine if the user is logged in.
+    All ``files`` are copied into the container when subscription auth is used.
+    """
+
+    replaces_env: str  # The env var this substitutes, e.g. "ANTHROPIC_API_KEY"
+    detect_file: str  # Host path to check for login, e.g. "~/.claude/.credentials.json"
+    files: list[HostAuthFile] = field(default_factory=list)  # All files to copy
+
+
+@dataclass
 class AgentConfig:
     """Configuration for a supported agent."""
 
@@ -63,6 +88,9 @@ class AgentConfig:
     home_dirs: list[str] = field(default_factory=list)
     # Extra dot-dirs under $HOME to copy to sandbox user (for dirs not
     # derivable from skill_paths or credential_files, e.g. ".openclaw").
+    subscription_auth: SubscriptionAuth | None = None
+    # Host CLI login that can substitute for an API key (e.g. OAuth tokens
+    # from `claude login`). Detected automatically; API keys take precedence.
 
 
 # Agent registry — all supported agents
@@ -84,6 +112,13 @@ AGENTS: dict[str, AgentConfig] = {
             "BENCHFLOW_PROVIDER_BASE_URL": "ANTHROPIC_BASE_URL",
             "BENCHFLOW_PROVIDER_API_KEY": "ANTHROPIC_AUTH_TOKEN",
         },
+        subscription_auth=SubscriptionAuth(
+            replaces_env="ANTHROPIC_API_KEY",
+            detect_file="~/.claude/.credentials.json",
+            files=[
+                HostAuthFile("~/.claude/.credentials.json", "{home}/.claude/.credentials.json"),
+            ],
+        ),
     ),
     "pi-acp": AgentConfig(
         name="pi-acp",
@@ -156,6 +191,13 @@ AGENTS: dict[str, AgentConfig] = {
                 template='{{"OPENAI_API_KEY": "{value}"}}',
             ),
         ],
+        subscription_auth=SubscriptionAuth(
+            replaces_env="OPENAI_API_KEY",
+            detect_file="~/.codex/auth.json",
+            files=[
+                HostAuthFile("~/.codex/auth.json", "{home}/.codex/auth.json"),
+            ],
+        ),
     ),
     "gemini": AgentConfig(
         name="gemini",
@@ -174,6 +216,15 @@ AGENTS: dict[str, AgentConfig] = {
             "BENCHFLOW_PROVIDER_BASE_URL": "GEMINI_API_BASE_URL",
             "BENCHFLOW_PROVIDER_API_KEY": "GOOGLE_API_KEY",
         },
+        subscription_auth=SubscriptionAuth(
+            replaces_env="GEMINI_API_KEY",
+            detect_file="~/.gemini/oauth_creds.json",
+            files=[
+                HostAuthFile("~/.gemini/oauth_creds.json", "{home}/.gemini/oauth_creds.json"),
+                HostAuthFile("~/.gemini/settings.json", "{home}/.gemini/settings.json"),
+                HostAuthFile("~/.gemini/google_accounts.json", "{home}/.gemini/google_accounts.json"),
+            ],
+        ),
     ),
 }
 
@@ -206,6 +257,11 @@ def get_sandbox_home_dirs() -> set[str]:
             if path.startswith("{home}/."):
                 dirname = path.removeprefix("{home}/").split("/")[0]
                 dirs.add(dirname)
+        if cfg.subscription_auth:
+            for f in cfg.subscription_auth.files:
+                if f.container_path.startswith("{home}/."):
+                    dirname = f.container_path.removeprefix("{home}/").split("/")[0]
+                    dirs.add(dirname)
         dirs.update(cfg.home_dirs)
     return dirs
 
@@ -272,6 +328,7 @@ def register_agent(
     env_mapping: dict[str, str] | None = None,
     credential_files: list[CredentialFile] | None = None,
     home_dirs: list[str] | None = None,
+    subscription_auth: SubscriptionAuth | None = None,
 ) -> AgentConfig:
     """Register a custom agent at runtime.
 
@@ -300,6 +357,7 @@ def register_agent(
         env_mapping=env_mapping or {},
         credential_files=credential_files or [],
         home_dirs=home_dirs or [],
+        subscription_auth=subscription_auth,
     )
     AGENTS[name] = config
     AGENT_INSTALLERS[name] = install_cmd

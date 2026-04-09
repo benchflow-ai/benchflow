@@ -105,11 +105,21 @@ class TestResolveAgentEnv:
         assert "ANTHROPIC_AUTH_TOKEN" in result
         assert result["ANTHROPIC_AUTH_TOKEN"] == "zk-test"
 
-    def test_required_key_missing_raises(self, monkeypatch):
-        """Missing required API key raises ValueError."""
+    def test_required_key_missing_raises(self, monkeypatch, tmp_path):
+        """Missing required API key raises ValueError when no subscription auth."""
         # Clear any auto-inherited keys from the environment
         for key in ("ANTHROPIC_API_KEY", "ZAI_API_KEY", "OPENAI_API_KEY"):
             monkeypatch.delenv(key, raising=False)
+        # Ensure no host subscription auth files are found
+        orig_expanduser = Path.expanduser
+
+        def fake_expanduser(self):
+            s = str(self)
+            if s.startswith("~"):
+                return tmp_path / s[2:]
+            return orig_expanduser(self)
+
+        monkeypatch.setattr(Path, "expanduser", fake_expanduser)
         # Anthropic model
         with pytest.raises(ValueError, match="ANTHROPIC_API_KEY required"):
             self._resolve(

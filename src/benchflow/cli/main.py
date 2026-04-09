@@ -175,11 +175,16 @@ def agents() -> None:
     table.add_column("Requires", style="yellow")
 
     for agent in list_agents():
+        sub_env = agent.subscription_auth.replaces_env if agent.subscription_auth else None
+        requires = [
+            f"{e} (or login)" if e == sub_env else e
+            for e in agent.requires_env
+        ]
         table.add_row(
             agent.name,
             agent.description,
             agent.protocol,
-            ", ".join(agent.requires_env),
+            ", ".join(requires),
         )
 
     console.print(table)

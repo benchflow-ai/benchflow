@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
-# Test claude-agent-acp across providers: Vertex Sonnet, Z.AI GLM-5.
+# Test claude-agent-acp across providers: subscription, Vertex Sonnet, Z.AI GLM-5.
 #
 # Prerequisites:
+#   - ANTHROPIC_API_KEY set, or logged in via `claude login` (for subscription)
 #   - gcloud ADC configured + GOOGLE_CLOUD_PROJECT set (for Vertex Sonnet)
 #   - ZAI_API_KEY set (for Z.AI GLM-5)
 #   - Docker running, or DAYTONA_API_KEY + DAYTONA_API_URL set for --daytona
 #
 # Usage:
-#   bash examples/test_claude.sh              # run all
-#   bash examples/test_claude.sh zai-glm5     # run one
-#   bash examples/test_claude.sh --daytona    # use Daytona
+#   bash examples/test_claude.sh                  # run all
+#   bash examples/test_claude.sh subscription     # subscription auth only
+#   bash examples/test_claude.sh zai-glm5         # run one
+#   bash examples/test_claude.sh --daytona        # use Daytona
 
 set -euo pipefail
 
@@ -60,6 +62,7 @@ show_failure() {
 # ── Model definitions ──
 declare -A MODELS
 MODELS=(
+  [subscription]="claude-sonnet-4-6"
   [sonnet]="anthropic-vertex/claude-sonnet-4-6"
   [zai-glm5]="zai/glm-5"
 )
@@ -67,6 +70,7 @@ MODELS=(
 # Extra --ae flags per model
 declare -A EXTRA_ARGS
 EXTRA_ARGS=(
+  [subscription]=""
   [sonnet]="--ae CLAUDE_CODE_USE_VERTEX=1 --ae GOOGLE_CLOUD_PROJECT=$PROJECT --ae GOOGLE_CLOUD_LOCATION=global"
   [zai-glm5]="--ae ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic --ae ANTHROPIC_AUTH_TOKEN=$ZAI_API_KEY --ae ANTHROPIC_MODEL=claude-sonnet-4-6"
 )
@@ -101,6 +105,13 @@ check_vertex() {
 check_env() {
   local label="$1"
   case "$label" in
+    subscription)
+      if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+        echo "NOTE: $label — ANTHROPIC_API_KEY is set, will use API key (not subscription)"
+      elif [ ! -f "$HOME/.claude/.credentials.json" ]; then
+        echo "SKIP: $label — no ANTHROPIC_API_KEY and no ~/.claude/.credentials.json (run: claude login)"
+        return 1
+      fi ;;
     sonnet)
       check_vertex "$label" ;;
     zai-glm5)
@@ -117,7 +128,7 @@ check_env() {
 if [ $# -gt 0 ]; then
   SELECTED=("$@")
 else
-  SELECTED=("sonnet" "zai-glm5")
+  SELECTED=("subscription" "sonnet" "zai-glm5")
 fi
 
 echo "=== $AGENT provider sweep ==="
