@@ -45,6 +45,9 @@ class AgentConfig:
     skill_paths: list[str] = field(default_factory=list)
     install_timeout: int = 900  # seconds
     default_model: str = ""  # default model ID when --model is omitted
+    env_mapping: dict[str, str] = field(default_factory=dict)
+    # Maps BENCHFLOW_PROVIDER_* → agent-native env var names.
+    # Applied by SDK after provider resolution.
 
 
 # Agent registry — all supported agents
@@ -62,6 +65,10 @@ AGENTS: dict[str, AgentConfig] = {
         launch_cmd="claude-agent-acp",
         protocol="acp",
         requires_env=["ANTHROPIC_API_KEY"],
+        env_mapping={
+            "BENCHFLOW_PROVIDER_BASE_URL": "ANTHROPIC_BASE_URL",
+            "BENCHFLOW_PROVIDER_API_KEY": "ANTHROPIC_AUTH_TOKEN",
+        },
     ),
     "pi-acp": AgentConfig(
         name="pi-acp",
@@ -78,6 +85,10 @@ AGENTS: dict[str, AgentConfig] = {
         launch_cmd="pi-acp",
         protocol="acp",
         requires_env=["ANTHROPIC_API_KEY"],
+        env_mapping={
+            "BENCHFLOW_PROVIDER_BASE_URL": "ANTHROPIC_BASE_URL",
+            "BENCHFLOW_PROVIDER_API_KEY": "ANTHROPIC_AUTH_TOKEN",
+        },
     ),
     "openclaw": AgentConfig(
         name="openclaw",
@@ -118,6 +129,10 @@ AGENTS: dict[str, AgentConfig] = {
         launch_cmd="codex-acp",
         protocol="acp",
         requires_env=["OPENAI_API_KEY"],
+        env_mapping={
+            "BENCHFLOW_PROVIDER_BASE_URL": "OPENAI_BASE_URL",
+            "BENCHFLOW_PROVIDER_API_KEY": "OPENAI_API_KEY",
+        },
     ),
     "gemini": AgentConfig(
         name="gemini",
@@ -132,6 +147,10 @@ AGENTS: dict[str, AgentConfig] = {
         launch_cmd="gemini --acp",
         protocol="acp",
         requires_env=["GOOGLE_API_KEY"],
+        env_mapping={
+            "BENCHFLOW_PROVIDER_BASE_URL": "GEMINI_API_BASE_URL",
+            "BENCHFLOW_PROVIDER_API_KEY": "GOOGLE_API_KEY",
+        },
     ),
 }
 
@@ -195,6 +214,7 @@ def register_agent(
     description: str = "",
     skill_paths: list[str] | None = None,
     install_timeout: int = 900,
+    env_mapping: dict[str, str] | None = None,
 ) -> AgentConfig:
     """Register a custom agent at runtime.
 
@@ -220,6 +240,7 @@ def register_agent(
         description=description,
         skill_paths=skill_paths or [],
         install_timeout=install_timeout,
+        env_mapping=env_mapping or {},
     )
     AGENTS[name] = config
     # Update backwards-compat dicts

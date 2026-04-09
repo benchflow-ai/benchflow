@@ -531,6 +531,13 @@ class SDK:
                     if _key:
                         agent_env.setdefault("BENCHFLOW_PROVIDER_API_KEY", _key)
             # Validate required API key for the chosen model
+            # Apply agent env_mapping: translate BENCHFLOW_PROVIDER_* → agent-native vars
+            agent_cfg = AGENTS.get(agent)
+            if agent_cfg and agent_cfg.env_mapping:
+                for src, dst in agent_cfg.env_mapping.items():
+                    if src in agent_env:
+                        agent_env.setdefault(dst, agent_env[src])
+
             from benchflow.agents.registry import infer_env_key_for_model
             required_key = infer_env_key_for_model(model)
             if required_key and required_key not in agent_env:
