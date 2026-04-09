@@ -66,20 +66,22 @@ class TestResolveAgentEnv:
         result = self._resolve(agent_env={})
         assert result["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] == "1"
 
-    def test_model_sets_anthropic_model(self):
-        """Model with no provider prefix sets ANTHROPIC_MODEL."""
+    def test_model_sets_provider_model(self):
+        """Model with no provider prefix sets BENCHFLOW_PROVIDER_MODEL and ANTHROPIC_MODEL."""
         result = self._resolve(
             model="claude-haiku-4-5-20251001",
             agent_env={"ANTHROPIC_API_KEY": "sk-test"},
         )
+        assert result["BENCHFLOW_PROVIDER_MODEL"] == "claude-haiku-4-5-20251001"
         assert result["ANTHROPIC_MODEL"] == "claude-haiku-4-5-20251001"
 
-    def test_provider_model_strips_prefix_for_anthropic_model(self):
-        """zai/glm-5 → ANTHROPIC_MODEL=glm-5."""
+    def test_provider_model_strips_prefix(self):
+        """zai/glm-5 → BENCHFLOW_PROVIDER_MODEL=glm-5, ANTHROPIC_MODEL=glm-5."""
         result = self._resolve(
             model="zai/glm-5",
             agent_env={"ZAI_API_KEY": "zk-test"},
         )
+        assert result["BENCHFLOW_PROVIDER_MODEL"] == "glm-5"
         assert result["ANTHROPIC_MODEL"] == "glm-5"
 
     def test_provider_injects_benchflow_vars(self):

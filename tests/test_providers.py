@@ -80,7 +80,7 @@ class TestBuiltinProviders:
 
     def test_all_providers_have_valid_auth_type(self):
         for key, cfg in PROVIDERS.items():
-            assert cfg.auth_type in ("api_key", "adc"), (
+            assert cfg.auth_type in ("api_key", "adc", "none"), (
                 f"Provider {key!r} has unknown auth_type {cfg.auth_type!r}"
             )
 
@@ -278,9 +278,12 @@ class TestShimProviderFallback:
         assert find_provider("zai/glm-5.1") is not None
 
     def test_sdk_injects_provider_env_for_all_known_providers(self):
-        """Every registered provider with a base_url should result in
-        BENCHFLOW_PROVIDER_BASE_URL being injectable by the SDK."""
+        """Every registered provider with a fixed base_url should result in
+        BENCHFLOW_PROVIDER_BASE_URL being injectable by the SDK.
+        Providers with user-supplied URLs (e.g. vllm) are excluded."""
         for name, cfg in PROVIDERS.items():
+            if cfg.auth_type == "none":
+                continue  # user-supplied base_url (e.g. local inference servers)
             assert cfg.base_url, f"Provider {name!r} has no base_url"
             assert cfg.api_protocol, f"Provider {name!r} has no api_protocol"
 

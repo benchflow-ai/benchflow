@@ -23,7 +23,7 @@ class ProviderConfig:
     name: str
     base_url: str  # primary endpoint; may contain {placeholders} expanded via url_params
     api_protocol: str  # protocol for base_url: "openai-completions" | "anthropic-messages"
-    auth_type: str  # "api_key" | "adc"
+    auth_type: str  # "api_key" | "adc" | "none"
     auth_env: str | None = None  # env var holding the API key (None for ADC)
     url_params: dict[str, str] = field(default_factory=dict)  # {placeholder: ENV_VAR}
     models: list[dict] = field(default_factory=list)  # model metadata for agents
@@ -75,6 +75,13 @@ PROVIDERS: dict[str, ProviderConfig] = {
                     "{home}/.config/gcloud/application_default_credentials.json",
             },
         }],
+    ),
+    # ── OpenAI-compatible inference servers (user-supplied base_url) ──
+    "vllm": ProviderConfig(
+        name="vllm",
+        base_url="",  # user-supplied via --ae BENCHFLOW_PROVIDER_BASE_URL=...
+        api_protocol="openai-completions",
+        auth_type="none",
     ),
     # ── Custom providers (need explicit endpoint config in agent shims) ──
     "zai": ProviderConfig(

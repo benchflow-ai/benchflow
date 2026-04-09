@@ -105,14 +105,17 @@ class TestInjectVertexCredentials:
 class TestResolveProviderEnv:
     """Tests for SDK._resolve_provider_env — provider detection and env_mapping."""
 
-    def test_sets_anthropic_model(self):
+    def test_sets_provider_model(self):
         env = {"ANTHROPIC_API_KEY": "sk-test"}
         SDK._resolve_provider_env(env, "claude-haiku-4-5-20251001", "claude-agent-acp")
+        assert env["BENCHFLOW_PROVIDER_MODEL"] == "claude-haiku-4-5-20251001"
+        # env_mapping translates to agent-native var
         assert env["ANTHROPIC_MODEL"] == "claude-haiku-4-5-20251001"
 
     def test_strips_provider_prefix(self):
         env = {"ZAI_API_KEY": "zk-test"}
         SDK._resolve_provider_env(env, "zai/glm-5", "claude-agent-acp")
+        assert env["BENCHFLOW_PROVIDER_MODEL"] == "glm-5"
         assert env["ANTHROPIC_MODEL"] == "glm-5"
 
     def test_injects_benchflow_provider_vars(self):
@@ -131,9 +134,10 @@ class TestResolveProviderEnv:
         assert env["ANTHROPIC_AUTH_TOKEN"] == "zk-test"
 
     def test_no_provider_still_sets_model(self):
-        """Model with no registered provider still sets ANTHROPIC_MODEL."""
+        """Model with no registered provider still sets BENCHFLOW_PROVIDER_MODEL."""
         env = {"ANTHROPIC_API_KEY": "sk-test"}
         SDK._resolve_provider_env(env, "claude-sonnet-4-6", "claude-agent-acp")
+        assert env["BENCHFLOW_PROVIDER_MODEL"] == "claude-sonnet-4-6"
         assert env["ANTHROPIC_MODEL"] == "claude-sonnet-4-6"
 
 

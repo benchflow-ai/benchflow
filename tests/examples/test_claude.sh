@@ -72,7 +72,7 @@ declare -A EXTRA_ARGS
 EXTRA_ARGS=(
   [subscription]=""
   [sonnet]="--ae CLAUDE_CODE_USE_VERTEX=1 --ae GOOGLE_CLOUD_PROJECT=$PROJECT --ae GOOGLE_CLOUD_LOCATION=global"
-  [zai-glm5]="--ae ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic --ae ANTHROPIC_AUTH_TOKEN=$ZAI_API_KEY --ae ANTHROPIC_MODEL=claude-sonnet-4-6"
+  [zai-glm5]="--ae ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic --ae ANTHROPIC_AUTH_TOKEN=$ZAI_API_KEY --ae BENCHFLOW_PROVIDER_MODEL=claude-sonnet-4-6"
 )
 
 # ── Pre-flight checks ──

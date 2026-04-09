@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 keywords = ["benchmark", "llm-agents", "acp", "agent-evaluation", "multi-turn", "terminal-bench", "skillsbench"]
 dependencies = [
-    "harbor @ git+https://github.com/benchflow-ai/harbor.git@6c2c2938512fbb8165a597349759b2e4c50ec13e",
+    "harbor==0.3.0",
     "httpx>=0.27.0",
     "anyio>=4.0",
     "pydantic>=2.0",
@@ -15,13 +15,13 @@ dependencies = [
     "typer>=0.9",
 ]
 authors = [
+    { name = "Xiangyi Li", email = "xiangyi@benchflow.ai" },
     { name = "Kyoung Whan Choe", email = "choe.kyoung@gmail.com" },
-    { name = "Xiangyi Li", email = "venusli370306@gmail.com" },
 ]
 
 maintainers = [
+    { name = "Xiangyi Li", email = "xiangyi@benchflow.ai" },
     { name = "Kyoung Whan Choe", email = "choe.kyoung@gmail.com" },
-    { name = "Xiangyi Li", email = "venusli370306@gmail.com" },
 ]
 
 license = { text = "Apache-2.0" }
@@ -55,11 +55,11 @@ Changelog = "https://github.com/benchflow-ai/benchflow/blob/main/CHANGELOG.md"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.build.targets.sdist]
+exclude = [".venv*", ".ref", "jobs", "dist", ".claude", ".pytest_cache", "__pycache__"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-
-[tool.hatch.metadata]
-allow-direct-references = true
 
 [tool.ruff]
 target-version = "py312"

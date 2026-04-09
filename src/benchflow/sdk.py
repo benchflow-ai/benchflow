@@ -229,7 +229,7 @@ class SDK:
     ) -> None:
         """Detect provider for model, inject BENCHFLOW_PROVIDER_* and env_mapping."""
         from benchflow.agents.providers import find_provider, resolve_base_url, strip_provider_prefix
-        agent_env.setdefault("ANTHROPIC_MODEL", strip_provider_prefix(model))
+        agent_env.setdefault("BENCHFLOW_PROVIDER_MODEL", strip_provider_prefix(model))
         _prov = find_provider(model)
         if _prov:
             _prov_name, _prov_cfg = _prov

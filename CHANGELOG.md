@@ -20,7 +20,7 @@
 - **`benchflow cleanup`** command with `--max-age` filtering (default 24h).
 - **Oracle agent support** — run `solution/solve.sh` directly for task validation.
 - **Hello-world-task example** for sanity-testing the agent pipeline.
-- **Agent test scripts** in `examples/` — `test_claude.sh`, `test_codex.sh`, `test_gemini.sh`, `test_openclaw.sh`.
+- **Agent test scripts** in `tests/examples/` — `test_claude.sh`, `test_codex.sh`, `test_gemini.sh`, `test_openclaw.sh`.
 - **Claude Code skill** in `.claude/skills/benchflow/` teaching agents how to use the framework.
 - **Model generation params** via env vars (`BENCHFLOW_TEMPERATURE`, `BENCHFLOW_TOP_P`, `BENCHFLOW_MAX_TOKENS`).
 - **OpenClaw ACP shim** with trajectory parsing and skills support.
@@ -109,4 +109,4 @@
 
 ### Migration from 0.1.x
 
-0.1.x users should treat this as a fresh install. The SDK API, CLI, registry pattern, and task format have all changed. There is no automatic migration path. See `docs/sdk-reference.md` for the new SDK, and `examples/` for end-to-end examples.
+0.1.x users should treat this as a fresh install. The SDK API, CLI, registry pattern, and task format have all changed. There is no automatic migration path. See `docs/sdk-reference.md` for the new SDK, and `tests/examples/` for end-to-end examples.

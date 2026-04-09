@@ -1,9 +1,0 @@
-{
-  "hooks": {
-    "PreCommit": [
-      {
-        "command": ".venv/bin/ruff check src/benchflow/ && .venv/bin/python -m pytest tests/ -x -q"
-      }
-    ]
-  }
-}
