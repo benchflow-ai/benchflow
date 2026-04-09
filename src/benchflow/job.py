@@ -73,6 +73,7 @@ class JobConfig:
     skills_dir: str | None = None
     sandbox_user: str | None = None
     context_root: str | None = None
+    exclude_tasks: set[str] = field(default_factory=set)
 
     def __post_init__(self):
         from benchflow.agents.registry import AGENTS
@@ -190,14 +191,21 @@ class Job:
         # Parse prompts — YAML null becomes Python None
         prompts = raw.get("prompts")
 
+        agent_env_raw = raw.get("agent_env", {})
+        exclude = set(raw.get("exclude", []))
+        sandbox_user = raw.get("sandbox_user")
+
         config = JobConfig(
             agent=raw.get("agent", "claude-agent-acp"),
             model=raw.get("model", "claude-haiku-4-5-20251001"),
             environment=raw.get("environment", "docker"),
             concurrency=raw.get("concurrency", 4),
             prompts=prompts,
+            agent_env=agent_env_raw,
             retry=RetryConfig(max_retries=raw.get("max_retries", 2)),
             skills_dir=str(base_dir / raw["skills_dir"]) if raw.get("skills_dir") else None,
+            sandbox_user=sandbox_user,
+            exclude_tasks=exclude,
         )
         return cls(tasks_dir=tasks_dir, jobs_dir=jobs_dir, config=config, **kwargs)
 
@@ -259,6 +267,7 @@ class Job:
         return sorted(
             d for d in self._tasks_dir.iterdir()
             if d.is_dir() and (d / "task.toml").exists()
+            and d.name not in self._config.exclude_tasks
         )
 
     def _get_completed_tasks(self) -> dict[str, dict]:
@@ -290,6 +299,8 @@ class Job:
         last_result = None
 
         for attempt in range(1, cfg.retry.max_retries + 2):  # +2 because range is exclusive and attempt 1 is first try
+            if attempt > 1:
+                self._prune_docker()
             result = await self._sdk.run(
                 task_path=task_dir,
                 agent=cfg.agent,
@@ -358,6 +369,7 @@ class Job:
         async def bounded(td: Path) -> tuple[str, RunResult]:
             async with sem:
                 result = await self._run_task(td)
+                self._prune_docker()
                 # Log result
                 reward = result.rewards.get("reward") if result.rewards else None
                 status = "PASS" if reward == 1 else ("FAIL" if reward is not None else "ERR")
