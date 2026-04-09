@@ -177,7 +177,7 @@ wheels = [
 
 [[package]]
 name = "benchflow"
-version = "2.0.0"
+version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "anyio" },
@@ -199,7 +199,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "anyio", specifier = ">=4.0" },
-    { name = "harbor", git = "https://github.com/benchflow-ai/harbor.git?rev=6c2c2938512fbb8165a597349759b2e4c50ec13e" },
+    { name = "harbor", specifier = "==0.3.0" },
     { name = "httpx", specifier = ">=0.27.0" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
@@ -842,8 +842,8 @@ wheels = [
 
 [[package]]
 name = "harbor"
-version = "0.1.45"
-source = { git = "https://github.com/benchflow-ai/harbor.git?rev=6c2c2938512fbb8165a597349759b2e4c50ec13e#6c2c2938512fbb8165a597349759b2e4c50ec13e" }
+version = "0.3.0"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "claude-agent-sdk" },
     { name = "datasets" },
@@ -857,6 +857,7 @@ dependencies = [
     { name = "litellm" },
     { name = "modal" },
     { name = "packaging" },
+    { name = "pathspec" },
     { name = "pydantic" },
     { name = "python-dotenv" },
     { name = "pyyaml" },
@@ -870,6 +871,10 @@ dependencies = [
     { name = "toml" },
     { name = "typer" },
     { name = "uvicorn" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/82/3f/58880773b733ba1a0184b5a92dd66ded02c12807f8566aaa7a4ccb176c51/harbor-0.3.0.tar.gz", hash = "sha256:19532c651cabc82787f1ce8683e5296401117091dfb668128b947a01b607df00", size = 754808, upload-time = "2026-03-30T17:46:42.172Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/32/af/179443069bf354e1fd035578c012a1bfaf55e412bf285e8706ec7452dc14/harbor-0.3.0-py3-none-any.whl", hash = "sha256:b2b4679489df6f752bc7b22b926b06f0ace7148944510e218fadd53a0c7afc34", size = 867388, upload-time = "2026-03-30T17:46:43.43Z" },
 ]
 
 [[package]]
