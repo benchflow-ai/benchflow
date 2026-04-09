@@ -10,8 +10,11 @@ Re-exports environment APIs and adds:
 
 __version__ = "2.0.0"
 
-# Re-export Harbor's public API
-from harbor import *  # noqa: F401, F403
+# Re-export Harbor's core types for downstream task authors
+from harbor import (  # noqa: F401
+    BaseAgent, BaseEnvironment, ExecResult,
+    Task, TaskConfig, Trial, Verifier, VerifierResult,
+)
 
 # benchflow's additions
 from benchflow.acp.client import ACPClient  # noqa: F401
@@ -25,3 +28,19 @@ from benchflow.environments import SERVICES, detect_services_from_dockerfile, bu
 from benchflow.trajectories.otel import OTelCollector  # noqa: F401
 from benchflow.trajectories.proxy import TrajectoryProxy  # noqa: F401
 from benchflow.trajectories.types import Trajectory  # noqa: F401
+
+
+def __getattr__(name: str):
+    """Fall through to harbor for names not explicitly re-exported."""
+    import harbor  # noqa: F811
+
+    if hasattr(harbor, name):
+        import warnings
+
+        warnings.warn(
+            f"'{name}' is not directly re-exported by benchflow. Use 'from harbor import {name}' instead.",
+            ImportWarning,
+            stacklevel=2,
+        )
+        return getattr(harbor, name)
+    raise AttributeError(f"module 'benchflow' has no attribute {name!r}")
