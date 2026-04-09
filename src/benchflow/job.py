@@ -30,7 +30,8 @@ from benchflow._scoring import (
 
 import yaml
 
-from benchflow.sdk import SDK, RunResult
+from benchflow._models import RunResult
+from benchflow.sdk import SDK
 
 logger = logging.getLogger(__name__)
 

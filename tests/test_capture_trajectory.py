@@ -2,7 +2,7 @@
 
 from benchflow.acp.session import ACPSession
 from benchflow.acp.types import ToolCallStatus
-from benchflow.sdk import _capture_session_trajectory
+from benchflow._trajectory import _capture_session_trajectory
 
 
 class TestCaptureSessionTrajectory:
