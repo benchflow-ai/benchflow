@@ -1,9 +1,6 @@
-"""Tests for process.py env-file handling (no Docker required)."""
+"""Tests for process.py env handling (no Docker required)."""
 
 import asyncio
-import os
-import stat
-import tempfile
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -11,8 +8,8 @@ import pytest
 from benchflow.process import DockerProcess
 
 
-class TestDockerProcessEnvFile:
-    """Verify env vars are written to a temp file, not passed as -e args."""
+class TestDockerProcessEnv:
+    """Verify env vars are injected via export prefix, not -e args."""
 
     def _make_process(self):
         return DockerProcess(
@@ -22,8 +19,8 @@ class TestDockerProcessEnvFile:
         )
 
     @pytest.mark.asyncio
-    async def test_env_file_not_dash_e(self):
-        """Env vars must go through --env-file, not -e K=V."""
+    async def test_env_not_dash_e(self):
+        """Env vars must not appear as -e K=V docker compose args."""
         proc = self._make_process()
         captured_cmd = []
 
@@ -47,63 +44,17 @@ class TestDockerProcessEnvFile:
         # Must not contain the secret as a -e argument
         assert "-e SECRET_KEY=hunter2" not in cmd_str
         assert "-e OTHER=value" not in cmd_str
-        # Must use --env-file
-        assert "--env-file" in cmd_str
+        # Must not use --env-file (not supported in all Docker Compose versions)
+        assert "--env-file" not in cmd_str
 
     @pytest.mark.asyncio
-    async def test_env_file_permissions(self):
-        """Env file must be created with 0600 permissions."""
+    async def test_env_exported_in_command(self):
+        """Env vars are prepended as export statements in the bash command."""
         proc = self._make_process()
-        observed_path = None
-        observed_mode = None
-        observed_content = None
-
-        original_exec = asyncio.create_subprocess_exec
-
-        async def spy_exec(*args, **kwargs):
-            nonlocal observed_path, observed_mode, observed_content
-            # Find the --env-file arg
-            args_list = list(args)
-            for i, arg in enumerate(args_list):
-                if arg == "--env-file" and i + 1 < len(args_list):
-                    observed_path = args_list[i + 1]
-                    observed_mode = stat.S_IMODE(os.stat(observed_path).st_mode)
-                    with open(observed_path) as f:
-                        observed_content = f.read()
-                    break
-
-            mock_proc = AsyncMock()
-            mock_proc.pid = 12345
-            mock_proc.returncode = None
-            mock_proc.stdin = AsyncMock()
-            mock_proc.stdout = AsyncMock()
-            mock_proc.stderr = AsyncMock()
-            return mock_proc
-
-        with patch("asyncio.create_subprocess_exec", side_effect=spy_exec):
-            await proc.start(
-                command="echo hello",
-                env={"API_KEY": "secret123"},
-            )
-
-        assert observed_path is not None
-        assert observed_mode == 0o600
-        assert "API_KEY=secret123\n" in observed_content
-
-    @pytest.mark.asyncio
-    async def test_env_file_cleaned_up(self):
-        """Env file must be deleted after subprocess starts."""
-        proc = self._make_process()
-        env_file_path = None
+        captured_cmd = []
 
         async def fake_exec(*args, **kwargs):
-            nonlocal env_file_path
-            args_list = list(args)
-            for i, arg in enumerate(args_list):
-                if arg == "--env-file" and i + 1 < len(args_list):
-                    env_file_path = args_list[i + 1]
-                    break
-
+            captured_cmd.extend(args)
             mock_proc = AsyncMock()
             mock_proc.pid = 12345
             mock_proc.returncode = None
@@ -115,15 +66,45 @@ class TestDockerProcessEnvFile:
         with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
             await proc.start(
                 command="echo hello",
-                env={"KEY": "val"},
+                env={"API_KEY": "secret123"},
             )
 
-        assert env_file_path is not None
-        assert not os.path.exists(env_file_path), "Env file should be deleted after start"
+        # The bash -c argument should contain the export + original command
+        cmd_str = " ".join(captured_cmd)
+        assert "export API_KEY=" in cmd_str
+        assert "echo hello" in cmd_str
 
     @pytest.mark.asyncio
-    async def test_no_env_no_file(self):
-        """When no env is passed, no --env-file arg should appear."""
+    async def test_env_values_shell_quoted(self):
+        """Env values with special chars are shell-quoted."""
+        proc = self._make_process()
+        captured_cmd = []
+
+        async def fake_exec(*args, **kwargs):
+            captured_cmd.extend(args)
+            mock_proc = AsyncMock()
+            mock_proc.pid = 12345
+            mock_proc.returncode = None
+            mock_proc.stdin = AsyncMock()
+            mock_proc.stdout = AsyncMock()
+            mock_proc.stderr = AsyncMock()
+            return mock_proc
+
+        with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+            await proc.start(
+                command="echo hello",
+                env={"KEY": "val with spaces & special; chars"},
+            )
+
+        # Find the bash -c argument (last arg)
+        bash_cmd = captured_cmd[-1]
+        assert "KEY=" in bash_cmd
+        # Value should be quoted (not raw)
+        assert "val with spaces & special; chars" not in bash_cmd or "'" in bash_cmd
+
+    @pytest.mark.asyncio
+    async def test_no_env_no_export(self):
+        """When no env is passed, no export prefix is added."""
         proc = self._make_process()
         captured_cmd = []
 
@@ -141,3 +122,5 @@ class TestDockerProcessEnvFile:
             await proc.start(command="echo hello")
 
         assert "--env-file" not in captured_cmd
+        # The bash -c command should be the original command
+        assert captured_cmd[-1] == "echo hello"

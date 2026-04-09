@@ -11,7 +11,6 @@ import asyncio
 import logging
 import os
 import shlex
-import tempfile
 from abc import ABC, abstractmethod
 from typing import Any
 
@@ -141,24 +140,14 @@ class DockerProcess(LiveProcess):
         if cwd:
             cmd.extend(["-w", cwd])
 
-        # Write env vars to a temp file instead of passing as -e K=V args
-        # (which are visible in ps aux).
-        env_file_path = None
+        # Inject env vars by prepending exports to the bash command.
+        # This avoids both `-e K=V` args (visible in `ps aux` on host)
+        # and `--env-file` (not supported in all Docker Compose versions).
         if env:
-            f = tempfile.NamedTemporaryFile(
-                mode="w", suffix=".env", prefix="benchflow_", delete=False,
+            exports = " ".join(
+                f"{k}={shlex.quote(v)}" for k, v in env.items()
             )
-            try:
-                os.chmod(f.name, 0o600)
-                for k, v in env.items():
-                    f.write(f"{k}={v}\n")
-                f.close()
-                env_file_path = f.name
-                cmd.extend(["--env-file", env_file_path])
-            except BaseException:
-                f.close()
-                os.unlink(f.name)
-                raise
+            command = f"export {exports}; {command}"
 
         cmd.extend([self._service, "bash", "-c", command])
 
@@ -176,23 +165,19 @@ class DockerProcess(LiveProcess):
             except Exception:
                 pass
 
-        try:
-            logger.debug(f"DockerProcess: {' '.join(cmd)}")
-            self._process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=proc_env,
-                limit=_BUFFER_LIMIT,
-            )
-            logger.info(
-                f"Docker process started (pid={self._process.pid}, "
-                f"project={self._project_name})"
-            )
-        finally:
-            if env_file_path:
-                os.unlink(env_file_path)
+        logger.debug(f"DockerProcess: {' '.join(cmd[:10])}...")
+        self._process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=proc_env,
+            limit=_BUFFER_LIMIT,
+        )
+        logger.info(
+            f"Docker process started (pid={self._process.pid}, "
+            f"project={self._project_name})"
+        )
 
 
 class DaytonaProcess(LiveProcess):
