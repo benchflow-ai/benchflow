@@ -80,7 +80,12 @@ def install_skill(spec: str, target_dir: Path | None = None) -> Path | None:
     """Install a skill from skills.sh.
 
     Args:
-        spec: Skill specifier (e.g. "anthropics/skills@find-skills")
+        spec: Skill specifier in the form "owner/repo@skill-name"
+            (e.g. "anthropics/skills@find-skills"). The part after "@"
+            is used to locate the installed directory. If no "@" is
+            present, the last path segment is used as a guess. In either
+            case, falls back to scanning target_dir for a matching
+            SKILL.md name if the guessed directory doesn't exist.
         target_dir: Where to install. Default: ~/.claude/skills/
 
     Returns:
