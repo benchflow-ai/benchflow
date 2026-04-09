@@ -108,6 +108,427 @@ class SDK:
                     await self._upload_credential(env, path, content)
                     logger.info("Agent credential file written: %s", path)
 
+    @staticmethod
+    def _init_trial(
+        task_path: Path,
+        job_name: str | None,
+        trial_name: str | None,
+        jobs_dir: str | Path,
+    ) -> tuple["Task", Path, "TrialPaths", datetime, str, str]:
+        """Set up trial directory tree and return core trial objects."""
+        from uuid import uuid4
+        task = Task(task_path)
+        job_name = job_name or datetime.now().strftime("%Y-%m-%d__%H-%M-%S")
+        trial_name = trial_name or f"{task_path.name}__{uuid4().hex[:8]}"
+        trial_dir = Path(jobs_dir) / job_name / trial_name
+        trial_paths = TrialPaths(trial_dir)
+        started_at = datetime.now()
+        # Pre-create trial directory tree so Docker doesn't create them as root.
+        trial_dir.mkdir(parents=True, exist_ok=True)
+        for subdir in ("agent", "verifier", "artifacts", "trajectory"):
+            (trial_dir / subdir).mkdir(exist_ok=True)
+        return task, trial_dir, trial_paths, started_at, job_name, trial_name
+
+    @staticmethod
+    def _resolve_agent_env(
+        agent: str,
+        model: str | None,
+        agent_env: dict[str, str] | None,
+    ) -> dict[str, str]:
+        """Resolve agent environment: auto-inherit keys, provider vars, env_mapping."""
+        agent_env = dict(agent_env or {})
+        # Built-in keys + any auth_env from custom providers
+        _auto_inherit = {"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY",
+                         "GEMINI_API_KEY", "GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION"}
+        from benchflow.agents.providers import PROVIDERS
+        for cfg in PROVIDERS.values():
+            if cfg.auth_env:
+                _auto_inherit.add(cfg.auth_env)
+            for env_var in cfg.url_params.values():
+                _auto_inherit.add(env_var)
+        for key in _auto_inherit:
+            if key in os.environ:
+                agent_env.setdefault(key, os.environ[key])
+        # Mirror GEMINI_API_KEY as GOOGLE_API_KEY (some agents expect one or the other)
+        if "GEMINI_API_KEY" in agent_env and "GOOGLE_API_KEY" not in agent_env:
+            agent_env["GOOGLE_API_KEY"] = agent_env["GEMINI_API_KEY"]
+        # Inject ADC credentials and defaults for Vertex AI models
+        if model:
+            from benchflow.agents.registry import is_vertex_model
+            if is_vertex_model(model):
+                adc_path = Path.home() / ".config/gcloud/application_default_credentials.json"
+                if not adc_path.exists():
+                    raise ValueError(
+                        f"Vertex AI model {model!r} requires ADC credentials. "
+                        f"Run: gcloud auth application-default login"
+                    )
+                agent_env.setdefault("GOOGLE_APPLICATION_CREDENTIALS_JSON", adc_path.read_text())
+                agent_env.setdefault("GOOGLE_CLOUD_LOCATION", "global")
+                if "GOOGLE_CLOUD_PROJECT" not in agent_env:
+                    raise ValueError(
+                        f"GOOGLE_CLOUD_PROJECT required for Vertex AI model {model!r}. "
+                        f"Export it or pass via --ae GOOGLE_CLOUD_PROJECT=<project>"
+                    )
+        if model:
+            from benchflow.agents.providers import strip_provider_prefix
+            agent_env.setdefault("ANTHROPIC_MODEL", strip_provider_prefix(model))
+            from benchflow.agents.providers import find_provider, resolve_base_url
+            _prov = find_provider(model)
+            if _prov:
+                _prov_name, _prov_cfg = _prov
+                agent_env.setdefault("BENCHFLOW_PROVIDER_NAME", _prov_name)
+                try:
+                    agent_env.setdefault("BENCHFLOW_PROVIDER_BASE_URL",
+                                         resolve_base_url(_prov_cfg, agent_env))
+                except KeyError:
+                    pass  # URL params missing — will fail later with clear error
+                agent_env.setdefault("BENCHFLOW_PROVIDER_PROTOCOL", _prov_cfg.api_protocol)
+                if _prov_cfg.models:
+                    agent_env.setdefault("BENCHFLOW_PROVIDER_MODELS",
+                                         json.dumps(_prov_cfg.models))
+                if _prov_cfg.auth_type == "api_key" and _prov_cfg.auth_env:
+                    _key = agent_env.get(_prov_cfg.auth_env, "")
+                    if _key:
+                        agent_env.setdefault("BENCHFLOW_PROVIDER_API_KEY", _key)
+            # Apply agent env_mapping: translate BENCHFLOW_PROVIDER_* → agent-native vars
+            agent_cfg = AGENTS.get(agent)
+            if agent_cfg and agent_cfg.env_mapping:
+                for src, dst in agent_cfg.env_mapping.items():
+                    if src in agent_env:
+                        agent_env.setdefault(dst, agent_env[src])
+            # Validate required API key for the chosen model
+            from benchflow.agents.registry import infer_env_key_for_model
+            required_key = infer_env_key_for_model(model)
+            if required_key and required_key not in agent_env:
+                raise ValueError(
+                    f"{required_key} required for model {model!r} but not set. "
+                    f"Export it or pass via agent_env."
+                )
+        # Increase output token limit to avoid truncation errors
+        agent_env.setdefault("CLAUDE_CODE_MAX_OUTPUT_TOKENS", "128000")
+        # Disable telemetry/non-essential traffic in container
+        agent_env.setdefault("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
+        return agent_env
+
+    @staticmethod
+    def _write_config(
+        trial_dir: Path,
+        *,
+        task_path: Path,
+        agent: str,
+        model: str | None,
+        environment: str,
+        skills_dir: str | Path | None,
+        sandbox_user: str | None,
+        context_root: str | Path | None,
+        timeout: int,
+        started_at: datetime,
+        agent_env: dict[str, str],
+    ) -> None:
+        """Write config.json to trial_dir with secrets filtered out."""
+        _secret_substrings = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIALS")
+        recorded_env = {
+            k: v for k, v in agent_env.items()
+            if not any(s in k.upper() for s in _secret_substrings)
+        }
+        config_data = {
+            "task_path": str(task_path),
+            "agent": agent,
+            "model": model,
+            "environment": environment,
+            "skills_dir": str(skills_dir) if skills_dir else None,
+            "sandbox_user": sandbox_user,
+            "context_root": str(context_root) if context_root else None,
+            "timeout_sec": timeout,
+            "started_at": str(started_at),
+            "agent_env": recorded_env,
+        }
+        (trial_dir / "config.json").write_text(json.dumps(config_data, indent=2))
+
+    @staticmethod
+    def _build_result(
+        trial_dir: Path,
+        *,
+        task_name: str,
+        trial_name: str,
+        agent: str,
+        agent_name: str,
+        model: str,
+        n_tool_calls: int,
+        prompts: list[str],
+        error: str | None,
+        trajectory: list[dict],
+        partial_trajectory: bool,
+        rewards: dict | None,
+        started_at: datetime,
+        timing: dict[str, float],
+    ) -> RunResult:
+        """Build RunResult and write result.json, timing.json, prompts.json, trajectory."""
+        result = RunResult(
+            task_name=task_name,
+            trial_name=trial_name,
+            rewards=rewards,
+            trajectory=trajectory,
+            agent=agent,
+            agent_name=agent_name,
+            model=model,
+            n_tool_calls=n_tool_calls,
+            n_prompts=len(prompts),
+            error=error,
+            started_at=started_at,
+            finished_at=datetime.now(),
+        )
+        # Finalize timing
+        timing["total"] = (result.finished_at - result.started_at).total_seconds()
+        timing = {k: round(v, 1) for k, v in timing.items()}
+        # Save trajectory
+        traj_dir = trial_dir / "trajectory"
+        traj_dir.mkdir(parents=True, exist_ok=True)
+        (traj_dir / "acp_trajectory.jsonl").write_text(
+            "\n".join(json.dumps(e, default=str) for e in trajectory)
+        )
+        # Save result.json, prompts.json, timing.json
+        trial_dir.mkdir(parents=True, exist_ok=True)
+        (trial_dir / "result.json").write_text(
+            json.dumps(
+                {
+                    "task_name": result.task_name,
+                    "trial_name": result.trial_name,
+                    "rewards": result.rewards,
+                    "agent": result.agent,
+                    "agent_name": result.agent_name,
+                    "model": result.model,
+                    "n_tool_calls": result.n_tool_calls,
+                    "n_prompts": result.n_prompts,
+                    "error": result.error,
+                    "partial_trajectory": partial_trajectory,
+                    "started_at": str(result.started_at),
+                    "finished_at": str(result.finished_at),
+                    "timing": timing,
+                },
+                indent=2,
+            )
+        )
+        (trial_dir / "timing.json").write_text(json.dumps(timing, indent=2))
+        (trial_dir / "prompts.json").write_text(json.dumps(prompts, indent=2))
+        return result
+
+    @staticmethod
+    def _resolve_prompts(task_path: Path, prompts: list[str | None] | None) -> list[str]:
+        """Read instruction.md and resolve prompt list."""
+        instruction_path = task_path / "instruction.md"
+        if not instruction_path.exists():
+            raise FileNotFoundError(f"Task missing instruction.md: {task_path}")
+        instruction = instruction_path.read_text().strip()
+        if prompts is None:
+            return [instruction]
+        return [p if p is not None else instruction for p in prompts]
+
+    async def _start_env_and_upload(self, env, task_path: Path, timing: dict) -> None:
+        """Start environment and upload task files."""
+        logger.info(f"Starting environment: {task_path.name}")
+        t0 = datetime.now()
+        await env.start(force_build=False)
+        timing["environment_setup"] = (datetime.now() - t0).total_seconds()
+        if (task_path / "instruction.md").exists():
+            await env.upload_file(task_path / "instruction.md", "/instruction.md")
+        if (task_path / "solution").is_dir():
+            await env.upload_dir(task_path / "solution", "/solution")
+
+    async def _run_oracle(self, env, task_path: Path, timeout: int) -> tuple[list[dict], str]:
+        """Run oracle mode (solution/solve.sh), return (trajectory, agent_name)."""
+        logger.info("Oracle mode: running solution/solve.sh")
+        if not (task_path / "solution" / "solve.sh").exists():
+            raise FileNotFoundError(f"Oracle requires solution/solve.sh: {task_path}")
+        result = await env.exec(
+            "chmod +x /solution/solve.sh && "
+            "/solution/solve.sh 2>&1 | tee /logs/agent/oracle.txt",
+            timeout_sec=timeout,
+        )
+        if result.return_code != 0:
+            logger.warning(f"Oracle solve.sh exited with rc={result.return_code}")
+        trajectory = [{
+            "type": "oracle",
+            "command": "solution/solve.sh",
+            "return_code": result.return_code,
+            "stdout": (result.stdout or "")[:2000],
+        }]
+        return trajectory, "oracle"
+
+    async def _install_agent(self, env, agent: str, trial_dir: Path) -> "AgentConfig | None":
+        """Install agent in sandbox and return its config."""
+        agent_base = agent.split()[0]
+        agent_cfg = AGENTS.get(agent_base)
+        if agent_base not in AGENT_INSTALLERS:
+            return agent_cfg
+        install_timeout = agent_cfg.install_timeout if agent_cfg else 900
+        logger.info(f"Installing {agent_base} in sandbox (timeout={install_timeout}s)...")
+        install_result = await env.exec(
+            AGENT_INSTALLERS[agent_base], timeout_sec=install_timeout,
+        )
+        install_log = trial_dir / "agent" / "install-stdout.txt"
+        install_log.parent.mkdir(parents=True, exist_ok=True)
+        install_log.write_text(install_result.stdout or "")
+        if install_result.return_code != 0:
+            diag = await env.exec(
+                "echo 'OS:' && cat /etc/os-release 2>/dev/null | head -2; "
+                "echo 'Node:' && node --version 2>&1; "
+                f"echo 'Agent:' && which {agent_base} 2>&1",
+                timeout_sec=10,
+            )
+            raise AgentInstallError(
+                agent=agent_base,
+                return_code=install_result.return_code,
+                stdout=install_result.stdout or "",
+                diagnostics=diag.stdout or "",
+                log_path=str(install_log),
+            )
+        return agent_cfg
+
+    async def _deploy_skills(
+        self, env, task_path: Path, skills_dir: str | Path | None,
+        agent_cfg, sandbox_user: str | None, agent_cwd: str, task: "Task",
+    ) -> None:
+        """Deploy and distribute skills into sandbox."""
+        # Runtime upload (fallback if not baked into Dockerfile)
+        if skills_dir:
+            dockerfile = task_path / "environment" / "Dockerfile"
+            already_injected = (
+                dockerfile.exists()
+                and "COPY _deps/skills /skills/" in dockerfile.read_text()
+            )
+            if not already_injected:
+                skills_path = Path(skills_dir)
+                if skills_path.is_dir():
+                    logger.info(f"Deploying skills via runtime upload from {skills_path}")
+                    await env.upload_dir(skills_path, "/skills")
+                    if agent_cfg and agent_cfg.skill_paths:
+                        parts = []
+                        for sp in agent_cfg.skill_paths:
+                            expanded = sp.replace("$HOME", "/root").replace("$WORKSPACE", "/app")
+                            parent = str(Path(expanded).parent)
+                            parts.append(f"mkdir -p '{parent}' && ln -sf /skills '{expanded}'")
+                        await env.exec(" && ".join(parts), timeout_sec=10)
+                    logger.info("Skills deployed to /skills and symlinked")
+                else:
+                    logger.warning(f"Skills dir not found: {skills_path}")
+            else:
+                logger.info("Skills already injected via Dockerfile")
+
+        # Distribute to agent-specific discovery paths
+        task_skills_dir = task.config.environment.skills_dir
+        effective_skills = "/skills" if skills_dir else task_skills_dir
+        if effective_skills and agent_cfg and agent_cfg.skill_paths:
+            home = f"/home/{sandbox_user}" if sandbox_user else "/root"
+            parts = []
+            for sp in agent_cfg.skill_paths:
+                expanded = sp.replace("$HOME", home).replace("$WORKSPACE", agent_cwd)
+                parts.append(f"mkdir -p '{expanded}' && cp -r '{effective_skills}'/. '{expanded}'/ 2>/dev/null")
+            if parts:
+                await env.exec("; ".join(parts), timeout_sec=15)
+                logger.info(f"Skills distributed to {len(parts)} paths for {agent_cfg.name}")
+
+    async def _setup_sandbox_user(self, env, sandbox_user: str) -> str:
+        """Create non-root sandbox user and copy agent configs. Return agent_cwd."""
+        if not re.match(r'^[a-z_][a-z0-9_-]*$', sandbox_user):
+            raise ValueError(f"Invalid sandbox_user: {sandbox_user!r} (must be alphanumeric)")
+        logger.info(f"Setting up sandbox user: {sandbox_user}")
+        await env.exec(
+            f"id -u {sandbox_user} >/dev/null 2>&1 || "
+            f"useradd -m -s /bin/bash {sandbox_user} && "
+            f"mkdir -p /home/{sandbox_user}/.local/bin && "
+            "if [ -d /root/.local/bin ]; then "
+            f"cp -aL /root/.local/bin/. /home/{sandbox_user}/.local/bin/ 2>/dev/null || true; fi && "
+            "if [ -d /root/.nvm ]; then "
+            f"cp -a /root/.nvm/. /home/{sandbox_user}/.nvm/ 2>/dev/null || true; fi && "
+            f"for d in {' '.join(sorted(get_sandbox_home_dirs()))}; do "
+            f"if [ -d /root/$d ]; then mkdir -p /home/{sandbox_user}/$d && "
+            f"cp -a /root/$d/. /home/{sandbox_user}/$d/ 2>/dev/null || true; fi; done && "
+            f"chown -R {sandbox_user}:{sandbox_user} /home/{sandbox_user}",
+            timeout_sec=30,
+        )
+        logger.info(f"Sandbox user {sandbox_user} ready")
+        return f"/home/{sandbox_user}"
+
+    async def _connect_acp(
+        self, env, agent: str, agent_launch: str, agent_env: dict,
+        sandbox_user: str | None, model: str | None,
+        trial_dir: Path, environment: str, agent_cwd: str,
+    ) -> tuple[ACPClient, object, str]:
+        """Create ACP transport, connect, init session, set model. Return (client, session, agent_name)."""
+        # Resolve agent binary path for non-docker environments
+        if environment != "docker":
+            which_result = await env.exec(f"which {agent_launch.split()[0]}", timeout_sec=10)
+            if which_result.return_code == 0 and (which_result.stdout or "").strip():
+                full_path = which_result.stdout.strip()
+                parts = agent_launch.split()
+                parts[0] = full_path
+                agent_launch = " ".join(parts)
+                logger.info(f"Resolved agent path: {agent_launch}")
+
+        if sandbox_user:
+            inner = f"export HOME=/home/{sandbox_user} && cd /home/{sandbox_user} && {agent_launch}"
+            agent_launch = f"gosu {sandbox_user} bash -c {shlex.quote(inner)}"
+            logger.info(f"Agent sandboxed as: {sandbox_user}")
+
+        if environment == "docker":
+            live_proc = DockerProcess.from_harbor_env(env)
+        else:
+            live_proc = await DaytonaProcess.from_harbor_env(env)
+
+        agent_log = trial_dir / "agent" / f"{agent.replace('-', '_')}.txt"
+        transport = ContainerTransport(
+            container_process=live_proc, command=agent_launch,
+            env=agent_env, cwd=agent_cwd, agent_log_path=agent_log,
+        )
+        acp_client = ACPClient(transport)
+        await acp_client.connect()
+
+        init_result = await asyncio.wait_for(acp_client.initialize(), timeout=60)
+        agent_name = init_result.agent_info.name if init_result.agent_info else agent
+        logger.info(f"ACP agent: {agent_name}")
+
+        session = await asyncio.wait_for(acp_client.session_new(cwd=agent_cwd), timeout=60)
+        logger.info(f"Session: {session.session_id}")
+
+        if model:
+            from benchflow.agents.providers import strip_provider_prefix
+            acp_model_id = strip_provider_prefix(model)
+            try:
+                await asyncio.wait_for(acp_client.set_model(acp_model_id), timeout=60)
+                logger.info(f"Model set to: {acp_model_id} (from {model})")
+            except Exception as e:
+                logger.warning(f"Failed to set model via ACP: {e}")
+
+        return acp_client, session, agent_name
+
+    async def _execute_prompts(
+        self, acp_client: ACPClient, session, prompts: list[str], timeout: int,
+    ) -> tuple[list[dict], int]:
+        """Send prompts via ACP and capture trajectory. Return (trajectory, n_tool_calls)."""
+        for i, prompt in enumerate(prompts):
+            logger.info(f"Prompt {i + 1}/{len(prompts)}: {prompt[:80]}...")
+            prompt_result = await asyncio.wait_for(
+                acp_client.prompt(prompt), timeout=timeout,
+            )
+            logger.info(
+                f"  → {prompt_result.stop_reason.value}, "
+                f"{len(session.tool_calls)} total tool calls"
+            )
+        trajectory = _capture_session_trajectory(session)
+        return trajectory, len(session.tool_calls)
+
+    async def _verify(self, env, task: "Task", trial_paths: "TrialPaths", timing: dict) -> dict | None:
+        """Run verifier and return rewards."""
+        trial_paths.verifier_dir.mkdir(parents=True, exist_ok=True)
+        logger.info("Running verifier...")
+        t0 = datetime.now()
+        verifier = Verifier(task=task, trial_paths=trial_paths, environment=env)
+        verifier_result = await verifier.verify()
+        timing["verifier"] = (datetime.now() - t0).total_seconds()
+        logger.info(f"Rewards: {verifier_result.rewards}")
+        return verifier_result.rewards
+
     async def run(
         self,
         task_path: str | Path,
@@ -150,116 +571,29 @@ class SDK:
         Returns:
             RunResult with rewards, trajectory, and metadata.
         """
-        from uuid import uuid4
         task_path = Path(task_path)
-        task = Task(task_path)
-
-        job_name = job_name or datetime.now().strftime("%Y-%m-%d__%H-%M-%S")
-        trial_name = trial_name or f"{task_path.name}__{uuid4().hex[:8]}"
-        job_dir = Path(jobs_dir) / job_name
-        trial_dir = job_dir / trial_name
-        trial_paths = TrialPaths(trial_dir)
-        started_at = datetime.now()
-
-        # Pre-create trial directory tree so Docker doesn't create them as root.
-        # Harbor's DockerEnvironment bind-mounts these subdirs into the container;
-        # if they don't exist, Docker creates them owned by root, causing
-        # PermissionError when SDK.run() writes artifacts after env.stop().
-        trial_dir.mkdir(parents=True, exist_ok=True)
-        for subdir in ("agent", "verifier", "artifacts", "trajectory"):
-            (trial_dir / subdir).mkdir(exist_ok=True)
-
-        # Resolve agent env — auto-inherit API keys from os.environ
-        agent_env = dict(agent_env or {})
-        # Built-in keys + any auth_env from custom providers
-        _auto_inherit = {"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY",
-                         "GEMINI_API_KEY", "GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION"}
-        from benchflow.agents.providers import PROVIDERS
-        for cfg in PROVIDERS.values():
-            if cfg.auth_env:
-                _auto_inherit.add(cfg.auth_env)
-            for env_var in cfg.url_params.values():
-                _auto_inherit.add(env_var)
-        for key in _auto_inherit:
-            if key in os.environ:
-                agent_env.setdefault(key, os.environ[key])
-        # Mirror GEMINI_API_KEY as GOOGLE_API_KEY (some agents expect one or the other)
-        if "GEMINI_API_KEY" in agent_env and "GOOGLE_API_KEY" not in agent_env:
-            agent_env["GOOGLE_API_KEY"] = agent_env["GEMINI_API_KEY"]
-        # Inject ADC credentials and defaults for Vertex AI models
-        if model:
-            from benchflow.agents.registry import is_vertex_model
-            if is_vertex_model(model):
-                adc_path = Path.home() / ".config/gcloud/application_default_credentials.json"
-                if not adc_path.exists():
-                    raise ValueError(
-                        f"Vertex AI model {model!r} requires ADC credentials. "
-                        f"Run: gcloud auth application-default login"
-                    )
-                agent_env.setdefault("GOOGLE_APPLICATION_CREDENTIALS_JSON", adc_path.read_text())
-                agent_env.setdefault("GOOGLE_CLOUD_LOCATION", "global")
-                if "GOOGLE_CLOUD_PROJECT" not in agent_env:
-                    raise ValueError(
-                        f"GOOGLE_CLOUD_PROJECT required for Vertex AI model {model!r}. "
-                        f"Export it or pass via --ae GOOGLE_CLOUD_PROJECT=<project>"
-                    )
-        if model:
-            from benchflow.agents.providers import strip_provider_prefix
-            agent_env.setdefault("ANTHROPIC_MODEL", strip_provider_prefix(model))
-            # Inject custom provider env vars so the shim can configure itself
-            # (the shim runs in the container where benchflow may not be installed)
-            from benchflow.agents.providers import find_provider, resolve_base_url
-            _prov = find_provider(model)
-            if _prov:
-                _prov_name, _prov_cfg = _prov
-                agent_env.setdefault("BENCHFLOW_PROVIDER_NAME", _prov_name)
-                try:
-                    agent_env.setdefault("BENCHFLOW_PROVIDER_BASE_URL",
-                                         resolve_base_url(_prov_cfg, agent_env))
-                except KeyError:
-                    pass  # URL params missing — will fail later with clear error
-                agent_env.setdefault("BENCHFLOW_PROVIDER_PROTOCOL", _prov_cfg.api_protocol)
-                if _prov_cfg.models:
-                    agent_env.setdefault("BENCHFLOW_PROVIDER_MODELS",
-                                         json.dumps(_prov_cfg.models))
-                # Resolve API key for the provider
-                if _prov_cfg.auth_type == "api_key" and _prov_cfg.auth_env:
-                    _key = agent_env.get(_prov_cfg.auth_env, "")
-                    if _key:
-                        agent_env.setdefault("BENCHFLOW_PROVIDER_API_KEY", _key)
-            # Validate required API key for the chosen model
-            # Apply agent env_mapping: translate BENCHFLOW_PROVIDER_* → agent-native vars
-            agent_cfg = AGENTS.get(agent)
-            if agent_cfg and agent_cfg.env_mapping:
-                for src, dst in agent_cfg.env_mapping.items():
-                    if src in agent_env:
-                        agent_env.setdefault(dst, agent_env[src])
-
-            from benchflow.agents.registry import infer_env_key_for_model
-            required_key = infer_env_key_for_model(model)
-            if required_key and required_key not in agent_env:
-                raise ValueError(
-                    f"{required_key} required for model {model!r} but not set. "
-                    f"Export it or pass via agent_env."
-                )
-        # Increase output token limit to avoid truncation errors
-        agent_env.setdefault("CLAUDE_CODE_MAX_OUTPUT_TOKENS", "128000")
-        # Disable telemetry/non-essential traffic in container
-        agent_env.setdefault("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
-
-        # Resolve agent launch command
+        task, trial_dir, trial_paths, started_at, job_name, trial_name = self._init_trial(
+            task_path, job_name, trial_name, jobs_dir,
+        )
+        agent_env = self._resolve_agent_env(agent, model, agent_env)
+        prompts = self._resolve_prompts(task_path, prompts)
         agent_launch = AGENT_LAUNCH.get(agent, agent)
 
-        # Stage Dockerfile deps if context_root is provided
         if context_root:
             stage_dockerfile_deps(task_path, Path(context_root))
-
-        # Inject skills into Dockerfile (bakes into image, more reliable than runtime upload)
         if skills_dir:
             _inject_skills_into_dockerfile(task_path, Path(skills_dir))
 
-        # Create Harbor environment
         env = _create_environment(environment, task, task_path, trial_name, trial_paths)
+        timeout = task.config.agent.timeout_sec
+        timing: dict[str, float] = {}
+
+        self._write_config(
+            trial_dir,
+            task_path=task_path, agent=agent, model=model, environment=environment,
+            skills_dir=skills_dir, sandbox_user=sandbox_user, context_root=context_root,
+            timeout=timeout, started_at=started_at, agent_env=agent_env,
+        )
 
         acp_client: ACPClient | None = None
         trajectory: list[dict] = []
@@ -268,292 +602,44 @@ class SDK:
         n_tool_calls = 0
         error = None
         rewards = None
-        timeout = task.config.agent.timeout_sec  # Define before try for except block
-        timing: dict[str, float] = {}
-
-        # Write config.json at trial start (for reproducibility)
-        # Include non-secret agent_env keys so --ae flags are recorded.
-        _secret_substrings = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIALS")
-        recorded_env = {
-            k: v for k, v in agent_env.items()
-            if not any(s in k.upper() for s in _secret_substrings)
-        }
-        config_data = {
-            "task_path": str(task_path),
-            "agent": agent,
-            "model": model,
-            "environment": environment,
-            "skills_dir": str(skills_dir) if skills_dir else None,
-            "sandbox_user": sandbox_user,
-            "context_root": str(context_root) if context_root else None,
-            "timeout_sec": timeout,
-            "started_at": str(started_at),
-            "agent_env": recorded_env,
-        }
-        (trial_dir / "config.json").write_text(json.dumps(config_data, indent=2))
 
         try:
-            # Default prompts: task instruction
-            instruction_path = task_path / "instruction.md"
-            if not instruction_path.exists():
-                raise FileNotFoundError(f"Task missing instruction.md: {task_path}")
-            instruction = instruction_path.read_text().strip()
-            if prompts is None:
-                prompts = [instruction]
-            else:
-                # Replace None entries with instruction
-                prompts = [p if p is not None else instruction for p in prompts]
-
-            # 1. Start environment
-            logger.info(f"Starting {environment} environment: {task_path.name}")
-            t_env_start = datetime.now()
-            await env.start(force_build=False)
-            timing["environment_setup"] = (datetime.now() - t_env_start).total_seconds()
-
-            # Upload task files
-            if (task_path / "instruction.md").exists():
-                await env.upload_file(task_path / "instruction.md", "/instruction.md")
-            if (task_path / "solution").is_dir():
-                await env.upload_dir(task_path / "solution", "/solution")
-
+            await self._start_env_and_upload(env, task_path, timing)
             t_agent_setup = datetime.now()
-            t_agent_exec = t_agent_setup  # fallback if exception before ACP prompt
+            t_agent_exec = t_agent_setup
 
-            # Run pre-agent hooks (e.g. start claw-* services) — needed by BOTH oracle and ACP
             for hook in (pre_agent_hooks or []):
                 await hook(env)
 
-            # Oracle mode: run solution/solve.sh directly, skip ACP
             if agent == "oracle":
-                logger.info("Oracle mode: running solution/solve.sh")
-                agent_name = "oracle"
-                if not (task_path / "solution" / "solve.sh").exists():
-                    raise FileNotFoundError(f"Oracle requires solution/solve.sh: {task_path}")
-
-                # Run solve.sh — output goes to /logs/agent/oracle.txt inside
-                # the container (bind-mounted to trial_dir/agent/oracle.txt).
-                # We don't write from the host to avoid root-ownership issues.
-                oracle_result = await env.exec(
-                    "chmod +x /solution/solve.sh && "
-                    "/solution/solve.sh 2>&1 | tee /logs/agent/oracle.txt",
-                    timeout_sec=timeout,
-                )
-                if oracle_result.return_code != 0:
-                    logger.warning(
-                        f"Oracle solve.sh exited with rc={oracle_result.return_code}"
-                    )
-                trajectory.append({
-                    "type": "oracle",
-                    "command": "solution/solve.sh",
-                    "return_code": oracle_result.return_code,
-                    "stdout": (oracle_result.stdout or "")[:2000],
-                })
-
+                trajectory, agent_name = await self._run_oracle(env, task_path, timeout)
             else:
-                # --- ACP agent path ---
-
-                # 2. Install agent in sandbox
-                agent_base = agent.split()[0]
-                agent_cfg = AGENTS.get(agent_base)
-                if agent_base in AGENT_INSTALLERS:
-                    install_timeout = agent_cfg.install_timeout if agent_cfg else 900
-                    logger.info(f"Installing {agent_base} in sandbox (timeout={install_timeout}s)...")
-                    install_result = await env.exec(
-                        AGENT_INSTALLERS[agent_base],
-                        timeout_sec=install_timeout,
-                    )
-                    # Persist install logs for debugging
-                    install_log = trial_dir / "agent" / "install-stdout.txt"
-                    install_log.parent.mkdir(parents=True, exist_ok=True)
-                    install_log.write_text(install_result.stdout or "")
-
-                    if install_result.return_code != 0:
-                        diag = await env.exec(
-                            "echo 'OS:' && cat /etc/os-release 2>/dev/null | head -2; "
-                            "echo 'Node:' && node --version 2>&1; "
-                            f"echo 'Agent:' && which {agent_base} 2>&1",
-                            timeout_sec=10,
-                        )
-                        raise AgentInstallError(
-                            agent=agent_base,
-                            return_code=install_result.return_code,
-                            stdout=install_result.stdout or "",
-                            diagnostics=diag.stdout or "",
-                            log_path=str(install_log),
-                        )
-
-
-                # Home directory for credential writes — must match where the agent runs
+                agent_cfg = await self._install_agent(env, agent, trial_dir)
                 cred_home = f"/home/{sandbox_user}" if sandbox_user else "/root"
-
-                # NOTE: We only support API-key auth (OPENAI_API_KEY, ANTHROPIC_API_KEY,
-                # ADC, etc.). "Bring your own subscription" flows (e.g. `codex auth login`,
-                # `claude login` with a Pro/Max plan) are not supported — that would
-                # require injecting OAuth session tokens into the sandbox.
-
-                # 2a-2. Write credential files (agent + provider) into container.
-                # Uses upload_file instead of echo to avoid leaking secrets in ps aux.
                 await self._write_credential_files(
                     env, agent, agent_env, agent_cfg, model, cred_home,
                 )
 
-                # 2b. Deploy skills into sandbox (runtime fallback if no Dockerfile injection)
-                if skills_dir:
-                    env_dir = task_path / "environment"
-                    dockerfile = env_dir / "Dockerfile"
-                    already_injected = (
-                        dockerfile.exists()
-                        and "COPY _deps/skills /skills/" in dockerfile.read_text()
-                    )
-                    if not already_injected:
-                        skills_path = Path(skills_dir)
-                        if skills_path.is_dir():
-                            logger.info(f"Deploying skills via runtime upload from {skills_path}")
-                            await env.upload_dir(skills_path, "/skills")
-                            # Symlink /skills into agent's skill discovery paths
-                            if agent_cfg and agent_cfg.skill_paths:
-                                parts = []
-                                for sp in agent_cfg.skill_paths:
-                                    expanded = sp.replace("$HOME", "/root").replace("$WORKSPACE", "/app")
-                                    parent = str(Path(expanded).parent)
-                                    parts.append(f"mkdir -p '{parent}' && ln -sf /skills '{expanded}'")
-                                await env.exec(" && ".join(parts), timeout_sec=10)
-                            logger.info("Skills deployed to /skills and symlinked")
-                        else:
-                            logger.warning(f"Skills dir not found: {skills_path}")
-                    else:
-                        logger.info("Skills already injected via Dockerfile")
-
-
-                # 2d. Set up sandbox user (non-root agent execution)
-                if sandbox_user:
-                    if not re.match(r'^[a-z_][a-z0-9_-]*$', sandbox_user):
-                        raise ValueError(f"Invalid sandbox_user: {sandbox_user!r} (must be alphanumeric)")
-                    logger.info(f"Setting up sandbox user: {sandbox_user}")
-                    await env.exec(
-                        f"id -u {sandbox_user} >/dev/null 2>&1 || "
-                        f"useradd -m -s /bin/bash {sandbox_user} && "
-                        f"mkdir -p /home/{sandbox_user}/.local/bin && "
-                        "if [ -d /root/.local/bin ]; then "
-                        f"cp -aL /root/.local/bin/. /home/{sandbox_user}/.local/bin/ 2>/dev/null || true; fi && "
-                        "if [ -d /root/.nvm ]; then "
-                        f"cp -a /root/.nvm/. /home/{sandbox_user}/.nvm/ 2>/dev/null || true; fi && "
-                        # Copy all agent config + baked skills dirs to sandbox user
-                        f"for d in {' '.join(sorted(get_sandbox_home_dirs()))}; do "
-                        f"if [ -d /root/$d ]; then mkdir -p /home/{sandbox_user}/$d && "
-                        f"cp -a /root/$d/. /home/{sandbox_user}/$d/ 2>/dev/null || true; fi; done && "
-                        f"chown -R {sandbox_user}:{sandbox_user} /home/{sandbox_user}",
-                        timeout_sec=30,
-                    )
-                    logger.info(f"Sandbox user {sandbox_user} ready")
-
-                # Detect sandbox working directory
+                # Detect working directory (overridden by sandbox user)
                 cwd_result = await env.exec("pwd", timeout_sec=10)
-                agent_cwd = (cwd_result.stdout or "").strip() if cwd_result.return_code == 0 else "/app"
-                agent_cwd = agent_cwd or "/app"
+                agent_cwd = (cwd_result.stdout or "").strip() or "/app"
                 if sandbox_user:
-                    agent_cwd = f"/home/{sandbox_user}"
-                logger.info(f"Agent cwd: {agent_cwd}")
+                    agent_cwd = await self._setup_sandbox_user(env, sandbox_user)
 
-                # 2e. Distribute skills to agent's specific discovery paths
-                task_skills_dir = task.config.environment.skills_dir
-                effective_skills = "/skills" if skills_dir else task_skills_dir
-                if effective_skills and agent_cfg and agent_cfg.skill_paths:
-                    home = f"/home/{sandbox_user}" if sandbox_user else "/root"
-                    parts = []
-                    for sp in agent_cfg.skill_paths:
-                        expanded = sp.replace("$HOME", home).replace("$WORKSPACE", agent_cwd)
-                        parts.append(f"mkdir -p '{expanded}' && cp -r '{effective_skills}'/. '{expanded}'/ 2>/dev/null")
-                    if parts:
-                        await env.exec("; ".join(parts), timeout_sec=15)
-                        logger.info(f"Skills distributed to {len(parts)} paths for {agent_base}")
-
-                # 3. Connect ACP via live stdio pipe
-                if environment != "docker":
-                    which_result = await env.exec(f"which {agent_launch.split()[0]}", timeout_sec=10)
-                    if which_result.return_code == 0 and (which_result.stdout or "").strip():
-                        full_path = which_result.stdout.strip()
-                        parts = agent_launch.split()
-                        parts[0] = full_path
-                        agent_launch = " ".join(parts)
-                        logger.info(f"Resolved agent path: {agent_launch}")
-
-                if sandbox_user:
-                    inner = f"export HOME=/home/{sandbox_user} && cd /home/{sandbox_user} && {agent_launch}"
-                    agent_launch = f"gosu {sandbox_user} bash -c {shlex.quote(inner)}"
-                    logger.info(f"Agent sandboxed as: {sandbox_user}")
-
-                if environment == "docker":
-                    live_proc = DockerProcess.from_harbor_env(env)
-                else:
-                    live_proc = await DaytonaProcess.from_harbor_env(env)
-
-                # Agent log captures non-JSON stdout (debug output, errors)
-                agent_log = trial_dir / "agent" / f"{agent.replace('-', '_')}.txt"
-
-                transport = ContainerTransport(
-                    container_process=live_proc,
-                    command=agent_launch,
-                    env=agent_env,
-                    cwd=agent_cwd,
-                    agent_log_path=agent_log,
+                await self._deploy_skills(
+                    env, task_path, skills_dir, agent_cfg, sandbox_user, agent_cwd, task,
                 )
-                acp_client = ACPClient(transport)
-                await acp_client.connect()
 
-                init_result = await asyncio.wait_for(
-                    acp_client.initialize(), timeout=60,
+                acp_client, session, agent_name = await self._connect_acp(
+                    env, agent, agent_launch, agent_env, sandbox_user,
+                    model, trial_dir, environment, agent_cwd,
                 )
-                agent_name = (
-                    init_result.agent_info.name if init_result.agent_info else agent
-                )
-                logger.info(f"ACP agent: {agent_name}")
-
-                session = await asyncio.wait_for(
-                    acp_client.session_new(cwd=agent_cwd), timeout=60,
-                )
-                logger.info(f"Session: {session.session_id}")
-
-                # TODO: Add normalized --reasoning flag (none/low/medium/high) that maps
-                # to each provider's native format:
-                #   - OpenAI:  reasoning.effort = "none"/"low"/"medium"/"high"
-                #   - Anthropic: thinking.budget_tokens = integer
-                #   - Gemini: thinking_config.thinking_budget = integer
-                # Mapping table would live in providers.py on ProviderConfig. SDK builds
-                # native params and extends ACP set_model with a modelConfig dict. Shims
-                # pass modelConfig through without per-shim logic.
-                # For now, use --ae (e.g. --ae OPENAI_REASONING_EFFORT=high) as escape hatch.
-
-                if model:
-                    from benchflow.agents.providers import strip_provider_prefix
-                    acp_model_id = strip_provider_prefix(model)
-                    try:
-                        await asyncio.wait_for(
-                            acp_client.set_model(acp_model_id), timeout=60,
-                        )
-                        logger.info(f"Model set to: {acp_model_id} (from {model})")
-                    except Exception as e:
-                        logger.warning(f"Failed to set model via ACP: {e}")
-
                 timing["agent_setup"] = (datetime.now() - t_agent_setup).total_seconds()
                 t_agent_exec = datetime.now()
 
-                # 4. Send prompts (multi-turn)
-                for i, prompt in enumerate(prompts):
-                    logger.info(f"Prompt {i + 1}/{len(prompts)}: {prompt[:80]}...")
-                    prompt_result = await asyncio.wait_for(
-                        acp_client.prompt(prompt),
-                        timeout=timeout,
-                    )
-                    logger.info(
-                        f"  → {prompt_result.stop_reason.value}, "
-                        f"{len(session.tool_calls)} total tool calls"
-                    )
-
-                n_tool_calls = len(session.tool_calls)
-
-                # 5. Capture trajectory
-                trajectory = _capture_session_trajectory(session)
+                trajectory, n_tool_calls = await self._execute_prompts(
+                    acp_client, session, prompts, timeout,
+                )
 
             if agent != "oracle" and "agent_setup" not in timing:
                 timing["agent_setup"] = (datetime.now() - t_agent_setup).total_seconds()
@@ -570,19 +656,7 @@ class SDK:
                     n_tool_calls = sum(1 for e in trajectory if e.get("type") == "tool_call")
                     logger.info(f"Scraped {len(trajectory)} events from agent-native trajectory")
 
-            # 6. Verify
-            trial_paths.verifier_dir.mkdir(parents=True, exist_ok=True)
-            logger.info("Running verifier...")
-            t_verify = datetime.now()
-            verifier = Verifier(
-                task=task,
-                trial_paths=trial_paths,
-                environment=env,
-            )
-            verifier_result = await verifier.verify()
-            rewards = verifier_result.rewards
-            timing["verifier"] = (datetime.now() - t_verify).total_seconds()
-            logger.info(f"Rewards: {rewards}")
+            rewards = await self._verify(env, task, trial_paths, timing)
 
         except asyncio.TimeoutError:
             error = f"Agent timed out after {timeout}s"
@@ -595,7 +669,6 @@ class SDK:
             logger.error("Run failed", exc_info=True)
 
         finally:
-            # Capture partial trajectory from session if not already captured
             if not trajectory and acp_client:
                 try:
                     trajectory = _capture_session_trajectory(acp_client.session)
@@ -616,55 +689,19 @@ class SDK:
             except Exception as e:
                 logger.warning(f"Cleanup failed: {e}")
 
-        # Save trajectory (both success and error/timeout paths)
-        traj_dir = trial_dir / "trajectory"
-        traj_dir.mkdir(parents=True, exist_ok=True)
-        (traj_dir / "acp_trajectory.jsonl").write_text(
-            "\n".join(json.dumps(e, default=str) for e in trajectory)
-        )
-
-        result = RunResult(
+        return self._build_result(
+            trial_dir,
             task_name=task_path.name,
             trial_name=trial_name,
-            rewards=rewards,
-            trajectory=trajectory,
             agent=agent,
             agent_name=agent_name,
             model=model or "",
             n_tool_calls=n_tool_calls,
-            n_prompts=len(prompts) if prompts else 0,
+            prompts=prompts,
             error=error,
+            trajectory=trajectory,
+            partial_trajectory=partial_trajectory,
+            rewards=rewards,
             started_at=started_at,
-            finished_at=datetime.now(),
+            timing=timing,
         )
-
-        # Finalize timing
-        timing["total"] = (result.finished_at - result.started_at).total_seconds()
-        timing = {k: round(v, 1) for k, v in timing.items()}
-
-        # Save result.json, prompts.json, timing.json
-        trial_dir.mkdir(parents=True, exist_ok=True)
-        (trial_dir / "result.json").write_text(
-            json.dumps(
-                {
-                    "task_name": result.task_name,
-                    "trial_name": result.trial_name,
-                    "rewards": result.rewards,
-                    "agent": result.agent,
-                    "agent_name": result.agent_name,
-                    "model": result.model,
-                    "n_tool_calls": result.n_tool_calls,
-                    "n_prompts": result.n_prompts,
-                    "error": result.error,
-                    "partial_trajectory": partial_trajectory,
-                    "started_at": str(result.started_at),
-                    "finished_at": str(result.finished_at),
-                    "timing": timing,
-                },
-                indent=2,
-            )
-        )
-        (trial_dir / "timing.json").write_text(json.dumps(timing, indent=2))
-        (trial_dir / "prompts.json").write_text(json.dumps(prompts, indent=2))
-
-        return result
