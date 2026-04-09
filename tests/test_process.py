@@ -9,7 +9,7 @@ from benchflow.process import DockerProcess
 
 
 class TestDockerProcessEnv:
-    """Verify env vars are injected via export prefix, not -e args."""
+    """Verify env vars are written inside the container, not leaked in ps aux."""
 
     def _make_process(self):
         return DockerProcess(
@@ -18,109 +18,132 @@ class TestDockerProcessEnv:
             compose_files=["/tmp/test/docker-compose.yml"],
         )
 
-    @pytest.mark.asyncio
-    async def test_env_not_dash_e(self):
-        """Env vars must not appear as -e K=V docker compose args."""
-        proc = self._make_process()
-        captured_cmd = []
-
+    def _mock_exec(self, captured_calls: list):
+        """Return a fake create_subprocess_exec that records calls."""
         async def fake_exec(*args, **kwargs):
-            captured_cmd.extend(args)
+            captured_calls.append(list(args))
             mock_proc = AsyncMock()
             mock_proc.pid = 12345
-            mock_proc.returncode = None
+            mock_proc.returncode = 0
             mock_proc.stdin = AsyncMock()
             mock_proc.stdout = AsyncMock()
             mock_proc.stderr = AsyncMock()
+            mock_proc.communicate = AsyncMock(return_value=(b"", b""))
             return mock_proc
+        return fake_exec
 
-        with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+    @pytest.mark.asyncio
+    async def test_env_not_in_main_cmd(self):
+        """Secrets must not appear as args in the main exec command."""
+        calls = []
+        with patch("asyncio.create_subprocess_exec", side_effect=self._mock_exec(calls)):
+            proc = self._make_process()
             await proc.start(
                 command="echo hello",
                 env={"SECRET_KEY": "hunter2", "OTHER": "value"},
             )
 
-        cmd_str = " ".join(captured_cmd)
-        # Must not contain the secret as a -e argument
-        assert "-e SECRET_KEY=hunter2" not in cmd_str
-        assert "-e OTHER=value" not in cmd_str
-        # Must not use --env-file (not supported in all Docker Compose versions)
-        assert "--env-file" not in cmd_str
+        # Two calls: one to write env file, one for the main command
+        assert len(calls) == 2
+        main_cmd_str = " ".join(calls[1])
+        assert "hunter2" not in main_cmd_str
+        assert "-e SECRET_KEY" not in main_cmd_str
+        assert "--env-file" not in main_cmd_str
 
     @pytest.mark.asyncio
-    async def test_env_exported_in_command(self):
-        """Env vars are prepended as export statements in the bash command."""
-        proc = self._make_process()
-        captured_cmd = []
+    async def test_env_written_to_container(self):
+        """Env vars are written to a file inside the container via stdin."""
+        calls = []
+        communicate_inputs = []
 
         async def fake_exec(*args, **kwargs):
-            captured_cmd.extend(args)
+            calls.append(list(args))
             mock_proc = AsyncMock()
             mock_proc.pid = 12345
-            mock_proc.returncode = None
+            mock_proc.returncode = 0
             mock_proc.stdin = AsyncMock()
             mock_proc.stdout = AsyncMock()
             mock_proc.stderr = AsyncMock()
+
+            async def capture_communicate(data=None):
+                if data:
+                    communicate_inputs.append(data)
+                return (b"", b"")
+            mock_proc.communicate = capture_communicate
             return mock_proc
 
         with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+            proc = self._make_process()
             await proc.start(
                 command="echo hello",
                 env={"API_KEY": "secret123"},
             )
 
-        # The bash -c argument should contain the export + original command
-        cmd_str = " ".join(captured_cmd)
-        assert "export API_KEY=" in cmd_str
-        assert "echo hello" in cmd_str
+        # First call writes the env file
+        write_cmd_str = " ".join(calls[0])
+        assert "cat >" in write_cmd_str
+        assert "chmod 600" in write_cmd_str
+
+        # Env content was piped to stdin
+        assert len(communicate_inputs) == 1
+        content = communicate_inputs[0].decode()
+        assert "export API_KEY=" in content
+        assert "secret123" in content
+
+    @pytest.mark.asyncio
+    async def test_main_cmd_sources_and_deletes_env(self):
+        """Main command sources the env file and then removes it."""
+        calls = []
+        with patch("asyncio.create_subprocess_exec", side_effect=self._mock_exec(calls)):
+            proc = self._make_process()
+            await proc.start(
+                command="codex-acp",
+                env={"KEY": "val"},
+            )
+
+        main_bash_cmd = calls[1][-1]  # last arg is the bash -c string
+        assert "source /tmp/.benchflow_env" in main_bash_cmd
+        assert "rm -f /tmp/.benchflow_env" in main_bash_cmd
+        assert "codex-acp" in main_bash_cmd
+
+    @pytest.mark.asyncio
+    async def test_no_env_single_call(self):
+        """When no env is passed, only the main exec runs (no env write step)."""
+        calls = []
+        with patch("asyncio.create_subprocess_exec", side_effect=self._mock_exec(calls)):
+            proc = self._make_process()
+            await proc.start(command="echo hello")
+
+        assert len(calls) == 1
+        assert calls[0][-1] == "echo hello"
 
     @pytest.mark.asyncio
     async def test_env_values_shell_quoted(self):
         """Env values with special chars are shell-quoted."""
-        proc = self._make_process()
-        captured_cmd = []
+        communicate_inputs = []
 
         async def fake_exec(*args, **kwargs):
-            captured_cmd.extend(args)
             mock_proc = AsyncMock()
             mock_proc.pid = 12345
-            mock_proc.returncode = None
+            mock_proc.returncode = 0
             mock_proc.stdin = AsyncMock()
             mock_proc.stdout = AsyncMock()
             mock_proc.stderr = AsyncMock()
+
+            async def capture_communicate(data=None):
+                if data:
+                    communicate_inputs.append(data)
+                return (b"", b"")
+            mock_proc.communicate = capture_communicate
             return mock_proc
 
         with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+            proc = self._make_process()
             await proc.start(
                 command="echo hello",
                 env={"KEY": "val with spaces & special; chars"},
             )
 
-        # Find the bash -c argument (last arg)
-        bash_cmd = captured_cmd[-1]
-        assert "KEY=" in bash_cmd
-        # Value should be quoted (not raw)
-        assert "val with spaces & special; chars" not in bash_cmd or "'" in bash_cmd
-
-    @pytest.mark.asyncio
-    async def test_no_env_no_export(self):
-        """When no env is passed, no export prefix is added."""
-        proc = self._make_process()
-        captured_cmd = []
-
-        async def fake_exec(*args, **kwargs):
-            captured_cmd.extend(args)
-            mock_proc = AsyncMock()
-            mock_proc.pid = 12345
-            mock_proc.returncode = None
-            mock_proc.stdin = AsyncMock()
-            mock_proc.stdout = AsyncMock()
-            mock_proc.stderr = AsyncMock()
-            return mock_proc
-
-        with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
-            await proc.start(command="echo hello")
-
-        assert "--env-file" not in captured_cmd
-        # The bash -c command should be the original command
-        assert captured_cmd[-1] == "echo hello"
+        content = communicate_inputs[0].decode()
+        # Value must be quoted so bash interprets it correctly
+        assert "'" in content or '"' in content

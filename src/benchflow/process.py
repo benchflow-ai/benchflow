@@ -123,12 +123,8 @@ class DockerProcess(LiveProcess):
             compose_files=compose_files,
         )
 
-    async def start(
-        self,
-        command: str,
-        env: dict[str, str] | None = None,
-        cwd: str | None = None,
-    ) -> None:
+    def _compose_cmd(self) -> list[str]:
+        """Base docker compose command with project/file flags."""
         cmd = [
             "docker", "compose",
             "-p", self._project_name,
@@ -136,21 +132,10 @@ class DockerProcess(LiveProcess):
         ]
         for f in self._compose_files:
             cmd.extend(["-f", f])
-        cmd.extend(["exec", "-i", "-T"])
-        if cwd:
-            cmd.extend(["-w", cwd])
+        return cmd
 
-        # Inject env vars by prepending exports to the bash command.
-        # This avoids both `-e K=V` args (visible in `ps aux` on host)
-        # and `--env-file` (not supported in all Docker Compose versions).
-        if env:
-            exports = " ".join(
-                f"{k}={shlex.quote(v)}" for k, v in env.items()
-            )
-            command = f"export {exports}; {command}"
-
-        cmd.extend([self._service, "bash", "-c", command])
-
+    def _host_env(self) -> dict[str, str]:
+        """Host process env with DOCKER_HOST resolved if needed."""
         proc_env = os.environ.copy()
         if not proc_env.get("DOCKER_HOST"):
             import subprocess
@@ -164,6 +149,56 @@ class DockerProcess(LiveProcess):
                     proc_env["DOCKER_HOST"] = r.stdout.strip()
             except Exception:
                 pass
+        return proc_env
+
+    _ENV_PATH = "/tmp/.benchflow_env"
+
+    async def _write_env_to_container(
+        self, env: dict[str, str], proc_env: dict[str, str],
+    ) -> None:
+        """Write env vars to a file inside the container (not visible in ps aux)."""
+        lines = "".join(f"export {k}={shlex.quote(v)}\n" for k, v in env.items())
+        write_cmd = self._compose_cmd()
+        write_cmd.extend([
+            "exec", "-T", self._service,
+            "bash", "-c",
+            f"cat > {self._ENV_PATH} && chmod 600 {self._ENV_PATH}",
+        ])
+        proc = await asyncio.create_subprocess_exec(
+            *write_cmd,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=proc_env,
+        )
+        _, stderr = await asyncio.wait_for(proc.communicate(lines.encode()), timeout=30)
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"Failed to write env file in container (rc={proc.returncode}): "
+                f"{stderr.decode()[:500]}"
+            )
+        logger.debug("Env file written inside container (%d vars)", len(env))
+
+    async def start(
+        self,
+        command: str,
+        env: dict[str, str] | None = None,
+        cwd: str | None = None,
+    ) -> None:
+        proc_env = self._host_env()
+
+        # Write env vars to a file inside the container, then source it
+        # in the main command. This keeps secrets off `ps aux` on the host
+        # and avoids `--env-file` (not supported in all Compose versions).
+        if env:
+            await self._write_env_to_container(env, proc_env)
+            command = f"source {self._ENV_PATH} && rm -f {self._ENV_PATH} && {command}"
+
+        cmd = self._compose_cmd()
+        cmd.extend(["exec", "-i", "-T"])
+        if cwd:
+            cmd.extend(["-w", cwd])
+        cmd.extend([self._service, "bash", "-c", command])
 
         logger.debug(f"DockerProcess: {' '.join(cmd[:10])}...")
         self._process = await asyncio.create_subprocess_exec(
