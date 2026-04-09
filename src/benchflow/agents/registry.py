@@ -60,6 +60,9 @@ class AgentConfig:
     # Applied by SDK after provider resolution.
     credential_files: list[CredentialFile] = field(default_factory=list)
     # Files to write into container before agent launch (e.g. auth.json).
+    home_dirs: list[str] = field(default_factory=list)
+    # Extra dot-dirs under $HOME to copy to sandbox user (for dirs not
+    # derivable from skill_paths or credential_files, e.g. ".openclaw").
 
 
 # Agent registry — all supported agents
@@ -127,6 +130,7 @@ AGENTS: dict[str, AgentConfig] = {
         launch_cmd="python3 /usr/local/bin/openclaw-acp-shim",
         protocol="acp",
         requires_env=[],  # inferred from --model at runtime
+        home_dirs=[".openclaw"],
     ),
     "codex-acp": AgentConfig(
         name="codex-acp",
@@ -172,6 +176,32 @@ AGENTS: dict[str, AgentConfig] = {
         },
     ),
 }
+
+
+def get_sandbox_home_dirs() -> set[str]:
+    """Collect all dot-dirs under $HOME that sandbox user setup should copy.
+
+    Derives from three sources across all registered agents:
+    - skill_paths: $HOME/.foo/... → ".foo"
+    - credential_files: {home}/.foo/... → ".foo"
+    - home_dirs: explicit extras (e.g. ".openclaw")
+
+    Always includes ".local" (pip scripts, etc.).
+    """
+    dirs: set[str] = {".local"}
+    for cfg in AGENTS.values():
+        for sp in cfg.skill_paths:
+            if sp.startswith("$HOME/."):
+                dirname = sp.removeprefix("$HOME/").split("/")[0]
+                dirs.add(dirname)
+        for cf in cfg.credential_files:
+            # path uses {home}/.foo/... placeholder
+            path = cf.path
+            if path.startswith("{home}/."):
+                dirname = path.removeprefix("{home}/").split("/")[0]
+                dirs.add(dirname)
+        dirs.update(cfg.home_dirs)
+    return dirs
 
 
 def is_vertex_model(model: str) -> bool:
@@ -235,6 +265,7 @@ def register_agent(
     install_timeout: int = 900,
     env_mapping: dict[str, str] | None = None,
     credential_files: list[CredentialFile] | None = None,
+    home_dirs: list[str] | None = None,
 ) -> AgentConfig:
     """Register a custom agent at runtime.
 
@@ -262,6 +293,7 @@ def register_agent(
         install_timeout=install_timeout,
         env_mapping=env_mapping or {},
         credential_files=credential_files or [],
+        home_dirs=home_dirs or [],
     )
     AGENTS[name] = config
     # Update backwards-compat dicts

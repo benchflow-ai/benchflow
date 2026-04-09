@@ -29,7 +29,7 @@ from harbor.verifier.verifier import Verifier
 from benchflow.acp.client import ACPClient
 from benchflow.acp.container_transport import ContainerTransport
 from benchflow.acp.session import ACPSession
-from benchflow.agents.registry import AGENTS
+from benchflow.agents.registry import AGENTS, get_sandbox_home_dirs
 from benchflow.process import DockerProcess, DaytonaProcess
 
 logger = logging.getLogger(__name__)
@@ -756,12 +756,14 @@ class SDK:
                         if skills_path.is_dir():
                             logger.info(f"Deploying skills via runtime upload from {skills_path}")
                             await env.upload_dir(skills_path, "/skills")
-                            await env.exec(
-                                "mkdir -p /root/.claude /root/.gemini && "
-                                "ln -sf /skills /root/.claude/skills && "
-                                "ln -sf /skills /root/.gemini/skills",
-                                timeout_sec=10,
-                            )
+                            # Symlink /skills into agent's skill discovery paths
+                            if agent_cfg and agent_cfg.skill_paths:
+                                parts = []
+                                for sp in agent_cfg.skill_paths:
+                                    expanded = sp.replace("$HOME", "/root").replace("$WORKSPACE", "/app")
+                                    parent = str(Path(expanded).parent)
+                                    parts.append(f"mkdir -p '{parent}' && ln -sf /skills '{expanded}'")
+                                await env.exec(" && ".join(parts), timeout_sec=10)
                             logger.info("Skills deployed to /skills and symlinked")
                         else:
                             logger.warning(f"Skills dir not found: {skills_path}")
@@ -777,14 +779,13 @@ class SDK:
                     await env.exec(
                         f"id -u {sandbox_user} >/dev/null 2>&1 || "
                         f"useradd -m -s /bin/bash {sandbox_user} && "
-                        f"mkdir -p /home/{sandbox_user}/.local/bin "
-                        f"/home/{sandbox_user}/.claude /home/{sandbox_user}/.gemini && "
+                        f"mkdir -p /home/{sandbox_user}/.local/bin && "
                         "if [ -d /root/.local/bin ]; then "
                         f"cp -aL /root/.local/bin/. /home/{sandbox_user}/.local/bin/ 2>/dev/null || true; fi && "
                         "if [ -d /root/.nvm ]; then "
                         f"cp -a /root/.nvm/. /home/{sandbox_user}/.nvm/ 2>/dev/null || true; fi && "
                         # Copy all agent config + baked skills dirs to sandbox user
-                        "for d in .claude .gemini .openclaw .pi .agents .codex; do "
+                        f"for d in {' '.join(sorted(get_sandbox_home_dirs()))}; do "
                         f"if [ -d /root/$d ]; then mkdir -p /home/{sandbox_user}/$d && "
                         f"cp -a /root/$d/. /home/{sandbox_user}/$d/ 2>/dev/null || true; fi; done && "
                         f"chown -R {sandbox_user}:{sandbox_user} /home/{sandbox_user}",
