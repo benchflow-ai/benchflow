@@ -277,6 +277,8 @@ def _find_and_setup_provider(model: str) -> str | None:
                     except Exception:
                         logger.debug("ADC token acquisition failed for %s", provider_name, exc_info=True)
                         return None
+                elif cfg.auth_type == "none":
+                    api_key = ""
                 elif cfg.auth_env:
                     api_key = env.get(cfg.auth_env, "")
                     if not api_key:

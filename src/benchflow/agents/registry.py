@@ -111,6 +111,7 @@ AGENTS: dict[str, AgentConfig] = {
         env_mapping={
             "BENCHFLOW_PROVIDER_BASE_URL": "ANTHROPIC_BASE_URL",
             "BENCHFLOW_PROVIDER_API_KEY": "ANTHROPIC_AUTH_TOKEN",
+            "BENCHFLOW_PROVIDER_MODEL": "ANTHROPIC_MODEL",
         },
         subscription_auth=SubscriptionAuth(
             replaces_env="ANTHROPIC_API_KEY",
@@ -138,6 +139,7 @@ AGENTS: dict[str, AgentConfig] = {
         env_mapping={
             "BENCHFLOW_PROVIDER_BASE_URL": "ANTHROPIC_BASE_URL",
             "BENCHFLOW_PROVIDER_API_KEY": "ANTHROPIC_AUTH_TOKEN",
+            "BENCHFLOW_PROVIDER_MODEL": "ANTHROPIC_MODEL",
         },
     ),
     "openclaw": AgentConfig(
