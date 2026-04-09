@@ -9,7 +9,9 @@ TASK_REPOS = {
         "repo": "https://github.com/benchflow-ai/skillsbench.git",
         "subdir": "tasks",
     },
-    # Future: "terminal-bench-2": { ... }
+    "terminal-bench-2": {
+        "repo": "https://github.com/harbor-framework/terminal-bench-2.git",
+    },
 }
 
 

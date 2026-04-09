@@ -1,0 +1,7 @@
+tasks_dir: ../.ref/terminal-bench-2
+jobs_dir: ../jobs/tb2_single-codex-gpt54
+agent: codex-acp
+model: gpt-5.4
+environment: daytona
+concurrency: 8
+max_retries: 2
