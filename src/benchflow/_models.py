@@ -1,11 +1,21 @@
-"""Data classes and exceptions for benchflow SDK results."""
+"""Data classes and exceptions for benchflow SDK results.
+
+Related: sdk.py (produces RunResult), job.py (aggregates RunResults),
+_scoring.py (extracts rewards and classifies errors from RunResults).
+"""
 
 from datetime import datetime
 from typing import Any
 
 
 class AgentInstallError(RuntimeError):
-    """Agent installation failed in the sandbox."""
+    """Agent installation failed in the sandbox.
+
+    Raised by SDK._install_agent() when the agent's install script exits
+    non-zero. ``diagnostics`` contains the last N lines of output for
+    triage; ``log_path`` points to the full log on disk.
+    """
+
     def __init__(self, agent: str, return_code: int, stdout: str, diagnostics: str, log_path: str = ""):
         self.agent = agent
         self.return_code = return_code
@@ -16,7 +26,12 @@ class AgentInstallError(RuntimeError):
 
 
 class AgentTimeoutError(RuntimeError):
-    """Agent execution timed out."""
+    """Agent execution exceeded the allowed wall-clock time.
+
+    Raised by SDK._execute_prompts() when the agent does not complete
+    within ``timeout_sec`` seconds.
+    """
+
     def __init__(self, agent: str, timeout_sec: float):
         self.agent = agent
         self.timeout_sec = timeout_sec
@@ -24,7 +39,24 @@ class AgentTimeoutError(RuntimeError):
 
 
 class RunResult:
-    """Result of a benchflow run."""
+    """Outcome of a single SDK.run() trial.
+
+    Attributes:
+        task_name:    Task directory name (e.g. "swe-bench/django__django-11848").
+        trial_name:   Unique trial identifier within a job run.
+        rewards:      Verifier-produced reward dict (e.g. {"exact_match": 1.0}).
+                      None if verification was skipped or failed.
+        trajectory:   Ordered list of ACP session-update dicts (tool calls,
+                      messages, thoughts) captured during execution.
+        agent:        Harness name from the registry (e.g. "openclaw").
+        agent_name:   Name reported by the agent via ACP initialize handshake.
+        model:        Model ID used (e.g. "google/gemini-3.1-flash-lite-preview").
+        n_tool_calls: Total tool calls observed during the session.
+        n_prompts:    Number of user prompts sent to the agent.
+        error:        Error description string, or None on success.
+        started_at:   Wall-clock start time.
+        finished_at:  Wall-clock end time.
+    """
 
     def __init__(
         self,
@@ -45,9 +77,9 @@ class RunResult:
         self.trial_name = trial_name
         self.rewards = rewards
         self.trajectory = trajectory or []
-        self.agent = agent  # harness name (e.g. "openclaw")
-        self.agent_name = agent_name  # ACP-reported name
-        self.model = model  # model ID (e.g. "google/gemini-3.1-flash-lite-preview")
+        self.agent = agent
+        self.agent_name = agent_name
+        self.model = model
         self.n_tool_calls = n_tool_calls
         self.n_prompts = n_prompts
         self.error = error
@@ -56,6 +88,7 @@ class RunResult:
 
     @property
     def success(self) -> bool:
+        """True when the trial completed without error (rewards may still be zero)."""
         return self.error is None
 
     def __repr__(self) -> str:
