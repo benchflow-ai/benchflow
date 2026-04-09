@@ -27,6 +27,15 @@ class TestExtractReward:
     def test_missing_reward_in_rewards(self):
         assert extract_reward({"rewards": {}}) is None
 
+    def test_rewards_is_list(self):
+        assert extract_reward({"rewards": [1.0]}) is None
+
+    def test_rewards_is_string(self):
+        assert extract_reward({"rewards": "1.0"}) is None
+
+    def test_rewards_is_number(self):
+        assert extract_reward({"rewards": 1.0}) is None
+
 
 class TestClassifyError:
     """classify_error(error) -> str | None"""

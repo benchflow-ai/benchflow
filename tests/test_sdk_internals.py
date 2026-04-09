@@ -105,11 +105,28 @@ class TestResolveAgentEnv:
         assert "ANTHROPIC_AUTH_TOKEN" in result
         assert result["ANTHROPIC_AUTH_TOKEN"] == "zk-test"
 
-    def test_required_key_missing_raises(self):
+    def test_required_key_missing_raises(self, monkeypatch):
         """Missing required API key raises ValueError."""
+        # Clear any auto-inherited keys from the environment
+        for key in ("ANTHROPIC_API_KEY", "ZAI_API_KEY", "OPENAI_API_KEY"):
+            monkeypatch.delenv(key, raising=False)
+        # Anthropic model
         with pytest.raises(ValueError, match="ANTHROPIC_API_KEY required"):
             self._resolve(
                 model="claude-haiku-4-5-20251001",
+                agent_env={},
+            )
+        # Custom provider (zai)
+        with pytest.raises(ValueError, match="ZAI_API_KEY required"):
+            self._resolve(
+                model="zai/glm-5",
+                agent_env={},
+            )
+        # OpenAI model
+        with pytest.raises(ValueError, match="OPENAI_API_KEY required"):
+            self._resolve(
+                agent="codex-acp",
+                model="gpt-4o",
                 agent_env={},
             )
 
@@ -134,6 +151,41 @@ class TestResolveAgentEnv:
                 model="google-vertex/gemini-3-flash",
                 agent_env={},
             )
+
+
+# ── _resolve_prompts ──
+
+
+class TestResolvePrompts:
+    """Tests for SDK._resolve_prompts — prompt list resolution from instruction.md."""
+
+    def _resolve(self, task_path, prompts):
+        from benchflow.sdk import SDK
+        return SDK._resolve_prompts(task_path, prompts)
+
+    def test_none_prompts_returns_instruction(self, tmp_path):
+        (tmp_path / "instruction.md").write_text("Do the thing.")
+        result = self._resolve(tmp_path, prompts=None)
+        assert result == ["Do the thing."]
+
+    def test_mixed_list_replaces_nones(self, tmp_path):
+        (tmp_path / "instruction.md").write_text("Do the thing.")
+        result = self._resolve(tmp_path, prompts=[None, "custom", None])
+        assert result == ["Do the thing.", "custom", "Do the thing."]
+
+    def test_all_explicit_preserves_prompts(self, tmp_path):
+        (tmp_path / "instruction.md").write_text("Do the thing.")
+        result = self._resolve(tmp_path, prompts=["a", "b"])
+        assert result == ["a", "b"]
+
+    def test_missing_instruction_raises(self, tmp_path):
+        with pytest.raises(FileNotFoundError):
+            self._resolve(tmp_path, prompts=None)
+
+    def test_whitespace_stripped(self, tmp_path):
+        (tmp_path / "instruction.md").write_text("  hello  \n")
+        result = self._resolve(tmp_path, prompts=None)
+        assert result == ["hello"]
 
 
 # ── _init_trial ──
@@ -240,6 +292,8 @@ class TestWriteConfig:
                 "ANTHROPIC_API_KEY": "secret",
                 "OPENAI_API_KEY": "secret",
                 "MY_TOKEN": "secret",
+                "DB_PASSWORD": "pass123",
+                "MY_CREDENTIALS": "creds",
                 "SAFE_VAR": "visible",
             },
         )
@@ -248,6 +302,8 @@ class TestWriteConfig:
         assert "ANTHROPIC_API_KEY" not in recorded
         assert "OPENAI_API_KEY" not in recorded
         assert "MY_TOKEN" not in recorded
+        assert "DB_PASSWORD" not in recorded
+        assert "MY_CREDENTIALS" not in recorded
         assert recorded["SAFE_VAR"] == "visible"
 
 
@@ -288,6 +344,14 @@ class TestBuildResult:
         data = json.loads((tmp_path / "result.json").read_text())
         assert data["task_name"] == "my-task"
         assert data["rewards"] == {"score": 1.0}
+        assert data["error"] is None
+        assert data["agent"] == "claude-agent-acp"
+        assert data["model"] == "claude-haiku-4-5-20251001"
+        assert data["n_tool_calls"] == 5
+        assert data["n_prompts"] == 1
+        assert "started_at" in data
+        assert "finished_at" in data
+        assert data["partial_trajectory"] is False
 
     def test_timing_json_written(self, tmp_path):
         self._build(tmp_path)
@@ -295,6 +359,9 @@ class TestBuildResult:
         data = json.loads((tmp_path / "timing.json").read_text())
         assert "total" in data
         assert "agent_setup" in data
+        for k, v in data.items():
+            assert v >= 0, f"negative timing: {k}={v}"
+            assert v == round(v, 1), f"not rounded: {k}={v}"
 
     def test_prompts_json_written(self, tmp_path):
         self._build(tmp_path)

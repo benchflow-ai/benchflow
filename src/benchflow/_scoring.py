@@ -10,7 +10,9 @@ TIMED_OUT = "timeout"
 def extract_reward(result: dict) -> float | None:
     """Extract the reward value from a result dict, or None if absent."""
     rewards = result.get("rewards")
-    return rewards.get("reward") if rewards else None
+    if not isinstance(rewards, dict):
+        return None
+    return rewards.get("reward")
 
 
 def classify_error(error: str | None) -> str | None:

@@ -46,6 +46,36 @@ class TestTrajectoryTypes:
         assert traj.total_input_tokens == 10
         assert traj.total_output_tokens == 5
 
+        # Add second exchange (Anthropic format)
+        traj.exchanges.append(
+            LLMExchange(
+                request=LLMRequest(body={"messages": [{"role": "user", "content": "more"}]}),
+                response=LLMResponse(
+                    body={
+                        "content": [{"type": "text", "text": "ok"}],
+                        "usage": {"input_tokens": 200, "output_tokens": 50},
+                    }
+                ),
+            )
+        )
+        assert traj.total_input_tokens == 210   # 10 + 200
+        assert traj.total_output_tokens == 55   # 5 + 50
+
+        # Add third exchange (OpenAI format fallback)
+        traj.exchanges.append(
+            LLMExchange(
+                request=LLMRequest(body={"messages": []}),
+                response=LLMResponse(
+                    body={
+                        "choices": [{"message": {"role": "assistant", "content": "hi"}}],
+                        "usage": {"prompt_tokens": 50, "completion_tokens": 10},
+                    }
+                ),
+            )
+        )
+        assert traj.total_input_tokens == 260   # 210 + 50
+        assert traj.total_output_tokens == 65   # 55 + 10
+
     def test_messages_extraction(self) -> None:
         traj = Trajectory(session_id="s1")
         traj.exchanges.append(
@@ -59,9 +89,9 @@ class TestTrajectoryTypes:
             )
         )
         msgs = traj.messages
-        assert len(msgs) >= 2
+        assert len(msgs) == 2  # exactly 1 request message + 1 response message
         assert msgs[0]["role"] == "user"
-        assert msgs[-1]["role"] == "assistant"
+        assert msgs[1]["role"] == "assistant"
 
     def test_to_jsonl(self) -> None:
         traj = Trajectory(session_id="s1")

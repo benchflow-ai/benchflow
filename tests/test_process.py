@@ -147,3 +147,45 @@ class TestDockerProcessEnv:
         content = communicate_inputs[0].decode()
         # Value must be quoted so bash interprets it correctly
         assert "'" in content or '"' in content
+
+    @pytest.mark.asyncio
+    async def test_dangerous_chars_in_env_values(self):
+        """Env values with shell metacharacters are safely quoted."""
+        communicate_inputs = []
+
+        async def fake_exec(*args, **kwargs):
+            mock_proc = AsyncMock()
+            mock_proc.pid = 12345
+            mock_proc.returncode = 0
+            mock_proc.stdin = AsyncMock()
+            mock_proc.stdout = AsyncMock()
+            mock_proc.stderr = AsyncMock()
+
+            async def capture_communicate(data=None):
+                if data:
+                    communicate_inputs.append(data)
+                return (b"", b"")
+            mock_proc.communicate = capture_communicate
+            return mock_proc
+
+        dangerous_env = {
+            "CMD_INJECT": "value; rm -rf /",
+            "NEWLINE_VAL": "line1\nline2",
+            "BACKTICK": "$(whoami)",
+            "SINGLE_QUOTE": "it's a test",
+        }
+
+        with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+            proc = self._make_process()
+            await proc.start(command="echo hello", env=dangerous_env)
+
+        content = communicate_inputs[0].decode()
+        # Each value must be shell-quoted — shlex.quote wraps in single quotes
+        for key in dangerous_env:
+            assert f"export {key}=" in content
+        # shlex.quote wraps values in single quotes
+        import shlex
+        assert f"export CMD_INJECT={shlex.quote('value; rm -rf /')}" in content
+        assert f"export NEWLINE_VAL={shlex.quote('line1\nline2')}" in content
+        assert f"export BACKTICK={shlex.quote('$(whoami)')}" in content
+        assert f"export SINGLE_QUOTE={shlex.quote('it' + chr(39) + 's a test')}" in content
