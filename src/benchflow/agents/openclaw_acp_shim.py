@@ -27,6 +27,9 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+_DIAG_TRUNCATE = 2000  # max chars for diagnostic output in ACP updates
+_TOOL_RESULT_TRUNCATE = 1000  # max chars for tool result text
+
 
 def send(msg):
     sys.stdout.write(json.dumps(msg) + "\n")
@@ -440,7 +443,7 @@ def parse_session_jsonl(path: Path, session_id: str) -> list[dict]:
                                         "type": "content",
                                         "content": {
                                             "type": "text",
-                                            "text": result_text[:1000],
+                                            "text": result_text[:_TOOL_RESULT_TRUNCATE],
                                         },
                                     }
                                 ],
@@ -568,7 +571,7 @@ def main():
                             "sessionId": session_id,
                             "update": {
                                 "sessionUpdate": "agent_thought",
-                                "text": f"[openclaw stderr]\n{result.stderr[:2000]}",
+                                "text": f"[openclaw stderr]\n{result.stderr[:_DIAG_TRUNCATE]}",
                             },
                         },
                     })
@@ -626,7 +629,7 @@ def main():
                         response = json.loads(result.stdout)
                         agent_text = response.get("payloads", [{}])[0].get("text", "")
                     except (json.JSONDecodeError, IndexError, KeyError):
-                        agent_text = result.stdout[:2000] if result.stdout else ""
+                        agent_text = result.stdout[:_DIAG_TRUNCATE] if result.stdout else ""
 
                     if agent_text:
                         send({

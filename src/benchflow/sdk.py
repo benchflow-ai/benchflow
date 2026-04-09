@@ -47,6 +47,8 @@ from benchflow.process import DockerProcess, DaytonaProcess
 
 logger = logging.getLogger(__name__)
 
+_DIAG_TRUNCATE = 2000  # max chars for diagnostic stdout/stderr in logs
+
 # Apply DinD patch once at import time
 _patch_harbor_dind()
 
@@ -421,7 +423,7 @@ class SDK:
             "type": "oracle",
             "command": "solution/solve.sh",
             "return_code": result.return_code,
-            "stdout": (result.stdout or "")[:2000],
+            "stdout": (result.stdout or "")[:_DIAG_TRUNCATE],
         }]
         return trajectory, "oracle"
 

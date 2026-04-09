@@ -17,6 +17,23 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 _BUFFER_LIMIT = 10 * 1024 * 1024  # 10MB readline buffer
+_DIAG_TRUNCATE = 2000  # max chars for diagnostic stderr in error messages
+
+
+async def drain_oversized_line(reader: asyncio.StreamReader) -> int:
+    """Drain an oversized line from *reader* after a buffer overflow.
+
+    Clears the internal buffer and attempts to skip ahead to the next
+    newline.  Returns the number of bytes discarded.
+    """
+    skipped = len(reader._buffer)
+    reader._buffer.clear()
+    reader._maybe_resume_transport()
+    try:
+        await asyncio.wait_for(reader.readuntil(b"\n"), timeout=5)
+    except Exception:
+        logger.debug("Could not find next newline after buffer overflow")
+    return skipped
 
 
 class LiveProcess(ABC):
@@ -41,16 +58,7 @@ class LiveProcess(ABC):
             line = await self._process.stdout.readline()
         except (ValueError, asyncio.LimitOverrunError) as e:
             # Buffer overflow — line exceeds _BUFFER_LIMIT.
-            # Drain the buffer and skip to next newline.
-            reader = self._process.stdout
-            skipped = len(reader._buffer)
-            reader._buffer.clear()
-            reader._maybe_resume_transport()
-            # Try to consume remaining bytes up to next newline
-            try:
-                await asyncio.wait_for(reader.readuntil(b"\n"), timeout=5)
-            except Exception:
-                logger.debug("Could not find next newline after buffer overflow")
+            skipped = await drain_oversized_line(self._process.stdout)
             logger.warning(f"Skipped oversized line ({skipped} bytes): {e}")
             # Return empty line — caller will retry readline
             return b""
@@ -67,7 +75,7 @@ class LiveProcess(ABC):
             rc = self._process.returncode if self._process else None
             msg = f"Process closed stdout (rc={rc})"
             if stderr_text:
-                msg += f"\nstderr: {stderr_text[:2000]}"
+                msg += f"\nstderr: {stderr_text[:_DIAG_TRUNCATE]}"
             raise ConnectionError(msg)
         return line
 

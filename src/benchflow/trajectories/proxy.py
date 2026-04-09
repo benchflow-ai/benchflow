@@ -16,6 +16,8 @@ from .types import LLMExchange, LLMRequest, LLMResponse, Trajectory
 
 logger = logging.getLogger(__name__)
 
+_RAW_RESP_TRUNCATE = 10000  # max chars for non-JSON response body capture
+
 
 class TrajectoryProxy:
     """HTTP proxy that forwards LLM API requests and captures exchanges.
@@ -194,7 +196,7 @@ class TrajectoryProxy:
         try:
             resp_body = resp.json()
         except (json.JSONDecodeError, ValueError):
-            resp_body = {"raw": resp.text[:10000]}
+            resp_body = {"raw": resp.text[:_RAW_RESP_TRUNCATE]}
 
         self._record_exchange(
             req, resp.status_code, dict(resp.headers), resp_body, duration_ms
