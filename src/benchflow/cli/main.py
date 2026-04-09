@@ -434,12 +434,15 @@ def cleanup(
     max_age_minutes: Annotated[
         int,
         typer.Option("--max-age", help="Delete sandboxes older than N minutes"),
-    ] = 30,
+    ] = 1440,
 ) -> None:
     """Clean up orphaned Daytona sandboxes.
 
     Lists and deletes sandboxes that were left running after eval runs.
+    Only affects sandboxes older than --max-age minutes (default 1440 = 24h).
     """
+    from datetime import datetime, timezone
+
     try:
         from daytona import Daytona
     except ImportError:
@@ -447,9 +450,11 @@ def cleanup(
         raise typer.Exit(1)
 
     d = Daytona()
+    now = datetime.now(timezone.utc)
     page = 1
     total_deleted = 0
     total_found = 0
+    total_skipped = 0
 
     while True:
         result = d.list(page=page, limit=100)
@@ -457,8 +462,14 @@ def cleanup(
             break
         total_found += len(result.items)
         for sb in result.items:
+            age_minutes = (now - sb.created_at).total_seconds() / 60
+            if age_minutes < max_age_minutes:
+                total_skipped += 1
+                if dry_run:
+                    console.print(f"  [dim]{sb.id}[/dim] state={sb.state} age={age_minutes:.0f}m [green](skip)[/green]")
+                continue
             if dry_run:
-                console.print(f"  [dim]{sb.id}[/dim] state={sb.state} created={sb.created_at}")
+                console.print(f"  [dim]{sb.id}[/dim] state={sb.state} age={age_minutes:.0f}m [red](delete)[/red]")
             else:
                 try:
                     d.delete(sb)
@@ -470,9 +481,9 @@ def cleanup(
         page += 1
 
     if dry_run:
-        console.print(f"\n[bold]{total_found} sandboxes found[/bold] (use without --dry-run to delete)")
+        console.print(f"\n[bold]{total_found} sandboxes found, {total_found - total_skipped} older than {max_age_minutes}m[/bold] (use without --dry-run to delete)")
     else:
-        console.print(f"\n[bold green]{total_deleted} sandboxes deleted[/bold green]")
+        console.print(f"\n[bold green]{total_deleted} sandboxes deleted[/bold green] ({total_skipped} skipped, younger than {max_age_minutes}m)")
 
 
 if __name__ == "__main__":

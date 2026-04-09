@@ -183,20 +183,24 @@ jobs/{job_name}/{trial_name}/
 ├── prompts.json             # prompts sent
 ├── agent/
 │   ├── install-stdout.txt   # agent install output
-│   └── {agent_name}.txt     # agent stderr/debug output
+│   └── {agent_name}.txt     # agent stderr/debug output (hyphens → underscores)
 ├── trajectory/
 │   └── acp_trajectory.jsonl # tool calls + agent thoughts
 └── verifier/
-    ├── reward.txt           # reward value
-    └── ctrf.json            # test results
+    └── reward.txt           # reward value
 ```
 
 ## Benchmark Results
 
-| Benchmark | Model | Score | Reference |
-|-----------|-------|-------|-----------|
-| TB2 single-turn | Sonnet 4.6 | **58.4%** (52/89) | 59.1% (Anthropic) |
-| TB2 multi-turn | Haiku 4.5 | **37.1%** (33/89) | 27.5% (tbench.ai) |
+| Benchmark | Agent | Model | Score |
+|-----------|-------|-------|-------|
+| TB2 single-turn | codex-acp | GPT-5.4* | **69.7%** (62/89) |
+| TB2 single-turn | claude-agent-acp | Sonnet 4.6 | **58.4%** (52/89) |
+| TB2 multi-turn | codex-acp | GPT-5.4* | **62.9%** (56/89) |
+| TB2 multi-turn | claude-agent-acp | Haiku 4.5 | **37.1%** (33/89) |
+| SkillsBench | codex-acp | GPT-5.4* | **37.2%** (32/86) |
+
+*GPT-5.4 runs used effort=medium.
 
 ## Skills
 
@@ -214,7 +218,7 @@ BenchFlow provides:
 - **Trajectory capture** — from ACP protocol
 - **Skills** — teach agents to use BenchFlow itself
 - **Viewer** — HTML trajectory visualization
-- **CLI** — `run`, `job`, `agents`, `metrics`, `view`
+- **CLI** — `run`, `job`, `agents`, `metrics`, `view`, `eval`, `skills`, `tasks`, `cleanup`
 
 ## Citation
 
