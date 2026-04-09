@@ -30,6 +30,9 @@ class ProviderConfig:
     # Multi-protocol support: {protocol: base_url} for providers with multiple APIs.
     # base_url + api_protocol is the primary; endpoints adds alternatives.
     endpoints: dict[str, str] = field(default_factory=dict)
+    credential_files: list[dict] = field(default_factory=list)
+    # Files to write into container (e.g. GCP ADC).
+    # Each dict: {"path": str, "env_source": str, "post_env": {k: v} (optional)}
 
     @property
     def all_endpoints(self) -> dict[str, str]:
@@ -49,6 +52,14 @@ PROVIDERS: dict[str, ProviderConfig] = {
         api_protocol="openai-completions",
         auth_type="adc",
         url_params={"project_id": "GOOGLE_CLOUD_PROJECT", "location": "GOOGLE_CLOUD_LOCATION"},
+        credential_files=[{
+            "path": "{home}/.config/gcloud/application_default_credentials.json",
+            "env_source": "GOOGLE_APPLICATION_CREDENTIALS_JSON",
+            "post_env": {
+                "GOOGLE_APPLICATION_CREDENTIALS":
+                    "{home}/.config/gcloud/application_default_credentials.json",
+            },
+        }],
     ),
     "anthropic-vertex": ProviderConfig(
         name="anthropic-vertex",
@@ -56,6 +67,14 @@ PROVIDERS: dict[str, ProviderConfig] = {
         api_protocol="anthropic-messages",
         auth_type="adc",
         url_params={"project_id": "GOOGLE_CLOUD_PROJECT", "location": "GOOGLE_CLOUD_LOCATION"},
+        credential_files=[{
+            "path": "{home}/.config/gcloud/application_default_credentials.json",
+            "env_source": "GOOGLE_APPLICATION_CREDENTIALS_JSON",
+            "post_env": {
+                "GOOGLE_APPLICATION_CREDENTIALS":
+                    "{home}/.config/gcloud/application_default_credentials.json",
+            },
+        }],
     ),
     # ── Custom providers (need explicit endpoint config in agent shims) ──
     "zai": ProviderConfig(

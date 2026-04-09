@@ -411,6 +411,49 @@ class SDK:
         print(result.trajectory)
     """
 
+    @staticmethod
+    async def _upload_credential(env, path: str, content: str) -> None:
+        """Write a credential file into the container via upload_file."""
+        parent = path.rsplit("/", 1)[0]
+        await env.exec(f"mkdir -p {parent}", timeout_sec=10)
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            f.write(content)
+            tmp_path = f.name
+        try:
+            await env.upload_file(tmp_path, path)
+        finally:
+            os.unlink(tmp_path)
+
+    async def _write_credential_files(
+        self, env, agent: str, agent_env: dict, agent_cfg, model: str | None,
+        cred_home: str,
+    ) -> None:
+        """Write credential files into container from agent + provider configs."""
+        # Provider credential files (e.g. GCP ADC for Vertex)
+        if model:
+            from benchflow.agents.providers import find_provider
+            _prov = find_provider(model)
+            if _prov:
+                _, _prov_cfg = _prov
+                for cf in _prov_cfg.credential_files:
+                    value = agent_env.get(cf["env_source"])
+                    if value:
+                        path = cf["path"].format(home=cred_home)
+                        await self._upload_credential(env, path, value)
+                        for k, v in cf.get("post_env", {}).items():
+                            agent_env.setdefault(k, v.format(home=cred_home))
+                        logger.info("Provider credential file written: %s", path)
+
+        # Agent credential files (e.g. codex auth.json)
+        if agent_cfg and agent_cfg.credential_files:
+            for cf in agent_cfg.credential_files:
+                value = agent_env.get(cf.env_source)
+                if value:
+                    content = cf.template.format(value=value) if cf.template else value
+                    path = cf.path.format(home=cred_home)
+                    await self._upload_credential(env, path, content)
+                    logger.info("Agent credential file written: %s", path)
+
     async def run(
         self,
         task_path: str | Path,
@@ -694,35 +737,11 @@ class SDK:
                 # `claude login` with a Pro/Max plan) are not supported — that would
                 # require injecting OAuth session tokens into the sandbox.
 
-                # 2a-2. Write codex auth.json if needed (env vars aren't enough for codex-acp)
+                # 2a-2. Write credential files (agent + provider) into container.
                 # Uses upload_file instead of echo to avoid leaking secrets in ps aux.
-                if "codex" in agent and agent_env.get("OPENAI_API_KEY"):
-                    auth_json = json.dumps({"OPENAI_API_KEY": agent_env["OPENAI_API_KEY"]})
-                    await env.exec(f"mkdir -p {cred_home}/.codex", timeout_sec=10)
-                    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-                        f.write(auth_json)
-                        tmp_path = f.name
-                    try:
-                        await env.upload_file(tmp_path, f"{cred_home}/.codex/auth.json")
-                    finally:
-                        os.unlink(tmp_path)
-                    logger.info("Codex auth.json written")
-
-                # 2a-3. Write GCP ADC credentials to disk for Vertex AI models
-                # Uses upload_file instead of echo to avoid leaking secrets in ps aux.
-                adc_json = agent_env.get("GOOGLE_APPLICATION_CREDENTIALS_JSON")
-                if adc_json:
-                    adc_target = f"{cred_home}/.config/gcloud/application_default_credentials.json"
-                    await env.exec(f"mkdir -p {cred_home}/.config/gcloud", timeout_sec=10)
-                    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-                        f.write(adc_json)
-                        tmp_path = f.name
-                    try:
-                        await env.upload_file(tmp_path, adc_target)
-                    finally:
-                        os.unlink(tmp_path)
-                    agent_env.setdefault("GOOGLE_APPLICATION_CREDENTIALS", adc_target)
-                    logger.info("GCP ADC credentials written to container")
+                await self._write_credential_files(
+                    env, agent, agent_env, agent_cfg, model, cred_home,
+                )
 
                 # 2b. Deploy skills into sandbox (runtime fallback if no Dockerfile injection)
                 if skills_dir:

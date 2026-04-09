@@ -33,6 +33,16 @@ _OPENCLAW_SHIM = (Path(__file__).parent / "openclaw_acp_shim.py").read_text()
 
 
 @dataclass
+class CredentialFile:
+    """A file to write inside the container before agent launch."""
+
+    path: str  # Target path in container (may use {home} placeholder)
+    env_source: str  # Env var to read value from
+    template: str = ""  # Template with {value} placeholder. Empty = raw value.
+    mkdir: bool = True  # Create parent directory
+
+
+@dataclass
 class AgentConfig:
     """Configuration for a supported agent."""
 
@@ -48,6 +58,8 @@ class AgentConfig:
     env_mapping: dict[str, str] = field(default_factory=dict)
     # Maps BENCHFLOW_PROVIDER_* → agent-native env var names.
     # Applied by SDK after provider resolution.
+    credential_files: list[CredentialFile] = field(default_factory=list)
+    # Files to write into container before agent launch (e.g. auth.json).
 
 
 # Agent registry — all supported agents
@@ -133,6 +145,13 @@ AGENTS: dict[str, AgentConfig] = {
             "BENCHFLOW_PROVIDER_BASE_URL": "OPENAI_BASE_URL",
             "BENCHFLOW_PROVIDER_API_KEY": "OPENAI_API_KEY",
         },
+        credential_files=[
+            CredentialFile(
+                path="{home}/.codex/auth.json",
+                env_source="OPENAI_API_KEY",
+                template='{{"OPENAI_API_KEY": "{value}"}}',
+            ),
+        ],
     ),
     "gemini": AgentConfig(
         name="gemini",
@@ -215,6 +234,7 @@ def register_agent(
     skill_paths: list[str] | None = None,
     install_timeout: int = 900,
     env_mapping: dict[str, str] | None = None,
+    credential_files: list[CredentialFile] | None = None,
 ) -> AgentConfig:
     """Register a custom agent at runtime.
 
@@ -241,6 +261,7 @@ def register_agent(
         skill_paths=skill_paths or [],
         install_timeout=install_timeout,
         env_mapping=env_mapping or {},
+        credential_files=credential_files or [],
     )
     AGENTS[name] = config
     # Update backwards-compat dicts
