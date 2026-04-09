@@ -38,20 +38,11 @@
 
 ### P1 — Fix Soon
 - **Harbor private attributes** — `process.py` accesses `env._sandbox`, `env._strategy`, `env._docker_compose_paths`. No public APIs exist in Harbor. Blocked on upstream.
-- **API keys in `ps aux`** — Docker exec `-e K=V` visible in process list.
 
 ### P2 — Backlog
 - **No integration tests** — SDK.run(), Job.run() have zero coverage.
 - **Job resume config scoping** — warns on agent mismatch, but other config fields (model, concurrency) still unscoped.
-- **`from harbor import *`** — namespace collision risk (benchflow.Job shadows harbor.Job).
-
----
-
-## Roadmap
-
-### Next Up
-- **YAML config parity with Harbor** — agent params, environment config, dataset config
-- **Registry architecture** — agent shims as first-class registry entries
+- **YAML config parity with Harbor** — job YAML already covers agent, model, env vars, concurrency, retries, prompts, skills_dir, sandbox_user. The real gap is Harbor *task-level* fields not overridable from job YAML: resource limits (cpus, memory_mb, storage_mb, gpus), timeouts (agent.timeout_sec, build_timeout_sec), and allow_internet. MCP servers and verifier config are inherently per-task, not job-level.
 
 ### Benchmarks To Run
 - TB2 multi-turn with Sonnet (the parity number that matters)

@@ -5,7 +5,7 @@ Used by SDK.run()'s pre_agent_hooks to auto-start services in the container.
 """
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 

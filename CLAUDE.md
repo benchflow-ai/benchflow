@@ -34,3 +34,9 @@ uv venv -p 3.12 .venv && uv pip install -e ".[dev]"
 ```
 
 Use Haiku 4.5 (`claude-haiku-4-5-20251001`) for smoke tests.
+
+## Test policy
+
+Do not modify or delete existing test files. If a test needs updating because
+the code it tests changed shape (e.g., function extracted to new module), that
+is acceptable. Write new tests in `tests/test_<module>.py`.

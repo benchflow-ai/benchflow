@@ -255,7 +255,7 @@ class DaytonaProcess(LiveProcess):
             # as -e K=V args (which are visible in ps aux on the remote host).
             remote_env_path = None
             if env:
-                remote_env_path = f"/tmp/benchflow_env_$$.env"
+                remote_env_path = "/tmp/benchflow_env_$$.env"
                 env_lines = "\n".join(f"{k}={v}" for k, v in env.items())
                 inner_parts.extend(["--env-file", remote_env_path])
             inner_parts.extend(["main", "bash", "-c", shlex.quote(command)])
@@ -280,7 +280,7 @@ class DaytonaProcess(LiveProcess):
             env_prefix = ""
             remote_env_path = None
             if env:
-                remote_env_path = f"/tmp/benchflow_env_$$.env"
+                remote_env_path = "/tmp/benchflow_env_$$.env"
                 env_lines = "\n".join(
                     f"export {k}={shlex.quote(v)}" for k, v in env.items()
                 )

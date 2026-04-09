@@ -1,6 +1,5 @@
 """ACP client — benchflow acts as the client, agents are ACP servers."""
 
-import asyncio
 import logging
 from typing import Any
 

@@ -2,7 +2,6 @@
 
 import asyncio
 import json
-import os
 from pathlib import Path
 from typing import Annotated
 
@@ -324,7 +323,7 @@ def eval(
     result = asyncio.run(j.run())
 
     # Summary
-    console.print(f"\n[bold]Skill Eval Results[/bold]")
+    console.print("\n[bold]Skill Eval Results[/bold]")
     if skill:
         console.print(f"  Skill: {skill}")
     if skills_dir:
@@ -397,9 +396,9 @@ def tasks_init(
     try:
         task_dir = init_task(name, parent_dir=parent_dir, no_pytest=no_pytest, no_solution=no_solution)
         console.print(f"[green]Created:[/green] {task_dir}/")
-        console.print(f"  task.toml, instruction.md, environment/Dockerfile, tests/test.sh")
+        console.print("  task.toml, instruction.md, environment/Dockerfile, tests/test.sh")
         if not no_solution:
-            console.print(f"  solution/solve.sh")
+            console.print("  solution/solve.sh")
     except FileExistsError as e:
         console.print(f"[red]{e}[/red]")
         raise typer.Exit(1)

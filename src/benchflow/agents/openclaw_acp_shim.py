@@ -17,7 +17,6 @@ Key details:
   - Model: set via openclaw config on session/set_model
 """
 
-import glob
 import json
 import os
 import shutil
@@ -124,8 +123,6 @@ def _get_adc_token() -> str:
     authorized-user credentials (refresh_token → token exchange).
     """
     import base64
-    import hashlib
-    import hmac
     import time
     import urllib.request
     import urllib.parse

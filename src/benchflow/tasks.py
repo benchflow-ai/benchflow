@@ -74,7 +74,7 @@ def init_task(
     task_dir.mkdir(parents=True)
 
     # task.toml
-    (task_dir / "task.toml").write_text(f'''version = "1.0"
+    (task_dir / "task.toml").write_text('''version = "1.0"
 
 [metadata]
 author_name = ""

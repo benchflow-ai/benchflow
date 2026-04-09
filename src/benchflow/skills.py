@@ -3,9 +3,7 @@
 Skills follow the agentskills.io spec (SKILL.md with YAML frontmatter).
 """
 
-import json
 import logging
-import shutil
 import subprocess
 import yaml
 from pathlib import Path

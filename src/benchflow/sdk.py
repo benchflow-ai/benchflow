@@ -20,7 +20,7 @@ import shutil
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Coroutine
+from typing import Any
 
 from harbor.models.task.task import Task
 from harbor.models.trial.paths import TrialPaths
@@ -29,8 +29,8 @@ from harbor.verifier.verifier import Verifier
 from benchflow.acp.client import ACPClient
 from benchflow.acp.container_transport import ContainerTransport
 from benchflow.acp.session import ACPSession
-from benchflow.agents.registry import AGENTS, get_agent
-from benchflow.process import DockerProcess, DaytonaProcess, LiveProcess
+from benchflow.agents.registry import AGENTS
+from benchflow.process import DockerProcess, DaytonaProcess
 
 logger = logging.getLogger(__name__)
 
