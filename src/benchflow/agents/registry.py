@@ -178,6 +178,12 @@ AGENTS: dict[str, AgentConfig] = {
 }
 
 
+# Derived lookup tables — install/launch commands by agent name.
+# Updated by register_agent() when new agents are added at runtime.
+AGENT_INSTALLERS: dict[str, str] = {name: a.install_cmd for name, a in AGENTS.items()}
+AGENT_LAUNCH: dict[str, str] = {name: a.launch_cmd for name, a in AGENTS.items()}
+
+
 def get_sandbox_home_dirs() -> set[str]:
     """Collect all dot-dirs under $HOME that sandbox user setup should copy.
 
@@ -296,8 +302,6 @@ def register_agent(
         home_dirs=home_dirs or [],
     )
     AGENTS[name] = config
-    # Update backwards-compat dicts
-    from benchflow.sdk import AGENT_INSTALLERS, AGENT_LAUNCH
     AGENT_INSTALLERS[name] = install_cmd
     AGENT_LAUNCH[name] = launch_cmd
     return config

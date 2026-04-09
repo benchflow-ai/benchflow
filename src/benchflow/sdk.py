@@ -37,7 +37,12 @@ from benchflow._trajectory import (
 )
 from benchflow.acp.client import ACPClient
 from benchflow.acp.container_transport import ContainerTransport
-from benchflow.agents.registry import AGENTS, get_sandbox_home_dirs
+from benchflow.agents.registry import (
+    AGENTS,
+    AGENT_INSTALLERS,
+    AGENT_LAUNCH,
+    get_sandbox_home_dirs,
+)
 from benchflow.process import DockerProcess, DaytonaProcess
 
 logger = logging.getLogger(__name__)
@@ -45,9 +50,8 @@ logger = logging.getLogger(__name__)
 # Apply DinD patch once at import time
 _patch_harbor_dind()
 
-# Backwards compat — expose install/launch dicts from registry
-AGENT_INSTALLERS = {name: a.install_cmd for name, a in AGENTS.items()}
-AGENT_LAUNCH = {name: a.launch_cmd for name, a in AGENTS.items()}
+# Re-exported from registry for backwards compat (AGENT_INSTALLERS, AGENT_LAUNCH
+# are imported above alongside AGENTS)
 
 
 class SDK:

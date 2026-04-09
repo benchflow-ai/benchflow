@@ -11,7 +11,9 @@
 - Result persistence: result.json, prompts.json, acp_trajectory.jsonl per trial
 - Metrics: `collect_metrics()` with pass rates, tool calls, timing, error breakdowns
 - Skills: benchflow-run, benchflow-create-task (eval'd at reward 1.0)
-- Unit tests (no Docker needed)
+- SDK refactored: run() decomposed into 14 private methods, 3 modules extracted (_models, _trajectory, _env_setup)
+- Data-driven agent config: env_mapping, credential_files, home_dirs — new agent = registry edit only
+- Unit tests: 232 pass (no Docker needed)
 
 ### Agents
 
@@ -40,7 +42,7 @@
 - **Harbor private attributes** — `process.py` accesses `env._sandbox`, `env._strategy`, `env._docker_compose_paths`. No public APIs exist in Harbor. Blocked on upstream.
 
 ### P2 — Backlog
-- **No integration tests** — SDK.run(), Job.run() have zero coverage.
+- **No integration tests** — SDK.run(), Job.run() have zero end-to-end coverage. SDK internals (_resolve_agent_env, _init_trial, _write_config, _build_result) are unit-tested; async methods need mock env for coverage.
 - **Job resume config scoping** — warns on agent mismatch, but other config fields (model, concurrency) still unscoped.
 - **YAML config parity with Harbor** — job YAML already covers agent, model, env vars, concurrency, retries, prompts, skills_dir, sandbox_user. The real gap is Harbor *task-level* fields not overridable from job YAML: resource limits (cpus, memory_mb, storage_mb, gpus), timeouts (agent.timeout_sec, build_timeout_sec), and allow_internet. MCP servers and verifier config are inherently per-task, not job-level.
 
