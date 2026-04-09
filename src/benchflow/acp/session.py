@@ -14,7 +14,11 @@ logger = logging.getLogger(__name__)
 
 
 class ToolCallRecord:
-    """Record of a single tool call within a session."""
+    """Record of a single tool call within a session.
+
+    Tracks identity (tool_call_id, title, kind), lifecycle status, captured
+    content blocks, and wall-clock timing.
+    """
 
     def __init__(self, tool_call_id: str, title: str, kind: str):
         self.tool_call_id = tool_call_id
@@ -40,7 +44,12 @@ class ToolCallRecord:
 
 
 class ACPSession:
-    """Tracks state for one ACP session."""
+    """Tracks mutable state for one ACP session.
+
+    Accumulates streaming chunks (message_chunks, thought_chunks) and
+    tool-call records as session/update notifications arrive.  Use
+    ``full_message`` / ``full_thought`` to read the assembled text.
+    """
 
     def __init__(self, session_id: str):
         self.session_id = session_id
@@ -110,8 +119,10 @@ class ACPSession:
 
     @property
     def full_message(self) -> str:
+        """Concatenated agent message text from all received chunks."""
         return "".join(self.message_chunks)
 
     @property
     def full_thought(self) -> str:
+        """Concatenated agent thought/reasoning text from all received chunks."""
         return "".join(self.thought_chunks)

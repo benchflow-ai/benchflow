@@ -1,0 +1,10 @@
+tasks_dir: ../.ref/terminal-bench-2
+jobs_dir: ../jobs/tb2_multiturn-codex-gpt54
+agent: codex-acp
+model: gpt-5.4
+environment: daytona
+concurrency: 8
+max_retries: 2
+prompts:
+  - null
+  - "Review your solution. Check for errors, test it, and fix any issues."

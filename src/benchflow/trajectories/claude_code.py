@@ -2,6 +2,9 @@
 
 Groups events into logical steps:
   PROMPT → AGENT (thinking + tool call + tool result) → AGENT → ... → RESULT
+
+Status: backlog — depends on atif.py. Not wired into SDK trajectory capture yet.
+See STATUS.md "Later" section (ATIF export).
 """
 
 import json

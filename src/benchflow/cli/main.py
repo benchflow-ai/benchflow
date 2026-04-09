@@ -2,13 +2,14 @@
 
 import asyncio
 import json
-import os
 from pathlib import Path
 from typing import Annotated
 
 import typer
 from rich.console import Console
 from rich.table import Table
+
+from benchflow.job import DEFAULT_AGENT, DEFAULT_MODEL
 
 console = Console()
 
@@ -28,7 +29,7 @@ def run(
     agent: Annotated[
         str,
         typer.Option("--agent", "-a", help="Agent name from registry"),
-    ] = "claude-agent-acp",
+    ] = DEFAULT_AGENT,
     model: Annotated[
         str | None,
         typer.Option("--model", "-m", help="Model to use"),
@@ -104,7 +105,7 @@ def job(
     agent: Annotated[
         str,
         typer.Option("--agent", "-a", help="Agent name from registry"),
-    ] = "claude-agent-acp",
+    ] = DEFAULT_AGENT,
     model: Annotated[
         str | None,
         typer.Option("--model", "-m", help="Model to use"),
@@ -144,7 +145,7 @@ def job(
             jobs_dir=jobs_dir,
             config=JobConfig(
                 agent=agent,
-                model=model or "claude-haiku-4-5-20251001",
+                model=model or DEFAULT_MODEL,
                 environment=environment,
                 concurrency=concurrency,
                 retry=RetryConfig(max_retries=max_retries),
@@ -176,11 +177,16 @@ def agents() -> None:
     table.add_column("Requires", style="yellow")
 
     for agent in list_agents():
+        sub_env = agent.subscription_auth.replaces_env if agent.subscription_auth else None
+        requires = [
+            f"{e} (or login)" if e == sub_env else e
+            for e in agent.requires_env
+        ]
         table.add_row(
             agent.name,
             agent.description,
             agent.protocol,
-            ", ".join(agent.requires_env),
+            ", ".join(requires),
         )
 
     console.print(table)
@@ -277,7 +283,7 @@ def eval(
     agent: Annotated[
         str,
         typer.Option("--agent", "-a", help="Agent name"),
-    ] = "claude-agent-acp",
+    ] = DEFAULT_AGENT,
     model: Annotated[
         str | None,
         typer.Option("--model", "-m", help="Model"),
@@ -314,7 +320,7 @@ def eval(
         jobs_dir=jobs_dir,
         config=JobConfig(
             agent=agent,
-            model=model or "claude-haiku-4-5-20251001",
+            model=model or DEFAULT_MODEL,
             environment=environment,
             concurrency=concurrency,
             skills_dir=effective_skills,
@@ -324,7 +330,7 @@ def eval(
     result = asyncio.run(j.run())
 
     # Summary
-    console.print(f"\n[bold]Skill Eval Results[/bold]")
+    console.print("\n[bold]Skill Eval Results[/bold]")
     if skill:
         console.print(f"  Skill: {skill}")
     if skills_dir:
@@ -348,7 +354,7 @@ def skills(
     ] = None,
 ) -> None:
     """List or install agent skills."""
-    from benchflow.skills import discover_skills, install_skill, DEFAULT_SKILLS_DIR, list_skills_summary
+    from benchflow.skills import discover_skills, install_skill, DEFAULT_SKILLS_DIR
 
     if install:
         target = directory or DEFAULT_SKILLS_DIR
@@ -397,9 +403,9 @@ def tasks_init(
     try:
         task_dir = init_task(name, parent_dir=parent_dir, no_pytest=no_pytest, no_solution=no_solution)
         console.print(f"[green]Created:[/green] {task_dir}/")
-        console.print(f"  task.toml, instruction.md, environment/Dockerfile, tests/test.sh")
+        console.print("  task.toml, instruction.md, environment/Dockerfile, tests/test.sh")
         if not no_solution:
-            console.print(f"  solution/solve.sh")
+            console.print("  solution/solve.sh")
     except FileExistsError as e:
         console.print(f"[red]{e}[/red]")
         raise typer.Exit(1)
@@ -430,12 +436,15 @@ def cleanup(
     max_age_minutes: Annotated[
         int,
         typer.Option("--max-age", help="Delete sandboxes older than N minutes"),
-    ] = 30,
+    ] = 1440,
 ) -> None:
     """Clean up orphaned Daytona sandboxes.
 
     Lists and deletes sandboxes that were left running after eval runs.
+    Only affects sandboxes older than --max-age minutes (default 1440 = 24h).
     """
+    from datetime import datetime, timezone
+
     try:
         from daytona import Daytona
     except ImportError:
@@ -443,9 +452,11 @@ def cleanup(
         raise typer.Exit(1)
 
     d = Daytona()
+    now = datetime.now(timezone.utc)
     page = 1
     total_deleted = 0
     total_found = 0
+    total_skipped = 0
 
     while True:
         result = d.list(page=page, limit=100)
@@ -453,8 +464,14 @@ def cleanup(
             break
         total_found += len(result.items)
         for sb in result.items:
+            age_minutes = (now - sb.created_at).total_seconds() / 60
+            if age_minutes < max_age_minutes:
+                total_skipped += 1
+                if dry_run:
+                    console.print(f"  [dim]{sb.id}[/dim] state={sb.state} age={age_minutes:.0f}m [green](skip)[/green]")
+                continue
             if dry_run:
-                console.print(f"  [dim]{sb.id}[/dim] state={sb.state} created={sb.created_at}")
+                console.print(f"  [dim]{sb.id}[/dim] state={sb.state} age={age_minutes:.0f}m [red](delete)[/red]")
             else:
                 try:
                     d.delete(sb)
@@ -466,9 +483,9 @@ def cleanup(
         page += 1
 
     if dry_run:
-        console.print(f"\n[bold]{total_found} sandboxes found[/bold] (use without --dry-run to delete)")
+        console.print(f"\n[bold]{total_found} sandboxes found, {total_found - total_skipped} older than {max_age_minutes}m[/bold] (use without --dry-run to delete)")
     else:
-        console.print(f"\n[bold green]{total_deleted} sandboxes deleted[/bold green]")
+        console.print(f"\n[bold green]{total_deleted} sandboxes deleted[/bold green] ({total_skipped} skipped, younger than {max_age_minutes}m)")
 
 
 if __name__ == "__main__":

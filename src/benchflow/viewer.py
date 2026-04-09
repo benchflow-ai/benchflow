@@ -9,6 +9,12 @@ import sys
 from pathlib import Path
 
 
+_THINKING_PREVIEW = 600  # max chars for thinking block preview
+_ARGS_PREVIEW = 300  # max chars for tool args display
+_CONTENT_PREVIEW = 200  # max chars for write/agent content preview
+_RESULT_PREVIEW = 300  # max chars for result summary
+
+
 def render_turn(events: list[dict], turn_number: int, prompt: str = "") -> str:
     """Render one turn's events as HTML blocks."""
     blocks = []
@@ -44,8 +50,8 @@ def render_turn(events: list[dict], turn_number: int, prompt: str = "") -> str:
                     parts = []
                     if pending_thinking:
                         parts.append(
-                            f'<div class="thinking">{html.escape(pending_thinking[:600])}'
-                            f"{'...' if len(pending_thinking) > 600 else ''}</div>"
+                            f'<div class="thinking">{html.escape(pending_thinking[:_THINKING_PREVIEW])}'
+                            f"{'...' if len(pending_thinking) > _THINKING_PREVIEW else ''}</div>"
                         )
                         pending_thinking = ""
                     if pending_text:
@@ -64,12 +70,12 @@ def render_turn(events: list[dict], turn_number: int, prompt: str = "") -> str:
                             args.get("file_path", args.get("path", ""))
                         )
                         if name == "Write" and "content" in args:
-                            content_preview = args["content"][:200]
-                            arg_display += f"\n{html.escape(content_preview)}{'...' if len(args['content']) > 200 else ''}"
+                            content_preview = args["content"][:_CONTENT_PREVIEW]
+                            arg_display += f"\n{html.escape(content_preview)}{'...' if len(args['content']) > _CONTENT_PREVIEW else ''}"
                     elif name == "Agent":
-                        arg_display = html.escape(str(args.get("prompt", ""))[:200])
+                        arg_display = html.escape(str(args.get("prompt", ""))[:_CONTENT_PREVIEW])
                     else:
-                        arg_display = html.escape(json.dumps(args, indent=2)[:300])
+                        arg_display = html.escape(json.dumps(args, indent=2)[:_ARGS_PREVIEW])
 
                     parts.append(
                         f'<div class="tool">'
@@ -102,7 +108,7 @@ def render_turn(events: list[dict], turn_number: int, prompt: str = "") -> str:
             # Final summary
             cost = event.get("total_cost_usd", 0)
             turns = event.get("num_turns", "?")
-            result_text = html.escape(event.get("result", "")[:300])
+            result_text = html.escape(event.get("result", "")[:_RESULT_PREVIEW])
             blocks.append(
                 f'<div class="step result">'
                 f'<div class="step-header"><span class="label result">RESULT</span>'
@@ -116,7 +122,7 @@ def render_turn(events: list[dict], turn_number: int, prompt: str = "") -> str:
         parts = []
         if pending_thinking:
             parts.append(
-                f'<div class="thinking">{html.escape(pending_thinking[:600])}</div>'
+                f'<div class="thinking">{html.escape(pending_thinking[:_THINKING_PREVIEW])}</div>'
             )
         if pending_text:
             parts.append(f'<div class="msg">{html.escape(pending_text)}</div>')

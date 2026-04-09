@@ -176,3 +176,5 @@ cython_debug/
 trials/
 jobs/
 dogfood/
+tmp/
+.claude/settings.local.json

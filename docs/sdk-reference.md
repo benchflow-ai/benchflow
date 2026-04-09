@@ -22,7 +22,9 @@ await SDK().run(
 
 ### Auto-inherited env vars
 These are forwarded from `os.environ` to the agent automatically:
-`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`, `GEMINI_API_KEY`
+`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`, `GEMINI_API_KEY`, `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION`
+
+Custom providers registered in `PROVIDERS` also auto-inherit their `auth_env` and `url_params`.
 
 Also auto-set: `CLAUDE_CODE_MAX_OUTPUT_TOKENS=128000`, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`
 
@@ -34,6 +36,7 @@ Timeout comes from `task.toml` → `[agent].timeout_sec` (default 900s). NOT a S
 ```python
 result.task_name        # str
 result.trial_name       # str
+result.agent            # str — registry/harness agent name (e.g. "claude-agent-acp")
 result.rewards          # dict | None — e.g. {"reward": 1.0}
 result.trajectory       # list[dict] — tool calls, messages, thoughts
 result.agent_name       # str — ACP-reported agent name
@@ -102,12 +105,13 @@ result.elapsed_sec      # float
 |-------|--------|----------|-------------|
 | `claude-agent-acp` | `claude-agent-acp` | ANTHROPIC_API_KEY | `$HOME/.claude/skills` |
 | `pi-acp` | `pi-acp` | ANTHROPIC_API_KEY | `$HOME/.pi/agent/skills`, `$HOME/.agents/skills` |
-| `openclaw` | ACP shim | ANTHROPIC_API_KEY | `$HOME/.claude/skills`, `$WORKSPACE/skills` |
-| `openclaw-gemini` | ACP shim | GEMINI_API_KEY | `$HOME/.claude/skills`, `$WORKSPACE/skills` |
+| `openclaw` | `openclaw-acp-shim` | Inferred from `--model` | `$HOME/.claude/skills`, `$WORKSPACE/skills` |
 | `codex-acp` | `codex-acp` | OPENAI_API_KEY | `$HOME/.agents/skills` |
 | `gemini` | `gemini --acp` | GOOGLE_API_KEY | `$HOME/.gemini/skills` |
 
 All agents must speak ACP (JSON-RPC 2.0 over stdio).
+
+See [tested-agents.md](tested-agents.md) for verified agent × model × provider combinations.
 
 ### Register custom agent
 
@@ -194,8 +198,6 @@ await sdk.run(task_path="task-dir", pre_agent_hooks=[my_hook])
 
 Note: `pre_agent_hooks` is SDK-only. Not available via Job or CLI.
 
-See `examples/smolclaws_eval.py` for a complete example.
-
 ## context_root
 
 Set this when your task's Dockerfile uses COPY instructions that reference files outside the `environment/` directory (relative to the repo root). Without it, the Docker build context won't find those files.
@@ -214,7 +216,8 @@ from benchflow import AgentInstallError, AgentTimeoutError
 # AgentInstallError — raised when install_cmd fails
 #   .agent, .return_code, .stdout, .diagnostics, .log_path
 
-# AgentTimeoutError — for timeout errors
+# AgentTimeoutError — defined but not raised by SDK; timeouts are caught as
+#   asyncio.TimeoutError and stored in result.error as a string.
 #   .agent, .timeout_sec
 ```
 

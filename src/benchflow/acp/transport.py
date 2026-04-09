@@ -6,6 +6,8 @@ import logging
 from abc import ABC, abstractmethod
 from typing import Any
 
+from benchflow.process import drain_oversized_line
+
 logger = logging.getLogger(__name__)
 
 
@@ -79,13 +81,7 @@ class StdioTransport(Transport):
             try:
                 line = await self._process.stdout.readline()
             except (ValueError, asyncio.LimitOverrunError) as e:
-                reader = self._process.stdout
-                reader._buffer.clear()
-                reader._maybe_resume_transport()
-                try:
-                    await asyncio.wait_for(reader.readuntil(b"\n"), timeout=5)
-                except Exception:
-                    pass
+                await drain_oversized_line(self._process.stdout)
                 logger.warning(f"Skipped oversized line: {e}")
                 continue
             if not line:

@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from benchflow.sdk import stage_dockerfile_deps, _dep_local_name
+from benchflow._env_setup import stage_dockerfile_deps, _dep_local_name
 
 
 class TestDepLocalName:
@@ -41,8 +41,10 @@ class TestStageDockerfileDeps:
 
         stage_dockerfile_deps(task_dir, repo_root)
 
-        # Check _deps was created
-        assert (env_dir / "_deps" / "claw-gmail" / "app.py").exists()
+        # Check _deps was created and content preserved
+        staged_file = env_dir / "_deps" / "claw-gmail" / "app.py"
+        assert staged_file.exists()
+        assert staged_file.read_text() == "print('gmail')"
 
         # Check Dockerfile was rewritten
         rewritten = (env_dir / "Dockerfile").read_text()
@@ -79,6 +81,39 @@ class TestStageDockerfileDeps:
         task_dir.mkdir()
         # Should not raise
         stage_dockerfile_deps(task_dir, tmp_path)
+
+    def test_multiple_copy_instructions(self, tmp_path):
+        """Multiple COPY instructions in the same Dockerfile are all rewritten."""
+        repo_root = tmp_path / "repo"
+        dep1 = repo_root / "packages" / "dep1"
+        dep1.mkdir(parents=True)
+        (dep1 / "a.txt").write_text("aaa")
+        dep2 = repo_root / "packages" / "dep2"
+        dep2.mkdir(parents=True)
+        (dep2 / "b.txt").write_text("bbb")
+
+        task_dir = repo_root / "tasks" / "multi"
+        env_dir = task_dir / "environment"
+        env_dir.mkdir(parents=True)
+        (task_dir / "task.toml").write_text('version = "1.0"')
+        (env_dir / "Dockerfile").write_text(
+            "FROM ubuntu:24.04\n"
+            "COPY packages/dep1 /app/dep1\n"
+            "RUN echo hi\n"
+            "COPY packages/dep2 /app/dep2\n"
+        )
+
+        stage_dockerfile_deps(task_dir, repo_root)
+
+        rewritten = (env_dir / "Dockerfile").read_text()
+        lines = rewritten.split("\n")
+        assert "_deps/" in lines[1]   # first COPY rewritten
+        assert "_deps/" in lines[3]   # second COPY rewritten
+        assert "packages/dep1" not in rewritten
+        assert "packages/dep2" not in rewritten
+        # Content preserved
+        assert (env_dir / "_deps" / "dep1" / "a.txt").read_text() == "aaa"
+        assert (env_dir / "_deps" / "dep2" / "b.txt").read_text() == "bbb"
 
     def test_source_not_found(self, tmp_path):
         """COPY with nonexistent source is left unchanged."""

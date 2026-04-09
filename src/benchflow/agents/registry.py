@@ -33,6 +33,41 @@ _OPENCLAW_SHIM = (Path(__file__).parent / "openclaw_acp_shim.py").read_text()
 
 
 @dataclass
+class CredentialFile:
+    """A file to write inside the container before agent launch."""
+
+    path: str  # Target path in container (may use {home} placeholder)
+    env_source: str  # Env var to read value from
+    template: str = ""  # Template with {value} placeholder. Empty = raw value.
+    mkdir: bool = True  # Create parent directory
+
+
+@dataclass
+class HostAuthFile:
+    """A single file to copy from the host into the container."""
+
+    host_path: str  # Path on host, e.g. "~/.claude/.credentials.json"
+    container_path: str  # Destination in container (may use {home} placeholder)
+
+
+@dataclass
+class SubscriptionAuth:
+    """Host CLI login credentials that can substitute for an API key.
+
+    When the user has logged in via the agent CLI (e.g. ``claude login``),
+    BenchFlow detects the auth files on the host, copies them into the
+    container, and skips the API key requirement.
+
+    ``detect_file`` is checked to determine if the user is logged in.
+    All ``files`` are copied into the container when subscription auth is used.
+    """
+
+    replaces_env: str  # The env var this substitutes, e.g. "ANTHROPIC_API_KEY"
+    detect_file: str  # Host path to check for login, e.g. "~/.claude/.credentials.json"
+    files: list[HostAuthFile] = field(default_factory=list)  # All files to copy
+
+
+@dataclass
 class AgentConfig:
     """Configuration for a supported agent."""
 
@@ -45,6 +80,17 @@ class AgentConfig:
     skill_paths: list[str] = field(default_factory=list)
     install_timeout: int = 900  # seconds
     default_model: str = ""  # default model ID when --model is omitted
+    env_mapping: dict[str, str] = field(default_factory=dict)
+    # Maps BENCHFLOW_PROVIDER_* → agent-native env var names.
+    # Applied by SDK after provider resolution.
+    credential_files: list[CredentialFile] = field(default_factory=list)
+    # Files to write into container before agent launch (e.g. auth.json).
+    home_dirs: list[str] = field(default_factory=list)
+    # Extra dot-dirs under $HOME to copy to sandbox user (for dirs not
+    # derivable from skill_paths or credential_files, e.g. ".openclaw").
+    subscription_auth: SubscriptionAuth | None = None
+    # Host CLI login that can substitute for an API key (e.g. OAuth tokens
+    # from `claude login`). Detected automatically; API keys take precedence.
 
 
 # Agent registry — all supported agents
@@ -62,6 +108,17 @@ AGENTS: dict[str, AgentConfig] = {
         launch_cmd="claude-agent-acp",
         protocol="acp",
         requires_env=["ANTHROPIC_API_KEY"],
+        env_mapping={
+            "BENCHFLOW_PROVIDER_BASE_URL": "ANTHROPIC_BASE_URL",
+            "BENCHFLOW_PROVIDER_API_KEY": "ANTHROPIC_AUTH_TOKEN",
+        },
+        subscription_auth=SubscriptionAuth(
+            replaces_env="ANTHROPIC_API_KEY",
+            detect_file="~/.claude/.credentials.json",
+            files=[
+                HostAuthFile("~/.claude/.credentials.json", "{home}/.claude/.credentials.json"),
+            ],
+        ),
     ),
     "pi-acp": AgentConfig(
         name="pi-acp",
@@ -78,6 +135,10 @@ AGENTS: dict[str, AgentConfig] = {
         launch_cmd="pi-acp",
         protocol="acp",
         requires_env=["ANTHROPIC_API_KEY"],
+        env_mapping={
+            "BENCHFLOW_PROVIDER_BASE_URL": "ANTHROPIC_BASE_URL",
+            "BENCHFLOW_PROVIDER_API_KEY": "ANTHROPIC_AUTH_TOKEN",
+        },
     ),
     "openclaw": AgentConfig(
         name="openclaw",
@@ -104,6 +165,7 @@ AGENTS: dict[str, AgentConfig] = {
         launch_cmd="python3 /usr/local/bin/openclaw-acp-shim",
         protocol="acp",
         requires_env=[],  # inferred from --model at runtime
+        home_dirs=[".openclaw"],
     ),
     "codex-acp": AgentConfig(
         name="codex-acp",
@@ -118,6 +180,24 @@ AGENTS: dict[str, AgentConfig] = {
         launch_cmd="codex-acp",
         protocol="acp",
         requires_env=["OPENAI_API_KEY"],
+        env_mapping={
+            "BENCHFLOW_PROVIDER_BASE_URL": "OPENAI_BASE_URL",
+            "BENCHFLOW_PROVIDER_API_KEY": "OPENAI_API_KEY",
+        },
+        credential_files=[
+            CredentialFile(
+                path="{home}/.codex/auth.json",
+                env_source="OPENAI_API_KEY",
+                template='{{"OPENAI_API_KEY": "{value}"}}',
+            ),
+        ],
+        subscription_auth=SubscriptionAuth(
+            replaces_env="OPENAI_API_KEY",
+            detect_file="~/.codex/auth.json",
+            files=[
+                HostAuthFile("~/.codex/auth.json", "{home}/.codex/auth.json"),
+            ],
+        ),
     ),
     "gemini": AgentConfig(
         name="gemini",
@@ -132,18 +212,81 @@ AGENTS: dict[str, AgentConfig] = {
         launch_cmd="gemini --acp",
         protocol="acp",
         requires_env=["GOOGLE_API_KEY"],
+        env_mapping={
+            "BENCHFLOW_PROVIDER_BASE_URL": "GEMINI_API_BASE_URL",
+            "BENCHFLOW_PROVIDER_API_KEY": "GOOGLE_API_KEY",
+        },
+        subscription_auth=SubscriptionAuth(
+            replaces_env="GEMINI_API_KEY",
+            detect_file="~/.gemini/oauth_creds.json",
+            files=[
+                HostAuthFile("~/.gemini/oauth_creds.json", "{home}/.gemini/oauth_creds.json"),
+                HostAuthFile("~/.gemini/settings.json", "{home}/.gemini/settings.json"),
+                HostAuthFile("~/.gemini/google_accounts.json", "{home}/.gemini/google_accounts.json"),
+            ],
+        ),
     ),
 }
 
 
-# Backward-compat aliases: old name → (agent, default_model)
-_AGENT_ALIASES: dict[str, tuple[str, str]] = {
-    "openclaw-gemini": ("openclaw", "google/gemini-3.1-flash-lite-preview"),
-}
+# Derived lookup tables — install/launch commands by agent name.
+# Updated by register_agent() when new agents are added at runtime.
+AGENT_INSTALLERS: dict[str, str] = {name: a.install_cmd for name, a in AGENTS.items()}
+AGENT_LAUNCH: dict[str, str] = {name: a.launch_cmd for name, a in AGENTS.items()}
+
+
+def get_sandbox_home_dirs() -> set[str]:
+    """Collect all dot-dirs under $HOME that sandbox user setup should copy.
+
+    Derives from three sources across all registered agents:
+    - skill_paths: $HOME/.foo/... → ".foo"
+    - credential_files: {home}/.foo/... → ".foo"
+    - home_dirs: explicit extras (e.g. ".openclaw")
+
+    Always includes ".local" (pip scripts, etc.).
+    """
+    dirs: set[str] = {".local"}
+    for cfg in AGENTS.values():
+        for sp in cfg.skill_paths:
+            if sp.startswith("$HOME/."):
+                dirname = sp.removeprefix("$HOME/").split("/")[0]
+                dirs.add(dirname)
+        for cf in cfg.credential_files:
+            # path uses {home}/.foo/... placeholder
+            path = cf.path
+            if path.startswith("{home}/."):
+                dirname = path.removeprefix("{home}/").split("/")[0]
+                dirs.add(dirname)
+        if cfg.subscription_auth:
+            for f in cfg.subscription_auth.files:
+                if f.container_path.startswith("{home}/."):
+                    dirname = f.container_path.removeprefix("{home}/").split("/")[0]
+                    dirs.add(dirname)
+        dirs.update(cfg.home_dirs)
+    return dirs
+
+
+def is_vertex_model(model: str) -> bool:
+    """True if the model uses Vertex AI (GCP ADC auth, not API keys)."""
+    from benchflow.agents.providers import find_provider
+    result = find_provider(model)
+    if result:
+        _, cfg = result
+        return cfg.auth_type == "adc"
+    return False
 
 
 def infer_env_key_for_model(model: str) -> str | None:
     """Infer the required API key environment variable from a model ID."""
+    # Check custom providers first
+    from benchflow.agents.providers import resolve_auth_env
+    custom = resolve_auth_env(model)
+    if custom is not None:
+        return custom
+    # ADC-based providers and built-in Vertex prefixes
+    if is_vertex_model(model):
+        return None
+    # Fallback heuristics for well-known model names
     m = model.lower()
     if "gemini" in m:
         return "GEMINI_API_KEY"
@@ -155,19 +298,16 @@ def infer_env_key_for_model(model: str) -> str | None:
 
 
 def get_agent(name: str) -> tuple[AgentConfig, str]:
-    """Get agent config by name, resolving aliases.
+    """Get agent config by name.
 
-    Returns (config, model) where model is non-empty only for alias lookups.
+    Returns (config, default_model) where default_model comes from config.default_model.
     Raises KeyError if not found.
     """
-    if name in _AGENT_ALIASES:
-        real_name, default_model = _AGENT_ALIASES[name]
-        config = AGENTS[real_name]
-        return config, default_model
     if name not in AGENTS:
-        available = ", ".join(sorted(list(AGENTS.keys()) + list(_AGENT_ALIASES.keys())))
+        available = ", ".join(sorted(AGENTS.keys()))
         raise KeyError(f"Unknown agent: {name!r}. Available: {available}")
-    return AGENTS[name], ""
+    config = AGENTS[name]
+    return config, config.default_model
 
 
 def list_agents() -> list[AgentConfig]:
@@ -185,6 +325,10 @@ def register_agent(
     description: str = "",
     skill_paths: list[str] | None = None,
     install_timeout: int = 900,
+    env_mapping: dict[str, str] | None = None,
+    credential_files: list[CredentialFile] | None = None,
+    home_dirs: list[str] | None = None,
+    subscription_auth: SubscriptionAuth | None = None,
 ) -> AgentConfig:
     """Register a custom agent at runtime.
 
@@ -210,10 +354,12 @@ def register_agent(
         description=description,
         skill_paths=skill_paths or [],
         install_timeout=install_timeout,
+        env_mapping=env_mapping or {},
+        credential_files=credential_files or [],
+        home_dirs=home_dirs or [],
+        subscription_auth=subscription_auth,
     )
     AGENTS[name] = config
-    # Update backwards-compat dicts
-    from benchflow.sdk import AGENT_INSTALLERS, AGENT_LAUNCH
     AGENT_INSTALLERS[name] = install_cmd
     AGENT_LAUNCH[name] = launch_cmd
     return config

@@ -37,6 +37,31 @@ def test_sdk_importable():
     assert hasattr(sdk, "run")
 
 
+def test_extracted_modules_importable():
+    """Symbols moved to _models, _trajectory, _env_setup are importable from canonical paths."""
+    from benchflow._models import RunResult, AgentInstallError, AgentTimeoutError
+    from benchflow._trajectory import _capture_session_trajectory
+    from benchflow._env_setup import stage_dockerfile_deps, _dep_local_name
+
+    assert RunResult.__module__ == "benchflow._models"
+    assert AgentInstallError.__module__ == "benchflow._models"
+    assert AgentTimeoutError.__module__ == "benchflow._models"
+    assert callable(_capture_session_trajectory)
+    assert callable(stage_dockerfile_deps)
+    assert callable(_dep_local_name)
+
+
+def test_public_api_reexports():
+    """Public API symbols are still importable from benchflow top-level."""
+    from benchflow import SDK, RunResult, AgentInstallError, AgentTimeoutError, stage_dockerfile_deps
+
+    assert callable(SDK)
+    assert callable(RunResult)
+    assert callable(AgentInstallError)
+    assert callable(AgentTimeoutError)
+    assert callable(stage_dockerfile_deps)
+
+
 def test_register_agent():
     """Custom agents can be registered at runtime."""
     from benchflow import register_agent, AGENTS, get_agent

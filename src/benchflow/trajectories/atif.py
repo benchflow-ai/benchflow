@@ -1,4 +1,14 @@
-"""ATIF trajectory model — Agent Trajectory Interchange Format."""
+"""ATIF trajectory model — Agent Trajectory Interchange Format.
+
+Canonical schema for recording a complete agent session as a sequence of
+steps (system/user/agent), each with optional tool calls, observations,
+and per-step token metrics. Designed to be agent-agnostic and exportable
+as JSON for cross-tool analysis.
+
+Status: backlog — implemented but not wired into SDK trajectory capture yet.
+See STATUS.md "Later" section (ATIF export).
+Related: trajectories/claude_code.py (converts Claude Code output → ATIF).
+"""
 
 from typing import Any, Literal
 
@@ -6,27 +16,37 @@ from pydantic import BaseModel, Field
 
 
 class ContentPart(BaseModel):
+    """A text or image fragment within a step message or observation."""
+
     type: Literal["text", "image"] = "text"
     text: str | None = None
     source: dict[str, Any] | None = None
 
 
 class ToolCall(BaseModel):
+    """Record of a single tool invocation by the agent."""
+
     tool_call_id: str
     function_name: str
     arguments: dict[str, Any] = Field(default_factory=dict)
 
 
 class ObservationResult(BaseModel):
+    """Output returned by a tool call (linked via source_call_id)."""
+
     source_call_id: str | None = None
     content: str | list[ContentPart] = ""
 
 
 class Observation(BaseModel):
+    """Collection of tool-call outputs observed after a step's tool calls."""
+
     results: list[ObservationResult] = Field(default_factory=list)
 
 
 class Metrics(BaseModel):
+    """Token usage and cost for a single LLM call or aggregated over a session."""
+
     input_tokens: int | None = None
     output_tokens: int | None = None
     cache_tokens: int | None = None
@@ -34,6 +54,12 @@ class Metrics(BaseModel):
 
 
 class Step(BaseModel):
+    """One turn in the trajectory: a system, user, or agent action.
+
+    Agent steps may include tool_calls + observation; user steps carry the
+    prompt text; system steps carry setup or environment messages.
+    """
+
     step_id: int = Field(ge=1)
     timestamp: str | None = None
     source: Literal["system", "user", "agent"]
@@ -47,6 +73,8 @@ class Step(BaseModel):
 
 
 class Agent(BaseModel):
+    """Identity and configuration of the agent that produced the trajectory."""
+
     name: str
     version: str = ""
     model_name: str | None = None
@@ -55,6 +83,8 @@ class Agent(BaseModel):
 
 
 class ATIFTrajectory(BaseModel):
+    """Top-level ATIF document: one agent, one session, ordered steps."""
+
     schema_version: str = "ATIF-v1.6"
     session_id: str
     agent: Agent

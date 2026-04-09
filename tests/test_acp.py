@@ -11,6 +11,7 @@ from benchflow.acp.transport import StdioTransport
 from benchflow.acp.types import StopReason, ToolCallStatus
 
 MOCK_AGENT = str(Path(__file__).parent / "fixtures" / "mock_acp_agent.py")
+MOCK_AGENT_INTERLEAVED = str(Path(__file__).parent / "fixtures" / "mock_acp_agent_interleaved.py")
 
 
 class TestACPClient:
@@ -185,3 +186,28 @@ class TestACPSession:
             "toolCallId": "nonexistent",
             "status": "completed",
         })
+
+
+class TestACPInterleaving:
+    """Test that _read_until_response handles interleaved notifications and agent requests."""
+
+    @pytest.mark.asyncio
+    async def test_prompt_with_interleaved_notifications_and_request(self) -> None:
+        """Notification, agent request, more notifications, then final response."""
+        client = ACPClient(StdioTransport(sys.executable, [MOCK_AGENT_INTERLEAVED]))
+        try:
+            await client.connect()
+            await client.initialize()
+            await client.session_new()
+
+            result = await client.prompt("Go!")
+            assert result.stop_reason == StopReason.END_TURN
+
+            session = client.session
+            assert session is not None
+            # Notifications processed: tool_call + tool_call_update + message chunk
+            assert len(session.tool_calls) == 1
+            assert session.tool_calls[0].status == ToolCallStatus.COMPLETED
+            assert session.full_message == "done"
+        finally:
+            await client.close()

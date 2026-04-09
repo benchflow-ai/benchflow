@@ -10,6 +10,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from benchflow._scoring import classify_error, pass_rate, pass_rate_excl_errors
+
 logger = logging.getLogger(__name__)
 
 
@@ -66,13 +68,12 @@ class BenchmarkMetrics:
     @property
     def score(self) -> float:
         """Pass rate over all tasks."""
-        return self.passed / self.total if self.total > 0 else 0.0
+        return pass_rate(passed=self.passed, total=self.total)
 
     @property
     def score_excl_errors(self) -> float:
         """Pass rate excluding errored tasks."""
-        completed = self.passed + self.failed
-        return self.passed / completed if completed > 0 else 0.0
+        return pass_rate_excl_errors(passed=self.passed, failed=self.failed)
 
     @property
     def avg_tool_calls(self) -> float:
@@ -93,18 +94,9 @@ class BenchmarkMetrics:
         for t in self.tasks:
             if not t.errored:
                 continue
-            err = t.error or ""
-            if "timed out" in err:
-                key = "timeout"
-            elif "install" in err:
-                key = "install_failure"
-            elif "closed stdout" in err:
-                key = "pipe_closed"
-            elif "ACP error" in err:
-                key = "acp_error"
-            else:
-                key = "other"
-            breakdown[key] = breakdown.get(key, 0) + 1
+            category = classify_error(t.error)
+            if category:
+                breakdown[category] = breakdown.get(category, 0) + 1
         return breakdown
 
     def summary(self) -> dict[str, Any]:
@@ -168,8 +160,8 @@ def collect_metrics(
             started = datetime.fromisoformat(r["started_at"])
             finished = datetime.fromisoformat(r["finished_at"])
             duration = (finished - started).total_seconds()
-        except Exception:
-            pass
+        except (KeyError, ValueError):
+            logger.debug("Could not compute duration for task %s", task_name)
 
         tasks.append(TaskMetrics(
             task_name=task_name,

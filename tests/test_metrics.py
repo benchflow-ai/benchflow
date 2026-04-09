@@ -113,13 +113,63 @@ def test_collect_metrics_duration(results_dir):
 
 def test_collect_metrics_best_result_picking(results_dir_with_retries):
     """Test that best result per task is picked (higher reward wins)."""
-    metrics = collect_metrics(str(results_dir_with_retries))
+    base = results_dir_with_retries
+
+    # --- Both errored (no rewards): first seen is kept, counted once as errored ---
+    trial_b1 = base / "attempt1" / "task-b__err1"
+    trial_b1.mkdir(parents=True)
+    (trial_b1 / "result.json").write_text(json.dumps({
+        "task_name": "task-b",
+        "rewards": None,
+        "error": "install failed",
+        "n_tool_calls": 0,
+        "started_at": "2026-03-24 10:00:00.000000",
+        "finished_at": "2026-03-24 10:01:00.000000",
+    }))
+    trial_b2 = base / "attempt2" / "task-b__err2"
+    trial_b2.mkdir(parents=True)
+    (trial_b2 / "result.json").write_text(json.dumps({
+        "task_name": "task-b",
+        "rewards": None,
+        "error": "pipe closed",
+        "n_tool_calls": 0,
+        "started_at": "2026-03-24 10:02:00.000000",
+        "finished_at": "2026-03-24 10:03:00.000000",
+    }))
+
+    # --- Equal rewards: deterministic pick (counted once) ---
+    trial_c1 = base / "attempt1" / "task-c__eq1"
+    trial_c1.mkdir(parents=True)
+    (trial_c1 / "result.json").write_text(json.dumps({
+        "task_name": "task-c",
+        "rewards": {"reward": 0.5},
+        "error": None,
+        "n_tool_calls": 3,
+        "started_at": "2026-03-24 10:00:00.000000",
+        "finished_at": "2026-03-24 10:01:00.000000",
+    }))
+    trial_c2 = base / "attempt2" / "task-c__eq2"
+    trial_c2.mkdir(parents=True)
+    (trial_c2 / "result.json").write_text(json.dumps({
+        "task_name": "task-c",
+        "rewards": {"reward": 0.5},
+        "error": None,
+        "n_tool_calls": 4,
+        "started_at": "2026-03-24 10:02:00.000000",
+        "finished_at": "2026-03-24 10:03:00.000000",
+    }))
+
+    metrics = collect_metrics(str(base))
     s = metrics.summary()
 
-    assert s["total"] == 1
+    # task-a: passed (higher reward picked), task-b: errored, task-c: failed (0.5 != 1.0)
+    assert s["total"] == 3
     assert s["passed"] == 1
-    assert s["failed"] == 0
     assert "task-a" in s["passed_tasks"]
+    assert s["errored"] == 1
+    assert "task-b" in s["errored_tasks"]
+    assert s["failed"] == 1
+    assert "task-c" in s["failed_tasks"]
 
 
 def test_collect_metrics_empty_dir(tmp_path):

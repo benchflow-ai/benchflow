@@ -16,6 +16,8 @@ from .types import LLMExchange, LLMRequest, LLMResponse, Trajectory
 
 logger = logging.getLogger(__name__)
 
+_RAW_RESP_TRUNCATE = 10000  # max chars for non-JSON response body capture
+
 
 class TrajectoryProxy:
     """HTTP proxy that forwards LLM API requests and captures exchanges.
@@ -169,7 +171,7 @@ class TrajectoryProxy:
             try:
                 await writer.wait_closed()
             except Exception:
-                pass
+                logger.debug("Writer close failed during connection teardown")
 
     async def _handle_regular(
         self,
@@ -193,8 +195,8 @@ class TrajectoryProxy:
         resp_body: dict[str, Any] = {}
         try:
             resp_body = resp.json()
-        except Exception:
-            resp_body = {"raw": resp.text[:10000]}
+        except (json.JSONDecodeError, ValueError):
+            resp_body = {"raw": resp.text[:_RAW_RESP_TRUNCATE]}
 
         self._record_exchange(
             req, resp.status_code, dict(resp.headers), resp_body, duration_ms
@@ -299,7 +301,7 @@ def _parse_sse_events(chunk: bytes) -> list[dict[str, Any]]:
             try:
                 events.append(json.loads(data))
             except json.JSONDecodeError:
-                pass
+                logger.debug("Skipping malformed SSE event")
     return events
 
 
@@ -357,7 +359,7 @@ def _reconstruct_response(events: list[dict[str, Any]]) -> dict[str, Any]:
                 try:
                     block["input"] = json.loads(block["input"])
                 except json.JSONDecodeError:
-                    pass
+                    logger.debug("Could not parse tool_use input as JSON, keeping as string")
         return {
             "content": content,
             "model": model,

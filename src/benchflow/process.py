@@ -17,6 +17,23 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 _BUFFER_LIMIT = 10 * 1024 * 1024  # 10MB readline buffer
+_DIAG_TRUNCATE = 2000  # max chars for diagnostic stderr in error messages
+
+
+async def drain_oversized_line(reader: asyncio.StreamReader) -> int:
+    """Drain an oversized line from *reader* after a buffer overflow.
+
+    Clears the internal buffer and attempts to skip ahead to the next
+    newline.  Returns the number of bytes discarded.
+    """
+    skipped = len(reader._buffer)
+    reader._buffer.clear()
+    reader._maybe_resume_transport()
+    try:
+        await asyncio.wait_for(reader.readuntil(b"\n"), timeout=5)
+    except Exception:
+        logger.debug("Could not find next newline after buffer overflow")
+    return skipped
 
 
 class LiveProcess(ABC):
@@ -41,16 +58,7 @@ class LiveProcess(ABC):
             line = await self._process.stdout.readline()
         except (ValueError, asyncio.LimitOverrunError) as e:
             # Buffer overflow — line exceeds _BUFFER_LIMIT.
-            # Drain the buffer and skip to next newline.
-            reader = self._process.stdout
-            skipped = len(reader._buffer)
-            reader._buffer.clear()
-            reader._maybe_resume_transport()
-            # Try to consume remaining bytes up to next newline
-            try:
-                await asyncio.wait_for(reader.readuntil(b"\n"), timeout=5)
-            except Exception:
-                pass
+            skipped = await drain_oversized_line(self._process.stdout)
             logger.warning(f"Skipped oversized line ({skipped} bytes): {e}")
             # Return empty line — caller will retry readline
             return b""
@@ -63,11 +71,11 @@ class LiveProcess(ABC):
                     )
                     stderr_text = stderr_bytes.decode(errors="replace").strip()
                 except Exception:
-                    pass
+                    logger.debug("Could not read stderr from closed process")
             rc = self._process.returncode if self._process else None
             msg = f"Process closed stdout (rc={rc})"
             if stderr_text:
-                msg += f"\nstderr: {stderr_text[:2000]}"
+                msg += f"\nstderr: {stderr_text[:_DIAG_TRUNCATE]}"
             raise ConnectionError(msg)
         return line
 
@@ -123,12 +131,8 @@ class DockerProcess(LiveProcess):
             compose_files=compose_files,
         )
 
-    async def start(
-        self,
-        command: str,
-        env: dict[str, str] | None = None,
-        cwd: str | None = None,
-    ) -> None:
+    def _compose_cmd(self) -> list[str]:
+        """Base docker compose command with project/file flags."""
         cmd = [
             "docker", "compose",
             "-p", self._project_name,
@@ -136,14 +140,10 @@ class DockerProcess(LiveProcess):
         ]
         for f in self._compose_files:
             cmd.extend(["-f", f])
-        cmd.extend(["exec", "-i", "-T"])
-        if cwd:
-            cmd.extend(["-w", cwd])
-        if env:
-            for k, v in env.items():
-                cmd.extend(["-e", f"{k}={v}"])
-        cmd.extend([self._service, "bash", "-c", command])
+        return cmd
 
+    def _host_env(self) -> dict[str, str]:
+        """Host process env with DOCKER_HOST resolved if needed."""
         proc_env = os.environ.copy()
         if not proc_env.get("DOCKER_HOST"):
             import subprocess
@@ -156,9 +156,59 @@ class DockerProcess(LiveProcess):
                 if r.returncode == 0 and r.stdout.strip():
                     proc_env["DOCKER_HOST"] = r.stdout.strip()
             except Exception:
-                pass
+                logger.debug("Could not inspect docker context", exc_info=True)
+        return proc_env
 
-        logger.debug(f"DockerProcess: {' '.join(cmd)}")
+    _ENV_PATH = "/tmp/.benchflow_env"
+
+    async def _write_env_to_container(
+        self, env: dict[str, str], proc_env: dict[str, str],
+    ) -> None:
+        """Write env vars to a file inside the container (not visible in ps aux)."""
+        lines = "".join(f"export {k}={shlex.quote(v)}\n" for k, v in env.items())
+        write_cmd = self._compose_cmd()
+        write_cmd.extend([
+            "exec", "-T", self._service,
+            "bash", "-c",
+            f"cat > {self._ENV_PATH} && chmod 600 {self._ENV_PATH}",
+        ])
+        proc = await asyncio.create_subprocess_exec(
+            *write_cmd,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=proc_env,
+        )
+        _, stderr = await asyncio.wait_for(proc.communicate(lines.encode()), timeout=30)
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"Failed to write env file in container (rc={proc.returncode}): "
+                f"{stderr.decode()[:500]}"
+            )
+        logger.debug("Env file written inside container (%d vars)", len(env))
+
+    async def start(
+        self,
+        command: str,
+        env: dict[str, str] | None = None,
+        cwd: str | None = None,
+    ) -> None:
+        proc_env = self._host_env()
+
+        # Write env vars to a file inside the container, then source it
+        # in the main command. This keeps secrets off `ps aux` on the host
+        # and avoids `--env-file` (not supported in all Compose versions).
+        if env:
+            await self._write_env_to_container(env, proc_env)
+            command = f"source {self._ENV_PATH} && rm -f {self._ENV_PATH} && {command}"
+
+        cmd = self._compose_cmd()
+        cmd.extend(["exec", "-i", "-T"])
+        if cwd:
+            cmd.extend(["-w", cwd])
+        cmd.extend([self._service, "bash", "-c", command])
+
+        logger.debug(f"DockerProcess: {' '.join(cmd[:10])}...")
         self._process = await asyncio.create_subprocess_exec(
             *cmd,
             stdin=asyncio.subprocess.PIPE,
@@ -229,9 +279,13 @@ class DaytonaProcess(LiveProcess):
             inner_parts = ["docker", "compose", "exec", "-i", "-T"]
             if cwd:
                 inner_parts.extend(["-w", cwd])
+            # Write env vars to a temp file on the remote VM instead of passing
+            # as -e K=V args (which are visible in ps aux on the remote host).
+            remote_env_path = None
             if env:
-                for k, v in env.items():
-                    inner_parts.extend(["-e", f"{k}={v}"])
+                remote_env_path = "/tmp/benchflow_env_$$.env"
+                env_lines = "\n".join(f"{k}={v}" for k, v in env.items())
+                inner_parts.extend(["--env-file", remote_env_path])
             inner_parts.extend(["main", "bash", "-c", shlex.quote(command)])
             inner_cmd = " ".join(inner_parts)
 
@@ -239,17 +293,37 @@ class DaytonaProcess(LiveProcess):
                 remote_cmd = f"{self._compose_cmd_prefix} {inner_cmd}"
             else:
                 remote_cmd = inner_cmd
+
+            if remote_env_path:
+                # Write env file, set trap for cleanup, then run the command
+                write_cmd = (
+                    f"umask 077 && cat > {remote_env_path} <<'__BENCHFLOW_ENV__'\n"
+                    f"{env_lines}\n__BENCHFLOW_ENV__"
+                )
+                remote_cmd = f"{write_cmd}\ntrap 'rm -f {remote_env_path}' EXIT\n{remote_cmd}"
         else:
-            # Direct sandbox — run command via SSH
-            # Build env string for the command (avoid shell builtins that vary by shell)
+            # Direct sandbox — run command via SSH.
+            # Write env vars to a file on the remote host and source it,
+            # instead of passing as `env K=V` args visible in ps aux.
             env_prefix = ""
+            remote_env_path = None
             if env:
-                env_parts = [f"{k}={shlex.quote(v)}" for k, v in env.items()]
-                env_prefix = "env " + " ".join(env_parts) + " "
+                remote_env_path = "/tmp/benchflow_env_$$.env"
+                env_lines = "\n".join(
+                    f"export {k}={shlex.quote(v)}" for k, v in env.items()
+                )
+                env_prefix = f". {remote_env_path} && "
             if cwd:
                 remote_cmd = f"cd {shlex.quote(cwd)} && {env_prefix}{command}"
             else:
                 remote_cmd = f"{env_prefix}{command}"
+
+            if remote_env_path:
+                write_cmd = (
+                    f"umask 077 && cat > {remote_env_path} <<'__BENCHFLOW_ENV__'\n"
+                    f"{env_lines}\n__BENCHFLOW_ENV__"
+                )
+                remote_cmd = f"{write_cmd}\ntrap 'rm -f {remote_env_path}' EXIT\n{remote_cmd}"
 
         cmd = [
             "ssh",

@@ -115,24 +115,22 @@ benchflow skills --install owner/repo@skill-name
 
 # View trajectory
 benchflow view jobs/tb2/my-trial/
+
+# Create/validate tasks
+benchflow tasks init my-task     # scaffold a new task directory
+benchflow tasks check tasks/my-task/  # validate task structure
 ```
 
 ## Agents
 
-Any [ACP-compatible agent](https://agentclientprotocol.com/get-started/agents) works. Registered agents are auto-installed in sandboxes:
-
-| Agent | Description | Requires | Status |
-|-------|-------------|----------|--------|
-| `claude-agent-acp` | Claude Code via ACP | ANTHROPIC_API_KEY | Tested |
-| `pi-acp` | Pi coding agent via ACP | ANTHROPIC_API_KEY | Tested |
-| `openclaw` | OpenClaw via ACP shim | ANTHROPIC_API_KEY | Tested |
-| `openclaw-gemini` | OpenClaw with Gemini | GEMINI_API_KEY | Tested |
-| `codex-acp` | OpenAI Codex via ACP | OPENAI_API_KEY | Tested |
-| `gemini` | Google Gemini CLI via ACP | GOOGLE_API_KEY | Tested |
+Any [ACP-compatible agent](https://agentclientprotocol.com/get-started/agents) works. Registered agents are auto-installed in sandboxes.
 
 ```bash
+benchflow agents              # list registered agents
 benchflow run -t task/ -a pi-acp -e daytona
 ```
+
+See [docs/tested-agents.md](docs/tested-agents.md) for the full list of tested agent × model/provider combinations.
 
 ## Environments
 
@@ -189,39 +187,30 @@ jobs/{job_name}/{trial_name}/
 ├── prompts.json             # prompts sent
 ├── agent/
 │   ├── install-stdout.txt   # agent install output
-│   └── {agent_name}.txt     # agent stderr/debug output
+│   └── {agent_name}.txt     # agent stderr/debug output (hyphens → underscores)
 ├── trajectory/
 │   └── acp_trajectory.jsonl # tool calls + agent thoughts
 └── verifier/
-    ├── reward.txt           # reward value
-    └── ctrf.json            # test results
+    └── reward.txt           # reward value
 ```
 
 ## Benchmark Results
 
-| Benchmark | Model | Score | Reference |
-|-----------|-------|-------|-----------|
-| TB2 single-turn | Sonnet 4.6 | **58.4%** (52/89) | 59.1% (Anthropic) |
-| TB2 multi-turn | Haiku 4.5 | **37.1%** (33/89) | 27.5% (tbench.ai) |
+| Benchmark | Agent | Model | Score |
+|-----------|-------|-------|-------|
+| TB2 single-turn | codex-acp | GPT-5.4* | **69.7%** (62/89) |
+| TB2 single-turn | claude-agent-acp | Sonnet 4.6 | **58.4%** (52/89) |
+| TB2 multi-turn | codex-acp | GPT-5.4* | **62.9%** (56/89) |
+| TB2 multi-turn | claude-agent-acp | Haiku 4.5 | **37.1%** (33/89) |
+| SkillsBench | codex-acp | GPT-5.4* | **37.2%** (32/86) |
 
-See [docs/parity/RESULTS.md](docs/parity/RESULTS.md) for full analysis.
+*GPT-5.4 runs used effort=medium.
 
 ## Skills
 
-BenchFlow ships skills that teach agents how to use the framework. Place them in `~/.claude/skills/` (or bake into task Dockerfiles) for auto-discovery:
+BenchFlow ships a Claude Code skill in `.claude/skills/benchflow/` that teaches agents how to use the framework. Place skills in `~/.claude/skills/` (or bake into task Dockerfiles) for auto-discovery.
 
-| Skill | Purpose |
-|-------|---------|
-| `skills/benchflow-run/` | Run benchmarks — SDK, Job, multi-turn, metrics |
-| `skills/benchflow-create-task/` | Create Harbor-format benchmark tasks |
-
-To bake skills into a task environment:
-
-```dockerfile
-COPY skills /root/.claude/skills
-```
-
-Validation tasks in `skills/tests/` confirm agents can use the skills correctly (both eval'd at reward 1.0 with Haiku 4.5).
+Validation tasks in `.claude/skills/benchflow/tasks/` confirm agents can use the skill correctly.
 
 ## Architecture
 
@@ -233,7 +222,7 @@ BenchFlow provides:
 - **Trajectory capture** — from ACP protocol
 - **Skills** — teach agents to use BenchFlow itself
 - **Viewer** — HTML trajectory visualization
-- **CLI** — `run`, `job`, `agents`, `metrics`, `view`
+- **CLI** — `run`, `job`, `agents`, `metrics`, `view`, `eval`, `skills`, `tasks`, `cleanup`
 
 ## Citation
 

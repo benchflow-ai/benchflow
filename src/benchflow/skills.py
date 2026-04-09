@@ -3,9 +3,7 @@
 Skills follow the agentskills.io spec (SKILL.md with YAML frontmatter).
 """
 
-import json
 import logging
-import shutil
 import subprocess
 import yaml
 from pathlib import Path
@@ -82,7 +80,12 @@ def install_skill(spec: str, target_dir: Path | None = None) -> Path | None:
     """Install a skill from skills.sh.
 
     Args:
-        spec: Skill specifier (e.g. "anthropics/skills@find-skills")
+        spec: Skill specifier in the form "owner/repo@skill-name"
+            (e.g. "anthropics/skills@find-skills"). The part after "@"
+            is used to locate the installed directory. If no "@" is
+            present, the last path segment is used as a guess. In either
+            case, falls back to scanning target_dir for a matching
+            SKILL.md name if the guessed directory doesn't exist.
         target_dir: Where to install. Default: ~/.claude/skills/
 
     Returns:
@@ -117,16 +120,3 @@ def install_skill(spec: str, target_dir: Path | None = None) -> Path | None:
     except Exception as e:
         logger.error(f"Skill install failed: {e}")
         return None
-
-
-
-def list_skills_summary(skills: list[SkillInfo]) -> str:
-    """Format skills list for display."""
-    if not skills:
-        return "No skills found."
-    lines = []
-    for s in skills:
-        desc = f" — {s.description[:60]}" if s.description else ""
-        ver = f" v{s.version}" if s.version else ""
-        lines.append(f"  {s.name}{ver}{desc}")
-    return "\n".join(lines)

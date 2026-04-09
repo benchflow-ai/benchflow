@@ -5,8 +5,9 @@ Used by SDK.run()'s pre_agent_hooks to auto-start services in the container.
 """
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Callable, Coroutine
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -85,7 +86,7 @@ def detect_services_from_dockerfile(task_path: Path | str) -> list[ServiceConfig
     return [svc for svc in SERVICES.values() if svc.cli_name in text]
 
 
-def build_service_hooks(services: list[ServiceConfig]) -> list:
+def build_service_hooks(services: list[ServiceConfig]) -> list[Callable[[Any], Coroutine[Any, Any, None]]]:
     """Build pre_agent_hooks that start the given services.
 
     Returns a list of async callables compatible with SDK.run(pre_agent_hooks=...).

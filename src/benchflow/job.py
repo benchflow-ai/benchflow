@@ -16,11 +16,22 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Callable
+
+from benchflow._scoring import (
+    ACP_ERROR,
+    INSTALL_FAILED,
+    PIPE_CLOSED,
+    classify_error,
+    extract_reward,
+    pass_rate,
+    pass_rate_excl_errors,
+)
 
 import yaml
 
-from benchflow.sdk import SDK, RunResult
+from benchflow._models import RunResult
+from benchflow.sdk import SDK
 
 logger = logging.getLogger(__name__)
 
@@ -36,23 +47,29 @@ class RetryConfig:
 
     def should_retry(self, error: str | None) -> bool:
         """Check if an error is retryable."""
-        if not error:
+        category = classify_error(error)
+        if not category:
             return False
-        if self.retry_on_install and "install failed" in error:
+        if self.retry_on_install and category == INSTALL_FAILED:
             return True
-        if self.retry_on_pipe and "closed stdout" in error:
+        if self.retry_on_pipe and category == PIPE_CLOSED:
             return True
-        if self.retry_on_acp and "ACP error" in error:
+        if self.retry_on_acp and category == ACP_ERROR:
             return True
         return False
+
+
+# Defaults: works out-of-the-box with `claude login` (subscription auth, no API key needed)
+DEFAULT_AGENT = "claude-agent-acp"
+DEFAULT_MODEL = "claude-haiku-4-5-20251001"
 
 
 @dataclass
 class JobConfig:
     """Configuration for a benchmark job."""
 
-    agent: str = "claude-agent-acp"
-    model: str = "claude-haiku-4-5-20251001"
+    agent: str = DEFAULT_AGENT
+    model: str = DEFAULT_MODEL
     environment: str = "docker"
     concurrency: int = 4
     prompts: list[str | None] | None = None
@@ -61,6 +78,7 @@ class JobConfig:
     skills_dir: str | None = None
     sandbox_user: str | None = None
     context_root: str | None = None
+    exclude_tasks: set[str] = field(default_factory=set)
 
     def __post_init__(self):
         from benchflow.agents.registry import AGENTS
@@ -87,13 +105,12 @@ class JobResult:
     @property
     def score(self) -> float:
         """Pass rate over all tasks."""
-        return self.passed / self.total if self.total > 0 else 0.0
+        return pass_rate(passed=self.passed, total=self.total)
 
     @property
     def score_excl_errors(self) -> float:
         """Pass rate excluding errored tasks."""
-        completed = self.passed + self.failed
-        return self.passed / completed if completed > 0 else 0.0
+        return pass_rate_excl_errors(passed=self.passed, failed=self.failed)
 
 
 class Job:
@@ -179,14 +196,21 @@ class Job:
         # Parse prompts — YAML null becomes Python None
         prompts = raw.get("prompts")
 
+        agent_env_raw = raw.get("agent_env", {})
+        exclude = set(raw.get("exclude", []))
+        sandbox_user = raw.get("sandbox_user")
+
         config = JobConfig(
-            agent=raw.get("agent", "claude-agent-acp"),
-            model=raw.get("model", "claude-haiku-4-5-20251001"),
+            agent=raw.get("agent", DEFAULT_AGENT),
+            model=raw.get("model", DEFAULT_MODEL),
             environment=raw.get("environment", "docker"),
             concurrency=raw.get("concurrency", 4),
             prompts=prompts,
+            agent_env=agent_env_raw,
             retry=RetryConfig(max_retries=raw.get("max_retries", 2)),
             skills_dir=str(base_dir / raw["skills_dir"]) if raw.get("skills_dir") else None,
+            sandbox_user=sandbox_user,
+            exclude_tasks=exclude,
         )
         return cls(tasks_dir=tasks_dir, jobs_dir=jobs_dir, config=config, **kwargs)
 
@@ -196,13 +220,13 @@ class Job:
         # Agent
         agents = raw.get("agents", [{}])
         agent_cfg = agents[0] if agents else {}
-        agent_name = agent_cfg.get("name", "claude-agent-acp")
+        agent_name = agent_cfg.get("name", DEFAULT_AGENT)
 
         # Model — Harbor uses "anthropic/model-name" format
         model = agent_cfg.get("model_name", "")
         if "/" in model:
             model = model.split("/", 1)[1]
-        model = model or "claude-haiku-4-5-20251001"
+        model = model or DEFAULT_MODEL
 
         # Environment
         env_cfg = raw.get("environment", {})
@@ -248,6 +272,7 @@ class Job:
         return sorted(
             d for d in self._tasks_dir.iterdir()
             if d.is_dir() and (d / "task.toml").exists()
+            and d.name not in self._config.exclude_tasks
         )
 
     def _get_completed_tasks(self) -> dict[str, dict]:
@@ -279,6 +304,8 @@ class Job:
         last_result = None
 
         for attempt in range(1, cfg.retry.max_retries + 2):  # +2 because range is exclusive and attempt 1 is first try
+            if attempt > 1:
+                self._prune_docker()
             result = await self._sdk.run(
                 task_path=task_dir,
                 agent=cfg.agent,
@@ -323,8 +350,8 @@ class Job:
                         cfg = json.loads(cfg_file.read_text())
                         prev_agent = cfg.get("agent", "")
                         break
-                    except Exception:
-                        pass
+                    except (json.JSONDecodeError, OSError):
+                        logger.debug("Could not read %s", cfg_file)
             if prev_agent and prev_agent != self._config.agent:
                 logger.warning(
                     f"Resuming with agent={self._config.agent!r} but "
@@ -347,6 +374,7 @@ class Job:
         async def bounded(td: Path) -> tuple[str, RunResult]:
             async with sem:
                 result = await self._run_task(td)
+                self._prune_docker()
                 # Log result
                 reward = result.rewards.get("reward") if result.rewards else None
                 status = "PASS" if reward == 1 else ("FAIL" if reward is not None else "ERR")
@@ -387,17 +415,13 @@ class Job:
             }
 
         # Count — all values are dicts now, no type branching needed
-        def _reward(r: dict) -> float | None:
-            rewards = r.get("rewards")
-            return rewards.get("reward") if rewards else None
-
         job_result = JobResult(
             job_name=self._job_name,
             config=cfg,
             total=len(task_dirs),
-            passed=sum(1 for r in all_results.values() if _reward(r) == 1.0),
+            passed=sum(1 for r in all_results.values() if extract_reward(r) == 1.0),
             failed=sum(1 for r in all_results.values()
-                       if _reward(r) is not None and _reward(r) != 1.0),
+                       if extract_reward(r) is not None and extract_reward(r) != 1.0),
             errored=sum(1 for r in all_results.values()
                         if r.get("error") and r.get("rewards") is None),
             elapsed_sec=elapsed,

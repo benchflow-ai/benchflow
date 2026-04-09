@@ -1,4 +1,8 @@
-"""User agent — interactive multi-turn ACP agent that proxies to a human."""
+"""User agent — interactive multi-turn ACP agent that proxies to a human.
+
+Status: backlog — not wired into CLI or SDK yet. Intended for manual
+debugging of benchmark tasks via stdin/stdout.
+"""
 
 import asyncio
 
