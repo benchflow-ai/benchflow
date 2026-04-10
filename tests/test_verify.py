@@ -1,6 +1,7 @@
 """Tests for verifier failure isolation — verifier_error field, retry, resume, metrics."""
 
 import asyncio
+import contextlib
 import json
 import logging
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -97,9 +98,11 @@ class TestSdkVerify:
         sdk = SDK()
         task = MagicMock()
         task.config.verifier.timeout_sec = 5
+        task.config.verifier.env = None
         tp = MagicMock()
         tp.verifier_dir = tmp_path / "verifier"
         env = MagicMock()
+        env.exec = AsyncMock(return_value=MagicMock(stdout="", stderr="", exit_code=0))
         return sdk, env, task, tp
 
     @pytest.mark.asyncio
@@ -368,3 +371,212 @@ class TestMetricsVerifierError:
 def test_task_metrics_verifier_errored(reward, error, verifier_error, expected):
     t = TaskMetrics(task_name="t", reward=reward, error=error, verifier_error=verifier_error)
     assert t.verifier_errored is expected
+
+
+# ---------------------------------------------------------------------------
+# Verifier hardening (PR 2)
+# ---------------------------------------------------------------------------
+
+class TestVerifierHardening:
+    """Pre-verification hardening: pkill, conftest cleanup, env injection."""
+
+    @pytest.fixture
+    def hardening_harness(self, tmp_path):
+        from benchflow.sdk import SDK
+        sdk = SDK()
+        task = MagicMock()
+        task.config.verifier.timeout_sec = 5
+        task.config.verifier.env = None
+        tp = MagicMock()
+        tp.verifier_dir = tmp_path / "verifier"
+        env = MagicMock()
+        env.exec = AsyncMock(return_value=MagicMock(stdout="", stderr="", exit_code=0))
+        return sdk, env, task, tp
+
+    @pytest.mark.asyncio
+    async def test_hardening_with_sandbox_user(self, hardening_harness):
+        """With sandbox_user: pkill runs first, cleanup runs, env injected."""
+        sdk, env, task, tp = hardening_harness
+        mock_v = MagicMock()
+        mock_v.verify = AsyncMock(return_value=MagicMock(rewards={"reward": 1.0}))
+        with patch("benchflow.sdk.Verifier", return_value=mock_v):
+            await sdk._verify(env, task, tp, {}, sandbox_user="agent")
+
+        exec_cmds = [c[0][0] for c in env.exec.call_args_list]
+        # pkill is first call
+        assert "pkill -u agent" in exec_cmds[0]
+        # Cleanup runs (conftest, sitecustomize, .pth — all in one command)
+        cleanup = [c for c in exec_cmds if "conftest.py" in c]
+        assert cleanup and "sitecustomize.py" in cleanup[0] and ".pth" in cleanup[0]
+        assert "-not -path '/tests/*'" in cleanup[0]
+        # Env injection — all _VERIFIER_ENV keys present
+        injected = task.config.verifier.env
+        assert injected["PATH"] == "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+        assert "--rootdir=/tests" in injected["PYTEST_ADDOPTS"]
+        assert "-p no:cacheprovider" in injected["PYTEST_ADDOPTS"]
+        assert injected["PYTHONPATH"] == ""
+        assert injected["PYTHONHOME"] == ""
+        assert injected["PYTHONDONTWRITEBYTECODE"] == "1"
+
+    @pytest.mark.asyncio
+    async def test_hardening_without_sandbox_user(self, hardening_harness):
+        """Without sandbox_user: no pkill, cleanup still runs, env still injected."""
+        sdk, env, task, tp = hardening_harness
+        mock_v = MagicMock()
+        mock_v.verify = AsyncMock(return_value=MagicMock(rewards={"reward": 1.0}))
+        with patch("benchflow.sdk.Verifier", return_value=mock_v):
+            await sdk._verify(env, task, tp, {}, sandbox_user=None)
+
+        exec_cmds = [c[0][0] for c in env.exec.call_args_list]
+        assert all("pkill" not in c for c in exec_cmds)
+        assert any("conftest.py" in c for c in exec_cmds)
+        assert task.config.verifier.env["PYTEST_ADDOPTS"] == "--rootdir=/tests -p no:cacheprovider"
+
+    @pytest.mark.asyncio
+    async def test_task_env_overrides_win(self, hardening_harness):
+        """Task-level verifier env vars override _VERIFIER_ENV defaults."""
+        sdk, env, task, tp = hardening_harness
+        task.config.verifier.env = {"PATH": "/custom/bin", "MY_VAR": "hello"}
+        mock_v = MagicMock()
+        mock_v.verify = AsyncMock(return_value=MagicMock(rewards={"reward": 1.0}))
+        with patch("benchflow.sdk.Verifier", return_value=mock_v):
+            await sdk._verify(env, task, tp, {})
+        injected = task.config.verifier.env
+        assert injected["PATH"] == "/custom/bin"
+        assert injected["MY_VAR"] == "hello"
+        assert injected["PYTHONPATH"] == ""  # non-overridden defaults kept
+
+
+class TestTrajectorySource:
+    """trajectory_source and partial_trajectory fields in RunResult and result.json."""
+
+    def _build(self, tmp_path, **overrides):
+        from benchflow.sdk import SDK
+        from datetime import datetime
+        defaults = dict(
+            task_name="t1", trial_name="trial-1", agent="test",
+            agent_name="", model="", n_tool_calls=0, prompts=["x"],
+            error=None, verifier_error=None, trajectory=[],
+            partial_trajectory=False, trajectory_source=None,
+            rewards={"reward": 1.0},
+            started_at=datetime.now(), timing={},
+        )
+        defaults.update(overrides)
+        SDK._build_result(tmp_path, **defaults)
+        return json.loads((tmp_path / "result.json").read_text())
+
+    @pytest.mark.parametrize("source,partial,expected_source,expected_partial", [
+        ("acp", False, "acp", False),
+        ("scraped", False, "scraped", False),
+        ("partial_acp", True, "partial_acp", True),
+        (None, False, None, False),
+    ])
+    def test_trajectory_source_in_result_json(self, tmp_path, source, partial, expected_source, expected_partial):
+        data = self._build(tmp_path, trajectory_source=source, partial_trajectory=partial)
+        assert data["trajectory_source"] == expected_source
+        assert data["partial_trajectory"] == expected_partial
+
+    def test_run_result_fields_and_defaults(self):
+        r_default = RunResult(task_name="t")
+        assert r_default.trajectory_source is None
+        assert r_default.partial_trajectory is False
+
+        r_set = RunResult(task_name="t", trajectory_source="acp", partial_trajectory=True)
+        assert r_set.trajectory_source == "acp"
+        assert r_set.partial_trajectory is True
+
+
+class TestScrapedTrajectoryTrust:
+    """Scraped trajectory must NOT overwrite ACP-sourced n_tool_calls.
+
+    These tests exercise the actual SDK.run() codepath by mocking all
+    external dependencies and verifying n_tool_calls is never derived
+    from agent-writable data.
+    """
+
+    @pytest.fixture
+    def sdk_run_mocks(self, tmp_path):
+        """Mocks for SDK.run() that reach scraping/finally without real containers."""
+        from benchflow.sdk import SDK
+        sdk = SDK()
+
+        mock_env = AsyncMock()
+        mock_env.exec = AsyncMock(return_value=MagicMock(stdout="", stderr="", exit_code=0))
+        mock_env.stop = AsyncMock()
+
+        task_dir = tmp_path / "task"
+        task_dir.mkdir()
+        (task_dir / "task.toml").write_text(
+            'version = "1.0"\n[verifier]\ntimeout_sec = 5\n'
+            '[agent]\ntimeout_sec = 5\n[environment]\n'
+        )
+        (task_dir / "environment").mkdir()
+        (task_dir / "environment" / "Dockerfile").write_text("FROM ubuntu:22.04\n")
+        (task_dir / "instruction.md").write_text("do the thing")
+
+        return sdk, mock_env, task_dir
+
+    @contextlib.contextmanager
+    def _patch_sdk_run(self, sdk, mock_env, extra_patches):
+        """Apply shared + extra patches for SDK.run() internals."""
+        patches = [
+            patch("benchflow.sdk._create_environment", return_value=mock_env),
+            patch.object(sdk, "_install_agent", return_value=MagicMock(
+                credential_files={}, home_dirs=[], skill_paths=[], env_mapping={},
+            )),
+            patch.object(sdk, "_write_credential_files", new_callable=AsyncMock),
+            patch.object(sdk, "_deploy_skills", new_callable=AsyncMock),
+        ] + extra_patches
+        with contextlib.ExitStack() as stack:
+            for p in patches:
+                stack.enter_context(p)
+            yield
+
+    @pytest.mark.asyncio
+    async def test_scraped_trajectory_preserves_n_tool_calls(self, sdk_run_mocks, caplog):
+        """Main path: forged scraped trajectory must NOT overwrite ACP n_tool_calls."""
+        sdk, mock_env, task_dir = sdk_run_mocks
+
+        forged = [{"type": "tool_call", "name": f"fake_{i}"} for i in range(100)]
+        mock_session = MagicMock()
+        mock_session.tool_calls = [MagicMock() for _ in range(5)]
+        mock_acp = AsyncMock()
+        mock_acp.session = mock_session
+        mock_acp.close = AsyncMock()
+
+        with self._patch_sdk_run(sdk, mock_env, [
+            patch.object(sdk, "_connect_acp", new_callable=AsyncMock, return_value=(mock_acp, mock_session, "test-agent")),
+            patch.object(sdk, "_execute_prompts", new_callable=AsyncMock, return_value=([], 5)),
+            patch("benchflow.sdk._scrape_agent_trajectory", new_callable=AsyncMock, return_value=forged),
+            patch.object(sdk, "_verify", new_callable=AsyncMock, return_value=({"reward": 1.0}, None)),
+        ]), caplog.at_level(logging.WARNING):
+            result = await sdk.run(task_dir, agent="test-agent", agent_env={"TEST": "1"})
+
+        assert result.n_tool_calls == 5, "ACP n_tool_calls must survive scraping fallback"
+        assert result.trajectory_source == "scraped"
+        assert len(result.trajectory) == 100
+        assert any("UNTRUSTED" in m for m in caplog.messages)
+
+    @pytest.mark.asyncio
+    async def test_partial_acp_uses_session_tool_calls(self, sdk_run_mocks):
+        """Finally block: partial_acp path gets n_tool_calls from session, not trajectory."""
+        sdk, mock_env, task_dir = sdk_run_mocks
+
+        mock_session = MagicMock()
+        mock_session.tool_calls = [MagicMock() for _ in range(3)]
+        partial_events = [{"type": "tool_call"}] * 7 + [{"type": "message"}] * 3
+        mock_acp = AsyncMock()
+        mock_acp.session = mock_session
+        mock_acp.close = AsyncMock()
+
+        with self._patch_sdk_run(sdk, mock_env, [
+            patch.object(sdk, "_connect_acp", new_callable=AsyncMock, return_value=(mock_acp, mock_session, "test-agent")),
+            patch.object(sdk, "_execute_prompts", new_callable=AsyncMock, side_effect=ConnectionError("lost")),
+            patch("benchflow.sdk._capture_session_trajectory", return_value=partial_events),
+            patch("benchflow.sdk._scrape_agent_trajectory", new_callable=AsyncMock, return_value=[]),
+        ]):
+            result = await sdk.run(task_dir, agent="test-agent", agent_env={"TEST": "1"})
+
+        assert result.n_tool_calls == 3, "Must use session.tool_calls, not trajectory count"
+        assert result.trajectory_source == "partial_acp"
+        assert result.partial_trajectory is True

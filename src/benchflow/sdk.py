@@ -359,6 +359,7 @@ class SDK:
         verifier_error: str | None,
         trajectory: list[dict],
         partial_trajectory: bool,
+        trajectory_source: str | None = None,
         rewards: dict | None,
         started_at: datetime,
         timing: dict[str, float],
@@ -376,6 +377,8 @@ class SDK:
             n_prompts=len(prompts),
             error=error,
             verifier_error=verifier_error,
+            partial_trajectory=partial_trajectory,
+            trajectory_source=trajectory_source,
             started_at=started_at,
             finished_at=datetime.now(),
         )
@@ -403,7 +406,8 @@ class SDK:
                     "n_prompts": result.n_prompts,
                     "error": result.error,
                     "verifier_error": result.verifier_error,
-                    "partial_trajectory": partial_trajectory,
+                    "partial_trajectory": result.partial_trajectory,
+                    "trajectory_source": result.trajectory_source,
                     "started_at": str(result.started_at),
                     "finished_at": str(result.finished_at),
                     "timing": timing,
@@ -620,9 +624,60 @@ class SDK:
         trajectory = _capture_session_trajectory(session)
         return trajectory, len(session.tool_calls)
 
+    # Trusted env vars for verifier execution — override any agent pollution
+    _VERIFIER_ENV = {
+        "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "PYTEST_ADDOPTS": "--rootdir=/tests -p no:cacheprovider",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONPATH": "",
+        "PYTHONHOME": "",
+    }
+
+    # Cleanup command for pytest hook / Python startup injection.
+    # Removes conftest.py outside /tests, sitecustomize.py/usercustomize.py
+    # and .pth files from writable sys.path entries (preserves /usr/lib,
+    # /usr/local/lib).
+    _CLEANUP_CMD = (
+        "find / -maxdepth 5 -name conftest.py -not -path '/tests/*' -delete 2>/dev/null; "
+        'python3 -c "'
+        "import sys,os;"
+        "[os.remove(os.path.join(d,f)) "
+        " for d in sys.path "
+        " for f in ('sitecustomize.py','usercustomize.py') "
+        " if d and not d.startswith('/usr/lib') and not d.startswith('/usr/local/lib') "
+        " and os.path.isfile(os.path.join(d,f))];"
+        "[os.remove(os.path.join(d,f)) "
+        " for d in sys.path if d and os.path.isdir(d) "
+        " for f in os.listdir(d) if f.endswith('.pth') "
+        " and not d.startswith('/usr/lib') and not d.startswith('/usr/local/lib') "
+        " and os.path.isfile(os.path.join(d,f))]"
+        '" 2>/dev/null || true'
+    )
+
+    async def _harden_before_verify(self, env, task: "Task", sandbox_user: str | None) -> None:
+        """Neutralize agent tampering before running the verifier.
+
+        1. Kill sandbox-user processes (prevent concurrent writes).
+        2. Remove injected conftest.py, sitecustomize.py, .pth files.
+        3. Merge trusted env vars into task.config.verifier.env.
+        """
+        if sandbox_user:
+            await env.exec(
+                f"pkill -u {sandbox_user} 2>/dev/null; "
+                f"sleep 1; pkill -9 -u {sandbox_user} 2>/dev/null || true",
+                timeout_sec=10,
+            )
+        await env.exec(self._CLEANUP_CMD, timeout_sec=10)
+
+        verifier_env = dict(self._VERIFIER_ENV)
+        if task.config.verifier.env:
+            verifier_env.update(task.config.verifier.env)
+        task.config.verifier.env = verifier_env
+
     async def _verify(self, env, task: "Task", trial_paths: "TrialPaths", timing: dict, sandbox_user: str | None = None) -> tuple[dict | None, str | None]:
-        """Run verifier and return (rewards, verifier_error)."""
+        """Run verifier with pre-verification hardening."""
         trial_paths.verifier_dir.mkdir(parents=True, exist_ok=True)
+        await self._harden_before_verify(env, task, sandbox_user)
         logger.info("Running verifier...")
         t0 = datetime.now()
         verifier_error = None
@@ -718,6 +773,7 @@ class SDK:
         acp_client: ACPClient | None = None
         trajectory: list[dict] = []
         partial_trajectory = False
+        trajectory_source: str | None = None
         agent_name = ""
         n_tool_calls = 0
         error = None
@@ -763,6 +819,7 @@ class SDK:
                 trajectory, n_tool_calls = await self._execute_prompts(
                     acp_client, session, prompts, timeout,
                 )
+                trajectory_source = "acp"
 
             if agent != "oracle" and "agent_setup" not in timing:
                 timing["agent_setup"] = (datetime.now() - t_agent_setup).total_seconds()
@@ -776,8 +833,13 @@ class SDK:
                 scraped = await _scrape_agent_trajectory(env, agent, sandbox_user)
                 if scraped:
                     trajectory = scraped
-                    n_tool_calls = sum(1 for e in trajectory if e.get("type") == "tool_call")
-                    logger.info(f"Scraped {len(trajectory)} events from agent-native trajectory")
+                    trajectory_source = "scraped"
+                    # Do NOT overwrite n_tool_calls — keep ACP-sourced value (trusted).
+                    # Scraped trajectory is agent-writable and forgeable.
+                    logger.warning(
+                        f"Using scraped trajectory ({len(scraped)} events) from "
+                        f"agent-writable directory — data is UNTRUSTED"
+                    )
 
             rewards, verifier_error = await self._verify(env, task, trial_paths, timing, sandbox_user=sandbox_user)
 
@@ -795,9 +857,10 @@ class SDK:
             if not trajectory and acp_client:
                 try:
                     trajectory = _capture_session_trajectory(acp_client.session)
-                    n_tool_calls = sum(1 for e in trajectory if e.get("type") == "tool_call")
                     if trajectory:
                         partial_trajectory = True
+                        trajectory_source = "partial_acp"
+                        n_tool_calls = len(acp_client.session.tool_calls)
                         logger.info(f"Captured {len(trajectory)} partial trajectory events")
                 except Exception as e:
                     logger.warning(f"Partial trajectory capture failed: {e}")
@@ -825,6 +888,7 @@ class SDK:
             verifier_error=verifier_error,
             trajectory=trajectory,
             partial_trajectory=partial_trajectory,
+            trajectory_source=trajectory_source,
             rewards=rewards,
             started_at=started_at,
             timing=timing,

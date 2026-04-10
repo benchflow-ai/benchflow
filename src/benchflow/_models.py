@@ -73,6 +73,8 @@ class RunResult:
         n_prompts: int = 0,
         error: str | None = None,
         verifier_error: str | None = None,
+        partial_trajectory: bool = False,
+        trajectory_source: str | None = None,
         started_at: datetime | None = None,
         finished_at: datetime | None = None,
     ):
@@ -87,6 +89,8 @@ class RunResult:
         self.n_prompts = n_prompts
         self.error = error
         self.verifier_error = verifier_error
+        self.partial_trajectory = partial_trajectory
+        self.trajectory_source = trajectory_source
         self.started_at = started_at
         self.finished_at = finished_at
 
