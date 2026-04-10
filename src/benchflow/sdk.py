@@ -356,6 +356,7 @@ class SDK:
         n_tool_calls: int,
         prompts: list[str],
         error: str | None,
+        verifier_error: str | None,
         trajectory: list[dict],
         partial_trajectory: bool,
         rewards: dict | None,
@@ -374,6 +375,7 @@ class SDK:
             n_tool_calls=n_tool_calls,
             n_prompts=len(prompts),
             error=error,
+            verifier_error=verifier_error,
             started_at=started_at,
             finished_at=datetime.now(),
         )
@@ -400,6 +402,7 @@ class SDK:
                     "n_tool_calls": result.n_tool_calls,
                     "n_prompts": result.n_prompts,
                     "error": result.error,
+                    "verifier_error": result.verifier_error,
                     "partial_trajectory": partial_trajectory,
                     "started_at": str(result.started_at),
                     "finished_at": str(result.finished_at),
@@ -617,16 +620,34 @@ class SDK:
         trajectory = _capture_session_trajectory(session)
         return trajectory, len(session.tool_calls)
 
-    async def _verify(self, env, task: "Task", trial_paths: "TrialPaths", timing: dict) -> dict | None:
-        """Run verifier and return rewards."""
+    async def _verify(self, env, task: "Task", trial_paths: "TrialPaths", timing: dict, sandbox_user: str | None = None) -> tuple[dict | None, str | None]:
+        """Run verifier and return (rewards, verifier_error)."""
         trial_paths.verifier_dir.mkdir(parents=True, exist_ok=True)
         logger.info("Running verifier...")
         t0 = datetime.now()
-        verifier = Verifier(task=task, trial_paths=trial_paths, environment=env)
-        verifier_result = await verifier.verify()
-        timing["verifier"] = (datetime.now() - t0).total_seconds()
-        logger.info(f"Rewards: {verifier_result.rewards}")
-        return verifier_result.rewards
+        verifier_error = None
+        try:
+            verifier = Verifier(task=task, trial_paths=trial_paths, environment=env)
+            verifier_result = await asyncio.wait_for(
+                verifier.verify(),
+                timeout=task.config.verifier.timeout_sec,
+            )
+            timing["verifier"] = (datetime.now() - t0).total_seconds()
+            rewards = verifier_result.rewards
+            logger.info(f"Rewards: {rewards}")
+        except asyncio.TimeoutError:
+            timing["verifier"] = (datetime.now() - t0).total_seconds()
+            # NOTE: these prefixes must stay in sync with classify_verifier_error() in _scoring.py
+            verifier_error = f"verifier timed out after {task.config.verifier.timeout_sec}s"
+            rewards = None
+            logger.error(verifier_error)
+        except Exception as e:
+            timing["verifier"] = (datetime.now() - t0).total_seconds()
+            # NOTE: these prefixes must stay in sync with classify_verifier_error() in _scoring.py
+            verifier_error = f"verifier crashed: {e}"
+            rewards = None
+            logger.error(verifier_error)
+        return rewards, verifier_error
 
     async def run(
         self,
@@ -700,6 +721,7 @@ class SDK:
         agent_name = ""
         n_tool_calls = 0
         error = None
+        verifier_error = None
         rewards = None
 
         try:
@@ -757,7 +779,7 @@ class SDK:
                     n_tool_calls = sum(1 for e in trajectory if e.get("type") == "tool_call")
                     logger.info(f"Scraped {len(trajectory)} events from agent-native trajectory")
 
-            rewards = await self._verify(env, task, trial_paths, timing)
+            rewards, verifier_error = await self._verify(env, task, trial_paths, timing, sandbox_user=sandbox_user)
 
         except asyncio.TimeoutError:
             error = f"Agent timed out after {timeout}s"
@@ -800,6 +822,7 @@ class SDK:
             n_tool_calls=n_tool_calls,
             prompts=prompts,
             error=error,
+            verifier_error=verifier_error,
             trajectory=trajectory,
             partial_trajectory=partial_trajectory,
             rewards=rewards,
