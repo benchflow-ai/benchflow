@@ -430,7 +430,9 @@ class TestVerifierHardening:
         exec_cmds = [c[0][0] for c in env.exec.call_args_list]
         assert all("pkill" not in c for c in exec_cmds)
         assert any("conftest.py" in c for c in exec_cmds)
-        assert task.config.verifier.env["PYTEST_ADDOPTS"] == "--rootdir=/tests -p no:cacheprovider"
+        addopts = task.config.verifier.env["PYTEST_ADDOPTS"]
+        assert "--rootdir=/tests" in addopts
+        assert "-p no:cacheprovider" in addopts
 
     @pytest.mark.asyncio
     async def test_task_env_overrides_win(self, hardening_harness):
@@ -445,6 +447,145 @@ class TestVerifierHardening:
         assert injected["PATH"] == "/custom/bin"
         assert injected["MY_VAR"] == "hello"
         assert injected["PYTHONPATH"] == ""  # non-overridden defaults kept
+
+    def test_verifier_env_contract(self):
+        """SDK._VERIFIER_ENV pins every layer of the pytest ini/plugin hardening.
+
+        Static dict inspection — no async harness needed. See
+        tmp/lockdown-sandbox_4.md for the threat model. Each assertion guards a
+        specific bypass; collapsing them into one test gives a single
+        authoritative contract for the env's contents.
+        """
+        from benchflow.sdk import SDK
+        env = SDK._VERIFIER_ENV
+        addopts = env["PYTEST_ADDOPTS"]
+
+        # Closed-set: any new key added to _VERIFIER_ENV must be deliberately
+        # accounted for here. Catches accidental additions that could weaken
+        # the contract (e.g. a stray debug var with sensitive content).
+        assert set(env.keys()) == {
+            "PATH",
+            "PYTEST_ADDOPTS",
+            "PYTHONDONTWRITEBYTECODE",
+            "PYTHONPATH",
+            "PYTHONHOME",
+            "PYTHONSTARTUP",
+            "PYTHONSAFEPATH",
+            "LD_PRELOAD",
+            "LD_LIBRARY_PATH",
+        }
+
+        # Layer 1 — block pyproject.toml/pytest.ini/tox.ini/setup.cfg discovery
+        assert "-c /dev/null" in addopts
+        # Layer 2 — block conftest.py walk-up beyond /tests
+        assert "--confcutdir=/tests" in addopts
+        # Pre-existing rootdir pin + cache disable
+        assert "--rootdir=/tests" in addopts
+        assert "-p no:cacheprovider" in addopts
+
+        # Layer 4 — drop implicit '' (cwd) from sys.path (Python 3.11+)
+        assert env["PYTHONSAFEPATH"] == "1"
+
+        # Layer 5 — clear image-ENV carryover (zero-downside insurance)
+        assert env["PYTHONSTARTUP"] == ""
+        assert env["LD_PRELOAD"] == ""
+        assert env["LD_LIBRARY_PATH"] == ""
+
+        # Pattern 7 hardening (pre-existing)
+        assert env["PYTHONPATH"] == ""
+        assert env["PYTHONHOME"] == ""
+        assert env["PYTHONDONTWRITEBYTECODE"] == "1"
+        assert env["PATH"] == "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+    def test_plugin_autoload_not_disabled(self):
+        """Negative guard: PYTEST_DISABLE_PLUGIN_AUTOLOAD must NOT be in _VERIFIER_ENV.
+
+        Disabling plugin autoload would break ~94 SkillsBench tasks that use
+        pytest-json-ctrf's --ctrf flag. Entry-point plugin injection is already
+        blocked structurally (root verifier + system site-packages perms +
+        .pth cleanup in _CLEANUP_CMD).
+
+        This guards against accidental re-addition. A developer who *intends*
+        to add it will (correctly) update this test and the comment in
+        sdk.py:_VERIFIER_ENV at the same time.
+        """
+        from benchflow.sdk import SDK
+        assert "PYTEST_DISABLE_PLUGIN_AUTOLOAD" not in SDK._VERIFIER_ENV
+
+    def test_dash_c_devnull_blocks_hostile_pyproject(self, tmp_path):
+        """End-to-end: real pytest under `-c /dev/null` ignores agent-written
+        `pyproject.toml` in cwd.
+
+        Binds the static `_VERIFIER_ENV` assertions above to actual pytest
+        behavior — if pytest ever changes such that `-c /dev/null` stops
+        suppressing ini-file discovery, this catches it. Drops a hostile
+        `pyproject.toml` referencing a nonexistent plugin into a tmpdir,
+        invokes pytest from that cwd, and asserts both directions:
+
+          1. without `-c /dev/null`: hostile config is loaded → pytest errors
+             (sanity check that the test setup is meaningful)
+          2. with `-c /dev/null`: hostile config is ignored → pytest succeeds
+        """
+        import os
+        import subprocess
+        import sys
+
+        plugin_marker = "benchflow_test_nonexistent_plugin_xyz123"
+        (tmp_path / "pyproject.toml").write_text(
+            "[tool.pytest.ini_options]\n"
+            f'addopts = "-p {plugin_marker}"\n'
+        )
+        (tmp_path / "test_dummy.py").write_text("def test_pass():\n    assert True\n")
+
+        # Whitelist parent env (not blacklist): only pass through what pytest
+        # genuinely needs. A blacklist of `PYTEST_*` would still leak
+        # PYTHONPATH, VIRTUAL_ENV, CI, TOX_*, etc., any of which can change
+        # pytest's behavior and let either branch pass for the wrong reason.
+        clean_env = {
+            k: os.environ[k]
+            for k in ("PATH", "HOME", "LANG", "LC_ALL")
+            if k in os.environ
+        }
+
+        unhardened = subprocess.run(
+            [sys.executable, "-m", "pytest", "--collect-only", "test_dummy.py"],
+            cwd=tmp_path, env=clean_env, capture_output=True, text=True,
+        )
+        # Must fail, AND must fail because of OUR hostile plugin marker —
+        # not because of an unrelated collection / setup error.
+        assert unhardened.returncode != 0, (
+            "Sanity check failed: hostile pyproject.toml should crash unhardened pytest. "
+            f"stdout: {unhardened.stdout}\nstderr: {unhardened.stderr}"
+        )
+        combined_unhardened = unhardened.stdout + unhardened.stderr
+        assert plugin_marker in combined_unhardened, (
+            "Sanity check passed for the wrong reason: hostile plugin marker not in output. "
+            f"stdout: {unhardened.stdout}\nstderr: {unhardened.stderr}"
+        )
+
+        hardened = subprocess.run(
+            [sys.executable, "-m", "pytest", "-c", "/dev/null",
+             "--collect-only", "test_dummy.py"],
+            cwd=tmp_path, env=clean_env, capture_output=True, text=True,
+        )
+        # Must succeed, AND must have actually collected the dummy test —
+        # not silently collected zero items (which also returns 0 with
+        # --collect-only on some pytest versions).
+        assert hardened.returncode == 0, (
+            "-c /dev/null should block hostile pyproject.toml discovery. "
+            f"stdout: {hardened.stdout}\nstderr: {hardened.stderr}"
+        )
+        assert "test_pass" in hardened.stdout, (
+            "Hardened branch returned 0 but did not collect test_pass — "
+            "the test may have passed for the wrong reason. "
+            f"stdout: {hardened.stdout}\nstderr: {hardened.stderr}"
+        )
+        # And the hostile plugin marker must NOT appear — proves -c /dev/null
+        # actually suppressed pyproject.toml loading.
+        assert plugin_marker not in hardened.stdout + hardened.stderr, (
+            "-c /dev/null did not suppress hostile pyproject.toml — "
+            f"plugin marker {plugin_marker!r} leaked into hardened output."
+        )
 
 
 class TestTrajectorySource:

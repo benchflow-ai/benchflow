@@ -730,13 +730,31 @@ class SDK:
         trajectory = _capture_session_trajectory(session)
         return trajectory, len(session.tool_calls)
 
-    # Trusted env vars for verifier execution — override any agent pollution
+    # Trusted env vars for verifier execution — override any agent pollution.
+    #
+    # PYTEST_DISABLE_PLUGIN_AUTOLOAD intentionally omitted: would break ~94
+    # SkillsBench tasks that rely on pytest-json-ctrf's --ctrf flag. Entry-point
+    # plugin injection is already blocked by verifier-runs-as-root + system
+    # site-packages permissions + the .pth cleanup in _CLEANUP_CMD.
+    #
+    # PYTHONNOUSERSITE intentionally omitted: verifier runs as root, so the
+    # only user-site dir on sys.path is /root/.local which sandbox_user cannot
+    # touch, and _CLEANUP_CMD already wipes .pth files there as belt-and-braces.
     _VERIFIER_ENV = {
         "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-        "PYTEST_ADDOPTS": "--rootdir=/tests -p no:cacheprovider",
+        "PYTEST_ADDOPTS": (
+            "-c /dev/null "          # block pyproject.toml/pytest.ini/tox.ini/setup.cfg discovery
+            "--confcutdir=/tests "   # block conftest.py walk-up beyond /tests
+            "--rootdir=/tests "
+            "-p no:cacheprovider"
+        ),
         "PYTHONDONTWRITEBYTECODE": "1",
         "PYTHONPATH": "",
         "PYTHONHOME": "",
+        "PYTHONSTARTUP": "",
+        "PYTHONSAFEPATH": "1",       # drop implicit '' (cwd) from sys.path
+        "LD_PRELOAD": "",
+        "LD_LIBRARY_PATH": "",
     }
 
     # Cleanup command for pytest hook / Python startup injection.
