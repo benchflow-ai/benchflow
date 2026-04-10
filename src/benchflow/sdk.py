@@ -279,16 +279,25 @@ class SDK:
         """Detect provider for model, inject BENCHFLOW_PROVIDER_* and env_mapping."""
         from benchflow.agents.providers import find_provider, resolve_base_url, strip_provider_prefix
         agent_env.setdefault("BENCHFLOW_PROVIDER_MODEL", strip_provider_prefix(model))
+        agent_cfg = AGENTS.get(agent)
+        # Agent-declared protocol takes precedence over provider's primary so
+        # multi-endpoint providers (e.g. zai) route to the right URL.
+        agent_protocol = agent_cfg.api_protocol if agent_cfg else ""
         _prov = find_provider(model)
         if _prov:
             _prov_name, _prov_cfg = _prov
             agent_env.setdefault("BENCHFLOW_PROVIDER_NAME", _prov_name)
             try:
-                agent_env.setdefault("BENCHFLOW_PROVIDER_BASE_URL",
-                                     resolve_base_url(_prov_cfg, agent_env))
+                agent_env.setdefault(
+                    "BENCHFLOW_PROVIDER_BASE_URL",
+                    resolve_base_url(_prov_cfg, agent_env, protocol=agent_protocol or None),
+                )
             except KeyError:
                 pass  # URL params missing — will fail later with clear error
-            agent_env.setdefault("BENCHFLOW_PROVIDER_PROTOCOL", _prov_cfg.api_protocol)
+            agent_env.setdefault(
+                "BENCHFLOW_PROVIDER_PROTOCOL",
+                agent_protocol or _prov_cfg.api_protocol,
+            )
             if _prov_cfg.models:
                 agent_env.setdefault("BENCHFLOW_PROVIDER_MODELS",
                                      json.dumps(_prov_cfg.models))
@@ -297,7 +306,6 @@ class SDK:
                 if _key:
                     agent_env.setdefault("BENCHFLOW_PROVIDER_API_KEY", _key)
         # Apply agent env_mapping: translate BENCHFLOW_PROVIDER_* → agent-native vars
-        agent_cfg = AGENTS.get(agent)
         if agent_cfg and agent_cfg.env_mapping:
             for src, dst in agent_cfg.env_mapping.items():
                 if src in agent_env:

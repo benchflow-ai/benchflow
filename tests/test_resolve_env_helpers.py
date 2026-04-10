@@ -121,7 +121,7 @@ class TestResolveProviderEnv:
     def test_injects_benchflow_provider_vars(self):
         env = {"ZAI_API_KEY": "zk-test"}
         SDK._resolve_provider_env(env, "zai/glm-5", "claude-agent-acp")
-        assert "BENCHFLOW_PROVIDER_NAME" in env
+        assert env["BENCHFLOW_PROVIDER_NAME"] == "zai"
         assert "BENCHFLOW_PROVIDER_BASE_URL" in env
         assert "BENCHFLOW_PROVIDER_PROTOCOL" in env
         assert env["BENCHFLOW_PROVIDER_API_KEY"] == "zk-test"
@@ -132,6 +132,32 @@ class TestResolveProviderEnv:
         SDK._resolve_provider_env(env, "zai/glm-5", "claude-agent-acp")
         assert "ANTHROPIC_BASE_URL" in env
         assert env["ANTHROPIC_AUTH_TOKEN"] == "zk-test"
+
+    def test_zai_picks_anthropic_endpoint_for_claude_agent(self):
+        """claude-agent-acp speaks anthropic-messages → routes to zai's anthropic endpoint."""
+        env = {"ZAI_API_KEY": "zk-test"}
+        SDK._resolve_provider_env(env, "zai/glm-5", "claude-agent-acp")
+        assert env["BENCHFLOW_PROVIDER_BASE_URL"] == "https://api.z.ai/api/anthropic"
+        assert env["BENCHFLOW_PROVIDER_PROTOCOL"] == "anthropic-messages"
+        # env_mapping translates to ANTHROPIC_BASE_URL
+        assert env["ANTHROPIC_BASE_URL"] == "https://api.z.ai/api/anthropic"
+
+    def test_zai_picks_openai_endpoint_for_codex_agent(self):
+        """codex-acp speaks openai-completions → routes to zai's openai endpoint."""
+        env = {"ZAI_API_KEY": "zk-test"}
+        SDK._resolve_provider_env(env, "zai/glm-5", "codex-acp")
+        assert env["BENCHFLOW_PROVIDER_BASE_URL"] == "https://api.z.ai/api/paas/v4"
+        assert env["BENCHFLOW_PROVIDER_PROTOCOL"] == "openai-completions"
+        assert env["OPENAI_BASE_URL"] == "https://api.z.ai/api/paas/v4"
+
+    def test_explicit_base_url_not_overwritten(self):
+        """User-supplied ANTHROPIC_BASE_URL must win over derived value."""
+        env = {
+            "ZAI_API_KEY": "zk-test",
+            "ANTHROPIC_BASE_URL": "https://custom.example/anthropic",
+        }
+        SDK._resolve_provider_env(env, "zai/glm-5", "claude-agent-acp")
+        assert env["ANTHROPIC_BASE_URL"] == "https://custom.example/anthropic"
 
     def test_no_provider_still_sets_model(self):
         """Model with no registered provider still sets BENCHFLOW_PROVIDER_MODEL."""
