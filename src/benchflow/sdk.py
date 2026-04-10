@@ -49,6 +49,55 @@ logger = logging.getLogger(__name__)
 
 _DIAG_TRUNCATE = 2000  # max chars for diagnostic stdout/stderr in logs
 
+# Path lockdown defaults and validation
+_DEFAULT_LOCKED = ["/solution", "/tests"]
+_SAFE_PATH_RE = re.compile(r"^/[a-zA-Z0-9_./*?\-]+(/[a-zA-Z0-9_./*?\-]+)*$")
+
+
+def _validate_locked_path(p: str) -> None:
+    """Validate a locked path — reject injection and traversal."""
+    p_norm = os.path.normpath(p)
+    if p_norm != p:
+        raise ValueError(
+            f"Invalid locked path {p!r}: normalizes to {p_norm!r} — "
+            f"use the normalized form directly"
+        )
+    if any(c == ".." for c in p.split("/")):
+        raise ValueError(f"Invalid locked path {p!r}: '..' component not allowed")
+    if not _SAFE_PATH_RE.match(p):
+        raise ValueError(
+            f"Invalid locked path {p!r}: must be absolute, "
+            f"alphanumeric with /-_.*? only"
+        )
+    if p.endswith("/") and p != "/":
+        raise ValueError(
+            f"Invalid locked path {p!r}: trailing slash not allowed "
+            f"(chown on '/dir/' may have unintended scope)"
+        )
+
+
+def _resolve_locked_paths(
+    sandbox_user: str | None,
+    sandbox_locked_paths: list[str] | None,
+) -> list[str]:
+    """Resolve effective locked paths.
+
+    - sandbox_user=None → [] (no lockdown)
+    - sandbox_user set, paths=None → defaults (/solution, /tests)
+    - sandbox_user set, paths=[] → [] (explicit opt-out)
+    - sandbox_user set, paths=[...] → union of defaults + caller paths
+    """
+    if not sandbox_user:
+        if sandbox_locked_paths:
+            raise ValueError("sandbox_locked_paths requires sandbox_user")
+        return []
+    if sandbox_locked_paths is None:
+        return list(_DEFAULT_LOCKED)
+    if not sandbox_locked_paths:
+        return []  # explicit opt-out
+    return list(dict.fromkeys(_DEFAULT_LOCKED + sandbox_locked_paths))
+
+
 # Apply DinD patch once at import time
 _patch_harbor_dind()
 
@@ -320,6 +369,7 @@ class SDK:
         skills_dir: str | Path | None,
         sandbox_user: str | None,
         context_root: str | Path | None,
+        sandbox_locked_paths: list[str] | None = None,
         timeout: int,
         started_at: datetime,
         agent_env: dict[str, str],
@@ -337,6 +387,7 @@ class SDK:
             "environment": environment,
             "skills_dir": str(skills_dir) if skills_dir else None,
             "sandbox_user": sandbox_user,
+            "sandbox_locked_paths": sandbox_locked_paths,
             "context_root": str(context_root) if context_root else None,
             "timeout_sec": timeout,
             "started_at": str(started_at),
@@ -529,13 +580,60 @@ class SDK:
             parts = []
             for sp in agent_cfg.skill_paths:
                 expanded = sp.replace("$HOME", home).replace("$WORKSPACE", agent_cwd)
-                parts.append(f"mkdir -p '{expanded}' && cp -r '{effective_skills}'/. '{expanded}'/ 2>/dev/null")
+                q_expanded = shlex.quote(expanded)
+                q_skills = shlex.quote(effective_skills)
+                parts.append(f"mkdir -p {q_expanded} && cp -r {q_skills}/. {q_expanded}/ 2>/dev/null")
             if parts:
                 await env.exec("; ".join(parts), timeout_sec=15)
                 logger.info(f"Skills distributed to {len(parts)} paths for {agent_cfg.name}")
 
-    async def _setup_sandbox_user(self, env, sandbox_user: str) -> str:
-        """Create non-root sandbox user and copy agent configs. Return agent_cwd."""
+    @staticmethod
+    def _build_priv_drop_cmd(agent_launch: str, sandbox_user: str) -> str:
+        """Build a shell command that drops to sandbox_user via setpriv or su.
+
+        setpriv (util-linux, Debian/Ubuntu) execs directly with no parent process.
+        su -l is the universal fallback (works on Alpine/BusyBox too).
+        No outer sh -c wrapper — DockerProcess wraps in bash -c already.
+        """
+        inner = f"export HOME=/home/{sandbox_user} && cd /home/{sandbox_user} && {agent_launch}"
+        quoted = shlex.quote(inner)
+        return (
+            f"if setpriv --help 2>&1 | grep -q reuid; then"
+            f" exec setpriv --reuid={sandbox_user} --regid={sandbox_user}"
+            f" --init-groups -- bash -c {quoted};"
+            f" else exec su -l {sandbox_user} -c {quoted};"
+            f" fi"
+        )
+
+    @staticmethod
+    async def _lockdown_paths(env, paths: list[str]) -> None:
+        """Lock directories so the sandbox user cannot access them.
+
+        Runs after all root-level setup but before agent launch.
+        Uses chown-then-chmod ordering to prevent TOCTOU window.
+        Rejects symlinks and validates path patterns against injection.
+        """
+        if not paths:
+            return
+
+        for p in paths:
+            _validate_locked_path(p)
+
+        # Build shell command: reject symlinks, chown before chmod
+        parts = []
+        for p in paths:
+            parts.append(
+                f'for d in {p}; do '
+                f'  [ -L "$d" ] && echo "WARN: skipping symlink $d" >&2 && continue; '
+                f'  [ -e "$d" ] || continue; '
+                f'  chown root:root "$d" && chmod 700 "$d"; '
+                f'done'
+            )
+        cmd = " && ".join(parts)
+        await env.exec(cmd, timeout_sec=30)
+
+    async def _setup_sandbox_user(self, env, sandbox_user: str, workspace: str) -> str:
+        """Create non-root sandbox user, grant workspace access. Return agent_cwd."""
         if not re.match(r'^[a-z_][a-z0-9_-]*$', sandbox_user):
             raise ValueError(f"Invalid sandbox_user: {sandbox_user!r} (must be alphanumeric)")
         logger.info(f"Setting up sandbox user: {sandbox_user}")
@@ -550,11 +648,12 @@ class SDK:
             f"for d in {' '.join(sorted(get_sandbox_home_dirs()))}; do "
             f"if [ -d /root/$d ]; then mkdir -p /home/{sandbox_user}/$d && "
             f"cp -a /root/$d/. /home/{sandbox_user}/$d/ 2>/dev/null || true; fi; done && "
-            f"chown -R {sandbox_user}:{sandbox_user} /home/{sandbox_user}",
+            f"chown -R {sandbox_user}:{sandbox_user} /home/{sandbox_user} && "
+            f"chown -R {sandbox_user}:{sandbox_user} {shlex.quote(workspace)}",
             timeout_sec=30,
         )
-        logger.info(f"Sandbox user {sandbox_user} ready")
-        return f"/home/{sandbox_user}"
+        logger.info(f"Sandbox user {sandbox_user} ready (workspace={workspace})")
+        return workspace
 
     async def _connect_acp(
         self, env, agent: str, agent_launch: str, agent_env: dict,
@@ -573,8 +672,7 @@ class SDK:
                 logger.info(f"Resolved agent path: {agent_launch}")
 
         if sandbox_user:
-            inner = f"export HOME=/home/{sandbox_user} && cd /home/{sandbox_user} && {agent_launch}"
-            agent_launch = f"gosu {sandbox_user} bash -c {shlex.quote(inner)}"
+            agent_launch = self._build_priv_drop_cmd(agent_launch, sandbox_user)
             logger.info(f"Agent sandboxed as: {sandbox_user}")
 
         if environment == "docker":
@@ -717,7 +815,8 @@ class SDK:
         jobs_dir: str | Path = "jobs",
         environment: str = "docker",
         skills_dir: str | Path | None = None,
-        sandbox_user: str | None = None,
+        sandbox_user: str | None = "agent",
+        sandbox_locked_paths: list[str] | None = None,
         pre_agent_hooks: list | None = None,
         context_root: str | Path | None = None,
     ) -> RunResult:
@@ -735,8 +834,9 @@ class SDK:
             environment: Environment type — "docker" or "daytona".
             skills_dir: Path to skills directory. Copied into sandbox and symlinked
                 to agent-specific discovery paths (e.g. ~/.claude/skills/).
-            sandbox_user: Run agent as this non-root user (e.g. "agent"). Requires
-                gosu in the container. Setup (install) and verification run as root.
+            sandbox_user: Run agent as this non-root user (e.g. "agent"). Uses
+                setpriv (Debian/Ubuntu) or su (Alpine/others) — no external
+                dependencies. Setup (install) and verification run as root.
             pre_agent_hooks: List of async callables(env) to run after setup but
                 before agent launch. Use for starting background services, etc.
             context_root: Repo root for resolving Dockerfile COPY paths. When set,
@@ -746,6 +846,16 @@ class SDK:
         Returns:
             RunResult with rewards, trajectory, and metadata.
         """
+        if sandbox_user is None:
+            logger.warning(
+                "sandbox_user=None — agent runs as root with no path lockdown. "
+                "Root can read solution/test files. "
+                "Set sandbox_user='agent' for answer integrity."
+            )
+
+        # Resolve effective locked paths
+        effective_locked = _resolve_locked_paths(sandbox_user, sandbox_locked_paths)
+
         task_path = Path(task_path)
         task, trial_dir, trial_paths, started_at, job_name, trial_name = self._init_trial(
             task_path, job_name, trial_name, jobs_dir,
@@ -767,6 +877,7 @@ class SDK:
             trial_dir,
             task_path=task_path, agent=agent, model=model, environment=environment,
             skills_dir=skills_dir, sandbox_user=sandbox_user, context_root=context_root,
+            sandbox_locked_paths=effective_locked,
             timeout=timeout, started_at=started_at, agent_env=agent_env,
         )
 
@@ -799,15 +910,17 @@ class SDK:
                 if agent_env.get("_BENCHFLOW_SUBSCRIPTION_AUTH"):
                     await self._upload_subscription_auth(env, agent, cred_home)
 
-                # Detect working directory (overridden by sandbox user)
+                # Detect working directory (preserved when sandbox user is set)
                 cwd_result = await env.exec("pwd", timeout_sec=10)
                 agent_cwd = (cwd_result.stdout or "").strip() or "/app"
                 if sandbox_user:
-                    agent_cwd = await self._setup_sandbox_user(env, sandbox_user)
+                    agent_cwd = await self._setup_sandbox_user(env, sandbox_user, workspace=agent_cwd)
 
                 await self._deploy_skills(
                     env, task_path, skills_dir, agent_cfg, sandbox_user, agent_cwd, task,
                 )
+
+                await self._lockdown_paths(env, effective_locked)
 
                 acp_client, session, agent_name = await self._connect_acp(
                     env, agent, agent_launch, agent_env, sandbox_user,

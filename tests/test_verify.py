@@ -550,7 +550,7 @@ class TestScrapedTrajectoryTrust:
             patch("benchflow.sdk._scrape_agent_trajectory", new_callable=AsyncMock, return_value=forged),
             patch.object(sdk, "_verify", new_callable=AsyncMock, return_value=({"reward": 1.0}, None)),
         ]), caplog.at_level(logging.WARNING):
-            result = await sdk.run(task_dir, agent="test-agent", agent_env={"TEST": "1"})
+            result = await sdk.run(task_dir, agent="test-agent", agent_env={"TEST": "1"}, sandbox_user=None)
 
         assert result.n_tool_calls == 5, "ACP n_tool_calls must survive scraping fallback"
         assert result.trajectory_source == "scraped"
@@ -575,7 +575,7 @@ class TestScrapedTrajectoryTrust:
             patch("benchflow.sdk._capture_session_trajectory", return_value=partial_events),
             patch("benchflow.sdk._scrape_agent_trajectory", new_callable=AsyncMock, return_value=[]),
         ]):
-            result = await sdk.run(task_dir, agent="test-agent", agent_env={"TEST": "1"})
+            result = await sdk.run(task_dir, agent="test-agent", agent_env={"TEST": "1"}, sandbox_user=None)
 
         assert result.n_tool_calls == 3, "Must use session.tool_calls, not trajectory count"
         assert result.trajectory_source == "partial_acp"

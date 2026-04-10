@@ -3,7 +3,10 @@
 from pathlib import Path
 from unittest.mock import patch
 
-from benchflow._env_setup import _inject_skills_into_dockerfile, _get_agent_skill_paths
+from benchflow._env_setup import (
+    _inject_skills_into_dockerfile,
+    _get_agent_skill_paths,
+)
 
 
 def _make_task(tmp_path: Path, dockerfile_content: str = "FROM ubuntu:22.04\n") -> Path:

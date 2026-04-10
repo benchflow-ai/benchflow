@@ -76,7 +76,8 @@ class JobConfig:
     agent_env: dict[str, str] = field(default_factory=dict)
     retry: RetryConfig = field(default_factory=RetryConfig)
     skills_dir: str | None = None
-    sandbox_user: str | None = None
+    sandbox_user: str | None = "agent"
+    sandbox_locked_paths: list[str] | None = None
     context_root: str | None = None
     exclude_tasks: set[str] = field(default_factory=set)
 
@@ -199,7 +200,8 @@ class Job:
 
         agent_env_raw = raw.get("agent_env", {})
         exclude = set(raw.get("exclude", []))
-        sandbox_user = raw.get("sandbox_user")
+        sandbox_user = raw.get("sandbox_user", "agent")
+        sandbox_locked_paths = raw.get("sandbox_locked_paths")
 
         config = JobConfig(
             agent=raw.get("agent", DEFAULT_AGENT),
@@ -211,6 +213,7 @@ class Job:
             retry=RetryConfig(max_retries=raw.get("max_retries", 2)),
             skills_dir=str(base_dir / raw["skills_dir"]) if raw.get("skills_dir") else None,
             sandbox_user=sandbox_user,
+            sandbox_locked_paths=sandbox_locked_paths,
             exclude_tasks=exclude,
         )
         return cls(tasks_dir=tasks_dir, jobs_dir=jobs_dir, config=config, **kwargs)
@@ -256,6 +259,8 @@ class Job:
         # Skills dir (shared with benchflow-native format)
         skills_dir_raw = raw.get("skills_dir")
         skills_dir = str(base_dir / skills_dir_raw) if skills_dir_raw else None
+        sandbox_user = raw.get("sandbox_user", "agent")
+        sandbox_locked_paths = raw.get("sandbox_locked_paths")
 
         config = JobConfig(
             agent=agent_name,
@@ -265,6 +270,8 @@ class Job:
             agent_env=agent_env,
             retry=RetryConfig(max_retries=max(0, max_retries)),
             skills_dir=skills_dir,
+            sandbox_user=sandbox_user,
+            sandbox_locked_paths=sandbox_locked_paths,
         )
         return cls(tasks_dir=tasks_dir, jobs_dir=jobs_dir, config=config, **kwargs)
 
@@ -320,6 +327,7 @@ class Job:
                 environment=cfg.environment,
                 skills_dir=cfg.skills_dir,
                 sandbox_user=cfg.sandbox_user,
+                sandbox_locked_paths=cfg.sandbox_locked_paths,
                 context_root=cfg.context_root,
             )
             last_result = result

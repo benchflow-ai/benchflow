@@ -91,4 +91,4 @@ sandbox_user: testuser
         job = Job.from_yaml(config)
         assert job._config.exclude_tasks == set()
         assert job._config.agent_env == {}
-        assert job._config.sandbox_user is None
+        assert job._config.sandbox_user == "agent"
