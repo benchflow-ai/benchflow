@@ -1,8 +1,8 @@
 """Tests for _capture_session_trajectory — ensures partial trajectory is saved on timeout."""
 
+from benchflow._trajectory import _capture_session_trajectory
 from benchflow.acp.session import ACPSession
 from benchflow.acp.types import ToolCallStatus
-from benchflow._trajectory import _capture_session_trajectory
 
 
 class TestCaptureSessionTrajectory:

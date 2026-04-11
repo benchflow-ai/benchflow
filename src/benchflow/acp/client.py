@@ -90,7 +90,7 @@ class ACPClient:
 
             # It's a response to our request
             if "id" in msg and msg["id"] == request_id:
-                if "error" in msg and msg["error"]:
+                if msg.get("error"):
                     raise ACPError(
                         msg["error"].get("code", -1),
                         msg["error"].get("message", "Unknown error"),

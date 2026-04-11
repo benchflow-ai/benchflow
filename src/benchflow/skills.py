@@ -5,9 +5,10 @@ Skills follow the agentskills.io spec (SKILL.md with YAML frontmatter).
 
 import logging
 import subprocess
-import yaml
-from pathlib import Path
 from dataclasses import dataclass, field
+from pathlib import Path
+
+import yaml
 
 logger = logging.getLogger(__name__)
 

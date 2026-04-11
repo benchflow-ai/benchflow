@@ -11,6 +11,7 @@ One execution path:
 """
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -19,6 +20,7 @@ import shlex
 import tempfile
 from datetime import datetime
 from pathlib import Path
+from typing import ClassVar
 
 from harbor.models.task.task import Task
 from harbor.models.trial.paths import TrialPaths
@@ -38,13 +40,13 @@ from benchflow._trajectory import (
 from benchflow.acp.client import ACPClient
 from benchflow.acp.container_transport import ContainerTransport
 from benchflow.agents.registry import (
-    AGENTS,
     AGENT_INSTALLERS,
     AGENT_LAUNCH,
+    AGENTS,
     AgentConfig,
     get_sandbox_home_dirs,
 )
-from benchflow.process import DockerProcess, DaytonaProcess
+from benchflow.process import DaytonaProcess, DockerProcess
 
 logger = logging.getLogger(__name__)
 
@@ -322,15 +324,14 @@ class SDK:
         if _prov:
             _prov_name, _prov_cfg = _prov
             agent_env.setdefault("BENCHFLOW_PROVIDER_NAME", _prov_name)
-            try:
+            # URL params missing — will fail later with clear error
+            with contextlib.suppress(KeyError):
                 agent_env.setdefault(
                     "BENCHFLOW_PROVIDER_BASE_URL",
                     resolve_base_url(
                         _prov_cfg, agent_env, protocol=agent_protocol or None
                     ),
                 )
-            except KeyError:
-                pass  # URL params missing — will fail later with clear error
             agent_env.setdefault(
                 "BENCHFLOW_PROVIDER_PROTOCOL",
                 agent_protocol or _prov_cfg.api_protocol,
@@ -394,13 +395,14 @@ class SDK:
             agent_cfg = AGENTS.get(agent)
             if agent_cfg:
                 for req_key in agent_cfg.requires_env:
-                    if req_key not in agent_env:
-                        if SDK._check_subscription_auth(agent, req_key):
-                            agent_env["_BENCHFLOW_SUBSCRIPTION_AUTH"] = "1"
-                            logger.info(
-                                "Using host subscription auth (no %s set)",
-                                req_key,
-                            )
+                    if req_key not in agent_env and SDK._check_subscription_auth(
+                        agent, req_key
+                    ):
+                        agent_env["_BENCHFLOW_SUBSCRIPTION_AUTH"] = "1"
+                        logger.info(
+                            "Using host subscription auth (no %s set)",
+                            req_key,
+                        )
         # Increase output token limit to avoid truncation errors
         agent_env.setdefault("CLAUDE_CODE_MAX_OUTPUT_TOKENS", "128000")
         # Disable telemetry/non-essential traffic in container
@@ -831,7 +833,7 @@ class SDK:
     # PYTHONNOUSERSITE intentionally omitted: verifier runs as root, so the
     # only user-site dir on sys.path is /root/.local which sandbox_user cannot
     # touch, and _CLEANUP_CMD already wipes .pth files there as belt-and-braces.
-    _VERIFIER_ENV = {
+    _VERIFIER_ENV: ClassVar[dict[str, str]] = {
         "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
         "PYTEST_ADDOPTS": (
             "-c /dev/null "  # block pyproject.toml/pytest.ini/tox.ini/setup.cfg discovery
@@ -914,7 +916,7 @@ class SDK:
             timing["verifier"] = (datetime.now() - t0).total_seconds()
             rewards = verifier_result.rewards
             logger.info(f"Rewards: {rewards}")
-        except asyncio.TimeoutError:
+        except TimeoutError:
             timing["verifier"] = (datetime.now() - t0).total_seconds()
             # NOTE: these prefixes must stay in sync with classify_verifier_error() in _scoring.py
             verifier_error = (
@@ -1125,7 +1127,7 @@ class SDK:
                 env, task, trial_paths, timing, sandbox_user=sandbox_user
             )
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             error = f"Agent timed out after {timeout}s"
             logger.error(error)
         except ConnectionError as e:

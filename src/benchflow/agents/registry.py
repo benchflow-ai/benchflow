@@ -10,7 +10,6 @@ Each agent has:
 from dataclasses import dataclass, field
 from pathlib import Path
 
-
 # Node.js bootstrap — handles missing node, old node (<22), Ubuntu + Debian slim
 _NODE_INSTALL = (
     "set -o pipefail; "

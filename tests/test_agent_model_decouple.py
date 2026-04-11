@@ -1,6 +1,7 @@
 """Tests for agent/model decoupling (issue #107)."""
 
 import pytest
+
 from benchflow.agents.registry import (
     AGENTS,
     get_agent,

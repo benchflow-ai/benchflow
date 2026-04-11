@@ -39,9 +39,9 @@ def test_sdk_importable():
 
 def test_extracted_modules_importable():
     """Symbols moved to _models, _trajectory, _env_setup are importable from canonical paths."""
-    from benchflow._models import RunResult, AgentInstallError, AgentTimeoutError
+    from benchflow._env_setup import _dep_local_name, stage_dockerfile_deps
+    from benchflow._models import AgentInstallError, AgentTimeoutError, RunResult
     from benchflow._trajectory import _capture_session_trajectory
-    from benchflow._env_setup import stage_dockerfile_deps, _dep_local_name
 
     assert RunResult.__module__ == "benchflow._models"
     assert AgentInstallError.__module__ == "benchflow._models"
@@ -55,9 +55,9 @@ def test_public_api_reexports():
     """Public API symbols are still importable from benchflow top-level."""
     from benchflow import (
         SDK,
-        RunResult,
         AgentInstallError,
         AgentTimeoutError,
+        RunResult,
         stage_dockerfile_deps,
     )
 
@@ -70,21 +70,26 @@ def test_public_api_reexports():
 
 def test_register_agent():
     """Custom agents can be registered at runtime."""
-    from benchflow import register_agent, AGENTS, get_agent
+    from benchflow import AGENTS, get_agent, register_agent
+    from benchflow.agents.registry import AGENT_INSTALLERS, AGENT_LAUNCH
 
-    register_agent(
-        name="test-custom-agent",
-        install_cmd="echo installed",
-        launch_cmd="test-agent --acp",
-        requires_env=["TEST_KEY"],
-        description="Test agent",
-    )
+    try:
+        register_agent(
+            name="test-custom-agent",
+            install_cmd="echo installed",
+            launch_cmd="test-agent --acp",
+            requires_env=["TEST_KEY"],
+            description="Test agent",
+        )
 
-    assert "test-custom-agent" in AGENTS
-    cfg, alias_model = get_agent("test-custom-agent")
-    assert cfg.launch_cmd == "test-agent --acp"
-    assert cfg.requires_env == ["TEST_KEY"]
-    assert alias_model == ""
-
-    # Cleanup
-    del AGENTS["test-custom-agent"]
+        assert "test-custom-agent" in AGENTS
+        cfg, alias_model = get_agent("test-custom-agent")
+        assert cfg.launch_cmd == "test-agent --acp"
+        assert cfg.requires_env == ["TEST_KEY"]
+        assert alias_model == ""
+    finally:
+        # register_agent writes to all three dicts; clean up all three to keep
+        # the global registries in sync for downstream tests.
+        AGENTS.pop("test-custom-agent", None)
+        AGENT_INSTALLERS.pop("test-custom-agent", None)
+        AGENT_LAUNCH.pop("test-custom-agent", None)

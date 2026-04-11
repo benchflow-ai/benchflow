@@ -8,6 +8,7 @@ ACP agents running inside containers.  Two implementations:
 """
 
 import asyncio
+import contextlib
 import logging
 import os
 import shlex
@@ -90,15 +91,13 @@ class LiveProcess(ABC):
         """Terminate the process (idempotent — safe to call after process death)."""
         if self._process:
             if self._process.stdin:
-                try:
+                with contextlib.suppress(OSError):  # already closed
                     self._process.stdin.close()
-                except OSError:
-                    pass  # already closed
             if self._process.returncode is None:
                 self._process.terminate()
                 try:
                     await asyncio.wait_for(self._process.wait(), timeout=5)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     self._process.kill()
                     await self._process.wait()
             logger.info("Process terminated")

@@ -16,7 +16,6 @@ from benchflow._scoring import (
 )
 from benchflow.metrics import BenchmarkMetrics, TaskMetrics
 
-
 # ---------------------------------------------------------------------------
 # classify_verifier_error
 # ---------------------------------------------------------------------------
@@ -64,8 +63,9 @@ class TestRunResultVerifierError:
 
 class TestResultJson:
     def _build(self, tmp_path, **overrides):
-        from benchflow.sdk import SDK
         from datetime import datetime
+
+        from benchflow.sdk import SDK
 
         defaults = dict(
             task_name="t1",
@@ -341,7 +341,7 @@ class TestJobRunLogs:
 
 
 def test_total_invariant():
-    from benchflow.job import JobResult, JobConfig
+    from benchflow.job import JobConfig, JobResult
 
     jr = JobResult(
         job_name="t",
@@ -428,8 +428,9 @@ class TestMetricsVerifierError:
         assert "verifier_error_breakdown" in s
 
     def test_collect_metrics_reads_verifier_error(self, tmp_path):
-        from benchflow.metrics import collect_metrics
         from datetime import datetime
+
+        from benchflow.metrics import collect_metrics
 
         task_dir = tmp_path / "task1" / "trial-1"
         task_dir.mkdir(parents=True)
@@ -710,8 +711,9 @@ class TestTrajectorySource:
     """trajectory_source and partial_trajectory fields in RunResult and result.json."""
 
     def _build(self, tmp_path, **overrides):
-        from benchflow.sdk import SDK
         from datetime import datetime
+
+        from benchflow.sdk import SDK
 
         defaults = dict(
             task_name="t1",
@@ -814,7 +816,8 @@ class TestScrapedTrajectoryTrust:
             ),
             patch.object(sdk, "_write_credential_files", new_callable=AsyncMock),
             patch.object(sdk, "_deploy_skills", new_callable=AsyncMock),
-        ] + extra_patches
+            *extra_patches,
+        ]
         with contextlib.ExitStack() as stack:
             for p in patches:
                 stack.enter_context(p)
