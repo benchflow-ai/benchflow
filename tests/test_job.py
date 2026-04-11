@@ -1,5 +1,6 @@
 """Tests for job counting logic and result aggregation."""
 
+import asyncio
 import json
 import logging
 from unittest.mock import AsyncMock
@@ -270,3 +271,74 @@ class TestJobResume:
         completed = job._get_completed_tasks()
         assert "task-a" not in completed
         assert len(completed) == 0
+
+
+class TestJobRunOrchestration:
+    """Tests for Job.run() orchestration: semaphore overlap, exception catching."""
+
+    def _make_job(self, tmp_path, n_tasks: int, concurrency: int = 2) -> Job:
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        for i in range(n_tasks):
+            (tasks_dir / f"task-{i}").mkdir()
+            (tasks_dir / f"task-{i}" / "task.toml").write_text(
+                'version = "1.0"\n[verifier]\ntimeout_sec = 60\n[agent]\ntimeout_sec = 60\n[environment]\n'
+            )
+        cfg = JobConfig(concurrency=concurrency, retry=RetryConfig(max_retries=0))
+        return Job(tasks_dir=tasks_dir, jobs_dir=tmp_path / "jobs", config=cfg)
+
+    @pytest.mark.asyncio
+    async def test_concurrency_semaphore_actually_overlaps_at_bound(self, tmp_path):
+        """Prove the asyncio.Semaphore at job.py:464 PERMITS concurrency-many
+        tasks at once. ``==`` (not ``<=``) — a broken semaphore that serializes
+        would still satisfy ``<= concurrency`` vacuously.
+        """
+        concurrency = 2
+        job = self._make_job(tmp_path, n_tasks=5, concurrency=concurrency)
+
+        counter = 0
+        max_in_flight = 0
+        lock = asyncio.Lock()
+        enough_in_flight = asyncio.Event()
+
+        async def fake_sdk_run(*args, **kwargs):
+            nonlocal counter, max_in_flight
+            async with lock:
+                counter += 1
+                max_in_flight = max(max_in_flight, counter)
+                if counter >= concurrency:
+                    enough_in_flight.set()
+            # All waiters block here until ``concurrency`` tasks have entered,
+            # then asyncio.Event.set() releases them simultaneously. Decrement
+            # AFTER the wait so the peak is observable.
+            await enough_in_flight.wait()
+            async with lock:
+                counter -= 1
+            return RunResult(task_name="task", rewards={"reward": 1.0})
+
+        job._sdk = AsyncMock()
+        job._sdk.run = AsyncMock(side_effect=fake_sdk_run)
+
+        await job.run()
+        assert max_in_flight == concurrency
+
+    @pytest.mark.asyncio
+    async def test_unexpected_sdk_exception_becomes_errored_result(
+        self, tmp_path, caplog
+    ):
+        """Prove the gather(return_exceptions=True) catch branch at job.py:491-502
+        catches a non-classified exception, increments ``errored``, and logs.
+
+        The synthesized RunResult(error="Unexpected: ...") is built in-Python
+        and never written to result.json (SDK._build_result never runs when
+        SDK.run raises), so we assert via JobResult and caplog, not disk.
+        """
+        job = self._make_job(tmp_path, n_tasks=1, concurrency=1)
+        job._sdk = AsyncMock()
+        job._sdk.run = AsyncMock(side_effect=RuntimeError("boom"))
+
+        with caplog.at_level(logging.ERROR):
+            result = await job.run()
+
+        assert result.errored == 1
+        assert any("unexpected exception: boom" in m for m in caplog.messages)
