@@ -63,7 +63,8 @@ Support modules
 - ``_env_setup``    Dockerfile staging, skills injection, DinD patching,
                     ``_create_environment``
 - ``_trajectory``   ACP-native + agent-scraped trajectory capture
-- ``_models``       ``RunResult``, ``AgentInstallError``, ``AgentTimeoutError``
+- ``models``        ``RunResult``, ``AgentInstallError``, ``AgentTimeoutError``,
+                    ``TrajectorySource`` (public — re-exported from ``benchflow``)
 - ``_scoring``      pure functions: ``extract_reward``,
                     ``classify_verifier_error``, pass-rate math
 - ``agents/registry``  ``AGENTS``, ``AgentConfig`` — see registry.py docstring
@@ -109,7 +110,7 @@ from benchflow._env_setup import (
     _patch_harbor_dind,
     stage_dockerfile_deps,
 )
-from benchflow._models import RunResult, TrajectorySource
+from benchflow.models import RunResult, TrajectorySource
 from benchflow._sandbox import (
     _resolve_locked_paths,
     harden_before_verify,

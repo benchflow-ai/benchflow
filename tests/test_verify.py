@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from benchflow._models import RunResult
+from benchflow.models import RunResult
 from benchflow._scoring import (
     VERIFIER_FAILED,
     VERIFIER_TIMEOUT,

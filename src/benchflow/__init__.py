@@ -24,7 +24,7 @@ from harbor import (
 
 # benchflow's additions
 from benchflow._env_setup import stage_dockerfile_deps
-from benchflow._models import AgentInstallError, AgentTimeoutError, RunResult
+from benchflow.models import AgentInstallError, AgentTimeoutError, RunResult
 from benchflow.acp.client import ACPClient
 from benchflow.acp.session import ACPSession
 from benchflow.agents.registry import (

@@ -38,14 +38,14 @@ def test_sdk_importable():
 
 
 def test_extracted_modules_importable():
-    """Symbols moved to _models, _trajectory, _env_setup are importable from canonical paths."""
+    """Symbols moved to models, _trajectory, _env_setup are importable from canonical paths."""
     from benchflow._env_setup import _dep_local_name, stage_dockerfile_deps
-    from benchflow._models import AgentInstallError, AgentTimeoutError, RunResult
     from benchflow._trajectory import _capture_session_trajectory
+    from benchflow.models import AgentInstallError, AgentTimeoutError, RunResult
 
-    assert RunResult.__module__ == "benchflow._models"
-    assert AgentInstallError.__module__ == "benchflow._models"
-    assert AgentTimeoutError.__module__ == "benchflow._models"
+    assert RunResult.__module__ == "benchflow.models"
+    assert AgentInstallError.__module__ == "benchflow.models"
+    assert AgentTimeoutError.__module__ == "benchflow.models"
     assert callable(_capture_session_trajectory)
     assert callable(stage_dockerfile_deps)
     assert callable(_dep_local_name)

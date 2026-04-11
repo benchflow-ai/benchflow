@@ -21,7 +21,7 @@ import shlex
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from benchflow._models import AgentInstallError
+from benchflow.models import AgentInstallError
 from benchflow.agents.registry import AGENT_INSTALLERS, AGENTS, AgentConfig
 
 if TYPE_CHECKING:

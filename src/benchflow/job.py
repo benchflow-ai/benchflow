@@ -20,7 +20,7 @@ from pathlib import Path
 
 import yaml
 
-from benchflow._models import RunResult
+from benchflow.models import RunResult
 from benchflow._scoring import (
     ACP_ERROR,
     INSTALL_FAILED,
