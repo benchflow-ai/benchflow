@@ -81,6 +81,7 @@ from harbor.models.task.task import Task
 from harbor.models.trial.paths import TrialPaths
 from harbor.verifier.verifier import Verifier
 
+from benchflow._acp_run import connect_acp, execute_prompts
 from benchflow._agent_env import resolve_agent_env
 from benchflow._credentials import (
     upload_subscription_auth,
@@ -95,7 +96,6 @@ from benchflow._env_setup import (
 from benchflow._models import AgentInstallError, RunResult
 from benchflow._sandbox import (
     _resolve_locked_paths,
-    build_priv_drop_cmd,
     harden_before_verify,
     lockdown_paths,
     setup_sandbox_user,
@@ -105,14 +105,12 @@ from benchflow._trajectory import (
     _scrape_agent_trajectory,
 )
 from benchflow.acp.client import ACPClient
-from benchflow.acp.container_transport import ContainerTransport
 from benchflow.agents.registry import (
     AGENT_INSTALLERS,
     AGENT_LAUNCH,
     AGENTS,
     AgentConfig,
 )
-from benchflow.process import DaytonaProcess, DockerProcess
 
 logger = logging.getLogger(__name__)
 
@@ -422,93 +420,6 @@ class SDK:
                     f"Skills distributed to {len(parts)} paths for {agent_cfg.name}"
                 )
 
-    async def _connect_acp(
-        self,
-        env,
-        agent: str,
-        agent_launch: str,
-        agent_env: dict,
-        sandbox_user: str | None,
-        model: str | None,
-        trial_dir: Path,
-        environment: str,
-        agent_cwd: str,
-    ) -> tuple[ACPClient, object, str]:
-        """Create ACP transport, connect, init session, set model. Return (client, session, agent_name)."""
-        # Resolve agent binary path for non-docker environments
-        if environment != "docker":
-            which_result = await env.exec(
-                f"which {agent_launch.split()[0]}", timeout_sec=10
-            )
-            if which_result.return_code == 0 and (which_result.stdout or "").strip():
-                full_path = which_result.stdout.strip()
-                parts = agent_launch.split()
-                parts[0] = full_path
-                agent_launch = " ".join(parts)
-                logger.info(f"Resolved agent path: {agent_launch}")
-
-        if sandbox_user:
-            agent_launch = build_priv_drop_cmd(agent_launch, sandbox_user)
-            logger.info(f"Agent sandboxed as: {sandbox_user}")
-
-        if environment == "docker":
-            live_proc = DockerProcess.from_harbor_env(env)
-        else:
-            live_proc = await DaytonaProcess.from_harbor_env(env)
-
-        agent_log = trial_dir / "agent" / f"{agent.replace('-', '_')}.txt"
-        transport = ContainerTransport(
-            container_process=live_proc,
-            command=agent_launch,
-            env=agent_env,
-            cwd=agent_cwd,
-            agent_log_path=agent_log,
-        )
-        acp_client = ACPClient(transport)
-        await acp_client.connect()
-
-        init_result = await asyncio.wait_for(acp_client.initialize(), timeout=60)
-        agent_name = init_result.agent_info.name if init_result.agent_info else agent
-        logger.info(f"ACP agent: {agent_name}")
-
-        session = await asyncio.wait_for(
-            acp_client.session_new(cwd=agent_cwd), timeout=60
-        )
-        logger.info(f"Session: {session.session_id}")
-
-        if model:
-            from benchflow.agents.providers import strip_provider_prefix
-
-            acp_model_id = strip_provider_prefix(model)
-            try:
-                await asyncio.wait_for(acp_client.set_model(acp_model_id), timeout=60)
-                logger.info(f"Model set to: {acp_model_id} (from {model})")
-            except Exception as e:
-                logger.warning(f"Failed to set model via ACP: {e}")
-
-        return acp_client, session, agent_name
-
-    async def _execute_prompts(
-        self,
-        acp_client: ACPClient,
-        session,
-        prompts: list[str],
-        timeout: int,
-    ) -> tuple[list[dict], int]:
-        """Send prompts via ACP and capture trajectory. Return (trajectory, n_tool_calls)."""
-        for i, prompt in enumerate(prompts):
-            logger.info(f"Prompt {i + 1}/{len(prompts)}: {prompt[:80]}...")
-            prompt_result = await asyncio.wait_for(
-                acp_client.prompt(prompt),
-                timeout=timeout,
-            )
-            logger.info(
-                f"  → {prompt_result.stop_reason.value}, "
-                f"{len(session.tool_calls)} total tool calls"
-            )
-        trajectory = _capture_session_trajectory(session)
-        return trajectory, len(session.tool_calls)
-
     async def _verify(
         self,
         env,
@@ -697,7 +608,7 @@ class SDK:
 
                 await lockdown_paths(env, effective_locked)
 
-                acp_client, session, agent_name = await self._connect_acp(
+                acp_client, session, agent_name = await connect_acp(
                     env,
                     agent,
                     agent_launch,
@@ -711,7 +622,7 @@ class SDK:
                 timing["agent_setup"] = (datetime.now() - t_agent_setup).total_seconds()
                 t_agent_exec = datetime.now()
 
-                trajectory, n_tool_calls = await self._execute_prompts(
+                trajectory, n_tool_calls = await execute_prompts(
                     acp_client,
                     session,
                     resolved_prompts,

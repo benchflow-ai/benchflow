@@ -842,15 +842,13 @@ class TestScrapedTrajectoryTrust:
                 sdk,
                 mock_env,
                 [
-                    patch.object(
-                        sdk,
-                        "_connect_acp",
+                    patch(
+                        "benchflow.sdk.connect_acp",
                         new_callable=AsyncMock,
                         return_value=(mock_acp, mock_session, "test-agent"),
                     ),
-                    patch.object(
-                        sdk,
-                        "_execute_prompts",
+                    patch(
+                        "benchflow.sdk.execute_prompts",
                         new_callable=AsyncMock,
                         return_value=([], 5),
                     ),
@@ -896,15 +894,13 @@ class TestScrapedTrajectoryTrust:
             sdk,
             mock_env,
             [
-                patch.object(
-                    sdk,
-                    "_connect_acp",
+                patch(
+                    "benchflow.sdk.connect_acp",
                     new_callable=AsyncMock,
                     return_value=(mock_acp, mock_session, "test-agent"),
                 ),
-                patch.object(
-                    sdk,
-                    "_execute_prompts",
+                patch(
+                    "benchflow.sdk.execute_prompts",
                     new_callable=AsyncMock,
                     side_effect=ConnectionError("lost"),
                 ),
