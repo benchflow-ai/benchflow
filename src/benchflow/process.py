@@ -87,16 +87,20 @@ class LiveProcess(ABC):
         await self._process.stdin.drain()
 
     async def close(self) -> None:
-        """Terminate the process."""
+        """Terminate the process (idempotent — safe to call after process death)."""
         if self._process:
             if self._process.stdin:
-                self._process.stdin.close()
-            self._process.terminate()
-            try:
-                await asyncio.wait_for(self._process.wait(), timeout=5)
-            except asyncio.TimeoutError:
-                self._process.kill()
-                await self._process.wait()
+                try:
+                    self._process.stdin.close()
+                except OSError:
+                    pass  # already closed
+            if self._process.returncode is None:
+                self._process.terminate()
+                try:
+                    await asyncio.wait_for(self._process.wait(), timeout=5)
+                except asyncio.TimeoutError:
+                    self._process.kill()
+                    await self._process.wait()
             logger.info("Process terminated")
 
     @property

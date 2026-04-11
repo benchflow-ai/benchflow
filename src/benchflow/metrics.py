@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from benchflow._scoring import classify_error, pass_rate, pass_rate_excl_errors
+from benchflow._scoring import classify_error, classify_verifier_error, pass_rate, pass_rate_excl_errors
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +24,7 @@ class TaskMetrics:
     n_tool_calls: int = 0
     n_prompts: int = 0
     error: str | None = None
+    verifier_error: str | None = None
     duration_sec: float = 0.0
     agent_name: str = ""
 
@@ -38,6 +39,11 @@ class TaskMetrics:
     @property
     def errored(self) -> bool:
         return self.reward is None and self.error is not None
+
+    @property
+    def verifier_errored(self) -> bool:
+        """True when task failed due to verifier error (not agent error)."""
+        return self.reward is None and self.verifier_error is not None
 
 
 @dataclass
@@ -66,6 +72,11 @@ class BenchmarkMetrics:
         return sum(1 for t in self.tasks if t.errored)
 
     @property
+    def verifier_errored(self) -> int:
+        """Count of tasks that failed due to verifier error."""
+        return sum(1 for t in self.tasks if t.verifier_errored)
+
+    @property
     def score(self) -> float:
         """Pass rate over all tasks."""
         return pass_rate(passed=self.passed, total=self.total)
@@ -78,13 +89,13 @@ class BenchmarkMetrics:
     @property
     def avg_tool_calls(self) -> float:
         """Average tool calls per completed task."""
-        completed = [t for t in self.tasks if not t.errored]
+        completed = [t for t in self.tasks if not t.errored and not t.verifier_errored]
         return sum(t.n_tool_calls for t in completed) / len(completed) if completed else 0.0
 
     @property
     def avg_duration(self) -> float:
         """Average duration per completed task (seconds)."""
-        completed = [t for t in self.tasks if not t.errored and t.duration_sec > 0]
+        completed = [t for t in self.tasks if not t.errored and not t.verifier_errored and t.duration_sec > 0]
         return sum(t.duration_sec for t in completed) / len(completed) if completed else 0.0
 
     @property
@@ -99,6 +110,18 @@ class BenchmarkMetrics:
                 breakdown[category] = breakdown.get(category, 0) + 1
         return breakdown
 
+    @property
+    def verifier_error_breakdown(self) -> dict[str, int]:
+        """Categorize verifier errors."""
+        breakdown: dict[str, int] = {}
+        for t in self.tasks:
+            if not t.verifier_errored:
+                continue
+            category = classify_verifier_error(t.verifier_error)
+            if category:
+                breakdown[category] = breakdown.get(category, 0) + 1
+        return breakdown
+
     def summary(self) -> dict[str, Any]:
         """Export as summary dict."""
         return {
@@ -109,14 +132,17 @@ class BenchmarkMetrics:
             "passed": self.passed,
             "failed": self.failed,
             "errored": self.errored,
+            "verifier_errored": self.verifier_errored,
             "score": f"{self.score:.1%}",
             "score_excl_errors": f"{self.score_excl_errors:.1%}",
             "avg_tool_calls": round(self.avg_tool_calls, 1),
             "avg_duration_sec": round(self.avg_duration, 1),
             "error_breakdown": self.error_breakdown,
+            "verifier_error_breakdown": self.verifier_error_breakdown,
             "passed_tasks": sorted(t.task_name for t in self.tasks if t.passed),
             "failed_tasks": sorted(t.task_name for t in self.tasks if t.failed),
             "errored_tasks": sorted(t.task_name for t in self.tasks if t.errored),
+            "verifier_errored_tasks": sorted(t.task_name for t in self.tasks if t.verifier_errored),
         }
 
 
@@ -169,6 +195,7 @@ def collect_metrics(
             n_tool_calls=r.get("n_tool_calls", 0),
             n_prompts=r.get("n_prompts", 0),
             error=r.get("error"),
+            verifier_error=r.get("verifier_error"),
             duration_sec=duration,
             agent_name=r.get("agent_name", ""),
         ))

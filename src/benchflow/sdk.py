@@ -49,6 +49,55 @@ logger = logging.getLogger(__name__)
 
 _DIAG_TRUNCATE = 2000  # max chars for diagnostic stdout/stderr in logs
 
+# Path lockdown defaults and validation
+_DEFAULT_LOCKED = ["/solution", "/tests"]
+_SAFE_PATH_RE = re.compile(r"^/[a-zA-Z0-9_./*?\-]+(/[a-zA-Z0-9_./*?\-]+)*$")
+
+
+def _validate_locked_path(p: str) -> None:
+    """Validate a locked path — reject injection and traversal."""
+    p_norm = os.path.normpath(p)
+    if p_norm != p:
+        raise ValueError(
+            f"Invalid locked path {p!r}: normalizes to {p_norm!r} — "
+            f"use the normalized form directly"
+        )
+    if any(c == ".." for c in p.split("/")):
+        raise ValueError(f"Invalid locked path {p!r}: '..' component not allowed")
+    if not _SAFE_PATH_RE.match(p):
+        raise ValueError(
+            f"Invalid locked path {p!r}: must be absolute, "
+            f"alphanumeric with /-_.*? only"
+        )
+    if p.endswith("/") and p != "/":
+        raise ValueError(
+            f"Invalid locked path {p!r}: trailing slash not allowed "
+            f"(chown on '/dir/' may have unintended scope)"
+        )
+
+
+def _resolve_locked_paths(
+    sandbox_user: str | None,
+    sandbox_locked_paths: list[str] | None,
+) -> list[str]:
+    """Resolve effective locked paths.
+
+    - sandbox_user=None → [] (no lockdown)
+    - sandbox_user set, paths=None → defaults (/solution, /tests)
+    - sandbox_user set, paths=[] → [] (explicit opt-out)
+    - sandbox_user set, paths=[...] → union of defaults + caller paths
+    """
+    if not sandbox_user:
+        if sandbox_locked_paths:
+            raise ValueError("sandbox_locked_paths requires sandbox_user")
+        return []
+    if sandbox_locked_paths is None:
+        return list(_DEFAULT_LOCKED)
+    if not sandbox_locked_paths:
+        return []  # explicit opt-out
+    return list(dict.fromkeys(_DEFAULT_LOCKED + sandbox_locked_paths))
+
+
 # Apply DinD patch once at import time
 _patch_harbor_dind()
 
@@ -230,16 +279,25 @@ class SDK:
         """Detect provider for model, inject BENCHFLOW_PROVIDER_* and env_mapping."""
         from benchflow.agents.providers import find_provider, resolve_base_url, strip_provider_prefix
         agent_env.setdefault("BENCHFLOW_PROVIDER_MODEL", strip_provider_prefix(model))
+        agent_cfg = AGENTS.get(agent)
+        # Agent-declared protocol takes precedence over provider's primary so
+        # multi-endpoint providers (e.g. zai) route to the right URL.
+        agent_protocol = agent_cfg.api_protocol if agent_cfg else ""
         _prov = find_provider(model)
         if _prov:
             _prov_name, _prov_cfg = _prov
             agent_env.setdefault("BENCHFLOW_PROVIDER_NAME", _prov_name)
             try:
-                agent_env.setdefault("BENCHFLOW_PROVIDER_BASE_URL",
-                                     resolve_base_url(_prov_cfg, agent_env))
+                agent_env.setdefault(
+                    "BENCHFLOW_PROVIDER_BASE_URL",
+                    resolve_base_url(_prov_cfg, agent_env, protocol=agent_protocol or None),
+                )
             except KeyError:
                 pass  # URL params missing — will fail later with clear error
-            agent_env.setdefault("BENCHFLOW_PROVIDER_PROTOCOL", _prov_cfg.api_protocol)
+            agent_env.setdefault(
+                "BENCHFLOW_PROVIDER_PROTOCOL",
+                agent_protocol or _prov_cfg.api_protocol,
+            )
             if _prov_cfg.models:
                 agent_env.setdefault("BENCHFLOW_PROVIDER_MODELS",
                                      json.dumps(_prov_cfg.models))
@@ -248,7 +306,6 @@ class SDK:
                 if _key:
                     agent_env.setdefault("BENCHFLOW_PROVIDER_API_KEY", _key)
         # Apply agent env_mapping: translate BENCHFLOW_PROVIDER_* → agent-native vars
-        agent_cfg = AGENTS.get(agent)
         if agent_cfg and agent_cfg.env_mapping:
             for src, dst in agent_cfg.env_mapping.items():
                 if src in agent_env:
@@ -320,6 +377,7 @@ class SDK:
         skills_dir: str | Path | None,
         sandbox_user: str | None,
         context_root: str | Path | None,
+        sandbox_locked_paths: list[str] | None = None,
         timeout: int,
         started_at: datetime,
         agent_env: dict[str, str],
@@ -337,6 +395,7 @@ class SDK:
             "environment": environment,
             "skills_dir": str(skills_dir) if skills_dir else None,
             "sandbox_user": sandbox_user,
+            "sandbox_locked_paths": sandbox_locked_paths,
             "context_root": str(context_root) if context_root else None,
             "timeout_sec": timeout,
             "started_at": str(started_at),
@@ -356,8 +415,10 @@ class SDK:
         n_tool_calls: int,
         prompts: list[str],
         error: str | None,
+        verifier_error: str | None,
         trajectory: list[dict],
         partial_trajectory: bool,
+        trajectory_source: str | None = None,
         rewards: dict | None,
         started_at: datetime,
         timing: dict[str, float],
@@ -374,6 +435,9 @@ class SDK:
             n_tool_calls=n_tool_calls,
             n_prompts=len(prompts),
             error=error,
+            verifier_error=verifier_error,
+            partial_trajectory=partial_trajectory,
+            trajectory_source=trajectory_source,
             started_at=started_at,
             finished_at=datetime.now(),
         )
@@ -400,7 +464,9 @@ class SDK:
                     "n_tool_calls": result.n_tool_calls,
                     "n_prompts": result.n_prompts,
                     "error": result.error,
-                    "partial_trajectory": partial_trajectory,
+                    "verifier_error": result.verifier_error,
+                    "partial_trajectory": result.partial_trajectory,
+                    "trajectory_source": result.trajectory_source,
                     "started_at": str(result.started_at),
                     "finished_at": str(result.finished_at),
                     "timing": timing,
@@ -522,13 +588,60 @@ class SDK:
             parts = []
             for sp in agent_cfg.skill_paths:
                 expanded = sp.replace("$HOME", home).replace("$WORKSPACE", agent_cwd)
-                parts.append(f"mkdir -p '{expanded}' && cp -r '{effective_skills}'/. '{expanded}'/ 2>/dev/null")
+                q_expanded = shlex.quote(expanded)
+                q_skills = shlex.quote(effective_skills)
+                parts.append(f"mkdir -p {q_expanded} && cp -r {q_skills}/. {q_expanded}/ 2>/dev/null")
             if parts:
                 await env.exec("; ".join(parts), timeout_sec=15)
                 logger.info(f"Skills distributed to {len(parts)} paths for {agent_cfg.name}")
 
-    async def _setup_sandbox_user(self, env, sandbox_user: str) -> str:
-        """Create non-root sandbox user and copy agent configs. Return agent_cwd."""
+    @staticmethod
+    def _build_priv_drop_cmd(agent_launch: str, sandbox_user: str) -> str:
+        """Build a shell command that drops to sandbox_user via setpriv or su.
+
+        setpriv (util-linux, Debian/Ubuntu) execs directly with no parent process.
+        su -l is the universal fallback (works on Alpine/BusyBox too).
+        No outer sh -c wrapper — DockerProcess wraps in bash -c already.
+        """
+        inner = f"export HOME=/home/{sandbox_user} && cd /home/{sandbox_user} && {agent_launch}"
+        quoted = shlex.quote(inner)
+        return (
+            f"if setpriv --help 2>&1 | grep -q reuid; then"
+            f" exec setpriv --reuid={sandbox_user} --regid={sandbox_user}"
+            f" --init-groups -- bash -c {quoted};"
+            f" else exec su -l {sandbox_user} -c {quoted};"
+            f" fi"
+        )
+
+    @staticmethod
+    async def _lockdown_paths(env, paths: list[str]) -> None:
+        """Lock directories so the sandbox user cannot access them.
+
+        Runs after all root-level setup but before agent launch.
+        Uses chown-then-chmod ordering to prevent TOCTOU window.
+        Rejects symlinks and validates path patterns against injection.
+        """
+        if not paths:
+            return
+
+        for p in paths:
+            _validate_locked_path(p)
+
+        # Build shell command: reject symlinks, chown before chmod
+        parts = []
+        for p in paths:
+            parts.append(
+                f'for d in {p}; do '
+                f'  [ -L "$d" ] && echo "WARN: skipping symlink $d" >&2 && continue; '
+                f'  [ -e "$d" ] || continue; '
+                f'  chown root:root "$d" && chmod 700 "$d"; '
+                f'done'
+            )
+        cmd = " && ".join(parts)
+        await env.exec(cmd, timeout_sec=30)
+
+    async def _setup_sandbox_user(self, env, sandbox_user: str, workspace: str) -> str:
+        """Create non-root sandbox user, grant workspace access. Return agent_cwd."""
         if not re.match(r'^[a-z_][a-z0-9_-]*$', sandbox_user):
             raise ValueError(f"Invalid sandbox_user: {sandbox_user!r} (must be alphanumeric)")
         logger.info(f"Setting up sandbox user: {sandbox_user}")
@@ -543,11 +656,12 @@ class SDK:
             f"for d in {' '.join(sorted(get_sandbox_home_dirs()))}; do "
             f"if [ -d /root/$d ]; then mkdir -p /home/{sandbox_user}/$d && "
             f"cp -a /root/$d/. /home/{sandbox_user}/$d/ 2>/dev/null || true; fi; done && "
-            f"chown -R {sandbox_user}:{sandbox_user} /home/{sandbox_user}",
+            f"chown -R {sandbox_user}:{sandbox_user} /home/{sandbox_user} && "
+            f"chown -R {sandbox_user}:{sandbox_user} {shlex.quote(workspace)}",
             timeout_sec=30,
         )
-        logger.info(f"Sandbox user {sandbox_user} ready")
-        return f"/home/{sandbox_user}"
+        logger.info(f"Sandbox user {sandbox_user} ready (workspace={workspace})")
+        return workspace
 
     async def _connect_acp(
         self, env, agent: str, agent_launch: str, agent_env: dict,
@@ -566,8 +680,7 @@ class SDK:
                 logger.info(f"Resolved agent path: {agent_launch}")
 
         if sandbox_user:
-            inner = f"export HOME=/home/{sandbox_user} && cd /home/{sandbox_user} && {agent_launch}"
-            agent_launch = f"gosu {sandbox_user} bash -c {shlex.quote(inner)}"
+            agent_launch = self._build_priv_drop_cmd(agent_launch, sandbox_user)
             logger.info(f"Agent sandboxed as: {sandbox_user}")
 
         if environment == "docker":
@@ -617,16 +730,103 @@ class SDK:
         trajectory = _capture_session_trajectory(session)
         return trajectory, len(session.tool_calls)
 
-    async def _verify(self, env, task: "Task", trial_paths: "TrialPaths", timing: dict) -> dict | None:
-        """Run verifier and return rewards."""
+    # Trusted env vars for verifier execution — override any agent pollution.
+    #
+    # PYTEST_DISABLE_PLUGIN_AUTOLOAD intentionally omitted: would break ~94
+    # SkillsBench tasks that rely on pytest-json-ctrf's --ctrf flag. Entry-point
+    # plugin injection is already blocked by verifier-runs-as-root + system
+    # site-packages permissions + the .pth cleanup in _CLEANUP_CMD.
+    #
+    # PYTHONNOUSERSITE intentionally omitted: verifier runs as root, so the
+    # only user-site dir on sys.path is /root/.local which sandbox_user cannot
+    # touch, and _CLEANUP_CMD already wipes .pth files there as belt-and-braces.
+    _VERIFIER_ENV = {
+        "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "PYTEST_ADDOPTS": (
+            "-c /dev/null "          # block pyproject.toml/pytest.ini/tox.ini/setup.cfg discovery
+            "--confcutdir=/tests "   # block conftest.py walk-up beyond /tests
+            "--rootdir=/tests "
+            "-p no:cacheprovider"
+        ),
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONPATH": "",
+        "PYTHONHOME": "",
+        "PYTHONSTARTUP": "",
+        "PYTHONSAFEPATH": "1",       # drop implicit '' (cwd) from sys.path
+        "LD_PRELOAD": "",
+        "LD_LIBRARY_PATH": "",
+    }
+
+    # Cleanup command for pytest hook / Python startup injection.
+    # Removes conftest.py outside /tests, sitecustomize.py/usercustomize.py
+    # and .pth files from writable sys.path entries (preserves /usr/lib,
+    # /usr/local/lib).
+    _CLEANUP_CMD = (
+        "find / -maxdepth 5 -name conftest.py -not -path '/tests/*' -delete 2>/dev/null; "
+        'python3 -c "'
+        "import sys,os;"
+        "[os.remove(os.path.join(d,f)) "
+        " for d in sys.path "
+        " for f in ('sitecustomize.py','usercustomize.py') "
+        " if d and not d.startswith('/usr/lib') and not d.startswith('/usr/local/lib') "
+        " and os.path.isfile(os.path.join(d,f))];"
+        "[os.remove(os.path.join(d,f)) "
+        " for d in sys.path if d and os.path.isdir(d) "
+        " for f in os.listdir(d) if f.endswith('.pth') "
+        " and not d.startswith('/usr/lib') and not d.startswith('/usr/local/lib') "
+        " and os.path.isfile(os.path.join(d,f))]"
+        '" 2>/dev/null || true'
+    )
+
+    async def _harden_before_verify(self, env, task: "Task", sandbox_user: str | None) -> None:
+        """Neutralize agent tampering before running the verifier.
+
+        1. Kill sandbox-user processes (prevent concurrent writes).
+        2. Remove injected conftest.py, sitecustomize.py, .pth files.
+        3. Merge trusted env vars into task.config.verifier.env.
+        """
+        if sandbox_user:
+            await env.exec(
+                f"pkill -u {sandbox_user} 2>/dev/null; "
+                f"sleep 1; pkill -9 -u {sandbox_user} 2>/dev/null || true",
+                timeout_sec=10,
+            )
+        await env.exec(self._CLEANUP_CMD, timeout_sec=10)
+
+        verifier_env = dict(self._VERIFIER_ENV)
+        if task.config.verifier.env:
+            verifier_env.update(task.config.verifier.env)
+        task.config.verifier.env = verifier_env
+
+    async def _verify(self, env, task: "Task", trial_paths: "TrialPaths", timing: dict, sandbox_user: str | None = None) -> tuple[dict | None, str | None]:
+        """Run verifier with pre-verification hardening."""
         trial_paths.verifier_dir.mkdir(parents=True, exist_ok=True)
+        await self._harden_before_verify(env, task, sandbox_user)
         logger.info("Running verifier...")
         t0 = datetime.now()
-        verifier = Verifier(task=task, trial_paths=trial_paths, environment=env)
-        verifier_result = await verifier.verify()
-        timing["verifier"] = (datetime.now() - t0).total_seconds()
-        logger.info(f"Rewards: {verifier_result.rewards}")
-        return verifier_result.rewards
+        verifier_error = None
+        try:
+            verifier = Verifier(task=task, trial_paths=trial_paths, environment=env)
+            verifier_result = await asyncio.wait_for(
+                verifier.verify(),
+                timeout=task.config.verifier.timeout_sec,
+            )
+            timing["verifier"] = (datetime.now() - t0).total_seconds()
+            rewards = verifier_result.rewards
+            logger.info(f"Rewards: {rewards}")
+        except asyncio.TimeoutError:
+            timing["verifier"] = (datetime.now() - t0).total_seconds()
+            # NOTE: these prefixes must stay in sync with classify_verifier_error() in _scoring.py
+            verifier_error = f"verifier timed out after {task.config.verifier.timeout_sec}s"
+            rewards = None
+            logger.error(verifier_error)
+        except Exception as e:
+            timing["verifier"] = (datetime.now() - t0).total_seconds()
+            # NOTE: these prefixes must stay in sync with classify_verifier_error() in _scoring.py
+            verifier_error = f"verifier crashed: {e}"
+            rewards = None
+            logger.error(verifier_error)
+        return rewards, verifier_error
 
     async def run(
         self,
@@ -641,7 +841,8 @@ class SDK:
         jobs_dir: str | Path = "jobs",
         environment: str = "docker",
         skills_dir: str | Path | None = None,
-        sandbox_user: str | None = None,
+        sandbox_user: str | None = "agent",
+        sandbox_locked_paths: list[str] | None = None,
         pre_agent_hooks: list | None = None,
         context_root: str | Path | None = None,
     ) -> RunResult:
@@ -659,8 +860,9 @@ class SDK:
             environment: Environment type — "docker" or "daytona".
             skills_dir: Path to skills directory. Copied into sandbox and symlinked
                 to agent-specific discovery paths (e.g. ~/.claude/skills/).
-            sandbox_user: Run agent as this non-root user (e.g. "agent"). Requires
-                gosu in the container. Setup (install) and verification run as root.
+            sandbox_user: Run agent as this non-root user (e.g. "agent"). Uses
+                setpriv (Debian/Ubuntu) or su (Alpine/others) — no external
+                dependencies. Setup (install) and verification run as root.
             pre_agent_hooks: List of async callables(env) to run after setup but
                 before agent launch. Use for starting background services, etc.
             context_root: Repo root for resolving Dockerfile COPY paths. When set,
@@ -670,6 +872,16 @@ class SDK:
         Returns:
             RunResult with rewards, trajectory, and metadata.
         """
+        if sandbox_user is None:
+            logger.warning(
+                "sandbox_user=None — agent runs as root with no path lockdown. "
+                "Root can read solution/test files. "
+                "Set sandbox_user='agent' for answer integrity."
+            )
+
+        # Resolve effective locked paths
+        effective_locked = _resolve_locked_paths(sandbox_user, sandbox_locked_paths)
+
         task_path = Path(task_path)
         task, trial_dir, trial_paths, started_at, job_name, trial_name = self._init_trial(
             task_path, job_name, trial_name, jobs_dir,
@@ -691,15 +903,18 @@ class SDK:
             trial_dir,
             task_path=task_path, agent=agent, model=model, environment=environment,
             skills_dir=skills_dir, sandbox_user=sandbox_user, context_root=context_root,
+            sandbox_locked_paths=effective_locked,
             timeout=timeout, started_at=started_at, agent_env=agent_env,
         )
 
         acp_client: ACPClient | None = None
         trajectory: list[dict] = []
         partial_trajectory = False
+        trajectory_source: str | None = None
         agent_name = ""
         n_tool_calls = 0
         error = None
+        verifier_error = None
         rewards = None
 
         try:
@@ -721,15 +936,17 @@ class SDK:
                 if agent_env.get("_BENCHFLOW_SUBSCRIPTION_AUTH"):
                     await self._upload_subscription_auth(env, agent, cred_home)
 
-                # Detect working directory (overridden by sandbox user)
+                # Detect working directory (preserved when sandbox user is set)
                 cwd_result = await env.exec("pwd", timeout_sec=10)
                 agent_cwd = (cwd_result.stdout or "").strip() or "/app"
                 if sandbox_user:
-                    agent_cwd = await self._setup_sandbox_user(env, sandbox_user)
+                    agent_cwd = await self._setup_sandbox_user(env, sandbox_user, workspace=agent_cwd)
 
                 await self._deploy_skills(
                     env, task_path, skills_dir, agent_cfg, sandbox_user, agent_cwd, task,
                 )
+
+                await self._lockdown_paths(env, effective_locked)
 
                 acp_client, session, agent_name = await self._connect_acp(
                     env, agent, agent_launch, agent_env, sandbox_user,
@@ -741,6 +958,7 @@ class SDK:
                 trajectory, n_tool_calls = await self._execute_prompts(
                     acp_client, session, prompts, timeout,
                 )
+                trajectory_source = "acp"
 
             if agent != "oracle" and "agent_setup" not in timing:
                 timing["agent_setup"] = (datetime.now() - t_agent_setup).total_seconds()
@@ -754,10 +972,15 @@ class SDK:
                 scraped = await _scrape_agent_trajectory(env, agent, sandbox_user)
                 if scraped:
                     trajectory = scraped
-                    n_tool_calls = sum(1 for e in trajectory if e.get("type") == "tool_call")
-                    logger.info(f"Scraped {len(trajectory)} events from agent-native trajectory")
+                    trajectory_source = "scraped"
+                    # Do NOT overwrite n_tool_calls — keep ACP-sourced value (trusted).
+                    # Scraped trajectory is agent-writable and forgeable.
+                    logger.warning(
+                        f"Using scraped trajectory ({len(scraped)} events) from "
+                        f"agent-writable directory — data is UNTRUSTED"
+                    )
 
-            rewards = await self._verify(env, task, trial_paths, timing)
+            rewards, verifier_error = await self._verify(env, task, trial_paths, timing, sandbox_user=sandbox_user)
 
         except asyncio.TimeoutError:
             error = f"Agent timed out after {timeout}s"
@@ -773,9 +996,10 @@ class SDK:
             if not trajectory and acp_client:
                 try:
                     trajectory = _capture_session_trajectory(acp_client.session)
-                    n_tool_calls = sum(1 for e in trajectory if e.get("type") == "tool_call")
                     if trajectory:
                         partial_trajectory = True
+                        trajectory_source = "partial_acp"
+                        n_tool_calls = len(acp_client.session.tool_calls)
                         logger.info(f"Captured {len(trajectory)} partial trajectory events")
                 except Exception as e:
                     logger.warning(f"Partial trajectory capture failed: {e}")
@@ -800,8 +1024,10 @@ class SDK:
             n_tool_calls=n_tool_calls,
             prompts=prompts,
             error=error,
+            verifier_error=verifier_error,
             trajectory=trajectory,
             partial_trajectory=partial_trajectory,
+            trajectory_source=trajectory_source,
             rewards=rewards,
             started_at=started_at,
             timing=timing,

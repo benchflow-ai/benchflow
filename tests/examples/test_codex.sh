@@ -14,7 +14,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 # Source .env from repo root if it exists
 if [ -f "$REPO_ROOT/.env" ]; then
@@ -23,7 +23,7 @@ if [ -f "$REPO_ROOT/.env" ]; then
   set +a
 fi
 
-TASK="examples/hello-world-task"
+TASK="$SCRIPT_DIR/hello-world-task"
 ENV="${ENV:-docker}"
 ARGS=()
 for arg in "$@"; do

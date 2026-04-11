@@ -80,6 +80,11 @@ class AgentConfig:
     skill_paths: list[str] = field(default_factory=list)
     install_timeout: int = 900  # seconds
     default_model: str = ""  # default model ID when --model is omitted
+    api_protocol: str = ""
+    # The LLM API protocol the agent natively speaks:
+    # "anthropic-messages" | "openai-completions" | "" (runtime/native).
+    # Used to pick the correct provider endpoint when a provider exposes
+    # multiple (e.g. zai has both anthropic-messages and openai-completions).
     env_mapping: dict[str, str] = field(default_factory=dict)
     # Maps BENCHFLOW_PROVIDER_* → agent-native env var names.
     # Applied by SDK after provider resolution.
@@ -108,6 +113,7 @@ AGENTS: dict[str, AgentConfig] = {
         launch_cmd="claude-agent-acp",
         protocol="acp",
         requires_env=["ANTHROPIC_API_KEY"],
+        api_protocol="anthropic-messages",
         env_mapping={
             "BENCHFLOW_PROVIDER_BASE_URL": "ANTHROPIC_BASE_URL",
             "BENCHFLOW_PROVIDER_API_KEY": "ANTHROPIC_AUTH_TOKEN",
@@ -136,6 +142,7 @@ AGENTS: dict[str, AgentConfig] = {
         launch_cmd="pi-acp",
         protocol="acp",
         requires_env=["ANTHROPIC_API_KEY"],
+        api_protocol="anthropic-messages",
         env_mapping={
             "BENCHFLOW_PROVIDER_BASE_URL": "ANTHROPIC_BASE_URL",
             "BENCHFLOW_PROVIDER_API_KEY": "ANTHROPIC_AUTH_TOKEN",
@@ -182,6 +189,7 @@ AGENTS: dict[str, AgentConfig] = {
         launch_cmd="codex-acp",
         protocol="acp",
         requires_env=["OPENAI_API_KEY"],
+        api_protocol="openai-completions",
         env_mapping={
             "BENCHFLOW_PROVIDER_BASE_URL": "OPENAI_BASE_URL",
             "BENCHFLOW_PROVIDER_API_KEY": "OPENAI_API_KEY",
@@ -214,6 +222,10 @@ AGENTS: dict[str, AgentConfig] = {
         launch_cmd="gemini --acp",
         protocol="acp",
         requires_env=["GOOGLE_API_KEY"],
+        # api_protocol intentionally empty: Gemini speaks Google's native
+        # GenerateContent format, which no current PROVIDERS entry exposes as
+        # a multi-endpoint option. Set this when a Gemini-compatible provider
+        # with multiple endpoints (e.g. OpenRouter) is added.
         env_mapping={
             "BENCHFLOW_PROVIDER_BASE_URL": "GEMINI_API_BASE_URL",
             "BENCHFLOW_PROVIDER_API_KEY": "GOOGLE_API_KEY",

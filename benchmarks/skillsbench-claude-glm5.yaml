@@ -1,0 +1,10 @@
+tasks_dir: ../.ref/skillsbench/tasks
+jobs_dir: ../jobs/skillsbench-claude-glm51
+agent: claude-agent-acp
+model: zai/glm-5.1
+environment: daytona
+concurrency: 8
+max_retries: 2
+exclude:
+  - scheduling-email-assistant
+  - mhc-layer-impl

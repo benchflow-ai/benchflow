@@ -56,6 +56,10 @@ def run(
         Path | None,
         typer.Option("--skills-dir", "-s", help="Skills directory to deploy into sandbox"),
     ] = None,
+    sandbox_user: Annotated[
+        str | None,
+        typer.Option("--sandbox-user", help="Run agent as non-root user (default: 'agent'). Pass 'none' for root."),
+    ] = "agent",
 ) -> None:
     """Run a single task with an ACP agent."""
     from benchflow.sdk import SDK
@@ -79,6 +83,7 @@ def run(
             jobs_dir=jobs_dir,
             environment=environment,
             skills_dir=str(skills_dir) if skills_dir else None,
+            sandbox_user=sandbox_user,
         )
     )
 

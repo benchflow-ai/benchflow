@@ -16,7 +16,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 # Source .env from repo root if it exists
 if [ -f "$REPO_ROOT/.env" ]; then
@@ -25,7 +25,7 @@ if [ -f "$REPO_ROOT/.env" ]; then
   set +a
 fi
 
-TASK="examples/hello-world-task"
+TASK="$SCRIPT_DIR/hello-world-task"
 ENV="${ENV:-docker}"
 ARGS=()
 for arg in "$@"; do
@@ -64,7 +64,7 @@ declare -A MODELS
 MODELS=(
   [subscription]="claude-sonnet-4-6"
   [sonnet]="anthropic-vertex/claude-sonnet-4-6"
-  [zai-glm5]="zai/glm-5"
+  [zai-glm5]="zai/glm-5.1"
 )
 
 # Extra --ae flags per model
@@ -72,7 +72,7 @@ declare -A EXTRA_ARGS
 EXTRA_ARGS=(
   [subscription]=""
   [sonnet]="--ae CLAUDE_CODE_USE_VERTEX=1 --ae GOOGLE_CLOUD_PROJECT=$PROJECT --ae GOOGLE_CLOUD_LOCATION=global"
-  [zai-glm5]="--ae ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic --ae ANTHROPIC_AUTH_TOKEN=$ZAI_API_KEY --ae BENCHFLOW_PROVIDER_MODEL=claude-sonnet-4-6"
+  [zai-glm5]="--ae ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic --ae ANTHROPIC_AUTH_TOKEN=$ZAI_API_KEY"
 )
 
 # ── Pre-flight checks ──

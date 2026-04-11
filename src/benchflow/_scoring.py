@@ -6,6 +6,10 @@ PIPE_CLOSED = "pipe_closed"
 ACP_ERROR = "acp_error"
 TIMED_OUT = "timeout"
 
+# Verifier error category constants
+VERIFIER_FAILED = "verifier_failure"
+VERIFIER_TIMEOUT = "verifier_timeout"
+
 
 def extract_reward(result: dict) -> float | None:
     """Extract the reward value from a result dict, or None if absent."""
@@ -28,6 +32,17 @@ def classify_error(error: str | None) -> str | None:
     if "timed out" in error:
         return TIMED_OUT
     return "other"
+
+
+def classify_verifier_error(verifier_error: str | None) -> str | None:
+    """Classify a verifier error string, or None if no error."""
+    if not verifier_error:
+        return None
+    if "verifier crashed" in verifier_error:
+        return VERIFIER_FAILED
+    if "verifier timed out" in verifier_error:
+        return VERIFIER_TIMEOUT
+    return "verifier_other"
 
 
 def pass_rate(*, passed: int, total: int) -> float:

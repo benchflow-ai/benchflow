@@ -336,6 +336,7 @@ class TestBuildResult:
             n_tool_calls=5,
             prompts=["solve it"],
             error=None,
+            verifier_error=None,
             trajectory=[{"type": "message", "text": "hello"}],
             partial_trajectory=False,
             rewards={"score": 1.0},

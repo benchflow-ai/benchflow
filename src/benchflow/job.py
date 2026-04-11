@@ -76,7 +76,8 @@ class JobConfig:
     agent_env: dict[str, str] = field(default_factory=dict)
     retry: RetryConfig = field(default_factory=RetryConfig)
     skills_dir: str | None = None
-    sandbox_user: str | None = None
+    sandbox_user: str | None = "agent"
+    sandbox_locked_paths: list[str] | None = None
     context_root: str | None = None
     exclude_tasks: set[str] = field(default_factory=set)
 
@@ -100,6 +101,7 @@ class JobResult:
     passed: int = 0
     failed: int = 0
     errored: int = 0
+    verifier_errored: int = 0
     elapsed_sec: float = 0.0
 
     @property
@@ -198,7 +200,8 @@ class Job:
 
         agent_env_raw = raw.get("agent_env", {})
         exclude = set(raw.get("exclude", []))
-        sandbox_user = raw.get("sandbox_user")
+        sandbox_user = raw.get("sandbox_user", "agent")
+        sandbox_locked_paths = raw.get("sandbox_locked_paths")
 
         config = JobConfig(
             agent=raw.get("agent", DEFAULT_AGENT),
@@ -210,6 +213,7 @@ class Job:
             retry=RetryConfig(max_retries=raw.get("max_retries", 2)),
             skills_dir=str(base_dir / raw["skills_dir"]) if raw.get("skills_dir") else None,
             sandbox_user=sandbox_user,
+            sandbox_locked_paths=sandbox_locked_paths,
             exclude_tasks=exclude,
         )
         return cls(tasks_dir=tasks_dir, jobs_dir=jobs_dir, config=config, **kwargs)
@@ -255,6 +259,8 @@ class Job:
         # Skills dir (shared with benchflow-native format)
         skills_dir_raw = raw.get("skills_dir")
         skills_dir = str(base_dir / skills_dir_raw) if skills_dir_raw else None
+        sandbox_user = raw.get("sandbox_user", "agent")
+        sandbox_locked_paths = raw.get("sandbox_locked_paths")
 
         config = JobConfig(
             agent=agent_name,
@@ -264,6 +270,8 @@ class Job:
             agent_env=agent_env,
             retry=RetryConfig(max_retries=max(0, max_retries)),
             skills_dir=skills_dir,
+            sandbox_user=sandbox_user,
+            sandbox_locked_paths=sandbox_locked_paths,
         )
         return cls(tasks_dir=tasks_dir, jobs_dir=jobs_dir, config=config, **kwargs)
 
@@ -276,13 +284,15 @@ class Job:
         )
 
     def _get_completed_tasks(self) -> dict[str, dict]:
-        """Load tasks that already have results with rewards."""
+        """Load tasks that already have results with rewards or verifier errors."""
         completed = {}
         for rfile in self._jobs_dir.rglob("result.json"):
             try:
                 r = json.loads(rfile.read_text())
                 task = r["task_name"]
-                if r.get("rewards") is not None:
+                if r.get("rewards") is not None or r.get("verifier_error"):
+                    if r.get("verifier_error"):
+                        logger.info(f"Skipping verifier-errored task on resume: {task} ({r['verifier_error'][:80]})")
                     completed[task] = r
             except Exception as e:
                 logger.debug(f"Skipping corrupt result file {rfile}: {e}")
@@ -317,12 +327,13 @@ class Job:
                 environment=cfg.environment,
                 skills_dir=cfg.skills_dir,
                 sandbox_user=cfg.sandbox_user,
+                sandbox_locked_paths=cfg.sandbox_locked_paths,
                 context_root=cfg.context_root,
             )
             last_result = result
 
-            # If succeeded or non-retryable error, return
-            if result.rewards is not None or not cfg.retry.should_retry(result.error):
+            # If succeeded, verifier-errored (terminal), or non-retryable, stop
+            if result.rewards is not None or result.verifier_error or not cfg.retry.should_retry(result.error):
                 break
 
             if attempt <= cfg.retry.max_retries:
@@ -378,7 +389,8 @@ class Job:
                 # Log result
                 reward = result.rewards.get("reward") if result.rewards else None
                 status = "PASS" if reward == 1 else ("FAIL" if reward is not None else "ERR")
-                err = f" ({result.error[:50]})" if result.error else ""
+                err_msg = result.error or result.verifier_error
+                err = f" ({err_msg[:50]})" if err_msg else ""
                 logger.info(f"[{status}] {td.name} (tools={result.n_tool_calls}){err}")
                 if self._on_result:
                     self._on_result(td.name, result)
@@ -411,6 +423,7 @@ class Job:
                 "task_name": result.task_name,
                 "rewards": result.rewards,
                 "error": result.error,
+                "verifier_error": result.verifier_error,
                 "n_tool_calls": result.n_tool_calls,
             }
 
@@ -424,7 +437,14 @@ class Job:
                        if extract_reward(r) is not None and extract_reward(r) != 1.0),
             errored=sum(1 for r in all_results.values()
                         if r.get("error") and r.get("rewards") is None),
+            verifier_errored=sum(1 for r in all_results.values()
+                                if r.get("verifier_error")),
             elapsed_sec=elapsed,
+        )
+
+        assert job_result.passed + job_result.failed + job_result.errored + job_result.verifier_errored == job_result.total, (
+            f"Counting bug: {job_result.passed}+{job_result.failed}+{job_result.errored}+"
+            f"{job_result.verifier_errored} != {job_result.total}"
         )
 
         # Save summary
@@ -437,11 +457,24 @@ class Job:
             "passed": job_result.passed,
             "failed": job_result.failed,
             "errored": job_result.errored,
+            "verifier_errored": job_result.verifier_errored,
             "score": f"{job_result.score:.1%}",
             "score_excl_errors": f"{job_result.score_excl_errors:.1%}",
             "elapsed_sec": elapsed,
         }
         (self._jobs_dir / "summary.json").write_text(json.dumps(summary, indent=2))
+
+        if job_result.verifier_errored > 0:
+            pct = job_result.verifier_errored / job_result.total * 100
+            logger.warning(
+                f"{job_result.verifier_errored} tasks ({pct:.0f}%) had verifier errors — "
+                f"check verifier scripts for bugs"
+            )
+            if pct > 20:
+                logger.error(
+                    "Over 20% of tasks had verifier errors — results may be unreliable. "
+                    "This likely indicates a systemic verifier bug, not agent failure."
+                )
 
         logger.info(
             f"Job complete: {job_result.passed}/{job_result.total} "
