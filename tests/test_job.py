@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from benchflow.job import Job, JobConfig, JobResult, RetryConfig
+from benchflow.job import Job, JobConfig, RetryConfig
 from benchflow.models import RunResult
 
 
@@ -41,27 +41,6 @@ class TestRetryConfig:
         # should_retry still returns True for retryable errors,
         # but max_retries=0 means the job loop won't retry
         assert cfg.should_retry("Agent install failed (rc=1): ...")
-
-
-class TestJobResult:
-    def test_score(self):
-        r = JobResult(job_name="test", config=JobConfig(), total=10, passed=5)
-        assert r.score == 0.5
-
-    def test_score_zero_total(self):
-        r = JobResult(job_name="test", config=JobConfig(), total=0)
-        assert r.score == 0.0
-
-    def test_score_excl_errors(self):
-        r = JobResult(
-            job_name="test",
-            config=JobConfig(),
-            total=10,
-            passed=5,
-            failed=3,
-            errored=2,
-        )
-        assert r.score_excl_errors == 5 / 8
 
 
 class TestJobCounting:

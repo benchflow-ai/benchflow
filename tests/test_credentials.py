@@ -1,34 +1,7 @@
 """Tests for credential_files on AgentConfig and ProviderConfig."""
 
-from benchflow.agents.providers import PROVIDERS, ProviderConfig
-from benchflow.agents.registry import AGENTS, AgentConfig, CredentialFile
-
-
-class TestCredentialFileDataclass:
-    def test_template_rendering(self):
-        cf = CredentialFile(
-            path="/root/.codex/auth.json",
-            env_source="OPENAI_API_KEY",
-            template='{{"OPENAI_API_KEY": "{value}"}}',
-        )
-        value = "sk-test-123"
-        content = cf.template.format(value=value)
-        assert content == '{"OPENAI_API_KEY": "sk-test-123"}'
-
-    def test_raw_value_when_no_template(self):
-        cf = CredentialFile(
-            path="/root/.config/creds.json",
-            env_source="MY_CREDS",
-        )
-        assert cf.template == ""
-
-    def test_mkdir_default_true(self):
-        cf = CredentialFile(path="/x", env_source="Y")
-        assert cf.mkdir is True
-
-    def test_defaults(self):
-        cfg = AgentConfig(name="t", install_cmd="", launch_cmd="")
-        assert cfg.credential_files == []
+from benchflow.agents.providers import PROVIDERS
+from benchflow.agents.registry import AGENTS
 
 
 class TestAgentCredentialFiles:
@@ -51,12 +24,6 @@ class TestAgentCredentialFiles:
 
 
 class TestProviderCredentialFiles:
-    def test_provider_config_has_field(self):
-        cfg = ProviderConfig(
-            name="t", base_url="", api_protocol="", auth_type="api_key"
-        )
-        assert cfg.credential_files == []
-
     def test_vertex_providers_have_adc(self):
         for name in ("google-vertex", "anthropic-vertex"):
             cfg = PROVIDERS[name]

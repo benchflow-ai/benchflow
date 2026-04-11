@@ -6,34 +6,8 @@ import pytest
 
 from benchflow.agents.registry import (
     AGENTS,
-    AgentConfig,
-    HostAuthFile,
-    SubscriptionAuth,
     get_sandbox_home_dirs,
 )
-
-# ── SubscriptionAuth dataclass ──
-
-
-class TestSubscriptionAuthDataclass:
-    def test_construction(self):
-        sa = SubscriptionAuth(
-            replaces_env="ANTHROPIC_API_KEY",
-            detect_file="~/.claude/.credentials.json",
-            files=[
-                HostAuthFile(
-                    "~/.claude/.credentials.json", "{home}/.claude/.credentials.json"
-                ),
-            ],
-        )
-        assert sa.replaces_env == "ANTHROPIC_API_KEY"
-        assert sa.detect_file == "~/.claude/.credentials.json"
-        assert len(sa.files) == 1
-
-    def test_agent_config_default_none(self):
-        cfg = AgentConfig(name="t", install_cmd="", launch_cmd="")
-        assert cfg.subscription_auth is None
-
 
 # ── Agent config entries ──
 

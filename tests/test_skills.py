@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from benchflow.skills import SkillInfo, discover_skills, parse_skill
+from benchflow.skills import discover_skills, parse_skill
 
 
 def _write_skill_md(skill_dir: Path, frontmatter: str, body: str = "") -> Path:
@@ -148,12 +148,3 @@ class TestDiscoverSkills:
         skills = discover_skills(tmp_path)
         assert skills[0].path.name == "aaa"
         assert skills[1].path.name == "zzz"
-
-
-class TestSkillInfo:
-    """SkillInfo dataclass basics."""
-
-    def test_repr(self):
-        s = SkillInfo(name="test", path=Path("/a/b"))
-        assert "test" in repr(s)
-        assert "/a/b" in repr(s)

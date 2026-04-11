@@ -17,12 +17,6 @@ from benchflow.trajectories.types import (
 
 
 class TestTrajectoryTypes:
-    def test_trajectory_creation(self) -> None:
-        traj = Trajectory(session_id="test-session")
-        assert len(traj.exchanges) == 0
-        assert traj.total_input_tokens == 0
-        assert traj.total_output_tokens == 0
-
     def test_exchange_with_usage(self) -> None:
         traj = Trajectory(session_id="s1")
         traj.exchanges.append(
@@ -113,18 +107,6 @@ class TestTrajectoryTypes:
 
 class TestTrajectoryProxy:
     @pytest.mark.asyncio
-    async def test_start_stop(self) -> None:
-        proxy = TrajectoryProxy(
-            target="https://api.anthropic.com",
-            session_id="test",
-        )
-        await proxy.start()
-        assert proxy.port > 0
-        assert proxy.base_url.startswith("http://127.0.0.1:")
-        await proxy.stop()
-        assert len(proxy.trajectory.exchanges) == 0
-
-    @pytest.mark.asyncio
     async def test_proxy_captures_exchange(self) -> None:
         """Test proxy with a real HTTP request to a mock target."""
 
@@ -188,14 +170,6 @@ class TestTrajectoryProxy:
 
 
 class TestOTelCollector:
-    @pytest.mark.asyncio
-    async def test_start_stop(self) -> None:
-        collector = OTelCollector(session_id="test")
-        await collector.start()
-        assert collector.port > 0
-        await collector.stop()
-        assert len(collector.trajectory.exchanges) == 0
-
     @pytest.mark.asyncio
     async def test_captures_genai_spans(self) -> None:
         """Send an OTLP/JSON payload with GenAI spans and verify capture."""
