@@ -128,7 +128,9 @@ logger = logging.getLogger(__name__)
 _DIAG_TRUNCATE = 2000  # max chars for diagnostic stdout/stderr in logs
 
 
-# Apply DinD patch once at import time
+# Apply at import time so any Harbor DockerEnvironment in this process
+# (SDK.run or otherwise) gets the env-var rewrite, and so we patch exactly
+# once without an idempotency guard. Do not move into SDK.run().
 _patch_harbor_dind()
 
 
