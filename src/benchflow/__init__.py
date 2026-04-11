@@ -8,7 +8,9 @@ Re-exports environment APIs and adds:
 - Metrics collection and aggregation
 """
 
-__version__ = "2.0.0"
+from importlib.metadata import version as _version
+
+__version__ = _version("benchflow")
 
 # Re-export Harbor's core types for downstream task authors
 from harbor import (
