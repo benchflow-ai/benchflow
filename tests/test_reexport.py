@@ -71,20 +71,25 @@ def test_public_api_reexports():
 def test_register_agent():
     """Custom agents can be registered at runtime."""
     from benchflow import AGENTS, get_agent, register_agent
+    from benchflow.agents.registry import AGENT_INSTALLERS, AGENT_LAUNCH
 
-    register_agent(
-        name="test-custom-agent",
-        install_cmd="echo installed",
-        launch_cmd="test-agent --acp",
-        requires_env=["TEST_KEY"],
-        description="Test agent",
-    )
+    try:
+        register_agent(
+            name="test-custom-agent",
+            install_cmd="echo installed",
+            launch_cmd="test-agent --acp",
+            requires_env=["TEST_KEY"],
+            description="Test agent",
+        )
 
-    assert "test-custom-agent" in AGENTS
-    cfg, alias_model = get_agent("test-custom-agent")
-    assert cfg.launch_cmd == "test-agent --acp"
-    assert cfg.requires_env == ["TEST_KEY"]
-    assert alias_model == ""
-
-    # Cleanup
-    del AGENTS["test-custom-agent"]
+        assert "test-custom-agent" in AGENTS
+        cfg, alias_model = get_agent("test-custom-agent")
+        assert cfg.launch_cmd == "test-agent --acp"
+        assert cfg.requires_env == ["TEST_KEY"]
+        assert alias_model == ""
+    finally:
+        # register_agent writes to all three dicts; clean up all three to keep
+        # the global registries in sync for downstream tests.
+        AGENTS.pop("test-custom-agent", None)
+        AGENT_INSTALLERS.pop("test-custom-agent", None)
+        AGENT_LAUNCH.pop("test-custom-agent", None)
