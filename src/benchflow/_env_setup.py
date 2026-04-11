@@ -15,7 +15,15 @@ from benchflow.agents.registry import AGENTS
 logger = logging.getLogger(__name__)
 
 # Directories to ignore when copying deps
-_IGNORE_DIRS = {".venv", "__pycache__", ".pytest_cache", "node_modules", ".git", ".mypy_cache", ".ruff_cache"}
+_IGNORE_DIRS = {
+    ".venv",
+    "__pycache__",
+    ".pytest_cache",
+    "node_modules",
+    ".git",
+    ".mypy_cache",
+    ".ruff_cache",
+}
 
 
 def _get_agent_skill_paths() -> list[str]:
@@ -80,9 +88,7 @@ def stage_dockerfile_deps(
     new_lines = []
 
     for line in lines:
-        copy_match = re.match(
-            r"^(\s*COPY\s+(?:--\S+\s+)*)(\S+)\s+(\S+)\s*$", line
-        )
+        copy_match = re.match(r"^(\s*COPY\s+(?:--\S+\s+)*)(\S+)\s+(\S+)\s*$", line)
         if copy_match:
             prefix = copy_match.group(1)
             src_path = copy_match.group(2)
@@ -101,7 +107,11 @@ def stage_dockerfile_deps(
                 if abs_src.is_dir():
                     if local_dest.exists():
                         shutil.rmtree(local_dest)
-                    shutil.copytree(abs_src, local_dest, ignore=shutil.ignore_patterns(*_IGNORE_DIRS))
+                    shutil.copytree(
+                        abs_src,
+                        local_dest,
+                        ignore=shutil.ignore_patterns(*_IGNORE_DIRS),
+                    )
                 else:
                     local_dest.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(abs_src, local_dest)
@@ -143,7 +153,9 @@ def _inject_skills_into_dockerfile(task_path: Path, skills_dir: Path) -> None:
 
     content = dockerfile_path.read_text()
     dockerfile_path.write_text(content + "\n".join(lines) + "\n")
-    logger.info(f"Skills injected into Dockerfile: {len(list(skills_dir.iterdir()))} items")
+    logger.info(
+        f"Skills injected into Dockerfile: {len(list(skills_dir.iterdir()))} items"
+    )
 
 
 def _detect_dind_mount() -> tuple[str, str] | None:
@@ -157,11 +169,14 @@ def _detect_dind_mount() -> tuple[str, str] | None:
     if not Path("/.dockerenv").exists():
         return None
     import subprocess as _sp
+
     try:
         hostname = _sp.check_output(["hostname"], text=True).strip()
         result = _sp.run(
             ["docker", "inspect", hostname],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         if result.returncode != 0:
             return None
@@ -202,10 +217,14 @@ def _patch_harbor_dind() -> None:
 
     def _patched(self, include_os_env=True):
         env = _original(self, include_os_env=include_os_env)
-        for key in ("HOST_VERIFIER_LOGS_PATH", "HOST_AGENT_LOGS_PATH", "HOST_ARTIFACTS_PATH"):
+        for key in (
+            "HOST_VERIFIER_LOGS_PATH",
+            "HOST_AGENT_LOGS_PATH",
+            "HOST_ARTIFACTS_PATH",
+        ):
             val = env.get(key, "")
             if val.startswith(container_dest):
-                env[key] = host_source + val[len(container_dest):]
+                env[key] = host_source + val[len(container_dest) :]
         return env
 
     DockerEnvironmentEnvVars.to_env_dict = _patched
@@ -221,6 +240,7 @@ def _create_environment(
     """Create a Harbor environment (Docker or Daytona)."""
     if environment_type == "docker":
         from harbor.environments.docker.docker import DockerEnvironment
+
         return DockerEnvironment(
             environment_dir=task.paths.environment_dir,
             environment_name=task_path.name,
@@ -230,6 +250,7 @@ def _create_environment(
         )
     elif environment_type == "daytona":
         from harbor.environments.daytona import DaytonaEnvironment
+
         return DaytonaEnvironment(
             environment_dir=task.paths.environment_dir,
             environment_name=task_path.name,
@@ -240,4 +261,6 @@ def _create_environment(
             auto_delete_interval_mins=1440,
         )
     else:
-        raise ValueError(f"Unknown environment_type: {environment_type!r} (use 'docker' or 'daytona')")
+        raise ValueError(
+            f"Unknown environment_type: {environment_type!r} (use 'docker' or 'daytona')"
+        )

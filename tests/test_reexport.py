@@ -53,7 +53,13 @@ def test_extracted_modules_importable():
 
 def test_public_api_reexports():
     """Public API symbols are still importable from benchflow top-level."""
-    from benchflow import SDK, RunResult, AgentInstallError, AgentTimeoutError, stage_dockerfile_deps
+    from benchflow import (
+        SDK,
+        RunResult,
+        AgentInstallError,
+        AgentTimeoutError,
+        stage_dockerfile_deps,
+    )
 
     assert callable(SDK)
     assert callable(RunResult)

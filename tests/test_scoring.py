@@ -1,6 +1,11 @@
 """Tests for benchflow._scoring — pure scoring/classification helpers."""
 
-from benchflow._scoring import classify_error, extract_reward, pass_rate, pass_rate_excl_errors
+from benchflow._scoring import (
+    classify_error,
+    extract_reward,
+    pass_rate,
+    pass_rate_excl_errors,
+)
 
 
 class TestExtractReward:
@@ -47,7 +52,10 @@ class TestClassifyError:
         assert classify_error("") is None
 
     def test_install_failed(self):
-        assert classify_error("Agent claude-agent-acp install failed (rc=1)") == "install_failure"
+        assert (
+            classify_error("Agent claude-agent-acp install failed (rc=1)")
+            == "install_failure"
+        )
 
     def test_pipe_closed(self):
         assert classify_error("Agent closed stdout") == "pipe_closed"

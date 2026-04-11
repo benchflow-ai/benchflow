@@ -1,6 +1,5 @@
 """Tests for Dockerfile dependency staging."""
 
-
 from benchflow._env_setup import stage_dockerfile_deps, _dep_local_name
 
 
@@ -15,7 +14,10 @@ class TestDepLocalName:
         assert _dep_local_name("tasks/email-foo/data") == "email-foo__data"
 
     def test_skills_basename(self):
-        assert _dep_local_name("tasks/email-foo/environment/skills") == "environment__skills"
+        assert (
+            _dep_local_name("tasks/email-foo/environment/skills")
+            == "environment__skills"
+        )
 
 
 class TestStageDockerfileDeps:
@@ -33,9 +35,7 @@ class TestStageDockerfileDeps:
         env_dir.mkdir(parents=True)
         (task_dir / "task.toml").write_text('version = "1.0"')
         (env_dir / "Dockerfile").write_text(
-            "FROM ubuntu:24.04\n"
-            "COPY packages/claw-gmail /app\n"
-            "RUN echo hello\n"
+            "FROM ubuntu:24.04\nCOPY packages/claw-gmail /app\nRUN echo hello\n"
         )
 
         stage_dockerfile_deps(task_dir, repo_root)
@@ -106,8 +106,8 @@ class TestStageDockerfileDeps:
 
         rewritten = (env_dir / "Dockerfile").read_text()
         lines = rewritten.split("\n")
-        assert "_deps/" in lines[1]   # first COPY rewritten
-        assert "_deps/" in lines[3]   # second COPY rewritten
+        assert "_deps/" in lines[1]  # first COPY rewritten
+        assert "_deps/" in lines[3]  # second COPY rewritten
         assert "packages/dep1" not in rewritten
         assert "packages/dep2" not in rewritten
         # Content preserved

@@ -153,12 +153,18 @@ class TestGetAgentSkillPaths:
 
         mock_agents = {
             "agent-a": AgentConfig(
-                name="agent-a", install_cmd="true", launch_cmd="true",
-                requires_env=[], skill_paths=["$HOME/.a/skills"],
+                name="agent-a",
+                install_cmd="true",
+                launch_cmd="true",
+                requires_env=[],
+                skill_paths=["$HOME/.a/skills"],
             ),
             "agent-b": AgentConfig(
-                name="agent-b", install_cmd="true", launch_cmd="true",
-                requires_env=[], skill_paths=["$HOME/.a/skills", "$WORKSPACE/skills"],
+                name="agent-b",
+                install_cmd="true",
+                launch_cmd="true",
+                requires_env=[],
+                skill_paths=["$HOME/.a/skills", "$WORKSPACE/skills"],
             ),
         }
         with patch("benchflow._env_setup.AGENTS", mock_agents):

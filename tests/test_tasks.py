@@ -16,7 +16,7 @@ class TestCheckTask:
         task = tmp_path / "my-task"
         task.mkdir()
         (task / "task.toml").write_text(
-            '[agent]\ntimeout_sec = 300\n[verifier]\ntimeout_sec = 120\n'
+            "[agent]\ntimeout_sec = 300\n[verifier]\ntimeout_sec = 120\n"
         )
         (task / "instruction.md").write_text("# Do something\n")
         (task / "environment").mkdir()
@@ -69,7 +69,9 @@ class TestCheckTask:
         task = self._make_valid_task(tmp_path)
         shutil.rmtree(task / "tests")
         issues = check_task(task)
-        assert "Missing tests/ directory (verifier needs test.sh or evaluate.py)" in issues
+        assert (
+            "Missing tests/ directory (verifier needs test.sh or evaluate.py)" in issues
+        )
 
     def test_empty_tests_dir(self, tmp_path):
         task = self._make_valid_task(tmp_path)
@@ -86,13 +88,13 @@ class TestCheckTask:
 
     def test_task_toml_missing_agent_section(self, tmp_path):
         task = self._make_valid_task(tmp_path)
-        (task / "task.toml").write_text('[verifier]\ntimeout_sec = 120\n')
+        (task / "task.toml").write_text("[verifier]\ntimeout_sec = 120\n")
         issues = check_task(task)
         assert "task.toml missing [agent] section" in issues
 
     def test_task_toml_missing_timeout_sec(self, tmp_path):
         task = self._make_valid_task(tmp_path)
-        (task / "task.toml").write_text('[agent]\n')
+        (task / "task.toml").write_text("[agent]\n")
         issues = check_task(task)
         assert "task.toml [agent] missing timeout_sec" in issues
 
@@ -143,11 +145,13 @@ class TestInitTask:
     def test_test_sh_is_executable(self, tmp_path):
         task = init_task("exec-test", parent_dir=tmp_path)
         import os
+
         assert os.access(task / "tests" / "test.sh", os.X_OK)
 
     def test_solve_sh_is_executable(self, tmp_path):
         task = init_task("exec-sol", parent_dir=tmp_path)
         import os
+
         assert os.access(task / "solution" / "solve.sh", os.X_OK)
 
     def test_raises_on_existing_dir(self, tmp_path):

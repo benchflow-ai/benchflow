@@ -138,9 +138,12 @@ class DockerProcess(LiveProcess):
     def _compose_cmd(self) -> list[str]:
         """Base docker compose command with project/file flags."""
         cmd = [
-            "docker", "compose",
-            "-p", self._project_name,
-            "--project-directory", self._project_dir,
+            "docker",
+            "compose",
+            "-p",
+            self._project_name,
+            "--project-directory",
+            self._project_dir,
         ]
         for f in self._compose_files:
             cmd.extend(["-f", f])
@@ -151,11 +154,19 @@ class DockerProcess(LiveProcess):
         proc_env = os.environ.copy()
         if not proc_env.get("DOCKER_HOST"):
             import subprocess
+
             try:
                 r = subprocess.run(
-                    ["docker", "context", "inspect", "--format",
-                     "{{.Endpoints.docker.Host}}"],
-                    capture_output=True, text=True, timeout=5,
+                    [
+                        "docker",
+                        "context",
+                        "inspect",
+                        "--format",
+                        "{{.Endpoints.docker.Host}}",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
                 )
                 if r.returncode == 0 and r.stdout.strip():
                     proc_env["DOCKER_HOST"] = r.stdout.strip()
@@ -166,16 +177,23 @@ class DockerProcess(LiveProcess):
     _ENV_PATH = "/tmp/.benchflow_env"
 
     async def _write_env_to_container(
-        self, env: dict[str, str], proc_env: dict[str, str],
+        self,
+        env: dict[str, str],
+        proc_env: dict[str, str],
     ) -> None:
         """Write env vars to a file inside the container (not visible in ps aux)."""
         lines = "".join(f"export {k}={shlex.quote(v)}\n" for k, v in env.items())
         write_cmd = self._compose_cmd()
-        write_cmd.extend([
-            "exec", "-T", self._service,
-            "bash", "-c",
-            f"cat > {self._ENV_PATH} && chmod 600 {self._ENV_PATH}",
-        ])
+        write_cmd.extend(
+            [
+                "exec",
+                "-T",
+                self._service,
+                "bash",
+                "-c",
+                f"cat > {self._ENV_PATH} && chmod 600 {self._ENV_PATH}",
+            ]
+        )
         proc = await asyncio.create_subprocess_exec(
             *write_cmd,
             stdin=asyncio.subprocess.PIPE,
@@ -235,7 +253,9 @@ class DaytonaProcess(LiveProcess):
     For direct sandboxes, the command runs directly via SSH.
     """
 
-    def __init__(self, sandbox: Any, is_dind: bool = False, compose_cmd_prefix: str = ""):
+    def __init__(
+        self, sandbox: Any, is_dind: bool = False, compose_cmd_prefix: str = ""
+    ):
         """
         Args:
             sandbox: Daytona AsyncSandbox instance
@@ -254,19 +274,20 @@ class DaytonaProcess(LiveProcess):
             raise RuntimeError("Daytona sandbox not started")
 
         # Detect DinD mode by checking if the environment uses compose
-        is_dind = hasattr(env, '_strategy') and hasattr(env._strategy, '_compose_cmd')
+        is_dind = hasattr(env, "_strategy") and hasattr(env._strategy, "_compose_cmd")
 
         compose_cmd_prefix = ""
         if is_dind:
             # Build compose env vars and command prefix for DinD
             strategy = env._strategy
             compose_env = " ".join(
-                f"{k}={shlex.quote(v)}"
-                for k, v in strategy._compose_env_vars().items()
+                f"{k}={shlex.quote(v)}" for k, v in strategy._compose_env_vars().items()
             )
             compose_cmd_prefix = compose_env
 
-        return cls(sandbox=sandbox, is_dind=is_dind, compose_cmd_prefix=compose_cmd_prefix)
+        return cls(
+            sandbox=sandbox, is_dind=is_dind, compose_cmd_prefix=compose_cmd_prefix
+        )
 
     async def start(
         self,
@@ -304,7 +325,9 @@ class DaytonaProcess(LiveProcess):
                     f"umask 077 && cat > {remote_env_path} <<'__BENCHFLOW_ENV__'\n"
                     f"{env_lines}\n__BENCHFLOW_ENV__"
                 )
-                remote_cmd = f"{write_cmd}\ntrap 'rm -f {remote_env_path}' EXIT\n{remote_cmd}"
+                remote_cmd = (
+                    f"{write_cmd}\ntrap 'rm -f {remote_env_path}' EXIT\n{remote_cmd}"
+                )
         else:
             # Direct sandbox — run command via SSH.
             # Write env vars to a file on the remote host and source it,
@@ -327,13 +350,18 @@ class DaytonaProcess(LiveProcess):
                     f"umask 077 && cat > {remote_env_path} <<'__BENCHFLOW_ENV__'\n"
                     f"{env_lines}\n__BENCHFLOW_ENV__"
                 )
-                remote_cmd = f"{write_cmd}\ntrap 'rm -f {remote_env_path}' EXIT\n{remote_cmd}"
+                remote_cmd = (
+                    f"{write_cmd}\ntrap 'rm -f {remote_env_path}' EXIT\n{remote_cmd}"
+                )
 
         cmd = [
             "ssh",
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
-            "-o", "LogLevel=ERROR",
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            "-o",
+            "LogLevel=ERROR",
             ssh_target,
             remote_cmd,
         ]

@@ -55,7 +55,9 @@ def check_task(task_dir: Path) -> list[str]:
         if not any(tests_dir.iterdir()):
             issues.append("tests/ directory is empty")
     else:
-        issues.append("Missing tests/ directory (verifier needs test.sh or evaluate.py)")
+        issues.append(
+            "Missing tests/ directory (verifier needs test.sh or evaluate.py)"
+        )
 
     return issues
 
@@ -74,7 +76,7 @@ def init_task(
     task_dir.mkdir(parents=True)
 
     # task.toml
-    (task_dir / "task.toml").write_text('''version = "1.0"
+    (task_dir / "task.toml").write_text("""version = "1.0"
 
 [metadata]
 author_name = ""
@@ -91,7 +93,7 @@ timeout_sec = 120
 [environment]
 cpus = 1
 memory_mb = 2048
-''')
+""")
 
     # instruction.md
     (task_dir / "instruction.md").write_text(f"""# {name}
@@ -128,7 +130,9 @@ echo "1.0" > /logs/verifier/reward.txt
     (tests_dir / "test.sh").chmod(0o755)
 
     if not no_pytest:
-        (tests_dir / "test_outputs.py").write_text("""\"\"\"Pytest-based verifier. Run by Harbor after agent completes.\"\"\"
+        (
+            tests_dir / "test_outputs.py"
+        ).write_text("""\"\"\"Pytest-based verifier. Run by Harbor after agent completes.\"\"\"
 
 def test_placeholder():
     # Replace with actual verification logic

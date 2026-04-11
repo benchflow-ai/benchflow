@@ -359,7 +359,9 @@ def _reconstruct_response(events: list[dict[str, Any]]) -> dict[str, Any]:
                 try:
                     block["input"] = json.loads(block["input"])
                 except json.JSONDecodeError:
-                    logger.debug("Could not parse tool_use input as JSON, keeping as string")
+                    logger.debug(
+                        "Could not parse tool_use input as JSON, keeping as string"
+                    )
         return {
             "content": content,
             "model": model,

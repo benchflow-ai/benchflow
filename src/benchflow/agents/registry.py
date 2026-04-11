@@ -18,9 +18,9 @@ _NODE_INSTALL = (
     "NODE_OK=0; "
     "if command -v node >/dev/null 2>&1; then "
     "  NODE_VER=$(node -e 'console.log(process.versions.node.split(\".\")[0])' 2>/dev/null || echo 0); "
-    "  [ \"$NODE_VER\" -ge 22 ] 2>/dev/null && NODE_OK=1; "
+    '  [ "$NODE_VER" -ge 22 ] 2>/dev/null && NODE_OK=1; '
     "fi; "
-    "if [ \"$NODE_OK\" = 0 ]; then "
+    'if [ "$NODE_OK" = 0 ]; then '
     "  apt-get update -qq && "
     "  apt-get install -y -qq curl ca-certificates && "
     "  curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && "
@@ -123,7 +123,9 @@ AGENTS: dict[str, AgentConfig] = {
             replaces_env="ANTHROPIC_API_KEY",
             detect_file="~/.claude/.credentials.json",
             files=[
-                HostAuthFile("~/.claude/.credentials.json", "{home}/.claude/.credentials.json"),
+                HostAuthFile(
+                    "~/.claude/.credentials.json", "{home}/.claude/.credentials.json"
+                ),
             ],
         ),
     ),
@@ -167,8 +169,8 @@ AGENTS: dict[str, AgentConfig] = {
             " > ~/.openclaw/exec-approvals.json && "
             # Deploy ACP shim
             "cat > /usr/local/bin/openclaw-acp-shim <<'SHIMEOF'\n"
-            + _OPENCLAW_SHIM +
-            "\nSHIMEOF\n"
+            + _OPENCLAW_SHIM
+            + "\nSHIMEOF\n"
             "chmod +x /usr/local/bin/openclaw-acp-shim"
         ),
         launch_cmd="python3 /usr/local/bin/openclaw-acp-shim",
@@ -234,9 +236,14 @@ AGENTS: dict[str, AgentConfig] = {
             replaces_env="GEMINI_API_KEY",
             detect_file="~/.gemini/oauth_creds.json",
             files=[
-                HostAuthFile("~/.gemini/oauth_creds.json", "{home}/.gemini/oauth_creds.json"),
+                HostAuthFile(
+                    "~/.gemini/oauth_creds.json", "{home}/.gemini/oauth_creds.json"
+                ),
                 HostAuthFile("~/.gemini/settings.json", "{home}/.gemini/settings.json"),
-                HostAuthFile("~/.gemini/google_accounts.json", "{home}/.gemini/google_accounts.json"),
+                HostAuthFile(
+                    "~/.gemini/google_accounts.json",
+                    "{home}/.gemini/google_accounts.json",
+                ),
             ],
         ),
     ),
@@ -283,6 +290,7 @@ def get_sandbox_home_dirs() -> set[str]:
 def is_vertex_model(model: str) -> bool:
     """True if the model uses Vertex AI (GCP ADC auth, not API keys)."""
     from benchflow.agents.providers import find_provider
+
     result = find_provider(model)
     if result:
         _, cfg = result
@@ -294,6 +302,7 @@ def infer_env_key_for_model(model: str) -> str | None:
     """Infer the required API key environment variable from a model ID."""
     # Check custom providers first
     from benchflow.agents.providers import resolve_auth_env
+
     custom = resolve_auth_env(model)
     if custom is not None:
         return custom

@@ -16,10 +16,11 @@ logger = logging.getLogger(__name__)
 @dataclass
 class ServiceConfig:
     """Configuration for a sandbox service (e.g. claw-gmail)."""
+
     name: str
-    cli_name: str            # Binary name (e.g. "claw-gmail")
-    port: int                # Default port
-    db_path: str             # Default database path
+    cli_name: str  # Binary name (e.g. "claw-gmail")
+    port: int  # Default port
+    db_path: str  # Default database path
     health_path: str = "/health"
     description: str = ""
 
@@ -72,7 +73,9 @@ def register_service(
     **kwargs,
 ) -> ServiceConfig:
     """Register a custom service at runtime."""
-    config = ServiceConfig(name=name, cli_name=cli_name, port=port, db_path=db_path, **kwargs)
+    config = ServiceConfig(
+        name=name, cli_name=cli_name, port=port, db_path=db_path, **kwargs
+    )
     SERVICES[name] = config
     return config
 
@@ -86,7 +89,9 @@ def detect_services_from_dockerfile(task_path: Path | str) -> list[ServiceConfig
     return [svc for svc in SERVICES.values() if svc.cli_name in text]
 
 
-def build_service_hooks(services: list[ServiceConfig]) -> list[Callable[[Any], Coroutine[Any, Any, None]]]:
+def build_service_hooks(
+    services: list[ServiceConfig],
+) -> list[Callable[[Any], Coroutine[Any, Any, None]]]:
     """Build pre_agent_hooks that start the given services.
 
     Returns a list of async callables compatible with SDK.run(pre_agent_hooks=...).

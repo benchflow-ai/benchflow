@@ -16,7 +16,14 @@ class AgentInstallError(RuntimeError):
     triage; ``log_path`` points to the full log on disk.
     """
 
-    def __init__(self, agent: str, return_code: int, stdout: str, diagnostics: str, log_path: str = ""):
+    def __init__(
+        self,
+        agent: str,
+        return_code: int,
+        stdout: str,
+        diagnostics: str,
+        log_path: str = "",
+    ):
         self.agent = agent
         self.return_code = return_code
         self.stdout = stdout

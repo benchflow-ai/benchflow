@@ -135,13 +135,19 @@ class SDK:
             os.unlink(tmp_path)
 
     async def _write_credential_files(
-        self, env, agent: str, agent_env: dict, agent_cfg, model: str | None,
+        self,
+        env,
+        agent: str,
+        agent_env: dict,
+        agent_cfg,
+        model: str | None,
         cred_home: str,
     ) -> None:
         """Write credential files into container from agent + provider configs."""
         # Provider credential files (e.g. GCP ADC for Vertex)
         if model:
             from benchflow.agents.providers import find_provider
+
             _prov = find_provider(model)
             if _prov:
                 _, _prov_cfg = _prov
@@ -168,7 +174,11 @@ class SDK:
                     logger.info("Agent credential file written: %s", path)
 
     async def _write_gemini_vertex_settings(
-        self, env, agent: str, model: str | None, cred_home: str,
+        self,
+        env,
+        agent: str,
+        model: str | None,
+        cred_home: str,
     ) -> None:
         """Write ~/.gemini/settings.json to select Vertex AI backend.
 
@@ -183,6 +193,7 @@ class SDK:
         if not model or agent != "gemini":
             return
         from benchflow.agents.registry import is_vertex_model
+
         if not is_vertex_model(model):
             return
         settings = json.dumps(
@@ -193,7 +204,10 @@ class SDK:
         logger.info("Gemini Vertex settings written: %s", path)
 
     async def _upload_subscription_auth(
-        self, env, agent: str, cred_home: str,
+        self,
+        env,
+        agent: str,
+        cred_home: str,
     ) -> None:
         """Upload host subscription auth files into the container.
 
@@ -211,7 +225,9 @@ class SDK:
             content = host_path.read_text()
             await self._upload_credential(env, container_path, content)
             logger.info(
-                "Subscription auth uploaded: %s -> %s", host_path, container_path,
+                "Subscription auth uploaded: %s -> %s",
+                host_path,
+                container_path,
             )
 
     @staticmethod
@@ -223,6 +239,7 @@ class SDK:
     ) -> tuple["Task", Path, "TrialPaths", datetime, str, str]:
         """Set up trial directory tree and return core trial objects."""
         from uuid import uuid4
+
         task = Task(task_path)
         job_name = job_name or datetime.now().strftime("%Y-%m-%d__%H-%M-%S")
         trial_name = trial_name or f"{task_path.name}__{uuid4().hex[:8]}"
@@ -239,8 +256,15 @@ class SDK:
     def _auto_inherit_env(agent_env: dict[str, str]) -> None:
         """Copy well-known API keys from host os.environ into agent_env."""
         from benchflow.agents.providers import PROVIDERS
-        keys = {"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY",
-                "GEMINI_API_KEY", "GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION"}
+
+        keys = {
+            "ANTHROPIC_API_KEY",
+            "OPENAI_API_KEY",
+            "GOOGLE_API_KEY",
+            "GEMINI_API_KEY",
+            "GOOGLE_CLOUD_PROJECT",
+            "GOOGLE_CLOUD_LOCATION",
+        }
         for cfg in PROVIDERS.values():
             if cfg.auth_env:
                 keys.add(cfg.auth_env)
@@ -257,6 +281,7 @@ class SDK:
     def _inject_vertex_credentials(agent_env: dict[str, str], model: str) -> None:
         """Inject ADC credentials and defaults for Vertex AI models."""
         from benchflow.agents.registry import is_vertex_model
+
         if not is_vertex_model(model):
             return
         adc_path = Path.home() / ".config/gcloud/application_default_credentials.json"
@@ -265,7 +290,9 @@ class SDK:
                 f"Vertex AI model {model!r} requires ADC credentials. "
                 f"Run: gcloud auth application-default login"
             )
-        agent_env.setdefault("GOOGLE_APPLICATION_CREDENTIALS_JSON", adc_path.read_text())
+        agent_env.setdefault(
+            "GOOGLE_APPLICATION_CREDENTIALS_JSON", adc_path.read_text()
+        )
         agent_env.setdefault("GOOGLE_CLOUD_LOCATION", "global")
         if "GOOGLE_CLOUD_PROJECT" not in agent_env:
             raise ValueError(
@@ -275,10 +302,17 @@ class SDK:
 
     @staticmethod
     def _resolve_provider_env(
-        agent_env: dict[str, str], model: str, agent: str,
+        agent_env: dict[str, str],
+        model: str,
+        agent: str,
     ) -> None:
         """Detect provider for model, inject BENCHFLOW_PROVIDER_* and env_mapping."""
-        from benchflow.agents.providers import find_provider, resolve_base_url, strip_provider_prefix
+        from benchflow.agents.providers import (
+            find_provider,
+            resolve_base_url,
+            strip_provider_prefix,
+        )
+
         agent_env.setdefault("BENCHFLOW_PROVIDER_MODEL", strip_provider_prefix(model))
         agent_cfg = AGENTS.get(agent)
         # Agent-declared protocol takes precedence over provider's primary so
@@ -291,7 +325,9 @@ class SDK:
             try:
                 agent_env.setdefault(
                     "BENCHFLOW_PROVIDER_BASE_URL",
-                    resolve_base_url(_prov_cfg, agent_env, protocol=agent_protocol or None),
+                    resolve_base_url(
+                        _prov_cfg, agent_env, protocol=agent_protocol or None
+                    ),
                 )
             except KeyError:
                 pass  # URL params missing — will fail later with clear error
@@ -300,8 +336,9 @@ class SDK:
                 agent_protocol or _prov_cfg.api_protocol,
             )
             if _prov_cfg.models:
-                agent_env.setdefault("BENCHFLOW_PROVIDER_MODELS",
-                                     json.dumps(_prov_cfg.models))
+                agent_env.setdefault(
+                    "BENCHFLOW_PROVIDER_MODELS", json.dumps(_prov_cfg.models)
+                )
             if _prov_cfg.auth_type == "api_key" and _prov_cfg.auth_env:
                 _key = agent_env.get(_prov_cfg.auth_env, "")
                 if _key:
@@ -337,12 +374,14 @@ class SDK:
             SDK._resolve_provider_env(agent_env, model, agent)
             # Validate required API key for the chosen model
             from benchflow.agents.registry import infer_env_key_for_model
+
             required_key = infer_env_key_for_model(model)
             if required_key and required_key not in agent_env:
                 if SDK._check_subscription_auth(agent, required_key):
                     agent_env["_BENCHFLOW_SUBSCRIPTION_AUTH"] = "1"
                     logger.info(
-                        "Using host subscription auth (no %s set)", required_key,
+                        "Using host subscription auth (no %s set)",
+                        required_key,
                     )
                 else:
                     raise ValueError(
@@ -359,7 +398,8 @@ class SDK:
                         if SDK._check_subscription_auth(agent, req_key):
                             agent_env["_BENCHFLOW_SUBSCRIPTION_AUTH"] = "1"
                             logger.info(
-                                "Using host subscription auth (no %s set)", req_key,
+                                "Using host subscription auth (no %s set)",
+                                req_key,
                             )
         # Increase output token limit to avoid truncation errors
         agent_env.setdefault("CLAUDE_CODE_MAX_OUTPUT_TOKENS", "128000")
@@ -386,7 +426,8 @@ class SDK:
         """Write config.json to trial_dir with secrets filtered out."""
         _secret_substrings = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIALS")
         recorded_env = {
-            k: v for k, v in agent_env.items()
+            k: v
+            for k, v in agent_env.items()
             if not any(s in k.upper() for s in _secret_substrings)
         }
         config_data = {
@@ -480,7 +521,9 @@ class SDK:
         return result
 
     @staticmethod
-    def _resolve_prompts(task_path: Path, prompts: list[str | None] | None) -> list[str]:
+    def _resolve_prompts(
+        task_path: Path, prompts: list[str | None] | None
+    ) -> list[str]:
         """Read instruction.md and resolve prompt list."""
         instruction_path = task_path / "instruction.md"
         if not instruction_path.exists():
@@ -501,7 +544,9 @@ class SDK:
         if (task_path / "solution").is_dir():
             await env.upload_dir(task_path / "solution", "/solution")
 
-    async def _run_oracle(self, env, task_path: Path, timeout: int) -> tuple[list[dict], str]:
+    async def _run_oracle(
+        self, env, task_path: Path, timeout: int
+    ) -> tuple[list[dict], str]:
         """Run oracle mode (solution/solve.sh), return (trajectory, agent_name)."""
         logger.info("Oracle mode: running solution/solve.sh")
         if not (task_path / "solution" / "solve.sh").exists():
@@ -513,24 +558,31 @@ class SDK:
         )
         if result.return_code != 0:
             logger.warning(f"Oracle solve.sh exited with rc={result.return_code}")
-        trajectory = [{
-            "type": "oracle",
-            "command": "solution/solve.sh",
-            "return_code": result.return_code,
-            "stdout": (result.stdout or "")[:_DIAG_TRUNCATE],
-        }]
+        trajectory = [
+            {
+                "type": "oracle",
+                "command": "solution/solve.sh",
+                "return_code": result.return_code,
+                "stdout": (result.stdout or "")[:_DIAG_TRUNCATE],
+            }
+        ]
         return trajectory, "oracle"
 
-    async def _install_agent(self, env, agent: str, trial_dir: Path) -> AgentConfig | None:
+    async def _install_agent(
+        self, env, agent: str, trial_dir: Path
+    ) -> AgentConfig | None:
         """Install agent in sandbox and return its config."""
         agent_base = agent.split()[0]
         agent_cfg = AGENTS.get(agent_base)
         if agent_base not in AGENT_INSTALLERS:
             return agent_cfg
         install_timeout = agent_cfg.install_timeout if agent_cfg else 900
-        logger.info(f"Installing {agent_base} in sandbox (timeout={install_timeout}s)...")
+        logger.info(
+            f"Installing {agent_base} in sandbox (timeout={install_timeout}s)..."
+        )
         install_result = await env.exec(
-            AGENT_INSTALLERS[agent_base], timeout_sec=install_timeout,
+            AGENT_INSTALLERS[agent_base],
+            timeout_sec=install_timeout,
         )
         install_log = trial_dir / "agent" / "install-stdout.txt"
         install_log.parent.mkdir(parents=True, exist_ok=True)
@@ -552,8 +604,14 @@ class SDK:
         return agent_cfg
 
     async def _deploy_skills(
-        self, env, task_path: Path, skills_dir: str | Path | None,
-        agent_cfg, sandbox_user: str | None, agent_cwd: str, task: "Task",
+        self,
+        env,
+        task_path: Path,
+        skills_dir: str | Path | None,
+        agent_cfg,
+        sandbox_user: str | None,
+        agent_cwd: str,
+        task: "Task",
     ) -> None:
         """Deploy and distribute skills into sandbox."""
         # Runtime upload (fallback if not baked into Dockerfile)
@@ -566,14 +624,20 @@ class SDK:
             if not already_injected:
                 skills_path = Path(skills_dir)
                 if skills_path.is_dir():
-                    logger.info(f"Deploying skills via runtime upload from {skills_path}")
+                    logger.info(
+                        f"Deploying skills via runtime upload from {skills_path}"
+                    )
                     await env.upload_dir(skills_path, "/skills")
                     if agent_cfg and agent_cfg.skill_paths:
                         parts = []
                         for sp in agent_cfg.skill_paths:
-                            expanded = sp.replace("$HOME", "/root").replace("$WORKSPACE", "/app")
+                            expanded = sp.replace("$HOME", "/root").replace(
+                                "$WORKSPACE", "/app"
+                            )
                             parent = str(Path(expanded).parent)
-                            parts.append(f"mkdir -p '{parent}' && ln -sf /skills '{expanded}'")
+                            parts.append(
+                                f"mkdir -p '{parent}' && ln -sf /skills '{expanded}'"
+                            )
                         await env.exec(" && ".join(parts), timeout_sec=10)
                     logger.info("Skills deployed to /skills and symlinked")
                 else:
@@ -591,10 +655,14 @@ class SDK:
                 expanded = sp.replace("$HOME", home).replace("$WORKSPACE", agent_cwd)
                 q_expanded = shlex.quote(expanded)
                 q_skills = shlex.quote(effective_skills)
-                parts.append(f"mkdir -p {q_expanded} && cp -r {q_skills}/. {q_expanded}/ 2>/dev/null")
+                parts.append(
+                    f"mkdir -p {q_expanded} && cp -r {q_skills}/. {q_expanded}/ 2>/dev/null"
+                )
             if parts:
                 await env.exec("; ".join(parts), timeout_sec=15)
-                logger.info(f"Skills distributed to {len(parts)} paths for {agent_cfg.name}")
+                logger.info(
+                    f"Skills distributed to {len(parts)} paths for {agent_cfg.name}"
+                )
 
     @staticmethod
     def _build_priv_drop_cmd(agent_launch: str, sandbox_user: str) -> str:
@@ -632,19 +700,21 @@ class SDK:
         parts = []
         for p in paths:
             parts.append(
-                f'for d in {p}; do '
+                f"for d in {p}; do "
                 f'  [ -L "$d" ] && echo "WARN: skipping symlink $d" >&2 && continue; '
                 f'  [ -e "$d" ] || continue; '
                 f'  chown root:root "$d" && chmod 700 "$d"; '
-                f'done'
+                f"done"
             )
         cmd = " && ".join(parts)
         await env.exec(cmd, timeout_sec=30)
 
     async def _setup_sandbox_user(self, env, sandbox_user: str, workspace: str) -> str:
         """Create non-root sandbox user, grant workspace access. Return agent_cwd."""
-        if not re.match(r'^[a-z_][a-z0-9_-]*$', sandbox_user):
-            raise ValueError(f"Invalid sandbox_user: {sandbox_user!r} (must be alphanumeric)")
+        if not re.match(r"^[a-z_][a-z0-9_-]*$", sandbox_user):
+            raise ValueError(
+                f"Invalid sandbox_user: {sandbox_user!r} (must be alphanumeric)"
+            )
         logger.info(f"Setting up sandbox user: {sandbox_user}")
         await env.exec(
             f"id -u {sandbox_user} >/dev/null 2>&1 || "
@@ -665,14 +735,23 @@ class SDK:
         return workspace
 
     async def _connect_acp(
-        self, env, agent: str, agent_launch: str, agent_env: dict,
-        sandbox_user: str | None, model: str | None,
-        trial_dir: Path, environment: str, agent_cwd: str,
+        self,
+        env,
+        agent: str,
+        agent_launch: str,
+        agent_env: dict,
+        sandbox_user: str | None,
+        model: str | None,
+        trial_dir: Path,
+        environment: str,
+        agent_cwd: str,
     ) -> tuple[ACPClient, object, str]:
         """Create ACP transport, connect, init session, set model. Return (client, session, agent_name)."""
         # Resolve agent binary path for non-docker environments
         if environment != "docker":
-            which_result = await env.exec(f"which {agent_launch.split()[0]}", timeout_sec=10)
+            which_result = await env.exec(
+                f"which {agent_launch.split()[0]}", timeout_sec=10
+            )
             if which_result.return_code == 0 and (which_result.stdout or "").strip():
                 full_path = which_result.stdout.strip()
                 parts = agent_launch.split()
@@ -691,8 +770,11 @@ class SDK:
 
         agent_log = trial_dir / "agent" / f"{agent.replace('-', '_')}.txt"
         transport = ContainerTransport(
-            container_process=live_proc, command=agent_launch,
-            env=agent_env, cwd=agent_cwd, agent_log_path=agent_log,
+            container_process=live_proc,
+            command=agent_launch,
+            env=agent_env,
+            cwd=agent_cwd,
+            agent_log_path=agent_log,
         )
         acp_client = ACPClient(transport)
         await acp_client.connect()
@@ -701,11 +783,14 @@ class SDK:
         agent_name = init_result.agent_info.name if init_result.agent_info else agent
         logger.info(f"ACP agent: {agent_name}")
 
-        session = await asyncio.wait_for(acp_client.session_new(cwd=agent_cwd), timeout=60)
+        session = await asyncio.wait_for(
+            acp_client.session_new(cwd=agent_cwd), timeout=60
+        )
         logger.info(f"Session: {session.session_id}")
 
         if model:
             from benchflow.agents.providers import strip_provider_prefix
+
             acp_model_id = strip_provider_prefix(model)
             try:
                 await asyncio.wait_for(acp_client.set_model(acp_model_id), timeout=60)
@@ -716,13 +801,18 @@ class SDK:
         return acp_client, session, agent_name
 
     async def _execute_prompts(
-        self, acp_client: ACPClient, session, prompts: list[str], timeout: int,
+        self,
+        acp_client: ACPClient,
+        session,
+        prompts: list[str],
+        timeout: int,
     ) -> tuple[list[dict], int]:
         """Send prompts via ACP and capture trajectory. Return (trajectory, n_tool_calls)."""
         for i, prompt in enumerate(prompts):
             logger.info(f"Prompt {i + 1}/{len(prompts)}: {prompt[:80]}...")
             prompt_result = await asyncio.wait_for(
-                acp_client.prompt(prompt), timeout=timeout,
+                acp_client.prompt(prompt),
+                timeout=timeout,
             )
             logger.info(
                 f"  → {prompt_result.stop_reason.value}, "
@@ -744,8 +834,8 @@ class SDK:
     _VERIFIER_ENV = {
         "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
         "PYTEST_ADDOPTS": (
-            "-c /dev/null "          # block pyproject.toml/pytest.ini/tox.ini/setup.cfg discovery
-            "--confcutdir=/tests "   # block conftest.py walk-up beyond /tests
+            "-c /dev/null "  # block pyproject.toml/pytest.ini/tox.ini/setup.cfg discovery
+            "--confcutdir=/tests "  # block conftest.py walk-up beyond /tests
             "--rootdir=/tests "
             "-p no:cacheprovider"
         ),
@@ -753,7 +843,7 @@ class SDK:
         "PYTHONPATH": "",
         "PYTHONHOME": "",
         "PYTHONSTARTUP": "",
-        "PYTHONSAFEPATH": "1",       # drop implicit '' (cwd) from sys.path
+        "PYTHONSAFEPATH": "1",  # drop implicit '' (cwd) from sys.path
         "LD_PRELOAD": "",
         "LD_LIBRARY_PATH": "",
     }
@@ -779,7 +869,9 @@ class SDK:
         '" 2>/dev/null || true'
     )
 
-    async def _harden_before_verify(self, env, task: "Task", sandbox_user: str | None) -> None:
+    async def _harden_before_verify(
+        self, env, task: "Task", sandbox_user: str | None
+    ) -> None:
         """Neutralize agent tampering before running the verifier.
 
         1. Kill sandbox-user processes (prevent concurrent writes).
@@ -799,7 +891,14 @@ class SDK:
             verifier_env.update(task.config.verifier.env)
         task.config.verifier.env = verifier_env
 
-    async def _verify(self, env, task: "Task", trial_paths: "TrialPaths", timing: dict, sandbox_user: str | None = None) -> tuple[dict | None, str | None]:
+    async def _verify(
+        self,
+        env,
+        task: "Task",
+        trial_paths: "TrialPaths",
+        timing: dict,
+        sandbox_user: str | None = None,
+    ) -> tuple[dict | None, str | None]:
         """Run verifier with pre-verification hardening."""
         trial_paths.verifier_dir.mkdir(parents=True, exist_ok=True)
         await self._harden_before_verify(env, task, sandbox_user)
@@ -818,7 +917,9 @@ class SDK:
         except asyncio.TimeoutError:
             timing["verifier"] = (datetime.now() - t0).total_seconds()
             # NOTE: these prefixes must stay in sync with classify_verifier_error() in _scoring.py
-            verifier_error = f"verifier timed out after {task.config.verifier.timeout_sec}s"
+            verifier_error = (
+                f"verifier timed out after {task.config.verifier.timeout_sec}s"
+            )
             rewards = None
             logger.error(verifier_error)
         except Exception as e:
@@ -884,8 +985,13 @@ class SDK:
         effective_locked = _resolve_locked_paths(sandbox_user, sandbox_locked_paths)
 
         task_path = Path(task_path)
-        task, trial_dir, trial_paths, started_at, job_name, trial_name = self._init_trial(
-            task_path, job_name, trial_name, jobs_dir,
+        task, trial_dir, trial_paths, started_at, job_name, trial_name = (
+            self._init_trial(
+                task_path,
+                job_name,
+                trial_name,
+                jobs_dir,
+            )
         )
         agent_env = self._resolve_agent_env(agent, model, agent_env)
         prompts = self._resolve_prompts(task_path, prompts)
@@ -902,10 +1008,17 @@ class SDK:
 
         self._write_config(
             trial_dir,
-            task_path=task_path, agent=agent, model=model, environment=environment,
-            skills_dir=skills_dir, sandbox_user=sandbox_user, context_root=context_root,
+            task_path=task_path,
+            agent=agent,
+            model=model,
+            environment=environment,
+            skills_dir=skills_dir,
+            sandbox_user=sandbox_user,
+            context_root=context_root,
             sandbox_locked_paths=effective_locked,
-            timeout=timeout, started_at=started_at, agent_env=agent_env,
+            timeout=timeout,
+            started_at=started_at,
+            agent_env=agent_env,
         )
 
         acp_client: ACPClient | None = None
@@ -923,7 +1036,7 @@ class SDK:
             t_agent_setup = datetime.now()
             t_agent_exec = t_agent_setup
 
-            for hook in (pre_agent_hooks or []):
+            for hook in pre_agent_hooks or []:
                 await hook(env)
 
             if agent == "oracle":
@@ -932,7 +1045,12 @@ class SDK:
                 agent_cfg = await self._install_agent(env, agent, trial_dir)
                 cred_home = f"/home/{sandbox_user}" if sandbox_user else "/root"
                 await self._write_credential_files(
-                    env, agent, agent_env, agent_cfg, model, cred_home,
+                    env,
+                    agent,
+                    agent_env,
+                    agent_cfg,
+                    model,
+                    cred_home,
                 )
                 if agent_env.get("_BENCHFLOW_SUBSCRIPTION_AUTH"):
                     await self._upload_subscription_auth(env, agent, cred_home)
@@ -941,32 +1059,54 @@ class SDK:
                 cwd_result = await env.exec("pwd", timeout_sec=10)
                 agent_cwd = (cwd_result.stdout or "").strip() or "/app"
                 if sandbox_user:
-                    agent_cwd = await self._setup_sandbox_user(env, sandbox_user, workspace=agent_cwd)
+                    agent_cwd = await self._setup_sandbox_user(
+                        env, sandbox_user, workspace=agent_cwd
+                    )
 
                 await self._deploy_skills(
-                    env, task_path, skills_dir, agent_cfg, sandbox_user, agent_cwd, task,
+                    env,
+                    task_path,
+                    skills_dir,
+                    agent_cfg,
+                    sandbox_user,
+                    agent_cwd,
+                    task,
                 )
 
                 await self._lockdown_paths(env, effective_locked)
 
                 acp_client, session, agent_name = await self._connect_acp(
-                    env, agent, agent_launch, agent_env, sandbox_user,
-                    model, trial_dir, environment, agent_cwd,
+                    env,
+                    agent,
+                    agent_launch,
+                    agent_env,
+                    sandbox_user,
+                    model,
+                    trial_dir,
+                    environment,
+                    agent_cwd,
                 )
                 timing["agent_setup"] = (datetime.now() - t_agent_setup).total_seconds()
                 t_agent_exec = datetime.now()
 
                 trajectory, n_tool_calls = await self._execute_prompts(
-                    acp_client, session, prompts, timeout,
+                    acp_client,
+                    session,
+                    prompts,
+                    timeout,
                 )
                 trajectory_source = "acp"
 
             if agent != "oracle" and "agent_setup" not in timing:
                 timing["agent_setup"] = (datetime.now() - t_agent_setup).total_seconds()
             if agent == "oracle":
-                timing["agent_execution"] = (datetime.now() - t_agent_setup).total_seconds()
+                timing["agent_execution"] = (
+                    datetime.now() - t_agent_setup
+                ).total_seconds()
             elif "agent_execution" not in timing:
-                timing["agent_execution"] = (datetime.now() - t_agent_exec).total_seconds()
+                timing["agent_execution"] = (
+                    datetime.now() - t_agent_exec
+                ).total_seconds()
 
             # Fallback: scrape agent-native trajectory if ACP captured nothing
             if not trajectory and agent != "oracle":
@@ -981,7 +1121,9 @@ class SDK:
                         f"agent-writable directory — data is UNTRUSTED"
                     )
 
-            rewards, verifier_error = await self._verify(env, task, trial_paths, timing, sandbox_user=sandbox_user)
+            rewards, verifier_error = await self._verify(
+                env, task, trial_paths, timing, sandbox_user=sandbox_user
+            )
 
         except asyncio.TimeoutError:
             error = f"Agent timed out after {timeout}s"
@@ -1001,7 +1143,9 @@ class SDK:
                         partial_trajectory = True
                         trajectory_source = "partial_acp"
                         n_tool_calls = len(acp_client.session.tool_calls)
-                        logger.info(f"Captured {len(trajectory)} partial trajectory events")
+                        logger.info(
+                            f"Captured {len(trajectory)} partial trajectory events"
+                        )
                 except Exception as e:
                     logger.warning(f"Partial trajectory capture failed: {e}")
 

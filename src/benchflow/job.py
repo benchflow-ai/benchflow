@@ -83,6 +83,7 @@ class JobConfig:
 
     def __post_init__(self):
         from benchflow.agents.registry import AGENTS
+
         if self.agent not in AGENTS:
             available = ", ".join(sorted(AGENTS.keys()))
             logger.warning(
@@ -211,7 +212,9 @@ class Job:
             prompts=prompts,
             agent_env=agent_env_raw,
             retry=RetryConfig(max_retries=raw.get("max_retries", 2)),
-            skills_dir=str(base_dir / raw["skills_dir"]) if raw.get("skills_dir") else None,
+            skills_dir=str(base_dir / raw["skills_dir"])
+            if raw.get("skills_dir")
+            else None,
             sandbox_user=sandbox_user,
             sandbox_locked_paths=sandbox_locked_paths,
             exclude_tasks=exclude,
@@ -254,7 +257,9 @@ class Job:
         concurrency = orch.get("n_concurrent_trials", 4)
 
         jobs_dir = base_dir / raw.get("jobs_dir", "jobs")
-        max_retries = raw.get("n_attempts", 1) - 1  # Harbor n_attempts includes first try
+        max_retries = (
+            raw.get("n_attempts", 1) - 1
+        )  # Harbor n_attempts includes first try
 
         # Skills dir (shared with benchflow-native format)
         skills_dir_raw = raw.get("skills_dir")
@@ -278,8 +283,10 @@ class Job:
     def _get_task_dirs(self) -> list[Path]:
         """Get all valid task directories."""
         return sorted(
-            d for d in self._tasks_dir.iterdir()
-            if d.is_dir() and (d / "task.toml").exists()
+            d
+            for d in self._tasks_dir.iterdir()
+            if d.is_dir()
+            and (d / "task.toml").exists()
             and d.name not in self._config.exclude_tasks
         )
 
@@ -292,7 +299,9 @@ class Job:
                 task = r["task_name"]
                 if r.get("rewards") is not None or r.get("verifier_error"):
                     if r.get("verifier_error"):
-                        logger.info(f"Skipping verifier-errored task on resume: {task} ({r['verifier_error'][:80]})")
+                        logger.info(
+                            f"Skipping verifier-errored task on resume: {task} ({r['verifier_error'][:80]})"
+                        )
                     completed[task] = r
             except Exception as e:
                 logger.debug(f"Skipping corrupt result file {rfile}: {e}")
@@ -303,8 +312,12 @@ class Job:
         if self._config.environment != "docker":
             return
         try:
-            subprocess.run(["docker", "container", "prune", "-f"], capture_output=True, timeout=30)
-            subprocess.run(["docker", "network", "prune", "-f"], capture_output=True, timeout=30)
+            subprocess.run(
+                ["docker", "container", "prune", "-f"], capture_output=True, timeout=30
+            )
+            subprocess.run(
+                ["docker", "network", "prune", "-f"], capture_output=True, timeout=30
+            )
         except Exception as e:
             logger.warning(f"Docker prune failed: {e}")
 
@@ -313,7 +326,9 @@ class Job:
         cfg = self._config
         last_result = None
 
-        for attempt in range(1, cfg.retry.max_retries + 2):  # +2 because range is exclusive and attempt 1 is first try
+        for attempt in range(
+            1, cfg.retry.max_retries + 2
+        ):  # +2 because range is exclusive and attempt 1 is first try
             if attempt > 1:
                 self._prune_docker()
             result = await self._sdk.run(
@@ -333,11 +348,17 @@ class Job:
             last_result = result
 
             # If succeeded, verifier-errored (terminal), or non-retryable, stop
-            if result.rewards is not None or result.verifier_error or not cfg.retry.should_retry(result.error):
+            if (
+                result.rewards is not None
+                or result.verifier_error
+                or not cfg.retry.should_retry(result.error)
+            ):
                 break
 
             if attempt <= cfg.retry.max_retries:
-                logger.info(f"Retrying {task_dir.name} (attempt {attempt + 1}): {result.error[:60]}")
+                logger.info(
+                    f"Retrying {task_dir.name} (attempt {attempt + 1}): {result.error[:60]}"
+                )
 
         return last_result
 
@@ -388,7 +409,9 @@ class Job:
                 self._prune_docker()
                 # Log result
                 reward = result.rewards.get("reward") if result.rewards else None
-                status = "PASS" if reward == 1 else ("FAIL" if reward is not None else "ERR")
+                status = (
+                    "PASS" if reward == 1 else ("FAIL" if reward is not None else "ERR")
+                )
                 err_msg = result.error or result.verifier_error
                 err = f" ({err_msg[:50]})" if err_msg else ""
                 logger.info(f"[{status}] {td.name} (tools={result.n_tool_calls}){err}")
@@ -408,9 +431,15 @@ class Job:
             if isinstance(r, BaseException):
                 task_name = remaining[i].name
                 logger.error(f"[ERR] {task_name}: unexpected exception: {r}")
-                pairs.append((task_name, RunResult(
-                    task_name=task_name, error=f"Unexpected: {r}",
-                )))
+                pairs.append(
+                    (
+                        task_name,
+                        RunResult(
+                            task_name=task_name,
+                            error=f"Unexpected: {r}",
+                        ),
+                    )
+                )
             else:
                 pairs.append(r)
 
@@ -433,16 +462,29 @@ class Job:
             config=cfg,
             total=len(task_dirs),
             passed=sum(1 for r in all_results.values() if extract_reward(r) == 1.0),
-            failed=sum(1 for r in all_results.values()
-                       if extract_reward(r) is not None and extract_reward(r) != 1.0),
-            errored=sum(1 for r in all_results.values()
-                        if r.get("error") and r.get("rewards") is None),
-            verifier_errored=sum(1 for r in all_results.values()
-                                if r.get("verifier_error")),
+            failed=sum(
+                1
+                for r in all_results.values()
+                if extract_reward(r) is not None and extract_reward(r) != 1.0
+            ),
+            errored=sum(
+                1
+                for r in all_results.values()
+                if r.get("error") and r.get("rewards") is None
+            ),
+            verifier_errored=sum(
+                1 for r in all_results.values() if r.get("verifier_error")
+            ),
             elapsed_sec=elapsed,
         )
 
-        assert job_result.passed + job_result.failed + job_result.errored + job_result.verifier_errored == job_result.total, (
+        assert (
+            job_result.passed
+            + job_result.failed
+            + job_result.errored
+            + job_result.verifier_errored
+            == job_result.total
+        ), (
             f"Counting bug: {job_result.passed}+{job_result.failed}+{job_result.errored}+"
             f"{job_result.verifier_errored} != {job_result.total}"
         )
@@ -479,7 +521,7 @@ class Job:
         logger.info(
             f"Job complete: {job_result.passed}/{job_result.total} "
             f"({job_result.score:.1%}), errors={job_result.errored}, "
-            f"time={elapsed/60:.1f}min"
+            f"time={elapsed / 60:.1f}min"
         )
 
         return job_result

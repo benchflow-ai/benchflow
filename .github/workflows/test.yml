@@ -28,5 +28,8 @@ jobs:
       - name: Lint
         run: .venv/bin/ruff check src tests
 
+      - name: Format check
+        run: .venv/bin/ruff format --check src tests
+
       - name: Test
         run: .venv/bin/python -m pytest tests/

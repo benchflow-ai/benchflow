@@ -21,8 +21,12 @@ class ProviderConfig:
     """Configuration for a custom LLM provider."""
 
     name: str
-    base_url: str  # primary endpoint; may contain {placeholders} expanded via url_params
-    api_protocol: str  # protocol for base_url: "openai-completions" | "anthropic-messages"
+    base_url: (
+        str  # primary endpoint; may contain {placeholders} expanded via url_params
+    )
+    api_protocol: (
+        str  # protocol for base_url: "openai-completions" | "anthropic-messages"
+    )
     auth_type: str  # "api_key" | "adc" | "none"
     auth_env: str | None = None  # env var holding the API key (None for ADC)
     url_params: dict[str, str] = field(default_factory=dict)  # {placeholder: ENV_VAR}
@@ -51,30 +55,38 @@ PROVIDERS: dict[str, ProviderConfig] = {
         base_url="https://aiplatform.googleapis.com/v1/projects/{project_id}/locations/{location}",
         api_protocol="openai-completions",
         auth_type="adc",
-        url_params={"project_id": "GOOGLE_CLOUD_PROJECT", "location": "GOOGLE_CLOUD_LOCATION"},
-        credential_files=[{
-            "path": "{home}/.config/gcloud/application_default_credentials.json",
-            "env_source": "GOOGLE_APPLICATION_CREDENTIALS_JSON",
-            "post_env": {
-                "GOOGLE_APPLICATION_CREDENTIALS":
-                    "{home}/.config/gcloud/application_default_credentials.json",
-            },
-        }],
+        url_params={
+            "project_id": "GOOGLE_CLOUD_PROJECT",
+            "location": "GOOGLE_CLOUD_LOCATION",
+        },
+        credential_files=[
+            {
+                "path": "{home}/.config/gcloud/application_default_credentials.json",
+                "env_source": "GOOGLE_APPLICATION_CREDENTIALS_JSON",
+                "post_env": {
+                    "GOOGLE_APPLICATION_CREDENTIALS": "{home}/.config/gcloud/application_default_credentials.json",
+                },
+            }
+        ],
     ),
     "anthropic-vertex": ProviderConfig(
         name="anthropic-vertex",
         base_url="https://aiplatform.googleapis.com/v1/projects/{project_id}/locations/{location}",
         api_protocol="anthropic-messages",
         auth_type="adc",
-        url_params={"project_id": "GOOGLE_CLOUD_PROJECT", "location": "GOOGLE_CLOUD_LOCATION"},
-        credential_files=[{
-            "path": "{home}/.config/gcloud/application_default_credentials.json",
-            "env_source": "GOOGLE_APPLICATION_CREDENTIALS_JSON",
-            "post_env": {
-                "GOOGLE_APPLICATION_CREDENTIALS":
-                    "{home}/.config/gcloud/application_default_credentials.json",
-            },
-        }],
+        url_params={
+            "project_id": "GOOGLE_CLOUD_PROJECT",
+            "location": "GOOGLE_CLOUD_LOCATION",
+        },
+        credential_files=[
+            {
+                "path": "{home}/.config/gcloud/application_default_credentials.json",
+                "env_source": "GOOGLE_APPLICATION_CREDENTIALS_JSON",
+                "post_env": {
+                    "GOOGLE_APPLICATION_CREDENTIALS": "{home}/.config/gcloud/application_default_credentials.json",
+                },
+            }
+        ],
     ),
     # ── OpenAI-compatible inference servers (user-supplied base_url) ──
     "vllm": ProviderConfig(
@@ -177,7 +189,7 @@ def strip_provider_prefix(model: str) -> str:
     result = find_provider(model)
     if result:
         prefix = f"{result[0]}/"
-        return model[len(prefix):]
+        return model[len(prefix) :]
     # Not a known provider — still strip unknown prefix if present
     if "/" in model:
         return model.split("/", 1)[1]

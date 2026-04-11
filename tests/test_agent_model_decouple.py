@@ -52,13 +52,18 @@ class TestInferEnvKey:
         assert infer_env_key_for_model("gemini-3.1-pro") == "GEMINI_API_KEY"
 
     def test_gemini_with_provider_prefix(self):
-        assert infer_env_key_for_model("google/gemini-3.1-flash-lite-preview") == "GEMINI_API_KEY"
+        assert (
+            infer_env_key_for_model("google/gemini-3.1-flash-lite-preview")
+            == "GEMINI_API_KEY"
+        )
 
     def test_claude_model(self):
         assert infer_env_key_for_model("claude-opus-4-6") == "ANTHROPIC_API_KEY"
 
     def test_haiku_model(self):
-        assert infer_env_key_for_model("claude-haiku-4-5-20251001") == "ANTHROPIC_API_KEY"
+        assert (
+            infer_env_key_for_model("claude-haiku-4-5-20251001") == "ANTHROPIC_API_KEY"
+        )
 
     def test_sonnet_model(self):
         assert infer_env_key_for_model("claude-sonnet-4-6") == "ANTHROPIC_API_KEY"
@@ -80,7 +85,6 @@ class TestInferEnvKey:
         """anthropic-vertex/ models use ADC, not API keys."""
         assert infer_env_key_for_model("anthropic-vertex/claude-sonnet-4-6") is None
 
-
     def test_unknown_model_returns_none(self):
         assert infer_env_key_for_model("some-custom-model") is None
 
@@ -95,6 +99,7 @@ class TestResultMetadata:
 
     def test_run_result_has_model(self):
         from benchflow._models import RunResult
+
         r = RunResult(
             task_name="test",
             agent="openclaw",
@@ -107,6 +112,7 @@ class TestResultMetadata:
 
     def test_run_result_defaults(self):
         from benchflow._models import RunResult
+
         r = RunResult(task_name="test")
         assert r.agent == ""
         assert r.model == ""

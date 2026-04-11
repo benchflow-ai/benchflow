@@ -189,11 +189,17 @@ class TestCheckSubscriptionAuth:
         creds_dir.mkdir()
         (creds_dir / ".credentials.json").write_text("{}")
         self._patch_expanduser(monkeypatch, tmp_path)
-        assert SDK._check_subscription_auth("claude-agent-acp", "ANTHROPIC_API_KEY") is True
+        assert (
+            SDK._check_subscription_auth("claude-agent-acp", "ANTHROPIC_API_KEY")
+            is True
+        )
 
     def test_returns_false_when_file_missing(self, monkeypatch, tmp_path):
         self._patch_expanduser(monkeypatch, tmp_path)
-        assert SDK._check_subscription_auth("claude-agent-acp", "ANTHROPIC_API_KEY") is False
+        assert (
+            SDK._check_subscription_auth("claude-agent-acp", "ANTHROPIC_API_KEY")
+            is False
+        )
 
     def test_returns_false_for_wrong_key(self, monkeypatch, tmp_path):
         """subscription_auth.replaces_env must match required_key."""
@@ -202,10 +208,15 @@ class TestCheckSubscriptionAuth:
         (creds_dir / ".credentials.json").write_text("{}")
         self._patch_expanduser(monkeypatch, tmp_path)
         # claude-agent-acp replaces ANTHROPIC_API_KEY, not OPENAI_API_KEY
-        assert SDK._check_subscription_auth("claude-agent-acp", "OPENAI_API_KEY") is False
+        assert (
+            SDK._check_subscription_auth("claude-agent-acp", "OPENAI_API_KEY") is False
+        )
 
     def test_returns_false_for_unknown_agent(self):
-        assert SDK._check_subscription_auth("nonexistent-agent", "ANTHROPIC_API_KEY") is False
+        assert (
+            SDK._check_subscription_auth("nonexistent-agent", "ANTHROPIC_API_KEY")
+            is False
+        )
 
     def test_returns_false_when_no_subscription_auth(self):
         """Agents without subscription_auth (e.g. openclaw) return False."""
@@ -246,7 +257,12 @@ class TestResolveAgentEnvNoModel:
 
     def test_no_model_subscription_auth_detected(self, monkeypatch, tmp_path):
         """No model + no API key + host credentials → subscription auth."""
-        for k in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY"):
+        for k in (
+            "ANTHROPIC_API_KEY",
+            "OPENAI_API_KEY",
+            "GOOGLE_API_KEY",
+            "GEMINI_API_KEY",
+        ):
             monkeypatch.delenv(k, raising=False)
         creds_dir = tmp_path / ".claude"
         creds_dir.mkdir()
@@ -258,7 +274,12 @@ class TestResolveAgentEnvNoModel:
 
     def test_no_model_no_auth_no_error(self, monkeypatch, tmp_path):
         """No model + no API key + no host credentials → no error (no model to validate)."""
-        for k in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY"):
+        for k in (
+            "ANTHROPIC_API_KEY",
+            "OPENAI_API_KEY",
+            "GOOGLE_API_KEY",
+            "GEMINI_API_KEY",
+        ):
             monkeypatch.delenv(k, raising=False)
         self._patch_expanduser(monkeypatch, tmp_path)
         # Should not raise — no model means no required key validation

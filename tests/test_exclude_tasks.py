@@ -1,7 +1,5 @@
 """Tests for exclude_tasks, agent_env, and sandbox_user in Job config."""
 
-
-
 from benchflow.job import Job, JobConfig
 
 
@@ -70,7 +68,10 @@ agent_env:
   OTHER_KEY: other-value
 """)
         job = Job.from_yaml(config)
-        assert job._config.agent_env == {"MY_KEY": "my-value", "OTHER_KEY": "other-value"}
+        assert job._config.agent_env == {
+            "MY_KEY": "my-value",
+            "OTHER_KEY": "other-value",
+        }
 
     def test_sandbox_user_parsed(self, tmp_path):
         _make_tasks(tmp_path)
