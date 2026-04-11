@@ -1,13 +1,73 @@
 """benchflow SDK — unified run() that uses ACP inside Harbor environments.
 
-One execution path:
-1. Start Harbor environment (Docker or Daytona)
-2. Install ACP agent in sandbox
-3. Connect via live stdio pipe (ContainerTransport)
-4. ACP: initialize → session/new → session/prompt (multi-turn)
-5. Capture trajectory from session/update notifications
-6. Run Harbor verifier
-7. Stop environment
+The whole framework is one ``SDK.run()`` call that orchestrates ~20 small
+private methods, each owning one phase of the run. This docstring is the
+map: read it before navigating the file.
+
+Run loop (SDK.run, top to bottom)
+---------------------------------
+
+::
+
+    ┌─ SETUP (host) ──────────────────────────────────────────────┐
+    │  _init_trial            task, trial_dir, paths, names        │
+    │  _resolve_agent_env     env vars: inherit, mirror, vertex,   │
+    │                         subscription auth detection          │
+    │  _resolve_prompts       prompt list (instruction.md fallback)│
+    │  stage_dockerfile_deps  COPY rewrites for context_root       │
+    │  _inject_skills_…       Dockerfile skill mount               │
+    │  _create_environment    Docker or Daytona, not yet started   │
+    │  _write_config          config.json → trial_dir              │
+    └──────────────────────────────────────────────────────────────┘
+    ┌─ START (sandbox) ───────────────────────────────────────────┐
+    │  _start_env_and_upload  spin up container, copy task files   │
+    │  pre_agent_hooks        user callbacks (services, etc.)      │
+    └──────────────────────────────────────────────────────────────┘
+    ┌─ AGENT (oracle: _run_oracle and skip everything below) ─────┐
+    │  _install_agent             registry-driven install_cmd      │
+    │  _write_credential_files    AgentConfig.credential_files     │
+    │  _upload_subscription_auth  if host login files detected     │
+    │  _setup_sandbox_user        non-root user + path lockdown    │
+    │  _deploy_skills             symlink skills into agent paths  │
+    │  _lockdown_paths            chmod -r on solution / tests     │
+    │  _connect_acp               stdio pipe + ACP initialize/new  │
+    │  _execute_prompts           multi-turn session/prompt loop   │
+    └──────────────────────────────────────────────────────────────┘
+    ┌─ VERIFY ────────────────────────────────────────────────────┐
+    │  (fallback) _scrape_agent_trajectory  if ACP captured none   │
+    │             — labeled trajectory_source="scraped" UNTRUSTED  │
+    │  _harden_before_verify  permissions reset for verifier root  │
+    │  _verify                Harbor verifier → rewards            │
+    │  _build_result          RunResult + result.json + timing     │
+    └──────────────────────────────────────────────────────────────┘
+    finally: env.stop()
+
+Support modules
+---------------
+- ``_env_setup``    Dockerfile staging, skills injection, DinD patching,
+                    ``_create_environment``, ``_resolve_locked_paths``
+- ``_trajectory``   ACP-native + agent-scraped trajectory capture
+- ``_models``       ``RunResult``, ``AgentInstallError``, ``AgentTimeoutError``
+- ``_scoring``      pure functions: ``extract_reward``,
+                    ``classify_verifier_error``, pass-rate math
+- ``agents/registry``  ``AGENTS``, ``AgentConfig`` — see registry.py docstring
+                       for the "add a new agent" recipe
+- ``agents/providers`` ``PROVIDERS``, ``ProviderConfig`` — see providers.py
+                       docstring for the "add a new provider" recipe
+
+Critical invariants
+-------------------
+- The phases above run in strict order. Methods named ``_resolve_*`` are pure
+  and can be called in tests independently; everything from
+  ``_start_env_and_upload`` onward assumes a live container and ordered setup.
+- Trajectory source is *labeled*, not deleted. ``trajectory_source`` is one of
+  ``"acp"`` (trusted) | ``"scraped"`` (UNTRUSTED, agent-writable, forgeable) |
+  ``"partial_acp"``. Verifier and metrics consumers decide trust per source.
+- ``n_tool_calls`` is set from ACP only and **never** overwritten by scraped
+  trajectories — see the security test in ``tests/test_verify.py``.
+- Adding a new agent or provider must be a registry-only change. No edits to
+  this file should be needed; ``tests/test_registry_invariants.py`` enforces
+  the contract.
 """
 
 import asyncio
@@ -468,6 +528,7 @@ class SDK:
         timing: dict[str, float],
     ) -> RunResult:
         """Build RunResult and write result.json, timing.json, prompts.json, trajectory."""
+        finished_at = datetime.now()
         result = RunResult(
             task_name=task_name,
             trial_name=trial_name,
@@ -483,10 +544,11 @@ class SDK:
             partial_trajectory=partial_trajectory,
             trajectory_source=trajectory_source,
             started_at=started_at,
-            finished_at=datetime.now(),
+            finished_at=finished_at,
         )
-        # Finalize timing
-        timing["total"] = (result.finished_at - result.started_at).total_seconds()
+        # Finalize timing — use the locals (RunResult fields are typed
+        # datetime | None and would need narrowing)
+        timing["total"] = (finished_at - started_at).total_seconds()
         timing = {k: round(v, 1) for k, v in timing.items()}
         # Save trajectory
         traj_dir = trial_dir / "trajectory"
@@ -996,7 +1058,10 @@ class SDK:
             )
         )
         agent_env = self._resolve_agent_env(agent, model, agent_env)
-        prompts = self._resolve_prompts(task_path, prompts)
+        # Use a new local so the type narrows from `list[str | None] | None`
+        # (the public API allows None entries to mean "use default") to
+        # `list[str]` after _resolve_prompts has substituted them.
+        resolved_prompts: list[str] = self._resolve_prompts(task_path, prompts)
         agent_launch = AGENT_LAUNCH.get(agent, agent)
 
         if context_root:
@@ -1005,7 +1070,8 @@ class SDK:
             _inject_skills_into_dockerfile(task_path, Path(skills_dir))
 
         env = _create_environment(environment, task, task_path, trial_name, trial_paths)
-        timeout = task.config.agent.timeout_sec
+        # Harbor returns timeout as int | float | None; SDK helpers expect int.
+        timeout = int(task.config.agent.timeout_sec or 0)
         timing: dict[str, float] = {}
 
         self._write_config(
@@ -1094,7 +1160,7 @@ class SDK:
                 trajectory, n_tool_calls = await self._execute_prompts(
                     acp_client,
                     session,
-                    prompts,
+                    resolved_prompts,
                     timeout,
                 )
                 trajectory_source = "acp"
@@ -1138,7 +1204,7 @@ class SDK:
             logger.error("Run failed", exc_info=True)
 
         finally:
-            if not trajectory and acp_client:
+            if not trajectory and acp_client and acp_client.session is not None:
                 try:
                     trajectory = _capture_session_trajectory(acp_client.session)
                     if trajectory:
@@ -1169,7 +1235,7 @@ class SDK:
             agent_name=agent_name,
             model=model or "",
             n_tool_calls=n_tool_calls,
-            prompts=prompts,
+            prompts=resolved_prompts,
             error=error,
             verifier_error=verifier_error,
             trajectory=trajectory,

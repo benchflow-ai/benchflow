@@ -321,7 +321,7 @@ class Job:
     async def _run_task(self, task_dir: Path) -> RunResult:
         """Run a single task with retries."""
         cfg = self._config
-        last_result = None
+        last_result: RunResult | None = None
 
         for attempt in range(
             1, cfg.retry.max_retries + 2
@@ -353,10 +353,14 @@ class Job:
                 break
 
             if attempt <= cfg.retry.max_retries:
+                err_preview = (result.error or "")[:60]
                 logger.info(
-                    f"Retrying {task_dir.name} (attempt {attempt + 1}): {result.error[:60]}"
+                    f"Retrying {task_dir.name} (attempt {attempt + 1}): {err_preview}"
                 )
 
+        # The loop always runs at least once (range(1, max_retries + 2)
+        # has min 1 iter), so last_result is guaranteed set.
+        assert last_result is not None
         return last_result
 
     async def run(self) -> JobResult:

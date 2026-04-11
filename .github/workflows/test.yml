@@ -31,5 +31,8 @@ jobs:
       - name: Format check
         run: .venv/bin/ruff format --check src tests
 
+      - name: Type check
+        run: .venv/bin/ty check
+
       - name: Test
         run: .venv/bin/python -m pytest tests/
