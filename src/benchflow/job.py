@@ -79,7 +79,6 @@ from pathlib import Path
 
 import yaml
 
-from benchflow.models import RunResult
 from benchflow._scoring import (
     ACP_ERROR,
     INSTALL_FAILED,
@@ -89,6 +88,7 @@ from benchflow._scoring import (
     pass_rate,
     pass_rate_excl_errors,
 )
+from benchflow.models import RunResult
 from benchflow.sdk import SDK
 
 logger = logging.getLogger(__name__)

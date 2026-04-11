@@ -26,7 +26,6 @@ from harbor import (
 
 # benchflow's additions
 from benchflow._env_setup import stage_dockerfile_deps
-from benchflow.models import AgentInstallError, AgentTimeoutError, RunResult
 from benchflow.acp.client import ACPClient
 from benchflow.acp.session import ACPSession
 from benchflow.agents.registry import (
@@ -45,6 +44,7 @@ from benchflow.environments import (
 )
 from benchflow.job import Job, JobConfig, JobResult, RetryConfig
 from benchflow.metrics import BenchmarkMetrics, collect_metrics
+from benchflow.models import AgentInstallError, AgentTimeoutError, RunResult
 from benchflow.sdk import SDK
 from benchflow.skills import SkillInfo, discover_skills, install_skill, parse_skill
 from benchflow.trajectories.otel import OTelCollector

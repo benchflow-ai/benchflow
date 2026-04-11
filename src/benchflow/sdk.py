@@ -110,7 +110,6 @@ from benchflow._env_setup import (
     _patch_harbor_dind,
     stage_dockerfile_deps,
 )
-from benchflow.models import RunResult, TrajectorySource
 from benchflow._sandbox import (
     _resolve_locked_paths,
     harden_before_verify,
@@ -123,6 +122,7 @@ from benchflow._trajectory import (
 )
 from benchflow.acp.client import ACPClient
 from benchflow.agents.registry import AGENT_LAUNCH
+from benchflow.models import RunResult, TrajectorySource
 
 logger = logging.getLogger(__name__)
 
