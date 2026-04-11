@@ -7,7 +7,7 @@ category = "sanity"
 tags = ["sanity", "hello-world"]
 
 [agent]
-timeout_sec = 120
+timeout_sec = 300
 
 [verifier]
 timeout_sec = 60
