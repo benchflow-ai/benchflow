@@ -5,7 +5,7 @@ Multi-turn agent benchmarking with ACP.
 ## Key files
 
 - `src/benchflow/sdk.py` — SDK.run() orchestrates via private methods
-- `src/benchflow/_models.py` — RunResult, AgentInstallError, AgentTimeoutError
+- `src/benchflow/models.py` — RunResult, AgentInstallError, AgentTimeoutError, TrajectorySource
 - `src/benchflow/_trajectory.py` — trajectory capture and parsing
 - `src/benchflow/_env_setup.py` — Dockerfile staging, skills injection, DinD patching
 - `src/benchflow/job.py` — Job with concurrency, retries, resume
@@ -22,7 +22,7 @@ Multi-turn agent benchmarking with ACP.
 
 ```
 SDK.run()          — orchestrates via private methods (each 10–80 lines)
-  _models.py       — RunResult, AgentInstallError, AgentTimeoutError (re-exported from sdk.py)
+  models.py        — RunResult, AgentInstallError, AgentTimeoutError, TrajectorySource (public, re-exported from benchflow)
   _trajectory.py   — ACP native, agent-scraped, Gemini trajectory capture
   _env_setup.py    — Dockerfile dep staging, skills injection, DinD detection/patching
 Job                — wraps SDK.run() with concurrency, retries, resume

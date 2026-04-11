@@ -358,7 +358,7 @@ class TestBuildResult:
         return SDK._build_result(trial_dir, **defaults)
 
     def test_returns_run_result(self, tmp_path):
-        from benchflow._models import RunResult
+        from benchflow.models import RunResult
 
         result = self._build(tmp_path)
         assert isinstance(result, RunResult)

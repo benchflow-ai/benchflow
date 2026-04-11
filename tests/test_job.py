@@ -6,8 +6,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from benchflow._models import RunResult
 from benchflow.job import Job, JobConfig, JobResult, RetryConfig
+from benchflow.models import RunResult
 
 
 class TestRetryConfig:

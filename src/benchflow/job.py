@@ -1,10 +1,69 @@
-"""Job management — run multiple tasks with concurrency, retries, and persistence.
+"""Job management — run many tasks against an agent with concurrency, retries, resume.
 
-A Job is a collection of trials (task × agent × attempt). Jobs support:
-- Concurrent execution with configurable parallelism
-- Automatic retries on transient failures (install timeouts, pipe errors)
-- Resume from where a previous run left off
-- Result persistence (result.json per trial, summary.json per job)
+A ``Job`` wraps ``SDK.run()`` with everything needed to drive a benchmark
+to completion: task discovery, parallelism, retry policy, resume from
+disk, summary aggregation. The SDK owns *one* task; the Job owns the
+fleet.
+
+Pipeline (Job.run, top to bottom)
+---------------------------------
+
+::
+
+    _get_task_dirs            scan tasks_dir for valid task.toml dirs
+                              (minus JobConfig.exclude_tasks)
+    _get_completed_tasks      load result.json files from jobs_dir;
+                              completed = has rewards or verifier_error
+                              (verifier_error is terminal — no retry)
+    resume sanity check       warn if config.json shows a different
+                              agent than self._config.agent
+    _prune_docker             best-effort container/network cleanup
+                              (skipped on non-docker environments)
+    bounded(_run_task) ×N     asyncio.Semaphore(concurrency); each task
+                              runs through SDK.run, then per-task retry
+                              loop in _run_task
+    aggregate                 merge new pairs with completed dicts;
+                              count passed / failed / errored /
+                              verifier_errored — assertion enforces
+                              the four buckets sum to total
+    summary.json              written into jobs_dir; verifier-error
+                              percentage is logged + warned over 20%
+
+Retry policy
+------------
+Per-task, not per-job. ``_run_task`` calls ``SDK.run`` up to
+``RetryConfig.max_retries + 1`` times, breaking out as soon as the
+result has rewards, has a verifier_error (terminal), or carries an
+error class that ``RetryConfig.should_retry`` rejects. Retryable
+classes are ``INSTALL_FAILED``, ``PIPE_CLOSED``, ``ACP_ERROR`` from
+``_scoring`` — each independently togglable on ``RetryConfig``.
+
+Config + persistence
+--------------------
+- ``JobConfig``   dataclass holding agent, model, environment,
+                  concurrency, prompts, agent_env, retry, skills_dir,
+                  sandbox_user/locked_paths, context_root, exclude_tasks.
+                  ``__post_init__`` warns (does *not* fail) on unknown
+                  agent so raw-command paths still work.
+- ``Job.from_yaml``  dispatcher: detects benchflow-native vs Harbor
+                  format by presence of ``agents``/``datasets`` keys,
+                  delegates to ``_from_native_yaml`` or
+                  ``_from_harbor_yaml``. Both produce a ``JobConfig``.
+- ``JobResult``   counts + ``score`` (over total) + ``score_excl_errors``
+                  (over passed+failed only). Persisted as ``summary.json``
+                  in ``jobs_dir``; per-trial ``result.json`` is written by
+                  ``SDK.run``, not here.
+
+Critical invariants
+-------------------
+- Counting assertion: ``passed + failed + errored + verifier_errored ==
+  total``. Any drift means classification logic regressed.
+- Resume keys on result.json existence + ``rewards is not None`` or
+  ``verifier_error``. The job-level config is *not* part of the resume
+  key — see Known issues "Job resume config scoping" in CLAUDE.md.
+- Unexpected exceptions inside ``bounded`` are caught by
+  ``return_exceptions=True`` and turned into synthetic ``RunResult(error=...)``
+  rows so the gather never raises and counts stay consistent.
 """
 
 import asyncio
@@ -20,7 +79,6 @@ from pathlib import Path
 
 import yaml
 
-from benchflow._models import RunResult
 from benchflow._scoring import (
     ACP_ERROR,
     INSTALL_FAILED,
@@ -30,6 +88,7 @@ from benchflow._scoring import (
     pass_rate,
     pass_rate_excl_errors,
 )
+from benchflow.models import RunResult
 from benchflow.sdk import SDK
 
 logger = logging.getLogger(__name__)

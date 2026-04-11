@@ -8,13 +8,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from benchflow._models import RunResult
 from benchflow._scoring import (
     VERIFIER_FAILED,
     VERIFIER_TIMEOUT,
     classify_verifier_error,
 )
 from benchflow.metrics import BenchmarkMetrics, TaskMetrics
+from benchflow.models import RunResult
 
 # ---------------------------------------------------------------------------
 # classify_verifier_error

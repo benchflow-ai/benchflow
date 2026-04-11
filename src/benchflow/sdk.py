@@ -63,7 +63,8 @@ Support modules
 - ``_env_setup``    Dockerfile staging, skills injection, DinD patching,
                     ``_create_environment``
 - ``_trajectory``   ACP-native + agent-scraped trajectory capture
-- ``_models``       ``RunResult``, ``AgentInstallError``, ``AgentTimeoutError``
+- ``models``        ``RunResult``, ``AgentInstallError``, ``AgentTimeoutError``,
+                    ``TrajectorySource`` (public — re-exported from ``benchflow``)
 - ``_scoring``      pure functions: ``extract_reward``,
                     ``classify_verifier_error``, pass-rate math
 - ``agents/registry``  ``AGENTS``, ``AgentConfig`` — see registry.py docstring
@@ -109,7 +110,6 @@ from benchflow._env_setup import (
     _patch_harbor_dind,
     stage_dockerfile_deps,
 )
-from benchflow._models import RunResult
 from benchflow._sandbox import (
     _resolve_locked_paths,
     harden_before_verify,
@@ -122,6 +122,7 @@ from benchflow._trajectory import (
 )
 from benchflow.acp.client import ACPClient
 from benchflow.agents.registry import AGENT_LAUNCH
+from benchflow.models import RunResult, TrajectorySource
 
 logger = logging.getLogger(__name__)
 
@@ -224,7 +225,7 @@ class SDK:
         verifier_error: str | None,
         trajectory: list[dict],
         partial_trajectory: bool,
-        trajectory_source: str | None = None,
+        trajectory_source: TrajectorySource | None = None,
         rewards: dict | None,
         started_at: datetime,
         timing: dict[str, float],
@@ -471,7 +472,7 @@ class SDK:
         acp_client: ACPClient | None = None
         trajectory: list[dict] = []
         partial_trajectory = False
-        trajectory_source: str | None = None
+        trajectory_source: TrajectorySource | None = None
         agent_name = ""
         n_tool_calls = 0
         error = None

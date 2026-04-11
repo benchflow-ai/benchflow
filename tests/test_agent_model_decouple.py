@@ -99,7 +99,7 @@ class TestResultMetadata:
     """RunResult stores agent and model separately."""
 
     def test_run_result_has_model(self):
-        from benchflow._models import RunResult
+        from benchflow.models import RunResult
 
         r = RunResult(
             task_name="test",
@@ -112,7 +112,7 @@ class TestResultMetadata:
         assert r.model == "google/gemini-3.1-pro"
 
     def test_run_result_defaults(self):
-        from benchflow._models import RunResult
+        from benchflow.models import RunResult
 
         r = RunResult(task_name="test")
         assert r.agent == ""

@@ -21,8 +21,8 @@ import shlex
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from benchflow._models import AgentInstallError
 from benchflow.agents.registry import AGENT_INSTALLERS, AGENTS, AgentConfig
+from benchflow.models import AgentInstallError
 
 if TYPE_CHECKING:
     from harbor.models.task.task import Task
