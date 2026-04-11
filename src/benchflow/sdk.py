@@ -74,12 +74,10 @@ import asyncio
 import json
 import logging
 import os
-import re
 import shlex
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import ClassVar
 
 from harbor.models.task.task import Task
 from harbor.models.trial.paths import TrialPaths
@@ -93,6 +91,13 @@ from benchflow._env_setup import (
     stage_dockerfile_deps,
 )
 from benchflow._models import AgentInstallError, RunResult
+from benchflow._sandbox import (
+    _resolve_locked_paths,
+    build_priv_drop_cmd,
+    harden_before_verify,
+    lockdown_paths,
+    setup_sandbox_user,
+)
 from benchflow._trajectory import (
     _capture_session_trajectory,
     _scrape_agent_trajectory,
@@ -104,61 +109,12 @@ from benchflow.agents.registry import (
     AGENT_LAUNCH,
     AGENTS,
     AgentConfig,
-    get_sandbox_home_dirs,
 )
 from benchflow.process import DaytonaProcess, DockerProcess
 
 logger = logging.getLogger(__name__)
 
 _DIAG_TRUNCATE = 2000  # max chars for diagnostic stdout/stderr in logs
-
-# Path lockdown defaults and validation
-_DEFAULT_LOCKED = ["/solution", "/tests"]
-_SAFE_PATH_RE = re.compile(r"^/[a-zA-Z0-9_./*?\-]+(/[a-zA-Z0-9_./*?\-]+)*$")
-
-
-def _validate_locked_path(p: str) -> None:
-    """Validate a locked path — reject injection and traversal."""
-    p_norm = os.path.normpath(p)
-    if p_norm != p:
-        raise ValueError(
-            f"Invalid locked path {p!r}: normalizes to {p_norm!r} — "
-            f"use the normalized form directly"
-        )
-    if any(c == ".." for c in p.split("/")):
-        raise ValueError(f"Invalid locked path {p!r}: '..' component not allowed")
-    if not _SAFE_PATH_RE.match(p):
-        raise ValueError(
-            f"Invalid locked path {p!r}: must be absolute, "
-            f"alphanumeric with /-_.*? only"
-        )
-    if p.endswith("/") and p != "/":
-        raise ValueError(
-            f"Invalid locked path {p!r}: trailing slash not allowed "
-            f"(chown on '/dir/' may have unintended scope)"
-        )
-
-
-def _resolve_locked_paths(
-    sandbox_user: str | None,
-    sandbox_locked_paths: list[str] | None,
-) -> list[str]:
-    """Resolve effective locked paths.
-
-    - sandbox_user=None → [] (no lockdown)
-    - sandbox_user set, paths=None → defaults (/solution, /tests)
-    - sandbox_user set, paths=[] → [] (explicit opt-out)
-    - sandbox_user set, paths=[...] → union of defaults + caller paths
-    """
-    if not sandbox_user:
-        if sandbox_locked_paths:
-            raise ValueError("sandbox_locked_paths requires sandbox_user")
-        return []
-    if sandbox_locked_paths is None:
-        return list(_DEFAULT_LOCKED)
-    if not sandbox_locked_paths:
-        return []  # explicit opt-out
-    return list(dict.fromkeys(_DEFAULT_LOCKED + sandbox_locked_paths))
 
 
 # Apply DinD patch once at import time
@@ -573,76 +529,6 @@ class SDK:
                     f"Skills distributed to {len(parts)} paths for {agent_cfg.name}"
                 )
 
-    @staticmethod
-    def _build_priv_drop_cmd(agent_launch: str, sandbox_user: str) -> str:
-        """Build a shell command that drops to sandbox_user via setpriv or su.
-
-        setpriv (util-linux, Debian/Ubuntu) execs directly with no parent process.
-        su -l is the universal fallback (works on Alpine/BusyBox too).
-        No outer sh -c wrapper — DockerProcess wraps in bash -c already.
-        """
-        inner = f"export HOME=/home/{sandbox_user} && cd /home/{sandbox_user} && {agent_launch}"
-        quoted = shlex.quote(inner)
-        return (
-            f"if setpriv --help 2>&1 | grep -q reuid; then"
-            f" exec setpriv --reuid={sandbox_user} --regid={sandbox_user}"
-            f" --init-groups -- bash -c {quoted};"
-            f" else exec su -l {sandbox_user} -c {quoted};"
-            f" fi"
-        )
-
-    @staticmethod
-    async def _lockdown_paths(env, paths: list[str]) -> None:
-        """Lock directories so the sandbox user cannot access them.
-
-        Runs after all root-level setup but before agent launch.
-        Uses chown-then-chmod ordering to prevent TOCTOU window.
-        Rejects symlinks and validates path patterns against injection.
-        """
-        if not paths:
-            return
-
-        for p in paths:
-            _validate_locked_path(p)
-
-        # Build shell command: reject symlinks, chown before chmod
-        parts = []
-        for p in paths:
-            parts.append(
-                f"for d in {p}; do "
-                f'  [ -L "$d" ] && echo "WARN: skipping symlink $d" >&2 && continue; '
-                f'  [ -e "$d" ] || continue; '
-                f'  chown root:root "$d" && chmod 700 "$d"; '
-                f"done"
-            )
-        cmd = " && ".join(parts)
-        await env.exec(cmd, timeout_sec=30)
-
-    async def _setup_sandbox_user(self, env, sandbox_user: str, workspace: str) -> str:
-        """Create non-root sandbox user, grant workspace access. Return agent_cwd."""
-        if not re.match(r"^[a-z_][a-z0-9_-]*$", sandbox_user):
-            raise ValueError(
-                f"Invalid sandbox_user: {sandbox_user!r} (must be alphanumeric)"
-            )
-        logger.info(f"Setting up sandbox user: {sandbox_user}")
-        await env.exec(
-            f"id -u {sandbox_user} >/dev/null 2>&1 || "
-            f"useradd -m -s /bin/bash {sandbox_user} && "
-            f"mkdir -p /home/{sandbox_user}/.local/bin && "
-            "if [ -d /root/.local/bin ]; then "
-            f"cp -aL /root/.local/bin/. /home/{sandbox_user}/.local/bin/ 2>/dev/null || true; fi && "
-            "if [ -d /root/.nvm ]; then "
-            f"cp -a /root/.nvm/. /home/{sandbox_user}/.nvm/ 2>/dev/null || true; fi && "
-            f"for d in {' '.join(sorted(get_sandbox_home_dirs()))}; do "
-            f"if [ -d /root/$d ]; then mkdir -p /home/{sandbox_user}/$d && "
-            f"cp -a /root/$d/. /home/{sandbox_user}/$d/ 2>/dev/null || true; fi; done && "
-            f"chown -R {sandbox_user}:{sandbox_user} /home/{sandbox_user} && "
-            f"chown -R {sandbox_user}:{sandbox_user} {shlex.quote(workspace)}",
-            timeout_sec=30,
-        )
-        logger.info(f"Sandbox user {sandbox_user} ready (workspace={workspace})")
-        return workspace
-
     async def _connect_acp(
         self,
         env,
@@ -669,7 +555,7 @@ class SDK:
                 logger.info(f"Resolved agent path: {agent_launch}")
 
         if sandbox_user:
-            agent_launch = self._build_priv_drop_cmd(agent_launch, sandbox_user)
+            agent_launch = build_priv_drop_cmd(agent_launch, sandbox_user)
             logger.info(f"Agent sandboxed as: {sandbox_user}")
 
         if environment == "docker":
@@ -730,76 +616,6 @@ class SDK:
         trajectory = _capture_session_trajectory(session)
         return trajectory, len(session.tool_calls)
 
-    # Trusted env vars for verifier execution — override any agent pollution.
-    #
-    # PYTEST_DISABLE_PLUGIN_AUTOLOAD intentionally omitted: would break ~94
-    # SkillsBench tasks that rely on pytest-json-ctrf's --ctrf flag. Entry-point
-    # plugin injection is already blocked by verifier-runs-as-root + system
-    # site-packages permissions + the .pth cleanup in _CLEANUP_CMD.
-    #
-    # PYTHONNOUSERSITE intentionally omitted: verifier runs as root, so the
-    # only user-site dir on sys.path is /root/.local which sandbox_user cannot
-    # touch, and _CLEANUP_CMD already wipes .pth files there as belt-and-braces.
-    _VERIFIER_ENV: ClassVar[dict[str, str]] = {
-        "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-        "PYTEST_ADDOPTS": (
-            "-c /dev/null "  # block pyproject.toml/pytest.ini/tox.ini/setup.cfg discovery
-            "--confcutdir=/tests "  # block conftest.py walk-up beyond /tests
-            "--rootdir=/tests "
-            "-p no:cacheprovider"
-        ),
-        "PYTHONDONTWRITEBYTECODE": "1",
-        "PYTHONPATH": "",
-        "PYTHONHOME": "",
-        "PYTHONSTARTUP": "",
-        "PYTHONSAFEPATH": "1",  # drop implicit '' (cwd) from sys.path
-        "LD_PRELOAD": "",
-        "LD_LIBRARY_PATH": "",
-    }
-
-    # Cleanup command for pytest hook / Python startup injection.
-    # Removes conftest.py outside /tests, sitecustomize.py/usercustomize.py
-    # and .pth files from writable sys.path entries (preserves /usr/lib,
-    # /usr/local/lib).
-    _CLEANUP_CMD = (
-        "find / -maxdepth 5 -name conftest.py -not -path '/tests/*' -delete 2>/dev/null; "
-        'python3 -c "'
-        "import sys,os;"
-        "[os.remove(os.path.join(d,f)) "
-        " for d in sys.path "
-        " for f in ('sitecustomize.py','usercustomize.py') "
-        " if d and not d.startswith('/usr/lib') and not d.startswith('/usr/local/lib') "
-        " and os.path.isfile(os.path.join(d,f))];"
-        "[os.remove(os.path.join(d,f)) "
-        " for d in sys.path if d and os.path.isdir(d) "
-        " for f in os.listdir(d) if f.endswith('.pth') "
-        " and not d.startswith('/usr/lib') and not d.startswith('/usr/local/lib') "
-        " and os.path.isfile(os.path.join(d,f))]"
-        '" 2>/dev/null || true'
-    )
-
-    async def _harden_before_verify(
-        self, env, task: "Task", sandbox_user: str | None
-    ) -> None:
-        """Neutralize agent tampering before running the verifier.
-
-        1. Kill sandbox-user processes (prevent concurrent writes).
-        2. Remove injected conftest.py, sitecustomize.py, .pth files.
-        3. Merge trusted env vars into task.config.verifier.env.
-        """
-        if sandbox_user:
-            await env.exec(
-                f"pkill -u {sandbox_user} 2>/dev/null; "
-                f"sleep 1; pkill -9 -u {sandbox_user} 2>/dev/null || true",
-                timeout_sec=10,
-            )
-        await env.exec(self._CLEANUP_CMD, timeout_sec=10)
-
-        verifier_env = dict(self._VERIFIER_ENV)
-        if task.config.verifier.env:
-            verifier_env.update(task.config.verifier.env)
-        task.config.verifier.env = verifier_env
-
     async def _verify(
         self,
         env,
@@ -810,7 +626,7 @@ class SDK:
     ) -> tuple[dict | None, str | None]:
         """Run verifier with pre-verification hardening."""
         trial_paths.verifier_dir.mkdir(parents=True, exist_ok=True)
-        await self._harden_before_verify(env, task, sandbox_user)
+        await harden_before_verify(env, task, sandbox_user)
         logger.info("Running verifier...")
         t0 = datetime.now()
         verifier_error = None
@@ -972,7 +788,7 @@ class SDK:
                 cwd_result = await env.exec("pwd", timeout_sec=10)
                 agent_cwd = (cwd_result.stdout or "").strip() or "/app"
                 if sandbox_user:
-                    agent_cwd = await self._setup_sandbox_user(
+                    agent_cwd = await setup_sandbox_user(
                         env, sandbox_user, workspace=agent_cwd
                     )
 
@@ -986,7 +802,7 @@ class SDK:
                     task,
                 )
 
-                await self._lockdown_paths(env, effective_locked)
+                await lockdown_paths(env, effective_locked)
 
                 acp_client, session, agent_name = await self._connect_acp(
                     env,

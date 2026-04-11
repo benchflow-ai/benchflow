@@ -1,15 +1,17 @@
-"""Tests for path lockdown — _validate_locked_path, _resolve_locked_paths, _lockdown_paths."""
+"""Tests for path lockdown — _validate_locked_path, _resolve_locked_paths, lockdown_paths."""
 
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from benchflow.sdk import (
-    SDK,
+from benchflow._sandbox import (
     _resolve_locked_paths,
     _validate_locked_path,
+    build_priv_drop_cmd,
+    lockdown_paths,
 )
+from benchflow.sdk import SDK
 
 # ---------------------------------------------------------------------------
 # _validate_locked_path
@@ -98,12 +100,12 @@ class TestResolveLockedPaths:
 
 
 # ---------------------------------------------------------------------------
-# SDK._lockdown_paths
+# lockdown_paths
 # ---------------------------------------------------------------------------
 
 
 class TestLockdownPaths:
-    """_lockdown_paths sends correct commands to env."""
+    """lockdown_paths sends correct commands to env."""
 
     @pytest.fixture
     def mock_env(self):
@@ -116,29 +118,29 @@ class TestLockdownPaths:
         return mock_env.exec.call_args_list[0][0][0]
 
     def test_noop_empty_paths(self, mock_env):
-        asyncio.run(SDK._lockdown_paths(mock_env, []))
+        asyncio.run(lockdown_paths(mock_env, []))
         mock_env.exec.assert_not_called()
 
     def test_chown_before_chmod_and_symlink_skip(self, mock_env):
-        asyncio.run(SDK._lockdown_paths(mock_env, ["/solution"]))
+        asyncio.run(lockdown_paths(mock_env, ["/solution"]))
         assert mock_env.exec.call_count == 1
         cmd = self._get_lockdown_cmd(mock_env)
         assert cmd.index("chown root:root") < cmd.index("chmod 700")
         assert '[ -L "$d" ]' in cmd
 
     def test_multiple_paths(self, mock_env):
-        asyncio.run(SDK._lockdown_paths(mock_env, ["/solution", "/tests", "/data"]))
+        asyncio.run(lockdown_paths(mock_env, ["/solution", "/tests", "/data"]))
         cmd = self._get_lockdown_cmd(mock_env)
         for p in ["/solution", "/tests", "/data"]:
             assert f"for d in {p}" in cmd
 
     def test_glob_expansion(self, mock_env):
-        asyncio.run(SDK._lockdown_paths(mock_env, ["/app-*"]))
+        asyncio.run(lockdown_paths(mock_env, ["/app-*"]))
         assert "for d in /app-*" in self._get_lockdown_cmd(mock_env)
 
     def test_validation_rejects_bad_path(self, mock_env):
         with pytest.raises(ValueError):
-            asyncio.run(SDK._lockdown_paths(mock_env, ["/solution/../etc"]))
+            asyncio.run(lockdown_paths(mock_env, ["/solution/../etc"]))
         mock_env.exec.assert_not_called()
 
 
@@ -258,35 +260,35 @@ class TestSandboxUserWarnings:
 
 
 class TestPrivDropCommand:
-    """SDK._build_priv_drop_cmd — setpriv/su-l command generation."""
+    """build_priv_drop_cmd — setpriv/su-l command generation."""
 
     def test_contains_setpriv_and_su_fallback(self):
-        cmd = SDK._build_priv_drop_cmd("my-agent --stdio", "agent")
+        cmd = build_priv_drop_cmd("my-agent --stdio", "agent")
         assert "setpriv --reuid=agent --regid=agent --init-groups" in cmd
         assert "su -l agent -c" in cmd
 
     def test_exec_prefix(self):
         """Both branches use exec to replace the shell (no lingering parent)."""
-        cmd = SDK._build_priv_drop_cmd("my-agent", "agent")
+        cmd = build_priv_drop_cmd("my-agent", "agent")
         assert "exec setpriv" in cmd
         assert "exec su" in cmd
 
     def test_inner_command_is_shlex_quoted(self):
         import shlex
 
-        cmd = SDK._build_priv_drop_cmd("agent --flag value", "agent")
+        cmd = build_priv_drop_cmd("agent --flag value", "agent")
         inner = "export HOME=/home/agent && cd /home/agent && agent --flag value"
         assert shlex.quote(inner) in cmd
 
     def test_single_quotes_in_launch(self):
         """Single quotes in agent_launch don't break the command."""
-        cmd = SDK._build_priv_drop_cmd("agent --prompt 'hello world'", "agent")
+        cmd = build_priv_drop_cmd("agent --prompt 'hello world'", "agent")
         assert "hello world" in cmd
         assert cmd.count("if ") == 1
         assert cmd.count(" fi") == 1
 
     def test_custom_sandbox_user(self):
-        cmd = SDK._build_priv_drop_cmd("my-agent", "bench-user")
+        cmd = build_priv_drop_cmd("my-agent", "bench-user")
         assert "--reuid=bench-user" in cmd
         assert "su -l bench-user" in cmd
         assert "/home/bench-user" in cmd

@@ -551,19 +551,19 @@ class TestVerifierHardening:
         assert injected["PYTHONPATH"] == ""  # non-overridden defaults kept
 
     def test_verifier_env_contract(self):
-        """SDK._VERIFIER_ENV pins every layer of the pytest ini/plugin hardening.
+        """VERIFIER_ENV pins every layer of the pytest ini/plugin hardening.
 
         Static dict inspection — no async harness needed. See
         tmp/lockdown-sandbox_4.md for the threat model. Each assertion guards a
         specific bypass; collapsing them into one test gives a single
         authoritative contract for the env's contents.
         """
-        from benchflow.sdk import SDK
+        from benchflow._sandbox import VERIFIER_ENV
 
-        env = SDK._VERIFIER_ENV
+        env = VERIFIER_ENV
         addopts = env["PYTEST_ADDOPTS"]
 
-        # Closed-set: any new key added to _VERIFIER_ENV must be deliberately
+        # Closed-set: any new key added to VERIFIER_ENV must be deliberately
         # accounted for here. Catches accidental additions that could weaken
         # the contract (e.g. a stray debug var with sensitive content).
         assert set(env.keys()) == {
@@ -604,20 +604,20 @@ class TestVerifierHardening:
         )
 
     def test_plugin_autoload_not_disabled(self):
-        """Negative guard: PYTEST_DISABLE_PLUGIN_AUTOLOAD must NOT be in _VERIFIER_ENV.
+        """Negative guard: PYTEST_DISABLE_PLUGIN_AUTOLOAD must NOT be in VERIFIER_ENV.
 
         Disabling plugin autoload would break ~94 SkillsBench tasks that use
         pytest-json-ctrf's --ctrf flag. Entry-point plugin injection is already
         blocked structurally (root verifier + system site-packages perms +
-        .pth cleanup in _CLEANUP_CMD).
+        .pth cleanup in CLEANUP_CMD).
 
         This guards against accidental re-addition. A developer who *intends*
         to add it will (correctly) update this test and the comment in
-        sdk.py:_VERIFIER_ENV at the same time.
+        _sandbox.py:VERIFIER_ENV at the same time.
         """
-        from benchflow.sdk import SDK
+        from benchflow._sandbox import VERIFIER_ENV
 
-        assert "PYTEST_DISABLE_PLUGIN_AUTOLOAD" not in SDK._VERIFIER_ENV
+        assert "PYTEST_DISABLE_PLUGIN_AUTOLOAD" not in VERIFIER_ENV
 
     def test_dash_c_devnull_blocks_hostile_pyproject(self, tmp_path):
         """End-to-end: real pytest under `-c /dev/null` ignores agent-written
