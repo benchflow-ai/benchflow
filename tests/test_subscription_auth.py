@@ -6,34 +6,8 @@ import pytest
 
 from benchflow.agents.registry import (
     AGENTS,
-    AgentConfig,
-    HostAuthFile,
-    SubscriptionAuth,
     get_sandbox_home_dirs,
 )
-
-# ── SubscriptionAuth dataclass ──
-
-
-class TestSubscriptionAuthDataclass:
-    def test_construction(self):
-        sa = SubscriptionAuth(
-            replaces_env="ANTHROPIC_API_KEY",
-            detect_file="~/.claude/.credentials.json",
-            files=[
-                HostAuthFile(
-                    "~/.claude/.credentials.json", "{home}/.claude/.credentials.json"
-                ),
-            ],
-        )
-        assert sa.replaces_env == "ANTHROPIC_API_KEY"
-        assert sa.detect_file == "~/.claude/.credentials.json"
-        assert len(sa.files) == 1
-
-    def test_agent_config_default_none(self):
-        cfg = AgentConfig(name="t", install_cmd="", launch_cmd="")
-        assert cfg.subscription_auth is None
-
 
 # ── Agent config entries ──
 
@@ -68,13 +42,9 @@ class TestAgentSubscriptionAuth:
         assert any("settings.json" in p for p in paths)
         assert any("google_accounts.json" in p for p in paths)
 
-    def test_openclaw_no_subscription_auth(self):
-        cfg = AGENTS["openclaw"]
-        assert cfg.subscription_auth is None
 
-    def test_pi_no_subscription_auth(self):
-        cfg = AGENTS["pi-acp"]
-        assert cfg.subscription_auth is None
+# Negative invariants ("agent X should NOT have subscription_auth") collapsed
+# into the consolidated tripwire in test_registry_invariants.py.
 
 
 # ── get_sandbox_home_dirs includes subscription auth dirs ──

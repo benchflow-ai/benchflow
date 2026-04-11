@@ -50,11 +50,6 @@ class TestRunResultVerifierError:
         r = RunResult(task_name="t", verifier_error="verifier timed out after 900s")
         assert "ERROR: verifier timed out after 900s" in repr(r)
 
-    def test_verifier_error_default_none(self):
-        r = RunResult(task_name="t", error="install failed (rc=1)")
-        assert r.verifier_error is None
-        assert r.success is False
-
 
 # ---------------------------------------------------------------------------
 # Result JSON round-trip via _build_result
@@ -353,14 +348,6 @@ def test_total_invariant():
         verifier_errored=1,
     )
     assert jr.passed + jr.failed + jr.errored + jr.verifier_errored == jr.total
-
-
-def test_double_count_violates_invariant():
-    """Both error and verifier_error set would double-count — documents mutual exclusivity."""
-    r = {"rewards": None, "error": "x", "verifier_error": "y"}
-    errored = 1 if r.get("error") and r.get("rewards") is None else 0
-    v_errored = 1 if r.get("verifier_error") else 0
-    assert errored + v_errored > 1  # proves double-counting
 
 
 # ---------------------------------------------------------------------------
@@ -753,17 +740,6 @@ class TestTrajectorySource:
         )
         assert data["trajectory_source"] == expected_source
         assert data["partial_trajectory"] == expected_partial
-
-    def test_run_result_fields_and_defaults(self):
-        r_default = RunResult(task_name="t")
-        assert r_default.trajectory_source is None
-        assert r_default.partial_trajectory is False
-
-        r_set = RunResult(
-            task_name="t", trajectory_source="acp", partial_trajectory=True
-        )
-        assert r_set.trajectory_source == "acp"
-        assert r_set.partial_trajectory is True
 
 
 class TestScrapedTrajectoryTrust:

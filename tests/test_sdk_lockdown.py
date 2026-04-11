@@ -239,22 +239,6 @@ class TestWriteConfigRecordsPaths:
 
 
 # ---------------------------------------------------------------------------
-# Sandbox user defaults and warnings
-# ---------------------------------------------------------------------------
-
-
-class TestSandboxUserWarnings:
-    """Default sandbox_user and root warnings."""
-
-    def test_default_is_agent(self):
-        """Default sandbox_user is 'agent', not None."""
-        import inspect
-
-        sig = inspect.signature(SDK.run)
-        assert sig.parameters["sandbox_user"].default == "agent"
-
-
-# ---------------------------------------------------------------------------
 # Privilege dropping command construction
 # ---------------------------------------------------------------------------
 

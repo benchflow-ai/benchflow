@@ -37,6 +37,41 @@ metrics.py         — post-hoc aggregation from result.json files
 _scoring.py        — shared pure functions: reward extraction, error classification, pass rates
 ```
 
+## Conventions
+
+Rules a fresh agent won't infer from the code alone:
+
+- **Minimal fix.** Fix what was asked, nothing more. "Leave as is" is a valid
+  outcome. No speculative abstractions, no drive-by cleanups, no adding
+  docstrings/types/comments to code you didn't touch. Generalize after the
+  third repetition, not the first.
+- **Registry over hardcode.** Adding an agent or provider = a dict entry in
+  `agents/registry.py` or `providers.py`, not a new code path. Narrow
+  boundary exceptions exist (e.g. the `oracle` agent is special-cased in
+  `sdk.py` because it bypasses the agent loop entirely) — don't add more
+  without the same justification.
+- **Single source of truth.** Scoring logic lives in `_scoring.py`, trajectory
+  parsing in `_trajectory.py`, env setup in `_env_setup.py`. Don't duplicate;
+  import.
+- **Greppable modules, small private methods.** `SDK.run()` is the
+  orchestrator; the private methods it calls are each 10–80 lines. Match
+  that shape when extending — add a new private method, don't inline more
+  logic into `run()`.
+- **Don't modify or delete existing tests.** Updating a test because the code
+  it tests changed shape is fine. Writing new tests in
+  `tests/test_<module>.py` is fine. Rewriting a passing test to match new
+  behavior without understanding why it was written is not.
+- **No tautological tests.** Don't test `@dataclass` field reads, stdlib
+  behavior, helper self-consistency, or "does it construct." Tests should
+  exercise real code paths.
+- **Human review before main.** Shared state changes only with explicit
+  approval.
+  - *Interactive sessions:* pause after each logical unit and wait for
+    "commit"; don't chain commits across unrelated fixes.
+  - *Autonomous/scheduled runs:* commit freely on a branch, then open a
+    PR. Never push to `main` directly. Never force-push to `main` under
+    any circumstance.
+
 ## Testing
 
 Requires Python >=3.12. Use `uv` for environment and dependency management:
@@ -52,6 +87,25 @@ Pre-commit hook runs `ruff format` + `ruff check` on staged files in `src/`
 and `tests/`, matching what CI gates. After cloning, run `pre-commit install`
 once. Bypassing with `--no-verify` defeats the local guard but CI still
 enforces the same checks — fix the underlying issue rather than skipping.
+
+Before pushing, run the full local gate: `ruff format`, `ruff check`,
+`pytest`, and `ty check src/`. CI enforces all four — running pytest alone
+has missed lint regressions before.
+
+### `ty` as a navigation tool
+
+`ty` (installed via `[dev]`) is both a type checker and the fastest way to
+discover blast radius. After any signature change, run:
+
+```bash
+.venv/bin/ty check src/
+```
+
+The error list *is* the caller list — but only because the tree is clean
+today (zero pre-existing errors). Treat any new `ty` error as signal, not
+noise, and keep the baseline at zero. Cheaper than grepping for a symbol
+that flows through registries or dynamic dispatch; use it before
+hand-rolling a find-references search.
 
 Use Haiku 4.5 (`claude-haiku-4-5-20251001`) for smoke tests.
 

@@ -98,6 +98,32 @@ def test_agent_derived_dicts_in_sync():
         assert AGENT_LAUNCH[name] == cfg.launch_cmd
 
 
+def test_agent_negative_config_invariants():
+    """Specific agents must NOT have certain features configured.
+
+    Tripwire for accidental config bleed (e.g. openclaw silently gaining
+    credential_files because someone copy-pasted from codex). Positive
+    per-agent assertions live in test_agent_registry.py /
+    test_subscription_auth.py; this is the dedicated negative side.
+    """
+    no_credential_files = {"claude-agent-acp", "openclaw"}
+    no_subscription_auth = {"openclaw", "pi-acp"}
+    no_env_mapping = {"openclaw"}
+
+    for name in no_credential_files:
+        assert AGENTS[name].credential_files == [], (
+            f"{name!r} should not declare credential_files"
+        )
+    for name in no_subscription_auth:
+        assert AGENTS[name].subscription_auth is None, (
+            f"{name!r} should not declare subscription_auth"
+        )
+    for name in no_env_mapping:
+        assert AGENTS[name].env_mapping == {}, (
+            f"{name!r} should not declare env_mapping"
+        )
+
+
 def test_agent_api_protocol_has_provider_endpoint():
     """If an agent declares api_protocol, at least one provider must support it.
 
