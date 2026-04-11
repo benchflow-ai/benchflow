@@ -70,6 +70,10 @@ exclude = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+addopts = "-m 'not live'"
+markers = [
+    "live: requires real Anthropic API and Docker daemon (run with -m live)",
+]
 
 [tool.ruff]
 target-version = "py312"
