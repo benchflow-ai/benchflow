@@ -1,10 +1,47 @@
 """Agent registry — supported agents and their configurations.
 
-Each agent has:
-- install_cmd: How to install in a sandbox (bash command)
-- launch_cmd: How to start the agent (ACP command or binary)
-- requires_env: Required environment variables
-- protocol: "acp" (Agent Client Protocol) or "cli" (direct CLI execution)
+Adding a new agent is a registry-only change: append one entry to ``AGENTS``
+below. The SDK reads everything it needs about the agent from this dict, so no
+``sdk.py`` edits are required. ``tests/test_registry_invariants.py`` runs
+contract checks against every entry — read it for the executable schema.
+
+Required fields
+---------------
+- ``name``               Must equal the dict key.
+- ``install_cmd``        Bash command run inside the sandbox to install the
+                         agent. Idempotent (use ``command -v ... ||`` guards).
+- ``launch_cmd``         Command that starts the agent process. The SDK pipes
+                         ACP messages to its stdin / reads from its stdout.
+
+Common optional fields
+----------------------
+- ``protocol``           "acp" (default) or "cli". Almost always "acp".
+- ``requires_env``       List of env var names the SDK must propagate into the
+                         sandbox (e.g. ``["ANTHROPIC_API_KEY"]``). Validated at
+                         run start; missing keys raise before the container
+                         spins up.
+- ``api_protocol``       "anthropic-messages" | "openai-completions" | "" — the
+                         LLM API the agent natively speaks. Used to pick the
+                         right endpoint when a provider exposes multiple
+                         (e.g. zai). Empty means "agent infers from model name".
+- ``env_mapping``        ``BENCHFLOW_PROVIDER_*`` → agent-native env var.
+                         Applied by the SDK after provider resolution. Keys
+                         **must** start with ``BENCHFLOW_PROVIDER_``.
+- ``skill_paths``        Sandbox paths where benchflow should mount skill
+                         content. Must start with ``$HOME/`` or ``$WORKSPACE/``.
+- ``credential_files``   ``CredentialFile`` entries for files written into the
+                         container before launch (e.g. ``~/.codex/auth.json``).
+- ``home_dirs``          Extra dot-dirs under ``$HOME`` to copy to the sandbox
+                         user (for dirs not derivable from ``skill_paths`` /
+                         ``credential_files``, e.g. ``.openclaw``).
+- ``subscription_auth``  ``SubscriptionAuth`` describing host CLI login files
+                         (e.g. ``claude login`` credentials) that can stand in
+                         for an API key. API keys still take precedence.
+
+Look at the existing entries below for worked examples:
+``claude-agent-acp`` (subscription auth + env_mapping), ``codex-acp``
+(credential_files), ``openclaw`` (home_dirs + custom shim), ``gemini``
+(multi-file subscription auth).
 """
 
 from dataclasses import dataclass, field
