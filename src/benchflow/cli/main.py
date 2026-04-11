@@ -4,7 +4,7 @@ import asyncio
 import json
 from datetime import UTC
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, cast
 
 import typer
 from rich.console import Console
@@ -79,12 +79,14 @@ def run(
         parsed_env[key] = value
 
     sdk = SDK()
+    # CLI only ever passes plain strings; cast to widen for the SDK's
+    # `list[str | None] | None` API (None entries mean "use default").
     result = asyncio.run(
         sdk.run(
             task_path=task_dir,
             agent=agent,
             model=model,
-            prompts=prompt,
+            prompts=cast("list[str | None] | None", prompt),
             agent_env=parsed_env,
             jobs_dir=jobs_dir,
             environment=environment,
@@ -500,7 +502,11 @@ def cleanup(
             break
         total_found += len(result.items)
         for sb in result.items:
-            age_minutes = (now - sb.created_at).total_seconds() / 60
+            # Daytona's created_at is an ISO-8601 string (with optional Z suffix)
+            if not sb.created_at:
+                continue
+            created_at = datetime.fromisoformat(sb.created_at.replace("Z", "+00:00"))
+            age_minutes = (now - created_at).total_seconds() / 60
             if age_minutes < max_age_minutes:
                 total_skipped += 1
                 if dry_run:

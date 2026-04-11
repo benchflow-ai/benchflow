@@ -528,6 +528,7 @@ class SDK:
         timing: dict[str, float],
     ) -> RunResult:
         """Build RunResult and write result.json, timing.json, prompts.json, trajectory."""
+        finished_at = datetime.now()
         result = RunResult(
             task_name=task_name,
             trial_name=trial_name,
@@ -543,10 +544,11 @@ class SDK:
             partial_trajectory=partial_trajectory,
             trajectory_source=trajectory_source,
             started_at=started_at,
-            finished_at=datetime.now(),
+            finished_at=finished_at,
         )
-        # Finalize timing
-        timing["total"] = (result.finished_at - result.started_at).total_seconds()
+        # Finalize timing — use the locals (RunResult fields are typed
+        # datetime | None and would need narrowing)
+        timing["total"] = (finished_at - started_at).total_seconds()
         timing = {k: round(v, 1) for k, v in timing.items()}
         # Save trajectory
         traj_dir = trial_dir / "trajectory"
@@ -1056,7 +1058,10 @@ class SDK:
             )
         )
         agent_env = self._resolve_agent_env(agent, model, agent_env)
-        prompts = self._resolve_prompts(task_path, prompts)
+        # Use a new local so the type narrows from `list[str | None] | None`
+        # (the public API allows None entries to mean "use default") to
+        # `list[str]` after _resolve_prompts has substituted them.
+        resolved_prompts: list[str] = self._resolve_prompts(task_path, prompts)
         agent_launch = AGENT_LAUNCH.get(agent, agent)
 
         if context_root:
@@ -1065,7 +1070,8 @@ class SDK:
             _inject_skills_into_dockerfile(task_path, Path(skills_dir))
 
         env = _create_environment(environment, task, task_path, trial_name, trial_paths)
-        timeout = task.config.agent.timeout_sec
+        # Harbor returns timeout as int | float | None; SDK helpers expect int.
+        timeout = int(task.config.agent.timeout_sec or 0)
         timing: dict[str, float] = {}
 
         self._write_config(
@@ -1154,7 +1160,7 @@ class SDK:
                 trajectory, n_tool_calls = await self._execute_prompts(
                     acp_client,
                     session,
-                    prompts,
+                    resolved_prompts,
                     timeout,
                 )
                 trajectory_source = "acp"
@@ -1198,7 +1204,7 @@ class SDK:
             logger.error("Run failed", exc_info=True)
 
         finally:
-            if not trajectory and acp_client:
+            if not trajectory and acp_client and acp_client.session is not None:
                 try:
                     trajectory = _capture_session_trajectory(acp_client.session)
                     if trajectory:
@@ -1229,7 +1235,7 @@ class SDK:
             agent_name=agent_name,
             model=model or "",
             n_tool_calls=n_tool_calls,
-            prompts=prompts,
+            prompts=resolved_prompts,
             error=error,
             verifier_error=verifier_error,
             trajectory=trajectory,

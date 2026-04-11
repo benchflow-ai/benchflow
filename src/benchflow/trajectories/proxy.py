@@ -184,6 +184,9 @@ class TrajectoryProxy:
         writer: asyncio.StreamWriter,
     ) -> None:
         """Handle a non-streaming request/response."""
+        assert self._client is not None, (
+            "proxy must be started before handling requests"
+        )
         resp = await self._client.request(
             method=method,
             url=url,
@@ -227,6 +230,9 @@ class TrajectoryProxy:
         Forwards SSE chunks to the agent in real-time while collecting
         events to reconstruct the full response for trajectory capture.
         """
+        assert self._client is not None, (
+            "proxy must be started before handling requests"
+        )
         async with self._client.stream(
             method=method,
             url=url,

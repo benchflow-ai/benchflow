@@ -39,6 +39,7 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24.0",
     "ruff>=0.7.0",
+    "ty>=0.0.1a1",
 ]
 
 [project.scripts]
@@ -88,3 +89,9 @@ ignore = [
     "RUF002", # ambiguous unicode in docstrings — × is intentional for "agent × model" matrix
     "RUF022", # __all__ unsorted — grouped by section for agent-friendliness
 ]
+
+[tool.ty.environment]
+python-version = "3.12"
+
+[tool.ty.src]
+include = ["src"]

@@ -27,9 +27,12 @@ async def drain_oversized_line(reader: asyncio.StreamReader) -> int:
     Clears the internal buffer and attempts to skip ahead to the next
     newline.  Returns the number of bytes discarded.
     """
-    skipped = len(reader._buffer)
-    reader._buffer.clear()
-    reader._maybe_resume_transport()
+    # Reach into asyncio.StreamReader internals to clear the buffer after
+    # a LimitOverrunError. There's no public API for this; the private
+    # attributes are stable across Python 3.10+.
+    skipped = len(reader._buffer)  # ty: ignore[unresolved-attribute]
+    reader._buffer.clear()  # ty: ignore[unresolved-attribute]
+    reader._maybe_resume_transport()  # ty: ignore[unresolved-attribute]
     try:
         await asyncio.wait_for(reader.readuntil(b"\n"), timeout=5)
     except Exception:
