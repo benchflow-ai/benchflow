@@ -5,15 +5,18 @@ _scoring.py (extracts rewards and classifies errors from RunResults).
 """
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
+
+TrajectorySource = Literal["acp", "scraped", "partial_acp"]
+"""Provenance label for a captured trajectory. See RunResult.trajectory_source."""
 
 
 class AgentInstallError(RuntimeError):
     """Agent installation failed in the sandbox.
 
-    Raised by SDK._install_agent() when the agent's install script exits
-    non-zero. ``diagnostics`` contains the last N lines of output for
-    triage; ``log_path`` points to the full log on disk.
+    Raised by ``_agent_setup.install_agent()`` when the agent's install
+    script exits non-zero. ``diagnostics`` contains the last N lines of
+    output for triage; ``log_path`` points to the full log on disk.
     """
 
     def __init__(
@@ -35,8 +38,8 @@ class AgentInstallError(RuntimeError):
 class AgentTimeoutError(RuntimeError):
     """Agent execution exceeded the allowed wall-clock time.
 
-    Raised by SDK._execute_prompts() when the agent does not complete
-    within ``timeout_sec`` seconds.
+    Raised by ``_acp_run.execute_prompts()`` when the agent does not
+    complete within ``timeout_sec`` seconds.
     """
 
     def __init__(self, agent: str, timeout_sec: float):
@@ -63,6 +66,13 @@ class RunResult:
         error:        Error description string, or None on success.
         verifier_error: Verifier error description, or None if verifier succeeded
                       or was not reached. Separate from ``error`` (agent errors).
+        partial_trajectory: True when the trajectory was salvaged from a timed-out
+                      or crashed session and may be incomplete.
+        trajectory_source: Provenance label for ``trajectory`` — one of
+                      ``"acp"`` (trusted), ``"scraped"`` (UNTRUSTED, agent-writable,
+                      forgeable), ``"partial_acp"`` (partial ACP capture). Verifier
+                      and metrics consumers decide trust per source. None if no
+                      trajectory was captured.
         started_at:   Wall-clock start time.
         finished_at:  Wall-clock end time.
     """
@@ -81,7 +91,7 @@ class RunResult:
         error: str | None = None,
         verifier_error: str | None = None,
         partial_trajectory: bool = False,
-        trajectory_source: str | None = None,
+        trajectory_source: TrajectorySource | None = None,
         started_at: datetime | None = None,
         finished_at: datetime | None = None,
     ):

@@ -109,7 +109,7 @@ from benchflow._env_setup import (
     _patch_harbor_dind,
     stage_dockerfile_deps,
 )
-from benchflow._models import RunResult
+from benchflow._models import RunResult, TrajectorySource
 from benchflow._sandbox import (
     _resolve_locked_paths,
     harden_before_verify,
@@ -224,7 +224,7 @@ class SDK:
         verifier_error: str | None,
         trajectory: list[dict],
         partial_trajectory: bool,
-        trajectory_source: str | None = None,
+        trajectory_source: TrajectorySource | None = None,
         rewards: dict | None,
         started_at: datetime,
         timing: dict[str, float],
@@ -471,7 +471,7 @@ class SDK:
         acp_client: ACPClient | None = None
         trajectory: list[dict] = []
         partial_trajectory = False
-        trajectory_source: str | None = None
+        trajectory_source: TrajectorySource | None = None
         agent_name = ""
         n_tool_calls = 0
         error = None
