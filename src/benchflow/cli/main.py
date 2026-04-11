@@ -54,11 +54,16 @@ def run(
     ] = None,
     skills_dir: Annotated[
         Path | None,
-        typer.Option("--skills-dir", "-s", help="Skills directory to deploy into sandbox"),
+        typer.Option(
+            "--skills-dir", "-s", help="Skills directory to deploy into sandbox"
+        ),
     ] = None,
     sandbox_user: Annotated[
         str | None,
-        typer.Option("--sandbox-user", help="Run agent as non-root user (default: 'agent'). Pass 'none' for root."),
+        typer.Option(
+            "--sandbox-user",
+            help="Run agent as non-root user (default: 'agent'). Pass 'none' for root.",
+        ),
     ] = "agent",
 ) -> None:
     """Run a single task with an ACP agent."""
@@ -105,7 +110,9 @@ def job(
     ] = None,
     config_file: Annotated[
         Path | None,
-        typer.Option("--config", "-f", help="YAML config file (Harbor or benchflow format)"),
+        typer.Option(
+            "--config", "-f", help="YAML config file (Harbor or benchflow format)"
+        ),
     ] = None,
     agent: Annotated[
         str,
@@ -133,7 +140,9 @@ def job(
     ] = "jobs",
     skills_dir: Annotated[
         Path | None,
-        typer.Option("--skills-dir", "-s", help="Skills directory to deploy into sandbox"),
+        typer.Option(
+            "--skills-dir", "-s", help="Skills directory to deploy into sandbox"
+        ),
     ] = None,
 ) -> None:
     """Run all tasks in a directory with concurrency and retries.
@@ -182,10 +191,11 @@ def agents() -> None:
     table.add_column("Requires", style="yellow")
 
     for agent in list_agents():
-        sub_env = agent.subscription_auth.replaces_env if agent.subscription_auth else None
+        sub_env = (
+            agent.subscription_auth.replaces_env if agent.subscription_auth else None
+        )
         requires = [
-            f"{e} (or login)" if e == sub_env else e
-            for e in agent.requires_env
+            f"{e} (or login)" if e == sub_env else e for e in agent.requires_env
         ]
         table.add_row(
             agent.name,
@@ -223,9 +233,7 @@ def metrics(
     """Collect and display metrics from a jobs directory."""
     from benchflow.metrics import collect_metrics
 
-    m = collect_metrics(
-        str(jobs_dir), benchmark=benchmark, agent=agent, model=model
-    )
+    m = collect_metrics(str(jobs_dir), benchmark=benchmark, agent=agent, model=model)
     summary = m.summary()
 
     if output_json:
@@ -250,9 +258,7 @@ def metrics(
     if summary["passed_tasks"]:
         console.print(f"\n[green]Passed:[/green] {', '.join(summary['passed_tasks'])}")
     if summary["errored_tasks"]:
-        console.print(
-            f"[yellow]Errors:[/yellow] {', '.join(summary['errored_tasks'])}"
-        )
+        console.print(f"[yellow]Errors:[/yellow] {', '.join(summary['errored_tasks'])}")
     if summary["error_breakdown"]:
         console.print(f"[yellow]Error breakdown:[/yellow] {summary['error_breakdown']}")
 
@@ -279,7 +285,9 @@ def eval(
     ],
     skill: Annotated[
         Path | None,
-        typer.Option("--skill", help="Path to SKILL.md (parent dir used as skills_dir)"),
+        typer.Option(
+            "--skill", help="Path to SKILL.md (parent dir used as skills_dir)"
+        ),
     ] = None,
     skills_dir: Annotated[
         Path | None,
@@ -318,7 +326,9 @@ def eval(
     from benchflow.job import Job, JobConfig
 
     # Use --skill as skills_dir if --skills-dir not provided
-    effective_skills = str(skills_dir) if skills_dir else (str(skill.parent) if skill else None)
+    effective_skills = (
+        str(skills_dir) if skills_dir else (str(skill.parent) if skill else None)
+    )
 
     j = Job(
         tasks_dir=str(tasks_dir),
@@ -355,7 +365,11 @@ def skills(
     ] = None,
     install: Annotated[
         str | None,
-        typer.Option("--install", "-i", help="Install skill from skills.sh (e.g. anthropics/skills@find-skills)"),
+        typer.Option(
+            "--install",
+            "-i",
+            help="Install skill from skills.sh (e.g. anthropics/skills@find-skills)",
+        ),
     ] = None,
 ) -> None:
     """List or install agent skills."""
@@ -371,10 +385,16 @@ def skills(
             raise typer.Exit(1)
         return
 
-    search_dirs = [directory] if directory else [DEFAULT_SKILLS_DIR, Path(".claude/skills"), Path("skills")]
+    search_dirs = (
+        [directory]
+        if directory
+        else [DEFAULT_SKILLS_DIR, Path(".claude/skills"), Path("skills")]
+    )
     found = discover_skills(*search_dirs)
     if not found:
-        console.print("No skills found. Install with: benchflow skills --install owner/repo@skill-name")
+        console.print(
+            "No skills found. Install with: benchflow skills --install owner/repo@skill-name"
+        )
         return
 
     table = Table(title="Discovered Skills")
@@ -400,15 +420,24 @@ def tasks_init(
         Path,
         typer.Option("--dir", "-p", help="Parent directory (default: tasks/)"),
     ] = Path("tasks"),
-    no_pytest: Annotated[bool, typer.Option("--no-pytest", help="Skip pytest template")] = False,
-    no_solution: Annotated[bool, typer.Option("--no-solution", help="Skip solution template")] = False,
+    no_pytest: Annotated[
+        bool, typer.Option("--no-pytest", help="Skip pytest template")
+    ] = False,
+    no_solution: Annotated[
+        bool, typer.Option("--no-solution", help="Skip solution template")
+    ] = False,
 ) -> None:
     """Scaffold a new benchmark task."""
     from benchflow.tasks import init_task
+
     try:
-        task_dir = init_task(name, parent_dir=parent_dir, no_pytest=no_pytest, no_solution=no_solution)
+        task_dir = init_task(
+            name, parent_dir=parent_dir, no_pytest=no_pytest, no_solution=no_solution
+        )
         console.print(f"[green]Created:[/green] {task_dir}/")
-        console.print("  task.toml, instruction.md, environment/Dockerfile, tests/test.sh")
+        console.print(
+            "  task.toml, instruction.md, environment/Dockerfile, tests/test.sh"
+        )
         if not no_solution:
             console.print("  solution/solve.sh")
     except FileExistsError as e:
@@ -422,6 +451,7 @@ def tasks_check(
 ) -> None:
     """Validate a task directory structure."""
     from benchflow.tasks import check_task
+
     issues = check_task(task_dir)
     if not issues:
         console.print(f"[green]✓[/green] {task_dir.name} — valid")
@@ -473,10 +503,14 @@ def cleanup(
             if age_minutes < max_age_minutes:
                 total_skipped += 1
                 if dry_run:
-                    console.print(f"  [dim]{sb.id}[/dim] state={sb.state} age={age_minutes:.0f}m [green](skip)[/green]")
+                    console.print(
+                        f"  [dim]{sb.id}[/dim] state={sb.state} age={age_minutes:.0f}m [green](skip)[/green]"
+                    )
                 continue
             if dry_run:
-                console.print(f"  [dim]{sb.id}[/dim] state={sb.state} age={age_minutes:.0f}m [red](delete)[/red]")
+                console.print(
+                    f"  [dim]{sb.id}[/dim] state={sb.state} age={age_minutes:.0f}m [red](delete)[/red]"
+                )
             else:
                 try:
                     d.delete(sb)
@@ -488,9 +522,13 @@ def cleanup(
         page += 1
 
     if dry_run:
-        console.print(f"\n[bold]{total_found} sandboxes found, {total_found - total_skipped} older than {max_age_minutes}m[/bold] (use without --dry-run to delete)")
+        console.print(
+            f"\n[bold]{total_found} sandboxes found, {total_found - total_skipped} older than {max_age_minutes}m[/bold] (use without --dry-run to delete)"
+        )
     else:
-        console.print(f"\n[bold green]{total_deleted} sandboxes deleted[/bold green] ({total_skipped} skipped, younger than {max_age_minutes}m)")
+        console.print(
+            f"\n[bold green]{total_deleted} sandboxes deleted[/bold green] ({total_skipped} skipped, younger than {max_age_minutes}m)"
+        )
 
 
 if __name__ == "__main__":

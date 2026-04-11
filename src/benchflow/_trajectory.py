@@ -18,28 +18,36 @@ def _capture_session_trajectory(session: ACPSession | None) -> list[dict]:
         return []
     trajectory: list[dict] = []
     for tc in session.tool_calls:
-        trajectory.append({
-            "type": "tool_call",
-            "tool_call_id": tc.tool_call_id,
-            "kind": tc.kind,
-            "title": tc.title,
-            "status": tc.status.value,
-            "content": tc.content,
-        })
+        trajectory.append(
+            {
+                "type": "tool_call",
+                "tool_call_id": tc.tool_call_id,
+                "kind": tc.kind,
+                "title": tc.title,
+                "status": tc.status.value,
+                "content": tc.content,
+            }
+        )
     if session.full_message:
-        trajectory.append({
-            "type": "agent_message",
-            "text": session.full_message,
-        })
+        trajectory.append(
+            {
+                "type": "agent_message",
+                "text": session.full_message,
+            }
+        )
     if session.full_thought:
-        trajectory.append({
-            "type": "agent_thought",
-            "text": session.full_thought,
-        })
+        trajectory.append(
+            {
+                "type": "agent_thought",
+                "text": session.full_thought,
+            }
+        )
     return trajectory
 
 
-async def _scrape_agent_trajectory(env: Any, agent: str, sandbox_user: str | None) -> list[dict]:
+async def _scrape_agent_trajectory(
+    env: Any, agent: str, sandbox_user: str | None
+) -> list[dict]:
     """Fallback: read agent-native trajectory files from the container."""
     home = f"/home/{sandbox_user}" if sandbox_user else "/root"
 
@@ -65,14 +73,18 @@ def _parse_gemini_trajectory(data: dict) -> list[dict]:
         if msg.get("type") == "user":
             continue
         for tc in msg.get("toolCalls", []):
-            events.append({
-                "type": "tool_call",
-                "tool_call_id": tc.get("id", ""),
-                "kind": tc.get("name", ""),
-                "title": tc.get("args", {}).get("command", tc.get("name", "")),
-                "status": "completed" if tc.get("status") == "success" else "failed",
-                "content": tc.get("result", []),
-            })
+            events.append(
+                {
+                    "type": "tool_call",
+                    "tool_call_id": tc.get("id", ""),
+                    "kind": tc.get("name", ""),
+                    "title": tc.get("args", {}).get("command", tc.get("name", "")),
+                    "status": "completed"
+                    if tc.get("status") == "success"
+                    else "failed",
+                    "content": tc.get("result", []),
+                }
+            )
         content = msg.get("content", "")
         if content:
             events.append({"type": "agent_message", "text": content})

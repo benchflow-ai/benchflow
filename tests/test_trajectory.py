@@ -49,7 +49,9 @@ class TestTrajectoryTypes:
         # Add second exchange (Anthropic format)
         traj.exchanges.append(
             LLMExchange(
-                request=LLMRequest(body={"messages": [{"role": "user", "content": "more"}]}),
+                request=LLMRequest(
+                    body={"messages": [{"role": "user", "content": "more"}]}
+                ),
                 response=LLMResponse(
                     body={
                         "content": [{"type": "text", "text": "ok"}],
@@ -58,8 +60,8 @@ class TestTrajectoryTypes:
                 ),
             )
         )
-        assert traj.total_input_tokens == 210   # 10 + 200
-        assert traj.total_output_tokens == 55   # 5 + 50
+        assert traj.total_input_tokens == 210  # 10 + 200
+        assert traj.total_output_tokens == 55  # 5 + 50
 
         # Add third exchange (OpenAI format fallback)
         traj.exchanges.append(
@@ -67,14 +69,16 @@ class TestTrajectoryTypes:
                 request=LLMRequest(body={"messages": []}),
                 response=LLMResponse(
                     body={
-                        "choices": [{"message": {"role": "assistant", "content": "hi"}}],
+                        "choices": [
+                            {"message": {"role": "assistant", "content": "hi"}}
+                        ],
                         "usage": {"prompt_tokens": 50, "completion_tokens": 10},
                     }
                 ),
             )
         )
-        assert traj.total_input_tokens == 260   # 210 + 50
-        assert traj.total_output_tokens == 65   # 55 + 10
+        assert traj.total_input_tokens == 260  # 210 + 50
+        assert traj.total_output_tokens == 65  # 55 + 10
 
     def test_messages_extraction(self) -> None:
         traj = Trajectory(session_id="s1")

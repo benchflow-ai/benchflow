@@ -14,4 +14,3 @@ def hello_world_task_dir() -> Path:
     if not path.exists():
         pytest.skip("Harbor reference tasks not available")
     return path
-

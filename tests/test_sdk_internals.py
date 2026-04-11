@@ -5,7 +5,6 @@ independently testable private methods.
 """
 
 import json
-import os
 from datetime import datetime
 from pathlib import Path
 
@@ -20,6 +19,7 @@ class TestResolveAgentEnv:
 
     def _resolve(self, agent="claude-agent-acp", model=None, agent_env=None):
         from benchflow.sdk import SDK
+
         return SDK._resolve_agent_env(agent, model, agent_env)
 
     def test_returns_dict(self):
@@ -45,10 +45,12 @@ class TestResolveAgentEnv:
 
     def test_gemini_mirror_no_overwrite(self):
         """Explicit GOOGLE_API_KEY not overwritten by mirror."""
-        result = self._resolve(agent_env={
-            "GEMINI_API_KEY": "gk-test",
-            "GOOGLE_API_KEY": "gk-explicit",
-        })
+        result = self._resolve(
+            agent_env={
+                "GEMINI_API_KEY": "gk-test",
+                "GOOGLE_API_KEY": "gk-explicit",
+            }
+        )
         assert result["GOOGLE_API_KEY"] == "gk-explicit"
 
     def test_none_agent_env_creates_empty(self):
@@ -173,6 +175,7 @@ class TestResolvePrompts:
 
     def _resolve(self, task_path, prompts):
         from benchflow.sdk import SDK
+
         return SDK._resolve_prompts(task_path, prompts)
 
     def test_none_prompts_returns_instruction(self, tmp_path):
@@ -208,6 +211,7 @@ class TestInitTrial:
 
     def _init(self, task_path, job_name=None, trial_name=None, jobs_dir="jobs"):
         from benchflow.sdk import SDK
+
         return SDK._init_trial(task_path, job_name, trial_name, jobs_dir)
 
     @pytest.fixture()
@@ -217,14 +221,16 @@ class TestInitTrial:
         td.mkdir()
         (td / "task.toml").write_text(
             'version = "1.0"\n\n[verifier]\ntimeout_sec = 900.0\n\n'
-            '[agent]\ntimeout_sec = 900.0\n\n[environment]\n'
+            "[agent]\ntimeout_sec = 900.0\n\n[environment]\n"
         )
         (td / "instruction.md").write_text("Do the thing.")
         return td
 
     def test_returns_tuple(self, task_dir, tmp_path):
         result = self._init(task_dir, jobs_dir=tmp_path / "jobs")
-        assert len(result) == 6  # task, trial_dir, trial_paths, started_at, job_name, trial_name
+        assert (
+            len(result) == 6
+        )  # task, trial_dir, trial_paths, started_at, job_name, trial_name
 
     def test_trial_dir_created(self, task_dir, tmp_path):
         _, trial_dir, _, _, _, _ = self._init(task_dir, jobs_dir=tmp_path / "jobs")
@@ -240,7 +246,9 @@ class TestInitTrial:
 
     def test_custom_job_name(self, task_dir, tmp_path):
         _, _, _, _, job_name, _ = self._init(
-            task_dir, job_name="my-job", jobs_dir=tmp_path / "jobs",
+            task_dir,
+            job_name="my-job",
+            jobs_dir=tmp_path / "jobs",
         )
         assert job_name == "my-job"
 
@@ -250,7 +258,9 @@ class TestInitTrial:
 
     def test_custom_trial_name(self, task_dir, tmp_path):
         _, _, _, _, _, trial_name = self._init(
-            task_dir, trial_name="custom-trial", jobs_dir=tmp_path / "jobs",
+            task_dir,
+            trial_name="custom-trial",
+            jobs_dir=tmp_path / "jobs",
         )
         assert trial_name == "custom-trial"
 
@@ -267,6 +277,7 @@ class TestWriteConfig:
 
     def _write(self, trial_dir, **kwargs):
         from benchflow.sdk import SDK
+
         return SDK._write_config(trial_dir, **kwargs)
 
     def test_config_json_written(self, tmp_path):
@@ -327,6 +338,7 @@ class TestBuildResult:
 
     def _build(self, trial_dir, **kwargs):
         from benchflow.sdk import SDK
+
         defaults = dict(
             task_name="my-task",
             trial_name="my-trial",
@@ -348,6 +360,7 @@ class TestBuildResult:
 
     def test_returns_run_result(self, tmp_path):
         from benchflow._models import RunResult
+
         result = self._build(tmp_path)
         assert isinstance(result, RunResult)
 
@@ -390,7 +403,7 @@ class TestBuildResult:
         assert traj_file.exists()
 
     def test_timing_values_rounded(self, tmp_path):
-        result = self._build(tmp_path, timing={"agent_setup": 1.5678})
+        self._build(tmp_path, timing={"agent_setup": 1.5678})
         data = json.loads((tmp_path / "timing.json").read_text())
         assert data["agent_setup"] == 1.6
 

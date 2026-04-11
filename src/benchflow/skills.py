@@ -18,6 +18,7 @@ DEFAULT_SKILLS_DIR = Path.home() / ".claude" / "skills"
 @dataclass
 class SkillInfo:
     """Parsed skill metadata from SKILL.md frontmatter."""
+
     name: str
     description: str = ""
     version: str = ""
@@ -95,7 +96,9 @@ def install_skill(spec: str, target_dir: Path | None = None) -> Path | None:
     try:
         result = subprocess.run(
             ["npx", "skills", "add", spec],
-            capture_output=True, text=True, timeout=60,
+            capture_output=True,
+            text=True,
+            timeout=60,
             cwd=str(target.parent),
         )
         if result.returncode != 0:

@@ -63,7 +63,8 @@ class StdioTransport(Transport):
             stderr=asyncio.subprocess.PIPE,
             env=proc_env,
             cwd=self._cwd,
-            limit=1024 * 1024,  # 1MB line buffer (default 64KB too small for large tool results)
+            limit=1024
+            * 1024,  # 1MB line buffer (default 64KB too small for large tool results)
         )
         logger.info(f"Started agent process: {self._command} (pid={self._process.pid})")
 

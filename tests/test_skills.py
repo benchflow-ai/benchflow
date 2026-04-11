@@ -17,7 +17,9 @@ class TestParseSkill:
     """parse_skill(skill_md) -> SkillInfo | None"""
 
     def test_basic_frontmatter(self, tmp_path):
-        md = _write_skill_md(tmp_path / "my-skill", "name: my-skill\ndescription: A test skill\n")
+        md = _write_skill_md(
+            tmp_path / "my-skill", "name: my-skill\ndescription: A test skill\n"
+        )
         info = parse_skill(md)
         assert info is not None
         assert info.name == "my-skill"

@@ -1,6 +1,5 @@
 """Tests for process.py env handling (no Docker required)."""
 
-import asyncio
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -20,6 +19,7 @@ class TestDockerProcessEnv:
 
     def _mock_exec(self, captured_calls: list):
         """Return a fake create_subprocess_exec that records calls."""
+
         async def fake_exec(*args, **kwargs):
             captured_calls.append(list(args))
             mock_proc = AsyncMock()
@@ -30,13 +30,16 @@ class TestDockerProcessEnv:
             mock_proc.stderr = AsyncMock()
             mock_proc.communicate = AsyncMock(return_value=(b"", b""))
             return mock_proc
+
         return fake_exec
 
     @pytest.mark.asyncio
     async def test_env_not_in_main_cmd(self):
         """Secrets must not appear as args in the main exec command."""
         calls = []
-        with patch("asyncio.create_subprocess_exec", side_effect=self._mock_exec(calls)):
+        with patch(
+            "asyncio.create_subprocess_exec", side_effect=self._mock_exec(calls)
+        ):
             proc = self._make_process()
             await proc.start(
                 command="echo hello",
@@ -69,6 +72,7 @@ class TestDockerProcessEnv:
                 if data:
                     communicate_inputs.append(data)
                 return (b"", b"")
+
             mock_proc.communicate = capture_communicate
             return mock_proc
 
@@ -94,7 +98,9 @@ class TestDockerProcessEnv:
     async def test_main_cmd_sources_and_deletes_env(self):
         """Main command sources the env file and then removes it."""
         calls = []
-        with patch("asyncio.create_subprocess_exec", side_effect=self._mock_exec(calls)):
+        with patch(
+            "asyncio.create_subprocess_exec", side_effect=self._mock_exec(calls)
+        ):
             proc = self._make_process()
             await proc.start(
                 command="codex-acp",
@@ -110,7 +116,9 @@ class TestDockerProcessEnv:
     async def test_no_env_single_call(self):
         """When no env is passed, only the main exec runs (no env write step)."""
         calls = []
-        with patch("asyncio.create_subprocess_exec", side_effect=self._mock_exec(calls)):
+        with patch(
+            "asyncio.create_subprocess_exec", side_effect=self._mock_exec(calls)
+        ):
             proc = self._make_process()
             await proc.start(command="echo hello")
 
@@ -134,6 +142,7 @@ class TestDockerProcessEnv:
                 if data:
                     communicate_inputs.append(data)
                 return (b"", b"")
+
             mock_proc.communicate = capture_communicate
             return mock_proc
 
@@ -165,6 +174,7 @@ class TestDockerProcessEnv:
                 if data:
                     communicate_inputs.append(data)
                 return (b"", b"")
+
             mock_proc.communicate = capture_communicate
             return mock_proc
 
@@ -185,7 +195,10 @@ class TestDockerProcessEnv:
             assert f"export {key}=" in content
         # shlex.quote wraps values in single quotes
         import shlex
+
         assert f"export CMD_INJECT={shlex.quote('value; rm -rf /')}" in content
         assert f"export NEWLINE_VAL={shlex.quote('line1\nline2')}" in content
         assert f"export BACKTICK={shlex.quote('$(whoami)')}" in content
-        assert f"export SINGLE_QUOTE={shlex.quote('it' + chr(39) + 's a test')}" in content
+        assert (
+            f"export SINGLE_QUOTE={shlex.quote('it' + chr(39) + 's a test')}" in content
+        )

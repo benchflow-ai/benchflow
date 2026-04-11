@@ -35,7 +35,9 @@ def ensure_tasks(benchmark: str) -> Path:
     regardless of the caller's working directory.
     """
     if benchmark not in TASK_REPOS:
-        raise ValueError(f"Unknown benchmark: {benchmark!r}. Available: {sorted(TASK_REPOS)}")
+        raise ValueError(
+            f"Unknown benchmark: {benchmark!r}. Available: {sorted(TASK_REPOS)}"
+        )
 
     info = TASK_REPOS[benchmark]
     root = _repo_root()
@@ -62,5 +64,9 @@ def ensure_tasks(benchmark: str) -> Path:
         if clone_dir.exists():
             shutil.rmtree(clone_dir, ignore_errors=True)
 
-    logger.info("Downloaded %d tasks to %s", sum(1 for d in target.iterdir() if d.is_dir()), target)
+    logger.info(
+        "Downloaded %d tasks to %s",
+        sum(1 for d in target.iterdir() if d.is_dir()),
+        target,
+    )
     return target

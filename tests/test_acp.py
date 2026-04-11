@@ -6,12 +6,14 @@ from pathlib import Path
 import pytest
 
 from benchflow.acp.client import ACPClient, ACPError
-from benchflow.acp.session import ACPSession, ToolCallRecord
+from benchflow.acp.session import ACPSession
 from benchflow.acp.transport import StdioTransport
 from benchflow.acp.types import StopReason, ToolCallStatus
 
 MOCK_AGENT = str(Path(__file__).parent / "fixtures" / "mock_acp_agent.py")
-MOCK_AGENT_INTERLEAVED = str(Path(__file__).parent / "fixtures" / "mock_acp_agent_interleaved.py")
+MOCK_AGENT_INTERLEAVED = str(
+    Path(__file__).parent / "fixtures" / "mock_acp_agent_interleaved.py"
+)
 
 
 class TestACPClient:
@@ -108,66 +110,82 @@ class TestACPClient:
 class TestACPSession:
     def test_handle_tool_call(self):
         session = ACPSession("test-session")
-        session.handle_update({
-            "sessionUpdate": "tool_call",
-            "toolCallId": "tc_1",
-            "title": "echo hello",
-            "kind": "bash",
-        })
+        session.handle_update(
+            {
+                "sessionUpdate": "tool_call",
+                "toolCallId": "tc_1",
+                "title": "echo hello",
+                "kind": "bash",
+            }
+        )
         assert len(session.tool_calls) == 1
         assert session.tool_calls[0].tool_call_id == "tc_1"
         assert session.tool_calls[0].kind == "bash"
 
     def test_handle_tool_call_update(self):
         session = ACPSession("test-session")
-        session.handle_update({
-            "sessionUpdate": "tool_call",
-            "toolCallId": "tc_1",
-            "title": "echo",
-            "kind": "bash",
-        })
-        session.handle_update({
-            "sessionUpdate": "tool_call_update",
-            "toolCallId": "tc_1",
-            "status": "completed",
-        })
+        session.handle_update(
+            {
+                "sessionUpdate": "tool_call",
+                "toolCallId": "tc_1",
+                "title": "echo",
+                "kind": "bash",
+            }
+        )
+        session.handle_update(
+            {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "tc_1",
+                "status": "completed",
+            }
+        )
         assert session.tool_calls[0].status == ToolCallStatus.COMPLETED
 
     def test_handle_invalid_tool_call_status(self):
         """Invalid status should fall back to IN_PROGRESS, not crash."""
         session = ACPSession("test-session")
-        session.handle_update({
-            "sessionUpdate": "tool_call",
-            "toolCallId": "tc_1",
-            "title": "echo",
-            "kind": "bash",
-        })
+        session.handle_update(
+            {
+                "sessionUpdate": "tool_call",
+                "toolCallId": "tc_1",
+                "title": "echo",
+                "kind": "bash",
+            }
+        )
         # Should not raise — invalid status handled gracefully
-        session.handle_update({
-            "sessionUpdate": "tool_call_update",
-            "toolCallId": "tc_1",
-            "status": "totally_invalid_status",
-        })
+        session.handle_update(
+            {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "tc_1",
+                "status": "totally_invalid_status",
+            }
+        )
         assert session.tool_calls[0].status == ToolCallStatus.IN_PROGRESS
 
     def test_handle_message_chunks(self):
         session = ACPSession("test-session")
-        session.handle_update({
-            "sessionUpdate": "agent_message_chunk",
-            "content": {"type": "text", "text": "Hello "},
-        })
-        session.handle_update({
-            "sessionUpdate": "agent_message_chunk",
-            "content": {"type": "text", "text": "world"},
-        })
+        session.handle_update(
+            {
+                "sessionUpdate": "agent_message_chunk",
+                "content": {"type": "text", "text": "Hello "},
+            }
+        )
+        session.handle_update(
+            {
+                "sessionUpdate": "agent_message_chunk",
+                "content": {"type": "text", "text": "world"},
+            }
+        )
         assert session.full_message == "Hello world"
 
     def test_handle_thought_chunks(self):
         session = ACPSession("test-session")
-        session.handle_update({
-            "sessionUpdate": "agent_thought_chunk",
-            "content": {"type": "text", "text": "thinking..."},
-        })
+        session.handle_update(
+            {
+                "sessionUpdate": "agent_thought_chunk",
+                "content": {"type": "text", "text": "thinking..."},
+            }
+        )
         assert session.full_thought == "thinking..."
 
     def test_handle_unknown_update_type(self):
@@ -181,11 +199,13 @@ class TestACPSession:
         """Update for non-existent tool call should be silently ignored."""
         session = ACPSession("test-session")
         # Should not raise
-        session.handle_update({
-            "sessionUpdate": "tool_call_update",
-            "toolCallId": "nonexistent",
-            "status": "completed",
-        })
+        session.handle_update(
+            {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "nonexistent",
+                "status": "completed",
+            }
+        )
 
 
 class TestACPInterleaving:

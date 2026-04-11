@@ -114,6 +114,7 @@ class TestFindProvider:
     def test_no_prefix_returns_none(self):
         assert find_provider("glm-5") is None
 
+
 # ── resolve_base_url: template expansion ──
 
 
@@ -157,14 +158,23 @@ class TestResolveBaseUrl:
     def test_protocol_selects_endpoint(self):
         """resolve_base_url with protocol= picks from endpoints dict."""
         p = PROVIDERS["zai"]
-        assert resolve_base_url(p, {}, protocol="anthropic-messages") == "https://api.z.ai/api/anthropic"
-        assert resolve_base_url(p, {}, protocol="openai-completions") == "https://api.z.ai/api/paas/v4"
+        assert (
+            resolve_base_url(p, {}, protocol="anthropic-messages")
+            == "https://api.z.ai/api/anthropic"
+        )
+        assert (
+            resolve_base_url(p, {}, protocol="openai-completions")
+            == "https://api.z.ai/api/paas/v4"
+        )
 
     def test_protocol_fallback_to_base_url(self):
         """Unknown protocol falls back to primary base_url."""
         p = PROVIDERS["zai"]
         assert resolve_base_url(p, {}) == "https://api.z.ai/api/paas/v4"
-        assert resolve_base_url(p, {}, protocol="unknown") == "https://api.z.ai/api/paas/v4"
+        assert (
+            resolve_base_url(p, {}, protocol="unknown")
+            == "https://api.z.ai/api/paas/v4"
+        )
 
 
 # ── resolve_auth_env: which env var does this provider need? ──
@@ -190,16 +200,19 @@ class TestRegistryIntegration:
     def test_infer_env_key_for_zai(self):
         """infer_env_key_for_model should return ZAI_API_KEY for zai/ models."""
         from benchflow.agents.registry import infer_env_key_for_model
+
         assert infer_env_key_for_model("zai/glm-5") == "ZAI_API_KEY"
 
     def test_is_vertex_model_zai_direct(self):
         """zai/ (direct API) is NOT vertex."""
         from benchflow.agents.registry import is_vertex_model
+
         assert is_vertex_model("zai/glm-5") is False
 
     def test_existing_models_unchanged(self):
         """Existing model inference must not regress."""
         from benchflow.agents.registry import infer_env_key_for_model
+
         assert infer_env_key_for_model("gemini-3.1-pro") == "GEMINI_API_KEY"
         assert infer_env_key_for_model("claude-sonnet-4-6") == "ANTHROPIC_API_KEY"
         assert infer_env_key_for_model("gpt-5.4") == "OPENAI_API_KEY"
@@ -239,7 +252,10 @@ class TestStripProviderPrefix:
         assert strip_provider_prefix("zai/glm-5") == "glm-5"
 
     def test_vertex_provider(self):
-        assert strip_provider_prefix("anthropic-vertex/claude-sonnet-4-6") == "claude-sonnet-4-6"
+        assert (
+            strip_provider_prefix("anthropic-vertex/claude-sonnet-4-6")
+            == "claude-sonnet-4-6"
+        )
 
     def test_nested_prefix(self):
         assert strip_provider_prefix("google-vertex/gemini-3-flash") == "gemini-3-flash"
@@ -297,19 +313,23 @@ class TestInferProviderPrefix:
     @pytest.fixture(autouse=True)
     def _import(self):
         from benchflow.agents.openclaw_acp_shim import _infer_provider_prefix
+
         self.infer = _infer_provider_prefix
 
-    @pytest.mark.parametrize("model,expected", [
-        ("gpt-4o", "openai"),
-        ("gpt-4o-mini", "openai"),
-        ("o1-preview", "openai"),
-        ("o3-mini", "openai"),
-        ("gemini-3-flash", "google"),
-        ("gemini-2.5-pro", "google"),
-        ("claude-sonnet-4-6", "anthropic"),
-        ("claude-haiku-4-5-20251001", "anthropic"),
-        ("some-unknown-model", "anthropic"),  # default
-    ])
+    @pytest.mark.parametrize(
+        "model,expected",
+        [
+            ("gpt-4o", "openai"),
+            ("gpt-4o-mini", "openai"),
+            ("o1-preview", "openai"),
+            ("o3-mini", "openai"),
+            ("gemini-3-flash", "google"),
+            ("gemini-2.5-pro", "google"),
+            ("claude-sonnet-4-6", "anthropic"),
+            ("claude-haiku-4-5-20251001", "anthropic"),
+            ("some-unknown-model", "anthropic"),  # default
+        ],
+    )
     def test_infer(self, model, expected):
         assert self.infer(model) == expected
 
@@ -323,7 +343,9 @@ class TestSetupOpenaiAuth:
         return tmp_path
 
     def _auth_path(self, home_dir):
-        return home_dir / ".openclaw" / "agents" / "main" / "agent" / "auth-profiles.json"
+        return (
+            home_dir / ".openclaw" / "agents" / "main" / "agent" / "auth-profiles.json"
+        )
 
     def test_writes_key(self, home_dir, monkeypatch):
         import json
@@ -370,7 +392,10 @@ class TestShimModelParams:
         """session/set_model handler should map all three env vars."""
         # Read the shim source and extract the _PARAM_MAP dict
         from pathlib import Path
-        shim_src = (Path(__file__).parent.parent / "src/benchflow/agents/openclaw_acp_shim.py").read_text()
+
+        shim_src = (
+            Path(__file__).parent.parent / "src/benchflow/agents/openclaw_acp_shim.py"
+        ).read_text()
         assert "BENCHFLOW_MODEL_TEMPERATURE" in shim_src
         assert "BENCHFLOW_MODEL_TOP_P" in shim_src
         assert "BENCHFLOW_MODEL_MAX_TOKENS" in shim_src
@@ -382,6 +407,7 @@ class TestShimModelParams:
         """When BENCHFLOW_MODEL_* env vars are set, the shim should call
         openclaw config set for each param during session/set_model."""
         import subprocess
+
         calls = []
         original_run = subprocess.run
 
@@ -397,6 +423,7 @@ class TestShimModelParams:
         # Import and simulate the set_model handler logic inline
         # (the shim's main() is a blocking loop, so we test the logic directly)
         import os
+
         _PARAM_MAP = {
             "BENCHFLOW_MODEL_TEMPERATURE": "agents.defaults.params.temperature",
             "BENCHFLOW_MODEL_TOP_P": "agents.defaults.params.topP",
@@ -409,7 +436,8 @@ class TestShimModelParams:
             if val:
                 subprocess.run(
                     ["openclaw", "config", "set", config_path, val],
-                    capture_output=True, timeout=10,
+                    capture_output=True,
+                    timeout=10,
                 )
 
         monkeypatch.setattr(subprocess, "run", original_run)
@@ -428,6 +456,7 @@ class TestShimModelParams:
     def test_missing_env_vars_skipped(self, monkeypatch):
         """When no BENCHFLOW_MODEL_* env vars are set, no config calls are made."""
         import subprocess
+
         calls = []
 
         def mock_run(cmd, **kwargs):
@@ -439,6 +468,7 @@ class TestShimModelParams:
         monkeypatch.delenv("BENCHFLOW_MODEL_MAX_TOKENS", raising=False)
 
         import os
+
         _PARAM_MAP = {
             "BENCHFLOW_MODEL_TEMPERATURE": "agents.defaults.params.temperature",
             "BENCHFLOW_MODEL_TOP_P": "agents.defaults.params.topP",
@@ -451,7 +481,8 @@ class TestShimModelParams:
             if val:
                 subprocess.run(
                     ["openclaw", "config", "set", config_path, val],
-                    capture_output=True, timeout=10,
+                    capture_output=True,
+                    timeout=10,
                 )
 
         assert len(calls) == 0

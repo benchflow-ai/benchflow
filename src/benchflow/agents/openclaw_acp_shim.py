@@ -71,10 +71,10 @@ def setup_workspace(cwd: str):
     if not workspace_skills.exists():
         # Search for skills in known locations
         skill_sources = [
-            Path(cwd) / ".claude" / "skills",      # SkillsBench Claude format
-            Path(home) / ".claude" / "skills",      # Home dir Claude skills
-            Path(cwd) / ".codex" / "skills",        # Codex format
-            Path(cwd) / ".agents" / "skills",       # Generic agent skills
+            Path(cwd) / ".claude" / "skills",  # SkillsBench Claude format
+            Path(home) / ".claude" / "skills",  # Home dir Claude skills
+            Path(cwd) / ".codex" / "skills",  # Codex format
+            Path(cwd) / ".agents" / "skills",  # Generic agent skills
         ]
         for src in skill_sources:
             if src.is_dir() and any(src.iterdir()):
@@ -111,14 +111,17 @@ def setup_gcloud_adc():
     adc_json = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS_JSON")
     if not adc_json:
         return
-    adc_path = Path.home() / ".config" / "gcloud" / "application_default_credentials.json"
+    adc_path = (
+        Path.home() / ".config" / "gcloud" / "application_default_credentials.json"
+    )
     adc_path.parent.mkdir(parents=True, exist_ok=True)
     adc_path.write_text(adc_json)
     os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(adc_path)
     # Enable the google plugin so openclaw recognizes google-vertex/ models
     subprocess.run(
         ["openclaw", "plugins", "enable", "google"],
-        capture_output=True, timeout=10,
+        capture_output=True,
+        timeout=10,
     )
 
 
@@ -136,7 +139,9 @@ def _get_adc_token() -> str:
     adc_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
     if not adc_path or not Path(adc_path).exists():
         # Fallback to default ADC location
-        adc_path = str(Path.home() / ".config" / "gcloud" / "application_default_credentials.json")
+        adc_path = str(
+            Path.home() / ".config" / "gcloud" / "application_default_credentials.json"
+        )
     with open(adc_path) as f:
         creds = json.load(f)
 
@@ -144,12 +149,14 @@ def _get_adc_token() -> str:
 
     if cred_type == "authorized_user":
         # Refresh token flow
-        data = urllib.parse.urlencode({
-            "client_id": creds["client_id"],
-            "client_secret": creds["client_secret"],
-            "refresh_token": creds["refresh_token"],
-            "grant_type": "refresh_token",
-        }).encode()
+        data = urllib.parse.urlencode(
+            {
+                "client_id": creds["client_id"],
+                "client_secret": creds["client_secret"],
+                "refresh_token": creds["refresh_token"],
+                "grant_type": "refresh_token",
+            }
+        ).encode()
         req = urllib.request.Request(
             "https://oauth2.googleapis.com/token",
             data=data,
@@ -162,20 +169,25 @@ def _get_adc_token() -> str:
         # JWT → access token flow (RS256)
         # Requires PyJWT or manual RSA — use subprocess openssl as fallback
         now = int(time.time())
-        header = base64.urlsafe_b64encode(json.dumps(
-            {"alg": "RS256", "typ": "JWT"}
-        ).encode()).rstrip(b"=")
-        payload = base64.urlsafe_b64encode(json.dumps({
-            "iss": creds["client_email"],
-            "scope": "https://www.googleapis.com/auth/cloud-platform",
-            "aud": "https://oauth2.googleapis.com/token",
-            "iat": now,
-            "exp": now + 3600,
-        }).encode()).rstrip(b"=")
+        header = base64.urlsafe_b64encode(
+            json.dumps({"alg": "RS256", "typ": "JWT"}).encode()
+        ).rstrip(b"=")
+        payload = base64.urlsafe_b64encode(
+            json.dumps(
+                {
+                    "iss": creds["client_email"],
+                    "scope": "https://www.googleapis.com/auth/cloud-platform",
+                    "aud": "https://oauth2.googleapis.com/token",
+                    "iat": now,
+                    "exp": now + 3600,
+                }
+            ).encode()
+        ).rstrip(b"=")
         signing_input = header + b"." + payload
 
         # Sign with openssl (available in most containers)
         import tempfile
+
         with tempfile.NamedTemporaryFile(mode="w", suffix=".pem", delete=False) as kf:
             kf.write(creds["private_key"])
             key_path = kf.name
@@ -183,17 +195,20 @@ def _get_adc_token() -> str:
             result = subprocess.run(
                 ["openssl", "dgst", "-sha256", "-sign", key_path],
                 input=signing_input,
-                capture_output=True, timeout=10,
+                capture_output=True,
+                timeout=10,
             )
             signature = base64.urlsafe_b64encode(result.stdout).rstrip(b"=")
         finally:
             os.unlink(key_path)
 
         jwt_token = (signing_input + b"." + signature).decode()
-        data = urllib.parse.urlencode({
-            "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
-            "assertion": jwt_token,
-        }).encode()
+        data = urllib.parse.urlencode(
+            {
+                "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+                "assertion": jwt_token,
+            }
+        ).encode()
         req = urllib.request.Request(
             "https://oauth2.googleapis.com/token",
             data=data,
@@ -206,9 +221,13 @@ def _get_adc_token() -> str:
         raise ValueError(f"Unsupported ADC credential type: {cred_type!r}")
 
 
-def setup_custom_provider(provider_name: str, base_url: str, api_key: str,
-                          api_protocol: str = "openai-completions",
-                          models: list[dict] | None = None):
+def setup_custom_provider(
+    provider_name: str,
+    base_url: str,
+    api_key: str,
+    api_protocol: str = "openai-completions",
+    models: list[dict] | None = None,
+):
     """Configure an openclaw custom provider in ~/.openclaw/openclaw.json.
 
     This is the generic replacement for per-provider setup functions.
@@ -275,7 +294,11 @@ def _find_and_setup_provider(model: str) -> str | None:
                     try:
                         api_key = _get_adc_token()
                     except Exception:
-                        logger.debug("ADC token acquisition failed for %s", provider_name, exc_info=True)
+                        logger.debug(
+                            "ADC token acquisition failed for %s",
+                            provider_name,
+                            exc_info=True,
+                        )
                         return None
                 elif cfg.auth_type == "none":
                     api_key = ""
@@ -285,7 +308,9 @@ def _find_and_setup_provider(model: str) -> str | None:
                         return None
                 else:
                     return None
-                setup_custom_provider(provider_name, base_url, api_key, cfg.api_protocol, cfg.models)
+                setup_custom_provider(
+                    provider_name, base_url, api_key, cfg.api_protocol, cfg.models
+                )
                 return provider_name
     except ImportError:
         logger.debug("benchflow.agents.providers not available, using env var fallback")
@@ -366,57 +391,68 @@ def parse_session_jsonl(path: Path, session_id: str) -> list[dict]:
                         block_type = block.get("type", "")
 
                         if block_type in ("text",):
-                            updates.append({
-                                "jsonrpc": "2.0",
-                                "method": "session/update",
-                                "params": {
-                                    "sessionId": session_id,
-                                    "update": {
-                                        "sessionUpdate": "text_update",
-                                        "text": block.get("text", ""),
+                            updates.append(
+                                {
+                                    "jsonrpc": "2.0",
+                                    "method": "session/update",
+                                    "params": {
+                                        "sessionId": session_id,
+                                        "update": {
+                                            "sessionUpdate": "text_update",
+                                            "text": block.get("text", ""),
+                                        },
                                     },
-                                },
-                            })
+                                }
+                            )
 
                         elif block_type in ("tool_use", "toolCall"):
                             _input = block.get("input", block.get("arguments", {}))
-                            _title = _input.get("command", _input.get("description", block.get("name", "tool")))
-                            updates.append({
-                                "jsonrpc": "2.0",
-                                "method": "session/update",
-                                "params": {
-                                    "sessionId": session_id,
-                                    "update": {
-                                        "sessionUpdate": "tool_call",
-                                        "toolCallId": block.get("id", ""),
-                                        "kind": block.get("name", "tool"),
-                                        "title": _title,
-                                        "status": "completed",
-                                        "content": [
-                                            {
-                                                "type": "content",
-                                                "content": {
-                                                    "type": "text",
-                                                    "text": json.dumps(_input)[:500],
-                                                },
-                                            }
-                                        ],
+                            _title = _input.get(
+                                "command",
+                                _input.get("description", block.get("name", "tool")),
+                            )
+                            updates.append(
+                                {
+                                    "jsonrpc": "2.0",
+                                    "method": "session/update",
+                                    "params": {
+                                        "sessionId": session_id,
+                                        "update": {
+                                            "sessionUpdate": "tool_call",
+                                            "toolCallId": block.get("id", ""),
+                                            "kind": block.get("name", "tool"),
+                                            "title": _title,
+                                            "status": "completed",
+                                            "content": [
+                                                {
+                                                    "type": "content",
+                                                    "content": {
+                                                        "type": "text",
+                                                        "text": json.dumps(_input)[
+                                                            :500
+                                                        ],
+                                                    },
+                                                }
+                                            ],
+                                        },
                                     },
-                                },
-                            })
+                                }
+                            )
 
                         elif block_type == "thinking":
-                            updates.append({
-                                "jsonrpc": "2.0",
-                                "method": "session/update",
-                                "params": {
-                                    "sessionId": session_id,
-                                    "update": {
-                                        "sessionUpdate": "agent_thought",
-                                        "text": block.get("thinking", ""),
+                            updates.append(
+                                {
+                                    "jsonrpc": "2.0",
+                                    "method": "session/update",
+                                    "params": {
+                                        "sessionId": session_id,
+                                        "update": {
+                                            "sessionUpdate": "agent_thought",
+                                            "text": block.get("thinking", ""),
+                                        },
                                     },
-                                },
-                            })
+                                }
+                            )
 
                 elif role == "toolResult":
                     # Emit as tool_call_update (status=completed) to update
@@ -425,33 +461,38 @@ def parse_session_jsonl(path: Path, session_id: str) -> list[dict]:
                     result_text = ""
                     if isinstance(content, list):
                         result_text = " ".join(
-                            b.get("text", "") for b in content
+                            b.get("text", "")
+                            for b in content
                             if isinstance(b, dict) and b.get("type") == "text"
                         )
                     elif isinstance(content, str):
                         result_text = content
 
-                    updates.append({
-                        "jsonrpc": "2.0",
-                        "method": "session/update",
-                        "params": {
-                            "sessionId": session_id,
-                            "update": {
-                                "sessionUpdate": "tool_call_update",
-                                "toolCallId": tool_id,
-                                "status": "completed",
-                                "content": [
-                                    {
-                                        "type": "content",
-                                        "content": {
-                                            "type": "text",
-                                            "text": result_text[:_TOOL_RESULT_TRUNCATE],
-                                        },
-                                    }
-                                ],
+                    updates.append(
+                        {
+                            "jsonrpc": "2.0",
+                            "method": "session/update",
+                            "params": {
+                                "sessionId": session_id,
+                                "update": {
+                                    "sessionUpdate": "tool_call_update",
+                                    "toolCallId": tool_id,
+                                    "status": "completed",
+                                    "content": [
+                                        {
+                                            "type": "content",
+                                            "content": {
+                                                "type": "text",
+                                                "text": result_text[
+                                                    :_TOOL_RESULT_TRUNCATE
+                                                ],
+                                            },
+                                        }
+                                    ],
+                                },
                             },
-                        },
-                    })
+                        }
+                    )
 
     except Exception:
         logger.debug("Failed to parse session JSONL for trajectory", exc_info=True)
@@ -476,28 +517,32 @@ def main():
         params = msg.get("params", {})
 
         if method == "initialize":
-            send({
-                "jsonrpc": "2.0",
-                "id": req_id,
-                "result": {
-                    "protocolVersion": 1,
-                    "agentCapabilities": {
-                        "loadSession": False,
-                        "promptCapabilities": {"image": False, "audio": False},
+            send(
+                {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "result": {
+                        "protocolVersion": 1,
+                        "agentCapabilities": {
+                            "loadSession": False,
+                            "promptCapabilities": {"image": False, "audio": False},
+                        },
+                        "agentInfo": {"name": "openclaw", "version": "1.0"},
                     },
-                    "agentInfo": {"name": "openclaw", "version": "1.0"},
-                },
-            })
+                }
+            )
 
         elif method == "session/new":
             cwd = params.get("cwd", "/app")
             setup_workspace(cwd)
             session_id = "openclaw-shim"
-            send({
-                "jsonrpc": "2.0",
-                "id": req_id,
-                "result": {"sessionId": session_id},
-            })
+            send(
+                {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "result": {"sessionId": session_id},
+                }
+            )
 
         elif method == "session/set_model":
             model = params.get("modelId", "")
@@ -526,7 +571,8 @@ def main():
 
                 subprocess.run(
                     ["openclaw", "config", "set", "agents.defaults.model", model],
-                    capture_output=True, timeout=10,
+                    capture_output=True,
+                    timeout=10,
                 )
 
             # Apply model generation parameters from env vars
@@ -540,7 +586,8 @@ def main():
                 if val:
                     subprocess.run(
                         ["openclaw", "config", "set", config_path, val],
-                        capture_output=True, timeout=10,
+                        capture_output=True,
+                        timeout=10,
                     )
 
             send({"jsonrpc": "2.0", "id": req_id, "result": {}})
@@ -555,8 +602,16 @@ def main():
             try:
                 result = subprocess.run(
                     [
-                        "openclaw", "agent", "--local", "--agent", "main",
-                        "--json", "-m", text, "--timeout", "900",
+                        "openclaw",
+                        "agent",
+                        "--local",
+                        "--agent",
+                        "main",
+                        "--json",
+                        "-m",
+                        text,
+                        "--timeout",
+                        "900",
                     ],
                     capture_output=True,
                     text=True,
@@ -566,17 +621,19 @@ def main():
 
                 # Surface stderr as agent thought (for debugging)
                 if result.stderr and result.stderr.strip():
-                    send({
-                        "jsonrpc": "2.0",
-                        "method": "session/update",
-                        "params": {
-                            "sessionId": session_id,
-                            "update": {
-                                "sessionUpdate": "agent_thought",
-                                "text": f"[openclaw stderr]\n{result.stderr[:_DIAG_TRUNCATE]}",
+                    send(
+                        {
+                            "jsonrpc": "2.0",
+                            "method": "session/update",
+                            "params": {
+                                "sessionId": session_id,
+                                "update": {
+                                    "sessionUpdate": "agent_thought",
+                                    "text": f"[openclaw stderr]\n{result.stderr[:_DIAG_TRUNCATE]}",
+                                },
                             },
-                        },
-                    })
+                        }
+                    )
 
                 # Parse openclaw's session JSONL for full trajectory
                 # Extract session ID from JSON output (may be multi-line)
@@ -586,12 +643,15 @@ def main():
                     stdout = result.stdout.strip()
                     if stdout:
                         response_data = json.loads(stdout)
-                        oc_session_id = response_data.get("meta", {}).get(
-                            "agentMeta", {}
-                        ).get("sessionId")
+                        oc_session_id = (
+                            response_data.get("meta", {})
+                            .get("agentMeta", {})
+                            .get("sessionId")
+                        )
                 except (json.JSONDecodeError, KeyError, TypeError):
                     # Try finding sessionId in raw output
                     import re
+
                     m = re.search(r'"sessionId"\s*:\s*"([^"]+)"', result.stdout or "")
                     if m:
                         oc_session_id = m.group(1)
@@ -616,7 +676,9 @@ def main():
                         key=lambda f: f.stat().st_mtime,
                         reverse=True,
                     ):
-                        if jf.name not in ("sessions.json",) and not jf.name.endswith(".lock"):
+                        if jf.name not in ("sessions.json",) and not jf.name.endswith(
+                            ".lock"
+                        ):
                             session_jsonl = jf
                             break
 
@@ -631,39 +693,49 @@ def main():
                         response = json.loads(result.stdout)
                         agent_text = response.get("payloads", [{}])[0].get("text", "")
                     except (json.JSONDecodeError, IndexError, KeyError):
-                        agent_text = result.stdout[:_DIAG_TRUNCATE] if result.stdout else ""
+                        agent_text = (
+                            result.stdout[:_DIAG_TRUNCATE] if result.stdout else ""
+                        )
 
                     if agent_text:
-                        send({
-                            "jsonrpc": "2.0",
-                            "method": "session/update",
-                            "params": {
-                                "sessionId": session_id,
-                                "update": {
-                                    "sessionUpdate": "text_update",
-                                    "text": agent_text,
+                        send(
+                            {
+                                "jsonrpc": "2.0",
+                                "method": "session/update",
+                                "params": {
+                                    "sessionId": session_id,
+                                    "update": {
+                                        "sessionUpdate": "text_update",
+                                        "text": agent_text,
+                                    },
                                 },
-                            },
-                        })
+                            }
+                        )
 
-                send({
-                    "jsonrpc": "2.0",
-                    "id": req_id,
-                    "result": {"stopReason": "end_turn"},
-                })
+                send(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "result": {"stopReason": "end_turn"},
+                    }
+                )
 
             except subprocess.TimeoutExpired:
-                send({
-                    "jsonrpc": "2.0",
-                    "id": req_id,
-                    "result": {"stopReason": "end_turn"},
-                })
+                send(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "result": {"stopReason": "end_turn"},
+                    }
+                )
             except Exception as e:
-                send({
-                    "jsonrpc": "2.0",
-                    "id": req_id,
-                    "error": {"code": -32603, "message": str(e)},
-                })
+                send(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "error": {"code": -32603, "message": str(e)},
+                    }
+                )
 
         elif method == "session/cancel":
             send({"jsonrpc": "2.0", "id": req_id, "result": {}})
@@ -671,11 +743,15 @@ def main():
         elif method == "session/request_permission":
             options = params.get("options", [])
             option_id = options[0].get("optionId", "default") if options else "default"
-            send({
-                "jsonrpc": "2.0",
-                "id": req_id,
-                "result": {"outcome": {"outcome": "selected", "optionId": option_id}},
-            })
+            send(
+                {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "result": {
+                        "outcome": {"outcome": "selected", "optionId": option_id}
+                    },
+                }
+            )
 
         else:
             if req_id:

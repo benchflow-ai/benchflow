@@ -102,7 +102,9 @@ class ACPClient:
                 try:
                     await self._handle_notification(msg)
                 except Exception as e:
-                    logger.warning(f"Error handling notification {msg.get('method')}: {e}")
+                    logger.warning(
+                        f"Error handling notification {msg.get('method')}: {e}"
+                    )
                 continue
 
             # It's a request from the agent (has id + method)
@@ -111,7 +113,9 @@ class ACPClient:
                 try:
                     await self._handle_agent_request(msg)
                 except Exception as e:
-                    logger.warning(f"Error handling agent request {msg.get('method')}: {e}")
+                    logger.warning(
+                        f"Error handling agent request {msg.get('method')}: {e}"
+                    )
                 continue
 
             logger.debug(f"ACPClient ignoring unknown message: {msg}")
@@ -198,7 +202,9 @@ class ACPClient:
             )
         return self._session
 
-    async def session_load(self, session_id: str, cwd: str = "/app") -> ACPSession:  # ACP spec; unused until session resume is wired
+    async def session_load(
+        self, session_id: str, cwd: str = "/app"
+    ) -> ACPSession:  # ACP spec; unused until session resume is wired
         """Load an existing session (used by agents like openclaw that need pre-created sessions)."""
         params = {"sessionId": session_id, "cwd": cwd, "mcpServers": []}
         result = await self._send_request("session/load", params)

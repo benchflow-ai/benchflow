@@ -73,9 +73,13 @@ def render_turn(events: list[dict], turn_number: int, prompt: str = "") -> str:
                             content_preview = args["content"][:_CONTENT_PREVIEW]
                             arg_display += f"\n{html.escape(content_preview)}{'...' if len(args['content']) > _CONTENT_PREVIEW else ''}"
                     elif name == "Agent":
-                        arg_display = html.escape(str(args.get("prompt", ""))[:_CONTENT_PREVIEW])
+                        arg_display = html.escape(
+                            str(args.get("prompt", ""))[:_CONTENT_PREVIEW]
+                        )
                     else:
-                        arg_display = html.escape(json.dumps(args, indent=2)[:_ARGS_PREVIEW])
+                        arg_display = html.escape(
+                            json.dumps(args, indent=2)[:_ARGS_PREVIEW]
+                        )
 
                     parts.append(
                         f'<div class="tool">'

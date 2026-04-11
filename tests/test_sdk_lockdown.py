@@ -7,7 +7,6 @@ import pytest
 
 from benchflow.sdk import (
     SDK,
-    _DEFAULT_LOCKED,
     _resolve_locked_paths,
     _validate_locked_path,
 )
@@ -17,31 +16,51 @@ from benchflow.sdk import (
 # _validate_locked_path
 # ---------------------------------------------------------------------------
 
+
 class TestValidateLockedPath:
     """Path validation rejects injection and traversal."""
 
-    @pytest.mark.parametrize("p", [
-        "/solution", "/tests", "/logs/verifier", "/app-foo", "/data", "/app-*",
-    ])
+    @pytest.mark.parametrize(
+        "p",
+        [
+            "/solution",
+            "/tests",
+            "/logs/verifier",
+            "/app-foo",
+            "/data",
+            "/app-*",
+        ],
+    )
     def test_valid_paths(self, p):
         _validate_locked_path(p)  # should not raise
 
-    @pytest.mark.parametrize("bad,match", [
-        ("$(rm -rf /)", "must be absolute"),
-        ("/solution; rm -rf /", None),
-        ("/solution/`whoami`", None),
-        ("/solution/../etc", None),
-        ("/solution/./foo", "normalizes to"),
-        ("//solution//foo", None),
-        ("/solution/", None),
-        ("solution", "must be absolute"),
-        ("/solution | cat /etc/passwd", "must be absolute"),
-        ("/", None),
-    ], ids=[
-        "dollar_injection", "semicolon", "backtick",
-        "dotdot_traversal", "dot_normpath", "double_slash",
-        "trailing_slash", "relative", "pipe", "bare_root",
-    ])
+    @pytest.mark.parametrize(
+        "bad,match",
+        [
+            ("$(rm -rf /)", "must be absolute"),
+            ("/solution; rm -rf /", None),
+            ("/solution/`whoami`", None),
+            ("/solution/../etc", None),
+            ("/solution/./foo", "normalizes to"),
+            ("//solution//foo", None),
+            ("/solution/", None),
+            ("solution", "must be absolute"),
+            ("/solution | cat /etc/passwd", "must be absolute"),
+            ("/", None),
+        ],
+        ids=[
+            "dollar_injection",
+            "semicolon",
+            "backtick",
+            "dotdot_traversal",
+            "dot_normpath",
+            "double_slash",
+            "trailing_slash",
+            "relative",
+            "pipe",
+            "bare_root",
+        ],
+    )
     def test_rejects_invalid(self, bad, match):
         with pytest.raises(ValueError, match=match):
             _validate_locked_path(bad)
@@ -50,6 +69,7 @@ class TestValidateLockedPath:
 # ---------------------------------------------------------------------------
 # _resolve_locked_paths
 # ---------------------------------------------------------------------------
+
 
 class TestResolveLockedPaths:
     """Effective path resolution logic."""
@@ -81,6 +101,7 @@ class TestResolveLockedPaths:
 # ---------------------------------------------------------------------------
 # SDK._lockdown_paths
 # ---------------------------------------------------------------------------
+
 
 class TestLockdownPaths:
     """_lockdown_paths sends correct commands to env."""
@@ -126,6 +147,7 @@ class TestLockdownPaths:
 # JobConfig YAML parsing
 # ---------------------------------------------------------------------------
 
+
 class TestJobConfigYAML:
     """sandbox_locked_paths round-trips from YAML."""
 
@@ -141,19 +163,18 @@ class TestJobConfigYAML:
         (tmp_path / "tasks").mkdir()
 
         from benchflow.job import Job
+
         job = Job.from_yaml(tmp_path / "config.yaml")
         assert job._config.sandbox_locked_paths == ["/tasks", "/data"]
         assert job._config.sandbox_user == "agent"
 
     def test_native_yaml_without_locked_paths(self, tmp_path):
-        yaml_content = (
-            "tasks_dir: tasks\n"
-            "sandbox_user: agent\n"
-        )
+        yaml_content = "tasks_dir: tasks\nsandbox_user: agent\n"
         (tmp_path / "config.yaml").write_text(yaml_content)
         (tmp_path / "tasks").mkdir()
 
         from benchflow.job import Job
+
         job = Job.from_yaml(tmp_path / "config.yaml")
         assert job._config.sandbox_locked_paths is None
 
@@ -171,6 +192,7 @@ class TestJobConfigYAML:
         (tmp_path / "tasks").mkdir()
 
         from benchflow.job import Job
+
         job = Job.from_yaml(tmp_path / "config.yaml")
         assert job._config.sandbox_locked_paths == ["/data"]
         assert job._config.sandbox_user == "agent"
@@ -181,6 +203,7 @@ class TestJobConfigYAML:
         (tmp_path / "tasks").mkdir()
 
         from benchflow.job import Job
+
         job = Job.from_yaml(tmp_path / "config.yaml")
         assert job._config.sandbox_user == "agent"
 
@@ -188,6 +211,7 @@ class TestJobConfigYAML:
 # ---------------------------------------------------------------------------
 # _write_config records locked paths
 # ---------------------------------------------------------------------------
+
 
 class TestWriteConfigRecordsPaths:
     """config.json includes effective locked paths."""
@@ -217,12 +241,14 @@ class TestWriteConfigRecordsPaths:
 # Sandbox user defaults and warnings
 # ---------------------------------------------------------------------------
 
+
 class TestSandboxUserWarnings:
     """Default sandbox_user and root warnings."""
 
     def test_default_is_agent(self):
         """Default sandbox_user is 'agent', not None."""
         import inspect
+
         sig = inspect.signature(SDK.run)
         assert sig.parameters["sandbox_user"].default == "agent"
 
@@ -230,6 +256,7 @@ class TestSandboxUserWarnings:
 # ---------------------------------------------------------------------------
 # Privilege dropping command construction
 # ---------------------------------------------------------------------------
+
 
 class TestPrivDropCommand:
     """SDK._build_priv_drop_cmd — setpriv/su-l command generation."""
@@ -247,6 +274,7 @@ class TestPrivDropCommand:
 
     def test_inner_command_is_shlex_quoted(self):
         import shlex
+
         cmd = SDK._build_priv_drop_cmd("agent --flag value", "agent")
         inner = "export HOME=/home/agent && cd /home/agent && agent --flag value"
         assert shlex.quote(inner) in cmd

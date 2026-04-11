@@ -1,9 +1,5 @@
 """Tests for exclude_tasks, agent_env, and sandbox_user in Job config."""
 
-from pathlib import Path
-
-import pytest
-
 from benchflow.job import Job, JobConfig
 
 
@@ -49,7 +45,7 @@ class TestExcludeTasksFilter:
 
 class TestNativeYamlNewFields:
     def test_exclude_parsed(self, tmp_path):
-        tasks_dir = _make_tasks(tmp_path)
+        _make_tasks(tmp_path)
         config = tmp_path / "config.yaml"
         config.write_text("""
 tasks_dir: tasks
@@ -72,7 +68,10 @@ agent_env:
   OTHER_KEY: other-value
 """)
         job = Job.from_yaml(config)
-        assert job._config.agent_env == {"MY_KEY": "my-value", "OTHER_KEY": "other-value"}
+        assert job._config.agent_env == {
+            "MY_KEY": "my-value",
+            "OTHER_KEY": "other-value",
+        }
 
     def test_sandbox_user_parsed(self, tmp_path):
         _make_tasks(tmp_path)

@@ -10,7 +10,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from benchflow._scoring import classify_error, classify_verifier_error, pass_rate, pass_rate_excl_errors
+from benchflow._scoring import (
+    classify_error,
+    classify_verifier_error,
+    pass_rate,
+    pass_rate_excl_errors,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -90,13 +95,25 @@ class BenchmarkMetrics:
     def avg_tool_calls(self) -> float:
         """Average tool calls per completed task."""
         completed = [t for t in self.tasks if not t.errored and not t.verifier_errored]
-        return sum(t.n_tool_calls for t in completed) / len(completed) if completed else 0.0
+        return (
+            sum(t.n_tool_calls for t in completed) / len(completed)
+            if completed
+            else 0.0
+        )
 
     @property
     def avg_duration(self) -> float:
         """Average duration per completed task (seconds)."""
-        completed = [t for t in self.tasks if not t.errored and not t.verifier_errored and t.duration_sec > 0]
-        return sum(t.duration_sec for t in completed) / len(completed) if completed else 0.0
+        completed = [
+            t
+            for t in self.tasks
+            if not t.errored and not t.verifier_errored and t.duration_sec > 0
+        ]
+        return (
+            sum(t.duration_sec for t in completed) / len(completed)
+            if completed
+            else 0.0
+        )
 
     @property
     def error_breakdown(self) -> dict[str, int]:
@@ -142,7 +159,9 @@ class BenchmarkMetrics:
             "passed_tasks": sorted(t.task_name for t in self.tasks if t.passed),
             "failed_tasks": sorted(t.task_name for t in self.tasks if t.failed),
             "errored_tasks": sorted(t.task_name for t in self.tasks if t.errored),
-            "verifier_errored_tasks": sorted(t.task_name for t in self.tasks if t.verifier_errored),
+            "verifier_errored_tasks": sorted(
+                t.task_name for t in self.tasks if t.verifier_errored
+            ),
         }
 
 
@@ -169,8 +188,10 @@ def collect_metrics(
             elif r.get("rewards") is not None and best[task].get("rewards") is None:
                 best[task] = r
             elif (
-                r.get("rewards") and best[task].get("rewards")
-                and r["rewards"].get("reward", 0) > best[task]["rewards"].get("reward", 0)
+                r.get("rewards")
+                and best[task].get("rewards")
+                and r["rewards"].get("reward", 0)
+                > best[task]["rewards"].get("reward", 0)
             ):
                 best[task] = r
         except Exception as e:
@@ -183,22 +204,25 @@ def collect_metrics(
         duration = 0.0
         try:
             from datetime import datetime
+
             started = datetime.fromisoformat(r["started_at"])
             finished = datetime.fromisoformat(r["finished_at"])
             duration = (finished - started).total_seconds()
         except (KeyError, ValueError):
             logger.debug("Could not compute duration for task %s", task_name)
 
-        tasks.append(TaskMetrics(
-            task_name=task_name,
-            reward=reward,
-            n_tool_calls=r.get("n_tool_calls", 0),
-            n_prompts=r.get("n_prompts", 0),
-            error=r.get("error"),
-            verifier_error=r.get("verifier_error"),
-            duration_sec=duration,
-            agent_name=r.get("agent_name", ""),
-        ))
+        tasks.append(
+            TaskMetrics(
+                task_name=task_name,
+                reward=reward,
+                n_tool_calls=r.get("n_tool_calls", 0),
+                n_prompts=r.get("n_prompts", 0),
+                error=r.get("error"),
+                verifier_error=r.get("verifier_error"),
+                duration_sec=duration,
+                agent_name=r.get("agent_name", ""),
+            )
+        )
 
     return BenchmarkMetrics(
         benchmark=benchmark,

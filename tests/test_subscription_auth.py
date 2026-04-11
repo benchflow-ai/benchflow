@@ -22,7 +22,9 @@ class TestSubscriptionAuthDataclass:
             replaces_env="ANTHROPIC_API_KEY",
             detect_file="~/.claude/.credentials.json",
             files=[
-                HostAuthFile("~/.claude/.credentials.json", "{home}/.claude/.credentials.json"),
+                HostAuthFile(
+                    "~/.claude/.credentials.json", "{home}/.claude/.credentials.json"
+                ),
             ],
         )
         assert sa.replaces_env == "ANTHROPIC_API_KEY"
@@ -112,6 +114,7 @@ def _patch_expanduser(monkeypatch, tmp_path):
 class TestResolveAgentEnvSubscription:
     def _resolve(self, agent="claude-agent-acp", model=None, agent_env=None):
         from benchflow.sdk import SDK
+
         return SDK._resolve_agent_env(agent, model, agent_env)
 
     def test_api_key_present_no_subscription_marker(self):
@@ -124,7 +127,12 @@ class TestResolveAgentEnvSubscription:
 
     def test_subscription_auth_detected(self, monkeypatch, tmp_path):
         """When host auth file exists and no API key, subscription auth is used."""
-        for k in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY"):
+        for k in (
+            "ANTHROPIC_API_KEY",
+            "OPENAI_API_KEY",
+            "GOOGLE_API_KEY",
+            "GEMINI_API_KEY",
+        ):
             monkeypatch.delenv(k, raising=False)
         creds_dir = tmp_path / ".claude"
         creds_dir.mkdir()
@@ -139,7 +147,12 @@ class TestResolveAgentEnvSubscription:
 
     def test_no_auth_file_raises(self, monkeypatch, tmp_path):
         """When no API key and no host auth file, raises ValueError."""
-        for k in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY"):
+        for k in (
+            "ANTHROPIC_API_KEY",
+            "OPENAI_API_KEY",
+            "GOOGLE_API_KEY",
+            "GEMINI_API_KEY",
+        ):
             monkeypatch.delenv(k, raising=False)
         _patch_expanduser(monkeypatch, tmp_path)
 

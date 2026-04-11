@@ -52,13 +52,17 @@ class TestAgentCredentialFiles:
 
 class TestProviderCredentialFiles:
     def test_provider_config_has_field(self):
-        cfg = ProviderConfig(name="t", base_url="", api_protocol="", auth_type="api_key")
+        cfg = ProviderConfig(
+            name="t", base_url="", api_protocol="", auth_type="api_key"
+        )
         assert cfg.credential_files == []
 
     def test_vertex_providers_have_adc(self):
         for name in ("google-vertex", "anthropic-vertex"):
             cfg = PROVIDERS[name]
-            assert len(cfg.credential_files) == 1, f"{name} should have 1 credential_file"
+            assert len(cfg.credential_files) == 1, (
+                f"{name} should have 1 credential_file"
+            )
             cf = cfg.credential_files[0]
             assert cf["env_source"] == "GOOGLE_APPLICATION_CREDENTIALS_JSON"
             assert "gcloud" in cf["path"]

@@ -2,8 +2,7 @@
 
 import json
 import logging
-from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -54,8 +53,12 @@ class TestJobResult:
 
     def test_score_excl_errors(self):
         r = JobResult(
-            job_name="test", config=JobConfig(),
-            total=10, passed=5, failed=3, errored=2,
+            job_name="test",
+            config=JobConfig(),
+            total=10,
+            passed=5,
+            failed=3,
+            errored=2,
         )
         assert r.score_excl_errors == 5 / 8
 
@@ -69,10 +72,16 @@ class TestJobCounting:
 
         return {
             "passed": sum(1 for r in all_results.values() if extract_reward(r) == 1.0),
-            "failed": sum(1 for r in all_results.values()
-                         if extract_reward(r) is not None and extract_reward(r) != 1.0),
-            "errored": sum(1 for r in all_results.values()
-                          if r.get("error") and r.get("rewards") is None),
+            "failed": sum(
+                1
+                for r in all_results.values()
+                if extract_reward(r) is not None and extract_reward(r) != 1.0
+            ),
+            "errored": sum(
+                1
+                for r in all_results.values()
+                if r.get("error") and r.get("rewards") is None
+            ),
         }
 
     def test_basic_counting(self):
@@ -138,7 +147,9 @@ class TestRunTaskLoop:
     async def test_exhausts_retries(self, tmp_path):
         """SDK called 1 + max_retries times when all attempts fail with retryable error."""
         job, task_dir = self._make_job(tmp_path, max_retries=2)
-        fail_result = RunResult(task_name="task-a", error="Agent install failed (rc=1): boom")
+        fail_result = RunResult(
+            task_name="task-a", error="Agent install failed (rc=1): boom"
+        )
         job._sdk = AsyncMock()
         job._sdk.run = AsyncMock(return_value=fail_result)
 
@@ -150,7 +161,9 @@ class TestRunTaskLoop:
     async def test_non_retryable_exits_immediately(self, tmp_path):
         """Non-retryable error (timeout) exits after 1 attempt."""
         job, task_dir = self._make_job(tmp_path, max_retries=3)
-        timeout_result = RunResult(task_name="task-a", error="Agent timed out after 900.0s")
+        timeout_result = RunResult(
+            task_name="task-a", error="Agent timed out after 900.0s"
+        )
         job._sdk = AsyncMock()
         job._sdk.run = AsyncMock(return_value=timeout_result)
 
@@ -162,7 +175,9 @@ class TestRunTaskLoop:
     async def test_succeeds_on_retry(self, tmp_path):
         """SDK fails once then succeeds — returns success result."""
         job, task_dir = self._make_job(tmp_path, max_retries=2)
-        fail_result = RunResult(task_name="task-a", error="Agent install failed (rc=1): boom")
+        fail_result = RunResult(
+            task_name="task-a", error="Agent install failed (rc=1): boom"
+        )
         ok_result = RunResult(task_name="task-a", rewards={"reward": 1.0})
         job._sdk = AsyncMock()
         job._sdk.run = AsyncMock(side_effect=[fail_result, ok_result])
@@ -235,9 +250,12 @@ class TestJobResume:
         job = Job(tasks_dir=tasks_dir, jobs_dir=jobs_dir, config=cfg)
         # Patch _run_task so run() doesn't actually run anything real
         job._sdk = AsyncMock()
-        job._sdk.run = AsyncMock(return_value=RunResult(task_name="task-b", rewards={"reward": 1.0}))
+        job._sdk.run = AsyncMock(
+            return_value=RunResult(task_name="task-b", rewards={"reward": 1.0})
+        )
         with caplog.at_level(logging.WARNING):
             import asyncio
+
             asyncio.get_event_loop().run_until_complete(job.run())
         assert any("old-agent" in msg for msg in caplog.messages)
 
