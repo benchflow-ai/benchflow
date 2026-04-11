@@ -17,9 +17,9 @@ class TestResolveAgentEnv:
     """Tests for SDK._resolve_agent_env — env var resolution logic."""
 
     def _resolve(self, agent="claude-agent-acp", model=None, agent_env=None):
-        from benchflow.sdk import SDK
+        from benchflow._agent_env import resolve_agent_env
 
-        return SDK._resolve_agent_env(agent, model, agent_env)
+        return resolve_agent_env(agent, model, agent_env)
 
     def test_returns_dict(self):
         result = self._resolve(agent_env={"ANTHROPIC_API_KEY": "sk-test"})

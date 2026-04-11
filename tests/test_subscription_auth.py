@@ -112,9 +112,9 @@ def _patch_expanduser(monkeypatch, tmp_path):
 
 class TestResolveAgentEnvSubscription:
     def _resolve(self, agent="claude-agent-acp", model=None, agent_env=None):
-        from benchflow.sdk import SDK
+        from benchflow._agent_env import resolve_agent_env
 
-        return SDK._resolve_agent_env(agent, model, agent_env)
+        return resolve_agent_env(agent, model, agent_env)
 
     def test_api_key_present_no_subscription_marker(self):
         """When API key is provided, no subscription auth marker is set."""
