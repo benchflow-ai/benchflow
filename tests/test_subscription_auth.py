@@ -42,13 +42,9 @@ class TestAgentSubscriptionAuth:
         assert any("settings.json" in p for p in paths)
         assert any("google_accounts.json" in p for p in paths)
 
-    def test_openclaw_no_subscription_auth(self):
-        cfg = AGENTS["openclaw"]
-        assert cfg.subscription_auth is None
 
-    def test_pi_no_subscription_auth(self):
-        cfg = AGENTS["pi-acp"]
-        assert cfg.subscription_auth is None
+# Negative invariants ("agent X should NOT have subscription_auth") collapsed
+# into the consolidated tripwire in test_registry_invariants.py.
 
 
 # ── get_sandbox_home_dirs includes subscription auth dirs ──

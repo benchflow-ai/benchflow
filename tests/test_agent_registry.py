@@ -1,17 +1,16 @@
 """Tests for AgentConfig + ProviderConfig registry shape:
-env_mapping (BENCHFLOW_PROVIDER_* → agent-native vars) and credential_files."""
+env_mapping (BENCHFLOW_PROVIDER_* → agent-native vars) and credential_files.
+
+Negative invariants ("agent X should NOT have feature Y configured") live in
+test_registry_invariants.py — search there for the consolidated tripwire.
+"""
 
 from benchflow.agents.providers import PROVIDERS
-from benchflow.agents.registry import AGENTS, AgentConfig
+from benchflow.agents.registry import AGENTS
 
 
 class TestEnvMappingField:
     """env_mapping exists on AgentConfig and is populated for known agents."""
-
-    def test_agentconfig_has_env_mapping(self):
-        cfg = AgentConfig(name="t", install_cmd="", launch_cmd="")
-        assert hasattr(cfg, "env_mapping")
-        assert cfg.env_mapping == {}
 
     def test_claude_agent_has_mapping(self):
         cfg = AGENTS["claude-agent-acp"]
@@ -34,11 +33,6 @@ class TestEnvMappingField:
         assert cfg.env_mapping["BENCHFLOW_PROVIDER_BASE_URL"] == "GEMINI_API_BASE_URL"
         assert cfg.env_mapping["BENCHFLOW_PROVIDER_API_KEY"] == "GOOGLE_API_KEY"
 
-    def test_openclaw_no_mapping(self):
-        """Openclaw reads BENCHFLOW_PROVIDER_* directly via shim — no mapping needed."""
-        cfg = AGENTS["openclaw"]
-        assert cfg.env_mapping == {}
-
 
 class TestAgentCredentialFiles:
     def test_codex_has_auth_json(self):
@@ -49,14 +43,6 @@ class TestAgentCredentialFiles:
         assert ".codex/auth.json" in cf.path
         assert "{home}" in cf.path
         assert "{value}" in cf.template
-
-    def test_claude_no_credential_files(self):
-        cfg = AGENTS["claude-agent-acp"]
-        assert cfg.credential_files == []
-
-    def test_openclaw_no_credential_files(self):
-        cfg = AGENTS["openclaw"]
-        assert cfg.credential_files == []
 
 
 class TestProviderCredentialFiles:
