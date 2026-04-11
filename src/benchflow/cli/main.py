@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from datetime import UTC
 from pathlib import Path
 from typing import Annotated
 
@@ -373,7 +374,7 @@ def skills(
     ] = None,
 ) -> None:
     """List or install agent skills."""
-    from benchflow.skills import discover_skills, install_skill, DEFAULT_SKILLS_DIR
+    from benchflow.skills import DEFAULT_SKILLS_DIR, discover_skills, install_skill
 
     if install:
         target = directory or DEFAULT_SKILLS_DIR
@@ -442,7 +443,7 @@ def tasks_init(
             console.print("  solution/solve.sh")
     except FileExistsError as e:
         console.print(f"[red]{e}[/red]")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
 
 
 @tasks_app.command("check")
@@ -478,16 +479,16 @@ def cleanup(
     Lists and deletes sandboxes that were left running after eval runs.
     Only affects sandboxes older than --max-age minutes (default 1440 = 24h).
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     try:
         from daytona import Daytona
     except ImportError:
         console.print("[red]daytona SDK not installed[/red]")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
 
     d = Daytona()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     page = 1
     total_deleted = 0
     total_found = 0

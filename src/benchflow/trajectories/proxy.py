@@ -378,11 +378,11 @@ def _reconstruct_response(events: list[dict[str, Any]]) -> dict[str, Any]:
     for event in events:
         if "model" in event:
             openai_model = event["model"]
-        if "usage" in event and event["usage"]:
+        if event.get("usage"):
             openai_usage.update(event["usage"])
         for choice in event.get("choices", []):
             delta = choice.get("delta", {})
-            if "content" in delta and delta["content"]:
+            if delta.get("content"):
                 openai_content += delta["content"]
             for tc in delta.get("tool_calls", []):
                 idx = tc.get("index", 0)

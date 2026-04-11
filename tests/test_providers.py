@@ -10,11 +10,10 @@ from benchflow.agents.providers import (
     PROVIDERS,
     ProviderConfig,
     find_provider,
-    resolve_base_url,
     resolve_auth_env,
+    resolve_base_url,
     strip_provider_prefix,
 )
-
 
 # ── ProviderConfig dataclass ──
 
@@ -349,6 +348,7 @@ class TestSetupOpenaiAuth:
 
     def test_writes_key(self, home_dir, monkeypatch):
         import json
+
         from benchflow.agents.openclaw_acp_shim import setup_openai_auth
 
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test-123")
@@ -367,6 +367,7 @@ class TestSetupOpenaiAuth:
 
     def test_preserves_existing_providers(self, home_dir, monkeypatch):
         import json
+
         from benchflow.agents.openclaw_acp_shim import setup_openai_auth
 
         path = self._auth_path(home_dir)

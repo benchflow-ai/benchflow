@@ -183,15 +183,15 @@ def collect_metrics(
         try:
             r = json.loads(rfile.read_text())
             task = r["task_name"]
-            if task not in best:
-                best[task] = r
-            elif r.get("rewards") is not None and best[task].get("rewards") is None:
-                best[task] = r
-            elif (
-                r.get("rewards")
-                and best[task].get("rewards")
-                and r["rewards"].get("reward", 0)
-                > best[task]["rewards"].get("reward", 0)
+            if (
+                task not in best
+                or (r.get("rewards") is not None and best[task].get("rewards") is None)
+                or (
+                    r.get("rewards")
+                    and best[task].get("rewards")
+                    and r["rewards"].get("reward", 0)
+                    > best[task]["rewards"].get("reward", 0)
+                )
             ):
                 best[task] = r
         except Exception as e:

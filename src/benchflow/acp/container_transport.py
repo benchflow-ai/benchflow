@@ -39,7 +39,8 @@ class ContainerTransport(Transport):
         """Start the agent process inside the sandbox."""
         if self._agent_log_path:
             self._agent_log_path.parent.mkdir(parents=True, exist_ok=True)
-            self._agent_log_file = open(self._agent_log_path, "w")
+            # File handle outlives this method — closed in stop(). noqa: SIM115
+            self._agent_log_file = open(self._agent_log_path, "w")  # noqa: SIM115
         await self._cp.start(
             command=self._command,
             env=self._env,

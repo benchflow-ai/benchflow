@@ -3,7 +3,7 @@
 import asyncio
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from .types import LLMExchange, LLMRequest, LLMResponse, Trajectory
@@ -175,14 +175,14 @@ class OTelCollector:
         duration_ms = (end_ns - start_ns) / 1_000_000 if start_ns and end_ns else 0
 
         start_dt = (
-            datetime.fromtimestamp(start_ns / 1e9, tz=timezone.utc)
+            datetime.fromtimestamp(start_ns / 1e9, tz=UTC)
             if start_ns
-            else datetime.now(tz=timezone.utc)
+            else datetime.now(tz=UTC)
         )
         end_dt = (
-            datetime.fromtimestamp(end_ns / 1e9, tz=timezone.utc)
+            datetime.fromtimestamp(end_ns / 1e9, tz=UTC)
             if end_ns
-            else datetime.now(tz=timezone.utc)
+            else datetime.now(tz=UTC)
         )
 
         # Build request

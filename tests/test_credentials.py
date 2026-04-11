@@ -1,7 +1,7 @@
 """Tests for credential_files on AgentConfig and ProviderConfig."""
 
-from benchflow.agents.registry import AGENTS, AgentConfig, CredentialFile
 from benchflow.agents.providers import PROVIDERS, ProviderConfig
+from benchflow.agents.registry import AGENTS, AgentConfig, CredentialFile
 
 
 class TestCredentialFileDataclass:

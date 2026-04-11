@@ -1,6 +1,6 @@
 """Tests for Dockerfile dependency staging."""
 
-from benchflow._env_setup import stage_dockerfile_deps, _dep_local_name
+from benchflow._env_setup import _dep_local_name, stage_dockerfile_deps
 
 
 class TestDepLocalName:

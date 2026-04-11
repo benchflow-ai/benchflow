@@ -8,7 +8,6 @@ import json
 import sys
 from pathlib import Path
 
-
 _THINKING_PREVIEW = 600  # max chars for thinking block preview
 _ARGS_PREVIEW = 300  # max chars for tool args display
 _CONTENT_PREVIEW = 200  # max chars for write/agent content preview

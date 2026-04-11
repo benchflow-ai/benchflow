@@ -13,11 +13,14 @@ import logging
 import os
 import subprocess
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Callable
 
+import yaml
+
+from benchflow._models import RunResult
 from benchflow._scoring import (
     ACP_ERROR,
     INSTALL_FAILED,
@@ -27,10 +30,6 @@ from benchflow._scoring import (
     pass_rate,
     pass_rate_excl_errors,
 )
-
-import yaml
-
-from benchflow._models import RunResult
 from benchflow.sdk import SDK
 
 logger = logging.getLogger(__name__)
@@ -54,9 +53,7 @@ class RetryConfig:
             return True
         if self.retry_on_pipe and category == PIPE_CLOSED:
             return True
-        if self.retry_on_acp and category == ACP_ERROR:
-            return True
-        return False
+        return bool(self.retry_on_acp and category == ACP_ERROR)
 
 
 # Defaults: works out-of-the-box with `claude login` (subscription auth, no API key needed)

@@ -5,9 +5,9 @@ Used by SDK.run()'s pre_agent_hooks to auto-start services in the container.
 """
 
 import logging
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from pathlib import Path
-from collections.abc import Callable, Coroutine
 from typing import Any
 
 logger = logging.getLogger(__name__)

@@ -133,8 +133,8 @@ def _get_adc_token() -> str:
     """
     import base64
     import time
-    import urllib.request
     import urllib.parse
+    import urllib.request
 
     adc_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
     if not adc_path or not Path(adc_path).exists():

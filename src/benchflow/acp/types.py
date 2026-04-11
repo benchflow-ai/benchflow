@@ -5,7 +5,7 @@ the wire format (camelCase aliases) and are used by ``acp/client.py`` to
 construct and parse messages. Related: acp/session.py (consumes SessionUpdate).
 """
 
-from enum import Enum
+from enum import StrEnum
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 # --- Enums ---
 
 
-class StopReason(str, Enum):
+class StopReason(StrEnum):
     """Why the agent stopped generating after a prompt."""
 
     END_TURN = "end_turn"  # Agent finished normally
@@ -23,7 +23,7 @@ class StopReason(str, Enum):
     CANCELLED = "cancelled"  # Client cancelled the request
 
 
-class ToolKind(str, Enum):
+class ToolKind(StrEnum):
     """Category tag for tool calls, used for metrics and trajectory display."""
 
     OTHER = "other"
@@ -34,7 +34,7 @@ class ToolKind(str, Enum):
     WRITE = "write"
 
 
-class ToolCallStatus(str, Enum):
+class ToolCallStatus(StrEnum):
     """Lifecycle state of a tool call within a session."""
 
     PENDING = "pending"

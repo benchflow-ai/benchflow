@@ -4,8 +4,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from benchflow._env_setup import (
-    _inject_skills_into_dockerfile,
     _get_agent_skill_paths,
+    _inject_skills_into_dockerfile,
 )
 
 

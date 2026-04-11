@@ -108,7 +108,7 @@ __all__ = [
 
 def __getattr__(name: str):
     """Fall through to harbor for names not explicitly re-exported."""
-    import harbor  # noqa: F811
+    import harbor
 
     if hasattr(harbor, name):
         import warnings
