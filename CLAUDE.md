@@ -43,10 +43,21 @@ Requires Python >=3.12. Use `uv` for environment and dependency management:
 
 ```bash
 uv venv -p 3.12 .venv && uv pip install -e ".[dev]"
-.venv/bin/python -m pytest tests/     # unit tests (no Docker needed)
+.venv/bin/python -m pytest tests/                      # unit tests (no Docker needed)
+.venv/bin/python -m pytest -m live tests/test_smoke.py # e2e smoke (real Docker + API)
 ```
 
 Use Haiku 4.5 (`claude-haiku-4-5-20251001`) for smoke tests.
+
+The `live` marker is excluded by default (`addopts = "-m 'not live'"`). Live
+tests require docker daemon + (`ANTHROPIC_API_KEY` or `~/.claude/.credentials.json`)
+and skip otherwise via the `smoke_prereqs` fixture. Inside DinD devcontainers
+the test uses a workspace-rooted `jobs_dir` (see `smoke_jobs_dir` fixture)
+because pytest's `tmp_path` lives on the container overlay and can't be
+bind-mounted by the host docker daemon. To add a new live test: opt into
+`@pytest.mark.live`, depend on `smoke_prereqs` and `smoke_jobs_dir`, never
+call `resolve_agent_env` from the skip path (it's part of the system under
+test).
 
 ## Test policy
 
@@ -60,7 +71,7 @@ is acceptable. Write new tests in `tests/test_<module>.py`.
 - **Harbor private attributes** — `process.py` accesses `env._sandbox`, `env._strategy`, `env._docker_compose_paths`. No public APIs exist in Harbor. Blocked on upstream.
 
 ### P2 — Backlog
-- **No e2e integration tests** — SDK.run(), Job.run() have no end-to-end coverage with real environments. Job._run_task_loop has mocked async tests.
+- **e2e coverage partial** — `tests/test_smoke.py::test_hello_world_smoke` exercises `SDK.run()` end-to-end against claude-agent-acp + Haiku 4.5 (live-marker, local/manual). Still open: multi-agent (codex/pi/openclaw/gemini), SkillsBench tasks, CI wiring.
 - **Job resume config scoping** — warns on agent mismatch, but other config fields (model, concurrency) still unscoped.
 - **YAML config parity with Harbor** — job YAML covers agent, model, env vars, concurrency, retries, prompts, skills_dir, sandbox_user. Gap: Harbor task-level fields not overridable from job YAML (resource limits, timeouts, allow_internet).
 
