@@ -814,7 +814,7 @@ class TestScrapedTrajectoryTrust:
                     env_mapping={},
                 ),
             ),
-            patch.object(sdk, "_write_credential_files", new_callable=AsyncMock),
+            patch("benchflow.sdk.write_credential_files", new_callable=AsyncMock),
             patch.object(sdk, "_deploy_skills", new_callable=AsyncMock),
             *extra_patches,
         ]
