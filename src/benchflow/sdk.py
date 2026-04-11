@@ -1,8 +1,8 @@
 """benchflow SDK — unified run() that uses ACP inside Harbor environments.
 
-The whole framework is one ``SDK.run()`` call that orchestrates ~20 small
-private methods, each owning one phase of the run. This docstring is the
-map: read it before navigating the file.
+``SDK.run()`` is a thin orchestrator that calls into five phase modules.
+Each phase module owns one slice of the run loop and is independently
+greppable. This docstring is the map: read it before navigating the file.
 
 Run loop (SDK.run, top to bottom)
 ---------------------------------
@@ -11,12 +11,12 @@ Run loop (SDK.run, top to bottom)
 
     ┌─ SETUP (host) ──────────────────────────────────────────────┐
     │  _init_trial            task, trial_dir, paths, names        │
-    │  _resolve_agent_env     env vars: inherit, mirror, vertex,   │
+    │  resolve_agent_env      env vars: inherit, mirror, vertex,   │  ← _agent_env
     │                         subscription auth detection          │
     │  _resolve_prompts       prompt list (instruction.md fallback)│
-    │  stage_dockerfile_deps  COPY rewrites for context_root       │
-    │  _inject_skills_…       Dockerfile skill mount               │
-    │  _create_environment    Docker or Daytona, not yet started   │
+    │  stage_dockerfile_deps  COPY rewrites for context_root       │  ← _env_setup
+    │  _inject_skills_…       Dockerfile skill mount               │  ← _env_setup
+    │  _create_environment    Docker or Daytona, not yet started   │  ← _env_setup
     │  _write_config          config.json → trial_dir              │
     └──────────────────────────────────────────────────────────────┘
     ┌─ START (sandbox) ───────────────────────────────────────────┐
@@ -24,28 +24,44 @@ Run loop (SDK.run, top to bottom)
     │  pre_agent_hooks        user callbacks (services, etc.)      │
     └──────────────────────────────────────────────────────────────┘
     ┌─ AGENT (oracle: _run_oracle and skip everything below) ─────┐
-    │  _install_agent             registry-driven install_cmd      │
-    │  _write_credential_files    AgentConfig.credential_files     │
-    │  _upload_subscription_auth  if host login files detected     │
-    │  _setup_sandbox_user        non-root user + path lockdown    │
-    │  _deploy_skills             symlink skills into agent paths  │
-    │  _lockdown_paths            chmod -r on solution / tests     │
-    │  _connect_acp               stdio pipe + ACP initialize/new  │
-    │  _execute_prompts           multi-turn session/prompt loop   │
+    │  install_agent             registry-driven install_cmd      │  ← _agent_setup
+    │  write_credential_files    AgentConfig.credential_files     │  ← _credentials
+    │  upload_subscription_auth  if host login files detected     │  ← _credentials
+    │  setup_sandbox_user        non-root user + path lockdown    │  ← _sandbox
+    │  deploy_skills             symlink skills into agent paths  │  ← _agent_setup
+    │  lockdown_paths            chmod -r on solution / tests     │  ← _sandbox
+    │  connect_acp               stdio pipe + ACP initialize/new  │  ← _acp_run
+    │  execute_prompts           multi-turn session/prompt loop   │  ← _acp_run
     └──────────────────────────────────────────────────────────────┘
     ┌─ VERIFY ────────────────────────────────────────────────────┐
     │  (fallback) _scrape_agent_trajectory  if ACP captured none   │
     │             — labeled trajectory_source="scraped" UNTRUSTED  │
-    │  _harden_before_verify  permissions reset for verifier root  │
+    │  harden_before_verify  permissions reset for verifier root   │  ← _sandbox
     │  _verify                Harbor verifier → rewards            │
     │  _build_result          RunResult + result.json + timing     │
     └──────────────────────────────────────────────────────────────┘
     finally: env.stop()
 
+Phase modules (extracted from sdk.py — see refactor branch for the arc)
+-----------------------------------------------------------------------
+- ``_agent_env``    env var resolution: auto-inherit, vertex ADC, provider
+                    BENCHFLOW_PROVIDER_*, env_mapping, subscription auth
+- ``_credentials``  credential file writing: upload_credential, agent +
+                    provider credential_files, gemini vertex settings,
+                    upload_subscription_auth
+- ``_sandbox``      sandbox user creation, privilege drop (setpriv/su),
+                    path lockdown, verifier hardening + VERIFIER_ENV /
+                    CLEANUP_CMD constants
+- ``_acp_run``      ACP transport bring-up + the multi-turn prompt loop.
+                    Imports ``build_priv_drop_cmd`` from ``_sandbox`` —
+                    the only allowed horizontal phase-to-phase import.
+- ``_agent_setup``  install_agent (registry-driven) + deploy_skills
+                    (runtime upload + per-agent distribution)
+
 Support modules
 ---------------
 - ``_env_setup``    Dockerfile staging, skills injection, DinD patching,
-                    ``_create_environment``, ``_resolve_locked_paths``
+                    ``_create_environment``
 - ``_trajectory``   ACP-native + agent-scraped trajectory capture
 - ``_models``       ``RunResult``, ``AgentInstallError``, ``AgentTimeoutError``
 - ``_scoring``      pure functions: ``extract_reward``,
@@ -57,7 +73,7 @@ Support modules
 
 Critical invariants
 -------------------
-- The phases above run in strict order. Methods named ``_resolve_*`` are pure
+- The phases above run in strict order. Functions in ``_agent_env`` are pure
   and can be called in tests independently; everything from
   ``_start_env_and_upload`` onward assumes a live container and ordered setup.
 - Trajectory source is *labeled*, not deleted. ``trajectory_source`` is one of
