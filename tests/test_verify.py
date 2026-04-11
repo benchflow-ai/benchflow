@@ -804,9 +804,9 @@ class TestScrapedTrajectoryTrust:
         """Apply shared + extra patches for SDK.run() internals."""
         patches = [
             patch("benchflow.sdk._create_environment", return_value=mock_env),
-            patch.object(
-                sdk,
-                "_install_agent",
+            patch(
+                "benchflow.sdk.install_agent",
+                new_callable=AsyncMock,
                 return_value=MagicMock(
                     credential_files={},
                     home_dirs=[],
@@ -815,7 +815,7 @@ class TestScrapedTrajectoryTrust:
                 ),
             ),
             patch("benchflow.sdk.write_credential_files", new_callable=AsyncMock),
-            patch.object(sdk, "_deploy_skills", new_callable=AsyncMock),
+            patch("benchflow.sdk.deploy_skills", new_callable=AsyncMock),
             *extra_patches,
         ]
         with contextlib.ExitStack() as stack:

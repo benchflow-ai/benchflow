@@ -73,7 +73,6 @@ Critical invariants
 import asyncio
 import json
 import logging
-import shlex
 from datetime import datetime
 from pathlib import Path
 
@@ -83,6 +82,7 @@ from harbor.verifier.verifier import Verifier
 
 from benchflow._acp_run import connect_acp, execute_prompts
 from benchflow._agent_env import resolve_agent_env
+from benchflow._agent_setup import deploy_skills, install_agent
 from benchflow._credentials import (
     upload_subscription_auth,
     write_credential_files,
@@ -93,7 +93,7 @@ from benchflow._env_setup import (
     _patch_harbor_dind,
     stage_dockerfile_deps,
 )
-from benchflow._models import AgentInstallError, RunResult
+from benchflow._models import RunResult
 from benchflow._sandbox import (
     _resolve_locked_paths,
     harden_before_verify,
@@ -105,12 +105,7 @@ from benchflow._trajectory import (
     _scrape_agent_trajectory,
 )
 from benchflow.acp.client import ACPClient
-from benchflow.agents.registry import (
-    AGENT_INSTALLERS,
-    AGENT_LAUNCH,
-    AGENTS,
-    AgentConfig,
-)
+from benchflow.agents.registry import AGENT_LAUNCH
 
 logger = logging.getLogger(__name__)
 
@@ -119,9 +114,6 @@ _DIAG_TRUNCATE = 2000  # max chars for diagnostic stdout/stderr in logs
 
 # Apply DinD patch once at import time
 _patch_harbor_dind()
-
-# Re-exported from registry for backwards compat (AGENT_INSTALLERS, AGENT_LAUNCH
-# are imported above alongside AGENTS)
 
 
 class SDK:
@@ -324,102 +316,6 @@ class SDK:
         ]
         return trajectory, "oracle"
 
-    async def _install_agent(
-        self, env, agent: str, trial_dir: Path
-    ) -> AgentConfig | None:
-        """Install agent in sandbox and return its config."""
-        agent_base = agent.split()[0]
-        agent_cfg = AGENTS.get(agent_base)
-        if agent_base not in AGENT_INSTALLERS:
-            return agent_cfg
-        install_timeout = agent_cfg.install_timeout if agent_cfg else 900
-        logger.info(
-            f"Installing {agent_base} in sandbox (timeout={install_timeout}s)..."
-        )
-        install_result = await env.exec(
-            AGENT_INSTALLERS[agent_base],
-            timeout_sec=install_timeout,
-        )
-        install_log = trial_dir / "agent" / "install-stdout.txt"
-        install_log.parent.mkdir(parents=True, exist_ok=True)
-        install_log.write_text(install_result.stdout or "")
-        if install_result.return_code != 0:
-            diag = await env.exec(
-                "echo 'OS:' && cat /etc/os-release 2>/dev/null | head -2; "
-                "echo 'Node:' && node --version 2>&1; "
-                f"echo 'Agent:' && which {agent_base} 2>&1",
-                timeout_sec=10,
-            )
-            raise AgentInstallError(
-                agent=agent_base,
-                return_code=install_result.return_code,
-                stdout=install_result.stdout or "",
-                diagnostics=diag.stdout or "",
-                log_path=str(install_log),
-            )
-        return agent_cfg
-
-    async def _deploy_skills(
-        self,
-        env,
-        task_path: Path,
-        skills_dir: str | Path | None,
-        agent_cfg,
-        sandbox_user: str | None,
-        agent_cwd: str,
-        task: "Task",
-    ) -> None:
-        """Deploy and distribute skills into sandbox."""
-        # Runtime upload (fallback if not baked into Dockerfile)
-        if skills_dir:
-            dockerfile = task_path / "environment" / "Dockerfile"
-            already_injected = (
-                dockerfile.exists()
-                and "COPY _deps/skills /skills/" in dockerfile.read_text()
-            )
-            if not already_injected:
-                skills_path = Path(skills_dir)
-                if skills_path.is_dir():
-                    logger.info(
-                        f"Deploying skills via runtime upload from {skills_path}"
-                    )
-                    await env.upload_dir(skills_path, "/skills")
-                    if agent_cfg and agent_cfg.skill_paths:
-                        parts = []
-                        for sp in agent_cfg.skill_paths:
-                            expanded = sp.replace("$HOME", "/root").replace(
-                                "$WORKSPACE", "/app"
-                            )
-                            parent = str(Path(expanded).parent)
-                            parts.append(
-                                f"mkdir -p '{parent}' && ln -sf /skills '{expanded}'"
-                            )
-                        await env.exec(" && ".join(parts), timeout_sec=10)
-                    logger.info("Skills deployed to /skills and symlinked")
-                else:
-                    logger.warning(f"Skills dir not found: {skills_path}")
-            else:
-                logger.info("Skills already injected via Dockerfile")
-
-        # Distribute to agent-specific discovery paths
-        task_skills_dir = task.config.environment.skills_dir
-        effective_skills = "/skills" if skills_dir else task_skills_dir
-        if effective_skills and agent_cfg and agent_cfg.skill_paths:
-            home = f"/home/{sandbox_user}" if sandbox_user else "/root"
-            parts = []
-            for sp in agent_cfg.skill_paths:
-                expanded = sp.replace("$HOME", home).replace("$WORKSPACE", agent_cwd)
-                q_expanded = shlex.quote(expanded)
-                q_skills = shlex.quote(effective_skills)
-                parts.append(
-                    f"mkdir -p {q_expanded} && cp -r {q_skills}/. {q_expanded}/ 2>/dev/null"
-                )
-            if parts:
-                await env.exec("; ".join(parts), timeout_sec=15)
-                logger.info(
-                    f"Skills distributed to {len(parts)} paths for {agent_cfg.name}"
-                )
-
     async def _verify(
         self,
         env,
@@ -575,7 +471,7 @@ class SDK:
             if agent == "oracle":
                 trajectory, agent_name = await self._run_oracle(env, task_path, timeout)
             else:
-                agent_cfg = await self._install_agent(env, agent, trial_dir)
+                agent_cfg = await install_agent(env, agent, trial_dir)
                 cred_home = f"/home/{sandbox_user}" if sandbox_user else "/root"
                 await write_credential_files(
                     env,
@@ -596,7 +492,7 @@ class SDK:
                         env, sandbox_user, workspace=agent_cwd
                     )
 
-                await self._deploy_skills(
+                await deploy_skills(
                     env,
                     task_path,
                     skills_dir,
