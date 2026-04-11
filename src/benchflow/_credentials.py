@@ -48,7 +48,16 @@ async def write_credential_files(
     model: str | None,
     cred_home: str,
 ) -> None:
-    """Write credential files into container from agent + provider configs."""
+    """Write credential files into container from agent + provider configs.
+
+    Two schemas live side by side intentionally — do not unify until a 3rd
+    pattern appears. Today: 1 agent (codex `template`-wraps a raw key) + 2
+    providers (vertex `post_env`-points GOOGLE_APPLICATION_CREDENTIALS at the
+    written file). Same op shape, different intent (compile-time value
+    transform vs. runtime env side effect). Provider list is `list[dict]`,
+    agent list is `list[CredentialFile]` dataclass — keep dict access vs.
+    attribute access straight when editing the loops below.
+    """
     # Provider credential files (e.g. GCP ADC for Vertex)
     if model:
         from benchflow.agents.providers import find_provider
