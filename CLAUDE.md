@@ -64,8 +64,13 @@ Rules a fresh agent won't infer from the code alone:
 - **No tautological tests.** Don't test `@dataclass` field reads, stdlib
   behavior, helper self-consistency, or "does it construct." Tests should
   exercise real code paths.
-- **Don't auto-commit.** Stop after each logical unit and wait for explicit
-  approval. Don't chain commits across unrelated fixes.
+- **Human review before main.** Shared state changes only with explicit
+  approval.
+  - *Interactive sessions:* pause after each logical unit and wait for
+    "commit"; don't chain commits across unrelated fixes.
+  - *Autonomous/scheduled runs:* commit freely on a branch, then open a
+    PR. Never push to `main` directly. Never force-push to `main` under
+    any circumstance.
 
 ## Testing
 
