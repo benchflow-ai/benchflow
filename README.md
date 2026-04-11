@@ -130,7 +130,7 @@ benchflow agents              # list registered agents
 benchflow run -t task/ -a pi-acp -e daytona
 ```
 
-See [docs/tested-agents.md](docs/tested-agents.md) for the full list of tested agent × model/provider combinations.
+See [.dev-docs/tested-agents.md](.dev-docs/tested-agents.md) for the full list of tested agent × model/provider combinations.
 
 ## Environments
 

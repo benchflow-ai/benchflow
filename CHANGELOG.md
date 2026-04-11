@@ -6,7 +6,7 @@
 
 ### Added
 
-- **Multi-agent, multi-provider, multi-auth matrix** — one YAML config, any supported agent × model × provider × auth combination. 12 end-to-end tested combinations documented in `docs/tested-agents.md`.
+- **Multi-agent, multi-provider, multi-auth matrix** — one YAML config, any supported agent × model × provider × auth combination. 12 end-to-end tested combinations documented in `.dev-docs/tested-agents.md`.
 - **Subscription auth support** — use `claude login`, `codex --login`, `gemini` OAuth credentials directly. No API keys required for host-based agent workflows.
 - **Vertex AI support** — ADC auth for `google-vertex/`, `anthropic-vertex/`, `vertex-zai/` prefixed models.
 - **Provider registry** — data-driven custom LLM endpoints via `ProviderConfig` (`src/benchflow/providers.py`). Adding a new provider = registry dict entry, no code changes.
@@ -86,9 +86,9 @@
 
 ### Documentation
 
-- New `docs/tested-agents.md` — 12 agent × model × provider × auth combinations.
-- New `docs/sdk-reference.md` — SDK API reference.
-- New `docs/sdk-refactor-notes.md` — architecture rationale.
+- New `.dev-docs/tested-agents.md` — 12 agent × model × provider × auth combinations.
+- New `.dev-docs/sdk-reference.md` — SDK API reference.
+- New `.dev-docs/sdk-refactor-notes.md` — architecture rationale.
 - `README.md` rewritten with Quick Start, SDK examples, CLI reference, Benchmark Results table.
 - `CLAUDE.md` documents architecture, test policy, known issues, backlog.
 
@@ -109,4 +109,4 @@
 
 ### Migration from 0.1.x
 
-0.1.x users should treat this as a fresh install. The SDK API, CLI, registry pattern, and task format have all changed. There is no automatic migration path. See `docs/sdk-reference.md` for the new SDK, and `tests/examples/` for end-to-end examples.
+0.1.x users should treat this as a fresh install. The SDK API, CLI, registry pattern, and task format have all changed. There is no automatic migration path. See `.dev-docs/sdk-reference.md` for the new SDK, and `tests/examples/` for end-to-end examples.

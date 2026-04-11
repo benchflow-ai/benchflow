@@ -3,14 +3,51 @@
 Every provider that benchflow routes models through lives here — both
 "custom" providers (like zai/) that need explicit endpoint config, and
 "native" providers (like google-vertex/) that agents already support
-but we still register so is_vertex_model() and infer_env_key_for_model()
-have a single source of truth.
+but we still register so ``is_vertex_model()`` and
+``infer_env_key_for_model()`` have a single source of truth.
 
-Native providers have empty models lists — agents know them natively.
-Custom providers include model metadata so agent shims (e.g. openclaw)
-can write the config files they need.
+Adding a new provider is a registry-only change: append one entry to
+``PROVIDERS`` below. No new functions, no shim edits, no SDK edits.
+``tests/test_registry_invariants.py`` runs contract checks against every
+entry — read it for the executable schema.
 
-Adding a new provider = one entry in PROVIDERS. No new functions needed.
+Required fields
+---------------
+- ``name``           Must equal the dict key.
+- ``base_url``       Primary endpoint URL. May contain ``{placeholder}``
+                     tokens that get expanded from env vars via
+                     ``url_params``. Empty string is allowed for
+                     "user-supplied at runtime" providers (e.g. ``vllm``).
+- ``api_protocol``   "anthropic-messages" or "openai-completions" — the
+                     wire protocol the primary ``base_url`` speaks.
+- ``auth_type``      "api_key" | "adc" | "none".
+                     - "api_key": ``auth_env`` **must** be set.
+                     - "adc": Application Default Credentials (GCP). The
+                       SDK writes the credential file from
+                       ``credential_files`` and sets the corresponding env.
+                     - "none": no auth (e.g. local vllm).
+
+Common optional fields
+----------------------
+- ``auth_env``         Env var holding the API key. Must be set iff
+                       ``auth_type == "api_key"``.
+- ``url_params``       ``{placeholder: ENV_VAR}`` — every placeholder in
+                       ``base_url`` (or any ``endpoints`` URL) must have an
+                       entry, and every entry must be referenced somewhere.
+- ``endpoints``        ``{api_protocol: url}`` for providers that expose
+                       multiple protocol surfaces (e.g. zai serves both
+                       openai-completions and anthropic-messages). Picked
+                       at runtime based on the agent's ``api_protocol``.
+- ``models``           Optional list of model metadata dicts (id, name,
+                       contextWindow, etc.) consumed by agent shims. ``id``
+                       is required and must be unique within the provider.
+- ``credential_files`` List of dicts with ``"path"`` and ``"env_source"``
+                       (and optional ``"post_env"``) — used by ADC providers
+                       to write the credential blob into the container.
+
+Look at the existing entries below for worked examples:
+``zai`` (multi-endpoint, models metadata), ``google-vertex`` (ADC,
+credential_files, url_params), ``vllm`` (user-supplied base_url).
 """
 
 from dataclasses import dataclass, field
