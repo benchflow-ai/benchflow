@@ -43,9 +43,15 @@ Requires Python >=3.12. Use `uv` for environment and dependency management:
 
 ```bash
 uv venv -p 3.12 .venv && uv pip install -e ".[dev]"
+.venv/bin/pre-commit install                           # one-time per clone — runs ruff on commit
 .venv/bin/python -m pytest tests/                      # unit tests (no Docker needed)
 .venv/bin/python -m pytest -m live tests/test_smoke.py # e2e smoke (real Docker + API)
 ```
+
+Pre-commit hook runs `ruff format` + `ruff check` on staged files in `src/`
+and `tests/`, matching what CI gates. After cloning, run `pre-commit install`
+once. Bypassing with `--no-verify` defeats the local guard but CI still
+enforces the same checks — fix the underlying issue rather than skipping.
 
 Use Haiku 4.5 (`claude-haiku-4-5-20251001`) for smoke tests.
 

@@ -1,0 +1,22 @@
+# Run on staged files at commit time. Mirrors what CI runs so format/lint
+# failures are caught locally before push. Install once per clone:
+#
+#     uv pip install -e ".[dev]" && pre-commit install
+#
+# Bypass with --no-verify only if you know what you're doing; CI will still
+# gate the same checks. Pinned to ruff 0.15.7 to match pyproject.toml's
+# ruff>=0.7.0 floor and avoid format-rule drift between hook and CI.
+#
+# Scoped to src/ and tests/ to match what CI actually checks
+# (`.github/workflows/*` runs `ruff format --check src tests`). benchmarks/
+# is intentionally excluded — out of CI scope, would silently expand the
+# format gate beyond what's enforced upstream.
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.7
+    hooks:
+      - id: ruff-format
+        files: ^(src|tests)/
+      - id: ruff-check
+        files: ^(src|tests)/
+        args: [--fix]
