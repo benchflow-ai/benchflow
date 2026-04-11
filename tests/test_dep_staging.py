@@ -1,6 +1,5 @@
 """Tests for Dockerfile dependency staging."""
 
-from pathlib import Path
 
 from benchflow._env_setup import stage_dockerfile_deps, _dep_local_name
 

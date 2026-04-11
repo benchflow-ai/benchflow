@@ -75,7 +75,7 @@ def main():
 
             # Agent reads the permission response (we just consume it)
             # The client will send back a response to id=9000
-            resp_line = sys.stdin.readline().strip()
+            sys.stdin.readline()
             # (ignore the response content — we just needed the round trip)
 
             # 3. Send tool_call_update notification

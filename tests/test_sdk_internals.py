@@ -5,7 +5,6 @@ independently testable private methods.
 """
 
 import json
-import os
 from datetime import datetime
 from pathlib import Path
 
@@ -390,7 +389,7 @@ class TestBuildResult:
         assert traj_file.exists()
 
     def test_timing_values_rounded(self, tmp_path):
-        result = self._build(tmp_path, timing={"agent_setup": 1.5678})
+        self._build(tmp_path, timing={"agent_setup": 1.5678})
         data = json.loads((tmp_path / "timing.json").read_text())
         assert data["agent_setup"] == 1.6
 

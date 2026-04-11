@@ -41,6 +41,7 @@ from benchflow.agents.registry import (
     AGENTS,
     AGENT_INSTALLERS,
     AGENT_LAUNCH,
+    AgentConfig,
     get_sandbox_home_dirs,
 )
 from benchflow.process import DockerProcess, DaytonaProcess
@@ -520,7 +521,7 @@ class SDK:
         }]
         return trajectory, "oracle"
 
-    async def _install_agent(self, env, agent: str, trial_dir: Path) -> "AgentConfig | None":
+    async def _install_agent(self, env, agent: str, trial_dir: Path) -> AgentConfig | None:
         """Install agent in sandbox and return its config."""
         agent_base = agent.split()[0]
         agent_cfg = AGENTS.get(agent_base)

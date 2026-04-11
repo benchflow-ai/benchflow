@@ -7,7 +7,6 @@ import pytest
 
 from benchflow.sdk import (
     SDK,
-    _DEFAULT_LOCKED,
     _resolve_locked_paths,
     _validate_locked_path,
 )

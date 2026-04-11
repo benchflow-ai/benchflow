@@ -13,7 +13,6 @@ from benchflow._scoring import (
     VERIFIER_FAILED,
     VERIFIER_TIMEOUT,
     classify_verifier_error,
-    extract_reward,
 )
 from benchflow.metrics import BenchmarkMetrics, TaskMetrics
 
@@ -263,7 +262,9 @@ class TestJobRunLogs:
         idx = 0
         async def make_result(**kwargs):
             nonlocal idx
-            r = results[idx]; idx += 1; return r
+            r = results[idx]
+            idx += 1
+            return r
         job._sdk = AsyncMock()
         job._sdk.run = make_result
         with caplog.at_level(logging.WARNING):

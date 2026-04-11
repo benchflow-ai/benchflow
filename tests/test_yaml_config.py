@@ -1,7 +1,6 @@
 """Tests for YAML job config loading."""
 
 import pytest
-from pathlib import Path
 
 from benchflow.job import Job
 

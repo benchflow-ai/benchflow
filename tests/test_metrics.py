@@ -1,7 +1,6 @@
 """Tests for metrics collection and aggregation."""
 
 import json
-from pathlib import Path
 
 import pytest
 

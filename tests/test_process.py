@@ -1,6 +1,5 @@
 """Tests for process.py env handling (no Docker required)."""
 
-import asyncio
 from unittest.mock import AsyncMock, patch
 
 import pytest

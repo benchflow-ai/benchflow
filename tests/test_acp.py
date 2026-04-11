@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from benchflow.acp.client import ACPClient, ACPError
-from benchflow.acp.session import ACPSession, ToolCallRecord
+from benchflow.acp.session import ACPSession
 from benchflow.acp.transport import StdioTransport
 from benchflow.acp.types import StopReason, ToolCallStatus
 
