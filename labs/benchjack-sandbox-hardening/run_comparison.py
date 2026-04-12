@@ -131,9 +131,9 @@ def main() -> int:
     print("[2/4] venv: benchflow@HEAD (editable)")
     _create_venv(VENVS_DIR / "bf-head", ["-e", str(REPO_ROOT)])
 
-    print("[3/4] run: benchflow 0.2.0 against attack_task")
+    print("[3/4] run: benchflow 0.2.0 against pattern1_conftest_hook")
     r020 = _run_in_venv(VENVS_DIR / "bf-0.2.0", "0.2.0")
-    print("[4/4] run: benchflow HEAD against attack_task")
+    print("[4/4] run: benchflow HEAD against pattern1_conftest_hook")
     rhead = _run_in_venv(VENVS_DIR / "bf-head", "head")
 
     print()

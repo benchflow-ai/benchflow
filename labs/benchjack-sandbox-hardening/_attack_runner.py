@@ -22,7 +22,9 @@ async def _run() -> dict:
     import benchflow
     from benchflow import SDK
 
-    task_path = HERE / "attack_task"
+    task_path = Path(sys.argv[1]) if len(sys.argv) > 1 else HERE / "pattern1_conftest_hook"
+    if not task_path.is_dir():
+        raise FileNotFoundError(f"Task directory not found: {task_path}")
     sdk = SDK()
 
     result = await sdk.run(
