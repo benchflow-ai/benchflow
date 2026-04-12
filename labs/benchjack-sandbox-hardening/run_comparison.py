@@ -2,8 +2,8 @@
 """Top-level orchestrator for the BenchJack sandbox-hardening labs demo.
 
 Creates two isolated venvs, installs benchflow==0.2.0 in one and editable-HEAD
-in the other, runs _attack_runner.py once per venv, and prints a two-row
-comparison table.
+in the other, runs _attack_runner.py once per venv × pattern, and prints a
+pattern-first comparison table.
 
 Usage:
     python run_comparison.py          # create venvs if missing and run
@@ -31,6 +31,13 @@ REPO_ROOT = HERE.parents[1]
 VENVS_DIR = HERE / ".venvs"
 JOBS_DIR = HERE / ".jobs"
 
+# Shipped patterns: (id, display_name, task_dir)
+PATTERNS: list[tuple[str, str, Path]] = [
+    ("P1", "conftest-hook", HERE / "pattern1_conftest_hook"),
+    ("P2", "answer-lookup", HERE / "pattern2_answer_lookup"),
+    ("P7", "pth-injection", HERE / "pattern7_pth_injection"),
+]
+
 
 def _have_uv() -> bool:
     return shutil.which("uv") is not None
@@ -56,14 +63,14 @@ def _create_venv(venv_dir: Path, spec: list[str]) -> None:
     subprocess.check_call([str(venv_dir / "bin" / "pip"), "install", *spec])
 
 
-def _run_in_venv(venv_dir: Path, label: str) -> dict:
+def _run_in_venv(venv_dir: Path, label: str, task_path: Path) -> dict:
     python = venv_dir / "bin" / "python"
     env = os.environ.copy()
-    env["BENCHJACK_JOBS_DIR"] = str(JOBS_DIR / label)
-    env["BENCHJACK_TRIAL_NAME"] = f"attack-{label}"
+    env["BENCHJACK_JOBS_DIR"] = str(JOBS_DIR / label / task_path.name)
+    env["BENCHJACK_TRIAL_NAME"] = f"attack-{label}-{task_path.name}"
 
     proc = subprocess.run(
-        [str(python), str(HERE / "_attack_runner.py")],
+        [str(python), str(HERE / "_attack_runner.py"), str(task_path)],
         env=env,
         capture_output=True,
         text=True,
@@ -94,21 +101,15 @@ def _run_in_venv(venv_dir: Path, label: str) -> dict:
     return payload
 
 
-def _fmt_row(row: dict) -> str:
-    version = row.get("version") or "?"
+def _fmt_cell(row: dict) -> str:
+    """Format one result cell (version × pattern) for the table."""
     reward = row.get("reward")
-
     if reward is None:
-        state = f"ERROR ({row.get('error') or 'unknown'})"
-        reward_str = "N/A"
+        return "   N/A  ERROR    "
     elif reward >= 0.999:
-        state = "EXPLOITED — conftest.py hook fired"
-        reward_str = f"{reward:.2f}"
+        return f"  {reward:.2f}  EXPLOITED"
     else:
-        state = "BLOCKED — hardening layer fired"
-        reward_str = f"{reward:.2f}"
-
-    return f"benchflow {version:10s}  reward={reward_str:>6s}  {state}"
+        return f"  {reward:.2f}  BLOCKED  "
 
 
 def main() -> int:
@@ -126,39 +127,73 @@ def main() -> int:
                 print(f"[clean] removing {d}")
                 shutil.rmtree(d)
 
-    print("[1/4] venv: benchflow==0.2.0 (PyPI)")
+    # Pre-flight: verify all task directories exist
+    missing = [str(td) for _, _, td in PATTERNS if not td.is_dir()]
+    if missing:
+        print("ERROR: missing task directories:")
+        for m in missing:
+            print(f"  {m}")
+        return 1
+
+    n = len(PATTERNS)
+    total_steps = 2 + 2 * n  # 2 venvs + 2 versions × n patterns
+
+    print(f"[1/{total_steps}] venv: benchflow==0.2.0 (PyPI)")
     _create_venv(VENVS_DIR / "bf-0.2.0", ["benchflow==0.2.0"])
-    print("[2/4] venv: benchflow@HEAD (editable)")
+    print(f"[2/{total_steps}] venv: benchflow@HEAD (editable)")
     _create_venv(VENVS_DIR / "bf-head", ["-e", str(REPO_ROOT)])
 
-    print("[3/4] run: benchflow 0.2.0 against pattern1_conftest_hook")
-    r020 = _run_in_venv(VENVS_DIR / "bf-0.2.0", "0.2.0")
-    print("[4/4] run: benchflow HEAD against pattern1_conftest_hook")
-    rhead = _run_in_venv(VENVS_DIR / "bf-head", "head")
+    results: dict[str, dict[str, dict]] = {}  # pattern_id -> {label -> payload}
+    step = 3
+    for pat_id, pat_name, task_path in PATTERNS:
+        results[pat_id] = {}
+        print(f"[{step}/{total_steps}] run: benchflow 0.2.0 against {pat_id} {pat_name}")
+        results[pat_id]["0.2.0"] = _run_in_venv(VENVS_DIR / "bf-0.2.0", "0.2.0", task_path)
+        step += 1
+        print(f"[{step}/{total_steps}] run: benchflow HEAD  against {pat_id} {pat_name}")
+        results[pat_id]["head"] = _run_in_venv(VENVS_DIR / "bf-head", "head", task_path)
+        step += 1
 
+    # Print pattern-first table
     print()
     print("=" * 72)
     print("BenchJack sandbox-hardening comparison (0.2.0 vs HEAD)")
     print("=" * 72)
-    print(_fmt_row(r020))
-    print(_fmt_row(rhead))
+    print(f"{'pattern':<24}  {'benchflow 0.2.0':<20}  {'benchflow HEAD'}")
+    print("-" * 72)
+    for pat_id, pat_name, _ in PATTERNS:
+        cell_020 = _fmt_cell(results[pat_id]["0.2.0"])
+        cell_head = _fmt_cell(results[pat_id]["head"])
+        label = f"{pat_id} {pat_name}"
+        print(f"{label:<24}  {cell_020}  {cell_head}")
     print()
 
-    r020_reward = r020.get("reward")
-    rhead_reward = rhead.get("reward")
-    ok = (
-        r020_reward is not None
-        and rhead_reward is not None
-        and r020_reward >= 0.999
-        and rhead_reward < 0.001
-    )
+    # Pass/fail assertion
+    all_ok = True
+    failures: list[dict] = []
+    for pat_id, pat_name, _ in PATTERNS:
+        r020 = results[pat_id]["0.2.0"].get("reward")
+        rhead = results[pat_id]["head"].get("reward")
+        ok = (
+            r020 is not None
+            and rhead is not None
+            and r020 >= 0.999
+            and rhead < 0.001
+        )
+        if not ok:
+            all_ok = False
+            failures.append({
+                "pattern": f"{pat_id} {pat_name}",
+                "0.2.0": results[pat_id]["0.2.0"],
+                "head": results[pat_id]["head"],
+            })
 
-    if ok:
-        print("✓ Expected: exploit succeeded under 0.2.0, blocked under HEAD.")
+    if all_ok:
+        print("✓ All patterns: exploit succeeded under 0.2.0, blocked under HEAD.")
         return 0
 
-    print("✗ Unexpected outcome. Full payloads below.")
-    print(json.dumps({"0.2.0": r020, "head": rhead}, indent=2, default=str))
+    print("✗ Unexpected outcome(s). Full payloads for failed patterns below.")
+    print(json.dumps(failures, indent=2, default=str))
     return 1
 
 
