@@ -105,6 +105,12 @@ def smoke_jobs_dir(tmp_path: Path) -> Iterator[Path]:
     may not be removable by our (non-root) test user.
     """
     if _detect_dind_mount() is None:
+        if Path("/.dockerenv").exists():
+            pytest.fail(
+                "Running inside DinD (/.dockerenv present) but cwd is not under any "
+                "container bind mount. Move your checkout under a bind-mounted path "
+                "(e.g. /workspace) so host docker can see it."
+            )
         yield tmp_path
         return
 
