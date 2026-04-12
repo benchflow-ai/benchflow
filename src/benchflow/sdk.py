@@ -120,7 +120,7 @@ from benchflow._trajectory import (
     _capture_session_trajectory,
     _scrape_agent_trajectory,
 )
-from benchflow.acp.client import ACPClient
+from benchflow.acp.client import ACPClient, ACPError
 from benchflow.agents.registry import AGENT_LAUNCH
 from benchflow.models import RunResult, TrajectorySource
 
@@ -579,6 +579,23 @@ class SDK:
         except ConnectionError as e:
             error = str(e)
             logger.error(f"Agent connection lost: {error}")
+        except ACPError as e:
+            if "Invalid API key" in e.message:
+                from benchflow._agent_env import check_subscription_auth
+                from benchflow.agents.registry import infer_env_key_for_model
+
+                key = infer_env_key_for_model(model) if model else None
+                if key and check_subscription_auth(agent, key):
+                    error = (
+                        f"{key} was rejected as invalid. "
+                        f"Subscription auth credentials exist — unset the env var "
+                        f"to use them: env -u {key} <command>"
+                    )
+                else:
+                    error = str(e)
+            else:
+                error = str(e)
+            logger.error(error)
         except Exception as e:
             error = str(e)
             logger.error("Run failed", exc_info=True)
