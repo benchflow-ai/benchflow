@@ -158,6 +158,19 @@ def resolve_agent_env(
                     f"Export it, pass via agent_env, or log in with the "
                     f"agent CLI (e.g. claude login, codex --login)."
                 )
+        elif (
+            required_key
+            and required_key in agent_env
+            and check_subscription_auth(agent, required_key)
+        ):
+            logger.warning(
+                "%s is set (possibly inherited from host env) AND "
+                "subscription auth credentials exist — the env var takes "
+                "precedence. If the key is stale, unset it: "
+                "env -u %s <command>",
+                required_key,
+                required_key,
+            )
     else:
         # No model specified — still check subscription auth for required env vars
         agent_cfg = AGENTS.get(agent)
