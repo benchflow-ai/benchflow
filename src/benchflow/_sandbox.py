@@ -163,28 +163,8 @@ async def lockdown_paths(env, paths: list[str]) -> None:
 # ── Verifier hardening ────────────────────────────────────────────────────────
 
 # Trusted env vars for verifier execution — override any agent pollution.
-#
-# PYTEST_DISABLE_PLUGIN_AUTOLOAD intentionally omitted: would break ~94
-# SkillsBench tasks that rely on pytest-json-ctrf's --ctrf flag. Entry-point
-# plugin injection is already blocked by verifier-runs-as-root + system
-# site-packages permissions + the .pth cleanup in CLEANUP_CMD.
-#
-# PYTHONNOUSERSITE intentionally omitted: verifier runs as root, so the
-# only user-site dir on sys.path is /root/.local which sandbox_user cannot
-# touch, and CLEANUP_CMD already wipes .pth files there as belt-and-braces.
-#
-# PYTHONHOME intentionally omitted: setting it to "" (empty string) is NOT
-# equivalent to leaving it unset — CPython reads it as the installation
-# prefix, fails to find lib/python3.X/encodings under the empty prefix,
-# and aborts during Py_Initialize with `ModuleNotFoundError: No module
-# named 'encodings'`. This breaks any verifier test.sh that spawns a
-# fresh Python interpreter (seen deterministically on 4 swebench astropy
-# __7xxx tasks whose test.sh does `python -m pip install -e .[test]`
-# before pytest runs). Defense-in-depth for PYTHONHOME is already covered
-# structurally: `sandbox_user` cannot set env vars that persist across
-# `docker exec` boundaries, so an agent-set PYTHONHOME never reaches the
-# verifier subprocess, and nothing in our base images sets PYTHONHOME.
-# See test_plugin_autoload_not_disabled-style negative guard below.
+# Intentionally omitted (negative guards in test_verify.py explain why):
+# PYTEST_DISABLE_PLUGIN_AUTOLOAD, PYTHONNOUSERSITE, PYTHONHOME.
 VERIFIER_ENV: dict[str, str] = {
     "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
     "PYTEST_ADDOPTS": (

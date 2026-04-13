@@ -609,23 +609,9 @@ class TestVerifierHardening:
     def test_pythonhome_not_set(self):
         """Negative guard: PYTHONHOME must NOT be in VERIFIER_ENV.
 
-        Setting PYTHONHOME="" (empty string) is NOT equivalent to leaving it
-        unset. CPython reads the empty string as the installation prefix,
-        fails to locate lib/python3.X/encodings under the empty prefix, and
-        aborts during Py_Initialize with
-        `ModuleNotFoundError: No module named 'encodings'`. This breaks any
-        verifier test.sh that spawns a fresh Python interpreter — seen
-        deterministically on swebench astropy__7166/7336/7606/7671 whose
-        test.sh does `python -m pip install -e .[test]` before pytest runs.
-
-        Defense-in-depth for PYTHONHOME is already covered structurally:
-        sandbox_user cannot set env vars that persist across `docker exec`
-        boundaries, so an agent-set PYTHONHOME never reaches the verifier
-        subprocess, and nothing in our base images sets PYTHONHOME.
-
-        A developer who wants to reintroduce a PYTHONHOME defense must use
-        a real "unset" mechanism (not empty string), update _sandbox.py's
-        VERIFIER_ENV comment, and update this test at the same time.
+        PYTHONHOME="" is not equivalent to unset — CPython reads the empty
+        prefix and aborts during Py_Initialize, breaking any test.sh that
+        spawns a fresh interpreter (e.g. `python -m pip install` before pytest).
         """
         from benchflow._sandbox import VERIFIER_ENV
 
