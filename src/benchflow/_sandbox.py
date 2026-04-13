@@ -237,44 +237,24 @@ async def _restore_build_config(env, workspace: str) -> None:
         await env.exec(cmd, user="root")
 
 
-# ── Verifier user setup (Tier 3) ─────────────────────────────────────────────
-
-# Dedicated non-root OS user for the verifier phase.
-# Tasks that need root (e.g. apt-get in test.sh) can opt out via
-# `[verifier] user = "root"` in task.toml — that will log a warning.
-_VERIFIER_USER = "verifier"
-
-
-async def _setup_verifier_user(env, workspace: str = "/testbed") -> None:
-    """Create a dedicated non-root OS user to run the verifier phase.
+async def _seed_verifier_workspace(env, workspace: str = "/testbed") -> None:
+    """Seed /testbed_verify as a pre-agent snapshot for the full workspace restore.
 
     Called once after setup_sandbox_user, before agent launch.
     - Locks /logs/ parent so sandbox_user cannot rename /logs/verifier/ out.
-    - Seeds /testbed_verify as a root-owned read-only copy of the workspace
-      so harden_before_verify can restore the full workspace to pre-agent
-      canonical state before freezing.
+    - Seeds /testbed_verify as a root-owned readable copy of the workspace
+      so harden_before_verify can rsync it back to restore ALL source files
+      to pre-agent canonical state before the verifier runs.
+
+    OS-user creation (the former "verifier" user) was removed: Harbor runs
+    test.sh as root by default; tasks that need a non-root verifier set
+    `[verifier] user = "verifier"` in task.toml (Harbor honors that field
+    if the user is pre-provisioned in the container image).
     """
     cmds = [
         # Lock /logs/ parent: sandbox_user cannot rename /logs/verifier/ out.
         "chown root:root /logs && chmod 755 /logs",
-        # Create group first — useradd --gid requires it to pre-exist.
-        f"getent group {_VERIFIER_USER} &>/dev/null || groupadd -r {_VERIFIER_USER}",
-        # System user: no login shell, no supplementary groups.
-        f"id {_VERIFIER_USER} &>/dev/null || "
-        f"useradd -r -s /bin/false "
-        f"--gid {_VERIFIER_USER} --groups '' {_VERIFIER_USER}",
-        # Wipe any pre-staged home dir the agent may have planted before useradd.
-        f"rm -rf /home/{_VERIFIER_USER} && "
-        f"mkdir -p /home/{_VERIFIER_USER} && "
-        f"chown {_VERIFIER_USER}:{_VERIFIER_USER} /home/{_VERIFIER_USER} && "
-        f"chmod 700 /home/{_VERIFIER_USER}",
-        # /logs/verifier/ must be writable so test.sh can write reward.txt.
-        # Tier 1 resets this to 777 at hardentime; ownership is set here as
-        # a structural guard before the agent starts.
-        f"mkdir -p /logs/verifier && "
-        f"chown {_VERIFIER_USER}:{_VERIFIER_USER} /logs/verifier && "
-        f"chmod 700 /logs/verifier",
-        # Seed root-owned read-only workspace copy from the actual workspace
+        # Seed root-owned readable workspace copy from the actual workspace
         # (may differ from /testbed for tasks with WORKDIR=/app etc.).
         f"rm -rf /testbed_verify && cp -a {shlex.quote(workspace)} /testbed_verify && "
         f"chown -R root:root /testbed_verify && chmod -R o+rX /testbed_verify",
@@ -387,20 +367,10 @@ async def harden_before_verify(
     4b.Full workspace restore from /testbed_verify — resets ALL source files to
        pre-agent canonical state, not just the build-config subset.
     4c.Purge symlinks and __pycache__ trees from workspace.
-    5. Freeze workspace read-only (chown root + chmod a-w) so editable-install
-       source files cannot execute agent code during the verify phase.
+    5. chown workspace to root (belt-and-suspenders against zombie sandbox writes).
     6. Remove injected conftest.py, sitecustomize.py, .pth files.
     7. Merge trusted env vars into task.config.verifier.env.
-    8. Set verifier user to the dedicated non-root account unless opted out.
     """
-    # Resolve verifier user before any mutation so hooks cannot override it.
-    _resolved_verifier_user = (
-        task.config.verifier.user
-        if task.config.verifier.user is not None
-        else _VERIFIER_USER
-    )
-    if _resolved_verifier_user == "root":
-        logger.warning("verifier running as root (opt-out set in task.toml)")
 
     if sandbox_user:
         await env.exec(
@@ -445,12 +415,10 @@ async def harden_before_verify(
             f" -exec rm -rf {{}} + 2>/dev/null; true",
             user="root",
         )
-        # Freeze the workspace read-only so agent-modified source files in
-        # editable installs (e.g. /testbed/src/pkg/utils.py) cannot execute
-        # during the verifier phase. Agent is already dead at this point.
+        # chown workspace to root: belt-and-suspenders against any zombie
+        # sandbox-user process that survived the pkill above.
         await env.exec(
-            f"chown -R root:root {shlex.quote(workspace)} && "
-            f"chmod -R a-w {shlex.quote(workspace)}",
+            f"chown -R root:root {shlex.quote(workspace)}",
             user="root",
         )
     await env.exec(CLEANUP_CMD, user="root", timeout_sec=10)
@@ -477,4 +445,3 @@ async def harden_before_verify(
     else:
         verifier_env["PYTEST_ADDOPTS"] = base_addopts
     task.config.verifier.env = verifier_env
-    task.config.verifier.user = _resolved_verifier_user

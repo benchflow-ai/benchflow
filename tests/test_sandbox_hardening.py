@@ -388,12 +388,13 @@ class TestBuildConfigSnapshot:
         assert restore_manifest_idx < restore_file_idx < cleanup_idx
 
     @pytest.mark.asyncio
-    async def test_workspace_frozen_after_restore(self):
-        """After restore, workspace is chowned root and made read-only (a-w).
+    async def test_workspace_chowned_after_restore(self):
+        """After restore, workspace is chowned to root (belt-and-suspenders against
+        zombie sandbox-user processes writing during the verify phase).
 
-        This closes the editable-install source modification vector: the agent
-        may have changed /testbed/src/pkg/utils.py, but it is frozen before
-        the verifier runs, so imports of that package execute the canonical code.
+        chmod -R a-w is intentionally absent: the verifier runs as root and needs
+        to write build artifacts (pip install -e ., setup.py install).  Content
+        integrity is guaranteed by the rsync restore, not by read-only permissions.
         """
         from benchflow._sandbox import _SNAPSHOT_MANIFEST, harden_before_verify
 
@@ -401,41 +402,43 @@ class TestBuildConfigSnapshot:
         task = _make_task()
         await harden_before_verify(env, task, sandbox_user=None, workspace="/testbed")
 
-        freeze_call_obj = next(
+        chown_call = next(
             (
                 c
                 for c in env.exec.call_args_list
-                if "chown -R root:root" in c.args[0]
-                and "chmod -R a-w" in c.args[0]
-                and "/testbed" in c.args[0]
+                if "chown -R root:root" in c.args[0] and "/testbed" in c.args[0]
             ),
             None,
         )
-        assert freeze_call_obj is not None, (
-            "workspace freeze (chown root + chmod a-w) not found — "
-            "editable-install source tampering is not mitigated"
+        assert chown_call is not None, (
+            "workspace chown (root:root) not found — "
+            "zombie sandbox-user writes not mitigated"
         )
-        assert freeze_call_obj.kwargs.get("user") == "root", (
-            "workspace freeze must run as root"
+        assert chown_call.kwargs.get("user") == "root"
+        assert "chmod -R a-w" not in chown_call.args[0], (
+            "chmod -R a-w must not be present — it breaks pip install as root verifier"
         )
-        # Freeze must come after restore so the canonical files are written first.
+        # chown must come after restore so canonical files are in place first.
         calls = [c.args[0] for c in env.exec.call_args_list]
         restore_idx = next(i for i, c in enumerate(calls) if _SNAPSHOT_MANIFEST in c)
-        freeze_idx = next(
+        chown_idx = next(
             i
             for i, c in enumerate(calls)
-            if "chown -R root:root" in c and "chmod -R a-w" in c
+            if "chown -R root:root" in c and "/testbed" in c
         )
-        assert restore_idx < freeze_idx
+        assert restore_idx < chown_idx
 
     @pytest.mark.asyncio
-    async def test_workspace_not_frozen_when_workspace_none(self):
-        """No freeze call when workspace=None (nothing to freeze)."""
+    async def test_workspace_ops_skipped_when_workspace_none(self):
+        """No workspace chown or chmod when workspace=None (nothing to operate on)."""
         from benchflow._sandbox import harden_before_verify
 
         env = _make_env()
         await harden_before_verify(env, _make_task(), sandbox_user=None, workspace=None)
 
+        assert not any(
+            "chown -R root:root" in c.args[0] for c in env.exec.call_args_list
+        )
         assert not any("chmod -R a-w" in c.args[0] for c in env.exec.call_args_list)
 
     @pytest.mark.asyncio
@@ -468,13 +471,13 @@ class TestBuildConfigSnapshot:
             "agent-modified source files survive to the verifier"
         )
         assert restore_call.kwargs.get("user") == "root"
-        # Full restore must run before the freeze so canonical files get locked.
+        # Full restore must run before the chown so canonical files are in place first.
         calls = [c.args[0] for c in env.exec.call_args_list]
         restore_idx = next(
             i for i, c in enumerate(calls) if "/testbed_verify" in c and "rsync" in c
         )
-        freeze_idx = next(i for i, c in enumerate(calls) if "chmod -R a-w" in c)
-        assert restore_idx < freeze_idx, "full restore must precede workspace freeze"
+        chown_idx = next(i for i, c in enumerate(calls) if "chown -R root:root" in c)
+        assert restore_idx < chown_idx, "full restore must precede workspace chown"
 
     def test_build_config_files_matches_test_constant(self):
         """_ALL_BUILD_FILES in this test file must mirror _BUILD_CONFIG_FILES in the implementation.
@@ -528,40 +531,7 @@ class TestBuildConfigSnapshot:
 
 
 class TestVerifierUserHarden:
-    """Tier 3: harden_before_verify sets the verifier OS user and pip isolation."""
-
-    @pytest.mark.asyncio
-    async def test_verifier_user_set_when_none(self):
-        """verifier.user is set to 'verifier' when the task leaves it unset."""
-        from benchflow._sandbox import _VERIFIER_USER, harden_before_verify
-
-        env = _make_env()
-        task = _make_task(user=None)
-        await harden_before_verify(env, task, sandbox_user=None)
-
-        assert task.config.verifier.user == _VERIFIER_USER
-
-    @pytest.mark.asyncio
-    async def test_verifier_user_not_overridden_when_root(self):
-        """task opt-out user='root' is preserved."""
-        from benchflow._sandbox import harden_before_verify
-
-        env = _make_env()
-        task = _make_task(user="root")
-        await harden_before_verify(env, task, sandbox_user=None)
-
-        assert task.config.verifier.user == "root"
-
-    @pytest.mark.asyncio
-    async def test_verifier_user_not_overridden_when_uid_zero(self):
-        """task opt-out with integer UID 0 is preserved."""
-        from benchflow._sandbox import harden_before_verify
-
-        env = _make_env()
-        task = _make_task(user=0)
-        await harden_before_verify(env, task, sandbox_user=None)
-
-        assert task.config.verifier.user == 0
+    """harden_before_verify pip isolation and env hardening (verifier OS user removed)."""
 
     def test_verifier_env_contains_pip_isolation_vars(self):
         """VERIFIER_ENV includes pip isolation vars and HOME=/nonexistent."""
@@ -768,12 +738,12 @@ class TestVerifierEnv:
         assert VERIFIER_ENV.get("PYTHONPYCACHEPREFIX") == "/nonexistent"
 
     @pytest.mark.asyncio
-    async def test_symlinks_purged_before_workspace_freeze(self):
-        """Symlinks in the workspace must be deleted before freezing.
+    async def test_symlinks_purged_before_workspace_chown(self):
+        """Symlinks in the workspace must be deleted before the workspace chown.
 
         Without this, a symlink planted by the agent (e.g. utils.py -> /tmp/evil.py)
-        survives the freeze; the target is outside the frozen area and remains
-        writable, so agent code still executes on import.
+        survives; the target is outside the workspace and remains writable,
+        so agent code still executes on import during the verify phase.
         """
         from benchflow._sandbox import harden_before_verify
 
@@ -795,16 +765,16 @@ class TestVerifierEnv:
         )
         assert symlink_purge is not None, (
             "symlink purge not found — agent symlinks pointing to external "
-            "writable targets survive the workspace freeze"
+            "writable targets survive into the verify phase"
         )
         assert symlink_purge.kwargs.get("user") == "root"
-        # Symlink purge must run before the freeze.
+        # Symlink purge must run before the chown.
         calls = [c.args[0] for c in env.exec.call_args_list]
         symlink_idx = next(
             i for i, c in enumerate(calls) if "-type l" in c and "-delete" in c
         )
-        freeze_idx = next(i for i, c in enumerate(calls) if "chmod -R a-w" in c)
-        assert symlink_idx < freeze_idx, "symlink purge must precede workspace freeze"
+        chown_idx = next(i for i, c in enumerate(calls) if "chown -R root:root" in c)
+        assert symlink_idx < chown_idx, "symlink purge must precede workspace chown"
 
     @pytest.mark.asyncio
     async def test_pycache_purged_during_workspace_freeze(self):
