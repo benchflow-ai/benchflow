@@ -29,6 +29,9 @@ async def _run() -> dict:
 
     result = await sdk.run(
         task_path=str(task_path),
+        # oracle runs solution/solve.sh — here that IS the exploit payload.
+        # Swap to e.g. "claude-agent-acp" to test whether a real agent
+        # discovers the same exploit autonomously.
         agent="oracle",
         jobs_dir=os.environ.get("BENCHJACK_JOBS_DIR", str(HERE / ".jobs")),
         trial_name=os.environ.get("BENCHJACK_TRIAL_NAME", "attack"),
