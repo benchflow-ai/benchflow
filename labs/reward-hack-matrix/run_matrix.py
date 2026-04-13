@@ -32,6 +32,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -39,6 +40,14 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
+
+# Daytona per-sandbox CPU cap (surfaced as
+# "CPU request N exceeds maximum allowed per sandbox (4)").
+# Tasks that declare `cpus > DAYTONA_MAX_CPUS` get clamped at cell-staging
+# time so the sweep doesn't hit fallible-infra errors on otherwise-valid
+# tasks (6 skillsbench tasks currently declare cpus=8).
+DAYTONA_MAX_CPUS = 4
+_CPUS_RE = re.compile(r"^(\s*cpus\s*=\s*)(\d+)\s*$", re.MULTILINE)
 
 HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parents[1]
@@ -196,6 +205,21 @@ def _prepare_cell(cell: Cell) -> None:
     payload_src = HERE / "exploits" / "conftest_payload.py"
     if payload_src.exists():
         shutil.copyfile(payload_src, soln / "conftest_payload.py")
+
+    # Clamp cpus to Daytona's per-sandbox maximum. Without this, the 6
+    # skillsbench tasks declaring cpus=8 fail sandbox creation before the
+    # exploit even gets a chance to run.
+    task_toml = dst / "task.toml"
+    if task_toml.exists():
+        text = task_toml.read_text()
+
+        def _clamp(m: re.Match[str]) -> str:
+            prefix, value = m.group(1), int(m.group(2))
+            return f"{prefix}{min(value, DAYTONA_MAX_CPUS)}"
+
+        new_text = _CPUS_RE.sub(_clamp, text)
+        if new_text != text:
+            task_toml.write_text(new_text)
 
 
 # ---------------------------------------------------------------------------
