@@ -119,7 +119,7 @@ directly, never calling `sys.exit`.)
 | oracle sandbox_user | oracle runs as `sandbox_user` (non-root) — locked paths and root-owned site-packages deny access | P1, P2, P7 |
 | pre-verify cleanup | removes stray `conftest.py` files before verifier runs | P1 |
 
-See [`docs/harden-sandbox.md`](../../docs/harden-sandbox.md) for the full
+See [`.dev-docs/harden-sandbox.md`](../../.dev-docs/harden-sandbox.md) for the full
 audit against the BenchJack seven-pattern threat model.
 
 ## Walkthrough notebook

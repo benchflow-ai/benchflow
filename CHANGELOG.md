@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+## 0.2.1 — 2026-04-12
+
+### Added
+
+- **Sandbox hardening on by default** — `sandbox_user` now defaults to `"agent"` (was `None`/root). Blocks conftest-hook and answer-lookup exploit patterns.
+- **Path lockdown** — new `sandbox_locked_paths` parameter makes `/solution` and `/tests` read-only before the verifier runs, blocking `.pth`-injection and similar pre-verify tampering.
+- **Verifier failure isolation** — agent errors and verifier errors are now stored separately; a crashing verifier no longer masks the agent result.
+- **`labs/benchjack-sandbox-hardening`** — cookbook demonstrating three exploit patterns (P1 conftest-hook, P2 answer-lookup, P7 `.pth`-injection) and their defenses.
+
+### Fixed
+
+- **Oracle runs as `sandbox_user`** — oracle agent now respects path lockdown instead of running as root and bypassing it.
+- **Multi-endpoint provider routing** — providers with multiple endpoints now route by the agent's native API protocol.
+- **Stale API key shadowing subscription auth** — emits a warning when `ANTHROPIC_API_KEY` env var is present alongside `claude login` credentials.
+- **pytest `ini`-injection bypass** — closed a verifier hardening edge case.
+
+### Changed
+
+- Version is now single-sourced via `importlib.metadata`; no more duplicate version string in `__init__.py`.
+
 ## 0.2.0 — 2026-04-09
 
 **First public release.** A near-complete rearchitecture from the 0.1.x era. API surface has changed — assume breaking changes. Future releases will maintain compatibility within the 0.2.x line. 0.1.x users should treat this as a fresh install; see `.dev-docs/sdk-reference.md` for the new SDK.
