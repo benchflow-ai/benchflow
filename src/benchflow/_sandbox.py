@@ -19,6 +19,7 @@ Does not own:
     - Running the verifier itself — see SDK._verify
 """
 
+import json as _json
 import logging
 import re
 import shlex
@@ -160,6 +161,87 @@ async def lockdown_paths(env, paths: list[str]) -> None:
     await env.exec(cmd, timeout_sec=30)
 
 
+# ── Build-config snapshot / restore (Tier 2) ─────────────────────────────────
+
+# Files whose pre-agent state is snapshotted and restored before verification.
+# Covers all common build backends to prevent setup.py / pyproject.toml hijacks.
+_BUILD_CONFIG_FILES = (
+    "setup.py",
+    "pyproject.toml",
+    "setup.cfg",
+    "tox.ini",
+    "noxfile.py",
+    "hatch.toml",
+    "flit.ini",
+    "MANIFEST.in",
+)
+# chmod 700: root-only so the sandbox_user cannot read or overwrite the snapshot.
+_SNAPSHOT_DIR = "/tmp/.benchflow_build_snapshot"
+_SNAPSHOT_MANIFEST = f"{_SNAPSHOT_DIR}/manifest.json"
+
+
+async def _snapshot_build_config(env, workspace: str) -> None:
+    """Snapshot build-config files before the agent runs.
+
+    Absence/presence is recorded in a separate manifest.json rather than
+    embedding a sentinel string inside the captured files — that way an agent
+    cannot forge "this file was absent" by planting a magic string in setup.py.
+
+    ORDERING INVARIANT: must be called before the agent launches. The agent
+    owns the workspace files (chown'd by setup_sandbox_user) and could modify
+    them the instant it starts. Calling this after agent launch would capture
+    a potentially-tainted snapshot.
+    """
+    # chmod 700: root-only so the sandbox_user cannot tamper with the snapshot.
+    await env.exec(
+        f"mkdir -p {_SNAPSHOT_DIR} && chmod 700 {_SNAPSHOT_DIR}",
+        user="root",
+    )
+    manifest: dict[str, bool] = {}
+    for fname in _BUILD_CONFIG_FILES:
+        src = f"{workspace}/{fname}"
+        dst = f"{_SNAPSHOT_DIR}/{fname}"
+        result = await env.exec(
+            f"if [ -f {src} ]; then "
+            f"  cp --preserve=all {src} {dst} && echo present; "
+            f"else "
+            f"  echo absent; "
+            f"fi",
+            user="root",
+        )
+        manifest[fname] = result.stdout.strip() == "present"
+    # Write manifest as JSON — only booleans, never file content.
+    manifest_json = _json.dumps(manifest)
+    await env.exec(
+        f"echo {shlex.quote(manifest_json)} > {_SNAPSHOT_MANIFEST}",
+        user="root",
+    )
+
+
+async def _restore_build_config(env, workspace: str) -> None:
+    """Restore build-config files to their pre-agent state.
+
+    Reads the manifest written by _snapshot_build_config to determine which
+    files existed before the agent ran. Files that existed are restored from
+    the snapshot; files that didn't are removed if the agent created them.
+    """
+    result = await env.exec(f"cat {_SNAPSHOT_MANIFEST}", user="root")
+    manifest: dict[str, bool] = _json.loads(result.stdout)
+    for fname in _BUILD_CONFIG_FILES:
+        src = f"{_SNAPSHOT_DIR}/{fname}"
+        dst = f"{workspace}/{fname}"
+        if manifest.get(fname):
+            # File existed pre-agent: restore the snapshot copy.
+            cmd = (
+                f"cp --preserve=timestamps {src} {dst} "
+                f"&& chown root:root {dst} && chmod 644 {dst}"
+            )
+        else:
+            # File did not exist pre-agent: remove anything the agent created.
+            cmd = f"rm -f {dst}"
+        await env.exec(cmd, user="root")
+
+
 # ── Verifier hardening ────────────────────────────────────────────────────────
 
 # Trusted env vars for verifier execution — override any agent pollution.
@@ -180,6 +262,14 @@ VERIFIER_ENV: dict[str, str] = {
     "LD_PRELOAD": "",
     "LD_LIBRARY_PATH": "",
 }
+
+# Wipe and recreate /logs/verifier/ before the verifier runs.
+# rm -rf severs hardlinks (G1), replaces symlink replacements (G2), and
+# removes all variant filenames and subdirectories (G4).
+# chmod 777 restores Harbor's expectation for the verifier write.
+_CLEAR_VERIFIER_DIR_CMD = (
+    "rm -rf /logs/verifier && mkdir -p /logs/verifier && chmod 777 /logs/verifier"
+)
 
 # Cleanup command for pytest hook / Python startup injection.
 # Removes conftest.py outside /tests, sitecustomize.py/usercustomize.py
@@ -203,12 +293,21 @@ CLEANUP_CMD = (
 )
 
 
-async def harden_before_verify(env, task: "Task", sandbox_user: str | None) -> None:
+async def harden_before_verify(
+    env, task: "Task", sandbox_user: str | None, workspace: str | None = None
+) -> None:
     """Neutralize agent tampering before running the verifier.
 
-    1. Kill sandbox-user processes (prevent concurrent writes).
-    2. Remove injected conftest.py, sitecustomize.py, .pth files.
-    3. Merge trusted env vars into task.config.verifier.env.
+    1. Kill sandbox-user processes (prevent concurrent writes during teardown).
+    2. Assert all sandbox-user processes are dead, then wipe and recreate
+       /logs/verifier/ so the verifier always writes into a clean directory
+       owned by root — severs hardlinks, removes symlink replacements, and
+       eliminates variant filenames the agent may have pre-staged.
+    3. Restore build-config files (setup.py, pyproject.toml, etc.) to their
+       pre-agent state so that pip/test runners see the originals, not agent-
+       modified versions. Only runs when workspace is provided.
+    4. Remove injected conftest.py, sitecustomize.py, .pth files.
+    5. Merge trusted env vars into task.config.verifier.env.
     """
     if sandbox_user:
         await env.exec(
@@ -216,6 +315,17 @@ async def harden_before_verify(env, task: "Task", sandbox_user: str | None) -> N
             f"sleep 1; pkill -9 -u {sandbox_user} 2>/dev/null || true",
             timeout_sec=10,
         )
+        # Second pass: catch any processes that slipped through (e.g. cron/at
+        # jobs started during the agent phase).
+        await env.exec(
+            f"! pgrep -u {sandbox_user} > /dev/null 2>&1 || "
+            f"(sleep 1 && pkill -9 -u {sandbox_user}; sleep 1)",
+            user="root",
+        )
+    # Wipe and recreate /logs/verifier/ with a clean root-owned directory.
+    await env.exec(_CLEAR_VERIFIER_DIR_CMD, user="root")
+    if workspace:
+        await _restore_build_config(env, workspace)
     await env.exec(CLEANUP_CMD, timeout_sec=10)
 
     verifier_env = dict(VERIFIER_ENV)

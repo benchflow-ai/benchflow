@@ -491,6 +491,17 @@ class TestVerifierHardening:
         exec_cmds = [c[0][0] for c in env.exec.call_args_list]
         # pkill is first call
         assert "pkill -u agent" in exec_cmds[0]
+        # /logs/verifier/ wipe-and-recreate runs after pkill and before cleanup
+        wipe_idx = next(
+            (i for i, c in enumerate(exec_cmds) if "rm -rf /logs/verifier" in c), None
+        )
+        assert wipe_idx is not None, "rm -rf /logs/verifier not found in exec calls"
+        cleanup_idx = next(
+            (i for i, c in enumerate(exec_cmds) if "conftest.py" in c), None
+        )
+        assert cleanup_idx is not None
+        assert wipe_idx < cleanup_idx, "wipe must run before CLEANUP_CMD"
+        assert any("mkdir -p /logs/verifier" in c for c in exec_cmds)
         # Cleanup runs (conftest, sitecustomize, .pth — all in one command)
         cleanup = [c for c in exec_cmds if "conftest.py" in c]
         assert cleanup and "sitecustomize.py" in cleanup[0] and ".pth" in cleanup[0]
@@ -538,6 +549,290 @@ class TestVerifierHardening:
         assert injected["PATH"] == "/custom/bin"
         assert injected["MY_VAR"] == "hello"
         assert injected["PYTHONPATH"] == ""  # non-overridden defaults kept
+
+    @pytest.mark.asyncio
+    async def test_verifier_dir_recreated_before_verifier(self):
+        """Full wipe-and-recreate runs as root even when sandbox_user is None."""
+        from benchflow._sandbox import harden_before_verify
+
+        env = MagicMock()
+        env.exec = AsyncMock(return_value=MagicMock(stdout="", stderr="", exit_code=0))
+        task = MagicMock()
+        task.config.verifier.env = None
+
+        await harden_before_verify(env, task, sandbox_user=None)
+
+        calls = [c.args[0] for c in env.exec.call_args_list]
+        assert any("rm -rf /logs/verifier" in c for c in calls)
+        assert any("mkdir -p /logs/verifier" in c for c in calls)
+
+    @pytest.mark.asyncio
+    async def test_verifier_dir_chmod_777_after_recreate(self):
+        """chmod 777 /logs/verifier appears in the wipe-and-recreate command."""
+        from benchflow._sandbox import harden_before_verify
+
+        env = MagicMock()
+        env.exec = AsyncMock(return_value=MagicMock(stdout="", stderr="", exit_code=0))
+        task = MagicMock()
+        task.config.verifier.env = None
+
+        await harden_before_verify(env, task, sandbox_user=None)
+
+        calls = [c.args[0] for c in env.exec.call_args_list]
+        assert any("chmod 777 /logs/verifier" in c for c in calls)
+
+    # ── Tier 2: build-config snapshot / restore ──────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_build_config_snapshot_writes_manifest_absent(self):
+        """Absent file recorded as false in manifest (not __ABSENT__ string — closes G5)."""
+        import json
+
+        from benchflow._sandbox import _snapshot_build_config
+
+        results = iter(
+            [
+                MagicMock(stdout="", stderr="", exit_code=0),  # mkdir
+                *[
+                    MagicMock(stdout="absent\n", stderr="", exit_code=0)
+                    for _ in range(8)
+                ],  # 8 files
+                MagicMock(stdout="", stderr="", exit_code=0),  # manifest write
+            ]
+        )
+        env = MagicMock()
+        env.exec = AsyncMock(side_effect=results)
+
+        await _snapshot_build_config(env, workspace="/testbed")
+
+        # Find the manifest write call and extract the JSON
+        calls = [c.args[0] for c in env.exec.call_args_list]
+        manifest_call = next(
+            c for c in calls if "_SNAPSHOT_MANIFEST" in c or "manifest.json" in c
+        )
+        # The JSON is echo'd as a quoted arg — extract it
+        import shlex as _shlex
+
+        tokens = _shlex.split(manifest_call)
+        json_str = tokens[1]  # echo <json> > path
+        manifest = json.loads(json_str)
+        assert manifest["setup.py"] is False
+        assert "__ABSENT__" not in json_str
+
+    @pytest.mark.asyncio
+    async def test_build_config_snapshot_writes_manifest_present(self):
+        """Present file recorded as true; cp command was issued."""
+        import json
+
+        from benchflow._sandbox import _snapshot_build_config
+
+        # setup.py present, rest absent
+        side_effects = [
+            MagicMock(stdout="", stderr="", exit_code=0),  # mkdir
+            MagicMock(stdout="present\n", stderr="", exit_code=0),  # setup.py
+            *[MagicMock(stdout="absent\n", stderr="", exit_code=0) for _ in range(7)],
+            MagicMock(stdout="", stderr="", exit_code=0),  # manifest write
+        ]
+        env = MagicMock()
+        env.exec = AsyncMock(side_effect=side_effects)
+
+        await _snapshot_build_config(env, workspace="/testbed")
+
+        calls = [c.args[0] for c in env.exec.call_args_list]
+        # cp ran for setup.py
+        assert any("cp --preserve=all /testbed/setup.py" in c for c in calls)
+        # manifest records true
+        manifest_call = next(c for c in calls if "manifest.json" in c)
+        import shlex as _shlex
+
+        json_str = _shlex.split(manifest_call)[1]
+        assert json.loads(json_str)["setup.py"] is True
+
+    @pytest.mark.asyncio
+    async def test_build_config_restore_removes_absent_file(self):
+        """Absent entry in manifest → rm -f issued for destination."""
+        import json
+
+        from benchflow._sandbox import _restore_build_config
+
+        manifest = {
+            f: False
+            for f in (
+                "setup.py",
+                "pyproject.toml",
+                "setup.cfg",
+                "tox.ini",
+                "noxfile.py",
+                "hatch.toml",
+                "flit.ini",
+                "MANIFEST.in",
+            )
+        }
+        env = MagicMock()
+        env.exec = AsyncMock(
+            side_effect=[
+                MagicMock(
+                    stdout=json.dumps(manifest), stderr="", exit_code=0
+                ),  # cat manifest
+                *[
+                    MagicMock(stdout="", stderr="", exit_code=0) for _ in range(8)
+                ],  # restores
+            ]
+        )
+
+        await _restore_build_config(env, workspace="/testbed")
+
+        calls = [c.args[0] for c in env.exec.call_args_list]
+        assert any("rm -f /testbed/setup.py" in c for c in calls)
+
+    @pytest.mark.asyncio
+    async def test_build_config_restore_overwrites_agent_modified_file(self):
+        """Present entry in manifest → cp + chown root:root + chmod 644 issued."""
+        import json
+
+        from benchflow._sandbox import _restore_build_config
+
+        manifest = {
+            f: False
+            for f in (
+                "setup.py",
+                "pyproject.toml",
+                "setup.cfg",
+                "tox.ini",
+                "noxfile.py",
+                "hatch.toml",
+                "flit.ini",
+                "MANIFEST.in",
+            )
+        }
+        manifest["setup.py"] = True
+        env = MagicMock()
+        env.exec = AsyncMock(
+            side_effect=[
+                MagicMock(stdout=json.dumps(manifest), stderr="", exit_code=0),
+                *[MagicMock(stdout="", stderr="", exit_code=0) for _ in range(8)],
+            ]
+        )
+
+        await _restore_build_config(env, workspace="/testbed")
+
+        calls = [c.args[0] for c in env.exec.call_args_list]
+        setup_call = next(c for c in calls if "setup.py" in c and "cp" in c)
+        assert "chown root:root" in setup_call
+        assert "chmod 644" in setup_call
+
+    @pytest.mark.asyncio
+    async def test_build_config_sentinel_string_in_file_does_not_trigger_delete(self):
+        """setup.py containing literal __ABSENT__ is restored, not deleted (regression for G5)."""
+        import json
+
+        from benchflow._sandbox import _restore_build_config
+
+        # Manifest says setup.py was present (True) — regardless of file content
+        manifest = {
+            f: False
+            for f in (
+                "setup.py",
+                "pyproject.toml",
+                "setup.cfg",
+                "tox.ini",
+                "noxfile.py",
+                "hatch.toml",
+                "flit.ini",
+                "MANIFEST.in",
+            )
+        }
+        manifest["setup.py"] = True
+        env = MagicMock()
+        env.exec = AsyncMock(
+            side_effect=[
+                MagicMock(stdout=json.dumps(manifest), stderr="", exit_code=0),
+                *[MagicMock(stdout="", stderr="", exit_code=0) for _ in range(8)],
+            ]
+        )
+
+        await _restore_build_config(env, workspace="/testbed")
+
+        calls = [c.args[0] for c in env.exec.call_args_list]
+        setup_call = next(c for c in calls if "setup.py" in c and c != calls[0])
+        # Must issue cp, not rm -f
+        assert "cp" in setup_call
+        assert "rm -f" not in setup_call
+
+    @pytest.mark.asyncio
+    async def test_harden_calls_restore_when_workspace_given(self):
+        """harden_before_verify calls restore before CLEANUP_CMD when workspace given."""
+        import json
+
+        from benchflow._sandbox import _SNAPSHOT_MANIFEST, harden_before_verify
+
+        manifest = {
+            f: False
+            for f in (
+                "setup.py",
+                "pyproject.toml",
+                "setup.cfg",
+                "tox.ini",
+                "noxfile.py",
+                "hatch.toml",
+                "flit.ini",
+                "MANIFEST.in",
+            )
+        }
+
+        def side_effect(cmd, **kwargs):
+            if f"cat {_SNAPSHOT_MANIFEST}" in cmd:
+                return MagicMock(stdout=json.dumps(manifest), stderr="", exit_code=0)
+            return MagicMock(stdout="", stderr="", exit_code=0)
+
+        env = MagicMock()
+        env.exec = AsyncMock(side_effect=side_effect)
+        task = MagicMock()
+        task.config.verifier.env = None
+
+        await harden_before_verify(env, task, sandbox_user=None, workspace="/testbed")
+
+        calls = [c.args[0] for c in env.exec.call_args_list]
+        restore_idx = next(
+            (i for i, c in enumerate(calls) if _SNAPSHOT_MANIFEST in c), None
+        )
+        cleanup_idx = next((i for i, c in enumerate(calls) if "conftest.py" in c), None)
+        assert restore_idx is not None, "restore (cat manifest) not found"
+        assert cleanup_idx is not None
+        assert restore_idx < cleanup_idx, "restore must run before CLEANUP_CMD"
+
+    @pytest.mark.asyncio
+    async def test_harden_skips_restore_when_workspace_none(self):
+        """harden_before_verify with workspace=None issues no restore calls."""
+        from benchflow._sandbox import _SNAPSHOT_MANIFEST, harden_before_verify
+
+        env = MagicMock()
+        env.exec = AsyncMock(return_value=MagicMock(stdout="", stderr="", exit_code=0))
+        task = MagicMock()
+        task.config.verifier.env = None
+
+        await harden_before_verify(env, task, sandbox_user=None, workspace=None)
+
+        calls = [c.args[0] for c in env.exec.call_args_list]
+        assert not any(_SNAPSHOT_MANIFEST in c for c in calls)
+
+    @pytest.mark.asyncio
+    async def test_snapshot_dir_created_chmod_700(self):
+        """Snapshot dir creation includes chmod 700 (closes G6)."""
+        from benchflow._sandbox import _snapshot_build_config
+
+        side_effects = [
+            MagicMock(stdout="", stderr="", exit_code=0),  # mkdir + chmod
+            *[MagicMock(stdout="absent\n", stderr="", exit_code=0) for _ in range(8)],
+            MagicMock(stdout="", stderr="", exit_code=0),  # manifest write
+        ]
+        env = MagicMock()
+        env.exec = AsyncMock(side_effect=side_effects)
+
+        await _snapshot_build_config(env, workspace="/testbed")
+
+        calls = [c.args[0] for c in env.exec.call_args_list]
+        assert any("chmod 700" in c and ".benchflow_build_snapshot" in c for c in calls)
 
     def test_verifier_env_contract(self):
         """VERIFIER_ENV pins every layer of the pytest ini/plugin hardening.

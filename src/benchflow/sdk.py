@@ -112,6 +112,7 @@ from benchflow._env_setup import (
 )
 from benchflow._sandbox import (
     _resolve_locked_paths,
+    _snapshot_build_config,
     harden_before_verify,
     lockdown_paths,
     setup_sandbox_user,
@@ -349,10 +350,11 @@ class SDK:
         trial_paths: "TrialPaths",
         timing: dict,
         sandbox_user: str | None = None,
+        workspace: str | None = None,
     ) -> tuple[dict | None, str | None]:
         """Run verifier with pre-verification hardening."""
         trial_paths.verifier_dir.mkdir(parents=True, exist_ok=True)
-        await harden_before_verify(env, task, sandbox_user)
+        await harden_before_verify(env, task, sandbox_user, workspace=workspace)
         logger.info("Running verifier...")
         t0 = datetime.now()
         verifier_error = None
@@ -485,6 +487,7 @@ class SDK:
         error = None
         verifier_error = None
         rewards = None
+        agent_cwd: str | None = None
 
         try:
             await self._start_env_and_upload(env, task_path, timing)
@@ -522,6 +525,10 @@ class SDK:
                     agent_cwd = await setup_sandbox_user(
                         env, sandbox_user, workspace=agent_cwd
                     )
+                    # Snapshot build-config files before agent runs (closes G7
+                    # ordering invariant — must be after setup_sandbox_user but
+                    # before agent launch).
+                    await _snapshot_build_config(env, workspace=agent_cwd)
 
                 await deploy_skills(
                     env,
@@ -582,7 +589,12 @@ class SDK:
                     )
 
             rewards, verifier_error = await self._verify(
-                env, task, trial_paths, timing, sandbox_user=sandbox_user
+                env,
+                task,
+                trial_paths,
+                timing,
+                sandbox_user=sandbox_user,
+                workspace=agent_cwd,
             )
 
         except TimeoutError:
