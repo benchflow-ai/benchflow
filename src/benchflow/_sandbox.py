@@ -328,7 +328,6 @@ VERIFIER_ENV: dict[str, str] = {
     "PYTHONPYCACHEPREFIX": "/nonexistent",
     "PYTHONPATH": "",
     "PYTHONSTARTUP": "",
-    "PYTHONSAFEPATH": "1",  # drop implicit '' (cwd) from sys.path
     "LD_PRELOAD": "",
     "LD_LIBRARY_PATH": "",
     # Prevent pip from writing to user site-packages during pip install -e .
@@ -355,8 +354,10 @@ _CLEAR_VERIFIER_DIR_CMD = (
 
 # Remove injected conftest.py, sitecustomize.py/usercustomize.py, and .pth
 # files from writable sys.path entries (preserves /usr/lib, /usr/local/lib).
+# Also purge *.py from temp dirs: covers module-shadow via non-workspace cwd.
 CLEANUP_CMD = (
     "find / -name conftest.py -not -path '/tests/*' -delete 2>/dev/null; "
+    "find /tmp /var/tmp -name '*.py' -delete 2>/dev/null; "
     'python3 -c "'
     "import sys,os;"
     "[os.remove(os.path.join(d,f)) "

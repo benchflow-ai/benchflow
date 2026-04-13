@@ -193,7 +193,6 @@ env cannot override them.
 | `PATH` | `/usr/local/sbin:…:/bin` | Locked PATH |
 | `PYTEST_ADDOPTS` | `-c /dev/null --confcutdir=/tests --rootdir=/tests -p no:cacheprovider` | `-c /dev/null` blocks ini-file walk-up; `--confcutdir=/tests` blocks conftest walk-up |
 | `PYTEST_DISABLE_PLUGIN_AUTOLOAD` | `1` | Blocks all `pytest11` entry-point plugins (see below) |
-| `PYTHONSAFEPATH` | `1` | Drops implicit `''` (cwd) from `sys.path` |
 | `PYTHONPATH` | `""` | Blocks env-var path injection |
 | `PYTHONSTARTUP`, `LD_PRELOAD`, `LD_LIBRARY_PATH` | `""` | Clears image-`ENV` carryover |
 | `PYTHONDONTWRITEBYTECODE` | `1` | No `.pyc` artifacts |
@@ -239,7 +238,8 @@ Several keys are re-applied unconditionally after `verifier_env.update(task.conf
 
 **`CLEANUP_CMD`** — defense-in-depth (runs as root):
 `find / -name conftest.py -not -path '/tests/*' -delete` (no depth limit) plus
-`python3 -c "import sys..."` to remove writable `sitecustomize.py`,
+`find /tmp /var/tmp -name '*.py' -delete` (module-shadow via non-workspace cwd)
+plus `python3 -c "import sys..."` to remove writable `sitecustomize.py`,
 `usercustomize.py`, and `.pth` files (stdlib paths under `/usr/lib` and
 `/usr/local/lib` are preserved). The depth limit was removed entirely — any
 `-maxdepth N` can be bypassed by planting `conftest.py` at depth `N+1`. Running
@@ -368,7 +368,8 @@ no verifier OS user, no build-config snapshot, and `_verify` received
 | `conftest.py` injection forces tests to pass | `--confcutdir=/tests` + `find / -name conftest.py -delete` (no depth limit, as root) |
 | `pyproject.toml` / `pytest.ini` injection from agent-writable cwd | `-c /dev/null` in `PYTEST_ADDOPTS` |
 | Task strips `-c /dev/null` / `--confcutdir` via `verifier.env.PYTEST_ADDOPTS` | `PYTEST_ADDOPTS` re-pinned from hardened base after task-env merge |
-| Module-shadow via `import x` finding `/app/x.py` | `PYTHONSAFEPATH=1` drops implicit `''` from `sys.path` |
+| Module-shadow via `import x` finding `/app/x.py` (workspace cwd) | Tier 4 workspace restore removes agent-planted files from cwd before verify; freeze blocks new writes |
+| Module-shadow via `import x` finding `/tmp/x.py` (non-workspace cwd) | `CLEANUP_CMD` purges `*.py` from `/tmp` and `/var/tmp` before verify |
 | Image-`ENV` carryover (`LD_PRELOAD`, `PYTHONSTARTUP`) | Cleared in `VERIFIER_ENV` |
 | `sitecustomize.py` / `.pth` injection in writable paths | sys.path-aware `CLEANUP_CMD` (runs as root) |
 | PATH poisoning to shadow verifier tools | Canonical `VERIFIER_ENV` PATH |
@@ -406,12 +407,12 @@ should prompt revisiting it.
 
 - **`pytest --import-mode=importlib`.** Eliminates pytest's default
   `prepend` import mode, which mutates `sys.path` to add each test file's
-  rootdir. `PYTHONSAFEPATH=1` (Layer 4) handles the *Python interpreter*'s
-  cwd-on-`sys.path` behavior, but pytest's own `--import-mode=prepend`
-  injection is independent. The audit confirmed no current task relies on
-  cwd-on-`sys.path` for sibling imports, so a migration is feasible but has
-  non-trivial breakage risk. **Trigger:** a `sys.path`-based bypass is
-  discovered that PYTHONSAFEPATH alone doesn't cover.
+  rootdir. The Tier 4 workspace restore + freeze covers the Python
+  interpreter's cwd-on-`sys.path` vector (previously `PYTHONSAFEPATH=1`,
+  removed because it broke `setup.py`-era matplotlib tasks that rely on
+  script-directory sibling imports). Pytest's own `--import-mode=prepend`
+  injection is independent of both. **Trigger:** a `sys.path`-based bypass is
+  discovered that Tier 4 doesn't cover.
 
 - **End-to-end pytest-injection smoke test in CI.** The unit-level
   subprocess test in `tests/test_verify.py` invokes `pytest -c /dev/null`

@@ -194,6 +194,12 @@ class TestVerifierDirWipe:
             "depth escapes the sweep"
         )
 
+    def test_cleanup_cmd_purges_py_from_tmp(self):
+        """CLEANUP_CMD must delete *.py from /tmp and /var/tmp (module-shadow via non-workspace cwd)."""
+        from benchflow._sandbox import CLEANUP_CMD
+
+        assert "find /tmp /var/tmp -name '*.py' -delete" in CLEANUP_CMD
+
     @pytest.mark.asyncio
     async def test_cleanup_cmd_runs_as_root(self):
         """CLEANUP_CMD must run as root so find can traverse all dirs."""
@@ -609,7 +615,6 @@ class TestVerifierEnv:
             "PYTHONPYCACHEPREFIX",
             "PYTHONPATH",
             "PYTHONSTARTUP",
-            "PYTHONSAFEPATH",
             "LD_PRELOAD",
             "LD_LIBRARY_PATH",
             "PYTHONNOUSERSITE",
@@ -626,7 +631,9 @@ class TestVerifierEnv:
         assert "--confcutdir=/tests" in addopts
         assert "--rootdir=/tests" in addopts
         assert "-p no:cacheprovider" in addopts
-        assert VERIFIER_ENV["PYTHONSAFEPATH"] == "1"
+        assert (
+            "PYTHONSAFEPATH" not in VERIFIER_ENV
+        )  # removed: Tier 4 freeze covers cwd vector
         assert VERIFIER_ENV["PYTHONSTARTUP"] == ""
         assert VERIFIER_ENV["LD_PRELOAD"] == ""
         assert VERIFIER_ENV["LD_LIBRARY_PATH"] == ""
