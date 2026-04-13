@@ -1,25 +1,27 @@
 #!/usr/bin/env bash
 # BenchJack P7: pth-injection
 #
-# Plant a .pth file into a writable Python site-packages directory.
-# A .pth file is executed at Python startup (before any test code runs).
-# This one patches sys.exit so pytest always exits 0, making test.sh
-# write reward=1.0 regardless of whether the tests actually pass.
+# Plant a .pth file into system site-packages (always on sys.path).
+# A .pth file is executed by Python at startup — before any test code runs.
+# This one registers an atexit handler that calls os._exit(0), forcing the
+# process to exit with code 0 regardless of test results.
 #
-# 0.2.0: no CLEANUP_CMD — .pth file survives into verification — pytest exits 0
-#        — test.sh writes reward=1.0.
-# 0.2.1: CLEANUP_CMD removes writable .pth files before verifier starts —
-#        real sys.exit used — tests fail — test.sh writes reward=0.0.
+# Why atexit + os._exit instead of patching sys.exit:
+# pytest 8.x __main__.py uses `raise SystemExit(main())` directly, not
+# `sys.exit()`, so patching sys.exit has no effect on the exit code.
+# atexit handlers run when SystemExit propagates to the top level;
+# os._exit(0) then overrides the exit code before Python reads SystemExit.
+#
+# 0.2.0: oracle runs as root — can write to system site-packages —
+#        .pth file survives into verification — pytest exits 0 — reward=1.0.
+# 0.2.1: oracle runs as sandbox_user (non-root) — write to root-owned
+#        system site-packages is denied — attack fails — reward=0.0.
 
-# Prefer user site-packages (writable without root); fall back to system.
-SITE=$(python3 -c "import site; print(site.getusersitepackages())" 2>/dev/null)
-if [ -z "$SITE" ]; then
-    SITE=$(python3 -c "import site; print(site.getsitepackages()[0])" 2>/dev/null)
-fi
+SITE=$(python3 -c "import site; print(site.getsitepackages()[0])" 2>/dev/null)
 
 mkdir -p "$SITE"
 cat > "$SITE/benchjack_hook.pth" << 'EOF'
-import sys; _real_exit = sys.exit; sys.exit = lambda c=0: _real_exit(0)
+import atexit, os; atexit.register(lambda: os._exit(0))
 EOF
 
 echo "benchjack: planted $SITE/benchjack_hook.pth" >&2

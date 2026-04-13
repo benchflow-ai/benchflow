@@ -40,12 +40,27 @@ Pass `--clean` to delete `.venvs/` and `.jobs/` before running.
   `python -m venv` + pip
 * Network access to PyPI on first run
 
+## Pattern registry
+
+Sourced from the [BenchJack seven-pattern threat model](https://moogician.github.io/blog/2026/trustworthy-benchmarks-cont/).
+
+| id | name | description | 0.2.1 blocks? | defense layer | status |
+|---|---|---|---|---|---|
+| P1 | conftest-hook | Plant `conftest.py` hook that rewrites all test bodies to no-ops | yes | path lockdown (`/tests` chmod 700) + pre-verify cleanup | shipped |
+| P2 | answer-lookup | Read locked answer key from `/solution/` | yes | path lockdown (`/solution` chmod 700) | shipped |
+| P3 | eval-injection | Agent output passed to `eval()` in verifier | no — verifier code quality | n/a | out of scope |
+| P4 | llm-judge-injection | Prompt injection into LLM judge via unsanitized agent output | no — API boundary | n/a | out of scope |
+| P5 | weak-string-match | Substring match lets wrong answers pass | no — verifier logic | n/a | out of scope |
+| P6 | trivial-verifier | Verifier always returns 1.0, never checks actual output | no — design | n/a | out of scope |
+| P7 | pth-injection | Plant `.pth` file that forces exit code 0 via atexit + os._exit | yes | oracle runs as `sandbox_user` (non-root) — system site-packages write denied | shipped |
+
+**P3–P6** are benchflow-agnostic verifier code quality issues. They produce "both versions fail" in a 0.2.0 vs 0.2.1 comparison and belong in a future `benchjack-scan/` auditor, not here.
+
 ## Layout
 
 ```
 labs/benchjack-sandbox-hardening/
 ├── README.md                       ← you are here
-├── PATTERNS.md                     ← canonical pattern registry (id, defense, status)
 ├── run_comparison.py               ← dual-venv orchestrator (top-level entry)
 ├── _attack_runner.py               ← inner runner, one per pinned benchflow version
 ├── pattern1_conftest_hook/
@@ -120,20 +135,32 @@ executes, so the read fails and the script writes a wrong answer instead.
 `solution/solve.sh` plants a `.pth` file into the writable Python
 user-site-packages directory (`~/.local/lib/python3.x/site-packages`). A
 `.pth` file is executed by Python at startup — before any test code runs.
-This one patches `sys.exit` so pytest always exits `0`:
+This one registers an atexit handler that calls `os._exit(0)`:
 
 ```python
-import sys; _real_exit = sys.exit; sys.exit = lambda c=0: _real_exit(0)
+import atexit, os; atexit.register(lambda: os._exit(0))
 ```
 
-When `test.sh` runs `python -m pytest`, the hook fires at Python startup,
-patches `sys.exit`, then pytest runs (tests fail as normal), but the patched
-`sys.exit(1)` becomes `sys.exit(0)`. `test.sh` sees exit code 0 and writes
+When `test.sh` runs `python -m pytest`, the hook fires at Python startup and
+registers the handler. pytest runs (tests fail as normal). When `raise
+SystemExit(1)` propagates to Python's top level, Python runs atexit handlers
+first — `os._exit(0)` fires and forces the process to exit with code 0 before
+Python can use the SystemExit value. `test.sh` sees exit code 0 and writes
 `reward.txt = 1.0`.
 
 Note: a naive version that writes `reward.txt = 1.0` directly in the `.pth`
 hook loses the race — test.sh overwrites it with `0.0` after pytest finishes.
-Patching `sys.exit` avoids the race entirely.
+The atexit approach avoids the race entirely. Patching `sys.exit` looks
+equivalent but doesn't work: pytest 8.x `__main__.py` uses `raise
+SystemExit(main())` directly rather than `sys.exit()`, so `sys.exit` is never
+called.
+
+**Name history:** Originally called "path-trojan" and described as injecting a
+fake `pytest` binary via PATH manipulation. That approach is broken because
+Harbor invokes verifiers as `bash -c` (non-login, non-interactive) — shell
+startup files (`/etc/profile.d/`, `.bashrc`, `/etc/environment`) are never
+sourced, so PATH changes made by the agent have no effect on the verifier
+process. The correct mechanism is `.pth` file injection.
 
 ## Why 0.2.1 blocks each attack
 
@@ -141,7 +168,15 @@ Patching `sys.exit` avoids the race entirely.
 |---|---|---|
 | P1 conftest-hook | `/tests` locked `chmod 700 root:root` → write denied | pytest `--confcutdir=/tests`; pre-verify `find … -name conftest.py -delete` |
 | P2 answer-lookup | `/solution` locked `chmod 700 root:root` → read denied | oracle runs as `sandbox_user` (non-root) |
-| P7 pth-injection | `CLEANUP_CMD` removes writable `.pth` files before verifier | verifier env reset (`PYTHONSAFEPATH`, `PATH`) |
+| P7 pth-injection | oracle runs as `sandbox_user` (non-root) — system site-packages write denied | — |
+
+**Defense layer reference:**
+
+| defense | what it does | patterns covered |
+|---|---|---|
+| path lockdown | `chown root:root && chmod 700` on `/tests` and `/solution` before agent/oracle runs | P1, P2 |
+| oracle sandbox_user | oracle runs `solve.sh` as `sandbox_user` (non-root), so locked paths and root-owned site-packages deny access | P1, P2, P7 |
+| pre-verify cleanup | removes stray `conftest.py` files outside `/tests` | P1 |
 
 See [`docs/harden-sandbox.md`](../../docs/harden-sandbox.md) for the full
 audit against the BenchJack seven-pattern threat model.
@@ -172,7 +207,7 @@ jupyter nbconvert --to notebook --execute --inplace comparison.ipynb
 
 ## Adding a new pattern
 
-1. Add an entry to `PATTERNS.md`.
+1. Add a row to the pattern registry table above.
 2. Create `pattern<N>_<name>/` with `task.toml`, `instruction.md`,
    `environment/Dockerfile`, `solution/solve.sh`, and `tests/`.
 3. Add a `(id, name, path)` tuple to the `PATTERNS` list in `run_comparison.py`.
