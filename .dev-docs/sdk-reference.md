@@ -14,7 +14,8 @@ await SDK().run(
     jobs_dir="jobs",                    # Output directory
     environment="docker",              # "docker" or "daytona"
     skills_dir=None,                    # Host path to skills dir (see Skills section)
-    sandbox_user=None,                  # Non-root user (e.g. "agent"). See Sandbox section
+    sandbox_user: str | None = "agent", # Non-root user. See Sandbox section
+    sandbox_locked_paths: list[str] | None = None,  # Extra paths to make read-only before verify
     pre_agent_hooks=None,              # List of async callables(env). Run before agent launch
     context_root=None,                  # Repo root for Dockerfile COPY path resolution
 ) -> RunResult
@@ -62,7 +63,8 @@ job = Job(
         prompts=None,                   # Multi-turn prompts (same as SDK.run)
         agent_env={},                   # Extra env vars
         skills_dir=None,
-        sandbox_user=None,
+        sandbox_user: str | None = "agent",
+        sandbox_locked_paths: list[str] | None = None,
         context_root=None,
         retry=RetryConfig(
             max_retries=2,              # Default: 2 (CLI default: 0)
@@ -247,6 +249,5 @@ jobs/{job_name}/{trial_name}/
 3. **Oracle mode**: `agent="oracle"` skips ACP, runs `solution/solve.sh` directly. No multi-turn.
 4. **codex-acp auth**: SDK auto-writes `~/.codex/auth.json` from OPENAI_API_KEY.
 5. **Gemini trajectory**: Gemini sends `tool_call_update` without initial `tool_call`. SDK auto-creates records.
-6. **API keys visible**: Docker exec `-e K=V` shows keys in `ps aux`.
-7. **benchflow view side-effect**: Writes `trajectory.html` to the trial directory.
-8. **collect_metrics deduplication**: Picks best result per task when multiple trials exist.
+6. **benchflow view side-effect**: Writes `trajectory.html` to the trial directory.
+7. **collect_metrics deduplication**: Picks best result per task when multiple trials exist.

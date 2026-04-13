@@ -42,84 +42,24 @@ benchflow view jobs/my-job/my-trial/
 ## SDK
 
 ```python
-import asyncio
 from benchflow import SDK, Job, JobConfig, collect_metrics
 
-async def main():
-    sdk = SDK()
-
-    # Single task — API keys auto-inherited from os.environ
-    result = await sdk.run(
-        task_path="path/to/task",
-        agent="claude-agent-acp",
-        model="claude-haiku-4-5-20251001",
-        environment="daytona",  # or "docker"
-    )
-    print(result.rewards)       # {"reward": 1.0}
-    print(result.n_tool_calls)  # 17
-
-    # Multi-turn — None = use task's instruction.md
-    result = await sdk.run(
-        task_path="path/to/task",
-        agent="claude-agent-acp",
-        prompts=[
-            None,
-            "Review your solution. Check for errors, test it, and fix any issues.",
-        ],
-        environment="daytona",
-    )
-
-    # Job — run a full benchmark with concurrency and retries
-    job = Job(
-        tasks_dir="path/to/tasks",
-        jobs_dir="jobs/tb2",
-        config=JobConfig(
-            agent="claude-agent-acp",
-            model="claude-haiku-4-5-20251001",
-            environment="daytona",
-            concurrency=64,
-        ),
-    )
-    result = await job.run()
-    print(f"{result.passed}/{result.total} ({result.score:.1%})")
-
-    # Metrics — aggregate results from a jobs directory
-    metrics = collect_metrics("jobs/tb2", benchmark="TB2")
-    print(metrics.summary())
-
-asyncio.run(main())
+result = await SDK().run(task_path="path/to/task", agent="claude-agent-acp")
+print(result.rewards)  # {"reward": 1.0}
 ```
+
+Single task, multi-turn, full benchmark jobs, and programmatic metrics — see [docs/getting-started.md](docs/getting-started.md).
 
 ## CLI
 
 ```bash
-# Run a single task
-benchflow run -t task/ -a claude-agent-acp -m claude-haiku-4-5-20251001 -e daytona
-
-# Run a benchmark job
-benchflow job -t tasks/ -a claude-agent-acp -c 64 -e daytona --retries 1
-
-# List agents
-benchflow agents
-
-# View metrics
-benchflow metrics jobs/tb2/ --json
-benchflow metrics jobs/tb2/
-
-# Evaluate a skill against tasks
-benchflow eval -t tasks/ --skills-dir skills/ -a claude-agent-acp -e daytona
-
-# List/install skills
-benchflow skills
-benchflow skills --install owner/repo@skill-name
-
-# View trajectory
-benchflow view jobs/tb2/my-trial/
-
-# Create/validate tasks
-benchflow tasks init my-task     # scaffold a new task directory
-benchflow tasks check tasks/my-task/  # validate task structure
+benchflow run -t path/to/task -a claude-agent-acp   # single task
+benchflow job -t tasks/ -a claude-agent-acp -c 1    # benchmark job
+benchflow metrics jobs/                              # aggregate results
+benchflow view jobs/my-job/my-trial/                # trajectory viewer
 ```
+
+Full flag reference for all 8 subcommands: [docs/cli-reference.md](docs/cli-reference.md).
 
 ## Agents
 
@@ -130,7 +70,7 @@ benchflow agents              # list registered agents
 benchflow run -t task/ -a pi-acp -e daytona
 ```
 
-See [.dev-docs/tested-agents.md](.dev-docs/tested-agents.md) for the full list of tested agent × model/provider combinations.
+See [docs/architecture.md](docs/architecture.md#registry-pattern) for the full tested agent × model/provider matrix and how to add your own.
 
 ## Environments
 
@@ -141,24 +81,9 @@ See [.dev-docs/tested-agents.md](.dev-docs/tested-agents.md) for the full list o
 
 ## How it Works
 
-```
-benchflow (host)                          Sandbox (Docker/Daytona)
-     |                                         |
-     |  1. Start environment (Harbor)          |
-     |  2. Install ACP agent (npm)             |
-     |  3. stdio pipe (exec/SSH) --------> claude-agent-acp
-     |                                         |
-     |  ACP: initialize                        |
-     |  ACP: session/new(cwd) --------------> agent sees workspace, skills
-     |  ACP: session/set_model(haiku) ------> model configured
-     |  ACP: session/prompt("solve this") --> agent uses Bash, Read, Write
-     |  ACP: session/update <---------------- tool calls, messages, thoughts
-     |  ACP: session/prompt("test it") -----> same session, full context
-     |  ACP: session/update <---------------- more tool calls
-     |                                         |
-     |  4. Run verifier (Harbor) -----------> tests/test.sh → reward.txt
-     |  5. Stop environment                    |
-```
+BenchFlow starts a sandboxed environment, connects to the agent via ACP over a live stdio pipe, sends one or more prompts (the agent retains full context between turns), then runs the verifier and captures the full trajectory.
+
+See [docs/architecture.md](docs/architecture.md) for SDK run phases, ACP protocol details, and the registry pattern.
 
 ## Task Format
 
@@ -174,6 +99,8 @@ my-task/
 │   └── test.sh            # verifier → reward.txt
 └── solution/              # optional reference solution
 ```
+
+Full `task.toml` schema, verifier contract, and a worked example: [docs/task-authoring.md](docs/task-authoring.md).
 
 ## Results
 
@@ -194,7 +121,25 @@ jobs/{job_name}/{trial_name}/
     └── reward.txt           # reward value
 ```
 
-## Benchmark Results
+## Benchmarks
+
+Tasks are auto-downloaded on first run (cloned into `.ref/`).
+
+**SkillsBench** (86 tasks — tool use, file editing, API calls):
+
+```bash
+python benchmarks/run_skillsbench.py benchmarks/skillsbench-claude-glm5.yaml   # Claude
+python benchmarks/run_skillsbench.py benchmarks/skillsbench-codex-gpt54.yaml   # Codex
+```
+
+**Terminal-Bench 2** (89 tasks — shell, git, compilers, daemons):
+
+```bash
+python benchmarks/run_tb2.py benchmarks/tb2_single-codex-gpt54.yaml      # single-turn
+python benchmarks/run_tb2.py benchmarks/tb2_multiturn-codex-gpt54.yaml   # multi-turn
+```
+
+Shipped configs use `environment: daytona` and `concurrency: 8`. For local Docker: `--env docker --concurrency 1`.
 
 | Benchmark | Agent | Model | Score |
 |-----------|-------|-------|-------|
@@ -214,15 +159,7 @@ Validation tasks in `.claude/skills/benchflow/tasks/` confirm agents can use the
 
 ## Architecture
 
-BenchFlow provides:
-
-- **ACP client** — multi-turn agent communication via live stdio pipe
-- **Job orchestration** — concurrency, retries, resume, metrics
-- **Multi-agent registry** — auto-install agents in sandboxes
-- **Trajectory capture** — from ACP protocol
-- **Skills** — teach agents to use BenchFlow itself
-- **Viewer** — HTML trajectory visualization
-- **CLI** — `run`, `job`, `agents`, `metrics`, `view`, `eval`, `skills`, `tasks`, `cleanup`
+ACP client, job orchestration, multi-agent registry, trajectory capture, skills, viewer, and CLI — see [docs/architecture.md](docs/architecture.md).
 
 ## Citation
 

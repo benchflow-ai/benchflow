@@ -312,17 +312,24 @@ class SDK:
             await env.upload_dir(task_path / "solution", "/solution")
 
     async def _run_oracle(
-        self, env, task_path: Path, timeout: int
+        self, env, task_path: Path, timeout: int, sandbox_user: str | None = None
     ) -> tuple[list[dict], str]:
         """Run oracle mode (solution/solve.sh), return (trajectory, agent_name)."""
         logger.info("Oracle mode: running solution/solve.sh")
         if not (task_path / "solution" / "solve.sh").exists():
             raise FileNotFoundError(f"Oracle requires solution/solve.sh: {task_path}")
-        result = await env.exec(
-            "chmod +x /solution/solve.sh && "
-            "/solution/solve.sh 2>&1 | tee /logs/agent/oracle.txt",
-            timeout_sec=timeout,
-        )
+        if sandbox_user:
+            cmd = (
+                f"chmod +x /solution/solve.sh && "
+                f"su -s /bin/bash {sandbox_user} -c /solution/solve.sh"
+                f" 2>&1 | tee /logs/agent/oracle.txt"
+            )
+        else:
+            cmd = (
+                "chmod +x /solution/solve.sh && "
+                "/solution/solve.sh 2>&1 | tee /logs/agent/oracle.txt"
+            )
+        result = await env.exec(cmd, timeout_sec=timeout)
         if result.return_code != 0:
             logger.warning(f"Oracle solve.sh exited with rc={result.return_code}")
         trajectory = [
@@ -488,7 +495,12 @@ class SDK:
                 await hook(env)
 
             if agent == "oracle":
-                trajectory, agent_name = await self._run_oracle(env, task_path, timeout)
+                if sandbox_user:
+                    await setup_sandbox_user(env, sandbox_user, workspace="/app")
+                await lockdown_paths(env, effective_locked)
+                trajectory, agent_name = await self._run_oracle(
+                    env, task_path, timeout, sandbox_user
+                )
             else:
                 agent_cfg = await install_agent(env, agent, trial_dir)
                 cred_home = f"/home/{sandbox_user}" if sandbox_user else "/root"
