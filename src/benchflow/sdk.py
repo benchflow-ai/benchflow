@@ -507,7 +507,7 @@ class SDK:
                 if sandbox_user:
                     await setup_sandbox_user(env, sandbox_user, workspace=agent_cwd)
                     await _snapshot_build_config(env, workspace=agent_cwd)
-                    await _setup_verifier_user(env)
+                    await _setup_verifier_user(env, workspace=agent_cwd)
                 await lockdown_paths(env, effective_locked)
                 trajectory, agent_name = await self._run_oracle(
                     env, task_path, timeout, sandbox_user
@@ -537,7 +537,7 @@ class SDK:
                     # before the agent launches — both have ordering invariants
                     # that require a clean pre-agent workspace state.
                     await _snapshot_build_config(env, workspace=agent_cwd)
-                    await _setup_verifier_user(env)
+                    await _setup_verifier_user(env, workspace=agent_cwd)
 
                 await deploy_skills(
                     env,

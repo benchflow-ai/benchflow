@@ -185,15 +185,14 @@ class TestVerifierDirWipe:
         )
         assert match.kwargs.get("user") == "root"
 
-    def test_cleanup_cmd_maxdepth_at_least_10(self):
-        """find -maxdepth must be ≥10 so conftest.py nested deep in the workspace is caught."""
-        import re
-
+    def test_cleanup_cmd_no_maxdepth(self):
+        """CLEANUP_CMD must not limit find depth so deeply nested conftest.py is caught."""
         from benchflow._sandbox import CLEANUP_CMD
 
-        m = re.search(r"-maxdepth\s+(\d+)", CLEANUP_CMD)
-        assert m is not None, "CLEANUP_CMD has no -maxdepth"
-        assert int(m.group(1)) >= 10, f"maxdepth {m.group(1)} is too shallow (need ≥10)"
+        assert "-maxdepth" not in CLEANUP_CMD, (
+            "CLEANUP_CMD has a -maxdepth limit — conftest.py nested beyond that "
+            "depth escapes the sweep"
+        )
 
     @pytest.mark.asyncio
     async def test_cleanup_cmd_runs_as_root(self):
@@ -433,6 +432,44 @@ class TestBuildConfigSnapshot:
 
         assert not any("chmod -R a-w" in c.args[0] for c in env.exec.call_args_list)
 
+    @pytest.mark.asyncio
+    async def test_full_workspace_restore_from_testbed_verify(self):
+        """When workspace is set, a full restore from /testbed_verify is attempted.
+
+        This closes F2: agent-modified source files (e.g. /testbed/src/pkg/utils.py)
+        are reset to pre-agent canonical state from the snapshot copy, not just the
+        11-file build-config subset.  rsync is tried first; cp -a is the fallback.
+        """
+        from benchflow._sandbox import harden_before_verify
+
+        env = _make_env(side_effect=_manifest_env(_blank_manifest()))
+        await harden_before_verify(
+            env, _make_task(), sandbox_user=None, workspace="/testbed"
+        )
+
+        restore_call = next(
+            (
+                c
+                for c in env.exec.call_args_list
+                if "/testbed_verify" in c.args[0]
+                and "rsync" in c.args[0]
+                and "/testbed" in c.args[0]
+            ),
+            None,
+        )
+        assert restore_call is not None, (
+            "full workspace restore from /testbed_verify not found — "
+            "agent-modified source files survive to the verifier"
+        )
+        assert restore_call.kwargs.get("user") == "root"
+        # Full restore must run before the freeze so canonical files get locked.
+        calls = [c.args[0] for c in env.exec.call_args_list]
+        restore_idx = next(
+            i for i, c in enumerate(calls) if "/testbed_verify" in c and "rsync" in c
+        )
+        freeze_idx = next(i for i, c in enumerate(calls) if "chmod -R a-w" in c)
+        assert restore_idx < freeze_idx, "full restore must precede workspace freeze"
+
     def test_build_config_files_matches_test_constant(self):
         """_ALL_BUILD_FILES in this test file must mirror _BUILD_CONFIG_FILES in the implementation.
 
@@ -569,6 +606,7 @@ class TestVerifierEnv:
             "PYTEST_ADDOPTS",
             "PYTEST_DISABLE_PLUGIN_AUTOLOAD",
             "PYTHONDONTWRITEBYTECODE",
+            "PYTHONPYCACHEPREFIX",
             "PYTHONPATH",
             "PYTHONSTARTUP",
             "PYTHONSAFEPATH",
@@ -578,6 +616,10 @@ class TestVerifierEnv:
             "PIP_USER",
             "PIP_NO_USER_CONFIG",
             "HOME",
+            "PYTHONBREAKPOINT",
+            "COVERAGE_PROCESS_START",
+            "DJANGO_SETTINGS_MODULE",
+            "CELERY_CONFIG_MODULE",
         }
 
         assert "-c /dev/null" in addopts
@@ -706,6 +748,126 @@ class TestVerifierEnv:
         assert addopts.startswith(VERIFIER_ENV["PYTEST_ADDOPTS"])
         assert "-p pytest-json-ctrf" in addopts
         assert "--rootdir=/evil" not in addopts
+
+    def test_pythonpycacheprefix_set_to_nonexistent(self):
+        """PYTHONPYCACHEPREFIX must redirect .pyc lookups away from __pycache__ dirs.
+
+        Without this, an agent can pre-compile a malicious payload into
+        workspace/__pycache__/*.pyc and have it execute despite PYTHONDONTWRITEBYTECODE=1
+        (which only blocks new writes, not reading existing bytecode).
+        """
+        from benchflow._sandbox import VERIFIER_ENV
+
+        assert VERIFIER_ENV.get("PYTHONPYCACHEPREFIX") == "/nonexistent"
+
+    @pytest.mark.asyncio
+    async def test_symlinks_purged_before_workspace_freeze(self):
+        """Symlinks in the workspace must be deleted before freezing.
+
+        Without this, a symlink planted by the agent (e.g. utils.py -> /tmp/evil.py)
+        survives the freeze; the target is outside the frozen area and remains
+        writable, so agent code still executes on import.
+        """
+        from benchflow._sandbox import harden_before_verify
+
+        env = _make_env(side_effect=_manifest_env(_blank_manifest()))
+        await harden_before_verify(
+            env, _make_task(), sandbox_user=None, workspace="/testbed"
+        )
+
+        symlink_purge = next(
+            (
+                c
+                for c in env.exec.call_args_list
+                if "find" in c.args[0]
+                and "-type l" in c.args[0]
+                and "-delete" in c.args[0]
+                and "/testbed" in c.args[0]
+            ),
+            None,
+        )
+        assert symlink_purge is not None, (
+            "symlink purge not found — agent symlinks pointing to external "
+            "writable targets survive the workspace freeze"
+        )
+        assert symlink_purge.kwargs.get("user") == "root"
+        # Symlink purge must run before the freeze.
+        calls = [c.args[0] for c in env.exec.call_args_list]
+        symlink_idx = next(
+            i for i, c in enumerate(calls) if "-type l" in c and "-delete" in c
+        )
+        freeze_idx = next(i for i, c in enumerate(calls) if "chmod -R a-w" in c)
+        assert symlink_idx < freeze_idx, "symlink purge must precede workspace freeze"
+
+    @pytest.mark.asyncio
+    async def test_pycache_purged_during_workspace_freeze(self):
+        """__pycache__ directories must be deleted before the workspace is frozen.
+
+        Defense-in-depth against PYTHONPYCACHEPREFIX bypass: even if the prefix
+        redirect is circumvented, pre-staged .pyc files are physically gone.
+        """
+        from benchflow._sandbox import harden_before_verify
+
+        env = _make_env(side_effect=_manifest_env(_blank_manifest()))
+        await harden_before_verify(
+            env, _make_task(), sandbox_user=None, workspace="/testbed"
+        )
+
+        purge_call = next(
+            (
+                c
+                for c in env.exec.call_args_list
+                if "__pycache__" in c.args[0] and "rm -rf" in c.args[0]
+            ),
+            None,
+        )
+        assert purge_call is not None, (
+            "__pycache__ purge not found — pre-compiled .pyc bytecode not mitigated"
+        )
+        assert purge_call.kwargs.get("user") == "root"
+        # Purge must happen before the chown/chmod freeze
+        calls = [c.args[0] for c in env.exec.call_args_list]
+        purge_idx = next(
+            i for i, c in enumerate(calls) if "__pycache__" in c and "rm -rf" in c
+        )
+        freeze_idx = next(i for i, c in enumerate(calls) if "chown -R root:root" in c)
+        assert purge_idx < freeze_idx, "pycache purge must run before workspace freeze"
+
+    def test_code_execution_env_vars_cleared(self):
+        """Env vars that trigger arbitrary code execution must be neutralised.
+
+        PYTHONBREAKPOINT: any value other than "0" imports an arbitrary callable.
+        COVERAGE_PROCESS_START: coverage.py executes plugins/config on startup.
+        DJANGO_SETTINGS_MODULE: Django imports the named module at startup.
+        CELERY_CONFIG_MODULE: Celery imports and executes the named module.
+        """
+        from benchflow._sandbox import VERIFIER_ENV
+
+        assert VERIFIER_ENV["PYTHONBREAKPOINT"] == "0"
+        assert VERIFIER_ENV["COVERAGE_PROCESS_START"] == ""
+        assert VERIFIER_ENV["DJANGO_SETTINGS_MODULE"] == ""
+        assert VERIFIER_ENV["CELERY_CONFIG_MODULE"] == ""
+
+    @pytest.mark.asyncio
+    async def test_code_execution_env_vars_repinned_after_task_merge(self):
+        """Task env must not be able to override code-execution env vars."""
+        from benchflow._sandbox import harden_before_verify
+
+        env = _make_env()
+        task = _make_task()
+        task.config.verifier.env = {
+            "PYTHONBREAKPOINT": "os:system",
+            "COVERAGE_PROCESS_START": "/testbed/.coveragerc",
+            "DJANGO_SETTINGS_MODULE": "evil.settings",
+            "CELERY_CONFIG_MODULE": "evil.celeryconfig",
+        }
+        await harden_before_verify(env, task, sandbox_user=None)
+
+        result = task.config.verifier.env
+        assert result["PYTHONBREAKPOINT"] == "0"
+        assert result["COVERAGE_PROCESS_START"] == ""
+        assert result["DJANGO_SETTINGS_MODULE"] == ""
+        assert result["CELERY_CONFIG_MODULE"] == ""
 
     def test_pythonhome_not_set(self):
         """PYTHONHOME must not be set — even "" breaks Py_Initialize."""

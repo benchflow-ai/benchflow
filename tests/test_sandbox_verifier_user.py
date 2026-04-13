@@ -105,11 +105,11 @@ async def test_setup_verifier_user_chowns_logs_verifier():
 
 @pytest.mark.asyncio
 async def test_setup_verifier_user_creates_testbed_verify():
-    """/testbed_verify is wiped, seeded from /testbed, chowned root, made world-readable; runs as root."""
+    """/testbed_verify is wiped, seeded from workspace, chowned root, made world-readable; runs as root."""
     from benchflow._sandbox import _setup_verifier_user
 
     env = _make_env()
-    await _setup_verifier_user(env)
+    await _setup_verifier_user(env, workspace="/testbed")
 
     pairs = _cmds(env)
 
@@ -140,6 +140,25 @@ async def test_setup_verifier_user_creates_testbed_verify():
     assert rm_idx is not None, "rm -rf /testbed_verify not found"
     assert cp_idx is not None, "cp -a /testbed /testbed_verify not found"
     assert rm_idx <= cp_idx, "rm -rf /testbed_verify must precede cp -a"
+
+
+@pytest.mark.asyncio
+async def test_setup_verifier_user_seeds_from_workspace_param():
+    """workspace param controls which directory is copied to /testbed_verify."""
+    from benchflow._sandbox import _setup_verifier_user
+
+    env = _make_env()
+    await _setup_verifier_user(env, workspace="/app")
+
+    cmds_list = [c.args[0] for c in env.exec.call_args_list]
+    seed_cmd = next(
+        (c for c in cmds_list if "cp -a" in c and "/testbed_verify" in c), None
+    )
+    assert seed_cmd is not None, "seed command not found"
+    assert "/app" in seed_cmd, "workspace=/app must be seeded into /testbed_verify"
+    assert "/testbed " not in seed_cmd, (
+        "default /testbed must not appear when workspace=/app"
+    )
 
 
 @pytest.mark.asyncio

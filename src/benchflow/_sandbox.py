@@ -245,13 +245,14 @@ async def _restore_build_config(env, workspace: str) -> None:
 _VERIFIER_USER = "verifier"
 
 
-async def _setup_verifier_user(env) -> None:
+async def _setup_verifier_user(env, workspace: str = "/testbed") -> None:
     """Create a dedicated non-root OS user to run the verifier phase.
 
     Called once after setup_sandbox_user, before agent launch.
     - Locks /logs/ parent so sandbox_user cannot rename /logs/verifier/ out.
     - Seeds /testbed_verify as a root-owned read-only copy of the workspace
-      so the verifier never touches agent-writable /testbed.
+      so harden_before_verify can restore the full workspace to pre-agent
+      canonical state before freezing.
     """
     cmds = [
         # Lock /logs/ parent: sandbox_user cannot rename /logs/verifier/ out.
@@ -273,11 +274,10 @@ async def _setup_verifier_user(env) -> None:
         f"mkdir -p /logs/verifier && "
         f"chown {_VERIFIER_USER}:{_VERIFIER_USER} /logs/verifier && "
         f"chmod 700 /logs/verifier",
-        # Seed root-owned read-only workspace copy. Tier 2 restore and
-        # _refresh_verifier_workspace update build-config files here before
-        # the verifier runs.
-        "rm -rf /testbed_verify && cp -a /testbed /testbed_verify && "
-        "chown -R root:root /testbed_verify && chmod -R o+rX /testbed_verify",
+        # Seed root-owned read-only workspace copy from the actual workspace
+        # (may differ from /testbed for tasks with WORKDIR=/app etc.).
+        f"rm -rf /testbed_verify && cp -a {shlex.quote(workspace)} /testbed_verify && "
+        f"chown -R root:root /testbed_verify && chmod -R o+rX /testbed_verify",
     ]
     for cmd in cmds:
         await env.exec(cmd, user="root")
@@ -323,6 +323,9 @@ VERIFIER_ENV: dict[str, str] = {
     # in task.toml [verifier] pytest_plugins = [...].
     "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
     "PYTHONDONTWRITEBYTECODE": "1",
+    # Redirect .pyc cache reads/writes to a non-existent directory so
+    # agent-pre-compiled __pycache__ bytecode is never found or executed.
+    "PYTHONPYCACHEPREFIX": "/nonexistent",
     "PYTHONPATH": "",
     "PYTHONSTARTUP": "",
     "PYTHONSAFEPATH": "1",  # drop implicit '' (cwd) from sys.path
@@ -334,6 +337,13 @@ VERIFIER_ENV: dict[str, str] = {
     "PIP_NO_USER_CONFIG": "1",
     # Force HOME to a non-existent path so pip cannot read any pre-staged pip.conf.
     "HOME": "/nonexistent",
+    # Disable breakpoint() — any other value imports an arbitrary callable.
+    "PYTHONBREAKPOINT": "0",
+    # Prevent coverage.py from importing a config file as Python on startup.
+    "COVERAGE_PROCESS_START": "",
+    # Prevent Django/Celery from importing an agent-controlled module at startup.
+    "DJANGO_SETTINGS_MODULE": "",
+    "CELERY_CONFIG_MODULE": "",
 }
 
 # Wipe and recreate /logs/verifier/ before the verifier runs.
@@ -346,7 +356,7 @@ _CLEAR_VERIFIER_DIR_CMD = (
 # Remove injected conftest.py, sitecustomize.py/usercustomize.py, and .pth
 # files from writable sys.path entries (preserves /usr/lib, /usr/local/lib).
 CLEANUP_CMD = (
-    "find / -maxdepth 10 -name conftest.py -not -path '/tests/*' -delete 2>/dev/null; "
+    "find / -name conftest.py -not -path '/tests/*' -delete 2>/dev/null; "
     'python3 -c "'
     "import sys,os;"
     "[os.remove(os.path.join(d,f)) "
@@ -373,6 +383,9 @@ async def harden_before_verify(
        /logs/verifier/ with a clean root-owned directory.
     3. Restore build-config files to pre-agent state (if workspace provided).
     4. Sync restored build-config files into /testbed_verify (if workspace provided).
+    4b.Full workspace restore from /testbed_verify — resets ALL source files to
+       pre-agent canonical state, not just the build-config subset.
+    4c.Purge symlinks and __pycache__ trees from workspace.
     5. Freeze workspace read-only (chown root + chmod a-w) so editable-install
        source files cannot execute agent code during the verify phase.
     6. Remove injected conftest.py, sitecustomize.py, .pth files.
@@ -405,6 +418,32 @@ async def harden_before_verify(
     if workspace:
         await _restore_build_config(env, workspace)
         await _refresh_verifier_workspace(env, workspace)
+        # Full workspace restore from /testbed_verify (the pre-agent canonical
+        # copy) so ALL source files — not just build-config files — are reset
+        # to their pre-agent state before freezing.  Closes the editable-install
+        # source modification vector (F2): agent rewrites /testbed/src/pkg/x.py
+        # during its phase; this step restores x.py to canonical before verify.
+        await env.exec(
+            f"if [ -d /testbed_verify ]; then "
+            f"  rsync -a --delete /testbed_verify/ {shlex.quote(workspace)}/ 2>/dev/null || "
+            f"  (rm -rf {shlex.quote(workspace)} && cp -a /testbed_verify/. {shlex.quote(workspace)}/); "
+            f"fi",
+            user="root",
+        )
+        # Purge symlinks so an agent-planted symlink pointing to a writable
+        # external target (e.g. utils.py -> /tmp/evil.py) cannot be followed
+        # during import after the workspace is frozen.
+        await env.exec(
+            f"find {shlex.quote(workspace)} -type l -delete 2>/dev/null; true",
+            user="root",
+        )
+        # Purge __pycache__ trees so pre-compiled .pyc bytecode cannot execute
+        # even if PYTHONPYCACHEPREFIX is bypassed (defense-in-depth).
+        await env.exec(
+            f"find {shlex.quote(workspace)} -type d -name '__pycache__'"
+            f" -exec rm -rf {{}} + 2>/dev/null; true",
+            user="root",
+        )
         # Freeze the workspace read-only so agent-modified source files in
         # editable installs (e.g. /testbed/src/pkg/utils.py) cannot execute
         # during the verifier phase. Agent is already dead at this point.
@@ -419,8 +458,13 @@ async def harden_before_verify(
     if task.config.verifier.env:
         verifier_env.update(task.config.verifier.env)
     # Hard security invariants — re-pin after task-env merge so a task cannot
-    # strip -c /dev/null / --confcutdir or re-enable entry-point plugin loading.
+    # strip -c /dev/null / --confcutdir, re-enable entry-point plugin loading,
+    # or inject code via breakpoint()/coverage/Django/Celery startup hooks.
     verifier_env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
+    verifier_env["PYTHONBREAKPOINT"] = "0"
+    verifier_env["COVERAGE_PROCESS_START"] = ""
+    verifier_env["DJANGO_SETTINGS_MODULE"] = ""
+    verifier_env["CELERY_CONFIG_MODULE"] = ""
     # Re-enable explicitly declared plugins by appending -p flags to the
     # hardened base — never to a task-supplied PYTEST_ADDOPTS.
     allowed_plugins = task.config.verifier.pytest_plugins or []
