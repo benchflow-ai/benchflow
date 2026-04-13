@@ -21,6 +21,7 @@
 ### Changed
 
 - Version is now single-sourced via `importlib.metadata`; no more duplicate version string in `__init__.py`.
+- **User-facing docs** — new `docs/` directory with getting-started guide, CLI reference, architecture overview, task-authoring guide, and labs index. README trimmed; detailed content moved to `docs/`.
 
 ## 0.2.0 — 2026-04-09
 
