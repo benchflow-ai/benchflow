@@ -242,11 +242,79 @@ async def _restore_build_config(env, workspace: str) -> None:
         await env.exec(cmd, user="root")
 
 
+# ── Verifier user setup (Tier 3) ─────────────────────────────────────────────
+
+# Dedicated non-root OS user that runs the verifier phase.
+# Tasks that genuinely need root (e.g. apt-get in test.sh) can opt out by
+# setting `[verifier] user = "root"` in task.toml — that will log a warning.
+_VERIFIER_USER = "verifier"
+
+
+async def _setup_verifier_user(env) -> None:
+    """Create a dedicated non-root OS user to run the verifier phase.
+
+    Called once after setup_sandbox_user, before the agent launches.
+    Establishes the verifier's home directory and ownership of /logs/verifier/,
+    and locks the /logs/ parent so the sandbox_user cannot rename
+    /logs/verifier/ out and replace it with a world-writable directory.
+    Also seeds a read-only copy of the workspace in /testbed_verify so the
+    verifier runs against root-owned files, not the agent-writable /testbed.
+    """
+    cmds = [
+        # Lock /logs/ parent: sandbox_user cannot rename /logs/verifier/ out.
+        "chown root:root /logs && chmod 755 /logs",
+        # System user: no login shell, no supplementary groups.
+        f"id {_VERIFIER_USER} &>/dev/null || "
+        f"useradd -r -s /bin/false "
+        f"--gid {_VERIFIER_USER} --groups '' {_VERIFIER_USER}",
+        # Wipe any pre-staged home dir the agent may have planted before useradd.
+        f"rm -rf /home/{_VERIFIER_USER} && "
+        f"mkdir -p /home/{_VERIFIER_USER} && "
+        f"chown {_VERIFIER_USER}:{_VERIFIER_USER} /home/{_VERIFIER_USER} && "
+        f"chmod 700 /home/{_VERIFIER_USER}",
+        # /logs/verifier/ must be writable by verifier so test.sh can write
+        # reward.txt. Tier 1 resets this to 777 at hardentime; here we
+        # establish ownership before the agent starts as a structural guard.
+        f"mkdir -p /logs/verifier && "
+        f"chown {_VERIFIER_USER}:{_VERIFIER_USER} /logs/verifier && "
+        f"chmod 700 /logs/verifier",
+        # Seed a root-owned read-only copy of the workspace. The Tier 2
+        # restore and _refresh_verifier_workspace update build-config files
+        # here before the verifier runs. The verifier's workdir is set to
+        # /testbed_verify so it never touches the agent-writable /testbed.
+        "rm -rf /testbed_verify && cp -a /testbed /testbed_verify && "
+        "chown -R root:root /testbed_verify && chmod -R o+rX /testbed_verify",
+    ]
+    for cmd in cmds:
+        await env.exec(cmd, user="root")
+
+
+async def _refresh_verifier_workspace(env, workspace: str) -> None:
+    """Copy restored build-config files into the read-only verifier workspace.
+
+    Called in harden_before_verify after _restore_build_config, so that
+    /testbed_verify reflects the canonical pre-agent build-config state
+    rather than whatever the agent may have written.
+    """
+    for fname in _BUILD_CONFIG_FILES:
+        src = f"{workspace}/{fname}"
+        dst = f"/testbed_verify/{fname}"
+        cmd = (
+            f"if [ -f {src} ]; then "
+            f"  cp --preserve=timestamps {src} {dst} "
+            f"  && chown root:root {dst} && chmod 644 {dst}; "
+            f"else "
+            f"  rm -f {dst}; "
+            f"fi"
+        )
+        await env.exec(cmd, user="root")
+
+
 # ── Verifier hardening ────────────────────────────────────────────────────────
 
 # Trusted env vars for verifier execution — override any agent pollution.
 # Intentionally omitted (negative guards in test_verify.py explain why):
-# PYTEST_DISABLE_PLUGIN_AUTOLOAD, PYTHONNOUSERSITE, PYTHONHOME.
+# PYTEST_DISABLE_PLUGIN_AUTOLOAD, PYTHONHOME.
 VERIFIER_ENV: dict[str, str] = {
     "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
     "PYTEST_ADDOPTS": (
@@ -261,6 +329,14 @@ VERIFIER_ENV: dict[str, str] = {
     "PYTHONSAFEPATH": "1",  # drop implicit '' (cwd) from sys.path
     "LD_PRELOAD": "",
     "LD_LIBRARY_PATH": "",
+    # Prevent pip from writing to user site-packages during pip install -e .
+    # so that no .pth files land in the verifier home or user site-packages.
+    "PYTHONNOUSERSITE": "1",
+    "PIP_USER": "0",
+    "PIP_NO_USER_CONFIG": "1",
+    # Force HOME to a non-existent path so pip cannot read any pre-staged
+    # pip.conf even if /home/verifier/ was not successfully cleared.
+    "HOME": "/nonexistent",
 }
 
 # Wipe and recreate /logs/verifier/ before the verifier runs.
@@ -306,9 +382,22 @@ async def harden_before_verify(
     3. Restore build-config files (setup.py, pyproject.toml, etc.) to their
        pre-agent state so that pip/test runners see the originals, not agent-
        modified versions. Only runs when workspace is provided.
-    4. Remove injected conftest.py, sitecustomize.py, .pth files.
-    5. Merge trusted env vars into task.config.verifier.env.
+    4. Sync restored build-config files into /testbed_verify. Only runs when
+       workspace is provided.
+    5. Remove injected conftest.py, sitecustomize.py, .pth files.
+    6. Merge trusted env vars into task.config.verifier.env.
+    7. Set verifier user to the dedicated non-root account unless the task
+       has explicitly opted out via task.config.verifier.user.
     """
+    # Resolve verifier user before any mutation so hooks cannot override it.
+    _resolved_verifier_user = (
+        task.config.verifier.user
+        if task.config.verifier.user is not None
+        else _VERIFIER_USER
+    )
+    if _resolved_verifier_user == "root":
+        logger.warning("verifier running as root (opt-out set in task.toml)")
+
     if sandbox_user:
         await env.exec(
             f"pkill -u {sandbox_user} 2>/dev/null; "
@@ -326,9 +415,11 @@ async def harden_before_verify(
     await env.exec(_CLEAR_VERIFIER_DIR_CMD, user="root")
     if workspace:
         await _restore_build_config(env, workspace)
+        await _refresh_verifier_workspace(env, workspace)
     await env.exec(CLEANUP_CMD, timeout_sec=10)
 
     verifier_env = dict(VERIFIER_ENV)
     if task.config.verifier.env:
         verifier_env.update(task.config.verifier.env)
     task.config.verifier.env = verifier_env
+    task.config.verifier.user = _resolved_verifier_user

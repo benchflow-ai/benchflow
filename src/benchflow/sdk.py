@@ -112,6 +112,7 @@ from benchflow._env_setup import (
 )
 from benchflow._sandbox import (
     _resolve_locked_paths,
+    _setup_verifier_user,
     _snapshot_build_config,
     harden_before_verify,
     lockdown_paths,
@@ -525,10 +526,11 @@ class SDK:
                     agent_cwd = await setup_sandbox_user(
                         env, sandbox_user, workspace=agent_cwd
                     )
-                    # Snapshot build-config files before agent runs (closes G7
-                    # ordering invariant — must be after setup_sandbox_user but
-                    # before agent launch).
+                    # Snapshot build-config files and create the verifier user
+                    # before the agent launches — both have ordering invariants
+                    # that require a clean pre-agent workspace state.
                     await _snapshot_build_config(env, workspace=agent_cwd)
+                    await _setup_verifier_user(env)
 
                 await deploy_skills(
                     env,
