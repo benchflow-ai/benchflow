@@ -467,12 +467,8 @@ async def harden_before_verify(
     verifier_env["DJANGO_SETTINGS_MODULE"] = ""
     verifier_env["CELERY_CONFIG_MODULE"] = ""
     # Re-enable explicitly declared plugins by appending -p flags to the
-    # hardened base — never to a task-supplied PYTEST_ADDOPTS. getattr guard
-    # because harbor's VerifierConfig doesn't declare `pytest_plugins` —
-    # without it every verifier run hits AttributeError before any defense
-    # layer executes (caught live on matplotlib/terminal-bench/skillsbench
-    # trials against this branch). A future harbor release can promote the
-    # field into VerifierConfig proper.
+    # hardened base — never to a task-supplied PYTEST_ADDOPTS.
+    # getattr: field absent in older harbor deployments; bare access was a live crash.
     allowed_plugins = getattr(task.config.verifier, "pytest_plugins", None) or []
     base_addopts = VERIFIER_ENV["PYTEST_ADDOPTS"]
     if allowed_plugins:
