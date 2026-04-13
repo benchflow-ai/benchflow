@@ -130,6 +130,7 @@ celerybeat.pid
 # Environments
 .env
 .venv
+.venvs/
 env/
 venv/
 ENV/
@@ -175,6 +176,7 @@ cython_debug/
 .ref/
 trials/
 jobs/
+.jobs/
 dogfood/
 tmp/
 .claude/settings.local.json
