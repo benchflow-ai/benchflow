@@ -504,7 +504,9 @@ class TestVerifierHardening:
         assert "--rootdir=/tests" in injected["PYTEST_ADDOPTS"]
         assert "-p no:cacheprovider" in injected["PYTEST_ADDOPTS"]
         assert injected["PYTHONPATH"] == ""
-        assert injected["PYTHONHOME"] == ""
+        assert (
+            "PYTHONHOME" not in injected
+        )  # see _sandbox.py comment — breaks Py_Initialize
         assert injected["PYTHONDONTWRITEBYTECODE"] == "1"
 
     @pytest.mark.asyncio
@@ -558,7 +560,6 @@ class TestVerifierHardening:
             "PYTEST_ADDOPTS",
             "PYTHONDONTWRITEBYTECODE",
             "PYTHONPATH",
-            "PYTHONHOME",
             "PYTHONSTARTUP",
             "PYTHONSAFEPATH",
             "LD_PRELOAD",
@@ -583,7 +584,6 @@ class TestVerifierHardening:
 
         # Pattern 7 hardening (pre-existing)
         assert env["PYTHONPATH"] == ""
-        assert env["PYTHONHOME"] == ""
         assert env["PYTHONDONTWRITEBYTECODE"] == "1"
         assert (
             env["PATH"]
@@ -605,6 +605,31 @@ class TestVerifierHardening:
         from benchflow._sandbox import VERIFIER_ENV
 
         assert "PYTEST_DISABLE_PLUGIN_AUTOLOAD" not in VERIFIER_ENV
+
+    def test_pythonhome_not_set(self):
+        """Negative guard: PYTHONHOME must NOT be in VERIFIER_ENV.
+
+        Setting PYTHONHOME="" (empty string) is NOT equivalent to leaving it
+        unset. CPython reads the empty string as the installation prefix,
+        fails to locate lib/python3.X/encodings under the empty prefix, and
+        aborts during Py_Initialize with
+        `ModuleNotFoundError: No module named 'encodings'`. This breaks any
+        verifier test.sh that spawns a fresh Python interpreter — seen
+        deterministically on swebench astropy__7166/7336/7606/7671 whose
+        test.sh does `python -m pip install -e .[test]` before pytest runs.
+
+        Defense-in-depth for PYTHONHOME is already covered structurally:
+        sandbox_user cannot set env vars that persist across `docker exec`
+        boundaries, so an agent-set PYTHONHOME never reaches the verifier
+        subprocess, and nothing in our base images sets PYTHONHOME.
+
+        A developer who wants to reintroduce a PYTHONHOME defense must use
+        a real "unset" mechanism (not empty string), update _sandbox.py's
+        VERIFIER_ENV comment, and update this test at the same time.
+        """
+        from benchflow._sandbox import VERIFIER_ENV
+
+        assert "PYTHONHOME" not in VERIFIER_ENV
 
     def test_dash_c_devnull_blocks_hostile_pyproject(self, tmp_path):
         """End-to-end: real pytest under `-c /dev/null` ignores agent-written
