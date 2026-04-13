@@ -3,6 +3,8 @@
 Runnable, Docker-heavy scenarios that exercise the full benchflow SDK end-to-end.
 Each entry is self-contained with its own README, orchestrator script, and prerequisites.
 
+For an indexed overview of all labs with run commands and key takeaways, see [docs/labs.md](../docs/labs.md).
+
 ## Contract
 
 Every `labs/<entry>/` must:
