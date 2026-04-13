@@ -97,7 +97,7 @@ and is composed of two class constants plus one method:
   | `PATH` | `/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin` | locked PATH (Pattern 7) |
   | `PYTEST_ADDOPTS` | `-c /dev/null --confcutdir=/tests --rootdir=/tests -p no:cacheprovider` | L1 (`-c /dev/null`) blocks `pyproject.toml`/`pytest.ini`/`tox.ini`/`setup.cfg` walk-up; L2 (`--confcutdir=/tests`) blocks `conftest.py` walk-up; rootdir pin + cache disable from original Pattern 7 |
   | `PYTHONSAFEPATH` | `1` | L4 — Python 3.11+ drops implicit `''` (cwd) from `sys.path`, blocking module-shadow via `import helpers` finding `/app/helpers.py` |
-  | `PYTHONPATH`, `PYTHONHOME` | `""` | block env-var path injection |
+  | `PYTHONPATH` | `""` | block env-var path injection (empty list = same as unset, safe) |
   | `PYTHONSTARTUP`, `LD_PRELOAD`, `LD_LIBRARY_PATH` | `""` | L5 — clear image-`ENV` carryover (zero-downside insurance against malicious base images) |
   | `PYTHONDONTWRITEBYTECODE` | `1` | no `.pyc` artifacts left behind |
 
@@ -111,6 +111,9 @@ and is composed of two class constants plus one method:
     `sys.path` entry.
   - `PYTHONNOUSERSITE=1` — root verifier means `/root/.local` is the only
     user-site on `sys.path`, and `sandbox_user` cannot write there.
+  - `PYTHONHOME=""` — not equivalent to unset; empty prefix aborts
+    `Py_Initialize` and breaks any verifier `test.sh` that spawns a fresh
+    Python (e.g. `python -m pip install` before pytest).
 - `SDK._CLEANUP_CMD` — defense-in-depth shell command:
   `find / -maxdepth 5 -name conftest.py -not -path '/tests/*' -delete`
   plus `python3 -c "import sys..."` to enumerate real `sys.path` and remove

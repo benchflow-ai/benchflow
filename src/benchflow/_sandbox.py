@@ -163,15 +163,8 @@ async def lockdown_paths(env, paths: list[str]) -> None:
 # ── Verifier hardening ────────────────────────────────────────────────────────
 
 # Trusted env vars for verifier execution — override any agent pollution.
-#
-# PYTEST_DISABLE_PLUGIN_AUTOLOAD intentionally omitted: would break ~94
-# SkillsBench tasks that rely on pytest-json-ctrf's --ctrf flag. Entry-point
-# plugin injection is already blocked by verifier-runs-as-root + system
-# site-packages permissions + the .pth cleanup in CLEANUP_CMD.
-#
-# PYTHONNOUSERSITE intentionally omitted: verifier runs as root, so the
-# only user-site dir on sys.path is /root/.local which sandbox_user cannot
-# touch, and CLEANUP_CMD already wipes .pth files there as belt-and-braces.
+# Intentionally omitted (negative guards in test_verify.py explain why):
+# PYTEST_DISABLE_PLUGIN_AUTOLOAD, PYTHONNOUSERSITE, PYTHONHOME.
 VERIFIER_ENV: dict[str, str] = {
     "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
     "PYTEST_ADDOPTS": (
@@ -182,7 +175,6 @@ VERIFIER_ENV: dict[str, str] = {
     ),
     "PYTHONDONTWRITEBYTECODE": "1",
     "PYTHONPATH": "",
-    "PYTHONHOME": "",
     "PYTHONSTARTUP": "",
     "PYTHONSAFEPATH": "1",  # drop implicit '' (cwd) from sys.path
     "LD_PRELOAD": "",
