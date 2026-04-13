@@ -499,8 +499,15 @@ class SDK:
                 await hook(env)
 
             if agent == "oracle":
+                # Detect the container's working directory the same way the regular
+                # agent path does — different Harbor tasks use different WORKDIR values
+                # (e.g. /testbed for SWE-bench, /app for others).
+                cwd_result = await env.exec("pwd", timeout_sec=10)
+                agent_cwd = (cwd_result.stdout or "").strip() or "/app"
                 if sandbox_user:
-                    await setup_sandbox_user(env, sandbox_user, workspace="/app")
+                    await setup_sandbox_user(env, sandbox_user, workspace=agent_cwd)
+                    await _snapshot_build_config(env, workspace=agent_cwd)
+                    await _setup_verifier_user(env)
                 await lockdown_paths(env, effective_locked)
                 trajectory, agent_name = await self._run_oracle(
                     env, task_path, timeout, sandbox_user

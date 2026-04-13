@@ -23,6 +23,9 @@ _ALL_BUILD_FILES = (
     "hatch.toml",
     "flit.ini",
     "MANIFEST.in",
+    "requirements.txt",
+    "requirements-dev.txt",
+    "Makefile",
 )
 
 
@@ -182,6 +185,31 @@ class TestVerifierDirWipe:
         )
         assert match.kwargs.get("user") == "root"
 
+    def test_cleanup_cmd_maxdepth_at_least_10(self):
+        """find -maxdepth must be ≥10 so conftest.py nested deep in the workspace is caught."""
+        import re
+
+        from benchflow._sandbox import CLEANUP_CMD
+
+        m = re.search(r"-maxdepth\s+(\d+)", CLEANUP_CMD)
+        assert m is not None, "CLEANUP_CMD has no -maxdepth"
+        assert int(m.group(1)) >= 10, f"maxdepth {m.group(1)} is too shallow (need ≥10)"
+
+    @pytest.mark.asyncio
+    async def test_cleanup_cmd_runs_as_root(self):
+        """CLEANUP_CMD must run as root so find can traverse all dirs."""
+        from benchflow._sandbox import harden_before_verify
+
+        env = _make_env()
+        await harden_before_verify(env, _make_task(), sandbox_user=None)
+
+        cleanup = next(
+            (c for c in env.exec.call_args_list if "conftest.py" in c.args[0]),
+            None,
+        )
+        assert cleanup is not None
+        assert cleanup.kwargs.get("user") == "root"
+
 
 # ── TestBuildConfigSnapshot ───────────────────────────────────────────────────
 
@@ -199,7 +227,7 @@ class TestBuildConfigSnapshot:
                 MagicMock(stdout="", stderr="", exit_code=0),  # mkdir
                 *[
                     MagicMock(stdout="absent\n", stderr="", exit_code=0)
-                    for _ in range(8)
+                    for _ in range(len(_ALL_BUILD_FILES))
                 ],
                 MagicMock(stdout="", stderr="", exit_code=0),  # manifest write
             ]
@@ -225,7 +253,7 @@ class TestBuildConfigSnapshot:
                 MagicMock(stdout="present\n", stderr="", exit_code=0),  # setup.py
                 *[
                     MagicMock(stdout="absent\n", stderr="", exit_code=0)
-                    for _ in range(7)
+                    for _ in range(len(_ALL_BUILD_FILES) - 1)
                 ],
                 MagicMock(stdout="", stderr="", exit_code=0),  # manifest write
             ]
@@ -247,7 +275,10 @@ class TestBuildConfigSnapshot:
         env = _make_env(
             side_effect=[
                 MagicMock(stdout=json.dumps(manifest), stderr="", exit_code=0),
-                *[MagicMock(stdout="", stderr="", exit_code=0) for _ in range(8)],
+                *[
+                    MagicMock(stdout="", stderr="", exit_code=0)
+                    for _ in range(len(_ALL_BUILD_FILES))
+                ],
             ]
         )
 
@@ -273,7 +304,10 @@ class TestBuildConfigSnapshot:
         env = _make_env(
             side_effect=[
                 MagicMock(stdout=json.dumps(manifest), stderr="", exit_code=0),
-                *[MagicMock(stdout="", stderr="", exit_code=0) for _ in range(8)],
+                *[
+                    MagicMock(stdout="", stderr="", exit_code=0)
+                    for _ in range(len(_ALL_BUILD_FILES))
+                ],
             ]
         )
 
@@ -303,7 +337,10 @@ class TestBuildConfigSnapshot:
         env = _make_env(
             side_effect=[
                 MagicMock(stdout=json.dumps(manifest), stderr="", exit_code=0),
-                *[MagicMock(stdout="", stderr="", exit_code=0) for _ in range(8)],
+                *[
+                    MagicMock(stdout="", stderr="", exit_code=0)
+                    for _ in range(len(_ALL_BUILD_FILES))
+                ],
             ]
         )
 
@@ -346,6 +383,72 @@ class TestBuildConfigSnapshot:
         assert restore_manifest_idx < restore_file_idx < cleanup_idx
 
     @pytest.mark.asyncio
+    async def test_workspace_frozen_after_restore(self):
+        """After restore, workspace is chowned root and made read-only (a-w).
+
+        This closes the editable-install source modification vector: the agent
+        may have changed /testbed/src/pkg/utils.py, but it is frozen before
+        the verifier runs, so imports of that package execute the canonical code.
+        """
+        from benchflow._sandbox import _SNAPSHOT_MANIFEST, harden_before_verify
+
+        env = _make_env(side_effect=_manifest_env(_blank_manifest()))
+        task = _make_task()
+        await harden_before_verify(env, task, sandbox_user=None, workspace="/testbed")
+
+        freeze_call_obj = next(
+            (
+                c
+                for c in env.exec.call_args_list
+                if "chown -R root:root" in c.args[0]
+                and "chmod -R a-w" in c.args[0]
+                and "/testbed" in c.args[0]
+            ),
+            None,
+        )
+        assert freeze_call_obj is not None, (
+            "workspace freeze (chown root + chmod a-w) not found — "
+            "editable-install source tampering is not mitigated"
+        )
+        assert freeze_call_obj.kwargs.get("user") == "root", (
+            "workspace freeze must run as root"
+        )
+        # Freeze must come after restore so the canonical files are written first.
+        calls = [c.args[0] for c in env.exec.call_args_list]
+        restore_idx = next(i for i, c in enumerate(calls) if _SNAPSHOT_MANIFEST in c)
+        freeze_idx = next(
+            i
+            for i, c in enumerate(calls)
+            if "chown -R root:root" in c and "chmod -R a-w" in c
+        )
+        assert restore_idx < freeze_idx
+
+    @pytest.mark.asyncio
+    async def test_workspace_not_frozen_when_workspace_none(self):
+        """No freeze call when workspace=None (nothing to freeze)."""
+        from benchflow._sandbox import harden_before_verify
+
+        env = _make_env()
+        await harden_before_verify(env, _make_task(), sandbox_user=None, workspace=None)
+
+        assert not any("chmod -R a-w" in c.args[0] for c in env.exec.call_args_list)
+
+    def test_build_config_files_matches_test_constant(self):
+        """_ALL_BUILD_FILES in this test file must mirror _BUILD_CONFIG_FILES in the implementation.
+
+        If they diverge, the parametrized symlink-sever test silently skips new files.
+        """
+        from benchflow._sandbox import _BUILD_CONFIG_FILES
+
+        assert set(_ALL_BUILD_FILES) == set(_BUILD_CONFIG_FILES), (
+            "Update _ALL_BUILD_FILES at the top of this test file to match "
+            f"_BUILD_CONFIG_FILES: {sorted(_BUILD_CONFIG_FILES)}"
+        )
+        assert "requirements.txt" in _BUILD_CONFIG_FILES
+        assert "requirements-dev.txt" in _BUILD_CONFIG_FILES
+        assert "Makefile" in _BUILD_CONFIG_FILES
+
+    @pytest.mark.asyncio
     async def test_harden_skips_restore_without_workspace(self):
         """No restore calls when workspace=None."""
         from benchflow._sandbox import _SNAPSHOT_MANIFEST, harden_before_verify
@@ -366,7 +469,7 @@ class TestBuildConfigSnapshot:
                 MagicMock(stdout="", stderr="", exit_code=0),  # mkdir + chmod
                 *[
                     MagicMock(stdout="absent\n", stderr="", exit_code=0)
-                    for _ in range(8)
+                    for _ in range(len(_ALL_BUILD_FILES))
                 ],
                 MagicMock(stdout="", stderr="", exit_code=0),  # manifest write
             ]
@@ -549,6 +652,60 @@ class TestVerifierEnv:
             task.config.verifier.env["PYTEST_ADDOPTS"] == VERIFIER_ENV["PYTEST_ADDOPTS"]
         )
         assert task.config.verifier.env.get("PYTEST_DISABLE_PLUGIN_AUTOLOAD") == "1"
+
+    @pytest.mark.asyncio
+    async def test_pytest_addopts_hardened_when_task_env_none(self):
+        """PYTEST_ADDOPTS is the hardened base even when task.config.verifier.env is None.
+
+        The rebuild must happen unconditionally — not only when task env is populated.
+        Without this, a None task env would leave PYTEST_ADDOPTS unset or lost.
+        """
+        from benchflow._sandbox import VERIFIER_ENV, harden_before_verify
+
+        env = _make_env()
+        task = _make_task()
+        task.config.verifier.env = None
+        await harden_before_verify(env, task, sandbox_user=None)
+
+        assert (
+            task.config.verifier.env["PYTEST_ADDOPTS"] == VERIFIER_ENV["PYTEST_ADDOPTS"]
+        )
+        assert "-c /dev/null" in task.config.verifier.env["PYTEST_ADDOPTS"]
+        assert "--confcutdir=/tests" in task.config.verifier.env["PYTEST_ADDOPTS"]
+
+    @pytest.mark.asyncio
+    async def test_pytest_addopts_not_overridable_by_task_env(self):
+        """A task that sets PYTEST_ADDOPTS in verifier.env must not win.
+
+        Without the re-pin the task could strip -c /dev/null and --confcutdir,
+        re-enabling pyproject.toml discovery and conftest walk-up.
+        """
+        from benchflow._sandbox import VERIFIER_ENV, harden_before_verify
+
+        env = _make_env()
+        task = _make_task()
+        task.config.verifier.env = {"PYTEST_ADDOPTS": "--rootdir=/testbed"}
+        await harden_before_verify(env, task, sandbox_user=None)
+
+        assert (
+            task.config.verifier.env["PYTEST_ADDOPTS"] == VERIFIER_ENV["PYTEST_ADDOPTS"]
+        )
+
+    @pytest.mark.asyncio
+    async def test_pytest_addopts_task_override_with_plugins(self):
+        """Even when the task overrides PYTEST_ADDOPTS, plugins are appended to the hardened base."""
+        from benchflow._sandbox import VERIFIER_ENV, harden_before_verify
+
+        env = _make_env()
+        task = _make_task()
+        task.config.verifier.env = {"PYTEST_ADDOPTS": "--rootdir=/evil"}
+        task.config.verifier.pytest_plugins = ["pytest-json-ctrf"]
+        await harden_before_verify(env, task, sandbox_user=None)
+
+        addopts = task.config.verifier.env["PYTEST_ADDOPTS"]
+        assert addopts.startswith(VERIFIER_ENV["PYTEST_ADDOPTS"])
+        assert "-p pytest-json-ctrf" in addopts
+        assert "--rootdir=/evil" not in addopts
 
     def test_pythonhome_not_set(self):
         """PYTHONHOME must not be set — even "" breaks Py_Initialize."""

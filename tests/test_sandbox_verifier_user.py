@@ -177,6 +177,43 @@ async def test_setup_verifier_user_creates_group_before_user():
     )
 
 
+def test_oracle_branch_setup_calls():
+    """Regression guard: oracle mode must wire up all pre-verify setup calls.
+
+    Checks the code structure because the full run() mock surface is too
+    expensive for a unit test. Four specific bugs are guarded:
+
+    1. _setup_verifier_user missing → verifier OS user never created → verifier_error
+    2. _snapshot_build_config missing → workspace not frozen; oracle can tamper setup.py
+    3. agent_cwd not set → _verify(workspace=None) → freeze + restore skipped entirely
+    4. agent_cwd hardcoded to "/app" → breaks tasks whose WORKDIR is /testbed or other;
+       must be detected via `pwd` like the non-oracle path
+    """
+    import inspect
+
+    from benchflow import sdk as sdk_mod
+
+    source = inspect.getsource(sdk_mod.SDK.run)
+    oracle_pos = source.find('agent == "oracle"')
+    else_pos = source.find("\n            else:", oracle_pos)
+    assert oracle_pos != -1, "oracle branch not found in SDK.run"
+    oracle_block = source[oracle_pos:else_pos]
+
+    assert "_setup_verifier_user" in oracle_block, (
+        "_setup_verifier_user not in oracle branch — verifier OS user never created"
+    )
+    assert "_snapshot_build_config" in oracle_block, (
+        "_snapshot_build_config not in oracle branch — build-config tampering not mitigated"
+    )
+    assert "agent_cwd" in oracle_block, (
+        "agent_cwd not assigned in oracle branch — _verify(workspace=None) skips freeze+restore"
+    )
+    assert '"pwd"' in oracle_block or "'pwd'" in oracle_block, (
+        "agent_cwd must be detected via pwd (not hardcoded) — "
+        "different Harbor tasks use different WORKDIR values (/testbed, /app, etc.)"
+    )
+
+
 @pytest.mark.asyncio
 async def test_setup_verifier_user_useradd_precedes_home_wipe():
     """useradd must run before the home-dir wipe to prevent agent pre-staging /home/verifier."""

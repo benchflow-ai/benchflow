@@ -165,6 +165,12 @@ _BUILD_CONFIG_FILES = (
     "hatch.toml",
     "flit.ini",
     "MANIFEST.in",
+    # Non-build files that control how tests install/run — must be snapshotted
+    # and restored so an agent cannot inject malicious packages or override
+    # test targets via set-e + early-exit tricks.
+    "requirements.txt",
+    "requirements-dev.txt",
+    "Makefile",
 )
 # chmod 700: root-only so sandbox_user cannot read or overwrite the snapshot.
 _SNAPSHOT_DIR = "/tmp/.benchflow_build_snapshot"
@@ -340,7 +346,7 @@ _CLEAR_VERIFIER_DIR_CMD = (
 # Remove injected conftest.py, sitecustomize.py/usercustomize.py, and .pth
 # files from writable sys.path entries (preserves /usr/lib, /usr/local/lib).
 CLEANUP_CMD = (
-    "find / -maxdepth 5 -name conftest.py -not -path '/tests/*' -delete 2>/dev/null; "
+    "find / -maxdepth 10 -name conftest.py -not -path '/tests/*' -delete 2>/dev/null; "
     'python3 -c "'
     "import sys,os;"
     "[os.remove(os.path.join(d,f)) "
@@ -367,9 +373,11 @@ async def harden_before_verify(
        /logs/verifier/ with a clean root-owned directory.
     3. Restore build-config files to pre-agent state (if workspace provided).
     4. Sync restored build-config files into /testbed_verify (if workspace provided).
-    5. Remove injected conftest.py, sitecustomize.py, .pth files.
-    6. Merge trusted env vars into task.config.verifier.env.
-    7. Set verifier user to the dedicated non-root account unless opted out.
+    5. Freeze workspace read-only (chown root + chmod a-w) so editable-install
+       source files cannot execute agent code during the verify phase.
+    6. Remove injected conftest.py, sitecustomize.py, .pth files.
+    7. Merge trusted env vars into task.config.verifier.env.
+    8. Set verifier user to the dedicated non-root account unless opted out.
     """
     # Resolve verifier user before any mutation so hooks cannot override it.
     _resolved_verifier_user = (
@@ -397,18 +405,30 @@ async def harden_before_verify(
     if workspace:
         await _restore_build_config(env, workspace)
         await _refresh_verifier_workspace(env, workspace)
-    await env.exec(CLEANUP_CMD, timeout_sec=10)
+        # Freeze the workspace read-only so agent-modified source files in
+        # editable installs (e.g. /testbed/src/pkg/utils.py) cannot execute
+        # during the verifier phase. Agent is already dead at this point.
+        await env.exec(
+            f"chown -R root:root {shlex.quote(workspace)} && "
+            f"chmod -R a-w {shlex.quote(workspace)}",
+            user="root",
+        )
+    await env.exec(CLEANUP_CMD, user="root", timeout_sec=10)
 
     verifier_env = dict(VERIFIER_ENV)
     if task.config.verifier.env:
         verifier_env.update(task.config.verifier.env)
-    # PYTEST_DISABLE_PLUGIN_AUTOLOAD is a hard security invariant — re-apply
-    # unconditionally so a task cannot re-enable entry-point plugin loading.
+    # Hard security invariants — re-pin after task-env merge so a task cannot
+    # strip -c /dev/null / --confcutdir or re-enable entry-point plugin loading.
     verifier_env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
-    # Re-enable explicitly declared plugins by appending -p flags.
+    # Re-enable explicitly declared plugins by appending -p flags to the
+    # hardened base — never to a task-supplied PYTEST_ADDOPTS.
     allowed_plugins = task.config.verifier.pytest_plugins or []
+    base_addopts = VERIFIER_ENV["PYTEST_ADDOPTS"]
     if allowed_plugins:
         flags = " ".join(f"-p {shlex.quote(p)}" for p in allowed_plugins)
-        verifier_env["PYTEST_ADDOPTS"] = verifier_env["PYTEST_ADDOPTS"] + f" {flags}"
+        verifier_env["PYTEST_ADDOPTS"] = base_addopts + f" {flags}"
+    else:
+        verifier_env["PYTEST_ADDOPTS"] = base_addopts
     task.config.verifier.env = verifier_env
     task.config.verifier.user = _resolved_verifier_user
