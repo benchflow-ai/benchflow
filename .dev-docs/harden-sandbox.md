@@ -15,7 +15,7 @@ This doc summarizes the gaps that were closed and how.
 | 4 | LLM judges without input sanitization | Agent output is interpolated into judge prompts, enabling prompt injection to bias scoring. | Not applicable — benchflow has no LLM judge in-tree (benchmark author responsibility if used). |
 | 5 | Weak string matching | Overly permissive comparison (substring, aggressive normalization) lets wrong answers pass. | Not applicable — scoring is reward-based, not string-match. |
 | 6 | Evaluation logic that doesn't evaluate | Scoring functions skip checks, contain dead code, or fail to compare against ground truth. | **Addressed** — [Verifier failure isolation](#verifier-failure-isolation) |
-| 7 | Trusting the output of untrusted code | Test results and artifacts produced inside the agent's environment are treated as reliable. | **Addressed** — [Verifier hardening](#verifier-hardening) (Tiers 1–3: reward-file wipe, build-config snapshot, dedicated verifier user) |
+| 7 | Trusting the output of untrusted code | Test results and artifacts produced inside the agent's environment are treated as reliable. | **Addressed** — [Verifier hardening](#verifier-hardening) (Tiers 1–4: reward-file wipe, build-config snapshot, dedicated verifier user, workspace restore + freeze; plus env hardening F1–F6) |
 
 ---
 
@@ -84,11 +84,24 @@ with `error`. `_verify()` now owns its own try/except with an explicit
    `/app/pyproject.toml` with `addopts = "-p evil"` plus `/app/evil.py`
    (importable because `''` is on `sys.path`) loads attacker code. `--rootdir`
    controls test discovery, not ini-file discovery.
+7. **Pre-compiled `.pyc` bytecode** — agent writes malicious bytecode to
+   `__pycache__/` during its phase. `PYTHONDONTWRITEBYTECODE=1` only blocks
+   new `.pyc` writes; existing bytecode is still loaded on import.
+8. **Editable-install source modification** — `pip install -e .` maps imports
+   directly to live workspace source files. The agent rewrites e.g.
+   `/testbed/src/pkg/utils.py`; workspace freeze (Tier 4) locked in the
+   modified version rather than restoring canonical source.
+9. **Workspace symlinks to external writable targets** — `chmod -R a-w` does
+   not follow symlinks; a symlink planted by the agent (`utils.py →
+   /tmp/evil.py`) leaves the target writable outside the frozen tree.
+10. **Missing `VERIFIER_ENV` entries** — `PYTHONBREAKPOINT`, `COVERAGE_PROCESS_START`,
+    `DJANGO_SETTINGS_MODULE`, and `CELERY_CONFIG_MODULE` were absent, allowing
+    a task to trigger code execution via `verifier.env` overrides.
 
 ### Fix
 
 `harden_before_verify` runs before every verifier invocation. It applies four
-layers in sequence:
+tiers (plus env hardening) in sequence:
 
 **Tier 1 — wipe `/logs/verifier/`.**  
 `rm -rf /logs/verifier && mkdir -p /logs/verifier && chmod 777 /logs/verifier`
@@ -114,15 +127,17 @@ Files absent pre-agent are simply removed. `_refresh_verifier_workspace` syncs
 the restored files into `/testbed_verify` (see Tier 3) with the same pattern.
 
 **Tier 3 — dedicated verifier OS user.**
-`_setup_verifier_user` (called after `setup_sandbox_user`, before agent launch)
-creates a system group and user `verifier` (no login shell, no supplementary
-groups), wipes any pre-staged `/home/verifier`, locks the `/logs/` parent
-against rename (`chmod 755`), owns `/logs/verifier/` to `verifier:verifier`,
-and seeds a root-owned read-only copy of the workspace at `/testbed_verify`.
-The group is created with `groupadd -r` before `useradd --gid verifier` —
-`useradd --gid` exits 6 if the group doesn't pre-exist, silently breaking
-all Tier 3 tasks. `harden_before_verify` sets
-`task.config.verifier.user = "verifier"` unless the task opts out via
+`_setup_verifier_user(env, workspace=)` (called after `setup_sandbox_user`,
+before agent launch) creates a system group and user `verifier` (no login
+shell, no supplementary groups), wipes any pre-staged `/home/verifier`, locks
+the `/logs/` parent against rename (`chmod 755`), owns `/logs/verifier/` to
+`verifier:verifier`, and seeds a root-owned read-only copy of the workspace at
+`/testbed_verify`. The `workspace` parameter (defaults to `/testbed`) controls
+which directory is copied — tasks whose `WORKDIR` is `/app` pass that path so
+the snapshot is drawn from the right tree. The group is created with `groupadd
+-r` before `useradd --gid verifier` — `useradd --gid` exits 6 if the group
+doesn't pre-exist, silently breaking all Tier 3 tasks. `harden_before_verify`
+sets `task.config.verifier.user = "verifier"` unless the task opts out via
 `[verifier] user = "root"` in `task.toml` (emits a WARNING). Harbor translates
 this to `docker compose exec -u verifier`.
 
@@ -131,19 +146,42 @@ cannot write to system site-packages (`/usr/local/lib/python3.12/dist-packages`)
 or `/root/.local`, structurally closing the entry-point plugin and
 `sitecustomize.py` vectors.
 
-**Tier 4 — workspace freeze.**  
-After build-config restore and before `CLEANUP_CMD`, `harden_before_verify`
-runs (as root):
+**Tier 4 — workspace restore + freeze.**  
+`harden_before_verify` runs four steps in order (all as root):
 
-```shell
-chown -R root:root {workspace} && chmod -R a-w {workspace}
-```
+1. **Full workspace restore.** After `_restore_build_config` and
+   `_refresh_verifier_workspace` (Tier 2), a full restore from the pre-agent
+   snapshot copy closes the remaining gap:
+   ```shell
+   rsync -a --delete /testbed_verify/ {workspace}/
+   # fallback: rm -rf {workspace} && cp -a /testbed_verify/. {workspace}/
+   ```
+   Resets every source file — not just the 11-file build-config subset — to
+   pre-agent canonical state. `/testbed_verify` was seeded before the agent
+   launched, so it is authoritative. Skipped if `/testbed_verify` is absent.
 
-Closes the **editable-install source modification** vector: with `pip install -e .`,
-imports resolve to live source files (e.g. `/testbed/src/pkg/utils.py`), which the
-agent can rewrite during its phase. Freezing the workspace read-only before the
-verifier runs ensures canonical source is executed. Runs after Tier 2 restore
-so canonical files are written before being locked. Skipped when `workspace=None`.
+2. **Symlink purge.**
+   ```shell
+   find {workspace} -type l -delete
+   ```
+   Removes all symlinks before the freeze. `chmod -R a-w` does not follow
+   symlinks, so a symlink planted by the agent (e.g. `utils.py → /tmp/evil.py`)
+   would leave the external target writable. Purging them closes that path.
+
+3. **`__pycache__` purge.**
+   ```shell
+   find {workspace} -type d -name '__pycache__' -exec rm -rf {} +
+   ```
+   Defense-in-depth for F1: physically removes all bytecode caches so
+   pre-compiled `.pyc` files cannot be found even if `PYTHONPYCACHEPREFIX`
+   is somehow bypassed.
+
+4. **Freeze.**
+   ```shell
+   chown -R root:root {workspace} && chmod -R a-w {workspace}
+   ```
+   Makes the restored, clean workspace read-only for all users before the
+   verifier runs. Skipped when `workspace=None`.
 
 **Env hardening — `VERIFIER_ENV`.**  
 Canonical env applied to every verifier invocation. Task-level env from
@@ -159,10 +197,15 @@ env cannot override them.
 | `PYTHONPATH` | `""` | Blocks env-var path injection |
 | `PYTHONSTARTUP`, `LD_PRELOAD`, `LD_LIBRARY_PATH` | `""` | Clears image-`ENV` carryover |
 | `PYTHONDONTWRITEBYTECODE` | `1` | No `.pyc` artifacts |
+| `PYTHONPYCACHEPREFIX` | `/nonexistent` | Redirects `.pyc` cache reads/writes away from `__pycache__` dirs; agent-pre-compiled bytecode is never found |
 | `PYTHONNOUSERSITE` | `1` | Prevents pip writing to user site-packages |
 | `PIP_USER` | `0` | Same — pip flag |
 | `PIP_NO_USER_CONFIG` | `1` | Blocks pre-staged `pip.conf` in verifier home |
 | `HOME` | `/nonexistent` | Prevents pip reading `pip.conf` even if home wipe failed |
+| `PYTHONBREAKPOINT` | `0` | Disables `breakpoint()` — any other value imports an arbitrary callable |
+| `COVERAGE_PROCESS_START` | `""` | Prevents coverage.py executing config as Python on startup |
+| `DJANGO_SETTINGS_MODULE` | `""` | Prevents Django importing an agent-controlled module at startup |
+| `CELERY_CONFIG_MODULE` | `""` | Same pattern for Celery |
 
 **`PYTEST_DISABLE_PLUGIN_AUTOLOAD` and the per-task plugin allowlist.**  
 `-c /dev/null` blocks ini-file discovery but not `importlib.metadata`-based
@@ -180,24 +223,27 @@ pytest_plugins = ["pytest-json-ctrf"]
 `harden_before_verify` appends `-p <name>` to `PYTEST_ADDOPTS` for each
 entry and re-pins the key to `"1"` after the task-env merge.
 
-**`PYTEST_ADDOPTS` re-pin.**  
-`PYTEST_ADDOPTS` is always rebuilt from `VERIFIER_ENV["PYTEST_ADDOPTS"]` after
-the task-env merge — never inherited from the merged result. Without this, a
-task that sets `PYTEST_ADDOPTS` in `[verifier] env` would strip `-c /dev/null`
-and `--confcutdir=/tests`, re-enabling ini-file and conftest walk-up. Plugins
-are appended to the hardened base, not to any task-supplied value.
+**Re-pinned keys after task-env merge.**  
+Several keys are re-applied unconditionally after `verifier_env.update(task.config.verifier.env)`:
+
+- `PYTEST_ADDOPTS` — always rebuilt from `VERIFIER_ENV["PYTEST_ADDOPTS"]`; a
+  task-supplied value would strip `-c /dev/null` / `--confcutdir=/tests`. Plugins
+  are appended to the hardened base.
+- `PYTEST_DISABLE_PLUGIN_AUTOLOAD` → `"1"`
+- `PYTHONBREAKPOINT` → `"0"`
+- `COVERAGE_PROCESS_START`, `DJANGO_SETTINGS_MODULE`, `CELERY_CONFIG_MODULE` → `""`
 
 **Intentionally omitted:**
 - `PYTHONHOME=""` — empty prefix aborts `Py_Initialize`; omitted, not set to
   empty.
 
 **`CLEANUP_CMD`** — defense-in-depth (runs as root):
-`find / -maxdepth 10 -name conftest.py -not -path '/tests/*' -delete` plus
+`find / -name conftest.py -not -path '/tests/*' -delete` (no depth limit) plus
 `python3 -c "import sys..."` to remove writable `sitecustomize.py`,
 `usercustomize.py`, and `.pth` files (stdlib paths under `/usr/lib` and
-`/usr/local/lib` are preserved). Depth raised from 5 → 10 to catch conftest
-files deep in nested workspace layouts; root user ensures traversal is not
-blocked by agent-altered directory modes.
+`/usr/local/lib` are preserved). The depth limit was removed entirely — any
+`-maxdepth N` can be bypassed by planting `conftest.py` at depth `N+1`. Running
+as root ensures traversal is not blocked by agent-altered directory modes.
 
 **Untrusted trajectory accounting** — `RunResult` gained
 `trajectory_source: str | None` (`acp` / `scraped` / `partial_acp` / `None`)
@@ -282,23 +328,24 @@ block does not crash after `pkill` has already killed the ACP transport.
 3.  _install_agent             — install agent binary (as root)
 4.  _write_credential_files    — write API keys
 5.  _setup_sandbox_user        — create agent user, chown workspace + home
-5b. _setup_verifier_user       — create verifier user, own /logs/verifier/, seed /testbed_verify
+5b. _setup_verifier_user(workspace=cwd) — create verifier user, own /logs/verifier/, seed /testbed_verify from actual workspace
 6.  _snapshot_build_config     — snapshot setup.py / pyproject.toml / requirements.txt / Makefile / etc. (root-only, pre-agent)
 7.  _deploy_skills             — copy skills to agent paths
 8.  _lockdown_paths            — chown root + chmod 700 on locked paths
 9.  _connect_acp               — setpriv/su privilege drop, ACP handshake
 10. _execute_prompts           — multi-turn agent execution
-11. _harden_before_verify      — pkill agent, wipe /logs/verifier/, restore build-config, freeze workspace, env reset, set verifier user
+11. _harden_before_verify      — pkill agent, wipe /logs/verifier/, restore build-config, full workspace restore from /testbed_verify, purge symlinks + __pycache__, freeze, env reset, set verifier user
 12. _verify                    — run verifier as 'verifier' user, isolated errors
 ```
 
 **Oracle branch parity.** When `agent == "oracle"`, `SDK.run()` previously
 skipped steps 5, 5b, and 6. The oracle path now detects `agent_cwd` via `pwd`
 (tasks vary in WORKDIR: `/testbed` vs `/app`), then calls
-`setup_sandbox_user(workspace=agent_cwd)`, `_snapshot_build_config(workspace=agent_cwd)`,
-and `_setup_verifier_user`. Previously, oracle runs had no verifier OS user, no
-build-config snapshot, and `_verify` received `workspace=None` — silently
-skipping Tier 2 restore and Tier 4 freeze.
+`setup_sandbox_user(workspace=agent_cwd)`,
+`_snapshot_build_config(workspace=agent_cwd)`, and
+`_setup_verifier_user(env, workspace=agent_cwd)`. Previously, oracle runs had
+no verifier OS user, no build-config snapshot, and `_verify` received
+`workspace=None` — silently skipping Tier 2 restore and all of Tier 4.
 
 ## Threat model coverage
 
@@ -318,18 +365,23 @@ skipping Tier 2 restore and Tier 4 freeze.
 | `conftest.py` plant in `/tests` after Harbor upload | Build-config snapshot (canonical `setup.py` cannot plant it) |
 | Agent forges `reward.txt` via background process | `pkill -u sandbox_user` before verify |
 | Agent forges scraped tool-call count | `n_tool_calls` only sourced from ACP session |
-| `conftest.py` injection forces tests to pass | `--confcutdir=/tests` + `find -maxdepth 10 -delete` (as root) |
+| `conftest.py` injection forces tests to pass | `--confcutdir=/tests` + `find / -name conftest.py -delete` (no depth limit, as root) |
 | `pyproject.toml` / `pytest.ini` injection from agent-writable cwd | `-c /dev/null` in `PYTEST_ADDOPTS` |
 | Task strips `-c /dev/null` / `--confcutdir` via `verifier.env.PYTEST_ADDOPTS` | `PYTEST_ADDOPTS` re-pinned from hardened base after task-env merge |
 | Module-shadow via `import x` finding `/app/x.py` | `PYTHONSAFEPATH=1` drops implicit `''` from `sys.path` |
 | Image-`ENV` carryover (`LD_PRELOAD`, `PYTHONSTARTUP`) | Cleared in `VERIFIER_ENV` |
 | `sitecustomize.py` / `.pth` injection in writable paths | sys.path-aware `CLEANUP_CMD` (runs as root) |
 | PATH poisoning to shadow verifier tools | Canonical `VERIFIER_ENV` PATH |
-| Agent rewrites editable-install source (`/testbed/src/pkg/utils.py`) | Workspace frozen `chown root + chmod a-w` (Tier 4) after build-config restore |
+| Agent rewrites editable-install source (`/testbed/src/pkg/utils.py`) | Full workspace restore from `/testbed_verify` (Tier 4) resets all source files; freeze locks canonical state |
 | Agent injects malicious deps via `requirements.txt` rewrite | `requirements.txt` / `requirements-dev.txt` snapshotted and restored (Tier 2) |
 | Agent replaces `Makefile` test target with no-op or pass | `Makefile` snapshotted and restored (Tier 2) |
-| `conftest.py` nested > 5 dirs deep escaping `find` sweep | `find -maxdepth 10` (raised from 5) |
-| Oracle path missing verifier setup (no verifier user / no snapshot) | Oracle branch now calls `pwd`, `_setup_verifier_user`, `_snapshot_build_config` |
+| `conftest.py` at any nesting depth | `find /` with no `-maxdepth` |
+| Oracle path missing verifier setup (no verifier user / no snapshot) | Oracle branch calls `pwd`, `_setup_verifier_user(workspace=cwd)`, `_snapshot_build_config` |
+| Agent pre-compiles `.pyc` bytecode in `__pycache__/` | `PYTHONPYCACHEPREFIX=/nonexistent` + `find -type d -name '__pycache__' -exec rm -rf` (Tier 4) |
+| Workspace symlink pointing to writable external target | `find {workspace} -type l -delete` before freeze (Tier 4) |
+| `breakpoint()` call importing an agent-chosen callable | `PYTHONBREAKPOINT=0` in `VERIFIER_ENV`, re-pinned after merge |
+| coverage.py executes agent-written config as Python | `COVERAGE_PROCESS_START=""` in `VERIFIER_ENV`, re-pinned |
+| Django/Celery import agent-controlled module at startup | `DJANGO_SETTINGS_MODULE=""` / `CELERY_CONFIG_MODULE=""` in `VERIFIER_ENV`, re-pinned |
 | Agent reads `/solution` or `/tests` to cheat | `chown root + chmod 700` lockdown |
 | Agent runs as root with full FS access | Default `sandbox_user="agent"` + setpriv/su |
 | Symlink attack on locked paths | Symlink guard in `_lockdown_paths` |
@@ -343,10 +395,9 @@ skipping Tier 2 restore and Tier 4 freeze.
 - Harbor private-attribute coupling in `process.py` — upstream-blocked
 - **Custom task layouts that `cd` into deeply nested agent-writable dirs
   other than `/app`** — `--confcutdir=/tests` blocks `conftest.py` walk-up
-  to any depth, and `-c /dev/null` blocks ini-file walk-up entirely, so
-  the residual surface is small. Tasks that intentionally operate in
-  agent-writable dirs deeper than `find -maxdepth 10 -name conftest.py`
-  reaches still benefit from L1/L2 (which are walk-depth-independent).
+  to any depth, `-c /dev/null` blocks ini-file walk-up entirely, and
+  `CLEANUP_CMD` uses `find /` with no depth limit, so the residual surface
+  is small.
 
 ## Future directions
 
