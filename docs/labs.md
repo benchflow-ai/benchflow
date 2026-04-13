@@ -2,7 +2,7 @@
 
 Runnable, Docker-heavy experiments that exercise the full benchflow SDK end-to-end. Labs are distinct from unit tests (real Docker, no mocking) and from docs (executable, with expected output). Each lab is self-contained with its own README and orchestrator script.
 
-Labs live under [`labs/`](../labs/). The contract for every lab is defined in [`labs/README.md`](../labs/README.md).
+Labs live under [`labs/`](../labs/).
 
 ---
 
