@@ -1,0 +1,6 @@
+.venvs/
+.jobs/
+.cells/
+.corpora/
+__pycache__/
+*.pyc
