@@ -55,6 +55,7 @@ def _make_task(user=None):
     task = MagicMock()
     task.config.verifier.env = None
     task.config.verifier.user = user
+    task.config.verifier.pytest_plugins = None
     return task
 
 
@@ -291,6 +292,36 @@ class TestBuildConfigSnapshot:
         assert "chmod 644" in cp_call.args[0]
         assert cp_call.kwargs.get("user") == "root"
 
+    @pytest.mark.parametrize("fname", _ALL_BUILD_FILES)
+    @pytest.mark.asyncio
+    async def test_restore_severs_symlink_before_cp(self, fname):
+        """rm -f dst must precede cp for every build-config file so a symlink the agent
+        planted is severed, not followed. Parametrized over all 8 tracked files."""
+        from benchflow._sandbox import _restore_build_config
+
+        manifest = {**_blank_manifest(), fname: True}
+        env = _make_env(
+            side_effect=[
+                MagicMock(stdout=json.dumps(manifest), stderr="", exit_code=0),
+                *[MagicMock(stdout="", stderr="", exit_code=0) for _ in range(8)],
+            ]
+        )
+
+        await _restore_build_config(env, workspace="/testbed")
+
+        calls = [c.args[0] for c in env.exec.call_args_list]
+        cp_call = next((c for c in calls if fname in c and "cp" in c), None)
+        assert cp_call is not None, f"no cp call for {fname!r} found"
+        # The rm -f must appear in the same command, before cp.
+        assert "rm -f" in cp_call, (
+            f"rm -f must precede cp for {fname!r} to sever any agent-planted symlink at dst"
+        )
+        rm_pos = cp_call.index("rm -f")
+        cp_pos = cp_call.index("cp ")
+        assert rm_pos < cp_pos, (
+            f"rm -f must come before cp in the command for {fname!r}"
+        )
+
     @pytest.mark.asyncio
     async def test_harden_calls_restore_before_cleanup(self):
         """All restore ops (manifest read + per-file deletes) complete before CLEANUP_CMD."""
@@ -433,6 +464,7 @@ class TestVerifierEnv:
         assert set(VERIFIER_ENV.keys()) == {
             "PATH",
             "PYTEST_ADDOPTS",
+            "PYTEST_DISABLE_PLUGIN_AUTOLOAD",
             "PYTHONDONTWRITEBYTECODE",
             "PYTHONPATH",
             "PYTHONSTARTUP",
@@ -460,11 +492,63 @@ class TestVerifierEnv:
             == "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
         )
 
-    def test_plugin_autoload_not_disabled(self):
-        """PYTEST_DISABLE_PLUGIN_AUTOLOAD must not be set — breaks ~94 SkillsBench tasks."""
+    def test_plugin_autoload_disabled(self):
+        """PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 must be set in VERIFIER_ENV source."""
         from benchflow._sandbox import VERIFIER_ENV
 
-        assert "PYTEST_DISABLE_PLUGIN_AUTOLOAD" not in VERIFIER_ENV
+        assert VERIFIER_ENV.get("PYTEST_DISABLE_PLUGIN_AUTOLOAD") == "1"
+
+    @pytest.mark.asyncio
+    async def test_plugin_autoload_disabled_survives_task_env_override(self):
+        """A task that sets PYTEST_DISABLE_PLUGIN_AUTOLOAD=0 in verifier.env must not win.
+
+        Task env is applied via dict.update(), which would normally overwrite the key.
+        The production code must re-pin it to '1' after the merge.
+        """
+        from benchflow._sandbox import harden_before_verify
+
+        env = _make_env(side_effect=_manifest_env(_blank_manifest()))
+        task = _make_task()
+        # Simulate a hostile or misconfigured task env that tries to re-enable autoload.
+        task.config.verifier.env = {"PYTEST_DISABLE_PLUGIN_AUTOLOAD": "0"}
+        await harden_before_verify(env, task, sandbox_user=None, workspace=None)
+
+        assert task.config.verifier.env.get("PYTEST_DISABLE_PLUGIN_AUTOLOAD") == "1", (
+            "task env must not be able to override PYTEST_DISABLE_PLUGIN_AUTOLOAD"
+        )
+
+    @pytest.mark.asyncio
+    async def test_per_task_plugins_appended_to_addopts(self):
+        """pytest_plugins are translated to -p flags; PYTEST_DISABLE_PLUGIN_AUTOLOAD must survive."""
+        from benchflow._sandbox import harden_before_verify
+
+        env = _make_env(side_effect=_manifest_env(_blank_manifest()))
+        task = _make_task()
+        task.config.verifier.pytest_plugins = ["pytest-json-ctrf", "myplug"]
+        await harden_before_verify(env, task, sandbox_user=None, workspace=None)
+
+        final_env = task.config.verifier.env
+        addopts = final_env.get("PYTEST_ADDOPTS", "")
+        assert "-p pytest-json-ctrf" in addopts
+        assert "-p myplug" in addopts
+        # The security flag must still be present after the plugin flags are appended.
+        assert final_env.get("PYTEST_DISABLE_PLUGIN_AUTOLOAD") == "1"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("plugins", [None, []])
+    async def test_no_extra_addopts_when_no_plugins(self, plugins):
+        """PYTEST_ADDOPTS is not modified when pytest_plugins is None or empty list."""
+        from benchflow._sandbox import VERIFIER_ENV, harden_before_verify
+
+        env = _make_env(side_effect=_manifest_env(_blank_manifest()))
+        task = _make_task()
+        task.config.verifier.pytest_plugins = plugins
+        await harden_before_verify(env, task, sandbox_user=None, workspace=None)
+
+        assert (
+            task.config.verifier.env["PYTEST_ADDOPTS"] == VERIFIER_ENV["PYTEST_ADDOPTS"]
+        )
+        assert task.config.verifier.env.get("PYTEST_DISABLE_PLUGIN_AUTOLOAD") == "1"
 
     def test_pythonhome_not_set(self):
         """PYTHONHOME must not be set — even "" breaks Py_Initialize."""

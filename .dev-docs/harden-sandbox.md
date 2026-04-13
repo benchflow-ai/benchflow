@@ -15,7 +15,7 @@ This doc summarizes the gaps that were closed and how.
 | 4 | LLM judges without input sanitization | Agent output is interpolated into judge prompts, enabling prompt injection to bias scoring. | Not applicable — benchflow has no LLM judge in-tree (benchmark author responsibility if used). |
 | 5 | Weak string matching | Overly permissive comparison (substring, aggressive normalization) lets wrong answers pass. | Not applicable — scoring is reward-based, not string-match. |
 | 6 | Evaluation logic that doesn't evaluate | Scoring functions skip checks, contain dead code, or fail to compare against ground truth. | **Addressed** — [Verifier failure isolation](#verifier-failure-isolation) |
-| 7 | Trusting the output of untrusted code | Test results and artifacts produced inside the agent's environment are treated as reliable. | **Addressed** — [Verifier hardening](#verifier-hardening) |
+| 7 | Trusting the output of untrusted code | Test results and artifacts produced inside the agent's environment are treated as reliable. | **Addressed** — [Verifier hardening](#verifier-hardening) (Tiers 1–3: reward-file wipe, build-config snapshot, dedicated verifier user) |
 
 ---
 
@@ -63,75 +63,121 @@ with `error`. `_verify()` now owns its own try/except with an explicit
 
 ### Problems
 
-1. **Forged verifier output** — if the agent ran as root or
-   `/logs/verifier` was world-writable, the agent could pre-write
-   `reward.txt` and the verifier might read its own forged prior output.
-2. **Forged scraped trajectory** — `_scrape_agent_trajectory()` reads from
+1. **Forged verifier output** — agent could pre-write `reward.txt` (directly
+   during the agent phase, or via `setup.py` executing during `pip install -e .`
+   in `test.sh`) and lock it `chmod 444` so the verifier reads a forged value.
+2. **Build-config hijack** — agent modifies `setup.py`, `pyproject.toml`, or
+   other build-backend files; `pip install` in `test.sh` then runs agent code
+   as the verifier user, enabling PATH shims, pytest entry-point plugins,
+   `sitecustomize.py` plants in system site-packages, and `conftest.py` plants
+   in `/tests` after Harbor uploads the canonical copy.
+3. **Forged scraped trajectory** — `_scrape_agent_trajectory()` reads from
    the agent's own home directory. Tool-call counts derived from it were
    trusted.
-3. **conftest.py injection** — pytest's `rootdir` is the common ancestor of
-   collected paths and CWD. An agent that drops `/conftest.py` with a
-   `pytest_runtest_makereport` hook can force every test to pass.
-4. **PATH / environment poisoning** — agent could shadow verifier tools, or
-   inject `sitecustomize.py` / `usercustomize.py` / `.pth` files into
-   `sys.path`.
-5. **Pytest ini-file injection via agent-writable cwd** — extends #3. Real
-   tasks `cd /app` (agent-writable scratch dir) before invoking pytest, and
-   pytest walks up from **cwd** looking for `pyproject.toml`, `pytest.ini`,
-   `tox.ini`, `setup.cfg`. An agent-written `/app/pyproject.toml` with
-   `[tool.pytest.ini_options] addopts = "-p evil"` plus `/app/evil.py`
-   (importable because `''` is on `sys.path` for `python -m pytest`) loads
-   attacker code as root. `--rootdir=/tests` alone does **not** block this:
-   it controls test discovery, not ini-file discovery.
+4. **conftest.py injection** — agent drops `/conftest.py` with a
+   `pytest_runtest_makereport` hook that forces every test to pass.
+5. **PATH / environment poisoning** — agent shadows verifier tools or injects
+   `sitecustomize.py` / `.pth` files into `sys.path`.
+6. **Pytest ini-file injection via agent-writable cwd** — extends #4. Tasks
+   `cd /app` before invoking pytest; pytest walks up from cwd looking for
+   `pyproject.toml`, `pytest.ini`, `tox.ini`, `setup.cfg`. An agent-written
+   `/app/pyproject.toml` with `addopts = "-p evil"` plus `/app/evil.py`
+   (importable because `''` is on `sys.path`) loads attacker code. `--rootdir`
+   controls test discovery, not ini-file discovery.
 
 ### Fix
 
-A new `SDK._harden_before_verify()` runs before every verifier invocation
-and is composed of two class constants plus one method:
+`harden_before_verify` runs before every verifier invocation. It applies four
+layers in sequence:
 
-- `SDK._VERIFIER_ENV` — canonical env merged into the verifier. Task-level
-  env from `task.toml` is merged last so authors can override.
+**Tier 1 — wipe `/logs/verifier/`.**  
+`rm -rf /logs/verifier && mkdir -p /logs/verifier && chmod 777 /logs/verifier`
+runs as root, severing hardlinks, removing symlink replacements, and
+eliminating any pre-staged reward files — including `chmod 444` ones. Followed
+by a second `pkill` pass to catch agent processes that slipped through the
+initial SIGTERM/SIGKILL window.
 
-  | Var | Value | Layer / purpose |
-  |---|---|---|
-  | `PATH` | `/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin` | locked PATH (Pattern 7) |
-  | `PYTEST_ADDOPTS` | `-c /dev/null --confcutdir=/tests --rootdir=/tests -p no:cacheprovider` | L1 (`-c /dev/null`) blocks `pyproject.toml`/`pytest.ini`/`tox.ini`/`setup.cfg` walk-up; L2 (`--confcutdir=/tests`) blocks `conftest.py` walk-up; rootdir pin + cache disable from original Pattern 7 |
-  | `PYTHONSAFEPATH` | `1` | L4 — Python 3.11+ drops implicit `''` (cwd) from `sys.path`, blocking module-shadow via `import helpers` finding `/app/helpers.py` |
-  | `PYTHONPATH` | `""` | block env-var path injection (empty list = same as unset, safe) |
-  | `PYTHONSTARTUP`, `LD_PRELOAD`, `LD_LIBRARY_PATH` | `""` | L5 — clear image-`ENV` carryover (zero-downside insurance against malicious base images) |
-  | `PYTHONDONTWRITEBYTECODE` | `1` | no `.pyc` artifacts left behind |
+**Tier 2 — build-config snapshot and restore.**  
+`_snapshot_build_config` (called before the agent launches) captures
+`setup.py`, `pyproject.toml`, `setup.cfg`, `tox.ini`, `noxfile.py`,
+`hatch.toml`, `flit.ini`, and `MANIFEST.in` into a `chmod 700` root-only
+directory. Presence/absence is tracked in a JSON manifest rather than a
+sentinel string, so the agent cannot forge "this file was absent" by embedding
+a magic string in `setup.py`. `_restore_build_config` (called in
+`harden_before_verify`) runs `rm -f {dst} && cp …` for each present file —
+the `rm -f` severs any symlink the agent planted at the destination before `cp`
+runs, preventing a redirect to an arbitrary target (e.g. `/logs/verifier/reward.txt`).
+Files absent pre-agent are simply removed. `_refresh_verifier_workspace` syncs
+the restored files into `/testbed_verify` (see Tier 3) with the same pattern.
 
-  **Intentionally omitted**, with reasons documented inline at the
-  declaration:
-  - `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` — would break ~94 SkillsBench tasks
-    that rely on `pytest-json-ctrf`'s `--ctrf` flag. Entry-point plugin
-    injection is structurally blocked anyway: verifier runs as root, system
-    site-packages is root-owned, agent's user-site is not on root's
-    `sys.path`, and `_CLEANUP_CMD` wipes `.pth` files in any writable
-    `sys.path` entry.
-  - `PYTHONNOUSERSITE=1` — root verifier means `/root/.local` is the only
-    user-site on `sys.path`, and `sandbox_user` cannot write there.
-  - `PYTHONHOME=""` — not equivalent to unset; empty prefix aborts
-    `Py_Initialize` and breaks any verifier `test.sh` that spawns a fresh
-    Python (e.g. `python -m pip install` before pytest).
-- `SDK._CLEANUP_CMD` — defense-in-depth shell command:
-  `find / -maxdepth 5 -name conftest.py -not -path '/tests/*' -delete`
-  plus `python3 -c "import sys..."` to enumerate real `sys.path` and remove
-  writable `sitecustomize.py`, `usercustomize.py`, and `.pth` files
-  (stdlib copies under `/usr/lib` and `/usr/local/lib` are preserved).
-- `pkill -u {sandbox_user}` (SIGTERM, sleep 1, SIGKILL) — kills any agent
-  background daemons before verification, so they cannot race the verifier.
-  Only runs when `sandbox_user` is set.
+**Tier 3 — dedicated verifier OS user.**  
+`_setup_verifier_user` (called after `setup_sandbox_user`, before agent launch)
+creates a system group and user `verifier` (no login shell, no supplementary
+groups), wipes any pre-staged `/home/verifier`, locks the `/logs/` parent
+against rename (`chmod 755`), owns `/logs/verifier/` to `verifier:verifier`,
+and seeds a root-owned read-only copy of the workspace at `/testbed_verify`.
+The group is created with `groupadd -r` before `useradd --gid verifier` —
+`useradd --gid` exits 6 if the group doesn't pre-exist, silently breaking
+all Tier 3 tasks. `harden_before_verify` sets
+`task.config.verifier.user = "verifier"` unless the task opts out via
+`[verifier] user = "root"` in `task.toml` (emits a WARNING). Harbor translates
+this to `docker compose exec -u verifier`.
+
+Running as `verifier` instead of root means `pip install -e .` in `test.sh`
+cannot write to system site-packages (`/usr/local/lib/python3.12/dist-packages`)
+or `/root/.local`, structurally closing the entry-point plugin and
+`sitecustomize.py` vectors.
+
+**Env hardening — `VERIFIER_ENV`.**  
+Canonical env applied to every verifier invocation. Task-level env from
+`task.toml` is merged in; security-critical keys are then re-pinned so task
+env cannot override them.
+
+| Var | Value | Purpose |
+|---|---|---|
+| `PATH` | `/usr/local/sbin:…:/bin` | Locked PATH |
+| `PYTEST_ADDOPTS` | `-c /dev/null --confcutdir=/tests --rootdir=/tests -p no:cacheprovider` | `-c /dev/null` blocks ini-file walk-up; `--confcutdir=/tests` blocks conftest walk-up |
+| `PYTEST_DISABLE_PLUGIN_AUTOLOAD` | `1` | Blocks all `pytest11` entry-point plugins (see below) |
+| `PYTHONSAFEPATH` | `1` | Drops implicit `''` (cwd) from `sys.path` |
+| `PYTHONPATH` | `""` | Blocks env-var path injection |
+| `PYTHONSTARTUP`, `LD_PRELOAD`, `LD_LIBRARY_PATH` | `""` | Clears image-`ENV` carryover |
+| `PYTHONDONTWRITEBYTECODE` | `1` | No `.pyc` artifacts |
+| `PYTHONNOUSERSITE` | `1` | Prevents pip writing to user site-packages |
+| `PIP_USER` | `0` | Same — pip flag |
+| `PIP_NO_USER_CONFIG` | `1` | Blocks pre-staged `pip.conf` in verifier home |
+| `HOME` | `/nonexistent` | Prevents pip reading `pip.conf` even if home wipe failed |
+
+**`PYTEST_DISABLE_PLUGIN_AUTOLOAD` and the per-task plugin allowlist.**  
+`-c /dev/null` blocks ini-file discovery but not `importlib.metadata`-based
+entry-point loading — an agent can modify a pre-installed plugin source
+(`mypkg/plugin.py`) without touching `pyproject.toml` and have it execute.
+`PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` is the only flag that blocks this path.
+
+Tasks that need specific plugins declare them in `task.toml`:
+
+```toml
+[verifier]
+pytest_plugins = ["pytest-json-ctrf"]
+```
+
+`harden_before_verify` appends `-p <name>` to `PYTEST_ADDOPTS` for each
+entry and re-pins the key to `"1"` after the task-env merge.
+
+**Intentionally omitted:**
+- `PYTHONHOME=""` — empty prefix aborts `Py_Initialize`; omitted, not set to
+  empty.
+
+**`CLEANUP_CMD`** — defense-in-depth:
+`find / -maxdepth 5 -name conftest.py -not -path '/tests/*' -delete` plus
+`python3 -c "import sys..."` to remove writable `sitecustomize.py`,
+`usercustomize.py`, and `.pth` files (stdlib paths under `/usr/lib` and
+`/usr/local/lib` are preserved).
 
 **Untrusted trajectory accounting** — `RunResult` gained
 `trajectory_source: str | None` (`acp` / `scraped` / `partial_acp` / `None`)
-and a proper `partial_trajectory: bool` field. When falling back to scraped
-or partial trajectories, `n_tool_calls` is **not** overwritten — only the
-ACP-tracked count (`session.tool_calls`) is trusted. A WARNING with the
-`UNTRUSTED` label is emitted on the scraped path.
-
-`/logs/verifier` filesystem lockdown is **not** done here — it is a host
-bind mount and `chmod 700` would block Harbor's SDK from writing.
+and a proper `partial_trajectory: bool` field. `n_tool_calls` is only
+overwritten from the ACP-tracked count (`session.tool_calls`); scraped paths
+emit a WARNING with the `UNTRUSTED` label.
 
 ---
 
@@ -192,8 +238,9 @@ Security properties:
 3. Non-recursive by design — `chmod 700` removes the traverse bit, so
    contents are unreachable regardless of individual file modes
 
-**`/logs/verifier` is not locked** — bind mount; verifier integrity is
-covered by `_harden_before_verify` instead.
+**`/logs/verifier` lockdown** — owned `verifier:verifier 700` at setup time
+(Tier 3) so `sandbox_user` cannot pre-write reward files; wiped and recreated
+`777` by `harden_before_verify` (Tier 1) immediately before the verifier runs.
 
 **Idempotent process close** — `LiveProcess.close()` checks `returncode`
 before `terminate()` and catches `OSError` on stdin close, so the finally
@@ -204,17 +251,19 @@ block does not crash after `pkill` has already killed the ACP transport.
 ## SDK flow after hardening
 
 ```
-1.  _start_env_and_upload   — start container, upload task files
-2.  pre_agent_hooks         — caller-provided hooks
-3.  _install_agent          — install agent binary (as root)
-4.  _write_credential_files — write API keys
-5.  _setup_sandbox_user     — create user, chown workspace + home
-6.  _deploy_skills          — copy skills to agent paths
-7.  _lockdown_paths         — chown root + chmod 700 on locked paths
-8.  _connect_acp            — setpriv/su privilege drop, ACP handshake
-9.  _execute_prompts        — multi-turn agent execution
-10. _harden_before_verify   — pkill agent, cleanup, env reset
-11. _verify                 — run verifier as root, isolated errors
+1.  _start_env_and_upload      — start container, upload task files
+2.  pre_agent_hooks            — caller-provided hooks
+3.  _install_agent             — install agent binary (as root)
+4.  _write_credential_files    — write API keys
+5.  _setup_sandbox_user        — create agent user, chown workspace + home
+5b. _setup_verifier_user       — create verifier user, own /logs/verifier/, seed /testbed_verify
+6.  _snapshot_build_config     — snapshot setup.py / pyproject.toml / etc. (root-only, pre-agent)
+7.  _deploy_skills             — copy skills to agent paths
+8.  _lockdown_paths            — chown root + chmod 700 on locked paths
+9.  _connect_acp               — setpriv/su privilege drop, ACP handshake
+10. _execute_prompts           — multi-turn agent execution
+11. _harden_before_verify      — pkill agent, wipe /logs/verifier/, restore build-config, env reset, set verifier user
+12. _verify                    — run verifier as 'verifier' user, isolated errors
 ```
 
 ## Threat model coverage
@@ -224,14 +273,23 @@ block does not crash after `pkill` has already killed the ACP transport.
 | Verifier crash misclassified as agent error | `verifier_error` field, separate bucket, terminal retry |
 | Verifier hangs and inflates duration | Explicit `asyncio.wait_for(verifier.timeout_sec)` |
 | Systemic verifier bug masquerades as agent failure | `>20%` ERROR threshold, separate aggregation |
+| Agent forges `reward.txt` during agent phase | `/logs/verifier/` wiped (`rm -rf` + recreate) in `harden_before_verify` |
+| `setup.py` re-creates `reward.txt` via `pip install` | Build-config snapshot restores canonical `setup.py` before verify |
+| PEP 517 build-backend hijack via `pyproject.toml` | Build-config snapshot restores canonical `pyproject.toml` |
+| `uv` PATH shim written by `setup.py` | Build-config snapshot |
+| pytest entry-point plugin via `pip install` as root (new install) | Verifier runs as `verifier` user; cannot write system site-packages |
+| pytest entry-point plugin via pre-installed dist-info (canonical `pytest11`) | `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`; per-task allowlist for legitimate plugins |
+| Symlink at restore dst redirects `cp` write to `reward.txt` | `rm -f {dst}` severs any symlink before `cp` in `_restore_build_config` |
+| `sitecustomize.py` / `.pth` in `/usr/local/lib` | Verifier runs as `verifier` user; cannot write system site-packages |
+| `conftest.py` plant in `/tests` after Harbor upload | Build-config snapshot (canonical `setup.py` cannot plant it) |
 | Agent forges `reward.txt` via background process | `pkill -u sandbox_user` before verify |
 | Agent forges scraped tool-call count | `n_tool_calls` only sourced from ACP session |
 | `conftest.py` injection forces tests to pass | `--confcutdir=/tests` + `find -delete` |
 | `pyproject.toml` / `pytest.ini` injection from agent-writable cwd | `-c /dev/null` in `PYTEST_ADDOPTS` |
 | Module-shadow via `import x` finding `/app/x.py` | `PYTHONSAFEPATH=1` drops implicit `''` from `sys.path` |
-| Image-`ENV` carryover (`LD_PRELOAD`, `PYTHONSTARTUP`) | Cleared in `_VERIFIER_ENV` |
-| `sitecustomize.py` / `.pth` injection | sys.path-aware cleanup |
-| PATH poisoning to shadow verifier tools | Canonical `_VERIFIER_ENV` PATH |
+| Image-`ENV` carryover (`LD_PRELOAD`, `PYTHONSTARTUP`) | Cleared in `VERIFIER_ENV` |
+| `sitecustomize.py` / `.pth` injection in writable paths | sys.path-aware `CLEANUP_CMD` |
+| PATH poisoning to shadow verifier tools | Canonical `VERIFIER_ENV` PATH |
 | Agent reads `/solution` or `/tests` to cheat | `chown root + chmod 700` lockdown |
 | Agent runs as root with full FS access | Default `sandbox_user="agent"` + setpriv/su |
 | Symlink attack on locked paths | Symlink guard in `_lockdown_paths` |
@@ -254,28 +312,6 @@ block does not crash after `pkill` has already killed the ACP transport.
 
 Items deferred but on the roadmap. Each entry lists the trigger that
 should prompt revisiting it.
-
-- **Verifier as a dedicated non-root user, distinct from `sandbox_user`.**
-  Today the verifier inherits Harbor's default of running as root, which is
-  the load-bearing assumption behind several layers (e.g. "agent's user-site
-  isn't on the verifier's `sys.path`" only holds because the verifier's user
-  is root, not the agent). Inverting this — verifier as its own UID, neither
-  root nor `sandbox_user` — would make most of the layered defenses
-  *redundant in a good way*: the agent-writable cwd, `/root/.local`, and
-  PATH-shadowing vectors all become structurally unreachable instead of
-  defended in depth. **Trigger:** Harbor exposes a `verifier.user` setting,
-  or benchflow adds its own privilege-drop wrapper around the verifier
-  invocation (mirroring `_setup_sandbox_user`).
-
-- **Per-task pytest plugin allowlist.** Would let us safely enable
-  `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` (Layer 3 from the original plan,
-  currently dropped). Today ~94 SkillsBench tasks rely on
-  `pytest-json-ctrf`'s `--ctrf` flag, so global autoload-disable would
-  break them. A per-task `pytest_plugins = [...]` declaration in
-  `test.sh` (or `task.toml`) would let those tasks opt back in
-  explicitly. **Trigger:** a real entry-point plugin injection attack is
-  found, OR a one-time refactor pass over the SkillsBench tasks becomes
-  worthwhile (e.g. as part of a broader test-infra cleanup).
 
 - **`pytest --import-mode=importlib`.** Eliminates pytest's default
   `prepend` import mode, which mutates `sys.path` to add each test file's

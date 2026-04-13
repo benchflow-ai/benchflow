@@ -143,6 +143,41 @@ async def test_setup_verifier_user_creates_testbed_verify():
 
 
 @pytest.mark.asyncio
+async def test_setup_verifier_user_creates_group_before_user():
+    """groupadd (or getent guard) must run before useradd --gid to avoid exit-6 failure."""
+    from benchflow._sandbox import _VERIFIER_USER, _setup_verifier_user
+
+    env = _make_env()
+    await _setup_verifier_user(env)
+
+    cmds_list = [c.args[0] for c in env.exec.call_args_list]
+    groupadd_idx = next(
+        (i for i, c in enumerate(cmds_list) if "groupadd" in c and _VERIFIER_USER in c),
+        None,
+    )
+    # Match the specific verifier useradd call (--gid + user name) to avoid
+    # false matches against any other useradd calls in a different function.
+    useradd_idx = next(
+        (
+            i
+            for i, c in enumerate(cmds_list)
+            if "useradd" in c and "--gid" in c and _VERIFIER_USER in c
+        ),
+        None,
+    )
+    assert groupadd_idx is not None, (
+        f"expected a groupadd call for {_VERIFIER_USER!r} — "
+        "useradd --gid requires the group to pre-exist"
+    )
+    assert useradd_idx is not None, (
+        f"expected useradd --gid {_VERIFIER_USER} call not found"
+    )
+    assert groupadd_idx < useradd_idx, (
+        f"groupadd (idx={groupadd_idx}) must precede useradd (idx={useradd_idx})"
+    )
+
+
+@pytest.mark.asyncio
 async def test_setup_verifier_user_useradd_precedes_home_wipe():
     """useradd must run before the home-dir wipe to prevent agent pre-staging /home/verifier."""
     from benchflow._sandbox import _VERIFIER_USER, _setup_verifier_user
@@ -151,7 +186,14 @@ async def test_setup_verifier_user_useradd_precedes_home_wipe():
     await _setup_verifier_user(env)
 
     cmds_list = [c.args[0] for c in env.exec.call_args_list]
-    useradd_idx = next((i for i, c in enumerate(cmds_list) if "useradd" in c), None)
+    useradd_idx = next(
+        (
+            i
+            for i, c in enumerate(cmds_list)
+            if "useradd" in c and "--gid" in c and _VERIFIER_USER in c
+        ),
+        None,
+    )
     wipe_idx = next(
         (i for i, c in enumerate(cmds_list) if f"rm -rf /home/{_VERIFIER_USER}" in c),
         None,
