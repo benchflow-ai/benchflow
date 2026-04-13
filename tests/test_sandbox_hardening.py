@@ -80,22 +80,32 @@ class TestHardenSequence:
 
     @pytest.mark.asyncio
     async def test_with_sandbox_user(self, harness):
-        """pkill runs first, wipe runs before cleanup, env is injected."""
+        """pkill → wipe → restore → refresh → cleanup → env injection, full path."""
         sdk, env, task, tp = harness
+        # Use a manifest-aware env so _restore_build_config can parse the cat call.
+        env = _make_env(side_effect=_manifest_env(_blank_manifest()))
         mock_v = MagicMock()
         mock_v.verify = AsyncMock(return_value=MagicMock(rewards={"reward": 1.0}))
         with patch("benchflow.sdk.Verifier", return_value=mock_v):
-            await sdk._verify(env, task, tp, {}, sandbox_user="agent")
+            await sdk._verify(
+                env, task, tp, {}, sandbox_user="agent", workspace="/testbed"
+            )
 
-        cmds = [c[0][0] for c in env.exec.call_args_list]
+        cmds = [c.args[0] for c in env.exec.call_args_list]
         assert "pkill -u agent" in cmds[0]
         wipe_idx = next(
             (i for i, c in enumerate(cmds) if "rm -rf /logs/verifier" in c), None
         )
+        restore_idx = next(
+            (i for i, c in enumerate(cmds) if "rm -f /testbed/setup.py" in c), None
+        )
         cleanup_idx = next((i for i, c in enumerate(cmds) if "conftest.py" in c), None)
         assert wipe_idx is not None
+        assert restore_idx is not None, (
+            "restore file op not found — workspace path not exercised"
+        )
         assert cleanup_idx is not None
-        assert wipe_idx < cleanup_idx
+        assert wipe_idx < restore_idx < cleanup_idx
         assert any("mkdir -p /logs/verifier" in c for c in cmds)
         cleanup_cmd = next(c for c in cmds if "conftest.py" in c)
         assert "sitecustomize.py" in cleanup_cmd and ".pth" in cleanup_cmd
@@ -120,7 +130,7 @@ class TestHardenSequence:
         with patch("benchflow.sdk.Verifier", return_value=mock_v):
             await sdk._verify(env, task, tp, {}, sandbox_user=None)
 
-        cmds = [c[0][0] for c in env.exec.call_args_list]
+        cmds = [c.args[0] for c in env.exec.call_args_list]
         assert all("pkill" not in c for c in cmds)
         assert any("conftest.py" in c for c in cmds)
         addopts = task.config.verifier.env["PYTEST_ADDOPTS"]
@@ -149,27 +159,27 @@ class TestVerifierDirWipe:
     """Tier 1: /logs/verifier/ is wiped and recreated before the verifier runs."""
 
     @pytest.mark.asyncio
-    async def test_wipe_runs_without_sandbox_user(self):
-        """rm -rf + mkdir -p run even when sandbox_user is None."""
+    async def test_wipe_recreates_verifier_dir(self):
+        """rm -rf, mkdir -p, and chmod 777 are all in one atomic call; it runs as root."""
         from benchflow._sandbox import harden_before_verify
 
         env = _make_env()
         await harden_before_verify(env, _make_task(), sandbox_user=None)
 
-        calls = [c.args[0] for c in env.exec.call_args_list]
-        assert any("rm -rf /logs/verifier" in c for c in calls)
-        assert any("mkdir -p /logs/verifier" in c for c in calls)
-
-    @pytest.mark.asyncio
-    async def test_chmod_777_after_recreate(self):
-        """chmod 777 /logs/verifier is part of the wipe command."""
-        from benchflow._sandbox import harden_before_verify
-
-        env = _make_env()
-        await harden_before_verify(env, _make_task(), sandbox_user=None)
-
-        calls = [c.args[0] for c in env.exec.call_args_list]
-        assert any("chmod 777 /logs/verifier" in c for c in calls)
+        match = next(
+            (
+                c
+                for c in env.exec.call_args_list
+                if "rm -rf /logs/verifier" in c.args[0]
+                and "mkdir -p /logs/verifier" in c.args[0]
+                and "chmod 777 /logs/verifier" in c.args[0]
+            ),
+            None,
+        )
+        assert match is not None, (
+            "expected a single call with rm -rf, mkdir -p, and chmod 777 for /logs/verifier"
+        )
+        assert match.kwargs.get("user") == "root"
 
 
 # ── TestBuildConfigSnapshot ───────────────────────────────────────────────────
@@ -229,7 +239,7 @@ class TestBuildConfigSnapshot:
 
     @pytest.mark.asyncio
     async def test_restore_removes_absent_file(self):
-        """Absent entry in manifest → rm -f for destination."""
+        """Absent entry in manifest → rm -f for destination; runs as root."""
         from benchflow._sandbox import _restore_build_config
 
         manifest = _blank_manifest()
@@ -242,12 +252,20 @@ class TestBuildConfigSnapshot:
 
         await _restore_build_config(env, workspace="/testbed")
 
-        calls = [c.args[0] for c in env.exec.call_args_list]
-        assert any("rm -f /testbed/setup.py" in c for c in calls)
+        rm_call = next(
+            (
+                c
+                for c in env.exec.call_args_list
+                if "rm -f /testbed/setup.py" in c.args[0]
+            ),
+            None,
+        )
+        assert rm_call is not None
+        assert rm_call.kwargs.get("user") == "root"
 
     @pytest.mark.asyncio
     async def test_restore_overwrites_agent_modified_file(self):
-        """Present entry in manifest → cp + chown root:root + chmod 644."""
+        """Present entry in manifest → cp + chown root:root + chmod 644; runs as root."""
         from benchflow._sandbox import _restore_build_config
 
         manifest = {**_blank_manifest(), "setup.py": True}
@@ -260,34 +278,22 @@ class TestBuildConfigSnapshot:
 
         await _restore_build_config(env, workspace="/testbed")
 
-        calls = [c.args[0] for c in env.exec.call_args_list]
-        setup_call = next(c for c in calls if "setup.py" in c and "cp" in c)
-        assert "chown root:root" in setup_call
-        assert "chmod 644" in setup_call
-
-    @pytest.mark.asyncio
-    async def test_sentinel_string_in_file_does_not_trigger_delete(self):
-        """setup.py containing __ABSENT__ is restored not deleted (manifest is authoritative)."""
-        from benchflow._sandbox import _restore_build_config
-
-        manifest = {**_blank_manifest(), "setup.py": True}
-        env = _make_env(
-            side_effect=[
-                MagicMock(stdout=json.dumps(manifest), stderr="", exit_code=0),
-                *[MagicMock(stdout="", stderr="", exit_code=0) for _ in range(8)],
-            ]
+        cp_call = next(
+            (
+                c
+                for c in env.exec.call_args_list
+                if "setup.py" in c.args[0] and "cp" in c.args[0]
+            ),
+            None,
         )
-
-        await _restore_build_config(env, workspace="/testbed")
-
-        calls = [c.args[0] for c in env.exec.call_args_list]
-        setup_call = next(c for c in calls if "setup.py" in c and c != calls[0])
-        assert "cp" in setup_call
-        assert "rm -f" not in setup_call
+        assert cp_call is not None
+        assert "chown root:root" in cp_call.args[0]
+        assert "chmod 644" in cp_call.args[0]
+        assert cp_call.kwargs.get("user") == "root"
 
     @pytest.mark.asyncio
     async def test_harden_calls_restore_before_cleanup(self):
-        """restore runs before CLEANUP_CMD when workspace is given."""
+        """All restore ops (manifest read + per-file deletes) complete before CLEANUP_CMD."""
         from benchflow._sandbox import _SNAPSHOT_MANIFEST, harden_before_verify
 
         env = _make_env(side_effect=_manifest_env(_blank_manifest()))
@@ -295,13 +301,18 @@ class TestBuildConfigSnapshot:
         await harden_before_verify(env, task, sandbox_user=None, workspace="/testbed")
 
         calls = [c.args[0] for c in env.exec.call_args_list]
-        restore_idx = next(
+        restore_manifest_idx = next(
             (i for i, c in enumerate(calls) if _SNAPSHOT_MANIFEST in c), None
         )
+        # With a blank manifest every file is absent → rm -f calls are the restore ops.
+        restore_file_idx = next(
+            (i for i, c in enumerate(calls) if "rm -f /testbed/setup.py" in c), None
+        )
         cleanup_idx = next((i for i, c in enumerate(calls) if "conftest.py" in c), None)
-        assert restore_idx is not None
-        assert cleanup_idx is not None
-        assert restore_idx < cleanup_idx
+        assert restore_manifest_idx is not None, "manifest read not found"
+        assert restore_file_idx is not None, "per-file restore op not found"
+        assert cleanup_idx is not None, "CLEANUP_CMD not found"
+        assert restore_manifest_idx < restore_file_idx < cleanup_idx
 
     @pytest.mark.asyncio
     async def test_harden_skips_restore_without_workspace(self):
