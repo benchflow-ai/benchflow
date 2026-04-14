@@ -120,7 +120,12 @@ async def test_harden_restore_fallback_uses_shutil():
 
     restore = next(c.args[0] for c in env.exec.call_args_list if "rsync" in c.args[0])
     fallback = restore.split("||", 1)[1]
-    assert "shutil" in fallback and "rm -rf" not in fallback
+    assert (
+        "shutil" in fallback
+        and "rm -rf" not in fallback
+        and "rmtree" not in fallback
+        and "dirs_exist_ok=True" in fallback
+    )
 
 
 def test_oracle_branch_setup_calls():
