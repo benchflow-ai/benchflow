@@ -5,10 +5,10 @@ Pulls real tasks from three Harbor-format benchmarks (skillsbench,
 swebench-verified, terminal-bench-2), copies each into an isolated
 "cell" directory under .cells/, swaps the task's `solution/solve.sh`
 with one of our exploit payloads, and runs the cell under both
-benchflow 0.2.0 and benchflow HEAD via Daytona oracle mode.
+benchflow 0.2.0 and benchflow 0.2.2 via Daytona oracle mode.
 
 Output: a benchmark × pattern × version table showing where reward
-hacking succeeds and where 0.2.1's hardening blocks it.
+hacking succeeds and where 0.2.2's hardening blocks it.
 
 Usage:
     python run_matrix.py                  # full matrix
@@ -137,7 +137,7 @@ CELLS: list[Cell] = [
 # once we have a harbor adapter that can run a task in oracle mode.
 VERSIONS: list[tuple[str, list[str]]] = [
     ("0.2.0", ["benchflow==0.2.0"]),
-    ("0.2.1", ["-e", str(REPO_ROOT)]),
+    ("0.2.2", ["-e", str(REPO_ROOT)]),
 ]
 
 
@@ -199,9 +199,10 @@ def _prepare_cell(cell: Cell) -> None:
     shutil.copyfile(exploit_src, exploit_dst)
     exploit_dst.chmod(exploit_dst.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
 
-    # The conftest payload is read by conftest_hook.sh from $(dirname $0),
-    # which inside the container ends up under /solution/. Copy it next to
-    # the exploit script so the relative lookup works.
+    # conftest_payload.py is a standalone reference copy of the payload;
+    # conftest_hook.sh inlines it as a heredoc and does not read this file.
+    # Ship it alongside the exploit script so the cell is self-contained and
+    # the payload is human-readable without parsing the shell script.
     payload_src = HERE / "exploits" / "conftest_payload.py"
     if payload_src.exists():
         shutil.copyfile(payload_src, soln / "conftest_payload.py")
@@ -295,15 +296,15 @@ def _print_table(results: dict[str, dict[str, dict]]) -> None:
     width = 72
     print()
     print("=" * width)
-    print("Reward-hack matrix — benchflow 0.2.0 vs 0.2.1")
+    print("Reward-hack matrix — benchflow 0.2.0 vs 0.2.2")
     print("=" * width)
-    header = f"{'cell':<40}  {'0.2.0':<18}  {'0.2.1'}"
+    header = f"{'cell':<40}  {'0.2.0':<18}  {'0.2.2'}"
     print(header)
     print("-" * width)
     for cell in CELLS:
         cells = results.get(cell.cell_id, {})
         c020 = _fmt_cell(cells.get("0.2.0", {}))
-        c021 = _fmt_cell(cells.get("0.2.1", {}))
+        c021 = _fmt_cell(cells.get("0.2.2", {}))
         label = f"{cell.pattern_id} {cell.benchmark}/{cell.task}"
         if len(label) > 40:
             label = label[:37] + "..."
@@ -709,7 +710,7 @@ def main() -> int:
     print("[venv] benchflow==0.2.0 (PyPI)")
     _create_venv(VENVS_DIR / "bf-0.2.0", VERSIONS[0][1])
     print("[venv] benchflow@HEAD (editable)")
-    _create_venv(VENVS_DIR / "bf-0.2.1", VERSIONS[1][1])
+    _create_venv(VENVS_DIR / "bf-0.2.2", VERSIONS[1][1])
 
     JOBS_DIR.mkdir(parents=True, exist_ok=True)
 
