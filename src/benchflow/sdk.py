@@ -112,6 +112,8 @@ from benchflow._env_setup import (
 )
 from benchflow._sandbox import (
     _resolve_locked_paths,
+    _seed_verifier_workspace,
+    _snapshot_build_config,
     harden_before_verify,
     lockdown_paths,
     setup_sandbox_user,
@@ -349,10 +351,11 @@ class SDK:
         trial_paths: "TrialPaths",
         timing: dict,
         sandbox_user: str | None = None,
+        workspace: str | None = None,
     ) -> tuple[dict | None, str | None]:
         """Run verifier with pre-verification hardening."""
         trial_paths.verifier_dir.mkdir(parents=True, exist_ok=True)
-        await harden_before_verify(env, task, sandbox_user)
+        await harden_before_verify(env, task, sandbox_user, workspace=workspace)
         logger.info("Running verifier...")
         t0 = datetime.now()
         verifier_error = None
@@ -485,6 +488,7 @@ class SDK:
         error = None
         verifier_error = None
         rewards = None
+        agent_cwd: str | None = None
 
         try:
             await self._start_env_and_upload(env, task_path, timing)
@@ -495,8 +499,15 @@ class SDK:
                 await hook(env)
 
             if agent == "oracle":
+                # Detect the container's working directory the same way the regular
+                # agent path does — different Harbor tasks use different WORKDIR values
+                # (e.g. /testbed for SWE-bench, /app for others).
+                cwd_result = await env.exec("pwd", timeout_sec=10)
+                agent_cwd = (cwd_result.stdout or "").strip() or "/app"
                 if sandbox_user:
-                    await setup_sandbox_user(env, sandbox_user, workspace="/app")
+                    await setup_sandbox_user(env, sandbox_user, workspace=agent_cwd)
+                    await _snapshot_build_config(env, workspace=agent_cwd)
+                    await _seed_verifier_workspace(env, workspace=agent_cwd)
                 await lockdown_paths(env, effective_locked)
                 trajectory, agent_name = await self._run_oracle(
                     env, task_path, timeout, sandbox_user
@@ -522,6 +533,11 @@ class SDK:
                     agent_cwd = await setup_sandbox_user(
                         env, sandbox_user, workspace=agent_cwd
                     )
+                    # Snapshot build-config files and create the verifier user
+                    # before the agent launches — both have ordering invariants
+                    # that require a clean pre-agent workspace state.
+                    await _snapshot_build_config(env, workspace=agent_cwd)
+                    await _seed_verifier_workspace(env, workspace=agent_cwd)
 
                 await deploy_skills(
                     env,
@@ -582,7 +598,12 @@ class SDK:
                     )
 
             rewards, verifier_error = await self._verify(
-                env, task, trial_paths, timing, sandbox_user=sandbox_user
+                env,
+                task,
+                trial_paths,
+                timing,
+                sandbox_user=sandbox_user,
+                workspace=agent_cwd,
             )
 
         except TimeoutError:

@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## 0.2.2 — 2026-04-13
+
+### Added
+
+- **Sandbox hardening tiers 1–3** — layered defense (env scrubbing, path lockdown, workspace
+  freeze, wider snapshot, oracle privilege drop) blocking F1–F6 red-team findings.
+- **`labs/reward-hack-matrix`** — per-trial timeout support and 0.2.2 sweep handoff scripts.
+
+### Fixed
+
+- Multiple sandbox bypass vectors identified in red-team testing.
+
 ## 0.2.1 — 2026-04-12
 
 ### Added

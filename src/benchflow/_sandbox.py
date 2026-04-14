@@ -4,21 +4,14 @@ Owns the "agent runs as non-root" lifecycle:
     - Creating the sandbox user and copying root's tooling into its home
     - Building the privilege-drop wrapper (setpriv / su) for agent launch
     - Locking down solution/test paths so the sandbox user cannot read them
-    - Hardening the environment before the verifier runs (kill sandbox
-      processes, scrub injected conftest/.pth files, install trusted env)
-
-Plus the supporting cast that only this module touches:
-    - Path validation against shell-injection (_validate_locked_path)
-    - Effective lockdown path resolution (_resolve_locked_paths)
-    - VERIFIER_ENV / CLEANUP_CMD module constants (consumed only by
-      harden_before_verify; never read directly from sdk.py)
+    - Hardening the environment before the verifier runs
 
 Does not own:
-    - Spawning the agent process — see _acp_run.py (which imports
-      build_priv_drop_cmd from here as the one allowed horizontal hop)
+    - Spawning the agent process — see _acp_run.py
     - Running the verifier itself — see SDK._verify
 """
 
+import json as _json
 import logging
 import re
 import shlex
@@ -39,7 +32,7 @@ _SAFE_PATH_RE = re.compile(r"^/[a-zA-Z0-9_./*?\-]+(/[a-zA-Z0-9_./*?\-]+)*$")
 
 
 def _validate_locked_path(p: str) -> None:
-    """Validate a locked path — reject injection and traversal."""
+    """Reject injection and traversal in a locked path."""
     import os
 
     p_norm = os.path.normpath(p)
@@ -90,8 +83,7 @@ def _resolve_locked_paths(
 def build_priv_drop_cmd(agent_launch: str, sandbox_user: str) -> str:
     """Build a shell command that drops to sandbox_user via setpriv or su.
 
-    setpriv (util-linux, Debian/Ubuntu) execs directly with no parent process.
-    su -l is the universal fallback (works on Alpine/BusyBox too).
+    setpriv (util-linux) execs directly; su -l is the fallback for Alpine/BusyBox.
     No outer sh -c wrapper — DockerProcess wraps in bash -c already.
     """
     inner = (
@@ -136,7 +128,7 @@ async def setup_sandbox_user(env, sandbox_user: str, workspace: str) -> str:
 async def lockdown_paths(env, paths: list[str]) -> None:
     """Lock directories so the sandbox user cannot access them.
 
-    Runs after all root-level setup but before agent launch.
+    Runs after root-level setup but before agent launch.
     Uses chown-then-chmod ordering to prevent TOCTOU window.
     Rejects symlinks and validates path patterns against injection.
     """
@@ -160,11 +152,143 @@ async def lockdown_paths(env, paths: list[str]) -> None:
     await env.exec(cmd, timeout_sec=30)
 
 
+# ── Build-config snapshot / restore (Tier 2) ─────────────────────────────────
+
+# Files snapshotted before agent runs and restored before verification.
+# Covers common build backends to prevent setup.py / pyproject.toml hijacks.
+_BUILD_CONFIG_FILES = (
+    "setup.py",
+    "pyproject.toml",
+    "setup.cfg",
+    "tox.ini",
+    "noxfile.py",
+    "hatch.toml",
+    "flit.ini",
+    "MANIFEST.in",
+    # Non-build files that control how tests install/run — must be snapshotted
+    # and restored so an agent cannot inject malicious packages or override
+    # test targets via set-e + early-exit tricks.
+    "requirements.txt",
+    "requirements-dev.txt",
+    "Makefile",
+)
+# chmod 700: root-only so sandbox_user cannot read or overwrite the snapshot.
+_SNAPSHOT_DIR = "/tmp/.benchflow_build_snapshot"
+_SNAPSHOT_MANIFEST = f"{_SNAPSHOT_DIR}/manifest.json"
+
+
+async def _snapshot_build_config(env, workspace: str) -> None:
+    """Snapshot build-config files before the agent runs.
+
+    Absence/presence is recorded in manifest.json rather than embedding a
+    sentinel string in captured files — prevents an agent from forging
+    "this file was absent" by planting a magic string in setup.py.
+
+    ORDERING INVARIANT: must be called before agent launch. The agent owns
+    workspace files (chown'd by setup_sandbox_user) and could modify them
+    immediately on start.
+    """
+    await env.exec(
+        f"mkdir -p {_SNAPSHOT_DIR} && chmod 700 {_SNAPSHOT_DIR}",
+        user="root",
+    )
+    manifest: dict[str, bool] = {}
+    for fname in _BUILD_CONFIG_FILES:
+        src = f"{workspace}/{fname}"
+        dst = f"{_SNAPSHOT_DIR}/{fname}"
+        result = await env.exec(
+            f"if [ -f {src} ]; then "
+            f"  cp --preserve=all {src} {dst} && echo present; "
+            f"else "
+            f"  echo absent; "
+            f"fi",
+            user="root",
+        )
+        manifest[fname] = result.stdout.strip() == "present"
+    manifest_json = _json.dumps(manifest)
+    await env.exec(
+        f"echo {shlex.quote(manifest_json)} > {_SNAPSHOT_MANIFEST}",
+        user="root",
+    )
+
+
+async def _restore_build_config(env, workspace: str) -> None:
+    """Restore build-config files to their pre-agent state.
+
+    Files that existed pre-agent are restored from the snapshot; files that
+    didn't are removed if the agent created them.
+    """
+    result = await env.exec(f"cat {_SNAPSHOT_MANIFEST}", user="root")
+    manifest: dict[str, bool] = _json.loads(result.stdout)
+    for fname in _BUILD_CONFIG_FILES:
+        src = f"{_SNAPSHOT_DIR}/{fname}"
+        dst = f"{workspace}/{fname}"
+        if manifest.get(fname):
+            # File existed pre-agent: restore from snapshot.
+            # rm -f first to sever any symlink the agent may have planted at dst.
+            cmd = (
+                f"rm -f {dst} && "
+                f"cp --preserve=timestamps {src} {dst} "
+                f"&& chown root:root {dst} && chmod 644 {dst}"
+            )
+        else:
+            # File did not exist pre-agent: remove anything the agent created.
+            cmd = f"rm -f {dst}"
+        await env.exec(cmd, user="root")
+
+
+async def _seed_verifier_workspace(env, workspace: str = "/testbed") -> None:
+    """Seed /testbed_verify as a pre-agent snapshot for the full workspace restore.
+
+    Called once after setup_sandbox_user, before agent launch.
+    - Locks /logs/ parent so sandbox_user cannot rename /logs/verifier/ out.
+    - Seeds /testbed_verify as a root-owned readable copy of the workspace
+      so harden_before_verify can rsync it back to restore ALL source files
+      to pre-agent canonical state before the verifier runs.
+
+    OS-user creation (the former "verifier" user) was removed: Harbor runs
+    test.sh as root by default; tasks that need a non-root verifier set
+    `[verifier] user = "verifier"` in task.toml (Harbor honors that field
+    if the user is pre-provisioned in the container image).
+    """
+    cmds = [
+        # Lock /logs/ parent: sandbox_user cannot rename /logs/verifier/ out.
+        "chown root:root /logs && chmod 755 /logs",
+        # Seed root-owned readable workspace copy from the actual workspace
+        # (may differ from /testbed for tasks with WORKDIR=/app etc.).
+        f"rm -rf /testbed_verify && cp -a {shlex.quote(workspace)} /testbed_verify && "
+        f"chown -R root:root /testbed_verify && chmod -R o+rX /testbed_verify",
+    ]
+    for cmd in cmds:
+        await env.exec(cmd, user="root")
+
+
+async def _refresh_verifier_workspace(env, workspace: str) -> None:
+    """Copy restored build-config files into the read-only verifier workspace.
+
+    Called after _restore_build_config so /testbed_verify reflects the
+    canonical pre-agent build-config state.
+    """
+    for fname in _BUILD_CONFIG_FILES:
+        src = f"{workspace}/{fname}"
+        dst = f"/testbed_verify/{fname}"
+        cmd = (
+            f"if [ -f {src} ]; then "
+            f"  rm -f {dst} && "
+            f"  cp --preserve=timestamps {src} {dst} "
+            f"  && chown root:root {dst} && chmod 644 {dst}; "
+            f"else "
+            f"  rm -f {dst}; "
+            f"fi"
+        )
+        await env.exec(cmd, user="root")
+
+
 # ── Verifier hardening ────────────────────────────────────────────────────────
 
 # Trusted env vars for verifier execution — override any agent pollution.
-# Intentionally omitted (negative guards in test_verify.py explain why):
-# PYTEST_DISABLE_PLUGIN_AUTOLOAD, PYTHONNOUSERSITE, PYTHONHOME.
+# Intentionally omitted (negative guard in test_verify.py explains why):
+# PYTHONHOME.
 VERIFIER_ENV: dict[str, str] = {
     "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
     "PYTEST_ADDOPTS": (
@@ -173,20 +297,47 @@ VERIFIER_ENV: dict[str, str] = {
         "--rootdir=/tests "
         "-p no:cacheprovider"
     ),
+    # Block pytest11 entry-point plugins. An agent can modify a pre-installed
+    # package's plugin source to forge a reward; -c /dev/null does not block
+    # entry-point registration. Tasks that need specific plugins declare them
+    # in task.toml [verifier] pytest_plugins = [...].
+    "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
     "PYTHONDONTWRITEBYTECODE": "1",
+    # Redirect .pyc cache reads/writes to a non-existent directory so
+    # agent-pre-compiled __pycache__ bytecode is never found or executed.
+    "PYTHONPYCACHEPREFIX": "/nonexistent",
     "PYTHONPATH": "",
     "PYTHONSTARTUP": "",
-    "PYTHONSAFEPATH": "1",  # drop implicit '' (cwd) from sys.path
     "LD_PRELOAD": "",
     "LD_LIBRARY_PATH": "",
+    # Prevent pip from writing to user site-packages during pip install -e .
+    "PYTHONNOUSERSITE": "1",
+    "PIP_USER": "0",
+    "PIP_NO_USER_CONFIG": "1",
+    # Force HOME to a non-existent path so pip cannot read any pre-staged pip.conf.
+    "HOME": "/nonexistent",
+    # Disable breakpoint() — any other value imports an arbitrary callable.
+    "PYTHONBREAKPOINT": "0",
+    # Prevent coverage.py from importing a config file as Python on startup.
+    "COVERAGE_PROCESS_START": "",
+    # Prevent Django/Celery from importing an agent-controlled module at startup.
+    "DJANGO_SETTINGS_MODULE": "",
+    "CELERY_CONFIG_MODULE": "",
 }
 
-# Cleanup command for pytest hook / Python startup injection.
-# Removes conftest.py outside /tests, sitecustomize.py/usercustomize.py
-# and .pth files from writable sys.path entries (preserves /usr/lib,
-# /usr/local/lib).
+# Wipe and recreate /logs/verifier/ before the verifier runs.
+# rm -rf severs hardlinks, removes symlink replacements, and eliminates
+# variant filenames/subdirs the agent may have pre-staged.
+_CLEAR_VERIFIER_DIR_CMD = (
+    "rm -rf /logs/verifier && mkdir -p /logs/verifier && chmod 777 /logs/verifier"
+)
+
+# Remove injected conftest.py, sitecustomize.py/usercustomize.py, and .pth
+# files from writable sys.path entries (preserves /usr/lib, /usr/local/lib).
+# Also purge *.py from temp dirs: covers module-shadow via non-workspace cwd.
 CLEANUP_CMD = (
-    "find / -maxdepth 5 -name conftest.py -not -path '/tests/*' -delete 2>/dev/null; "
+    "find / -name conftest.py -not -path '/tests/*' -delete 2>/dev/null; "
+    "find /tmp /var/tmp -name '*.py' -delete 2>/dev/null; "
     'python3 -c "'
     "import sys,os;"
     "[os.remove(os.path.join(d,f)) "
@@ -203,22 +354,95 @@ CLEANUP_CMD = (
 )
 
 
-async def harden_before_verify(env, task: "Task", sandbox_user: str | None) -> None:
+async def harden_before_verify(
+    env, task: "Task", sandbox_user: str | None, workspace: str | None = None
+) -> None:
     """Neutralize agent tampering before running the verifier.
 
-    1. Kill sandbox-user processes (prevent concurrent writes).
-    2. Remove injected conftest.py, sitecustomize.py, .pth files.
-    3. Merge trusted env vars into task.config.verifier.env.
+    1. Kill sandbox-user processes (prevent concurrent writes during teardown).
+    2. Assert all sandbox-user processes are dead, then wipe/recreate
+       /logs/verifier/ with a clean root-owned directory.
+    3. Restore build-config files to pre-agent state (if workspace provided).
+    4. Sync restored build-config files into /testbed_verify (if workspace provided).
+    4b.Full workspace restore from /testbed_verify — resets ALL source files to
+       pre-agent canonical state, not just the build-config subset.
+    4c.Purge symlinks and __pycache__ trees from workspace.
+    5. chown workspace to root (belt-and-suspenders against zombie sandbox writes).
+    6. Remove injected conftest.py, sitecustomize.py, .pth files.
+    7. Merge trusted env vars into task.config.verifier.env.
     """
+
     if sandbox_user:
         await env.exec(
             f"pkill -u {sandbox_user} 2>/dev/null; "
             f"sleep 1; pkill -9 -u {sandbox_user} 2>/dev/null || true",
             timeout_sec=10,
         )
-    await env.exec(CLEANUP_CMD, timeout_sec=10)
+        # Second pass: catch any processes that slipped through (e.g. cron/at jobs).
+        await env.exec(
+            f"! pgrep -u {sandbox_user} > /dev/null 2>&1 || "
+            f"(sleep 1 && pkill -9 -u {sandbox_user}; sleep 1)",
+            user="root",
+        )
+    # Wipe and recreate /logs/verifier/ with a clean root-owned directory.
+    await env.exec(_CLEAR_VERIFIER_DIR_CMD, user="root")
+    if workspace:
+        await _restore_build_config(env, workspace)
+        await _refresh_verifier_workspace(env, workspace)
+        # Full workspace restore from /testbed_verify (the pre-agent canonical
+        # copy) so ALL source files — not just build-config files — are reset
+        # to their pre-agent state before freezing.  Closes the editable-install
+        # source modification vector (F2): agent rewrites /testbed/src/pkg/x.py
+        # during its phase; this step restores x.py to canonical before verify.
+        await env.exec(
+            f"if [ -d /testbed_verify ]; then "
+            f"  rsync -a --delete /testbed_verify/ {shlex.quote(workspace)}/ 2>/dev/null || "
+            f"  python3 -c 'import shutil,sys; shutil.copytree(\"/testbed_verify\",sys.argv[1],dirs_exist_ok=True)'"
+            f"  {shlex.quote(workspace)}; "
+            f"fi",
+            user="root",
+        )
+        # Purge symlinks so an agent-planted symlink pointing to a writable
+        # external target (e.g. utils.py -> /tmp/evil.py) cannot be followed
+        # during import after the workspace is frozen.
+        await env.exec(
+            f"find {shlex.quote(workspace)} -type l -delete 2>/dev/null; true",
+            user="root",
+        )
+        # Purge __pycache__ trees so pre-compiled .pyc bytecode cannot execute
+        # even if PYTHONPYCACHEPREFIX is bypassed (defense-in-depth).
+        await env.exec(
+            f"find {shlex.quote(workspace)} -type d -name '__pycache__'"
+            f" -exec rm -rf {{}} + 2>/dev/null; true",
+            user="root",
+        )
+        # chown workspace to root: belt-and-suspenders against any zombie
+        # sandbox-user process that survived the pkill above.
+        await env.exec(
+            f"chown -R root:root {shlex.quote(workspace)}",
+            user="root",
+        )
+    await env.exec(CLEANUP_CMD, user="root", timeout_sec=10)
 
     verifier_env = dict(VERIFIER_ENV)
     if task.config.verifier.env:
         verifier_env.update(task.config.verifier.env)
+    # Hard security invariants — re-pin after task-env merge so a task cannot
+    # strip -c /dev/null / --confcutdir, re-enable entry-point plugin loading,
+    # or inject code via breakpoint()/coverage/Django/Celery startup hooks.
+    verifier_env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
+    verifier_env["PYTHONBREAKPOINT"] = "0"
+    verifier_env["COVERAGE_PROCESS_START"] = ""
+    verifier_env["DJANGO_SETTINGS_MODULE"] = ""
+    verifier_env["CELERY_CONFIG_MODULE"] = ""
+    # Re-enable explicitly declared plugins by appending -p flags to the
+    # hardened base — never to a task-supplied PYTEST_ADDOPTS.
+    # getattr: field absent in older harbor deployments; bare access was a live crash.
+    allowed_plugins = getattr(task.config.verifier, "pytest_plugins", None) or []
+    base_addopts = VERIFIER_ENV["PYTEST_ADDOPTS"]
+    if allowed_plugins:
+        flags = " ".join(f"-p {shlex.quote(p)}" for p in allowed_plugins)
+        verifier_env["PYTEST_ADDOPTS"] = base_addopts + f" {flags}"
+    else:
+        verifier_env["PYTEST_ADDOPTS"] = base_addopts
     task.config.verifier.env = verifier_env
