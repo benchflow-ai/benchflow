@@ -1,6 +1,6 @@
 """Tests for _seed_verifier_workspace (pre-agent workspace snapshot)."""
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -102,6 +102,25 @@ async def test_seed_verifier_workspace_seeds_from_workspace_param():
     assert "/testbed " not in seed_cmd, (
         "default /testbed must not appear when workspace=/app"
     )
+
+
+@pytest.mark.asyncio
+async def test_harden_restore_fallback_uses_shutil():
+    """Fallback must use shutil not rm -rf — rm -rf crashes with EOVERFLOW on old LFS images."""
+    from benchflow._sandbox import harden_before_verify
+
+    env = _make_env()
+    task = MagicMock()
+    task.config.verifier.env = {}
+    with (
+        patch("benchflow._sandbox._restore_build_config", AsyncMock()),
+        patch("benchflow._sandbox._refresh_verifier_workspace", AsyncMock()),
+    ):
+        await harden_before_verify(env, task, sandbox_user=None, workspace="/testbed")
+
+    restore = next(c.args[0] for c in env.exec.call_args_list if "rsync" in c.args[0])
+    fallback = restore.split("||", 1)[1]
+    assert "shutil" in fallback and "rm -rf" not in fallback
 
 
 def test_oracle_branch_setup_calls():

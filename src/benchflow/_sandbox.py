@@ -397,7 +397,8 @@ async def harden_before_verify(
         await env.exec(
             f"if [ -d /testbed_verify ]; then "
             f"  rsync -a --delete /testbed_verify/ {shlex.quote(workspace)}/ 2>/dev/null || "
-            f"  (rm -rf {shlex.quote(workspace)} && cp -a /testbed_verify/. {shlex.quote(workspace)}/); "
+            f"  python3 -c 'import shutil,sys; shutil.rmtree(sys.argv[1]); shutil.copytree(\"/testbed_verify\",sys.argv[1])'"
+            f"  {shlex.quote(workspace)}; "
             f"fi",
             user="root",
         )
