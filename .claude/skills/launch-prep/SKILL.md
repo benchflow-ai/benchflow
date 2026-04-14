@@ -124,5 +124,11 @@ Return the PR URL.
 ```bash
 git checkout main && git pull
 git tag v<NEW_VERSION> && git push origin v<NEW_VERSION>
-uv build && uv publish   # requires UV_PUBLISH_TOKEN or ~/.pypirc
+
+# GitHub release — substitute the actual version for <NEW_VERSION> in the awk pattern
+awk '/^## <NEW_VERSION> /{flag=1; next} /^## [0-9]/{flag=0} flag' CHANGELOG.md > /tmp/release_notes.md
+gh release create v<NEW_VERSION> --title "v<NEW_VERSION>" --notes-file /tmp/release_notes.md
+
+# PyPI publish — separate step (requires UV_PUBLISH_TOKEN or ~/.pypirc)
+uv build && uv publish
 ```
