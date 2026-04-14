@@ -20,7 +20,7 @@ Labs live under [`labs/`](../labs/).
 **Prerequisites:**
 
 - Docker daemon
-- Python 3.10+
+- Python 3.12+
 - `uv` on PATH
 - Network access to PyPI
 - No API keys required (uses the `oracle` agent)
