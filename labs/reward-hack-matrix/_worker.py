@@ -32,6 +32,11 @@ startup before fanning out trials.
 Concurrency is bounded by the ``--concurrency`` argument — the orchestrator
 should set this to ``daytona_cap / num_workers`` (e.g. 32 when running 2
 workers against a 64-sandbox Daytona cap).
+
+Each trial is wrapped in ``asyncio.wait_for(..., timeout=TRIAL_TIMEOUT_SEC)``
+so a hung Daytona sandbox cannot block the pool semaphore forever. Tripped
+timeouts surface as a single result with ``error="TrialTimeoutError: ..."``
+— the orchestrator treats them the same as any other per-trial failure.
 """
 
 from __future__ import annotations
@@ -41,6 +46,13 @@ import asyncio
 import json
 import sys
 import traceback
+
+# Per-trial deadline. The old subprocess-per-trial design had no timeout and
+# lost ~10 minutes of wall time during the 1332-trial A sweep when 7 Daytona
+# sandboxes hung indefinitely on sdk.run(). 15 minutes is well above the
+# longest observed healthy swebench trial (~8 min for cython-heavy images)
+# and short enough that a hung trial doesn't starve the semaphore slot.
+TRIAL_TIMEOUT_SEC = 900
 
 
 async def _stream_requests(stdin: asyncio.StreamReader):
@@ -63,16 +75,23 @@ def _emit(obj: dict) -> None:
 
 
 async def _run_trial(sdk, req: dict) -> dict:
-    """Execute one trial. Returns a result dict with the original id."""
+    """Execute one trial. Returns a result dict with the original id.
+
+    Wrapped in ``asyncio.wait_for(..., TRIAL_TIMEOUT_SEC)`` so a hung
+    Daytona sandbox cannot block the pool semaphore forever.
+    """
     import benchflow
 
     try:
-        result = await sdk.run(
-            task_path=req["task_path"],
-            agent="oracle",
-            environment=req.get("environment", "daytona"),
-            jobs_dir=req["jobs_dir"],
-            trial_name=req["trial_name"],
+        result = await asyncio.wait_for(
+            sdk.run(
+                task_path=req["task_path"],
+                agent="oracle",
+                environment=req.get("environment", "daytona"),
+                jobs_dir=req["jobs_dir"],
+                trial_name=req["trial_name"],
+            ),
+            timeout=TRIAL_TIMEOUT_SEC,
         )
         reward = None
         rewards = getattr(result, "rewards", None)
@@ -84,6 +103,13 @@ async def _run_trial(sdk, req: dict) -> dict:
             "reward": reward,
             "error": getattr(result, "error", None),
             "verifier_error": getattr(result, "verifier_error", None),
+        }
+    except TimeoutError:
+        return {
+            "id": req["id"],
+            "benchflow_version": getattr(benchflow, "__version__", "unknown"),
+            "reward": None,
+            "error": f"TrialTimeoutError: sdk.run exceeded {TRIAL_TIMEOUT_SEC}s",
         }
     except Exception as exc:
         tb = traceback.format_exc()
