@@ -6,163 +6,97 @@ user-invocable: true
 
 # BenchFlow Launch Prep
 
-Prepares a release: docs/labs/code review → CI gate → e2e smoke → CHANGELOG → version bump → commit → PR.
+Prepares a release: docs/labs/code review → CI gate → e2e smoke → CHANGELOG → version bump → PR.
 
 Arguments passed: `$ARGUMENTS`
 
 ---
 
-## Dispatch on arguments
+## Dispatch
 
-### No args — show current release state
+**No args** — show release state: current version (`grep '^version' pyproject.toml`), `[Unreleased]` section of CHANGELOG.md, branch and dirty files (`git status --short`). Recommend next step.
 
-1. Read current version: `grep '^version' pyproject.toml`
-2. Show `[Unreleased]` section of CHANGELOG.md (if empty, warn)
-3. Show current branch and any uncommitted changes: `git status --short`
-4. Recommend next step (e.g. `/launch-prep patch`)
-
-### `check` — preflight only, no changes
-
-Run the CI gate and report pass/fail. Make no edits.
-
+**`check`** — run CI gate, report pass/fail, no edits:
 ```bash
-.venv/bin/ruff format --check src/ tests/
-.venv/bin/ruff check src/ tests/
-.venv/bin/ty check src/
+.venv/bin/ruff format --check src tests && .venv/bin/ruff check src tests
+.venv/bin/ty check
 .venv/bin/python -m pytest tests/ -q
 ```
 
-Stop and report any failures. All four must pass before proceeding.
-
-### `patch` / `minor` / `major` — full release prep
-
-Follow steps 1–7 in order. Stop and ask the user if anything is unclear or if there are blockers.
+**`patch` / `minor` / `major`** — follow Steps 0–6 below.
 
 ---
 
-## Step 1 — Docs, labs, and code review
+## Step 0 — Pre-flight
 
-Run three subagents in parallel before touching anything else.
+1. **Version:** `grep '^version' pyproject.toml`, compute new version, ask user to confirm before proceeding. Use their value if they override.
+2. **Branch:** `git branch --show-current` — if `main`, stop: *"Switch to a feature branch or: `git checkout -b release/v<NEW_VERSION>`"*. Any non-main branch is fine.
 
-**Subagent A — docs review:**
-- Read `README.md` and all `.dev-docs/*.md`. Check that code examples, CLI flags, file paths, and API signatures match the current `src/benchflow` implementation. Flag any that are stale.
-- Check all relative markdown links (`[text](path)`) in README and .dev-docs — do the target files/dirs actually exist?
-- Confirm `CHANGELOG.md` has a non-empty `[Unreleased]` section.
+---
 
-**Subagent B — labs/ review:**
-- For each experiment under `labs/`, verify: README accurately describes the code, no broken relative links, no stale `src/benchflow` API calls (e.g. wrong SDK method names, wrong result field names).
-- Check notebook output cells for tracebacks or errors.
-- Grep `labs/` for `TODO`, `FIXME`.
+## Step 1 — Docs, labs, and code review (3 subagents in parallel)
 
-**Subagent C — src/ code smell:**
-- Grep `src/` and `tests/` for `TODO`, `FIXME`, `HACK`, `XXX`. Classify each as blocker vs. acceptable debt.
-- Grep for hardcoded secret patterns: `api_key\s*=\s*["']`, `token\s*=\s*["']`, `password\s*=\s*["']`.
-- Check `__init__.py` exports for obviously unfinished or debug symbols.
+**A — user-facing docs:** Read `README.md` and all `docs/*.md`. Evaluate as a first-time external user: complete install instructions, working examples, accurate CLI flags and API signatures, no broken relative links. Flag anything confusing or stale.
 
-Synthesize into a punch list: **Blockers** / **Polish** / **Clean**. Stop if there are blockers and wait for the user to resolve them.
+**B — labs/:** For each experiment: README matches code, no broken links, no stale `src/benchflow` API calls, no notebook tracebacks. Grep for `TODO`, `FIXME`.
+
+**C — src/ code smell:** Grep `src/` and `tests/` for `TODO`, `FIXME`, `HACK`, `XXX` (blocker vs. debt). Grep for hardcoded secrets (`api_key\s*=\s*["']`, etc.). Check `__init__.py` for debug symbols.
+
+Synthesize: **Blockers / Polish / Clean**. Stop on blockers.
 
 ---
 
 ## Step 2 — CI gate
 
-Run all four checks. If any fail, report the failures and stop. Do not proceed until the gate is green.
+Mirrors `.github/workflows/test.yml` exactly. Stop on any failure.
 
 ```bash
-.venv/bin/ruff format src/ tests/
-.venv/bin/ruff check src/ tests/
-.venv/bin/ty check src/
+.venv/bin/ruff format src tests       # note: ty check takes no path arg
+.venv/bin/ruff check src tests
+.venv/bin/ty check
 .venv/bin/python -m pytest tests/ -q
 ```
 
-If `ruff format` made changes, stage them and include in the version-bump commit (step 6).
+If `ruff format` changed files: `git diff --name-only`, then `git add <those files only>` — not `git add .`.
 
 ---
 
 ## Step 3 — e2e smoke test
 
-Run the live smoke test against a real Docker daemon and API key.
-
 ```bash
-source .env
+source .env 2>/dev/null || true
 .venv/bin/python -m pytest -m live tests/test_smoke.py -v
 ```
 
-- If Docker is unavailable, warn the user and ask whether to skip or abort. Do not skip silently.
-- If the smoke test fails, stop and report. Do not proceed to version bump until e2e passes.
-- Expected: `test_hello_world_smoke` passes with reward > 0 and non-empty trajectory.
+If Docker is unavailable, warn and ask to skip or abort — do not skip silently. Expected: `test_hello_world_smoke` passes with reward > 0 and non-empty trajectory.
 
 ---
 
-## Step 4 — Draft CHANGELOG entries
+## Step 4 — CHANGELOG draft
 
-Read `CHANGELOG.md`. Check if `[Unreleased]` already has content.
+If `[Unreleased]` is non-empty: show it, ask to confirm.
 
-**If `[Unreleased]` is non-empty:** show the entries to the user and ask for confirmation before using them as-is.
+If empty: generate from git log —
+```bash
+git log $(git describe --tags --abbrev=0)..HEAD --oneline --no-merges
+```
+Map prefixes: `feat:` → Added, `fix:` → Fixed, `chore:`/`refactor:`/`build:` → Changed. Omit `docs:` and `test:` unless notable. Show draft and wait for user approval before writing anything.
 
-**If `[Unreleased]` is empty:** generate entries from git log since the last release tag.
+---
+
+## Step 5 — Write CHANGELOG and pyproject.toml
+
+**CHANGELOG:** Insert approved entries as `## <NEW_VERSION> — $(date +%Y-%m-%d)` immediately after `## [Unreleased]`, leaving `[Unreleased]` empty. Use Edit, not Write.
+
+**pyproject.toml:** Edit only `version = "..."` under `[project]` (line 3). Do not touch `target-version` (ruff) or `python-version` (ty) — those are Python version pins. Do not edit `__init__.py`; it reads version from `importlib.metadata` automatically.
+
+---
+
+## Step 6 — Commit and PR
 
 ```bash
-# Find the last release tag
-git describe --tags --abbrev=0
-
-# List commits since that tag
-git log <last-tag>..HEAD --oneline
-```
-
-Group the commits into Added / Changed / Fixed / Deprecated sections using conventional commit prefixes (`feat:` → Added, `fix:` → Fixed, `chore:`/`refactor:` → Changed). Show the draft to the user and ask them to confirm or edit before proceeding. Do not write to CHANGELOG.md until the user approves the draft.
-
----
-
-## Step 5 — Compute new version
-
-Read current version from `pyproject.toml` (`version = "X.Y.Z"`).
-
-Apply the requested bump:
-- `patch` → X.Y.(Z+1)
-- `minor` → X.(Y+1).0
-- `major` → (X+1).0.0
-
-Show the user: "Bumping X.Y.Z → X.Y.Z+1. Proceed?"
-
----
-
-## Step 6 — Update CHANGELOG.md and pyproject.toml
-
-**CHANGELOG:** Insert the approved entries (from Step 4) as a new versioned section immediately after the `## [Unreleased]` heading, leaving `[Unreleased]` empty. Get today's date via `date +%Y-%m-%d`.
-
-Result:
-```markdown
-## [Unreleased]
-
-## 0.2.2 — 2026-04-12
-
-### Added
-- ...
-
-## 0.2.1 — ...
-```
-
-Use Edit (not Write) — preserve all existing content below.
-
-**pyproject.toml:** Edit the single `version = "..."` line. No other changes.
-
----
-
-## Step 7 — Commit and open PR
-
-Stage only the modified files:
-
-```bash
-git add CHANGELOG.md pyproject.toml
-```
-
-Commit:
-```bash
+git add CHANGELOG.md pyproject.toml   # plus any ruff-formatted files from Step 2
 git commit -m "chore: release v<NEW_VERSION>"
-```
-
-Push and open a PR to main:
-```bash
 git push -u origin HEAD
 gh pr create --title "chore: release v<NEW_VERSION>" --body "$(cat <<'EOF'
 ## Release v<NEW_VERSION>
@@ -181,28 +115,14 @@ EOF
 )"
 ```
 
-Return the PR URL to the user.
+Return the PR URL.
 
 ---
 
-## Step 8 — Post-merge (manual, on main)
-
-After the PR is merged, remind the user to run these — do NOT run automatically:
+## Step 7 — Post-merge (remind user, do not run)
 
 ```bash
 git checkout main && git pull
-git tag v<NEW_VERSION>
-git push origin v<NEW_VERSION>
-uv build
-uv publish
+git tag v<NEW_VERSION> && git push origin v<NEW_VERSION>
+uv build && uv publish   # requires UV_PUBLISH_TOKEN or ~/.pypirc
 ```
-
-`uv publish` requires `UV_PUBLISH_TOKEN` or `~/.pypirc` configured.
-
----
-
-## Notes
-
-- CI gate mirrors exactly what `.github/workflows/test.yml` enforces.
-- `ty check src/` baseline is zero errors — any new error is a blocker.
-- Never push directly to main. Always go through a PR.
