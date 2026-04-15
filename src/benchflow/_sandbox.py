@@ -325,6 +325,124 @@ VERIFIER_ENV: dict[str, str] = {
     "CELERY_CONFIG_MODULE": "",
 }
 
+_SAFE_VERIFIER_PATH = VERIFIER_ENV["PATH"]
+_SAFE_VERIFIER_PATH_PARTS = tuple(_SAFE_VERIFIER_PATH.split(":"))
+_RUNTIME_PATH_PREFIXES = ("/tmp", "/var/tmp", "/logs", "/testbed")
+
+
+def _under_path(path: str, prefix: str) -> bool:
+    prefix = prefix.rstrip("/")
+    return path == prefix or path.startswith(f"{prefix}/")
+
+
+def _blocked_verifier_path_prefixes(
+    sandbox_user: str | None, workspace: str | None
+) -> tuple[str, ...]:
+    """Paths that must never be preserved as verifier PATH extras."""
+    prefixes = list(_RUNTIME_PATH_PREFIXES)
+    if workspace:
+        prefixes.append(workspace)
+    if sandbox_user:
+        prefixes.append(f"/home/{sandbox_user}")
+    return tuple(dict.fromkeys(prefixes))
+
+
+def _merge_trusted_verifier_path(extras: list[str]) -> str:
+    """Prepend validated image PATH entries to the verifier allowlist."""
+    kept: list[str] = []
+    seen: set[str] = set(_SAFE_VERIFIER_PATH_PARTS)
+    for entry in extras:
+        if entry and entry not in seen:
+            seen.add(entry)
+            kept.append(entry)
+    return ":".join([*kept, *_SAFE_VERIFIER_PATH_PARTS])
+
+
+_TRUSTED_PATH_EXTRAS_SCRIPT = r"""
+import json
+import os
+import stat
+import sys
+
+raw_path = json.loads(sys.argv[1])
+safe_parts = set(json.loads(sys.argv[2]))
+blocked_prefixes = tuple(json.loads(sys.argv[3]))
+
+
+def under_path(path, prefix):
+    prefix = prefix.rstrip("/")
+    return path == prefix or path.startswith(prefix + "/")
+
+
+trusted = []
+seen = set(safe_parts)
+for entry in raw_path.split(":"):
+    entry = entry.strip()
+    if (
+        not entry
+        or entry in seen
+        or not entry.startswith("/")
+        or "\x00" in entry
+        or "\n" in entry
+    ):
+        continue
+    seen.add(entry)
+    try:
+        real = os.path.realpath(entry)
+        st = os.stat(real)
+    except OSError:
+        continue
+    if not stat.S_ISDIR(st.st_mode):
+        continue
+    if any(under_path(real, prefix) for prefix in blocked_prefixes):
+        continue
+    if st.st_uid != 0:
+        continue
+    if st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        continue
+    trusted.append(entry)
+print(json.dumps(trusted))
+""".strip()
+
+
+def _trusted_path_extras_cmd(raw_path: str, blocked_prefixes: tuple[str, ...]) -> str:
+    """Build the container-side command that validates verifier PATH extras."""
+    return (
+        f"python3 -c {shlex.quote(_TRUSTED_PATH_EXTRAS_SCRIPT)} "
+        f"{shlex.quote(_json.dumps(raw_path))} "
+        f"{shlex.quote(_json.dumps(_SAFE_VERIFIER_PATH_PARTS))} "
+        f"{shlex.quote(_json.dumps(blocked_prefixes))}"
+    )
+
+
+async def _trusted_verifier_path(
+    env, sandbox_user: str | None, workspace: str | None
+) -> str:
+    """Return verifier PATH with trusted image extras preserved.
+
+    Dockerfile PATH additions are accepted only after container-side stat
+    checks prove they are root-owned directories and not group/world writable.
+    Runtime locations and sandbox-user writable locations stay excluded.
+    """
+    path_result = await env.exec("printenv PATH", user="root", timeout_sec=10)
+    raw_path = path_result.stdout or ""
+    if not raw_path.strip():
+        return _SAFE_VERIFIER_PATH
+    cmd = _trusted_path_extras_cmd(
+        raw_path, _blocked_verifier_path_prefixes(sandbox_user, workspace)
+    )
+    result = await env.exec(cmd, user="root", timeout_sec=10)
+    try:
+        extras = _json.loads(result.stdout or "[]")
+    except _json.JSONDecodeError:
+        logger.warning("Could not parse trusted verifier PATH extras; using safe PATH")
+        extras = []
+    if not isinstance(extras, list):
+        logger.warning("Invalid trusted verifier PATH extras; using safe PATH")
+        extras = []
+    return _merge_trusted_verifier_path([e for e in extras if isinstance(e, str)])
+
+
 # Wipe and recreate /logs/verifier/ before the verifier runs.
 # rm -rf severs hardlinks, removes symlink replacements, and eliminates
 # variant filenames/subdirs the agent may have pre-staged.
@@ -424,12 +542,16 @@ async def harden_before_verify(
         )
     await env.exec(CLEANUP_CMD, user="root", timeout_sec=10)
 
+    hardened_path = await _trusted_verifier_path(env, sandbox_user, workspace)
+
     verifier_env = dict(VERIFIER_ENV)
     if task.config.verifier.env:
         verifier_env.update(task.config.verifier.env)
     # Hard security invariants — re-pin after task-env merge so a task cannot
-    # strip -c /dev/null / --confcutdir, re-enable entry-point plugin loading,
-    # or inject code via breakpoint()/coverage/Django/Celery startup hooks.
+    # replace PATH, strip -c /dev/null / --confcutdir, re-enable entry-point
+    # plugin loading, or inject code via breakpoint()/coverage/Django/Celery
+    # startup hooks.
+    verifier_env["PATH"] = hardened_path
     verifier_env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
     verifier_env["PYTHONBREAKPOINT"] = "0"
     verifier_env["COVERAGE_PROCESS_START"] = ""
