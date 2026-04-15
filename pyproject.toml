@@ -71,6 +71,7 @@ only-include = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 addopts = "-m 'not live'"
+testpaths = ["tests"]
 markers = [
     "live: requires real Anthropic API and Docker daemon (run with -m live)",
 ]
