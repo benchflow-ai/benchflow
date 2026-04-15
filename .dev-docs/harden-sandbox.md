@@ -198,6 +198,7 @@ env cannot override them.
 | `PYTHONNOUSERSITE` | `1` | Prevents pip writing to user site-packages |
 | `PIP_USER` | `0` | Same — pip flag |
 | `PIP_NO_USER_CONFIG` | `1` | Blocks pre-staged `pip.conf` in verifier home |
+| `PIP_BREAK_SYSTEM_PACKAGES` | `1` | PEP-668 base images (Fedora, recent Debian) refuse pip into system-site without this; verifier runs as root and system-site is root-owned, so it's safe |
 | `HOME` | `/root` | Root-owned; sandbox agent can't pre-stage caches. Pip config already blocked by `PIP_*`/`PYTHONNOUSERSITE`. Writable `$HOME` lets Playwright/uv/npm/elan/coursier find their caches |
 | `PYTHONBREAKPOINT` | `0` | Disables `breakpoint()` — any other value imports an arbitrary callable |
 | `COVERAGE_PROCESS_START` | `""` | Prevents coverage.py executing config as Python on startup |

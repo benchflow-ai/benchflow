@@ -317,6 +317,12 @@ VERIFIER_ENV: dict[str, str] = {
     "PYTHONNOUSERSITE": "1",
     "PIP_USER": "0",
     "PIP_NO_USER_CONFIG": "1",
+    # PEP-668 base images (Fedora, recent Debian) refuse pip installs into
+    # system-site without this flag. Verifier runs as root and system-site is
+    # root-owned, so allowing it is safe; without it, tasks that pip-install
+    # pytest in test.sh either fail outright or fall back to a user-site path
+    # that PYTHONNOUSERSITE=1 hides at import time.
+    "PIP_BREAK_SYSTEM_PACKAGES": "1",
     # /root is root-owned; sandbox_user cannot pre-stage caches there. Pip
     # config is already blocked by the PIP_* / PYTHONNOUSERSITE vars above.
     "HOME": "/root",
@@ -616,19 +622,40 @@ async def harden_before_verify(
             user="root",
         )
     if workspace:
-        # Purge symlinks so an agent-planted symlink pointing to a writable
-        # external target (e.g. utils.py -> /tmp/evil.py) cannot be followed
-        # during import after the workspace is frozen. This preserves ordinary
-        # file edits while removing a verifier-time escape hatch.
+        # Purge symlinks whose realpath escapes the workspace (e.g. agent-planted
+        # utils.py -> /tmp/evil.py). In-tree symlinks are preserved — some
+        # source trees (OTP, lake-packages, etc.) ship them as fixtures.
+        # Residual risk: agent plants utils.py -> ./evil.py inside workspace.
+        # Mitigated by the workspace chown below + CLEANUP_CMD path scrubbing.
+        purge_external_symlinks = (
+            "import os, sys, pathlib;"
+            "root = pathlib.Path(sys.argv[1]).resolve();"
+            "root_str = str(root) + os.sep;"
+            "[p.unlink() for p in root.rglob('*')"
+            " if p.is_symlink()"
+            " and not (str(p.resolve()) + os.sep).startswith(root_str)"
+            " and str(p.resolve()) != str(root)]"
+        )
         await env.exec(
-            f"find {shlex.quote(workspace)} -type l -delete 2>/dev/null; true",
+            f"python3 -c {shlex.quote(purge_external_symlinks)} "
+            f"{shlex.quote(workspace)} 2>/dev/null; true",
             user="root",
         )
-        # Purge __pycache__ trees so pre-compiled .pyc bytecode cannot execute
-        # even if PYTHONPYCACHEPREFIX is bypassed (defense-in-depth).
+        # Purge __pycache__ trees that did not exist in the pre-agent baseline,
+        # so agent-planted .pyc bytecode cannot execute even if
+        # PYTHONPYCACHEPREFIX is bypassed. Baseline-present caches are kept so
+        # tasks whose tests diff workspace against /testbed_verify don't break.
         await env.exec(
-            f"find {shlex.quote(workspace)} -type d -name '__pycache__'"
-            f" -exec rm -rf {{}} + 2>/dev/null; true",
+            f"if [ -d /testbed_verify ]; then "
+            f"  find {shlex.quote(workspace)} -type d -name __pycache__ -print0 "
+            f"  | while IFS= read -r -d '' d; do "
+            f"      rel=${{d#{shlex.quote(workspace)}/}}; "
+            f'      [ -d "/testbed_verify/$rel" ] || rm -rf "$d"; '
+            f"  done; "
+            f"else "
+            f"  find {shlex.quote(workspace)} -type d -name '__pycache__'"
+            f" -exec rm -rf {{}} + 2>/dev/null; "
+            f"fi; true",
             user="root",
         )
         # chown workspace to root: belt-and-suspenders against any zombie

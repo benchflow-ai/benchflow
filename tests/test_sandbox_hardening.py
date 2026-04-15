@@ -637,6 +637,7 @@ class TestVerifierEnv:
             "PYTHONNOUSERSITE",
             "PIP_USER",
             "PIP_NO_USER_CONFIG",
+            "PIP_BREAK_SYSTEM_PACKAGES",
             "HOME",
             "PYTHONBREAKPOINT",
             "COVERAGE_PROCESS_START",
@@ -966,9 +967,8 @@ class TestVerifierEnv:
             (
                 c
                 for c in env.exec.call_args_list
-                if "find" in c.args[0]
-                and "-type l" in c.args[0]
-                and "-delete" in c.args[0]
+                if "is_symlink()" in c.args[0]
+                and "rglob" in c.args[0]
                 and "/testbed" in c.args[0]
             ),
             None,
@@ -978,10 +978,16 @@ class TestVerifierEnv:
             "writable targets survive into the verify phase"
         )
         assert symlink_purge.kwargs.get("user") == "root"
+        # Purge resolves each symlink and skips it unless its realpath escapes
+        # the workspace, so in-tree fixtures (e.g. OTP cert symlinks) survive.
+        assert (
+            "resolve()" in symlink_purge.args[0]
+            and "startswith" in symlink_purge.args[0]
+        )
         # Symlink purge must run before the chown.
         calls = [c.args[0] for c in env.exec.call_args_list]
         symlink_idx = next(
-            i for i, c in enumerate(calls) if "-type l" in c and "-delete" in c
+            i for i, c in enumerate(calls) if "is_symlink()" in c and "rglob" in c
         )
         chown_idx = next(i for i, c in enumerate(calls) if "chown -R root:root" in c)
         assert symlink_idx < chown_idx, "symlink purge must precede workspace chown"
@@ -1012,6 +1018,9 @@ class TestVerifierEnv:
             "__pycache__ purge not found — pre-compiled .pyc bytecode not mitigated"
         )
         assert purge_call.kwargs.get("user") == "root"
+        # Baseline-aware: dirs present in /testbed_verify must survive so tasks
+        # whose verifiers diff workspace against the baseline don't break.
+        assert "/testbed_verify" in purge_call.args[0]
         # Purge must happen before the chown/chmod freeze
         calls = [c.args[0] for c in env.exec.call_args_list]
         purge_idx = next(
