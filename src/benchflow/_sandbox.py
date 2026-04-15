@@ -510,6 +510,38 @@ def _pytest_plugin_flags(task: "Task") -> str:
     return " ".join(f"-p {shlex.quote(p)}" for p in plugins)
 
 
+_FEDORA_LIKE = ("fedora", "rhel", "centos", "rocky", "alma")
+
+
+async def _distro_pip_env(env) -> dict[str, str]:
+    """Distro-conditional pip env to neutralize Fedora's user-install fallback.
+
+    Fedora's downstream pip patch routes root pip-installs to ~/.local/lib
+    even with PIP_USER=0 + PIP_BREAK_SYSTEM_PACKAGES=1. PYTHONNOUSERSITE=1 then
+    hides those installs from python3 at import time. Pinning PIP_PREFIX on
+    Fedora-likes only writes them to /usr/local where python3 can find them.
+
+    Setting PIP_PREFIX on Debian/Ubuntu would double-prefix (their downstream
+    pip already injects --prefix=/usr/local for root), creating
+    /usr/local/usr/local/bin/pytest. So this is conditional on the image distro.
+    """
+    try:
+        result = await env.exec(
+            "cat /etc/os-release 2>/dev/null || true", user="root", timeout_sec=5
+        )
+    except Exception:
+        return {}
+    text = (result.stdout or "").lower()
+    ids: list[str] = []
+    for line in text.splitlines():
+        if line.startswith("id=") or line.startswith("id_like="):
+            value = line.split("=", 1)[1].strip().strip('"').strip("'")
+            ids.extend(value.split())
+    if any(d in ids for d in _FEDORA_LIKE):
+        return {"PIP_PREFIX": "/usr/local"}
+    return {}
+
+
 async def _trusted_verifier_path(
     env, sandbox_user: str | None, workspace: str | None
 ) -> str:
@@ -667,8 +699,10 @@ async def harden_before_verify(
     await env.exec(CLEANUP_CMD, user="root", timeout_sec=10)
 
     hardened_path = await _trusted_verifier_path(env, sandbox_user, workspace)
+    distro_env = await _distro_pip_env(env)
 
     verifier_env = dict(VERIFIER_ENV)
+    verifier_env.update(distro_env)
     if task.config.verifier.env:
         verifier_env.update(task.config.verifier.env)
     # Hard security invariants — re-pin after task-env merge so a task cannot

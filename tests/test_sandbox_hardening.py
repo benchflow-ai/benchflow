@@ -668,6 +668,30 @@ class TestVerifierEnv:
 
         assert VERIFIER_ENV.get("PYTEST_DISABLE_PLUGIN_AUTOLOAD") == "1"
 
+    @pytest.mark.asyncio
+    async def test_distro_pip_env_fedora(self):
+        """Fedora-like ID triggers PIP_PREFIX=/usr/local."""
+        from benchflow._sandbox import _distro_pip_env
+
+        env = _make_env(
+            side_effect=lambda *a, **kw: MagicMock(
+                stdout='ID=fedora\nID_LIKE="rhel centos"\n', stderr="", exit_code=0
+            )
+        )
+        assert await _distro_pip_env(env) == {"PIP_PREFIX": "/usr/local"}
+
+    @pytest.mark.asyncio
+    async def test_distro_pip_env_ubuntu(self):
+        """Ubuntu must NOT get PIP_PREFIX (their downstream pip already prefixes)."""
+        from benchflow._sandbox import _distro_pip_env
+
+        env = _make_env(
+            side_effect=lambda *a, **kw: MagicMock(
+                stdout="ID=ubuntu\nID_LIKE=debian\n", stderr="", exit_code=0
+            )
+        )
+        assert await _distro_pip_env(env) == {}
+
     def test_trusted_path_merge_keeps_validated_extras(self):
         """Validated image PATH entries are prepended once to the safe base."""
         from benchflow._sandbox import _merge_trusted_verifier_path
