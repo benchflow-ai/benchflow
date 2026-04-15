@@ -90,6 +90,7 @@ Critical invariants
 import asyncio
 import json
 import logging
+import shlex
 from datetime import datetime
 from pathlib import Path
 
@@ -320,26 +321,33 @@ class SDK:
         logger.info("Oracle mode: running solution/solve.sh")
         if not (task_path / "solution" / "solve.sh").exists():
             raise FileNotFoundError(f"Oracle requires solution/solve.sh: {task_path}")
+        await env.exec("chmod +x /solution/solve.sh", user="root", timeout_sec=10)
         if sandbox_user:
+            oracle_cmd = "DEBIAN_FRONTEND=noninteractive /solution/solve.sh"
             cmd = (
-                f"chmod +x /solution/solve.sh && "
-                f"su -s /bin/bash {sandbox_user} -c /solution/solve.sh"
-                f" 2>&1 | tee /logs/agent/oracle.txt"
+                f"su -s /bin/bash {shlex.quote(sandbox_user)} "
+                f"-c {shlex.quote(oracle_cmd)}"
             )
         else:
-            cmd = (
-                "chmod +x /solution/solve.sh && "
-                "/solution/solve.sh 2>&1 | tee /logs/agent/oracle.txt"
-            )
-        result = await env.exec(cmd, timeout_sec=timeout)
+            cmd = "/solution/solve.sh"
+        result = await env.exec(
+            f"{cmd} > /logs/agent/oracle.txt 2>&1",
+            env={"DEBIAN_FRONTEND": "noninteractive"},
+            timeout_sec=timeout,
+        )
         if result.return_code != 0:
             logger.warning(f"Oracle solve.sh exited with rc={result.return_code}")
+        preview = await env.exec(
+            f"tail -c {shlex.quote(str(_DIAG_TRUNCATE))} /logs/agent/oracle.txt 2>/dev/null || true",
+            user="root",
+            timeout_sec=10,
+        )
         trajectory = [
             {
                 "type": "oracle",
                 "command": "solution/solve.sh",
                 "return_code": result.return_code,
-                "stdout": (result.stdout or "")[:_DIAG_TRUNCATE],
+                "stdout": (preview.stdout or "")[:_DIAG_TRUNCATE],
             }
         ]
         return trajectory, "oracle"
