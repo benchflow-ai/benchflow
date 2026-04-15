@@ -323,13 +323,13 @@ class SDK:
             raise FileNotFoundError(f"Oracle requires solution/solve.sh: {task_path}")
         await env.exec("chmod +x /solution/solve.sh", user="root", timeout_sec=10)
         if sandbox_user:
-            oracle_cmd = "DEBIAN_FRONTEND=noninteractive /solution/solve.sh"
+            oracle_cmd = "DEBIAN_FRONTEND=noninteractive bash /solution/solve.sh"
             cmd = (
                 f"su -s /bin/bash {shlex.quote(sandbox_user)} "
                 f"-c {shlex.quote(oracle_cmd)}"
             )
         else:
-            cmd = "/solution/solve.sh"
+            cmd = "bash /solution/solve.sh"
         result = await env.exec(
             f"{cmd} > /logs/agent/oracle.txt 2>&1",
             env={"DEBIAN_FRONTEND": "noninteractive"},
@@ -360,10 +360,17 @@ class SDK:
         timing: dict,
         sandbox_user: str | None = None,
         workspace: str | None = None,
+        restore_workspace: bool = False,
     ) -> tuple[dict | None, str | None]:
         """Run verifier with pre-verification hardening."""
         trial_paths.verifier_dir.mkdir(parents=True, exist_ok=True)
-        await harden_before_verify(env, task, sandbox_user, workspace=workspace)
+        await harden_before_verify(
+            env,
+            task,
+            sandbox_user,
+            workspace=workspace,
+            restore_workspace=restore_workspace,
+        )
         logger.info("Running verifier...")
         t0 = datetime.now()
         verifier_error = None
@@ -517,8 +524,14 @@ class SDK:
                     await _snapshot_build_config(env, workspace=agent_cwd)
                     await _seed_verifier_workspace(env, workspace=agent_cwd)
                 await lockdown_paths(env, effective_locked)
+                await env.exec(
+                    "git config --global --add safe.directory "
+                    f"{shlex.quote(agent_cwd)} 2>/dev/null || true",
+                    user="root",
+                    timeout_sec=10,
+                )
                 trajectory, agent_name = await self._run_oracle(
-                    env, task_path, timeout, sandbox_user
+                    env, task_path, timeout, sandbox_user=None
                 )
             else:
                 agent_cfg = await install_agent(env, agent, trial_dir)
@@ -612,6 +625,10 @@ class SDK:
                 timing,
                 sandbox_user=sandbox_user,
                 workspace=agent_cwd,
+                # Keep verifier semantics identical for oracle and normal agents.
+                # Full workspace restore should become task metadata, not an
+                # agent-type branch, once tasks can declare it is safe.
+                restore_workspace=False,
             )
 
         except TimeoutError:
