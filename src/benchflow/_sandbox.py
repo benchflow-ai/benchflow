@@ -323,6 +323,12 @@ VERIFIER_ENV: dict[str, str] = {
     # pytest in test.sh either fail outright or fall back to a user-site path
     # that PYTHONNOUSERSITE=1 hides at import time.
     "PIP_BREAK_SYSTEM_PACKAGES": "1",
+    # PIP_BREAK_SYSTEM_PACKAGES alone is not enough on Fedora: its downstream
+    # patch routes root pip installs to ~/.local even with PIP_USER=0. Pinning
+    # PIP_PREFIX short-circuits that heuristic and writes to /usr/local, which
+    # is on sys.path for /usr/bin/python3 on every distro (no-op on Debian/
+    # Ubuntu/Alpine — already the default). Root-owned, so no agent vector.
+    "PIP_PREFIX": "/usr/local",
     # /root is root-owned; sandbox_user cannot pre-stage caches there. Pip
     # config is already blocked by the PIP_* / PYTHONNOUSERSITE vars above.
     "HOME": "/root",
