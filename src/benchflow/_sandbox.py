@@ -358,6 +358,16 @@ _PYTEST_OPTION_PLUGINS = {
     "--json-report-file": "pytest_jsonreport",
 }
 
+# Pytest plugins worth auto-loading when test.sh pip-installs them but the
+# task author forgot to declare pytest_plugins in task.toml. Map distribution
+# name (as it appears in `pip install pytest-foo`) to importable plugin name.
+_PYTEST_INSTALLED_PLUGINS = {
+    "pytest-asyncio": "pytest_asyncio",
+    "pytest-anyio": "anyio.pytest_plugin",
+    "pytest-trio": "pytest_trio",
+}
+_PIP_INSTALL_RE = re.compile(r"\bpip3?\s+install\b[^\n;|&]*", re.IGNORECASE)
+
 
 def _under_path(path: str, prefix: str) -> bool:
     prefix = prefix.rstrip("/")
@@ -474,6 +484,13 @@ def _plugins_from_verifier_script(task: "Task") -> list[str]:
     for option, plugin in _PYTEST_OPTION_PLUGINS.items():
         if option in content and plugin not in plugins:
             plugins.append(plugin)
+    # Detect pip-installed pytest plugins so PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
+    # doesn't silently drop them. Only matches the exact installer line so
+    # arbitrary text mentioning the plugin name is ignored.
+    for match in _PIP_INSTALL_RE.findall(content):
+        for dist, plugin in _PYTEST_INSTALLED_PLUGINS.items():
+            if dist in match and plugin not in plugins:
+                plugins.append(plugin)
     return plugins
 
 

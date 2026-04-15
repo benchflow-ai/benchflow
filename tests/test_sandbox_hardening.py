@@ -680,6 +680,35 @@ class TestVerifierEnv:
         )
         assert await _distro_pip_env(env) == {"PIP_PREFIX": "/usr/local"}
 
+    def test_pip_installed_pytest_plugin_inferred(self, tmp_path):
+        """`pip install pytest-asyncio` in test.sh auto-loads pytest_asyncio."""
+        from benchflow._sandbox import _plugins_from_verifier_script
+
+        task_dir = tmp_path / "task"
+        (task_dir / "tests").mkdir(parents=True)
+        (task_dir / "tests" / "test.sh").write_text(
+            "pip3 install --break-system-packages pytest==8.3.4 pytest-asyncio==0.24.0\n"
+            "pytest /tests/test_perf.py\n"
+        )
+        task = MagicMock()
+        task.task_dir = str(task_dir)
+        plugins = _plugins_from_verifier_script(task)
+        assert "pytest_asyncio" in plugins
+
+    def test_pip_install_unrelated_mention_not_inferred(self, tmp_path):
+        """A bare mention of 'pytest-asyncio' in a comment must not auto-load it."""
+        from benchflow._sandbox import _plugins_from_verifier_script
+
+        task_dir = tmp_path / "task"
+        (task_dir / "tests").mkdir(parents=True)
+        (task_dir / "tests" / "test.sh").write_text(
+            "# tests using pytest-asyncio decorators (already installed in image)\n"
+            "pytest /tests/test_perf.py\n"
+        )
+        task = MagicMock()
+        task.task_dir = str(task_dir)
+        assert _plugins_from_verifier_script(task) == []
+
     @pytest.mark.asyncio
     async def test_distro_pip_env_ubuntu(self):
         """Ubuntu must NOT get PIP_PREFIX (their downstream pip already prefixes)."""
