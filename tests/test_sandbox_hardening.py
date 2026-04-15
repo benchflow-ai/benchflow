@@ -638,7 +638,6 @@ class TestVerifierEnv:
             "PIP_USER",
             "PIP_NO_USER_CONFIG",
             "PIP_BREAK_SYSTEM_PACKAGES",
-            "PIP_PREFIX",
             "HOME",
             "PYTHONBREAKPOINT",
             "COVERAGE_PROCESS_START",
