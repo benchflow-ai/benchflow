@@ -21,6 +21,7 @@ Arguments passed: `$ARGUMENTS`
 .venv/bin/ruff format --check src tests && .venv/bin/ruff check src tests
 .venv/bin/ty check
 .venv/bin/python -m pytest tests/ -q
+uv lock --check
 ```
 
 **`patch` / `minor` / `major`** — follow Steps 0–6 below.
@@ -55,6 +56,7 @@ Mirrors `.github/workflows/test.yml` exactly. Stop on any failure.
 .venv/bin/ruff check src tests
 .venv/bin/ty check
 .venv/bin/python -m pytest tests/ -q
+uv lock --check
 ```
 
 If `ruff format` changed files: `git diff --name-only`, then `git add <those files only>` — not `git add .`.
@@ -84,18 +86,18 @@ Map prefixes: `feat:` → Added, `fix:` → Fixed, `chore:`/`refactor:`/`build:`
 
 ---
 
-## Step 5 — Write CHANGELOG and pyproject.toml
+## Step 5 — Write CHANGELOG, pyproject.toml, and uv.lock
 
 **CHANGELOG:** Insert approved entries as `## <NEW_VERSION> — $(date +%Y-%m-%d)` immediately after `## [Unreleased]`, leaving `[Unreleased]` empty. Use Edit, not Write.
 
-**pyproject.toml:** Edit only `version = "..."` under `[project]` (line 3). Do not touch `target-version` (ruff) or `python-version` (ty) — those are Python version pins. Do not edit `__init__.py`; it reads version from `importlib.metadata` automatically.
+**pyproject.toml + uv.lock:** Edit only `version = "..."` under `[project]` (line 3). Do not touch `target-version` (ruff) or `python-version` (ty) — those are Python version pins. Then run `uv lock` so the editable `benchflow` package entry in `uv.lock` matches the new version. Do not edit `__init__.py`; it reads version from `importlib.metadata` automatically.
 
 ---
 
 ## Step 6 — Commit and PR
 
 ```bash
-git add CHANGELOG.md pyproject.toml   # plus any ruff-formatted files from Step 2
+git add CHANGELOG.md pyproject.toml uv.lock   # plus any ruff-formatted files from Step 2
 git commit -m "chore: release v<NEW_VERSION>"
 git push -u origin HEAD
 gh pr create --title "chore: release v<NEW_VERSION>" --body "$(cat <<'EOF'
@@ -108,6 +110,7 @@ See CHANGELOG.md for details.
 - [ ] e2e smoke test passes
 - [ ] CHANGELOG updated
 - [ ] Version bumped in pyproject.toml
+- [ ] uv.lock refreshed
 - [ ] Merge and tag after review
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

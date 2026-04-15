@@ -13,7 +13,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 
 async def main():
     config = sys.argv[1] if len(sys.argv) > 1 else str(
-        Path(__file__).parent / "skillsbench.yaml"
+        Path(__file__).parent / "skillsbench-codex-gpt54.yaml"
     )
     ensure_tasks("skillsbench")
     job = Job.from_yaml(config)
