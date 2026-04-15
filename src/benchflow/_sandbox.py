@@ -317,8 +317,9 @@ VERIFIER_ENV: dict[str, str] = {
     "PYTHONNOUSERSITE": "1",
     "PIP_USER": "0",
     "PIP_NO_USER_CONFIG": "1",
-    # Force HOME to a non-existent path so pip cannot read any pre-staged pip.conf.
-    "HOME": "/nonexistent",
+    # /root is root-owned; sandbox_user cannot pre-stage caches there. Pip
+    # config is already blocked by the PIP_* / PYTHONNOUSERSITE vars above.
+    "HOME": "/root",
     # Disable breakpoint() — any other value imports an arbitrary callable.
     "PYTHONBREAKPOINT": "0",
     # Prevent coverage.py from importing a config file as Python on startup.

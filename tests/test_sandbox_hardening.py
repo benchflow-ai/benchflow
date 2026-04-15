@@ -556,13 +556,13 @@ class TestVerifierUserHarden:
     """harden_before_verify pip isolation and env hardening (verifier OS user removed)."""
 
     def test_verifier_env_contains_pip_isolation_vars(self):
-        """VERIFIER_ENV includes pip isolation vars and HOME=/nonexistent."""
+        """VERIFIER_ENV includes pip isolation vars and HOME=/root."""
         from benchflow._sandbox import VERIFIER_ENV
 
         assert VERIFIER_ENV["PYTHONNOUSERSITE"] == "1"
         assert VERIFIER_ENV["PIP_USER"] == "0"
         assert VERIFIER_ENV["PIP_NO_USER_CONFIG"] == "1"
-        assert VERIFIER_ENV["HOME"] == "/nonexistent"
+        assert VERIFIER_ENV["HOME"] == "/root"
 
     @pytest.mark.asyncio
     async def test_refresh_workspace_called_after_restore_before_cleanup(self):

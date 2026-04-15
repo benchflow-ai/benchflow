@@ -198,7 +198,7 @@ env cannot override them.
 | `PYTHONNOUSERSITE` | `1` | Prevents pip writing to user site-packages |
 | `PIP_USER` | `0` | Same — pip flag |
 | `PIP_NO_USER_CONFIG` | `1` | Blocks pre-staged `pip.conf` in verifier home |
-| `HOME` | `/nonexistent` | Prevents pip reading `pip.conf` even if home wipe failed |
+| `HOME` | `/root` | Root-owned; sandbox agent can't pre-stage caches. Pip config already blocked by `PIP_*`/`PYTHONNOUSERSITE`. Writable `$HOME` lets Playwright/uv/npm/elan/coursier find their caches |
 | `PYTHONBREAKPOINT` | `0` | Disables `breakpoint()` — any other value imports an arbitrary callable |
 | `COVERAGE_PROCESS_START` | `""` | Prevents coverage.py executing config as Python on startup |
 | `DJANGO_SETTINGS_MODULE` | `""` | Prevents Django importing an agent-controlled module at startup |
