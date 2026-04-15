@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+## 0.2.3 — 2026-04-15
+
+### Added
+
+- `benchmarks/tb2_multiturn-claude-haiku45.yaml` — shipped config matching the README's TB2 multi-turn Claude result.
+
+### Changed
+
+- Renamed `benchmarks/skillsbench-claude-glm5.yaml` → `skillsbench-claude-glm51.yaml` to match the `glm-5.1` model ID.
+- `codex --login` correction in `docs/getting-started.md`.
+- Restricted sdist build to `src/`, `tests/`, and metadata via `only-include`.
+
+### Fixed
+
+- Preserve trusted verifier path entries during sandbox setup.
+- Redirect oracle output to container log.
+- Align YAML path resolution to config file location.
+
 ## 0.2.2 — 2026-04-13
 
 ### Added

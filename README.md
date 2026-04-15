@@ -128,7 +128,7 @@ Tasks are auto-downloaded on first run (cloned into `.ref/`).
 **SkillsBench** (86 tasks — tool use, file editing, API calls):
 
 ```bash
-python benchmarks/run_skillsbench.py benchmarks/skillsbench-claude-glm5.yaml   # Claude
+python benchmarks/run_skillsbench.py benchmarks/skillsbench-claude-glm51.yaml   # Claude
 python benchmarks/run_skillsbench.py benchmarks/skillsbench-codex-gpt54.yaml   # Codex
 ```
 

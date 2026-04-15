@@ -1,6 +1,6 @@
 [project]
 name = "benchflow"
-version = "0.2.2"
+version = "0.2.3"
 description = "Multi-turn agent benchmarking with ACP — run any agent, any model, any provider."
 readme = "README.md"
 requires-python = ">=3.12"
