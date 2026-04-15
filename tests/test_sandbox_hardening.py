@@ -143,7 +143,9 @@ class TestHardenSequence:
 
     @pytest.mark.asyncio
     async def test_task_env_overrides_win(self, harness):
-        """Task-level verifier env vars override VERIFIER_ENV defaults."""
+        """Task-level verifier env vars override defaults except pinned invariants."""
+        from benchflow._sandbox import VERIFIER_ENV
+
         sdk, env, task, tp = harness
         task.config.verifier.env = {"PATH": "/custom/bin", "MY_VAR": "hello"}
         mock_v = MagicMock()
@@ -151,7 +153,7 @@ class TestHardenSequence:
         with patch("benchflow.sdk.Verifier", return_value=mock_v):
             await sdk._verify(env, task, tp, {})
         injected = task.config.verifier.env
-        assert injected["PATH"] == "/custom/bin"
+        assert injected["PATH"] == VERIFIER_ENV["PATH"]
         assert injected["MY_VAR"] == "hello"
         assert injected["PYTHONPATH"] == ""  # non-overridden defaults kept
 
@@ -619,6 +621,113 @@ class TestVerifierEnv:
         from benchflow._sandbox import VERIFIER_ENV
 
         assert VERIFIER_ENV.get("PYTEST_DISABLE_PLUGIN_AUTOLOAD") == "1"
+
+    def test_trusted_path_merge_keeps_validated_extras(self):
+        """Validated image PATH entries are prepended once to the safe base."""
+        from benchflow._sandbox import _merge_trusted_verifier_path
+
+        merged = _merge_trusted_verifier_path(
+            [
+                "/root/.local/bin",
+                "/opt/tool/bin",
+                "/usr/local/bin",
+                "/root/.local/bin",
+            ]
+        )
+
+        assert merged == (
+            "/root/.local/bin:/opt/tool/bin:"
+            "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+        )
+
+    def test_blocked_path_prefixes_include_runtime_and_sandbox_paths(self):
+        """Runtime, workspace, and sandbox-user dirs are excluded from PATH extras."""
+        from benchflow._sandbox import _blocked_verifier_path_prefixes
+
+        blocked = _blocked_verifier_path_prefixes("agent", "/workspace")
+
+        assert "/tmp" in blocked
+        assert "/var/tmp" in blocked
+        assert "/logs" in blocked
+        assert "/testbed" in blocked
+        assert "/workspace" in blocked
+        assert "/home/agent" in blocked
+
+    def test_trusted_path_extras_cmd_passes_json_args(self):
+        """Container-side PATH validation receives JSON-encoded policy inputs."""
+        import shlex
+
+        from benchflow._sandbox import _trusted_path_extras_cmd
+
+        cmd = _trusted_path_extras_cmd("/root/.local/bin:/tmp/bin", ("/tmp",))
+        parts = shlex.split(cmd)
+
+        assert parts[:2] == ["python3", "-c"]
+        assert json.loads(parts[3]) == "/root/.local/bin:/tmp/bin"
+        assert "/usr/local/bin" in json.loads(parts[4])
+        assert json.loads(parts[5]) == ["/tmp"]
+
+    @pytest.mark.asyncio
+    async def test_harden_preserves_trusted_container_path_extras(self):
+        """Verifier PATH includes trusted image-level additions from the container."""
+        from benchflow._sandbox import harden_before_verify
+
+        def side_effect(cmd, **kwargs):
+            if cmd == "printenv PATH":
+                return MagicMock(
+                    stdout="/root/.local/bin:/tmp/pwn:/usr/local/bin:/opt/uv/bin\n",
+                    stderr="",
+                    exit_code=0,
+                )
+            if cmd.startswith("python3 -c"):
+                return MagicMock(
+                    stdout='["/root/.local/bin", "/opt/uv/bin"]',
+                    stderr="",
+                    exit_code=0,
+                )
+            return MagicMock(stdout="", stderr="", exit_code=0)
+
+        task = _make_task()
+        await harden_before_verify(
+            _make_env(side_effect=side_effect), task, sandbox_user=None
+        )
+
+        assert task.config.verifier.env["PATH"] == (
+            "/root/.local/bin:/opt/uv/bin:"
+            "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+        )
+
+    @pytest.mark.asyncio
+    async def test_task_env_path_cannot_override_hardened_path(self):
+        """Task env keeps ordinary vars but cannot replace verifier PATH."""
+        from benchflow._sandbox import harden_before_verify
+
+        def side_effect(cmd, **kwargs):
+            if cmd == "printenv PATH":
+                return MagicMock(
+                    stdout="/root/.local/bin:/tmp/pwn:/usr/local/bin\n",
+                    stderr="",
+                    exit_code=0,
+                )
+            if cmd.startswith("python3 -c"):
+                return MagicMock(
+                    stdout='["/root/.local/bin"]',
+                    stderr="",
+                    exit_code=0,
+                )
+            return MagicMock(stdout="", stderr="", exit_code=0)
+
+        task = _make_task()
+        task.config.verifier.env = {"PATH": "/custom/bin", "MY_VAR": "hello"}
+        await harden_before_verify(
+            _make_env(side_effect=side_effect), task, sandbox_user="agent"
+        )
+
+        assert task.config.verifier.env["PATH"] == (
+            "/root/.local/bin:"
+            "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+        )
+        assert task.config.verifier.env["MY_VAR"] == "hello"
 
     @pytest.mark.asyncio
     async def test_plugin_autoload_disabled_survives_task_env_override(self):
