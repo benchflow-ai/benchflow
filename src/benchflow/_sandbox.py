@@ -99,7 +99,9 @@ def build_priv_drop_cmd(agent_launch: str, sandbox_user: str) -> str:
     )
 
 
-async def setup_sandbox_user(env, sandbox_user: str, workspace: str) -> str:
+async def setup_sandbox_user(
+    env, sandbox_user: str, workspace: str, *, timeout_sec: int = 120
+) -> str:
     """Create non-root sandbox user, grant workspace access. Return agent_cwd."""
     if not re.match(r"^[a-z_][a-z0-9_-]*$", sandbox_user):
         raise ValueError(
@@ -119,7 +121,7 @@ async def setup_sandbox_user(env, sandbox_user: str, workspace: str) -> str:
         f"cp -a /root/$d/. /home/{sandbox_user}/$d/ 2>/dev/null || true; fi; done && "
         f"chown -R {sandbox_user}:{sandbox_user} /home/{sandbox_user} && "
         f"chown -R {sandbox_user}:{sandbox_user} {shlex.quote(workspace)}",
-        timeout_sec=30,
+        timeout_sec=timeout_sec,
     )
     logger.info(f"Sandbox user {sandbox_user} ready (workspace={workspace})")
     return workspace
