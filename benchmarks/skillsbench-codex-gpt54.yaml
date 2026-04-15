@@ -1,5 +1,5 @@
-tasks_dir: ../.ref/skillsbench/tasks
-jobs_dir: ../jobs/skillsbench-codex-gpt54
+tasks_dir: .ref/skillsbench/tasks
+jobs_dir: jobs/skillsbench-codex-gpt54
 agent: codex-acp
 model: gpt-5.4
 environment: daytona

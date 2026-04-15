@@ -107,8 +107,8 @@ The repo ships ready-to-run configs in `benchmarks/` targeting Daytona (`concurr
 **Local Docker config (`my-skillsbench.yaml`)**
 
 ```yaml
-tasks_dir: ../.ref/skillsbench/tasks
-jobs_dir: ../jobs/skillsbench-local
+tasks_dir: .ref/skillsbench/tasks
+jobs_dir: jobs/skillsbench-local
 agent: claude-agent-acp
 model: claude-haiku-4-5-20251001
 environment: docker
@@ -175,8 +175,8 @@ benchflow job --config benchmarks/tb2_multiturn-codex-gpt54.yaml --env docker --
 Or write your own local config. Multi-turn adds a `prompts` list:
 
 ```yaml
-tasks_dir: ../.ref/terminal-bench-2
-jobs_dir: ../jobs/tb2_multiturn-local
+tasks_dir: .ref/terminal-bench-2
+jobs_dir: jobs/tb2_multiturn-local
 agent: claude-agent-acp
 model: claude-haiku-4-5-20251001
 environment: docker

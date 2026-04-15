@@ -1,5 +1,7 @@
 """Tests for YAML job config loading."""
 
+from pathlib import Path
+
 import pytest
 
 from benchflow.job import Job
@@ -68,7 +70,8 @@ def test_from_native_yaml(native_yaml):
     assert cfg.concurrency == 32
     assert cfg.retry.max_retries == 1
     assert cfg.prompts == [None, "Review your solution."]
-    assert job._tasks_dir.name == "tasks"
+    assert job._tasks_dir == Path("tasks")
+    assert job._jobs_dir == Path("output")
 
 
 def test_from_harbor_yaml(harbor_yaml):
@@ -82,7 +85,8 @@ def test_from_harbor_yaml(harbor_yaml):
     assert cfg.concurrency == 8
     assert cfg.retry.max_retries == 1  # n_attempts=2 → max_retries=1
     assert cfg.agent_env.get("ANTHROPIC_API_KEY") == "test-key"
-    assert job._tasks_dir.name == "tasks"
+    assert job._tasks_dir == Path("tasks")
+    assert job._jobs_dir == Path("output")
 
 
 def test_from_harbor_yaml_defaults(tmp_path):
@@ -104,6 +108,8 @@ datasets:
     assert cfg.agent == "pi-acp"
     assert cfg.environment == "docker"
     assert cfg.concurrency == 4
+    assert job._tasks_dir == Path("tasks")
+    assert job._jobs_dir == Path("jobs")
 
 
 def test_native_yaml_with_skills_dir(tmp_path):
@@ -122,7 +128,44 @@ skills_dir: my-skills
 """)
 
     job = Job.from_yaml(config)
-    assert job._config.skills_dir == str(tmp_path / "my-skills")
+    assert job._config.skills_dir == "my-skills"
+
+
+def test_native_yaml_paths_are_cwd_relative(tmp_path):
+    """Relative YAML paths are not rebased to the config file directory."""
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    config = config_dir / "config.yaml"
+    config.write_text("""
+tasks_dir: tasks
+jobs_dir: jobs/my-run
+skills_dir: skills
+""")
+
+    job = Job.from_yaml(config)
+    assert job._tasks_dir == Path("tasks")
+    assert job._jobs_dir == Path("jobs/my-run")
+    assert job._config.skills_dir == "skills"
+
+
+def test_harbor_yaml_paths_are_cwd_relative(tmp_path):
+    """Harbor relative paths match CLI and SDK path behavior."""
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    config = config_dir / "config.yaml"
+    config.write_text("""
+jobs_dir: jobs/my-run
+skills_dir: skills
+agents:
+  - name: pi-acp
+datasets:
+  - path: tasks
+""")
+
+    job = Job.from_yaml(config)
+    assert job._tasks_dir == Path("tasks")
+    assert job._jobs_dir == Path("jobs/my-run")
+    assert job._config.skills_dir == "skills"
 
 
 def test_native_yaml_without_skills_dir(native_yaml):
@@ -143,8 +186,9 @@ def _make_tasks(tmp_path, names=("task-a", "task-b", "task-c")):
 
 
 class TestNativeYamlNewFields:
-    def test_exclude_parsed(self, tmp_path):
+    def test_exclude_parsed(self, tmp_path, monkeypatch):
         _make_tasks(tmp_path)
+        monkeypatch.chdir(tmp_path)
         config = tmp_path / "config.yaml"
         config.write_text("""
 tasks_dir: tasks

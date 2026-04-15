@@ -1,8 +1,8 @@
 """Run Terminal-Bench 2.0 — downloads tasks if needed, runs via Job.
 
 Usage:
-    python benchmarks/run_tb2.py                          # defaults to tb2_single.yaml
-    python benchmarks/run_tb2.py benchmarks/tb2_multiturn.yaml
+    python benchmarks/run_tb2.py  # defaults to tb2_single-codex-gpt54.yaml
+    python benchmarks/run_tb2.py benchmarks/tb2_multiturn-codex-gpt54.yaml
 """
 
 import asyncio
@@ -18,7 +18,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 
 async def main():
     config = sys.argv[1] if len(sys.argv) > 1 else str(
-        Path(__file__).parent / "tb2_single.yaml"
+        Path(__file__).parent / "tb2_single-codex-gpt54.yaml"
     )
     ensure_tasks("terminal-bench-2")
     job = Job.from_yaml(config)

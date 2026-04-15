@@ -243,14 +243,14 @@ class Job:
 
         # Detect format: Harbor uses "agents" + "datasets", benchflow uses "agent"
         if "agents" in raw or "datasets" in raw:
-            return cls._from_harbor_yaml(raw, path.parent, **kwargs)
-        return cls._from_native_yaml(raw, path.parent, **kwargs)
+            return cls._from_harbor_yaml(raw, **kwargs)
+        return cls._from_native_yaml(raw, **kwargs)
 
     @classmethod
-    def _from_native_yaml(cls, raw: dict, base_dir: Path, **kwargs) -> "Job":
+    def _from_native_yaml(cls, raw: dict, **kwargs) -> "Job":
         """Parse benchflow-native YAML."""
-        tasks_dir = base_dir / raw["tasks_dir"]
-        jobs_dir = base_dir / raw.get("jobs_dir", "jobs")
+        tasks_dir = Path(raw["tasks_dir"])
+        jobs_dir = Path(raw.get("jobs_dir", "jobs"))
 
         # Parse prompts — YAML null becomes Python None
         prompts = raw.get("prompts")
@@ -268,9 +268,7 @@ class Job:
             prompts=prompts,
             agent_env=agent_env_raw,
             retry=RetryConfig(max_retries=raw.get("max_retries", 2)),
-            skills_dir=str(base_dir / raw["skills_dir"])
-            if raw.get("skills_dir")
-            else None,
+            skills_dir=str(Path(raw["skills_dir"])) if raw.get("skills_dir") else None,
             sandbox_user=sandbox_user,
             sandbox_locked_paths=sandbox_locked_paths,
             exclude_tasks=exclude,
@@ -278,7 +276,7 @@ class Job:
         return cls(tasks_dir=tasks_dir, jobs_dir=jobs_dir, config=config, **kwargs)
 
     @classmethod
-    def _from_harbor_yaml(cls, raw: dict, base_dir: Path, **kwargs) -> "Job":
+    def _from_harbor_yaml(cls, raw: dict, **kwargs) -> "Job":
         """Parse Harbor-compatible YAML."""
         # Agent
         agents = raw.get("agents", [{}])
@@ -306,20 +304,20 @@ class Job:
 
         # Datasets
         datasets = raw.get("datasets", [{}])
-        tasks_dir = base_dir / datasets[0].get("path", "tasks")
+        tasks_dir = Path(datasets[0].get("path", "tasks"))
 
         # Orchestrator
         orch = raw.get("orchestrator", {})
         concurrency = orch.get("n_concurrent_trials", 4)
 
-        jobs_dir = base_dir / raw.get("jobs_dir", "jobs")
+        jobs_dir = Path(raw.get("jobs_dir", "jobs"))
         max_retries = (
             raw.get("n_attempts", 1) - 1
         )  # Harbor n_attempts includes first try
 
         # Skills dir (shared with benchflow-native format)
         skills_dir_raw = raw.get("skills_dir")
-        skills_dir = str(base_dir / skills_dir_raw) if skills_dir_raw else None
+        skills_dir = str(Path(skills_dir_raw)) if skills_dir_raw else None
         sandbox_user = raw.get("sandbox_user", "agent")
         sandbox_locked_paths = raw.get("sandbox_locked_paths")
 
