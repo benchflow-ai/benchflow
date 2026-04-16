@@ -134,6 +134,42 @@ async def test_harden_restore_fallback_uses_shutil():
     )
 
 
+@pytest.mark.asyncio
+async def test_seed_verifier_workspace_chowns_agent_log_dirs():
+    """/logs/agent and /logs/artifacts are chowned to sandbox_user when provided."""
+    from benchflow._sandbox import _seed_verifier_workspace
+
+    env = _make_env()
+    await _seed_verifier_workspace(env, sandbox_user="testuser")
+
+    pairs = _cmds(env)
+    match = next(
+        (
+            call
+            for cmd, call in pairs
+            if "chown testuser:testuser /logs/agent /logs/artifacts" in cmd
+        ),
+        None,
+    )
+    assert match is not None, (
+        "expected chown testuser:testuser /logs/agent /logs/artifacts"
+    )
+
+
+@pytest.mark.asyncio
+async def test_seed_verifier_workspace_no_chown_without_sandbox_user():
+    """No agent-log chown when sandbox_user is not set."""
+    from benchflow._sandbox import _seed_verifier_workspace
+
+    env = _make_env()
+    await _seed_verifier_workspace(env)
+
+    cmds_list = [c.args[0] for c in env.exec.call_args_list]
+    assert not any("chown" in c and "/logs/agent" in c for c in cmds_list), (
+        "should not chown /logs/agent without sandbox_user"
+    )
+
+
 def test_oracle_branch_setup_calls():
     """Regression guard: oracle mode must wire up all pre-verify setup calls.
 
