@@ -116,7 +116,13 @@ async def test_harden_restore_fallback_uses_shutil():
         patch("benchflow._sandbox._restore_build_config", AsyncMock()),
         patch("benchflow._sandbox._refresh_verifier_workspace", AsyncMock()),
     ):
-        await harden_before_verify(env, task, sandbox_user=None, workspace="/testbed")
+        await harden_before_verify(
+            env,
+            task,
+            sandbox_user=None,
+            workspace="/testbed",
+            restore_workspace=True,
+        )
 
     restore = next(c.args[0] for c in env.exec.call_args_list if "rsync" in c.args[0])
     fallback = restore.split("||", 1)[1]

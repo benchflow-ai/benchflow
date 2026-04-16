@@ -59,6 +59,7 @@ def _make_task(user=None):
     task.config.verifier.env = None
     task.config.verifier.user = user
     task.config.verifier.pytest_plugins = None
+    task.task_dir = None
     return task
 
 
@@ -84,9 +85,8 @@ class TestHardenSequence:
 
     @pytest.mark.asyncio
     async def test_with_sandbox_user(self, harness):
-        """pkill → wipe → restore → refresh → cleanup → env injection, full path."""
+        """pkill → wipe → workspace freeze → cleanup → env injection."""
         sdk, env, task, tp = harness
-        # Use a manifest-aware env so _restore_build_config can parse the cat call.
         env = _make_env(side_effect=_manifest_env(_blank_manifest()))
         mock_v = MagicMock()
         mock_v.verify = AsyncMock(return_value=MagicMock(rewards={"reward": 1.0}))
@@ -100,16 +100,17 @@ class TestHardenSequence:
         wipe_idx = next(
             (i for i, c in enumerate(cmds) if "rm -rf /logs/verifier" in c), None
         )
-        restore_idx = next(
-            (i for i, c in enumerate(cmds) if "rm -f /testbed/setup.py" in c), None
+        chown_idx = next(
+            (i for i, c in enumerate(cmds) if "chown -R root:root /testbed" in c),
+            None,
         )
         cleanup_idx = next((i for i, c in enumerate(cmds) if "conftest.py" in c), None)
         assert wipe_idx is not None
-        assert restore_idx is not None, (
-            "restore file op not found — workspace path not exercised"
-        )
+        assert chown_idx is not None, "workspace chown not found"
         assert cleanup_idx is not None
-        assert wipe_idx < restore_idx < cleanup_idx
+        assert wipe_idx < chown_idx < cleanup_idx
+        assert not any("rm -f /testbed/setup.py" in c for c in cmds)
+        assert not any("rsync -a --delete /testbed_verify/" in c for c in cmds)
         assert any("mkdir -p /logs/verifier" in c for c in cmds)
         cleanup_cmd = next(c for c in cmds if "conftest.py" in c)
         assert "sitecustomize.py" in cleanup_cmd and ".pth" in cleanup_cmd
@@ -373,7 +374,13 @@ class TestBuildConfigSnapshot:
 
         env = _make_env(side_effect=_manifest_env(_blank_manifest()))
         task = _make_task()
-        await harden_before_verify(env, task, sandbox_user=None, workspace="/testbed")
+        await harden_before_verify(
+            env,
+            task,
+            sandbox_user=None,
+            workspace="/testbed",
+            restore_workspace=True,
+        )
 
         calls = [c.args[0] for c in env.exec.call_args_list]
         restore_manifest_idx = next(
@@ -402,7 +409,13 @@ class TestBuildConfigSnapshot:
 
         env = _make_env(side_effect=_manifest_env(_blank_manifest()))
         task = _make_task()
-        await harden_before_verify(env, task, sandbox_user=None, workspace="/testbed")
+        await harden_before_verify(
+            env,
+            task,
+            sandbox_user=None,
+            workspace="/testbed",
+            restore_workspace=True,
+        )
 
         chown_call = next(
             (
@@ -444,8 +457,8 @@ class TestBuildConfigSnapshot:
         assert not any("chmod -R a-w" in c.args[0] for c in env.exec.call_args_list)
 
     @pytest.mark.asyncio
-    async def test_full_workspace_restore_from_testbed_verify(self):
-        """When workspace is set, a full restore from /testbed_verify is attempted.
+    async def test_full_workspace_restore_from_testbed_verify_when_enabled(self):
+        """When enabled, a full restore from /testbed_verify is attempted.
 
         This closes F2: agent-modified source files (e.g. /testbed/src/pkg/utils.py)
         are reset to pre-agent canonical state from the snapshot copy, not just the
@@ -455,7 +468,11 @@ class TestBuildConfigSnapshot:
 
         env = _make_env(side_effect=_manifest_env(_blank_manifest()))
         await harden_before_verify(
-            env, _make_task(), sandbox_user=None, workspace="/testbed"
+            env,
+            _make_task(),
+            sandbox_user=None,
+            workspace="/testbed",
+            restore_workspace=True,
         )
 
         restore_call = next(
@@ -497,15 +514,18 @@ class TestBuildConfigSnapshot:
         assert "Makefile" in _BUILD_CONFIG_FILES
 
     @pytest.mark.asyncio
-    async def test_harden_skips_restore_without_workspace(self):
-        """No restore calls when workspace=None."""
+    async def test_harden_skips_restore_by_default(self):
+        """No destructive workspace restore unless restore_workspace=True."""
         from benchflow._sandbox import _SNAPSHOT_MANIFEST, harden_before_verify
 
         env = _make_env()
-        await harden_before_verify(env, _make_task(), sandbox_user=None, workspace=None)
+        await harden_before_verify(
+            env, _make_task(), sandbox_user=None, workspace="/testbed"
+        )
 
         calls = [c.args[0] for c in env.exec.call_args_list]
         assert not any(_SNAPSHOT_MANIFEST in c for c in calls)
+        assert not any("rsync -a --delete /testbed_verify/" in c for c in calls)
 
     @pytest.mark.asyncio
     async def test_snapshot_dir_chmod_700(self):
@@ -536,13 +556,13 @@ class TestVerifierUserHarden:
     """harden_before_verify pip isolation and env hardening (verifier OS user removed)."""
 
     def test_verifier_env_contains_pip_isolation_vars(self):
-        """VERIFIER_ENV includes pip isolation vars and HOME=/nonexistent."""
+        """VERIFIER_ENV includes pip isolation vars and HOME=/root."""
         from benchflow._sandbox import VERIFIER_ENV
 
         assert VERIFIER_ENV["PYTHONNOUSERSITE"] == "1"
         assert VERIFIER_ENV["PIP_USER"] == "0"
         assert VERIFIER_ENV["PIP_NO_USER_CONFIG"] == "1"
-        assert VERIFIER_ENV["HOME"] == "/nonexistent"
+        assert VERIFIER_ENV["HOME"] == "/root"
 
     @pytest.mark.asyncio
     async def test_refresh_workspace_called_after_restore_before_cleanup(self):
@@ -551,7 +571,13 @@ class TestVerifierUserHarden:
 
         env = _make_env(side_effect=_manifest_env(_blank_manifest()))
         task = _make_task(user=None)
-        await harden_before_verify(env, task, sandbox_user=None, workspace="/testbed")
+        await harden_before_verify(
+            env,
+            task,
+            sandbox_user=None,
+            workspace="/testbed",
+            restore_workspace=True,
+        )
 
         calls = [c.args[0] for c in env.exec.call_args_list]
         restore_idx = next(
@@ -565,6 +591,25 @@ class TestVerifierUserHarden:
         assert refresh_idx is not None, "_refresh_verifier_workspace not found"
         assert cleanup_idx is not None, "CLEANUP_CMD not found"
         assert restore_idx < refresh_idx < cleanup_idx
+
+    @pytest.mark.asyncio
+    async def test_workspace_restore_is_opt_in(self):
+        """Default verification keeps legitimate workspace-answer changes."""
+        from benchflow._sandbox import harden_before_verify
+
+        env = _make_env(side_effect=_manifest_env(_blank_manifest()))
+        task = _make_task(user=None)
+        await harden_before_verify(
+            env,
+            task,
+            sandbox_user=None,
+            workspace="/testbed",
+        )
+
+        calls = [c.args[0] for c in env.exec.call_args_list]
+        assert not any("rsync -a --delete /testbed_verify/" in c for c in calls)
+        assert not any("rm -f /testbed/setup.py" in c for c in calls)
+        assert any("conftest.py" in c for c in calls)
 
 
 # ── TestVerifierEnv ───────────────────────────────────────────────────────────
@@ -592,6 +637,7 @@ class TestVerifierEnv:
             "PYTHONNOUSERSITE",
             "PIP_USER",
             "PIP_NO_USER_CONFIG",
+            "PIP_BREAK_SYSTEM_PACKAGES",
             "HOME",
             "PYTHONBREAKPOINT",
             "COVERAGE_PROCESS_START",
@@ -621,6 +667,59 @@ class TestVerifierEnv:
         from benchflow._sandbox import VERIFIER_ENV
 
         assert VERIFIER_ENV.get("PYTEST_DISABLE_PLUGIN_AUTOLOAD") == "1"
+
+    @pytest.mark.asyncio
+    async def test_distro_pip_env_fedora(self):
+        """Fedora-like ID triggers PIP_PREFIX=/usr/local."""
+        from benchflow._sandbox import _distro_pip_env
+
+        env = _make_env(
+            side_effect=lambda *a, **kw: MagicMock(
+                stdout='ID=fedora\nID_LIKE="rhel centos"\n', stderr="", exit_code=0
+            )
+        )
+        assert await _distro_pip_env(env) == {"PIP_PREFIX": "/usr/local"}
+
+    def test_pip_installed_pytest_plugin_inferred(self, tmp_path):
+        """`pip install pytest-asyncio` in test.sh auto-loads pytest_asyncio."""
+        from benchflow._sandbox import _plugins_from_verifier_script
+
+        task_dir = tmp_path / "task"
+        (task_dir / "tests").mkdir(parents=True)
+        (task_dir / "tests" / "test.sh").write_text(
+            "pip3 install --break-system-packages pytest==8.3.4 pytest-asyncio==0.24.0\n"
+            "pytest /tests/test_perf.py\n"
+        )
+        task = MagicMock()
+        task.task_dir = str(task_dir)
+        plugins = _plugins_from_verifier_script(task)
+        assert "pytest_asyncio" in plugins
+
+    def test_pip_install_unrelated_mention_not_inferred(self, tmp_path):
+        """A bare mention of 'pytest-asyncio' in a comment must not auto-load it."""
+        from benchflow._sandbox import _plugins_from_verifier_script
+
+        task_dir = tmp_path / "task"
+        (task_dir / "tests").mkdir(parents=True)
+        (task_dir / "tests" / "test.sh").write_text(
+            "# tests using pytest-asyncio decorators (already installed in image)\n"
+            "pytest /tests/test_perf.py\n"
+        )
+        task = MagicMock()
+        task.task_dir = str(task_dir)
+        assert _plugins_from_verifier_script(task) == []
+
+    @pytest.mark.asyncio
+    async def test_distro_pip_env_ubuntu(self):
+        """Ubuntu must NOT get PIP_PREFIX (their downstream pip already prefixes)."""
+        from benchflow._sandbox import _distro_pip_env
+
+        env = _make_env(
+            side_effect=lambda *a, **kw: MagicMock(
+                stdout="ID=ubuntu\nID_LIKE=debian\n", stderr="", exit_code=0
+            )
+        )
+        assert await _distro_pip_env(env) == {}
 
     def test_trusted_path_merge_keeps_validated_extras(self):
         """Validated image PATH entries are prepended once to the safe base."""
@@ -760,10 +859,66 @@ class TestVerifierEnv:
 
         final_env = task.config.verifier.env
         addopts = final_env.get("PYTEST_ADDOPTS", "")
-        assert "-p pytest-json-ctrf" in addopts
+        assert "-p ctrf" in addopts
         assert "-p myplug" in addopts
         # The security flag must still be present after the plugin flags are appended.
         assert final_env.get("PYTEST_DISABLE_PLUGIN_AUTOLOAD") == "1"
+
+    @pytest.mark.asyncio
+    async def test_legacy_ctrf_script_gets_allowlisted_plugin(self, tmp_path):
+        """Legacy verifier scripts using --ctrf get -p ctrf without pytest autoload."""
+        from benchflow._sandbox import harden_before_verify
+
+        tests_dir = tmp_path / "tests"
+        tests_dir.mkdir()
+        (tests_dir / "test.sh").write_text(
+            "uvx --with pytest-json-ctrf==0.3.5 "
+            "pytest --ctrf /logs/verifier/ctrf.json /tests/test_outputs.py\n"
+        )
+        env = _make_env(side_effect=_manifest_env(_blank_manifest()))
+        task = _make_task()
+        task.task_dir = tmp_path
+        await harden_before_verify(env, task, sandbox_user=None, workspace=None)
+
+        final_env = task.config.verifier.env
+        assert "-p ctrf" in final_env["PYTEST_ADDOPTS"]
+        assert final_env.get("PYTEST_DISABLE_PLUGIN_AUTOLOAD") == "1"
+
+    @pytest.mark.asyncio
+    async def test_legacy_json_report_script_gets_allowlisted_plugin(self, tmp_path):
+        """Legacy verifier scripts using --json-report get the right import name."""
+        from benchflow._sandbox import harden_before_verify
+
+        tests_dir = tmp_path / "tests"
+        tests_dir.mkdir()
+        (tests_dir / "test.sh").write_text(
+            "pytest --json-report "
+            "--json-report-file=/logs/verifier/report.json /tests/test_outputs.py\n"
+        )
+        env = _make_env(side_effect=_manifest_env(_blank_manifest()))
+        task = _make_task()
+        task.task_dir = tmp_path
+        await harden_before_verify(env, task, sandbox_user=None, workspace=None)
+
+        assert "-p pytest_jsonreport" in task.config.verifier.env["PYTEST_ADDOPTS"]
+
+    @pytest.mark.asyncio
+    async def test_task_toml_pytest_plugins_fallback(self, tmp_path):
+        """Raw task.toml pytest_plugins work even if Harbor ignores the extra field."""
+        from benchflow._sandbox import harden_before_verify
+
+        (tmp_path / "task.toml").write_text(
+            '[verifier]\npytest_plugins = ["pytest_json_ctrf", "pytest-json-report"]\n'
+        )
+        env = _make_env(side_effect=_manifest_env(_blank_manifest()))
+        task = _make_task()
+        task.task_dir = tmp_path
+        task.config.verifier.pytest_plugins = None
+        await harden_before_verify(env, task, sandbox_user=None, workspace=None)
+
+        addopts = task.config.verifier.env["PYTEST_ADDOPTS"]
+        assert "-p ctrf" in addopts
+        assert "-p pytest_jsonreport" in addopts
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("plugins", [None, []])
@@ -832,7 +987,7 @@ class TestVerifierEnv:
 
         addopts = task.config.verifier.env["PYTEST_ADDOPTS"]
         assert addopts.startswith(VERIFIER_ENV["PYTEST_ADDOPTS"])
-        assert "-p pytest-json-ctrf" in addopts
+        assert "-p ctrf" in addopts
         assert "--rootdir=/evil" not in addopts
 
     def test_pythonpycacheprefix_set_to_nonexistent(self):
@@ -865,9 +1020,8 @@ class TestVerifierEnv:
             (
                 c
                 for c in env.exec.call_args_list
-                if "find" in c.args[0]
-                and "-type l" in c.args[0]
-                and "-delete" in c.args[0]
+                if "is_symlink()" in c.args[0]
+                and "rglob" in c.args[0]
                 and "/testbed" in c.args[0]
             ),
             None,
@@ -877,10 +1031,16 @@ class TestVerifierEnv:
             "writable targets survive into the verify phase"
         )
         assert symlink_purge.kwargs.get("user") == "root"
+        # Purge resolves each symlink and skips it unless its realpath escapes
+        # the workspace, so in-tree fixtures (e.g. OTP cert symlinks) survive.
+        assert (
+            "resolve()" in symlink_purge.args[0]
+            and "startswith" in symlink_purge.args[0]
+        )
         # Symlink purge must run before the chown.
         calls = [c.args[0] for c in env.exec.call_args_list]
         symlink_idx = next(
-            i for i, c in enumerate(calls) if "-type l" in c and "-delete" in c
+            i for i, c in enumerate(calls) if "is_symlink()" in c and "rglob" in c
         )
         chown_idx = next(i for i, c in enumerate(calls) if "chown -R root:root" in c)
         assert symlink_idx < chown_idx, "symlink purge must precede workspace chown"
@@ -911,6 +1071,9 @@ class TestVerifierEnv:
             "__pycache__ purge not found — pre-compiled .pyc bytecode not mitigated"
         )
         assert purge_call.kwargs.get("user") == "root"
+        # Baseline-aware: dirs present in /testbed_verify must survive so tasks
+        # whose verifiers diff workspace against the baseline don't break.
+        assert "/testbed_verify" in purge_call.args[0]
         # Purge must happen before the chown/chmod freeze
         calls = [c.args[0] for c in env.exec.call_args_list]
         purge_idx = next(

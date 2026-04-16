@@ -2,6 +2,7 @@
 
 import json
 import logging
+import os
 import re
 import shutil
 from pathlib import Path
@@ -13,6 +14,12 @@ from harbor.models.trial.paths import TrialPaths
 from benchflow.agents.registry import AGENTS
 
 logger = logging.getLogger(__name__)
+
+# Daytona's per-sandbox cap on the default tier is 4 CPU / 8 GB. Tasks declaring
+# more fail at sandbox creation. Clamp here so tasks degrade gracefully (slower
+# build) instead of erroring out. Override via env if running on a paid tier.
+_DAYTONA_MAX_CPUS = int(os.environ.get("BENCHFLOW_DAYTONA_MAX_CPUS", "4"))
+_DAYTONA_MAX_MEMORY_MB = int(os.environ.get("BENCHFLOW_DAYTONA_MAX_MEMORY_MB", "8192"))
 
 # Directories to ignore when copying deps
 _IGNORE_DIRS = {
@@ -253,12 +260,28 @@ def _create_environment(
     elif environment_type == "daytona":
         from harbor.environments.daytona import DaytonaEnvironment
 
+        env_config = task.config.environment
+        if env_config.cpus > _DAYTONA_MAX_CPUS:
+            logger.warning(
+                "Clamping cpus %d -> %d for Daytona (override with BENCHFLOW_DAYTONA_MAX_CPUS)",
+                env_config.cpus,
+                _DAYTONA_MAX_CPUS,
+            )
+            env_config.cpus = _DAYTONA_MAX_CPUS
+        if env_config.memory_mb > _DAYTONA_MAX_MEMORY_MB:
+            logger.warning(
+                "Clamping memory_mb %d -> %d for Daytona (override with BENCHFLOW_DAYTONA_MAX_MEMORY_MB)",
+                env_config.memory_mb,
+                _DAYTONA_MAX_MEMORY_MB,
+            )
+            env_config.memory_mb = _DAYTONA_MAX_MEMORY_MB
+
         return DaytonaEnvironment(
             environment_dir=task.paths.environment_dir,
             environment_name=task_path.name,
             session_id=trial_name,
             trial_paths=trial_paths,
-            task_env_config=task.config.environment,
+            task_env_config=env_config,
             auto_stop_interval_mins=1440,
             auto_delete_interval_mins=1440,
         )

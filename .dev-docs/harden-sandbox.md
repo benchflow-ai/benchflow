@@ -198,7 +198,9 @@ env cannot override them.
 | `PYTHONNOUSERSITE` | `1` | Prevents pip writing to user site-packages |
 | `PIP_USER` | `0` | Same — pip flag |
 | `PIP_NO_USER_CONFIG` | `1` | Blocks pre-staged `pip.conf` in verifier home |
-| `HOME` | `/nonexistent` | Prevents pip reading `pip.conf` even if home wipe failed |
+| `PIP_BREAK_SYSTEM_PACKAGES` | `1` | PEP-668 base images (Fedora, recent Debian) refuse pip into system-site without this; verifier runs as root and system-site is root-owned, so it's safe |
+| `PIP_PREFIX` | `/usr/local` (Fedora-like only) | Fedora's pip patch routes root installs to `~/.local` even with PIP_BREAK_SYSTEM_PACKAGES; pinning prefix overrides that. Set conditionally via `_distro_pip_env` because Debian/Ubuntu's downstream pip already prefixes — setting it again would double-prefix |
+| `HOME` | `/root` | Root-owned; sandbox agent can't pre-stage caches. Pip config already blocked by `PIP_*`/`PYTHONNOUSERSITE`. Writable `$HOME` lets Playwright/uv/npm/elan/coursier find their caches |
 | `PYTHONBREAKPOINT` | `0` | Disables `breakpoint()` — any other value imports an arbitrary callable |
 | `COVERAGE_PROCESS_START` | `""` | Prevents coverage.py executing config as Python on startup |
 | `DJANGO_SETTINGS_MODULE` | `""` | Prevents Django importing an agent-controlled module at startup |

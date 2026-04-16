@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+## 0.2.3 — 2026-04-15
+
+### Added
+
+- `benchmarks/tb2_multiturn-claude-haiku45.yaml` — shipped config for the README's TB2 multi-turn Claude result.
+- Daytona resource clamping via `BENCHFLOW_DAYTONA_MAX_CPUS` / `MAX_MEMORY_MB`.
+
+### Changed
+
+- Renamed `skillsbench-claude-glm5.yaml` → `skillsbench-claude-glm51.yaml` to match the model ID.
+- `codex --login` correction in `docs/getting-started.md`.
+- Restricted sdist build to `src/`, `tests/`, and metadata.
+
+### Fixed
+
+- Verifier sandbox hardening follow-ups across several base-image and tooling edge cases.
+- Preserve trusted verifier path entries and workspace answer files.
+- Redirect oracle output to container log.
+- Align YAML path resolution to config file location.
+
 ## 0.2.2 — 2026-04-13
 
 ### Added
