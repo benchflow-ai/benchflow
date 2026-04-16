@@ -249,6 +249,8 @@ async def _seed_verifier_workspace(
 
     Called once after setup_sandbox_user, before agent launch.
     - Locks /logs/ parent so sandbox_user cannot rename /logs/verifier/ out.
+    - Grants sandbox_user write access to /logs/agent and /logs/artifacts
+      so tasks that write answers there (e.g. infinitebench) work.
     - Seeds /testbed_verify as a root-owned readable copy of the workspace
       so harden_before_verify can rsync it back to restore ALL source files
       to pre-agent canonical state before the verifier runs.
