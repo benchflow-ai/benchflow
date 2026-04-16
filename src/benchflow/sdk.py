@@ -522,7 +522,9 @@ class SDK:
                 if sandbox_user:
                     await setup_sandbox_user(env, sandbox_user, workspace=agent_cwd)
                     await _snapshot_build_config(env, workspace=agent_cwd)
-                    await _seed_verifier_workspace(env, workspace=agent_cwd, sandbox_user=sandbox_user)
+                    await _seed_verifier_workspace(
+                        env, workspace=agent_cwd, sandbox_user=sandbox_user
+                    )
                 await lockdown_paths(env, effective_locked)
                 await env.exec(
                     "git config --global --add safe.directory "
@@ -558,7 +560,9 @@ class SDK:
                     # before the agent launches — both have ordering invariants
                     # that require a clean pre-agent workspace state.
                     await _snapshot_build_config(env, workspace=agent_cwd)
-                    await _seed_verifier_workspace(env, workspace=agent_cwd, sandbox_user=sandbox_user)
+                    await _seed_verifier_workspace(
+                        env, workspace=agent_cwd, sandbox_user=sandbox_user
+                    )
 
                 await deploy_skills(
                     env,
