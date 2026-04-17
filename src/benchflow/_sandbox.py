@@ -242,11 +242,15 @@ async def _restore_build_config(env, workspace: str) -> None:
         await env.exec(cmd, user="root")
 
 
-async def _seed_verifier_workspace(env, workspace: str = "/testbed") -> None:
+async def _seed_verifier_workspace(
+    env, workspace: str = "/testbed", sandbox_user: str | None = None
+) -> None:
     """Seed /testbed_verify as a pre-agent snapshot for the full workspace restore.
 
     Called once after setup_sandbox_user, before agent launch.
     - Locks /logs/ parent so sandbox_user cannot rename /logs/verifier/ out.
+    - Grants sandbox_user write access to /logs/agent and /logs/artifacts
+      so tasks that write answers there (e.g. infinitebench) work.
     - Seeds /testbed_verify as a root-owned readable copy of the workspace
       so harden_before_verify can rsync it back to restore ALL source files
       to pre-agent canonical state before the verifier runs.
@@ -259,6 +263,13 @@ async def _seed_verifier_workspace(env, workspace: str = "/testbed") -> None:
     cmds = [
         # Lock /logs/ parent: sandbox_user cannot rename /logs/verifier/ out.
         "chown root:root /logs && chmod 755 /logs",
+        # Grant sandbox user write access to agent-writable log dirs so tasks
+        # that write answers to /logs/artifacts/ (e.g. infinitebench) work.
+        *(
+            [f"chown {sandbox_user}:{sandbox_user} /logs/agent /logs/artifacts"]
+            if sandbox_user
+            else []
+        ),
         # Seed root-owned readable workspace copy from the actual workspace
         # (may differ from /testbed for tasks with WORKDIR=/app etc.).
         f"rm -rf /testbed_verify && cp -a {shlex.quote(workspace)} /testbed_verify && "
