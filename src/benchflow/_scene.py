@@ -8,6 +8,11 @@ prompt and continues until max_rounds or an explicit done signal.
 Transport is pluggable via MessageTransport. The default MailboxTransport
 is an in-memory queue — no HTTP server, no sidecar.
 
+Message passing between agents uses a file-based convention: each agent
+writes to /tmp/outbox/{recipient}.json to send a message. The scheduler
+reads the outbox after each agent exits, routes through the transport,
+and injects into the next agent's prompt.
+
 0.3 scope: exactly 2 roles, sequential execution, mailbox transport only.
 """
 
@@ -17,9 +22,11 @@ import json
 import logging
 import uuid
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -163,6 +170,92 @@ class Scene:
             f"Available recipients: {', '.join(n for n in self.roles if n != role.name)}."
         )
         return "\n".join(parts)
+
+    # ------------------------------------------------------------------
+    # Outbox convention: agents write /tmp/outbox/{recipient}.json
+    # ------------------------------------------------------------------
+
+    _OUTBOX_DIR = "/tmp/outbox"
+
+    async def _setup_outbox(self, env: Any) -> None:
+        await env.exec(f"rm -rf {self._OUTBOX_DIR} && mkdir -p {self._OUTBOX_DIR}")
+
+    async def _read_outbox(self, env: Any, sender: str) -> list[Message]:
+        """Read all messages left by sender in /tmp/outbox/ and clear them."""
+        result = await env.exec(f"ls {self._OUTBOX_DIR}/*.json 2>/dev/null || true")
+        files = [f.strip() for f in (result.stdout or "").strip().splitlines() if f.strip()]
+        messages = []
+        for fpath in files:
+            cat_result = await env.exec(f"cat {fpath}")
+            try:
+                data = json.loads(cat_result.stdout or "{}")
+                recipient = data.get("to", "")
+                content = data.get("content", "")
+                if recipient and content:
+                    self._round += 1
+                    msg = Message(
+                        id=str(uuid.uuid4())[:8],
+                        sender=sender,
+                        recipient=recipient,
+                        content=content,
+                        turn=self._round,
+                    )
+                    self.trajectory.append(msg)
+                    await self.transport.send(msg)
+                    logger.info(f"[Scene] round={self._round} {sender} → {recipient}: {content[:80]}")
+                    messages.append(msg)
+            except json.JSONDecodeError:
+                logger.warning(f"[Scene] invalid JSON in outbox file: {fpath}")
+            await env.exec(f"rm -f {fpath}")
+        return messages
+
+    # ------------------------------------------------------------------
+    # Scheduler
+    # ------------------------------------------------------------------
+
+    RoleRunner = Callable[..., Any]
+
+    async def run(
+        self,
+        env: Any,
+        role_runner: RoleRunner,
+    ) -> list[Message]:
+        """Run the 2-role scene to completion.
+
+        Args:
+            env: the sandbox environment (started, files uploaded)
+            role_runner: async callback(env, role, prompt) -> None
+                         Connects ACP, sends prompt, waits for agent exit.
+                         Does NOT manage env lifecycle.
+
+        Returns: the full message trajectory.
+        """
+        await self._setup_outbox(env)
+        active = self.role_names[0]
+
+        while not self.is_done:
+            role = self.roles[active]
+            inbox = []
+            while True:
+                msg = await self.transport.receive(active)
+                if msg is None:
+                    break
+                inbox.append(msg)
+
+            prompt = self.build_prompt_for_role(role, inbox)
+            logger.info(f"[Scene] running {active} (round {self._round})")
+
+            await role_runner(env, role, prompt)
+
+            outbox_msgs = await self._read_outbox(env, sender=active)
+            if not outbox_msgs:
+                logger.info(f"[Scene] {active} exited without sending a message — scene ends")
+                break
+
+            active = self.next_active_role(active)
+
+        logger.info(f"[Scene] complete: {len(self.trajectory)} messages, {self._round} rounds")
+        return self.trajectory
 
     def save_trajectory(self, path: Path) -> None:
         """Write the inter-agent message trajectory as JSONL."""
