@@ -139,15 +139,37 @@ def _write_rewards_jsonl(
 ) -> None:
     """Write rewards.jsonl — one JSON line per reward event.
 
-    For now, emits only the terminal reward from the verifier.  Future
-    additions (rubric items, agent-emitted process rewards) append more
-    lines with type="process".  Schema is ORS-reward-signal compatible.
+    Emits rubric items (if present) as type="process" lines, then the
+    terminal reward as the final type="terminal" line.  Schema is
+    ORS-reward-signal compatible: one streamed event per line.
+
+    Rubric format in rewards dict::
+
+        {"reward": 0.75, "rubric": [
+            {"name": "file_exists", "score": 1.0, "weight": 1.0},
+            {"name": "content_correct", "score": 0.5, "weight": 1.0}
+        ]}
     """
     if not rewards:
         return
-    events = []
+    events: list[dict] = []
+    rubric = rewards.get("rubric")
+    if isinstance(rubric, list):
+        for i, item in enumerate(rubric):
+            events.append(
+                {
+                    "ts": finished_at.isoformat(),
+                    "type": "process",
+                    "source": "verifier_rubric",
+                    "value": item.get("score", 0.0),
+                    "tag": item.get("name", f"rubric_{i}"),
+                    "step_index": i,
+                    "meta": {k: v for k, v in item.items() if k not in ("score", "name")},
+                }
+            )
     scalar = rewards.get("reward")
     if scalar is not None:
+        non_event_keys = {"reward", "rubric"}
         events.append(
             {
                 "ts": finished_at.isoformat(),
@@ -156,7 +178,7 @@ def _write_rewards_jsonl(
                 "value": scalar,
                 "tag": "reward",
                 "step_index": None,
-                "meta": {k: v for k, v in rewards.items() if k != "reward"},
+                "meta": {k: v for k, v in rewards.items() if k not in non_event_keys},
             }
         )
     if events:
