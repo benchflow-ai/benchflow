@@ -132,6 +132,40 @@ logger = logging.getLogger(__name__)
 _DIAG_TRUNCATE = 2000  # max chars for diagnostic stdout/stderr in logs
 
 
+def _write_rewards_jsonl(
+    trial_dir: Path,
+    rewards: dict | None,
+    finished_at: datetime,
+) -> None:
+    """Write rewards.jsonl — one JSON line per reward event.
+
+    For now, emits only the terminal reward from the verifier.  Future
+    additions (rubric items, agent-emitted process rewards) append more
+    lines with type="process".  Schema is ORS-reward-signal compatible.
+    """
+    if not rewards:
+        return
+    events = []
+    scalar = rewards.get("reward")
+    if scalar is not None:
+        events.append(
+            {
+                "ts": finished_at.isoformat(),
+                "type": "terminal",
+                "source": "verifier",
+                "value": scalar,
+                "tag": "reward",
+                "step_index": None,
+                "meta": {k: v for k, v in rewards.items() if k != "reward"},
+            }
+        )
+    if events:
+        path = trial_dir / "rewards.jsonl"
+        path.write_text(
+            "\n".join(json.dumps(e, default=str) for e in events) + "\n"
+        )
+
+
 # Apply at import time so any Harbor DockerEnvironment in this process
 # (SDK.run or otherwise) gets the env-var rewrite, and so we patch exactly
 # once without an idempotency guard. Do not move into SDK.run().
@@ -288,6 +322,7 @@ class SDK:
         )
         (trial_dir / "timing.json").write_text(json.dumps(timing, indent=2))
         (trial_dir / "prompts.json").write_text(json.dumps(prompts, indent=2))
+        _write_rewards_jsonl(trial_dir, rewards, finished_at)
         return result
 
     @staticmethod
