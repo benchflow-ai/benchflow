@@ -175,7 +175,7 @@ class Scene:
     # Outbox convention: agents write /tmp/outbox/{recipient}.json
     # ------------------------------------------------------------------
 
-    _OUTBOX_DIR = "/tmp/outbox"
+    _OUTBOX_DIR = "/app/.outbox"
 
     async def _setup_outbox(self, env: Any) -> None:
         await env.exec(f"rm -rf {self._OUTBOX_DIR} && mkdir -p {self._OUTBOX_DIR}")

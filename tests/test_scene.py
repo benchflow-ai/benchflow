@@ -122,8 +122,8 @@ class FakeEnv:
         if cmd.startswith("rm -rf /tmp/outbox") or cmd.startswith("mkdir -p"):
             self._files.clear()
             return FakeExecResult("", "", 0)
-        if "ls /tmp/outbox/" in cmd:
-            files = [f for f in self._files if f.startswith("/tmp/outbox/")]
+        if "ls /app/.outbox/" in cmd:
+            files = [f for f in self._files if f.startswith("/app/.outbox/")]
             return FakeExecResult("\n".join(files), "", 0)
         if cmd.startswith("cat "):
             path = cmd.split(" ", 1)[1]
@@ -135,7 +135,7 @@ class FakeEnv:
         return FakeExecResult("", "", 0)
 
     def stage_outbox(self, recipient: str, content: str) -> None:
-        self._files[f"/tmp/outbox/{recipient}.json"] = json.dumps(
+        self._files[f"/app/.outbox/{recipient}.json"] = json.dumps(
             {"to": recipient, "content": content}
         )
 
