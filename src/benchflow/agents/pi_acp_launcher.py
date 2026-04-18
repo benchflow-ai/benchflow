@@ -57,7 +57,10 @@ def setup_provider():
                 existing.setdefault("providers", {}).update(config["providers"])
                 config = existing
             except (json.JSONDecodeError, OSError):
-                pass
+                print(
+                    f"Warning: could not parse {models_path}, overwriting.",
+                    file=sys.stderr,
+                )
         models_path.write_text(json.dumps(config, indent=2))
     else:
         # Anthropic mode — set native env vars that Pi reads directly
