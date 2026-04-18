@@ -13,11 +13,40 @@ Does not own:
 
 import json as _json
 import logging
+import os
 import re
 import shlex
+from pathlib import Path
 from typing import TYPE_CHECKING
 
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib  # type: ignore[no-redef]
+
 from benchflow.agents.registry import get_sandbox_home_dirs
+
+_PYTEST_PLUGIN_ALIASES = {
+    "ctrf": "ctrf",
+    "pytest-json-ctrf": "ctrf",
+    "pytest_json_ctrf": "ctrf",
+    "pytest_json_ctrf.plugin": "ctrf",
+    "pytest-json-report": "pytest_jsonreport",
+    "pytest_json_report": "pytest_jsonreport",
+    "pytest_jsonreport": "pytest_jsonreport",
+    "pytest_jsonreport.plugin": "pytest_jsonreport",
+}
+_PYTEST_OPTION_PLUGINS = {
+    "--ctrf": "ctrf",
+    "--json-report": "pytest_jsonreport",
+    "--json-report-file": "pytest_jsonreport",
+}
+_PYTEST_INSTALLED_PLUGINS = {
+    "pytest-asyncio": "pytest_asyncio",
+    "pytest-anyio": "anyio.pytest_plugin",
+    "pytest-trio": "pytest_trio",
+}
+_PIP_INSTALL_RE = re.compile(r"\bpip3?\s+install\b[^\n;|&]*", re.IGNORECASE)
 
 if TYPE_CHECKING:
     from harbor.models.task.task import Task
@@ -472,6 +501,65 @@ CLEANUP_CMD = (
 )
 
 
+def _normalize_pytest_plugin(name: object) -> str | None:
+    if not isinstance(name, str):
+        return None
+    clean = name.strip()
+    if not clean:
+        return None
+    return _PYTEST_PLUGIN_ALIASES.get(clean, clean)
+
+
+def _plugins_from_verifier_script(task: "Task") -> list[str]:
+    """Infer pytest plugins from legacy test.sh (--ctrf, pip install, etc.)."""
+    task_dir = getattr(task, "task_dir", None)
+    if not isinstance(task_dir, (str, os.PathLike)):
+        return []
+    test_sh = Path(task_dir) / "tests" / "test.sh"
+    try:
+        content = test_sh.read_text()
+    except OSError:
+        return []
+    plugins: list[str] = []
+    for option, plugin in _PYTEST_OPTION_PLUGINS.items():
+        if option in content and plugin not in plugins:
+            plugins.append(plugin)
+    for match in _PIP_INSTALL_RE.findall(content):
+        for dist, plugin in _PYTEST_INSTALLED_PLUGINS.items():
+            if dist in match and plugin not in plugins:
+                plugins.append(plugin)
+    return plugins
+
+
+def _declared_pytest_plugins(task: "Task") -> list[object]:
+    declared = getattr(task.config.verifier, "pytest_plugins", None)
+    if declared:
+        return list(declared)
+    task_dir = getattr(task, "task_dir", None)
+    if not isinstance(task_dir, (str, os.PathLike)):
+        return []
+    config_path = Path(task_dir) / "task.toml"
+    try:
+        data = tomllib.loads(config_path.read_text())
+    except (OSError, tomllib.TOMLDecodeError):
+        return []
+    plugins = data.get("verifier", {}).get("pytest_plugins", [])
+    return list(plugins) if isinstance(plugins, list) else []
+
+
+def _pytest_plugin_flags(task: "Task") -> str:
+    """Build -p flags for inferred + declared pytest plugins."""
+    plugins: list[str] = []
+    for plugin in _plugins_from_verifier_script(task):
+        if plugin not in plugins:
+            plugins.append(plugin)
+    for plugin in _declared_pytest_plugins(task):
+        normalized = _normalize_pytest_plugin(plugin)
+        if normalized and normalized not in plugins:
+            plugins.append(normalized)
+    return " ".join(f"-p {shlex.quote(p)}" for p in plugins)
+
+
 async def harden_before_verify(
     env, task: "Task", sandbox_user: str | None, workspace: str | None = None
 ) -> None:
@@ -557,13 +645,13 @@ async def harden_before_verify(
     verifier_env["COVERAGE_PROCESS_START"] = ""
     verifier_env["DJANGO_SETTINGS_MODULE"] = ""
     verifier_env["CELERY_CONFIG_MODULE"] = ""
-    # Re-enable explicitly declared plugins by appending -p flags to the
-    # hardened base — never to a task-supplied PYTEST_ADDOPTS.
-    # getattr: field absent in older harbor deployments; bare access was a live crash.
-    allowed_plugins = getattr(task.config.verifier, "pytest_plugins", None) or []
+    # Re-enable declared + inferred pytest plugins by appending -p flags to
+    # the hardened base. Covers legacy TB2/SkillsBench tasks that use --ctrf
+    # or pip-install pytest plugins in test.sh without declaring them in
+    # task.toml's pytest_plugins field.
     base_addopts = VERIFIER_ENV["PYTEST_ADDOPTS"]
-    if allowed_plugins:
-        flags = " ".join(f"-p {shlex.quote(p)}" for p in allowed_plugins)
+    flags = _pytest_plugin_flags(task)
+    if flags:
         verifier_env["PYTEST_ADDOPTS"] = base_addopts + f" {flags}"
     else:
         verifier_env["PYTEST_ADDOPTS"] = base_addopts
