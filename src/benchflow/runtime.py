@@ -28,6 +28,88 @@ from benchflow.agents.registry import AGENTS, AGENT_LAUNCH, AgentConfig
 logger = logging.getLogger(__name__)
 
 
+class Environment:
+    """Wraps a Harbor Docker/Daytona environment, owns lifecycle.
+
+    Usage::
+
+        env = Environment.from_task("tasks/my-task", backend="daytona")
+        await env.start()
+        # ... run agents ...
+        await env.stop()
+
+    Or as a context manager::
+
+        async with Environment.from_task("tasks/X", backend="daytona") as env:
+            result = await runtime.execute()
+    """
+
+    def __init__(self, inner: Any, task_path: Path, backend: str) -> None:
+        self._inner = inner
+        self.task_path = task_path
+        self.backend = backend
+        self._started = False
+
+    @classmethod
+    def from_task(
+        cls,
+        task_path: str | Path,
+        backend: str = "daytona",
+        trial_name: str | None = None,
+    ) -> "Environment":
+        """Create an environment from a task directory."""
+        from benchflow._env_setup import _create_environment
+        from harbor.models.task.task import Task
+
+        task_path = Path(task_path)
+        task = Task(task_path)
+        trial_name = trial_name or task_path.name
+        inner = _create_environment(
+            environment_type=backend,
+            task=task,
+            task_path=task_path,
+            trial_name=trial_name,
+            trial_paths=None,
+        )
+        return cls(inner=inner, task_path=task_path, backend=backend)
+
+    @property
+    def task(self) -> Any:
+        from harbor.models.task.task import Task
+        return Task(self.task_path)
+
+    async def start(self, force_build: bool = False) -> None:
+        await self._inner.start(force_build=force_build)
+        self._started = True
+
+    async def stop(self, delete: bool = True) -> None:
+        if self._started:
+            await self._inner.stop(delete=delete)
+            self._started = False
+
+    async def exec(self, cmd: str, **kwargs) -> Any:
+        return await self._inner.exec(cmd, **kwargs)
+
+    async def upload_file(self, src: str | Path, dst: str) -> None:
+        await self._inner.upload_file(src, dst)
+
+    async def upload_dir(self, src: str | Path, dst: str) -> None:
+        await self._inner.upload_dir(src, dst)
+
+    async def download_file(self, src: str, dst: str | Path) -> None:
+        await self._inner.download_file(src, dst)
+
+    async def __aenter__(self) -> "Environment":
+        await self.start()
+        return self
+
+    async def __aexit__(self, *exc) -> None:
+        await self.stop()
+
+    def __repr__(self) -> str:
+        return f"Environment({self.task_path.name!r}, backend={self.backend!r})"
+
+
 @dataclass
 class Agent:
     """Thin wrapper around a registered agent + model + credentials."""

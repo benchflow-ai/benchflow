@@ -2,7 +2,7 @@
 from datetime import datetime
 from pathlib import Path
 
-from benchflow.runtime import Agent, RuntimeConfig, RuntimeResult
+from benchflow.runtime import Agent, Environment, RuntimeConfig, RuntimeResult
 
 
 def test_agent_basic() -> None:
@@ -77,6 +77,25 @@ def test_runtime_result_error() -> None:
     )
     assert r.passed is False
     assert r.verified is False
+
+
+def test_environment_from_task() -> None:
+    """Environment.from_task creates a wrapper with correct metadata."""
+    # Use the conformance task as a real task.toml source
+    task_path = Path(__file__).parent / "conformance" / "acp_smoke"
+    if not (task_path / "task.toml").exists():
+        return  # skip if not available
+    env = Environment.from_task(task_path, backend="daytona")
+    assert env.backend == "daytona"
+    assert env.task_path == task_path
+    assert not env._started
+    assert "acp_smoke" in repr(env)
+
+
+def test_environment_context_manager_interface() -> None:
+    """Environment has async context manager methods."""
+    assert hasattr(Environment, "__aenter__")
+    assert hasattr(Environment, "__aexit__")
 
 
 def test_runtime_result_to_run_result() -> None:
