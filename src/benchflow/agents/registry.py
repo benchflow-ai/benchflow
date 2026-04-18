@@ -67,6 +67,9 @@ _NODE_INSTALL = (
 # Path to the openclaw ACP shim script
 _OPENCLAW_SHIM = (Path(__file__).parent / "openclaw_acp_shim.py").read_text()
 
+# Path to the Pi launch wrapper (bridges BENCHFLOW_PROVIDER_* → Pi config)
+_PI_LAUNCHER = (Path(__file__).parent / "pi_acp_launcher.py").read_text()
+
 
 @dataclass
 class CredentialFile:
@@ -175,17 +178,26 @@ AGENTS: dict[str, AgentConfig] = {
             "npm install -g @mariozechner/pi-coding-agent@latest >/dev/null 2>&1 ) && "
             "( command -v pi-acp >/dev/null 2>&1 || "
             "npm install -g pi-acp@latest >/dev/null 2>&1 ) && "
-            "command -v pi-acp >/dev/null 2>&1"
+            "command -v pi-acp >/dev/null 2>&1 && "
+            # Ensure python3 for launcher
+            "( command -v python3 >/dev/null 2>&1 || "
+            "(apt-get update -qq && apt-get install -y -qq python3 >/dev/null 2>&1) ) && "
+            # Deploy launch wrapper (bridges BENCHFLOW_PROVIDER_* → Pi config)
+            "cat > /usr/local/bin/pi-acp-launcher <<'LAUNCHEREOF'\n"
+            + _PI_LAUNCHER
+            + "\nLAUNCHEREOF\n"
+            "chmod +x /usr/local/bin/pi-acp-launcher"
         ),
-        launch_cmd="pi-acp",
+        launch_cmd="python3 /usr/local/bin/pi-acp-launcher",
         protocol="acp",
-        requires_env=["ANTHROPIC_API_KEY"],
-        api_protocol="anthropic-messages",
-        env_mapping={
-            "BENCHFLOW_PROVIDER_BASE_URL": "ANTHROPIC_BASE_URL",
-            "BENCHFLOW_PROVIDER_API_KEY": "ANTHROPIC_AUTH_TOKEN",
-            "BENCHFLOW_PROVIDER_MODEL": "ANTHROPIC_MODEL",
-        },
+        requires_env=[],  # inferred from --model at runtime
+        # Pi is multi-protocol: speaks Anthropic natively and OpenAI via
+        # models.json.  Empty lets the provider determine the protocol so
+        # multi-endpoint providers (e.g. zai) route to the right URL.
+        api_protocol="",
+        # env_mapping intentionally empty — the launch wrapper handles
+        # protocol-dependent translation (env vars for Anthropic,
+        # models.json for OpenAI-compatible providers like vLLM).
     ),
     "openclaw": AgentConfig(
         name="openclaw",
