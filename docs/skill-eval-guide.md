@@ -322,6 +322,47 @@ evolve the skill text based on failure patterns.
 └──────────────────────────────────────────────────────────────────┘
 ```
 
+## Real-World Example: Benchmark Hallucination Audit
+
+The `benchmark-hallucination-audit` skill teaches agents to verify claims
+in benchmark comparison tables by checking papers, GitHub, and HuggingFace.
+Its eval cases use findings from a real audit of AlphaEval (arXiv:2604.12162).
+
+```
+benchmark-hallucination-audit/
+├── skill.md                     # 5-round layered subagent methodology
+└── evals/
+    └── evals.json               # 8 cases from real AlphaEval audit
+```
+
+Sample case — detecting a Cross-Domain overclaim:
+```json
+{
+  "id": "overclaim-xdom-agentbench",
+  "question": "AlphaEval Table 1 marks AgentBench with Cross-Domain=✓. The definition is: 'spans 3+ distinct PROFESSIONAL domains'. AgentBench has 8 environments: OS, Database, Knowledge Graph, Card Game, Puzzles, ALFWorld, WebShop, Web Browsing. Is this correct or an overclaim?",
+  "ground_truth": "OVERCLAIM. The 8 environments are TASK TYPES, not 3+ professional domains like healthcare, finance, or law.",
+  "expected_behavior": [
+    "The agent fetched the AgentBench paper (arXiv:2308.03688)",
+    "The agent compared environments against the strict definition",
+    "The agent concluded task types ≠ professional domains"
+  ]
+}
+```
+
+Other cases test: missing Multi-Modal marks (MLE-bench), missing Dynamic
+marks (Gaia2 — title literally says "Dynamic"), correct Production marks
+(SWE-Lancer — $1M real Upwork payouts), and self-audit overclaims
+(AlphaEval's own Dynamic=✓ is aspirational, not mechanism-backed).
+
+Run it:
+```bash
+benchflow skills eval ./benchmark-hallucination-audit/ -a claude-agent-acp -a codex-acp
+```
+
+This is a good template for **research skills** — where the eval cases
+have verified ground truth from manual expert analysis, and the skill
+teaches a systematic methodology.
+
 ## For Skill Developers (Jon Snow Adapter Pattern)
 
 If you maintain skills and want CI-integrated eval:
