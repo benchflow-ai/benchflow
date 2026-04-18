@@ -111,7 +111,7 @@ class TestLoadEvalDataset:
         ds = load_eval_dataset(skill_dir)
         assert ds.skill_name == "calculator"
         assert len(ds.cases) == 2
-        assert ds.judge_model == "claude-haiku-4-5-20251001"
+        assert ds.judge_model == "gemini-2.0-flash"
         assert ds.timeout_sec == 120
 
     def test_parses_cases(self, skill_dir):
@@ -199,7 +199,7 @@ class TestLoadEvalDataset:
 
     def test_defaults_fallback(self, minimal_skill_dir):
         ds = load_eval_dataset(minimal_skill_dir)
-        assert ds.judge_model == "claude-haiku-4-5-20251001"
+        assert ds.judge_model == "gemini-2.0-flash"
         assert ds.timeout_sec == 300
 
 
