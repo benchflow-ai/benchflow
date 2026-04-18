@@ -505,14 +505,17 @@ def skills_eval(
 
     for row in result.summary_table():
         style = "bold green" if row["mode"] == "LIFT" else None
-        table.add_row(row["agent"], row["mode"], row["score"], row["avg_reward"], style=style)
+        table.add_row(
+            row["agent"], row["mode"], row["score"], row["avg_reward"], style=style
+        )
 
     console.print(table)
 
     # GEPA export
     if export_gepa:
         gepa_dir = export_gepa_traces(
-            result, evaluator.dataset,
+            result,
+            evaluator.dataset,
             output_dir=f"{jobs_dir}/skill-eval/{result.skill_name}/gepa",
         )
         console.print(f"[green]GEPA traces exported to {gepa_dir}[/green]")
@@ -687,7 +690,9 @@ def agent_show(
     console.print(f"  Launch:      {cfg.launch_cmd}")
     console.print(f"  Requires:    {', '.join(cfg.requires_env) or '(none)'}")
     if cfg.subscription_auth:
-        console.print(f"  Auth:        subscription via {cfg.subscription_auth.detect_file}")
+        console.print(
+            f"  Auth:        subscription via {cfg.subscription_auth.detect_file}"
+        )
 
 
 eval_app = typer.Typer(help="Evaluation commands.")
@@ -814,7 +819,9 @@ def environment_create(
     console.print(f"[green]Environment created:[/green] {env}")
     console.print(f"  Task:    {env.task_path}")
     console.print(f"  Backend: {env.backend}")
-    console.print("  Use [cyan]bench environment start[/cyan] to launch, or pass to [cyan]bf.run()[/cyan]")
+    console.print(
+        "  Use [cyan]bench environment start[/cyan] to launch, or pass to [cyan]bf.run()[/cyan]"
+    )
 
 
 @env_app.command("list")

@@ -45,8 +45,14 @@ from benchflow.environments import (
 from benchflow.job import Job, JobConfig, JobResult, RetryConfig
 from benchflow.metrics import BenchmarkMetrics, collect_metrics
 from benchflow.models import AgentInstallError, AgentTimeoutError, RunResult
-from benchflow.runtime import Agent, Environment, Runtime, RuntimeConfig, RuntimeResult
-from benchflow.runtime import run  # bf.run(agent, env) — the primary 0.3 API
+from benchflow.runtime import (
+    Agent,
+    Environment,
+    Runtime,
+    RuntimeConfig,
+    RuntimeResult,
+    run,  # bf.run(agent, env) — the primary 0.3 API
+)
 from benchflow.sdk import SDK
 from benchflow.skills import SkillInfo, discover_skills, install_skill, parse_skill
 from benchflow.trajectories.otel import OTelCollector
@@ -90,7 +96,14 @@ __all__ = [
     "AgentInstallError",
     "AgentTimeoutError",
     "RunResult",
-    # SDK
+    # Runtime (0.3 primary API)
+    "Agent",
+    "Environment",
+    "Runtime",
+    "RuntimeConfig",
+    "RuntimeResult",
+    "run",
+    # SDK (backwards compat)
     "SDK",
     # Environments / dep staging
     "SERVICES",

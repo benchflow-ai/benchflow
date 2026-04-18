@@ -8,8 +8,8 @@ Runs a coder→reviewer scene where:
   3. Scene exits deterministically
   4. Trajectory JSONL contains ordered cross-role messages
 """
+
 import asyncio
-import json
 import logging
 import sys
 from pathlib import Path
@@ -18,14 +18,15 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
+from harbor.models.task.task import Task
+
 from benchflow._acp_run import connect_acp, execute_prompts
 from benchflow._agent_setup import install_agent
 from benchflow._credentials import upload_subscription_auth, write_credential_files
 from benchflow._env_setup import _create_environment
 from benchflow._sandbox import setup_sandbox_user
 from benchflow._scene import Role, Scene
-from benchflow.agents.registry import AGENTS, AGENT_LAUNCH
-from harbor.models.task.task import Task
+from benchflow.agents.registry import AGENT_LAUNCH, AGENTS
 
 TASK_PATH = Path(__file__).parent / "acp_smoke"
 
@@ -61,7 +62,9 @@ async def role_runner(env, role: Role, prompt: str) -> None:
         agent_config = AGENTS.get(role.agent)
         await install_agent(env, role.agent, trial_dir)
         if agent_config:
-            await write_credential_files(env, role.agent, {}, agent_config, role.model, "/home/agent")
+            await write_credential_files(
+                env, role.agent, {}, agent_config, role.model, "/home/agent"
+            )
             await upload_subscription_auth(env, role.agent, "/home/agent")
         await setup_sandbox_user(env, sandbox_user="agent", workspace="/app")
         _INSTALLED_AGENTS.add(role.agent)
@@ -83,7 +86,10 @@ async def role_runner(env, role: Role, prompt: str) -> None:
     )
     try:
         trajectory, n_tools = await execute_prompts(
-            acp_client, session, [prompt], timeout=120,
+            acp_client,
+            session,
+            [prompt],
+            timeout=120,
         )
         logging.info(f"[{role.name}] finished: {n_tools} tool calls")
     finally:
@@ -128,9 +134,9 @@ async def main() -> None:
         out = Path("/tmp/multi-agent-proof-trajectory.jsonl")
         scene.save_trajectory(out)
 
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print("MULTI-AGENT PROOF RESULTS")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
         print(f"Rounds: {scene._round}")
         print(f"Messages: {len(trajectory)}")
         for msg in trajectory:
@@ -141,11 +147,15 @@ async def main() -> None:
         r = await env.exec("cat /app/result.txt 2>/dev/null || echo MISSING")
         print(f"result.txt: {(r.stdout or '').strip()!r}")
 
-        if len(trajectory) >= 2 and trajectory[0].sender == "coder" and trajectory[1].sender == "reviewer":
+        if (
+            len(trajectory) >= 2
+            and trajectory[0].sender == "coder"
+            and trajectory[1].sender == "reviewer"
+        ):
             print("\n=== MULTI-AGENT PROOF: PASS ===")
         else:
             print("\n=== MULTI-AGENT PROOF: FAIL ===")
-            print(f"Expected >= 2 messages with coder→reviewer→coder flow")
+            print("Expected >= 2 messages with coder→reviewer→coder flow")
 
     finally:
         await env.stop(delete=True)

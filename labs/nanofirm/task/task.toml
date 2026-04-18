@@ -1,0 +1,21 @@
+version = "1.0"
+
+[metadata]
+author_name = "benchflow"
+difficulty = "hard"
+category = "multi-agent"
+tags = ["multi-agent", "legal", "negotiation", "nanofirm", "demo"]
+
+[agent]
+# Single-turn demo: one instruction.md prompt; agent works through the
+# simulation in that one turn. 10 min cap keeps the hackathon loop tight.
+timeout_sec = 600
+
+[verifier]
+# Verifier only stages artifacts; host-side grade.py does the LLM judge.
+timeout_sec = 30
+
+[environment]
+cpus = 2
+memory_mb = 2048
+allow_internet = true

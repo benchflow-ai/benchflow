@@ -1,0 +1,21 @@
+# Oracle parity: Harbor side.
+# Same 10 skillsbench tasks, run via `uvx harbor run -c this.yaml`.
+# Harbor-format job config — agents[].name "oracle" is Harbor's built-in
+# no-LLM agent that runs solution/solve.sh and lets the verifier score it.
+#
+# Pair with parity-oracle-benchflow.yaml for the head-to-head. We compare
+# which tasks pass on each side to find any structural regression in the
+# vendored Task/Verifier stack.
+
+jobs_dir: /workspace/repos/benchflow/jobs/parity-oracle-harbor
+n_concurrent_trials: 4
+n_attempts: 1
+
+environment:
+  type: docker
+
+agents:
+  - name: oracle
+
+datasets:
+  - path: /tmp/parity-oracle-tasks

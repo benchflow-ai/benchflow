@@ -12,9 +12,7 @@ optimization for branching rollouts (new sandbox from snapshot), but the
 filesystem approach covers the rewind use case and is provable now.
 """
 
-import json
 import logging
-from datetime import datetime
 from pathlib import PurePosixPath
 
 logger = logging.getLogger(__name__)
@@ -35,7 +33,7 @@ async def snapshot(env, name: str, workspace: str = "/app") -> str:
         timeout_sec=120,
     )
     if result.return_code != 0:
-        raise RuntimeError(f"snapshot failed: {(result.stderr or "")}")
+        raise RuntimeError(f"snapshot failed: {(result.stderr or '')}")
     ref = f"fs:{name}:{snap_path}"
     logger.info(f"Snapshot created: {ref}")
     return ref
@@ -59,7 +57,7 @@ async def restore(env, ref: str, workspace: str = "/app") -> None:
         timeout_sec=120,
     )
     if result.return_code != 0:
-        raise RuntimeError(f"restore failed: {(result.stderr or "")}")
+        raise RuntimeError(f"restore failed: {(result.stderr or '')}")
     logger.info(f"Snapshot restored: {ref}")
 
 

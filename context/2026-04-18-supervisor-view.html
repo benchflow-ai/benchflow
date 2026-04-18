@@ -1,0 +1,109 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>BenchFlow supervisor update view</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 40px auto; max-width: 900px; line-height: 1.5; color: #111; }
+    h1,h2,h3 { line-height: 1.2; }
+    code { background: #f4f4f4; padding: 2px 6px; border-radius: 4px; }
+    pre { background: #f4f4f4; padding: 12px; border-radius: 8px; overflow-x: auto; }
+    .muted { color: #666; }
+    .box { background: #fafafa; border: 1px solid #ddd; border-radius: 8px; padding: 14px; }
+    ul { margin-top: 0.4em; }
+  </style>
+</head>
+<body>
+  <h1>BenchFlow supervisor update view</h1>
+  <p class="muted">Updated: 2026-04-18 early AM</p>
+
+  <div class="box">
+    <strong>Bottom line:</strong> We are past planning, through the first shipped 0.3 foundation slices, currently in benchmark/integration-test clarification, and the next major milestone is stabilizing the Gemini-based cross-harness integration line before full runtime unification.
+  </div>
+
+  <h2>1. Overall progress</h2>
+  <p>BenchFlow 0.3 is in <strong>execution + validation phase</strong>, not pure planning.</p>
+  <ul>
+    <li><strong>A6 ACP conformance</strong>: done for 0.3 gate</li>
+    <li><strong>A2 dense rewards</strong>: shipped</li>
+    <li><strong>A2 snapshot/restore</strong>: shipped behind unified API, Daytona proved</li>
+    <li><strong>A1 multi-agent runtime</strong>: first minimal slice shipped</li>
+    <li><strong>Runtime unification</strong> (<code>Runtime.execute()</code> / <code>bf.run</code>): design agreed, not yet implemented</li>
+  </ul>
+
+  <h2>2. Feature stage</h2>
+  <h3>A6 ACP conformance</h3>
+  <p>Complete. Green: <code>claude-agent-acp</code>, <code>gemini</code>. Experimental: <code>codex-acp</code>, <code>pi-acp</code>, <code>openclaw</code>.</p>
+
+  <h3>A2 dense rewards + snapshots</h3>
+  <p>Shipped. Reward events, process rewards, and snapshot/restore API now exist in the 0.3 line.</p>
+
+  <h3>A1 multi-agent runtime</h3>
+  <p>Minimal viable slice landed. Enough to answer product questions, not yet the final architecture.</p>
+
+  <h3>Runtime refactor</h3>
+  <p>Still the next big engineering phase. Not started as implementation yet.</p>
+
+  <h2>3. Benchmark state</h2>
+  <h3>TB2 learned today</h3>
+  <p>The earlier zero-score story was wrong because a verifier/plugin bug caused false negatives. The important fixes were root-mode verifier preflight plus legacy pytest plugin inference for <code>--ctrf</code>.</p>
+
+  <h3>BenchFlow slices</h3>
+  <ul>
+    <li><strong>Haiku legacy baseline</strong>: 0/89 pass, but now treated as <strong>confounded</strong></li>
+    <li><strong>Opus sandbox slice v1</strong>: 0/10 pass, confounded/restricted</li>
+    <li><strong>Opus root slice v3</strong>: 4/10 pass, first clean Claude-era 10-task slice</li>
+    <li><strong>Gemini current full TB2 baseline</strong>: 86/89 completed on disk at update time, 12 pass / 69 fail / 5 err</li>
+  </ul>
+
+  <p>Most important Gemini signal so far: <code>pytorch-model-recovery</code> passed under Gemini after timing out in both Opus slices.</p>
+
+  <h2>4. Harbor status</h2>
+  <p>Full parity was <strong>not</strong> run yet. Only a single-task Harbor probe was triggered earlier, so it should not be treated as apples-to-apples parity.</p>
+  <p>The correct reusable Harbor integration line going forward is:</p>
+  <ul>
+    <li><code>gemini-cli</code></li>
+    <li><code>gemini-3.1-flash-lite-preview</code></li>
+    <li>Daytona</li>
+    <li>SkillsBench 10</li>
+    <li>Terminal Bench 2.0 89</li>
+  </ul>
+
+  <h2>5. Integration test shape</h2>
+  <p>This is now one of the main reusable integration tests:</p>
+  <ul>
+    <li>model: <code>gemini-3.1-flash-lite-preview</code></li>
+    <li>BenchFlow agent: <code>gemini</code></li>
+    <li>Harbor agent: <code>gemini-cli</code></li>
+    <li>backend: Daytona</li>
+    <li>SkillsBench: 10 tasks</li>
+    <li>TB2: 89 tasks</li>
+  </ul>
+
+  <h2>6. What is blocked</h2>
+  <ul>
+    <li>Runtime unification work has not begun</li>
+    <li>Docker snapshot proof is unavailable in this environment</li>
+    <li>Harbor full parity on the Gemini line still needs to be run</li>
+    <li>SkillsBench 10-task Gemini line still needs to be run and logged</li>
+    <li>TB2 Gemini full 89-task result was still finishing at update time</li>
+  </ul>
+
+  <h2>7. Immediate next steps</h2>
+  <ol>
+    <li>Finish TB2 Gemini 89-task run and record final summary</li>
+    <li>Run Harbor parity on the reusable Gemini line</li>
+    <li>Add results into the executed notebook and mark parity/non-parity clearly</li>
+    <li>Then begin runtime unification implementation</li>
+  </ol>
+
+  <h2>8. Artifacts</h2>
+  <ul>
+    <li>Previous planning artifact: <code>docs/0.3-plan.md</code>, <code>docs/0.3-plan.pdf</code></li>
+    <li>New update: <code>context/2026-04-18-supervisor-view.md</code></li>
+    <li>New update: <code>context/2026-04-18-supervisor-view.html</code></li>
+    <li>New update: <code>context/2026-04-18-supervisor-view.pdf</code></li>
+    <li>Executed notebook: <code>context/tb2-parity-results.ipynb</code></li>
+  </ul>
+</body>
+</html>

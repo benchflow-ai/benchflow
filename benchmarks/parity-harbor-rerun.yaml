@@ -1,0 +1,19 @@
+# Harbor rerun — the 65 tasks Harbor either failed or never produced
+# a result for in the first full parity run. Xiangyi wants to see if
+# they're Harbor-side flakes (timeouts, CancelledError, Daytona auth
+# races) or real Harbor-inherent failures.
+#
+# Same config as parity-full-oracle-harbor.yaml otherwise.
+
+jobs_dir: /workspace/repos/benchflow/jobs/parity-harbor-rerun
+n_concurrent_trials: 16
+n_attempts: 1
+
+environment:
+  type: daytona
+
+agents:
+  - name: oracle
+
+datasets:
+  - path: /tmp/harbor-rerun-tasks

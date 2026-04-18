@@ -23,7 +23,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from benchflow.agents.registry import AGENTS, AGENT_LAUNCH, AgentConfig
+from benchflow.agents.registry import AGENT_LAUNCH, AGENTS, AgentConfig
 
 logger = logging.getLogger(__name__)
 
@@ -56,10 +56,11 @@ class Environment:
         task_path: str | Path,
         backend: str = "daytona",
         trial_name: str | None = None,
-    ) -> "Environment":
+    ) -> Environment:
         """Create an environment from a task directory."""
-        from benchflow._env_setup import _create_environment
         from harbor.models.task.task import Task
+
+        from benchflow._env_setup import _create_environment
 
         task_path = Path(task_path)
         task = Task(task_path)
@@ -76,6 +77,7 @@ class Environment:
     @property
     def task(self) -> Any:
         from harbor.models.task.task import Task
+
         return Task(self.task_path)
 
     async def start(self, force_build: bool = False) -> None:
@@ -99,7 +101,7 @@ class Environment:
     async def download_file(self, src: str, dst: str | Path) -> None:
         await self._inner.download_file(src, dst)
 
-    async def __aenter__(self) -> "Environment":
+    async def __aenter__(self) -> Environment:
         await self.start()
         return self
 
@@ -192,6 +194,7 @@ class RuntimeResult:
     def to_run_result(self) -> Any:
         """Convert to legacy RunResult for SDK.run() compat."""
         from benchflow.models import RunResult
+
         return RunResult(
             task_name=self.task_name,
             trial_name=self.trial_name,

@@ -164,7 +164,9 @@ class Scene:
         if inbox:
             parts.append("\n---\nYou have received the following messages:\n")
             for msg in inbox:
-                parts.append(f"**From {msg.sender} (round {msg.turn}):** {msg.content}\n")
+                parts.append(
+                    f"**From {msg.sender} (round {msg.turn}):** {msg.content}\n"
+                )
         parts.append(
             f"\nYou can send a message to another agent using the send_message tool. "
             f"Available recipients: {', '.join(n for n in self.roles if n != role.name)}."
@@ -183,7 +185,9 @@ class Scene:
     async def _read_outbox(self, env: Any, sender: str) -> list[Message]:
         """Read all messages left by sender in /tmp/outbox/ and clear them."""
         result = await env.exec(f"ls {self._OUTBOX_DIR}/*.json 2>/dev/null || true")
-        files = [f.strip() for f in (result.stdout or "").strip().splitlines() if f.strip()]
+        files = [
+            f.strip() for f in (result.stdout or "").strip().splitlines() if f.strip()
+        ]
         messages = []
         for fpath in files:
             cat_result = await env.exec(f"cat {fpath}")
@@ -202,7 +206,9 @@ class Scene:
                     )
                     self.trajectory.append(msg)
                     await self.transport.send(msg)
-                    logger.info(f"[Scene] round={self._round} {sender} → {recipient}: {content[:80]}")
+                    logger.info(
+                        f"[Scene] round={self._round} {sender} → {recipient}: {content[:80]}"
+                    )
                     messages.append(msg)
             except json.JSONDecodeError:
                 logger.warning(f"[Scene] invalid JSON in outbox file: {fpath}")
@@ -249,12 +255,16 @@ class Scene:
 
             outbox_msgs = await self._read_outbox(env, sender=active)
             if not outbox_msgs:
-                logger.info(f"[Scene] {active} exited without sending a message — scene ends")
+                logger.info(
+                    f"[Scene] {active} exited without sending a message — scene ends"
+                )
                 break
 
             active = self.next_active_role(active)
 
-        logger.info(f"[Scene] complete: {len(self.trajectory)} messages, {self._round} rounds")
+        logger.info(
+            f"[Scene] complete: {len(self.trajectory)} messages, {self._round} rounds"
+        )
         return self.trajectory
 
     def save_trajectory(self, path: Path) -> None:

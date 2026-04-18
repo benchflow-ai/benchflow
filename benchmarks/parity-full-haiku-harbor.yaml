@@ -1,0 +1,26 @@
+# Full agent parity (Haiku 4.5) — Harbor side.
+#
+# Harbor has a built-in `claude-code` agent in harbor.agents.installed.
+# It installs via `npm install -g @anthropic-ai/claude-code` and reads
+# credentials from ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN.
+#
+# Harbor doesn't have benchflow's "detect subscription auth from
+# ~/.claude/.credentials.json" logic, so the runner script will read
+# the OAuth access token from the credentials file and export it as
+# ANTHROPIC_AUTH_TOKEN before invoking `uvx harbor run -c ...`.
+
+jobs_dir: /workspace/repos/benchflow/jobs/parity-full-haiku-harbor
+n_concurrent_trials: 16
+n_attempts: 1
+
+environment:
+  type: daytona
+  env:
+    - ANTHROPIC_AUTH_TOKEN=${ANTHROPIC_AUTH_TOKEN}
+
+agents:
+  - name: claude-code
+    model_name: claude-haiku-4-5-20251001
+
+datasets:
+  - path: /tmp/parity-full-tasks

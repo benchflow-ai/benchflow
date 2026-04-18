@@ -6,6 +6,7 @@ If no agent names given, runs all registered agents that have credentials
 available in the environment. Results are printed as a table and written
 to conformance-results.json.
 """
+
 import asyncio
 import json
 import logging
@@ -105,16 +106,18 @@ async def main() -> None:
             print(f"SKIP {name} — no credentials in env ({ENV_KEYS[name]})")
             results.append({"agent": name, "status": "SKIP (no creds)"})
             continue
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print(f"CONFORMANCE: {name} (model={AGENT_MODELS.get(name, '?')})")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
         r = await run_one(name)
         results.append(r)
-        print(f"  → {r['status']}  (reward={r.get('passed',0)}/{r.get('total',1)}, {r.get('elapsed_sec',0)}s)")
+        print(
+            f"  → {r['status']}  (reward={r.get('passed', 0)}/{r.get('total', 1)}, {r.get('elapsed_sec', 0)}s)"
+        )
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print("CONFORMANCE SUMMARY")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     for r in results:
         print(f"  {r['agent']:25s} {r['status']}")
 

@@ -23,9 +23,11 @@ TEMPLATES_DIR = Path(__file__).parent / "templates"
 # Data models
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class EvalCase:
     """A single test case from evals.json."""
+
     id: str
     question: str
     ground_truth: str = ""
@@ -38,6 +40,7 @@ class EvalCase:
 @dataclass
 class EvalDataset:
     """Parsed evals.json with metadata."""
+
     skill_name: str
     skill_dir: Path
     cases: list[EvalCase]
@@ -56,6 +59,7 @@ class EvalDataset:
 @dataclass
 class CaseResult:
     """Result for a single case × agent × mode."""
+
     case_id: str
     agent: str
     model: str
@@ -69,6 +73,7 @@ class CaseResult:
 @dataclass
 class AgentLift:
     """Aggregated lift for one agent across all cases."""
+
     agent: str
     model: str
     with_skill_score: float
@@ -84,6 +89,7 @@ class AgentLift:
 @dataclass
 class SkillEvalResult:
     """Full skill evaluation result."""
+
     skill_name: str
     n_cases: int
     agents: list[str]
@@ -94,30 +100,37 @@ class SkillEvalResult:
         """Return rows for display."""
         rows = []
         for lift in self.agent_lifts:
-            rows.append({
-                "agent": lift.agent,
-                "mode": "with-skill",
-                "score": f"{lift.with_skill_passed}/{lift.n_cases}",
-                "avg_reward": f"{lift.with_skill_score:.2f}",
-            })
-            rows.append({
-                "agent": lift.agent,
-                "mode": "baseline",
-                "score": f"{lift.baseline_passed}/{lift.n_cases}",
-                "avg_reward": f"{lift.baseline_score:.2f}",
-            })
-            rows.append({
-                "agent": lift.agent,
-                "mode": "LIFT",
-                "score": f"+{lift.with_skill_passed - lift.baseline_passed}",
-                "avg_reward": f"+{lift.lift:.2f}",
-            })
+            rows.append(
+                {
+                    "agent": lift.agent,
+                    "mode": "with-skill",
+                    "score": f"{lift.with_skill_passed}/{lift.n_cases}",
+                    "avg_reward": f"{lift.with_skill_score:.2f}",
+                }
+            )
+            rows.append(
+                {
+                    "agent": lift.agent,
+                    "mode": "baseline",
+                    "score": f"{lift.baseline_passed}/{lift.n_cases}",
+                    "avg_reward": f"{lift.baseline_score:.2f}",
+                }
+            )
+            rows.append(
+                {
+                    "agent": lift.agent,
+                    "mode": "LIFT",
+                    "score": f"+{lift.with_skill_passed - lift.baseline_passed}",
+                    "avg_reward": f"+{lift.lift:.2f}",
+                }
+            )
         return rows
 
 
 # ---------------------------------------------------------------------------
 # Dataset loading
 # ---------------------------------------------------------------------------
+
 
 def load_eval_dataset(skill_dir: str | Path) -> EvalDataset:
     """Load and validate evals/evals.json from a skill directory."""
@@ -143,6 +156,7 @@ def load_eval_dataset(skill_dir: str | Path) -> EvalDataset:
         skill_md = skill_dir / "SKILL.md"
         if skill_md.exists():
             from benchflow.skills import parse_skill
+
             info = parse_skill(skill_md)
             skill_name = info.name if info else skill_dir.name
         else:
@@ -159,15 +173,17 @@ def load_eval_dataset(skill_dir: str | Path) -> EvalDataset:
         if "question" not in c:
             raise ValueError(f"Case {case_id} missing 'question' field")
 
-        cases.append(EvalCase(
-            id=case_id,
-            question=c["question"],
-            ground_truth=c.get("ground_truth", ""),
-            expected_behavior=c.get("expected_behavior", []),
-            expected_skill=c.get("expected_skill", skill_name),
-            expected_script=c.get("expected_script", ""),
-            environment=c.get("environment", {}),
-        ))
+        cases.append(
+            EvalCase(
+                id=case_id,
+                question=c["question"],
+                ground_truth=c.get("ground_truth", ""),
+                expected_behavior=c.get("expected_behavior", []),
+                expected_skill=c.get("expected_skill", skill_name),
+                expected_script=c.get("expected_script", ""),
+                environment=c.get("environment", {}),
+            )
+        )
 
     return EvalDataset(
         skill_name=skill_name,
@@ -181,6 +197,7 @@ def load_eval_dataset(skill_dir: str | Path) -> EvalDataset:
 # ---------------------------------------------------------------------------
 # Ephemeral task generation
 # ---------------------------------------------------------------------------
+
 
 def generate_tasks(
     dataset: EvalDataset,
@@ -214,18 +231,18 @@ def generate_tasks(
         # task.toml
         (task_dir / "task.toml").write_text(
             f'version = "1.0"\n\n'
-            f'[metadata]\n'
+            f"[metadata]\n"
             f'author_name = "benchflow-skill-eval"\n'
             f'difficulty = "medium"\n'
             f'category = "skill-eval"\n'
             f'tags = ["skill-eval", "{dataset.skill_name}"]\n\n'
-            f'[agent]\n'
-            f'timeout_sec = {dataset.timeout_sec}\n\n'
-            f'[verifier]\n'
-            f'timeout_sec = 120\n\n'
-            f'[environment]\n'
-            f'cpus = 1\n'
-            f'memory_mb = 2048\n'
+            f"[agent]\n"
+            f"timeout_sec = {dataset.timeout_sec}\n\n"
+            f"[verifier]\n"
+            f"timeout_sec = 120\n\n"
+            f"[environment]\n"
+            f"cpus = 1\n"
+            f"memory_mb = 2048\n"
         )
 
         # environment/
@@ -247,7 +264,8 @@ def generate_tasks(
             if skills_dst.exists():
                 shutil.rmtree(skills_dst)
             shutil.copytree(
-                dataset.skill_dir, skills_dst,
+                dataset.skill_dir,
+                skills_dst,
                 ignore=shutil.ignore_patterns("evals", "__pycache__", ".git"),
             )
 
@@ -256,14 +274,19 @@ def generate_tasks(
         tests_dir.mkdir(exist_ok=True)
 
         # case.json — injected data for the judge
-        (tests_dir / "case.json").write_text(json.dumps({
-            "id": case.id,
-            "question": case.question,
-            "ground_truth": case.ground_truth,
-            "expected_behavior": case.expected_behavior,
-            "expected_skill": case.expected_skill,
-            "expected_script": case.expected_script,
-        }, indent=2))
+        (tests_dir / "case.json").write_text(
+            json.dumps(
+                {
+                    "id": case.id,
+                    "question": case.question,
+                    "ground_truth": case.ground_truth,
+                    "expected_behavior": case.expected_behavior,
+                    "expected_skill": case.expected_skill,
+                    "expected_script": case.expected_script,
+                },
+                indent=2,
+            )
+        )
 
         # judge.py — from template
         judge_content = Template(judge_template).safe_substitute(
@@ -278,8 +301,7 @@ def generate_tasks(
         task_dirs.append(task_dir)
 
     logger.info(
-        f"Generated {len(task_dirs)} tasks in {output_dir} "
-        f"(with_skill={with_skill})"
+        f"Generated {len(task_dirs)} tasks in {output_dir} (with_skill={with_skill})"
     )
     return task_dirs
 
@@ -313,8 +335,8 @@ def _default_dockerfile(dataset: EvalDataset, with_skill: bool) -> str:
     if with_skill:
         lines += [
             "# Install skill",
-            f"COPY skills/ /home/user/.claude/skills/",
-            f"COPY skills/ /home/user/.agents/skills/",
+            "COPY skills/ /home/user/.claude/skills/",
+            "COPY skills/ /home/user/.agents/skills/",
             "",
         ]
 
@@ -335,6 +357,7 @@ def cleanup_tasks(task_dirs: list[Path]) -> None:
 # ---------------------------------------------------------------------------
 # Comparison runner
 # ---------------------------------------------------------------------------
+
 
 class SkillEvaluator:
     """Run skill evaluation: generate tasks, run with/without, compare."""
@@ -489,8 +512,7 @@ class SkillEvaluator:
                         rewards = result_data.get("rewards")
                         if rewards:
                             reward = rewards.get(
-                                "reward",
-                                next(iter(rewards.values()), None)
+                                "reward", next(iter(rewards.values()), None)
                             )
                         error = result_data.get("error")
                         n_tool_calls = result_data.get("n_tool_calls", 0)
@@ -505,25 +527,29 @@ class SkillEvaluator:
                     except (json.JSONDecodeError, KeyError):
                         pass
 
-                results.append(CaseResult(
-                    case_id=case_id,
-                    agent=agent,
-                    model=model or "",
-                    with_skill=with_skill,
-                    reward=reward,
-                    error=error,
-                    n_tool_calls=n_tool_calls,
-                    rubric_results=rubric_results,
-                ))
+                results.append(
+                    CaseResult(
+                        case_id=case_id,
+                        agent=agent,
+                        model=model or "",
+                        with_skill=with_skill,
+                        reward=reward,
+                        error=error,
+                        n_tool_calls=n_tool_calls,
+                        rubric_results=rubric_results,
+                    )
+                )
             else:
-                results.append(CaseResult(
-                    case_id=case_id,
-                    agent=agent,
-                    model=model or "",
-                    with_skill=with_skill,
-                    reward=None,
-                    error="No trial directory found",
-                ))
+                results.append(
+                    CaseResult(
+                        case_id=case_id,
+                        agent=agent,
+                        model=model or "",
+                        with_skill=with_skill,
+                        reward=None,
+                        error="No trial directory found",
+                    )
+                )
 
         return results
 
@@ -537,34 +563,40 @@ class SkillEvaluator:
         """Compute per-agent lift from case results."""
         lifts = []
         for agent, model in zip(agents, models):
-            with_results = [
-                r for r in all_results
-                if r.agent == agent and r.with_skill
-            ]
+            with_results = [r for r in all_results if r.agent == agent and r.with_skill]
             baseline_results = [
-                r for r in all_results
-                if r.agent == agent and not r.with_skill
+                r for r in all_results if r.agent == agent and not r.with_skill
             ]
 
-            with_rewards = [r.reward if r.reward is not None else 0.0 for r in with_results]
-            baseline_rewards = [r.reward if r.reward is not None else 0.0 for r in baseline_results]
+            with_rewards = [
+                r.reward if r.reward is not None else 0.0 for r in with_results
+            ]
+            baseline_rewards = [
+                r.reward if r.reward is not None else 0.0 for r in baseline_results
+            ]
 
             with_score = sum(with_rewards) / len(with_rewards) if with_rewards else 0.0
-            baseline_score = sum(baseline_rewards) / len(baseline_rewards) if baseline_rewards else 0.0
+            baseline_score = (
+                sum(baseline_rewards) / len(baseline_rewards)
+                if baseline_rewards
+                else 0.0
+            )
 
             with_passed = sum(1 for r in with_rewards if r > 0.5)
             baseline_passed = sum(1 for r in baseline_rewards if r > 0.5)
 
-            lifts.append(AgentLift(
-                agent=agent,
-                model=model or "",
-                with_skill_score=with_score,
-                baseline_score=baseline_score,
-                lift=with_score - baseline_score,
-                n_cases=len(self.dataset.cases),
-                with_skill_passed=with_passed,
-                baseline_passed=baseline_passed if not no_baseline else 0,
-            ))
+            lifts.append(
+                AgentLift(
+                    agent=agent,
+                    model=model or "",
+                    with_skill_score=with_score,
+                    baseline_score=baseline_score,
+                    lift=with_score - baseline_score,
+                    n_cases=len(self.dataset.cases),
+                    with_skill_passed=with_passed,
+                    baseline_passed=baseline_passed if not no_baseline else 0,
+                )
+            )
 
         return lifts
 
@@ -572,6 +604,7 @@ class SkillEvaluator:
 # ---------------------------------------------------------------------------
 # GEPA export
 # ---------------------------------------------------------------------------
+
 
 def export_gepa_traces(
     result: SkillEvalResult,
@@ -605,17 +638,22 @@ def export_gepa_traces(
         agent_label = cr.agent.split("/")[-1] if "/" in cr.agent else cr.agent
         mode = "with" if cr.with_skill else "without"
         trace_file = traces_dir / f"{cr.case_id}-{agent_label}-{mode}.json"
-        trace_file.write_text(json.dumps({
-            "case_id": cr.case_id,
-            "agent": cr.agent,
-            "model": cr.model,
-            "with_skill": cr.with_skill,
-            "score": cr.reward,
-            "rubric_results": cr.rubric_results,
-            "n_tool_calls": cr.n_tool_calls,
-            "error": cr.error,
-            "skill_text": skill_md.read_text() if skill_md.exists() else None,
-        }, indent=2))
+        trace_file.write_text(
+            json.dumps(
+                {
+                    "case_id": cr.case_id,
+                    "agent": cr.agent,
+                    "model": cr.model,
+                    "with_skill": cr.with_skill,
+                    "score": cr.reward,
+                    "rubric_results": cr.rubric_results,
+                    "n_tool_calls": cr.n_tool_calls,
+                    "error": cr.error,
+                    "skill_text": skill_md.read_text() if skill_md.exists() else None,
+                },
+                indent=2,
+            )
+        )
 
     # Write summary
     summary = {

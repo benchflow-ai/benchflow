@@ -1,22 +1,17 @@
 """Tests for benchflow.skill_eval — dataset loading, task generation, comparison."""
 
 import json
-import shutil
-import tempfile
-from pathlib import Path
 
 import pytest
 
 from benchflow.skill_eval import (
-    EvalCase,
-    EvalDataset,
-    CaseResult,
     AgentLift,
+    CaseResult,
     SkillEvalResult,
-    load_eval_dataset,
-    generate_tasks,
     cleanup_tasks,
     export_gepa_traces,
+    generate_tasks,
+    load_eval_dataset,
 )
 
 
@@ -41,42 +36,48 @@ Use calc.py to compute math expressions.
     # scripts
     scripts = skill / "scripts"
     scripts.mkdir()
-    (scripts / "calc.py").write_text('import sys; print(sum(int(x) for x in sys.argv[1:]))')
+    (scripts / "calc.py").write_text(
+        "import sys; print(sum(int(x) for x in sys.argv[1:]))"
+    )
 
     # evals
     evals = skill / "evals"
     evals.mkdir()
-    (evals / "evals.json").write_text(json.dumps({
-        "version": "1",
-        "skill_name": "calculator",
-        "defaults": {
-            "timeout_sec": 120,
-            "judge_model": "claude-haiku-4-5-20251001",
-        },
-        "cases": [
+    (evals / "evals.json").write_text(
+        json.dumps(
             {
-                "id": "calc-001",
-                "question": "What is 2 + 3 * 4? Use the calculator skill.",
-                "ground_truth": "14",
-                "expected_behavior": [
-                    "Agent read the calculator SKILL.md",
-                    "Agent executed calc.py with '2 + 3 * 4'",
-                    "Agent reported correct result of 14",
+                "version": "1",
+                "skill_name": "calculator",
+                "defaults": {
+                    "timeout_sec": 120,
+                    "judge_model": "claude-haiku-4-5-20251001",
+                },
+                "cases": [
+                    {
+                        "id": "calc-001",
+                        "question": "What is 2 + 3 * 4? Use the calculator skill.",
+                        "ground_truth": "14",
+                        "expected_behavior": [
+                            "Agent read the calculator SKILL.md",
+                            "Agent executed calc.py with '2 + 3 * 4'",
+                            "Agent reported correct result of 14",
+                        ],
+                        "expected_skill": "calculator",
+                        "expected_script": "calc.py",
+                    },
+                    {
+                        "id": "calc-002",
+                        "question": "What is sqrt(144)?",
+                        "ground_truth": "12",
+                        "expected_behavior": [
+                            "Agent used the calculator skill",
+                            "Agent reported 12",
+                        ],
+                    },
                 ],
-                "expected_skill": "calculator",
-                "expected_script": "calc.py",
-            },
-            {
-                "id": "calc-002",
-                "question": "What is sqrt(144)?",
-                "ground_truth": "12",
-                "expected_behavior": [
-                    "Agent used the calculator skill",
-                    "Agent reported 12",
-                ],
-            },
-        ],
-    }))
+            }
+        )
+    )
 
     return skill
 
@@ -88,17 +89,22 @@ def minimal_skill_dir(tmp_path):
     skill.mkdir()
     evals = skill / "evals"
     evals.mkdir()
-    (evals / "evals.json").write_text(json.dumps({
-        "cases": [
-            {"id": "s-001", "question": "Say hello", "ground_truth": "hello"},
-        ],
-    }))
+    (evals / "evals.json").write_text(
+        json.dumps(
+            {
+                "cases": [
+                    {"id": "s-001", "question": "Say hello", "ground_truth": "hello"},
+                ],
+            }
+        )
+    )
     return skill
 
 
 # ---------------------------------------------------------------------------
 # load_eval_dataset
 # ---------------------------------------------------------------------------
+
 
 class TestLoadEvalDataset:
     def test_loads_valid_dataset(self, skill_dir):
@@ -144,9 +150,13 @@ class TestLoadEvalDataset:
         skill.mkdir()
         evals = skill / "evals"
         evals.mkdir()
-        (evals / "evals.json").write_text(json.dumps({
-            "cases": [{"id": "x", "ground_truth": "y"}],
-        }))
+        (evals / "evals.json").write_text(
+            json.dumps(
+                {
+                    "cases": [{"id": "x", "ground_truth": "y"}],
+                }
+            )
+        )
         with pytest.raises(ValueError, match="question"):
             load_eval_dataset(skill)
 
@@ -155,12 +165,16 @@ class TestLoadEvalDataset:
         skill.mkdir()
         evals = skill / "evals"
         evals.mkdir()
-        (evals / "evals.json").write_text(json.dumps({
-            "cases": [
-                {"id": "same", "question": "a"},
-                {"id": "same", "question": "b"},
-            ],
-        }))
+        (evals / "evals.json").write_text(
+            json.dumps(
+                {
+                    "cases": [
+                        {"id": "same", "question": "a"},
+                        {"id": "same", "question": "b"},
+                    ],
+                }
+            )
+        )
         with pytest.raises(ValueError, match="Duplicate"):
             load_eval_dataset(skill)
 
@@ -169,12 +183,16 @@ class TestLoadEvalDataset:
         skill.mkdir()
         evals = skill / "evals"
         evals.mkdir()
-        (evals / "evals.json").write_text(json.dumps({
-            "cases": [
-                {"question": "first"},
-                {"question": "second"},
-            ],
-        }))
+        (evals / "evals.json").write_text(
+            json.dumps(
+                {
+                    "cases": [
+                        {"question": "first"},
+                        {"question": "second"},
+                    ],
+                }
+            )
+        )
         ds = load_eval_dataset(skill)
         assert ds.cases[0].id == "case-000"
         assert ds.cases[1].id == "case-001"
@@ -188,6 +206,7 @@ class TestLoadEvalDataset:
 # ---------------------------------------------------------------------------
 # generate_tasks
 # ---------------------------------------------------------------------------
+
 
 class TestGenerateTasks:
     def test_generates_correct_structure(self, skill_dir, tmp_path):
@@ -279,6 +298,7 @@ class TestGenerateTasks:
 # cleanup_tasks
 # ---------------------------------------------------------------------------
 
+
 class TestCleanupTasks:
     def test_removes_directories(self, tmp_path):
         dirs = [tmp_path / "a", tmp_path / "b"]
@@ -298,6 +318,7 @@ class TestCleanupTasks:
 # SkillEvalResult
 # ---------------------------------------------------------------------------
 
+
 class TestSkillEvalResult:
     def test_summary_table(self):
         result = SkillEvalResult(
@@ -306,10 +327,14 @@ class TestSkillEvalResult:
             agents=["agent-a"],
             agent_lifts=[
                 AgentLift(
-                    agent="agent-a", model="model-a",
-                    with_skill_score=0.8, baseline_score=0.3,
-                    lift=0.5, n_cases=3,
-                    with_skill_passed=2, baseline_passed=1,
+                    agent="agent-a",
+                    model="model-a",
+                    with_skill_score=0.8,
+                    baseline_score=0.3,
+                    lift=0.5,
+                    n_cases=3,
+                    with_skill_passed=2,
+                    baseline_passed=1,
                 ),
             ],
         )
@@ -325,6 +350,7 @@ class TestSkillEvalResult:
 # GEPA export
 # ---------------------------------------------------------------------------
 
+
 class TestGepaExport:
     def test_exports_structure(self, skill_dir, tmp_path):
         ds = load_eval_dataset(skill_dir)
@@ -334,20 +360,30 @@ class TestGepaExport:
             agents=["agent-a"],
             case_results=[
                 CaseResult(
-                    case_id="calc-001", agent="agent-a", model="m",
-                    with_skill=True, reward=0.9,
+                    case_id="calc-001",
+                    agent="agent-a",
+                    model="m",
+                    with_skill=True,
+                    reward=0.9,
                 ),
                 CaseResult(
-                    case_id="calc-001", agent="agent-a", model="m",
-                    with_skill=False, reward=0.3,
+                    case_id="calc-001",
+                    agent="agent-a",
+                    model="m",
+                    with_skill=False,
+                    reward=0.3,
                 ),
             ],
             agent_lifts=[
                 AgentLift(
-                    agent="agent-a", model="m",
-                    with_skill_score=0.9, baseline_score=0.3,
-                    lift=0.6, n_cases=2,
-                    with_skill_passed=1, baseline_passed=0,
+                    agent="agent-a",
+                    model="m",
+                    with_skill_score=0.9,
+                    baseline_score=0.3,
+                    lift=0.6,
+                    n_cases=2,
+                    with_skill_passed=1,
+                    baseline_passed=0,
                 ),
             ],
         )

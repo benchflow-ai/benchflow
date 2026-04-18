@@ -164,7 +164,9 @@ def _write_rewards_jsonl(
                     "value": item.get("score", 0.0),
                     "tag": item.get("name", f"rubric_{i}"),
                     "step_index": i,
-                    "meta": {k: v for k, v in item.items() if k not in ("score", "name")},
+                    "meta": {
+                        k: v for k, v in item.items() if k not in ("score", "name")
+                    },
                 }
             )
     scalar = rewards.get("reward")
@@ -183,9 +185,7 @@ def _write_rewards_jsonl(
         )
     if events:
         path = trial_dir / "rewards.jsonl"
-        path.write_text(
-            "\n".join(json.dumps(e, default=str) for e in events) + "\n"
-        )
+        path.write_text("\n".join(json.dumps(e, default=str) for e in events) + "\n")
 
 
 # Apply at import time so any Harbor DockerEnvironment in this process

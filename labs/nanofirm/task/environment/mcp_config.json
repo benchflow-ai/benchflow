@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "nanofirm-personas": {
+      "type": "stdio",
+      "command": "python3",
+      "args": ["/app/personas_server.py"]
+    }
+  }
+}

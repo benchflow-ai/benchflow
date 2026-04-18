@@ -1,4 +1,5 @@
 """Tests for _scene.py — multi-agent scene runtime."""
+
 import asyncio
 import json
 from pathlib import Path
@@ -83,9 +84,7 @@ async def test_end_scene(two_roles: dict[str, Role]) -> None:
 
 async def test_mailbox_transport() -> None:
     transport = MailboxTransport()
-    msg = Message(
-        id="abc", sender="a", recipient="b", content="hello", turn=1
-    )
+    msg = Message(id="abc", sender="a", recipient="b", content="hello", turn=1)
     await transport.send(msg)
     pending = await transport.list_pending("b")
     assert len(pending) == 1
@@ -102,7 +101,9 @@ async def test_mailbox_transport() -> None:
 async def test_build_prompt_for_role(two_roles: dict[str, Role]) -> None:
     scene = Scene(roles=two_roles)
     inbox = [
-        Message(id="x", sender="reviewer", recipient="coder", content="looks good", turn=1)
+        Message(
+            id="x", sender="reviewer", recipient="coder", content="looks good", turn=1
+        )
     ]
     prompt = scene.build_prompt_for_role(two_roles["coder"], inbox)
     assert "You are a coder" in prompt
@@ -113,6 +114,7 @@ async def test_build_prompt_for_role(two_roles: dict[str, Role]) -> None:
 
 class FakeEnv:
     """Mock env with exec() that simulates outbox file writes."""
+
     def __init__(self) -> None:
         self._files: dict[str, str] = {}
         self._exec_log: list[str] = []

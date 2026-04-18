@@ -1,0 +1,13 @@
+# 0.2.3 regression gate — full oracle parity with the tee-stream fix +
+# additional skillsbench cleanup (organize-messy-files, syzkaller-ppdev-syzlang
+# capped at 10GB disk).
+#
+# Fresh jobs_dir so Job.resume() doesn't short-circuit on the prior
+# 10:24:40 run's result.json files.
+
+tasks_dir: /tmp/parity-full-tasks
+jobs_dir: ../jobs/parity-full-oracle-benchflow-0_2_3
+agent: oracle
+environment: daytona
+concurrency: 16
+max_retries: 0

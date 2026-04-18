@@ -1,0 +1,14 @@
+# Full oracle parity (benchflow side).
+#
+# 172 tasks: all of skillsbench (minus 6 external-API-key tasks) merged
+# with all of terminal-bench-2, symlinked into /tmp/parity-full-tasks.
+# Oracle agent runs solution/solve.sh directly — no LLM calls. The point
+# is head-to-head infrastructure parity with Harbor (same task set, same
+# agent, same environment backend).
+
+tasks_dir: /tmp/parity-full-tasks
+jobs_dir: ../jobs/parity-full-oracle-benchflow
+agent: oracle
+environment: daytona
+concurrency: 16
+max_retries: 0

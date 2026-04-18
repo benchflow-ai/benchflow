@@ -1,0 +1,613 @@
+<!doctype html><html><head><meta charset="utf-8"><title>BenchFlow 0.3 Plan</title><style>
+@page { size: Letter; margin: 0.7in 0.75in; }
+body { font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color:#111; line-height:1.55; font-size:14px; }
+main { max-width: 900px; margin: 0 auto; }
+h1 { font-size: 34px; margin: 0 0 12px; letter-spacing:-0.02em; }
+h2 { margin-top: 34px; padding-bottom: 6px; border-bottom: 1px solid #ddd; font-size: 24px; }
+h3 { margin-top: 24px; font-size: 18px; }
+p, li { font-size: 14px; }
+code { background:#f4f4f4; padding:2px 5px; border-radius:4px; font-family: "SFMono-Regular", Consolas, monospace; font-size: 12px; }
+pre { background:#f7f7f7; padding:14px; border-radius:8px; overflow:auto; border:1px solid #e6e6e6; }
+pre code { background:transparent; padding:0; }
+table { border-collapse: collapse; width:100%; margin: 14px 0 18px; font-size:13px; }
+th, td { border:1px solid #ddd; padding:8px 10px; vertical-align: top; }
+th { background:#f5f5f5; text-align:left; }
+ul, ol { padding-left: 22px; }
+blockquote { margin: 16px 0; padding: 10px 14px; border-left: 4px solid #bbb; background:#fafafa; }
+hr { border:none; border-top:1px solid #ddd; margin: 28px 0; }
+</style></head><body><main><h1 id="benchflow-03-plan">BenchFlow 0.3 — Plan</h1>
+<p>Status: active execution + validation · branch: <code>dev-0.3</code> · authored: 2026-04-17 · updated: 2026-04-18 07:05 UTC · participants: xdotli, hermes bot, planning bot</p>
+<p>Source of truth for the 0.3 release scope, terminology, protocol commitments, testing philosophy, and open decisions. Rendered PDF with the same content sits at <code>docs/0.3-plan.pdf</code> (generated from <code>/tmp/designs/plan.html</code>). This file should be updated in-place as decisions harden; do not replace it with a separate summary doc.</p>
+<h2 id="0-2026-04-18-update-snapshot">§0 · 2026-04-18 update snapshot</h2>
+<p>What changed since the original draft:</p>
+<ul>
+<li><strong>A6 is effectively closed for the 0.3 gate.</strong> Green: <code>claude-agent-acp</code>, <code>gemini</code>. Experimental: <code>codex-acp</code>, <code>pi-acp</code>, <code>openclaw</code>.</li>
+<li><strong>A2 first slice is shipped.</strong> Terminal rewards, process/rubric rewards, <code>rewards.jsonl</code>, and snapshot/restore API landed. Daytona proof passed; Docker path exists but is still unproved in this devcontainer.</li>
+<li><strong>A1 minimal slice is shipped.</strong> Scene/role/message core types, scheduler/outbox bridge, and 2-agent proof landed.</li>
+<li><strong>The old TB2 Haiku <code>0/89</code> baseline is deprecated.</strong> It was verifier-confounded and should no longer be treated as the current reference line.</li>
+<li><strong>Current clean TB2 default baseline is Gemini, not Claude.</strong> The old clean BenchFlow Gemini baseline was <code>12/89 = 13.5%</code> under <code>gemini --acp</code>; the current recommended diagnostic line is <code>gemini --acp --yolo</code>, which improved the full rerun to <code>19/86 = 22.1%</code> with 3 pending timeouts and narrowed the Harbor gap substantially.</li>
+<li><strong>Harbor Gemini parity is unblocked.</strong> The earlier Harbor <code>gemini-cli</code> failure was a trivial model-name format issue (<code>google/gemini-3.1-flash-lite-preview</code> required), not a deep agent integration failure.</li>
+<li><strong>ACP parity remains an active diagnostic line, not a closed decision.</strong> Current evidence says Gemini ACP has at least two distinct failure classes: (1) policy/workspace/path restrictions on edit-style file tools and (2) a persistent ACP edit/write crash (<code>Cannot read properties of undefined (reading 'split')</code>). The latest full rerun shows <code>--acp --yolo</code> closes most of the Harbor gap (<code>19/86 = 22.1%</code> vs Harbor <code>21/85 = 24.7%</code>), so it is the current leading default candidate, but the remaining mismatch set still needs per-case audit.</li>
+<li><strong>Main reusable integration-test plan is now clear:</strong></li>
+<li>BenchFlow agent: <code>gemini</code></li>
+<li>Harbor agent: <code>gemini-cli</code></li>
+<li>BenchFlow model: <code>gemini-3.1-flash-lite-preview</code></li>
+<li>Harbor model: <code>google/gemini-3.1-flash-lite-preview</code></li>
+<li>Backend: Daytona</li>
+<li>Benchmarks: SkillsBench-10 and TB2-89</li>
+<li><strong>Runtime unification remains the next major implementation phase.</strong> <code>Runtime.execute()</code> is the agreed execution center; <code>bf.run(scene, env)</code> is the user-facing sugar on top once the integration line stabilizes.</li>
+</ul>
+<hr />
+<h2 id="1-object-model-terminology">§1 · Object model &amp; terminology</h2>
+<p>Naming convention adopted from Hermes's proposal on 2026-04-17 after reconciling with the bot's first cut and cross-checking research.</p>
+<table>
+<thead>
+<tr>
+<th>Term</th>
+<th>Defined as</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>agent</code></td>
+<td>Any model-driven actor in a scene.</td>
+<td>System-under-test, reviewer, adversary, or simulated user. Identity = role + tool access + prompt.</td>
+</tr>
+<tr>
+<td><code>simulated user</code></td>
+<td>A degenerate agent whose role is "user".</td>
+<td>Not a separate concept. Same orchestration path. Persona + LLM + optional MCP surface.</td>
+</tr>
+<tr>
+<td><code>turn</code></td>
+<td>One actor, one utterance.</td>
+<td>Smallest conversational unit. User turn, agent turn, tool turn.</td>
+</tr>
+<tr>
+<td><code>round</code></td>
+<td>One bidirectional exchange between two actors.</td>
+<td><code>agent ↔ user</code> or <code>agent ↔ agent</code>. Composes multiple turns.</td>
+</tr>
+<tr>
+<td><code>step</code></td>
+<td>One action against env/tool + its observation.</td>
+<td>Gym convention: <code>env.step(a) → (o, r, done, info)</code>.</td>
+</tr>
+<tr>
+<td><code>trajectory</code></td>
+<td>Full ordered trace of turns, rounds, and steps for one trial.</td>
+<td>What the verifier reads and the publisher ships.</td>
+</tr>
+</tbody>
+</table>
+<p>Three orthogonal axes: <strong>multi-turn × multi-round × multi-step</strong>. Single-round multi-step = SWE-Bench. Multi-round single-step = chatbots. Multi-round &amp; multi-step = ClawsBench, nanofirm.</p>
+<p><strong>Sources:</strong> OpenAI Gym (<code>step</code>); task-oriented dialogue literature, <em>Flipping the Dialogue</em> arXiv:2510.06552 (<code>turn</code>/<code>round</code>); MCP-sidecar pattern in <code>docs/multi-agent-sandbox-design.md</code> (simulated user).</p>
+<p><strong>Consequence for metrics:</strong> turns-per-role, rounds-to-resolution, steps-per-success, communication-overhead-vs-reward, round-level process reward.</p>
+<hr />
+<h2 id="2-protocol-integration-matrix">§2 · Protocol integration matrix</h2>
+<table>
+<thead>
+<tr>
+<th>Protocol</th>
+<th>Role</th>
+<th>Status in 0.2.3</th>
+<th>Action for 0.3</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ACP</code></td>
+<td>client ↔ agent (stdio)</td>
+<td>Shipped. 5 agents registered (<code>claude-agent-acp</code>, <code>pi-acp</code>, <code>openclaw</code>, <code>codex-acp</code>, <code>gemini</code>), not all verified. Gemini ACP parity investigation still open.</td>
+<td>§A6 conformance matrix; green-bar every registered agent. For Gemini, also classify parity failures into permission/workspace, tool-handler crash, verifier, or reasoning buckets.</td>
+</tr>
+<tr>
+<td><code>MCP</code></td>
+<td>agent ↔ tools + task-side services</td>
+<td><code>MCPServerConfig</code> in schema (<code>schemas/task/config.py:110</code>); runtime wiring incomplete.</td>
+<td>Runtime boots task-declared MCP sidecars before the agent.</td>
+</tr>
+<tr>
+<td><code>A2A</code></td>
+<td>peer ↔ peer (agents)</td>
+<td>Not implemented.</td>
+<td>Adopt Linux Foundation spec (JSON-RPC 2.0 + HTTP/SSE/gRPC, v1.0, Signed Agent Cards).</td>
+</tr>
+<tr>
+<td><code>ORS</code></td>
+<td>env ↔ trainer (RL)</td>
+<td>Not implemented.</td>
+<td>0.3 target is reward-signal-first compatibility with Open Reward Standard (openrewardstandard.io), over HTTP+SSE. Full ORS surface can slip to 0.3.x if needed; do not invent a bespoke reward protocol.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Design principle:</strong> speak standards, don't fork them. Every protocol above has an owner and a spec URL.</p>
+<hr />
+<h2 id="a1-multi-agent-multi-round-runtime">§A1 · Multi-agent, multi-round runtime</h2>
+<p>Docker Compose scene with N agent containers, an orchestrator with an A2A bus + mailbox + MCP router, a shared workspace volume, and pluggable mock-service sidecars.</p>
+<p><strong>Three comms substrates:</strong>
+- <strong>A2A</strong> — peer agents. JSON-RPC 2.0 over HTTP/SSE/gRPC. Adopt rather than roll our own.
+- <strong>MCP</strong> — agent ↔ tools. Existing in-tree; wire runtime end-to-end for 0.3.
+- <strong>Mailbox</strong> — async / realistic. Small HTTP "email" service with delivery delays and inboxes. Shared implementation with the §A3 gmail sidecar.</p>
+<p><strong>Build path:</strong>
+1. Lift <code>docs/multi-agent-sandbox-design.md</code> from draft. Compose file becomes the runtime definition.
+2. Orchestrator container runs A2A endpoint + mailbox + MCP router in one binary.
+3. Each agent container gets an <code>agent.yaml</code> — role, peers, tools.
+4. Trajectory emits distinct <code>TrajectoryTurn</code>, <code>TrajectoryRound</code>, <code>TrajectoryStep</code> events.
+5. Budget enforcement: per-trial round cap, per-agent token cap, scene timeout.</p>
+<p><strong>Risks:</strong> cost explosion (N × M), reproducibility under async + LLM non-determinism (record/replay companion feature), simulated-user placement in core vs ClawsBench.</p>
+<hr />
+<h2 id="a2-dense-rewards-env-snapshots-rl-core-ors-reward-signal-compatible-in-03">§A2 · Dense rewards + env snapshots <em>(RL core, ORS reward-signal-compatible in 0.3)</em></h2>
+<p><strong>Reward-signal-first ORS interface.</strong> ORS extends MCP semantics with RL primitives. For 0.3, benchflow should expose the reward/event surface over HTTP+SSE and keep the shape compatible with ORS concepts: Tools (action surface), Episodes (session until <code>finished</code>), Reward signals (streamed), with Tasks/splits/prompts completed only if they do not slow the release.</p>
+<p><strong>Dense / process rewards wired end-to-end:</strong>
+- Agent SDK: <code>session.emit_process_reward(value, tag)</code>. Runner proxies to ORS <code>reward</code> event stream.
+- Runner: writes <code>rewards.jsonl</code> alongside <code>reward.json</code>; also emits SSE to ORS-subscribed trainers.
+- Verifier: returns a rubric (list of scored items), not just a scalar. Schema extension with backwards-compat shim.
+- Aggregator: per-step, per-round, terminal reward surfaces.</p>
+<p><strong>Env snapshots — cross-backend:</strong>
+- Docker: <code>docker commit</code> + <code>docker export</code> of overlay diff. Acceptable for single-agent, too slow for branching rollouts.
+- Daytona: built-in <code>SnapshotState</code> API (<code>harbor/environments/daytona.py:21</code>). Target for fast rollout branching.</p>
+<p><strong>Build path:</strong> wire <code>emit_process_reward</code> through ACP + runner + storage → rubric verifier → Docker snapshot prototype → Daytona snapshot prototype → reference task <code>tasks/rl-cartpole-mock</code> (10-step env, shaped reward per step). Freeze the reward/event wire first; defer any non-essential ORS endpoints.</p>
+<hr />
+<h2 id="a3-clawsbench-as-benchflow-native-environment">§A3 · ClawsBench as benchflow-native environment</h2>
+<p>ClawsBench becomes a first-class benchflow environment family. Its mock services (gmail, gcal, gdocs, gdrive, slack) ship as benchflow-managed sidecars via <code>[[environment.services]]</code> in <code>task.toml</code>.</p>
+<pre><code class="language-toml">[[environment.services]]
+name     = &quot;gmail&quot;
+snapshot = &quot;acme-corp-2026-03-01&quot;
+policy   = &quot;fresh-per-trial&quot;
+</code></pre>
+<p><strong>Guarantees:</strong> reproducibility (per-trial fresh state, deterministic seeds), fidelity (real-ish APIs with delivery delays, rate limits, permission denials), composability (any task opts into any subset).</p>
+<p><strong>Build path:</strong> extract mock services into <code>benchflow-services/</code> → define schema + Compose boot → snapshots as tagged container images + <code>state.tar.zstd</code> in registry → 3 starter snapshots (<em>acme-corp</em>, <em>indie-dev</em>, <em>research-lab</em>) → CLI <code>bench environment snapshot create</code>.</p>
+<hr />
+<h2 id="a4-gym-like-step-api-observationaction-specs-rl-core">§A4 · Gym-like step API + observation/action specs <em>(RL core)</em></h2>
+<p>Makes benchflow addressable by RL libraries (TRL, Verl). Current job-based model is wrong for RL — we need a live loop where the trainer drives <code>env.step(action)</code>.</p>
+<pre><code class="language-python">import benchflow as bf
+
+env = bf.make(&quot;clawsbench/inbox-triage&quot;, agent=&quot;claude-agent-acp&quot;)
+obs, info = env.reset()
+done = False
+while not done:
+    action = policy(obs)
+    obs, reward, done, info = env.step(action)
+env.close()
+</code></pre>
+<p><strong>Observation / action spec in <code>task.toml</code>:</strong></p>
+<pre><code class="language-toml">[observation]
+kind    = &quot;tool_results&quot;    # or &quot;text&quot;, &quot;structured&quot;, &quot;pixels&quot;
+schema  = &quot;schemas/obs.json&quot;
+
+[action]
+kind    = &quot;tool_call&quot;       # or &quot;text&quot;, &quot;discrete&quot;, &quot;mcp_invoke&quot;
+schema  = &quot;schemas/act.json&quot;
+</code></pre>
+<p><strong>Build path:</strong> <code>benchflow.Env</code> base class (<code>reset / step / close / snapshot / restore</code>) → Docker backend first → observation/action schemas in <code>schemas/task/config.py</code> (optional in 0.3) → adapter shim (existing job-based tasks wrap as <code>JobEnv</code>) → reference integration: TRL-compatible loop on <code>tasks/rl-cartpole-mock</code>.</p>
+<hr />
+<h2 id="a5-cli-redesign">§A5 · CLI redesign</h2>
+<p>Anthropic-style <code>bench &lt;resource&gt; &lt;verb&gt;</code> at top level. Every macro emits fine trajectory events underneath.</p>
+<table>
+<thead>
+<tr>
+<th>Resource</th>
+<th>create</th>
+<th>run</th>
+<th>list</th>
+<th>show</th>
+<th>delete</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>agent</code></td>
+<td>●</td>
+<td>—</td>
+<td>●</td>
+<td>●</td>
+<td>●</td>
+</tr>
+<tr>
+<td><code>environment</code></td>
+<td>●</td>
+<td>—</td>
+<td>●</td>
+<td>●</td>
+<td>●</td>
+</tr>
+<tr>
+<td><code>trajectory</code></td>
+<td>—</td>
+<td>—</td>
+<td>●</td>
+<td>●</td>
+<td>●</td>
+</tr>
+<tr>
+<td><code>job</code></td>
+<td>●</td>
+<td>●</td>
+<td>●</td>
+<td>●</td>
+<td>●</td>
+</tr>
+<tr>
+<td><code>eval</code></td>
+<td>●</td>
+<td>●</td>
+<td>●</td>
+<td>●</td>
+<td>●</td>
+</tr>
+<tr>
+<td><code>train</code></td>
+<td>●</td>
+<td>●</td>
+<td>●</td>
+<td>●</td>
+<td>●</td>
+</tr>
+<tr>
+<td><code>registry</code></td>
+<td>—</td>
+<td>—</td>
+<td>●</td>
+<td>●</td>
+<td>●</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Events emitted by macros:</strong> <code>JobStarted</code>, <code>TrialDispatched</code>, <code>TrajectoryTurn</code>, <code>TrajectoryRound</code>, <code>TrajectoryStep</code>, <code>ProcessReward</code>, <code>EnvSnapshot</code>, <code>VerifierResult</code>. One stream, many consumers (publisher, metrics, replay, train loop).</p>
+<p><strong>Supersedes <code>docs/cli-redesign-proposal.md</code>.</strong> The "unified <code>benchflow run</code>" auto-mode detection logic lands as the body of <code>bench job run</code>; drop the verb conflation. Old <code>benchflow {run, job, eval, skill-eval}</code> commands removed in one migration.</p>
+<hr />
+<h2 id="a6-acp-agent-conformance-matrix">§A6 · ACP agent conformance matrix</h2>
+<p>Five agents in <code>src/benchflow/agents/registry.py</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Agent</th>
+<th>Source</th>
+<th>Tested</th>
+<th>Gate for 0.3</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>claude-agent-acp</code></td>
+<td><code>registry.py:140</code></td>
+<td>Yes</td>
+<td>Run 3×50 smoke (§13).</td>
+</tr>
+<tr>
+<td><code>pi-acp</code></td>
+<td><code>registry.py:169</code></td>
+<td>Unknown</td>
+<td>Conformance task + smoke.</td>
+</tr>
+<tr>
+<td><code>openclaw</code></td>
+<td><code>registry.py:191</code></td>
+<td>Unknown</td>
+<td>Conformance task + verify <code>openclaw_acp_shim.py</code>.</td>
+</tr>
+<tr>
+<td><code>codex-acp</code></td>
+<td><code>registry.py:218</code></td>
+<td>Partial</td>
+<td>10-task smoke on skillsbench.</td>
+</tr>
+<tr>
+<td><code>gemini</code></td>
+<td><code>registry.py:251</code></td>
+<td>Unknown</td>
+<td>Conformance task + 10-task smoke.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Conformance task spec:</strong> one small benchflow task (<code>tests/conformance/acp_smoke/</code>) that every registered agent must pass. ACP handshake → receive prompt → invoke one tool call → get observation → emit reward → verifier sees expected reward. Any agent that fails is fixed or removed from the registry before 0.3 ships.</p>
+<p><strong>Gemini-specific release note:</strong> ACP conformance is necessary but not sufficient. Current TB2 parity work shows Gemini ACP can fail in at least two ways even when handshake/tool basics work: edit-style file tools may be denied or path-restricted, and ACP edit/write may crash with <code>Cannot read properties of undefined (reading 'split')</code>. 0.3 should ship with this caveat documented unless the full mismatch audit and upstream/client fix land first.</p>
+<hr />
+<h2 id="a7-harbor-internalization-selective-not-a-fork">§A7 · Harbor internalization — selective, not a fork</h2>
+<p>benchflow depends on <code>harbor==0.3.0</code> at runtime. The <code>internalize-harbor-experiments</code> branch vendored Task, Verifier, multi-agent schema, and harbor-registry compat.</p>
+<p><strong>Policy</strong> (xdotli, 2026-04-17): avoid massive code duplication with harbor. Importing from <code>harbor.*</code> is fine. Vendor only when we need to diverge.</p>
+<p><strong>Vendoring criteria — vendor iff ≥1 is true:</strong>
+1. We need behavior upstream doesn't offer (e.g. structural <code>_harden()</code> as first line of <code>verify()</code>).
+2. We need schema extensions upstream won't accept (<code>SkillRef</code>, multi-agent <code>[[agents]]</code>).
+3. The upstream API is a constant churn risk and our runtime can't tolerate breakage.
+4. Security-boundary fork (verifier hardening is the clearest example).</p>
+<p>If none are true — import, don't vendor. Subclass or compose when a small extension is enough.</p>
+<p><strong>Current branch audit:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Module</th>
+<th>Status</th>
+<th>Justified?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Task / TaskConfig</code></td>
+<td>Vendored at <code>benchflow.schemas.task</code></td>
+<td><strong>Yes</strong> — extended with <code>SkillRef</code>, multi-agent <code>[[agents]]</code>, env sidecar services.</td>
+</tr>
+<tr>
+<td><code>Verifier</code></td>
+<td>Vendored at <code>benchflow.verifier.Verifier</code></td>
+<td><strong>Yes</strong> — <code>_harden()</code> runs first line; security-boundary fork.</td>
+</tr>
+<tr>
+<td><code>SkillRef</code>, multi-agent schema</td>
+<td>New</td>
+<td>N/A — adding.</td>
+</tr>
+<tr>
+<td><code>DockerEnvironment</code></td>
+<td>NOT vendored (issue #142)</td>
+<td><strong>Don't vendor.</strong> Import from <code>harbor.environments.docker</code>; subclass if needed.</td>
+</tr>
+<tr>
+<td><code>DaytonaEnvironment</code></td>
+<td>Imported from harbor</td>
+<td><strong>Keep importing</strong> — thin wrapper around Daytona's snapshot API.</td>
+</tr>
+<tr>
+<td>Harbor registry compat</td>
+<td>New glue (<code>harbor://</code>, <code>benchflow://</code> prefixes)</td>
+<td><strong>Yes</strong> — new code, not duplication.</td>
+</tr>
+<tr>
+<td>Installed agent runners</td>
+<td>Upstream; benchflow doesn't use</td>
+<td><strong>Don't import, don't vendor</strong> — our 5 ACP agents replace this tree.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Recommendation:</strong> keep harbor as a pinned import-dep for 0.3. Full standalone (off <code>install_requires</code>) is a 0.3.x decision tied to closing issue #142.</p>
+<hr />
+<h2 id="b-benchmarks-built-on-the-runtime">§B · Benchmarks built on the runtime</h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Benchmark</th>
+<th>What it measures</th>
+<th>Depends on</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>B1</td>
+<td>Models-as-skills</td>
+<td>Controller-vs-specialist: task success, delegation precision, unnecessary-delegation, cost efficiency, recovery after delegate failure.</td>
+<td>A1</td>
+</tr>
+<tr>
+<td>B1.1</td>
+<td>Swarm / leader emergence</td>
+<td>10+ agents, shared objective, comms budget. Consensus latency, leader emergence rate, stability.</td>
+<td>A1 + budget</td>
+</tr>
+<tr>
+<td>B2</td>
+<td>Code-review bench</td>
+<td>CodeRabbit, Greptile, PR reviewer agents. Seeded bugs; bug-find rate, false positives, patch usefulness.</td>
+<td>A1 minimal</td>
+</tr>
+<tr>
+<td>B3</td>
+<td>Nanofirm</td>
+<td>Persistent multi-agent firm sim. Long-horizon coordination, role specialization, async channels.</td>
+<td>A1 + A2 + A3 + A4</td>
+</tr>
+</tbody>
+</table>
+<p><strong>OnlyLabs is out of scope for benchflow 0.3.</strong> It's a separate product — a scraper that monitors labs' publications, releases, and JDs to help RL-env companies stay current. Target customer overlap, not a benchflow surface.</p>
+<hr />
+<h2 id="dependency-graph-sequencing">§Dependency graph &amp; sequencing</h2>
+<pre><code>                       §1 Terminology (doc)
+                              │
+        ┌──────────────┬──────┴──────┬──────────────┐
+        ▼              ▼             ▼              ▼
+   A1 multi-agent  A2 dense-rew  A4 gym-step    A5 CLI
+   runtime         + snapshots   + obs/act       redesign
+        │              │             │              │
+        ▼              ▼             ▼              ▼
+   B1 models-as-   train loop    RL lib (TRL,   ergonomics,
+   skills          plumbing      Verl) adapter   events,
+   B2 code-review                                migration
+        │              │             │              │
+        └──────────────┴─────┬───────┴──────────────┘
+                             ▼
+                     A3 ClawsBench sidecars
+                             │
+                             ▼
+                       B3 nanofirm
+</code></pre>
+<p><strong>Proposed order:</strong>
+1. <strong>Week 1:</strong> §1 terminology + §A5 CLI doc (same PR). Locks vocabulary and user-facing shape.
+2. <strong>Weeks 2–4:</strong> A1 runtime + A2 dense rewards wiring. Both need the event-type split.
+3. <strong>Weeks 3–5:</strong> A3 ClawsBench sidecars + A4 gym-step in parallel.
+4. <strong>Week 6:</strong> Integration — one reference task exercising A1+A2+A4 (multi-agent cartpole with dense reward per step).
+5. <strong>Week 7+:</strong> B-list picks. B2 lowest-dependency; B3 showcase that needs everything.</p>
+<hr />
+<h2 id="testing-philosophy-regression-loop">§Testing philosophy &amp; regression loop</h2>
+<p>The "unit" for this framework is <strong>not</strong> a pytest function. It's <strong>one benchmark task, one agent, one model, one scored result</strong>. Coverage is measured in completed trajectories, not in lines hit.</p>
+<p><strong>Three tiers:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Tier</th>
+<th>What it is</th>
+<th>When to run</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Unit</strong> (framework-native)</td>
+<td>1 task × 1 agent × 1 model × scored result.</td>
+<td>Every PR touching runtime, verifier, sandbox, or agent code. Sample ≤5 tasks, ~10-min CI budget.</td>
+</tr>
+<tr>
+<td><strong>Smoke (parity)</strong></td>
+<td>50 tasks × 3 benchmarks vs 0.2.3 baseline.</td>
+<td>Every feature-complete PR before merge; before any tag cut.</td>
+</tr>
+<tr>
+<td><strong>Intervention</strong></td>
+<td>Targeted probe: assert one behavior without a full task. E.g. "<code>emit_process_reward</code> reaches trajectory log" on a stubbed scene.</td>
+<td>Future state — as corpus grows, replace some unit executions to keep CI cost down. Track ratio in release notes.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Regression loop per-feature:</strong> change → Tier 1 (≤5 tasks) → Tier 2 (50-task parity) → merge. Any parity delta outside the gate is root-caused per-task, annotated, or reverted.</p>
+<hr />
+<h2 id="test-plan-integration-smoke-parity">§Test plan (integration smoke + parity)</h2>
+<p>Tier-2 suite. Each A-item validated by running real benchmarks through dev-0.3 and comparing against 0.2.3 baseline.</p>
+<p><strong>Suite spec (updated 2026-04-18):</strong></p>
+<table>
+<thead>
+<tr>
+<th>Axis</th>
+<th>Choice</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>BenchFlow default model</td>
+<td><code>gemini-3.1-flash-lite-preview</code></td>
+</tr>
+<tr>
+<td>BenchFlow default agent</td>
+<td><code>gemini</code></td>
+</tr>
+<tr>
+<td>Harbor parity model</td>
+<td><code>google/gemini-3.1-flash-lite-preview</code></td>
+</tr>
+<tr>
+<td>Harbor parity agent</td>
+<td><code>gemini-cli</code></td>
+</tr>
+<tr>
+<td>Backend</td>
+<td><code>daytona</code></td>
+</tr>
+<tr>
+<td>Concurrency target</td>
+<td><code>&gt;=64</code> by default; <code>89</code> for TB2 full runs</td>
+</tr>
+<tr>
+<td>Trials / task</td>
+<td><code>1</code></td>
+</tr>
+<tr>
+<td>Retries</td>
+<td><code>0</code> for benchmark baselines unless diagnosing instability</td>
+</tr>
+<tr>
+<td>TB2 sandbox mode</td>
+<td><code>sandbox_user: null</code> / root for fair comparison</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Benchmarks &amp; integration lines:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Bench</th>
+<th>Scope</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>SkillsBench-10</strong></td>
+<td>10-task reusable subset</td>
+<td>Main light-weight integration line across BenchFlow and Harbor.</td>
+</tr>
+<tr>
+<td><strong>TB2-89</strong></td>
+<td>Full Terminal Bench 2.0</td>
+<td>Main heavy integration line and current runtime/harness regression benchmark.</td>
+</tr>
+<tr>
+<td><strong>Opus root 10-task probe</strong></td>
+<td>Diagnostic slice only</td>
+<td>Keeps the earlier Claude-era comparison point, but is no longer the default baseline.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Current benchmark truth state:</strong>
+- <strong>Current recommended BenchFlow Gemini line:</strong> <code>gemini --acp --yolo</code> on TB2 full rerun = <code>19/86 = 22.1%</code> with 3 tasks still pending timeout.
+- <strong>Current Harbor comparison line:</strong> Harbor + Gemini CLI = <code>21/85 = 24.7%</code> with 4 Harbor-only / BF-only style mismatches still requiring per-case classification.
+- <strong>Earlier clean baseline:</strong> BenchFlow + Gemini on TB2-89 under plain <code>--acp</code> = <code>12/89 = 13.5%</code>.
+- <strong>Deprecated baseline:</strong> old Haiku <code>0/89</code> on TB2 — verifier-confounded.
+- <strong>Harbor parity rule:</strong> same task set, same model family, same backend. Harbor model strings must use provider prefix (e.g. <code>google/gemini-3.1-flash-lite-preview</code>).
+- <strong>ACP parity audit rule:</strong> when BenchFlow and Harbor disagree, inspect every mismatch trajectory and classify first divergence as permission/workspace, ACP tool crash, verifier difference, or reasoning difference. Do not treat <code>--yolo</code> probes as a new canonical baseline until a full rerun is complete.</p>
+<p><strong>Per-A-item acceptance tests:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th>Won't ship without this</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>A1</td>
+<td>Multi-agent reference task (coder ↔ reviewer, 3 rounds) completes; trajectory emits distinct Turn/Round/Step event counts matching hand-annotated ground truth.</td>
+</tr>
+<tr>
+<td>A2</td>
+<td>Reference task emits ≥1 <code>ProcessReward</code> per step; one <code>snapshot → mutate → restore</code> round-trip on Docker and Daytona; rubric verifier aggregates to correct scalar.</td>
+</tr>
+<tr>
+<td>A3</td>
+<td>5 ClawsBench tasks pass with gmail/gcal/slack sidecars attached; per-trial snapshot reset verified by inbox-state diff.</td>
+</tr>
+<tr>
+<td>A4</td>
+<td>TRL-compatible loop runs <code>reset/step</code> on <code>tasks/rl-cartpole-mock</code> for 100 episodes. Old job tasks still run via <code>JobEnv</code> shim.</td>
+</tr>
+<tr>
+<td>A5</td>
+<td>All three 50-task suites launchable via <code>bench eval run</code> without fallback.</td>
+</tr>
+<tr>
+<td>A6</td>
+<td>Every registered agent green-bars the <code>tests/conformance/acp_smoke</code> task.</td>
+</tr>
+<tr>
+<td>A7</td>
+<td>353 benchflow unit tests + 3×50 parity suite pass post-vendor audit.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Parity gate (0.2.3 baseline vs dev-0.3):</strong> reward delta ≤ ±2 tasks per benchmark net; no silent regressions; wall-clock ≤ 1.3× baseline at matched concurrency.</p>
+<p><strong>Concrete run commands:</strong></p>
+<pre><code class="language-bash">bench eval run skillsbench-50      --env daytona --concurrency 25 &amp;
+bench eval run tb2-50              --env daytona --concurrency 25 &amp;
+bench eval run swebench-verified-50 --env daytona --concurrency 25 &amp;
+wait
+
+BENCHFLOW_VERSION=0.2.3 bench eval run skillsbench-50 --env daytona --concurrency 25
+</code></pre>
+<hr />
+<h2 id="open-decisions">§Open decisions</h2>
+<ol>
+<li><strong>Simulated-user placement</strong> — benchflow core (preferred) or ClawsBench add-on.</li>
+<li><strong>Models-as-skills granularity</strong> — single LLM call wrap, or full sub-benchflow-session.</li>
+<li><strong>A2A vs ACP coexistence</strong> — ACP stays client↔agent (stdio); A2A added for peer agents. Confirm non-replacement.</li>
+<li><strong>Mailbox vs generic async bus</strong> — email-shaped only, or typed message queues.</li>
+<li><strong>Registry hosting</strong> — self-hosted HTTP, GitHub releases, or S3+signed URLs.</li>
+<li><strong>Reward-rubric schema</strong> — freeze as <code>{name, weight, score}</code> list, or open-ended JSON until three consumers.</li>
+<li><strong>Parity gate threshold</strong> — ±2 tasks net, or accept larger A2 deltas as intentional reward-hack hardening.</li>
+<li><strong>Gemini ACP default mode</strong> — latest evidence strongly favors <code>--acp --yolo</code>, but keep this technically open until the remaining mismatch audit and pending timeouts finish.</li>
+</ol>
+<hr />
+<h2 id="parking-lot-out-of-03">§Parking lot (out of 0.3)</h2>
+<ul>
+<li>Cross-backend env snapshots beyond Docker + Daytona (Modal, GKE, E2B).</li>
+<li>Full train loop — reward-model integration, PPO/DPO, distributed rollouts. A4 ships the env side; training side lands in 0.4.</li>
+<li>Harbor decoupling beyond §A7 selective-vendor line (issue #142 may slip to 0.3.x).</li>
+<li>OnlyLabs (separate product, not in benchflow scope).</li>
+</ul></main></body></html>

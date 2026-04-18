@@ -3,9 +3,9 @@
 import pytest
 
 from benchflow.agents.registry import (
+    AGENT_ALIASES,
     parse_agent_spec,
     resolve_agent,
-    AGENT_ALIASES,
 )
 
 

@@ -5,9 +5,9 @@ Usage: env -u ANTHROPIC_API_KEY python proof_snapshot.py
 Creates a sandbox, writes a known file, snapshots, mutates, restores,
 then verifies the original content is back. Prints a pass/fail summary.
 """
+
 import asyncio
 import logging
-import os
 import sys
 from pathlib import Path
 
@@ -15,9 +15,10 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-from benchflow._snapshot import list_snapshots, restore, snapshot
-from benchflow._env_setup import _create_environment
 from harbor.models.task.task import Task
+
+from benchflow._env_setup import _create_environment
+from benchflow._snapshot import list_snapshots, restore, snapshot
 
 TASK_PATH = Path(__file__).parent / "acp_smoke"
 
@@ -67,7 +68,9 @@ async def main() -> None:
         print(f"6. VERIFIED proof.txt: {r3.stdout.strip()!r}")
 
         # Step 7: verify mutated file is gone
-        r4 = await env.exec(f"test -f {workspace}/extra.txt && echo exists || echo gone")
+        r4 = await env.exec(
+            f"test -f {workspace}/extra.txt && echo exists || echo gone"
+        )
         assert "gone" in r4.stdout, f"extra file survived restore: {r4.stdout}"
         print(f"7. VERIFIED extra.txt removed: {r4.stdout.strip()!r}")
 
