@@ -75,6 +75,11 @@ class Environment:
         return cls(inner=inner, task_path=task_path, backend=backend)
 
     @property
+    def inner(self) -> Any:
+        """The underlying harbor environment (Docker/Daytona). Use for Scene-based shared sandbox access."""
+        return self._inner
+
+    @property
     def task(self) -> Any:
         from harbor.models.task.task import Task
 

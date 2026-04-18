@@ -61,7 +61,7 @@ bench skills eval my-skill/ -a claude-agent-acp
 
 Expected output:
 ```
-$ bench skills eval ./my-skill/ -a claude-agent-acp
+$ benchflow skills eval ./my-skill/ -a claude-agent-acp
 
 Skill eval: my-skill (1 cases)
   Agents: claude-agent-acp
@@ -119,7 +119,7 @@ bench skills eval my-skill/ \
 
 Expected output:
 ```
-$ bench skills eval ./calculator/ -a claude-agent-acp -a codex-acp
+$ benchflow skills eval ./calculator/ -a claude-agent-acp -a codex-acp
 
 Skill eval: calculator (3 cases)
   Agents: claude-agent-acp, codex-acp
@@ -246,7 +246,7 @@ Write `gws-skill/evals/evals.json`:
 ### Step 3: Run the eval
 
 ```bash
-$ bench skills eval ./gws-skill/ -a claude-agent-acp -a codex-acp
+$ benchflow skills eval ./gws-skill/ -a claude-agent-acp -a codex-acp
 
 Skill eval: gws-email-drafting (2 cases)
   Agents: claude-agent-acp, codex-acp
@@ -287,7 +287,7 @@ jobs/skill-eval/gws-email-drafting/
 ### Step 5: Improve with GEPA (optional)
 
 ```bash
-$ bench skills eval ./gws-skill/ -a claude-agent-acp --export-gepa
+$ benchflow skills eval ./gws-skill/ -a claude-agent-acp --export-gepa
 
 GEPA traces exported to jobs/skill-eval/gws-email-drafting/gepa
 ```

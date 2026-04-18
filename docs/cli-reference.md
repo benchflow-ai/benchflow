@@ -286,20 +286,20 @@ Delete output: `1 sandboxes deleted (1 skipped, younger than 1440m)`
 
 ## 0.3 Resource-Verb Commands
 
-### bench agent list
+### benchflow agent list
 
 List all registered agents with protocol and credential requirements.
 
 ```bash
-bench agent list
+benchflow agent list
 ```
 
-### bench agent show
+### benchflow agent show
 
 Show details for a specific agent.
 
 ```bash
-bench agent show gemini
+benchflow agent show gemini
 ```
 
 ```
@@ -313,44 +313,44 @@ gemini
 
 ---
 
-### bench eval run
+### benchflow eval run
 
 Run an evaluation — batch of tasks with scoring. Equivalent to `benchflow job` but under the resource-verb pattern.
 
 ```bash
-bench eval run -f benchmarks/tb2-gemini-baseline.yaml
-bench eval run -t tasks/ -a gemini -m gemini-3.1-flash-lite-preview -e daytona -c 64
+benchflow eval run -f benchmarks/tb2-gemini-baseline.yaml
+benchflow eval run -t tasks/ -a gemini -m gemini-3.1-flash-lite-preview -e daytona -c 64
 ```
 
-### bench eval list
+### benchflow eval list
 
 List completed evaluations from a jobs directory.
 
 ```bash
-bench eval list jobs/
+benchflow eval list jobs/
 ```
 
 ---
 
-### bench environment create
+### benchflow environment create
 
 Create an environment from a task directory.
 
 ```bash
-bench environment create tasks/my-task --backend daytona
+benchflow environment create tasks/my-task --backend daytona
 ```
 
-### bench environment list
+### benchflow environment list
 
 List active Daytona sandboxes.
 
 ```bash
-bench environment list
+benchflow environment list
 ```
 
 ---
 
-### bench train create
+### benchflow train create
 
 Run a training sweep — successive eval runs with reward-based filtering.
 
@@ -366,21 +366,21 @@ Run a training sweep — successive eval runs with reward-based filtering.
 | `--export` | — | Export results to directory |
 
 ```bash
-bench train create -t tasks/ -a gemini --sweeps 3 --export ./training-data
+benchflow train create -t tasks/ -a gemini --sweeps 3 --export ./training-data
 ```
 
 Each sweep runs remaining tasks, drops successes, exports results as success/failure splits for RL training.
 
 ---
 
-### bench skills eval
+### benchflow skills eval
 
 Evaluate a skill using evals.json test cases.
 
 ```bash
-bench skills eval ./my-skill -a gemini -m gemini-3.1-flash-lite-preview --env daytona
-bench skills eval ./my-skill --no-baseline  # skip baseline comparison
-bench skills eval ./my-skill --export-gepa traces/  # export for GEPA optimization
+benchflow skills eval ./my-skill -a gemini -m gemini-3.1-flash-lite-preview --env daytona
+benchflow skills eval ./my-skill --no-baseline  # skip baseline comparison
+benchflow skills eval ./my-skill --export-gepa traces/  # export for GEPA optimization
 ```
 
 Output:

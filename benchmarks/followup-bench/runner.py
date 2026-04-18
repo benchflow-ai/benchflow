@@ -133,7 +133,7 @@ async def run_followup_task(
     env = Environment.from_task(task_path, backend=environment)
 
     async with env:
-        trajectory = await scene.run(env._inner, _role_runner)
+        trajectory = await scene.run(env.inner, _role_runner)
 
     messages = [
         {"sender": m.sender, "recipient": m.recipient, "content": m.content, "turn": m.turn}

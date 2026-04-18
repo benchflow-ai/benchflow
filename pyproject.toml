@@ -45,6 +45,7 @@ dev = [
 
 [project.scripts]
 benchflow = "benchflow.cli.main:app"
+bench = "benchflow.cli.main:app"
 
 [project.urls]
 Homepage = "https://github.com/benchflow-ai/benchflow"

@@ -53,6 +53,8 @@ from benchflow.runtime import (
     RuntimeResult,
     run,  # bf.run(agent, env) — the primary 0.3 API
 )
+from benchflow._scene import MailboxTransport, Message, MessageTransport, Role, Scene
+from benchflow._snapshot import list_snapshots, restore, snapshot
 from benchflow.sdk import SDK
 from benchflow.skills import SkillInfo, discover_skills, install_skill, parse_skill
 from benchflow.trajectories.otel import OTelCollector
@@ -103,6 +105,16 @@ __all__ = [
     "RuntimeConfig",
     "RuntimeResult",
     "run",
+    # Multi-agent scene
+    "Scene",
+    "Role",
+    "Message",
+    "MessageTransport",
+    "MailboxTransport",
+    # Env snapshots
+    "snapshot",
+    "restore",
+    "list_snapshots",
     # SDK (backwards compat)
     "SDK",
     # Environments / dep staging
