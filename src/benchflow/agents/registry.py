@@ -257,7 +257,7 @@ AGENTS: dict[str, AgentConfig] = {
             "npm install -g @google/gemini-cli@latest >/dev/null 2>&1 ) && "
             "command -v gemini >/dev/null 2>&1"
         ),
-        launch_cmd="gemini --acp",
+        launch_cmd="gemini --acp --yolo",
         protocol="acp",
         requires_env=["GOOGLE_API_KEY"],
         # api_protocol intentionally empty: Gemini speaks Google's native

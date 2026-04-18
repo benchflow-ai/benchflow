@@ -1,0 +1,12 @@
+# TB2 Opus 4.6 probe — ROOT mode (sandbox_user: null).
+# Same 10 tasks as tb2-opus-probe.yaml but without sandbox hardening.
+# Tests whether non-root was the cause of 0/10 failure.
+
+tasks_dir: /tmp/tb2-opus-probe-10
+jobs_dir: ../jobs/tb2-opus-probe-root
+agent: claude-agent-acp
+model: claude-opus-4-6
+environment: daytona
+concurrency: 64
+max_retries: 0
+sandbox_user: null
