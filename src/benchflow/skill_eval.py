@@ -309,6 +309,8 @@ def generate_tasks(
 
 def _default_dockerfile(dataset: EvalDataset, with_skill: bool) -> str:
     """Generate a default Dockerfile for skill eval tasks."""
+    import os
+
     lines = [
         "FROM python:3.12-slim",
         "",
@@ -322,6 +324,13 @@ def _default_dockerfile(dataset: EvalDataset, with_skill: bool) -> str:
         "RUN mkdir -p /logs/verifier /logs/agent /logs/artifacts /app /tests",
         "",
     ]
+
+    # Forward judge API keys into the container as ENV
+    for key in ("GOOGLE_API_KEY", "GEMINI_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
+        val = os.environ.get(key)
+        if val:
+            lines += [f"ENV {key}={val}", ""]
+            break  # one judge key is enough
 
     # Install extra deps if requirements.txt exists
     reqs = dataset.skill_dir / "evals" / "requirements.txt"
