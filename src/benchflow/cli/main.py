@@ -644,5 +644,153 @@ def cleanup(
         )
 
 
+# ── Resource-verb subgroups (0.3 CLI) ────────────────────────────────────────
+
+agent_app = typer.Typer(help="Agent management commands.")
+app.add_typer(agent_app, name="agent")
+
+
+@agent_app.command("list")
+def agent_list() -> None:
+    """List all registered agents."""
+    from benchflow.agents.registry import list_agents
+
+    table = Table(title="Registered Agents")
+    table.add_column("Name", style="cyan")
+    table.add_column("Description")
+    table.add_column("Protocol", style="green")
+    table.add_column("Requires", style="yellow")
+
+    for a in list_agents():
+        sub_env = a.subscription_auth.replaces_env if a.subscription_auth else None
+        requires = [f"{e} (or login)" if e == sub_env else e for e in a.requires_env]
+        table.add_row(a.name, a.description, a.protocol, ", ".join(requires))
+
+    console.print(table)
+
+
+@agent_app.command("show")
+def agent_show(
+    name: Annotated[str, typer.Argument(help="Agent name")],
+) -> None:
+    """Show details for a registered agent."""
+    from benchflow.agents.registry import AGENTS
+
+    cfg = AGENTS.get(name)
+    if not cfg:
+        console.print(f"[red]Unknown agent: {name}[/red]")
+        raise typer.Exit(1)
+
+    console.print(f"[bold]{cfg.name}[/bold]")
+    console.print(f"  Description: {cfg.description}")
+    console.print(f"  Protocol:    {cfg.protocol}")
+    console.print(f"  Launch:      {cfg.launch_cmd}")
+    console.print(f"  Requires:    {', '.join(cfg.requires_env) or '(none)'}")
+    if cfg.subscription_auth:
+        console.print(f"  Auth:        subscription via {cfg.subscription_auth.detect_file}")
+
+
+eval_app = typer.Typer(help="Evaluation commands.")
+app.add_typer(eval_app, name="eval")
+
+
+@eval_app.command("run")
+def eval_run(
+    config_file: Annotated[
+        Path | None,
+        typer.Option("--config", "-f", help="YAML config file"),
+    ] = None,
+    tasks_dir: Annotated[
+        Path | None,
+        typer.Option("--tasks-dir", "-t", help="Tasks directory"),
+    ] = None,
+    agent: Annotated[
+        str,
+        typer.Option("--agent", "-a", help="Agent name"),
+    ] = DEFAULT_AGENT,
+    model: Annotated[
+        str | None,
+        typer.Option("--model", "-m", help="Model"),
+    ] = None,
+    environment: Annotated[
+        str,
+        typer.Option("--env", "-e", help="Backend: docker or daytona"),
+    ] = "docker",
+    concurrency: Annotated[
+        int,
+        typer.Option("--concurrency", "-c", help="Max concurrent tasks"),
+    ] = 4,
+    jobs_dir: Annotated[
+        str,
+        typer.Option("--jobs-dir", "-o", help="Output directory"),
+    ] = "jobs",
+    sandbox_user: Annotated[
+        str | None,
+        typer.Option("--sandbox-user", help="Sandbox user (null for root)"),
+    ] = "agent",
+) -> None:
+    """Run an evaluation — batch of tasks with scoring."""
+    from benchflow.job import Job, JobConfig
+
+    if config_file:
+        j = Job.from_yaml(config_file)
+    elif tasks_dir:
+        j = Job(
+            tasks_dir=str(tasks_dir),
+            jobs_dir=jobs_dir,
+            config=JobConfig(
+                agent=agent,
+                model=model or DEFAULT_MODEL,
+                environment=environment,
+                concurrency=concurrency,
+                sandbox_user=sandbox_user,
+            ),
+        )
+    else:
+        console.print("[red]Either --config or --tasks-dir is required[/red]")
+        raise typer.Exit(1)
+
+    result = asyncio.run(j.run())
+    console.print(
+        f"\n[bold]Score: {result.passed}/{result.total} "
+        f"({result.score:.1%})[/bold], errors={result.errored}"
+    )
+
+
+@eval_app.command("list")
+def eval_list(
+    jobs_dir: Annotated[
+        Path,
+        typer.Argument(help="Jobs directory to list"),
+    ] = Path("jobs"),
+) -> None:
+    """List completed evaluations."""
+    if not jobs_dir.exists():
+        console.print(f"[yellow]No jobs directory: {jobs_dir}[/yellow]")
+        return
+
+    table = Table(title="Evaluations")
+    table.add_column("Job", style="cyan")
+    table.add_column("Tasks", justify="right")
+    table.add_column("Summary")
+
+    for d in sorted(jobs_dir.iterdir()):
+        if not d.is_dir():
+            continue
+        summary = d / "summary.json"
+        if summary.exists():
+            data = json.loads(summary.read_text())
+            table.add_row(
+                d.name,
+                str(data.get("total", "?")),
+                f"{data.get('passed', '?')}/{data.get('total', '?')} ({data.get('score', '?')})",
+            )
+        else:
+            sub_count = sum(1 for s in d.iterdir() if s.is_dir())
+            table.add_row(d.name, str(sub_count), "[dim]no summary[/dim]")
+
+    console.print(table)
+
+
 if __name__ == "__main__":
     app()
