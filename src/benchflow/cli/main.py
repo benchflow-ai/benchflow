@@ -478,7 +478,7 @@ def skills_eval(
     evaluator = SkillEvaluator(skill_dir)
     console.print(
         f"[bold]Skill eval:[/bold] {evaluator.dataset.skill_name} "
-        f"({evaluator.dataset.n_cases} cases)"
+        f"({len(evaluator.dataset.cases)} cases)"
     )
     console.print(f"  Agents: {', '.join(agent)}")
     console.print(f"  Environment: {environment}")
