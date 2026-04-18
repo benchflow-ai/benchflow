@@ -25,6 +25,7 @@ from benchflow._sandbox import build_priv_drop_cmd
 from benchflow._trajectory import _capture_session_trajectory
 from benchflow.acp.client import ACPClient
 from benchflow.acp.container_transport import ContainerTransport
+from benchflow.agents.registry import AgentConfig
 from benchflow.process import DaytonaProcess, DockerProcess
 
 logger = logging.getLogger(__name__)
@@ -40,6 +41,7 @@ async def connect_acp(
     trial_dir: Path,
     environment: str,
     agent_cwd: str,
+    agent_cfg: AgentConfig | None = None,
 ) -> tuple[ACPClient, object, str]:
     """Create ACP transport, connect, init session, set model. Return (client, session, agent_name)."""
     # Resolve agent binary path for non-docker environments
@@ -83,9 +85,7 @@ async def connect_acp(
 
     if model:
         from benchflow.agents.providers import strip_provider_prefix
-        from benchflow.agents.registry import AGENTS
 
-        agent_cfg = AGENTS.get(agent)
         if agent_cfg and agent_cfg.preserve_provider_prefix:
             acp_model_id = model
         else:
