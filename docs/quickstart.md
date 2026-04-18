@@ -8,88 +8,123 @@ Get your first benchmark score in under 5 minutes.
 - Docker running locally
 - An API key for at least one agent (Claude, Codex, or Gemini)
 
-## 1. Install benchflow
+## 1. Install
 
 ```bash
-# Recommended: install as a CLI tool
 uv tool install benchflow
-
-# Or with pip
-pip install benchflow
 ```
 
-## 2. Authenticate and run
+Verify:
+```
+$ benchflow --help
 
-Pick your agent — each one needs just one auth step:
+ Usage: benchflow [OPTIONS] COMMAND [ARGS]...
 
-### Claude Code (Anthropic)
+ ACP-native agent benchmarking framework.
+
+╭─ Commands ──────────────────────────────────────────╮
+│ agents    List available agents.                    │
+│ eval      Evaluate a skill against multiple tasks.  │
+│ job       Run all tasks with concurrency + retries. │
+│ metrics   Collect and display metrics.              │
+│ run       Run a single task with an ACP agent.      │
+│ skills    Skill discovery and evaluation.           │
+│ tasks     Task authoring commands.                  │
+│ view      Serve trajectory viewer in browser.       │
+╰─────────────────────────────────────────────────────╯
+```
+
+## 2. See available agents
+
+```
+$ benchflow agents
+
+              Registered Agents
+┏━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━┓
+┃ Name              ┃ Description         ┃ Protocol ┃
+┡━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━┩
+│ claude-agent-acp  │ Claude Code via ACP │ acp      │
+│ codex-acp         │ OpenAI Codex CLI    │ acp      │
+│ gemini            │ Google Gemini CLI   │ acp      │
+│ pi-acp            │ Pi agent            │ acp      │
+│ openclaw          │ OpenClaw agent      │ acp      │
+└───────────────────┴─────────────────────┴──────────┘
+```
+
+## 3. Authenticate
+
+Pick your agent — each needs one auth step:
 
 ```bash
-# Login with your Claude subscription (no API key needed)
+# Claude — login with subscription (no API key needed)
 claude login
 
-# Run a task
-benchflow run -t .ref/skillsbench/tasks/citation-check -a claude-agent-acp -e docker
-```
+# Or use an API key
+export ANTHROPIC_API_KEY=sk-ant-...
 
-Or use an API key: `export ANTHROPIC_API_KEY=sk-ant-...`
-
-### Codex (OpenAI)
-
-```bash
-# Login with your OpenAI subscription (no API key needed)
-codex --login
-
-# Run with GPT-5.4
-benchflow run -t .ref/skillsbench/tasks/citation-check -a codex-acp -m gpt-5.4 -e docker
-```
-
-Or use an API key: `export OPENAI_API_KEY=sk-...`
-
-### Gemini (Google)
-
-```bash
-# Login with Google account
-gemini   # follow OAuth flow
-
-# Run with Gemini
-benchflow run -t .ref/skillsbench/tasks/citation-check -a gemini -m gemini-3-flash-preview -e docker
-```
-
-Or use an API key: `export GEMINI_API_KEY=...`
-
-### OpenClaw (any model, any provider)
-
-```bash
-# Works with any provider — just set the right key
+# Codex
 export OPENAI_API_KEY=sk-...
-benchflow run -t .ref/skillsbench/tasks/citation-check -a openclaw -m gpt-5.4 -e docker
 
-# Or with Gemini on Vertex
-export GOOGLE_CLOUD_PROJECT=my-project
-benchflow run -t .ref/skillsbench/tasks/citation-check -a openclaw -m gemini-3-flash-preview -e docker
+# Gemini
+gemini   # follow OAuth flow
 ```
 
-## 3. What happens when you run
-
-benchflow downloads the task on first run, then:
-
-This will:
-1. Pull the task's Docker image (~30s)
-2. Install Claude Code inside the container (~10s)
-3. Send the task instruction to the agent
-4. Agent works on the task (tool calls, file edits, etc.)
-5. Run the verifier to score the result
-6. Print the reward
+## 4. Run a single task
 
 ```
+$ benchflow run -t tasks/citation-check -a claude-agent-acp -e docker
+
 Task:       citation-check
 Agent:      Claude Code (claude-agent-acp)
 Rewards:    {'reward': 1.0}
 Tool calls: 5
 ```
 
-## 4. View the trajectory
+What happened:
+1. Docker container spun up with the task environment (~30s)
+2. Claude Code installed inside the container (~10s)
+3. Task instruction sent to the agent via ACP
+4. Agent worked (read files, made tool calls, edited code)
+5. Verifier ran and scored the result
+6. Result saved to `jobs/`
+
+## 5. Run a full benchmark
+
+```
+$ benchflow job -t tasks/ -a claude-agent-acp -e docker -c 4
+
+Score: 32/86 (37.2%), errors=2
+```
+
+View aggregate metrics:
+```bash
+benchflow metrics jobs/
+```
+
+## 6. Evaluate a skill
+
+Test whether a skill actually helps agents:
+
+```
+$ benchflow skills eval ./my-skill/ -a claude-agent-acp
+
+Skill eval: my-skill (3 cases)
+  Agents: claude-agent-acp
+  Environment: docker
+
+              Skill Eval: my-skill
+┏━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━┳━━━━━━━━━━━━┓
+┃ Agent             ┃ Mode       ┃ Score ┃ Avg Reward ┃
+┡━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━╇━━━━━━━━━━━━┩
+│ claude-agent-acp  │ with-skill │ 3/3   │ 0.92       │
+│ claude-agent-acp  │ baseline   │ 1/3   │ 0.35       │
+│ claude-agent-acp  │ LIFT       │ +2    │ +0.57      │
+└───────────────────┴────────────┴───────┴────────────┘
+```
+
+See the [Skill Eval Guide](skill-eval-guide.md) for the full walkthrough.
+
+## 7. View trajectories
 
 See exactly what the agent did:
 
@@ -97,64 +132,35 @@ See exactly what the agent did:
 benchflow view jobs/citation-check/
 ```
 
-Opens a browser at `localhost:8888` showing every tool call, message, and
-thought the agent had.
+Opens a browser showing every tool call, message, and thought.
 
-## 5. Run a full benchmark
-
-Run all SkillsBench tasks with concurrency:
-
-```bash
-benchflow job \
-  -t .ref/skillsbench/tasks \
-  -a claude-agent-acp \
-  -e docker \
-  -c 4
-```
-
-View aggregate results:
-
-```bash
-benchflow metrics jobs/
-```
-
-```
-Score: 32/86 (37.2%), errors=2
-```
-
-## 6. Try a different agent
-
-```bash
-# Codex
-benchflow run -t .ref/skillsbench/tasks/citation-check -a codex-acp -e docker
-
-# Gemini
-benchflow run -t .ref/skillsbench/tasks/citation-check -a gemini -e docker
-
-# List all agents
-benchflow agents
-```
-
-## 7. Run at scale with Daytona (optional)
+## 8. Scale with Daytona (optional)
 
 For 64+ concurrent tasks, use Daytona cloud sandboxes:
 
 ```bash
 export DAYTONA_API_KEY=your-key
-
-benchflow job \
-  -t .ref/skillsbench/tasks \
-  -a claude-agent-acp \
-  -e daytona \
-  -c 64
+benchflow job -t tasks/ -a claude-agent-acp -e daytona -c 64
 ```
+
+## 9. Use the Python API
+
+```python
+import asyncio
+import benchflow as bf
+
+agent = bf.Agent("claude-agent-acp", model="claude-haiku-4-5-20251001")
+env = bf.Environment.from_task("tasks/my-task", backend="docker")
+result = asyncio.run(bf.run(agent, env))
+
+print(f"Reward: {result.reward}")   # 1.0
+print(f"Passed: {result.passed}")   # True
+```
+
+See the [Runtime API Guide](runtime-guide.md) for full API reference.
 
 ## What next?
 
-- **[Evaluate a skill](skill-eval-guide.md)** — Test whether a skill
-  actually helps agents
-- **[Create your own tasks](create-tasks.md)** — Build custom benchmark
-  tasks for your domain
-- **[SDK Reference](sdk-reference.md)** — Use benchflow programmatically
-- **[Security](harden-sandbox.md)** — How benchflow protects against
-  reward hacking
+- **[Skill Eval Guide](skill-eval-guide.md)** — Test whether skills help agents
+- **[Runtime API](runtime-guide.md)** — Use benchflow programmatically
+- **[Skill Eval Tutorial](examples/skill-eval-tutorial.ipynb)** — Interactive notebook walkthrough
