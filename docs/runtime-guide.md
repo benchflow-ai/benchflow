@@ -185,7 +185,7 @@ Aliases: `claude` → `claude-agent-acp`, `codex` → `codex-acp`, `gemini` → 
 Every registered agent must pass the ACP conformance smoke test:
 
 ```bash
-benchflow run -t tests/conformance/acp_smoke -a claude-agent-acp -e docker
+bench run -t tests/conformance/acp_smoke -a claude-agent-acp -e docker
 ```
 
 Expected: reward=1.0, verifier passes, ACP handshake completes.

@@ -28,7 +28,7 @@ export DAYTONA_API_KEY=...            # required for daytona environment only
 ```
 
 ```bash
-benchflow agents   # list registered agents, required env vars, and protocol
+bench agent list   # list registered agents, required env vars, and protocol
 ```
 
 ---
@@ -36,7 +36,7 @@ benchflow agents   # list registered agents, required env vars, and protocol
 ## 2. Run a single task
 
 ```bash
-benchflow run \
+bench run \
   --task-dir path/to/task \
   --agent claude-agent-acp \
   --model claude-haiku-4-5-20251001 \
@@ -92,15 +92,15 @@ python -c "from benchflow.task_download import ensure_tasks; ensure_tasks('skill
 ```
 
 ```bash
-benchflow run --task-dir .ref/skillsbench/tasks/court-form-filling --agent claude-agent-acp --model claude-haiku-4-5-20251001
-benchflow run --task-dir .ref/terminal-bench-2/fix-git --agent claude-agent-acp --model claude-haiku-4-5-20251001
+bench run --task-dir .ref/skillsbench/tasks/court-form-filling --agent claude-agent-acp --model claude-haiku-4-5-20251001
+bench run --task-dir .ref/terminal-bench-2/fix-git --agent claude-agent-acp --model claude-haiku-4-5-20251001
 ```
 
 ---
 
 ## 3. Run a job (SkillsBench)
 
-`benchflow job` runs an entire task directory with configurable concurrency and retries.
+`bench job` runs an entire task directory with configurable concurrency and retries.
 
 The repo ships ready-to-run configs in `benchmarks/` targeting Daytona (`concurrency: 8`). To run locally with Docker, use `concurrency: 1`.
 
@@ -120,19 +120,19 @@ exclude:
 ```
 
 ```bash
-benchflow job --config my-skillsbench.yaml
+bench job --config my-skillsbench.yaml
 ```
 
 Or override a shipped config inline:
 
 ```bash
-benchflow job --config benchmarks/skillsbench-codex-gpt54.yaml --env docker --concurrency 1
+bench job --config benchmarks/skillsbench-codex-gpt54.yaml --env docker --concurrency 1
 ```
 
 Or use inline flags directly:
 
 ```bash
-benchflow job \
+bench job \
   --tasks-dir .ref/skillsbench/tasks \
   --agent claude-agent-acp \
   --model claude-haiku-4-5-20251001 \
@@ -168,8 +168,8 @@ python benchmarks/run_tb2.py benchmarks/tb2_multiturn-codex-gpt54.yaml  # multi-
 For local Docker, override inline:
 
 ```bash
-benchflow job --config benchmarks/tb2_single-codex-gpt54.yaml --env docker --concurrency 1
-benchflow job --config benchmarks/tb2_multiturn-codex-gpt54.yaml --env docker --concurrency 1
+bench job --config benchmarks/tb2_single-codex-gpt54.yaml --env docker --concurrency 1
+bench job --config benchmarks/tb2_multiturn-codex-gpt54.yaml --env docker --concurrency 1
 ```
 
 Or write your own local config. Multi-turn adds a `prompts` list:

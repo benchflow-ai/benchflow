@@ -5,7 +5,7 @@ A benchmark for evaluating AI agents as code reviewers. Tests whether agents can
 ## Quick start
 
 ```bash
-benchflow skills eval ./benchmarks/code-review-bench/ -a claude-agent-acp --no-baseline
+bench skills eval ./benchmarks/code-review-bench/ -a claude-agent-acp --no-baseline
 ```
 
 Expected output:
@@ -38,7 +38,7 @@ Skill eval: code-review (5 cases)
 Compare code review agents:
 
 ```bash
-benchflow skills eval ./benchmarks/code-review-bench/ \
+bench skills eval ./benchmarks/code-review-bench/ \
   -a claude-agent-acp -a codex-acp -a gemini \
   -e daytona -c 4
 ```
@@ -48,7 +48,7 @@ benchflow skills eval ./benchmarks/code-review-bench/ \
 The code-review SKILL.md provides a structured checklist (security, correctness, concurrency, error handling, input validation). Test whether it improves review quality:
 
 ```bash
-benchflow skills eval ./benchmarks/code-review-bench/ -a claude-agent-acp
+bench skills eval ./benchmarks/code-review-bench/ -a claude-agent-acp
 ```
 
 Without `--no-baseline`, this runs each case twice: once with the skill installed (agent sees the checklist) and once without (baseline). The lift shows whether the structured checklist helps agents catch more bugs.

@@ -5,7 +5,7 @@ A benchmark for evaluating how well AI agents handle multi-turn conversations wh
 ## Quick start
 
 ```bash
-benchflow skills eval ./benchmarks/followup-bench/ -a claude-agent-acp --no-baseline
+bench skills eval ./benchmarks/followup-bench/ -a claude-agent-acp --no-baseline
 ```
 
 ## Cases

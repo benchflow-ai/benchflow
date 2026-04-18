@@ -37,7 +37,7 @@ $ benchflow --help
 ## 2. See available agents
 
 ```
-$ benchflow agents
+$ bench agent list
 
               Registered Agents
 ┏━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━┓
@@ -72,7 +72,7 @@ gemini   # follow OAuth flow
 ## 4. Run a single task
 
 ```
-$ benchflow run -t tasks/citation-check -a claude-agent-acp -e docker
+$ bench run -t tasks/citation-check -a claude-agent-acp -e docker
 
 Task:       citation-check
 Agent:      Claude Code (claude-agent-acp)
@@ -91,7 +91,7 @@ What happened:
 ## 5. Run a full benchmark
 
 ```
-$ benchflow job -t tasks/ -a claude-agent-acp -e docker -c 4
+$ bench job -t tasks/ -a claude-agent-acp -e docker -c 4
 
 Score: 32/86 (37.2%), errors=2
 ```
@@ -106,7 +106,7 @@ benchflow metrics jobs/
 Test whether a skill actually helps agents:
 
 ```
-$ benchflow skills eval ./my-skill/ -a claude-agent-acp
+$ bench skills eval ./my-skill/ -a claude-agent-acp
 
 Skill eval: my-skill (3 cases)
   Agents: claude-agent-acp
@@ -140,7 +140,7 @@ For 64+ concurrent tasks, use Daytona cloud sandboxes:
 
 ```bash
 export DAYTONA_API_KEY=your-key
-benchflow job -t tasks/ -a claude-agent-acp -e daytona -c 64
+bench job -t tasks/ -a claude-agent-acp -e daytona -c 64
 ```
 
 ## 9. Use the Python API

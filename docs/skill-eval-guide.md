@@ -10,7 +10,7 @@ uv tool install benchflow
 
 ## Overview
 
-`benchflow skills eval` takes a skill directory with an `evals/evals.json`
+`bench skills eval` takes a skill directory with an `evals/evals.json`
 file, generates benchmark tasks from it, runs them with and without the
 skill installed, and reports the "lift" — how much the skill improves
 agent performance.
@@ -56,12 +56,12 @@ my-skill/
 ### 3. Run the eval
 
 ```bash
-benchflow skills eval my-skill/ -a claude-agent-acp
+bench skills eval my-skill/ -a claude-agent-acp
 ```
 
 Expected output:
 ```
-$ benchflow skills eval ./my-skill/ -a claude-agent-acp
+$ bench skills eval ./my-skill/ -a claude-agent-acp
 
 Skill eval: my-skill (1 cases)
   Agents: claude-agent-acp
@@ -113,13 +113,13 @@ Skill eval: my-skill (1 cases)
 Test your skill across multiple agents:
 
 ```bash
-benchflow skills eval my-skill/ \
+bench skills eval my-skill/ \
   -a claude-agent-acp -a codex-acp -a gemini
 ```
 
 Expected output:
 ```
-$ benchflow skills eval ./calculator/ -a claude-agent-acp -a codex-acp
+$ bench skills eval ./calculator/ -a claude-agent-acp -a codex-acp
 
 Skill eval: calculator (3 cases)
   Agents: claude-agent-acp, codex-acp
@@ -156,7 +156,7 @@ The Dockerfile is used instead of the default `python:3.12-slim` base.
 Export traces for GEPA skill evolution:
 
 ```bash
-benchflow skills eval my-skill/ -a claude-agent-acp --export-gepa traces/
+bench skills eval my-skill/ -a claude-agent-acp --export-gepa traces/
 ```
 
 This creates:
@@ -246,7 +246,7 @@ Write `gws-skill/evals/evals.json`:
 ### Step 3: Run the eval
 
 ```bash
-$ benchflow skills eval ./gws-skill/ -a claude-agent-acp -a codex-acp
+$ bench skills eval ./gws-skill/ -a claude-agent-acp -a codex-acp
 
 Skill eval: gws-email-drafting (2 cases)
   Agents: claude-agent-acp, codex-acp
@@ -287,7 +287,7 @@ jobs/skill-eval/gws-email-drafting/
 ### Step 5: Improve with GEPA (optional)
 
 ```bash
-$ benchflow skills eval ./gws-skill/ -a claude-agent-acp --export-gepa
+$ bench skills eval ./gws-skill/ -a claude-agent-acp --export-gepa
 
 GEPA traces exported to jobs/skill-eval/gws-email-drafting/gepa
 ```
@@ -299,7 +299,7 @@ evolve the skill text based on failure patterns.
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│                    benchflow skills eval                         │
+│                    bench skills eval                         │
 ├──────────────────────────────────────────────────────────────────┤
 │                                                                  │
 │  ┌─────────────┐    ┌──────────────────┐    ┌────────────────┐  │
@@ -356,7 +356,7 @@ marks (Gaia2 — title literally says "Dynamic"), correct Production marks
 
 Run it:
 ```bash
-benchflow skills eval ./benchmark-hallucination-audit/ -a claude-agent-acp -a codex-acp
+bench skills eval ./benchmark-hallucination-audit/ -a claude-agent-acp -a codex-acp
 ```
 
 This is a good template for **research skills** — where the eval cases
@@ -383,7 +383,7 @@ BenchFlow generates everything ephemeral — only results persist.
 ```bash
 # In your skill's CI pipeline
 uv tool install benchflow
-benchflow skills eval . -a claude-agent-acp --no-baseline
+bench skills eval . -a claude-agent-acp --no-baseline
 # Exit code 1 if any case scores < 0.5
 ```
 

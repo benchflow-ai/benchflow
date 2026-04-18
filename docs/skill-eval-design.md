@@ -16,7 +16,7 @@ lightweight `evals/evals.json` inside the skill directory. We want to make this
 native to benchflow so any skill developer can run:
 
 ```bash
-benchflow skill-eval my-skill/ -a claude-agent-acp,codex-acp
+bench skills eval my-skill/ -a claude-agent-acp,codex-acp
 ```
 
 ## User-Facing Design
@@ -66,19 +66,19 @@ my-skill/
 
 ```bash
 # Evaluate one skill against one agent
-benchflow skill-eval my-skill/ -a claude-agent-acp
+bench skills eval my-skill/ -a claude-agent-acp
 
 # Multi-agent comparison
-benchflow skill-eval my-skill/ -a claude-agent-acp,codex-acp -m haiku,gpt-5.4
+bench skills eval my-skill/ -a claude-agent-acp,codex-acp -m haiku,gpt-5.4
 
 # Skip baseline (with-skill only, no lift calculation)
-benchflow skill-eval my-skill/ -a claude-agent-acp --no-baseline
+bench skills eval my-skill/ -a claude-agent-acp --no-baseline
 
 # Custom output dir
-benchflow skill-eval my-skill/ -a claude-agent-acp -o jobs/skill-eval-run
+bench skills eval my-skill/ -a claude-agent-acp -o jobs/skill-eval-run
 
 # Export traces for GEPA
-benchflow skill-eval my-skill/ -a claude-agent-acp --export-gepa gepa-traces/
+bench skills eval my-skill/ -a claude-agent-acp --export-gepa gepa-traces/
 ```
 
 ### Output
@@ -353,7 +353,7 @@ Docker Compose support in benchflow (harbor internalization).
 ### Phase 1: Skill Eval Core (this branch)
 1. `src/benchflow/skill_eval.py` — EvalDataset, task generator, comparison runner
 2. `src/benchflow/templates/` — Dockerfile, judge.py, test.sh templates
-3. CLI: `benchflow skill-eval` command in `cli/main.py`
+3. CLI: `bench skills eval` command in `cli/main.py`
 4. Tests: `tests/test_skill_eval.py`
 
 ### Phase 2: GEPA Integration
