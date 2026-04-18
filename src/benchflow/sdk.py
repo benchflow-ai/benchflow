@@ -571,8 +571,8 @@ class SDK:
                 agent_cwd = (cwd_result.stdout or "").strip() or "/app"
                 if sandbox_user:
                     await setup_sandbox_user(env, sandbox_user, workspace=agent_cwd)
-                    await _snapshot_build_config(env, workspace=agent_cwd)
-                    await _seed_verifier_workspace(env, workspace=agent_cwd)
+                await _snapshot_build_config(env, workspace=agent_cwd)
+                await _seed_verifier_workspace(env, workspace=agent_cwd)
                 await lockdown_paths(env, effective_locked)
                 trajectory, agent_name = await self._run_oracle(
                     env, task_path, timeout, sandbox_user
@@ -598,11 +598,10 @@ class SDK:
                     agent_cwd = await setup_sandbox_user(
                         env, sandbox_user, workspace=agent_cwd
                     )
-                    # Snapshot build-config files and create the verifier user
-                    # before the agent launches — both have ordering invariants
-                    # that require a clean pre-agent workspace state.
-                    await _snapshot_build_config(env, workspace=agent_cwd)
-                    await _seed_verifier_workspace(env, workspace=agent_cwd)
+                # Snapshot build-config and seed verifier workspace regardless
+                # of sandbox_user — the verifier needs these even in root mode.
+                await _snapshot_build_config(env, workspace=agent_cwd)
+                await _seed_verifier_workspace(env, workspace=agent_cwd)
 
                 await deploy_skills(
                     env,
