@@ -13,5 +13,5 @@ jobs_dir: ../jobs/parity-dev-0_3-skillsbench-50
 agent: claude-agent-acp
 model: claude-haiku-4-5-20251001
 environment: daytona
-concurrency: 25
-max_retries: 1
+concurrency: 10
+max_retries: 2
