@@ -243,7 +243,7 @@ def generate_tasks(
             f"[environment]\n"
             f"cpus = 1\n"
             f"memory_mb = 2048\n"
-            f'env = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY"]\n'
+            f'allow_internet = true\n'
         )
 
         # environment/
@@ -479,6 +479,12 @@ class SkillEvaluator:
         """Run a batch of tasks using Job for concurrency and retries."""
         from benchflow.job import Job, JobConfig, RetryConfig
 
+        import os
+        judge_env = {}
+        for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY"):
+            if os.environ.get(key):
+                judge_env[key] = os.environ[key]
+
         j = Job(
             tasks_dir=str(tasks_dir),
             jobs_dir=jobs_dir,
@@ -488,6 +494,7 @@ class SkillEvaluator:
                 environment=environment,
                 concurrency=concurrency,
                 retry=RetryConfig(max_retries=1),
+                agent_env=judge_env,
             ),
         )
         job_result = await j.run()
