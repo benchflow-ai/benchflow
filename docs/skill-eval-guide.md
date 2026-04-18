@@ -176,6 +176,185 @@ optimizer = gepa.GEPA(traces_dir="traces/")
 improved_skill = optimizer.evolve("traces/skill.md")
 ```
 
+## End-to-End Walkthrough
+
+Here's a complete example evaluating a real skill from scratch.
+
+### Step 1: Create the skill
+
+```bash
+mkdir -p gws-skill/scripts gws-skill/evals
+```
+
+Write `gws-skill/SKILL.md`:
+```markdown
+---
+name: gws-email-drafting
+description: Draft professional emails using Gmail API patterns
+---
+
+# GWS Email Drafting
+
+Use the templates in scripts/ to draft professional emails.
+```
+
+Write `gws-skill/scripts/draft_email.py`:
+```python
+import sys
+template = sys.argv[1] if len(sys.argv) > 1 else "general"
+print(f"Email drafted using {template} template")
+```
+
+### Step 2: Write eval cases
+
+Write `gws-skill/evals/evals.json`:
+```json
+{
+  "skill_name": "gws-email-drafting",
+  "version": "1",
+  "defaults": {
+    "timeout_sec": 300,
+    "judge_model": "claude-haiku-4-5-20251001"
+  },
+  "cases": [
+    {
+      "id": "draft-intro-email",
+      "question": "Draft a professional introduction email to a potential workshop speaker. Use the gws-email-drafting skill.",
+      "ground_truth": "The agent produced a professional email with subject line, greeting, body explaining the workshop, and call to action.",
+      "expected_behavior": [
+        "The agent read the SKILL.md to understand the skill",
+        "The agent used draft_email.py or followed the skill's patterns",
+        "The email has a clear subject line",
+        "The email body is professional and includes a call to action"
+      ]
+    },
+    {
+      "id": "draft-followup",
+      "question": "Draft a follow-up email to someone who hasn't responded in 2 weeks. Use the gws-email-drafting skill.",
+      "ground_truth": "The agent produced a polite follow-up email that references the original outreach.",
+      "expected_behavior": [
+        "The agent read the SKILL.md",
+        "The email references a previous conversation",
+        "The tone is polite but action-oriented",
+        "The email is concise (under 200 words)"
+      ]
+    }
+  ]
+}
+```
+
+### Step 3: Run the eval
+
+```bash
+$ benchflow skills eval ./gws-skill/ -a claude-agent-acp -a codex-acp
+
+Skill eval: gws-email-drafting (2 cases)
+  Agents: claude-agent-acp, codex-acp
+  Environment: docker
+
+         Skill Eval: gws-email-drafting
+┏━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━┳━━━━━━━━━━━━┓
+┃ Agent             ┃ Mode       ┃ Score ┃ Avg Reward ┃
+┡━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━╇━━━━━━━━━━━━┩
+│ claude-agent-acp  │ with-skill │ 2/2   │ 0.92       │
+│ claude-agent-acp  │ baseline   │ 1/2   │ 0.55       │
+│ claude-agent-acp  │ LIFT       │ +1    │ +0.37      │
+│ codex-acp         │ with-skill │ 2/2   │ 0.88       │
+│ codex-acp         │ baseline   │ 1/2   │ 0.48       │
+│ codex-acp         │ LIFT       │ +1    │ +0.40      │
+└───────────────────┴────────────┴───────┴────────────┘
+```
+
+### Step 4: Inspect results
+
+Results are saved to `jobs/skill-eval/<skill-name>/`:
+```
+jobs/skill-eval/gws-email-drafting/
+├── claude-agent-acp/
+│   ├── with-skill/
+│   │   ├── draft-intro-email__abc123/
+│   │   │   ├── result.json
+│   │   │   ├── trajectory/acp_trajectory.jsonl
+│   │   │   └── timing.json
+│   │   └── draft-followup__def456/
+│   │       └── ...
+│   └── baseline/
+│       └── ...
+└── codex-acp/
+    └── ...
+```
+
+### Step 5: Improve with GEPA (optional)
+
+```bash
+$ benchflow skills eval ./gws-skill/ -a claude-agent-acp --export-gepa
+
+GEPA traces exported to jobs/skill-eval/gws-email-drafting/gepa
+```
+
+Feed traces to the SkillSpin improvement pipeline to automatically
+evolve the skill text based on failure patterns.
+
+## Architecture
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                    benchflow skills eval                         │
+├──────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  ┌─────────────┐    ┌──────────────────┐    ┌────────────────┐  │
+│  │ evals.json  │───▶│ Task Generator   │───▶│ Ephemeral      │  │
+│  │ (2-8 cases) │    │ (with/without    │    │ Harbor Tasks   │  │
+│  └─────────────┘    │  skill mode)     │    │ (auto-deleted) │  │
+│                     └──────────────────┘    └───────┬────────┘  │
+│                                                      │          │
+│  ┌─────────────┐    ┌──────────────────┐    ┌───────▼────────┐  │
+│  │ Lift Report │◀───│ Result Collector │◀───│ Job Engine     │  │
+│  │ (per agent) │    │ (per case×mode)  │    │ (concurrency,  │  │
+│  └─────────────┘    └──────────────────┘    │  retries, ACP) │  │
+│                                              └────────────────┘  │
+│                                                                  │
+│  ┌─────────────────────────────────────────────────────────┐    │
+│  │ LLM Judge (claude-haiku-4-5)                            │    │
+│  │ Reads: trajectory + case.json (ground_truth, rubric)    │    │
+│  │ Writes: /logs/verifier/reward.txt (0.0-1.0)            │    │
+│  └─────────────────────────────────────────────────────────┘    │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+## For Skill Developers (Jon Snow Adapter Pattern)
+
+If you maintain skills and want CI-integrated eval:
+
+```
+my-skill/
+├── SKILL.md
+├── scripts/
+│   └── do_something.py
+└── evals/
+    └── evals.json          ← 2-4 test cases
+```
+
+That's it. No Harbor task authoring, no Dockerfiles, no test scripts.
+BenchFlow generates everything ephemeral — only results persist.
+
+**CI integration:**
+```bash
+# In your skill's CI pipeline
+uv tool install benchflow
+benchflow skills eval . -a claude-agent-acp --no-baseline
+# Exit code 1 if any case scores < 0.5
+```
+
+**What the adapter does (zero LLM):**
+```
+evals.json → Generate Harbor tasks → Run agents → Grade → Cleanup
+  (static)     (deterministic)        (ACP)      (LLM)   (auto)
+```
+
+The adapter is purely deterministic — no LLM in task generation.
+LLM is only used at grading time (the judge).
+
 ## Tips for writing good eval cases
 
 1. **Be specific in questions** — "Use the calculator skill to compute X"
@@ -188,3 +367,6 @@ improved_skill = optimizer.evolve("traces/skill.md")
    short-string answers
 5. **Use 2-4 cases minimum** — Enough to show a pattern, not so many that
    runs get expensive
+6. **Test the lift, not just correctness** — The goal is to show the skill
+   improves performance vs baseline. If baseline already scores high, the
+   skill isn't adding value
