@@ -75,11 +75,30 @@ def read_trajectory() -> str:
 
 
 def call_llm(prompt: str) -> str:
-    """Call LLM judge, trying Anthropic or OpenAI based on model name."""
+    """Call LLM judge, trying Gemini, Anthropic, or OpenAI based on model name and available keys."""
     model = JUDGE_MODEL
     is_openai_model = model.startswith(("gpt-", "o1", "o3"))
+    is_gemini_model = model.startswith("gemini")
 
-    if not is_openai_model:
+    # Try Gemini first (if model is gemini or GOOGLE_API_KEY/GEMINI_API_KEY is set)
+    if is_gemini_model or os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY"):
+        try:
+            from google import genai
+            api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
+            if api_key:
+                client = genai.Client(api_key=api_key)
+                response = client.models.generate_content(
+                    model=model if is_gemini_model else "gemini-2.0-flash",
+                    contents=prompt,
+                )
+                return response.text
+        except ImportError:
+            pass
+        except Exception as e:
+            print(f"WARNING: Gemini API error: {e}", file=sys.stderr)
+
+    # Try Anthropic
+    if not is_openai_model and not is_gemini_model:
         try:
             import anthropic
             client = anthropic.Anthropic()
@@ -90,11 +109,11 @@ def call_llm(prompt: str) -> str:
             )
             return response.content[0].text
         except ImportError:
-            pass  # fall through to OpenAI
+            pass
         except Exception as e:
             print(f"WARNING: Anthropic API error: {e}", file=sys.stderr)
-            # fall through to OpenAI
 
+    # Try OpenAI
     try:
         import openai
         client = openai.OpenAI()
@@ -105,11 +124,12 @@ def call_llm(prompt: str) -> str:
         )
         return response.choices[0].message.content
     except ImportError:
-        print("ERROR: Neither anthropic nor openai SDK installed", file=sys.stderr)
-        return '{"items": [], "score": 0.0, "reasoning": "No LLM SDK available"}'
+        pass
     except Exception as e:
-        print(f"ERROR: LLM judge call failed: {e}", file=sys.stderr)
-        return '{"items": [], "score": 0.0, "reasoning": "LLM call failed"}'
+        print(f"WARNING: OpenAI API error: {e}", file=sys.stderr)
+
+    print("ERROR: No LLM SDK available (tried google-genai, anthropic, openai)", file=sys.stderr)
+    return '{"items": [], "score": 0.0, "reasoning": "No LLM SDK available"}'
 
 
 def judge_with_llm(trajectory_text: str) -> float:

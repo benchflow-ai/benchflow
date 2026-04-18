@@ -49,7 +49,7 @@ class EvalDataset:
 
     @property
     def judge_model(self) -> str:
-        return self.defaults.get("judge_model", "claude-haiku-4-5-20251001")
+        return self.defaults.get("judge_model", "gemini-2.0-flash")
 
     @property
     def timeout_sec(self) -> int:
@@ -243,6 +243,7 @@ def generate_tasks(
             f"[environment]\n"
             f"cpus = 1\n"
             f"memory_mb = 2048\n"
+            f'env = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY"]\n'
         )
 
         # environment/
@@ -315,7 +316,7 @@ def _default_dockerfile(dataset: EvalDataset, with_skill: bool) -> str:
         "RUN apt-get update -qq && apt-get install -y -qq curl git && rm -rf /var/lib/apt/lists/*",
         "",
         "# Judge dependencies (baked in, not installed at test time)",
-        "RUN pip install -q anthropic openai",
+        "RUN pip install -q anthropic openai google-genai",
         "",
         "# Log directories",
         "RUN mkdir -p /logs/verifier /logs/agent /logs/artifacts /app /tests",
