@@ -83,8 +83,13 @@ async def connect_acp(
 
     if model:
         from benchflow.agents.providers import strip_provider_prefix
+        from benchflow.agents.registry import AGENTS
 
-        acp_model_id = strip_provider_prefix(model)
+        agent_cfg = AGENTS.get(agent)
+        if agent_cfg and agent_cfg.preserve_provider_prefix:
+            acp_model_id = model
+        else:
+            acp_model_id = strip_provider_prefix(model)
         try:
             await asyncio.wait_for(acp_client.set_model(acp_model_id), timeout=60)
             logger.info(f"Model set to: {acp_model_id} (from {model})")
