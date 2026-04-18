@@ -1,8 +1,8 @@
-"""Tests for runtime.py — Agent, RuntimeConfig, RuntimeResult."""
+"""Tests for runtime.py — Agent, Environment, Runtime, RuntimeResult."""
 from datetime import datetime
 from pathlib import Path
 
-from benchflow.runtime import Agent, Environment, RuntimeConfig, RuntimeResult
+from benchflow.runtime import Agent, Environment, Runtime, RuntimeConfig, RuntimeResult, run
 
 
 def test_agent_basic() -> None:
@@ -115,3 +115,32 @@ def test_runtime_result_to_run_result() -> None:
     assert legacy.task_name == "test-task"
     assert legacy.rewards == {"reward": 1.0}
     assert legacy.n_tool_calls == 5
+
+
+def test_runtime_init() -> None:
+    agent = Agent(name="gemini", model="gemini-3.1-flash-lite-preview")
+    task_path = Path(__file__).parent / "conformance" / "acp_smoke"
+    if not (task_path / "task.toml").exists():
+        return
+    env = Environment.from_task(task_path, backend="daytona")
+    runtime = Runtime(env, agent)
+    assert runtime.agent.name == "gemini"
+    assert runtime.env.backend == "daytona"
+    assert runtime.config.sandbox_user == "agent"
+
+
+def test_runtime_custom_config() -> None:
+    agent = Agent(name="gemini", model="gemini-3.1-flash-lite-preview")
+    task_path = Path(__file__).parent / "conformance" / "acp_smoke"
+    if not (task_path / "task.toml").exists():
+        return
+    env = Environment.from_task(task_path, backend="daytona")
+    config = RuntimeConfig(sandbox_user=None, timeout=1800)
+    runtime = Runtime(env, agent, config)
+    assert runtime.config.sandbox_user is None
+    assert runtime.config.timeout == 1800
+
+
+def test_run_function_exists() -> None:
+    """bf.run() convenience function is importable and callable."""
+    assert callable(run)

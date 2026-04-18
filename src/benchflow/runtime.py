@@ -209,3 +209,86 @@ class RuntimeResult:
             started_at=self.started_at,
             finished_at=self.finished_at,
         )
+
+
+class Runtime:
+    """The 0.3 execution center.
+
+    Single execution path for both single-agent and multi-agent runs.
+    Owns: environment lifecycle, agent setup, ACP session, verification,
+    reward emission, snapshots, artifact writing.
+
+    Usage::
+
+        agent = Agent("gemini", model="gemini-3.1-flash-lite-preview")
+        env = Environment.from_task("tasks/X", backend="daytona")
+        runtime = Runtime(env, agent)
+        result = await runtime.execute()
+    """
+
+    def __init__(
+        self,
+        env: Environment,
+        agent: Agent,
+        config: RuntimeConfig | None = None,
+    ) -> None:
+        self.env = env
+        self.agent = agent
+        self.config = config or RuntimeConfig()
+
+    async def execute(self) -> RuntimeResult:
+        """Run the full execution loop: setup -> agent -> verify -> result.
+
+        Delegates to SDK.run() internally for the execution mechanics.
+        The Runtime API is the stable surface; internals will migrate
+        from SDK to Runtime directly in subsequent PRs.
+        """
+        from benchflow.sdk import SDK
+
+        config = self.config
+        sdk = SDK()
+        run_result = await sdk.run(
+            task_path=self.env.task_path,
+            agent=self.agent.name,
+            model=self.agent.model,
+            agent_env=self.agent.env,
+            environment=self.env.backend,
+            jobs_dir=str(config.jobs_dir),
+            trial_name=config.trial_name,
+            sandbox_user=config.sandbox_user,
+            sandbox_locked_paths=config.sandbox_locked_paths,
+            skills_dir=config.skills_dir,
+            context_root=config.context_root,
+            pre_agent_hooks=config.pre_agent_hooks,
+        )
+
+        reward = (run_result.rewards or {}).get("reward")
+        return RuntimeResult(
+            task_name=run_result.task_name,
+            trial_name=run_result.trial_name,
+            reward=reward,
+            rewards=run_result.rewards,
+            n_tool_calls=run_result.n_tool_calls,
+            error=run_result.error,
+            verifier_error=run_result.verifier_error,
+            trajectory=run_result.trajectory,
+            started_at=run_result.started_at,
+            finished_at=run_result.finished_at,
+        )
+
+
+async def run(
+    agent: Agent,
+    env: Environment,
+    config: RuntimeConfig | None = None,
+) -> RuntimeResult:
+    """Convenience function — the primary user-facing API.
+
+    Usage::
+
+        import benchflow as bf
+        result = await bf.run(agent, env)
+        print(result.reward)
+    """
+    runtime = Runtime(env, agent, config)
+    return await runtime.execute()
