@@ -391,7 +391,9 @@ def resolve_agent(spec: str) -> AgentConfig:
     protocol, name = parse_agent_spec(spec)
 
     if protocol not in VALID_PROTOCOLS:
-        raise KeyError(f"Unknown protocol: {protocol!r}. Valid: {', '.join(sorted(VALID_PROTOCOLS))}")
+        raise KeyError(
+            f"Unknown protocol: {protocol!r}. Valid: {', '.join(sorted(VALID_PROTOCOLS))}"
+        )
 
     if protocol == "harbor":
         return AgentConfig(
@@ -408,10 +410,13 @@ def resolve_agent(spec: str) -> AgentConfig:
 
     # Fuzzy suggestion
     from difflib import get_close_matches
+
     close = get_close_matches(name, list(AGENTS.keys()), n=1, cutoff=0.6)
     if close:
         raise KeyError(f"Unknown agent: {name!r}. Did you mean: {close[0]!r}?")
-    raise KeyError(f"Unknown agent: {name!r}. Available: {', '.join(sorted(AGENTS.keys()))}")
+    raise KeyError(
+        f"Unknown agent: {name!r}. Available: {', '.join(sorted(AGENTS.keys()))}"
+    )
 
 
 def get_agent(name: str) -> tuple[AgentConfig, str]:

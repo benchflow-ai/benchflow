@@ -13,14 +13,14 @@ from pathlib import Path
 import pytest
 
 from benchflow.skill_eval import (
+    AgentLift,
+    CaseResult,
+    SkillEvalResult,
     SkillEvaluator,
-    load_eval_dataset,
-    generate_tasks,
     cleanup_tasks,
     export_gepa_traces,
-    SkillEvalResult,
-    CaseResult,
-    AgentLift,
+    generate_tasks,
+    load_eval_dataset,
 )
 
 
@@ -55,46 +55,51 @@ This skill helps agents verify claims in benchmark papers.
 
     evals = skill / "evals"
     evals.mkdir()
-    (evals / "evals.json").write_text(json.dumps({
-        "skill_name": "mock-audit-skill",
-        "version": "1",
-        "defaults": {
-            "timeout_sec": 120,
-            "judge_model": "claude-haiku-4-5-20251001"
-        },
-        "cases": [
+    (evals / "evals.json").write_text(
+        json.dumps(
             {
-                "id": "detect-overclaim",
-                "question": "A paper claims benchmark X has Cross-Domain=True. X has 8 task types (OS, DB, games, web). Is this an overclaim?",
-                "ground_truth": "Yes, this is an overclaim. Task types are not professional domains.",
-                "expected_behavior": [
-                    "The agent identified that task types differ from professional domains",
-                    "The agent concluded this is an overclaim"
+                "skill_name": "mock-audit-skill",
+                "version": "1",
+                "defaults": {
+                    "timeout_sec": 120,
+                    "judge_model": "claude-haiku-4-5-20251001",
+                },
+                "cases": [
+                    {
+                        "id": "detect-overclaim",
+                        "question": "A paper claims benchmark X has Cross-Domain=True. X has 8 task types (OS, DB, games, web). Is this an overclaim?",
+                        "ground_truth": "Yes, this is an overclaim. Task types are not professional domains.",
+                        "expected_behavior": [
+                            "The agent identified that task types differ from professional domains",
+                            "The agent concluded this is an overclaim",
+                        ],
+                        "expected_skill": "mock-audit-skill",
+                    },
+                    {
+                        "id": "detect-missing-mark",
+                        "question": "A paper marks benchmark Y as Dynamic=False. Y has a live HuggingFace leaderboard updated weekly. Is this correct?",
+                        "ground_truth": "No, Dynamic should be True. A live leaderboard with weekly updates qualifies as designed for continuous evolution.",
+                        "expected_behavior": [
+                            "The agent checked for leaderboard evidence",
+                            "The agent concluded Dynamic should be True",
+                        ],
+                        "expected_skill": "mock-audit-skill",
+                    },
+                    {
+                        "id": "confirm-correct",
+                        "question": "A paper marks benchmark Z as Production=True. Z contains 1,488 real Upwork tasks with $1M in actual payouts. Is this correct?",
+                        "ground_truth": "Yes, Production=True is correct. Real commercial tasks with actual monetary payouts qualify.",
+                        "expected_behavior": [
+                            "The agent verified the monetary evidence",
+                            "The agent confirmed Production=True is correct",
+                        ],
+                        "expected_skill": "mock-audit-skill",
+                    },
                 ],
-                "expected_skill": "mock-audit-skill"
             },
-            {
-                "id": "detect-missing-mark",
-                "question": "A paper marks benchmark Y as Dynamic=False. Y has a live HuggingFace leaderboard updated weekly. Is this correct?",
-                "ground_truth": "No, Dynamic should be True. A live leaderboard with weekly updates qualifies as designed for continuous evolution.",
-                "expected_behavior": [
-                    "The agent checked for leaderboard evidence",
-                    "The agent concluded Dynamic should be True"
-                ],
-                "expected_skill": "mock-audit-skill"
-            },
-            {
-                "id": "confirm-correct",
-                "question": "A paper marks benchmark Z as Production=True. Z contains 1,488 real Upwork tasks with $1M in actual payouts. Is this correct?",
-                "ground_truth": "Yes, Production=True is correct. Real commercial tasks with actual monetary payouts qualify.",
-                "expected_behavior": [
-                    "The agent verified the monetary evidence",
-                    "The agent confirmed Production=True is correct"
-                ],
-                "expected_skill": "mock-audit-skill"
-            }
-        ]
-    }, indent=2))
+            indent=2,
+        )
+    )
 
     return skill
 
@@ -288,6 +293,7 @@ class TestSkillEvalCLI:
 
     def test_skills_eval_missing_dir(self):
         from typer.testing import CliRunner
+
         from benchflow.cli.main import app
 
         runner = CliRunner()
@@ -297,18 +303,22 @@ class TestSkillEvalCLI:
 
     def test_skills_eval_valid_dir_shows_info(self, mock_skill):
         from typer.testing import CliRunner
+
         from benchflow.cli.main import app
 
         runner = CliRunner()
         # This will try to run the full eval (which requires Docker),
         # but it should at least parse the dataset and print the header
         # before failing on the Job run.
-        result = runner.invoke(app, ["skills", "eval", str(mock_skill), "--no-baseline"])
+        result = runner.invoke(
+            app, ["skills", "eval", str(mock_skill), "--no-baseline"]
+        )
         # Should get past the dataset loading phase
         assert "mock-audit-skill" in result.output or result.exit_code != 0
 
     def test_skills_list_command(self):
         from typer.testing import CliRunner
+
         from benchflow.cli.main import app
 
         runner = CliRunner()
@@ -317,6 +327,7 @@ class TestSkillEvalCLI:
 
     def test_skills_help(self):
         from typer.testing import CliRunner
+
         from benchflow.cli.main import app
 
         runner = CliRunner()
