@@ -304,7 +304,7 @@ evolve the skill text based on failure patterns.
 │                                                                  │
 │  ┌─────────────┐    ┌──────────────────┐    ┌────────────────┐  │
 │  │ evals.json  │───▶│ Task Generator   │───▶│ Ephemeral      │  │
-│  │ (2-8 cases) │    │ (with/without    │    │ Harbor Tasks   │  │
+│  │ (2-8 cases) │    │ (with/without    │    │ BenchFlow Tasks   │  │
 │  └─────────────┘    │  skill mode)     │    │ (auto-deleted) │  │
 │                     └──────────────────┘    └───────┬────────┘  │
 │                                                      │          │
@@ -376,7 +376,7 @@ my-skill/
     └── evals.json          ← 2-4 test cases
 ```
 
-That's it. No Harbor task authoring, no Dockerfiles, no test scripts.
+That's it. No benchmark task authoring, no Dockerfiles, no test scripts.
 BenchFlow generates everything ephemeral — only results persist.
 
 **CI integration:**
@@ -389,7 +389,7 @@ benchflow skills eval . -a claude-agent-acp --no-baseline
 
 **What the adapter does (zero LLM):**
 ```
-evals.json → Generate Harbor tasks → Run agents → Grade → Cleanup
+evals.json → Generate benchmark tasks → Run agents → Grade → Cleanup
   (static)     (deterministic)        (ACP)      (LLM)   (auto)
 ```
 
