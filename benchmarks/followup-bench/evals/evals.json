@@ -3,7 +3,7 @@
   "version": "1",
   "defaults": {
     "timeout_sec": 600,
-    "judge_model": "gemini-2.0-flash"
+    "judge_model": "gemini-3.1-flash-lite"
   },
   "cases": [
     {

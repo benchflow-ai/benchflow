@@ -49,7 +49,7 @@ class EvalDataset:
 
     @property
     def judge_model(self) -> str:
-        return self.defaults.get("judge_model", "gemini-2.0-flash")
+        return self.defaults.get("judge_model", "gemini-3.1-flash-lite")
 
     @property
     def timeout_sec(self) -> int:

@@ -88,7 +88,7 @@ def call_llm(prompt: str) -> str:
             if api_key:
                 client = genai.Client(api_key=api_key)
                 response = client.models.generate_content(
-                    model=model if is_gemini_model else "gemini-2.0-flash",
+                    model=model if is_gemini_model else "gemini-3.1-flash-lite",
                     contents=prompt,
                 )
                 return response.text
