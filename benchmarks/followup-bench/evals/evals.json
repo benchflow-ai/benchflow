@@ -1,0 +1,43 @@
+{
+  "skill_name": "followup-handling",
+  "version": "1",
+  "defaults": {
+    "timeout_sec": 300,
+    "judge_model": "claude-haiku-4-5-20251001"
+  },
+  "cases": [
+    {
+      "id": "correction-mid-task",
+      "question": "Write a Python function that sorts a list of dictionaries by the 'name' key alphabetically.\n\n[FOLLOW-UP after agent responds]\nActually, sort by 'age' key in descending order instead.",
+      "ground_truth": "The agent should produce a function that sorts by 'age' in descending order (reverse=True), NOT by 'name'. The final output must reflect the correction, not the original request.",
+      "expected_behavior": [
+        "The agent initially wrote a function sorting by 'name'",
+        "The agent acknowledged the correction",
+        "The agent modified the function to sort by 'age' in descending order",
+        "The final function uses key=lambda x: x['age'] and reverse=True"
+      ]
+    },
+    {
+      "id": "partial-undo",
+      "question": "Create a config file for a web server with these settings: port=8080, host=0.0.0.0, workers=4, debug=true, log_level=INFO.\n\n[FOLLOW-UP after agent responds]\nChange debug to false and log_level to WARNING. Keep everything else the same.",
+      "ground_truth": "The agent should modify ONLY debug and log_level in the config. port, host, and workers must remain unchanged. The agent should NOT regenerate the entire config from scratch.",
+      "expected_behavior": [
+        "The agent created the initial config with all 5 settings",
+        "The agent modified only debug=false and log_level=WARNING",
+        "The agent preserved port=8080, host=0.0.0.0, workers=4 unchanged",
+        "The agent did not regenerate the entire config from scratch"
+      ]
+    },
+    {
+      "id": "ambiguous-followup",
+      "question": "Write a function to calculate the average of a list of numbers.\n\n[FOLLOW-UP after agent responds]\nHandle the edge cases.",
+      "ground_truth": "The follow-up 'handle the edge cases' is ambiguous. Good behavior: the agent should either (a) ask which edge cases the user means, or (b) proactively handle common ones (empty list, None values, non-numeric types) and explain what it handled. Bad behavior: ignoring the follow-up or only handling one edge case without explanation.",
+      "expected_behavior": [
+        "The agent wrote an initial average function",
+        "The agent addressed the ambiguous follow-up by handling multiple edge cases OR asking for clarification",
+        "If handled proactively: empty list (return 0 or raise), None/non-numeric filtering, single-element list",
+        "The agent explained which edge cases it chose to handle and why"
+      ]
+    }
+  ]
+}
