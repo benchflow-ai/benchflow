@@ -8,67 +8,61 @@ Does an independent code review improve agent performance on coding tasks?
 Agent A (coder)          Agent B (reviewer)
     │                         │
     ├─ solves task ──────────▶│
-    │                         ├─ reviews output
-    │◀── feedback ────────────┤
+    │                         ├─ reads output, writes review
+    │◀── /app/.outbox/coder ──┤
     ├─ revises solution       │
     │                         │
     ▼                         ▼
- Final score              (review only)
+ Verifier scores           (review only)
 ```
 
-**The question**: When a different agent reviews the coder's work and gives feedback, does the coder produce a better final solution?
+**The question**: When a different agent reviews the coder's work and gives targeted feedback, does the coder produce a better final solution?
+
+## Architecture: Scene-based two-agent flow
+
+Uses BenchFlow's Scene runtime — two real ACP agents in a shared sandbox:
+
+1. **Coder** (Role 1) attempts the TB2 task
+2. **Reviewer** (Role 2) reads the coder's work, writes specific feedback to `/app/.outbox/coder.json`
+3. **Coder** reads the feedback, revises
+4. Scene ends when reviewer approves (LGTM) or max rounds hit
+5. Verifier scores the final `/app/` state
+
+Both roles are real ACP agents (can be same or different models). Communication is filesystem-based via the outbox convention.
 
 ## Quick start
 
-```bash
-# With independent review skill (coder gets reviewer feedback)
-benchflow skills eval ./benchmarks/followup-bench/ -a gemini --no-baseline
+```python
+from benchmarks.followup_bench.runner import run_followup_task
+from pathlib import Path
 
-# Compare: with review vs without
-benchflow skills eval ./benchmarks/followup-bench/ -a gemini
+result = await run_followup_task(
+    task_path=Path(".ref/terminal-bench-2/tasks/some-task"),
+    coder_agent="gemini",
+    coder_model="gemini-3.1-flash-lite-preview",
+    reviewer_agent="gemini",
+    reviewer_model="gemini-3-pro-preview",
+    environment="daytona",
+)
+print(f"Rounds: {result.n_rounds}, Messages: {len(result.messages)}")
 ```
 
-## Cases
+## What we measure
 
-| ID | Scenario | What's tested |
-|----|----------|---------------|
-| `review-improves-solution` | Reviewer finds 3 bugs in bash script | Does coder fix all 3? |
-| `review-catches-bug` | Reviewer finds merge-sort remainder bug | Does coder fix correctly? |
-| `review-no-change-needed` | Reviewer approves — no changes needed | Does coder avoid unnecessary edits? |
+Compare two runs on the same TB2 tasks:
 
-## How it works now (single-agent simulation)
+| Run | Setup | What it tests |
+|-----|-------|---------------|
+| Baseline | Coder only (single turn) | Raw agent capability |
+| Followup | Coder + Reviewer + Coder revision | Does review help? |
 
-Each eval case embeds the reviewer's feedback inline as a `[REVIEW]` section. The coder agent sees the task + review in one prompt. This simulates the multi-agent flow without requiring Scene runtime.
+**Lift** = followup score - baseline score. Positive lift = review helps. Negative = review causes regressions.
 
-## Future: multi-agent Scene (0.4+)
+## Experiment variants
 
-In the full version, the reviewer is a real second agent:
-
-```toml
-[[agents]]
-name = "coder"
-agent = "claude-agent-acp"
-model = "claude-haiku-4-5-20251001"
-
-[[agents]]
-name = "reviewer"
-agent = "gemini"
-model = "gemini-3-pro-preview"
-```
-
-The coder solves, reviewer reviews, coder revises. BenchFlow orchestrates the handoff via the Scene runtime.
-
-## Using TB2 tasks
-
-For a larger-scale experiment, run Terminal-Bench 2.0 tasks with multi-turn:
-
-```yaml
-# benchmarks/tb2-followup.yaml
-tasks_dir: .ref/terminal-bench-2/tasks
-agent: claude-agent-acp
-prompts:
-  - null   # task instruction
-  - "An independent reviewer checked your work and found issues. Review your solution, check for errors, test it, and fix any issues."
-```
-
-Compare single-turn vs multi-turn scores across agents to measure review lift.
+| Variant | Coder | Reviewer | Question |
+|---------|-------|----------|----------|
+| Self-review | Gemini | Gemini | Does same-model review help? |
+| Cross-model | Gemini | Claude | Does a different model catch different bugs? |
+| Strong reviewer | Haiku | Opus | Does a stronger reviewer help a weaker coder? |
+| Weak reviewer | Opus | Haiku | Does a weaker reviewer hurt a stronger coder? |
