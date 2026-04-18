@@ -1,22 +1,28 @@
 ---
-name: followup-handling
-description: Handle multi-turn follow-up conversations where the user corrects, clarifies, or changes requirements mid-task.
+name: independent-review
+description: Incorporate feedback from an independent code reviewer to improve your solution. The reviewer is a different agent that analyzed your work.
 ---
 
-# Follow-up Handling Skill
+# Independent Review Skill
 
-Handle multi-turn conversations where users correct mistakes, clarify ambiguity, or change requirements after the initial request.
+When an independent reviewer provides feedback on your code, incorporate it effectively.
 
-## Key behaviors
+## Process
 
-1. **Listen to corrections** — When a user says "actually X" or "no, I meant Y", discard the previous approach and follow the new instruction.
-2. **Don't repeat work** — If the first turn produced partial correct output, preserve it and only change what the follow-up requires.
-3. **Ask for clarification** — If a follow-up is ambiguous, ask before acting.
-4. **Track state** — Remember what was done in previous turns and build on it, don't start from scratch.
+1. Read the reviewer's feedback carefully
+2. Identify each specific issue raised
+3. Fix only what the reviewer flagged — don't refactor unrelated code
+4. If the reviewer says the code is correct, don't make unnecessary changes
+5. Verify your fixes address each point
 
-## Anti-patterns to avoid
+## When reviewer finds bugs
 
-- Ignoring the follow-up and sticking with the original interpretation
-- Starting over from scratch when only a small change is needed
-- Applying the correction to the wrong part of the output
-- Not acknowledging the correction before acting on it
+- Fix each bug the reviewer identified
+- Add edge case handling if reviewer pointed out missing cases
+- Test mentally that the fix resolves the specific issue
+
+## When reviewer approves
+
+- Acknowledge the positive review
+- Do NOT introduce unnecessary changes to working code
+- "If it ain't broke, don't fix it"

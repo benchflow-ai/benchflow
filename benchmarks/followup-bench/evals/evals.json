@@ -1,42 +1,42 @@
 {
-  "skill_name": "followup-handling",
+  "skill_name": "independent-review",
   "version": "1",
   "defaults": {
-    "timeout_sec": 300,
-    "judge_model": "claude-haiku-4-5-20251001"
+    "timeout_sec": 600,
+    "judge_model": "gemini-2.0-flash"
   },
   "cases": [
     {
-      "id": "correction-mid-task",
-      "question": "Write a Python function that sorts a list of dictionaries by the 'name' key alphabetically.\n\n[FOLLOW-UP after agent responds]\nActually, sort by 'age' key in descending order instead.",
-      "ground_truth": "The agent should produce a function that sorts by 'age' in descending order (reverse=True), NOT by 'name'. The final output must reflect the correction, not the original request.",
+      "id": "review-improves-solution",
+      "question": "Solve this task, then an independent reviewer will check your work.\n\n[TASK]\nWrite a bash script that finds all Python files in the current directory tree that import 'requests' but don't have 'requests' in their requirements.txt. Output the list of files, one per line.\n\n[REVIEW from independent agent]\nYour script has issues:\n1. You're using grep without -r flag for recursive search\n2. You're not checking if requirements.txt exists before reading it\n3. Edge case: some files use 'from requests import' not just 'import requests'\n\nPlease fix these issues.",
+      "ground_truth": "The agent should produce a corrected script that: uses recursive grep or find, checks requirements.txt existence, handles both 'import requests' and 'from requests import' patterns.",
       "expected_behavior": [
-        "The agent initially wrote a function sorting by 'name'",
-        "The agent acknowledged the correction",
-        "The agent modified the function to sort by 'age' in descending order",
-        "The final function uses key=lambda x: x['age'] and reverse=True"
+        "The agent wrote an initial solution",
+        "The agent incorporated the reviewer's feedback about recursive search",
+        "The agent added requirements.txt existence check",
+        "The agent handles both import patterns"
       ]
     },
     {
-      "id": "partial-undo",
-      "question": "Create a config file for a web server with these settings: port=8080, host=0.0.0.0, workers=4, debug=true, log_level=INFO.\n\n[FOLLOW-UP after agent responds]\nChange debug to false and log_level to WARNING. Keep everything else the same.",
-      "ground_truth": "The agent should modify ONLY debug and log_level in the config. port, host, and workers must remain unchanged. The agent should NOT regenerate the entire config from scratch.",
+      "id": "review-catches-bug",
+      "question": "Solve this task, then an independent reviewer will check your work.\n\n[TASK]\nWrite a Python function that merges two sorted lists into one sorted list without using the built-in sort() or sorted(). The function should handle duplicates and empty lists.\n\n[REVIEW from independent agent]\nYour merge function has a bug: when one list is exhausted, you're not appending the remainder of the other list. Also, your comparison doesn't handle the case where both lists have the same element — you're only advancing one pointer, causing duplicates to be skipped.\n\nPlease fix.",
+      "ground_truth": "The agent should fix the merge function to: correctly append remaining elements when one list is exhausted, and handle equal elements by advancing both pointers (or one, keeping the duplicate).",
       "expected_behavior": [
-        "The agent created the initial config with all 5 settings",
-        "The agent modified only debug=false and log_level=WARNING",
-        "The agent preserved port=8080, host=0.0.0.0, workers=4 unchanged",
-        "The agent did not regenerate the entire config from scratch"
+        "The agent wrote an initial merge function",
+        "The agent fixed the remainder-appending bug",
+        "The agent fixed the duplicate-handling bug",
+        "The final function correctly merges sorted lists with duplicates"
       ]
     },
     {
-      "id": "ambiguous-followup",
-      "question": "Write a function to calculate the average of a list of numbers.\n\n[FOLLOW-UP after agent responds]\nHandle the edge cases.",
-      "ground_truth": "The follow-up 'handle the edge cases' is ambiguous. Good behavior: the agent should either (a) ask which edge cases the user means, or (b) proactively handle common ones (empty list, None values, non-numeric types) and explain what it handled. Bad behavior: ignoring the follow-up or only handling one edge case without explanation.",
+      "id": "review-no-change-needed",
+      "question": "Solve this task, then an independent reviewer will check your work.\n\n[TASK]\nWrite a function that checks if a string is a valid IPv4 address. Valid means: 4 octets separated by dots, each octet is 0-255, no leading zeros (except '0' itself).\n\n[REVIEW from independent agent]\nYour solution looks correct. The regex handles all edge cases well — no leading zeros, proper range checking, and dot separation. No changes needed.\n\nGood work.",
+      "ground_truth": "The agent should keep the original solution unchanged since the reviewer confirmed it's correct. The agent should acknowledge the positive review without making unnecessary changes.",
       "expected_behavior": [
-        "The agent wrote an initial average function",
-        "The agent addressed the ambiguous follow-up by handling multiple edge cases OR asking for clarification",
-        "If handled proactively: empty list (return 0 or raise), None/non-numeric filtering, single-element list",
-        "The agent explained which edge cases it chose to handle and why"
+        "The agent wrote a correct IPv4 validator",
+        "The agent acknowledged the positive review",
+        "The agent did NOT make unnecessary changes to a correct solution",
+        "The final solution still correctly validates IPv4 addresses"
       ]
     }
   ]

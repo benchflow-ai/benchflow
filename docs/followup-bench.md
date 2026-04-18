@@ -1,40 +1,74 @@
 # Follow-up Bench
 
-A benchmark for evaluating how well AI agents handle multi-turn conversations where users correct, clarify, or change requirements mid-task.
+Does an independent code review improve agent performance on coding tasks?
+
+## Concept
+
+```
+Agent A (coder)          Agent B (reviewer)
+    │                         │
+    ├─ solves task ──────────▶│
+    │                         ├─ reviews output
+    │◀── feedback ────────────┤
+    ├─ revises solution       │
+    │                         │
+    ▼                         ▼
+ Final score              (review only)
+```
+
+**The question**: When a different agent reviews the coder's work and gives feedback, does the coder produce a better final solution?
 
 ## Quick start
 
 ```bash
-bench skills eval ./benchmarks/followup-bench/ -a claude-agent-acp --no-baseline
+# With independent review skill (coder gets reviewer feedback)
+benchflow skills eval ./benchmarks/followup-bench/ -a gemini --no-baseline
+
+# Compare: with review vs without
+benchflow skills eval ./benchmarks/followup-bench/ -a gemini
 ```
 
 ## Cases
 
 | ID | Scenario | What's tested |
 |----|----------|---------------|
-| `correction-mid-task` | "Sort by name" → "actually, sort by age descending" | Does the agent apply the correction? |
-| `partial-undo` | Create config → "change only debug and log_level" | Does the agent modify only what was asked? |
-| `ambiguous-followup` | Write average function → "handle the edge cases" | Does the agent handle ambiguity well? |
+| `review-improves-solution` | Reviewer finds 3 bugs in bash script | Does coder fix all 3? |
+| `review-catches-bug` | Reviewer finds merge-sort remainder bug | Does coder fix correctly? |
+| `review-no-change-needed` | Reviewer approves — no changes needed | Does coder avoid unnecessary edits? |
 
-## Multi-turn execution
+## How it works now (single-agent simulation)
 
-These tasks use BenchFlow's multi-turn prompt system. The `[FOLLOW-UP]` markers in each question translate to separate prompts in the ACP session:
+Each eval case embeds the reviewer's feedback inline as a `[REVIEW]` section. The coder agent sees the task + review in one prompt. This simulates the multi-agent flow without requiring Scene runtime.
 
-```yaml
-prompts:
-  - null    # → instruction.md (initial request)
-  - "Actually, sort by 'age' key in descending order instead."
+## Future: multi-agent Scene (0.4+)
+
+In the full version, the reviewer is a real second agent:
+
+```toml
+[[agents]]
+name = "coder"
+agent = "claude-agent-acp"
+model = "claude-haiku-4-5-20251001"
+
+[[agents]]
+name = "reviewer"
+agent = "gemini"
+model = "gemini-3-pro-preview"
 ```
 
-The agent keeps its full context between turns — it sees the follow-up as a continuation, not a new task.
+The coder solves, reviewer reviews, coder revises. BenchFlow orchestrates the handoff via the Scene runtime.
 
-## What we measure
+## Using TB2 tasks
 
-1. **Correction accuracy** — Did the agent apply the correction?
-2. **Preservation** — Did the agent keep unchanged parts intact?
-3. **Ambiguity handling** — Did the agent ask for clarification or handle proactively?
-4. **Efficiency** — Did the agent avoid redundant work (not starting from scratch)?
+For a larger-scale experiment, run Terminal-Bench 2.0 tasks with multi-turn:
 
-## Extending
+```yaml
+# benchmarks/tb2-followup.yaml
+tasks_dir: .ref/terminal-bench-2/tasks
+agent: claude-agent-acp
+prompts:
+  - null   # task instruction
+  - "An independent reviewer checked your work and found issues. Review your solution, check for errors, test it, and fix any issues."
+```
 
-Add new multi-turn cases to `evals/evals.json`. Use `[FOLLOW-UP]` markers to indicate turn boundaries. The judge evaluates the final state against expected behavior across all turns.
+Compare single-turn vs multi-turn scores across agents to measure review lift.
