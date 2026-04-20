@@ -492,6 +492,10 @@ class Job:
 
         async def bounded(td: Path) -> tuple[str, RunResult]:
             async with sem:
+                # Jitter start to avoid SSH connection storms at high concurrency
+                import random
+                if cfg.concurrency > 16:
+                    await asyncio.sleep(random.uniform(0, min(cfg.concurrency / 10, 10)))
                 result = await self._run_task(td)
                 self._prune_docker()
                 # Log result

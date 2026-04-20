@@ -30,6 +30,10 @@ from benchflow.process import DaytonaProcess, DockerProcess
 logger = logging.getLogger(__name__)
 
 
+_ACP_CONNECT_MAX_RETRIES = 3
+_ACP_CONNECT_BASE_DELAY = 2.0
+
+
 async def connect_acp(
     env,
     agent: str,
@@ -41,7 +45,10 @@ async def connect_acp(
     environment: str,
     agent_cwd: str,
 ) -> tuple[ACPClient, object, str]:
-    """Create ACP transport, connect, init session, set model. Return (client, session, agent_name)."""
+    """Create ACP transport, connect, init session, set model. Return (client, session, agent_name).
+
+    Retries with exponential backoff on ConnectionError (Daytona SSH storms).
+    """
     # Resolve agent binary path for non-docker environments
     if environment != "docker":
         which_result = await env.exec(
@@ -58,28 +65,44 @@ async def connect_acp(
         agent_launch = build_priv_drop_cmd(agent_launch, sandbox_user)
         logger.info(f"Agent sandboxed as: {sandbox_user}")
 
-    if environment == "docker":
-        live_proc = DockerProcess.from_harbor_env(env)
-    else:
-        live_proc = await DaytonaProcess.from_harbor_env(env)
+    last_err: Exception | None = None
+    for attempt in range(_ACP_CONNECT_MAX_RETRIES + 1):
+        if attempt > 0:
+            delay = _ACP_CONNECT_BASE_DELAY * (2 ** (attempt - 1))
+            logger.info(f"ACP connect retry {attempt}/{_ACP_CONNECT_MAX_RETRIES} after {delay:.0f}s")
+            await asyncio.sleep(delay)
 
-    agent_log = trial_dir / "agent" / f"{agent.replace('-', '_')}.txt"
-    transport = ContainerTransport(
-        container_process=live_proc,
-        command=agent_launch,
-        env=agent_env,
-        cwd=agent_cwd,
-        agent_log_path=agent_log,
-    )
-    acp_client = ACPClient(transport)
-    await acp_client.connect()
+        try:
+            if environment == "docker":
+                live_proc = DockerProcess.from_harbor_env(env)
+            else:
+                live_proc = await DaytonaProcess.from_harbor_env(env)
 
-    init_result = await asyncio.wait_for(acp_client.initialize(), timeout=60)
-    agent_name = init_result.agent_info.name if init_result.agent_info else agent
-    logger.info(f"ACP agent: {agent_name}")
+            agent_log = trial_dir / "agent" / f"{agent.replace('-', '_')}.txt"
+            transport = ContainerTransport(
+                container_process=live_proc,
+                command=agent_launch,
+                env=agent_env,
+                cwd=agent_cwd,
+                agent_log_path=agent_log,
+            )
+            acp_client = ACPClient(transport)
+            await acp_client.connect()
 
-    session = await asyncio.wait_for(acp_client.session_new(cwd=agent_cwd), timeout=60)
-    logger.info(f"Session: {session.session_id}")
+            init_result = await asyncio.wait_for(acp_client.initialize(), timeout=60)
+            agent_name = init_result.agent_info.name if init_result.agent_info else agent
+            logger.info(f"ACP agent: {agent_name}")
+
+            session = await asyncio.wait_for(acp_client.session_new(cwd=agent_cwd), timeout=60)
+            logger.info(f"Session: {session.session_id}")
+            # Success — break out of retry loop
+            break
+        except ConnectionError as e:
+            last_err = e
+            if attempt == _ACP_CONNECT_MAX_RETRIES:
+                raise
+            logger.warning(f"ACP connect failed (attempt {attempt + 1}): {e}")
+            continue
 
     if model:
         from benchflow.agents.providers import strip_provider_prefix
