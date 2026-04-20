@@ -201,8 +201,24 @@ class TestStripProviderPrefix:
     def test_no_prefix(self):
         assert strip_provider_prefix("claude-sonnet-4-6") == "claude-sonnet-4-6"
 
-    def test_unknown_prefix(self):
-        assert strip_provider_prefix("unknown-provider/some-model") == "some-model"
+    def test_unknown_prefix_preserved(self):
+        # Unregistered prefix passes through unchanged — avoids mangling
+        # HuggingFace-style IDs whose org is not a registered provider.
+        assert (
+            strip_provider_prefix("unknown-provider/some-model")
+            == "unknown-provider/some-model"
+        )
+
+    def test_bare_huggingface_id_preserved(self):
+        # Regression: bare HF ID (no registered prefix) must keep org/model.
+        assert strip_provider_prefix("Qwen/Qwen3-Coder") == "Qwen/Qwen3-Coder"
+        assert strip_provider_prefix("Qwen/Qwen3.5-35B-A3B") == "Qwen/Qwen3.5-35B-A3B"
+
+    def test_registered_prefix_with_huggingface_id(self):
+        # Registered vllm/ prefix stripped; HF org/model kept intact.
+        assert (
+            strip_provider_prefix("vllm/Qwen/Qwen3.5-35B-A3B") == "Qwen/Qwen3.5-35B-A3B"
+        )
 
 
 # ── Shim provider fallback: stripped model + BENCHFLOW_PROVIDER_* env vars ──

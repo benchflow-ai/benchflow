@@ -44,8 +44,26 @@ Look at the existing entries below for worked examples:
 (multi-file subscription auth).
 """
 
+import base64
 from dataclasses import dataclass, field
 from pathlib import Path
+
+
+def _install_python_script(container_path: str, source: str) -> str:
+    """Shell snippet that ensures python3 and writes `source` to container_path.
+
+    Base64 transport — makes the install shell line content-agnostic so a line
+    like `SHIMEOF` or `LAUNCHEREOF` inside the Python source can't collide with
+    a heredoc terminator.
+    """
+    encoded = base64.b64encode(source.encode()).decode()
+    return (
+        "( command -v python3 >/dev/null 2>&1 || "
+        "(apt-get update -qq && apt-get install -y -qq python3 >/dev/null 2>&1) ) && "
+        f"echo {encoded} | base64 -d > {container_path} && "
+        f"chmod +x {container_path}"
+    )
+
 
 # Node.js bootstrap — handles missing node, old node (<22), Ubuntu + Debian slim
 _NODE_INSTALL = (
@@ -132,12 +150,6 @@ class AgentConfig:
     home_dirs: list[str] = field(default_factory=list)
     # Extra dot-dirs under $HOME to copy to sandbox user (for dirs not
     # derivable from skill_paths or credential_files, e.g. ".openclaw").
-    preserve_provider_prefix: bool = False
-    # When True, ACP set_model receives the full model string including the
-    # BenchFlow provider prefix (e.g. "vllm/Qwen/Qwen3.5-35B-A3B").
-    # When False (default), the prefix is stripped first (e.g. "Qwen/Qwen3.5-35B-A3B").
-    # Agents whose set_model handler uses "provider/model" routing (e.g. pi-acp)
-    # need the prefix to avoid misparsing HuggingFace model IDs that contain "/".
     subscription_auth: SubscriptionAuth | None = None
     # Host CLI login that can substitute for an API key (e.g. OAuth tokens
     # from `claude login`). Detected automatically; API keys take precedence.
@@ -177,7 +189,6 @@ AGENTS: dict[str, AgentConfig] = {
     "pi-acp": AgentConfig(
         name="pi-acp",
         description="Pi agent via ACP",
-        preserve_provider_prefix=True,
         skill_paths=["$HOME/.pi/agent/skills", "$HOME/.agents/skills"],
         install_cmd=(
             f"{_NODE_INSTALL} && "
@@ -186,14 +197,8 @@ AGENTS: dict[str, AgentConfig] = {
             "( command -v pi-acp >/dev/null 2>&1 || "
             "npm install -g pi-acp@latest >/dev/null 2>&1 ) && "
             "command -v pi-acp >/dev/null 2>&1 && "
-            # Ensure python3 for launcher
-            "( command -v python3 >/dev/null 2>&1 || "
-            "(apt-get update -qq && apt-get install -y -qq python3 >/dev/null 2>&1) ) && "
             # Deploy launch wrapper (bridges BENCHFLOW_PROVIDER_* → Pi config)
-            "cat > /usr/local/bin/pi-acp-launcher <<'LAUNCHEREOF'\n"
-            + _PI_LAUNCHER
-            + "\nLAUNCHEREOF\n"
-            "chmod +x /usr/local/bin/pi-acp-launcher"
+            + _install_python_script("/usr/local/bin/pi-acp-launcher", _PI_LAUNCHER)
         ),
         launch_cmd="python3 /usr/local/bin/pi-acp-launcher",
         protocol="acp",
@@ -215,18 +220,12 @@ AGENTS: dict[str, AgentConfig] = {
             "( command -v openclaw >/dev/null 2>&1 || "
             "npm install -g openclaw@latest >/dev/null 2>&1 ) && "
             "command -v openclaw >/dev/null 2>&1 && "
-            # Ensure python3 for shim
-            "( command -v python3 >/dev/null 2>&1 || "
-            "(apt-get update -qq && apt-get install -y -qq python3 >/dev/null 2>&1) ) && "
             # Configure: auto-approve tools (no model — set at runtime via ACP set_model)
             "mkdir -p ~/.openclaw && "
             'echo \'{"version":1,"defaults":{"allow_all":true}}\''
             " > ~/.openclaw/exec-approvals.json && "
             # Deploy ACP shim
-            "cat > /usr/local/bin/openclaw-acp-shim <<'SHIMEOF'\n"
-            + _OPENCLAW_SHIM
-            + "\nSHIMEOF\n"
-            "chmod +x /usr/local/bin/openclaw-acp-shim"
+            + _install_python_script("/usr/local/bin/openclaw-acp-shim", _OPENCLAW_SHIM)
         ),
         launch_cmd="python3 /usr/local/bin/openclaw-acp-shim",
         protocol="acp",
