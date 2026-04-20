@@ -4,6 +4,22 @@ import json
 
 import pytest
 
+from benchflow.agents.providers import PROVIDERS
+
+# All registry models declaring contextWindow/maxTokens — drives the parametrized
+# invariant that the launcher preserves registry-declared values.
+_REGISTRY_MODELS_WITH_METADATA = [
+    (name, m)
+    for name, cfg in PROVIDERS.items()
+    for m in cfg.models
+    if "contextWindow" in m or "maxTokens" in m
+]
+assert _REGISTRY_MODELS_WITH_METADATA, (
+    "PROVIDERS has no model entry with contextWindow/maxTokens — the "
+    "parametrized invariant below would silently cover nothing. Either "
+    "add metadata to a provider or delete this guard."
+)
+
 
 @pytest.fixture()
 def _pi_env(monkeypatch, tmp_path):
@@ -14,6 +30,7 @@ def _pi_env(monkeypatch, tmp_path):
         "BENCHFLOW_PROVIDER_BASE_URL",
         "BENCHFLOW_PROVIDER_API_KEY",
         "BENCHFLOW_PROVIDER_MODEL",
+        "BENCHFLOW_PROVIDER_MODELS",
         "BENCHFLOW_PROVIDER_NAME",
         "ANTHROPIC_BASE_URL",
         "ANTHROPIC_AUTH_TOKEN",
@@ -115,7 +132,11 @@ class TestSetupProviderAnthropic:
         assert os.environ["ANTHROPIC_MODEL"] == "claude-haiku"
 
     def test_setdefault_does_not_overwrite(self, monkeypatch):
-        """Pre-existing ANTHROPIC_* values take precedence."""
+        """Pre-existing ANTHROPIC_* values take precedence.
+
+        Users routing through a proxy set ANTHROPIC_BASE_URL directly (e.g.
+        via --ae); the launcher must not clobber that.
+        """
         monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://keep-this.example.com")
         monkeypatch.setenv("BENCHFLOW_PROVIDER_BASE_URL", "https://new.example.com")
 
@@ -126,3 +147,123 @@ class TestSetupProviderAnthropic:
         setup_provider()
 
         assert os.environ["ANTHROPIC_BASE_URL"] == "https://keep-this.example.com"
+
+
+@pytest.mark.usefixtures("_pi_env")
+class TestSetupProviderErrors:
+    """Misconfiguration surfaces as a clear SystemExit, not a silent no-op."""
+
+    def test_openai_protocol_requires_base_url(self, monkeypatch):
+        monkeypatch.setenv("BENCHFLOW_PROVIDER_PROTOCOL", "openai-completions")
+        monkeypatch.setenv("BENCHFLOW_PROVIDER_MODEL", "some-model")
+        # BASE_URL intentionally unset — simulates failed url_params resolution
+
+        from benchflow.agents.pi_acp_launcher import setup_provider
+
+        with pytest.raises(SystemExit, match="BENCHFLOW_PROVIDER_BASE_URL"):
+            setup_provider()
+
+
+@pytest.mark.usefixtures("_pi_env")
+class TestSetupProviderModelMetadata:
+    """Model metadata from BENCHFLOW_PROVIDER_MODELS overrides defaults."""
+
+    @pytest.mark.parametrize(
+        "provider_name, model_meta",
+        _REGISTRY_MODELS_WITH_METADATA,
+        ids=[f"{p}-{m['id']}" for p, m in _REGISTRY_MODELS_WITH_METADATA],
+    )
+    def test_registry_metadata_flows_to_models_json(
+        self, provider_name, model_meta, monkeypatch, tmp_path
+    ):
+        """Every contextWindow/maxTokens declared in PROVIDERS must reach
+        the generated models.json unchanged. PR #156 hardcoded 128000/16384
+        in the launcher; new registry entries would be silently truncated.
+        """
+        monkeypatch.setenv("BENCHFLOW_PROVIDER_PROTOCOL", "openai-completions")
+        monkeypatch.setenv("BENCHFLOW_PROVIDER_BASE_URL", "http://localhost/v1")
+        monkeypatch.setenv("BENCHFLOW_PROVIDER_MODEL", model_meta["id"])
+        monkeypatch.setenv("BENCHFLOW_PROVIDER_NAME", provider_name)
+        monkeypatch.setenv(
+            "BENCHFLOW_PROVIDER_MODELS",
+            json.dumps(PROVIDERS[provider_name].models),
+        )
+
+        from benchflow.agents.pi_acp_launcher import setup_provider
+
+        setup_provider()
+
+        config = json.loads((tmp_path / ".pi" / "agent" / "models.json").read_text())
+        entry = config["providers"][provider_name]["models"][0]
+        for field in ("contextWindow", "maxTokens", "name"):
+            if field in model_meta:
+                assert entry[field] == model_meta[field], (
+                    f"{provider_name}/{model_meta['id']}: launcher emitted "
+                    f"{field}={entry[field]}, registry declares {model_meta[field]}"
+                )
+
+    def test_defaults_when_provider_models_absent(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("BENCHFLOW_PROVIDER_PROTOCOL", "openai-completions")
+        monkeypatch.setenv("BENCHFLOW_PROVIDER_BASE_URL", "http://localhost/v1")
+        monkeypatch.setenv("BENCHFLOW_PROVIDER_MODEL", "mystery-model")
+        monkeypatch.setenv("BENCHFLOW_PROVIDER_NAME", "custom-vllm")
+
+        from benchflow.agents.pi_acp_launcher import setup_provider
+
+        setup_provider()
+
+        config = json.loads((tmp_path / ".pi" / "agent" / "models.json").read_text())
+        model_entry = config["providers"]["custom-vllm"]["models"][0]
+        assert model_entry["contextWindow"] == 128000
+        assert model_entry["maxTokens"] == 16384
+
+
+@pytest.mark.usefixtures("_pi_env")
+class TestSetupProviderNameDerivation:
+    """Absent BENCHFLOW_PROVIDER_NAME → slug-based key, never plain 'custom'.
+
+    Concurrent runs with different models must not collide in models.json.
+    """
+
+    def test_name_derived_from_hf_org(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("BENCHFLOW_PROVIDER_PROTOCOL", "openai-completions")
+        monkeypatch.setenv("BENCHFLOW_PROVIDER_BASE_URL", "http://a/v1")
+        monkeypatch.setenv("BENCHFLOW_PROVIDER_MODEL", "Qwen/Qwen3-Coder")
+
+        from benchflow.agents.pi_acp_launcher import setup_provider
+
+        setup_provider()
+
+        config = json.loads((tmp_path / ".pi" / "agent" / "models.json").read_text())
+        assert "custom" not in config["providers"]
+        assert "benchflow-Qwen" in config["providers"]
+
+    def test_explicit_name_wins_over_derivation(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("BENCHFLOW_PROVIDER_PROTOCOL", "openai-completions")
+        monkeypatch.setenv("BENCHFLOW_PROVIDER_BASE_URL", "http://a/v1")
+        monkeypatch.setenv("BENCHFLOW_PROVIDER_MODEL", "Qwen/Qwen3-Coder")
+        monkeypatch.setenv("BENCHFLOW_PROVIDER_NAME", "vllm")
+
+        from benchflow.agents.pi_acp_launcher import setup_provider
+
+        setup_provider()
+
+        config = json.loads((tmp_path / ".pi" / "agent" / "models.json").read_text())
+        assert "vllm" in config["providers"]
+        assert "benchflow-Qwen" not in config["providers"]
+
+
+@pytest.mark.usefixtures("_pi_env")
+class TestMainExecvpFailure:
+    """Missing pi-acp binary must surface a clear error, not a bare FileNotFoundError."""
+
+    def test_missing_binary_raises_sysexit(self, monkeypatch):
+        monkeypatch.setattr(
+            "os.execvp",
+            lambda *_: (_ for _ in ()).throw(FileNotFoundError(2, "No such file")),
+        )
+
+        from benchflow.agents.pi_acp_launcher import main
+
+        with pytest.raises(SystemExit, match="pi-acp"):
+            main()

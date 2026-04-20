@@ -217,19 +217,23 @@ def resolve_base_url(
 
 
 def strip_provider_prefix(model: str) -> str:
-    """Strip the provider prefix from a model ID.
+    """Strip a *registered* provider prefix. Unregistered inputs pass through.
 
     "anthropic-vertex/claude-sonnet-4-6" → "claude-sonnet-4-6"
     "zai/glm-5" → "glm-5"
-    "claude-sonnet-4-6" → "claude-sonnet-4-6"  (no prefix = unchanged)
+    "vllm/Qwen/Qwen3-Coder" → "Qwen/Qwen3-Coder"  (HF org/model kept intact)
+    "Qwen/Qwen3-Coder" → "Qwen/Qwen3-Coder"       (no registered prefix → unchanged)
+    "claude-sonnet-4-6" → "claude-sonnet-4-6"
+
+    Single normalization point for downstream callers (ACP set_model,
+    BENCHFLOW_PROVIDER_MODEL env var, Harbor YAML parse). If a model ID
+    reaches an agent launcher still prefixed, fix the routing into this
+    function — do NOT strip again at the call site. See PRs #154 and #155
+    for the symptomatic-patch anti-pattern that caused the original bug.
     """
     result = find_provider(model)
     if result:
-        prefix = f"{result[0]}/"
-        return model[len(prefix) :]
-    # Not a known provider — still strip unknown prefix if present
-    if "/" in model:
-        return model.split("/", 1)[1]
+        return model[len(result[0]) + 1 :]
     return model
 
 
