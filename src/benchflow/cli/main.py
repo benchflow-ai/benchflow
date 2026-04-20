@@ -739,27 +739,59 @@ def eval_create(
 
     if config_file:
         j = Job.from_yaml(config_file)
+        result = asyncio.run(j.run())
+        console.print(
+            f"\n[bold]Score: {result.passed}/{result.total} "
+            f"({result.score:.1%})[/bold], errors={result.errored}"
+        )
     elif tasks_dir:
-        j = Job(
-            tasks_dir=str(tasks_dir),
-            jobs_dir=jobs_dir,
-            config=JobConfig(
+        # Smart detection: if tasks_dir has task.toml, it's a single task
+        if (tasks_dir / "task.toml").exists():
+            from benchflow.trial import Trial, TrialConfig, Scene
+
+            config = TrialConfig(
+                task_path=tasks_dir,
+                scenes=[Scene.single(agent=agent, model=model or DEFAULT_MODEL)],
+                environment=environment,
+                sandbox_user=sandbox_user,
+                jobs_dir=jobs_dir,
                 agent=agent,
                 model=model or DEFAULT_MODEL,
-                environment=environment,
-                concurrency=concurrency,
-                sandbox_user=sandbox_user,
-            ),
-        )
+            )
+
+            async def _run():
+                trial = await Trial.create(config)
+                return await trial.run()
+
+            run_result = asyncio.run(_run())
+            reward = (run_result.rewards or {}).get("reward")
+            console.print(f"\n[bold]Task:[/bold] {tasks_dir.name}")
+            console.print(f"[bold]Agent:[/bold] {agent} ({model or DEFAULT_MODEL})")
+            console.print(f"[bold]Reward:[/bold] {reward}")
+            console.print(f"[bold]Tool calls:[/bold] {run_result.n_tool_calls}")
+            if run_result.error:
+                console.print(f"[red]Error:[/red] {run_result.error}")
+        else:
+            # Directory of tasks — batch run
+            j = Job(
+                tasks_dir=str(tasks_dir),
+                jobs_dir=jobs_dir,
+                config=JobConfig(
+                    agent=agent,
+                    model=model or DEFAULT_MODEL,
+                    environment=environment,
+                    concurrency=concurrency,
+                    sandbox_user=sandbox_user,
+                ),
+            )
+            result = asyncio.run(j.run())
+            console.print(
+                f"\n[bold]Score: {result.passed}/{result.total} "
+                f"({result.score:.1%})[/bold], errors={result.errored}"
+            )
     else:
         console.print("[red]Either --config or --tasks-dir is required[/red]")
         raise typer.Exit(1)
-
-    result = asyncio.run(j.run())
-    console.print(
-        f"\n[bold]Score: {result.passed}/{result.total} "
-        f"({result.score:.1%})[/bold], errors={result.errored}"
-    )
 
 
 @eval_app.command("list")
