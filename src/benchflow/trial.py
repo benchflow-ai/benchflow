@@ -347,7 +347,7 @@ class Trial:
         agent_cwd = (cwd_result.stdout or "").strip() or "/app"
         self._agent_cwd = agent_cwd
 
-        if cfg.agent == "oracle":
+        if cfg.primary_agent == "oracle":
             if cfg.sandbox_user:
                 await setup_sandbox_user(
                     self._env, cfg.sandbox_user, workspace=self._agent_cwd
@@ -456,7 +456,7 @@ class Trial:
         """Run the verifier and return rewards."""
         cfg = self._config
 
-        if not self._trajectory and cfg.agent != "oracle":
+        if not self._trajectory and cfg.primary_agent != "oracle":
             scraped = await _scrape_agent_trajectory(
                 self._env, cfg.agent, cfg.sandbox_user
             )

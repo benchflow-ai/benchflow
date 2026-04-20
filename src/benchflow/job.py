@@ -128,7 +128,7 @@ class RetryConfig:
             return True
         if self.retry_on_acp and category == ACP_ERROR:
             return True
-        return category == "other"
+        return False
 
     def backoff_delay(self, attempt: int) -> float:
         """Exponential backoff delay for retry attempt."""
