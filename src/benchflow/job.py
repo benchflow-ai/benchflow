@@ -96,23 +96,44 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class RetryConfig:
-    """Configuration for retry behavior."""
+    """Configuration for retry behavior.
+
+    Matches Harbor's RetryConfig pattern: exponential backoff with
+    configurable exception filtering. Legacy boolean fields are
+    preserved for backwards compat but the category-based check
+    covers all cases.
+    """
 
     max_retries: int = 2
     retry_on_install: bool = True
     retry_on_pipe: bool = True
     retry_on_acp: bool = True
+    wait_multiplier: float = 2.0
+    min_wait_sec: float = 1.0
+    max_wait_sec: float = 30.0
+    exclude_categories: set[str] = field(
+        default_factory=lambda: {"timeout"}
+    )
 
     def should_retry(self, error: str | None) -> bool:
         """Check if an error is retryable."""
         category = classify_error(error)
         if not category:
             return False
+        if category in self.exclude_categories:
+            return False
         if self.retry_on_install and category == INSTALL_FAILED:
             return True
         if self.retry_on_pipe and category == PIPE_CLOSED:
             return True
-        return bool(self.retry_on_acp and category == ACP_ERROR)
+        if self.retry_on_acp and category == ACP_ERROR:
+            return True
+        return category == "other"
+
+    def backoff_delay(self, attempt: int) -> float:
+        """Exponential backoff delay for retry attempt."""
+        delay = self.min_wait_sec * (self.wait_multiplier ** attempt)
+        return min(delay, self.max_wait_sec)
 
 
 # Defaults: works out-of-the-box with `claude login` (subscription auth, no API key needed)
@@ -422,6 +443,9 @@ class Job:
             1, cfg.retry.max_retries + 2
         ):  # +2 because range is exclusive and attempt 1 is first try
             if attempt > 1:
+                delay = cfg.retry.backoff_delay(attempt - 1)
+                logger.info(f"Retry backoff: {delay:.1f}s before attempt {attempt}")
+                await asyncio.sleep(delay)
                 self._prune_docker()
             # Use legacy SDK path if _sdk has been replaced (test compat)
             if not isinstance(self._sdk, SDK):
