@@ -1,166 +1,107 @@
-# Quickstart — Zero to Score in 5 Minutes
+# Quickstart
 
-Get your first benchmark score in under 5 minutes.
+Get a benchmark result in under 5 minutes.
 
 ## Prerequisites
 
 - Python 3.12+
-- Docker running locally
-- An API key for at least one agent (Claude, Codex, or Gemini)
+- A Daytona API key (`DAYTONA_API_KEY`) for cloud sandboxes
+- An agent API key (e.g. `GEMINI_API_KEY` for Gemini)
 
-## 1. Install
-
-```bash
-uv tool install benchflow
-```
-
-Verify:
-```
-$ benchflow --help
-
- Usage: benchflow [OPTIONS] COMMAND [ARGS]...
-
- ACP-native agent benchmarking framework.
-
-╭─ Commands ──────────────────────────────────────────╮
-│ agents    List available agents.                    │
-│ eval      Evaluate a skill against multiple tasks.  │
-│ job       Run all tasks with concurrency + retries. │
-│ metrics   Collect and display metrics.              │
-│ run       Run a single task with an ACP agent.      │
-│ skills    Skill discovery and evaluation.           │
-│ tasks     Task authoring commands.                  │
-│ view      Serve trajectory viewer in browser.       │
-╰─────────────────────────────────────────────────────╯
-```
-
-## 2. See available agents
-
-```
-$ benchflow agents
-
-              Registered Agents
-┏━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━┓
-┃ Name              ┃ Description         ┃ Protocol ┃
-┡━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━┩
-│ claude-agent-acp  │ Claude Code via ACP │ acp      │
-│ codex-acp         │ OpenAI Codex CLI    │ acp      │
-│ gemini            │ Google Gemini CLI   │ acp      │
-│ pi-acp            │ Pi agent            │ acp      │
-│ openclaw          │ OpenClaw agent      │ acp      │
-└───────────────────┴─────────────────────┴──────────┘
-```
-
-## 3. Authenticate
-
-Pick your agent — each needs one auth step:
+## Install
 
 ```bash
-# Claude — login with subscription (no API key needed)
-claude login
-
-# Or use an API key
-export ANTHROPIC_API_KEY=sk-ant-...
-
-# Codex
-export OPENAI_API_KEY=sk-...
-
-# Gemini
-gemini   # follow OAuth flow
+pip install benchflow==0.3.0a3
 ```
 
-## 4. Run a single task
-
-```
-$ benchflow run -t tasks/citation-check -a claude-agent-acp -e docker
-
-Task:       citation-check
-Agent:      Claude Code (claude-agent-acp)
-Rewards:    {'reward': 1.0}
-Tool calls: 5
-```
-
-What happened:
-1. Docker container spun up with the task environment (~30s)
-2. Claude Code installed inside the container (~10s)
-3. Task instruction sent to the agent via ACP
-4. Agent worked (read files, made tool calls, edited code)
-5. Verifier ran and scored the result
-6. Result saved to `jobs/`
-
-## 5. Run a full benchmark
-
-```
-$ benchflow job -t tasks/ -a claude-agent-acp -e docker -c 4
-
-Score: 32/86 (37.2%), errors=2
-```
-
-View aggregate metrics:
-```bash
-benchflow metrics jobs/
-```
-
-## 6. Evaluate a skill
-
-Test whether a skill actually helps agents:
-
-```
-$ benchflow skills eval ./my-skill/ -a claude-agent-acp
-
-Skill eval: my-skill (3 cases)
-  Agents: claude-agent-acp
-  Environment: docker
-
-              Skill Eval: my-skill
-┏━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━┳━━━━━━━━━━━━┓
-┃ Agent             ┃ Mode       ┃ Score ┃ Avg Reward ┃
-┡━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━╇━━━━━━━━━━━━┩
-│ claude-agent-acp  │ with-skill │ 3/3   │ 0.92       │
-│ claude-agent-acp  │ baseline   │ 1/3   │ 0.35       │
-│ claude-agent-acp  │ LIFT       │ +2    │ +0.57      │
-└───────────────────┴────────────┴───────┴────────────┘
-```
-
-See the [Skill Eval Guide](skill-eval-guide.md) for the full walkthrough.
-
-## 7. View trajectories
-
-See exactly what the agent did:
+## Run your first evaluation
 
 ```bash
-benchflow view jobs/citation-check/
+# Set credentials
+export DAYTONA_API_KEY="dtn_..."
+export GEMINI_API_KEY="AIza..."
+
+# Run one TB2 task with Gemini
+bench eval create \
+  -t .ref/terminal-bench-2/regex-log \
+  -a gemini \
+  -m gemini-3.1-flash-lite-preview \
+  -e daytona
 ```
 
-Opens a browser showing every tool call, message, and thought.
+BenchFlow will:
+1. Download Terminal-Bench-2 tasks (first run only)
+2. Spin up a Daytona sandbox
+3. Install the Gemini CLI agent
+4. Send the task instruction via ACP
+5. Run the verifier
+6. Print the reward (0.0 or 1.0)
 
-## 8. Scale with Daytona (optional)
-
-For 64+ concurrent tasks, use Daytona cloud sandboxes:
+## Run a full benchmark
 
 ```bash
-export DAYTONA_API_KEY=your-key
-benchflow job -t tasks/ -a claude-agent-acp -e daytona -c 64
+# 89 TB2 tasks, 64 concurrent
+bench eval create -f benchmarks/tb2-gemini-baseline.yaml
 ```
 
-## 9. Use the Python API
+Example YAML config:
+```yaml
+task_dir: .ref/terminal-bench-2
+agent: gemini
+model: gemini-3.1-flash-lite-preview
+environment: daytona
+concurrency: 64
+max_retries: 2
+```
+
+## Python API
 
 ```python
-import asyncio
 import benchflow as bf
 
-agent = bf.Agent("claude-agent-acp", model="claude-haiku-4-5-20251001")
-env = bf.Environment.from_task("tasks/my-task", backend="docker")
-result = asyncio.run(bf.run(agent, env))
+# One-liner
+result = await bf.run("gemini", task_path="tasks/regex-log", model="gemini-3.1-flash-lite-preview")
+print(f"reward={result.rewards}")
 
-print(f"Reward: {result.reward}")   # 1.0
-print(f"Passed: {result.passed}")   # True
+# With Trial for more control
+from benchflow.trial import Trial, TrialConfig, Scene
+
+config = TrialConfig(
+    task_path=Path("tasks/regex-log"),
+    scenes=[Scene.single(agent="gemini", model="gemini-3.1-flash-lite-preview")],
+    environment="daytona",
+)
+trial = await Trial.create(config)
+result = await trial.run()
 ```
 
-See the [Runtime API Guide](runtime-guide.md) for full API reference.
+## Multi-agent (reviewer pattern)
 
-## What next?
+```python
+from benchflow.trial import TrialConfig, Scene, Role, Turn
 
-- **[Skill Eval Guide](skill-eval-guide.md)** — Test whether skills help agents
-- **[Runtime API](runtime-guide.md)** — Use benchflow programmatically
-- **[Skill Eval Tutorial](examples/skill-eval-tutorial.ipynb)** — Interactive notebook walkthrough
+config = TrialConfig(
+    task_path=Path("tasks/regex-log"),
+    scenes=[
+        Scene(name="coder-reviewer",
+              roles=[
+                  Role("coder", "gemini", "gemini-3.1-flash-lite-preview"),
+                  Role("reviewer", "gemini", "gemini-3.1-flash-lite-preview"),
+              ],
+              turns=[
+                  Turn("coder"),
+                  Turn("reviewer", "Review the code in /app/. Write feedback to /app/.outbox/coder.json"),
+                  Turn("coder", "Read reviewer feedback and fix issues."),
+              ]),
+    ],
+    environment="daytona",
+)
+result = await bf.run(config)
+```
+
+## Next steps
+
+- [CLI Reference](cli-reference.md) — all commands
+- [Task Authoring](task-authoring.md) — create your own tasks
+- [Runtime Guide](runtime-guide.md) — Trial/Scene API details
+- [Skill Eval Guide](skill-eval-guide.md) — evaluate agent skills
