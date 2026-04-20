@@ -588,6 +588,12 @@ class Trial:
         finally:
             await self.cleanup()
 
+        if self._trial_dir is None:
+            from benchflow.models import RunResult
+            return RunResult(
+                task_name=self._config.task_path.name,
+                error=self._error or "Setup failed before trial directory was created",
+            )
         return self._build_result()
 
     # ── Scene execution ──
