@@ -559,7 +559,8 @@ async def _distro_pip_env(env) -> dict[str, str]:
         result = await env.exec(
             "cat /etc/os-release 2>/dev/null || true", user="root", timeout_sec=5
         )
-    except Exception:
+    except Exception as e:
+        logger.warning("distro detection failed (%s); skipping pip env tweaks", e)
         return {}
     text = (result.stdout or "").lower()
     ids: list[str] = []

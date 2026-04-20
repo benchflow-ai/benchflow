@@ -532,6 +532,8 @@ class SDK:
                     user="root",
                     timeout_sec=10,
                 )
+                timing["agent_setup"] = (datetime.now() - t_agent_setup).total_seconds()
+                t_agent_exec = datetime.now()
                 trajectory, agent_name = await self._run_oracle(
                     env, task_path, timeout, sandbox_user=None
                 )
@@ -598,13 +600,9 @@ class SDK:
                 )
                 trajectory_source = "acp"
 
-            if agent != "oracle" and "agent_setup" not in timing:
+            if "agent_setup" not in timing:
                 timing["agent_setup"] = (datetime.now() - t_agent_setup).total_seconds()
-            if agent == "oracle":
-                timing["agent_execution"] = (
-                    datetime.now() - t_agent_setup
-                ).total_seconds()
-            elif "agent_execution" not in timing:
+            if "agent_execution" not in timing:
                 timing["agent_execution"] = (
                     datetime.now() - t_agent_exec
                 ).total_seconds()
