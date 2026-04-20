@@ -24,9 +24,9 @@ scenes:
 
 **Result:** reward=0.0, 3 tool calls. The agent wrote a regex but missed edge cases.
 
-## Pattern 2: Multi-Turn Self-Review
+## Pattern 2: Single-Agent Multi-Turn
 
-Same agent, two sequential prompts. The agent maintains ACP session context between turns.
+Same agent, multiple sequential prompts in one ACP session. Context preserved between turns. Self-review is the most common variant.
 
 ```yaml
 scenes:
