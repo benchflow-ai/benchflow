@@ -55,6 +55,13 @@ def _install_python_script(container_path: str, source: str) -> str:
     Base64 transport — makes the install shell line content-agnostic so a line
     like `SHIMEOF` or `LAUNCHEREOF` inside the Python source can't collide with
     a heredoc terminator.
+
+    Used by pi-acp and openclaw — both ship a Python launcher/shim baked into
+    install_cmd. Rule of three: if you're adding a THIRD agent that needs this
+    pattern, read both pi_acp_launcher.py and openclaw_acp_shim.py first and
+    reconcile their semantics (env bridging, provider-name derivation, model
+    metadata) before writing a new one. Only consider extracting a shared base
+    after the third data point — divergence is cheap, premature abstraction isn't.
     """
     encoded = base64.b64encode(source.encode()).decode()
     return (
