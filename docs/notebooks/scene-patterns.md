@@ -1,6 +1,6 @@
 # BenchFlow Scene Patterns — Multi-Turn, Multi-Round, Multi-Scene
 
-This document + the companion notebook demonstrates all multi-agent evaluation patterns that BenchFlow's Scene lifecycle supports. Each pattern replaces hundreds of lines of custom runtime code (e.g. [harbor PR #1462](https://github.com/harbor-framework/harbor/pull/1462)) with a YAML config.
+This document + the companion notebook demonstrates all multi-agent evaluation patterns that BenchFlow's Scene lifecycle supports. Each pattern replaces hundreds of lines of custom runtime code with a YAML config.
 
 ## Terminology
 
@@ -61,7 +61,7 @@ scenes:
 
 ## Pattern 4: Interactive User Simulation
 
-A "user" role reveals task information gradually. This is exactly what [harbor #1316](https://github.com/harbor-framework/harbor/issues/1316) proposed and [PR #1462](https://github.com/harbor-framework/harbor/pull/1462) built 600+ lines to implement.
+A "user" role reveals task information gradually. This pattern supports interactive benchmarks where a user reveals information gradually.
 
 ```yaml
 scenes:
@@ -113,15 +113,6 @@ scenes:
 
 This pattern shows why multi-round matters for real users — the advisor's analysis improves when the client clarifies priorities.
 
-## Comparison: BenchFlow vs Harbor
-
-| Pattern | BenchFlow | Harbor |
-|---------|-----------|--------|
-| Single-agent | `scenes: [{turns: [{role: agent}]}]` | `harbor run` |
-| Multi-turn | Same scene, multiple turns | `prompts:` list in YAML |
-| Multi-round | Two roles in one scene | PR #1462: BaseUser + UserFactory + per-round archiving (600+ lines) |
-| Interactive user | Role with oracle access | PR #1462 required |
-| Multi-scene | Two scenes in sequence | Not supported |
 | Skill warmup | Scene with `scoring: null` | Not supported |
 
 ## Running the Demos
