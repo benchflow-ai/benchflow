@@ -46,13 +46,13 @@ bench eval create \
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--config`, `-f` | — | YAML config file |
-| `--tasks-dir`, `-t` | — | Directory of tasks |
+| `--tasks-dir`, `-t` | — | Task dir (single task with task.toml, or parent of many tasks) |
 | `--agent`, `-a` | `gemini` | Agent name |
 | `--model`, `-m` | `gemini-3.1-flash-lite-preview` | Model ID |
 | `--env`, `-e` | `docker` | Environment: docker or daytona |
-| `--concurrency`, `-c` | `4` | Max concurrent tasks |
-| `--max-retries` | `2` | Per-trial retry count |
-| `--skills-dir`, `-s` | — | Skills directory |
+| `--concurrency`, `-c` | `4` | Max concurrent tasks (batch mode only) |
+| `--jobs-dir`, `-o` | `jobs` | Output directory |
+| `--sandbox-user` | `agent` | Sandbox user (null for root) |
 
 ### bench eval list
 

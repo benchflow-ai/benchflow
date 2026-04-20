@@ -33,6 +33,8 @@ def auto_inherit_env(agent_env: dict[str, str]) -> None:
 
     keys = {
         "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "CLAUDE_CODE_OAUTH_TOKEN",
         "OPENAI_API_KEY",
         "GOOGLE_API_KEY",
         "GEMINI_API_KEY",
