@@ -377,9 +377,7 @@ class Job:
         cfg = self._config
         last_result: RunResult | None = None
 
-        for attempt in range(
-            1, cfg.retry.max_retries + 2
-        ):  # +2 because range is exclusive and attempt 1 is first try
+        for attempt in range(1, cfg.retry.max_retries + 2):
             if attempt > 1:
                 self._prune_docker()
             result = await self._sdk.run(
@@ -520,7 +518,7 @@ class Job:
             failed=sum(
                 1
                 for r in all_results.values()
-                if extract_reward(r) is not None and extract_reward(r) != 1.0
+                if (rw := extract_reward(r)) is not None and rw != 1.0
             ),
             errored=sum(
                 1

@@ -36,8 +36,6 @@ _SAFE_PATH_RE = re.compile(r"^/[a-zA-Z0-9_./*?\-]+(/[a-zA-Z0-9_./*?\-]+)*$")
 
 def _validate_locked_path(p: str) -> None:
     """Reject injection and traversal in a locked path."""
-    import os
-
     p_norm = os.path.normpath(p)
     if p_norm != p:
         raise ValueError(

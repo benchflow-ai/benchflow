@@ -263,7 +263,6 @@ class SDK:
             "\n".join(json.dumps(e, default=str) for e in trajectory)
         )
         # Save result.json, prompts.json, timing.json
-        trial_dir.mkdir(parents=True, exist_ok=True)
         (trial_dir / "result.json").write_text(
             json.dumps(
                 {
@@ -380,11 +379,9 @@ class SDK:
                 verifier.verify(),
                 timeout=task.config.verifier.timeout_sec,
             )
-            timing["verifier"] = (datetime.now() - t0).total_seconds()
             rewards = verifier_result.rewards
             logger.info(f"Rewards: {rewards}")
         except TimeoutError:
-            timing["verifier"] = (datetime.now() - t0).total_seconds()
             # NOTE: these prefixes must stay in sync with classify_verifier_error() in _scoring.py
             verifier_error = (
                 f"verifier timed out after {task.config.verifier.timeout_sec}s"
@@ -392,11 +389,12 @@ class SDK:
             rewards = None
             logger.error(verifier_error)
         except Exception as e:
-            timing["verifier"] = (datetime.now() - t0).total_seconds()
             # NOTE: these prefixes must stay in sync with classify_verifier_error() in _scoring.py
             verifier_error = f"verifier crashed: {e}"
             rewards = None
             logger.error(verifier_error)
+        finally:
+            timing["verifier"] = (datetime.now() - t0).total_seconds()
         return rewards, verifier_error
 
     async def run(

@@ -25,6 +25,7 @@ from benchflow._sandbox import build_priv_drop_cmd
 from benchflow._trajectory import _capture_session_trajectory
 from benchflow.acp.client import ACPClient
 from benchflow.acp.container_transport import ContainerTransport
+from benchflow.agents.providers import strip_provider_prefix
 from benchflow.process import DaytonaProcess, DockerProcess
 
 logger = logging.getLogger(__name__)
@@ -82,8 +83,6 @@ async def connect_acp(
     logger.info(f"Session: {session.session_id}")
 
     if model:
-        from benchflow.agents.providers import strip_provider_prefix
-
         acp_model_id = strip_provider_prefix(model)
         try:
             await asyncio.wait_for(acp_client.set_model(acp_model_id), timeout=60)

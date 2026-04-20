@@ -31,6 +31,9 @@ _DIAG_TRUNCATE = 2000  # max chars for diagnostic output in ACP updates
 _TOOL_RESULT_TRUNCATE = 1000  # max chars for tool result text
 
 
+# ── ACP stdio I/O ─────────────────────────────────────────────────────────────
+
+
 def send(msg):
     sys.stdout.write(json.dumps(msg) + "\n")
     sys.stdout.flush()
@@ -45,6 +48,9 @@ def recv():
         if not line:
             continue
         return json.loads(line)
+
+
+# ── Workspace + auth setup ────────────────────────────────────────────────────
 
 
 def setup_workspace(cwd: str):
@@ -221,6 +227,9 @@ def _get_adc_token() -> str:
         raise ValueError(f"Unsupported ADC credential type: {cred_type!r}")
 
 
+# ── Provider resolution ───────────────────────────────────────────────────────
+
+
 def setup_custom_provider(
     provider_name: str,
     base_url: str,
@@ -338,6 +347,9 @@ def _find_and_setup_provider(model: str) -> str | None:
         setup_custom_provider(provider_name, base_url, api_key, api_protocol, models)
         return provider_name
     return None
+
+
+# ── Session parsing ───────────────────────────────────────────────────────────
 
 
 def find_session_jsonl() -> Path | None:
@@ -498,6 +510,9 @@ def parse_session_jsonl(path: Path, session_id: str) -> list[dict]:
         logger.debug("Failed to parse session JSONL for trajectory", exc_info=True)
 
     return updates
+
+
+# ── Main loop ─────────────────────────────────────────────────────────────────
 
 
 def main():
