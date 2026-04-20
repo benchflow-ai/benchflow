@@ -1,7 +1,7 @@
 ---
 name: code-cleanup
 description: Two-pass subagent sweep for trivial/small refactoring wins — find candidates, then verify each before recommending
-user_invocable: true
+user-invocable: true
 ---
 
 # Code Cleanup Skill

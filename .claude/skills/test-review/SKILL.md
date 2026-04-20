@@ -1,7 +1,7 @@
 ---
 name: test-review
 description: Mutation-kill oriented review of benchflow test files — find bloat to delete/collapse and coverage gaps to add, without naive deletion
-user_invocable: true
+user-invocable: true
 ---
 
 # Test Review Skill

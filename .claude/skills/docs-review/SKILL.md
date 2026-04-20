@@ -1,7 +1,7 @@
 ---
 name: docs-review
 description: Review benchflow documentation for drift, staleness, duplication, and alignment
-user_invocable: true
+user-invocable: true
 ---
 
 # Docs Review Skill

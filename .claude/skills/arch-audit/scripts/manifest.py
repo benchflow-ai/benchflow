@@ -11,7 +11,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parents[3]
+REPO = Path(__file__).resolve().parents[4]
 SRC_ROOT = REPO / "src" / "benchflow"
 CACHE_DIR = Path(__file__).parent / ".cache"
 PKG_PREFIX = "benchflow"
@@ -115,11 +115,18 @@ def scan_all_py_files() -> list[Path]:
         "build",
         ".ref",
         "labs",
-        ".smoke-jobs",
-        "trajectories",
     }
+    # Names that are legitimate submodules of src/benchflow/ but also appear as
+    # top-level run-output dirs — skip only when they're directly under REPO.
+    skip_top_level = {"trajectories", ".smoke-jobs"}
     for p in REPO.rglob("*.py"):
         if any(part in skip_parts for part in p.parts):
+            continue
+        try:
+            rel = p.relative_to(REPO)
+        except ValueError:
+            rel = p
+        if rel.parts and rel.parts[0] in skip_top_level:
             continue
         out.append(p)
     return out
