@@ -291,17 +291,62 @@ class Runtime:
 
 
 async def run(
-    agent: Agent,
-    env: Environment,
+    subject: "Agent | TrialConfig | str",
+    env: "Environment | str | None" = None,
     config: RuntimeConfig | None = None,
-) -> RuntimeResult:
-    """Convenience function — the primary user-facing API.
+    *,
+    task_path: "str | Path | None" = None,
+    model: str | None = None,
+) -> "RuntimeResult | RunResult":
+    """Primary user-facing API — multiple calling conventions.
 
     Usage::
 
         import benchflow as bf
-        result = await bf.run(agent, env)
-        print(result.reward)
+
+        # 1. TrialConfig (Scene-based, full control)
+        result = await bf.run(TrialConfig(task_path=..., scenes=[...]))
+
+        # 2. Agent + Environment (0.3 style)
+        result = await bf.run(Agent("gemini", "flash"), Environment.from_task("tasks/X"))
+
+        # 3. Agent name string (simplest)
+        result = await bf.run("gemini", task_path="tasks/X")
     """
-    runtime = Runtime(env, agent, config)
-    return await runtime.execute()
+    from benchflow.models import RunResult
+    from benchflow.trial import Scene, Trial, TrialConfig
+
+    if isinstance(subject, TrialConfig):
+        trial = await Trial.create(subject)
+        return await trial.run()
+
+    if isinstance(subject, Agent):
+        if not isinstance(env, Environment):
+            raise TypeError(
+                f"When passing an Agent, env must be an Environment, got {type(env).__name__}. "
+                f"Use bf.run('agent-name', task_path=...) for the string shortcut."
+            )
+        runtime = Runtime(env, subject, config)
+        return await runtime.execute()
+
+    if isinstance(subject, str):
+        if task_path is None:
+            raise ValueError("task_path required when passing agent name as string")
+        rc = config or RuntimeConfig()
+        trial_config = TrialConfig(
+            task_path=Path(task_path),
+            scenes=[Scene.single(agent=subject, model=model)],
+            environment=env if isinstance(env, str) else "docker",
+            sandbox_user=rc.sandbox_user,
+            sandbox_locked_paths=rc.sandbox_locked_paths,
+            jobs_dir=rc.jobs_dir,
+            context_root=rc.context_root,
+            pre_agent_hooks=rc.pre_agent_hooks,
+            skills_dir=rc.skills_dir,
+            agent=subject,
+            model=model,
+        )
+        trial = await Trial.create(trial_config)
+        return await trial.run()
+
+    raise TypeError(f"Unsupported subject type: {type(subject).__name__}")
