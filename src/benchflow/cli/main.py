@@ -21,11 +21,11 @@ app = typer.Typer(
 )
 
 
-@app.command(hidden=True, deprecated=True)
+@app.command()
 def run(
     task_dir: Annotated[
         Path,
-        typer.Option("--task-dir", "-t", help="Task directory"),
+        typer.Argument(help="Task directory (must contain task.toml)"),
     ],
     agent: Annotated[
         str,
@@ -37,7 +37,7 @@ def run(
     ] = None,
     environment: Annotated[
         str,
-        typer.Option("--env", "-e", help="Environment: docker or daytona"),
+        typer.Option("--backend", "-b", help="Backend: docker or daytona"),
     ] = "docker",
     prompt: Annotated[
         list[str] | None,
@@ -51,7 +51,7 @@ def run(
     ] = "jobs",
     agent_env: Annotated[
         list[str] | None,
-        typer.Option("--ae", help="Agent env var (KEY=VALUE)"),
+        typer.Option("--agent-env", "--ae", help="Agent env var (KEY=VALUE)"),
     ] = None,
     skills_dir: Annotated[
         Path | None,
@@ -67,7 +67,12 @@ def run(
         ),
     ] = "agent",
 ) -> None:
-    """Run a single task with an ACP agent."""
+    """Run a single task with an ACP agent.
+
+    Examples:
+        bench run tasks/regex-log --agent gemini --model gemini-3.1-flash-lite-preview
+        bench run tasks/X --agent openhands --backend daytona
+    """
     from benchflow.sdk import SDK
 
     parsed_env: dict[str, str] = {}
