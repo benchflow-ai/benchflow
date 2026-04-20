@@ -760,7 +760,7 @@ class TestVerifierEnv:
 
         final_env = task.config.verifier.env
         addopts = final_env.get("PYTEST_ADDOPTS", "")
-        assert "-p pytest-json-ctrf" in addopts
+        assert "-p ctrf" in addopts
         assert "-p myplug" in addopts
         # The security flag must still be present after the plugin flags are appended.
         assert final_env.get("PYTEST_DISABLE_PLUGIN_AUTOLOAD") == "1"
@@ -832,7 +832,7 @@ class TestVerifierEnv:
 
         addopts = task.config.verifier.env["PYTEST_ADDOPTS"]
         assert addopts.startswith(VERIFIER_ENV["PYTEST_ADDOPTS"])
-        assert "-p pytest-json-ctrf" in addopts
+        assert "-p ctrf" in addopts
         assert "--rootdir=/evil" not in addopts
 
     def test_pythonpycacheprefix_set_to_nonexistent(self):

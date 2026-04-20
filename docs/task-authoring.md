@@ -146,10 +146,10 @@ benchflow tasks init my-task --no-pytest --no-solution
 benchflow tasks check tasks/my-task/
 
 # Confirm oracle gets reward = 1.0
-benchflow run -t tasks/my-task/ -a oracle -e docker
+bench run -t tasks/my-task/ -a oracle -e docker
 
 # Run a real agent
-benchflow run -t tasks/my-task/ -a claude-agent-acp -e docker
+bench run -t tasks/my-task/ -a claude-agent-acp -e docker
 ```
 
 `benchflow tasks check` validates that `task.toml`, `instruction.md` (non-empty), `environment/Dockerfile`, and `tests/` (non-empty) all exist, and that `[agent].timeout_sec` is set. Exits with code 1 on failure (CI-friendly).

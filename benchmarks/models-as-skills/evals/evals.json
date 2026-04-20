@@ -1,0 +1,46 @@
+{
+  "skill_name": "code-specialist",
+  "version": "1",
+  "defaults": {
+    "timeout_sec": 600,
+    "judge_model": "claude-haiku-4-5-20251001"
+  },
+  "cases": [
+    {
+      "id": "topo-sort-with-cycle-detection",
+      "question": "Implement a function `topo_sort(graph: dict[str, list[str]]) -> list[str]` that performs topological sorting on a directed graph. The graph is represented as an adjacency list (node → list of nodes it points to). If the graph contains a cycle, raise a ValueError with the message 'Graph contains a cycle'. The function should be deterministic — for nodes with equal ordering, sort alphabetically.\n\nExample:\n```python\ngraph = {'a': ['b', 'c'], 'b': ['d'], 'c': ['d'], 'd': []}\ntopo_sort(graph)  # ['a', 'b', 'c', 'd'] or ['a', 'c', 'b', 'd']\n\ncyclic = {'a': ['b'], 'b': ['c'], 'c': ['a']}\ntopo_sort(cyclic)  # raises ValueError('Graph contains a cycle')\n```\n\nWrite tests to verify correctness.",
+      "ground_truth": "Correct implementation using Kahn's algorithm or DFS-based topological sort with cycle detection. Must handle: empty graph, single node, diamond DAG, disconnected components, and cyclic graphs.",
+      "expected_behavior": [
+        "The agent produced a working topo_sort function",
+        "The function correctly detects cycles and raises ValueError",
+        "The function handles edge cases (empty graph, single node)",
+        "The agent wrote tests verifying the implementation",
+        "The implementation is deterministic (alphabetical tiebreaking)"
+      ]
+    },
+    {
+      "id": "regex-email-parser",
+      "question": "Write a Python function `parse_email_addresses(text: str) -> list[dict]` that extracts all email addresses from a block of text and returns structured data. For each email, return: `{'local': str, 'domain': str, 'full': str}`. Handle edge cases: emails in angle brackets `<user@domain.com>`, emails with dots and hyphens in local part, emails with subdomains.\n\nDo NOT match: strings without @ signs, emails with spaces, or emails ending with dots.\n\nExample:\n```python\ntext = 'Contact us at support@example.com or <sales@sub.domain.co.uk>'\nparse_email_addresses(text)\n# [{'local': 'support', 'domain': 'example.com', 'full': 'support@example.com'},\n#  {'local': 'sales', 'domain': 'sub.domain.co.uk', 'full': 'sales@sub.domain.co.uk'}]\n```",
+      "ground_truth": "A regex-based email parser that correctly handles: standard emails, angle-bracket emails, dotted local parts, hyphenated domains, subdomains, and rejects invalid patterns (spaces, trailing dots, no @ sign).",
+      "expected_behavior": [
+        "The agent produced a working parse_email_addresses function",
+        "The regex handles standard emails, angle brackets, and subdomains",
+        "Invalid emails are correctly rejected",
+        "The agent wrote tests covering edge cases",
+        "The function returns the structured dict format"
+      ]
+    },
+    {
+      "id": "optimize-quadratic-to-nlogn",
+      "question": "The following function finds all pairs in a list that sum to a target value. It works but is O(n²). Optimize it to O(n) or O(n log n) while maintaining the same output format (sorted list of pairs, each pair sorted).\n\n```python\ndef find_pairs(nums: list[int], target: int) -> list[tuple[int, int]]:\n    result = []\n    for i in range(len(nums)):\n        for j in range(i + 1, len(nums)):\n            if nums[i] + nums[j] == target:\n                pair = tuple(sorted([nums[i], nums[j]]))\n                if pair not in result:\n                    result.append(pair)\n    return sorted(result)\n```\n\nYour optimized version must produce identical output for all inputs. Include a brief explanation of the complexity improvement.",
+      "ground_truth": "Hash-set based O(n) solution using a seen set. For each number, check if (target - number) is in the seen set. Handles duplicates correctly by using sorted pairs in a result set.",
+      "expected_behavior": [
+        "The agent produced an O(n) or O(n log n) solution",
+        "The optimized function produces identical output to the original",
+        "The agent explained the complexity improvement",
+        "The agent handled duplicate pairs correctly",
+        "The agent wrote tests verifying equivalence with the original"
+      ]
+    }
+  ]
+}

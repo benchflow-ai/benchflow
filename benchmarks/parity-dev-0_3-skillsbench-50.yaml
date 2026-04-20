@@ -1,0 +1,17 @@
+# dev-0.3 parity smoke (skillsbench-50).
+#
+# 50-task subset of the 173-task parity corpus (first 50 alphabetically).
+# Intended to be run twice: once pinned to benchflow==0.2.3, once on dev-0.3.
+# Per docs/0.3-plan.md §13 — gate is ±2 tasks net delta, wall-clock ≤1.3× baseline.
+#
+# Subset dir is built by scripts/make_parity_subset.sh before the run. Task
+# names live in scripts/parity-skillsbench-50.txt so the subset is reproducible
+# on any machine with the parity-full-tasks corpus.
+
+tasks_dir: /tmp/parity-dev-0_3-skillsbench-50
+jobs_dir: ../jobs/parity-dev-0_3-skillsbench-50
+agent: claude-agent-acp
+model: claude-haiku-4-5-20251001
+environment: daytona
+concurrency: 10
+max_retries: 2

@@ -360,33 +360,19 @@ def eval(
     console.print(f"  Elapsed: {result.elapsed_sec:.0f}s")
 
 
-@app.command()
-def skills(
+skills_app = typer.Typer(help="Skill discovery, installation, and evaluation.")
+app.add_typer(skills_app, name="skills")
+
+
+@skills_app.command("list")
+def skills_list(
     directory: Annotated[
         Path | None,
         typer.Option("--dir", "-d", help="Skills directory to scan"),
     ] = None,
-    install: Annotated[
-        str | None,
-        typer.Option(
-            "--install",
-            "-i",
-            help="Install skill from skills.sh (e.g. anthropics/skills@find-skills)",
-        ),
-    ] = None,
 ) -> None:
-    """List or install agent skills."""
-    from benchflow.skills import DEFAULT_SKILLS_DIR, discover_skills, install_skill
-
-    if install:
-        target = directory or DEFAULT_SKILLS_DIR
-        result = install_skill(install, target_dir=target)
-        if result:
-            console.print(f"[green]Installed:[/green] {result}")
-        else:
-            console.print(f"[red]Failed to install {install}[/red]")
-            raise typer.Exit(1)
-        return
+    """List discovered skills."""
+    from benchflow.skills import DEFAULT_SKILLS_DIR, discover_skills
 
     search_dirs = (
         [directory]
@@ -396,7 +382,7 @@ def skills(
     found = discover_skills(*search_dirs)
     if not found:
         console.print(
-            "No skills found. Install with: benchflow skills --install owner/repo@skill-name"
+            "No skills found. Install with: benchflow skills install owner/repo@skill-name"
         )
         return
 
@@ -410,6 +396,129 @@ def skills(
         table.add_row(s.name, s.version or "-", s.description[:60], str(s.path))
 
     console.print(table)
+
+
+@skills_app.command("install")
+def skills_install(
+    spec: Annotated[
+        str,
+        typer.Argument(help="Skill spec (e.g. anthropics/skills@find-skills)"),
+    ],
+    directory: Annotated[
+        Path | None,
+        typer.Option("--dir", "-d", help="Target directory"),
+    ] = None,
+) -> None:
+    """Install a skill from the registry."""
+    from benchflow.skills import DEFAULT_SKILLS_DIR, install_skill
+
+    target = directory or DEFAULT_SKILLS_DIR
+    result = install_skill(spec, target_dir=target)
+    if result:
+        console.print(f"[green]Installed:[/green] {result}")
+    else:
+        console.print(f"[red]Failed to install {spec}[/red]")
+        raise typer.Exit(1)
+
+
+@skills_app.command("eval")
+def skills_eval(
+    skill_dir: Annotated[
+        Path,
+        typer.Argument(help="Path to skill directory containing evals/evals.json"),
+    ],
+    agent: Annotated[
+        list[str],
+        typer.Option("--agent", "-a", help="Agent(s) to evaluate (repeatable)"),
+    ] = ["claude-agent-acp"],
+    model: Annotated[
+        list[str] | None,
+        typer.Option("--model", "-m", help="Model(s) (matched 1:1 with agents)"),
+    ] = None,
+    environment: Annotated[
+        str,
+        typer.Option("--env", "-e", help="Environment: docker or daytona"),
+    ] = "docker",
+    concurrency: Annotated[
+        int,
+        typer.Option("--concurrency", "-c", help="Max concurrent tasks"),
+    ] = 1,
+    jobs_dir: Annotated[
+        str,
+        typer.Option("--jobs-dir", "-o", help="Output directory for results"),
+    ] = "jobs",
+    no_baseline: Annotated[
+        bool,
+        typer.Option("--no-baseline", help="Skip baseline (without-skill) runs"),
+    ] = False,
+    export_gepa: Annotated[
+        bool,
+        typer.Option("--export-gepa", help="Export GEPA-compatible traces"),
+    ] = False,
+) -> None:
+    """Evaluate a skill using its evals/evals.json test cases.
+
+    Generates ephemeral tasks from the skill's eval dataset, runs each agent
+    with and without the skill installed, and reports the lift.
+
+    Examples:
+        benchflow skills eval ./my-skill/ -a claude-agent-acp
+        benchflow skills eval ./my-skill/ -a claude-agent-acp -a codex-acp -e daytona -c 4
+        benchflow skills eval ./my-skill/ -a claude-agent-acp --no-baseline --export-gepa
+    """
+    from benchflow.skill_eval import SkillEvaluator, export_gepa_traces
+
+    if not (skill_dir / "evals" / "evals.json").exists():
+        console.print(
+            f"[red]No evals/evals.json found in {skill_dir}[/red]\n"
+            f"Create one with test cases. See: benchflow skills eval --help"
+        )
+        raise typer.Exit(1)
+
+    evaluator = SkillEvaluator(skill_dir)
+    console.print(
+        f"[bold]Skill eval:[/bold] {evaluator.dataset.skill_name} "
+        f"({len(evaluator.dataset.cases)} cases)"
+    )
+    console.print(f"  Agents: {', '.join(agent)}")
+    console.print(f"  Environment: {environment}")
+    if no_baseline:
+        console.print("  [dim]Baseline skipped (--no-baseline)[/dim]")
+
+    result = asyncio.run(
+        evaluator.run(
+            agents=agent,
+            models=model,
+            environment=environment,
+            jobs_dir=jobs_dir,
+            no_baseline=no_baseline,
+            concurrency=concurrency,
+        )
+    )
+
+    # Display results
+    table = Table(title=f"Skill Eval: {result.skill_name}")
+    table.add_column("Agent", style="cyan")
+    table.add_column("Mode", style="dim")
+    table.add_column("Score")
+    table.add_column("Avg Reward")
+
+    for row in result.summary_table():
+        style = "bold green" if row["mode"] == "LIFT" else None
+        table.add_row(
+            row["agent"], row["mode"], row["score"], row["avg_reward"], style=style
+        )
+
+    console.print(table)
+
+    # GEPA export
+    if export_gepa:
+        gepa_dir = export_gepa_traces(
+            result,
+            evaluator.dataset,
+            output_dir=f"{jobs_dir}/skill-eval/{result.skill_name}/gepa",
+        )
+        console.print(f"[green]GEPA traces exported to {gepa_dir}[/green]")
 
 
 tasks_app = typer.Typer(help="Task authoring commands")
@@ -536,6 +645,350 @@ def cleanup(
         console.print(
             f"\n[bold green]{total_deleted} sandboxes deleted[/bold green] ({total_skipped} skipped, younger than {max_age_minutes}m)"
         )
+
+
+# ── Resource-verb subgroups (0.3 CLI) ────────────────────────────────────────
+
+agent_app = typer.Typer(help="Agent management commands.")
+app.add_typer(agent_app, name="agent")
+
+
+@agent_app.command("list")
+def agent_list() -> None:
+    """List all registered agents."""
+    from benchflow.agents.registry import list_agents
+
+    table = Table(title="Registered Agents")
+    table.add_column("Name", style="cyan")
+    table.add_column("Description")
+    table.add_column("Protocol", style="green")
+    table.add_column("Requires", style="yellow")
+
+    for a in list_agents():
+        sub_env = a.subscription_auth.replaces_env if a.subscription_auth else None
+        requires = [f"{e} (or login)" if e == sub_env else e for e in a.requires_env]
+        table.add_row(a.name, a.description, a.protocol, ", ".join(requires))
+
+    console.print(table)
+
+
+@agent_app.command("show")
+def agent_show(
+    name: Annotated[str, typer.Argument(help="Agent name")],
+) -> None:
+    """Show details for a registered agent."""
+    from benchflow.agents.registry import AGENTS
+
+    cfg = AGENTS.get(name)
+    if not cfg:
+        console.print(f"[red]Unknown agent: {name}[/red]")
+        raise typer.Exit(1)
+
+    console.print(f"[bold]{cfg.name}[/bold]")
+    console.print(f"  Description: {cfg.description}")
+    console.print(f"  Protocol:    {cfg.protocol}")
+    console.print(f"  Launch:      {cfg.launch_cmd}")
+    console.print(f"  Requires:    {', '.join(cfg.requires_env) or '(none)'}")
+    if cfg.subscription_auth:
+        console.print(
+            f"  Auth:        subscription via {cfg.subscription_auth.detect_file}"
+        )
+
+
+eval_app = typer.Typer(help="Evaluation commands.")
+app.add_typer(eval_app, name="eval")
+
+
+@eval_app.command("run")
+def eval_run(
+    config_file: Annotated[
+        Path | None,
+        typer.Option("--config", "-f", help="YAML config file"),
+    ] = None,
+    tasks_dir: Annotated[
+        Path | None,
+        typer.Option("--tasks-dir", "-t", help="Tasks directory"),
+    ] = None,
+    agent: Annotated[
+        str,
+        typer.Option("--agent", "-a", help="Agent name"),
+    ] = DEFAULT_AGENT,
+    model: Annotated[
+        str | None,
+        typer.Option("--model", "-m", help="Model"),
+    ] = None,
+    environment: Annotated[
+        str,
+        typer.Option("--env", "-e", help="Backend: docker or daytona"),
+    ] = "docker",
+    concurrency: Annotated[
+        int,
+        typer.Option("--concurrency", "-c", help="Max concurrent tasks"),
+    ] = 4,
+    jobs_dir: Annotated[
+        str,
+        typer.Option("--jobs-dir", "-o", help="Output directory"),
+    ] = "jobs",
+    sandbox_user: Annotated[
+        str | None,
+        typer.Option("--sandbox-user", help="Sandbox user (null for root)"),
+    ] = "agent",
+) -> None:
+    """Run an evaluation — batch of tasks with scoring."""
+    from benchflow.job import Job, JobConfig
+
+    if config_file:
+        j = Job.from_yaml(config_file)
+    elif tasks_dir:
+        j = Job(
+            tasks_dir=str(tasks_dir),
+            jobs_dir=jobs_dir,
+            config=JobConfig(
+                agent=agent,
+                model=model or DEFAULT_MODEL,
+                environment=environment,
+                concurrency=concurrency,
+                sandbox_user=sandbox_user,
+            ),
+        )
+    else:
+        console.print("[red]Either --config or --tasks-dir is required[/red]")
+        raise typer.Exit(1)
+
+    result = asyncio.run(j.run())
+    console.print(
+        f"\n[bold]Score: {result.passed}/{result.total} "
+        f"({result.score:.1%})[/bold], errors={result.errored}"
+    )
+
+
+@eval_app.command("list")
+def eval_list(
+    jobs_dir: Annotated[
+        Path,
+        typer.Argument(help="Jobs directory to list"),
+    ] = Path("jobs"),
+) -> None:
+    """List completed evaluations."""
+    if not jobs_dir.exists():
+        console.print(f"[yellow]No jobs directory: {jobs_dir}[/yellow]")
+        return
+
+    table = Table(title="Evaluations")
+    table.add_column("Job", style="cyan")
+    table.add_column("Tasks", justify="right")
+    table.add_column("Summary")
+
+    for d in sorted(jobs_dir.iterdir()):
+        if not d.is_dir():
+            continue
+        summary = d / "summary.json"
+        if summary.exists():
+            data = json.loads(summary.read_text())
+            table.add_row(
+                d.name,
+                str(data.get("total", "?")),
+                f"{data.get('passed', '?')}/{data.get('total', '?')} ({data.get('score', '?')})",
+            )
+        else:
+            sub_count = sum(1 for s in d.iterdir() if s.is_dir())
+            table.add_row(d.name, str(sub_count), "[dim]no summary[/dim]")
+
+    console.print(table)
+
+
+train_app = typer.Typer(help="Training and RL optimization commands.")
+app.add_typer(train_app, name="train")
+
+
+@train_app.command("create")
+def train_create(
+    config_file: Annotated[
+        Path | None,
+        typer.Option("--config", "-f", help="Job config YAML"),
+    ] = None,
+    tasks_dir: Annotated[
+        Path | None,
+        typer.Option("--tasks-dir", "-t", help="Tasks directory"),
+    ] = None,
+    agent: Annotated[
+        str,
+        typer.Option("--agent", "-a", help="Agent name"),
+    ] = DEFAULT_AGENT,
+    model: Annotated[
+        str | None,
+        typer.Option("--model", "-m", help="Model"),
+    ] = None,
+    environment: Annotated[
+        str,
+        typer.Option("--env", "-e", help="Backend"),
+    ] = "daytona",
+    sweeps: Annotated[
+        int,
+        typer.Option("--sweeps", help="Number of sweep iterations"),
+    ] = 3,
+    concurrency: Annotated[
+        int,
+        typer.Option("--concurrency", "-c", help="Max concurrent tasks"),
+    ] = 64,
+    export_dir: Annotated[
+        Path | None,
+        typer.Option("--export", help="Export sweep results to directory"),
+    ] = None,
+    jobs_dir: Annotated[
+        str,
+        typer.Option("--jobs-dir", "-o", help="Output directory"),
+    ] = "jobs",
+) -> None:
+    """Run a training sweep — successive eval runs with reward-based filtering.
+
+    Each sweep runs all remaining tasks. Tasks that succeed (reward > 0) are
+    dropped from the next sweep. After all sweeps, results are split into
+    success/failure for RL training data.
+
+    Modeled after Harbor's sweep pattern: run → collect → filter → repeat.
+    Integrates with rewards.jsonl (ORS-compatible) for dense reward export.
+
+    Example:
+        bench train create -t tasks/ -a gemini --sweeps 3 --export ./training-data
+    """
+    from benchflow.job import Job, JobConfig
+
+    if not config_file and not tasks_dir:
+        console.print("[red]Either --config or --tasks-dir is required[/red]")
+        raise typer.Exit(1)
+
+    sweep_results: list[dict] = []
+
+    for sweep_idx in range(1, sweeps + 1):
+        console.print(f"\n[bold]Sweep {sweep_idx}/{sweeps}[/bold]")
+
+        if config_file:
+            j = Job.from_yaml(config_file)
+        else:
+            j = Job(
+                tasks_dir=str(tasks_dir),
+                jobs_dir=f"{jobs_dir}/sweep-{sweep_idx}",
+                config=JobConfig(
+                    agent=agent,
+                    model=model or DEFAULT_MODEL,
+                    environment=environment,
+                    concurrency=concurrency,
+                ),
+            )
+
+        result = asyncio.run(j.run())
+
+        console.print(
+            f"  Score: {result.passed}/{result.total} ({result.score:.1%}), "
+            f"errors={result.errored}"
+        )
+
+        sweep_results.append(
+            {
+                "sweep": sweep_idx,
+                "passed": result.passed,
+                "total": result.total,
+                "score": round(result.score, 3),
+                "errored": result.errored,
+            }
+        )
+
+        if result.passed == result.total:
+            console.print("[green]All tasks succeeded — stopping early.[/green]")
+            break
+
+    console.print("\n[bold]Training Summary[/bold]")
+    table = Table()
+    table.add_column("Sweep", justify="right")
+    table.add_column("Passed", justify="right")
+    table.add_column("Total", justify="right")
+    table.add_column("Score", justify="right")
+    for sr in sweep_results:
+        table.add_row(
+            str(sr["sweep"]),
+            str(sr["passed"]),
+            str(sr["total"]),
+            f"{sr['score']:.1%}",
+        )
+    console.print(table)
+
+    if export_dir:
+        export_dir = Path(export_dir)
+        export_dir.mkdir(parents=True, exist_ok=True)
+        (export_dir / "sweep_results.json").write_text(
+            json.dumps(sweep_results, indent=2)
+        )
+        console.print(f"\n[green]Results exported to {export_dir}[/green]")
+
+
+env_app = typer.Typer(help="Environment management commands.")
+app.add_typer(env_app, name="environment")
+
+
+@env_app.command("create")
+def environment_create(
+    task_dir: Annotated[
+        Path,
+        typer.Argument(help="Task directory with task.toml + environment/Dockerfile"),
+    ],
+    backend: Annotated[
+        str,
+        typer.Option("--backend", "-b", help="Backend: docker or daytona"),
+    ] = "daytona",
+) -> None:
+    """Create an environment from a task directory (does not start it)."""
+    from benchflow.runtime import Environment
+
+    env = Environment.from_task(task_dir, backend=backend)
+    console.print(f"[green]Environment created:[/green] {env}")
+    console.print(f"  Task:    {env.task_path}")
+    console.print(f"  Backend: {env.backend}")
+    console.print(
+        "  Use [cyan]bench environment start[/cyan] to launch, or pass to [cyan]bf.run()[/cyan]"
+    )
+
+
+@env_app.command("list")
+def environment_list() -> None:
+    """List active Daytona sandboxes."""
+    from datetime import datetime
+
+    try:
+        from daytona import Daytona
+    except ImportError:
+        console.print("[red]daytona SDK not installed[/red]")
+        raise typer.Exit(1) from None
+
+    d = Daytona()
+    table = Table(title="Active Sandboxes")
+    table.add_column("ID", style="cyan")
+    table.add_column("State", style="green")
+    table.add_column("Age")
+    table.add_column("Target")
+
+    page = 1
+    now = datetime.now(UTC)
+    total = 0
+    while True:
+        result = d.list(page=page, limit=50)
+        if not result.items:
+            break
+        for sb in result.items:
+            total += 1
+            age = ""
+            if sb.created_at:
+                created = datetime.fromisoformat(sb.created_at.replace("Z", "+00:00"))
+                mins = (now - created).total_seconds() / 60
+                age = f"{mins:.0f}m"
+            target = getattr(sb, "target", "") or ""
+            table.add_row(sb.id[:12] + "…", str(sb.state), age, str(target)[:40])
+        if len(result.items) < 50:
+            break
+        page += 1
+
+    console.print(table)
+    console.print(f"\n[bold]{total} sandbox(es)[/bold]")
 
 
 if __name__ == "__main__":

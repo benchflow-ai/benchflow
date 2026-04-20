@@ -281,3 +281,133 @@ Dry-run output:
 ```
 
 Delete output: `1 sandboxes deleted (1 skipped, younger than 1440m)`
+
+---
+
+## 0.3 Resource-Verb Commands
+
+### benchflow agent list
+
+List all registered agents with protocol and credential requirements.
+
+```bash
+benchflow agent list
+```
+
+### benchflow agent show
+
+Show details for a specific agent.
+
+```bash
+benchflow agent show gemini
+```
+
+```
+gemini
+  Description: Google Gemini CLI via ACP
+  Protocol:    acp
+  Launch:      gemini --acp --yolo
+  Requires:    GOOGLE_API_KEY
+  Auth:        subscription via ~/.config/gemini/credentials.json
+```
+
+---
+
+### benchflow eval run
+
+Run an evaluation — batch of tasks with scoring. Equivalent to `benchflow job` but under the resource-verb pattern.
+
+```bash
+benchflow eval run -f benchmarks/tb2-gemini-baseline.yaml
+benchflow eval run -t tasks/ -a gemini -m gemini-3.1-flash-lite-preview -e daytona -c 64
+```
+
+### benchflow eval list
+
+List completed evaluations from a jobs directory.
+
+```bash
+benchflow eval list jobs/
+```
+
+---
+
+### benchflow environment create
+
+Create an environment from a task directory.
+
+```bash
+benchflow environment create tasks/my-task --backend daytona
+```
+
+### benchflow environment list
+
+List active Daytona sandboxes.
+
+```bash
+benchflow environment list
+```
+
+---
+
+### benchflow train create
+
+Run a training sweep — successive eval runs with reward-based filtering.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--config`, `-f` | — | Job config YAML |
+| `--tasks-dir`, `-t` | — | Tasks directory |
+| `--agent`, `-a` | `claude-agent-acp` | Agent name |
+| `--model`, `-m` | *(default)* | Model |
+| `--env`, `-e` | `daytona` | Backend |
+| `--sweeps` | `3` | Number of sweep iterations |
+| `--concurrency`, `-c` | `64` | Max concurrent tasks |
+| `--export` | — | Export results to directory |
+
+```bash
+benchflow train create -t tasks/ -a gemini --sweeps 3 --export ./training-data
+```
+
+Each sweep runs remaining tasks, drops successes, exports results as success/failure splits for RL training.
+
+---
+
+### benchflow skills eval
+
+Evaluate a skill using evals.json test cases.
+
+```bash
+benchflow skills eval ./my-skill -a gemini -m gemini-3.1-flash-lite-preview --env daytona
+benchflow skills eval ./my-skill --no-baseline  # skip baseline comparison
+benchflow skills eval ./my-skill --export-gepa traces/  # export for GEPA optimization
+```
+
+Output:
+```
+          Skill Eval: my-skill           
+┏━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━┳━━━━━━━━━━━━┓
+┃ Agent  ┃ Mode       ┃ Score ┃ Avg Reward ┃
+┡━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━╇━━━━━━━━━━━━┩
+│ gemini │ with-skill │ 3/5   │ 0.60       │
+│ gemini │ baseline   │ 1/5   │ 0.20       │
+│ gemini │ LIFT       │ +2    │ +0.40      │
+└────────┴────────────┴───────┴────────────┘
+```
+
+---
+
+### Python API (bf.run)
+
+```python
+import benchflow as bf
+
+agent = bf.Agent("gemini", model="gemini-3.1-flash-lite-preview")
+env = bf.Environment.from_task("tasks/my-task", backend="daytona")
+result = await bf.run(agent, env)
+
+print(result.reward)       # 1.0
+print(result.verified)     # True
+print(result.n_tool_calls) # 12
+print(result.trajectory)   # [...]
+```

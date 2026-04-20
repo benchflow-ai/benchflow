@@ -1,0 +1,43 @@
+{
+  "skill_name": "independent-review",
+  "version": "1",
+  "defaults": {
+    "timeout_sec": 600,
+    "judge_model": "gemini-3.1-flash-lite"
+  },
+  "cases": [
+    {
+      "id": "review-improves-solution",
+      "question": "Solve this task, then an independent reviewer will check your work.\n\n[TASK]\nWrite a bash script that finds all Python files in the current directory tree that import 'requests' but don't have 'requests' in their requirements.txt. Output the list of files, one per line.\n\n[REVIEW from independent agent]\nYour script has issues:\n1. You're using grep without -r flag for recursive search\n2. You're not checking if requirements.txt exists before reading it\n3. Edge case: some files use 'from requests import' not just 'import requests'\n\nPlease fix these issues.",
+      "ground_truth": "The agent should produce a corrected script that: uses recursive grep or find, checks requirements.txt existence, handles both 'import requests' and 'from requests import' patterns.",
+      "expected_behavior": [
+        "The agent wrote an initial solution",
+        "The agent incorporated the reviewer's feedback about recursive search",
+        "The agent added requirements.txt existence check",
+        "The agent handles both import patterns"
+      ]
+    },
+    {
+      "id": "review-catches-bug",
+      "question": "Solve this task, then an independent reviewer will check your work.\n\n[TASK]\nWrite a Python function that merges two sorted lists into one sorted list without using the built-in sort() or sorted(). The function should handle duplicates and empty lists.\n\n[REVIEW from independent agent]\nYour merge function has a bug: when one list is exhausted, you're not appending the remainder of the other list. Also, your comparison doesn't handle the case where both lists have the same element — you're only advancing one pointer, causing duplicates to be skipped.\n\nPlease fix.",
+      "ground_truth": "The agent should fix the merge function to: correctly append remaining elements when one list is exhausted, and handle equal elements by advancing both pointers (or one, keeping the duplicate).",
+      "expected_behavior": [
+        "The agent wrote an initial merge function",
+        "The agent fixed the remainder-appending bug",
+        "The agent fixed the duplicate-handling bug",
+        "The final function correctly merges sorted lists with duplicates"
+      ]
+    },
+    {
+      "id": "review-no-change-needed",
+      "question": "Solve this task, then an independent reviewer will check your work.\n\n[TASK]\nWrite a function that checks if a string is a valid IPv4 address. Valid means: 4 octets separated by dots, each octet is 0-255, no leading zeros (except '0' itself).\n\n[REVIEW from independent agent]\nYour solution looks correct. The regex handles all edge cases well — no leading zeros, proper range checking, and dot separation. No changes needed.\n\nGood work.",
+      "ground_truth": "The agent should keep the original solution unchanged since the reviewer confirmed it's correct. The agent should acknowledge the positive review without making unnecessary changes.",
+      "expected_behavior": [
+        "The agent wrote a correct IPv4 validator",
+        "The agent acknowledged the positive review",
+        "The agent did NOT make unnecessary changes to a correct solution",
+        "The final solution still correctly validates IPv4 addresses"
+      ]
+    }
+  ]
+}

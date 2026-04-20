@@ -143,13 +143,12 @@ def test_oracle_branch_setup_calls():
     """
     import inspect
 
-    from benchflow import sdk as sdk_mod
+    from benchflow import trial as trial_mod
 
-    source = inspect.getsource(sdk_mod.SDK.run)
+    source = inspect.getsource(trial_mod.Trial.install_agent)
     oracle_pos = source.find('agent == "oracle"')
-    else_pos = source.find("\n            else:", oracle_pos)
-    assert oracle_pos != -1, "oracle branch not found in SDK.run"
-    oracle_block = source[oracle_pos:else_pos]
+    assert oracle_pos != -1, "oracle branch not found in Trial.install_agent"
+    oracle_block = source[oracle_pos:]
 
     assert "_seed_verifier_workspace" in oracle_block, (
         "_seed_verifier_workspace not in oracle branch — "
@@ -161,7 +160,8 @@ def test_oracle_branch_setup_calls():
     assert "agent_cwd" in oracle_block, (
         "agent_cwd not assigned in oracle branch — _verify(workspace=None) skips restore"
     )
-    assert '"pwd"' in oracle_block or "'pwd'" in oracle_block, (
+    # pwd detection happens before the oracle branch in install_agent
+    assert '"pwd"' in source or "'pwd'" in source, (
         "agent_cwd must be detected via pwd (not hardcoded) — "
         "different Harbor tasks use different WORKDIR values (/testbed, /app, etc.)"
     )
