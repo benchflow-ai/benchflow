@@ -378,15 +378,14 @@ class SDK:
         logger.info("Oracle mode: running solution/solve.sh")
         if not (task_path / "solution" / "solve.sh").exists():
             raise FileNotFoundError(f"Oracle requires solution/solve.sh: {task_path}")
-        await env.exec("chmod +x /solution/solve.sh", user="root", timeout_sec=10)
         if sandbox_user:
-            oracle_cmd = "DEBIAN_FRONTEND=noninteractive /solution/solve.sh"
+            oracle_cmd = "DEBIAN_FRONTEND=noninteractive bash /solution/solve.sh"
             cmd = (
                 f"su -s /bin/bash {shlex.quote(sandbox_user)} "
                 f"-c {shlex.quote(oracle_cmd)}"
             )
         else:
-            cmd = "/solution/solve.sh"
+            cmd = "bash /solution/solve.sh"
         result = await env.exec(
             f"{cmd} > /logs/agent/oracle.txt 2>&1",
             env={"DEBIAN_FRONTEND": "noninteractive"},
