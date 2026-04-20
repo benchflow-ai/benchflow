@@ -37,14 +37,17 @@ def mcp_reviewer_hook(
             f"--port {port} --model {model} --host {host} &",
             timeout_sec=10,
         )
-        # Wait for health
-        await env.exec(
+        # Wait for server to respond
+        result = await env.exec(
             f"for i in $(seq 1 15); do "
-            f"curl -sf http://localhost:{port}/health > /dev/null 2>&1 && break; "
-            f"sleep 1; done",
+            f"curl -sf http://localhost:{port}/mcp > /dev/null 2>&1 && echo ok && exit 0; "
+            f"sleep 1; done; echo fail",
             timeout_sec=20,
         )
-        logger.info(f"MCP reviewer server ready on port {port}")
+        if "ok" in (result.stdout or ""):
+            logger.info(f"MCP reviewer server ready on port {port}")
+        else:
+            logger.warning(f"MCP reviewer server may not be ready on port {port}")
 
     return _start_reviewer
 

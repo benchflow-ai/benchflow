@@ -85,11 +85,14 @@ def create_reviewer_server(
         genai.configure(api_key=api_key)
         llm = genai.GenerativeModel(model)
 
-        # Read the files
+        # Read files — restrict to /app/ to prevent path traversal
         file_contents = []
         target_files = files or _find_modified_files()
+        app_root = Path("/app").resolve()
         for f in target_files:
-            path = Path("/app") / f if not f.startswith("/") else Path(f)
+            path = (Path("/app") / f).resolve()
+            if not str(path).startswith(str(app_root)):
+                continue
             if path.exists():
                 content = path.read_text()[:50000]
                 file_contents.append(f"=== {f} ===\n{content}")
@@ -103,7 +106,7 @@ def create_reviewer_server(
 
         full_prompt = f"{prompt}\n\nReview the following:\n{review_input}"
 
-        response = llm.generate_content(full_prompt)
+        response = await asyncio.to_thread(llm.generate_content, full_prompt)
         return response.text
 
     @mcp.tool()
