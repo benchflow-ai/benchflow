@@ -245,30 +245,35 @@ class Runtime:
         self.config = config or RuntimeConfig()
 
     async def execute(self) -> RuntimeResult:
-        """Run the full execution loop: setup -> agent -> verify -> result.
+        """Run the full execution loop via Trial.
 
-        Delegates to SDK.run() internally for the execution mechanics.
-        The Runtime API is the stable surface; internals will migrate
-        from SDK to Runtime directly in subsequent PRs.
+        Runtime is the stable user-facing surface. Trial owns the
+        decomposed lifecycle phases underneath.
         """
-        from benchflow.sdk import SDK
+        from benchflow.trial import Scene, Trial, TrialConfig
 
         config = self.config
-        sdk = SDK()
-        run_result = await sdk.run(
+        trial_config = TrialConfig(
             task_path=self.env.task_path,
+            scenes=[Scene.single(
+                agent=self.agent.name,
+                model=self.agent.model,
+                skills_dir=config.skills_dir,
+            )],
+            environment=self.env.backend,
+            sandbox_user=config.sandbox_user,
+            sandbox_locked_paths=config.sandbox_locked_paths,
+            jobs_dir=config.jobs_dir,
+            context_root=config.context_root,
+            pre_agent_hooks=config.pre_agent_hooks,
             agent=self.agent.name,
             model=self.agent.model,
             agent_env=self.agent.env,
-            environment=self.env.backend,
-            jobs_dir=str(config.jobs_dir),
-            trial_name=config.trial_name,
-            sandbox_user=config.sandbox_user,
-            sandbox_locked_paths=config.sandbox_locked_paths,
             skills_dir=config.skills_dir,
-            context_root=config.context_root,
-            pre_agent_hooks=config.pre_agent_hooks,
         )
+
+        trial = await Trial.create(trial_config)
+        run_result = await trial.run()
 
         reward = (run_result.rewards or {}).get("reward")
         return RuntimeResult(

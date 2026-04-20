@@ -56,7 +56,7 @@ from benchflow.runtime import (
 from benchflow._scene import MailboxTransport, Message, MessageTransport, Role, Scene
 from benchflow._snapshot import list_snapshots, restore, snapshot
 from benchflow.sdk import SDK
-from benchflow.trial import Trial, TrialConfig
+from benchflow.trial import Role, Scene, Trial, TrialConfig, Turn
 from benchflow.skills import SkillInfo, discover_skills, install_skill, parse_skill
 from benchflow.trajectories.otel import OTelCollector
 from benchflow.trajectories.proxy import TrajectoryProxy
@@ -116,8 +116,11 @@ __all__ = [
     "restore",
     "list_snapshots",
     # Trial (decomposed lifecycle)
+    "Role",
+    "Scene",
     "Trial",
     "TrialConfig",
+    "Turn",
     # SDK (backwards compat)
     "SDK",
     # Environments / dep staging

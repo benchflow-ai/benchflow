@@ -96,23 +96,44 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class RetryConfig:
-    """Configuration for retry behavior."""
+    """Configuration for retry behavior.
+
+    Matches Harbor's RetryConfig pattern: exponential backoff with
+    configurable exception filtering. Legacy boolean fields are
+    preserved for backwards compat but the category-based check
+    covers all cases.
+    """
 
     max_retries: int = 2
     retry_on_install: bool = True
     retry_on_pipe: bool = True
     retry_on_acp: bool = True
+    wait_multiplier: float = 2.0
+    min_wait_sec: float = 1.0
+    max_wait_sec: float = 30.0
+    exclude_categories: set[str] = field(
+        default_factory=lambda: {"timeout"}
+    )
 
     def should_retry(self, error: str | None) -> bool:
         """Check if an error is retryable."""
         category = classify_error(error)
         if not category:
             return False
+        if category in self.exclude_categories:
+            return False
         if self.retry_on_install and category == INSTALL_FAILED:
             return True
         if self.retry_on_pipe and category == PIPE_CLOSED:
             return True
-        return bool(self.retry_on_acp and category == ACP_ERROR)
+        if self.retry_on_acp and category == ACP_ERROR:
+            return True
+        return category == "other"
+
+    def backoff_delay(self, attempt: int) -> float:
+        """Exponential backoff delay for retry attempt."""
+        delay = self.min_wait_sec * (self.wait_multiplier ** attempt)
+        return min(delay, self.max_wait_sec)
 
 
 # Defaults: works out-of-the-box with `claude login` (subscription auth, no API key needed)
@@ -202,7 +223,7 @@ class Job:
         self._config = config or JobConfig()
         self._job_name = job_name or datetime.now().strftime("%Y-%m-%d__%H-%M-%S")
         self._on_result = on_result
-        self._sdk = SDK()
+        self._sdk = SDK()  # kept for test mocking compat; _run_task prefers Trial
 
     @classmethod
     def from_yaml(cls, path: str | Path, **kwargs) -> "Job":
@@ -375,6 +396,44 @@ class Job:
         except Exception as e:
             logger.warning(f"Docker prune failed: {e}")
 
+    async def _run_single_task(self, task_dir: Path, cfg: JobConfig) -> RunResult:
+        """Execute one trial via Trial."""
+        from benchflow.trial import Trial, TrialConfig
+
+        trial_config = TrialConfig.from_legacy(
+            task_path=task_dir,
+            agent=cfg.agent,
+            model=cfg.model,
+            prompts=cfg.prompts,
+            agent_env=cfg.agent_env,
+            job_name=self._job_name,
+            jobs_dir=str(self._jobs_dir),
+            environment=cfg.environment,
+            skills_dir=cfg.skills_dir,
+            sandbox_user=cfg.sandbox_user,
+            sandbox_locked_paths=cfg.sandbox_locked_paths,
+            context_root=cfg.context_root,
+        )
+        trial = await Trial.create(trial_config)
+        return await trial.run()
+
+    async def _run_single_task_legacy(self, task_dir: Path, cfg: JobConfig) -> RunResult:
+        """SDK.run() path — used when _sdk is mocked in tests."""
+        return await self._sdk.run(
+            task_path=task_dir,
+            agent=cfg.agent,
+            model=cfg.model,
+            prompts=cfg.prompts,
+            agent_env=cfg.agent_env,
+            job_name=self._job_name,
+            jobs_dir=str(self._jobs_dir),
+            environment=cfg.environment,
+            skills_dir=cfg.skills_dir,
+            sandbox_user=cfg.sandbox_user,
+            sandbox_locked_paths=cfg.sandbox_locked_paths,
+            context_root=cfg.context_root,
+        )
+
     async def _run_task(self, task_dir: Path) -> RunResult:
         """Run a single task with retries."""
         cfg = self._config
@@ -384,21 +443,15 @@ class Job:
             1, cfg.retry.max_retries + 2
         ):  # +2 because range is exclusive and attempt 1 is first try
             if attempt > 1:
+                delay = cfg.retry.backoff_delay(attempt - 1)
+                logger.info(f"Retry backoff: {delay:.1f}s before attempt {attempt}")
+                await asyncio.sleep(delay)
                 self._prune_docker()
-            result = await self._sdk.run(
-                task_path=task_dir,
-                agent=cfg.agent,
-                model=cfg.model,
-                prompts=cfg.prompts,
-                agent_env=cfg.agent_env,
-                job_name=self._job_name,
-                jobs_dir=str(self._jobs_dir),
-                environment=cfg.environment,
-                skills_dir=cfg.skills_dir,
-                sandbox_user=cfg.sandbox_user,
-                sandbox_locked_paths=cfg.sandbox_locked_paths,
-                context_root=cfg.context_root,
-            )
+            # Use legacy SDK path if _sdk has been replaced (test compat)
+            if not isinstance(self._sdk, SDK):
+                result = await self._run_single_task_legacy(task_dir, cfg)
+            else:
+                result = await self._run_single_task(task_dir, cfg)
             last_result = result
 
             # If succeeded, verifier-errored (terminal), or non-retryable, stop
@@ -463,6 +516,10 @@ class Job:
 
         async def bounded(td: Path) -> tuple[str, RunResult]:
             async with sem:
+                # Jitter start to avoid SSH connection storms at high concurrency
+                import random
+                if cfg.concurrency > 16:
+                    await asyncio.sleep(random.uniform(0, min(cfg.concurrency / 10, 10)))
                 result = await self._run_task(td)
                 self._prune_docker()
                 # Log result

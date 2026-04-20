@@ -71,23 +71,125 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class Role:
+    """One agent participant in a scene."""
+
+    name: str
+    agent: str
+    model: str | None = None
+    env: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class Turn:
+    """One prompt in a scene. role selects which Role acts."""
+
+    role: str
+    prompt: str | None = None  # None = expand from instruction.md
+
+
+@dataclass
+class Scene:
+    """One interaction region — roles take turns executing prompts."""
+
+    name: str = "default"
+    roles: list[Role] = field(default_factory=list)
+    turns: list[Turn] = field(default_factory=list)
+    skills_dir: str | Path | None = None
+    # Future (xiangyi li): snapshot_before, snapshot_after for stateful envs
+    # Future: scoring config (None = unscored warmup scene)
+
+    @classmethod
+    def single(
+        cls,
+        *,
+        agent: str,
+        model: str | None = None,
+        prompts: list[str | None] | None = None,
+        role_name: str = "agent",
+        skills_dir: str | Path | None = None,
+    ) -> "Scene":
+        """Shortcut for single-agent, single-role scene."""
+        prompts = prompts or [None]
+        return cls(
+            roles=[Role(name=role_name, agent=agent, model=model)],
+            turns=[Turn(role=role_name, prompt=p) for p in prompts],
+            skills_dir=skills_dir,
+        )
+
+
+@dataclass
 class TrialConfig:
-    """All parameters for a single trial run."""
+    """Declarative trial configuration.
+
+    A trial is a sequence of scenes executed in a shared sandbox.
+    Single-agent runs are a trial with one scene containing one role.
+    """
 
     task_path: Path
+    scenes: list[Scene] = field(default_factory=list)
+    environment: str = "docker"
+    sandbox_user: str | None = "agent"
+    sandbox_locked_paths: list[str] | None = None
+    services: list[str] | None = None
+    job_name: str | None = None
+    trial_name: str | None = None
+    jobs_dir: str | Path = "jobs"
+    context_root: str | Path | None = None
+    pre_agent_hooks: list | None = None
+
+    # Legacy compat fields — used by SDK.run() shim. Ignored when scenes is set.
     agent: str = "claude-agent-acp"
     prompts: list[str | None] | None = None
     model: str | None = None
     agent_env: dict[str, str] | None = None
-    job_name: str | None = None
-    trial_name: str | None = None
-    jobs_dir: str | Path = "jobs"
-    environment: str = "docker"
     skills_dir: str | Path | None = None
-    sandbox_user: str | None = "agent"
-    sandbox_locked_paths: list[str] | None = None
-    pre_agent_hooks: list | None = None
-    context_root: str | Path | None = None
+
+    @classmethod
+    def from_legacy(
+        cls,
+        *,
+        task_path: Path,
+        agent: str = "claude-agent-acp",
+        model: str | None = None,
+        prompts: list[str | None] | None = None,
+        skills_dir: str | Path | None = None,
+        **kwargs,
+    ) -> "TrialConfig":
+        """Construct from flat SDK.run()-style args."""
+        return cls(
+            task_path=task_path,
+            scenes=[Scene.single(agent=agent, model=model, prompts=prompts, skills_dir=skills_dir)],
+            agent=agent,
+            model=model,
+            prompts=prompts,
+            skills_dir=skills_dir,
+            **kwargs,
+        )
+
+    @property
+    def effective_scenes(self) -> list[Scene]:
+        """Scenes to execute — falls back to legacy fields if scenes is empty."""
+        if self.scenes:
+            return self.scenes
+        return [Scene.single(agent=self.agent, model=self.model, prompts=self.prompts,
+                             skills_dir=self.skills_dir)]
+
+    @property
+    def primary_agent(self) -> str:
+        """Agent name for the first role of the first scene."""
+        scenes = self.effective_scenes
+        if scenes and scenes[0].roles:
+            return scenes[0].roles[0].agent
+        return self.agent
+
+    @property
+    def primary_model(self) -> str | None:
+        """Model for the first role of the first scene."""
+        scenes = self.effective_scenes
+        if scenes and scenes[0].roles:
+            return scenes[0].roles[0].model
+        return self.model
 
 
 class Trial:
@@ -176,7 +278,6 @@ class Trial:
             cfg.sandbox_user, cfg.sandbox_locked_paths
         )
 
-        sdk = SDK()
         (
             self._task,
             self._trial_dir,
@@ -184,12 +285,14 @@ class Trial:
             self._started_at,
             self._job_name,
             self._trial_name,
-        ) = sdk._init_trial(
+        ) = SDK._init_trial(
             cfg.task_path, cfg.job_name, cfg.trial_name, cfg.jobs_dir
         )
 
-        self._agent_env = resolve_agent_env(cfg.agent, cfg.model, cfg.agent_env)
-        self._resolved_prompts = sdk._resolve_prompts(cfg.task_path, cfg.prompts)
+        self._agent_env = resolve_agent_env(
+            cfg.primary_agent, cfg.primary_model, cfg.agent_env
+        )
+        self._resolved_prompts = SDK._resolve_prompts(cfg.task_path, cfg.prompts)
         self._agent_launch = AGENT_LAUNCH.get(cfg.agent, cfg.agent)
 
         if cfg.context_root:
@@ -203,7 +306,7 @@ class Trial:
         )
         self._timeout = int(self._task.config.agent.timeout_sec or 0)
 
-        sdk._write_config(
+        SDK._write_config(
             self._trial_dir,
             task_path=cfg.task_path,
             agent=cfg.agent,
@@ -306,7 +409,7 @@ class Trial:
         self._phase = "connected"
 
     async def disconnect(self) -> None:
-        """Close the ACP client but keep the environment alive."""
+        """Close the ACP client and clean up agent process, keeping the environment alive."""
         if self._acp_client:
             try:
                 await self._acp_client.close()
@@ -314,6 +417,13 @@ class Trial:
                 logger.warning(f"ACP client close failed: {e}")
             self._acp_client = None
             self._session = None
+        # Kill any lingering agent processes to prevent context bleed between scenes
+        if self._env:
+            agent_cmd = self._agent_launch.split()[0].split("/")[-1]
+            try:
+                await self._env.exec(f"pkill -f '{agent_cmd}' || true", timeout_sec=10)
+            except Exception:
+                pass
         self._phase = "installed"
 
     # ── Phase 3c: EXECUTE ──
@@ -392,16 +502,20 @@ class Trial:
 
         self._phase = "cleaned"
 
-    # ── Full run (equivalent to SDK.run()) ──
+    # ── Full run ──
 
     async def run(self) -> RunResult:
-        """Run the complete trial lifecycle with error handling."""
+        """Run the complete trial lifecycle.
+
+        Iterates over effective_scenes. Single-agent is a trial with one
+        scene containing one role — no special case.
+        """
         cfg = self._config
         try:
             await self.setup()
             await self.start()
 
-            if cfg.agent == "oracle":
+            if cfg.primary_agent == "oracle":
                 await self.install_agent()
                 from benchflow.sdk import SDK
                 sdk = SDK()
@@ -410,8 +524,8 @@ class Trial:
                 )
             else:
                 await self.install_agent()
-                await self.connect()
-                await self.execute()
+                for scene in cfg.effective_scenes:
+                    await self._run_scene(scene)
 
             await self.verify()
 
@@ -431,6 +545,61 @@ class Trial:
             await self.cleanup()
 
         return self._build_result()
+
+    # ── Scene execution ──
+
+    async def _run_scene(self, scene: Scene) -> None:
+        """Execute one scene: for each turn, connect as the turn's role, execute, disconnect."""
+        cfg = self._config
+        logger.info(f"[Scene] {scene.name} — {len(scene.turns)} turns, {len(scene.roles)} roles")
+
+        role_map = {r.name: r for r in scene.roles}
+        current_role: str | None = None
+
+        for i, turn in enumerate(scene.turns):
+            role = role_map.get(turn.role)
+            if not role:
+                raise ValueError(f"Turn references unknown role {turn.role!r}")
+
+            # Reconnect if role changed or first turn
+            if current_role != turn.role:
+                if current_role is not None:
+                    await self.disconnect()
+
+                # Override agent/model for this role
+                self._agent_launch = AGENT_LAUNCH.get(role.agent, role.agent)
+                self._agent_env = resolve_agent_env(role.agent, role.model, role.env or None)
+
+                await self.connect_as(role)
+                current_role = turn.role
+
+            prompts = [turn.prompt] if turn.prompt else self._resolved_prompts
+            await self.execute(prompts=prompts)
+
+        if current_role is not None:
+            await self.disconnect()
+
+    async def connect_as(self, role: Role) -> None:
+        """Open an ACP connection for a specific role."""
+        cfg = self._config
+        t0 = datetime.now()
+
+        self._acp_client, self._session, self._agent_name = await connect_acp(
+            env=self._env,
+            agent=role.agent,
+            agent_launch=AGENT_LAUNCH.get(role.agent, role.agent),
+            agent_env=resolve_agent_env(role.agent, role.model, role.env or None),
+            sandbox_user=cfg.sandbox_user,
+            model=role.model,
+            trial_dir=self._trial_dir,
+            environment=cfg.environment,
+            agent_cwd=self._agent_cwd,
+        )
+
+        if "agent_setup" not in self._timing:
+            self._timing["agent_setup"] = (datetime.now() - t0).total_seconds()
+
+        self._phase = "connected"
 
     # ── Internal helpers ──
 
@@ -455,7 +624,6 @@ class Trial:
         _write_rewards_jsonl(self._trial_dir, self._rewards, finished_at)
 
         return SDK._build_result(
-            SDK(),
             self._trial_dir,
             task_name=self._config.task_path.name,
             trial_name=self._trial_name or "",
@@ -471,4 +639,5 @@ class Trial:
             trajectory_source=self._trajectory_source,
             rewards=self._rewards,
             started_at=self._started_at,
+            timing=self._timing,
         )
