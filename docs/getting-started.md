@@ -155,38 +155,43 @@ bench eval list jobs/skillsbench-local/ --json  # machine-readable
 
 ---
 
-## 4. Run a job (TB2)
+## 4. Run a batch evaluation (TB2)
 
-Terminal-Bench 2 ships single-turn and multi-turn variants, driven by the `prompts` field in the YAML.
+Terminal-Bench 2 tasks auto-download via `ensure_tasks("terminal-bench-2")`.
 
 ```bash
-python benchmarks/run_tb2.py benchmarks/tb2_single-codex-gpt54.yaml     # single-turn, Daytona
-python benchmarks/run_tb2.py benchmarks/tb2_multiturn-codex-gpt54.yaml  # multi-turn, Daytona
+# Single-turn, Daytona
+bench eval create -f benchmarks/tb2-gemini-baseline.yaml
+
+# Multi-turn with scenes
+bench eval create -f benchmarks/tb2-gemini-multiturn.yaml
 ```
 
 For local Docker, override inline:
 
 ```bash
-bench eval create -f --config benchmarks/tb2_single-codex-gpt54.yaml --env docker --concurrency 1
-bench eval create -f --config benchmarks/tb2_multiturn-codex-gpt54.yaml --env docker --concurrency 1
+bench eval create -f benchmarks/tb2-gemini-baseline.yaml --env docker --concurrency 1
 ```
 
-Or write your own local config. Multi-turn adds a `prompts` list:
+Or write your own config. Multi-turn uses a Scene with multiple Turns:
 
 ```yaml
-tasks_dir: .ref/terminal-bench-2
-jobs_dir: jobs/tb2_multiturn-local
-agent: claude-agent-acp
-model: claude-haiku-4-5-20251001
-environment: docker
-concurrency: 1
-max_retries: 2
-prompts:
-  - null                # expands to task's instruction.md
-  - "Review your solution. Check for errors, test it, and fix any issues."
+task_dir: .ref/terminal-bench-2
+environment: daytona
+concurrency: 64
+scenes:
+  - name: solve-and-review
+    roles:
+      - name: solver
+        agent: gemini
+        model: gemini-3.1-flash-lite-preview
+    turns:
+      - role: solver            # uses instruction.md
+      - role: solver
+        prompt: "Review your solution. Check for errors, test it, and fix any issues."
 ```
 
-The agent retains full context (tool history, memory) between turns.
+The agent retains full context (tool history, memory) between turns within a Scene.
 
 ---
 

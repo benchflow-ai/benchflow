@@ -5,7 +5,7 @@ Test whether your agent skill actually helps agents perform better.
 ## Install
 
 ```bash
-uv tool install benchflow
+pip install benchflow==0.3.0a3
 ```
 
 ## Overview
@@ -61,7 +61,7 @@ bench skills eval my-skill/ -a claude-agent-acp
 
 Expected output:
 ```
-$ benchflow skills eval ./my-skill/ -a claude-agent-acp
+$ bench skills eval ./my-skill/ -a claude-agent-acp
 
 Skill eval: my-skill (1 cases)
   Agents: claude-agent-acp
@@ -119,7 +119,7 @@ bench skills eval my-skill/ \
 
 Expected output:
 ```
-$ benchflow skills eval ./calculator/ -a claude-agent-acp -a codex-acp
+$ bench skills eval ./calculator/ -a claude-agent-acp -a codex-acp
 
 Skill eval: calculator (3 cases)
   Agents: claude-agent-acp, codex-acp
@@ -246,7 +246,7 @@ Write `gws-skill/evals/evals.json`:
 ### Step 3: Run the eval
 
 ```bash
-$ benchflow skills eval ./gws-skill/ -a claude-agent-acp -a codex-acp
+$ bench skills eval ./gws-skill/ -a claude-agent-acp -a codex-acp
 
 Skill eval: gws-email-drafting (2 cases)
   Agents: claude-agent-acp, codex-acp
@@ -287,7 +287,7 @@ jobs/skill-eval/gws-email-drafting/
 ### Step 5: Improve with GEPA (optional)
 
 ```bash
-$ benchflow skills eval ./gws-skill/ -a claude-agent-acp --export-gepa
+$ bench skills eval ./gws-skill/ -a claude-agent-acp --export-gepa
 
 GEPA traces exported to jobs/skill-eval/gws-email-drafting/gepa
 ```
@@ -382,7 +382,7 @@ BenchFlow generates everything ephemeral — only results persist.
 **CI integration:**
 ```bash
 # In your skill's CI pipeline
-uv tool install benchflow
+pip install benchflow==0.3.0a3
 bench skills eval . -a claude-agent-acp --no-baseline
 # Exit code 1 if any case scores < 0.5
 ```

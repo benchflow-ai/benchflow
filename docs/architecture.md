@@ -5,49 +5,44 @@
 BenchFlow runs AI coding agents inside isolated sandboxes, evaluates their output with a task-specific verifier, and returns structured results. The SDK wraps Harbor environments (Docker or Daytona) and communicates with agents via ACP (Agent Client Protocol) — JSON-RPC 2.0 over stdio. Each trial is one task run by one agent; a `Job` fans out many trials concurrently and aggregates results.
 
 ```
-  Task (Harbor format)
+  Task (Harbor format) + TrialConfig (YAML or Python)
        |
        v
-  SDK.run()
+  bf.run(config) → Trial.create(config) → trial.run()
        |
        |  SETUP (host)
-       |    _init_trial, resolve_agent_env, _resolve_prompts
-       |    stage_dockerfile_deps, _inject_skills_into_dockerfile
-       |    _create_environment, _write_config
+       |    resolve config, create env object, write config
        |
        |  START (sandbox)
-       |    _start_env_and_upload ──> Docker / Daytona container
-       |    pre_agent_hooks
+       |    spin up sandbox ──> Daytona / Docker container
+       |    upload task files, start services
        |
-       |  AGENT
-       |    install_agent, write_credential_files, setup_sandbox_user
-       |    deploy_skills, lockdown_paths
-       |    connect_acp ──── ACP (JSON-RPC/stdio) ──> Agent Process
-       |    execute_prompts <── session/update notifications ─── |
+       |  SCENES (one or more)
+       |    for each Scene:
+       |      install_agent, write credentials, setup sandbox user
+       |      deploy_skills, lockdown_paths
+       |      for each Turn in scene:
+       |        connect_as(role) ── ACP (JSON-RPC/stdio) ──> Agent Process
+       |        execute(prompt) <── session/update notifications ─── |
+       |        disconnect()
        |
        |  VERIFY
-       |    (_scrape_agent_trajectory fallback)
        |    harden_before_verify
        |    _verify ──> Harbor Verifier
        |
        v
-  RunResult (rewards, trajectory, error, timing)
+  RuntimeResult (rewards, trajectory, error, timing)
 ```
 
 ---
 
-## SDK Run Phases
+## Trial Run Phases
 
-`SDK.run()` in `src/benchflow/sdk.py` is a strict-order orchestrator; each phase is a private method or imported function.
+`Trial.run()` is a strict-order orchestrator. `bf.run()` creates a Trial internally and calls `trial.run()`.
 
 ### Phase 1: SETUP (host)
 
-- **`_init_trial`** — creates `jobs/{job_name}/{trial_name}/` with subdirs `agent/`, `verifier/`, `artifacts/`, `trajectory/`. Pre-creates dirs in Python so Docker doesn't own them as root.
-- **`resolve_agent_env`** — builds the agent env-var dict: inherits well-known API keys, applies provider `auth_env`/`url_params`, translates `BENCHFLOW_PROVIDER_*` via `AgentConfig.env_mapping`, and validates `requires_env`.
-- **`_resolve_prompts`** — reads `instruction.md`; replaces `None` entries in `prompts` with its content.
-- **`stage_dockerfile_deps`** / **`_inject_skills_into_dockerfile`** — mutate `environment/Dockerfile` in-place when `context_root` or `skills_dir` is set (Docker build context is limited to the task directory).
-- **`_create_environment`** — instantiates a Harbor `DockerEnvironment` or `DaytonaEnvironment` (not yet started). Applies `_patch_harbor_dind()` for DinD setups.
-- **`_write_config`** — writes `trial_dir/config.json` with secrets filtered by key-name substring match.
+- **`setup()`** — creates `jobs/{job_name}/{trial_name}/` with subdirs `agent/`, `verifier/`, `artifacts/`, `trajectory/`. Pre-creates dirs in Python so Docker doesn't own them as root. Resolves agent env vars, reads `instruction.md`, stages Dockerfile deps, creates the environment object, writes `config.json`.
 
 ### Phase 2: START (sandbox)
 
@@ -129,7 +124,7 @@ Adding an agent or provider is a **dict entry only** — no changes to `sdk.py`,
 | `install_timeout` | `int` | Default: 900 seconds. |
 | `default_model` | `str` | Default model ID when `--model` is omitted. |
 
-**Adding an agent** — append to `AGENTS` in `registry.py`, or call `register_agent()` before `SDK.run()`:
+**Adding an agent** — append to `AGENTS` in `registry.py`, or call `register_agent()` before `bf.run()`:
 
 ```python
 from benchflow import register_agent
@@ -239,7 +234,7 @@ RetryConfig(
 )
 ```
 
-`_run_task()` calls `SDK.run()` up to `max_retries + 1` times, stopping early on success, `verifier_error`, or when `should_retry()` returns false. Docker resources are pruned between retries via `_prune_docker()`.
+`_run_task()` calls `Trial.run()` up to `max_retries + 1` times, stopping early on success, `verifier_error`, or when `should_retry()` returns false. Docker resources are pruned between retries via `_prune_docker()`.
 
 ---
 
@@ -247,7 +242,7 @@ RetryConfig(
 
 ```
 jobs/{job_name}/{trial_name}/
-├── config.json              # SDK.run() parameters (secrets filtered)
+├── config.json              # Trial parameters (secrets filtered)
 ├── result.json              # rewards, n_tool_calls, timing, error
 ├── timing.json              # {environment_setup, agent_setup, agent_execution, verifier, total}
 ├── prompts.json             # Resolved prompt list

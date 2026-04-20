@@ -61,14 +61,23 @@ The first prompt sent to the agent. Write it as you would for a skilled develope
 - Specify constraints (no external libraries, must pass existing tests, etc.).
 - Don't mention the verifier or `reward.txt` — those are internal.
 
-**Multi-turn prompts** — pass `prompts=` to `SDK.run()` to add follow-up turns. `None` means "use `instruction.md`":
+**Multi-turn prompts** — use a Scene with multiple Turns. A `None` prompt means "use `instruction.md`":
 
 ```python
-result = await sdk.run(
+from benchflow.trial import TrialConfig, Scene, Role, Turn
+
+config = TrialConfig(
     task_path="tasks/my-task",
-    agent="claude-agent-acp",
-    prompts=[None, "Review your solution and fix any test failures."],
+    scenes=[Scene(
+        roles=[Role("agent", "gemini", "gemini-3.1-flash-lite-preview")],
+        turns=[
+            Turn("agent"),                                        # instruction.md
+            Turn("agent", "Review your solution and fix any test failures."),
+        ],
+    )],
+    backend="daytona",
 )
+result = await bf.run(config)
 ```
 
 ---
@@ -139,20 +148,20 @@ echo "Hello, world!" > /app/hello.txt
 
 ```bash
 # Scaffold a new task
-benchflow tasks init my-task
-benchflow tasks init my-task --no-pytest --no-solution
+bench tasks init my-task
+bench tasks init my-task --no-pytest --no-solution
 
 # Validate structure
-benchflow tasks check tasks/my-task/
+bench tasks check tasks/my-task/
 
 # Confirm oracle gets reward = 1.0
-bench run -t tasks/my-task/ -a oracle -e docker
+bench eval create -t tasks/my-task/ -a oracle -e docker
 
 # Run a real agent
-bench run -t tasks/my-task/ -a claude-agent-acp -e docker
+bench eval create -t tasks/my-task/ -a gemini -e daytona
 ```
 
-`benchflow tasks check` validates that `task.toml`, `instruction.md` (non-empty), `environment/Dockerfile`, and `tests/` (non-empty) all exist, and that `[agent].timeout_sec` is set. Exits with code 1 on failure (CI-friendly).
+`bench tasks check` validates that `task.toml`, `instruction.md` (non-empty), `environment/Dockerfile`, and `tests/` (non-empty) all exist, and that `[agent].timeout_sec` is set. Exits with code 1 on failure (CI-friendly).
 
 ---
 
