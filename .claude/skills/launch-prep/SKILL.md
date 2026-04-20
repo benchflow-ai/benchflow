@@ -35,15 +35,38 @@ uv lock --check
 
 ---
 
-## Step 1 — Docs, labs, and code review (3 subagents in parallel)
+## Step 1 — Docs, labs, code, and test review
 
-**A — user-facing docs:** Read `README.md` and all `docs/*.md`. Evaluate as a first-time external user: complete install instructions, working examples, accurate CLI flags and API signatures, no broken relative links. Flag anything confusing or stale.
+Delegate to purpose-built skills in **report-only** mode — each skill
+normally waits for per-finding approval, but launch-prep just triages
+their output into Blockers/Polish/Clean. Tell each skill up front: "no
+edits, no approval loop; return the punch list."
 
-**B — labs/:** For each experiment: README matches code, no broken links, no stale `src/benchflow` API calls, no notebook tracebacks. Grep for `TODO`, `FIXME`.
+Run A → B → C → D serially (each skill spawns its own subagents; stacking
+them saturates the pool).
 
-**C — src/ code smell:** Grep `src/` and `tests/` for `TODO`, `FIXME`, `HACK`, `XXX` (blocker vs. debt). Grep for hardcoded secrets (`api_key\s*=\s*["']`, etc.). Check `__init__.py` for debug symbols.
+**A — `/docs-review`** (full). Covers `README.md`, `docs/*.md`, `CLAUDE.md`,
+and the light-touch `.dev-docs/` set. Captures drift vs. code, stale refs,
+link integrity, registry alignment. Supersedes the old ad-hoc docs pass.
 
-Synthesize: **Blockers / Polish / Clean**. Stop on blockers.
+**B — labs/ (ad-hoc subagent)** — `/docs-review` skips labs. Spawn one
+`Explore` agent: for each experiment, README matches code, no broken
+links, no stale `src/benchflow` API calls, no notebook tracebacks. Grep
+for `TODO`, `FIXME`.
+
+**C — `/code-cleanup --recent`** (report-only). Covers the old `src/`
+TODO/FIXME/HACK/debug-symbol grep plus dead code, over-defensive checks,
+latent bugs. `--recent` scopes to files changed since the last tag so the
+two-pass verify stays fast. Also grep explicitly for hardcoded secrets
+(`api_key\s*=\s*["']`, `sk-[A-Za-z0-9]{20,}`) — outside code-cleanup's
+category list.
+
+**D — `/test-review --recent`** (report-only). Catches mock-echo bloat
+and coverage gaps in tests whose source changed this cycle. Findings
+route to Polish unless a gap covers a shipped bug fix (→ Blocker).
+
+Synthesize all four into one list: **Blockers / Polish / Clean**. Stop on
+blockers.
 
 ---
 
