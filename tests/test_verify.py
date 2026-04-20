@@ -35,6 +35,15 @@ def test_classify_verifier_error(input_str, expected):
     assert classify_verifier_error(input_str) == expected
 
 
+def test_classify_verifier_error_substring_order():
+    """Precedence contract: 'verifier crashed' wins over 'verifier timed out'
+    when both substrings appear. Pins the order of the if-branches so a future
+    reorder that checks 'timed out' first surfaces as a regression.
+    """
+    msg = "verifier crashed: verifier timed out inside"
+    assert classify_verifier_error(msg) == VERIFIER_FAILED
+
+
 # ---------------------------------------------------------------------------
 # RunResult with verifier_error
 # ---------------------------------------------------------------------------

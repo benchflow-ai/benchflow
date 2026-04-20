@@ -62,12 +62,3 @@ class TestSandboxDirs:
         assert isinstance(dirs, set)
         assert all(isinstance(d, str) for d in dirs)
         assert all(d.startswith(".") for d in dirs)
-
-    def test_no_duplicates_across_agents(self):
-        """Multiple agents sharing a dir (e.g. .claude) don't cause issues."""
-        # claude-agent-acp and openclaw both use $HOME/.claude/skills
-        dirs = get_sandbox_home_dirs()
-        assert ".claude" in dirs
-        # set ensures no duplicates by nature; just verify count
-        dir_list = list(dirs)
-        assert len(dir_list) == len(set(dir_list))

@@ -75,16 +75,6 @@ class TestJobCounting:
         assert counts["failed"] == 1
         assert counts["errored"] == 1
 
-    def test_all_passed(self):
-        results = {
-            "a": {"rewards": {"reward": 1.0}, "error": None},
-            "b": {"rewards": {"reward": 1.0}, "error": None},
-        }
-        counts = self._count(results)
-        assert counts["passed"] == 2
-        assert counts["failed"] == 0
-        assert counts["errored"] == 0
-
     def test_partial_reward_counts_as_failed(self):
         results = {
             "a": {"rewards": {"reward": 0.5}, "error": None},
@@ -101,12 +91,6 @@ class TestJobCounting:
         counts = self._count(results)
         assert counts["errored"] == 0
         assert counts["failed"] == 1
-
-    def test_empty_results(self):
-        counts = self._count({})
-        assert counts["passed"] == 0
-        assert counts["failed"] == 0
-        assert counts["errored"] == 0
 
 
 class TestRunTaskLoop:

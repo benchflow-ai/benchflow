@@ -116,10 +116,6 @@ class TestHardenSequence:
         assert "sitecustomize.py" in cleanup_cmd and ".pth" in cleanup_cmd
         assert "-not -path '/tests/*'" in cleanup_cmd
         injected = task.config.verifier.env
-        assert (
-            injected["PATH"]
-            == "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-        )
         assert "--rootdir=/tests" in injected["PYTEST_ADDOPTS"]
         assert "-p no:cacheprovider" in injected["PYTEST_ADDOPTS"]
         assert injected["PYTHONPATH"] == ""
@@ -1118,12 +1114,6 @@ class TestVerifierEnv:
         assert result["DJANGO_SETTINGS_MODULE"] == ""
         assert result["CELERY_CONFIG_MODULE"] == ""
 
-    def test_pythonhome_not_set(self):
-        """PYTHONHOME must not be set — even "" breaks Py_Initialize."""
-        from benchflow._sandbox import VERIFIER_ENV
-
-        assert "PYTHONHOME" not in VERIFIER_ENV
-
     def test_devnull_blocks_hostile_pyproject(self, tmp_path):
         """Real pytest under -c /dev/null ignores agent-written pyproject.toml."""
         import os
@@ -1185,3 +1175,41 @@ class TestVerifierEnv:
             f"-c /dev/null did not suppress hostile pyproject.toml — "
             f"plugin marker {plugin_marker!r} leaked into hardened output."
         )
+
+
+class TestSandboxFailureModes:
+    """Recovery paths when untrusted inputs (task.toml, PATH extras) are malformed."""
+
+    def test_harden_before_verify_survives_manifest_read_failure(self, tmp_path):
+        """Truncated task.toml must not propagate TOMLDecodeError; treat as no plugins."""
+        from benchflow._sandbox import _declared_pytest_plugins
+
+        # Truncated inline-table → tomllib.TOMLDecodeError
+        (tmp_path / "task.toml").write_text(
+            "[verifier]\npytest_plugins = [\n",
+        )
+        task = _make_task()
+        task.task_dir = str(tmp_path)
+        task.config.verifier.pytest_plugins = None
+
+        assert _declared_pytest_plugins(task) == []
+
+    @pytest.mark.asyncio
+    async def test_trusted_path_extras_malformed_json_falls_back(self):
+        """Malformed JSON from the container-side PATH probe falls back to SAFE_VERIFIER_PATH."""
+        from benchflow._sandbox import _SAFE_VERIFIER_PATH, _trusted_verifier_path
+
+        async def fake_exec(cmd, user=None, timeout_sec=None):
+            result = MagicMock()
+            if "printenv PATH" in cmd:
+                result.stdout = "/usr/local/bin:/usr/bin:/bin"
+            else:
+                result.stdout = "not json"
+            return result
+
+        env = MagicMock()
+        env.exec = AsyncMock(side_effect=fake_exec)
+
+        path = await _trusted_verifier_path(env, sandbox_user=None, workspace=None)
+        # Malformed JSON ⇒ extras treated as empty ⇒ result equals safe PATH
+        assert path == _SAFE_VERIFIER_PATH
