@@ -283,11 +283,8 @@ class Job:
         agent_cfg = agents[0] if agents else {}
         agent_name = agent_cfg.get("name", DEFAULT_AGENT)
 
-        # Model — Harbor uses "anthropic/model-name" format
-        model = agent_cfg.get("model_name", "")
-        if "/" in model:
-            model = model.split("/", 1)[1]
-        model = model or DEFAULT_MODEL
+        # Model — keep provider prefix intact for downstream resolution
+        model = agent_cfg.get("model_name", "") or DEFAULT_MODEL
 
         # Environment
         env_cfg = raw.get("environment", {})
