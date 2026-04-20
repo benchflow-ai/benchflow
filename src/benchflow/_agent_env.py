@@ -52,6 +52,10 @@ def auto_inherit_env(agent_env: dict[str, str]) -> None:
     # Mirror GEMINI_API_KEY as GOOGLE_API_KEY (some agents expect one or the other)
     if "GEMINI_API_KEY" in agent_env and "GOOGLE_API_KEY" not in agent_env:
         agent_env["GOOGLE_API_KEY"] = agent_env["GEMINI_API_KEY"]
+    # CLAUDE_CODE_OAUTH_TOKEN satisfies ANTHROPIC_API_KEY requirement
+    # (Claude CLI accepts either for auth)
+    if "CLAUDE_CODE_OAUTH_TOKEN" in agent_env and "ANTHROPIC_API_KEY" not in agent_env:
+        agent_env["ANTHROPIC_API_KEY"] = agent_env["CLAUDE_CODE_OAUTH_TOKEN"]
 
 
 def inject_vertex_credentials(agent_env: dict[str, str], model: str) -> None:
