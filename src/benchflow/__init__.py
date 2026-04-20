@@ -58,6 +58,7 @@ from benchflow._snapshot import list_snapshots, restore, snapshot
 from benchflow.sdk import SDK
 from benchflow.trial import Trial, TrialConfig
 from benchflow.trial import Role as TrialRole, Scene as TrialScene, Turn
+from benchflow.trial_yaml import trial_config_from_yaml
 from benchflow.skills import SkillInfo, discover_skills, install_skill, parse_skill
 from benchflow.trajectories.otel import OTelCollector
 from benchflow.trajectories.proxy import TrajectoryProxy
