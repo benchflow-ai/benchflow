@@ -140,12 +140,8 @@ class TestProviderModels:
 
     def test_model_has_required_fields(self):
         """Each model entry should have at least id and name."""
-        for key, cfg in PROVIDERS.items():
-            if not cfg.models:
-                continue
-            for m in cfg.models:
-                assert "id" in m, f"Provider {key!r} model missing 'id'"
-                assert "name" in m, f"Provider {key!r} model missing 'name'"
+        for cfg in PROVIDERS.values():
+            assert all("id" in m and "name" in m for m in cfg.models)
 
 
 # ── strip_provider_prefix ──

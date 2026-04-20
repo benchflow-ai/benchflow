@@ -17,18 +17,30 @@ Key details:
   - Model: set via openclaw config on session/set_model
 """
 
+import base64
 import json
 import logging
 import os
 import shutil
 import subprocess
 import sys
+import tempfile
+import time
+import urllib.parse
+import urllib.request
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 _DIAG_TRUNCATE = 2000  # max chars for diagnostic output in ACP updates
 _TOOL_RESULT_TRUNCATE = 1000  # max chars for tool result text
+_TOOL_INPUT_TRUNCATE = 500  # max chars for tool input echoed in ACP updates
+
+_PARAM_MAP = {
+    "BENCHFLOW_MODEL_TEMPERATURE": "agents.defaults.params.temperature",
+    "BENCHFLOW_MODEL_TOP_P": "agents.defaults.params.topP",
+    "BENCHFLOW_MODEL_MAX_TOKENS": "agents.defaults.params.maxTokens",
+}
 
 
 # ── ACP stdio I/O ─────────────────────────────────────────────────────────────
@@ -137,11 +149,6 @@ def _get_adc_token() -> str:
     Supports both service-account keys (JWT → token exchange) and
     authorized-user credentials (refresh_token → token exchange).
     """
-    import base64
-    import time
-    import urllib.parse
-    import urllib.request
-
     adc_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
     if not adc_path or not Path(adc_path).exists():
         # Fallback to default ADC location
@@ -192,8 +199,6 @@ def _get_adc_token() -> str:
         signing_input = header + b"." + payload
 
         # Sign with openssl (available in most containers)
-        import tempfile
-
         with tempfile.NamedTemporaryFile(mode="w", suffix=".pem", delete=False) as kf:
             kf.write(creds["private_key"])
             key_path = kf.name
@@ -441,7 +446,7 @@ def parse_session_jsonl(path: Path, session_id: str) -> list[dict]:
                                                     "content": {
                                                         "type": "text",
                                                         "text": json.dumps(_input)[
-                                                            :500
+                                                            :_TOOL_INPUT_TRUNCATE
                                                         ],
                                                     },
                                                 }
@@ -591,11 +596,6 @@ def main():
                 )
 
             # Apply model generation parameters from env vars
-            _PARAM_MAP = {
-                "BENCHFLOW_MODEL_TEMPERATURE": "agents.defaults.params.temperature",
-                "BENCHFLOW_MODEL_TOP_P": "agents.defaults.params.topP",
-                "BENCHFLOW_MODEL_MAX_TOKENS": "agents.defaults.params.maxTokens",
-            }
             for env_key, config_path in _PARAM_MAP.items():
                 val = os.environ.get(env_key)
                 if val:

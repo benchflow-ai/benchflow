@@ -625,9 +625,7 @@ class SDK:
                 timing,
                 sandbox_user=sandbox_user,
                 workspace=agent_cwd,
-                # Keep verifier semantics identical for oracle and normal agents.
-                # Full workspace restore should become task metadata, not an
-                # agent-type branch, once tasks can declare it is safe.
+                # Same verifier semantics for oracle and normal agents.
                 restore_workspace=False,
             )
 

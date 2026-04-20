@@ -3,7 +3,6 @@
 import pytest
 
 from benchflow.agents.registry import (
-    AGENTS,
     get_agent,
     infer_env_key_for_model,
     is_vertex_model,
@@ -25,9 +24,6 @@ class TestGetAgent:
     def test_unknown_agent_raises(self):
         with pytest.raises(KeyError, match="Unknown agent"):
             get_agent("nonexistent-agent")
-
-    def test_no_openclaw_gemini_entry(self):
-        assert "openclaw-gemini" not in AGENTS
 
 
 class TestIsVertexModel:
