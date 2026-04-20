@@ -5,7 +5,7 @@
 **Requirements:** Python 3.12+, Docker (local) or a [Daytona](https://app.daytona.io) account (cloud).
 
 ```bash
-pip install benchflow
+pip install benchflow==0.3.0a3
 ```
 
 **Credentials**
@@ -36,25 +36,25 @@ bench agent list   # list registered agents, required env vars, and protocol
 ## 2. Run a single task
 
 ```bash
-bench run \
-  --task-dir path/to/task \
-  --agent claude-agent-acp \
-  --model claude-haiku-4-5-20251001 \
-  --jobs-dir jobs/
+bench eval create \
+  -t path/to/task \
+  -a gemini \
+  -m gemini-3.1-flash-lite-preview \
+  -e daytona
 ```
 
 Key flags:
-- `--task-dir` (`-t`) — directory containing `task.toml` and `instruction.md`
-- `--agent` (`-a`) — agent name from the registry (default: `claude-agent-acp`)
-- `--model` (`-m`) — model ID; omit to use the agent's default
-- `--env` (`-e`) — `docker` (local, default) or `daytona` (cloud)
+- `--tasks-dir` (`-t`) — directory containing `task.toml` and `instruction.md`
+- `--agent` (`-a`) — agent name from the registry (default: `gemini`)
+- `--model` (`-m`) — model ID (default: `gemini-3.1-flash-lite-preview`)
+- `--env` (`-e`) — `daytona` (cloud, default for Daytona users) or `docker` (local)
 - `--jobs-dir` (`-o`) — where results are written (default: `jobs/`)
 
 **Output**
 
 ```
 Task:       fix-login-bug
-Agent:      claude-agent-acp
+Agent:      gemini (gemini-3.1-flash-lite-preview)
 Rewards:    {'reward': 1.0}
 Tool calls: 14
 ```
@@ -80,37 +80,37 @@ jobs/{job_name}/{trial_name}/
 **Inspect a trajectory**
 
 ```bash
-benchflow view jobs/my-job/my-trial/   # starts HTTP server at localhost:8888 — open in browser
+bench eval list jobs/my-job/   # show results for a job
 ```
 
 **Try it with a real task**
 
-Download tasks once (clones into `.ref/`):
+Tasks auto-download on first run via `ensure_tasks()`. Or download explicitly:
 
 ```bash
-python -c "from benchflow.task_download import ensure_tasks; ensure_tasks('skillsbench'); ensure_tasks('terminal-bench-2')"
+python -c "from benchflow.task_download import ensure_tasks; ensure_tasks('terminal-bench-2')"
 ```
 
 ```bash
-bench run --task-dir .ref/skillsbench/tasks/court-form-filling --agent claude-agent-acp --model claude-haiku-4-5-20251001
-bench run --task-dir .ref/terminal-bench-2/fix-git --agent claude-agent-acp --model claude-haiku-4-5-20251001
+bench eval create -t .ref/terminal-bench-2/fix-git -a gemini -e daytona
+bench eval create -t .ref/skillsbench/tasks/court-form-filling -a gemini -e daytona
 ```
 
 ---
 
-## 3. Run a job (SkillsBench)
+## 3. Run a batch evaluation (SkillsBench)
 
-`bench job` runs an entire task directory with configurable concurrency and retries.
+`bench eval create` runs an entire task directory with configurable concurrency and retries.
 
-The repo ships ready-to-run configs in `benchmarks/` targeting Daytona (`concurrency: 8`). To run locally with Docker, use `concurrency: 1`.
+The repo ships ready-to-run configs in `benchmarks/` targeting Daytona. To run locally with Docker, override with `--env docker --concurrency 1`.
 
 **Local Docker config (`my-skillsbench.yaml`)**
 
 ```yaml
-tasks_dir: .ref/skillsbench/tasks
+task_dir: .ref/skillsbench/tasks
 jobs_dir: jobs/skillsbench-local
-agent: claude-agent-acp
-model: claude-haiku-4-5-20251001
+agent: gemini
+model: gemini-3.1-flash-lite-preview
 environment: docker
 concurrency: 1
 max_retries: 2
@@ -120,25 +120,24 @@ exclude:
 ```
 
 ```bash
-bench job --config my-skillsbench.yaml
+bench eval create -f my-skillsbench.yaml
 ```
 
 Or override a shipped config inline:
 
 ```bash
-bench job --config benchmarks/skillsbench-codex-gpt54.yaml --env docker --concurrency 1
+bench eval create -f benchmarks/skillsbench-gemini.yaml --env docker --concurrency 1
 ```
 
 Or use inline flags directly:
 
 ```bash
-bench job \
-  --tasks-dir .ref/skillsbench/tasks \
-  --agent claude-agent-acp \
-  --model claude-haiku-4-5-20251001 \
-  --concurrency 1 \
-  --retries 2 \
-  --jobs-dir jobs/skillsbench-local
+bench eval create \
+  -t .ref/skillsbench/tasks \
+  -a gemini \
+  -m gemini-3.1-flash-lite-preview \
+  -c 1 --retries 2 \
+  -o jobs/skillsbench-local
 ```
 
 **Output and metrics**
@@ -148,8 +147,8 @@ Score: 32/86 (37.2%), errors=2
 ```
 
 ```bash
-benchflow metrics jobs/skillsbench-local/       # tabular summary
-benchflow metrics jobs/skillsbench-local/ --json  # machine-readable
+bench eval list jobs/skillsbench-local/       # tabular summary
+bench eval list jobs/skillsbench-local/ --json  # machine-readable
 ```
 
 **Resume:** Re-running the same command resumes automatically. Tasks with an existing `result.json` are skipped.
@@ -168,8 +167,8 @@ python benchmarks/run_tb2.py benchmarks/tb2_multiturn-codex-gpt54.yaml  # multi-
 For local Docker, override inline:
 
 ```bash
-bench job --config benchmarks/tb2_single-codex-gpt54.yaml --env docker --concurrency 1
-bench job --config benchmarks/tb2_multiturn-codex-gpt54.yaml --env docker --concurrency 1
+bench eval create -f --config benchmarks/tb2_single-codex-gpt54.yaml --env docker --concurrency 1
+bench eval create -f --config benchmarks/tb2_multiturn-codex-gpt54.yaml --env docker --concurrency 1
 ```
 
 Or write your own local config. Multi-turn adds a `prompts` list:
@@ -191,22 +190,16 @@ The agent retains full context (tool history, memory) between turns.
 
 ---
 
-## 5. Multi-turn via the Python SDK
+## 5. Python SDK
 
 **Single task**
 
 ```python
 import asyncio
-from benchflow import SDK
+import benchflow as bf
 
 async def main():
-    sdk = SDK()
-    result = await sdk.run(
-        task_path="path/to/task",
-        agent="claude-agent-acp",
-        model="claude-haiku-4-5-20251001",
-        environment="docker",
-    )
+    result = await bf.run("gemini", task_path="path/to/task")
     print(result.rewards)      # {"reward": 1.0}
     print(result.n_tool_calls) # 17
     print(result.error)        # None on success
@@ -214,48 +207,57 @@ async def main():
 asyncio.run(main())
 ```
 
-**Multi-turn**
+**With explicit TrialConfig**
 
 ```python
-result = await sdk.run(
+from benchflow.trial import TrialConfig
+
+result = await bf.run(TrialConfig(
+    agent="gemini",
+    model="gemini-3.1-flash-lite-preview",
     task_path="path/to/task",
-    agent="claude-agent-acp",
-    prompts=[
-        None,
-        "Review your solution. Check for errors, test it, and fix any issues.",
-    ],
-    environment="docker",
-)
+    backend="daytona",
+))
 ```
 
-**Full benchmark job**
+**Multi-agent (coder + reviewer)**
 
 ```python
-from benchflow import SDK, Job, JobConfig, collect_metrics
+from benchflow.trial import TrialConfig, Scene, Role, Turn
 
-async def main():
-    job = Job(
-        tasks_dir="path/to/tasks",
-        jobs_dir="jobs/tb2",
-        config=JobConfig(
-            agent="claude-agent-acp",
-            model="claude-haiku-4-5-20251001",
-            environment="docker",
-            concurrency=1,
-            prompts=[None, "Review your solution. Check for errors, test it, and fix any issues."],
-        ),
-    )
-    result = await job.run()
-    print(f"{result.passed}/{result.total} ({result.score:.1%})")
+config = TrialConfig(
+    task_path="path/to/task",
+    scenes=[
+        Scene(name="review-loop",
+              roles=[
+                  Role("coder", "gemini", "gemini-3.1-flash-lite-preview"),
+                  Role("reviewer", "gemini", "gemini-3.1-flash-lite-preview"),
+              ],
+              turns=[
+                  Turn("coder"),
+                  Turn("reviewer", "Review the solution. Write feedback."),
+                  Turn("coder", "Address the reviewer's feedback."),
+              ]),
+    ],
+    backend="daytona",
+)
+result = await bf.run(config)
+```
 
-asyncio.run(main())
+**Explicit Trial lifecycle**
+
+```python
+from benchflow.trial import Trial, TrialConfig
+
+config = TrialConfig(...)
+trial = await Trial.create(config)
+result = await trial.run()
 ```
 
 **Load from YAML**
 
 ```python
-job = Job.from_yaml("benchmarks/tb2_multiturn-codex-gpt54.yaml")
-result = await job.run()
+result = await bf.run(TrialConfig.from_yaml("benchmarks/tb2-gemini-baseline.yaml"))
 ```
 
 **Aggregate metrics**
