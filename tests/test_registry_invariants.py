@@ -108,7 +108,7 @@ def test_agent_negative_config_invariants():
     """
     no_credential_files = {"claude-agent-acp", "openclaw"}
     no_subscription_auth = {"openclaw", "pi-acp"}
-    no_env_mapping = {"openclaw"}
+    no_env_mapping = {"openclaw", "pi-acp"}
 
     for name in no_credential_files:
         assert AGENTS[name].credential_files == [], (
