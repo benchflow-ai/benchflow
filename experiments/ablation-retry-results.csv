@@ -53,3 +53,26 @@ tb2,prove-plus-comm,reviewer,gemini-3.1-flash-lite-preview,daytona,1,0.0,109,0,A
 tb2,path-tracing,reviewer,gemini-3.1-flash-lite-preview,daytona,1,0.0,156,66,
 tb2,reshard-c4-data,reviewer,gemini-3.1-flash-lite-preview,daytona,1,0.0,153,40,
 tb2,sqlite-with-gcov,reviewer+spec,gemini-3.1-flash-lite-preview,daytona,1,0.0,159,65,
+tb2,polyglot-c-py,reviewer,gemini-3.1-flash-lite-preview,daytona,1,0.0,168,85,
+tb2,path-tracing,reviewer+spec,gemini-3.1-flash-lite-preview,daytona,1,0.0,184,68,
+tb2,tune-mjcf,reviewer,gemini-3.1-flash-lite-preview,daytona,1,0.0,1,0,Process closed stdout (rc=None)
+tb2,tune-mjcf,reviewer+spec,gemini-3.1-flash-lite-preview,daytona,1,0.0,0,0,Process closed stdout (rc=None)
+tb2,sam-cell-seg,reviewer,gemini-3.1-flash-lite-preview,daytona,1,0.0,182,12,
+tb2,torch-tensor-parallelism,reviewer+spec,gemini-3.1-flash-lite-preview,daytona,1,0.0,144,8,
+tb2,torch-tensor-parallelism,reviewer,gemini-3.1-flash-lite-preview,daytona,1,0.0,146,11,
+tb2,torch-pipeline-parallelism,reviewer,gemini-3.1-flash-lite-preview,daytona,1,0.0,204,12,
+tb2,password-recovery,reviewer,gemini-3.1-flash-lite-preview,daytona,1,0.0,339,89,
+tb2,regex-chess,reviewer,gemini-3.1-flash-lite-preview,daytona,1,0.0,384,82,
+tb2,winning-avg-corewars,reviewer,gemini-3.1-flash-lite-preview,daytona,1,0.0,128,62,
+tb2,winning-avg-corewars,reviewer+spec,gemini-3.1-flash-lite-preview,daytona,1,0.0,181,49,
+tb2,qemu-startup,baseline,gemini-3.1-flash-lite-preview,daytona,0,0.0,505,13,
+tb2,qemu-startup,reviewer+spec,gemini-3.1-flash-lite-preview,daytona,1,0.0,592,26,
+tb2,pytorch-model-recovery,reviewer+spec,gemini-3.1-flash-lite-preview,daytona,1,0.0,633,0,
+tb2,pytorch-model-recovery,reviewer,gemini-3.1-flash-lite-preview,daytona,1,0.0,634,0,
+tb2,query-optimize,reviewer+spec,gemini-3.1-flash-lite-preview,daytona,1,0.0,669,13,
+tb2,rstan-to-pystan,reviewer+spec,gemini-3.1-flash-lite-preview,daytona,1,0.0,725,39,
+tb2,train-fasttext,reviewer,gemini-3.1-flash-lite-preview,daytona,1,0.0,622,0,
+tb2,train-fasttext,reviewer+spec,gemini-3.1-flash-lite-preview,daytona,1,0.0,631,0,
+tb2,vulnerable-secret,reviewer,gemini-3.1-flash-lite-preview,daytona,1,0.0,700,38,Process closed stdout (rc=None)
+tb2,vulnerable-secret,reviewer+spec,gemini-3.1-flash-lite-preview,daytona,1,0.0,700,95,Process closed stdout (rc=None)
+tb2,pytorch-model-recovery,baseline,gemini-3.1-flash-lite-preview,daytona,0,0.0,888,11,Process closed stdout (rc=None)
