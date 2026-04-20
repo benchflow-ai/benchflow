@@ -520,7 +520,7 @@ class Trial:
                 from benchflow.sdk import SDK
                 sdk = SDK()
                 self._trajectory, self._agent_name = await sdk._run_oracle(
-                    self._env, cfg.task_path, self._timeout, cfg.sandbox_user
+                    self._env, cfg.task_path, self._timeout, sandbox_user=None
                 )
             else:
                 await self.install_agent()
