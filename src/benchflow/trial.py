@@ -539,6 +539,13 @@ class Trial:
 
             if cfg.primary_agent == "oracle":
                 await self.install_agent()
+                # git safe.directory needed for SWE-bench tasks with sandbox_user
+                import shlex
+                await self._env.exec(
+                    f"git config --global --add safe.directory "
+                    f"{shlex.quote(self._agent_cwd)} 2>/dev/null || true",
+                    user="root", timeout_sec=10,
+                )
                 from benchflow.sdk import SDK
                 sdk = SDK()
                 self._trajectory, self._agent_name = await sdk._run_oracle(
@@ -595,7 +602,7 @@ class Trial:
                 await self.connect_as(role)
                 current_role = turn.role
 
-            prompts = [turn.prompt] if turn.prompt else self._resolved_prompts
+            prompts = [turn.prompt] if turn.prompt else [self._resolved_prompts[0]] if self._resolved_prompts else [None]
             await self.execute(prompts=prompts)
 
         if current_role is not None:
@@ -630,8 +637,8 @@ class Trial:
             from benchflow._agent_env import check_subscription_auth
             from benchflow.agents.registry import infer_env_key_for_model
 
-            key = infer_env_key_for_model(self._config.model) if self._config.model else None
-            if key and check_subscription_auth(self._config.agent, key):
+            key = infer_env_key_for_model(self._config.primary_model) if self._config.primary_model else None
+            if key and check_subscription_auth(self._config.primary_agent, key):
                 return (
                     f"{key} was rejected as invalid. "
                     f"Subscription auth credentials exist — unset the env var "
@@ -640,10 +647,7 @@ class Trial:
         return str(e)
 
     def _build_result(self) -> RunResult:
-        from benchflow.sdk import SDK, _write_rewards_jsonl
-
-        finished_at = datetime.now()
-        _write_rewards_jsonl(self._trial_dir, self._rewards, finished_at)
+        from benchflow.sdk import SDK
 
         return SDK._build_result(
             self._trial_dir,
