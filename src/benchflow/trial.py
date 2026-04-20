@@ -306,7 +306,7 @@ class Trial:
         self._phase = "connected"
 
     async def disconnect(self) -> None:
-        """Close the ACP client but keep the environment alive."""
+        """Close the ACP client and clean up agent process, keeping the environment alive."""
         if self._acp_client:
             try:
                 await self._acp_client.close()
@@ -314,6 +314,13 @@ class Trial:
                 logger.warning(f"ACP client close failed: {e}")
             self._acp_client = None
             self._session = None
+        # Kill any lingering agent processes to prevent context bleed between scenes
+        if self._env:
+            agent_cmd = self._agent_launch.split()[0].split("/")[-1]
+            try:
+                await self._env.exec(f"pkill -f '{agent_cmd}' || true", timeout_sec=10)
+            except Exception:
+                pass
         self._phase = "installed"
 
     # ── Phase 3c: EXECUTE ──
@@ -455,7 +462,6 @@ class Trial:
         _write_rewards_jsonl(self._trial_dir, self._rewards, finished_at)
 
         return SDK._build_result(
-            SDK(),
             self._trial_dir,
             task_name=self._config.task_path.name,
             trial_name=self._trial_name or "",
@@ -471,4 +477,5 @@ class Trial:
             trajectory_source=self._trajectory_source,
             rewards=self._rewards,
             started_at=self._started_at,
+            timing=self._timing,
         )
