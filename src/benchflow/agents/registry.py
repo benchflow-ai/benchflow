@@ -308,6 +308,24 @@ AGENTS: dict[str, AgentConfig] = {
             ],
         ),
     ),
+    "openhands": AgentConfig(
+        name="openhands",
+        description="OpenHands agent via ACP (multi-model, Python-based)",
+        skill_paths=[],
+        install_cmd=(
+            "( command -v openhands >/dev/null 2>&1 || "
+            "pip install openhands >/dev/null 2>&1 ) && "
+            "command -v openhands >/dev/null 2>&1"
+        ),
+        launch_cmd="openhands acp --always-approve --override-with-envs",
+        protocol="acp",
+        requires_env=["LLM_API_KEY"],
+        api_protocol="",
+        env_mapping={
+            "BENCHFLOW_PROVIDER_BASE_URL": "LLM_BASE_URL",
+            "BENCHFLOW_PROVIDER_API_KEY": "LLM_API_KEY",
+        },
+    ),
 }
 
 
@@ -387,6 +405,8 @@ AGENT_ALIASES: dict[str, str] = {
     "gemini": "gemini",
     "pi": "pi-acp",
     "openclaw": "openclaw",
+    "openhands": "openhands",
+    "oh": "openhands",
 }
 
 VALID_PROTOCOLS = {"acp", "harbor"}

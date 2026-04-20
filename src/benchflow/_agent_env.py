@@ -40,6 +40,8 @@ def auto_inherit_env(agent_env: dict[str, str]) -> None:
         "GEMINI_API_KEY",
         "GOOGLE_CLOUD_PROJECT",
         "GOOGLE_CLOUD_LOCATION",
+        "LLM_API_KEY",
+        "LLM_BASE_URL",
     }
     for cfg in PROVIDERS.values():
         if cfg.auth_env:
