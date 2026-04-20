@@ -295,13 +295,25 @@ class Trial:
         self._resolved_prompts = SDK._resolve_prompts(cfg.task_path, cfg.prompts)
         self._agent_launch = AGENT_LAUNCH.get(cfg.agent, cfg.agent)
 
+        # Copy task dir to temp when Dockerfile mutations are needed
+        # (_inject_skills writes into environment/_deps/, stage_dockerfile
+        # rewrites COPY paths — neither should modify the source tree)
+        effective_task_path = cfg.task_path
+        if cfg.context_root or cfg.skills_dir:
+            import shutil
+            import tempfile
+            tmp = Path(tempfile.mkdtemp(prefix="benchflow-task-"))
+            shutil.copytree(cfg.task_path, tmp / cfg.task_path.name, dirs_exist_ok=True)
+            effective_task_path = tmp / cfg.task_path.name
+            self._task_tmp = tmp
+
         if cfg.context_root:
-            stage_dockerfile_deps(cfg.task_path, Path(cfg.context_root))
+            stage_dockerfile_deps(effective_task_path, Path(cfg.context_root))
         if cfg.skills_dir:
-            _inject_skills_into_dockerfile(cfg.task_path, Path(cfg.skills_dir))
+            _inject_skills_into_dockerfile(effective_task_path, Path(cfg.skills_dir))
 
         self._env = _create_environment(
-            cfg.environment, self._task, cfg.task_path,
+            cfg.environment, self._task, effective_task_path,
             self._trial_name, self._trial_paths,
         )
         self._timeout = int(self._task.config.agent.timeout_sec or 0)
@@ -499,6 +511,10 @@ class Trial:
                 await self._env.stop(delete=True)
             except Exception as e:
                 logger.warning(f"Cleanup failed: {e}")
+
+        if hasattr(self, "_task_tmp") and self._task_tmp:
+            import shutil
+            shutil.rmtree(self._task_tmp, ignore_errors=True)
 
         self._phase = "cleaned"
 
