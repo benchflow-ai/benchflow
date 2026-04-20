@@ -23,30 +23,25 @@ from benchflow._agent_env import (
 class TestAutoInheritEnv:
     """Tests for auto_inherit_env — host env key inheritance."""
 
-    def test_inherits_anthropic_key(self, monkeypatch):
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-host")
+    @pytest.mark.parametrize(
+        ("env_name", "env_value"),
+        [
+            pytest.param("ANTHROPIC_API_KEY", "sk-host", id="anthropic"),
+            pytest.param("OPENAI_API_KEY", "sk-oai", id="openai"),
+            pytest.param("ZAI_API_KEY", "zk-host", id="provider"),
+        ],
+    )
+    def test_inherits_key(self, monkeypatch, env_name, env_value):
+        monkeypatch.setenv(env_name, env_value)
         env = {}
         auto_inherit_env(env)
-        assert env["ANTHROPIC_API_KEY"] == "sk-host"
-
-    def test_inherits_openai_key(self, monkeypatch):
-        monkeypatch.setenv("OPENAI_API_KEY", "sk-oai")
-        env = {}
-        auto_inherit_env(env)
-        assert env["OPENAI_API_KEY"] == "sk-oai"
+        assert env[env_name] == env_value
 
     def test_does_not_overwrite_explicit(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-host")
         env = {"ANTHROPIC_API_KEY": "sk-explicit"}
         auto_inherit_env(env)
         assert env["ANTHROPIC_API_KEY"] == "sk-explicit"
-
-    def test_inherits_provider_auth_env(self, monkeypatch):
-        """Custom provider auth keys (e.g. ZAI_API_KEY) are inherited."""
-        monkeypatch.setenv("ZAI_API_KEY", "zk-host")
-        env = {}
-        auto_inherit_env(env)
-        assert env["ZAI_API_KEY"] == "zk-host"
 
     def test_gemini_mirrored_to_google(self):
         env = {"GEMINI_API_KEY": "gk-test"}

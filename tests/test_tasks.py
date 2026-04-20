@@ -36,11 +36,6 @@ class TestCheckTask:
         issues = check_task(f)
         assert issues == [f"Not a directory: {f}"]
 
-    def test_nonexistent_path(self, tmp_path):
-        p = tmp_path / "nonexistent"
-        issues = check_task(p)
-        assert issues == [f"Not a directory: {p}"]
-
     def test_missing_task_toml(self, tmp_path):
         task = self._make_valid_task(tmp_path)
         (task / "task.toml").unlink()

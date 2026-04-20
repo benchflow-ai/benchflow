@@ -2,41 +2,25 @@
 
 ## [Unreleased]
 
-## 0.3.0 — 2026-04-18
+## 0.2.3 — 2026-04-15
 
 ### Added
 
-- **Runtime API** — `bf.run(agent, env)` as the primary execution surface.
-  `Agent`, `Environment`, `Runtime`, `RuntimeConfig`, `RuntimeResult` types
-  exported from `benchflow`. SDK.run() remains as backwards-compat shim.
-- **Resource-verb CLI** — `bench agent {list,show}`, `bench eval {run,list}`,
-  `bench environment {create,list}`, `bench skills {list,eval}`.
-- **Dense rewards** — `rewards.jsonl` with terminal + rubric/process reward events.
-  ORS reward-signal compatible schema.
-- **Env snapshots** — `snapshot(env, name)` / `restore(env, ref)` for checkpoint/rewind.
-  Filesystem-level via tar; Daytona proof passed.
-- **Multi-agent runtime** — `Scene`, `Role`, `Message`, `MailboxTransport` for
-  turn-based 2-agent evaluation. Coder↔reviewer proof on Daytona.
-- **ACP conformance gate** — `tests/conformance/acp_smoke/` task. Green:
-  `claude-agent-acp`, `gemini`. Experimental: `codex-acp`, `pi-acp`, `openclaw`.
-- **Skill evaluation** — `bench skills eval` with evals.json task generation,
-  LLM judge, lift reporting, GEPA export.
-- **Pytest plugin inference** — auto-detect `--ctrf`, `--json-report`, and
-  pip-installed plugins from test.sh. Fixes false-negative verifier crashes
-  on TB2 and SkillsBench tasks.
-- **Gemini `--acp --yolo`** — default launch mode for Gemini CLI agent.
-  Closes 11pp Harbor gap (13.5% → 22.1% on TB2-89).
-
-### Fixed
-
-- Verifier preflight now runs in root mode (`sandbox_user=None`).
-- Agent spec parsing with aliases and fuzzy matching.
+- `benchmarks/tb2_multiturn-claude-haiku45.yaml` — shipped config for the README's TB2 multi-turn Claude result.
+- Daytona resource clamping via `BENCHFLOW_DAYTONA_MAX_CPUS` / `MAX_MEMORY_MB`.
 
 ### Changed
 
-- Default model switched to `gemini-3.1-flash-lite-preview`.
-- Legacy Haiku TB2 baseline (0/89) deprecated.
-- Current TB2 baseline: BenchFlow Gemini 19/86 = 22.1%.
+- Renamed `skillsbench-claude-glm5.yaml` → `skillsbench-claude-glm51.yaml` to match the model ID.
+- `codex --login` correction in `docs/getting-started.md`.
+- Restricted sdist build to `src/`, `tests/`, and metadata.
+
+### Fixed
+
+- Verifier sandbox hardening follow-ups across several base-image and tooling edge cases.
+- Preserve trusted verifier path entries and workspace answer files.
+- Redirect oracle output to container log.
+- Align YAML path resolution to config file location.
 
 ## 0.2.2 — 2026-04-13
 

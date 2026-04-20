@@ -1,7 +1,9 @@
 """Tests for ACP client ↔ mock agent — Step 10."""
 
+import asyncio
 import sys
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -196,9 +198,12 @@ class TestACPSession:
         assert len(session.tool_calls) == 0
 
     def test_tool_call_update_for_unknown_id(self):
-        """Update for non-existent tool call should be silently ignored."""
+        """Update for non-existent tool call auto-creates a record.
+
+        Agents like Gemini CLI skip the initial tool_call notification and
+        send only tool_call_update, so the session synthesizes a record.
+        """
         session = ACPSession("test-session")
-        # Should not raise
         session.handle_update(
             {
                 "sessionUpdate": "tool_call_update",
@@ -206,6 +211,53 @@ class TestACPSession:
                 "status": "completed",
             }
         )
+        assert len(session.tool_calls) == 1
+        assert session.tool_calls[0].tool_call_id == "nonexistent"
+        assert session.tool_calls[0].kind == "tool"
+
+
+class TestStdioTransportOversizedLine:
+    """StdioTransport must recover from oversized lines (LimitOverrunError)."""
+
+    @pytest.mark.asyncio
+    async def test_stdio_transport_drain_oversized_line(self) -> None:
+        """Oversized line on stdout is skipped; following valid JSON returns normally.
+
+        Feeds the oversized chunk first, lets receive() hit LimitOverrunError and
+        call drain_oversized_line (which clears the buffer), then feeds the next
+        valid JSON line so readline() can find it. This matches the real ordering
+        (stdin -> drain -> next line) that a live process would produce.
+        """
+        limit = 64
+        reader = asyncio.StreamReader(limit=limit)
+        # Oversized chunk WITH a newline: triggers "Separator is found, but
+        # chunk is longer than limit" on readline().
+        reader.feed_data(b"x" * (limit * 3) + b"\n")
+
+        transport = StdioTransport(sys.executable, [])
+        fake_process = MagicMock()
+        fake_process.stdout = reader
+        fake_process.stdin = MagicMock()
+        transport._process = fake_process
+
+        async def feed_valid_later() -> None:
+            # Give receive() time to drain, then supply the next line.
+            # drain_oversized_line clears the buffer and consumes up to the
+            # next \n (the oversized newline was flushed with the clear), so
+            # we feed a dummy newline to satisfy drain's readuntil, then the
+            # real JSON line that receive() should return.
+            await asyncio.sleep(0.05)
+            reader.feed_data(b"\n")
+            await asyncio.sleep(0.05)
+            reader.feed_data(b'{"ok": true}\n')
+            reader.feed_eof()
+
+        feeder = asyncio.create_task(feed_valid_later())
+        try:
+            msg = await asyncio.wait_for(transport.receive(), timeout=5)
+        finally:
+            await feeder
+        assert msg == {"ok": True}
 
 
 class TestACPInterleaving:
@@ -231,3 +283,67 @@ class TestACPInterleaving:
             assert session.full_message == "done"
         finally:
             await client.close()
+
+
+class TestConnectAcpModelSelection:
+    """Verify connect_acp passes the right model string to set_model."""
+
+    @staticmethod
+    def _make_mocks():
+        mock_session = MagicMock()
+        mock_session.session_id = "s1"
+        mock_init = MagicMock()
+        mock_init.agent_info = None
+
+        mock_acp = AsyncMock(spec=ACPClient)
+        mock_acp.connect = AsyncMock()
+        mock_acp.initialize = AsyncMock(return_value=mock_init)
+        mock_acp.session_new = AsyncMock(return_value=mock_session)
+        mock_acp.set_model = AsyncMock()
+        mock_acp.close = AsyncMock()
+        return mock_acp
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "model_in, expected_model",
+        [
+            # Registered vllm/ prefix stripped; HF org/model intact — this is
+            # what pi-acp and other ACP agents need for downstream routing.
+            ("vllm/Qwen/Qwen3.5-35B-A3B", "Qwen/Qwen3.5-35B-A3B"),
+            ("zai/glm-5", "glm-5"),
+            # Bare HF ID (no registered prefix) passes through unchanged.
+            ("Qwen/Qwen3-Coder", "Qwen/Qwen3-Coder"),
+            # Vertex ADC provider — prefix stripped like any other registered one.
+            ("anthropic-vertex/claude-sonnet-4-6", "claude-sonnet-4-6"),
+            # No prefix at all — unchanged.
+            ("claude-sonnet-4-6", "claude-sonnet-4-6"),
+        ],
+        ids=["vllm-hf", "zai", "bare-hf", "vertex", "no-prefix"],
+    )
+    async def test_model_id_selection(self, model_in, expected_model, tmp_path):
+        from benchflow._acp_run import connect_acp
+
+        mock_acp = self._make_mocks()
+
+        mock_env = AsyncMock()
+        with (
+            patch(
+                "benchflow._acp_run.DockerProcess.from_harbor_env",
+                return_value=MagicMock(),
+            ),
+            patch("benchflow._acp_run.ContainerTransport", return_value=MagicMock()),
+            patch("benchflow._acp_run.ACPClient", return_value=mock_acp),
+        ):
+            await connect_acp(
+                env=mock_env,
+                agent="test-agent",
+                agent_launch="test-agent",
+                agent_env={},
+                sandbox_user=None,
+                model=model_in,
+                trial_dir=tmp_path,
+                environment="docker",
+                agent_cwd="/app",
+            )
+
+        mock_acp.set_model.assert_awaited_once_with(expected_model)

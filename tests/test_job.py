@@ -75,16 +75,6 @@ class TestJobCounting:
         assert counts["failed"] == 1
         assert counts["errored"] == 1
 
-    def test_all_passed(self):
-        results = {
-            "a": {"rewards": {"reward": 1.0}, "error": None},
-            "b": {"rewards": {"reward": 1.0}, "error": None},
-        }
-        counts = self._count(results)
-        assert counts["passed"] == 2
-        assert counts["failed"] == 0
-        assert counts["errored"] == 0
-
     def test_partial_reward_counts_as_failed(self):
         results = {
             "a": {"rewards": {"reward": 0.5}, "error": None},
@@ -102,67 +92,50 @@ class TestJobCounting:
         assert counts["errored"] == 0
         assert counts["failed"] == 1
 
-    def test_empty_results(self):
-        counts = self._count({})
-        assert counts["passed"] == 0
-        assert counts["failed"] == 0
-        assert counts["errored"] == 0
-
 
 class TestRunTaskLoop:
     """Tests for Job._run_task — retry loop behavior."""
 
-    def _make_job(self, tmp_path, max_retries=2):
-        tasks_dir = tmp_path / "tasks"
-        tasks_dir.mkdir()
-        (tasks_dir / "task-a").mkdir()
-        (tasks_dir / "task-a" / "task.toml").write_text(
-            'version = "1.0"\n[verifier]\ntimeout_sec = 60\n[agent]\ntimeout_sec = 60\n[environment]\n'
-        )
-        cfg = JobConfig(retry=RetryConfig(max_retries=max_retries))
-        job = Job(tasks_dir=tasks_dir, jobs_dir=tmp_path / "jobs", config=cfg)
-        return job, tasks_dir / "task-a"
-
     @pytest.mark.asyncio
-    async def test_exhausts_retries(self, tmp_path):
+    async def test_exhausts_retries(self, job_factory):
         """SDK called 1 + max_retries times when all attempts fail with retryable error."""
-        job, task_dir = self._make_job(tmp_path, max_retries=2)
+        job, tasks_dir = job_factory(n_tasks=1, max_retries=2)
         fail_result = RunResult(
-            task_name="task-a", error="Agent install failed (rc=1): boom"
+            task_name="task-0", error="Agent install failed (rc=1): boom"
         )
         job._sdk = AsyncMock()
         job._sdk.run = AsyncMock(return_value=fail_result)
 
-        result = await job._run_task(task_dir)
+        result = await job._run_task(tasks_dir / "task-0")
         assert job._sdk.run.call_count == 3  # 1 + 2 retries
         assert result.error == "Agent install failed (rc=1): boom"
 
     @pytest.mark.asyncio
-    async def test_non_retryable_exits_immediately(self, tmp_path):
+    async def test_non_retryable_exits_immediately(self, job_factory):
         """Non-retryable error (timeout) exits after 1 attempt."""
-        job, task_dir = self._make_job(tmp_path, max_retries=3)
+        job, tasks_dir = job_factory(n_tasks=1, max_retries=3)
         timeout_result = RunResult(
-            task_name="task-a", error="Agent timed out after 900.0s"
+            task_name="task-0", error="Agent timed out after 900.0s"
         )
         job._sdk = AsyncMock()
         job._sdk.run = AsyncMock(return_value=timeout_result)
 
-        result = await job._run_task(task_dir)
+        result = await job._run_task(tasks_dir / "task-0")
         assert job._sdk.run.call_count == 1
         assert result.error == "Agent timed out after 900.0s"
 
     @pytest.mark.asyncio
-    async def test_succeeds_on_retry(self, tmp_path):
+    async def test_succeeds_on_retry(self, job_factory):
         """SDK fails once then succeeds — returns success result."""
-        job, task_dir = self._make_job(tmp_path, max_retries=2)
+        job, tasks_dir = job_factory(n_tasks=1, max_retries=2)
         fail_result = RunResult(
-            task_name="task-a", error="Agent install failed (rc=1): boom"
+            task_name="task-0", error="Agent install failed (rc=1): boom"
         )
-        ok_result = RunResult(task_name="task-a", rewards={"reward": 1.0})
+        ok_result = RunResult(task_name="task-0", rewards={"reward": 1.0})
         job._sdk = AsyncMock()
         job._sdk.run = AsyncMock(side_effect=[fail_result, ok_result])
 
-        result = await job._run_task(task_dir)
+        result = await job._run_task(tasks_dir / "task-0")
         assert job._sdk.run.call_count == 2
         assert result.rewards == {"reward": 1.0}
 

@@ -18,10 +18,10 @@ class TestEnvMappingField:
         assert cfg.env_mapping["BENCHFLOW_PROVIDER_BASE_URL"] == "ANTHROPIC_BASE_URL"
         assert cfg.env_mapping["BENCHFLOW_PROVIDER_API_KEY"] == "ANTHROPIC_AUTH_TOKEN"
 
-    def test_pi_acp_has_mapping(self):
+    def test_pi_acp_no_static_mapping(self):
+        """pi-acp is multi-protocol — launch wrapper handles env translation."""
         cfg = AGENTS["pi-acp"]
-        assert cfg.env_mapping["BENCHFLOW_PROVIDER_BASE_URL"] == "ANTHROPIC_BASE_URL"
-        assert cfg.env_mapping["BENCHFLOW_PROVIDER_API_KEY"] == "ANTHROPIC_AUTH_TOKEN"
+        assert cfg.env_mapping == {}
 
     def test_codex_acp_has_mapping(self):
         cfg = AGENTS["codex-acp"]

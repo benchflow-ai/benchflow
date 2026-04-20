@@ -80,13 +80,32 @@ def test_from_harbor_yaml(harbor_yaml):
     cfg = job._config
 
     assert cfg.agent == "claude-agent-acp"
-    assert cfg.model == "claude-haiku-4-5-20251001"
+    assert cfg.model == "anthropic/claude-haiku-4-5-20251001"
     assert cfg.environment == "daytona"
     assert cfg.concurrency == 8
     assert cfg.retry.max_retries == 1  # n_attempts=2 → max_retries=1
     assert cfg.agent_env.get("ANTHROPIC_API_KEY") == "test-key"
     assert job._tasks_dir == Path("tasks")
     assert job._jobs_dir == Path("output")
+
+
+def test_harbor_yaml_preserves_provider_prefix(tmp_path):
+    """Provider prefix must survive _from_harbor_yaml for downstream resolution."""
+    tasks = tmp_path / "tasks" / "task-a"
+    tasks.mkdir(parents=True)
+    (tasks / "task.toml").write_text('version = "1.0"')
+
+    config = tmp_path / "config.yaml"
+    config.write_text("""
+agents:
+  - name: pi-acp
+    model_name: vllm/Qwen/Qwen3.5-35B-A3B
+datasets:
+  - path: tasks
+""")
+
+    job = Job.from_yaml(config)
+    assert job._config.model == "vllm/Qwen/Qwen3.5-35B-A3B"
 
 
 def test_from_harbor_yaml_defaults(tmp_path):

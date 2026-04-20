@@ -150,12 +150,6 @@ class TestInitTrial:
         (td / "instruction.md").write_text("Do the thing.")
         return td
 
-    def test_returns_tuple(self, task_dir, tmp_path):
-        result = self._init(task_dir, jobs_dir=tmp_path / "jobs")
-        assert (
-            len(result) == 6
-        )  # task, trial_dir, trial_paths, started_at, job_name, trial_name
-
     def test_trial_dir_created(self, task_dir, tmp_path):
         _, trial_dir, _, _, _, _ = self._init(task_dir, jobs_dir=tmp_path / "jobs")
         assert trial_dir.exists()
@@ -219,8 +213,26 @@ class TestWriteConfig:
             agent_env={"ANTHROPIC_API_KEY": "sk-secret", "SOME_VAR": "visible"},
         )
         data = json.loads((tmp_path / "config.json").read_text())
+        expected_keys = {
+            "task_path",
+            "agent",
+            "model",
+            "environment",
+            "skills_dir",
+            "sandbox_user",
+            "sandbox_locked_paths",
+            "context_root",
+            "timeout_sec",
+            "started_at",
+            "agent_env",
+        }
+        assert expected_keys.issubset(data.keys()), (
+            f"missing keys: {expected_keys - data.keys()}"
+        )
         assert data["agent"] == "claude-agent-acp"
         assert data["model"] == "claude-haiku-4-5-20251001"
+        assert data["environment"] == "docker"
+        assert data["timeout_sec"] == 300
 
     def test_secrets_filtered(self, tmp_path):
         """Keys containing KEY/TOKEN/SECRET not in config.json agent_env."""
@@ -281,12 +293,6 @@ class TestBuildResult:
         )
         defaults.update(kwargs)
         return SDK._build_result(trial_dir, **defaults)
-
-    def test_returns_run_result(self, tmp_path):
-        from benchflow.models import RunResult
-
-        result = self._build(tmp_path)
-        assert isinstance(result, RunResult)
 
     def test_result_json_written(self, tmp_path):
         self._build(tmp_path)

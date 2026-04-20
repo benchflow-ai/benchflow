@@ -15,7 +15,7 @@ BenchFlow detects subscription auth and copies it into the sandbox automatically
 | Agent | Login command | Credential file |
 |-------|--------------|-----------------|
 | `claude-agent-acp` | `claude login` | `~/.claude/.credentials.json` |
-| `codex-acp` | `codex login` | `~/.codex/auth.json` |
+| `codex-acp` | `codex --login` | `~/.codex/auth.json` |
 | `gemini` | `gemini auth login` | `~/.gemini/oauth_creds.json` |
 
 API keys override subscription auth when both are present:

@@ -304,11 +304,8 @@ class Job:
         agent_cfg = agents[0] if agents else {}
         agent_name = agent_cfg.get("name", DEFAULT_AGENT)
 
-        # Model — Harbor uses "anthropic/model-name" format
-        model = agent_cfg.get("model_name", "")
-        if "/" in model:
-            model = model.split("/", 1)[1]
-        model = model or DEFAULT_MODEL
+        # Model — keep provider prefix intact for downstream resolution
+        model = agent_cfg.get("model_name", "") or DEFAULT_MODEL
 
         # Environment
         env_cfg = raw.get("environment", {})
@@ -439,9 +436,7 @@ class Job:
         cfg = self._config
         last_result: RunResult | None = None
 
-        for attempt in range(
-            1, cfg.retry.max_retries + 2
-        ):  # +2 because range is exclusive and attempt 1 is first try
+        for attempt in range(1, cfg.retry.max_retries + 2):
             if attempt > 1:
                 delay = cfg.retry.backoff_delay(attempt - 1)
                 logger.info(f"Retry backoff: {delay:.1f}s before attempt {attempt}")
@@ -580,7 +575,7 @@ class Job:
             failed=sum(
                 1
                 for r in all_results.values()
-                if extract_reward(r) is not None and extract_reward(r) != 1.0
+                if (rw := extract_reward(r)) is not None and rw != 1.0
             ),
             errored=sum(
                 1

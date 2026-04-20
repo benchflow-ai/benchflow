@@ -44,8 +44,33 @@ Look at the existing entries below for worked examples:
 (multi-file subscription auth).
 """
 
+import base64
 from dataclasses import dataclass, field
 from pathlib import Path
+
+
+def _install_python_script(container_path: str, source: str) -> str:
+    """Shell snippet that ensures python3 and writes `source` to container_path.
+
+    Base64 transport — makes the install shell line content-agnostic so a line
+    like `SHIMEOF` or `LAUNCHEREOF` inside the Python source can't collide with
+    a heredoc terminator.
+
+    Used by pi-acp and openclaw — both ship a Python launcher/shim baked into
+    install_cmd. Rule of three: if you're adding a THIRD agent that needs this
+    pattern, read both pi_acp_launcher.py and openclaw_acp_shim.py first and
+    reconcile their semantics (env bridging, provider-name derivation, model
+    metadata) before writing a new one. Only consider extracting a shared base
+    after the third data point — divergence is cheap, premature abstraction isn't.
+    """
+    encoded = base64.b64encode(source.encode()).decode()
+    return (
+        "( command -v python3 >/dev/null 2>&1 || "
+        "(apt-get update -qq && apt-get install -y -qq python3 >/dev/null 2>&1) ) && "
+        f"echo {encoded} | base64 -d > {container_path} && "
+        f"chmod +x {container_path}"
+    )
+
 
 # Node.js bootstrap — handles missing node, old node (<22), Ubuntu + Debian slim
 _NODE_INSTALL = (
@@ -66,6 +91,9 @@ _NODE_INSTALL = (
 
 # Path to the openclaw ACP shim script
 _OPENCLAW_SHIM = (Path(__file__).parent / "openclaw_acp_shim.py").read_text()
+
+# Path to the Pi launch wrapper (bridges BENCHFLOW_PROVIDER_* → Pi config)
+_PI_LAUNCHER = (Path(__file__).parent / "pi_acp_launcher.py").read_text()
 
 
 @dataclass
@@ -175,17 +203,20 @@ AGENTS: dict[str, AgentConfig] = {
             "npm install -g @mariozechner/pi-coding-agent@latest >/dev/null 2>&1 ) && "
             "( command -v pi-acp >/dev/null 2>&1 || "
             "npm install -g pi-acp@latest >/dev/null 2>&1 ) && "
-            "command -v pi-acp >/dev/null 2>&1"
+            "command -v pi-acp >/dev/null 2>&1 && "
+            # Deploy launch wrapper (bridges BENCHFLOW_PROVIDER_* → Pi config)
+            + _install_python_script("/usr/local/bin/pi-acp-launcher", _PI_LAUNCHER)
         ),
-        launch_cmd="pi-acp",
+        launch_cmd="python3 /usr/local/bin/pi-acp-launcher",
         protocol="acp",
-        requires_env=["ANTHROPIC_API_KEY"],
-        api_protocol="anthropic-messages",
-        env_mapping={
-            "BENCHFLOW_PROVIDER_BASE_URL": "ANTHROPIC_BASE_URL",
-            "BENCHFLOW_PROVIDER_API_KEY": "ANTHROPIC_AUTH_TOKEN",
-            "BENCHFLOW_PROVIDER_MODEL": "ANTHROPIC_MODEL",
-        },
+        requires_env=[],  # inferred from --model at runtime
+        # Pi is multi-protocol: speaks Anthropic natively and OpenAI via
+        # models.json.  Empty lets the provider determine the protocol so
+        # multi-endpoint providers (e.g. zai) route to the right URL.
+        api_protocol="",
+        # env_mapping intentionally empty — the launch wrapper handles
+        # protocol-dependent translation (env vars for Anthropic,
+        # models.json for OpenAI-compatible providers like vLLM).
     ),
     "openclaw": AgentConfig(
         name="openclaw",
@@ -196,18 +227,12 @@ AGENTS: dict[str, AgentConfig] = {
             "( command -v openclaw >/dev/null 2>&1 || "
             "npm install -g openclaw@latest >/dev/null 2>&1 ) && "
             "command -v openclaw >/dev/null 2>&1 && "
-            # Ensure python3 for shim
-            "( command -v python3 >/dev/null 2>&1 || "
-            "(apt-get update -qq && apt-get install -y -qq python3 >/dev/null 2>&1) ) && "
             # Configure: auto-approve tools (no model — set at runtime via ACP set_model)
             "mkdir -p ~/.openclaw && "
             'echo \'{"version":1,"defaults":{"allow_all":true}}\''
             " > ~/.openclaw/exec-approvals.json && "
             # Deploy ACP shim
-            "cat > /usr/local/bin/openclaw-acp-shim <<'SHIMEOF'\n"
-            + _OPENCLAW_SHIM
-            + "\nSHIMEOF\n"
-            "chmod +x /usr/local/bin/openclaw-acp-shim"
+            + _install_python_script("/usr/local/bin/openclaw-acp-shim", _OPENCLAW_SHIM)
         ),
         launch_cmd="python3 /usr/local/bin/openclaw-acp-shim",
         protocol="acp",
