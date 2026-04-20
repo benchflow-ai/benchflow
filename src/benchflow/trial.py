@@ -278,7 +278,6 @@ class Trial:
             cfg.sandbox_user, cfg.sandbox_locked_paths
         )
 
-        sdk = SDK()
         (
             self._task,
             self._trial_dir,
@@ -286,12 +285,14 @@ class Trial:
             self._started_at,
             self._job_name,
             self._trial_name,
-        ) = sdk._init_trial(
+        ) = SDK._init_trial(
             cfg.task_path, cfg.job_name, cfg.trial_name, cfg.jobs_dir
         )
 
-        self._agent_env = resolve_agent_env(cfg.agent, cfg.model, cfg.agent_env)
-        self._resolved_prompts = sdk._resolve_prompts(cfg.task_path, cfg.prompts)
+        self._agent_env = resolve_agent_env(
+            cfg.primary_agent, cfg.primary_model, cfg.agent_env
+        )
+        self._resolved_prompts = SDK._resolve_prompts(cfg.task_path, cfg.prompts)
         self._agent_launch = AGENT_LAUNCH.get(cfg.agent, cfg.agent)
 
         if cfg.context_root:
