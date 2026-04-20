@@ -586,6 +586,7 @@ class SDK:
                     trial_dir,
                     environment,
                     agent_cwd,
+                    agent_cfg=agent_cfg,
                 )
                 timing["agent_setup"] = (datetime.now() - t_agent_setup).total_seconds()
                 t_agent_exec = datetime.now()

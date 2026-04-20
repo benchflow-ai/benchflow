@@ -2,6 +2,7 @@
 
 import sys
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -9,6 +10,7 @@ from benchflow.acp.client import ACPClient, ACPError
 from benchflow.acp.session import ACPSession
 from benchflow.acp.transport import StdioTransport
 from benchflow.acp.types import StopReason, ToolCallStatus
+from benchflow.agents.registry import AgentConfig
 
 MOCK_AGENT = str(Path(__file__).parent / "fixtures" / "mock_acp_agent.py")
 MOCK_AGENT_INTERLEAVED = str(
@@ -231,3 +233,100 @@ class TestACPInterleaving:
             assert session.full_message == "done"
         finally:
             await client.close()
+
+
+class TestConnectAcpModelSelection:
+    """Verify connect_acp passes the right model string to set_model."""
+
+    @staticmethod
+    def _make_mocks():
+        mock_session = MagicMock()
+        mock_session.session_id = "s1"
+        mock_init = MagicMock()
+        mock_init.agent_info = None
+
+        mock_acp = AsyncMock(spec=ACPClient)
+        mock_acp.connect = AsyncMock()
+        mock_acp.initialize = AsyncMock(return_value=mock_init)
+        mock_acp.session_new = AsyncMock(return_value=mock_session)
+        mock_acp.set_model = AsyncMock()
+        mock_acp.close = AsyncMock()
+        return mock_acp
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "preserve, model_in, expected_model",
+        [
+            (True, "vllm/Qwen/Qwen3.5-35B-A3B", "vllm/Qwen/Qwen3.5-35B-A3B"),
+            (False, "vllm/Qwen/Qwen3.5-35B-A3B", "Qwen/Qwen3.5-35B-A3B"),
+            (False, "zai/glm-5", "glm-5"),
+        ],
+        ids=["preserve-true", "preserve-false-vllm", "preserve-false-zai"],
+    )
+    async def test_model_id_selection(
+        self, preserve, model_in, expected_model, tmp_path
+    ):
+        from benchflow._acp_run import connect_acp
+
+        mock_acp = self._make_mocks()
+        cfg = AgentConfig(
+            name="test-agent",
+            install_cmd="true",
+            launch_cmd="test-agent",
+            preserve_provider_prefix=preserve,
+        )
+
+        mock_env = AsyncMock()
+        with (
+            patch(
+                "benchflow._acp_run.DockerProcess.from_harbor_env",
+                return_value=MagicMock(),
+            ),
+            patch("benchflow._acp_run.ContainerTransport", return_value=MagicMock()),
+            patch("benchflow._acp_run.ACPClient", return_value=mock_acp),
+        ):
+            await connect_acp(
+                env=mock_env,
+                agent="test-agent",
+                agent_launch="test-agent",
+                agent_env={},
+                sandbox_user=None,
+                model=model_in,
+                trial_dir=tmp_path,
+                environment="docker",
+                agent_cwd="/app",
+                agent_cfg=cfg,
+            )
+
+        mock_acp.set_model.assert_awaited_once_with(expected_model)
+
+    @pytest.mark.asyncio
+    async def test_no_agent_cfg_strips_prefix(self, tmp_path):
+        """When agent_cfg is None, prefix is always stripped."""
+        from benchflow._acp_run import connect_acp
+
+        mock_acp = self._make_mocks()
+
+        mock_env = AsyncMock()
+        with (
+            patch(
+                "benchflow._acp_run.DockerProcess.from_harbor_env",
+                return_value=MagicMock(),
+            ),
+            patch("benchflow._acp_run.ContainerTransport", return_value=MagicMock()),
+            patch("benchflow._acp_run.ACPClient", return_value=mock_acp),
+        ):
+            await connect_acp(
+                env=mock_env,
+                agent="unknown-agent",
+                agent_launch="unknown-agent",
+                agent_env={},
+                sandbox_user=None,
+                model="vllm/Qwen/Qwen3.5-35B-A3B",
+                trial_dir=tmp_path,
+                environment="docker",
+                agent_cwd="/app",
+                agent_cfg=None,
+            )
+
+        mock_acp.set_model.assert_awaited_once_with("Qwen/Qwen3.5-35B-A3B")

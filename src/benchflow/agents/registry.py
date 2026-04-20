@@ -129,6 +129,12 @@ class AgentConfig:
     home_dirs: list[str] = field(default_factory=list)
     # Extra dot-dirs under $HOME to copy to sandbox user (for dirs not
     # derivable from skill_paths or credential_files, e.g. ".openclaw").
+    preserve_provider_prefix: bool = False
+    # When True, ACP set_model receives the full model string including the
+    # BenchFlow provider prefix (e.g. "vllm/Qwen/Qwen3.5-35B-A3B").
+    # When False (default), the prefix is stripped first (e.g. "Qwen/Qwen3.5-35B-A3B").
+    # Agents whose set_model handler uses "provider/model" routing (e.g. pi-acp)
+    # need the prefix to avoid misparsing HuggingFace model IDs that contain "/".
     subscription_auth: SubscriptionAuth | None = None
     # Host CLI login that can substitute for an API key (e.g. OAuth tokens
     # from `claude login`). Detected automatically; API keys take precedence.
@@ -168,6 +174,7 @@ AGENTS: dict[str, AgentConfig] = {
     "pi-acp": AgentConfig(
         name="pi-acp",
         description="Pi agent via ACP",
+        preserve_provider_prefix=True,
         skill_paths=["$HOME/.pi/agent/skills", "$HOME/.agents/skills"],
         install_cmd=(
             f"{_NODE_INSTALL} && "
