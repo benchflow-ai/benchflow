@@ -1,11 +1,11 @@
 # Runtime API Guide
 
-The 0.3 Runtime API is the primary way to run agent benchmarks programmatically.
+The Trial/Scene API is the primary way to run agent benchmarks programmatically.
 
 ## Install
 
 ```bash
-uv tool install benchflow
+pip install benchflow==0.3.0a3
 ```
 
 ## Quick Start
@@ -14,178 +14,197 @@ uv tool install benchflow
 import asyncio
 import benchflow as bf
 
-agent = bf.Agent("claude-agent-acp", model="claude-haiku-4-5-20251001")
-env = bf.Environment.from_task("tasks/my-task", backend="docker")
-result = asyncio.run(bf.run(agent, env))
+result = asyncio.run(bf.run("gemini", task_path="tasks/my-task", model="gemini-3.1-flash-lite-preview"))
 
-print(f"Reward: {result.reward}")
-print(f"Passed: {result.passed}")
+print(f"Reward: {result.rewards}")
 print(f"Tool calls: {result.n_tool_calls}")
-```
-
-Expected output:
-```
-Reward: 1.0
-Passed: True
-Tool calls: 3
 ```
 
 ## Core Types
 
-### Agent
+### TrialConfig
 
-Thin wrapper around a registered agent + model.
-
-```python
-# Using a registered agent
-agent = bf.Agent("claude-agent-acp", model="claude-haiku-4-5-20251001")
-
-# With custom environment variables
-agent = bf.Agent("codex-acp", model="gpt-5.4", env={"OPENAI_API_KEY": "..."})
-
-# Using aliases (resolved via parse_agent_spec)
-from benchflow.agents.registry import resolve_agent
-config = resolve_agent("claude")  # → claude-agent-acp
-config = resolve_agent("codex")   # → codex-acp
-```
-
-### Environment
-
-Wraps a Docker or Daytona sandbox. Owns the container lifecycle.
+Declarative configuration for a trial — a sequence of Scenes in a shared sandbox.
 
 ```python
-# From a task directory
-env = bf.Environment.from_task("tasks/my-task", backend="docker")
+from benchflow.trial import TrialConfig, Scene, Role, Turn
 
-# Daytona (cloud sandboxes, faster for batch)
-env = bf.Environment.from_task("tasks/my-task", backend="daytona")
-
-# As context manager (auto-cleanup)
-async with bf.Environment.from_task("tasks/X", backend="docker") as env:
-    result = await bf.run(agent, env)
-```
-
-### RuntimeConfig
-
-Controls sandbox, timeouts, skills, and execution policy.
-
-```python
-config = bf.RuntimeConfig(
-    sandbox_user="agent",           # non-root user (default: "agent")
-    timeout=900,                    # max seconds for agent execution
-    max_rounds=10,                  # max conversation rounds
-    jobs_dir="jobs",                # output directory
-    skills_dir="skills/",           # deploy skills into sandbox
-    snapshot_policy="none",         # "none", "on_reward", "every_round"
-    reward_stream=True,             # emit reward events
+# Single-agent (simplest)
+config = TrialConfig(
+    task_path=Path("tasks/my-task"),
+    scenes=[Scene.single(agent="gemini", model="gemini-3.1-flash-lite-preview")],
+    environment="daytona",
 )
 
-result = await bf.run(agent, env, config)
+# Multi-scene BYOS (skill-gen → solve)
+config = TrialConfig(
+    task_path=Path("tasks/my-task"),
+    scenes=[
+        Scene(name="prep", roles=[Role("gen", "gemini", "gemini-3.1-flash-lite-preview")],
+              turns=[Turn("gen", "Generate a skill for this task...")]),
+        Scene(name="solve", roles=[Role("solver", "gemini", "gemini-3.1-flash-lite-preview")],
+              turns=[Turn("solver")]),
+    ],
+    environment="daytona",
+)
 ```
 
-### RuntimeResult
+### Scene
 
-Artifact-oriented result with structured access to everything.
+One interaction region — roles take turns executing prompts.
 
 ```python
+# Single-role shortcut
+scene = Scene.single(agent="gemini", model="gemini-3.1-flash-lite-preview")
+
+# Multi-role with turn order
+scene = Scene(
+    name="coder-reviewer",
+    roles=[
+        Role("coder", "gemini", "gemini-3.1-flash-lite-preview"),
+        Role("reviewer", "gemini", "gemini-3.1-flash-lite-preview"),
+    ],
+    turns=[
+        Turn("coder"),                    # None prompt = instruction.md
+        Turn("reviewer", "Review..."),
+        Turn("coder", "Fix issues..."),
+    ],
+)
+```
+
+### Trial
+
+The execution engine — decomposed into independently-callable phases.
+
+```python
+from benchflow.trial import Trial
+
+trial = await Trial.create(config)
+
+# Full lifecycle (most common)
+result = await trial.run()
+
+# Manual composition (for custom flows)
+await trial.setup()
+await trial.start()
+await trial.install_agent()
+await trial.connect()
+await trial.execute(prompts=["custom prompt"])
+await trial.disconnect()
+await trial.verify()
+await trial.cleanup()
+```
+
+### bf.run()
+
+Convenience function — multiple calling conventions:
+
+```python
+import benchflow as bf
+
+# 1. TrialConfig (full control)
+result = await bf.run(config)
+
+# 2. Agent + Environment (0.3 style)
+agent = bf.Agent("gemini", model="gemini-3.1-flash-lite-preview")
+env = bf.Environment.from_task("tasks/X", backend="daytona")
 result = await bf.run(agent, env)
 
-# Core fields
-result.reward          # float | None — terminal reward
-result.passed          # bool — reward > 0
-result.verified        # bool — verifier ran without error
-result.n_tool_calls    # int — ACP-sourced tool call count
-result.error           # str | None — agent error
-result.verifier_error  # str | None — verifier error
-
-# Trajectories and artifacts
-result.trajectory      # list[dict] — ACP trajectory events
-result.messages        # list[dict] — inter-agent messages (multi-agent)
-result.trial_dir       # Path — directory with all artifacts
-
-# Timing
-result.started_at      # datetime
-result.finished_at     # datetime
-
-# Backward compat
-run_result = result.to_run_result()  # → legacy RunResult
+# 3. String shortcut (simplest)
+result = await bf.run("gemini", task_path="tasks/X", model="gemini-3.1-flash-lite-preview")
 ```
 
-Guaranteed artifacts in `trial_dir/`:
-```
-trial_dir/
-├── result.json           # reward, timing, error, metadata
-├── rewards.jsonl         # terminal + rubric reward events (ORS-compatible)
-├── trajectory/
-│   └── acp_trajectory.jsonl  # one JSON per ACP event
-├── timing.json           # phase-level timing
-├── config.json           # run configuration snapshot
-└── prompts.json          # prompts sent to agent
-```
-
-## Runtime (Explicit Form)
-
-For more control, use `Runtime` directly:
-
-```python
-runtime = bf.Runtime(env, agent, config)
-result = await runtime.execute()
-```
-
-`Runtime.execute()` is the single execution path — everything else
-(`bf.run()`, `SDK.run()`, `Job.run()`) delegates to it.
-
-## Execution Phases
+## Trial Lifecycle
 
 ```
-Runtime.execute()
+Trial.run()
   │
-  ├─ 1. SETUP     — resolve env, create container, write config
-  ├─ 2. START     — boot container, upload task files
-  ├─ 3. AGENT     — install agent, connect ACP, send prompts
-  │                  ├─ initialize() → agent name
-  │                  ├─ session_new() → session ID
-  │                  ├─ prompt() × N → trajectory events
-  │                  └─ close()
-  ├─ 4. VERIFY    — run verifier (tests/test.sh), collect rewards
-  └─ 5. RESULT    — write artifacts, return RuntimeResult
+  ├─ setup()          — resolve config, create env object
+  ├─ start()          — spin up sandbox, upload task files, start services
+  ├─ install_agent()  — install agent binary, credentials, sandbox user
+  ├─ for scene in scenes:
+  │    └─ _run_scene(scene)
+  │         ├─ connect_as(role)    — open ACP session for this role
+  │         ├─ execute(prompts)    — send prompts, collect trajectory
+  │         └─ disconnect()        — kill agent process, clean up
+  ├─ verify()         — run verifier, collect rewards
+  └─ cleanup()        — stop sandbox
 ```
 
-## Multi-Agent (Preview)
+Key: `disconnect()` kills the agent process between scenes to prevent context bleed. Each scene gets a fresh agent session.
+
+## Multi-Agent Patterns
+
+### Coder + Reviewer (followup-bench)
 
 ```python
-# Coming in 0.3 — multi-agent scenes
-from benchflow.runtime import Agent, Environment, RuntimeConfig
+config = TrialConfig(
+    task_path=task_path,
+    scenes=[Scene(
+        roles=[Role("coder", "gemini", "flash"), Role("reviewer", "gemini", "flash")],
+        turns=[
+            Turn("coder"),
+            Turn("reviewer", "Review /app/. Write feedback to /app/.outbox/coder.json"),
+            Turn("coder", "Read feedback and fix."),
+        ],
+    )],
+    environment="daytona",
+)
+```
 
-coder = Agent("claude-agent-acp", model="claude-haiku-4-5-20251001")
-reviewer = Agent("gemini", model="gemini-3.1-flash-lite-preview")
+### Skill Generation + Solve (BYOS)
 
-# Scene with multiple agents and rounds
-# (API still stabilizing — check docs/0.3-plan.rendered.html §A1)
+```python
+config = TrialConfig(
+    task_path=task_path,
+    scenes=[
+        Scene(name="skill-gen",
+              roles=[Role("gen", "gemini", "flash")],
+              turns=[Turn("gen", "Generate a skill document to /app/generated-skill.md")]),
+        Scene(name="solve",
+              roles=[Role("solver", "gemini", "flash")],
+              turns=[Turn("solver")]),
+    ],
+    environment="daytona",
+)
+```
+
+## YAML Trial Configs
+
+```python
+from benchflow.trial_yaml import trial_config_from_yaml
+
+config = trial_config_from_yaml("trial.yaml")
+result = await bf.run(config)
 ```
 
 ## Registered Agents
 
-```bash
-$ benchflow agents
+| Agent | Protocol | Auth | Aliases |
+|-------|----------|------|---------|
+| `gemini` | ACP | GOOGLE_API_KEY | — |
+| `claude-agent-acp` | ACP | ANTHROPIC_API_KEY | `claude` |
+| `codex-acp` | ACP | OPENAI_API_KEY | `codex` |
+| `pi-acp` | ACP | ANTHROPIC_API_KEY | `pi` |
+| `openclaw` | ACP | inferred from model | — |
 
-  Agent              Protocol   Description
-  ─────────────────────────────────────────────
-  claude-agent-acp   acp        Claude Code via ACP
-  codex-acp          acp        OpenAI Codex CLI
-  gemini             acp        Google Gemini CLI
-  pi-acp             acp        Pi agent
-  openclaw           acp        OpenClaw agent
+## Retry and Error Handling
+
+Trial.run() catches common errors:
+- `TimeoutError` — agent exceeded timeout
+- `ConnectionError` — SSH/ACP pipe closed (retried 3x with exponential backoff)
+- `ACPError` — agent protocol error
+
+Job-level retry with `RetryConfig`:
+```python
+from benchflow.job import Job, JobConfig, RetryConfig
+
+config = JobConfig(
+    retry=RetryConfig(
+        max_retries=2,
+        wait_multiplier=2.0,
+        min_wait_sec=1.0,
+        max_wait_sec=30.0,
+    ),
+)
 ```
-
-Aliases: `claude` → `claude-agent-acp`, `codex` → `codex-acp`, `gemini` → `gemini`.
-
-## Conformance Task
-
-Every registered agent must pass the ACP conformance smoke test:
-
-```bash
-bench run -t tests/conformance/acp_smoke -a claude-agent-acp -e docker
-```
-
-Expected: reward=1.0, verifier passes, ACP handshake completes.
