@@ -262,8 +262,12 @@ class TestConnectAcpModelSelection:
             ("zai/glm-5", "glm-5"),
             # Bare HF ID (no registered prefix) passes through unchanged.
             ("Qwen/Qwen3-Coder", "Qwen/Qwen3-Coder"),
+            # Vertex ADC provider — prefix stripped like any other registered one.
+            ("anthropic-vertex/claude-sonnet-4-6", "claude-sonnet-4-6"),
+            # No prefix at all — unchanged.
+            ("claude-sonnet-4-6", "claude-sonnet-4-6"),
         ],
-        ids=["vllm-hf", "zai", "bare-hf"],
+        ids=["vllm-hf", "zai", "bare-hf", "vertex", "no-prefix"],
     )
     async def test_model_id_selection(self, model_in, expected_model, tmp_path):
         from benchflow._acp_run import connect_acp

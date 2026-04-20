@@ -4,6 +4,22 @@ import json
 
 import pytest
 
+from benchflow.agents.providers import PROVIDERS
+
+# All registry models declaring contextWindow/maxTokens — drives the parametrized
+# invariant that the launcher preserves registry-declared values.
+_REGISTRY_MODELS_WITH_METADATA = [
+    (name, m)
+    for name, cfg in PROVIDERS.items()
+    for m in cfg.models
+    if "contextWindow" in m or "maxTokens" in m
+]
+assert _REGISTRY_MODELS_WITH_METADATA, (
+    "PROVIDERS has no model entry with contextWindow/maxTokens — the "
+    "parametrized invariant below would silently cover nothing. Either "
+    "add metadata to a provider or delete this guard."
+)
+
 
 @pytest.fixture()
 def _pi_env(monkeypatch, tmp_path):
@@ -152,23 +168,25 @@ class TestSetupProviderErrors:
 class TestSetupProviderModelMetadata:
     """Model metadata from BENCHFLOW_PROVIDER_MODELS overrides defaults."""
 
-    def test_context_window_from_provider_models(self, monkeypatch, tmp_path):
+    @pytest.mark.parametrize(
+        "provider_name, model_meta",
+        _REGISTRY_MODELS_WITH_METADATA,
+        ids=[f"{p}-{m['id']}" for p, m in _REGISTRY_MODELS_WITH_METADATA],
+    )
+    def test_registry_metadata_flows_to_models_json(
+        self, provider_name, model_meta, monkeypatch, tmp_path
+    ):
+        """Every contextWindow/maxTokens declared in PROVIDERS must reach
+        the generated models.json unchanged. PR #156 hardcoded 128000/16384
+        in the launcher; new registry entries would be silently truncated.
+        """
         monkeypatch.setenv("BENCHFLOW_PROVIDER_PROTOCOL", "openai-completions")
         monkeypatch.setenv("BENCHFLOW_PROVIDER_BASE_URL", "http://localhost/v1")
-        monkeypatch.setenv("BENCHFLOW_PROVIDER_MODEL", "glm-4.6")
-        monkeypatch.setenv("BENCHFLOW_PROVIDER_NAME", "zai")
+        monkeypatch.setenv("BENCHFLOW_PROVIDER_MODEL", model_meta["id"])
+        monkeypatch.setenv("BENCHFLOW_PROVIDER_NAME", provider_name)
         monkeypatch.setenv(
             "BENCHFLOW_PROVIDER_MODELS",
-            json.dumps(
-                [
-                    {
-                        "id": "glm-4.6",
-                        "name": "GLM-4.6",
-                        "contextWindow": 200000,
-                        "maxTokens": 131072,
-                    }
-                ]
-            ),
+            json.dumps(PROVIDERS[provider_name].models),
         )
 
         from benchflow.agents.pi_acp_launcher import setup_provider
@@ -176,10 +194,13 @@ class TestSetupProviderModelMetadata:
         setup_provider()
 
         config = json.loads((tmp_path / ".pi" / "agent" / "models.json").read_text())
-        model_entry = config["providers"]["zai"]["models"][0]
-        assert model_entry["contextWindow"] == 200000
-        assert model_entry["maxTokens"] == 131072
-        assert model_entry["name"] == "GLM-4.6"
+        entry = config["providers"][provider_name]["models"][0]
+        for field in ("contextWindow", "maxTokens", "name"):
+            if field in model_meta:
+                assert entry[field] == model_meta[field], (
+                    f"{provider_name}/{model_meta['id']}: launcher emitted "
+                    f"{field}={entry[field]}, registry declares {model_meta[field]}"
+                )
 
     def test_defaults_when_provider_models_absent(self, monkeypatch, tmp_path):
         monkeypatch.setenv("BENCHFLOW_PROVIDER_PROTOCOL", "openai-completions")
