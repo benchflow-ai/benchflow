@@ -25,6 +25,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 sys.path.insert(0, str(Path(__file__).resolve().parents[0].parent / "src"))
 
 from benchflow._acp_run import connect_acp, execute_prompts
+from benchflow._agent_env import resolve_agent_env
 from benchflow._agent_setup import install_agent
 from benchflow._credentials import upload_subscription_auth, write_credential_files
 from benchflow._env_setup import _create_environment
@@ -38,52 +39,59 @@ from harbor.models.trial.paths import TrialPaths
 
 logger = logging.getLogger(__name__)
 
-MODEL = "claude-haiku-4-5-20251001"
-BACKEND = "daytona"
-AGENT = "claude-agent-acp"
+MODEL = os.environ.get("ABLATION_MODEL", "gemini-3.1-flash-lite-preview")
+BACKEND = os.environ.get("ABLATION_BACKEND", "daytona")
+AGENT = os.environ.get("ABLATION_AGENT", "gemini")
 
-SKILLSBENCH_TASKS = [
-    "3d-scan-calc",
-    "adaptive-cruise-control",
-    "citation-check",
-    "court-form-filling",
-    "dialogue-parser",
-]
-
-TB2_TASKS = [
-    "adaptive-rejection-sampler",
-    "bn-fit-modify",
-    "break-filter-js-from-html",
-    "build-cython-ext",
-    "chess-best-move",
-]
+TB2_ROOT = Path(__file__).resolve().parents[1] / ".ref" / "terminal-bench-2"
+TB2_TASKS = sorted([
+    d.name for d in TB2_ROOT.iterdir()
+    if d.is_dir() and (d / "task.toml").exists()
+])
 
 RESULTS_FILE = Path(__file__).parent / "ablation-results.csv"
 JOBS_DIR = Path("/tmp/ablation-jobs")
 
-REVIEWER_PLAIN = """You are a code reviewer. The coder has attempted a task. Your job:
-1. Read the files in /app/ to understand what the coder produced
-2. Check for correctness, completeness, and any bugs
-3. If you find issues, create /app/.outbox/coder.json with:
-   {{"to": "coder", "content": "YOUR SPECIFIC FEEDBACK AND FIX SUGGESTIONS"}}
-4. If everything looks correct, create /app/.outbox/coder.json with:
-   {{"to": "coder", "content": "Code looks correct, no changes needed"}}
+REVIEWER_PLAIN = """You are an expert code reviewer. A coder agent has attempted a programming task.
+
+IMPORTANT: You are a REVIEWER, not a coder. Do NOT modify, create, or delete any files in /app/ except /app/.outbox/coder.json. Only read and inspect.
+
+Review the coder's work in /app/ systematically:
+
+1. **Correctness**: Does the code produce the right output for all inputs? Look for off-by-one errors, unhandled edge cases, incorrect algorithm choice, and logic bugs.
+2. **Completeness**: Does the solution address every requirement? Check for missing functionality and unimplemented cases.
+3. **Bugs**: Trace through the code with concrete test inputs. Flag any path that produces wrong results.
+
+Be specific and evidence-backed: reference file names and concrete failing inputs. If you are uncertain about an issue, say so — do not fabricate precision. Only report issues you can justify with evidence from the code.
+
+Write your review to /app/.outbox/coder.json:
+  {{"to": "coder", "content": "YOUR SPECIFIC FEEDBACK — cite files, failing inputs, and fixes"}}
+
+If the code is correct and complete:
+  {{"to": "coder", "content": "Code looks correct, no changes needed"}}
 
 You MUST create /app/.outbox/coder.json before stopping."""
 
-REVIEWER_SPEC = """You are a code reviewer with access to the original task specification.
+REVIEWER_SPEC = """You are an expert code reviewer with access to the original task specification.
+
+IMPORTANT: You are a REVIEWER, not a coder. Do NOT modify, create, or delete any files in /app/ except /app/.outbox/coder.json. Only read and inspect.
 
 ORIGINAL TASK SPECIFICATION:
 {instruction}
 
-The coder has attempted this task. Your job:
-1. Read the files in /app/ to understand what the coder produced
-2. Compare against the ORIGINAL TASK SPECIFICATION above
-3. Check for correctness, completeness, and adherence to the spec
-4. If you find issues, create /app/.outbox/coder.json with:
-   {{"to": "coder", "content": "YOUR SPECIFIC FEEDBACK AND FIX SUGGESTIONS based on the spec"}}
-5. If everything looks correct, create /app/.outbox/coder.json with:
-   {{"to": "coder", "content": "Code matches specification, no changes needed"}}
+A coder agent has attempted this task. Review their work in /app/:
+
+1. **Spec compliance**: Compare the coder's output against each requirement in the specification. Note which are met and which are missing or wrong.
+2. **Correctness**: Trace through the code with concrete inputs from the spec. Flag any divergence from expected output.
+3. **Bugs**: Look for off-by-one errors, unhandled edge cases mentioned in the spec, incorrect parsing, and wrong output format.
+
+Be specific and evidence-backed: reference file names, the spec requirement violated, and what the fix should be. If uncertain, say so — do not fabricate issues.
+
+Write your review to /app/.outbox/coder.json:
+  {{"to": "coder", "content": "YOUR SPECIFIC FEEDBACK — cite spec requirements, files, and fixes"}}
+
+If the code correctly implements the specification:
+  {{"to": "coder", "content": "Code matches specification, no changes needed"}}
 
 You MUST create /app/.outbox/coder.json before stopping."""
 
@@ -119,17 +127,19 @@ async def _ensure_agent(env, trial_dir: Path) -> None:
         _agent_installed.add(AGENT)
 
 
-async def _run_acp(env, prompt: str, trial_dir: Path) -> tuple[int, int]:
+async def _run_acp(env, prompt: str, trial_dir: Path, timeout: int = 600) -> tuple[int, int]:
     """Run one ACP agent session. Returns (n_tool_calls, elapsed_sec)."""
     launch_cmd = AGENT_LAUNCH.get(AGENT, AGENT)
+    agent_env = resolve_agent_env(AGENT, MODEL, None)
+    agent_env.pop("_BENCHFLOW_SUBSCRIPTION_AUTH", None)
     t0 = time.time()
     acp_client, session, _ = await connect_acp(
-        env=env, agent=AGENT, agent_launch=launch_cmd, agent_env={},
+        env=env, agent=AGENT, agent_launch=launch_cmd, agent_env=agent_env,
         sandbox_user="agent", model=MODEL, trial_dir=trial_dir,
         environment=BACKEND, agent_cwd="/app",
     )
     try:
-        _, n_tools = await execute_prompts(acp_client, session, [prompt], timeout=300)
+        _, n_tools = await execute_prompts(acp_client, session, [prompt], timeout=timeout)
     finally:
         try:
             await acp_client.close()
@@ -263,7 +273,7 @@ async def _run_task_all_conditions(benchmark: str, task_dir_root: Path, task_nam
     return rows
 
 
-_PHASE_SEM = asyncio.Semaphore(2)
+_PHASE_SEM = asyncio.Semaphore(int(os.environ.get("ABLATION_CONCURRENCY", "64")))
 
 
 async def run_experiment(benchmark: str, task_dir_root: Path, task_names: list[str]) -> list[dict]:
@@ -297,22 +307,10 @@ def _write_csv(rows: list[dict]) -> None:
 async def main() -> None:
     JOBS_DIR.mkdir(parents=True, exist_ok=True)
 
-    skillsbench_root = Path("/workspace/repos/skillsbench/tasks")
-    tb2_root = Path("/workspace/repos/benchflow/.ref/terminal-bench-2")
+    logger.info(f"=== FOLLOWUP-BENCH: {len(TB2_TASKS)} TB2 tasks, agent={AGENT}, model={MODEL} ===")
+    all_rows = await run_experiment("tb2", TB2_ROOT, TB2_TASKS)
 
-    all_rows = []
-
-    logger.info("=== SKILLSBENCH PILOT (concurrency=2) ===")
-    sb_rows = await run_experiment("skillsbench", skillsbench_root, SKILLSBENCH_TASKS)
-    all_rows.extend(sb_rows)
-
-    _print_table(sb_rows)
-
-    # TB2 deferred — hermes directive: fix reviewer contention on SkillsBench first
-    # logger.info("\n=== TB2 PILOT ===")
-    # tb2_rows = await run_experiment("tb2", tb2_root, TB2_TASKS)
-    # all_rows.extend(tb2_rows)
-    # _print_table(all_rows)
+    _print_table(all_rows)
     logger.info(f"\nResults: {RESULTS_FILE}")
 
 
