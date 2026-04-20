@@ -306,7 +306,7 @@ class Trial:
         )
         self._timeout = int(self._task.config.agent.timeout_sec or 0)
 
-        sdk._write_config(
+        SDK._write_config(
             self._trial_dir,
             task_path=cfg.task_path,
             agent=cfg.agent,
