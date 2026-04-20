@@ -293,7 +293,7 @@ class Trial:
             cfg.primary_agent, cfg.primary_model, cfg.agent_env
         )
         self._resolved_prompts = SDK._resolve_prompts(cfg.task_path, cfg.prompts)
-        self._agent_launch = AGENT_LAUNCH.get(cfg.agent, cfg.agent)
+        self._agent_launch = AGENT_LAUNCH.get(cfg.primary_agent, cfg.primary_agent)
 
         # Copy task dir to temp when Dockerfile mutations are needed
         # (_inject_skills writes into environment/_deps/, stage_dockerfile
@@ -321,8 +321,8 @@ class Trial:
         SDK._write_config(
             self._trial_dir,
             task_path=cfg.task_path,
-            agent=cfg.agent,
-            model=cfg.model,
+            agent=cfg.primary_agent,
+            model=cfg.primary_model,
             environment=cfg.environment,
             skills_dir=cfg.skills_dir,
             sandbox_user=cfg.sandbox_user,
@@ -406,11 +406,11 @@ class Trial:
 
         self._acp_client, self._session, self._agent_name = await connect_acp(
             env=self._env,
-            agent=cfg.agent,
+            agent=cfg.primary_agent,
             agent_launch=self._agent_launch,
             agent_env=self._agent_env,
             sandbox_user=cfg.sandbox_user,
-            model=cfg.model,
+            model=cfg.primary_model,
             trial_dir=self._trial_dir,
             environment=cfg.environment,
             agent_cwd=self._agent_cwd,
@@ -471,7 +471,7 @@ class Trial:
 
         if not self._trajectory and cfg.primary_agent != "oracle":
             scraped = await _scrape_agent_trajectory(
-                self._env, cfg.agent, cfg.sandbox_user
+                self._env, cfg.primary_agent, cfg.sandbox_user
             )
             if scraped:
                 self._trajectory = scraped

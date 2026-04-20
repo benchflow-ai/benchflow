@@ -10,7 +10,6 @@ Requires Python 3.12+. Uses `uv`.
 
 ```bash
 uv venv -p 3.12 .venv && uv pip install -e ".[dev]"
-.venv/bin/pre-commit install
 ```
 
 ## Test
