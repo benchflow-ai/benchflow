@@ -1,0 +1,90 @@
+task,reward,tools,error
+adaptive-rejection-sampler,0.0,7,
+bn-fit-modify,0.0,20,
+break-filter-js-from-html,0.0,78,Process closed stdout (rc=None)
+build-cython-ext,0.0,39,
+build-pmars,0.0,39,
+build-pov-ray,0.0,28,
+caffe-cifar-10,0.0,13,
+cancel-async-tasks,1.0,7,
+chess-best-move,0.0,4,
+circuit-fibsqrt,0.0,23,
+cobol-modernization,1.0,5,
+code-from-image,1.0,6,
+compile-compcert,0.0,6,
+configure-git-webserver,0.0,6,
+constraints-scheduling,0.0,6,
+count-dataset-tokens,0.0,12,Process closed stdout (rc=None)
+crack-7z-hash,0.0,31,Process closed stdout (rc=None)
+custom-memory-heap-crash,0.0,31,
+db-wal-recovery,0.0,68,
+distribution-search,1.0,9,
+dna-assembly,0.0,9,
+dna-insert,0.0,24,Process closed stdout (rc=None)
+extract-elf,0.0,8,
+extract-moves-from-video,0.0,7,Process closed stdout (rc=None)
+feal-differential-cryptanalysis,0.0,15,Process closed stdout (rc=None)
+feal-linear-cryptanalysis,0.0,37,Process closed stdout (rc=None)
+filter-js-from-html,0.0,3,
+financial-document-processor,0.0,9,
+fix-code-vulnerability,0.0,54,Failed to get session command: not found: sandbox container not found: not found: failed to inspect sandbox container 13cbd2a5-cd49-44a8-bfac-e841ca83d245: Error response from daemon: No such container: 13cbd2a5-cd49-44a8-bfac-e841ca83d245
+fix-git,0.0,9,
+fix-ocaml-gc,0.0,39,Process closed stdout (rc=None)
+gcode-to-text,0.0,10,
+git-leak-recovery,1.0,7,
+git-multibranch,0.0,37,
+gpt2-codegolf,0.0,3,
+headless-terminal,0.0,9,
+hf-model-inference,0.0,6,
+install-windows-3.11,0.0,4,
+kv-store-grpc,0.0,7,
+large-scale-text-editing,0.0,6,Process closed stdout (rc=None)
+largest-eigenval,0.0,12,
+llm-inference-batching-scheduler,0.0,54,Process closed stdout (rc=None)
+log-summary-date-ranges,0.0,2,Process closed stdout (rc=None)
+mailman,0.0,15,
+make-doom-for-mips,0.0,22,
+make-mips-interpreter,0.0,24,
+mcmc-sampling-stan,0.0,4,Process closed stdout (rc=None)
+merge-diff-arc-agi-task,0.0,53,
+model-extraction-relu-logits,0.0,6,
+modernize-scientific-stack,0.0,10,
+mteb-leaderboard,1.0,4,
+mteb-retrieve,0.0,1,
+multi-source-data-merger,0.0,11,
+nginx-request-logging,0.0,7,
+openssl-selfsigned-cert,1.0,5,
+overfull-hbox,0.0,43,
+password-recovery,0.0,63,Process closed stdout (rc=None)
+path-tracing,0.0,35,Process closed stdout (rc=None)
+path-tracing-reverse,0.0,9,ACP error 400: The input token count exceeds the maximum number of tokens allowed 1048576.
+polyglot-c-py,0.0,67,Process closed stdout (rc=None)
+polyglot-rust-c,0.0,18,
+portfolio-optimization,0.0,10,
+protein-assembly,0.0,11,Process closed stdout (rc=None)
+prove-plus-comm,0.0,6,
+pypi-server,0.0,8,
+pytorch-model-cli,0.0,17,Process closed stdout (rc=None)
+pytorch-model-recovery,0.0,11,Process closed stdout (rc=None)
+qemu-alpine-ssh,0.0,36,Process closed stdout (rc=None)
+qemu-startup,0.0,2,Process closed stdout (rc=None)
+query-optimize,0.0,9,Process closed stdout (rc=None)
+raman-fitting,0.0,14,
+regex-chess,0.0,6,
+regex-log,0.0,3,
+reshard-c4-data,0.0,12,ACP error 400: The input token count exceeds the maximum number of tokens allowed 1048576.
+rstan-to-pystan,0.0,8,Process closed stdout (rc=None)
+sam-cell-seg,0.0,5,
+sanitize-git-repo,0.0,1,ACP error 400: The input token count exceeds the maximum number of tokens allowed 1048576.
+schemelike-metacircular-eval,0.0,52,
+sparql-university,0.0,4,
+sqlite-db-truncate,0.0,12,
+sqlite-with-gcov,0.0,8,
+torch-pipeline-parallelism,0.0,4,
+torch-tensor-parallelism,0.0,3,
+train-fasttext,0.0,10,Process closed stdout (rc=None)
+tune-mjcf,0.0,39,Process closed stdout (rc=None)
+video-processing,0.0,6,
+vulnerable-secret,0.0,6,Process closed stdout (rc=None)
+winning-avg-corewars,0.0,32,
+write-compressor,0.0,36,
