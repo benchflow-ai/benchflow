@@ -291,17 +291,52 @@ class Runtime:
 
 
 async def run(
-    agent: Agent,
-    env: Environment,
+    subject: "Agent | TrialConfig | str",
+    env: "Environment | str | None" = None,
     config: RuntimeConfig | None = None,
-) -> RuntimeResult:
-    """Convenience function — the primary user-facing API.
+    *,
+    task_path: "str | Path | None" = None,
+    model: str | None = None,
+) -> "RuntimeResult | RunResult":
+    """Primary user-facing API — multiple calling conventions.
 
     Usage::
 
         import benchflow as bf
-        result = await bf.run(agent, env)
-        print(result.reward)
+
+        # 1. TrialConfig (Scene-based, full control)
+        result = await bf.run(TrialConfig(task_path=..., scenes=[...]))
+
+        # 2. Agent + Environment (0.3 style)
+        result = await bf.run(Agent("gemini", "flash"), Environment.from_task("tasks/X"))
+
+        # 3. Agent name string (simplest)
+        result = await bf.run("gemini", task_path="tasks/X")
     """
-    runtime = Runtime(env, agent, config)
-    return await runtime.execute()
+    from benchflow.trial import Scene, Trial, TrialConfig
+
+    # Case 1: TrialConfig passed directly
+    if isinstance(subject, TrialConfig):
+        trial = await Trial.create(subject)
+        return await trial.run()
+
+    # Case 2: Agent object + Environment
+    if isinstance(subject, Agent) and isinstance(env, Environment):
+        runtime = Runtime(env, subject, config)
+        return await runtime.execute()
+
+    # Case 3: string agent name
+    if isinstance(subject, str):
+        if task_path is None:
+            raise ValueError("task_path required when passing agent name as string")
+        trial_config = TrialConfig(
+            task_path=Path(task_path),
+            scenes=[Scene.single(agent=subject, model=model)],
+            environment=env if isinstance(env, str) else "daytona",
+            agent=subject,
+            model=model,
+        )
+        trial = await Trial.create(trial_config)
+        return await trial.run()
+
+    raise TypeError(f"Unsupported subject type: {type(subject)}")
