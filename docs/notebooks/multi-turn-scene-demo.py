@@ -1,10 +1,17 @@
-"""Multi-turn Scene demo — interactive agent benchmarking with benchflow.
+"""Scene demo — multi-turn, multi-round, and multi-scene benchmarking.
 
-This script demonstrates benchflow's Scene-based Trial lifecycle, showing
-how to run multi-turn, multi-agent evaluations that Harbor #1316 proposed
-and PR #1462 built 600+ lines to implement.
+Terminology:
+  Turn  = one prompt in one ACP session (one role acts)
+  Round = one cycle of multi-agent exchange (A→B = 1 round)
+  Scene = one interaction region with roles + turns
 
-With benchflow, the same patterns are YAML configs — no new runtime code.
+  Multi-turn:  same agent, multiple sequential prompts (Demo 2)
+  Multi-round: different agents take turns communicating (Demo 3, 4)
+  Multi-scene: sequential scenes in shared sandbox (Demo 5)
+
+This demonstrates benchflow's Scene-based Trial lifecycle, showing
+how to run all patterns that Harbor #1316 proposed (and PR #1462 built
+600+ lines to implement) as YAML configs — no new runtime code.
 
 Run:
     pip install benchflow==0.3.0a8
@@ -48,9 +55,9 @@ async def demo_single_agent():
     return reward
 
 
-# ── Demo 2: Multi-turn self-review ─────────────────────────────────────
-# Same agent gets two prompts: solve, then review your own work.
-# Harbor equivalent: prompts list in YAML
+# ── Demo 2: Multi-TURN self-review ────────────────────────────────────
+# Same agent, two sequential prompts (maintains ACP session context).
+# This is multi-TURN — one role, multiple prompts.
 
 async def demo_multi_turn():
     print("\n" + "=" * 60)
@@ -81,10 +88,10 @@ async def demo_multi_turn():
     return reward
 
 
-# ── Demo 3: Coder + Reviewer (two-role Scene) ────────────────────────
-# Two agents in one scene — coder solves, reviewer critiques, coder fixes.
-# Harbor equivalent: PR #1462 (600+ lines of User orchestration)
-# Benchflow: 15 lines of config.
+# ── Demo 3: Coder + Reviewer (multi-ROUND) ───────────────────────────
+# Two roles taking turns — coder→reviewer→coder = 1.5 rounds.
+# This is multi-ROUND — different roles communicate.
+# Harbor equivalent: PR #1462 (600+ lines). Benchflow: 15 lines of config.
 
 async def demo_coder_reviewer():
     print("\n" + "=" * 60)
@@ -126,9 +133,9 @@ async def demo_coder_reviewer():
     return reward
 
 
-# ── Demo 4: Interactive user simulation (harbor #1316) ────────────────
-# A "user" role reveals task info gradually. Agent asks questions.
-# This is exactly what harbor #1316 proposed.
+# ── Demo 4: Interactive user simulation (multi-ROUND, harbor #1316) ───
+# A "user" role reveals task info gradually. Agent responds.
+# This is multi-ROUND with a simulated user — exactly harbor #1316.
 
 async def demo_interactive_user():
     print("\n" + "=" * 60)
@@ -170,8 +177,9 @@ async def demo_interactive_user():
     return reward
 
 
-# ── Demo 5: Two-scene BYOS (skill generation → solve) ────────────────
-# First scene: agent generates a skill. Second scene: agent uses it.
+# ── Demo 5: Multi-SCENE BYOS (skill generation → solve) ──────────────
+# Two scenes in sequence, shared sandbox. First generates, second solves.
+# This is multi-SCENE — sequential scenes with state carryover.
 
 async def demo_byos():
     print("\n" + "=" * 60)
