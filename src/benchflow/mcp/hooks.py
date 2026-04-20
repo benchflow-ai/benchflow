@@ -37,10 +37,11 @@ def mcp_reviewer_hook(
             f"--port {port} --model {model} --host {host} &",
             timeout_sec=10,
         )
-        # Wait for health
+        # Wait for server to respond (FastMCP uses /mcp endpoint, not /health)
         await env.exec(
             f"for i in $(seq 1 15); do "
-            f"curl -sf http://localhost:{port}/health > /dev/null 2>&1 && break; "
+            f"curl -sf http://localhost:{port}/mcp > /dev/null 2>&1 && break; "
+            f"curl -sf http://localhost:{port}/ > /dev/null 2>&1 && break; "
             f"sleep 1; done",
             timeout_sec=20,
         )
