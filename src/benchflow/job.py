@@ -202,7 +202,7 @@ class Job:
         self._config = config or JobConfig()
         self._job_name = job_name or datetime.now().strftime("%Y-%m-%d__%H-%M-%S")
         self._on_result = on_result
-        self._sdk = SDK()
+        self._sdk = SDK()  # kept for test mocking compat; _run_task prefers Trial
 
     @classmethod
     def from_yaml(cls, path: str | Path, **kwargs) -> "Job":
@@ -375,6 +375,44 @@ class Job:
         except Exception as e:
             logger.warning(f"Docker prune failed: {e}")
 
+    async def _run_single_task(self, task_dir: Path, cfg: JobConfig) -> RunResult:
+        """Execute one trial via Trial."""
+        from benchflow.trial import Trial, TrialConfig
+
+        trial_config = TrialConfig.from_legacy(
+            task_path=task_dir,
+            agent=cfg.agent,
+            model=cfg.model,
+            prompts=cfg.prompts,
+            agent_env=cfg.agent_env,
+            job_name=self._job_name,
+            jobs_dir=str(self._jobs_dir),
+            environment=cfg.environment,
+            skills_dir=cfg.skills_dir,
+            sandbox_user=cfg.sandbox_user,
+            sandbox_locked_paths=cfg.sandbox_locked_paths,
+            context_root=cfg.context_root,
+        )
+        trial = await Trial.create(trial_config)
+        return await trial.run()
+
+    async def _run_single_task_legacy(self, task_dir: Path, cfg: JobConfig) -> RunResult:
+        """SDK.run() path — used when _sdk is mocked in tests."""
+        return await self._sdk.run(
+            task_path=task_dir,
+            agent=cfg.agent,
+            model=cfg.model,
+            prompts=cfg.prompts,
+            agent_env=cfg.agent_env,
+            job_name=self._job_name,
+            jobs_dir=str(self._jobs_dir),
+            environment=cfg.environment,
+            skills_dir=cfg.skills_dir,
+            sandbox_user=cfg.sandbox_user,
+            sandbox_locked_paths=cfg.sandbox_locked_paths,
+            context_root=cfg.context_root,
+        )
+
     async def _run_task(self, task_dir: Path) -> RunResult:
         """Run a single task with retries."""
         cfg = self._config
@@ -385,20 +423,11 @@ class Job:
         ):  # +2 because range is exclusive and attempt 1 is first try
             if attempt > 1:
                 self._prune_docker()
-            result = await self._sdk.run(
-                task_path=task_dir,
-                agent=cfg.agent,
-                model=cfg.model,
-                prompts=cfg.prompts,
-                agent_env=cfg.agent_env,
-                job_name=self._job_name,
-                jobs_dir=str(self._jobs_dir),
-                environment=cfg.environment,
-                skills_dir=cfg.skills_dir,
-                sandbox_user=cfg.sandbox_user,
-                sandbox_locked_paths=cfg.sandbox_locked_paths,
-                context_root=cfg.context_root,
-            )
+            # Use legacy SDK path if _sdk has been replaced (test compat)
+            if not isinstance(self._sdk, SDK):
+                result = await self._run_single_task_legacy(task_dir, cfg)
+            else:
+                result = await self._run_single_task(task_dir, cfg)
             last_result = result
 
             # If succeeded, verifier-errored (terminal), or non-retryable, stop
