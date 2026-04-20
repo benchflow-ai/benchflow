@@ -241,7 +241,8 @@ class Trial:
         cfg = self._config
 
         cwd_result = await self._env.exec("pwd", timeout_sec=10)
-        self._agent_cwd = (cwd_result.stdout or "").strip() or "/app"
+        agent_cwd = (cwd_result.stdout or "").strip() or "/app"
+        self._agent_cwd = agent_cwd
 
         if cfg.agent == "oracle":
             if cfg.sandbox_user:
