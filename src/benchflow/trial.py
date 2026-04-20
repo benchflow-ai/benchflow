@@ -602,7 +602,12 @@ class Trial:
                 await self.connect_as(role)
                 current_role = turn.role
 
-            prompts = [turn.prompt] if turn.prompt else [self._resolved_prompts[0]] if self._resolved_prompts else [None]
+            if turn.prompt:
+                prompts = [turn.prompt]
+            elif self._resolved_prompts:
+                prompts = [self._resolved_prompts[0]]
+            else:
+                prompts = ["Solve the task described in /app/instruction.md"]
             await self.execute(prompts=prompts)
 
         if current_role is not None:

@@ -131,7 +131,7 @@ async def execute_prompts(
 ) -> tuple[list[dict], int]:
     """Send prompts via ACP and capture trajectory. Return (trajectory, n_tool_calls)."""
     for i, prompt in enumerate(prompts):
-        logger.info(f"Prompt {i + 1}/{len(prompts)}: {prompt[:80]}...")
+        logger.info(f"Prompt {i + 1}/{len(prompts)}: {(prompt or '<instruction.md>')[:80]}...")
         prompt_result = await asyncio.wait_for(
             acp_client.prompt(prompt),
             timeout=timeout,
