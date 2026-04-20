@@ -63,6 +63,42 @@ def _make_task(user=None):
     return task
 
 
+def _snapshot_side_effect(present: frozenset = frozenset()) -> list:
+    """Build side_effect list for _snapshot_build_config: mkdir -> per-file probes -> manifest write.
+
+    present: which _BUILD_CONFIG_FILES names exist in the sandbox (rest are absent).
+    Ordering mirrors _BUILD_CONFIG_FILES declaration order — that ordering IS the
+    contract under test, so we iterate _ALL_BUILD_FILES directly.
+    """
+    probes = [
+        MagicMock(
+            stdout="present\n" if fname in present else "absent\n",
+            stderr="",
+            exit_code=0,
+        )
+        for fname in _ALL_BUILD_FILES
+    ]
+    return [
+        MagicMock(stdout="", stderr="", exit_code=0),  # mkdir
+        *probes,
+        MagicMock(stdout="", stderr="", exit_code=0),  # manifest write
+    ]
+
+
+def _restore_side_effect(manifest: dict[str, bool]) -> list:
+    """Build side_effect list for _restore_build_config: manifest read -> per-file ops.
+
+    One empty result per file in _BUILD_CONFIG_FILES declaration order.
+    """
+    return [
+        MagicMock(stdout=json.dumps(manifest), stderr="", exit_code=0),
+        *[
+            MagicMock(stdout="", stderr="", exit_code=0)
+            for _ in range(len(_ALL_BUILD_FILES))
+        ],
+    ]
+
+
 # ── TestHardenSequence ────────────────────────────────────────────────────────
 
 
@@ -226,16 +262,7 @@ class TestBuildConfigSnapshot:
         """Absent file → false in manifest (no __ABSENT__ string in content)."""
         from benchflow._sandbox import _snapshot_build_config
 
-        env = _make_env(
-            side_effect=[
-                MagicMock(stdout="", stderr="", exit_code=0),  # mkdir
-                *[
-                    MagicMock(stdout="absent\n", stderr="", exit_code=0)
-                    for _ in range(len(_ALL_BUILD_FILES))
-                ],
-                MagicMock(stdout="", stderr="", exit_code=0),  # manifest write
-            ]
-        )
+        env = _make_env(side_effect=_snapshot_side_effect())
 
         await _snapshot_build_config(env, workspace="/testbed")
 
@@ -252,15 +279,7 @@ class TestBuildConfigSnapshot:
         from benchflow._sandbox import _snapshot_build_config
 
         env = _make_env(
-            side_effect=[
-                MagicMock(stdout="", stderr="", exit_code=0),  # mkdir
-                MagicMock(stdout="present\n", stderr="", exit_code=0),  # setup.py
-                *[
-                    MagicMock(stdout="absent\n", stderr="", exit_code=0)
-                    for _ in range(len(_ALL_BUILD_FILES) - 1)
-                ],
-                MagicMock(stdout="", stderr="", exit_code=0),  # manifest write
-            ]
+            side_effect=_snapshot_side_effect(present=frozenset({"setup.py"}))
         )
 
         await _snapshot_build_config(env, workspace="/testbed")
@@ -276,15 +295,7 @@ class TestBuildConfigSnapshot:
         from benchflow._sandbox import _restore_build_config
 
         manifest = _blank_manifest()
-        env = _make_env(
-            side_effect=[
-                MagicMock(stdout=json.dumps(manifest), stderr="", exit_code=0),
-                *[
-                    MagicMock(stdout="", stderr="", exit_code=0)
-                    for _ in range(len(_ALL_BUILD_FILES))
-                ],
-            ]
-        )
+        env = _make_env(side_effect=_restore_side_effect(manifest))
 
         await _restore_build_config(env, workspace="/testbed")
 
@@ -305,15 +316,7 @@ class TestBuildConfigSnapshot:
         from benchflow._sandbox import _restore_build_config
 
         manifest = {**_blank_manifest(), "setup.py": True}
-        env = _make_env(
-            side_effect=[
-                MagicMock(stdout=json.dumps(manifest), stderr="", exit_code=0),
-                *[
-                    MagicMock(stdout="", stderr="", exit_code=0)
-                    for _ in range(len(_ALL_BUILD_FILES))
-                ],
-            ]
-        )
+        env = _make_env(side_effect=_restore_side_effect(manifest))
 
         await _restore_build_config(env, workspace="/testbed")
 
@@ -338,15 +341,7 @@ class TestBuildConfigSnapshot:
         from benchflow._sandbox import _restore_build_config
 
         manifest = {**_blank_manifest(), fname: True}
-        env = _make_env(
-            side_effect=[
-                MagicMock(stdout=json.dumps(manifest), stderr="", exit_code=0),
-                *[
-                    MagicMock(stdout="", stderr="", exit_code=0)
-                    for _ in range(len(_ALL_BUILD_FILES))
-                ],
-            ]
-        )
+        env = _make_env(side_effect=_restore_side_effect(manifest))
 
         await _restore_build_config(env, workspace="/testbed")
 
@@ -528,16 +523,7 @@ class TestBuildConfigSnapshot:
         """Snapshot dir is created with chmod 700 so sandbox_user cannot tamper."""
         from benchflow._sandbox import _snapshot_build_config
 
-        env = _make_env(
-            side_effect=[
-                MagicMock(stdout="", stderr="", exit_code=0),  # mkdir + chmod
-                *[
-                    MagicMock(stdout="absent\n", stderr="", exit_code=0)
-                    for _ in range(len(_ALL_BUILD_FILES))
-                ],
-                MagicMock(stdout="", stderr="", exit_code=0),  # manifest write
-            ]
-        )
+        env = _make_env(side_effect=_snapshot_side_effect())
 
         await _snapshot_build_config(env, workspace="/testbed")
 

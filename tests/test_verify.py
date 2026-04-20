@@ -66,41 +66,16 @@ class TestRunResultVerifierError:
 
 
 class TestResultJson:
-    def _build(self, tmp_path, **overrides):
-        from datetime import datetime
-
-        from benchflow.sdk import SDK
-
-        defaults = dict(
-            task_name="t1",
-            trial_name="trial-1",
-            agent="test",
-            agent_name="",
-            model="",
-            n_tool_calls=0,
-            prompts=["x"],
-            error=None,
-            verifier_error=None,
-            trajectory=[],
-            partial_trajectory=False,
-            rewards={"reward": 1.0},
-            started_at=datetime.now(),
-            timing={},
-        )
-        defaults.update(overrides)
-        SDK._build_result(tmp_path, **defaults)
-        return json.loads((tmp_path / "result.json").read_text())
-
-    def test_verifier_error_in_json(self, tmp_path):
-        data = self._build(
-            tmp_path, verifier_error="verifier crashed: KeyError", rewards=None
+    def test_verifier_error_in_json(self, build_result_json):
+        data = build_result_json(
+            verifier_error="verifier crashed: KeyError", rewards=None
         )
         assert data["verifier_error"] == "verifier crashed: KeyError"
         assert data["error"] is None
         assert data["rewards"] is None
 
-    def test_clean_run_json(self, tmp_path):
-        data = self._build(tmp_path)
+    def test_clean_run_json(self, build_result_json):
+        data = build_result_json()
         assert data["verifier_error"] is None
         assert data["rewards"] == {"reward": 1.0}
 
@@ -166,28 +141,6 @@ class TestSdkVerify:
 # ---------------------------------------------------------------------------
 # Job: retry, resume, bounded log, threshold warning
 # ---------------------------------------------------------------------------
-
-
-@pytest.fixture
-def job_factory(tmp_path):
-    """Create a Job with n task directories and a mocked SDK."""
-    from benchflow.job import Job, JobConfig, RetryConfig
-
-    def _make(n_tasks=1, max_retries=0):
-        tasks_dir = tmp_path / "tasks"
-        tasks_dir.mkdir(exist_ok=True)
-        for i in range(n_tasks):
-            td = tasks_dir / f"task-{i}"
-            td.mkdir(exist_ok=True)
-            (td / "task.toml").write_text(
-                'version = "1.0"\n[verifier]\ntimeout_sec = 60\n'
-                "[agent]\ntimeout_sec = 60\n[environment]\n"
-            )
-        cfg = JobConfig(retry=RetryConfig(max_retries=max_retries))
-        job = Job(tasks_dir=tasks_dir, jobs_dir=tmp_path / "jobs", config=cfg)
-        return job, tasks_dir
-
-    return _make
 
 
 class TestRetry:
@@ -469,32 +422,6 @@ def test_task_metrics_verifier_errored(reward, error, verifier_error, expected):
 class TestTrajectorySource:
     """trajectory_source and partial_trajectory fields in RunResult and result.json."""
 
-    def _build(self, tmp_path, **overrides):
-        from datetime import datetime
-
-        from benchflow.sdk import SDK
-
-        defaults = dict(
-            task_name="t1",
-            trial_name="trial-1",
-            agent="test",
-            agent_name="",
-            model="",
-            n_tool_calls=0,
-            prompts=["x"],
-            error=None,
-            verifier_error=None,
-            trajectory=[],
-            partial_trajectory=False,
-            trajectory_source=None,
-            rewards={"reward": 1.0},
-            started_at=datetime.now(),
-            timing={},
-        )
-        defaults.update(overrides)
-        SDK._build_result(tmp_path, **defaults)
-        return json.loads((tmp_path / "result.json").read_text())
-
     @pytest.mark.parametrize(
         "source,partial,expected_source,expected_partial",
         [
@@ -505,11 +432,9 @@ class TestTrajectorySource:
         ],
     )
     def test_trajectory_source_in_result_json(
-        self, tmp_path, source, partial, expected_source, expected_partial
+        self, build_result_json, source, partial, expected_source, expected_partial
     ):
-        data = self._build(
-            tmp_path, trajectory_source=source, partial_trajectory=partial
-        )
+        data = build_result_json(trajectory_source=source, partial_trajectory=partial)
         assert data["trajectory_source"] == expected_source
         assert data["partial_trajectory"] == expected_partial
 
