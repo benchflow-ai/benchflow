@@ -338,7 +338,7 @@ async def run(
         trial_config = TrialConfig(
             task_path=Path(task_path),
             scenes=[Scene.single(agent=subject, model=model)],
-            environment=env if isinstance(env, str) else rc.environment if hasattr(rc, 'environment') else "daytona",
+            environment=env if isinstance(env, str) else "docker",
             sandbox_user=rc.sandbox_user,
             sandbox_locked_paths=rc.sandbox_locked_paths,
             jobs_dir=rc.jobs_dir,
