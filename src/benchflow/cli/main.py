@@ -21,7 +21,7 @@ app = typer.Typer(
 )
 
 
-@app.command()
+@app.command(hidden=True, deprecated=True)
 def run(
     task_dir: Annotated[
         Path,
@@ -105,7 +105,7 @@ def run(
     console.print(f"[green]Tool calls:[/green] {result.n_tool_calls}")
 
 
-@app.command()
+@app.command(hidden=True, deprecated=True)
 def job(
     tasks_dir: Annotated[
         Path | None,
@@ -182,7 +182,7 @@ def job(
     )
 
 
-@app.command()
+@app.command(hidden=True, deprecated=True)
 def agents() -> None:
     """List available agents."""
     from benchflow.agents.registry import list_agents
@@ -210,7 +210,7 @@ def agents() -> None:
     console.print(table)
 
 
-@app.command()
+@app.command(hidden=True, deprecated=True)
 def metrics(
     jobs_dir: Annotated[
         Path,
@@ -266,7 +266,7 @@ def metrics(
         console.print(f"[yellow]Error breakdown:[/yellow] {summary['error_breakdown']}")
 
 
-@app.command()
+@app.command(hidden=True, deprecated=True)
 def view(
     trial_dir: Annotated[
         Path,
@@ -280,7 +280,7 @@ def view(
     serve(str(trial_dir), port)
 
 
-@app.command()
+@app.command(hidden=True, deprecated=True)
 def eval(
     tasks_dir: Annotated[
         Path,
@@ -398,7 +398,7 @@ def skills_list(
     console.print(table)
 
 
-@skills_app.command("install")
+@skills_app.command("install", hidden=True, deprecated=True)
 def skills_install(
     spec: Annotated[
         str,
@@ -574,7 +574,7 @@ def tasks_check(
         raise typer.Exit(1)
 
 
-@app.command()
+@app.command(hidden=True, deprecated=True)
 def cleanup(
     dry_run: Annotated[
         bool,
@@ -699,8 +699,8 @@ eval_app = typer.Typer(help="Evaluation commands.")
 app.add_typer(eval_app, name="eval")
 
 
-@eval_app.command("run")
-def eval_run(
+@eval_app.command("create")
+def eval_create(
     config_file: Annotated[
         Path | None,
         typer.Option("--config", "-f", help="YAML config file"),
