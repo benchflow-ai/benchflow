@@ -442,13 +442,21 @@ class Trial:
                 await self._env.exec(f"pkill -f '{agent_cmd}' || true", timeout_sec=10)
             except Exception:
                 pass
+        self._session_tool_count = 0
+        self._session_traj_count = 0
         self._phase = "installed"
 
     # ── Phase 3c: EXECUTE ──
 
     async def execute(self, prompts: list[str] | None = None) -> tuple[list[dict], int]:
-        """Run prompts through the ACP session. Returns (trajectory, n_tool_calls)."""
+        """Run prompts through the ACP session. Returns (new trajectory, new tool calls).
+
+        execute_prompts returns cumulative session trajectory. We track
+        what we've already captured to avoid duplication when the same
+        session is reused across multiple turns.
+        """
         effective_prompts = prompts or self._resolved_prompts
+        prev_session_tools = getattr(self, "_session_tool_count", 0)
         t0 = datetime.now()
 
         trajectory, n_tool_calls = await execute_prompts(
@@ -458,8 +466,15 @@ class Trial:
             self._timeout,
         )
 
-        self._trajectory.extend(trajectory)
-        self._n_tool_calls += n_tool_calls
+        # trajectory and n_tool_calls are cumulative for this session.
+        # Compute the delta since last execute() on this session.
+        new_tools = n_tool_calls - prev_session_tools
+        new_events = trajectory[getattr(self, "_session_traj_count", 0):]
+        self._session_tool_count = n_tool_calls
+        self._session_traj_count = len(trajectory)
+
+        self._trajectory.extend(new_events)
+        self._n_tool_calls += new_tools
         self._trajectory_source = "acp"
 
         if "agent_execution" not in self._timing:
