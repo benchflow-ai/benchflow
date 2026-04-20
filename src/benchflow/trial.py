@@ -615,11 +615,6 @@ class Trial:
             if current_role != turn.role:
                 if current_role is not None:
                     await self.disconnect()
-
-                # Override agent/model for this role
-                self._agent_launch = AGENT_LAUNCH.get(role.agent, role.agent)
-                self._agent_env = resolve_agent_env(role.agent, role.model, role.env or None)
-
                 await self.connect_as(role)
                 current_role = turn.role
 
