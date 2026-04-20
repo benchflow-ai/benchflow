@@ -109,6 +109,7 @@ def trial_config_from_dict(
         context_root=raw.get("context_root"),
         agent=raw.get("agent", "claude-agent-acp"),
         model=raw.get("model"),
+        agent_env=raw.get("agent_env"),
         skills_dir=raw.get("skills_dir"),
     )
 

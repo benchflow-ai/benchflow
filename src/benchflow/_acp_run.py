@@ -111,6 +111,14 @@ async def connect_acp(
                 raise
             logger.warning(f"ACP connect failed (attempt {attempt + 1}): {e}")
             continue
+        except Exception:
+            # Non-retryable error — close client to prevent leak
+            if acp_client:
+                try:
+                    await acp_client.close()
+                except Exception:
+                    pass
+            raise
 
     if model:
         acp_model_id = strip_provider_prefix(model)
