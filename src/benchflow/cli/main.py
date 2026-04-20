@@ -733,8 +733,12 @@ def eval_create(
         str | None,
         typer.Option("--sandbox-user", help="Sandbox user (null for root)"),
     ] = "agent",
+    skills_dir: Annotated[
+        Path | None,
+        typer.Option("--skills-dir", "-s", help="Skills directory to deploy"),
+    ] = None,
 ) -> None:
-    """Run an evaluation — batch of tasks with scoring."""
+    """Run an evaluation — single task or batch."""
     from benchflow.job import Job, JobConfig
 
     if config_file:
@@ -751,12 +755,14 @@ def eval_create(
 
             config = TrialConfig(
                 task_path=tasks_dir,
-                scenes=[Scene.single(agent=agent, model=model or DEFAULT_MODEL)],
+                scenes=[Scene.single(agent=agent, model=model or DEFAULT_MODEL,
+                                     skills_dir=str(skills_dir) if skills_dir else None)],
                 environment=environment,
                 sandbox_user=sandbox_user,
                 jobs_dir=jobs_dir,
                 agent=agent,
                 model=model or DEFAULT_MODEL,
+                skills_dir=str(skills_dir) if skills_dir else None,
             )
 
             async def _run():
@@ -782,6 +788,7 @@ def eval_create(
                     environment=environment,
                     concurrency=concurrency,
                     sandbox_user=sandbox_user,
+                    skills_dir=str(skills_dir) if skills_dir else None,
                 ),
             )
             result = asyncio.run(j.run())

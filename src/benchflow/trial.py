@@ -365,28 +365,29 @@ class Trial:
                     self._env, cfg.sandbox_user, workspace=self._agent_cwd
                 )
             await _snapshot_build_config(self._env, workspace=self._agent_cwd)
-            await _seed_verifier_workspace(self._env, workspace=self._agent_cwd)
+            await _seed_verifier_workspace(self._env, workspace=self._agent_cwd, sandbox_user=cfg.sandbox_user)
             await lockdown_paths(self._env, self._effective_locked)
             self._phase = "installed"
             return
 
+        agent_name = cfg.primary_agent
         self._agent_cfg = await install_agent(
-            self._env, cfg.agent, self._trial_dir
+            self._env, agent_name, self._trial_dir
         )
         cred_home = f"/home/{cfg.sandbox_user}" if cfg.sandbox_user else "/root"
         await write_credential_files(
-            self._env, cfg.agent, self._agent_env,
-            self._agent_cfg, cfg.model, cred_home,
+            self._env, agent_name, self._agent_env,
+            self._agent_cfg, cfg.primary_model, cred_home,
         )
         if self._agent_env.get("_BENCHFLOW_SUBSCRIPTION_AUTH"):
-            await upload_subscription_auth(self._env, cfg.agent, cred_home)
+            await upload_subscription_auth(self._env, agent_name, cred_home)
 
         if cfg.sandbox_user:
             self._agent_cwd = await setup_sandbox_user(
                 self._env, cfg.sandbox_user, workspace=self._agent_cwd
             )
         await _snapshot_build_config(self._env, workspace=self._agent_cwd)
-        await _seed_verifier_workspace(self._env, workspace=self._agent_cwd)
+        await _seed_verifier_workspace(self._env, workspace=self._agent_cwd, sandbox_user=cfg.sandbox_user)
 
         await deploy_skills(
             self._env, cfg.task_path, cfg.skills_dir,
