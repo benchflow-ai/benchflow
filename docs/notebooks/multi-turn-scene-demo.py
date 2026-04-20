@@ -35,6 +35,7 @@ async def demo_single_agent():
 
     result = await bf.run(
         "gemini",
+        env="daytona",
         task_path=".ref/terminal-bench-2/regex-log",
         model="gemini-3.1-flash-lite-preview",
     )
