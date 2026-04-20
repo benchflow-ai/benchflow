@@ -67,6 +67,7 @@ async def connect_acp(
         logger.info(f"Agent sandboxed as: {sandbox_user}")
 
     last_err: Exception | None = None
+    acp_client: ACPClient | None = None
     for attempt in range(_ACP_CONNECT_MAX_RETRIES + 1):
         if attempt > 0:
             delay = _ACP_CONNECT_BASE_DELAY * (2 ** (attempt - 1))
@@ -96,9 +97,15 @@ async def connect_acp(
 
             session = await asyncio.wait_for(acp_client.session_new(cwd=agent_cwd), timeout=60)
             logger.info(f"Session: {session.session_id}")
-            # Success — break out of retry loop
             break
         except ConnectionError as e:
+            # Close the failed client before retrying
+            if acp_client:
+                try:
+                    await acp_client.close()
+                except Exception:
+                    pass
+                acp_client = None
             last_err = e
             if attempt == _ACP_CONNECT_MAX_RETRIES:
                 raise

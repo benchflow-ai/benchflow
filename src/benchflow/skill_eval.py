@@ -325,11 +325,11 @@ def _default_dockerfile(dataset: EvalDataset, with_skill: bool) -> str:
         "",
     ]
 
-    # Forward judge API keys into the container as ENV
+    # Forward judge API keys as ARG (build-time only, not persisted in image layers)
     for key in ("GOOGLE_API_KEY", "GEMINI_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
         val = os.environ.get(key)
         if val:
-            lines += [f"ENV {key}={val}", ""]
+            lines += [f"ARG {key}", f"ENV {key}=${{{key}}}", ""]
             break  # one judge key is enough
 
     # Install extra deps if requirements.txt exists
