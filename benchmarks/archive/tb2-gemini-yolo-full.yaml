@@ -1,9 +1,0 @@
-# TB2 Gemini --acp --yolo full 89-task rerun.
-tasks_dir: .ref/terminal-bench-2
-jobs_dir: ../jobs/tb2-gemini-yolo-full
-agent: gemini
-model: gemini-3.1-flash-lite-preview
-environment: daytona
-concurrency: 89
-max_retries: 0
-sandbox_user: null

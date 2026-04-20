@@ -1,9 +1,0 @@
-# Oracle parity: benchflow side (Daytona).
-# Pair with parity-oracle-harbor-daytona.yaml for the head-to-head.
-
-tasks_dir: /tmp/parity-oracle-tasks
-jobs_dir: ../jobs/parity-oracle-benchflow-daytona
-agent: oracle
-environment: daytona
-concurrency: 4
-max_retries: 0
