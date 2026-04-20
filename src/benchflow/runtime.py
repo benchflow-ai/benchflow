@@ -321,7 +321,12 @@ async def run(
         return await trial.run()
 
     # Case 2: Agent object + Environment
-    if isinstance(subject, Agent) and isinstance(env, Environment):
+    if isinstance(subject, Agent):
+        if not isinstance(env, Environment):
+            raise TypeError(
+                f"When passing an Agent, env must be an Environment, got {type(env).__name__}. "
+                f"Use bf.run('agent-name', task_path=...) for the string shortcut."
+            )
         runtime = Runtime(env, subject, config)
         return await runtime.execute()
 
@@ -329,14 +334,21 @@ async def run(
     if isinstance(subject, str):
         if task_path is None:
             raise ValueError("task_path required when passing agent name as string")
+        rc = config or RuntimeConfig()
         trial_config = TrialConfig(
             task_path=Path(task_path),
             scenes=[Scene.single(agent=subject, model=model)],
-            environment=env if isinstance(env, str) else "daytona",
+            environment=env if isinstance(env, str) else rc.environment if hasattr(rc, 'environment') else "daytona",
+            sandbox_user=rc.sandbox_user,
+            sandbox_locked_paths=rc.sandbox_locked_paths,
+            jobs_dir=rc.jobs_dir,
+            context_root=rc.context_root,
+            pre_agent_hooks=rc.pre_agent_hooks,
+            skills_dir=rc.skills_dir,
             agent=subject,
             model=model,
         )
         trial = await Trial.create(trial_config)
         return await trial.run()
 
-    raise TypeError(f"Unsupported subject type: {type(subject)}")
+    raise TypeError(f"Unsupported subject type: {type(subject).__name__}")
