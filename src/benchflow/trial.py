@@ -352,7 +352,12 @@ class Trial:
     # ── Phase 3: INSTALL AGENT ──
 
     async def install_agent(self) -> None:
-        """Install agent binary, set up credentials, sandbox user, skills, lockdown."""
+        """Install the primary agent binary, set up credentials, sandbox user, skills, lockdown.
+
+        For heterogeneous multi-agent scenes (different agents per role),
+        each role's agent is installed on-demand in _run_scene/connect_as.
+        This method installs the primary agent to set up the sandbox baseline.
+        """
         cfg = self._config
 
         cwd_result = await self._env.exec("pwd", timeout_sec=10)
