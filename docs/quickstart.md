@@ -103,5 +103,5 @@ result = await bf.run(config)
 
 - [CLI Reference](cli-reference.md) — all commands
 - [Task Authoring](task-authoring.md) — create your own tasks
-- [Runtime Guide](runtime-guide.md) — Trial/Scene API details
+- [API Reference](api-reference.md) — Trial/Scene API details
 - [Skill Eval Guide](skill-eval-guide.md) — evaluate agent skills
