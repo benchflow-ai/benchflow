@@ -418,7 +418,7 @@ class Trial:
             self._acp_client = None
             self._session = None
         # Kill any lingering agent processes to prevent context bleed between scenes
-        if self._env:
+        if self._env and self._agent_launch.strip():
             agent_cmd = self._agent_launch.split()[0].split("/")[-1]
             try:
                 await self._env.exec(f"pkill -f '{agent_cmd}' || true", timeout_sec=10)
