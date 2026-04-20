@@ -258,12 +258,6 @@ class DaytonaProcess(LiveProcess):
     def __init__(
         self, sandbox: Any, is_dind: bool = False, compose_cmd_prefix: str = ""
     ):
-        """
-        Args:
-            sandbox: Daytona AsyncSandbox instance
-            is_dind: True if sandbox is DinD (compose) mode
-            compose_cmd_prefix: For DinD, the docker compose prefix with env vars
-        """
         self._sandbox = sandbox
         self._is_dind = is_dind
         self._compose_cmd_prefix = compose_cmd_prefix

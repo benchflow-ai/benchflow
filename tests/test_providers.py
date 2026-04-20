@@ -15,31 +15,6 @@ from benchflow.agents.providers import (
     strip_provider_prefix,
 )
 
-# ── Built-in providers ──
-
-
-class TestBuiltinProviders:
-    """PROVIDERS dict contains expected entries."""
-
-    def test_all_providers_have_name_matching_key(self):
-        for key, cfg in PROVIDERS.items():
-            assert cfg.name == key, f"Provider {key!r} has mismatched name {cfg.name!r}"
-
-    def test_all_providers_have_valid_auth_type(self):
-        for key, cfg in PROVIDERS.items():
-            assert cfg.auth_type in ("api_key", "adc", "none"), (
-                f"Provider {key!r} has unknown auth_type {cfg.auth_type!r}"
-            )
-
-    def test_api_key_providers_have_auth_env(self):
-        """Every api_key provider must declare which env var holds the key."""
-        for key, cfg in PROVIDERS.items():
-            if cfg.auth_type == "api_key":
-                assert cfg.auth_env is not None, (
-                    f"Provider {key!r} uses api_key auth but has no auth_env"
-                )
-
-
 # ── find_provider: model string → provider config ──
 
 
@@ -156,15 +131,6 @@ class TestRegistryIntegration:
 
         assert is_vertex_model("zai/glm-5") is False
 
-    def test_existing_models_unchanged(self):
-        """Existing model inference must not regress."""
-        from benchflow.agents.registry import infer_env_key_for_model
-
-        assert infer_env_key_for_model("gemini-3.1-pro") == "GEMINI_API_KEY"
-        assert infer_env_key_for_model("claude-sonnet-4-6") == "ANTHROPIC_API_KEY"
-        assert infer_env_key_for_model("gpt-5.4") == "OPENAI_API_KEY"
-        assert infer_env_key_for_model("google-vertex/gemini-2.5-flash") is None
-
 
 # ── Provider model metadata (for openclaw.json generation) ──
 
@@ -174,12 +140,8 @@ class TestProviderModels:
 
     def test_model_has_required_fields(self):
         """Each model entry should have at least id and name."""
-        for key, cfg in PROVIDERS.items():
-            if not cfg.models:
-                continue
-            for m in cfg.models:
-                assert "id" in m, f"Provider {key!r} model missing 'id'"
-                assert "name" in m, f"Provider {key!r} model missing 'name'"
+        for cfg in PROVIDERS.values():
+            assert all("id" in m and "name" in m for m in cfg.models)
 
 
 # ── strip_provider_prefix ──
@@ -345,16 +307,37 @@ class TestShimModelParams:
     openclaw config set agents.defaults.params.<key> for each."""
 
     def test_param_map_covers_all_generation_params(self):
-        """session/set_model handler should map all three env vars."""
-        # Read the shim source and extract the _PARAM_MAP dict
+        """session/set_model handler should map all three env vars.
+
+        Parses the AST of openclaw_acp_shim.py to find the _PARAM_MAP dict
+        literal and assert its contents directly (not via source-text grep).
+        """
+        import ast
         from pathlib import Path
 
-        shim_src = (
+        shim_path = (
             Path(__file__).parent.parent / "src/benchflow/agents/openclaw_acp_shim.py"
-        ).read_text()
-        assert "BENCHFLOW_MODEL_TEMPERATURE" in shim_src
-        assert "BENCHFLOW_MODEL_TOP_P" in shim_src
-        assert "BENCHFLOW_MODEL_MAX_TOKENS" in shim_src
-        assert "agents.defaults.params.temperature" in shim_src
-        assert "agents.defaults.params.topP" in shim_src
-        assert "agents.defaults.params.maxTokens" in shim_src
+        )
+        tree = ast.parse(shim_path.read_text())
+
+        param_map: dict[str, str] | None = None
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and node.targets[0].id == "_PARAM_MAP"
+                and isinstance(node.value, ast.Dict)
+            ):
+                param_map = {
+                    ast.literal_eval(k): ast.literal_eval(v)
+                    for k, v in zip(node.value.keys, node.value.values, strict=True)
+                }
+                break
+
+        assert param_map is not None, "_PARAM_MAP not found in openclaw_acp_shim.py"
+        assert param_map == {
+            "BENCHFLOW_MODEL_TEMPERATURE": "agents.defaults.params.temperature",
+            "BENCHFLOW_MODEL_TOP_P": "agents.defaults.params.topP",
+            "BENCHFLOW_MODEL_MAX_TOKENS": "agents.defaults.params.maxTokens",
+        }

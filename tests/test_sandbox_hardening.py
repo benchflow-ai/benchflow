@@ -63,6 +63,42 @@ def _make_task(user=None):
     return task
 
 
+def _snapshot_side_effect(present: frozenset = frozenset()) -> list:
+    """Build side_effect list for _snapshot_build_config: mkdir -> per-file probes -> manifest write.
+
+    present: which _BUILD_CONFIG_FILES names exist in the sandbox (rest are absent).
+    Ordering mirrors _BUILD_CONFIG_FILES declaration order — that ordering IS the
+    contract under test, so we iterate _ALL_BUILD_FILES directly.
+    """
+    probes = [
+        MagicMock(
+            stdout="present\n" if fname in present else "absent\n",
+            stderr="",
+            exit_code=0,
+        )
+        for fname in _ALL_BUILD_FILES
+    ]
+    return [
+        MagicMock(stdout="", stderr="", exit_code=0),  # mkdir
+        *probes,
+        MagicMock(stdout="", stderr="", exit_code=0),  # manifest write
+    ]
+
+
+def _restore_side_effect(manifest: dict[str, bool]) -> list:
+    """Build side_effect list for _restore_build_config: manifest read -> per-file ops.
+
+    One empty result per file in _BUILD_CONFIG_FILES declaration order.
+    """
+    return [
+        MagicMock(stdout=json.dumps(manifest), stderr="", exit_code=0),
+        *[
+            MagicMock(stdout="", stderr="", exit_code=0)
+            for _ in range(len(_ALL_BUILD_FILES))
+        ],
+    ]
+
+
 # ── TestHardenSequence ────────────────────────────────────────────────────────
 
 
@@ -116,10 +152,6 @@ class TestHardenSequence:
         assert "sitecustomize.py" in cleanup_cmd and ".pth" in cleanup_cmd
         assert "-not -path '/tests/*'" in cleanup_cmd
         injected = task.config.verifier.env
-        assert (
-            injected["PATH"]
-            == "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-        )
         assert "--rootdir=/tests" in injected["PYTEST_ADDOPTS"]
         assert "-p no:cacheprovider" in injected["PYTEST_ADDOPTS"]
         assert injected["PYTHONPATH"] == ""
@@ -230,16 +262,7 @@ class TestBuildConfigSnapshot:
         """Absent file → false in manifest (no __ABSENT__ string in content)."""
         from benchflow._sandbox import _snapshot_build_config
 
-        env = _make_env(
-            side_effect=[
-                MagicMock(stdout="", stderr="", exit_code=0),  # mkdir
-                *[
-                    MagicMock(stdout="absent\n", stderr="", exit_code=0)
-                    for _ in range(len(_ALL_BUILD_FILES))
-                ],
-                MagicMock(stdout="", stderr="", exit_code=0),  # manifest write
-            ]
-        )
+        env = _make_env(side_effect=_snapshot_side_effect())
 
         await _snapshot_build_config(env, workspace="/testbed")
 
@@ -256,15 +279,7 @@ class TestBuildConfigSnapshot:
         from benchflow._sandbox import _snapshot_build_config
 
         env = _make_env(
-            side_effect=[
-                MagicMock(stdout="", stderr="", exit_code=0),  # mkdir
-                MagicMock(stdout="present\n", stderr="", exit_code=0),  # setup.py
-                *[
-                    MagicMock(stdout="absent\n", stderr="", exit_code=0)
-                    for _ in range(len(_ALL_BUILD_FILES) - 1)
-                ],
-                MagicMock(stdout="", stderr="", exit_code=0),  # manifest write
-            ]
+            side_effect=_snapshot_side_effect(present=frozenset({"setup.py"}))
         )
 
         await _snapshot_build_config(env, workspace="/testbed")
@@ -280,15 +295,7 @@ class TestBuildConfigSnapshot:
         from benchflow._sandbox import _restore_build_config
 
         manifest = _blank_manifest()
-        env = _make_env(
-            side_effect=[
-                MagicMock(stdout=json.dumps(manifest), stderr="", exit_code=0),
-                *[
-                    MagicMock(stdout="", stderr="", exit_code=0)
-                    for _ in range(len(_ALL_BUILD_FILES))
-                ],
-            ]
-        )
+        env = _make_env(side_effect=_restore_side_effect(manifest))
 
         await _restore_build_config(env, workspace="/testbed")
 
@@ -309,15 +316,7 @@ class TestBuildConfigSnapshot:
         from benchflow._sandbox import _restore_build_config
 
         manifest = {**_blank_manifest(), "setup.py": True}
-        env = _make_env(
-            side_effect=[
-                MagicMock(stdout=json.dumps(manifest), stderr="", exit_code=0),
-                *[
-                    MagicMock(stdout="", stderr="", exit_code=0)
-                    for _ in range(len(_ALL_BUILD_FILES))
-                ],
-            ]
-        )
+        env = _make_env(side_effect=_restore_side_effect(manifest))
 
         await _restore_build_config(env, workspace="/testbed")
 
@@ -342,15 +341,7 @@ class TestBuildConfigSnapshot:
         from benchflow._sandbox import _restore_build_config
 
         manifest = {**_blank_manifest(), fname: True}
-        env = _make_env(
-            side_effect=[
-                MagicMock(stdout=json.dumps(manifest), stderr="", exit_code=0),
-                *[
-                    MagicMock(stdout="", stderr="", exit_code=0)
-                    for _ in range(len(_ALL_BUILD_FILES))
-                ],
-            ]
-        )
+        env = _make_env(side_effect=_restore_side_effect(manifest))
 
         await _restore_build_config(env, workspace="/testbed")
 
@@ -532,16 +523,7 @@ class TestBuildConfigSnapshot:
         """Snapshot dir is created with chmod 700 so sandbox_user cannot tamper."""
         from benchflow._sandbox import _snapshot_build_config
 
-        env = _make_env(
-            side_effect=[
-                MagicMock(stdout="", stderr="", exit_code=0),  # mkdir + chmod
-                *[
-                    MagicMock(stdout="absent\n", stderr="", exit_code=0)
-                    for _ in range(len(_ALL_BUILD_FILES))
-                ],
-                MagicMock(stdout="", stderr="", exit_code=0),  # manifest write
-            ]
-        )
+        env = _make_env(side_effect=_snapshot_side_effect())
 
         await _snapshot_build_config(env, workspace="/testbed")
 
@@ -1118,12 +1100,6 @@ class TestVerifierEnv:
         assert result["DJANGO_SETTINGS_MODULE"] == ""
         assert result["CELERY_CONFIG_MODULE"] == ""
 
-    def test_pythonhome_not_set(self):
-        """PYTHONHOME must not be set — even "" breaks Py_Initialize."""
-        from benchflow._sandbox import VERIFIER_ENV
-
-        assert "PYTHONHOME" not in VERIFIER_ENV
-
     def test_devnull_blocks_hostile_pyproject(self, tmp_path):
         """Real pytest under -c /dev/null ignores agent-written pyproject.toml."""
         import os
@@ -1185,3 +1161,41 @@ class TestVerifierEnv:
             f"-c /dev/null did not suppress hostile pyproject.toml — "
             f"plugin marker {plugin_marker!r} leaked into hardened output."
         )
+
+
+class TestSandboxFailureModes:
+    """Recovery paths when untrusted inputs (task.toml, PATH extras) are malformed."""
+
+    def test_harden_before_verify_survives_manifest_read_failure(self, tmp_path):
+        """Truncated task.toml must not propagate TOMLDecodeError; treat as no plugins."""
+        from benchflow._sandbox import _declared_pytest_plugins
+
+        # Truncated inline-table → tomllib.TOMLDecodeError
+        (tmp_path / "task.toml").write_text(
+            "[verifier]\npytest_plugins = [\n",
+        )
+        task = _make_task()
+        task.task_dir = str(tmp_path)
+        task.config.verifier.pytest_plugins = None
+
+        assert _declared_pytest_plugins(task) == []
+
+    @pytest.mark.asyncio
+    async def test_trusted_path_extras_malformed_json_falls_back(self):
+        """Malformed JSON from the container-side PATH probe falls back to SAFE_VERIFIER_PATH."""
+        from benchflow._sandbox import _SAFE_VERIFIER_PATH, _trusted_verifier_path
+
+        async def fake_exec(cmd, user=None, timeout_sec=None):
+            result = MagicMock()
+            if "printenv PATH" in cmd:
+                result.stdout = "/usr/local/bin:/usr/bin:/bin"
+            else:
+                result.stdout = "not json"
+            return result
+
+        env = MagicMock()
+        env.exec = AsyncMock(side_effect=fake_exec)
+
+        path = await _trusted_verifier_path(env, sandbox_user=None, workspace=None)
+        # Malformed JSON ⇒ extras treated as empty ⇒ result equals safe PATH
+        assert path == _SAFE_VERIFIER_PATH

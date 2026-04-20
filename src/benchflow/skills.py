@@ -27,9 +27,6 @@ class SkillInfo:
     compatibility: str = ""
     metadata: dict = field(default_factory=dict)
 
-    def __repr__(self):
-        return f"Skill({self.name}, {self.path})"
-
 
 def discover_skills(*search_dirs: Path | str) -> list[SkillInfo]:
     """Discover skills from one or more directories.

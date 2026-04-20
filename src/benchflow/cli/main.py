@@ -21,6 +21,9 @@ app = typer.Typer(
 )
 
 
+# ── Run / job runners ─────────────────────────────────────────────────────────
+
+
 @app.command()
 def run(
     task_dir: Annotated[
@@ -182,6 +185,9 @@ def job(
     )
 
 
+# ── Listing / inspection ──────────────────────────────────────────────────────
+
+
 @app.command()
 def agents() -> None:
     """List available agents."""
@@ -278,6 +284,9 @@ def view(
     from benchflow.viewer import serve
 
     serve(str(trial_dir), port)
+
+
+# ── Eval / skills ─────────────────────────────────────────────────────────────
 
 
 @app.command()
@@ -412,6 +421,8 @@ def skills(
     console.print(table)
 
 
+# ── Tasks subcommands ─────────────────────────────────────────────────────────
+
 tasks_app = typer.Typer(help="Task authoring commands")
 app.add_typer(tasks_app, name="tasks")
 
@@ -463,6 +474,9 @@ def tasks_check(
         for issue in issues:
             console.print(f"  [yellow]→[/yellow] {issue}")
         raise typer.Exit(1)
+
+
+# ── Cleanup ───────────────────────────────────────────────────────────────────
 
 
 @app.command()

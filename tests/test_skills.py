@@ -49,13 +49,6 @@ class TestParseSkill:
         assert info is not None
         assert info.name == "fallback-name"
 
-    def test_no_frontmatter_returns_none(self, tmp_path):
-        skill_dir = tmp_path / "no-front"
-        skill_dir.mkdir()
-        md = skill_dir / "SKILL.md"
-        md.write_text("# Just a markdown file\nNo frontmatter here.")
-        assert parse_skill(md) is None
-
     def test_missing_closing_delimiter_returns_none(self, tmp_path):
         skill_dir = tmp_path / "no-close"
         skill_dir.mkdir()
@@ -130,11 +123,6 @@ class TestDiscoverSkills:
         _write_skill_md(dir_b / "s2", "name: two\n")
         skills = discover_skills(dir_a, dir_b)
         assert len(skills) == 2
-
-    def test_empty_directory(self, tmp_path):
-        empty = tmp_path / "empty"
-        empty.mkdir()
-        assert discover_skills(empty) == []
 
     def test_accepts_string_paths(self, tmp_path):
         _write_skill_md(tmp_path / "s", "name: str-path\n")

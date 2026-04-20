@@ -217,6 +217,25 @@ class TestSetupProviderModelMetadata:
         assert model_entry["contextWindow"] == 128000
         assert model_entry["maxTokens"] == 16384
 
+    def test_lookup_model_metadata_corrupt_json_returns_empty(
+        self, monkeypatch, tmp_path
+    ):
+        """Malformed BENCHFLOW_PROVIDER_MODELS falls through to defaults, no raise."""
+        monkeypatch.setenv("BENCHFLOW_PROVIDER_PROTOCOL", "openai-completions")
+        monkeypatch.setenv("BENCHFLOW_PROVIDER_BASE_URL", "http://localhost/v1")
+        monkeypatch.setenv("BENCHFLOW_PROVIDER_MODEL", "mystery-model")
+        monkeypatch.setenv("BENCHFLOW_PROVIDER_NAME", "custom-vllm")
+        monkeypatch.setenv("BENCHFLOW_PROVIDER_MODELS", "{bad")
+
+        from benchflow.agents.pi_acp_launcher import setup_provider
+
+        setup_provider()
+
+        config = json.loads((tmp_path / ".pi" / "agent" / "models.json").read_text())
+        entry = config["providers"]["custom-vllm"]["models"][0]
+        assert entry["contextWindow"] == 128000
+        assert entry["maxTokens"] == 16384
+
 
 @pytest.mark.usefixtures("_pi_env")
 class TestSetupProviderNameDerivation:
@@ -237,6 +256,19 @@ class TestSetupProviderNameDerivation:
         config = json.loads((tmp_path / ".pi" / "agent" / "models.json").read_text())
         assert "custom" not in config["providers"]
         assert "benchflow-Qwen" in config["providers"]
+
+    def test_derive_provider_name_empty_model(self, monkeypatch, tmp_path):
+        """Empty model string → 'benchflow-custom' (no slash to slug, no name to embed)."""
+        monkeypatch.setenv("BENCHFLOW_PROVIDER_PROTOCOL", "openai-completions")
+        monkeypatch.setenv("BENCHFLOW_PROVIDER_BASE_URL", "http://a/v1")
+        monkeypatch.setenv("BENCHFLOW_PROVIDER_MODEL", "")
+
+        from benchflow.agents.pi_acp_launcher import setup_provider
+
+        setup_provider()
+
+        config = json.loads((tmp_path / ".pi" / "agent" / "models.json").read_text())
+        assert "benchflow-custom" in config["providers"]
 
     def test_explicit_name_wins_over_derivation(self, monkeypatch, tmp_path):
         monkeypatch.setenv("BENCHFLOW_PROVIDER_PROTOCOL", "openai-completions")

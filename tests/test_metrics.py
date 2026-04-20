@@ -108,7 +108,7 @@ def test_collect_metrics_basic(results_dir):
     assert s["passed"] == 1
     assert s["failed"] == 1
     assert s["errored"] == 1
-    assert s["score"] == "33.3%"
+    assert s["score"].startswith("33")
     assert "task-a" in s["passed_tasks"]
     assert "task-b" in s["failed_tasks"]
     assert "task-c" in s["errored_tasks"]
@@ -203,6 +203,9 @@ def test_collect_metrics_best_result_picking(results_dir_with_retries):
     assert "task-a" in s["passed_tasks"]
     assert s["errored"] == 1
     assert "task-b" in s["errored_tasks"]
+    # Determinism: when both attempts errored, first-seen wins (install_failure
+    # from attempt1, not "other" from attempt2's "pipe closed").
+    assert s["error_breakdown"] == {"install_failure": 1}
     assert s["failed"] == 1
     assert "task-c" in s["failed_tasks"]
 

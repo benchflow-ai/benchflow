@@ -7,6 +7,7 @@ from trial results.
 import json
 import logging
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -203,8 +204,6 @@ def collect_metrics(
         # Calculate duration
         duration = 0.0
         try:
-            from datetime import datetime
-
             started = datetime.fromisoformat(r["started_at"])
             finished = datetime.fromisoformat(r["finished_at"])
             duration = (finished - started).total_seconds()

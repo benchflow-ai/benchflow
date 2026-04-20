@@ -263,7 +263,6 @@ class SDK:
             "\n".join(json.dumps(e, default=str) for e in trajectory)
         )
         # Save result.json, prompts.json, timing.json
-        trial_dir.mkdir(parents=True, exist_ok=True)
         (trial_dir / "result.json").write_text(
             json.dumps(
                 {
@@ -380,11 +379,9 @@ class SDK:
                 verifier.verify(),
                 timeout=task.config.verifier.timeout_sec,
             )
-            timing["verifier"] = (datetime.now() - t0).total_seconds()
             rewards = verifier_result.rewards
             logger.info(f"Rewards: {rewards}")
         except TimeoutError:
-            timing["verifier"] = (datetime.now() - t0).total_seconds()
             # NOTE: these prefixes must stay in sync with classify_verifier_error() in _scoring.py
             verifier_error = (
                 f"verifier timed out after {task.config.verifier.timeout_sec}s"
@@ -392,11 +389,12 @@ class SDK:
             rewards = None
             logger.error(verifier_error)
         except Exception as e:
-            timing["verifier"] = (datetime.now() - t0).total_seconds()
             # NOTE: these prefixes must stay in sync with classify_verifier_error() in _scoring.py
             verifier_error = f"verifier crashed: {e}"
             rewards = None
             logger.error(verifier_error)
+        finally:
+            timing["verifier"] = (datetime.now() - t0).total_seconds()
         return rewards, verifier_error
 
     async def run(
@@ -532,6 +530,8 @@ class SDK:
                     user="root",
                     timeout_sec=10,
                 )
+                timing["agent_setup"] = (datetime.now() - t_agent_setup).total_seconds()
+                t_agent_exec = datetime.now()
                 trajectory, agent_name = await self._run_oracle(
                     env, task_path, timeout, sandbox_user=None
                 )
@@ -598,13 +598,9 @@ class SDK:
                 )
                 trajectory_source = "acp"
 
-            if agent != "oracle" and "agent_setup" not in timing:
+            if "agent_setup" not in timing:
                 timing["agent_setup"] = (datetime.now() - t_agent_setup).total_seconds()
-            if agent == "oracle":
-                timing["agent_execution"] = (
-                    datetime.now() - t_agent_setup
-                ).total_seconds()
-            elif "agent_execution" not in timing:
+            if "agent_execution" not in timing:
                 timing["agent_execution"] = (
                     datetime.now() - t_agent_exec
                 ).total_seconds()
@@ -629,9 +625,7 @@ class SDK:
                 timing,
                 sandbox_user=sandbox_user,
                 workspace=agent_cwd,
-                # Keep verifier semantics identical for oracle and normal agents.
-                # Full workspace restore should become task metadata, not an
-                # agent-type branch, once tasks can declare it is safe.
+                # Same verifier semantics for oracle and normal agents.
                 restore_workspace=False,
             )
 

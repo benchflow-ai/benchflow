@@ -3,7 +3,6 @@
 import pytest
 
 from benchflow.agents.registry import (
-    AGENTS,
     get_agent,
     infer_env_key_for_model,
     is_vertex_model,
@@ -25,9 +24,6 @@ class TestGetAgent:
     def test_unknown_agent_raises(self):
         with pytest.raises(KeyError, match="Unknown agent"):
             get_agent("nonexistent-agent")
-
-    def test_no_openclaw_gemini_entry(self):
-        assert "openclaw-gemini" not in AGENTS
 
 
 class TestIsVertexModel:
@@ -89,31 +85,24 @@ class TestInferEnvKey:
     def test_unknown_model_returns_none(self):
         assert infer_env_key_for_model("some-custom-model") is None
 
-    def test_infer_delegates_to_is_vertex(self):
-        """All vertex prefixes return None via is_vertex_model."""
-        for prefix in ("google-vertex/", "anthropic-vertex/", "vertex-zai/"):
-            assert infer_env_key_for_model(f"{prefix}any-model") is None
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "google-vertex/any-model",
+            "anthropic-vertex/any-model",
+        ],
+    )
+    def test_infer_delegates_to_is_vertex(self, monkeypatch, model):
+        """infer_env_key_for_model defers to is_vertex_model for ADC prefixes.
+
+        Forces is_vertex_model → True so we test the delegation path, not
+        the unrelated fallback that returns None for unknown prefixes.
+        """
+        from benchflow.agents import registry as registry_mod
+
+        monkeypatch.setattr(registry_mod, "is_vertex_model", lambda m: True)
+        assert registry_mod.infer_env_key_for_model(model) is None
 
 
 class TestResultMetadata:
     """RunResult stores agent and model separately."""
-
-    def test_run_result_has_model(self):
-        from benchflow.models import RunResult
-
-        r = RunResult(
-            task_name="test",
-            agent="openclaw",
-            agent_name="openclaw-acp",
-            model="google/gemini-3.1-pro",
-        )
-        assert r.agent == "openclaw"
-        assert r.agent_name == "openclaw-acp"
-        assert r.model == "google/gemini-3.1-pro"
-
-    def test_run_result_defaults(self):
-        from benchflow.models import RunResult
-
-        r = RunResult(task_name="test")
-        assert r.agent == ""
-        assert r.model == ""

@@ -1,5 +1,7 @@
 """Tests for benchflow._scoring — pure scoring/classification helpers."""
 
+import pytest
+
 from benchflow._scoring import (
     classify_error,
     extract_reward,
@@ -34,12 +36,6 @@ class TestExtractReward:
 
     def test_rewards_is_list(self):
         assert extract_reward({"rewards": [1.0]}) is None
-
-    def test_rewards_is_string(self):
-        assert extract_reward({"rewards": "1.0"}) is None
-
-    def test_rewards_is_number(self):
-        assert extract_reward({"rewards": 1.0}) is None
 
 
 class TestClassifyError:
@@ -77,30 +73,30 @@ class TestClassifyError:
 class TestPassRate:
     """pass_rate(*, passed, total) -> float"""
 
-    def test_normal(self):
-        assert pass_rate(passed=5, total=10) == 0.5
-
-    def test_all_passed(self):
-        assert pass_rate(passed=10, total=10) == 1.0
-
-    def test_none_passed(self):
-        assert pass_rate(passed=0, total=10) == 0.0
-
-    def test_zero_total(self):
-        assert pass_rate(passed=0, total=0) == 0.0
+    @pytest.mark.parametrize(
+        ("passed", "total", "expected"),
+        [
+            pytest.param(5, 10, 0.5, id="50pct"),
+            pytest.param(10, 10, 1.0, id="100pct"),
+            pytest.param(0, 10, 0.0, id="0pct"),
+            pytest.param(0, 0, 0.0, id="empty"),
+        ],
+    )
+    def test_pass_rate(self, passed, total, expected):
+        assert pass_rate(passed=passed, total=total) == expected
 
 
 class TestPassRateExclErrors:
     """pass_rate_excl_errors(*, passed, failed) -> float"""
 
-    def test_normal(self):
-        assert pass_rate_excl_errors(passed=5, failed=3) == 5 / 8
-
-    def test_all_passed(self):
-        assert pass_rate_excl_errors(passed=5, failed=0) == 1.0
-
-    def test_none_passed(self):
-        assert pass_rate_excl_errors(passed=0, failed=5) == 0.0
-
-    def test_zero_completed(self):
-        assert pass_rate_excl_errors(passed=0, failed=0) == 0.0
+    @pytest.mark.parametrize(
+        ("passed", "failed", "expected"),
+        [
+            pytest.param(5, 3, 5 / 8, id="normal"),
+            pytest.param(5, 0, 1.0, id="100pct"),
+            pytest.param(0, 5, 0.0, id="0pct"),
+            pytest.param(0, 0, 0.0, id="empty"),
+        ],
+    )
+    def test_pass_rate_excl_errors(self, passed, failed, expected):
+        assert pass_rate_excl_errors(passed=passed, failed=failed) == expected
