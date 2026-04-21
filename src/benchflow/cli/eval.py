@@ -228,11 +228,12 @@ def _run_single(
     from benchflow.sdk import SDK
 
     sdk = SDK()
+    effective_model = None if agent == "oracle" else (model or DEFAULT_MODEL)
     result = asyncio.run(
         sdk.run(
             task_path=task_dir,
             agent=agent,
-            model=model or DEFAULT_MODEL,
+            model=effective_model,
             environment=environment,
             prompts=cast("list[str | None] | None", prompt),
             agent_env=agent_env,
@@ -268,9 +269,10 @@ def _run_batch(
 ) -> None:
     from benchflow.job import Job, JobConfig, RetryConfig
 
+    effective_model = None if agent == "oracle" else (model or DEFAULT_MODEL)
     config = JobConfig(
         agent=agent,
-        model=model or DEFAULT_MODEL,
+        model=effective_model,
         environment=environment,
         concurrency=concurrency,
         retry=RetryConfig(max_retries=max_retries),

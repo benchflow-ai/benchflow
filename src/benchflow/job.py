@@ -146,7 +146,7 @@ class JobConfig:
     """Configuration for a benchmark job."""
 
     agent: str = DEFAULT_AGENT
-    model: str = DEFAULT_MODEL
+    model: str | None = DEFAULT_MODEL
     environment: str = "docker"
     concurrency: int = 4
     prompts: list[str | None] | None = None
