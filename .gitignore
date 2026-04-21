@@ -181,3 +181,5 @@ dogfood/
 tmp/
 .claude/settings.local.json
 tests/.smoke-jobs/
+context/
+tutorials/

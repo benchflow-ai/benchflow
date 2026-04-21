@@ -1,6 +1,9 @@
 <div align="center">
   <h1>BenchFlow</h1>
-  <p>Multi-turn agent benchmarking with ACP</p>
+  <p>Multi-turn agent benchmarking — Scene-based lifecycle for any ACP agent</p>
+  <a href="https://pypi.org/project/benchflow/" target="_blank">
+    <img src="https://img.shields.io/badge/PyPI-0.3.0a3-blue?style=for-the-badge&logo=pypi" alt="PyPI">
+  </a>
   <a href="https://discord.gg/mZ9Rc8q8W3" target="_blank">
     <img src="https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord">
   </a>
@@ -8,173 +11,167 @@
 
 ## What
 
-BenchFlow runs AI coding agents against benchmark tasks and captures their full trajectory. It combines [Harbor](https://github.com/benchflow-ai/harbor) (environments, verifier, orchestration) with [ACP](https://agentclientprotocol.com/) (multi-turn agent communication).
+BenchFlow runs AI agents against benchmark tasks in sandboxed environments. It supports single-agent, multi-agent, and multi-turn evaluation patterns through a Scene-based lifecycle.
 
-The agent runs inside a sandboxed environment (Docker or Daytona). BenchFlow connects to it via ACP over a live stdio pipe. You can send one prompt or many — the agent stays alive between prompts, maintaining full context.
+- **Any ACP agent** — Gemini CLI, Claude, Codex, OpenClaw, Pi, or your own
+- **Multi-scene trials** — skill generation → solve, coder → reviewer → revision
+- **Cloud sandboxes** — Daytona backend for parallel execution at scale
+- **YAML-driven** — same task folder, different trial configs for ablation
 
 ## Install
 
 ```bash
-pip install benchflow
+pip install benchflow==0.3.0a3
 ```
 
-Requires Python 3.12+ and Docker (or a Daytona API key for cloud sandboxes).
+Requires Python 3.12+. For cloud sandboxes, set `DAYTONA_API_KEY`.
 
 ## Quick Start
 
+### CLI
+
 ```bash
-source .env  # ANTHROPIC_API_KEY (auto-inherited by SDK)
+# Run a single task with Gemini
+bench eval create -t tasks/my-task -a gemini -m gemini-3.1-flash-lite-preview -e daytona
 
-# Run a single task
-benchflow run -t path/to/task -a claude-agent-acp -e daytona
+# Run from YAML config (batch, concurrent)
+bench eval create -f benchmarks/tb2-gemini-baseline.yaml
 
-# Run a full benchmark (89 tasks, 64 concurrent)
-benchflow job -t .ref/terminal-bench-2 -e daytona -c 64
+# List agents
+bench agent list
 
-# List available agents
-benchflow agents
-
-# View results
-benchflow metrics jobs/
-benchflow view jobs/my-job/my-trial/
+# Check task validity
+bench tasks check tasks/my-task
 ```
 
-## SDK
+### Python
 
 ```python
-from benchflow import SDK, Job, JobConfig, collect_metrics
+import benchflow as bf
+from benchflow.trial import TrialConfig, Scene, Role, Turn
 
-result = await SDK().run(task_path="path/to/task", agent="claude-agent-acp")
+# Simplest: one agent, one task
+result = await bf.run("gemini", task_path="tasks/my-task", model="gemini-3.1-flash-lite-preview")
 print(result.rewards)  # {"reward": 1.0}
+
+# Scene-based: skill-gen → solve (BYOS pattern)
+config = TrialConfig(
+    task_path=Path("tasks/my-task"),
+    scenes=[
+        Scene(name="skill-gen",
+              roles=[Role("gen", "gemini", "gemini-3.1-flash-lite-preview")],
+              turns=[Turn("gen", "Analyze the task and write a skill to /app/generated-skill.md")]),
+        Scene(name="solve",
+              roles=[Role("solver", "gemini", "gemini-3.1-flash-lite-preview")],
+              turns=[Turn("solver")]),  # None prompt = use instruction.md
+    ],
+    environment="daytona",
+)
+result = await bf.run(config)
+
+# Multi-agent: coder + reviewer
+config = TrialConfig(
+    task_path=Path("tasks/my-task"),
+    scenes=[
+        Scene(name="review-loop",
+              roles=[
+                  Role("coder", "gemini", "gemini-3.1-flash-lite-preview"),
+                  Role("reviewer", "gemini", "gemini-3.1-flash-lite-preview"),
+              ],
+              turns=[
+                  Turn("coder", "Solve the task. Write to /app/.outbox/reviewer.json when done."),
+                  Turn("reviewer", "Review the coder's work. Write feedback to /app/.outbox/coder.json."),
+                  Turn("coder", "Read the reviewer's feedback and revise your solution."),
+              ]),
+    ],
+    environment="daytona",
+)
+result = await bf.run(config)
 ```
 
-Single task, multi-turn, full benchmark jobs, and programmatic metrics — see [docs/getting-started.md](docs/getting-started.md).
+### YAML Trial Config
 
-## CLI
+```yaml
+# trial-baseline.yaml
+task_dir: .ref/terminal-bench-2
+agent: gemini
+model: gemini-3.1-flash-lite-preview
+environment: daytona
+concurrency: 89
 
-```bash
-benchflow run -t path/to/task -a claude-agent-acp   # single task
-benchflow job -t tasks/ -a claude-agent-acp -c 1    # benchmark job
-benchflow metrics jobs/                              # aggregate results
-benchflow view jobs/my-job/my-trial/                # trajectory viewer
+# trial-byos.yaml (same tasks, different config)
+task_dir: .ref/terminal-bench-2
+scenes:
+  - name: skill-gen
+    roles: [{name: gen, agent: gemini, model: gemini-3.1-flash-lite-preview}]
+    turns: [{role: gen, prompt: "Generate a skill for this task..."}]
+  - name: solve
+    roles: [{name: solver, agent: gemini, model: gemini-3.1-flash-lite-preview}]
 ```
 
-Full flag reference for all 8 subcommands: [docs/cli-reference.md](docs/cli-reference.md).
-
-## Agents
-
-Any [ACP-compatible agent](https://agentclientprotocol.com/get-started/agents) works. Registered agents are auto-installed in sandboxes.
-
-```bash
-benchflow agents              # list registered agents
-benchflow run -t task/ -a pi-acp -e daytona
-```
-
-See [docs/architecture.md](docs/architecture.md#registry-pattern) for the full tested agent × model/provider matrix and how to add your own.
-
-## Environments
-
-| Environment | Concurrency | Notes |
-|-------------|-------------|-------|
-| `docker` | ~4 | Local Docker. Limited by network exhaustion. |
-| `daytona` | 64+ | Cloud sandboxes. Requires `DAYTONA_API_KEY`. |
-
-## How it Works
-
-BenchFlow starts a sandboxed environment, connects to the agent via ACP over a live stdio pipe, sends one or more prompts (the agent retains full context between turns), then runs the verifier and captures the full trajectory.
-
-See [docs/architecture.md](docs/architecture.md) for SDK run phases, ACP protocol details, and the registry pattern.
-
-## Task Format
-
-Tasks follow the [Harbor task format](https://github.com/benchflow-ai/harbor):
+## CLI Reference
 
 ```
-my-task/
-├── task.toml              # timeouts, resources, metadata
-├── instruction.md         # what the agent should do
-├── environment/
-│   └── Dockerfile         # sandbox setup
-├── tests/
-│   └── test.sh            # verifier → reward.txt
-└── solution/              # optional reference solution
+bench agent list              List registered agents
+bench agent show <name>       Agent details + conformance status
+
+bench eval create             Create + run evaluation (returns job-id)
+bench eval list               List completed evaluations
+
+bench skills eval             Evaluate skill via evals.json
+
+bench tasks init <name>       Scaffold new task
+bench tasks check <dir>       Validate task (--rubric for custom)
+
+bench train create            Reward-based training sweep
+
+bench environment create      Spin up sandbox from task dir
+bench environment list        List active sandboxes
 ```
-
-Full `task.toml` schema, verifier contract, and a worked example: [docs/task-authoring.md](docs/task-authoring.md).
-
-## Results
-
-Every run produces structured output:
-
-```
-jobs/{job_name}/{trial_name}/
-├── config.json              # SDK.run() parameters (agent, model, environment)
-├── result.json              # rewards, agent, timing breakdown
-├── timing.json              # {environment_setup, agent_setup, agent_execution, verifier, total}
-├── prompts.json             # prompts sent
-├── agent/
-│   ├── install-stdout.txt   # agent install output
-│   └── {agent_name}.txt     # agent stderr/debug output (hyphens → underscores)
-├── trajectory/
-│   └── acp_trajectory.jsonl # tool calls + agent thoughts
-└── verifier/
-    └── reward.txt           # reward value
-```
-
-## Benchmarks
-
-Tasks are auto-downloaded on first run (cloned into `.ref/`).
-
-**SkillsBench** (86 tasks — tool use, file editing, API calls):
-
-```bash
-python benchmarks/run_skillsbench.py benchmarks/skillsbench-claude-glm51.yaml   # Claude
-python benchmarks/run_skillsbench.py benchmarks/skillsbench-codex-gpt54.yaml   # Codex
-```
-
-**Terminal-Bench 2** (89 tasks — shell, git, compilers, daemons):
-
-```bash
-python benchmarks/run_tb2.py benchmarks/tb2_single-codex-gpt54.yaml      # single-turn
-python benchmarks/run_tb2.py benchmarks/tb2_multiturn-codex-gpt54.yaml   # multi-turn
-```
-
-Shipped configs use `environment: daytona` and `concurrency: 8`. For local Docker: `--env docker --concurrency 1`.
-
-| Benchmark | Agent | Model | Score |
-|-----------|-------|-------|-------|
-| TB2 single-turn | codex-acp | GPT-5.4* | **69.7%** (62/89) |
-| TB2 single-turn | claude-agent-acp | Sonnet 4.6 | **58.4%** (52/89) |
-| TB2 multi-turn | codex-acp | GPT-5.4* | **62.9%** (56/89) |
-| TB2 multi-turn | claude-agent-acp | Haiku 4.5 | **37.1%** (33/89) |
-| SkillsBench | codex-acp | GPT-5.4* | **37.2%** (32/86) |
-
-*GPT-5.4 runs used effort=medium.
-
-## Skills
-
-BenchFlow ships a Claude Code skill in `.claude/skills/benchflow/` that teaches agents how to use the framework. Place skills in `~/.claude/skills/` (or bake into task Dockerfiles) for auto-discovery.
-
-Validation tasks in `.claude/skills/benchflow/tasks/` confirm agents can use the skill correctly.
 
 ## Architecture
 
-ACP client, job orchestration, multi-agent registry, trajectory capture, skills, viewer, and CLI — see [docs/architecture.md](docs/architecture.md).
+```
+Trial = sequence of Scenes in a shared sandbox
+Scene = Roles + Turns (one interaction region)
+Role  = agent + model
+Turn  = one prompt for one role
 
-## Citation
-
-If you use BenchFlow in academic work, please cite:
-
-```bibtex
-@software{BenchFlow_Team_BenchFlow_2026,
-author = {{BenchFlow Team}},
-month = mar,
-title = {{BenchFlow: Multi-turn agent benchmarking with ACP}},
-url = {https://github.com/benchflow-ai/benchflow},
-year = {2026}
-}
+bf.run(config)
+  → Trial.create(config)
+    → trial.setup()      # resolve config, create env object
+    → trial.start()      # spin up sandbox, upload task files
+    → for scene in config.scenes:
+        → trial._run_scene(scene)  # connect/execute/disconnect per role
+    → trial.verify()     # run verifier, score
+    → trial.cleanup()    # stop sandbox
 ```
 
-## License
+## Registered Agents
 
-Apache License 2.0 — see [LICENSE](LICENSE).
+| Agent | Command | Auth |
+|-------|---------|------|
+| `gemini` | `gemini --acp --yolo` | GOOGLE_API_KEY |
+| `claude-agent-acp` | `claude-agent-acp` | ANTHROPIC_API_KEY |
+| `codex-acp` | `codex-acp` | OPENAI_API_KEY |
+| `openclaw` | `openclaw-acp-shim` | inferred from model |
+| `pi-acp` | `pi-acp` | ANTHROPIC_API_KEY |
+
+## Adding a Custom Agent
+
+Any ACP-native agent works. Create `agent.toml`:
+
+```toml
+name = "my-agent"
+launch_cmd = "my-agent --acp"
+install_cmd = "npm install -g my-agent"
+requires_env = ["MY_API_KEY"]
+```
+
+## Development
+
+```bash
+uv venv -p 3.12 .venv && uv pip install -e ".[dev]"
+.venv/bin/python -m pytest tests/       # 580+ unit tests
+.venv/bin/ty check src/                 # type check
+```

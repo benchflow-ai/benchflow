@@ -1,0 +1,23 @@
+task,condition,reward,tools,error
+energy-ac-optimal-power-flow,baseline,0.0,35,
+energy-ac-optimal-power-flow,byos,0.0,4,Process closed stdout (rc=255)
+energy-market-pricing,baseline,0.0,23,Process closed stdout (rc=None)
+energy-market-pricing,byos,0.0,38,
+exceltable-in-ppt,baseline,1.0,19,
+exceltable-in-ppt,byos,0.0,8,ACP error 400: The input token count exceeds the maximum number of tokens allowed 1048576.
+fix-build-google-auto,baseline,0.0,60,Process closed stdout (rc=None)
+fix-build-google-auto,byos,0.0,114,
+flood-risk-analysis,baseline,1.0,13,
+flood-risk-analysis,byos,1.0,27,
+glm-lake-mendota,baseline,0.0,11,
+glm-lake-mendota,byos,0.0,23,
+organize-messy-files,baseline,0.0,4,
+organize-messy-files,byos,0.0,8,ACP error 400: The input token count exceeds the maximum number of tokens allowed 1048576.
+quantum-numerical-simulation,baseline,0.0,14,
+quantum-numerical-simulation,byos,0.0,25,
+shock-analysis-supply,baseline,0.0,8,
+shock-analysis-supply,byos,0.0,8,Process closed stdout (rc=None)
+video-filler-word-remover,baseline,0.0,0,"Failed to create sandbox: Disk request 15GB exceeds maximum allowed per sandbox (10GB).
+Need higher resource limits per-sandbox? Contact us at support@daytona.io and let us know about your use case."
+video-filler-word-remover,byos,0.0,0,"Failed to create sandbox: Disk request 15GB exceeds maximum allowed per sandbox (10GB).
+Need higher resource limits per-sandbox? Contact us at support@daytona.io and let us know about your use case."

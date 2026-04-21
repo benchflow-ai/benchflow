@@ -282,7 +282,7 @@ AGENTS: dict[str, AgentConfig] = {
             "npm install -g @google/gemini-cli@latest >/dev/null 2>&1 ) && "
             "command -v gemini >/dev/null 2>&1"
         ),
-        launch_cmd="gemini --acp",
+        launch_cmd="gemini --acp --yolo",
         protocol="acp",
         requires_env=["GOOGLE_API_KEY"],
         # api_protocol intentionally empty: Gemini speaks Google's native
@@ -307,6 +307,24 @@ AGENTS: dict[str, AgentConfig] = {
                 ),
             ],
         ),
+    ),
+    "openhands": AgentConfig(
+        name="openhands",
+        description="OpenHands agent via ACP (multi-model, Python-based)",
+        skill_paths=[],
+        install_cmd=(
+            "( command -v openhands >/dev/null 2>&1 || "
+            "pip install openhands >/dev/null 2>&1 ) && "
+            "command -v openhands >/dev/null 2>&1"
+        ),
+        launch_cmd="openhands acp --always-approve --override-with-envs",
+        protocol="acp",
+        requires_env=["LLM_API_KEY"],
+        api_protocol="",
+        env_mapping={
+            "BENCHFLOW_PROVIDER_BASE_URL": "LLM_BASE_URL",
+            "BENCHFLOW_PROVIDER_API_KEY": "LLM_API_KEY",
+        },
     ),
 }
 
@@ -379,6 +397,71 @@ def infer_env_key_for_model(model: str) -> str | None:
     if "claude" in m or "haiku" in m or "sonnet" in m or "opus" in m:
         return "ANTHROPIC_API_KEY"
     return None
+
+
+AGENT_ALIASES: dict[str, str] = {
+    "claude": "claude-agent-acp",
+    "codex": "codex-acp",
+    "gemini": "gemini",
+    "pi": "pi-acp",
+    "openclaw": "openclaw",
+    "openhands": "openhands",
+    "oh": "openhands",
+}
+
+VALID_PROTOCOLS = {"acp", "harbor"}
+
+
+def parse_agent_spec(spec: str) -> tuple[str, str]:
+    """Parse an agent spec like 'acp/claude-agent-acp' or 'claude'.
+
+    Returns (protocol, agent_name) with alias resolution.
+    Bare names default to 'acp' protocol.
+    """
+    if "/" in spec:
+        protocol, name = spec.split("/", 1)
+    else:
+        protocol, name = "acp", spec
+
+    name = AGENT_ALIASES.get(name, name)
+    return protocol, name
+
+
+def resolve_agent(spec: str) -> AgentConfig:
+    """Resolve an agent spec to an AgentConfig.
+
+    Supports: bare name, alias, protocol/name.
+    Raises KeyError with suggestions for unknown agents.
+    """
+    protocol, name = parse_agent_spec(spec)
+
+    if protocol not in VALID_PROTOCOLS:
+        raise KeyError(
+            f"Unknown protocol: {protocol!r}. Valid: {', '.join(sorted(VALID_PROTOCOLS))}"
+        )
+
+    if protocol == "harbor":
+        return AgentConfig(
+            name=name,
+            install_cmd="",
+            launch_cmd="",
+            protocol="harbor",
+            requires_env=[],
+            description=f"Harbor agent: {name}",
+        )
+
+    if name in AGENTS:
+        return AGENTS[name]
+
+    # Fuzzy suggestion
+    from difflib import get_close_matches
+
+    close = get_close_matches(name, list(AGENTS.keys()), n=1, cutoff=0.6)
+    if close:
+        raise KeyError(f"Unknown agent: {name!r}. Did you mean: {close[0]!r}?")
+    raise KeyError(
+        f"Unknown agent: {name!r}. Available: {', '.join(sorted(AGENTS.keys()))}"
+    )
 
 
 def get_agent(name: str) -> tuple[AgentConfig, str]:

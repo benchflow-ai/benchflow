@@ -33,11 +33,15 @@ def auto_inherit_env(agent_env: dict[str, str]) -> None:
 
     keys = {
         "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "CLAUDE_CODE_OAUTH_TOKEN",
         "OPENAI_API_KEY",
         "GOOGLE_API_KEY",
         "GEMINI_API_KEY",
         "GOOGLE_CLOUD_PROJECT",
         "GOOGLE_CLOUD_LOCATION",
+        "LLM_API_KEY",
+        "LLM_BASE_URL",
     }
     for cfg in PROVIDERS.values():
         if cfg.auth_env:
@@ -50,6 +54,8 @@ def auto_inherit_env(agent_env: dict[str, str]) -> None:
     # Mirror GEMINI_API_KEY as GOOGLE_API_KEY (some agents expect one or the other)
     if "GEMINI_API_KEY" in agent_env and "GOOGLE_API_KEY" not in agent_env:
         agent_env["GOOGLE_API_KEY"] = agent_env["GEMINI_API_KEY"]
+    # CLAUDE_CODE_OAUTH_TOKEN is a separate auth path — Claude CLI reads it
+    # directly. Don't map to ANTHROPIC_API_KEY (different auth mechanism).
 
 
 def inject_vertex_credentials(agent_env: dict[str, str], model: str) -> None:
@@ -145,7 +151,9 @@ def resolve_agent_env(
         from benchflow.agents.registry import infer_env_key_for_model
 
         required_key = infer_env_key_for_model(model)
-        if required_key and required_key not in agent_env:
+        # CLAUDE_CODE_OAUTH_TOKEN is an alternative auth path for Claude agents
+        has_oauth = "CLAUDE_CODE_OAUTH_TOKEN" in agent_env or "ANTHROPIC_AUTH_TOKEN" in agent_env
+        if required_key and required_key not in agent_env and not has_oauth:
             if check_subscription_auth(agent, required_key):
                 agent_env["_BENCHFLOW_SUBSCRIPTION_AUTH"] = "1"
                 logger.info(

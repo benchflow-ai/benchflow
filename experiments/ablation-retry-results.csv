@@ -1,0 +1,78 @@
+benchmark,task,condition,model,backend,rounds,reward,wall_sec,tool_calls,error
+tb2,chess-best-move,reviewer+spec,gemini-3.1-flash-lite-preview,daytona,1,0.0,83,19,
+tb2,chess-best-move,reviewer,gemini-3.1-flash-lite-preview,daytona,1,0.0,91,22,
+tb2,build-pmars,reviewer,gemini-3.1-flash-lite-preview,daytona,1,0.0,110,50,
+tb2,code-from-image,reviewer+spec,gemini-3.1-flash-lite-preview,daytona,1,1.0,114,39,
+tb2,circuit-fibsqrt,reviewer,gemini-3.1-flash-lite-preview,daytona,1,0.0,120,57,
+tb2,feal-differential-cryptanalysis,reviewer+spec,gemini-3.1-flash-lite-preview,daytona,1,0.0,4,0,Process closed stdout (rc=None)
+tb2,build-pmars,reviewer+spec,gemini-3.1-flash-lite-preview,daytona,1,0.0,125,57,
+tb2,db-wal-recovery,reviewer,gemini-3.1-flash-lite-preview,daytona,1,0.0,127,0,ACP error 400: The input token count exceeds the maximum number of tokens allowed 1048576.
+tb2,dna-assembly,reviewer+spec,gemini-3.1-flash-lite-preview,daytona,1,0.0,61,13,
+tb2,fix-ocaml-gc,reviewer,gemini-3.1-flash-lite-preview,daytona,1,0.0,1,0,Process closed stdout (rc=None)
+tb2,fix-ocaml-gc,reviewer+spec,gemini-3.1-flash-lite-preview,daytona,1,0.0,2,0,Process closed stdout (rc=None)
+tb2,git-multibranch,reviewer,gemini-3.1-flash-lite-preview,daytona,1,0.0,1,0,Process closed stdout (rc=None)
+tb2,dna-assembly,reviewer,gemini-3.1-flash-lite-preview,daytona,1,0.0,80,18,
+tb2,build-pov-ray,reviewer,gemini-3.1-flash-lite-preview,daytona,1,0.0,217,68,
+tb2,extract-elf,reviewer+spec,gemini-3.1-flash-lite-preview,daytona,1,0.0,136,47,
+tb2,hf-model-inference,reviewer,gemini-3.1-flash-lite-preview,daytona,1,0.0,95,18,
+tb2,git-multibranch,reviewer+spec,gemini-3.1-flash-lite-preview,daytona,1,0.0,107,32,
+tb2,build-cython-ext,reviewer,gemini-3.1-flash-lite-preview,daytona,1,0.0,270,121,
+tb2,count-dataset-tokens,reviewer+spec,gemini-3.1-flash-lite-preview,daytona,1,0.0,285,40,
+tb2,dna-insert,reviewer,gemini-3.1-flash-lite-preview,daytona,1,0.0,182,31,
+tb2,filter-js-from-html,reviewer,gemini-3.1-flash-lite-preview,daytona,1,0.0,179,10,
+tb2,kv-store-grpc,reviewer+spec,gemini-3.1-flash-lite-preview,daytona,1,0.0,94,26,
+tb2,crack-7z-hash,baseline,gemini-3.1-flash-lite-preview,daytona,0,0.0,317,95,
+tb2,make-doom-for-mips,reviewer,gemini-3.1-flash-lite-preview,daytona,1,0.0,3,0,Process closed stdout (rc=None)
+tb2,count-dataset-tokens,reviewer,gemini-3.1-flash-lite-preview,daytona,1,0.0,348,58,
+tb2,log-summary-date-ranges,reviewer+spec,gemini-3.1-flash-lite-preview,daytona,1,0.0,87,20,
+tb2,mailman,reviewer,gemini-3.1-flash-lite-preview,daytona,1,0.0,80,29,
+tb2,log-summary-date-ranges,reviewer,gemini-3.1-flash-lite-preview,daytona,1,1.0,108,50,
+tb2,fix-code-vulnerability,reviewer,gemini-3.1-flash-lite-preview,daytona,1,1.0,274,103,
+tb2,mailman,reviewer+spec,gemini-3.1-flash-lite-preview,daytona,1,0.0,115,41,
+tb2,llm-inference-batching-scheduler,reviewer,gemini-3.1-flash-lite-preview,daytona,1,0.0,180,49,
+tb2,modernize-scientific-stack,reviewer+spec,gemini-3.1-flash-lite-preview,daytona,1,1.0,76,28,
+tb2,nginx-request-logging,reviewer,gemini-3.1-flash-lite-preview,daytona,1,0.0,3,0,Process closed stdout (rc=None)
+tb2,large-scale-text-editing,baseline,gemini-3.1-flash-lite-preview,daytona,0,0.0,207,12,
+tb2,mteb-retrieve,reviewer+spec,gemini-3.1-flash-lite-preview,daytona,1,0.0,95,15,Process closed stdout (rc=None)
+tb2,multi-source-data-merger,reviewer,gemini-3.1-flash-lite-preview,daytona,1,0.0,71,15,Process closed stdout (rc=None)
+tb2,multi-source-data-merger,reviewer+spec,gemini-3.1-flash-lite-preview,daytona,1,0.0,53,5,Process closed stdout (rc=None)
+tb2,mteb-retrieve,reviewer,gemini-3.1-flash-lite-preview,daytona,1,0.0,100,14,Process closed stdout (rc=None)
+tb2,large-scale-text-editing,reviewer,gemini-3.1-flash-lite-preview,daytona,1,0.0,214,0,Process closed stdout (rc=None)
+tb2,merge-diff-arc-agi-task,reviewer,gemini-3.1-flash-lite-preview,daytona,1,0.0,126,23,Process closed stdout (rc=None)
+tb2,custom-memory-heap-crash,reviewer,gemini-3.1-flash-lite-preview,daytona,1,0.0,474,55,Process closed stdout (rc=None)
+tb2,db-wal-recovery,reviewer+spec,gemini-3.1-flash-lite-preview,daytona,1,0.0,474,0,Process closed stdout (rc=None)
+tb2,feal-linear-cryptanalysis,reviewer,gemini-3.1-flash-lite-preview,daytona,1,0.0,349,0,Process closed stdout (rc=None)
+tb2,crack-7z-hash,reviewer+spec,gemini-3.1-flash-lite-preview,daytona,1,0.0,474,0,Process closed stdout (rc=255)
+tb2,crack-7z-hash,reviewer,gemini-3.1-flash-lite-preview,daytona,1,0.0,474,61,Process closed stdout (rc=None)
+tb2,password-recovery,baseline,gemini-3.1-flash-lite-preview,daytona,0,0.0,20,0,Failed to get session command: not found: sandbox container not found: not found: failed to inspect sandbox container 819a9557-c137-431d-a24f-d4d1d75e1d6e: Error response from daemon: No such container: 819a9557-c137-431d-a24f-d4d1d75e1d6e
+tb2,overfull-hbox,reviewer,gemini-3.1-flash-lite-preview,daytona,1,0.0,27,0,Failed to get session command: not found: sandbox container not found: not found: failed to inspect 
+tb2,nginx-request-logging,reviewer+spec,gemini-3.1-flash-lite-preview,daytona,1,0.0,28,0,Failed to get session command: not found: sandbox container not found: not found: failed to inspect 
+tb2,make-doom-for-mips,baseline,gemini-3.1-flash-lite-preview,daytona,0,0.0,168,46,
+tb2,make-doom-for-mips,reviewer+spec,gemini-3.1-flash-lite-preview,daytona,1,0.0,158,65,
+tb2,prove-plus-comm,reviewer,gemini-3.1-flash-lite-preview,daytona,1,0.0,109,0,ACP error 400: The input token count exceeds the maximum number of tokens allowed 1048576.
+tb2,path-tracing,reviewer,gemini-3.1-flash-lite-preview,daytona,1,0.0,156,66,
+tb2,reshard-c4-data,reviewer,gemini-3.1-flash-lite-preview,daytona,1,0.0,153,40,
+tb2,sqlite-with-gcov,reviewer+spec,gemini-3.1-flash-lite-preview,daytona,1,0.0,159,65,
+tb2,polyglot-c-py,reviewer,gemini-3.1-flash-lite-preview,daytona,1,0.0,168,85,
+tb2,path-tracing,reviewer+spec,gemini-3.1-flash-lite-preview,daytona,1,0.0,184,68,
+tb2,tune-mjcf,reviewer,gemini-3.1-flash-lite-preview,daytona,1,0.0,1,0,Process closed stdout (rc=None)
+tb2,tune-mjcf,reviewer+spec,gemini-3.1-flash-lite-preview,daytona,1,0.0,0,0,Process closed stdout (rc=None)
+tb2,sam-cell-seg,reviewer,gemini-3.1-flash-lite-preview,daytona,1,0.0,182,12,
+tb2,torch-tensor-parallelism,reviewer+spec,gemini-3.1-flash-lite-preview,daytona,1,0.0,144,8,
+tb2,torch-tensor-parallelism,reviewer,gemini-3.1-flash-lite-preview,daytona,1,0.0,146,11,
+tb2,torch-pipeline-parallelism,reviewer,gemini-3.1-flash-lite-preview,daytona,1,0.0,204,12,
+tb2,password-recovery,reviewer,gemini-3.1-flash-lite-preview,daytona,1,0.0,339,89,
+tb2,regex-chess,reviewer,gemini-3.1-flash-lite-preview,daytona,1,0.0,384,82,
+tb2,winning-avg-corewars,reviewer,gemini-3.1-flash-lite-preview,daytona,1,0.0,128,62,
+tb2,winning-avg-corewars,reviewer+spec,gemini-3.1-flash-lite-preview,daytona,1,0.0,181,49,
+tb2,qemu-startup,baseline,gemini-3.1-flash-lite-preview,daytona,0,0.0,505,13,
+tb2,qemu-startup,reviewer+spec,gemini-3.1-flash-lite-preview,daytona,1,0.0,592,26,
+tb2,pytorch-model-recovery,reviewer+spec,gemini-3.1-flash-lite-preview,daytona,1,0.0,633,0,
+tb2,pytorch-model-recovery,reviewer,gemini-3.1-flash-lite-preview,daytona,1,0.0,634,0,
+tb2,query-optimize,reviewer+spec,gemini-3.1-flash-lite-preview,daytona,1,0.0,669,13,
+tb2,rstan-to-pystan,reviewer+spec,gemini-3.1-flash-lite-preview,daytona,1,0.0,725,39,
+tb2,train-fasttext,reviewer,gemini-3.1-flash-lite-preview,daytona,1,0.0,622,0,
+tb2,train-fasttext,reviewer+spec,gemini-3.1-flash-lite-preview,daytona,1,0.0,631,0,
+tb2,vulnerable-secret,reviewer,gemini-3.1-flash-lite-preview,daytona,1,0.0,700,38,Process closed stdout (rc=None)
+tb2,vulnerable-secret,reviewer+spec,gemini-3.1-flash-lite-preview,daytona,1,0.0,700,95,Process closed stdout (rc=None)
+tb2,pytorch-model-recovery,baseline,gemini-3.1-flash-lite-preview,daytona,0,0.0,888,11,Process closed stdout (rc=None)

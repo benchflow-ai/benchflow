@@ -1,0 +1,40 @@
+[
+  {
+    "agent": "claude-agent-acp",
+    "model": "claude-haiku-4-5-20251001",
+    "passed": 1,
+    "total": 1,
+    "errors": 0,
+    "elapsed_sec": 65.6,
+    "status": "GREEN"
+  },
+  {
+    "agent": "gemini",
+    "model": "gemini-3.1-flash-lite-preview",
+    "passed": 1,
+    "total": 1,
+    "errors": 0,
+    "elapsed_sec": 46.6,
+    "status": "GREEN"
+  },
+  {
+    "agent": "codex-acp",
+    "model": "gpt-5-nano",
+    "passed": 0,
+    "total": 1,
+    "errors": 1,
+    "elapsed_sec": 130.6,
+    "status": "EXPERIMENTAL",
+    "failure_mode": "agent binary bug — ACP error -32603 (Internal error) on both gpt-4.1-mini and gpt-5-nano, 4 attempts total"
+  },
+  {
+    "agent": "pi-acp",
+    "status": "EXPERIMENTAL",
+    "failure_mode": "no subscription auth configured; requires valid ANTHROPIC_API_KEY not available in this env"
+  },
+  {
+    "agent": "openclaw",
+    "status": "EXPERIMENTAL",
+    "failure_mode": "not installed (needs npm install); model routing untested"
+  }
+]

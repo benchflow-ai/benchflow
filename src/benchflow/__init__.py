@@ -45,7 +45,20 @@ from benchflow.environments import (
 from benchflow.job import Job, JobConfig, JobResult, RetryConfig
 from benchflow.metrics import BenchmarkMetrics, collect_metrics
 from benchflow.models import AgentInstallError, AgentTimeoutError, RunResult
+from benchflow.runtime import (
+    Agent,
+    Environment,
+    Runtime,
+    RuntimeConfig,
+    RuntimeResult,
+    run,  # bf.run(agent, env) — the primary 0.3 API
+)
+from benchflow._scene import MailboxTransport, Message, MessageTransport, Role, Scene
+from benchflow._snapshot import list_snapshots, restore, snapshot
 from benchflow.sdk import SDK
+from benchflow.trial import Trial, TrialConfig
+from benchflow.trial import Role as TrialRole, Scene as TrialScene, Turn
+from benchflow.trial_yaml import trial_config_from_yaml
 from benchflow.skills import SkillInfo, discover_skills, install_skill, parse_skill
 from benchflow.trajectories.otel import OTelCollector
 from benchflow.trajectories.proxy import TrajectoryProxy
@@ -63,7 +76,6 @@ __all__ = [
     "ExecResult",
     "Task",
     "TaskConfig",
-    "Trial",
     "Verifier",
     "VerifierResult",
     # ACP
@@ -88,7 +100,30 @@ __all__ = [
     "AgentInstallError",
     "AgentTimeoutError",
     "RunResult",
-    # SDK
+    # Runtime (0.3 primary API)
+    "Agent",
+    "Environment",
+    "Runtime",
+    "RuntimeConfig",
+    "RuntimeResult",
+    "run",
+    # Multi-agent scene
+    "Scene",
+    "Role",
+    "Message",
+    "MessageTransport",
+    "MailboxTransport",
+    # Env snapshots
+    "snapshot",
+    "restore",
+    "list_snapshots",
+    # Trial (decomposed lifecycle)
+    "Trial",
+    "TrialConfig",
+    "TrialRole",
+    "TrialScene",
+    "Turn",
+    # SDK (backwards compat)
     "SDK",
     # Environments / dep staging
     "SERVICES",

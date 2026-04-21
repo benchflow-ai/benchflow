@@ -1,0 +1,6 @@
+task,condition,reward,tools,error
+exceltable-in-ppt,skill-creator,1.0,56,
+flood-risk-analysis,skill-creator,1.0,19,
+organize-messy-files,skill-creator,0.0,40,
+glm-lake-mendota,skill-creator,0.0,49,
+quantum-numerical-simulation,skill-creator,0.0,15,Process closed stdout (rc=None)
