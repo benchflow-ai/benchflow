@@ -29,27 +29,24 @@ import pytest
 from typer.testing import CliRunner
 
 
-class TestOrphanRemoval:
-    """src/benchflow/cli/eval.py was orphaned (never imported into the live CLI).
+class TestEvalModuleNotWiredIntoCLI:
+    """src/benchflow/cli/eval.py exists but is NOT wired into the live CLI.
 
-    Deletion was safe because nothing wired it up. These tests make sure
-    the orphan stays gone — re-introducing it as a parallel `eval_create`
-    is what caused PR #173 to land its fix in dead code.
+    The live `bench eval create` dispatches to cli/main.py:eval_create.
+    cli/eval.py is a standalone module (with its own resolver logic and tests)
+    but must not be imported by the CLI entry-point code — doing so is what
+    caused PR #173 to land its fix in dead code.
     """
 
-    def test_cli_eval_module_is_gone(self):
-        with pytest.raises(ModuleNotFoundError):
-            importlib.import_module("benchflow.cli.eval")
-
-    def test_no_source_file_imports_the_orphan(self):
-        """Catch any future import of `benchflow.cli.eval` from src/."""
-        src = Path(__file__).resolve().parent.parent / "src" / "benchflow"
-        offenders = [
-            p
-            for p in src.rglob("*.py")
-            if "benchflow.cli.eval" in p.read_text()
-        ]
-        assert not offenders, f"Orphan import re-introduced in: {offenders}"
+    def test_cli_main_does_not_import_cli_eval(self):
+        """cli/main.py must not import from cli/eval — they are separate."""
+        main_py = (
+            Path(__file__).resolve().parent.parent
+            / "src" / "benchflow" / "cli" / "main.py"
+        )
+        text = main_py.read_text()
+        assert "from benchflow.cli.eval" not in text
+        assert "import benchflow.cli.eval" not in text
 
 
 class TestEvalCreateRouting:
