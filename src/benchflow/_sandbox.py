@@ -1,7 +1,7 @@
 """Sandbox user setup, path lockdown, and verifier hardening.
 
 Owns the "agent runs as non-root" lifecycle:
-    - Creating the sandbox user and copying root's tooling into its home
+    - Creating the sandbox user and preparing minimal home state it needs
     - Building the privilege-drop wrapper (setpriv / su) for agent launch
     - Locking down solution/test paths so the sandbox user cannot read them
     - Hardening the environment before the verifier runs
@@ -100,6 +100,20 @@ def build_priv_drop_cmd(agent_launch: str, sandbox_user: str) -> str:
     )
 
 
+def _legacy_root_tool_link_cmd(source: str, dest: str) -> str:
+    """Link legacy root-only tool dirs into the sandbox home when needed."""
+    src = shlex.quote(source)
+    dst = shlex.quote(dest)
+    parent = shlex.quote(str(Path(dest).parent))
+    return (
+        f"if [ -e {src} ] && [ ! -L {dst} ]; then "
+        f"mkdir -p {parent} && "
+        f"rmdir {dst} 2>/dev/null || true; "
+        f"[ -e {dst} ] || ln -s {src} {dst}; "
+        "fi"
+    )
+
+
 async def setup_sandbox_user(
     env, sandbox_user: str, workspace: str, *, timeout_sec: int = 120
 ) -> str:
@@ -109,18 +123,17 @@ async def setup_sandbox_user(
             f"Invalid sandbox_user: {sandbox_user!r} (must be alphanumeric)"
         )
     logger.info(f"Setting up sandbox user: {sandbox_user}")
+    home = f"/home/{sandbox_user}"
+    home_dirs = sorted(d for d in get_sandbox_home_dirs() if d != ".local")
     await env.exec(
         f"id -u {sandbox_user} >/dev/null 2>&1 || "
         f"useradd -m -s /bin/bash {sandbox_user} && "
-        f"mkdir -p /home/{sandbox_user}/.local/bin && "
-        "if [ -d /root/.local/bin ]; then "
-        f"cp -aL /root/.local/bin/. /home/{sandbox_user}/.local/bin/ 2>/dev/null || true; fi && "
-        "if [ -d /root/.nvm ]; then "
-        f"cp -a /root/.nvm/. /home/{sandbox_user}/.nvm/ 2>/dev/null || true; fi && "
-        f"for d in {' '.join(sorted(get_sandbox_home_dirs()))}; do "
-        f"if [ -d /root/$d ]; then mkdir -p /home/{sandbox_user}/$d && "
-        f"cp -a /root/$d/. /home/{sandbox_user}/$d/ 2>/dev/null || true; fi; done && "
-        f"chown -R {sandbox_user}:{sandbox_user} /home/{sandbox_user} && "
+        f"{_legacy_root_tool_link_cmd('/root/.local/bin', f'{home}/.local/bin')} && "
+        f"{_legacy_root_tool_link_cmd('/root/.nvm', f'{home}/.nvm')} && "
+        f"for d in {' '.join(home_dirs)}; do "
+        f"if [ -d /root/$d ]; then mkdir -p {home}/$d && "
+        f"cp -a /root/$d/. {home}/$d/ 2>/dev/null || true; fi; done && "
+        f"chown -R {sandbox_user}:{sandbox_user} {home} && "
         f"chown -R {sandbox_user}:{sandbox_user} {shlex.quote(workspace)}",
         timeout_sec=timeout_sec,
     )

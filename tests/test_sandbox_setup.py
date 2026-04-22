@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from benchflow._sandbox import setup_sandbox_user
+from benchflow.agents.registry import get_sandbox_home_dirs
 
 
 async def _run_setup_sandbox_user(*, sandbox_user: str = "agent", workspace: str = "/app"):
@@ -19,12 +20,19 @@ async def _run_setup_sandbox_user(*, sandbox_user: str = "agent", workspace: str
     return env.exec.call_args.args[0], env.exec.call_args.kwargs
 
 
-def _assert_explicit_symlink(cmd: str, *, source: str, dest: str) -> None:
-    """Heavy tool dirs must use an explicit symlink compatibility path."""
+def _assert_conditional_legacy_symlink(cmd: str, *, source: str, dest: str) -> None:
+    """Legacy tool dirs should link only when a root-only install exists."""
     assert re.search(
-        rf"ln -s(?:f|[a-zA-Z-])* [\"']?{re.escape(source)}[\"']? [\"']?{re.escape(dest)}[\"']?",
+        rf"if \[ -e [\"']?{re.escape(source)}[\"']? \].*ln -s(?:f|[a-zA-Z-])* [\"']?{re.escape(source)}[\"']? [\"']?{re.escape(dest)}[\"']?.*fi",
         cmd,
     ), f"expected explicit symlink from {source} to {dest} in setup command: {cmd}"
+
+
+def _get_copy_loop_dirs(cmd: str) -> list[str]:
+    """Extract the general home-dir copy loop payload from the shell command."""
+    match = re.search(r"for d in (?P<dirs>.*?); do", cmd)
+    assert match, f"expected general home-dir copy loop in setup command: {cmd}"
+    return match.group("dirs").split()
 
 
 class TestSetupSandboxUser:
@@ -43,20 +51,36 @@ class TestSetupSandboxUser:
         cmd, _ = await _run_setup_sandbox_user()
 
         assert "id -u agent >/dev/null 2>&1 || useradd -m -s /bin/bash agent" in cmd
-        assert "mkdir -p /home/agent/.local/bin" in cmd
+        assert "mkdir -p /home/agent/.local/bin" not in cmd
         assert "chown -R agent:agent /home/agent" in cmd
         assert f"chown -R agent:agent {shlex.quote('/app')}" in cmd
 
     @pytest.mark.asyncio
     async def test_setup_command_keeps_heavy_root_tool_dirs_on_shared_paths(self):
-        """Heavy root-owned tool dirs should use explicit symlinks, not duplication."""
+        """Legacy root-only tool dirs should use conditional symlinks, not duplication."""
         cmd, _ = await _run_setup_sandbox_user()
 
-        _assert_explicit_symlink(
+        _assert_conditional_legacy_symlink(
             cmd,
             source="/root/.local/bin",
             dest="/home/agent/.local/bin",
         )
-        _assert_explicit_symlink(cmd, source="/root/.nvm", dest="/home/agent/.nvm")
+        _assert_conditional_legacy_symlink(
+            cmd, source="/root/.nvm", dest="/home/agent/.nvm"
+        )
         assert "cp -aL /root/.local/bin/. /home/agent/.local/bin/" not in cmd
         assert "cp -a /root/.nvm/. /home/agent/.nvm/" not in cmd
+
+    @pytest.mark.asyncio
+    async def test_setup_command_copy_loop_excludes_local_dir(self):
+        """General home-dir copying should narrow to small config/auth dirs only."""
+        cmd, _ = await _run_setup_sandbox_user()
+
+        copy_loop_dirs = _get_copy_loop_dirs(cmd)
+
+        assert copy_loop_dirs == sorted(
+            d for d in get_sandbox_home_dirs() if d != ".local"
+        )
+        assert ".local" not in copy_loop_dirs
+        assert "mkdir -p /home/agent/$d" in cmd
+        assert "cp -a /root/$d/. /home/agent/$d/ 2>/dev/null || true" in cmd
