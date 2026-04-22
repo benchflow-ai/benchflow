@@ -38,6 +38,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import shlex
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -617,10 +618,11 @@ class Trial:
         multi_role = len(scene.roles) > 1
 
         if multi_role:
-            await self._env.exec(
-                f"rm -rf {self._OUTBOX_DIR} && mkdir -p {self._OUTBOX_DIR}",
-                timeout_sec=10,
-            )
+            setup_cmd = f"rm -rf {self._OUTBOX_DIR} && mkdir -p {self._OUTBOX_DIR}"
+            if cfg.sandbox_user:
+                user = shlex.quote(cfg.sandbox_user)
+                setup_cmd += f" && chown {user}:{user} {self._OUTBOX_DIR}"
+            await self._env.exec(setup_cmd, timeout_sec=10)
 
         inbox: dict[str, list[str]] = {r.name: [] for r in scene.roles}
 
@@ -670,7 +672,8 @@ class Trial:
         files = [f.strip() for f in (result.stdout or "").strip().splitlines() if f.strip()]
         messages: list[tuple[str, str]] = []
         for fpath in files:
-            cat = await self._env.exec(f"cat {fpath}", timeout_sec=10)
+            quoted = shlex.quote(fpath)
+            cat = await self._env.exec(f"cat {quoted}", timeout_sec=10)
             try:
                 data = json.loads(cat.stdout or "{}")
                 recipient = data.get("to", "")
@@ -680,7 +683,7 @@ class Trial:
                     logger.info(f"[Scene] outbox: {sender} → {recipient}: {content[:80]}")
             except json.JSONDecodeError:
                 logger.warning(f"[Scene] invalid JSON in outbox: {fpath}")
-            await self._env.exec(f"rm -f {fpath}", timeout_sec=10)
+            await self._env.exec(f"rm -f {quoted}", timeout_sec=10)
         return messages
 
     async def connect_as(self, role: Role) -> None:

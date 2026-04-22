@@ -98,7 +98,7 @@ def self_review_scene() -> Scene:
 
 
 async def test_outbox_setup_for_multi_role(coder_reviewer_scene: Scene) -> None:
-    """Multi-role scenes set up /app/.outbox before running turns."""
+    """Multi-role scenes set up /app/.outbox with correct ownership."""
     trial = _make_trial(coder_reviewer_scene)
     prompts_received: list[str] = []
 
@@ -114,6 +114,7 @@ async def test_outbox_setup_for_multi_role(coder_reviewer_scene: Scene) -> None:
 
     outbox_setup = [c for c in trial._env._exec_log if "mkdir -p /app/.outbox" in c]
     assert len(outbox_setup) == 1
+    assert "chown agent:agent /app/.outbox" in outbox_setup[0]
 
 
 async def test_no_outbox_setup_for_single_role(self_review_scene: Scene) -> None:
