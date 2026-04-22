@@ -57,7 +57,9 @@ One interaction region — roles take turns executing prompts.
 # Single-role shortcut
 scene = Scene.single(agent="gemini", model="gemini-3.1-flash-lite-preview")
 
-# Multi-role with turn order
+# Multi-role with turn order (coder-reviewer pattern)
+# Agents communicate via outbox: write /app/.outbox/{recipient}.json
+# Scheduler reads outbox after each turn, injects into next role's prompt
 scene = Scene(
     name="coder-reviewer",
     roles=[
@@ -66,8 +68,9 @@ scene = Scene(
     ],
     turns=[
         Turn("coder"),                    # None prompt = instruction.md
-        Turn("reviewer", "Review..."),
-        Turn("coder", "Fix issues..."),
+        Turn("reviewer", "Review the code. Write feedback to "
+             '/app/.outbox/coder.json as {"to":"coder","content":"..."}'),
+        Turn("coder", "Fix the issues."), # reviewer's feedback auto-injected
     ],
 )
 ```
@@ -124,14 +127,31 @@ Trial.run()
   ├─ install_agent()  — install agent binary, credentials, sandbox user
   ├─ for scene in scenes:
   │    └─ _run_scene(scene)
-  │         ├─ connect_as(role)    — open ACP session for this role
-  │         ├─ execute(prompts)    — send prompts, collect trajectory
-  │         └─ disconnect()        — kill agent process, clean up
+  │         ├─ setup /app/.outbox/ — (multi-role scenes only)
+  │         └─ for turn in scene.turns:
+  │              ├─ read outbox     — inject messages into prompt
+  │              ├─ connect_as(role) — open ACP session for this role
+  │              ├─ execute(prompts) — send prompts, collect trajectory
+  │              └─ disconnect()    — kill agent process, clean up
   ├─ verify()         — run verifier, collect rewards
   └─ cleanup()        — stop sandbox
 ```
 
 Key: `disconnect()` kills the agent process between scenes to prevent context bleed. Each scene gets a fresh agent session.
+
+## Multi-Turn vs Multi-Round
+
+| Pattern | Roles | Turns | Communication | Example |
+|---------|-------|-------|---------------|---------|
+| **Single-turn** | 1 | 1 | — | Baseline benchmark |
+| **Multi-turn** | 1 | 2+ | Same session, sequential prompts | Self-review |
+| **Multi-round** | 2+ | 2+ | Outbox files between roles | Coder + Reviewer |
+
+**Multi-turn** = same agent gets multiple prompts. Use when a second pass catches errors (self-review, iterative refinement). The agent keeps its context across turns.
+
+**Multi-round** = different agents exchange turns. Use when tasks need multiple perspectives (code review, client-advisor). The scheduler reads outbox files and injects messages.
+
+Both use the same API — `TrialConfig` with different `Scene` configurations.
 
 ## Multi-Agent Patterns
 

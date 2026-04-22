@@ -36,6 +36,7 @@ Phases can be composed for multi-agent flows::
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -598,20 +599,36 @@ class Trial:
 
     # ── Scene execution ──
 
+    _OUTBOX_DIR = "/app/.outbox"
+
     async def _run_scene(self, scene: Scene) -> None:
-        """Execute one scene: for each turn, connect as the turn's role, execute, disconnect."""
+        """Execute one scene: for each turn, connect as the turn's role, execute, disconnect.
+
+        For multi-role scenes, agents communicate via outbox files:
+        an agent writes ``/app/.outbox/{recipient}.json`` with
+        ``{"to": "role_name", "content": "..."}`` and the scheduler
+        injects received messages into the next turn's prompt.
+        """
         cfg = self._config
         logger.info(f"[Scene] {scene.name} — {len(scene.turns)} turns, {len(scene.roles)} roles")
 
         role_map = {r.name: r for r in scene.roles}
         current_role: str | None = None
+        multi_role = len(scene.roles) > 1
+
+        if multi_role:
+            await self._env.exec(
+                f"rm -rf {self._OUTBOX_DIR} && mkdir -p {self._OUTBOX_DIR}",
+                timeout_sec=10,
+            )
+
+        inbox: dict[str, list[str]] = {r.name: [] for r in scene.roles}
 
         for i, turn in enumerate(scene.turns):
             role = role_map.get(turn.role)
             if not role:
                 raise ValueError(f"Turn references unknown role {turn.role!r}")
 
-            # Reconnect if role changed or first turn
             if current_role != turn.role:
                 if current_role is not None:
                     await self.disconnect()
@@ -619,15 +636,52 @@ class Trial:
                 current_role = turn.role
 
             if turn.prompt:
-                prompts = [turn.prompt]
+                base_prompt = turn.prompt
             elif self._resolved_prompts:
-                prompts = [self._resolved_prompts[0]]
+                base_prompt = self._resolved_prompts[0]
             else:
-                prompts = ["Solve the task described in /app/instruction.md"]
+                base_prompt = "Solve the task described in /app/instruction.md"
+
+            pending = inbox.get(turn.role, [])
+            if pending:
+                parts = [base_prompt, "\n---\nMessages from other agents:\n"]
+                parts.extend(pending)
+                prompts = ["\n".join(parts)]
+                inbox[turn.role] = []
+            else:
+                prompts = [base_prompt]
+
             await self.execute(prompts=prompts)
+
+            if multi_role:
+                for recipient, content in await self._read_scene_outbox(current_role):
+                    inbox.setdefault(recipient, []).append(
+                        f"**From {current_role}:** {content}"
+                    )
 
         if current_role is not None:
             await self.disconnect()
+
+    async def _read_scene_outbox(self, sender: str) -> list[tuple[str, str]]:
+        """Read and clear outbox files left by *sender*. Returns [(recipient, content), ...]."""
+        result = await self._env.exec(
+            f"ls {self._OUTBOX_DIR}/*.json 2>/dev/null || true", timeout_sec=10,
+        )
+        files = [f.strip() for f in (result.stdout or "").strip().splitlines() if f.strip()]
+        messages: list[tuple[str, str]] = []
+        for fpath in files:
+            cat = await self._env.exec(f"cat {fpath}", timeout_sec=10)
+            try:
+                data = json.loads(cat.stdout or "{}")
+                recipient = data.get("to", "")
+                content = data.get("content", "")
+                if recipient and content:
+                    messages.append((recipient, content))
+                    logger.info(f"[Scene] outbox: {sender} → {recipient}: {content[:80]}")
+            except json.JSONDecodeError:
+                logger.warning(f"[Scene] invalid JSON in outbox: {fpath}")
+            await self._env.exec(f"rm -f {fpath}", timeout_sec=10)
+        return messages
 
     async def connect_as(self, role: Role) -> None:
         """Open an ACP connection for a specific role."""
