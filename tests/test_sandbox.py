@@ -36,6 +36,11 @@ class TestSandboxDirs:
         dirs = get_sandbox_home_dirs()
         assert ".local" in dirs
 
+    def test_only_includes_top_level_home_dirs(self):
+        """Derived entries stay at $HOME top-level, not nested tool subpaths."""
+        dirs = get_sandbox_home_dirs()
+        assert ".local/bin" not in dirs
+
     def test_new_agent_auto_included(self):
         """Adding an agent with skill_paths=$HOME/.newagent/skills includes .newagent."""
         AGENTS["_test_agent"] = AgentConfig(
