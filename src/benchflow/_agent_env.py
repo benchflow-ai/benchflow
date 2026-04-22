@@ -144,6 +144,7 @@ def resolve_agent_env(
     """Resolve agent environment: auto-inherit keys, provider vars, env_mapping."""
     agent_env = dict(agent_env or {})
     auto_inherit_env(agent_env)
+    agent_cfg = AGENTS.get(agent)
     if model:
         inject_vertex_credentials(agent_env, model)
         resolve_provider_env(agent_env, model, agent)
@@ -151,9 +152,28 @@ def resolve_agent_env(
         from benchflow.agents.registry import infer_env_key_for_model
 
         required_key = infer_env_key_for_model(model)
+        mapped_provider_key = (
+            agent_cfg.env_mapping.get("BENCHFLOW_PROVIDER_API_KEY")
+            if agent_cfg
+            else None
+        )
+        has_agent_native_bridge_key = bool(
+            mapped_provider_key and mapped_provider_key in agent_env
+        )
+        if has_agent_native_bridge_key:
+            # Agent-native credential var can satisfy provider auth checks.
+            agent_env.setdefault(
+                "BENCHFLOW_PROVIDER_API_KEY",
+                agent_env[mapped_provider_key],
+            )
         # CLAUDE_CODE_OAUTH_TOKEN is an alternative auth path for Claude agents
         has_oauth = "CLAUDE_CODE_OAUTH_TOKEN" in agent_env or "ANTHROPIC_AUTH_TOKEN" in agent_env
-        if required_key and required_key not in agent_env and not has_oauth:
+        if (
+            required_key
+            and required_key not in agent_env
+            and not has_oauth
+            and not has_agent_native_bridge_key
+        ):
             if check_subscription_auth(agent, required_key):
                 agent_env["_BENCHFLOW_SUBSCRIPTION_AUTH"] = "1"
                 logger.info(
@@ -181,7 +201,6 @@ def resolve_agent_env(
             )
     else:
         # No model specified — still check subscription auth for required env vars
-        agent_cfg = AGENTS.get(agent)
         if agent_cfg:
             for req_key in agent_cfg.requires_env:
                 if req_key not in agent_env and check_subscription_auth(agent, req_key):

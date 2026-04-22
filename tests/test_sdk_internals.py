@@ -33,6 +33,30 @@ class TestResolveAgentEnv:
         assert "ANTHROPIC_AUTH_TOKEN" in result
         assert result["ANTHROPIC_AUTH_TOKEN"] == "zk-test"
 
+    def test_agent_native_api_key_satisfies_model_check(self, monkeypatch):
+        """Agent-native mapped key (LLM_API_KEY) can satisfy provider auth check."""
+        for key in ("OPENAI_API_KEY", "LLM_API_KEY"):
+            monkeypatch.delenv(key, raising=False)
+        result = self._resolve(
+            agent="openhands",
+            model="openai/gpt-4.1-mini",
+            agent_env={"LLM_API_KEY": "test-llm-key"},
+        )
+        assert result["LLM_API_KEY"] == "test-llm-key"
+        assert result["BENCHFLOW_PROVIDER_API_KEY"] == "test-llm-key"
+
+    def test_provider_bridge_key_alone_does_not_bypass_required_model_key(
+        self, monkeypatch
+    ):
+        """Only mapped agent-native keys can bypass provider-specific key checks."""
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        with pytest.raises(ValueError, match="OPENAI_API_KEY required"):
+            self._resolve(
+                agent="openclaw",
+                model="openai/gpt-4.1-mini",
+                agent_env={"BENCHFLOW_PROVIDER_API_KEY": "x"},
+            )
+
     def test_required_key_missing_raises(self, monkeypatch, tmp_path):
         """Missing required API key raises ValueError when no subscription auth."""
         # Clear any auto-inherited keys from the environment

@@ -317,17 +317,16 @@ AGENTS: dict[str, AgentConfig] = {
             "export DEBIAN_FRONTEND=noninteractive && "
             "export PATH=\"$HOME/.local/bin:$PATH\" && "
             "( command -v openhands >/dev/null 2>&1 || ( "
-            "  ( command -v uv >/dev/null 2>&1 || ( "
-            "    ( command -v curl >/dev/null 2>&1 || "
-            "      (apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null 2>&1) ) && "
-            "    curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null 2>&1 "
-            "  ) ) && "
-            "  uv tool install openhands --python 3.12 >/dev/null 2>&1 "
+            "  ( command -v uv >/dev/null 2>&1 || "
+            "    ( curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null 2>&1 "
+            "      && export PATH=\"$HOME/.local/bin:$PATH\" ) ) && "
+            "  ( uv tool list 2>/dev/null | grep -q '^openhands\\b' || "
+            "    uv tool install openhands --python 3.12 >/dev/null 2>&1 ) "
             ") ) && "
-            # Let sandbox user traverse to the uv-managed Python interpreter
+            # Let sandbox user traverse to uv-managed Python interpreter path.
             "chmod o+x /root /root/.local /root/.local/share "
             "/root/.local/share/uv /root/.local/share/uv/tools 2>/dev/null; "
-            # Seed agent_settings.json so _is_authenticated() passes
+            # Seed config so OpenHands ACP auth check passes before env override.
             "mkdir -p ~/.openhands && "
             "echo '{\"llm\":{\"model\":\"placeholder\",\"api_key\":\"placeholder\"}}' "
             "> ~/.openhands/agent_settings.json && "
