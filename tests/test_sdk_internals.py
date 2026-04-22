@@ -7,6 +7,7 @@ independently testable private methods.
 import json
 from datetime import datetime
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -208,6 +209,7 @@ class TestWriteConfig:
             skills_dir=None,
             sandbox_user=None,
             context_root=None,
+            sandbox_setup_timeout=33,
             timeout=300,
             started_at=datetime(2026, 4, 8, 12, 0),
             agent_env={"ANTHROPIC_API_KEY": "sk-secret", "SOME_VAR": "visible"},
@@ -221,6 +223,7 @@ class TestWriteConfig:
             "skills_dir",
             "sandbox_user",
             "sandbox_locked_paths",
+            "sandbox_setup_timeout",
             "context_root",
             "timeout_sec",
             "started_at",
@@ -232,6 +235,7 @@ class TestWriteConfig:
         assert data["agent"] == "claude-agent-acp"
         assert data["model"] == "claude-haiku-4-5-20251001"
         assert data["environment"] == "docker"
+        assert data["sandbox_setup_timeout"] == 33
         assert data["timeout_sec"] == 300
 
     def test_secrets_filtered(self, tmp_path):
@@ -264,6 +268,41 @@ class TestWriteConfig:
         assert "DB_PASSWORD" not in recorded
         assert "MY_CREDENTIALS" not in recorded
         assert recorded["SAFE_VAR"] == "visible"
+
+
+# ── run wiring ──
+
+
+class TestRunWiring:
+    """Tests for SDK.run() argument forwarding into TrialConfig."""
+
+    @pytest.mark.asyncio
+    async def test_run_forwards_sandbox_setup_timeout_to_trial_config(
+        self, monkeypatch, tmp_path
+    ):
+        from benchflow.models import RunResult
+        from benchflow.sdk import SDK
+
+        seen = {}
+
+        async def fake_create(config):
+            seen["config"] = config
+            trial = AsyncMock()
+            trial.run = AsyncMock(
+                return_value=RunResult(task_name="task-1", rewards={"reward": 1.0})
+            )
+            return trial
+
+        monkeypatch.setattr("benchflow.trial.Trial.create", fake_create)
+
+        result = await SDK().run(
+            task_path=tmp_path,
+            sandbox_setup_timeout=77,
+        )
+
+        assert result.rewards == {"reward": 1.0}
+        assert seen["config"].sandbox_setup_timeout == 77
+        assert seen["config"].task_path == tmp_path
 
 
 # ── _build_result ──
