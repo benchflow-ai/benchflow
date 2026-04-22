@@ -122,6 +122,10 @@ Trial.run()
   ├─ setup()          — resolve config, create env object
   ├─ start()          — spin up sandbox, upload task files, start services
   ├─ install_agent()  — install agent binary, credentials, sandbox user
+  │                    (sandbox user setup: create non-root user, prepare
+  │                     small config/auth dirs, chown the workspace — no
+  │                     recursive copy of /root tool trees; agent binaries
+  │                     must live on shared prefixes like /usr/local/bin)
   ├─ for scene in scenes:
   │    └─ _run_scene(scene)
   │         ├─ connect_as(role)    — open ACP session for this role

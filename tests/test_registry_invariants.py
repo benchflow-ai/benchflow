@@ -76,6 +76,22 @@ def test_agent_collection_invariants(name, cfg):
 
 
 @pytest.mark.parametrize("name,cfg", AGENTS.items(), ids=list(AGENTS.keys()))
+def test_agent_install_cmd_targets_shared_paths(name, cfg):
+    """Installed binaries must land in shared prefixes, not a root-only home.
+
+    setup_sandbox_user() no longer recursively copies /root/.nvm or
+    /root/.local/bin into the sandbox home. If an install_cmd placed its
+    binary there, the sandbox user would silently lose access to the agent.
+    """
+    forbidden_binary_prefixes = ("/root/.nvm/", "/root/.local/bin/", "$HOME/.nvm/")
+    for prefix in forbidden_binary_prefixes:
+        assert prefix not in cfg.install_cmd, (
+            f"{name!r} install_cmd writes under {prefix!r}; use /usr/local/bin "
+            f"or another shared prefix so the sandbox user inherits the tool"
+        )
+
+
+@pytest.mark.parametrize("name,cfg", AGENTS.items(), ids=list(AGENTS.keys()))
 def test_agent_credential_and_subscription_auth(name, cfg):
     """Optional credential_files and subscription_auth structures."""
     for cf in cfg.credential_files:

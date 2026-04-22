@@ -84,3 +84,23 @@ class TestSetupSandboxUser:
         assert ".local" not in copy_loop_dirs
         assert "mkdir -p /home/agent/$d" in cmd
         assert "cp -a /root/$d/. /home/agent/$d/ 2>/dev/null || true" in cmd
+
+    @pytest.mark.asyncio
+    async def test_setup_command_does_not_copy_heavy_tool_trees_into_home(self):
+        """BenchFlow-installed agents must not rely on sandbox-home tool copies.
+
+        Agent binaries are placed in /usr/local/bin by the registered install_cmd
+        values, so setup_sandbox_user() must not bulk-copy heavyweight tool trees
+        (e.g. /root/.nvm, /root/.local/bin) to make them executable for the user.
+        """
+        cmd, _ = await _run_setup_sandbox_user()
+
+        for heavy_source in ("/root/.nvm", "/root/.local/bin"):
+            assert f"cp -a {heavy_source}/." not in cmd
+            assert f"cp -aL {heavy_source}/." not in cmd
+
+        copy_loop_dirs = _get_copy_loop_dirs(cmd)
+        for heavy_dir in (".nvm", ".local"):
+            assert heavy_dir not in copy_loop_dirs, (
+                f"sandbox copy loop must not include heavy tool dir {heavy_dir!r}"
+            )

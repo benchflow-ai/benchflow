@@ -10,16 +10,12 @@ from benchflow.agents.registry import (
 
 
 class TestSandboxDirs:
-    def test_dirs_derived_from_skill_paths(self):
-        """All $HOME skill_paths dirs from AGENTS registry are included."""
+    def test_skill_only_dirs_not_included(self):
+        """Skill-only home dirs should not be copied during sandbox user setup."""
         dirs = get_sandbox_home_dirs()
-        # claude-agent-acp has $HOME/.claude/skills
-        assert ".claude" in dirs
-        # gemini has $HOME/.gemini/skills
-        assert ".gemini" in dirs
-        # pi-acp has $HOME/.pi/agent/skills and $HOME/.agents/skills
-        assert ".pi" in dirs
-        assert ".agents" in dirs
+
+        assert ".pi" not in dirs
+        assert ".agents" not in dirs
 
     def test_credential_file_dirs_included(self):
         """Dirs from credential_files paths are included."""
@@ -46,10 +42,12 @@ class TestSandboxDirs:
     def test_dirs_represent_registry_backed_home_config_or_auth(self):
         """Returned dirs are registry-derived user home config/auth roots."""
         dirs = get_sandbox_home_dirs()
-        assert dirs == {".agents", ".claude", ".codex", ".gemini", ".openclaw", ".pi"}
+        assert {".claude", ".codex", ".gemini", ".openclaw"}.issubset(dirs)
+        assert ".agents" not in dirs
+        assert ".pi" not in dirs
 
-    def test_new_agent_auto_included(self):
-        """Adding an agent with skill_paths=$HOME/.newagent/skills includes .newagent."""
+    def test_new_agent_skill_path_not_auto_included(self):
+        """Skill-only home dirs should not become sandbox copy targets."""
         AGENTS["_test_agent"] = AgentConfig(
             name="_test_agent",
             install_cmd="true",
@@ -58,7 +56,7 @@ class TestSandboxDirs:
         )
         try:
             dirs = get_sandbox_home_dirs()
-            assert ".newagent" in dirs
+            assert ".newagent" not in dirs
         finally:
             del AGENTS["_test_agent"]
 
