@@ -4,14 +4,14 @@ Get a benchmark result in under 5 minutes.
 
 ## Prerequisites
 
-- Python 3.12+
+- Python 3.12+ and [uv](https://docs.astral.sh/uv/)
 - A Daytona API key (`DAYTONA_API_KEY`) for cloud sandboxes
 - An agent API key (e.g. `GEMINI_API_KEY` for Gemini)
 
 ## Install
 
 ```bash
-pip install benchflow==0.3.0a3
+uv tool install benchflow
 ```
 
 ## Run your first evaluation
