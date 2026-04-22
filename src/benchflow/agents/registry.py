@@ -313,17 +313,16 @@ AGENTS: dict[str, AgentConfig] = {
         description="OpenHands agent via ACP (multi-model, Python-based)",
         skill_paths=[],
         install_cmd=(
-            "export DEBIAN_FRONTEND=noninteractive; "
-            "( command -v openhands >/dev/null 2>&1 || ( "
-            "  ( command -v uv >/dev/null 2>&1 || "
-            "    ( command -v curl >/dev/null 2>&1 || "
-            "      (apt-get update -qq && apt-get install -y -qq curl ca-certificates) ) && "
-            "    curl -LsSf https://astral.sh/uv/install.sh | sh && "
-            "    export PATH=\"$HOME/.local/bin:$PATH\" "
-            "  ) && "
-            "  uv tool install openhands --python 3.12 "
-            ") ) >/dev/null 2>&1 && "
+            "export DEBIAN_FRONTEND=noninteractive && "
             "export PATH=\"$HOME/.local/bin:$PATH\" && "
+            "( command -v openhands >/dev/null 2>&1 || ( "
+            "  ( command -v uv >/dev/null 2>&1 || ( "
+            "    ( command -v curl >/dev/null 2>&1 || "
+            "      (apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null 2>&1) ) && "
+            "    curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null 2>&1 "
+            "  ) ) && "
+            "  uv tool install openhands --python 3.12 >/dev/null 2>&1 "
+            ") ) && "
             "command -v openhands >/dev/null 2>&1"
         ),
         launch_cmd="openhands acp --always-approve --override-with-envs",
