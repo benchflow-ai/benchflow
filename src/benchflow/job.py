@@ -168,6 +168,7 @@ class JobConfig:
     skills_dir: str | None = None
     sandbox_user: str | None = "agent"
     sandbox_locked_paths: list[str] | None = None
+    sandbox_setup_timeout: int = 120
     context_root: str | None = None
     exclude_tasks: set[str] = field(default_factory=set)
 
@@ -293,6 +294,7 @@ class Job:
         exclude = set(raw.get("exclude", []))
         sandbox_user = raw.get("sandbox_user", "agent")
         sandbox_locked_paths = raw.get("sandbox_locked_paths")
+        sandbox_setup_timeout = raw.get("sandbox_setup_timeout", 120)
 
         agent_name = raw.get("agent", DEFAULT_AGENT)
         config = JobConfig(
@@ -306,6 +308,7 @@ class Job:
             skills_dir=str(Path(raw["skills_dir"])) if raw.get("skills_dir") else None,
             sandbox_user=sandbox_user,
             sandbox_locked_paths=sandbox_locked_paths,
+            sandbox_setup_timeout=sandbox_setup_timeout,
             exclude_tasks=exclude,
         )
         return cls(tasks_dir=tasks_dir, jobs_dir=jobs_dir, config=config, **kwargs)
@@ -352,6 +355,7 @@ class Job:
         skills_dir = str(Path(skills_dir_raw)) if skills_dir_raw else None
         sandbox_user = raw.get("sandbox_user", "agent")
         sandbox_locked_paths = raw.get("sandbox_locked_paths")
+        sandbox_setup_timeout = raw.get("sandbox_setup_timeout", 120)
 
         config = JobConfig(
             agent=agent_name,
@@ -363,6 +367,7 @@ class Job:
             skills_dir=skills_dir,
             sandbox_user=sandbox_user,
             sandbox_locked_paths=sandbox_locked_paths,
+            sandbox_setup_timeout=sandbox_setup_timeout,
         )
         return cls(tasks_dir=tasks_dir, jobs_dir=jobs_dir, config=config, **kwargs)
 
@@ -423,6 +428,7 @@ class Job:
             skills_dir=cfg.skills_dir,
             sandbox_user=cfg.sandbox_user,
             sandbox_locked_paths=cfg.sandbox_locked_paths,
+            sandbox_setup_timeout=cfg.sandbox_setup_timeout,
             context_root=cfg.context_root,
         )
         trial = await Trial.create(trial_config)
@@ -442,6 +448,7 @@ class Job:
             skills_dir=cfg.skills_dir,
             sandbox_user=cfg.sandbox_user,
             sandbox_locked_paths=cfg.sandbox_locked_paths,
+            sandbox_setup_timeout=cfg.sandbox_setup_timeout,
             context_root=cfg.context_root,
         )
 

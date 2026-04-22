@@ -142,6 +142,7 @@ class RuntimeConfig:
     """Configuration for a Runtime execution."""
 
     sandbox_user: str | None = "agent"
+    sandbox_setup_timeout: int = 120
     max_rounds: int = 10
     snapshot_policy: str = "none"
     reward_stream: bool = True
@@ -263,6 +264,7 @@ class Runtime:
             environment=self.env.backend,
             sandbox_user=config.sandbox_user,
             sandbox_locked_paths=config.sandbox_locked_paths,
+            sandbox_setup_timeout=config.sandbox_setup_timeout,
             jobs_dir=config.jobs_dir,
             context_root=config.context_root,
             pre_agent_hooks=config.pre_agent_hooks,
@@ -339,6 +341,7 @@ async def run(
             environment=env if isinstance(env, str) else "docker",
             sandbox_user=rc.sandbox_user,
             sandbox_locked_paths=rc.sandbox_locked_paths,
+            sandbox_setup_timeout=rc.sandbox_setup_timeout,
             jobs_dir=rc.jobs_dir,
             context_root=rc.context_root,
             pre_agent_hooks=rc.pre_agent_hooks,
