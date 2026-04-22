@@ -314,7 +314,9 @@ AGENTS: dict[str, AgentConfig] = {
         skill_paths=[],
         install_cmd=(
             "( command -v openhands >/dev/null 2>&1 || "
-            "pip install openhands >/dev/null 2>&1 ) && "
+            "( command -v uv >/dev/null 2>&1 && "
+            "uv tool install openhands --python 3.12 >/dev/null 2>&1 ) || "
+            "( pip install openhands-ai >/dev/null 2>&1 ) ) && "
             "command -v openhands >/dev/null 2>&1"
         ),
         launch_cmd="openhands acp --always-approve --override-with-envs",
