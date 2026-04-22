@@ -26,7 +26,8 @@ bench eval create \
   -t .ref/terminal-bench-2/regex-log \
   -a gemini \
   -m gemini-3.1-flash-lite-preview \
-  -e daytona
+  -e daytona \
+  --sandbox-setup-timeout 300
 ```
 
 BenchFlow will:
@@ -52,6 +53,7 @@ model: gemini-3.1-flash-lite-preview
 environment: daytona
 concurrency: 64
 max_retries: 2
+sandbox_setup_timeout: 300
 ```
 
 ## Python API
@@ -70,9 +72,21 @@ config = TrialConfig(
     task_path=Path("tasks/regex-log"),
     scenes=[Scene.single(agent="gemini", model="gemini-3.1-flash-lite-preview")],
     environment="daytona",
+    sandbox_setup_timeout=300,
 )
 trial = await Trial.create(config)
 result = await trial.run()
+```
+
+If you are using the `Agent + Environment` path directly, pass the timeout through `RuntimeConfig`:
+
+```python
+from benchflow.runtime import Agent, Environment, Runtime, RuntimeConfig
+
+agent = Agent("gemini", model="gemini-3.1-flash-lite-preview")
+env = Environment.from_task("tasks/regex-log", backend="daytona")
+runtime = Runtime(env, agent, config=RuntimeConfig(sandbox_setup_timeout=300))
+result = await runtime.execute()
 ```
 
 ## Multi-agent (reviewer pattern)
@@ -95,6 +109,7 @@ config = TrialConfig(
               ]),
     ],
     environment="daytona",
+    sandbox_setup_timeout=300,
 )
 result = await bf.run(config)
 ```

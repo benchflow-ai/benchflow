@@ -34,6 +34,7 @@ config = TrialConfig(
     task_path=Path("tasks/my-task"),
     scenes=[Scene.single(agent="gemini", model="gemini-3.1-flash-lite-preview")],
     environment="daytona",
+    sandbox_setup_timeout=120,
 )
 
 # Multi-scene BYOS (skill-gen → solve)
@@ -46,8 +47,12 @@ config = TrialConfig(
               turns=[Turn("solver")]),
     ],
     environment="daytona",
+    sandbox_setup_timeout=120,
 )
 ```
+
+Set `sandbox_setup_timeout` when sandbox user setup needs more than the default 120 seconds.
+The same field is also available on `JobConfig` and `RuntimeConfig`.
 
 ### Scene
 
@@ -95,6 +100,20 @@ await trial.verify()
 await trial.cleanup()
 ```
 
+### RuntimeConfig
+
+Runtime-level configuration for the `Agent + Environment` execution path.
+
+```python
+from benchflow.runtime import Agent, Environment, Runtime, RuntimeConfig
+
+config = RuntimeConfig(sandbox_setup_timeout=300)
+agent = Agent("gemini", model="gemini-3.1-flash-lite-preview")
+env = Environment.from_task("tasks/X", backend="daytona")
+runtime = Runtime(env, agent, config=config)
+result = await runtime.execute()
+```
+
 ### bf.run()
 
 Convenience function — multiple calling conventions:
@@ -108,10 +127,16 @@ result = await bf.run(config)
 # 2. Agent + Environment (0.3 style)
 agent = bf.Agent("gemini", model="gemini-3.1-flash-lite-preview")
 env = bf.Environment.from_task("tasks/X", backend="daytona")
-result = await bf.run(agent, env)
+runtime_config = bf.RuntimeConfig(sandbox_setup_timeout=300)
+result = await bf.run(agent, env, runtime_config)
 
 # 3. String shortcut (simplest)
-result = await bf.run("gemini", task_path="tasks/X", model="gemini-3.1-flash-lite-preview")
+result = await bf.run(
+    "gemini",
+    task_path="tasks/X",
+    model="gemini-3.1-flash-lite-preview",
+    config=bf.RuntimeConfig(sandbox_setup_timeout=300),
+)
 ```
 
 ## Trial Lifecycle
