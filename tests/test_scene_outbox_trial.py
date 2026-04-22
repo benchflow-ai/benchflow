@@ -266,3 +266,78 @@ async def test_empty_outbox_no_injection() -> None:
     assert prompts_received[0] == "do stuff"
     assert prompts_received[1] == "also do stuff"
     assert all("Messages from other agents" not in p for p in prompts_received)
+
+
+async def test_scene_messages_persisted(
+    coder_reviewer_scene: Scene, tmp_path: Path
+) -> None:
+    """Inter-role messages are saved to scene_messages.jsonl in trial_dir."""
+    trial = _make_trial(coder_reviewer_scene)
+    trial._trial_dir = tmp_path
+    call_count = 0
+
+    async def fake_execute(prompts=None):
+        nonlocal call_count
+        if call_count == 0:
+            trial._env.stage_outbox("reviewer", "Please review my code")
+        elif call_count == 1:
+            trial._env.stage_outbox("coder", "Found a bug on line 5")
+        call_count += 1
+        return [], 0
+
+    trial.connect_as = AsyncMock()
+    trial.disconnect = AsyncMock()
+    trial.execute = fake_execute
+
+    await trial._run_scene(coder_reviewer_scene)
+
+    msg_path = tmp_path / "scene_messages.jsonl"
+    assert msg_path.exists()
+    lines = [json.loads(ln) for ln in msg_path.read_text().strip().splitlines()]
+    assert len(lines) == 2
+    assert lines[0]["sender"] == "coder"
+    assert lines[0]["recipient"] == "reviewer"
+    assert lines[0]["content"] == "Please review my code"
+    assert lines[1]["sender"] == "reviewer"
+    assert lines[1]["recipient"] == "coder"
+    assert lines[1]["content"] == "Found a bug on line 5"
+    assert lines[0]["scene"] == "code-review"
+
+
+async def test_heterogeneous_agent_install(coder_reviewer_scene: Scene) -> None:
+    """connect_as installs non-primary agents."""
+    scene = Scene(
+        name="hetero",
+        roles=[
+            Role("coder", "gemini", "flash"),
+            Role("reviewer", "claude-agent-acp", "haiku"),
+        ],
+        turns=[Turn("coder"), Turn("reviewer", "Review.")],
+    )
+    config = TrialConfig(
+        task_path=Path("tasks/fake"),
+        scenes=[scene],
+        environment="docker",
+        agent="gemini",
+    )
+    trial = Trial(config)
+    trial._env = FakeEnv()
+    trial._resolved_prompts = ["Solve the task"]
+
+    installed_agents: list[str] = []
+    original_connect_as = Trial.connect_as
+
+    async def tracking_connect_as(self_inner, role):
+        if role.agent != config.primary_agent:
+            installed_agents.append(role.agent)
+
+    async def fake_execute(prompts=None):
+        return [], 0
+
+    trial.connect_as = lambda role: tracking_connect_as(trial, role)
+    trial.disconnect = AsyncMock()
+    trial.execute = fake_execute
+
+    await trial._run_scene(scene)
+
+    assert "claude-agent-acp" in installed_agents

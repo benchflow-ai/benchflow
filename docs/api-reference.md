@@ -189,6 +189,17 @@ config = TrialConfig(
 )
 ```
 
+## 0.3 Limitations
+
+The Scene API in 0.3 covers coder-reviewer and multi-turn patterns. It does **not** yet support:
+
+- **Dynamic termination** — turn count is fixed at config time. A "user" role cannot decide to stop early based on agent output. Workaround: use `max_rounds` in the standalone `_scene.py` scheduler.
+- **Oracle access** — no mechanism for a "user" role to read `/solution` during setup.
+- **Per-round verification** — `verify()` runs once after all scenes complete, not between rounds.
+- **Inter-round trajectory inspection** — a "user" role cannot read the agent's trajectory between turns.
+
+These are tracked for 0.4. See the [Harbor PR #1462 mapping](docs/notebooks/scene-patterns.ipynb) for details.
+
 ## YAML Trial Configs
 
 ```python

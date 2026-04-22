@@ -609,6 +609,8 @@ class Trial:
         an agent writes ``/app/.outbox/{recipient}.json`` with
         ``{"to": "role_name", "content": "..."}`` and the scheduler
         injects received messages into the next turn's prompt.
+
+        Inter-role messages are persisted to ``trial_dir/scene_messages.jsonl``.
         """
         cfg = self._config
         logger.info(f"[Scene] {scene.name} — {len(scene.turns)} turns, {len(scene.roles)} roles")
@@ -616,6 +618,7 @@ class Trial:
         role_map = {r.name: r for r in scene.roles}
         current_role: str | None = None
         multi_role = len(scene.roles) > 1
+        scene_messages: list[dict] = []
 
         if multi_role:
             setup_cmd = f"rm -rf {self._OUTBOX_DIR} && mkdir -p {self._OUTBOX_DIR}"
@@ -625,6 +628,7 @@ class Trial:
             await self._env.exec(setup_cmd, timeout_sec=10)
 
         inbox: dict[str, list[str]] = {r.name: [] for r in scene.roles}
+        turn_counter = 0
 
         for i, turn in enumerate(scene.turns):
             role = role_map.get(turn.role)
@@ -657,12 +661,29 @@ class Trial:
 
             if multi_role:
                 for recipient, content in await self._read_scene_outbox(current_role):
+                    turn_counter += 1
                     inbox.setdefault(recipient, []).append(
                         f"**From {current_role}:** {content}"
                     )
+                    scene_messages.append({
+                        "scene": scene.name,
+                        "turn": turn_counter,
+                        "sender": current_role,
+                        "recipient": recipient,
+                        "content": content,
+                    })
 
         if current_role is not None:
             await self.disconnect()
+
+        if scene_messages and self._trial_dir:
+            msg_path = self._trial_dir / "scene_messages.jsonl"
+            with msg_path.open("a") as f:
+                for m in scene_messages:
+                    f.write(json.dumps(m) + "\n")
+            logger.info(
+                f"[Scene] {scene.name}: {len(scene_messages)} messages → {msg_path}"
+            )
 
     async def _read_scene_outbox(self, sender: str) -> list[tuple[str, str]]:
         """Read and clear outbox files left by *sender*. Returns [(recipient, content), ...]."""
@@ -687,9 +708,16 @@ class Trial:
         return messages
 
     async def connect_as(self, role: Role) -> None:
-        """Open an ACP connection for a specific role."""
+        """Open an ACP connection for a specific role.
+
+        Installs the role's agent binary if it differs from the primary
+        agent (which was installed in install_agent()).
+        """
         cfg = self._config
         t0 = datetime.now()
+
+        if role.agent != cfg.primary_agent:
+            await install_agent(self._env, role.agent, self._trial_dir)
 
         self._acp_client, self._session, self._agent_name = await connect_acp(
             env=self._env,
