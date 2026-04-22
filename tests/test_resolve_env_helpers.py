@@ -296,3 +296,45 @@ class TestResolveAgentEnvNoModel:
         self._patch_expanduser(monkeypatch, tmp_path)
         result = self._resolve(agent="openclaw", agent_env={})
         assert "_BENCHFLOW_SUBSCRIPTION_AUTH" not in result
+
+
+class TestResolveAgentEnvOracle:
+    """Oracle runs solve.sh and never calls an LLM — must skip model-related env.
+
+    Regression for the PR #173 follow-up: commit 360c460 removed the
+    `agent != "oracle"` guard from resolve_agent_env, betting that CLI callers
+    would pass model=None for oracle. But cli/main.py:eval_create (the live
+    `bench eval create`) still passes `model or DEFAULT_MODEL`, so oracle
+    reaches the chokepoint with a real model and triggers ANTHROPIC_API_KEY
+    validation — breaking offline oracle runs that have no API key set.
+    """
+
+    def _patch_expanduser(self, monkeypatch, tmp_path):
+        orig = Path.expanduser
+
+        def fake(self):
+            s = str(self)
+            if s.startswith("~"):
+                return tmp_path / s[2:]
+            return orig(self)
+
+        monkeypatch.setattr(Path, "expanduser", fake)
+
+    def test_oracle_with_default_model_does_not_validate_api_key(
+        self, monkeypatch, tmp_path
+    ):
+        """Oracle + DEFAULT_MODEL + no API key + no host auth must not raise."""
+        for k in (
+            "ANTHROPIC_API_KEY",
+            "OPENAI_API_KEY",
+            "GOOGLE_API_KEY",
+            "GEMINI_API_KEY",
+        ):
+            monkeypatch.delenv(k, raising=False)
+        self._patch_expanduser(monkeypatch, tmp_path)
+
+        result = resolve_agent_env("oracle", "claude-haiku-4-5-20251001", {})
+
+        # Provider env never resolved — oracle never calls an LLM.
+        assert "BENCHFLOW_PROVIDER_MODEL" not in result
+        assert "_BENCHFLOW_SUBSCRIPTION_AUTH" not in result
