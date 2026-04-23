@@ -26,6 +26,7 @@ from benchflow._trajectory import _capture_session_trajectory
 from benchflow.acp.client import ACPClient
 from benchflow.acp.container_transport import ContainerTransport
 from benchflow.agents.providers import strip_provider_prefix
+from benchflow.agents.registry import AGENTS
 from benchflow.process import DaytonaProcess, DockerProcess
 
 logger = logging.getLogger(__name__)
@@ -33,6 +34,50 @@ logger = logging.getLogger(__name__)
 
 _ACP_CONNECT_MAX_RETRIES = 3
 _ACP_CONNECT_BASE_DELAY = 2.0
+
+# models.dev provider inference — used when acp_model_format="provider/model"
+# to reconstruct "provider/model" from a bare model name.
+_MODELSDEV_PROVIDER_HEURISTICS: list[tuple[str, str]] = [
+    # (substring in model name, models.dev provider ID)
+    ("gemini", "google"),
+    ("gemma", "google"),
+    ("gpt", "openai"),
+    ("o1", "openai"),
+    ("o3", "openai"),
+    ("o4", "openai"),
+    ("claude", "anthropic"),
+    ("haiku", "anthropic"),
+    ("sonnet", "anthropic"),
+    ("opus", "anthropic"),
+    ("mistral", "mistral"),
+    ("codestral", "mistral"),
+]
+
+
+def _format_acp_model(model: str, agent: str) -> str:
+    """Format a model ID for ACP session/set_model based on agent requirements.
+
+    Most agents expect a bare model name (e.g. "claude-sonnet-4-6").
+    Agents with acp_model_format="provider/model" (e.g. opencode) need the
+    models.dev provider prefix (e.g. "google/gemini-3.1-pro-preview").
+
+    Strips benchflow's custom provider prefixes first, then re-adds the
+    models.dev provider prefix when the agent requires it.
+    """
+    bare = strip_provider_prefix(model)
+    agent_cfg = AGENTS.get(agent)
+    if not agent_cfg or agent_cfg.acp_model_format != "provider/model":
+        return bare
+    # Already has a slash — assume it's provider/model already
+    if "/" in bare:
+        return bare
+    # Infer the models.dev provider from the bare model name
+    m = bare.lower()
+    for substring, provider in _MODELSDEV_PROVIDER_HEURISTICS:
+        if substring in m:
+            return f"{provider}/{bare}"
+    # Unknown model family — default to anthropic (most common)
+    return f"anthropic/{bare}"
 
 
 async def connect_acp(
@@ -121,7 +166,7 @@ async def connect_acp(
             raise
 
     if model:
-        acp_model_id = strip_provider_prefix(model)
+        acp_model_id = _format_acp_model(model, agent)
         try:
             await asyncio.wait_for(acp_client.set_model(acp_model_id), timeout=60)
             logger.info(f"Model set to: {acp_model_id} (from {model})")

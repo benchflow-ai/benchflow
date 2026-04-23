@@ -157,6 +157,13 @@ class AgentConfig:
     home_dirs: list[str] = field(default_factory=list)
     # Extra dot-dirs under $HOME to copy to sandbox user (for dirs not
     # derivable from skill_paths or credential_files, e.g. ".openclaw").
+    acp_model_format: str = "bare"
+    # How the agent expects the modelId in session/set_model:
+    # "bare"           — just the model name (e.g. "claude-sonnet-4-6").
+    #                    Default; works for claude-agent-acp, codex-acp.
+    # "provider/model" — models.dev convention (e.g. "google/gemini-3.1-pro-preview").
+    #                    Required by opencode, which uses Provider.parseModel()
+    #                    to split on "/" and treats the first segment as provider ID.
     subscription_auth: SubscriptionAuth | None = None
     # Host CLI login that can substitute for an API key (e.g. OAuth tokens
     # from `claude login`). Detected automatically; API keys take precedence.
@@ -321,7 +328,11 @@ AGENTS: dict[str, AgentConfig] = {
         ),
         launch_cmd="opencode acp",
         protocol="acp",
-        requires_env=["ANTHROPIC_API_KEY"],
+        requires_env=[],  # inferred from --model at runtime
+        acp_model_format="provider/model",
+        # OpenCode uses models.dev provider IDs — its parseModel() splits
+        # modelId on "/" so set_model must send "google/gemini-3.1-pro-preview",
+        # not just "gemini-3.1-pro-preview".
         env_mapping={
             "BENCHFLOW_PROVIDER_BASE_URL": "OPENAI_BASE_URL",
             "BENCHFLOW_PROVIDER_API_KEY": "ANTHROPIC_API_KEY",
@@ -538,6 +549,7 @@ def register_agent(
     credential_files: list[CredentialFile] | None = None,
     home_dirs: list[str] | None = None,
     subscription_auth: SubscriptionAuth | None = None,
+    acp_model_format: str = "bare",
 ) -> AgentConfig:
     """Register a custom agent at runtime.
 
@@ -567,6 +579,7 @@ def register_agent(
         credential_files=credential_files or [],
         home_dirs=home_dirs or [],
         subscription_auth=subscription_auth,
+        acp_model_format=acp_model_format,
     )
     AGENTS[name] = config
     AGENT_INSTALLERS[name] = install_cmd
