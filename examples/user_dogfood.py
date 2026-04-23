@@ -61,7 +61,7 @@ async def main():
 
     config = TrialConfig(
         task_path=task_path,
-        scenes=[Scene.single(agent="gemini", model="gemini-2.5-flash-preview-04-17")],
+        scenes=[Scene.single(agent="gemini", model="gemini-2.5-flash")],
         environment="daytona",
         user=FunctionUser(progressive_user),
         max_user_rounds=4,

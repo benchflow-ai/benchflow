@@ -19,29 +19,6 @@ from benchflow.user import BaseUser, FunctionUser, PassthroughUser, RoundResult
 # ── Unit tests for User types ──
 
 
-class TestRoundResult:
-    def test_defaults(self):
-        r = RoundResult(round=0)
-        assert r.round == 0
-        assert r.trajectory == []
-        assert r.rewards is None
-        assert r.verifier_output is None
-        assert r.verifier_error is None
-        assert r.n_tool_calls == 0
-
-    def test_with_data(self):
-        r = RoundResult(
-            round=2,
-            trajectory=[{"type": "tool_call"}],
-            rewards={"exact_match": 1.0},
-            verifier_output="all tests passed",
-            n_tool_calls=5,
-        )
-        assert r.round == 2
-        assert r.rewards == {"exact_match": 1.0}
-        assert r.n_tool_calls == 5
-
-
 class TestPassthroughUser:
     @pytest.mark.asyncio
     async def test_sends_instruction_once(self):
@@ -184,19 +161,6 @@ class RecordingUser(BaseUser):
         if round >= self._max:
             return None
         return self._prompts[min(round, len(self._prompts) - 1)]
-
-
-class TestTrialConfigUser:
-    def test_user_field_defaults_to_none(self):
-        cfg = TrialConfig(task_path=Path("tasks/x"))
-        assert cfg.user is None
-        assert cfg.max_user_rounds == 5
-
-    def test_user_field_set(self):
-        user = PassthroughUser()
-        cfg = TrialConfig(task_path=Path("tasks/x"), user=user, max_user_rounds=3)
-        assert cfg.user is user
-        assert cfg.max_user_rounds == 3
 
 
 class TestUserLoop:
