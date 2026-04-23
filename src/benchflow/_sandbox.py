@@ -88,7 +88,7 @@ def build_priv_drop_cmd(agent_launch: str, sandbox_user: str) -> str:
     No outer sh -c wrapper — DockerProcess wraps in bash -c already.
     """
     inner = (
-        f"export HOME=/home/{sandbox_user} && cd /home/{sandbox_user} && {agent_launch}"
+        f"export HOME=/home/{sandbox_user} && {agent_launch}"
     )
     quoted = shlex.quote(inner)
     return (
