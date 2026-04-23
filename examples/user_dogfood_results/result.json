@@ -1,0 +1,25 @@
+{
+  "task_name": "regex-log",
+  "trial_name": "regex-log__bab1cbf6",
+  "rewards": {
+    "reward": 0.0
+  },
+  "agent": "gemini",
+  "agent_name": "gemini-cli",
+  "model": "gemini-2.5-flash",
+  "n_tool_calls": 8,
+  "n_prompts": 1,
+  "error": null,
+  "verifier_error": null,
+  "partial_trajectory": false,
+  "trajectory_source": "acp",
+  "started_at": "2026-04-22 22:37:42.034339",
+  "finished_at": "2026-04-22 22:40:58.748485",
+  "timing": {
+    "environment_setup": 1.3,
+    "agent_setup": 3.1,
+    "agent_execution": 15.6,
+    "verifier": 6.4,
+    "total": 196.7
+  }
+}
