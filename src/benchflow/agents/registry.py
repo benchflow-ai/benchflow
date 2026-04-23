@@ -308,6 +308,25 @@ AGENTS: dict[str, AgentConfig] = {
             ],
         ),
     ),
+    "opencode": AgentConfig(
+        name="opencode",
+        description="OpenCode via ACP — open-source coding agent (TypeScript)",
+        skill_paths=["$HOME/.opencode/skills"],
+        home_dirs=[".opencode"],
+        install_cmd=(
+            f"{_NODE_INSTALL} && "
+            "( command -v opencode >/dev/null 2>&1 || "
+            "npm install -g opencode-ai@latest >/dev/null 2>&1 ) && "
+            "command -v opencode >/dev/null 2>&1"
+        ),
+        launch_cmd="opencode acp",
+        protocol="acp",
+        requires_env=["ANTHROPIC_API_KEY"],
+        env_mapping={
+            "BENCHFLOW_PROVIDER_BASE_URL": "OPENAI_BASE_URL",
+            "BENCHFLOW_PROVIDER_API_KEY": "ANTHROPIC_API_KEY",
+        },
+    ),
     "openhands": AgentConfig(
         name="openhands",
         description="OpenHands agent via ACP (multi-model, Python-based)",
