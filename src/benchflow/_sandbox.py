@@ -342,8 +342,12 @@ _DISCOVER_PYTEST_PLUGINS_SCRIPT = r"""
 import json, os, sys
 try:
     from importlib.metadata import entry_points
+    try:
+        eps = entry_points(group='pytest11')
+    except TypeError:
+        eps = entry_points().get('pytest11', [])
     safe = []
-    for ep in entry_points(group='pytest11'):
+    for ep in eps:
         try:
             dist_path = str(ep.dist._path.parent)
             st = os.stat(dist_path)
