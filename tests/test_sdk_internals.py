@@ -45,6 +45,30 @@ class TestResolveAgentEnv:
         assert result["LLM_API_KEY"] == "test-llm-key"
         assert result["BENCHFLOW_PROVIDER_API_KEY"] == "test-llm-key"
 
+    def test_openhands_gemini_model_is_prefixed_for_google_ai_studio(self, monkeypatch):
+        """OpenHands expects Gemini models in gemini/<model> format."""
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        result = self._resolve(
+            agent="openhands",
+            model="gemini-3.1-flash-lite-preview",
+            agent_env={"GEMINI_API_KEY": "test-gemini-key"},
+        )
+        assert result["LLM_MODEL"] == "gemini/gemini-3.1-flash-lite-preview"
+        assert result["LLM_API_KEY"] == "test-gemini-key"
+
+    def test_openhands_vertex_model_is_prefixed_for_vertex(self, monkeypatch, tmp_path):
+        """OpenHands expects Vertex Gemini models in vertex_ai/<model> format."""
+        adc_dir = tmp_path / ".config" / "gcloud"
+        adc_dir.mkdir(parents=True)
+        (adc_dir / "application_default_credentials.json").write_text("{}")
+        monkeypatch.setattr("pathlib.Path.home", staticmethod(lambda: tmp_path))
+        result = self._resolve(
+            agent="openhands",
+            model="google-vertex/gemini-2.5-flash",
+            agent_env={"GOOGLE_CLOUD_PROJECT": "my-proj"},
+        )
+        assert result["LLM_MODEL"] == "vertex_ai/gemini-2.5-flash"
+
     def test_provider_bridge_key_alone_does_not_bypass_required_model_key(
         self, monkeypatch
     ):

@@ -27,6 +27,26 @@ from benchflow.agents.registry import AGENTS
 logger = logging.getLogger(__name__)
 
 
+def _normalize_openhands_model(model: str) -> str:
+    """Translate benchflow model IDs to OpenHands/LiteLLM model IDs.
+
+    OpenHands expects provider-qualified model names for some providers even
+    when benchflow uses bare model IDs or its own provider prefixes.
+    """
+    from benchflow.agents.providers import strip_provider_prefix
+    from benchflow.agents.registry import is_vertex_model
+
+    if model.startswith(("gemini/", "vertex_ai/", "openhands/")):
+        return model
+    stripped = strip_provider_prefix(model)
+    lower = model.lower()
+    if is_vertex_model(model) and "gemini" in lower:
+        return f"vertex_ai/{stripped}"
+    if "gemini" in lower:
+        return f"gemini/{stripped}"
+    return stripped
+
+
 def auto_inherit_env(agent_env: dict[str, str]) -> None:
     """Copy well-known API keys from host os.environ into agent_env."""
     from benchflow.agents.providers import PROVIDERS
@@ -118,11 +138,22 @@ def resolve_provider_env(
             _key = agent_env.get(_prov_cfg.auth_env, "")
             if _key:
                 agent_env.setdefault("BENCHFLOW_PROVIDER_API_KEY", _key)
+    else:
+        # No registered provider prefix — bridge the model's well-known API key
+        # to BENCHFLOW_PROVIDER_API_KEY so env_mapping can translate it to
+        # agent-native vars (e.g. GEMINI_API_KEY → LLM_API_KEY for openhands).
+        from benchflow.agents.registry import infer_env_key_for_model
+
+        _inferred = infer_env_key_for_model(model)
+        if _inferred and _inferred in agent_env:
+            agent_env.setdefault("BENCHFLOW_PROVIDER_API_KEY", agent_env[_inferred])
     # Apply agent env_mapping: translate BENCHFLOW_PROVIDER_* → agent-native vars
     if agent_cfg and agent_cfg.env_mapping:
         for src, dst in agent_cfg.env_mapping.items():
             if src in agent_env:
                 agent_env.setdefault(dst, agent_env[src])
+    if agent == "openhands":
+        agent_env["LLM_MODEL"] = _normalize_openhands_model(model)
 
 
 def check_subscription_auth(agent: str, required_key: str) -> bool:

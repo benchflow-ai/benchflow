@@ -33,6 +33,29 @@ class TestEnvMappingField:
         assert cfg.env_mapping["BENCHFLOW_PROVIDER_BASE_URL"] == "GEMINI_API_BASE_URL"
         assert cfg.env_mapping["BENCHFLOW_PROVIDER_API_KEY"] == "GOOGLE_API_KEY"
 
+    def test_openhands_has_mapping(self):
+        cfg = AGENTS["openhands"]
+        assert cfg.env_mapping["BENCHFLOW_PROVIDER_BASE_URL"] == "LLM_BASE_URL"
+        assert cfg.env_mapping["BENCHFLOW_PROVIDER_API_KEY"] == "LLM_API_KEY"
+        assert cfg.env_mapping["BENCHFLOW_PROVIDER_MODEL"] == "LLM_MODEL"
+
+
+class TestOpenHandsConfig:
+    def test_openhands_uses_agentskills_paths(self):
+        cfg = AGENTS["openhands"]
+        assert "$HOME/.agents/skills" in cfg.skill_paths
+        assert "$WORKSPACE/.agents/skills" in cfg.skill_paths
+
+    def test_openhands_install_cmd_has_uv_and_binary_fallbacks(self):
+        cfg = AGENTS["openhands"]
+        assert "apt-get install -y -qq curl ca-certificates" in cfg.install_cmd
+        assert "uv tool install openhands --python 3.12" in cfg.install_cmd
+        assert "install.openhands.dev/install.sh" in cfg.install_cmd
+
+    def test_openhands_skips_acp_set_model(self):
+        cfg = AGENTS["openhands"]
+        assert cfg.supports_acp_set_model is False
+
 
 class TestAgentCredentialFiles:
     def test_codex_has_auth_json(self):

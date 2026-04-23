@@ -347,3 +347,31 @@ class TestConnectAcpModelSelection:
             )
 
         mock_acp.set_model.assert_awaited_once_with(expected_model)
+
+    @pytest.mark.asyncio
+    async def test_openhands_skips_set_model(self, tmp_path):
+        from benchflow._acp_run import connect_acp
+
+        mock_acp = self._make_mocks()
+        mock_env = AsyncMock()
+        with (
+            patch(
+                "benchflow._acp_run.DockerProcess.from_harbor_env",
+                return_value=MagicMock(),
+            ),
+            patch("benchflow._acp_run.ContainerTransport", return_value=MagicMock()),
+            patch("benchflow._acp_run.ACPClient", return_value=mock_acp),
+        ):
+            await connect_acp(
+                env=mock_env,
+                agent="openhands",
+                agent_launch="openhands acp --always-approve --override-with-envs",
+                agent_env={},
+                sandbox_user=None,
+                model="gemini-3.1-flash-lite-preview",
+                trial_dir=tmp_path,
+                environment="docker",
+                agent_cwd="/app",
+            )
+
+        mock_acp.set_model.assert_not_awaited()
