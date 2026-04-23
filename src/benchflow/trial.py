@@ -519,21 +519,29 @@ class Trial:
         return self._rewards
 
     async def soft_verify(self) -> tuple[dict | None, str | None, str | None]:
-        """Run the verifier WITHOUT hardening — agent stays alive, workspace untouched.
+        """Run the verifier without full hardening — for intermediate feedback.
 
-        Returns (rewards, verifier_output, verifier_error). Used for
-        intermediate feedback in user-driven loops. The final verify()
-        still does full hardening.
+        Skips process kill and workspace restore/chown (so the sandbox
+        stays usable for the next round), but DOES purge agent-injected
+        conftest.py / sitecustomize.py / .pth files to prevent the agent
+        from gaming intermediate test results.
+
+        Returns (rewards, verifier_output, verifier_error). The final
+        verify() still does full hardening.
         """
         from harbor import Verifier
+        from benchflow._sandbox import CLEANUP_CMD
 
         self._trial_paths.verifier_dir.mkdir(parents=True, exist_ok=True)
-        # Clean verifier output dir without killing agent
+        # Clean verifier output dir
         await self._env.exec(
             "rm -rf /logs/verifier && mkdir -p /logs/verifier && "
             "chown root:root /logs/verifier",
             user="root", timeout_sec=10,
         )
+        # Purge agent-injected conftest/sitecustomize/.pth without
+        # killing processes or restoring workspace
+        await self._env.exec(CLEANUP_CMD, user="root", timeout_sec=10)
 
         rewards = None
         verifier_output = None
@@ -797,7 +805,7 @@ class Trial:
                 "cat /solution/solve.sh 2>/dev/null || "
                 "cat /solution/*.py 2>/dev/null || "
                 "cat /solution/* 2>/dev/null || true",
-                timeout_sec=10,
+                user="root", timeout_sec=10,
             )
             solution = (cat.stdout or "").strip() or None
 
@@ -833,16 +841,20 @@ class Trial:
             # Fresh ACP session each round — agent starts clean but sees
             # its previous workspace changes in the shared sandbox.
             traj_before = len(self._trajectory)
-            await self.connect_as(role)
-            await self.execute(prompts=[prompt])
+            try:
+                await self.connect_as(role)
+                await self.execute(prompts=[prompt])
+            finally:
+                await self.disconnect()
+
             round_trajectory = self._trajectory[traj_before:]
             round_tools = sum(
                 1 for e in round_trajectory
                 if isinstance(e, dict) and e.get("type") == "tool_call"
             )
-            await self.disconnect()
 
-            # Soft verify: run tests without killing the agent
+            # Soft verify: run tests after agent disconnected but before
+            # next round. Purges conftest/pth but skips full hardening.
             rewards, verifier_output, verifier_error = await self.soft_verify()
 
             round_result = RoundResult(

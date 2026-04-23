@@ -12,6 +12,7 @@ the sandbox.
 from __future__ import annotations
 
 import asyncio
+import inspect
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Union, cast
 
@@ -95,6 +96,6 @@ class FunctionUser(BaseUser):
         round_result: RoundResult | None = None,
     ) -> str | None:
         result = self._fn(round, instruction, round_result)
-        if asyncio.iscoroutine(result):
+        if inspect.isawaitable(result):
             return cast(str | None, await result)
         return cast(str | None, result)
