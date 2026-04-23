@@ -710,20 +710,33 @@ class Trial:
     async def connect_as(self, role: Role) -> None:
         """Open an ACP connection for a specific role.
 
-        Installs the role's agent binary if it differs from the primary
-        agent (which was installed in install_agent()).
+        Installs the role's agent binary and credentials if it differs
+        from the primary agent (which was set up in install_agent()).
+        Updates _agent_launch so disconnect() kills the correct process.
         """
         cfg = self._config
         t0 = datetime.now()
 
+        agent_launch = AGENT_LAUNCH.get(role.agent, role.agent)
+        agent_env = resolve_agent_env(role.agent, role.model, role.env or None)
+
         if role.agent != cfg.primary_agent:
-            await install_agent(self._env, role.agent, self._trial_dir)
+            agent_cfg = await install_agent(self._env, role.agent, self._trial_dir)
+            cred_home = f"/home/{cfg.sandbox_user}" if cfg.sandbox_user else "/root"
+            await write_credential_files(
+                self._env, role.agent, agent_env,
+                agent_cfg, role.model, cred_home,
+            )
+            if agent_env.get("_BENCHFLOW_SUBSCRIPTION_AUTH"):
+                await upload_subscription_auth(self._env, role.agent, cred_home)
+
+        self._agent_launch = agent_launch
 
         self._acp_client, self._session, self._agent_name = await connect_acp(
             env=self._env,
             agent=role.agent,
-            agent_launch=AGENT_LAUNCH.get(role.agent, role.agent),
-            agent_env=resolve_agent_env(role.agent, role.model, role.env or None),
+            agent_launch=agent_launch,
+            agent_env=agent_env,
             sandbox_user=cfg.sandbox_user,
             model=role.model,
             trial_dir=self._trial_dir,
