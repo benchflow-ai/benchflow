@@ -325,8 +325,8 @@ class DaytonaProcess(LiveProcess):
                 remote_env_path = "/tmp/benchflow_env_$$.env"
                 env_lines = "\n".join(f"{k}={v}" for k, v in env.items())
                 inner_parts.extend(["--env-file", remote_env_path])
-            inner_parts.extend(["main", "bash", "-c", shlex.quote(command)])
-            inner_cmd = " ".join(inner_parts)
+            inner_parts.extend(["main", "bash", "-c", command])
+            inner_cmd = shlex.join(inner_parts)
 
             if self._compose_cmd_prefix:
                 remote_cmd = f"{self._compose_cmd_prefix} {inner_cmd}"
