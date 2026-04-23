@@ -256,11 +256,16 @@ class DaytonaProcess(LiveProcess):
     """
 
     def __init__(
-        self, sandbox: Any, is_dind: bool = False, compose_cmd_prefix: str = ""
+        self,
+        sandbox: Any,
+        is_dind: bool = False,
+        compose_cmd_prefix: str = "",
+        compose_cmd_base: str = "",
     ):
         self._sandbox = sandbox
         self._is_dind = is_dind
         self._compose_cmd_prefix = compose_cmd_prefix
+        self._compose_cmd_base = compose_cmd_base
 
     @classmethod
     async def from_harbor_env(cls, env: Any) -> "DaytonaProcess":
@@ -273,6 +278,7 @@ class DaytonaProcess(LiveProcess):
         is_dind = hasattr(env, "_strategy") and hasattr(env._strategy, "_compose_cmd")
 
         compose_cmd_prefix = ""
+        compose_cmd_base = ""
         if is_dind:
             # Build compose env vars and command prefix for DinD
             strategy = env._strategy
@@ -280,9 +286,16 @@ class DaytonaProcess(LiveProcess):
                 f"{k}={shlex.quote(v)}" for k, v in strategy._compose_env_vars().items()
             )
             compose_cmd_prefix = compose_env
+            # Extract the full compose base command with project/file flags
+            # (e.g. "docker compose -p NAME --project-directory DIR -f F1 -f F2")
+            # so that `docker compose exec` can find the running project.
+            compose_cmd_base = strategy._compose_cmd([])
 
         return cls(
-            sandbox=sandbox, is_dind=is_dind, compose_cmd_prefix=compose_cmd_prefix
+            sandbox=sandbox,
+            is_dind=is_dind,
+            compose_cmd_prefix=compose_cmd_prefix,
+            compose_cmd_base=compose_cmd_base,
         )
 
     async def start(
@@ -296,8 +309,13 @@ class DaytonaProcess(LiveProcess):
         ssh_target = f"{ssh_access.token}@ssh.app.daytona.io"
 
         if self._is_dind:
-            # Build the docker compose exec command to run inside the DinD VM
-            inner_parts = ["docker", "compose", "exec", "-i", "-T"]
+            # Build the docker compose exec command to run inside the DinD VM.
+            # Use the full compose base command (with -p, --project-directory,
+            # and -f flags) so that exec can find the running project.
+            if self._compose_cmd_base:
+                inner_parts = shlex.split(self._compose_cmd_base) + ["exec", "-i", "-T"]
+            else:
+                inner_parts = ["docker", "compose", "exec", "-i", "-T"]
             if cwd:
                 inner_parts.extend(["-w", cwd])
             # Write env vars to a temp file on the remote VM instead of passing
@@ -307,8 +325,8 @@ class DaytonaProcess(LiveProcess):
                 remote_env_path = "/tmp/benchflow_env_$$.env"
                 env_lines = "\n".join(f"{k}={v}" for k, v in env.items())
                 inner_parts.extend(["--env-file", remote_env_path])
-            inner_parts.extend(["main", "bash", "-c", shlex.quote(command)])
-            inner_cmd = " ".join(inner_parts)
+            inner_parts.extend(["main", "bash", "-c", command])
+            inner_cmd = shlex.join(inner_parts)
 
             if self._compose_cmd_prefix:
                 remote_cmd = f"{self._compose_cmd_prefix} {inner_cmd}"
