@@ -641,6 +641,13 @@ class Trial:
                     for scene in cfg.effective_scenes:
                         await self._run_scene(scene)
 
+            # Restore oracle files before final verify (moved during user loop)
+            if cfg.oracle_access:
+                await self._env.exec(
+                    "mv /solution_oracle_backup /solution 2>/dev/null || true",
+                    user="root", timeout_sec=10,
+                )
+
             await self.verify()
 
         except TimeoutError:
@@ -811,10 +818,11 @@ class Trial:
 
         await user.setup(instruction, solution)
 
-        # Remove oracle files before agent sees them
+        # Hide oracle files from agent — move rather than delete so the
+        # final verify() can still access /solution if the verifier needs it.
         if cfg.oracle_access:
             await self._env.exec(
-                "rm -rf /solution 2>/dev/null || true",
+                "mv /solution /solution_oracle_backup 2>/dev/null || true",
                 user="root", timeout_sec=10,
             )
 

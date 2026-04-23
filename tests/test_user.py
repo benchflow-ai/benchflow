@@ -276,3 +276,68 @@ class TestUserLoop:
             await trial._run_user_loop()
 
         assert "user.run() failed" in trial._error
+
+
+class TestSoftVerify:
+    @pytest.mark.asyncio
+    async def test_soft_verify_timeout(self):
+        trial = _make_user_trial(PassthroughUser())
+
+        with patch("harbor.Verifier") as MockVerifier, \
+             patch("benchflow._sandbox.CLEANUP_CMD", "true"):
+            mock_instance = MockVerifier.return_value
+            mock_instance.verify = AsyncMock(side_effect=asyncio.TimeoutError())
+
+            rewards, output, error = await trial.soft_verify()
+
+        assert rewards is None
+        assert output is None
+        assert "timed out" in error
+
+    @pytest.mark.asyncio
+    async def test_soft_verify_crash(self):
+        trial = _make_user_trial(PassthroughUser())
+
+        with patch("harbor.Verifier") as MockVerifier, \
+             patch("benchflow._sandbox.CLEANUP_CMD", "true"):
+            mock_instance = MockVerifier.return_value
+            mock_instance.verify = AsyncMock(side_effect=RuntimeError("boom"))
+
+            rewards, output, error = await trial.soft_verify()
+
+        assert rewards is None
+        assert "crashed" in error
+        assert "boom" in error
+
+    @pytest.mark.asyncio
+    async def test_soft_verify_success(self):
+        trial = _make_user_trial(PassthroughUser())
+
+        mock_result = type("VR", (), {"rewards": {"exact_match": 1.0}})()
+
+        with patch("harbor.Verifier") as MockVerifier, \
+             patch("benchflow._sandbox.CLEANUP_CMD", "true"):
+            mock_instance = MockVerifier.return_value
+            mock_instance.verify = AsyncMock(return_value=mock_result)
+
+            rewards, output, error = await trial.soft_verify()
+
+        assert rewards == {"exact_match": 1.0}
+        assert error is None
+
+    @pytest.mark.asyncio
+    async def test_soft_verify_runs_cleanup_cmd(self):
+        trial = _make_user_trial(PassthroughUser())
+
+        mock_result = type("VR", (), {"rewards": {}})()
+
+        with patch("harbor.Verifier") as MockVerifier, \
+             patch("benchflow._sandbox.CLEANUP_CMD", "echo cleanup_sentinel"):
+            mock_instance = MockVerifier.return_value
+            mock_instance.verify = AsyncMock(return_value=mock_result)
+
+            await trial.soft_verify()
+
+        # Verify CLEANUP_CMD was executed
+        exec_log = trial._env._exec_log
+        assert any("cleanup_sentinel" in cmd for cmd in exec_log)
