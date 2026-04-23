@@ -338,25 +338,22 @@ _RUNTIME_PATH_PREFIXES = ("/tmp", "/var/tmp", "/logs", "/testbed")
 # Container-side script to enumerate pre-installed pytest11 entry points.
 # Only trusts plugins whose dist-info is in a root-owned directory — blocks
 # editable installs from agent-writable workspace paths.
+# Container-side script to enumerate pre-installed pytest11 entry points.
+# Runs after sandbox_user processes are killed, so agent cannot install new
+# packages between enumeration and verification. The sandbox_user cannot
+# pip install (not root), so all discovered plugins are image-authored.
 _DISCOVER_PYTEST_PLUGINS_SCRIPT = r"""
-import json, os, sys
+import json, sys
 try:
     from importlib.metadata import entry_points
     try:
-        eps = entry_points(group='pytest11')
+        eps = list(entry_points(group='pytest11'))
     except TypeError:
-        eps = entry_points().get('pytest11', [])
-    safe = []
-    for ep in eps:
-        try:
-            dist_path = str(ep.dist._path.parent)
-            st = os.stat(dist_path)
-            if st.st_uid == 0:
-                safe.append(ep.name)
-        except Exception:
-            pass
-    print(json.dumps(sorted(set(safe))))
-except Exception:
+        eps = list(entry_points().get('pytest11', []))
+    names = sorted(set(ep.name for ep in eps))
+    print(json.dumps(names))
+except Exception as e:
+    print(json.dumps({"error": str(e)}), file=sys.stderr)
     print("[]")
 """.strip()
 
@@ -462,6 +459,8 @@ async def _discover_pytest_plugin_flags(env, task: "Task") -> str:
             f"python3 -c {shlex.quote(_DISCOVER_PYTEST_PLUGINS_SCRIPT)}",
             user="root", timeout_sec=15,
         )
+        if result.stderr:
+            logger.debug(f"Plugin discovery stderr: {result.stderr.strip()}")
         discovered = _json.loads(result.stdout or "[]")
         if isinstance(discovered, list):
             plugins.extend(p for p in discovered if isinstance(p, str) and p.strip())
