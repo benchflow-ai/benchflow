@@ -49,6 +49,8 @@ Add a test that:
 1. Creates a `TrialConfig` with `agent_env={"BENCHFLOW_PROVIDER_BASE_URL": "http://localhost:8080/v1"}` and a scene via `Scene.single()`
 2. Mocks `connect_acp` and verifies `resolve_agent_env` receives the merged env
 3. Verifies role-specific `env` overrides config-level `agent_env`
+4. Verifies non-overlapping keys from both dicts are all present in the merge
+5. Verifies `cfg.agent_env=None` + empty `role.env` does not crash
 
 ### No change to `Scene.single()`
 
@@ -63,3 +65,15 @@ Pushing `agent_env` into `Role` at construction time would conflate config-level
 ## Risk
 
 Low. Standard dict unpacking, one-line change. Role-level > config-level precedence matches the specificity expectation. Legacy path (line 292) unchanged.
+
+## GSTACK REVIEW REPORT
+
+| Review | Trigger | Why | Runs | Status | Findings |
+|--------|---------|-----|------|--------|----------|
+| CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | — |
+| Codex Review | `/codex review` | Independent 2nd opinion | 0 | — | — |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 1 | CLEAR (PLAN) | 0 issues, 0 critical gaps |
+| Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | — |
+| DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | — |
+
+- **VERDICT:** ENG CLEARED — ready to implement.
