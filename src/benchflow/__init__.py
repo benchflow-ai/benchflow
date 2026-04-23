@@ -58,6 +58,7 @@ from benchflow._snapshot import list_snapshots, restore, snapshot
 from benchflow.sdk import SDK
 from benchflow.trial import Trial, TrialConfig
 from benchflow.trial import Role as TrialRole, Scene as TrialScene, Turn
+from benchflow.user import BaseUser, FunctionUser, PassthroughUser, RoundResult
 from benchflow.trial_yaml import trial_config_from_yaml
 from benchflow.skills import SkillInfo, discover_skills, install_skill, parse_skill
 from benchflow.trajectories.otel import OTelCollector
@@ -123,6 +124,11 @@ __all__ = [
     "TrialRole",
     "TrialScene",
     "Turn",
+    # User abstraction (progressive disclosure)
+    "BaseUser",
+    "FunctionUser",
+    "PassthroughUser",
+    "RoundResult",
     # SDK (backwards compat)
     "SDK",
     # Environments / dep staging
