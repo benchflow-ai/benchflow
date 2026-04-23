@@ -375,6 +375,21 @@ def _blocked_verifier_path_prefixes(
     return tuple(dict.fromkeys(prefixes))
 
 
+def _blocked_verifier_pythonpath_prefixes(
+    sandbox_user: str | None,
+) -> tuple[str, ...]:
+    """Paths blocked from verifier PYTHONPATH.
+
+    Unlike PATH, the workspace is NOT blocked: PYTHONPATH entries like /app
+    are set by the Dockerfile for project imports, and the workspace is
+    already importable via CWD/pytest sys.path insertion regardless.
+    """
+    prefixes = list(_RUNTIME_PATH_PREFIXES)
+    if sandbox_user:
+        prefixes.append(f"/home/{sandbox_user}")
+    return tuple(dict.fromkeys(prefixes))
+
+
 def _merge_trusted_verifier_path(extras: list[str]) -> str:
     """Prepend validated image PATH entries to the verifier allowlist."""
     kept: list[str] = []
@@ -539,6 +554,31 @@ async def _trusted_verifier_path(
     return _merge_trusted_verifier_path([e for e in extras if isinstance(e, str)])
 
 
+async def _trusted_verifier_pythonpath(
+    env, sandbox_user: str | None,
+) -> str:
+    """Return filtered PYTHONPATH preserving only trusted image entries.
+
+    Same root-owned, non-world-writable validation as PATH, but does not
+    block the workspace — it is already importable via CWD/pytest and
+    is chowned to root before verification.
+    """
+    pp_result = await env.exec("printenv PYTHONPATH", user="root", timeout_sec=10)
+    raw_pp = (pp_result.stdout or "").strip()
+    if not raw_pp:
+        return ""
+    blocked = _blocked_verifier_pythonpath_prefixes(sandbox_user)
+    cmd = _trusted_path_extras_cmd(raw_pp, blocked)
+    result = await env.exec(cmd, user="root", timeout_sec=10)
+    try:
+        extras = _json.loads(result.stdout or "[]")
+    except _json.JSONDecodeError:
+        return ""
+    if not isinstance(extras, list):
+        return ""
+    return ":".join(e for e in extras if isinstance(e, str))
+
+
 # Wipe and recreate /logs/verifier/ before the verifier runs.
 # rm -rf severs hardlinks, removes symlink replacements, and eliminates
 # variant filenames/subdirs the agent may have pre-staged.
@@ -668,6 +708,7 @@ async def harden_before_verify(
     await env.exec(CLEANUP_CMD, user="root", timeout_sec=10)
 
     hardened_path = await _trusted_verifier_path(env, sandbox_user, workspace)
+    hardened_pythonpath = await _trusted_verifier_pythonpath(env, sandbox_user)
     distro_env = await _distro_pip_env(env)
 
     verifier_env = dict(VERIFIER_ENV)
@@ -679,6 +720,7 @@ async def harden_before_verify(
     # plugin loading, or inject code via breakpoint()/coverage/Django/Celery
     # startup hooks.
     verifier_env["PATH"] = hardened_path
+    verifier_env["PYTHONPATH"] = hardened_pythonpath
     verifier_env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
     verifier_env["PYTHONBREAKPOINT"] = "0"
     verifier_env["COVERAGE_PROCESS_START"] = ""
