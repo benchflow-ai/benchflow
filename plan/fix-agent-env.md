@@ -58,9 +58,9 @@ Pushing `agent_env` into `Role` at construction time would conflate config-level
 
 ## Tasks
 
-- [ ] Fix `connect_as()` env merging in `trial.py:641`
-- [ ] Add regression test for env propagation
-- [ ] Run test suite (`pytest tests/` + `ty check src/`)
+- [x] Fix `connect_as()` env merging in `trial.py:641`
+- [x] Add regression test for env propagation
+- [x] Run test suite (`pytest tests/` + `ty check src/`)
 
 ## Risk
 

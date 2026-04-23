@@ -638,7 +638,10 @@ class Trial:
             env=self._env,
             agent=role.agent,
             agent_launch=AGENT_LAUNCH.get(role.agent, role.agent),
-            agent_env=resolve_agent_env(role.agent, role.model, role.env or None),
+            agent_env=resolve_agent_env(
+                role.agent, role.model,
+                {**(cfg.agent_env or {}), **(role.env or {})},
+            ),
             sandbox_user=cfg.sandbox_user,
             model=role.model,
             trial_dir=self._trial_dir,
