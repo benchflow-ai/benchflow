@@ -662,34 +662,41 @@ class TestVerifierEnv:
         )
         assert await _distro_pip_env(env) == {"PIP_PREFIX": "/usr/local"}
 
-    def test_pip_installed_pytest_plugin_inferred(self, tmp_path):
-        """`pip install pytest-asyncio` in test.sh auto-loads pytest_asyncio."""
-        from benchflow._sandbox import _plugins_from_verifier_script
+    @pytest.mark.asyncio
+    async def test_container_plugin_discovery_merged_into_addopts(self):
+        """Plugins discovered from root-owned container packages appear as -p flags."""
+        from benchflow._sandbox import harden_before_verify
 
-        task_dir = tmp_path / "task"
-        (task_dir / "tests").mkdir(parents=True)
-        (task_dir / "tests" / "test.sh").write_text(
-            "pip3 install --break-system-packages pytest==8.3.4 pytest-asyncio==0.24.0\n"
-            "pytest /tests/test_perf.py\n"
-        )
-        task = MagicMock()
-        task.task_dir = str(task_dir)
-        plugins = _plugins_from_verifier_script(task)
-        assert "pytest_asyncio" in plugins
+        def side_effect(cmd, **kwargs):
+            if "_DISCOVER_PYTEST" in str(cmd) or "importlib.metadata" in str(cmd):
+                return MagicMock(
+                    stdout='["benchmark", "xdist"]', stderr="", exit_code=0
+                )
+            return MagicMock(stdout="", stderr="", exit_code=0)
 
-    def test_pip_install_unrelated_mention_not_inferred(self, tmp_path):
-        """A bare mention of 'pytest-asyncio' in a comment must not auto-load it."""
-        from benchflow._sandbox import _plugins_from_verifier_script
+        env = _make_env(side_effect=side_effect)
+        task = _make_task()
+        await harden_before_verify(env, task, sandbox_user=None)
 
-        task_dir = tmp_path / "task"
-        (task_dir / "tests").mkdir(parents=True)
-        (task_dir / "tests" / "test.sh").write_text(
-            "# tests using pytest-asyncio decorators (already installed in image)\n"
-            "pytest /tests/test_perf.py\n"
-        )
-        task = MagicMock()
-        task.task_dir = str(task_dir)
-        assert _plugins_from_verifier_script(task) == []
+        addopts = task.config.verifier.env["PYTEST_ADDOPTS"]
+        assert "-p benchmark" in addopts
+        assert "-p xdist" in addopts
+
+    @pytest.mark.asyncio
+    async def test_plugin_discovery_failure_graceful(self):
+        """If container-side discovery fails, hardening proceeds without extra plugins."""
+        from benchflow._sandbox import VERIFIER_ENV, harden_before_verify
+
+        def side_effect(cmd, **kwargs):
+            if "importlib.metadata" in str(cmd):
+                raise RuntimeError("no python3")
+            return MagicMock(stdout="", stderr="", exit_code=0)
+
+        env = _make_env(side_effect=side_effect)
+        task = _make_task()
+        await harden_before_verify(env, task, sandbox_user=None)
+
+        assert task.config.verifier.env["PYTEST_ADDOPTS"] == VERIFIER_ENV["PYTEST_ADDOPTS"]
 
     @pytest.mark.asyncio
     async def test_distro_pip_env_ubuntu(self):
@@ -831,76 +838,19 @@ class TestVerifierEnv:
 
     @pytest.mark.asyncio
     async def test_per_task_plugins_appended_to_addopts(self):
-        """pytest_plugins are translated to -p flags; PYTEST_DISABLE_PLUGIN_AUTOLOAD must survive."""
+        """pytest_plugins from task.toml are translated to -p flags."""
         from benchflow._sandbox import harden_before_verify
 
         env = _make_env(side_effect=_manifest_env(_blank_manifest()))
         task = _make_task()
-        task.config.verifier.pytest_plugins = ["pytest-json-ctrf", "myplug"]
+        task.config.verifier.pytest_plugins = ["ctrf", "myplug"]
         await harden_before_verify(env, task, sandbox_user=None, workspace=None)
 
         final_env = task.config.verifier.env
         addopts = final_env.get("PYTEST_ADDOPTS", "")
         assert "-p ctrf" in addopts
         assert "-p myplug" in addopts
-        # The security flag must still be present after the plugin flags are appended.
         assert final_env.get("PYTEST_DISABLE_PLUGIN_AUTOLOAD") == "1"
-
-    @pytest.mark.asyncio
-    async def test_legacy_ctrf_script_gets_allowlisted_plugin(self, tmp_path):
-        """Legacy verifier scripts using --ctrf get -p ctrf without pytest autoload."""
-        from benchflow._sandbox import harden_before_verify
-
-        tests_dir = tmp_path / "tests"
-        tests_dir.mkdir()
-        (tests_dir / "test.sh").write_text(
-            "uvx --with pytest-json-ctrf==0.3.5 "
-            "pytest --ctrf /logs/verifier/ctrf.json /tests/test_outputs.py\n"
-        )
-        env = _make_env(side_effect=_manifest_env(_blank_manifest()))
-        task = _make_task()
-        task.task_dir = tmp_path
-        await harden_before_verify(env, task, sandbox_user=None, workspace=None)
-
-        final_env = task.config.verifier.env
-        assert "-p ctrf" in final_env["PYTEST_ADDOPTS"]
-        assert final_env.get("PYTEST_DISABLE_PLUGIN_AUTOLOAD") == "1"
-
-    @pytest.mark.asyncio
-    async def test_legacy_json_report_script_gets_allowlisted_plugin(self, tmp_path):
-        """Legacy verifier scripts using --json-report get the right import name."""
-        from benchflow._sandbox import harden_before_verify
-
-        tests_dir = tmp_path / "tests"
-        tests_dir.mkdir()
-        (tests_dir / "test.sh").write_text(
-            "pytest --json-report "
-            "--json-report-file=/logs/verifier/report.json /tests/test_outputs.py\n"
-        )
-        env = _make_env(side_effect=_manifest_env(_blank_manifest()))
-        task = _make_task()
-        task.task_dir = tmp_path
-        await harden_before_verify(env, task, sandbox_user=None, workspace=None)
-
-        assert "-p pytest_jsonreport" in task.config.verifier.env["PYTEST_ADDOPTS"]
-
-    @pytest.mark.asyncio
-    async def test_task_toml_pytest_plugins_fallback(self, tmp_path):
-        """Raw task.toml pytest_plugins work even if Harbor ignores the extra field."""
-        from benchflow._sandbox import harden_before_verify
-
-        (tmp_path / "task.toml").write_text(
-            '[verifier]\npytest_plugins = ["pytest_json_ctrf", "pytest-json-report"]\n'
-        )
-        env = _make_env(side_effect=_manifest_env(_blank_manifest()))
-        task = _make_task()
-        task.task_dir = tmp_path
-        task.config.verifier.pytest_plugins = None
-        await harden_before_verify(env, task, sandbox_user=None, workspace=None)
-
-        addopts = task.config.verifier.env["PYTEST_ADDOPTS"]
-        assert "-p ctrf" in addopts
-        assert "-p pytest_jsonreport" in addopts
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("plugins", [None, []])
@@ -964,7 +914,7 @@ class TestVerifierEnv:
         env = _make_env()
         task = _make_task()
         task.config.verifier.env = {"PYTEST_ADDOPTS": "--rootdir=/evil"}
-        task.config.verifier.pytest_plugins = ["pytest-json-ctrf"]
+        task.config.verifier.pytest_plugins = ["ctrf"]
         await harden_before_verify(env, task, sandbox_user=None)
 
         addopts = task.config.verifier.env["PYTEST_ADDOPTS"]
@@ -1166,19 +1116,17 @@ class TestVerifierEnv:
 class TestSandboxFailureModes:
     """Recovery paths when untrusted inputs (task.toml, PATH extras) are malformed."""
 
-    def test_harden_before_verify_survives_manifest_read_failure(self, tmp_path):
-        """Truncated task.toml must not propagate TOMLDecodeError; treat as no plugins."""
-        from benchflow._sandbox import _declared_pytest_plugins
+    @pytest.mark.asyncio
+    async def test_plugin_discovery_bad_json_graceful(self):
+        """Malformed JSON from container plugin discovery falls back gracefully."""
+        from benchflow._sandbox import _discover_pytest_plugin_flags
 
-        # Truncated inline-table → tomllib.TOMLDecodeError
-        (tmp_path / "task.toml").write_text(
-            "[verifier]\npytest_plugins = [\n",
-        )
+        env = _make_env(side_effect=lambda cmd, **kw: MagicMock(
+            stdout="not valid json", stderr="", exit_code=0
+        ))
         task = _make_task()
-        task.task_dir = str(tmp_path)
-        task.config.verifier.pytest_plugins = None
-
-        assert _declared_pytest_plugins(task) == []
+        flags = await _discover_pytest_plugin_flags(env, task)
+        assert flags == ""
 
     @pytest.mark.asyncio
     async def test_trusted_path_extras_malformed_json_falls_back(self):

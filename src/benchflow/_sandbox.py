@@ -16,7 +16,6 @@ import logging
 import os
 import re
 import shlex
-import tomllib
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -336,34 +335,26 @@ _SAFE_VERIFIER_PATH = VERIFIER_ENV["PATH"]
 _SAFE_VERIFIER_PATH_PARTS = tuple(_SAFE_VERIFIER_PATH.split(":"))
 _RUNTIME_PATH_PREFIXES = ("/tmp", "/var/tmp", "/logs", "/testbed")
 
-# pytest plugin names are not always the same as the PyPI distribution name
-# or the option they register. These aliases cover the common benchmark
-# verifier plugins while preserving PYTEST_DISABLE_PLUGIN_AUTOLOAD=1.
-_PYTEST_PLUGIN_ALIASES = {
-    "ctrf": "ctrf",
-    "pytest-json-ctrf": "ctrf",
-    "pytest_json_ctrf": "ctrf",
-    "pytest_json_ctrf.plugin": "ctrf",
-    "pytest-json-report": "pytest_jsonreport",
-    "pytest_json_report": "pytest_jsonreport",
-    "pytest_jsonreport": "pytest_jsonreport",
-    "pytest_jsonreport.plugin": "pytest_jsonreport",
-}
-_PYTEST_OPTION_PLUGINS = {
-    "--ctrf": "ctrf",
-    "--json-report": "pytest_jsonreport",
-    "--json-report-file": "pytest_jsonreport",
-}
-
-# Pytest plugins worth auto-loading when test.sh pip-installs them but the
-# task author forgot to declare pytest_plugins in task.toml. Map distribution
-# name (as it appears in `pip install pytest-foo`) to importable plugin name.
-_PYTEST_INSTALLED_PLUGINS = {
-    "pytest-asyncio": "pytest_asyncio",
-    "pytest-anyio": "anyio.pytest_plugin",
-    "pytest-trio": "pytest_trio",
-}
-_PIP_INSTALL_RE = re.compile(r"\bpip3?\s+install\b[^\n;|&]*", re.IGNORECASE)
+# Container-side script to enumerate pre-installed pytest11 entry points.
+# Only trusts plugins whose dist-info is in a root-owned directory — blocks
+# editable installs from agent-writable workspace paths.
+_DISCOVER_PYTEST_PLUGINS_SCRIPT = r"""
+import json, os, sys
+try:
+    from importlib.metadata import entry_points
+    safe = []
+    for ep in entry_points(group='pytest11'):
+        try:
+            dist_path = str(ep.dist._path.parent)
+            st = os.stat(dist_path)
+            if st.st_uid == 0:
+                safe.append(ep.name)
+        except Exception:
+            pass
+    print(json.dumps(sorted(set(safe))))
+except Exception:
+    print("[]")
+""".strip()
 
 
 def _under_path(path: str, prefix: str) -> bool:
@@ -451,76 +442,36 @@ def _trusted_path_extras_cmd(raw_path: str, blocked_prefixes: tuple[str, ...]) -
     )
 
 
-def _normalize_pytest_plugin(name: object) -> str | None:
-    """Return the importable pytest plugin name for a task declaration."""
-    if not isinstance(name, str):
-        return None
-    clean = name.strip()
-    if not clean:
-        return None
-    return _PYTEST_PLUGIN_ALIASES.get(clean, clean)
+async def _discover_pytest_plugin_flags(env, task: "Task") -> str:
+    """Auto-discover pytest plugins from root-owned system packages.
 
-
-def _plugins_from_verifier_script(task: "Task") -> list[str]:
-    """Infer known pytest plugins needed by legacy verifier scripts.
-
-    Older SkillsBench/TB2 tasks predate task-level pytest plugin metadata and
-    call options such as --ctrf directly from tests/test.sh. With pytest entry
-    point autoload disabled, those options must be backed by explicit -p flags.
+    Runs a container-side script that enumerates pytest11 entry points and
+    filters to only those whose dist-info is in a root-owned directory.
+    Falls back to task.toml pytest_plugins declarations if discovery fails.
+    Replaces the previous hand-curated whitelist mechanism.
     """
-    task_dir = getattr(task, "task_dir", None)
-    if not isinstance(task_dir, (str, os.PathLike)):
-        return []
-    test_sh = Path(task_dir) / "tests" / "test.sh"
-    try:
-        content = test_sh.read_text()
-    except OSError:
-        return []
-
     plugins: list[str] = []
-    for option, plugin in _PYTEST_OPTION_PLUGINS.items():
-        if option in content and plugin not in plugins:
-            plugins.append(plugin)
-    # Detect pip-installed pytest plugins so PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
-    # doesn't silently drop them. Only matches the exact installer line so
-    # arbitrary text mentioning the plugin name is ignored.
-    for match in _PIP_INSTALL_RE.findall(content):
-        for dist, plugin in _PYTEST_INSTALLED_PLUGINS.items():
-            if dist in match and plugin not in plugins:
-                plugins.append(plugin)
-    return plugins
 
+    # Container-side auto-discovery
+    try:
+        result = await env.exec(
+            f"python3 -c {shlex.quote(_DISCOVER_PYTEST_PLUGINS_SCRIPT)}",
+            user="root", timeout_sec=15,
+        )
+        discovered = _json.loads(result.stdout or "[]")
+        if isinstance(discovered, list):
+            plugins.extend(p for p in discovered if isinstance(p, str) and p.strip())
+        logger.info(f"Discovered {len(plugins)} pytest plugins from container")
+    except Exception as e:
+        logger.warning(f"Pytest plugin discovery failed, using task.toml fallback: {e}")
 
-def _declared_pytest_plugins(task: "Task") -> list[object]:
-    """Return pytest_plugins from the model, falling back to raw task.toml."""
+    # Merge task.toml declarations as fallback
     declared = getattr(task.config.verifier, "pytest_plugins", None)
     if declared:
-        return list(declared)
+        for name in declared:
+            if isinstance(name, str) and name.strip() and name.strip() not in plugins:
+                plugins.append(name.strip())
 
-    task_dir = getattr(task, "task_dir", None)
-    if not isinstance(task_dir, (str, os.PathLike)):
-        return []
-    config_path = Path(task_dir) / "task.toml"
-    try:
-        data = tomllib.loads(config_path.read_text())
-    except (OSError, tomllib.TOMLDecodeError):
-        return []
-    plugins = data.get("verifier", {}).get("pytest_plugins", [])
-    if isinstance(plugins, list):
-        return plugins
-    return []
-
-
-def _pytest_plugin_flags(task: "Task") -> str:
-    """Build deterministic -p flags for inferred and declared pytest plugins."""
-    plugins: list[str] = []
-    for plugin in _plugins_from_verifier_script(task):
-        if plugin not in plugins:
-            plugins.append(plugin)
-    for plugin in _declared_pytest_plugins(task):
-        normalized = _normalize_pytest_plugin(plugin)
-        if normalized and normalized not in plugins:
-            plugins.append(normalized)
     return " ".join(f"-p {shlex.quote(p)}" for p in plugins)
 
 
@@ -730,11 +681,10 @@ async def harden_before_verify(
     verifier_env["COVERAGE_PROCESS_START"] = ""
     verifier_env["DJANGO_SETTINGS_MODULE"] = ""
     verifier_env["CELERY_CONFIG_MODULE"] = ""
-    # Re-enable known verifier plugins by appending -p flags to the hardened
-    # base — never to a task-supplied PYTEST_ADDOPTS. Legacy task sets are
-    # inferred from tests/test.sh; newer tasks may declare pytest_plugins.
+    # Auto-discover pytest plugins from root-owned system packages and
+    # task.toml declarations. Appends -p flags to the hardened base.
     base_addopts = VERIFIER_ENV["PYTEST_ADDOPTS"]
-    flags = _pytest_plugin_flags(task)
+    flags = await _discover_pytest_plugin_flags(env, task)
     if flags:
         verifier_env["PYTEST_ADDOPTS"] = base_addopts + f" {flags}"
     else:
