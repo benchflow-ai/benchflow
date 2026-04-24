@@ -152,7 +152,7 @@ class TestHardenSequence:
         assert "sitecustomize.py" in cleanup_cmd and ".pth" in cleanup_cmd
         assert "-not -path '/tests/*'" in cleanup_cmd
         injected = task.config.verifier.env
-        assert "--rootdir=/tests" in injected["PYTEST_ADDOPTS"]
+        assert "--rootdir" not in injected["PYTEST_ADDOPTS"]
         assert "-p no:cacheprovider" in injected["PYTEST_ADDOPTS"]
         assert injected["PYTHONPATH"] == ""
         assert "PYTHONHOME" not in injected  # breaks Py_Initialize if set to ""
@@ -171,7 +171,7 @@ class TestHardenSequence:
         assert all("pkill" not in c for c in cmds)
         assert any("conftest.py" in c for c in cmds)
         addopts = task.config.verifier.env["PYTEST_ADDOPTS"]
-        assert "--rootdir=/tests" in addopts
+        assert "--rootdir" not in addopts
         assert "-p no:cacheprovider" in addopts
 
     @pytest.mark.asyncio
@@ -629,7 +629,7 @@ class TestVerifierEnv:
 
         assert "-c /dev/null" in addopts
         assert "--confcutdir=/tests" in addopts
-        assert "--rootdir=/tests" in addopts
+        assert "--rootdir" not in addopts
         assert "-p no:cacheprovider" in addopts
         assert (
             "PYTHONSAFEPATH" not in VERIFIER_ENV

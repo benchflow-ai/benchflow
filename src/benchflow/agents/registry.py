@@ -335,7 +335,6 @@ AGENTS: dict[str, AgentConfig] = {
         # not just "gemini-3.1-pro-preview".
         env_mapping={
             "BENCHFLOW_PROVIDER_BASE_URL": "OPENAI_BASE_URL",
-            "BENCHFLOW_PROVIDER_API_KEY": "ANTHROPIC_API_KEY",
         },
     ),
     "openhands": AgentConfig(

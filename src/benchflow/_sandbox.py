@@ -293,7 +293,6 @@ VERIFIER_ENV: dict[str, str] = {
     "PYTEST_ADDOPTS": (
         "-c /dev/null "  # block pyproject.toml/pytest.ini/tox.ini/setup.cfg discovery
         "--confcutdir=/tests "  # block conftest.py walk-up beyond /tests
-        "--rootdir=/tests "
         "-p no:cacheprovider"
     ),
     # Block pytest11 entry-point plugins. An agent can modify a pre-installed
@@ -336,11 +335,8 @@ _SAFE_VERIFIER_PATH_PARTS = tuple(_SAFE_VERIFIER_PATH.split(":"))
 _RUNTIME_PATH_PREFIXES = ("/tmp", "/var/tmp", "/logs", "/testbed")
 
 # Container-side script to enumerate pre-installed pytest11 entry points.
-# Only trusts plugins whose dist-info is in a root-owned directory — blocks
-# editable installs from agent-writable workspace paths.
-# Container-side script to enumerate pre-installed pytest11 entry points.
-# Runs after sandbox_user processes are killed, so agent cannot install new
-# packages between enumeration and verification. The sandbox_user cannot
+# Runs after sandbox_user processes are killed, so the agent cannot install
+# new packages between enumeration and verification. The sandbox_user cannot
 # pip install (not root), so all discovered plugins are image-authored.
 _DISCOVER_PYTEST_PLUGINS_SCRIPT = r"""
 import json, sys
@@ -563,7 +559,7 @@ async def _trusted_verifier_pythonpath(
     block the workspace — it is already importable via CWD/pytest and
     is chowned to root before verification.
     """
-    pp_result = await env.exec("printenv PYTHONPATH", user="root", timeout_sec=10)
+    pp_result = await env.exec("printenv PYTHONPATH 2>/dev/null || true", user="root", timeout_sec=10)
     raw_pp = (pp_result.stdout or "").strip()
     if not raw_pp:
         return ""

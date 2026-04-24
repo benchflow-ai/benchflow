@@ -533,10 +533,9 @@ class Trial:
         from benchflow._sandbox import CLEANUP_CMD
 
         self._trial_paths.verifier_dir.mkdir(parents=True, exist_ok=True)
-        # Clean verifier output dir
+        # Clean verifier output dir — chmod 777 so non-root verifier processes can write
         await self._env.exec(
-            "rm -rf /logs/verifier && mkdir -p /logs/verifier && "
-            "chown root:root /logs/verifier",
+            "rm -rf /logs/verifier && mkdir -p /logs/verifier && chmod 777 /logs/verifier",
             user="root", timeout_sec=10,
         )
         # Purge agent-injected conftest/sitecustomize/.pth without
@@ -793,11 +792,16 @@ class Trial:
         user = cfg.user
         assert user is not None
 
+        if len(cfg.effective_scenes) > 1:
+            raise ValueError(
+                "User-driven loops operate on a single scene. "
+                f"Got {len(cfg.effective_scenes)} scenes."
+            )
         scene = cfg.effective_scenes[0]
-        if len(scene.roles) > 1:
+        if len(scene.roles) != 1:
             raise ValueError(
                 "User-driven loops require a single-role scene. "
-                "Multi-role scenes with a User are not yet supported."
+                f"Got {len(scene.roles)} roles."
             )
         role = scene.roles[0]
 
@@ -862,8 +866,21 @@ class Trial:
             )
 
             # Soft verify: run tests after agent disconnected but before
-            # next round. Purges conftest/pth but skips full hardening.
-            rewards, verifier_output, verifier_error = await self.soft_verify()
+            # next round. Temporarily restore /solution so the verifier can
+            # access it, then re-hide before the next agent round.
+            if cfg.oracle_access:
+                await self._env.exec(
+                    "mv /solution_oracle_backup /solution 2>/dev/null || true",
+                    user="root", timeout_sec=10,
+                )
+            try:
+                rewards, verifier_output, verifier_error = await self.soft_verify()
+            finally:
+                if cfg.oracle_access:
+                    await self._env.exec(
+                        "mv /solution /solution_oracle_backup 2>/dev/null || true",
+                        user="root", timeout_sec=10,
+                    )
 
             round_result = RoundResult(
                 round=round_num,

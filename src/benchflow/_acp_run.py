@@ -76,7 +76,9 @@ def _format_acp_model(model: str, agent: str) -> str:
     for substring, provider in _MODELSDEV_PROVIDER_HEURISTICS:
         if substring in m:
             return f"{provider}/{bare}"
-    # Unknown model family — default to anthropic (most common)
+    logger.warning(
+        "Cannot infer models.dev provider for %r — defaulting to anthropic/", bare
+    )
     return f"anthropic/{bare}"
 
 

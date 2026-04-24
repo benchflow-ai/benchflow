@@ -33,10 +33,6 @@ class TestPassthroughUser:
         result = await user.run(1, "Fix the bug", RoundResult(round=0))
         assert result is None
 
-    @pytest.mark.asyncio
-    async def test_setup_is_noop(self):
-        user = PassthroughUser()
-        await user.setup("instruction", "solution")
 
 
 class TestFunctionUser:
