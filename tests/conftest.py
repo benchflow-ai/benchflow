@@ -1,12 +1,17 @@
 """Test fixtures."""
 
 import json
+import sys
 from datetime import datetime
 from pathlib import Path
 
 import pytest
 
 REPO_ROOT = Path(__file__).parent.parent
+SRC_ROOT = REPO_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
 REF_TASKS = REPO_ROOT / ".ref" / "harbor" / "examples" / "tasks"
 
 

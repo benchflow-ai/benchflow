@@ -199,6 +199,13 @@ def resolve_agent_env(
     if model:
         inject_vertex_credentials(agent_env, model)
         resolve_provider_env(agent_env, model, agent)
+        if agent_cfg and agent_cfg.env_mapping:
+            for src, dst in agent_cfg.env_mapping.items():
+                if src in agent_env and dst not in explicit_agent_env_keys:
+                    # Provider resolution must override unrelated host-native
+                    # vars auto-inherited from the environment, but preserve
+                    # explicit agent_env overrides supplied by the caller.
+                    agent_env[dst] = agent_env[src]
         # Validate required API key for the chosen model
         from benchflow.agents.registry import infer_env_key_for_model
 

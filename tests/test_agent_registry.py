@@ -5,6 +5,7 @@ Negative invariants ("agent X should NOT have feature Y configured") live in
 test_registry_invariants.py — search there for the consolidated tripwire.
 """
 
+from benchflow._agent_env import resolve_provider_env
 from benchflow.agents.providers import PROVIDERS
 from benchflow.agents.registry import AGENTS
 
@@ -37,8 +38,18 @@ class TestEnvMappingField:
         cfg = AGENTS["openhands"]
         assert cfg.env_mapping["BENCHFLOW_PROVIDER_BASE_URL"] == "LLM_BASE_URL"
         assert cfg.env_mapping["BENCHFLOW_PROVIDER_API_KEY"] == "LLM_API_KEY"
-        assert cfg.env_mapping["BENCHFLOW_PROVIDER_MODEL"] == "LLM_MODEL"
+        # OpenHands model is normalized in _normalize_openhands_model().
+        assert "BENCHFLOW_PROVIDER_MODEL" not in cfg.env_mapping
 
+    def test_openhands_normalizes_model(self):
+        env = {}
+        resolve_provider_env(
+            agent="openhands",
+            model="zai/glm-5",
+            agent_env=env,
+        )
+
+        assert env["LLM_MODEL"] == "glm-5"
 
 class TestOpenHandsConfig:
     def test_openhands_uses_agentskills_paths(self):
