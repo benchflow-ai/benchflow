@@ -361,7 +361,6 @@ AGENTS: dict[str, AgentConfig] = {
         env_mapping={
             "BENCHFLOW_PROVIDER_BASE_URL": "LLM_BASE_URL",
             "BENCHFLOW_PROVIDER_API_KEY": "LLM_API_KEY",
-            "BENCHFLOW_PROVIDER_MODEL": "LLM_MODEL",
         },
         supports_acp_set_model=False,
     ),

@@ -26,6 +26,12 @@ from benchflow.agents.registry import AGENTS
 
 logger = logging.getLogger(__name__)
 
+_AUTH_CONTEXT_GROUPS = (
+    frozenset({"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"}),
+    frozenset({"GEMINI_API_KEY", "GOOGLE_API_KEY"}),
+)
+_EXPLICIT_AGENT_NATIVE_BRIDGE_KEYS = frozenset({"LLM_API_KEY"})
+
 
 def _normalize_openhands_model(model: str) -> str:
     """Translate benchflow model IDs to OpenHands/LiteLLM model IDs.
@@ -153,7 +159,7 @@ def resolve_provider_env(
             if src in agent_env:
                 agent_env.setdefault(dst, agent_env[src])
     if agent == "openhands":
-        agent_env["LLM_MODEL"] = _normalize_openhands_model(model)
+        agent_env.setdefault("LLM_MODEL", _normalize_openhands_model(model))
 
 
 def check_subscription_auth(agent: str, required_key: str) -> bool:
@@ -167,6 +173,18 @@ def check_subscription_auth(agent: str, required_key: str) -> bool:
     return Path(sa.detect_file).expanduser().is_file()
 
 
+def _shares_auth_context(required_key: str | None, candidate_key: str | None) -> bool:
+    """True when both keys represent the same provider auth context."""
+    if not required_key or not candidate_key:
+        return False
+    if required_key == candidate_key:
+        return True
+    return any(
+        required_key in group and candidate_key in group
+        for group in _AUTH_CONTEXT_GROUPS
+    )
+
+
 def resolve_agent_env(
     agent: str,
     model: str | None,
@@ -174,7 +192,9 @@ def resolve_agent_env(
 ) -> dict[str, str]:
     """Resolve agent environment: auto-inherit keys, provider vars, env_mapping."""
     agent_env = dict(agent_env or {})
+    explicit_agent_env_keys = set(agent_env)
     auto_inherit_env(agent_env)
+    pre_provider_env = dict(agent_env)
     agent_cfg = AGENTS.get(agent)
     if model:
         inject_vertex_credentials(agent_env, model)
@@ -189,16 +209,29 @@ def resolve_agent_env(
             else None
         )
         has_agent_native_bridge_key = bool(
-            mapped_provider_key and mapped_provider_key in agent_env
+            mapped_provider_key
+            and pre_provider_env.get(mapped_provider_key)
+            and (
+                _shares_auth_context(required_key, mapped_provider_key)
+                or (
+                    mapped_provider_key in _EXPLICIT_AGENT_NATIVE_BRIDGE_KEYS
+                    and mapped_provider_key in explicit_agent_env_keys
+                )
+            )
         )
         if has_agent_native_bridge_key:
-            # Agent-native credential var can satisfy provider auth checks.
+            # Only pre-existing same-provider aliases or explicit generic bridge
+            # keys can satisfy provider auth. Values synthesized by env_mapping
+            # or inherited from another provider context must not bypass the
+            # model's required credential.
             agent_env.setdefault(
                 "BENCHFLOW_PROVIDER_API_KEY",
-                agent_env[mapped_provider_key],
+                pre_provider_env[mapped_provider_key],
             )
-        # CLAUDE_CODE_OAUTH_TOKEN is an alternative auth path for Claude agents
-        has_oauth = "CLAUDE_CODE_OAUTH_TOKEN" in agent_env or "ANTHROPIC_AUTH_TOKEN" in agent_env
+        has_oauth = any(
+            key in agent_env and _shares_auth_context(required_key, key)
+            for key in ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN")
+        )
         if (
             required_key
             and required_key not in agent_env
