@@ -1,6 +1,5 @@
 """Evaluate contract risk analysis quality."""
 import json
-import sys
 
 ANALYSIS_PATH = "/app/analysis.json"
 REWARD_PATH = "/logs/verifier/reward.txt"

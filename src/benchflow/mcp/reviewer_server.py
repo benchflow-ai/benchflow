@@ -24,8 +24,6 @@ import asyncio
 import json
 import logging
 import os
-import subprocess
-import sys
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -52,11 +50,11 @@ def create_reviewer_server(
     """
     try:
         from fastmcp import FastMCP
-    except ImportError:
+    except ImportError as e:
         raise ImportError(
             "fastmcp required for MCP reviewer server. "
             "Install with: pip install fastmcp"
-        )
+        ) from e
 
     mcp = FastMCP("benchflow-reviewer")
     prompt = review_prompt or os.environ.get("REVIEWER_PROMPT", DEFAULT_REVIEW_PROMPT)

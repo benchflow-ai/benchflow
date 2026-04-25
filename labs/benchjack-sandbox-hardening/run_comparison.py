@@ -136,7 +136,7 @@ def main() -> int:
         return 1
 
     n = len(PATTERNS)
-    total_steps = 2 + 2 * n  # 2 venvs + 2 versions × n patterns
+    total_steps = 2 + 2 * n  # 2 venvs + 2 versions x n patterns
 
     print(f"[1/{total_steps}] venv: benchflow==0.2.0 (PyPI)")
     _create_venv(VENVS_DIR / "bf-0.2.0", ["benchflow==0.2.0"])

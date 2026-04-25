@@ -18,9 +18,6 @@ Run:
 """
 
 import os
-import sys
-import json
-from pathlib import Path
 
 # ── The contract (constructed here, no external files) ──────────────
 

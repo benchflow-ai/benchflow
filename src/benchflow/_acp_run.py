@@ -18,6 +18,7 @@ Does not own:
 """
 
 import asyncio
+import contextlib
 import logging
 from pathlib import Path
 
@@ -66,7 +67,6 @@ async def connect_acp(
         agent_launch = build_priv_drop_cmd(agent_launch, sandbox_user)
         logger.info(f"Agent sandboxed as: {sandbox_user}")
 
-    last_err: Exception | None = None
     acp_client: ACPClient | None = None
     for attempt in range(_ACP_CONNECT_MAX_RETRIES + 1):
         if attempt > 0:
@@ -106,12 +106,9 @@ async def connect_acp(
         except ConnectionError as e:
             # Close the failed client before retrying
             if acp_client:
-                try:
+                with contextlib.suppress(Exception):
                     await acp_client.close()
-                except Exception:
-                    pass
                 acp_client = None
-            last_err = e
             if attempt == _ACP_CONNECT_MAX_RETRIES:
                 raise
             logger.warning(f"ACP connect failed (attempt {attempt + 1}): {e}")
@@ -119,10 +116,8 @@ async def connect_acp(
         except Exception:
             # Non-retryable error — close client to prevent leak
             if acp_client:
-                try:
+                with contextlib.suppress(Exception):
                     await acp_client.close()
-                except Exception:
-                    pass
             raise
 
     if model:

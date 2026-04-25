@@ -21,11 +21,9 @@ The classes below pin each layer at the right altitude:
 
 from __future__ import annotations
 
-import importlib
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-import pytest
 from typer.testing import CliRunner
 
 
