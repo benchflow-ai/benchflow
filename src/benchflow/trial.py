@@ -141,6 +141,11 @@ class TrialConfig:
     jobs_dir: str | Path = "jobs"
     context_root: str | Path | None = None
     pre_agent_hooks: list | None = None
+    # Abort the prompt if no tool call arrives for this many seconds.
+    # Catches agents that hung silently while the local process is alive
+    # (e.g. gemini-cli not responding). None disables idle detection and
+    # falls back to the agent's wall-clock timeout (task.toml [agent]).
+    agent_idle_timeout: int | None = 600
 
     # User-driven progressive-disclosure loop
     user: BaseUser | None = None
@@ -483,6 +488,7 @@ class Trial:
             self._session,
             effective_prompts,
             self._timeout,
+            idle_timeout=self._config.agent_idle_timeout,
         )
 
         # trajectory and n_tool_calls are cumulative for this session.

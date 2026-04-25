@@ -186,17 +186,77 @@ async def execute_prompts(
     session,
     prompts: list[str],
     timeout: int,
+    idle_timeout: int | None = None,
 ) -> tuple[list[dict], int]:
-    """Send prompts via ACP and capture trajectory. Return (trajectory, n_tool_calls)."""
+    """Send prompts via ACP and capture trajectory. Return (trajectory, n_tool_calls).
+
+    timeout      — wall-clock budget for each prompt (full agent budget).
+    idle_timeout — abort the prompt if no tool call or message arrives for
+                   this many seconds. Catches agents that hung silently while
+                   the agent process is still alive (e.g. gemini-cli not
+                   responding). None disables idle detection.
+    """
     for i, prompt in enumerate(prompts):
         logger.info(f"Prompt {i + 1}/{len(prompts)}: {(prompt or '<instruction.md>')[:80]}...")
-        prompt_result = await asyncio.wait_for(
-            acp_client.prompt(prompt),
-            timeout=timeout,
-        )
+        if idle_timeout is None:
+            prompt_result = await asyncio.wait_for(
+                acp_client.prompt(prompt),
+                timeout=timeout,
+            )
+        else:
+            prompt_result = await _prompt_with_idle_watchdog(
+                acp_client, session, prompt, timeout, idle_timeout
+            )
         logger.info(
             f"  → {prompt_result.stop_reason.value}, "
             f"{len(session.tool_calls)} total tool calls"
         )
     trajectory = _capture_session_trajectory(session)
     return trajectory, len(session.tool_calls)
+
+
+async def _prompt_with_idle_watchdog(
+    acp_client: ACPClient,
+    session,
+    prompt: str,
+    timeout: int,
+    idle_timeout: int,
+):
+    """Run acp_client.prompt() with both a wall-clock and an idle watchdog.
+
+    The watchdog polls session.tool_calls every few seconds and aborts if no
+    progress was made in idle_timeout. This catches agents that hung silently
+    while the local process is still alive (no output to stdout, no tool calls
+    appended).
+    """
+    prompt_task = asyncio.create_task(acp_client.prompt(prompt))
+    last_progress = asyncio.get_event_loop().time()
+    last_count = len(session.tool_calls)
+    poll_interval = min(30, max(5, idle_timeout // 4))
+    deadline = last_progress + timeout
+
+    while not prompt_task.done():
+        await asyncio.sleep(poll_interval)
+        now = asyncio.get_event_loop().time()
+        cur_count = len(session.tool_calls)
+        if cur_count > last_count:
+            last_progress = now
+            last_count = cur_count
+        if now - last_progress >= idle_timeout:
+            prompt_task.cancel()
+            with contextlib.suppress(BaseException):
+                await prompt_task
+            raise TimeoutError(
+                f"Agent idle for {idle_timeout}s with no new tool call "
+                f"(last activity {int(now - last_progress)}s ago, "
+                f"{cur_count} tool calls so far)"
+            )
+        if now > deadline:
+            prompt_task.cancel()
+            with contextlib.suppress(BaseException):
+                await prompt_task
+            raise TimeoutError(
+                f"Agent prompt exceeded wall-clock budget {timeout}s"
+            )
+
+    return prompt_task.result()

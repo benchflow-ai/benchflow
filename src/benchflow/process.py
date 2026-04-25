@@ -78,7 +78,22 @@ class LiveProcess(ABC):
                 except Exception:
                     logger.debug("Could not read stderr from closed process")
             rc = self._process.returncode if self._process else None
-            msg = f"Process closed stdout (rc={rc})"
+            # Diagnose: rc=None with closed stdout usually means the *transport*
+            # died (SSH/Daytona idle sleep, container killed) while the local
+            # subprocess wrapper is still alive. rc set means the local process
+            # actually exited. Surfacing the distinction makes the failure
+            # actionable instead of cryptic.
+            pid = self._process.pid if self._process else None
+            if rc is None:
+                hint = (
+                    f"Local subprocess (pid={pid}) is still alive but its "
+                    "stdout/transport closed. This usually means the remote "
+                    "container or SSH session was killed (e.g. Daytona idle "
+                    "sleep, agent hung with no output)."
+                )
+            else:
+                hint = f"Local subprocess exited with rc={rc} before stdout closed."
+            msg = f"Process closed stdout (rc={rc}): {hint}"
             if stderr_text:
                 msg += f"\nstderr: {stderr_text[:_DIAG_TRUNCATE]}"
             raise ConnectionError(msg)

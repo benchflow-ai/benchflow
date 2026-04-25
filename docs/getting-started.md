@@ -7,7 +7,7 @@ A 5-minute path from install to first eval.
 - Python 3.12+
 - [`uv`](https://docs.astral.sh/uv/) (recommended) or `pip`
 - Docker (for local sandboxes) and/or `DAYTONA_API_KEY` (for cloud sandboxes)
-- An API key or subscription auth for at least one agent (Anthropic, Gemini, OpenAI, etc.)
+- An API key or subscription/OAuth auth for at least one agent (see below)
 
 ## Install
 
@@ -22,6 +22,26 @@ git clone https://github.com/benchflow-ai/benchflow
 cd benchflow
 uv venv -p 3.12 .venv && uv pip install -e ".[dev]"
 ```
+
+## Auth: OAuth / subscription login (no API key)
+
+If you already have a Claude / Codex / Gemini CLI subscription, benchflow can pick up your existing OAuth credentials from the host — no API key billing required. Three agents support this today:
+
+| Agent | How to log in on the host | What benchflow detects | Replaces env var |
+|-------|---------------------------|------------------------|------------------|
+| `claude-agent-acp` | `claude login` (Claude Code CLI) | `~/.claude/.credentials.json` | `ANTHROPIC_API_KEY` |
+| `codex-acp` | `codex --login` (Codex CLI) | `~/.codex/auth.json` | `OPENAI_API_KEY` |
+| `gemini` | `gemini` (interactive login flow) | `~/.gemini/oauth_creds.json` | `GEMINI_API_KEY` |
+
+When benchflow finds the detect file on the host, it copies the auth files into the sandbox and skips the API-key check. You'll see a log line like:
+
+```
+Using host subscription auth (no ANTHROPIC_API_KEY set)
+```
+
+If both an env var and OAuth login exist, the env var wins. To force OAuth, `unset ANTHROPIC_API_KEY` before running.
+
+For other agents, set the API key env var (`GEMINI_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `LLM_API_KEY` for OpenHands, etc.). benchflow auto-inherits well-known keys from your shell environment.
 
 ## Run your first eval
 
