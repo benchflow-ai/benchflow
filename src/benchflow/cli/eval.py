@@ -1,7 +1,12 @@
 """`bf eval` — the benchflow eval-runner command group.
 
-The future-facing entry point for running evaluations. Anthropic-style shape:
-resource creation, one command, return the result or a job-id.
+NOTE: This module is **not wired into the live CLI**.  The active
+``bench eval create`` command dispatches to ``cli/main.py:eval_create``.
+This file is kept as the future-facing design for the eval sub-command
+and must not be imported by ``cli/main.py`` (see
+``test_oracle_chokepoint.py::TestEvalModuleNotWiredIntoCLI``).
+
+Design shape — Anthropic-style resource creation:
 
     bf eval create <task-ref> [flags]
         One-shot eval — creates an Agent + Environment + Trajectory under
@@ -14,9 +19,6 @@ resource creation, one command, return the result or a job-id.
 
     bf eval list          Show recent eval runs (reads the jobs/ dir)
     bf eval retrieve ID   Look up a specific trajectory by trial name
-
-Replaces `bf run` + `bf job` as the idiomatic way to run evals. `bf run`
-stays around as a deprecated alias for one release.
 """
 
 from __future__ import annotations
@@ -29,7 +31,8 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from benchflow.job import DEFAULT_AGENT, DEFAULT_MODEL
+from benchflow.job import DEFAULT_AGENT
+from benchflow.job import effective_model as _effective_model
 
 console = Console()
 
@@ -228,12 +231,12 @@ def _run_single(
     from benchflow.sdk import SDK
 
     sdk = SDK()
-    effective_model = None if agent == "oracle" else (model or DEFAULT_MODEL)
+    eff_model = _effective_model(agent, model)
     result = asyncio.run(
         sdk.run(
             task_path=task_dir,
             agent=agent,
-            model=effective_model,
+            model=eff_model,
             environment=environment,
             prompts=cast("list[str | None] | None", prompt),
             agent_env=agent_env,
@@ -269,10 +272,10 @@ def _run_batch(
 ) -> None:
     from benchflow.job import Job, JobConfig, RetryConfig
 
-    effective_model = None if agent == "oracle" else (model or DEFAULT_MODEL)
+    eff_model = _effective_model(agent, model)
     config = JobConfig(
         agent=agent,
-        model=effective_model,
+        model=eff_model,
         environment=environment,
         concurrency=concurrency,
         retry=RetryConfig(max_retries=max_retries),

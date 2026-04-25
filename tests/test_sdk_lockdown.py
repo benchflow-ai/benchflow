@@ -261,7 +261,7 @@ class TestPrivDropCommand:
         import shlex
 
         cmd = build_priv_drop_cmd("agent --flag value", "agent")
-        inner = "export HOME=/home/agent && cd /home/agent && agent --flag value"
+        inner = "export HOME=/home/agent && agent --flag value"
         assert shlex.quote(inner) in cmd
 
     def test_single_quotes_in_launch(self):

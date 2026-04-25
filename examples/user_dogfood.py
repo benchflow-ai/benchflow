@@ -68,7 +68,7 @@ async def main():
     )
 
     print("Running progressive-disclosure trial on regex-log...")
-    print(f"  Agent: gemini/flash")
+    print("  Agent: gemini/flash")
     print(f"  Max rounds: {config.max_user_rounds}")
     print(f"  Environment: {config.environment}")
     print()

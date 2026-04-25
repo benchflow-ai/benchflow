@@ -10,7 +10,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from benchflow.job import DEFAULT_AGENT, DEFAULT_MODEL
+from benchflow.job import DEFAULT_AGENT, effective_model
 
 console = Console()
 
@@ -167,7 +167,7 @@ def job(
             jobs_dir=jobs_dir,
             config=JobConfig(
                 agent=agent,
-                model=model or DEFAULT_MODEL,
+                model=effective_model(agent, model),
                 environment=environment,
                 concurrency=concurrency,
                 retry=RetryConfig(max_retries=max_retries),
@@ -343,7 +343,7 @@ def eval(
         jobs_dir=jobs_dir,
         config=JobConfig(
             agent=agent,
-            model=model or DEFAULT_MODEL,
+            model=effective_model(agent, model),
             environment=environment,
             concurrency=concurrency,
             skills_dir=effective_skills,
@@ -433,9 +433,9 @@ def skills_eval(
         typer.Argument(help="Path to skill directory containing evals/evals.json"),
     ],
     agent: Annotated[
-        list[str],
+        list[str] | None,
         typer.Option("--agent", "-a", help="Agent(s) to evaluate (repeatable)"),
-    ] = ["claude-agent-acp"],
+    ] = None,
     model: Annotated[
         list[str] | None,
         typer.Option("--model", "-m", help="Model(s) (matched 1:1 with agents)"),
@@ -473,6 +473,8 @@ def skills_eval(
     """
     from benchflow.skill_eval import SkillEvaluator, export_gepa_traces
 
+    if agent is None:
+        agent = ["claude-agent-acp"]
     if not (skill_dir / "evals" / "evals.json").exists():
         console.print(
             f"[red]No evals/evals.json found in {skill_dir}[/red]\n"
@@ -754,19 +756,20 @@ def eval_create(
             f"({result.score:.1%})[/bold], errors={result.errored}"
         )
     elif tasks_dir:
+        eff_model = effective_model(agent, model)
         # Smart detection: if tasks_dir has task.toml, it's a single task
         if (tasks_dir / "task.toml").exists():
-            from benchflow.trial import Trial, TrialConfig, Scene
+            from benchflow.trial import Scene, Trial, TrialConfig
 
             config = TrialConfig(
                 task_path=tasks_dir,
-                scenes=[Scene.single(agent=agent, model=model or DEFAULT_MODEL,
+                scenes=[Scene.single(agent=agent, model=eff_model,
                                      skills_dir=str(skills_dir) if skills_dir else None)],
                 environment=environment,
                 sandbox_user=sandbox_user,
                 jobs_dir=jobs_dir,
                 agent=agent,
-                model=model or DEFAULT_MODEL,
+                model=eff_model,
                 skills_dir=str(skills_dir) if skills_dir else None,
             )
 
@@ -777,7 +780,7 @@ def eval_create(
             run_result = asyncio.run(_run())
             reward = (run_result.rewards or {}).get("reward")
             console.print(f"\n[bold]Task:[/bold] {tasks_dir.name}")
-            console.print(f"[bold]Agent:[/bold] {agent} ({model or DEFAULT_MODEL})")
+            console.print(f"[bold]Agent:[/bold] {agent} ({eff_model or 'no model'})")
             console.print(f"[bold]Reward:[/bold] {reward}")
             console.print(f"[bold]Tool calls:[/bold] {run_result.n_tool_calls}")
             if run_result.error:
@@ -789,7 +792,7 @@ def eval_create(
                 jobs_dir=jobs_dir,
                 config=JobConfig(
                     agent=agent,
-                    model=model or DEFAULT_MODEL,
+                    model=eff_model,
                     environment=environment,
                     concurrency=concurrency,
                     sandbox_user=sandbox_user,
@@ -915,7 +918,7 @@ def train_create(
                 jobs_dir=f"{jobs_dir}/sweep-{sweep_idx}",
                 config=JobConfig(
                     agent=agent,
-                    model=model or DEFAULT_MODEL,
+                    model=effective_model(agent, model),
                     environment=environment,
                     concurrency=concurrency,
                 ),

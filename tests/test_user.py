@@ -2,19 +2,15 @@
 
 from __future__ import annotations
 
-import asyncio
-import json
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from benchflow.trial import Role, Scene, Trial, TrialConfig, Turn
 from benchflow.user import BaseUser, FunctionUser, PassthroughUser, RoundResult
-
 
 # ── Unit tests for User types ──
 
@@ -282,7 +278,7 @@ class TestSoftVerify:
         with patch("harbor.Verifier") as MockVerifier, \
              patch("benchflow._sandbox.CLEANUP_CMD", "true"):
             mock_instance = MockVerifier.return_value
-            mock_instance.verify = AsyncMock(side_effect=asyncio.TimeoutError())
+            mock_instance.verify = AsyncMock(side_effect=TimeoutError())
 
             rewards, output, error = await trial.soft_verify()
 
@@ -299,7 +295,7 @@ class TestSoftVerify:
             mock_instance = MockVerifier.return_value
             mock_instance.verify = AsyncMock(side_effect=RuntimeError("boom"))
 
-            rewards, output, error = await trial.soft_verify()
+            rewards, _output, error = await trial.soft_verify()
 
         assert rewards is None
         assert "crashed" in error
@@ -316,7 +312,7 @@ class TestSoftVerify:
             mock_instance = MockVerifier.return_value
             mock_instance.verify = AsyncMock(return_value=mock_result)
 
-            rewards, output, error = await trial.soft_verify()
+            rewards, _output, error = await trial.soft_verify()
 
         assert rewards == {"exact_match": 1.0}
         assert error is None

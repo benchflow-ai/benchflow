@@ -218,7 +218,7 @@ class TestDryRunPipeline:
 
         # Verify trace files
         traces = list((gepa_dir / "traces").iterdir())
-        assert len(traces) == 4  # 2 cases × 2 modes
+        assert len(traces) == 4  # 2 cases x 2 modes
 
         # Verify trace content
         trace = json.loads(traces[0].read_text())
@@ -228,6 +228,7 @@ class TestDryRunPipeline:
 
     def test_cli_dryrun_loads_dataset(self, mock_skill):
         from typer.testing import CliRunner
+
         from benchflow.cli.main import app
 
         runner = CliRunner()

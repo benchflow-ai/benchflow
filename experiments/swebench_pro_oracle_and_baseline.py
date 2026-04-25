@@ -27,12 +27,10 @@ Results → experiments/swebench-pro-results.csv
 import argparse
 import asyncio
 import csv
-import json
 import logging
 import os
 import sys
 import time
-from datetime import datetime
 from pathlib import Path
 
 logging.basicConfig(
@@ -44,7 +42,7 @@ logger = logging.getLogger(__name__)
 sys.path.insert(0, str(Path(__file__).resolve().parents[0].parent / "src"))
 
 import benchflow as bf
-from benchflow.trial import Scene, Trial, TrialConfig
+from benchflow.trial import Scene, TrialConfig
 
 SWEBENCH_PRO_ROOT = Path(__file__).resolve().parents[1] / ".ref" / "swebenchpro"
 

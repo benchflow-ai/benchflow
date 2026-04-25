@@ -12,8 +12,9 @@ the sandbox.
 from __future__ import annotations
 
 import inspect
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Union, cast
+from typing import Any, cast
 
 
 @dataclass
@@ -83,7 +84,7 @@ class FunctionUser(BaseUser):
         self,
         fn: Callable[
             [int, str, RoundResult | None],
-            Union[str, None, Awaitable[str | None]],
+            str | None | Awaitable[str | None],
         ],
     ) -> None:
         self._fn = fn

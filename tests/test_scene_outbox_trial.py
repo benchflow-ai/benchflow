@@ -11,8 +11,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -325,7 +324,6 @@ async def test_heterogeneous_agent_install(coder_reviewer_scene: Scene) -> None:
     trial._resolved_prompts = ["Solve the task"]
 
     installed_agents: list[str] = []
-    original_connect_as = Trial.connect_as
 
     async def tracking_connect_as(self_inner, role):
         if role.agent != config.primary_agent:

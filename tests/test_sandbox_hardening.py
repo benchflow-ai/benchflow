@@ -1117,12 +1117,12 @@ class TestHardeningOptOuts:
     """Per-task [verifier.hardening] opt-outs from task.toml."""
 
     def test_defaults_when_no_task_dir(self):
-        from benchflow._sandbox import _read_hardening_config, HARDENING_DEFAULTS
+        from benchflow._sandbox import HARDENING_DEFAULTS, _read_hardening_config
 
         assert _read_hardening_config(None) == HARDENING_DEFAULTS
 
     def test_defaults_when_no_hardening_section(self, tmp_path):
-        from benchflow._sandbox import _read_hardening_config, HARDENING_DEFAULTS
+        from benchflow._sandbox import HARDENING_DEFAULTS, _read_hardening_config
 
         (tmp_path / "task.toml").write_text(
             "[verifier]\ntimeout_sec = 60\n"
@@ -1139,7 +1139,7 @@ class TestHardeningOptOuts:
         assert cfg["cleanup_conftests"] is False
 
     def test_unknown_key_logged_not_applied(self, tmp_path, caplog):
-        from benchflow._sandbox import _read_hardening_config, HARDENING_DEFAULTS
+        from benchflow._sandbox import HARDENING_DEFAULTS, _read_hardening_config
 
         (tmp_path / "task.toml").write_text(
             "[verifier.hardening]\nbogus_flag = true\n"

@@ -6,6 +6,7 @@ Usage:
     result = await evaluator.run(agents=["claude-agent-acp"], environment="docker")
 """
 
+import contextlib
 import json
 import logging
 import shutil
@@ -431,7 +432,7 @@ class SkillEvaluator:
             all_results: list[CaseResult] = []
 
             # Run each agent
-            for agent, model in zip(agents, models):
+            for agent, model in zip(agents, models, strict=False):
                 agent_label = agent.split("/")[-1] if "/" in agent else agent
 
                 # With-skill run
@@ -486,9 +487,9 @@ class SkillEvaluator:
         with_skill: bool,
     ) -> list[CaseResult]:
         """Run a batch of tasks using Job for concurrency and retries."""
-        from benchflow.job import Job, JobConfig, RetryConfig
-
         import os
+
+        from benchflow.job import Job, JobConfig, RetryConfig
         judge_env = {}
         for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY"):
             if os.environ.get(key):
@@ -506,7 +507,7 @@ class SkillEvaluator:
                 agent_env=judge_env,
             ),
         )
-        job_result = await j.run()
+        await j.run()
 
         results = []
         # Walk the jobs directory to collect per-case results
@@ -539,10 +540,8 @@ class SkillEvaluator:
                 # Read judge rubric details if available
                 judge_file = trial_dir / "verifier" / "judge_result.json"
                 if judge_file.exists():
-                    try:
+                    with contextlib.suppress(json.JSONDecodeError, KeyError):
                         rubric_results = json.loads(judge_file.read_text()).get("items")
-                    except (json.JSONDecodeError, KeyError):
-                        pass
 
                 results.append(
                     CaseResult(
@@ -579,7 +578,7 @@ class SkillEvaluator:
     ) -> list[AgentLift]:
         """Compute per-agent lift from case results."""
         lifts = []
-        for agent, model in zip(agents, models):
+        for agent, model in zip(agents, models, strict=False):
             with_results = [r for r in all_results if r.agent == agent and r.with_skill]
             baseline_results = [
                 r for r in all_results if r.agent == agent and not r.with_skill
