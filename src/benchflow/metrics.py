@@ -180,7 +180,7 @@ def collect_metrics(
     results_dir = Path(results_dir)
     best: dict[str, dict] = {}
 
-    for rfile in results_dir.rglob("result.json"):
+    for rfile in sorted(results_dir.rglob("result.json")):
         try:
             r = json.loads(rfile.read_text())
             task = r["task_name"]

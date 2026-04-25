@@ -111,7 +111,7 @@ class TestLoadEvalDataset:
         ds = load_eval_dataset(skill_dir)
         assert ds.skill_name == "calculator"
         assert len(ds.cases) == 2
-        assert ds.judge_model == "gemini-3.1-flash-lite"
+        assert ds.judge_model == "claude-haiku-4-5-20251001"
         assert ds.timeout_sec == 120
 
     def test_parses_cases(self, skill_dir):
@@ -133,7 +133,7 @@ class TestLoadEvalDataset:
     def test_missing_evals_json(self, tmp_path):
         skill = tmp_path / "no-evals"
         skill.mkdir()
-        with pytest.raises(FileNotFoundError, match="evals.json"):
+        with pytest.raises(FileNotFoundError, match=r"evals\.json"):
             load_eval_dataset(skill)
 
     def test_empty_cases(self, tmp_path):

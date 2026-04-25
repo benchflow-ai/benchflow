@@ -98,33 +98,12 @@ from harbor.models.task.task import Task
 from harbor.models.trial.paths import TrialPaths
 from harbor.verifier.verifier import Verifier
 
-from benchflow._acp_run import connect_acp, execute_prompts
-from benchflow._agent_env import resolve_agent_env
-from benchflow._agent_setup import deploy_skills, install_agent
-from benchflow._credentials import (
-    upload_subscription_auth,
-    write_credential_files,
-)
 from benchflow._env_setup import (
-    _create_environment,
-    _inject_skills_into_dockerfile,
     _patch_harbor_dind,
-    stage_dockerfile_deps,
 )
 from benchflow._sandbox import (
-    _resolve_locked_paths,
-    _seed_verifier_workspace,
-    _snapshot_build_config,
     harden_before_verify,
-    lockdown_paths,
-    setup_sandbox_user,
 )
-from benchflow._trajectory import (
-    _capture_session_trajectory,
-    _scrape_agent_trajectory,
-)
-from benchflow.acp.client import ACPClient, ACPError
-from benchflow.agents.registry import AGENT_LAUNCH
 from benchflow.models import RunResult, TrajectorySource
 
 logger = logging.getLogger(__name__)
@@ -243,6 +222,7 @@ class SDK:
         sandbox_user: str | None,
         context_root: str | Path | None,
         sandbox_locked_paths: list[str] | None = None,
+        sandbox_setup_timeout: int = 120,
         timeout: int,
         started_at: datetime,
         agent_env: dict[str, str],
@@ -262,6 +242,7 @@ class SDK:
             "skills_dir": str(skills_dir) if skills_dir else None,
             "sandbox_user": sandbox_user,
             "sandbox_locked_paths": sandbox_locked_paths,
+            "sandbox_setup_timeout": sandbox_setup_timeout,
             "context_root": str(context_root) if context_root else None,
             "timeout_sec": timeout,
             "started_at": str(started_at),
@@ -463,6 +444,7 @@ class SDK:
         skills_dir: str | Path | None = None,
         sandbox_user: str | None = "agent",
         sandbox_locked_paths: list[str] | None = None,
+        sandbox_setup_timeout: int = 120,
         pre_agent_hooks: list | None = None,
         context_root: str | Path | None = None,
     ) -> RunResult:
@@ -511,6 +493,7 @@ class SDK:
             skills_dir=skills_dir,
             sandbox_user=sandbox_user,
             sandbox_locked_paths=sandbox_locked_paths,
+            sandbox_setup_timeout=sandbox_setup_timeout,
             pre_agent_hooks=pre_agent_hooks,
             context_root=context_root,
         )

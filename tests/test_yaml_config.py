@@ -24,6 +24,7 @@ model: claude-haiku-4-5-20251001
 environment: daytona
 concurrency: 32
 max_retries: 1
+sandbox_setup_timeout: 45
 prompts:
   - null
   - "Review your solution."
@@ -46,6 +47,7 @@ n_attempts: 2
 orchestrator:
   type: local
   n_concurrent_trials: 8
+sandbox_setup_timeout: 75
 environment:
   type: daytona
   env:
@@ -69,6 +71,7 @@ def test_from_native_yaml(native_yaml):
     assert cfg.environment == "daytona"
     assert cfg.concurrency == 32
     assert cfg.retry.max_retries == 1
+    assert cfg.sandbox_setup_timeout == 45
     assert cfg.prompts == [None, "Review your solution."]
     assert job._tasks_dir == Path("tasks")
     assert job._jobs_dir == Path("output")
@@ -85,6 +88,7 @@ def test_from_harbor_yaml(harbor_yaml):
     assert cfg.concurrency == 8
     assert cfg.retry.max_retries == 1  # n_attempts=2 → max_retries=1
     assert cfg.agent_env.get("ANTHROPIC_API_KEY") == "test-key"
+    assert cfg.sandbox_setup_timeout == 75
     assert job._tasks_dir == Path("tasks")
     assert job._jobs_dir == Path("output")
 
@@ -127,6 +131,7 @@ datasets:
     assert cfg.agent == "pi-acp"
     assert cfg.environment == "docker"
     assert cfg.concurrency == 4
+    assert cfg.sandbox_setup_timeout == 120
     assert job._tasks_dir == Path("tasks")
     assert job._jobs_dir == Path("jobs")
 
@@ -253,3 +258,4 @@ sandbox_user: testuser
         assert job._config.exclude_tasks == set()
         assert job._config.agent_env == {}
         assert job._config.sandbox_user == "agent"
+        assert job._config.sandbox_setup_timeout == 120

@@ -21,10 +21,10 @@ BenchFlow runs AI agents against benchmark tasks in sandboxed environments. It s
 ## Install
 
 ```bash
-pip install benchflow==0.3.0a3
+uv tool install benchflow
 ```
 
-Requires Python 3.12+. For cloud sandboxes, set `DAYTONA_API_KEY`.
+Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/). For cloud sandboxes, set `DAYTONA_API_KEY`.
 
 ## Quick Start
 

@@ -313,7 +313,7 @@ class DaytonaProcess(LiveProcess):
             # Use the full compose base command (with -p, --project-directory,
             # and -f flags) so that exec can find the running project.
             if self._compose_cmd_base:
-                inner_parts = shlex.split(self._compose_cmd_base) + ["exec", "-i", "-T"]
+                inner_parts = [*shlex.split(self._compose_cmd_base), "exec", "-i", "-T"]
             else:
                 inner_parts = ["docker", "compose", "exec", "-i", "-T"]
             if cwd:
@@ -453,7 +453,7 @@ class DaytonaPtyProcess(LiveProcess):
         logger.info(f"DaytonaPtyProcess: PTY connected (session={session_id})")
 
         compose_parts = shlex.split(self._compose_cmd_base) if self._compose_cmd_base else ["docker", "compose"]
-        exec_parts = compose_parts + ["exec", "-i", "-T"]
+        exec_parts = [*compose_parts, "exec", "-i", "-T"]
         if cwd:
             exec_parts.extend(["-w", cwd])
         # Write env vars to a file inside the container (not visible in ps aux),
@@ -475,7 +475,7 @@ class DaytonaPtyProcess(LiveProcess):
         marker = f"__BENCHFLOW_ACP_{session_id}__"
         setup = f"stty -echo 2>/dev/null; echo '{marker}'; exec {exec_cmd}\n"
         await self._pty.send_input(setup)
-        logger.info(f"DaytonaPtyProcess: sent setup, waiting for marker...")
+        logger.info("DaytonaPtyProcess: sent setup, waiting for marker...")
 
         while True:
             try:
@@ -484,10 +484,10 @@ class DaytonaPtyProcess(LiveProcess):
                 logger.debug(f"DaytonaPtyProcess drain: {decoded[:120]}")
                 if marker in decoded:
                     break
-            except TimeoutError:
-                raise ConnectionError("DaytonaPtyProcess: timeout waiting for agent start marker")
+            except TimeoutError as e:
+                raise ConnectionError("DaytonaPtyProcess: timeout waiting for agent start marker") from e
 
-        logger.info(f"DaytonaPtyProcess: marker seen, agent starting")
+        logger.info("DaytonaPtyProcess: marker seen, agent starting")
 
     async def readline(self) -> bytes:
         if self._closed:
@@ -495,10 +495,10 @@ class DaytonaPtyProcess(LiveProcess):
         try:
             line = await asyncio.wait_for(self._line_buffer.get(), timeout=900)
             return line
-        except TimeoutError:
-            raise ConnectionError("PTY readline timeout (900s)")
+        except TimeoutError as e:
+            raise ConnectionError("PTY readline timeout (900s)") from e
         except Exception as e:
-            raise ConnectionError(f"PTY readline error: {e}")
+            raise ConnectionError(f"PTY readline error: {e}") from e
 
     async def writeline(self, data: str) -> None:
         if not self._pty or self._closed:
@@ -508,14 +508,10 @@ class DaytonaPtyProcess(LiveProcess):
     async def close(self) -> None:
         self._closed = True
         if self._pty:
-            try:
+            with contextlib.suppress(Exception):
                 await self._pty.kill()
-            except Exception:
-                pass
-            try:
+            with contextlib.suppress(Exception):
                 await self._pty.disconnect()
-            except Exception:
-                pass
             logger.info("DaytonaPtyProcess terminated")
 
     @property

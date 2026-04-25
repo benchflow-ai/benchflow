@@ -36,6 +36,7 @@ def test_agent_env_default_empty() -> None:
 def test_runtime_config_defaults() -> None:
     c = RuntimeConfig()
     assert c.sandbox_user == "agent"
+    assert c.sandbox_setup_timeout == 120
     assert c.max_rounds == 10
     assert c.snapshot_policy == "none"
     assert c.reward_stream is True
@@ -143,9 +144,10 @@ def test_runtime_custom_config() -> None:
     if not (task_path / "task.toml").exists():
         return
     env = Environment.from_task(task_path, backend="daytona")
-    config = RuntimeConfig(sandbox_user=None, timeout=1800)
+    config = RuntimeConfig(sandbox_user=None, timeout=1800, sandbox_setup_timeout=45)
     runtime = Runtime(env, agent, config)
     assert runtime.config.sandbox_user is None
+    assert runtime.config.sandbox_setup_timeout == 45
     assert runtime.config.timeout == 1800
 
 
