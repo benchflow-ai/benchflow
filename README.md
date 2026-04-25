@@ -46,7 +46,7 @@ Notebooks: [`docs/examples/`](./docs/examples/). Runnable example scripts: [`exa
 
 ## Featured
 
-- **Progressive disclosure on SWE-bench Pro** — built for [Josh @ GitHub/Microsoft](https://www.swebench.com/multimodal.html). The `BaseUser` abstraction drives a multi-round trial: terse round-0 prompt → failing-test hints → full spec. 5/5 oracle on Daytona, runnable demo at [`examples/swebench_pro_progressive_disclosure.ipynb`](./examples/swebench_pro_progressive_disclosure.ipynb). Also benchflow's [Harbor #1316](https://github.com/harbor-ai/harbor/issues/1316) parity answer for the no-second-LLM case. See [Progressive disclosure](./docs/progressive-disclosure.md).
+- **Progressive disclosure on SWE-bench Pro** — the `BaseUser` abstraction drives a multi-round trial: terse round-0 prompt → failing-test hints → full spec. 5/5 oracle on Daytona, runnable demo at [`examples/swebench_pro_progressive_disclosure.ipynb`](./examples/swebench_pro_progressive_disclosure.ipynb). Also benchflow's [Harbor #1316](https://github.com/harbor-ai/harbor/issues/1316) parity answer for the no-second-LLM case. See [Progressive disclosure](./docs/progressive-disclosure.md).
 
 ## Research artifacts
 

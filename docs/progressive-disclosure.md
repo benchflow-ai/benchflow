@@ -4,9 +4,9 @@
 
 `BaseUser` is a Python callback that drives a benchflow trial across multiple rounds. Each round: the callback sees the previous verifier result and decides what to tell the agent next, or stops the loop. No second LLM, no outbox protocol — just a function that knows how to grade and hint.
 
-It was built for [Josh @ GitHub/Microsoft's SWE-bench Pro use case](https://www.swebench.com/multimodal.html): the dataset's instructions are long structured specs that overwhelm agents in a single turn. A `BaseUser` lets you compress the spec for round 0, watch which tests fail, then disclose hints from the spec on subsequent rounds — all driven by deterministic Python, not by another LLM acting as a "user."
+It was built for the SWE-bench Pro progressive-disclosure use case: the dataset's instructions are long structured specs that overwhelm agents in a single turn. A `BaseUser` lets you compress the spec for round 0, watch which tests fail, then disclose hints from the spec on subsequent rounds — all driven by deterministic Python, not by another LLM acting as a "user."
 
-It is also benchflow's parity answer to [Harbor's simulated-user proposal (#1316)](https://github.com/harbor-ai/harbor/issues/1316) for the no-second-LLM case. Harbor's proposal required a FastMCP sidecar container; benchflow's `BaseUser` is in-process Python.
+It is also benchflow's parity answer to the [Harbor simulated-user proposal (#1316)](https://github.com/harbor-ai/harbor/issues/1316) for the no-second-LLM case. The Harbor proposal required a FastMCP sidecar container; benchflow's `BaseUser` is in-process Python.
 
 ```python
 import benchflow as bf
@@ -40,7 +40,7 @@ result = await bf.run(config)
 
 ---
 
-## Case study: SWE-bench Pro (Josh @ GitHub)
+## Case study: SWE-bench Pro
 
 SWE-bench Pro tasks ship long, structured `instruction.md` specs (typically 2-5KB) describing API requirements, test fixtures, and expected behaviors. Single-shot agents either drown in the spec or under-engineer because they bail before reading to the bottom.
 
@@ -57,17 +57,24 @@ round 2   "Still failing. Here's the full original spec: <complete instruction>"
 
 Rule-based, deterministic, and the "user" never needs to think — the disclosure schedule is fixed. Spinning up a second LLM to play the user role would (a) cost double, (b) introduce nondeterminism, and (c) require an outbox protocol the agent has to learn.
 
-### Validation (2026-04-24, 5 SWE-bench Pro tasks, Daytona)
+### Validation (2026-04-25, 5 SWE-bench Pro tasks, Daytona, Gemini 3.1 Pro Preview)
 
-| Task | Oracle | Single-round (Gemini 3.1 Pro) | 3-round progressive |
-|------|--------|-------------------------------|---------------------|
-| ansible | ✅ 1.0 | ✅ 1.0 (23 tools, 207s) | (already passed baseline) |
-| flipt | ✅ 1.0 | ❌ 0.0 (61 tools, 1444s) | ❌ 0.0 (203 tools, 3 rounds) |
-| openlibrary | ✅ 1.0 | ✅ 1.0 (32 tools, 340s) | (already passed baseline) |
-| navidrome | ✅ 1.0 | (not tested) | — |
-| qutebrowser | ✅ 1.0 (with `cleanup_conftests=false`) | ❌ 0.0 (verifier broken pre-fix) | — |
+| Task | Oracle | Single-round baseline | 3-round progressive (final) | Per-round soft-verify |
+|------|--------|-----------------------|------------------------------|------------------------|
+| ansible | ✅ 1.0 | ✅ 1.0 (23 tools, 207s) | error: stdout closed at 17min | (no rounds completed) |
+| flipt | ✅ 1.0 | ❌ 0.0 (61 tools, 1444s) | ❌ 0.0 (195 tools, 3 rounds) | 0.0 / 0.0 / 0.0 |
+| openlibrary | ✅ 1.0 | ✅ 1.0 (32 tools, 340s) | ✅ 1.0 (82 tools, 3 rounds) | 0.0 / 0.0 / 0.0 |
+| navidrome | ✅ 1.0 | (not tested) | ❌ 0.0 (145 tools, 3 rounds) | 0.0 / 0.0 / 0.0 |
+| qutebrowser | ✅ 1.0 (with `cleanup_conftests=false`) | ❌ 0.0 (verifier broken pre-fix) | error: agent timeout at 50min | (no rounds completed) |
 
-flipt is the case where progressive disclosure *should* help — oracle passes but baseline fails after 24 minutes — and on this run with Gemini 3.1 Pro it didn't. The infrastructure works (round-by-round trajectories captured, hints injected, soft_verify between rounds, oracle access semantics), but a single-model evaluation isn't conclusive — flipt is genuinely hard and the failure mode may not be one progressive disclosure addresses. Different models or hint schedules may show different lifts. The notebook at [`examples/swebench_pro_progressive_disclosure.ipynb`](../examples/swebench_pro_progressive_disclosure.ipynb) has the full data.
+What this run shows and doesn't show:
+
+- **The infrastructure works.** Round trajectories are captured, soft_verify runs between rounds, the BaseUser callback drives the loop, multi-round results are reproducible.
+- **Two task setups failed for infrastructure reasons** (ansible's stdout-closed after 17 min, qutebrowser's hard 50 min agent timeout) — these are benchflow / Daytona reliability issues, not progressive-disclosure outcomes.
+- **flipt didn't unlock under progressive disclosure** with Gemini 3.1 Pro on this run. The agent burned 195 tool calls across 3 rounds and ended where it started. Whether a different model or hint schedule would lift it is an open question.
+- **openlibrary's per-round soft-verify scored 0.0 even though the final hardened verify scored 1.0.** Soft-verify runs between rounds without the full hardening sequence (it skips workspace restore + process kill so the sandbox stays alive), so its scoring can diverge from the final verifier. The user's hint schedule reacts to soft-verify, not the canonical reward.
+
+This is one model on one day, not a published comparison. The notebook at [`examples/swebench_pro_progressive_disclosure.ipynb`](../examples/swebench_pro_progressive_disclosure.ipynb) has the executable cells; raw aggregated results are at [`experiments/swebench-pro-progressive-results.json`](../experiments/swebench-pro-progressive-results.json).
 
 ---
 
@@ -262,7 +269,7 @@ benchflow has two patterns for multi-round agent runs. Both are functionally at 
 | **`BaseUser` callback (this doc)** | Python function in the scheduler process | Programmatic, deterministic, rule-based. No second LLM. Cheap. Best for progressive disclosure, curriculum, scripted hints. |
 | **Multi-role Scene with simulated-user role** ([use-cases §1](./use-cases.md#1-interactive-user-simulation-harbor-1316-equivalent)) | Another LLM with full tool access | Open-ended, conversational. The "user" can read files, check outputs, give nuanced feedback. Best when the user's behavior must itself be adaptive or LLM-quality. |
 
-The two coexist. Choose based on whether your "user" needs to think (Scene-based) or just decide (`BaseUser`). For Josh's SWE-bench Pro use case, the disclosure schedule is fixed, the grading is the verifier, and there's nothing for a second LLM to add — `BaseUser` wins on cost and determinism.
+The two coexist. Choose based on whether your "user" needs to think (Scene-based) or just decide (`BaseUser`). For the SWE-bench Pro use case, the disclosure schedule is fixed, the grading is the verifier, and there's nothing for a second LLM to add — `BaseUser` wins on cost and determinism.
 
 ---
 
