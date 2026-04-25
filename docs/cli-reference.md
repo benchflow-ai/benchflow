@@ -40,7 +40,8 @@ bench eval create \
   -a gemini \
   -m gemini-3.1-flash-lite-preview \
   -e daytona \
-  -c 64
+  -c 64 \
+  --sandbox-setup-timeout 300
 ```
 
 | Flag | Default | Description |
@@ -53,6 +54,7 @@ bench eval create \
 | `--concurrency`, `-c` | `4` | Max concurrent tasks (batch mode only) |
 | `--jobs-dir`, `-o` | `jobs` | Output directory |
 | `--sandbox-user` | `agent` | Sandbox user (null for root) |
+| `--sandbox-setup-timeout` | `120` | Timeout in seconds for sandbox user setup |
 
 ### bench eval list
 
@@ -145,6 +147,7 @@ bench environment list
 task_dir: .ref/terminal-bench-2
 environment: daytona
 concurrency: 64
+sandbox_setup_timeout: 300
 
 scenes:
   - name: solve
@@ -165,6 +168,7 @@ model: gemini-3.1-flash-lite-preview
 environment: daytona
 concurrency: 64
 max_retries: 2
+sandbox_setup_timeout: 300
 ```
 
 ### Multi-scene (BYOS skill generation)
@@ -173,6 +177,7 @@ max_retries: 2
 task_dir: tasks/
 environment: daytona
 concurrency: 10
+sandbox_setup_timeout: 300
 
 scenes:
   - name: skill-gen

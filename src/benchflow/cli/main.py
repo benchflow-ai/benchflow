@@ -740,6 +740,13 @@ def eval_create(
         str | None,
         typer.Option("--sandbox-user", help="Sandbox user (null for root)"),
     ] = "agent",
+    sandbox_setup_timeout: Annotated[
+        int,
+        typer.Option(
+            "--sandbox-setup-timeout",
+            help="Timeout (seconds) for sandbox user setup inside the environment.",
+        ),
+    ] = 120,
     skills_dir: Annotated[
         Path | None,
         typer.Option("--skills-dir", "-s", help="Skills directory to deploy"),
@@ -767,6 +774,7 @@ def eval_create(
                                      skills_dir=str(skills_dir) if skills_dir else None)],
                 environment=environment,
                 sandbox_user=sandbox_user,
+                sandbox_setup_timeout=sandbox_setup_timeout,
                 jobs_dir=jobs_dir,
                 agent=agent,
                 model=eff_model,
@@ -796,6 +804,7 @@ def eval_create(
                     environment=environment,
                     concurrency=concurrency,
                     sandbox_user=sandbox_user,
+                    sandbox_setup_timeout=sandbox_setup_timeout,
                     skills_dir=str(skills_dir) if skills_dir else None,
                 ),
             )

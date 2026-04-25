@@ -222,6 +222,7 @@ class SDK:
         sandbox_user: str | None,
         context_root: str | Path | None,
         sandbox_locked_paths: list[str] | None = None,
+        sandbox_setup_timeout: int = 120,
         timeout: int,
         started_at: datetime,
         agent_env: dict[str, str],
@@ -241,6 +242,7 @@ class SDK:
             "skills_dir": str(skills_dir) if skills_dir else None,
             "sandbox_user": sandbox_user,
             "sandbox_locked_paths": sandbox_locked_paths,
+            "sandbox_setup_timeout": sandbox_setup_timeout,
             "context_root": str(context_root) if context_root else None,
             "timeout_sec": timeout,
             "started_at": str(started_at),
@@ -442,6 +444,7 @@ class SDK:
         skills_dir: str | Path | None = None,
         sandbox_user: str | None = "agent",
         sandbox_locked_paths: list[str] | None = None,
+        sandbox_setup_timeout: int = 120,
         pre_agent_hooks: list | None = None,
         context_root: str | Path | None = None,
     ) -> RunResult:
@@ -490,6 +493,7 @@ class SDK:
             skills_dir=skills_dir,
             sandbox_user=sandbox_user,
             sandbox_locked_paths=sandbox_locked_paths,
+            sandbox_setup_timeout=sandbox_setup_timeout,
             pre_agent_hooks=pre_agent_hooks,
             context_root=context_root,
         )

@@ -132,6 +132,7 @@ class TrialConfig:
     environment: str = "docker"
     sandbox_user: str | None = "agent"
     sandbox_locked_paths: list[str] | None = None
+    sandbox_setup_timeout: int = 120
     services: list[str] | None = None
     job_name: str | None = None
     trial_name: str | None = None
@@ -329,6 +330,7 @@ class Trial:
             sandbox_user=cfg.sandbox_user,
             context_root=cfg.context_root,
             sandbox_locked_paths=self._effective_locked,
+            sandbox_setup_timeout=cfg.sandbox_setup_timeout,
             timeout=self._timeout,
             started_at=self._started_at,
             agent_env=self._agent_env,
@@ -368,7 +370,10 @@ class Trial:
         if cfg.primary_agent == "oracle":
             if cfg.sandbox_user:
                 await setup_sandbox_user(
-                    self._env, cfg.sandbox_user, workspace=self._agent_cwd
+                    self._env,
+                    cfg.sandbox_user,
+                    workspace=self._agent_cwd,
+                    timeout_sec=cfg.sandbox_setup_timeout,
                 )
             await _snapshot_build_config(self._env, workspace=self._agent_cwd)
             await _seed_verifier_workspace(self._env, workspace=self._agent_cwd, sandbox_user=cfg.sandbox_user)
@@ -390,7 +395,10 @@ class Trial:
 
         if cfg.sandbox_user:
             self._agent_cwd = await setup_sandbox_user(
-                self._env, cfg.sandbox_user, workspace=self._agent_cwd
+                self._env,
+                cfg.sandbox_user,
+                workspace=self._agent_cwd,
+                timeout_sec=cfg.sandbox_setup_timeout,
             )
         await _snapshot_build_config(self._env, workspace=self._agent_cwd)
         await _seed_verifier_workspace(self._env, workspace=self._agent_cwd, sandbox_user=cfg.sandbox_user)
