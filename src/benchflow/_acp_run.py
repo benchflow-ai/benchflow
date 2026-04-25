@@ -237,6 +237,11 @@ async def _prompt_with_idle_watchdog(
 
     while not prompt_task.done():
         await asyncio.sleep(poll_interval)
+        # Re-check done() after the sleep — the prompt may have completed
+        # during the poll interval. Without this, we'd cancel an already-
+        # completed task and discard a successful result.
+        if prompt_task.done():
+            break
         now = asyncio.get_event_loop().time()
         cur_count = len(session.tool_calls)
         if cur_count > last_count:

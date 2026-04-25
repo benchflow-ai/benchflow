@@ -671,8 +671,12 @@ class Trial:
 
             await self.verify()
 
-        except TimeoutError:
-            self._error = f"Agent timed out after {self._timeout}s"
+        except TimeoutError as e:
+            # Preserve the watchdog's diagnostic message ("Agent idle for 600s
+            # with no new tool call ...") if it raised one. Fall back to the
+            # generic wall-clock message only when there's no detail.
+            detail = str(e).strip()
+            self._error = detail or f"Agent timed out after {self._timeout}s"
             logger.error(self._error)
         except ConnectionError as e:
             self._error = str(e)
