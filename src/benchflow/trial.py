@@ -281,6 +281,11 @@ class Trial:
             logger.warning(
                 "sandbox_user=None — agent runs as root with no path lockdown."
             )
+        if cfg.oracle_access and cfg.user is None:
+            logger.warning(
+                "oracle_access=True without a User — /solution stays visible "
+                "to the agent for the entire trial."
+            )
 
         self._effective_locked = _resolve_locked_paths(
             cfg.sandbox_user, cfg.sandbox_locked_paths
@@ -634,18 +639,18 @@ class Trial:
                 )
             else:
                 await self.install_agent()
-                if cfg.user is not None:
-                    await self._run_user_loop()
-                else:
-                    for scene in cfg.effective_scenes:
-                        await self._run_scene(scene)
-
-            # Restore oracle files before final verify (moved during user loop)
-            if cfg.oracle_access:
-                await self._env.exec(
-                    "mv /solution_oracle_backup /solution 2>/dev/null || true",
-                    user="root", timeout_sec=10,
-                )
+                try:
+                    if cfg.user is not None:
+                        await self._run_user_loop()
+                    else:
+                        for scene in cfg.effective_scenes:
+                            await self._run_scene(scene)
+                finally:
+                    if cfg.oracle_access:
+                        await self._env.exec(
+                            "mv /solution_oracle_backup /solution 2>/dev/null || true",
+                            user="root", timeout_sec=10,
+                        )
 
             await self.verify()
 
@@ -813,9 +818,7 @@ class Trial:
         solution: str | None = None
         if cfg.oracle_access:
             cat = await self._env.exec(
-                "cat /solution/solve.sh 2>/dev/null || "
-                "cat /solution/*.py 2>/dev/null || "
-                "cat /solution/* 2>/dev/null || true",
+                "cat /solution/solve.sh 2>/dev/null || true",
                 user="root", timeout_sec=10,
             )
             solution = (cat.stdout or "").strip() or None
