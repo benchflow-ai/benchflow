@@ -31,6 +31,7 @@ def apply() -> None:
 
     try:
         from daytona._async.process import AsyncProcess
+        from daytona.common.errors import DaytonaError
         from daytona.common.process import SessionCommandLogsResponse
     except Exception:  # pragma: no cover — SDK not installed / layout changed
         logger.debug("daytona SDK not importable; skipping patches", exc_info=True)
@@ -41,22 +42,44 @@ def apply() -> None:
     except Exception:  # pragma: no cover
         return
 
+    # AsyncProcess.get_session_command_logs is decorated by intercept_errors
+    # at class definition, which converts every inner exception (including
+    # the pydantic ValidationError we care about) into a DaytonaError. The
+    # decorated bound method is what we capture here, so we have to match
+    # on the wrapped DaytonaError shape too — not just ValidationError.
     original = AsyncProcess.get_session_command_logs
+
+    _MALFORMED_MARKER = "SessionCommandLogsResponse"
+
+    def _is_malformed_logs_error(exc: BaseException) -> bool:
+        if isinstance(exc, ValidationError):
+            return True
+        if isinstance(exc, DaytonaError) and _MALFORMED_MARKER in str(exc):
+            return True
+        return False
 
     async def _patched_get_session_command_logs(
         self: Any, session_id: str, command_id: str
     ) -> SessionCommandLogsResponse:
-        attempts = 4
+        # Harbor already wraps this call in tenacity (3 attempts), so
+        # additional retries here are usually wasted on a deterministic
+        # malformed payload. Try once more with a small delay in case it
+        # IS transient, then return an empty-but-valid response so the
+        # caller can still observe the command's exit_code via
+        # get_session_command. Original error is logged for triage.
+        attempts = 2
         delay = 0.5
-        last_exc: Exception | None = None
+        last_exc: BaseException | None = None
         for attempt in range(1, attempts + 1):
             try:
                 return await original(self, session_id, command_id)
-            except ValidationError as exc:
+            except (ValidationError, DaytonaError) as exc:
+                if not _is_malformed_logs_error(exc):
+                    raise
                 last_exc = exc
                 logger.warning(
-                    "daytona get_session_command_logs ValidationError (attempt %d/%d) "
-                    "for session=%s command=%s: %s",
+                    "daytona get_session_command_logs malformed payload "
+                    "(attempt %d/%d) for session=%s command=%s: %s",
                     attempt,
                     attempts,
                     session_id,
@@ -65,19 +88,15 @@ def apply() -> None:
                 )
                 if attempt < attempts:
                     await asyncio.sleep(delay)
-                    delay = min(delay * 2, 4.0)
 
         logger.error(
-            "daytona get_session_command_logs returned malformed payloads "
-            "%d times for session=%s command=%s; falling back to empty logs",
+            "daytona get_session_command_logs malformed %d times for "
+            "session=%s command=%s; falling back to empty logs (%s)",
             attempts,
             session_id,
             command_id,
+            last_exc,
         )
-        # Return a valid empty response so callers can still inspect the
-        # command's exit_code via get_session_command. The original error
-        # is logged above for debuggability.
-        _ = last_exc  # retained for log context
         return SessionCommandLogsResponse(output="", stdout="", stderr="")
 
     AsyncProcess.get_session_command_logs = _patched_get_session_command_logs  # type: ignore[method-assign]
