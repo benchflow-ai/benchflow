@@ -144,7 +144,9 @@ def resolve_agent_env(
     """Resolve agent environment: auto-inherit keys, provider vars, env_mapping."""
     agent_env = dict(agent_env or {})
     auto_inherit_env(agent_env)
-    if model:
+    # Oracle runs solve.sh and never calls an LLM — model env vars and
+    # API-key validation are skipped even if a caller forwards a model.
+    if model and agent != "oracle":
         inject_vertex_credentials(agent_env, model)
         resolve_provider_env(agent_env, model, agent)
         # Validate required API key for the chosen model
