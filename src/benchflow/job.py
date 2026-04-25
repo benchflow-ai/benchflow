@@ -126,9 +126,7 @@ class RetryConfig:
             return True
         if self.retry_on_pipe and category == PIPE_CLOSED:
             return True
-        if self.retry_on_acp and category == ACP_ERROR:
-            return True
-        return False
+        return bool(self.retry_on_acp and category == ACP_ERROR)
 
     def backoff_delay(self, attempt: int) -> float:
         """Exponential backoff delay for retry attempt."""

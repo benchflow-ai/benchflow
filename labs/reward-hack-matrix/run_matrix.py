@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import os
 import re
@@ -447,13 +448,11 @@ class _Worker:
         if self.proc is None:
             return
         if self.proc.stdin and not self.proc.stdin.is_closing():
-            try:
+            with contextlib.suppress(OSError, BrokenPipeError):
                 self.proc.stdin.close()
-            except (OSError, BrokenPipeError):
-                pass
         try:
             await asyncio.wait_for(self.proc.wait(), timeout=30)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             self.proc.kill()
             await self.proc.wait()
         if self.reader_task:
@@ -717,7 +716,7 @@ def main() -> int:
     if args.sweep:
         summary_path = Path(args.summary_path) if args.summary_path else (JOBS_DIR / "matrix_sweep.json")
         print(
-            f"[sweep] {len(cells)} cells × {len(VERSIONS)} versions = "
+            f"[sweep] {len(cells)} cells x {len(VERSIONS)} versions = "
             f"{len(cells) * len(VERSIONS)} trials, concurrency={args.concurrency}"
         )
         results = asyncio.run(

@@ -35,7 +35,7 @@ Phases can be composed for multi-agent flows::
 
 from __future__ import annotations
 
-import asyncio
+import contextlib
 import json
 import logging
 import shlex
@@ -57,7 +57,6 @@ from benchflow._sandbox import (
     _resolve_locked_paths,
     _seed_verifier_workspace,
     _snapshot_build_config,
-    harden_before_verify,
     lockdown_paths,
     setup_sandbox_user,
 )
@@ -66,7 +65,7 @@ from benchflow._trajectory import (
     _scrape_agent_trajectory,
 )
 from benchflow.acp.client import ACPClient, ACPError
-from benchflow.agents.registry import AGENT_LAUNCH, AGENTS
+from benchflow.agents.registry import AGENT_LAUNCH
 from benchflow.models import RunResult, TrajectorySource
 
 logger = logging.getLogger(__name__)
@@ -110,7 +109,7 @@ class Scene:
         prompts: list[str | None] | None = None,
         role_name: str = "agent",
         skills_dir: str | Path | None = None,
-    ) -> "Scene":
+    ) -> Scene:
         """Shortcut for single-agent, single-role scene."""
         prompts = prompts or [None]
         return cls(
@@ -157,7 +156,7 @@ class TrialConfig:
         prompts: list[str | None] | None = None,
         skills_dir: str | Path | None = None,
         **kwargs,
-    ) -> "TrialConfig":
+    ) -> TrialConfig:
         """Construct from flat SDK.run()-style args."""
         return cls(
             task_path=task_path,
@@ -440,10 +439,8 @@ class Trial:
         # Kill any lingering agent processes to prevent context bleed between scenes
         if self._env and self._agent_launch.strip():
             agent_cmd = self._agent_launch.split()[0].split("/")[-1]
-            try:
+            with contextlib.suppress(Exception):
                 await self._env.exec(f"pkill -f '{agent_cmd}' || true", timeout_sec=10)
-            except Exception:
-                pass
         self._session_tool_count = 0
         self._session_traj_count = 0
         self._phase = "installed"
@@ -630,7 +627,7 @@ class Trial:
         inbox: dict[str, list[str]] = {r.name: [] for r in scene.roles}
         turn_counter = 0
 
-        for i, turn in enumerate(scene.turns):
+        for _i, turn in enumerate(scene.turns):
             role = role_map.get(turn.role)
             if not role:
                 raise ValueError(f"Turn references unknown role {turn.role!r}")

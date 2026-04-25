@@ -31,7 +31,8 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from benchflow.job import DEFAULT_AGENT, effective_model as _effective_model
+from benchflow.job import DEFAULT_AGENT
+from benchflow.job import effective_model as _effective_model
 
 console = Console()
 
