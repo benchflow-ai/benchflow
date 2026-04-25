@@ -545,9 +545,15 @@ class Trial:
         from benchflow._sandbox import _build_cleanup_cmd, _read_hardening_config
 
         self._trial_paths.verifier_dir.mkdir(parents=True, exist_ok=True)
-        # Clean verifier output dir — chmod 777 so non-root verifier processes can write
+        # Clean verifier output dir — chmod 777 so non-root verifier processes can write.
+        # Also ensure /app exists: VERIFIER_ENV pins PYTEST_ADDOPTS=--rootdir=/app for
+        # test-node-ID anchoring, and pytest aborts with "Directory '/app' not found"
+        # when the task's Dockerfile WORKDIRs elsewhere (e.g. /root). Tasks that DO
+        # populate /app are unaffected — `mkdir -p` is a no-op when the directory
+        # already exists, and we don't chmod it (any task content stays root-owned).
         await self._env.exec(
-            "rm -rf /logs/verifier && mkdir -p /logs/verifier && chmod 777 /logs/verifier",
+            "rm -rf /logs/verifier && mkdir -p /logs/verifier /app && "
+            "chmod 777 /logs/verifier",
             user="root", timeout_sec=10,
         )
         # Purge agent-injected conftest/sitecustomize/.pth without
