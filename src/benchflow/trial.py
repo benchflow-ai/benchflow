@@ -715,7 +715,12 @@ class Trial:
         t0 = datetime.now()
 
         agent_launch = AGENT_LAUNCH.get(role.agent, role.agent)
-        agent_env = resolve_agent_env(role.agent, role.model, role.env or None)
+        # Merge cfg.agent_env (config-level) with role.env (role-specific) so
+        # provider creds from YAML reach the agent. role.env wins on overlap.
+        agent_env = resolve_agent_env(
+            role.agent, role.model,
+            {**(cfg.agent_env or {}), **(role.env or {})},
+        )
 
         if role.agent != cfg.primary_agent:
             agent_cfg = await install_agent(self._env, role.agent, self._trial_dir)
