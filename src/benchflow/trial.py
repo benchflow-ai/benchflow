@@ -35,6 +35,7 @@ Phases can be composed for multi-agent flows::
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import logging
@@ -67,6 +68,7 @@ from benchflow._trajectory import (
 from benchflow.acp.client import ACPClient, ACPError
 from benchflow.agents.registry import AGENT_LAUNCH
 from benchflow.models import RunResult, TrajectorySource
+from benchflow.user import BaseUser, RoundResult
 
 logger = logging.getLogger(__name__)
 
@@ -139,6 +141,11 @@ class TrialConfig:
     jobs_dir: str | Path = "jobs"
     context_root: str | Path | None = None
     pre_agent_hooks: list | None = None
+
+    # User-driven progressive-disclosure loop
+    user: BaseUser | None = None
+    max_user_rounds: int = 5
+    oracle_access: bool = False
 
     # Legacy compat fields — used by SDK.run() shim. Ignored when scenes is set.
     agent: str = "claude-agent-acp"
@@ -274,6 +281,11 @@ class Trial:
         if cfg.sandbox_user is None:
             logger.warning(
                 "sandbox_user=None — agent runs as root with no path lockdown."
+            )
+        if cfg.oracle_access and cfg.user is None:
+            logger.warning(
+                "oracle_access=True without a User — /solution stays visible "
+                "to the agent for the entire trial."
             )
 
         self._effective_locked = _resolve_locked_paths(
@@ -517,6 +529,69 @@ class Trial:
         self._phase = "verified"
         return self._rewards
 
+    async def soft_verify(self) -> tuple[dict | None, str | None, str | None]:
+        """Run the verifier without full hardening — for intermediate feedback.
+
+        Skips process kill and workspace restore/chown (so the sandbox
+        stays usable for the next round), but DOES purge agent-injected
+        conftest.py / sitecustomize.py / .pth files to prevent the agent
+        from gaming intermediate test results.
+
+        Returns (rewards, verifier_output, verifier_error). The final
+        verify() still does full hardening.
+        """
+        from harbor import Verifier
+
+        from benchflow._sandbox import _build_cleanup_cmd, _read_hardening_config
+
+        self._trial_paths.verifier_dir.mkdir(parents=True, exist_ok=True)
+        # Clean verifier output dir — chmod 777 so non-root verifier processes can write
+        await self._env.exec(
+            "rm -rf /logs/verifier && mkdir -p /logs/verifier && chmod 777 /logs/verifier",
+            user="root", timeout_sec=10,
+        )
+        # Purge agent-injected conftest/sitecustomize/.pth without
+        # killing processes or restoring workspace.
+        # Honor per-task [verifier.hardening] opt-outs from task.toml.
+        hardening = _read_hardening_config(getattr(self._task, "task_dir", None))
+        await self._env.exec(
+            _build_cleanup_cmd(hardening), user="root", timeout_sec=10
+        )
+
+        rewards = None
+        verifier_output = None
+        verifier_error = None
+        try:
+            verifier = Verifier(
+                task=self._task,
+                trial_paths=self._trial_paths,
+                environment=self._env,
+            )
+            verifier_result = await asyncio.wait_for(
+                verifier.verify(),
+                timeout=self._task.config.verifier.timeout_sec,
+            )
+            rewards = verifier_result.rewards
+            # Capture raw verifier output for the user
+            cat = await self._env.exec(
+                "cat /logs/verifier/*.log 2>/dev/null || "
+                "cat /logs/verifier/output.txt 2>/dev/null || true",
+                timeout_sec=10,
+            )
+            verifier_output = (cat.stdout or "").strip() or None
+            logger.info(f"[soft_verify] rewards={rewards}")
+        except TimeoutError:
+            verifier_error = (
+                f"soft verifier timed out after "
+                f"{self._task.config.verifier.timeout_sec}s"
+            )
+            logger.warning(verifier_error)
+        except Exception as e:
+            verifier_error = f"soft verifier crashed: {e}"
+            logger.warning(verifier_error)
+
+        return rewards, verifier_output, verifier_error
+
     # ── Phase 5: CLEANUP ──
 
     async def cleanup(self) -> None:
@@ -575,8 +650,18 @@ class Trial:
                 )
             else:
                 await self.install_agent()
-                for scene in cfg.effective_scenes:
-                    await self._run_scene(scene)
+                try:
+                    if cfg.user is not None:
+                        await self._run_user_loop()
+                    else:
+                        for scene in cfg.effective_scenes:
+                            await self._run_scene(scene)
+                finally:
+                    if cfg.oracle_access:
+                        await self._env.exec(
+                            "mv /solution_oracle_backup /solution 2>/dev/null || true",
+                            user="root", timeout_sec=10,
+                        )
 
             await self.verify()
 
@@ -711,6 +796,136 @@ class Trial:
                 logger.warning(f"[Scene] invalid JSON in outbox: {fpath}")
             await self._env.exec(f"rm -f {quoted}", timeout_sec=10)
         return messages
+
+    async def _run_user_loop(self) -> None:
+        """Execute a user-driven progressive-disclosure loop.
+
+        Each round: user.run() → connect → agent.execute() → disconnect →
+        soft_verify() → build RoundResult → repeat. Stops when user.run()
+        returns None or max_user_rounds is reached.
+        """
+        cfg = self._config
+        user = cfg.user
+        assert user is not None
+
+        if len(cfg.effective_scenes) > 1:
+            raise ValueError(
+                "User-driven loops operate on a single scene. "
+                f"Got {len(cfg.effective_scenes)} scenes."
+            )
+        scene = cfg.effective_scenes[0]
+        if len(scene.roles) != 1:
+            raise ValueError(
+                "User-driven loops require a single-role scene. "
+                f"Got {len(scene.roles)} roles."
+            )
+        role = scene.roles[0]
+
+        instruction = self._resolved_prompts[0] if self._resolved_prompts else (
+            "Solve the task described in /app/instruction.md"
+        )
+
+        # Oracle access: read /solution before the agent runs, then remove it
+        solution: str | None = None
+        if cfg.oracle_access:
+            cat = await self._env.exec(
+                "cat /solution/solve.sh 2>/dev/null || true",
+                user="root", timeout_sec=10,
+            )
+            solution = (cat.stdout or "").strip() or None
+
+        await user.setup(instruction, solution)
+
+        # Hide oracle files from agent — move rather than delete so the
+        # final verify() can still access /solution if the verifier needs it.
+        if cfg.oracle_access:
+            await self._env.exec(
+                "mv /solution /solution_oracle_backup 2>/dev/null || true",
+                user="root", timeout_sec=10,
+            )
+
+        round_result: RoundResult | None = None
+        rounds_log: list[dict] = []
+
+        for round_num in range(cfg.max_user_rounds):
+            try:
+                prompt = await user.run(round_num, instruction, round_result)
+            except Exception as e:
+                self._error = f"user.run() failed at round {round_num}: {e}"
+                logger.error(self._error, exc_info=True)
+                break
+
+            if prompt is None:
+                logger.info(f"[User] stopped at round {round_num}")
+                break
+
+            logger.info(
+                f"[User] round {round_num}: prompt={prompt[:80]!r}..."
+                if len(prompt) > 80 else f"[User] round {round_num}: prompt={prompt!r}"
+            )
+
+            # Fresh ACP session each round — agent starts clean but sees
+            # its previous workspace changes in the shared sandbox.
+            traj_before = len(self._trajectory)
+            try:
+                await self.connect_as(role)
+                await self.execute(prompts=[prompt])
+            finally:
+                await self.disconnect()
+
+            round_trajectory = self._trajectory[traj_before:]
+            round_tools = sum(
+                1 for e in round_trajectory
+                if isinstance(e, dict) and e.get("type") == "tool_call"
+            )
+
+            # Soft verify: run tests after agent disconnected but before
+            # next round. Temporarily restore /solution so the verifier can
+            # access it, then re-hide before the next agent round.
+            if cfg.oracle_access:
+                await self._env.exec(
+                    "mv /solution_oracle_backup /solution 2>/dev/null || true",
+                    user="root", timeout_sec=10,
+                )
+            try:
+                rewards, verifier_output, verifier_error = await self.soft_verify()
+            finally:
+                if cfg.oracle_access:
+                    await self._env.exec(
+                        "mv /solution /solution_oracle_backup 2>/dev/null || true",
+                        user="root", timeout_sec=10,
+                    )
+
+            round_result = RoundResult(
+                round=round_num,
+                trajectory=round_trajectory,
+                rewards=rewards,
+                verifier_output=verifier_output,
+                verifier_error=verifier_error,
+                n_tool_calls=round_tools,
+            )
+
+            rounds_log.append({
+                "round": round_num,
+                "prompt": prompt,
+                "rewards": rewards,
+                "verifier_error": verifier_error,
+                "n_tool_calls": round_tools,
+                "n_trajectory_events": len(round_trajectory),
+            })
+
+            logger.info(
+                f"[User] round {round_num} done: "
+                f"rewards={rewards}, tools={round_tools}"
+            )
+
+        # Persist round log
+        if rounds_log and self._trial_dir:
+            log_path = self._trial_dir / "user_rounds.jsonl"
+            with log_path.open("w") as f:
+                for entry in rounds_log:
+                    f.write(json.dumps(entry) + "\n")
+            logger.info(f"[User] {len(rounds_log)} rounds → {log_path}")
 
     async def connect_as(self, role: Role) -> None:
         """Open an ACP connection for a specific role.

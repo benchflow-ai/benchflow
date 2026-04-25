@@ -63,6 +63,7 @@ from benchflow.trial import Role as TrialRole
 from benchflow.trial import Scene as TrialScene
 from benchflow.trial import Trial, TrialConfig, Turn
 from benchflow.trial_yaml import trial_config_from_yaml
+from benchflow.user import BaseUser, FunctionUser, PassthroughUser, RoundResult
 
 # Public API surface. Anything not in this list is implementation detail and
 # may change without notice. Names are grouped by source module to match the
@@ -124,6 +125,11 @@ __all__ = [
     "TrialScene",
     "Turn",
     "trial_config_from_yaml",
+    # User abstraction (progressive disclosure)
+    "BaseUser",
+    "FunctionUser",
+    "PassthroughUser",
+    "RoundResult",
     # SDK (backwards compat)
     "SDK",
     # Environments / dep staging

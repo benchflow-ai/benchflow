@@ -100,6 +100,8 @@ ignore = [
 # Standalone scripts — sys.path manipulation before imports is intentional
 "experiments/*.py" = ["E402"]
 "tests/conformance/*.py" = ["E402"]
+# Notebooks: cell-local imports + short loop vars are notebook conventions
+"examples/*.ipynb" = ["E402", "E741", "SIM115"]
 # Forward references resolved via __future__ annotations — ruff flags them
 # but they work at runtime; explicit TYPE_CHECKING imports would force eager loads.
 "src/benchflow/runtime.py" = ["F821"]

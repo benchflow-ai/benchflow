@@ -1,0 +1,9 @@
+agent,elapsed_s,error,experiment,model,n_tool_calls,reward,task,task_full
+,54.3,,oracle,,0,1.0,ansible,instance_ansible__ansible-0ea40e09d1b35bcb69ff4d9cecf3d0defa4b36e8-v30a923fb5c164d6cd18280c02422f75e611e8fb2
+,480.5,,oracle,,0,1.0,flipt,instance_flipt-io__flipt-02e21636c58e86c51119b63e0fb5ca7b813b07b1
+,147.7,,oracle,,0,1.0,openlibrary,instance_internetarchive__openlibrary-00bec1e7c8f3272c469a58e1377df03f955ed478-v13642507b4fc1f8d234172bf8129942da2c2ca26
+,24.3,,oracle,,0,0.0,qutebrowser,instance_qutebrowser__qutebrowser-01d1d1494411380d97cac14614a829d3a69cecaf-v2ef375ac784985212b1805e1d0431dc8f1b3c171
+gemini,206.8,,baseline,gemini-3.1-pro-preview,23,1.0,ansible,instance_ansible__ansible-0ea40e09d1b35bcb69ff4d9cecf3d0defa4b36e8-v30a923fb5c164d6cd18280c02422f75e611e8fb2
+gemini,1443.7,,baseline,gemini-3.1-pro-preview,61,0.0,flipt,instance_flipt-io__flipt-02e21636c58e86c51119b63e0fb5ca7b813b07b1
+gemini,340.0,,baseline,gemini-3.1-pro-preview,32,1.0,openlibrary,instance_internetarchive__openlibrary-00bec1e7c8f3272c469a58e1377df03f955ed478-v13642507b4fc1f8d234172bf8129942da2c2ca26
+gemini,543.6,,baseline,gemini-3.1-pro-preview,72,0.0,qutebrowser,instance_qutebrowser__qutebrowser-01d1d1494411380d97cac14614a829d3a69cecaf-v2ef375ac784985212b1805e1d0431dc8f1b3c171
