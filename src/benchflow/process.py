@@ -12,6 +12,7 @@ import contextlib
 import logging
 import os
 import shlex
+import uuid
 from abc import ABC, abstractmethod
 from typing import Any
 
@@ -320,9 +321,15 @@ class DaytonaProcess(LiveProcess):
                 inner_parts.extend(["-w", cwd])
             # Write env vars to a temp file on the remote VM instead of passing
             # as -e K=V args (which are visible in ps aux on the remote host).
+            # Use a Python-generated unique suffix instead of a shell `$$`
+            # expansion: shlex.join() (below) single-quotes the --env-file arg,
+            # so `$$` would survive as a literal in the docker compose call
+            # while the cat > ... heredoc would expand it — the file would be
+            # written to one path and read from another. uuid.uuid4 sidesteps
+            # the entire shell-expansion-vs-quoting problem.
             remote_env_path = None
             if env:
-                remote_env_path = "/tmp/benchflow_env_$$.env"
+                remote_env_path = f"/tmp/benchflow_env_{uuid.uuid4().hex[:16]}.env"
                 env_lines = "\n".join(f"{k}={v}" for k, v in env.items())
                 inner_parts.extend(["--env-file", remote_env_path])
             inner_parts.extend(["main", "bash", "-c", command])
@@ -349,7 +356,9 @@ class DaytonaProcess(LiveProcess):
             env_prefix = ""
             remote_env_path = None
             if env:
-                remote_env_path = "/tmp/benchflow_env_$$.env"
+                # Python-generated unique suffix; see DinD branch above for why
+                # $$ shell expansion is fragile across quoting boundaries.
+                remote_env_path = f"/tmp/benchflow_env_{uuid.uuid4().hex[:16]}.env"
                 env_lines = "\n".join(
                     f"export {k}={shlex.quote(v)}" for k, v in env.items()
                 )

@@ -202,3 +202,96 @@ class TestDockerProcessEnv:
         assert (
             f"export SINGLE_QUOTE={shlex.quote('it' + chr(39) + 's a test')}" in content
         )
+
+
+class TestDaytonaProcessEnvFilePath:
+    """Regression: env-file path must be unique without relying on shell `$$` expansion.
+
+    The DinD branch builds an inner `docker compose exec --env-file PATH ...`
+    command and runs it through `shlex.join()`, which single-quotes any `$$`
+    (preventing remote shell expansion). The `cat > PATH` heredoc that writes
+    the file uses raw f-string interpolation where `$$` IS expanded. If the
+    path contains `$$`, the file is written to one path and read from another
+    — env vars silently disappear.
+
+    The direct (non-DinD) branch uses raw f-string in both write and read, so
+    `$$` would expand consistently — but uuid is robust against future quoting
+    changes. Pin both branches.
+    """
+
+    @pytest.mark.asyncio
+    async def test_dind_env_file_path_does_not_use_shell_pid_expansion(self):
+        """DinD path must not use $$ — shlex.join would quote it literally."""
+        from unittest.mock import MagicMock
+
+        from benchflow.process import DaytonaProcess
+
+        sandbox = MagicMock()
+        sandbox.create_ssh_access = AsyncMock(
+            return_value=MagicMock(token="abc")
+        )
+        proc = DaytonaProcess(
+            sandbox=sandbox,
+            is_dind=True,
+            compose_cmd_prefix="",
+            compose_cmd_base="docker compose -p test",
+        )
+
+        captured = []
+
+        async def fake_exec(*args, **kwargs):
+            captured.append(list(args))
+            mock_proc = AsyncMock()
+            mock_proc.pid = 12345
+            mock_proc.returncode = 0
+            mock_proc.stdin = AsyncMock()
+            mock_proc.stdout = AsyncMock()
+            mock_proc.stderr = AsyncMock()
+            mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+            return mock_proc
+
+        with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+            await proc.start(command="echo hi", env={"FOO": "bar"})
+
+        # Last arg of ssh is the remote command. Search it for $$
+        remote_cmd = captured[0][-1]
+        assert "$$" not in remote_cmd, (
+            "$$ in remote command — shlex.join() will quote it, mismatching "
+            f"the cat heredoc that does expand it. Got: {remote_cmd[:200]!r}"
+        )
+        # And: a real path was used (literal hex suffix, no shell variable)
+        assert "/tmp/benchflow_env_" in remote_cmd
+        assert "--env-file" in remote_cmd
+
+    @pytest.mark.asyncio
+    async def test_direct_sandbox_env_file_path_does_not_use_shell_pid_expansion(self):
+        """Direct (non-DinD) path is currently safe with $$, but pin the uuid form for robustness."""
+        from unittest.mock import MagicMock
+
+        from benchflow.process import DaytonaProcess
+
+        sandbox = MagicMock()
+        sandbox.create_ssh_access = AsyncMock(
+            return_value=MagicMock(token="abc")
+        )
+        proc = DaytonaProcess(sandbox=sandbox, is_dind=False)
+
+        captured = []
+
+        async def fake_exec(*args, **kwargs):
+            captured.append(list(args))
+            mock_proc = AsyncMock()
+            mock_proc.pid = 12345
+            mock_proc.returncode = 0
+            mock_proc.stdin = AsyncMock()
+            mock_proc.stdout = AsyncMock()
+            mock_proc.stderr = AsyncMock()
+            mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+            return mock_proc
+
+        with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+            await proc.start(command="echo hi", env={"FOO": "bar"})
+
+        remote_cmd = captured[0][-1]
+        assert "$$" not in remote_cmd
+        assert "/tmp/benchflow_env_" in remote_cmd

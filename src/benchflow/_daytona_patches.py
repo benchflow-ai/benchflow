@@ -54,9 +54,7 @@ def apply() -> None:
     def _is_malformed_logs_error(exc: BaseException) -> bool:
         if isinstance(exc, ValidationError):
             return True
-        if isinstance(exc, DaytonaError) and _MALFORMED_MARKER in str(exc):
-            return True
-        return False
+        return isinstance(exc, DaytonaError) and _MALFORMED_MARKER in str(exc)
 
     async def _patched_get_session_command_logs(
         self: Any, session_id: str, command_id: str
