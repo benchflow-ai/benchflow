@@ -235,33 +235,37 @@ async def _prompt_with_idle_watchdog(
     poll_interval = min(30, max(5, idle_timeout // 4))
     deadline = last_progress + timeout
 
-    while not prompt_task.done():
-        await asyncio.sleep(poll_interval)
-        # Re-check done() after the sleep — the prompt may have completed
-        # during the poll interval. Without this, we'd cancel an already-
-        # completed task and discard a successful result.
-        if prompt_task.done():
-            break
-        now = asyncio.get_event_loop().time()
-        cur_count = len(session.tool_calls)
-        if cur_count > last_count:
-            last_progress = now
-            last_count = cur_count
-        if now - last_progress >= idle_timeout:
-            prompt_task.cancel()
-            with contextlib.suppress(BaseException):
-                await prompt_task
-            raise TimeoutError(
-                f"Agent idle for {idle_timeout}s with no new tool call "
-                f"(last activity {int(now - last_progress)}s ago, "
-                f"{cur_count} tool calls so far)"
-            )
-        if now > deadline:
-            prompt_task.cancel()
-            with contextlib.suppress(BaseException):
-                await prompt_task
-            raise TimeoutError(
-                f"Agent prompt exceeded wall-clock budget {timeout}s"
-            )
+    try:
+        while not prompt_task.done():
+            await asyncio.sleep(poll_interval)
+            # Re-check done() after the sleep — the prompt may have completed
+            # during the poll interval. Without this, we'd cancel an already-
+            # completed task and discard a successful result.
+            if prompt_task.done():
+                break
+            now = asyncio.get_event_loop().time()
+            cur_count = len(session.tool_calls)
+            if cur_count > last_count:
+                last_progress = now
+                last_count = cur_count
+            if now - last_progress >= idle_timeout:
+                raise TimeoutError(
+                    f"Agent idle for {idle_timeout}s with no new tool call "
+                    f"(last activity {int(now - last_progress)}s ago, "
+                    f"{cur_count} tool calls so far)"
+                )
+            if now > deadline:
+                raise TimeoutError(
+                    f"Agent prompt exceeded wall-clock budget {timeout}s"
+                )
 
-    return prompt_task.result()
+        return prompt_task.result()
+    finally:
+        # Always cancel + drain the prompt task on exit, including the
+        # external-cancellation path (CancelledError from sleep). Without this
+        # an outer cancel leaks the prompt task — it keeps running in the
+        # background until Trial.cleanup() eventually kills the agent process.
+        if not prompt_task.done():
+            prompt_task.cancel()
+            with contextlib.suppress(BaseException):
+                await prompt_task
