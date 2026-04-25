@@ -444,7 +444,6 @@ class DaytonaPtyProcess(LiveProcess):
         env: dict[str, str] | None = None,
         cwd: str | None = None,
     ) -> None:
-        import uuid
         session_id = f"acp-{uuid.uuid4().hex[:8]}"
         pty_env = {}
         if self._compose_cmd_prefix:
@@ -469,10 +468,11 @@ class DaytonaPtyProcess(LiveProcess):
         # matching the approach in DaytonaProcess.start().
         env_file_cmd = ""
         if env:
+            env_file_path = f"/tmp/.benchflow_env_{uuid.uuid4().hex[:16]}"
             env_lines = "\n".join(f"export {k}={shlex.quote(v)}" for k, v in env.items())
             env_file_cmd = (
-                f"cat > /tmp/.benchflow_env <<'__EOF__'\n{env_lines}\n__EOF__\n"
-                f". /tmp/.benchflow_env && rm -f /tmp/.benchflow_env && "
+                f"cat > {env_file_path} <<'__EOF__'\n{env_lines}\n__EOF__\n"
+                f". {env_file_path} && rm -f {env_file_path} && "
             )
         exec_parts.extend(["main", "bash", "-lc", f"{env_file_cmd}{command}"])
         exec_cmd = shlex.join(exec_parts)
