@@ -126,9 +126,7 @@ class RetryConfig:
             return True
         if self.retry_on_pipe and category == PIPE_CLOSED:
             return True
-        if self.retry_on_acp and category == ACP_ERROR:
-            return True
-        return False
+        return bool(self.retry_on_acp and category == ACP_ERROR)
 
     def backoff_delay(self, attempt: int) -> float:
         """Exponential backoff delay for retry attempt."""
@@ -412,6 +410,13 @@ class Job:
         except Exception as e:
             logger.warning(f"Docker prune failed: {e}")
 
+    def _resolve_skills_dir(self, task_dir: Path, skills_dir: str | None) -> str | None:
+        """Resolve skills_dir — 'auto' means per-task environment/skills/."""
+        if skills_dir == "auto":
+            candidate = task_dir / "environment" / "skills"
+            return str(candidate) if candidate.is_dir() else None
+        return skills_dir
+
     async def _run_single_task(self, task_dir: Path, cfg: JobConfig) -> RunResult:
         """Execute one trial via Trial."""
         from benchflow.trial import Trial, TrialConfig
@@ -425,7 +430,7 @@ class Job:
             job_name=self._job_name,
             jobs_dir=str(self._jobs_dir),
             environment=cfg.environment,
-            skills_dir=cfg.skills_dir,
+            skills_dir=self._resolve_skills_dir(task_dir, cfg.skills_dir),
             sandbox_user=cfg.sandbox_user,
             sandbox_locked_paths=cfg.sandbox_locked_paths,
             sandbox_setup_timeout=cfg.sandbox_setup_timeout,
@@ -445,7 +450,7 @@ class Job:
             job_name=self._job_name,
             jobs_dir=str(self._jobs_dir),
             environment=cfg.environment,
-            skills_dir=cfg.skills_dir,
+            skills_dir=self._resolve_skills_dir(task_dir, cfg.skills_dir),
             sandbox_user=cfg.sandbox_user,
             sandbox_locked_paths=cfg.sandbox_locked_paths,
             sandbox_setup_timeout=cfg.sandbox_setup_timeout,

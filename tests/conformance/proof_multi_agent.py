@@ -18,6 +18,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
+import contextlib
+
 from harbor.models.task.task import Task
 
 from benchflow._acp_run import connect_acp, execute_prompts
@@ -73,7 +75,7 @@ async def role_runner(env, role: Role, prompt: str) -> None:
     trial_dir = Path(f"/tmp/multi-agent-proof/{role.name}")
     trial_dir.mkdir(parents=True, exist_ok=True)
     launch_cmd = AGENT_LAUNCH.get(role.agent, role.agent)
-    acp_client, session, agent_name = await connect_acp(
+    acp_client, session, _agent_name = await connect_acp(
         env=env,
         agent=role.agent,
         agent_launch=launch_cmd,
@@ -85,7 +87,7 @@ async def role_runner(env, role: Role, prompt: str) -> None:
         agent_cwd="/app",
     )
     try:
-        trajectory, n_tools = await execute_prompts(
+        _trajectory, n_tools = await execute_prompts(
             acp_client,
             session,
             [prompt],
@@ -93,10 +95,8 @@ async def role_runner(env, role: Role, prompt: str) -> None:
         )
         logging.info(f"[{role.name}] finished: {n_tools} tool calls")
     finally:
-        try:
+        with contextlib.suppress(Exception):
             await acp_client.close()
-        except Exception:
-            pass
 
 
 async def main() -> None:
