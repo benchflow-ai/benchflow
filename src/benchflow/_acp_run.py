@@ -118,14 +118,18 @@ async def connect_acp(
     for attempt in range(_ACP_CONNECT_MAX_RETRIES + 1):
         if attempt > 0:
             delay = _ACP_CONNECT_BASE_DELAY * (2 ** (attempt - 1))
-            logger.info(f"ACP connect retry {attempt}/{_ACP_CONNECT_MAX_RETRIES} after {delay:.0f}s")
+            logger.info(
+                f"ACP connect retry {attempt}/{_ACP_CONNECT_MAX_RETRIES} after {delay:.0f}s"
+            )
             await asyncio.sleep(delay)
 
         try:
             if environment == "docker":
                 live_proc = DockerProcess.from_harbor_env(env)
             else:
-                is_dind = hasattr(env, "_strategy") and hasattr(env._strategy, "_compose_cmd")
+                is_dind = hasattr(env, "_strategy") and hasattr(
+                    env._strategy, "_compose_cmd"
+                )
                 if is_dind:
                     live_proc = await DaytonaPtyProcess.from_harbor_env(env)
                     logger.info("Using PTY transport for DinD compose task")
@@ -144,10 +148,14 @@ async def connect_acp(
             await acp_client.connect()
 
             init_result = await asyncio.wait_for(acp_client.initialize(), timeout=60)
-            agent_name = init_result.agent_info.name if init_result.agent_info else agent
+            agent_name = (
+                init_result.agent_info.name if init_result.agent_info else agent
+            )
             logger.info(f"ACP agent: {agent_name}")
 
-            session = await asyncio.wait_for(acp_client.session_new(cwd=agent_cwd), timeout=60)
+            session = await asyncio.wait_for(
+                acp_client.session_new(cwd=agent_cwd), timeout=60
+            )
             logger.info(f"Session: {session.session_id}")
             break
         except ConnectionError as e:
@@ -176,7 +184,9 @@ async def connect_acp(
         except Exception as e:
             logger.warning(f"Failed to set model via ACP: {e}")
     elif model:
-        logger.info(f"Skipping ACP set_model for {agent} — launch/env config owns model selection")
+        logger.info(
+            f"Skipping ACP set_model for {agent} — launch/env config owns model selection"
+        )
 
     return acp_client, session, agent_name
 
@@ -186,17 +196,102 @@ async def execute_prompts(
     session,
     prompts: list[str],
     timeout: int,
+    idle_timeout: int | None = None,
 ) -> tuple[list[dict], int]:
-    """Send prompts via ACP and capture trajectory. Return (trajectory, n_tool_calls)."""
+    """Send prompts via ACP and capture trajectory. Return (trajectory, n_tool_calls).
+
+    timeout      — wall-clock budget for each prompt (full agent budget).
+    idle_timeout — abort the prompt if no tool call or message arrives for
+                   this many seconds. Catches agents that hung silently while
+                   the agent process is still alive (e.g. gemini-cli not
+                   responding). None disables idle detection.
+    """
     for i, prompt in enumerate(prompts):
-        logger.info(f"Prompt {i + 1}/{len(prompts)}: {(prompt or '<instruction.md>')[:80]}...")
-        prompt_result = await asyncio.wait_for(
-            acp_client.prompt(prompt),
-            timeout=timeout,
+        logger.info(
+            f"Prompt {i + 1}/{len(prompts)}: {(prompt or '<instruction.md>')[:80]}..."
         )
+        if idle_timeout is None:
+            prompt_result = await asyncio.wait_for(
+                acp_client.prompt(prompt),
+                timeout=timeout,
+            )
+        else:
+            prompt_result = await _prompt_with_idle_watchdog(
+                acp_client, session, prompt, timeout, idle_timeout
+            )
         logger.info(
             f"  → {prompt_result.stop_reason.value}, "
             f"{len(session.tool_calls)} total tool calls"
         )
     trajectory = _capture_session_trajectory(session)
     return trajectory, len(session.tool_calls)
+
+
+async def _prompt_with_idle_watchdog(
+    acp_client: ACPClient,
+    session,
+    prompt: str,
+    timeout: int,
+    idle_timeout: int,
+):
+    """Run acp_client.prompt() with both a wall-clock and an idle watchdog.
+
+    The watchdog polls session.tool_calls every few seconds and aborts if no
+    progress was made in idle_timeout. This catches agents that hung silently
+    while the local process is still alive (no output to stdout, no tool calls
+    appended).
+    """
+
+    def _activity_count() -> int:
+        # Match the docstring contract: idle = no tool call AND no message
+        # AND no thought. Sum all three so streamed text resets the timer.
+        return (
+            len(session.tool_calls)
+            + len(session.message_chunks)
+            + len(session.thought_chunks)
+        )
+
+    prompt_task = asyncio.create_task(acp_client.prompt(prompt))
+    last_progress = asyncio.get_event_loop().time()
+    last_count = _activity_count()
+    # poll_interval considers BOTH idle_timeout and wall-clock timeout so that
+    # short overall budgets don't overshoot (e.g. timeout=30s with default
+    # poll_interval=30s could overshoot 100%). Cap at 30s, floor at 1s.
+    poll_interval = max(1, min(30, idle_timeout // 4, max(1, timeout // 4)))
+    deadline = last_progress + timeout
+
+    try:
+        while not prompt_task.done():
+            await asyncio.sleep(poll_interval)
+            # Re-check done() after the sleep — the prompt may have completed
+            # during the poll interval. Without this, we'd cancel an already-
+            # completed task and discard a successful result.
+            if prompt_task.done():
+                break
+            now = asyncio.get_event_loop().time()
+            cur_count = _activity_count()
+            if cur_count > last_count:
+                last_progress = now
+                last_count = cur_count
+            if now - last_progress >= idle_timeout:
+                raise TimeoutError(
+                    f"Agent idle for {idle_timeout}s with no new tool call, "
+                    f"message, or thought "
+                    f"(last activity {int(now - last_progress)}s ago, "
+                    f"{len(session.tool_calls)} tool calls so far)"
+                )
+            if now > deadline:
+                raise TimeoutError(
+                    f"Agent prompt exceeded wall-clock budget {timeout}s"
+                )
+
+        return prompt_task.result()
+    finally:
+        # Always cancel + drain the prompt task on exit, including the
+        # external-cancellation path (CancelledError from sleep). Without this
+        # an outer cancel leaks the prompt task — it keeps running in the
+        # background until Trial.cleanup() eventually kills the agent process.
+        if not prompt_task.done():
+            prompt_task.cancel()
+            with contextlib.suppress(BaseException):
+                await prompt_task

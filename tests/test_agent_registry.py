@@ -51,6 +51,7 @@ class TestEnvMappingField:
 
         assert env["LLM_MODEL"] == "glm-5"
 
+
 class TestOpenHandsConfig:
     def test_openhands_uses_agentskills_paths(self):
         cfg = AGENTS["openhands"]

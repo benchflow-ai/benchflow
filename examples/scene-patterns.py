@@ -14,7 +14,7 @@ Pattern 4: Client clarifies priorities → advisor gives targeted redlines
 
 Run:
     export GEMINI_API_KEY="AIza..."
-    python docs/notebooks/scene-patterns.py
+    python examples/scene-patterns.py
 """
 
 import os

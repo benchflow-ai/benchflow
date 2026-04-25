@@ -256,11 +256,13 @@ class Runtime:
         config = self.config
         trial_config = TrialConfig(
             task_path=self.env.task_path,
-            scenes=[Scene.single(
-                agent=self.agent.name,
-                model=self.agent.model,
-                skills_dir=config.skills_dir,
-            )],
+            scenes=[
+                Scene.single(
+                    agent=self.agent.name,
+                    model=self.agent.model,
+                    skills_dir=config.skills_dir,
+                )
+            ],
             environment=self.env.backend,
             sandbox_user=config.sandbox_user,
             sandbox_locked_paths=config.sandbox_locked_paths,

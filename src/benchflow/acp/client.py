@@ -98,7 +98,6 @@ class ACPClient:
                     )
                 return msg.get("result", {})
 
-
             # It's a notification (no id)
             if "method" in msg and "id" not in msg:
                 try:

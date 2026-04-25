@@ -111,9 +111,7 @@ class RetryConfig:
     wait_multiplier: float = 2.0
     min_wait_sec: float = 1.0
     max_wait_sec: float = 30.0
-    exclude_categories: set[str] = field(
-        default_factory=lambda: {"timeout"}
-    )
+    exclude_categories: set[str] = field(default_factory=lambda: {"timeout"})
 
     def should_retry(self, error: str | None) -> bool:
         """Check if an error is retryable."""
@@ -130,7 +128,7 @@ class RetryConfig:
 
     def backoff_delay(self, attempt: int) -> float:
         """Exponential backoff delay for retry attempt."""
-        delay = self.min_wait_sec * (self.wait_multiplier ** attempt)
+        delay = self.min_wait_sec * (self.wait_multiplier**attempt)
         return min(delay, self.max_wait_sec)
 
 
@@ -439,7 +437,9 @@ class Job:
         trial = await Trial.create(trial_config)
         return await trial.run()
 
-    async def _run_single_task_legacy(self, task_dir: Path, cfg: JobConfig) -> RunResult:
+    async def _run_single_task_legacy(
+        self, task_dir: Path, cfg: JobConfig
+    ) -> RunResult:
         """SDK.run() path — used when _sdk is mocked in tests."""
         return await self._sdk.run(
             task_path=task_dir,
@@ -539,8 +539,11 @@ class Job:
             async with sem:
                 # Jitter start to avoid SSH connection storms at high concurrency
                 import random
+
                 if cfg.concurrency > 16:
-                    await asyncio.sleep(random.uniform(0, min(cfg.concurrency / 10, 10)))
+                    await asyncio.sleep(
+                        random.uniform(0, min(cfg.concurrency / 10, 10))
+                    )
                 result = await self._run_task(td)
                 self._prune_docker()
                 # Log result

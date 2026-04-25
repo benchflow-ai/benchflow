@@ -227,7 +227,7 @@ The Scene API in 0.3 covers coder-reviewer and multi-turn patterns. It does **no
 - **Per-round verification** — `verify()` runs once after all scenes complete, not between rounds.
 - **Inter-round trajectory inspection** — a "user" role cannot read the agent's trajectory between turns.
 
-These are tracked for 0.4. See the [Harbor PR #1462 mapping](docs/notebooks/scene-patterns.ipynb) for details.
+These are tracked for 0.4. See the [Harbor PR #1462 mapping](../examples/scene-patterns.ipynb) for details.
 
 ## YAML Trial Configs
 

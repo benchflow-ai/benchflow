@@ -88,12 +88,14 @@ def trial_config_from_dict(
             prompts = [prompts_raw]
         else:
             prompts = [None]
-        scenes = [Scene.single(
-            agent=raw["agent"],
-            model=raw.get("model"),
-            prompts=prompts,
-            skills_dir=raw.get("skills_dir"),
-        )]
+        scenes = [
+            Scene.single(
+                agent=raw["agent"],
+                model=raw.get("model"),
+                prompts=prompts,
+                skills_dir=raw.get("skills_dir"),
+            )
+        ]
     else:
         raise ValueError("YAML must have either 'scenes' or 'agent' at top level")
 

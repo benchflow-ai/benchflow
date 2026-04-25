@@ -1,0 +1,117 @@
+{
+  "ansible": {
+    "final_reward": 1.0,
+    "tool_calls": 126,
+    "error": null,
+    "elapsed_s": 938.1,
+    "rounds": [
+      {
+        "round": 0,
+        "reward": 0.0,
+        "tools": 38
+      },
+      {
+        "round": 1,
+        "reward": 0.0,
+        "tools": 47
+      },
+      {
+        "round": 2,
+        "reward": 0.0,
+        "tools": 41
+      }
+    ]
+  },
+  "flipt": {
+    "final_reward": 0.0,
+    "tool_calls": 195,
+    "error": null,
+    "elapsed_s": 3373.8,
+    "rounds": [
+      {
+        "round": 0,
+        "reward": 0.0,
+        "tools": 32
+      },
+      {
+        "round": 1,
+        "reward": 0.0,
+        "tools": 92
+      },
+      {
+        "round": 2,
+        "reward": 0.0,
+        "tools": 71
+      }
+    ]
+  },
+  "openlibrary": {
+    "final_reward": 1.0,
+    "tool_calls": 82,
+    "error": null,
+    "elapsed_s": 707.0,
+    "rounds": [
+      {
+        "round": 0,
+        "reward": 0.0,
+        "tools": 18
+      },
+      {
+        "round": 1,
+        "reward": 0.0,
+        "tools": 29
+      },
+      {
+        "round": 2,
+        "reward": 0.0,
+        "tools": 35
+      }
+    ]
+  },
+  "navidrome": {
+    "final_reward": 0.0,
+    "tool_calls": 145,
+    "error": null,
+    "elapsed_s": 1514.3,
+    "rounds": [
+      {
+        "round": 0,
+        "reward": 0.0,
+        "tools": 47
+      },
+      {
+        "round": 1,
+        "reward": 0.0,
+        "tools": 66
+      },
+      {
+        "round": 2,
+        "reward": 0.0,
+        "tools": 32
+      }
+    ]
+  },
+  "qutebrowser": {
+    "final_reward": 1.0,
+    "tool_calls": 183,
+    "error": null,
+    "elapsed_s": 1478.9,
+    "rounds": [
+      {
+        "round": 0,
+        "reward": 0.0,
+        "tools": 89
+      },
+      {
+        "round": 1,
+        "reward": 0.0,
+        "tools": 40
+      },
+      {
+        "round": 2,
+        "reward": 0.0,
+        "tools": 54
+      }
+    ]
+  }
+}

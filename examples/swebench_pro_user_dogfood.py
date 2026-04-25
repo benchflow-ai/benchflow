@@ -1,7 +1,7 @@
 """Dogfood: SWE-bench Pro progressive disclosure with BaseUser.
 
 Demonstrates the BaseUser abstraction on a SWE-bench Pro task — the original
-motivation for this feature (Josh's GitHub/Microsoft use case).
+motivation for this feature.
 
 The user:
   Round 0: terse problem description (one sentence from the spec).
@@ -127,8 +127,6 @@ async def main():
     print(f"  Rewards: {result.rewards}")
     print(f"  Tool calls: {result.n_tool_calls}")
     print(f"  Error: {result.error}")
-    if result.trial_dir:
-        print(f"  Trial dir: {result.trial_dir}")
 
 
 if __name__ == "__main__":

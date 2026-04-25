@@ -82,7 +82,10 @@ def auto_inherit_env(agent_env: dict[str, str]) -> None:
     if "GEMINI_API_KEY" in agent_env and "GOOGLE_API_KEY" not in agent_env:
         agent_env["GOOGLE_API_KEY"] = agent_env["GEMINI_API_KEY"]
     # Mirror GEMINI_API_KEY as GOOGLE_GENERATIVE_AI_API_KEY (opencode/models.dev convention)
-    if "GEMINI_API_KEY" in agent_env and "GOOGLE_GENERATIVE_AI_API_KEY" not in agent_env:
+    if (
+        "GEMINI_API_KEY" in agent_env
+        and "GOOGLE_GENERATIVE_AI_API_KEY" not in agent_env
+    ):
         agent_env["GOOGLE_GENERATIVE_AI_API_KEY"] = agent_env["GEMINI_API_KEY"]
     # CLAUDE_CODE_OAUTH_TOKEN is a separate auth path — Claude CLI reads it
     # directly. Don't map to ANTHROPIC_API_KEY (different auth mechanism).

@@ -480,7 +480,8 @@ async def _discover_pytest_plugin_flags(env, task: "Task") -> str:
     try:
         result = await env.exec(
             f"python3 -c {shlex.quote(_DISCOVER_PYTEST_PLUGINS_SCRIPT)}",
-            user="root", timeout_sec=15,
+            user="root",
+            timeout_sec=15,
         )
         if result.stderr:
             logger.debug(f"Plugin discovery stderr: {result.stderr.strip()}")
@@ -563,7 +564,8 @@ async def _trusted_verifier_path(
 
 
 async def _trusted_verifier_pythonpath(
-    env, sandbox_user: str | None,
+    env,
+    sandbox_user: str | None,
 ) -> str:
     """Return filtered PYTHONPATH preserving only trusted image entries.
 
@@ -571,7 +573,9 @@ async def _trusted_verifier_pythonpath(
     block the workspace — it is already importable via CWD/pytest and
     is chowned to root before verification.
     """
-    pp_result = await env.exec("printenv PYTHONPATH 2>/dev/null || true", user="root", timeout_sec=10)
+    pp_result = await env.exec(
+        "printenv PYTHONPATH 2>/dev/null || true", user="root", timeout_sec=10
+    )
     raw_pp = (pp_result.stdout or "").strip()
     if not raw_pp:
         return ""
@@ -630,9 +634,7 @@ def _read_hardening_config(task_dir: "Path | str | None") -> dict[str, bool]:
         if k in result and isinstance(v, bool):
             result[k] = v
         else:
-            logger.warning(
-                f"task.toml [verifier.hardening] unknown/invalid: {k}={v!r}"
-            )
+            logger.warning(f"task.toml [verifier.hardening] unknown/invalid: {k}={v!r}")
     return result
 
 

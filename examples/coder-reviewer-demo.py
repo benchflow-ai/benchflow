@@ -12,8 +12,8 @@ Requirements:
   - A Harbor-format task directory (e.g. .ref/terminal-bench-2/regex-log)
 
 Usage:
-  python docs/notebooks/coder-reviewer-demo.py --task .ref/terminal-bench-2/regex-log
-  python docs/notebooks/coder-reviewer-demo.py --task .ref/terminal-bench-2/regex-log --env docker
+  python examples/coder-reviewer-demo.py --task .ref/terminal-bench-2/regex-log
+  python examples/coder-reviewer-demo.py --task .ref/terminal-bench-2/regex-log --env docker
 
 Terminology:
   - Turn:        One prompt → one ACP session (one role acts)

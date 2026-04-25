@@ -67,7 +67,9 @@ class TestConnectAsEnvMerge:
             await _mock_trial.connect_as(role)
 
         assert "BENCHFLOW_PROVIDER_BASE_URL" in captured["env"]
-        assert captured["env"]["BENCHFLOW_PROVIDER_BASE_URL"] == "http://localhost:8080/v1"
+        assert (
+            captured["env"]["BENCHFLOW_PROVIDER_BASE_URL"] == "http://localhost:8080/v1"
+        )
 
     @pytest.mark.asyncio
     async def test_role_env_overrides_config_env(self, _mock_trial):

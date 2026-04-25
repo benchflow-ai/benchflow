@@ -55,7 +55,10 @@ def mock_skill(tmp_path):
         json.dumps(
             {
                 "skill_name": "mock-review",
-                "defaults": {"timeout_sec": 60, "judge_model": "claude-haiku-4-5-20251001"},
+                "defaults": {
+                    "timeout_sec": 60,
+                    "judge_model": "claude-haiku-4-5-20251001",
+                },
                 "cases": [
                     {
                         "id": "bug-001",
@@ -143,10 +146,18 @@ class TestDryRunPipeline:
         """Verify SkillEvaluator passes correct config to Job."""
         mock_job_instance = MockJob.return_value
         mock_job_instance.run = AsyncMock(
-            return_value=type("R", (), {
-                "passed": 1, "failed": 1, "errored": 0, "total": 2,
-                "score": 0.5, "elapsed_sec": 10,
-            })()
+            return_value=type(
+                "R",
+                (),
+                {
+                    "passed": 1,
+                    "failed": 1,
+                    "errored": 0,
+                    "total": 2,
+                    "score": 0.5,
+                    "elapsed_sec": 10,
+                },
+            )()
         )
 
         evaluator = SkillEvaluator(mock_skill)
@@ -176,28 +187,48 @@ class TestDryRunPipeline:
             agents=["claude-agent-acp"],
             case_results=[
                 CaseResult(
-                    case_id="bug-001", agent="claude-agent-acp",
-                    model="haiku", with_skill=True, reward=0.85, n_tool_calls=3,
+                    case_id="bug-001",
+                    agent="claude-agent-acp",
+                    model="haiku",
+                    with_skill=True,
+                    reward=0.85,
+                    n_tool_calls=3,
                 ),
                 CaseResult(
-                    case_id="bug-001", agent="claude-agent-acp",
-                    model="haiku", with_skill=False, reward=0.4, n_tool_calls=1,
+                    case_id="bug-001",
+                    agent="claude-agent-acp",
+                    model="haiku",
+                    with_skill=False,
+                    reward=0.4,
+                    n_tool_calls=1,
                 ),
                 CaseResult(
-                    case_id="bug-002", agent="claude-agent-acp",
-                    model="haiku", with_skill=True, reward=0.9, n_tool_calls=4,
+                    case_id="bug-002",
+                    agent="claude-agent-acp",
+                    model="haiku",
+                    with_skill=True,
+                    reward=0.9,
+                    n_tool_calls=4,
                 ),
                 CaseResult(
-                    case_id="bug-002", agent="claude-agent-acp",
-                    model="haiku", with_skill=False, reward=0.3, n_tool_calls=1,
+                    case_id="bug-002",
+                    agent="claude-agent-acp",
+                    model="haiku",
+                    with_skill=False,
+                    reward=0.3,
+                    n_tool_calls=1,
                 ),
             ],
             agent_lifts=[
                 AgentLift(
-                    agent="claude-agent-acp", model="haiku",
-                    with_skill_score=0.875, baseline_score=0.35,
-                    lift=0.525, n_cases=2,
-                    with_skill_passed=2, baseline_passed=0,
+                    agent="claude-agent-acp",
+                    model="haiku",
+                    with_skill_score=0.875,
+                    baseline_score=0.35,
+                    lift=0.525,
+                    n_cases=2,
+                    with_skill_passed=2,
+                    baseline_passed=0,
                 ),
             ],
         )
@@ -235,7 +266,14 @@ class TestDryRunPipeline:
         # Run with a non-existent agent to trigger early failure after dataset loads
         result = runner.invoke(
             app,
-            ["skills", "eval", str(mock_skill), "-a", "claude-agent-acp", "--no-baseline"],
+            [
+                "skills",
+                "eval",
+                str(mock_skill),
+                "-a",
+                "claude-agent-acp",
+                "--no-baseline",
+            ],
         )
         # Should get past dataset loading (prints skill name)
         assert "mock-review" in result.output or "2 cases" in result.output
@@ -247,16 +285,24 @@ class TestDryRunPipeline:
             agents=["claude-agent-acp", "codex-acp"],
             agent_lifts=[
                 AgentLift(
-                    agent="claude-agent-acp", model="haiku",
-                    with_skill_score=0.85, baseline_score=0.40,
-                    lift=0.45, n_cases=5,
-                    with_skill_passed=4, baseline_passed=2,
+                    agent="claude-agent-acp",
+                    model="haiku",
+                    with_skill_score=0.85,
+                    baseline_score=0.40,
+                    lift=0.45,
+                    n_cases=5,
+                    with_skill_passed=4,
+                    baseline_passed=2,
                 ),
                 AgentLift(
-                    agent="codex-acp", model="gpt-5.4",
-                    with_skill_score=0.72, baseline_score=0.35,
-                    lift=0.37, n_cases=5,
-                    with_skill_passed=3, baseline_passed=1,
+                    agent="codex-acp",
+                    model="gpt-5.4",
+                    with_skill_score=0.72,
+                    baseline_score=0.35,
+                    lift=0.37,
+                    n_cases=5,
+                    with_skill_passed=3,
+                    baseline_passed=1,
                 ),
             ],
         )

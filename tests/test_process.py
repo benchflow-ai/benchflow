@@ -230,9 +230,7 @@ class TestDaytonaProcessEnvFilePath:
         from benchflow.process import DaytonaProcess
 
         sandbox = MagicMock()
-        sandbox.create_ssh_access = AsyncMock(
-            return_value=MagicMock(token="abc")
-        )
+        sandbox.create_ssh_access = AsyncMock(return_value=MagicMock(token="abc"))
         proc = DaytonaProcess(
             sandbox=sandbox,
             is_dind=True,
@@ -274,9 +272,7 @@ class TestDaytonaProcessEnvFilePath:
         from benchflow.process import DaytonaProcess
 
         sandbox = MagicMock()
-        sandbox.create_ssh_access = AsyncMock(
-            return_value=MagicMock(token="abc")
-        )
+        sandbox.create_ssh_access = AsyncMock(return_value=MagicMock(token="abc"))
         proc = DaytonaProcess(sandbox=sandbox, is_dind=False)
 
         captured = []

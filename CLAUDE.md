@@ -1,26 +1,20 @@
 # benchflow
 
-Multi-turn agent benchmarking with ACP.
+Multi-turn agent benchmarking with ACP. Docs in [`docs/`](./docs/).
 
-Docs: `docs/quickstart.md`, `docs/cli-reference.md`, `docs/api-reference.md`, `docs/task-authoring.md`, `docs/use-cases.md`, `docs/progressive-disclosure.md`.
-
-## Setup
-
-Requires Python 3.12+. Uses `uv`.
+## Setup + test
 
 ```bash
 uv venv -p 3.12 .venv && uv pip install -e ".[dev]"
-```
-
-## Test
-
-```bash
 .venv/bin/python -m pytest tests/
 .venv/bin/ty check src/
+ruff check .
 ```
 
 ## Conventions
 
-- **Don't rewrite passing tests.** Updating a test because the code it covers changed shape is fine; rewriting one to match new behavior without understanding why it was written is not. No tautological tests (dataclass reads, stdlib behavior, "does it construct").
-- **Test new regressions against `main` first.** A test that passes on buggy `main` pins the bug instead of preventing it. Name the commit/PR it guards.
-- **Human review before main.** Commit freely on a feature branch, open a PR. Never push to `main` directly, never force-push it. Self-approval doesn't count — request an independent reviewer.
+- **Don't rewrite passing tests** to match new behavior. Update for shape changes, not for semantic changes you don't understand. No tautological tests.
+- **Regression tests must name the PR/commit they guard** in the docstring (e.g. `Guards the fix from PR #198 against the regression introduced by PR #193`).
+- **Human review before `main`.** PRs only. No force-pushes to `main`. Self-approval doesn't count.
+- **Trunk-based:** branch off `main`, PR back to `main`. No long-lived release branches.
+- **Releases:** bump `pyproject.toml` to the stable version, tag `v<version>` on main, push tag (CI publishes to PyPI), then bump main to the next `.dev0`.

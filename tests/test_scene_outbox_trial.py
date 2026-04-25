@@ -35,8 +35,11 @@ class FakeEnv:
     async def exec(self, cmd: str, **kwargs) -> FakeExecResult:
         self._exec_log.append(cmd)
         if "rm -rf /app/.outbox" in cmd:
-            self._files = {k: v for k, v in self._files.items()
-                           if not k.startswith("/app/.outbox/")}
+            self._files = {
+                k: v
+                for k, v in self._files.items()
+                if not k.startswith("/app/.outbox/")
+            }
             return FakeExecResult()
         if "ls /app/.outbox/" in cmd:
             files = [f for f in self._files if f.startswith("/app/.outbox/")]
@@ -78,7 +81,9 @@ def coder_reviewer_scene() -> Scene:
         ],
         turns=[
             Turn("coder"),
-            Turn("reviewer", "Review the code. Write feedback to /app/.outbox/coder.json"),
+            Turn(
+                "reviewer", "Review the code. Write feedback to /app/.outbox/coder.json"
+            ),
             Turn("coder", "Read feedback and fix issues."),
         ],
     )
@@ -133,7 +138,9 @@ async def test_no_outbox_setup_for_single_role(self_review_scene: Scene) -> None
     assert len(outbox_cmds) == 0
 
 
-async def test_outbox_messages_injected_into_prompt(coder_reviewer_scene: Scene) -> None:
+async def test_outbox_messages_injected_into_prompt(
+    coder_reviewer_scene: Scene,
+) -> None:
     """Outbox messages from coder are injected into reviewer's prompt."""
     trial = _make_trial(coder_reviewer_scene)
     prompts_received: list[tuple[str, list[str]]] = []
@@ -149,7 +156,9 @@ async def test_outbox_messages_injected_into_prompt(coder_reviewer_scene: Scene)
             trial._env.stage_outbox("reviewer", "Please review my regex implementation")
         # Reviewer writes feedback to coder outbox on second turn
         elif call_count == 1:
-            trial._env.stage_outbox("coder", "Edge case: empty string input not handled")
+            trial._env.stage_outbox(
+                "coder", "Edge case: empty string input not handled"
+            )
         call_count += 1
         return [], 0
 
@@ -219,7 +228,9 @@ async def test_outbox_invalid_json_skipped(coder_reviewer_scene: Scene) -> None:
     assert call_count == 3
 
 
-async def test_role_switching_connects_and_disconnects(coder_reviewer_scene: Scene) -> None:
+async def test_role_switching_connects_and_disconnects(
+    coder_reviewer_scene: Scene,
+) -> None:
     """Verify connect/disconnect happens on role switches."""
     trial = _make_trial(coder_reviewer_scene)
 

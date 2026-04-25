@@ -696,7 +696,9 @@ class TestVerifierEnv:
         task = _make_task()
         await harden_before_verify(env, task, sandbox_user=None)
 
-        assert task.config.verifier.env["PYTEST_ADDOPTS"] == VERIFIER_ENV["PYTEST_ADDOPTS"]
+        assert (
+            task.config.verifier.env["PYTEST_ADDOPTS"] == VERIFIER_ENV["PYTEST_ADDOPTS"]
+        )
 
     @pytest.mark.asyncio
     async def test_distro_pip_env_ubuntu(self):
@@ -1124,9 +1126,7 @@ class TestHardeningOptOuts:
     def test_defaults_when_no_hardening_section(self, tmp_path):
         from benchflow._sandbox import HARDENING_DEFAULTS, _read_hardening_config
 
-        (tmp_path / "task.toml").write_text(
-            "[verifier]\ntimeout_sec = 60\n"
-        )
+        (tmp_path / "task.toml").write_text("[verifier]\ntimeout_sec = 60\n")
         assert _read_hardening_config(tmp_path) == HARDENING_DEFAULTS
 
     def test_opt_out_cleanup_conftests(self, tmp_path):
@@ -1141,9 +1141,7 @@ class TestHardeningOptOuts:
     def test_unknown_key_logged_not_applied(self, tmp_path, caplog):
         from benchflow._sandbox import HARDENING_DEFAULTS, _read_hardening_config
 
-        (tmp_path / "task.toml").write_text(
-            "[verifier.hardening]\nbogus_flag = true\n"
-        )
+        (tmp_path / "task.toml").write_text("[verifier.hardening]\nbogus_flag = true\n")
         cfg = _read_hardening_config(tmp_path)
         assert cfg == HARDENING_DEFAULTS  # bogus key ignored
         assert any("bogus_flag" in r.message for r in caplog.records)
@@ -1184,9 +1182,11 @@ class TestSandboxFailureModes:
         """Malformed JSON from container plugin discovery falls back gracefully."""
         from benchflow._sandbox import _discover_pytest_plugin_flags
 
-        env = _make_env(side_effect=lambda cmd, **kw: MagicMock(
-            stdout="not valid json", stderr="", exit_code=0
-        ))
+        env = _make_env(
+            side_effect=lambda cmd, **kw: MagicMock(
+                stdout="not valid json", stderr="", exit_code=0
+            )
+        )
         task = _make_task()
         flags = await _discover_pytest_plugin_flags(env, task)
         assert flags == ""

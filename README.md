@@ -2,7 +2,7 @@
   <h1>BenchFlow</h1>
   <p>Multi-turn agent benchmarking — Scene-based lifecycle for any ACP agent</p>
   <a href="https://pypi.org/project/benchflow/" target="_blank">
-    <img src="https://img.shields.io/badge/PyPI-0.3.0a3-blue?style=for-the-badge&logo=pypi" alt="PyPI">
+    <img src="https://img.shields.io/badge/PyPI-0.3.2-blue?style=for-the-badge&logo=pypi" alt="PyPI">
   </a>
   <a href="https://discord.gg/mZ9Rc8q8W3" target="_blank">
     <img src="https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord">
@@ -11,12 +11,12 @@
 
 ## What
 
-BenchFlow runs AI agents against benchmark tasks in sandboxed environments. It supports single-agent, multi-agent, and multi-turn evaluation patterns through a Scene-based lifecycle.
+BenchFlow runs AI agents against benchmark tasks in sandboxed environments. Single-agent, multi-agent, and multi-round patterns share one Scene-based lifecycle.
 
-- **Any ACP agent** — Gemini CLI, Claude, Codex, OpenClaw, Pi, or your own
-- **Multi-scene trials** — skill generation → solve, coder → reviewer → revision
+- **Any ACP agent** — Gemini CLI, Claude Code, Codex, OpenCode, OpenClaw, Pi, or your own
+- **Single + multi + progressive** — single-agent / multi-agent (coder + reviewer, simulated user) / multi-round with a Python `BaseUser` callback
 - **Cloud sandboxes** — Daytona backend for parallel execution at scale
-- **YAML-driven** — same task folder, different trial configs for ablation
+- **Hardened verifier** — defaults block BenchJack/Meerkat-style reward-hacking; tasks opt out per-feature
 
 ## Install
 
@@ -24,173 +24,50 @@ BenchFlow runs AI agents against benchmark tasks in sandboxed environments. It s
 uv tool install benchflow
 ```
 
-Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/). For cloud sandboxes, set `DAYTONA_API_KEY`.
+Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/). Set `DAYTONA_API_KEY` for cloud sandboxes; export the relevant agent API key (`GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, etc.) or run `claude login` / `codex --login` for subscription auth.
 
-## Quick Start
+## Documentation
 
-### CLI
+Start with [Getting started](./docs/getting-started.md), then [Concepts](./docs/concepts.md) for the mental model. Then by goal:
 
-```bash
-# Run a single task with Gemini
-bench eval create -t tasks/my-task -a gemini -m gemini-3.1-flash-lite-preview -e daytona
+| If you want to… | Read |
+|------------------|------|
+| Run an eval on an existing task | [Getting started](./docs/getting-started.md) |
+| Understand Trial / Scene / Role / Verifier | [Concepts](./docs/concepts.md) |
+| Author a new task | [Task authoring](./docs/task-authoring.md) |
+| Multi-agent: coder + reviewer, simulated user, BYOS, stateful envs | [Use cases](./docs/use-cases.md) |
+| Multi-round single-agent (progressive disclosure, oracle access) | [Progressive disclosure](./docs/progressive-disclosure.md) |
+| Skill evaluation (when the artifact is a skill, not a workspace) | [Skill eval](./docs/skill-eval.md) |
+| Understand the security model | [Sandbox hardening](./docs/sandbox-hardening.md) |
+| CLI flags + commands | [CLI reference](./docs/reference/cli.md) |
+| Python API surface | [Python API reference](./docs/reference/python-api.md) |
 
-# Run from YAML config (batch, concurrent)
-bench eval create -f benchmarks/tb2-gemini-baseline.yaml
+Notebooks and runnable example scripts: [`examples/`](./examples/).
 
-# List agents
-bench agent list
+## Featured
 
-# Check task validity
-bench tasks check tasks/my-task
-```
+- **Progressive disclosure on SWE-bench Pro** — the `BaseUser` abstraction drives a multi-round trial: terse round-0 prompt → failing-test hints → full spec. 5/5 oracle on Daytona, runnable demo at [`examples/swebench_pro_progressive_disclosure.ipynb`](./examples/swebench_pro_progressive_disclosure.ipynb). Also benchflow's [Harbor #1316](https://github.com/harbor-ai/harbor/issues/1316) parity answer for the no-second-LLM case. See [Progressive disclosure](./docs/progressive-disclosure.md).
 
-### Python
+## Research artifacts
 
-```python
-import benchflow as bf
-from benchflow.trial import TrialConfig, Scene, Role, Turn
+Two runnable labs validate the security story:
 
-# Simplest: one agent, one task
-result = await bf.run("gemini", task_path="tasks/my-task", model="gemini-3.1-flash-lite-preview")
-print(result.rewards)  # {"reward": 1.0}
+- [`labs/benchjack-sandbox-hardening/`](./labs/benchjack-sandbox-hardening/) — end-to-end demo that 0.2.1+ blocks three [BenchJack](https://rdi.berkeley.edu/blog/trustworthy-benchmarks-cont/) exploits that flip 0.2.0's reward from 0.0 to 1.0.
+- [`labs/reward-hack-matrix/`](./labs/reward-hack-matrix/) — full reward-hack sweep across real benchmarks comparing 0.2.0 vs 0.2.2.
 
-# Scene-based: skill-gen → solve (BYOS pattern)
-config = TrialConfig(
-    task_path=Path("tasks/my-task"),
-    scenes=[
-        Scene(name="skill-gen",
-              roles=[Role("gen", "gemini", "gemini-3.1-flash-lite-preview")],
-              turns=[Turn("gen", "Analyze the task and write a skill to /app/generated-skill.md")]),
-        Scene(name="solve",
-              roles=[Role("solver", "gemini", "gemini-3.1-flash-lite-preview")],
-              turns=[Turn("solver")]),  # None prompt = use instruction.md
-    ],
-    environment="daytona",
-)
-result = await bf.run(config)
+## Audience
 
-# Multi-agent: coder + reviewer
-config = TrialConfig(
-    task_path=Path("tasks/my-task"),
-    scenes=[
-        Scene(name="review-loop",
-              roles=[
-                  Role("coder", "gemini", "gemini-3.1-flash-lite-preview"),
-                  Role("reviewer", "gemini", "gemini-3.1-flash-lite-preview"),
-              ],
-              turns=[
-                  Turn("coder", "Solve the task. Write to /app/.outbox/reviewer.json when done."),
-                  Turn("reviewer", "Review the coder's work. Write feedback to /app/.outbox/coder.json."),
-                  Turn("coder", "Read the reviewer's feedback and revise your solution."),
-              ]),
-    ],
-    environment="daytona",
-)
-result = await bf.run(config)
-```
+- **Eval researchers / paper writers** → [Getting started](./docs/getting-started.md) → [Concepts](./docs/concepts.md) → [Use cases](./docs/use-cases.md)
+- **Task authors** → [Task authoring](./docs/task-authoring.md) → [Sandbox hardening](./docs/sandbox-hardening.md)
+- **Agent builders integrating with benchflow** → [Concepts](./docs/concepts.md) → [Python API reference](./docs/reference/python-api.md) → [`benchflow.agents.registry`](./src/benchflow/agents/registry.py)
+- **Existing Harbor users migrating** → [Use cases — migration section](./docs/use-cases.md#migration-from-harbor) → [Progressive disclosure (Harbor #1316 parity)](./docs/progressive-disclosure.md#comparison-with-multi-agent-simulated-user-harbor-1316-parity)
 
-### YAML Trial Config
+## Contributing
 
-```yaml
-# trial-baseline.yaml
-task_dir: .ref/terminal-bench-2
-agent: gemini
-model: gemini-3.1-flash-lite-preview
-environment: daytona
-concurrency: 89
+PRs welcome. Open against `main`. CI runs ruff + tests on every PR; please run `ruff check .` and `pytest tests/` locally first.
 
-# trial-byos.yaml (same tasks, different config)
-task_dir: .ref/terminal-bench-2
-scenes:
-  - name: skill-gen
-    roles: [{name: gen, agent: gemini, model: gemini-3.1-flash-lite-preview}]
-    turns: [{role: gen, prompt: "Generate a skill for this task..."}]
-  - name: solve
-    roles: [{name: solver, agent: gemini, model: gemini-3.1-flash-lite-preview}]
-```
+For a release: bump `pyproject.toml` to the next stable version, tag `v<version>` on main, push the tag — CI publishes to PyPI. Then bump main to the next `.dev0`.
 
-## CLI Reference
+## License
 
-```
-bench agent list              List registered agents
-bench agent show <name>       Agent details + conformance status
-
-bench eval create             Create + run evaluation (returns job-id)
-bench eval list               List completed evaluations
-
-bench skills eval             Evaluate skill via evals.json
-
-bench tasks init <name>       Scaffold new task
-bench tasks check <dir>       Validate task (--rubric for custom)
-
-bench train create            Reward-based training sweep
-
-bench environment create      Spin up sandbox from task dir
-bench environment list        List active sandboxes
-```
-
-## Terminology
-
-| Term | Definition | Example |
-|------|-----------|---------|
-| **Turn** | One prompt in one ACP session — one role acts | Coder writes a regex |
-| **Multi-turn** | Same role, multiple turns | Self-review: agent → agent |
-| **Round** | One A→B exchange between different roles | Coder → Reviewer |
-| **Multi-round** | Different roles exchanging turns | Coder → Reviewer → Coder |
-| **Scene** | Interaction region with roles + turns | A code-review scene |
-| **Trial** | Sequence of scenes in a shared sandbox | Skill-gen → Solve |
-
-**Inter-role messaging:** In multi-role scenes, agents communicate via outbox files.
-An agent writes `/app/.outbox/{recipient}.json` with `{"to": "role", "content": "..."}`.
-The scheduler reads these after each turn and injects the message into the next role's prompt.
-
-## Architecture
-
-```
-Trial = sequence of Scenes in a shared sandbox
-Scene = Roles + Turns (one interaction region)
-Role  = agent + model
-Turn  = one prompt for one role
-
-bf.run(config)
-  → Trial.create(config)
-    → trial.setup()      # resolve config, create env object
-    → trial.start()      # spin up sandbox, upload task files
-    → for scene in config.scenes:
-        → trial._run_scene(scene)  # connect/execute/disconnect per role
-          → setup /app/.outbox/    # (multi-role scenes only)
-          → for turn in scene.turns:
-              → read outbox → inject messages into prompt
-              → connect as role → execute → disconnect
-    → trial.verify()     # run verifier, score
-    → trial.cleanup()    # stop sandbox
-```
-
-## Registered Agents
-
-| Agent | Command | Auth |
-|-------|---------|------|
-| `gemini` | `gemini --acp --yolo` | GOOGLE_API_KEY |
-| `claude-agent-acp` | `claude-agent-acp` | ANTHROPIC_API_KEY |
-| `codex-acp` | `codex-acp` | OPENAI_API_KEY |
-| `openclaw` | `openclaw-acp-shim` | inferred from model |
-| `pi-acp` | `pi-acp` | ANTHROPIC_API_KEY |
-
-## Adding a Custom Agent
-
-Any ACP-native agent works. Create `agent.toml`:
-
-```toml
-name = "my-agent"
-launch_cmd = "my-agent --acp"
-install_cmd = "npm install -g my-agent"
-requires_env = ["MY_API_KEY"]
-```
-
-## Development
-
-```bash
-uv venv -p 3.12 .venv && uv pip install -e ".[dev]"
-.venv/bin/python -m pytest tests/       # 580+ unit tests
-.venv/bin/ty check src/                 # type check
-```
+Apache-2.0.

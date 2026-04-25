@@ -38,14 +38,12 @@ def _skill_link_cmd(source: str, dest: str) -> str:
     parent = shlex.quote(str(Path(dest).parent))
     q_source = shlex.quote(source)
     q_dest = shlex.quote(dest)
-    return (
-        f"mkdir -p {parent} && "
-        f"rm -rf {q_dest} && "
-        f"ln -sfn {q_source} {q_dest}"
-    )
+    return f"mkdir -p {parent} && rm -rf {q_dest} && ln -sfn {q_source} {q_dest}"
 
 
-async def _link_skill_paths(env, source: str, skill_paths: list[str], home: str, cwd: str) -> int:
+async def _link_skill_paths(
+    env, source: str, skill_paths: list[str], home: str, cwd: str
+) -> int:
     """Link one shared skills tree into each configured discovery path."""
     parts = []
     for sp in skill_paths:
@@ -160,6 +158,4 @@ async def deploy_skills(
             agent_cwd,
         )
         if count:
-            logger.info(
-                f"Skills distributed to {count} paths for {agent_cfg.name}"
-            )
+            logger.info(f"Skills distributed to {count} paths for {agent_cfg.name}")

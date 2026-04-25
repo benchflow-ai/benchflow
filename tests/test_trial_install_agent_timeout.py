@@ -63,9 +63,7 @@ async def test_install_agent_forwards_sandbox_setup_timeout(
     )
     monkeypatch.setattr("benchflow.trial.deploy_skills", deploy_skills_mock)
     monkeypatch.setattr("benchflow.trial.lockdown_paths", lockdown_paths_mock)
-    monkeypatch.setattr(
-        "benchflow.trial.setup_sandbox_user", setup_sandbox_user_mock
-    )
+    monkeypatch.setattr("benchflow.trial.setup_sandbox_user", setup_sandbox_user_mock)
 
     await trial.install_agent()
 
