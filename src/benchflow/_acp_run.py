@@ -254,7 +254,10 @@ async def _prompt_with_idle_watchdog(
     prompt_task = asyncio.create_task(acp_client.prompt(prompt))
     last_progress = asyncio.get_event_loop().time()
     last_count = _activity_count()
-    poll_interval = min(30, max(5, idle_timeout // 4))
+    # poll_interval considers BOTH idle_timeout and wall-clock timeout so that
+    # short overall budgets don't overshoot (e.g. timeout=30s with default
+    # poll_interval=30s could overshoot 100%). Cap at 30s, floor at 1s.
+    poll_interval = max(1, min(30, idle_timeout // 4, max(1, timeout // 4)))
     deadline = last_progress + timeout
 
     try:
