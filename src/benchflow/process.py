@@ -389,3 +389,135 @@ class DaytonaProcess(LiveProcess):
             limit=_BUFFER_LIMIT,
         )
         logger.info(f"Daytona process started (pid={self._process.pid})")
+
+
+class DaytonaPtyProcess(LiveProcess):
+    """Live stdin/stdout via Daytona PTY WebSocket API.
+
+    Uses the Daytona SDK's PTY session (WebSocket) instead of SSH, which
+    maintains long-lived interactive pipes through DinD compose layers.
+    Falls back to this for DinD sandboxes where SSH pipes break.
+    """
+
+    _process = None  # Not used — override readline/writeline/close
+
+    def __init__(self, sandbox: Any, compose_cmd_prefix: str, compose_cmd_base: str):
+        self._sandbox = sandbox
+        self._compose_cmd_prefix = compose_cmd_prefix
+        self._compose_cmd_base = compose_cmd_base
+        self._pty = None
+        self._line_buffer = asyncio.Queue()
+        self._partial = b""
+        self._closed = False
+
+    @classmethod
+    async def from_harbor_env(cls, env: Any) -> "DaytonaPtyProcess":
+        sandbox = env._sandbox
+        if not sandbox:
+            raise RuntimeError("Daytona sandbox not started")
+        strategy = env._strategy
+        compose_env = " ".join(
+            f"{k}={shlex.quote(v)}" for k, v in strategy._compose_env_vars().items()
+        )
+        compose_cmd_base = strategy._compose_cmd([])
+        return cls(sandbox=sandbox, compose_cmd_prefix=compose_env, compose_cmd_base=compose_cmd_base)
+
+    async def _on_pty_data(self, data: bytes) -> None:
+        self._partial += data
+        while b"\n" in self._partial:
+            line, self._partial = self._partial.split(b"\n", 1)
+            line = line.replace(b"\r", b"")
+            await self._line_buffer.put(line + b"\n")
+
+    async def start(
+        self,
+        command: str,
+        env: dict[str, str] | None = None,
+        cwd: str | None = None,
+    ) -> None:
+        import uuid
+        session_id = f"acp-{uuid.uuid4().hex[:8]}"
+        pty_env = {}
+        if self._compose_cmd_prefix:
+            for part in shlex.split(self._compose_cmd_prefix):
+                if "=" in part:
+                    k, v = part.split("=", 1)
+                    pty_env[k] = v
+
+        self._pty = await self._sandbox.process.create_pty_session(
+            id=session_id,
+            on_data=self._on_pty_data,
+            envs=pty_env if pty_env else None,
+        )
+        await self._pty.wait_for_connection()
+        logger.info(f"DaytonaPtyProcess: PTY connected (session={session_id})")
+
+        compose_parts = shlex.split(self._compose_cmd_base) if self._compose_cmd_base else ["docker", "compose"]
+        exec_parts = compose_parts + ["exec", "-i", "-T"]
+        if cwd:
+            exec_parts.extend(["-w", cwd])
+        # Write env vars to a file inside the container (not visible in ps aux),
+        # matching the approach in DaytonaProcess.start().
+        env_file_cmd = ""
+        if env:
+            env_lines = "\n".join(f"export {k}={shlex.quote(v)}" for k, v in env.items())
+            env_file_cmd = (
+                f"cat > /tmp/.benchflow_env <<'__EOF__'\n{env_lines}\n__EOF__\n"
+                f". /tmp/.benchflow_env && rm -f /tmp/.benchflow_env && "
+            )
+        exec_parts.extend(["main", "bash", "-lc", f"{env_file_cmd}{command}"])
+        exec_cmd = shlex.join(exec_parts)
+
+        # Use a marker + stty to cleanly hand over the PTY to the agent.
+        # 1. Disable echo so typed commands don't appear in output
+        # 2. Print marker so we know when to start reading ACP output
+        # 3. exec into compose exec so the agent owns the PTY
+        marker = f"__BENCHFLOW_ACP_{session_id}__"
+        setup = f"stty -echo 2>/dev/null; echo '{marker}'; exec {exec_cmd}\n"
+        await self._pty.send_input(setup)
+        logger.info(f"DaytonaPtyProcess: sent setup, waiting for marker...")
+
+        while True:
+            try:
+                line = await asyncio.wait_for(self._line_buffer.get(), timeout=120)
+                decoded = line.decode(errors="replace").strip()
+                logger.debug(f"DaytonaPtyProcess drain: {decoded[:120]}")
+                if marker in decoded:
+                    break
+            except TimeoutError:
+                raise ConnectionError("DaytonaPtyProcess: timeout waiting for agent start marker")
+
+        logger.info(f"DaytonaPtyProcess: marker seen, agent starting")
+
+    async def readline(self) -> bytes:
+        if self._closed:
+            raise ConnectionError("PTY closed")
+        try:
+            line = await asyncio.wait_for(self._line_buffer.get(), timeout=300)
+            return line
+        except TimeoutError:
+            raise ConnectionError("PTY readline timeout (300s)")
+        except Exception as e:
+            raise ConnectionError(f"PTY readline error: {e}")
+
+    async def writeline(self, data: str) -> None:
+        if not self._pty or self._closed:
+            raise RuntimeError("PTY not started")
+        await self._pty.send_input(data + "\n")
+
+    async def close(self) -> None:
+        self._closed = True
+        if self._pty:
+            try:
+                await self._pty.kill()
+            except Exception:
+                pass
+            try:
+                await self._pty.disconnect()
+            except Exception:
+                pass
+            logger.info("DaytonaPtyProcess terminated")
+
+    @property
+    def is_running(self) -> bool:
+        return self._pty is not None and not self._closed
