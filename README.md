@@ -129,6 +129,21 @@ bench environment create      Spin up sandbox from task dir
 bench environment list        List active sandboxes
 ```
 
+## Terminology
+
+| Term | Definition | Example |
+|------|-----------|---------|
+| **Turn** | One prompt in one ACP session — one role acts | Coder writes a regex |
+| **Multi-turn** | Same role, multiple turns | Self-review: agent → agent |
+| **Round** | One A→B exchange between different roles | Coder → Reviewer |
+| **Multi-round** | Different roles exchanging turns | Coder → Reviewer → Coder |
+| **Scene** | Interaction region with roles + turns | A code-review scene |
+| **Trial** | Sequence of scenes in a shared sandbox | Skill-gen → Solve |
+
+**Inter-role messaging:** In multi-role scenes, agents communicate via outbox files.
+An agent writes `/app/.outbox/{recipient}.json` with `{"to": "role", "content": "..."}`.
+The scheduler reads these after each turn and injects the message into the next role's prompt.
+
 ## Architecture
 
 ```
@@ -143,6 +158,10 @@ bf.run(config)
     → trial.start()      # spin up sandbox, upload task files
     → for scene in config.scenes:
         → trial._run_scene(scene)  # connect/execute/disconnect per role
+          → setup /app/.outbox/    # (multi-role scenes only)
+          → for turn in scene.turns:
+              → read outbox → inject messages into prompt
+              → connect as role → execute → disconnect
     → trial.verify()     # run verifier, score
     → trial.cleanup()    # stop sandbox
 ```

@@ -312,18 +312,41 @@ AGENTS: dict[str, AgentConfig] = {
         name="openhands",
         description="OpenHands agent via ACP (multi-model, Python-based)",
         skill_paths=[],
+        home_dirs=[".openhands"],
         install_cmd=(
-            "( command -v openhands >/dev/null 2>&1 || "
-            "pip install openhands >/dev/null 2>&1 ) && "
+            "export DEBIAN_FRONTEND=noninteractive && "
+            "export PATH=\"$HOME/.local/bin:$PATH\" && "
+            "( command -v openhands >/dev/null 2>&1 || ( "
+            "  ( command -v uv >/dev/null 2>&1 || ( "
+            "    ( command -v curl >/dev/null 2>&1 || "
+            "      (apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null 2>&1) ) && "
+            "    curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null 2>&1 "
+            "  ) ) && "
+            "  uv tool install openhands --python 3.12 >/dev/null 2>&1 "
+            ") ) && "
+            # Let sandbox user traverse to the uv-managed Python interpreter
+            "chmod o+x /root /root/.local /root/.local/share "
+            "/root/.local/share/uv /root/.local/share/uv/tools 2>/dev/null; "
+            # Seed agent_settings.json so _is_authenticated() passes
+            "mkdir -p ~/.openhands && "
+            "echo '{\"llm\":{\"model\":\"placeholder\",\"api_key\":\"placeholder\"}}' "
+            "> ~/.openhands/agent_settings.json && "
             "command -v openhands >/dev/null 2>&1"
         ),
-        launch_cmd="openhands acp --always-approve --override-with-envs",
+        launch_cmd=(
+            "export PATH=\"$HOME/.local/bin:$PATH\" && "
+            "mkdir -p ~/.openhands && "
+            "printf '{\"llm\":{\"model\":\"%s\",\"api_key\":\"%s\"}}' "
+            "\"$LLM_MODEL\" \"$LLM_API_KEY\" > ~/.openhands/agent_settings.json && "
+            "openhands acp --always-approve --override-with-envs"
+        ),
         protocol="acp",
         requires_env=["LLM_API_KEY"],
         api_protocol="",
         env_mapping={
             "BENCHFLOW_PROVIDER_BASE_URL": "LLM_BASE_URL",
             "BENCHFLOW_PROVIDER_API_KEY": "LLM_API_KEY",
+            "BENCHFLOW_PROVIDER_MODEL": "LLM_MODEL",
         },
     ),
 }

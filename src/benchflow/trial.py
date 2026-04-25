@@ -36,7 +36,9 @@ Phases can be composed for multi-agent flows::
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import shlex
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -598,20 +600,41 @@ class Trial:
 
     # ── Scene execution ──
 
+    _OUTBOX_DIR = "/app/.outbox"
+
     async def _run_scene(self, scene: Scene) -> None:
-        """Execute one scene: for each turn, connect as the turn's role, execute, disconnect."""
+        """Execute one scene: for each turn, connect as the turn's role, execute, disconnect.
+
+        For multi-role scenes, agents communicate via outbox files:
+        an agent writes ``/app/.outbox/{recipient}.json`` with
+        ``{"to": "role_name", "content": "..."}`` and the scheduler
+        injects received messages into the next turn's prompt.
+
+        Inter-role messages are persisted to ``trial_dir/scene_messages.jsonl``.
+        """
         cfg = self._config
         logger.info(f"[Scene] {scene.name} — {len(scene.turns)} turns, {len(scene.roles)} roles")
 
         role_map = {r.name: r for r in scene.roles}
         current_role: str | None = None
+        multi_role = len(scene.roles) > 1
+        scene_messages: list[dict] = []
+
+        if multi_role:
+            setup_cmd = f"rm -rf {self._OUTBOX_DIR} && mkdir -p {self._OUTBOX_DIR}"
+            if cfg.sandbox_user:
+                user = shlex.quote(cfg.sandbox_user)
+                setup_cmd += f" && chown {user}:{user} {self._OUTBOX_DIR}"
+            await self._env.exec(setup_cmd, timeout_sec=10)
+
+        inbox: dict[str, list[str]] = {r.name: [] for r in scene.roles}
+        turn_counter = 0
 
         for i, turn in enumerate(scene.turns):
             role = role_map.get(turn.role)
             if not role:
                 raise ValueError(f"Turn references unknown role {turn.role!r}")
 
-            # Reconnect if role changed or first turn
             if current_role != turn.role:
                 if current_role is not None:
                     await self.disconnect()
@@ -619,29 +642,106 @@ class Trial:
                 current_role = turn.role
 
             if turn.prompt:
-                prompts = [turn.prompt]
+                base_prompt = turn.prompt
             elif self._resolved_prompts:
-                prompts = [self._resolved_prompts[0]]
+                base_prompt = self._resolved_prompts[0]
             else:
-                prompts = ["Solve the task described in /app/instruction.md"]
+                base_prompt = "Solve the task described in /app/instruction.md"
+
+            pending = inbox.get(turn.role, [])
+            if pending:
+                parts = [base_prompt, "\n---\nMessages from other agents:\n"]
+                parts.extend(pending)
+                prompts = ["\n".join(parts)]
+                inbox[turn.role] = []
+            else:
+                prompts = [base_prompt]
+
             await self.execute(prompts=prompts)
+
+            if multi_role:
+                for recipient, content in await self._read_scene_outbox(current_role):
+                    turn_counter += 1
+                    inbox.setdefault(recipient, []).append(
+                        f"**From {current_role}:** {content}"
+                    )
+                    scene_messages.append({
+                        "scene": scene.name,
+                        "turn": turn_counter,
+                        "sender": current_role,
+                        "recipient": recipient,
+                        "content": content,
+                    })
 
         if current_role is not None:
             await self.disconnect()
 
+        if scene_messages and self._trial_dir:
+            msg_path = self._trial_dir / "scene_messages.jsonl"
+            with msg_path.open("a") as f:
+                for m in scene_messages:
+                    f.write(json.dumps(m) + "\n")
+            logger.info(
+                f"[Scene] {scene.name}: {len(scene_messages)} messages → {msg_path}"
+            )
+
+    async def _read_scene_outbox(self, sender: str) -> list[tuple[str, str]]:
+        """Read and clear outbox files left by *sender*. Returns [(recipient, content), ...]."""
+        result = await self._env.exec(
+            f"ls {self._OUTBOX_DIR}/*.json 2>/dev/null || true", timeout_sec=10,
+        )
+        files = [f.strip() for f in (result.stdout or "").strip().splitlines() if f.strip()]
+        messages: list[tuple[str, str]] = []
+        for fpath in files:
+            quoted = shlex.quote(fpath)
+            cat = await self._env.exec(f"cat {quoted}", timeout_sec=10)
+            try:
+                data = json.loads(cat.stdout or "{}")
+                recipient = data.get("to", "")
+                content = data.get("content", "")
+                if recipient and content:
+                    messages.append((recipient, content))
+                    logger.info(f"[Scene] outbox: {sender} → {recipient}: {content[:80]}")
+            except json.JSONDecodeError:
+                logger.warning(f"[Scene] invalid JSON in outbox: {fpath}")
+            await self._env.exec(f"rm -f {quoted}", timeout_sec=10)
+        return messages
+
     async def connect_as(self, role: Role) -> None:
-        """Open an ACP connection for a specific role."""
+        """Open an ACP connection for a specific role.
+
+        Installs the role's agent binary and credentials if it differs
+        from the primary agent (which was set up in install_agent()).
+        Updates _agent_launch so disconnect() kills the correct process.
+        """
         cfg = self._config
         t0 = datetime.now()
+
+        agent_launch = AGENT_LAUNCH.get(role.agent, role.agent)
+        # Merge cfg.agent_env (config-level) with role.env (role-specific) so
+        # provider creds from YAML reach the agent. role.env wins on overlap.
+        agent_env = resolve_agent_env(
+            role.agent, role.model,
+            {**(cfg.agent_env or {}), **(role.env or {})},
+        )
+
+        if role.agent != cfg.primary_agent:
+            agent_cfg = await install_agent(self._env, role.agent, self._trial_dir)
+            cred_home = f"/home/{cfg.sandbox_user}" if cfg.sandbox_user else "/root"
+            await write_credential_files(
+                self._env, role.agent, agent_env,
+                agent_cfg, role.model, cred_home,
+            )
+            if agent_env.get("_BENCHFLOW_SUBSCRIPTION_AUTH"):
+                await upload_subscription_auth(self._env, role.agent, cred_home)
+
+        self._agent_launch = agent_launch
 
         self._acp_client, self._session, self._agent_name = await connect_acp(
             env=self._env,
             agent=role.agent,
-            agent_launch=AGENT_LAUNCH.get(role.agent, role.agent),
-            agent_env=resolve_agent_env(
-                role.agent, role.model,
-                {**(cfg.agent_env or {}), **(role.env or {})},
-            ),
+            agent_launch=agent_launch,
+            agent_env=agent_env,
             sandbox_user=cfg.sandbox_user,
             model=role.model,
             trial_dir=self._trial_dir,
