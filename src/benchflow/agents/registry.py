@@ -374,21 +374,18 @@ AGENT_LAUNCH: dict[str, str] = {name: a.launch_cmd for name, a in AGENTS.items()
 
 
 def get_sandbox_home_dirs() -> set[str]:
-    """Collect all dot-dirs under $HOME that sandbox user setup should copy.
+    """Collect user home config/auth dirs BenchFlow may materialize for the sandbox user.
 
     Derives from three sources across all registered agents:
-    - skill_paths: $HOME/.foo/... → ".foo"
     - credential_files: {home}/.foo/... → ".foo"
+    - subscription_auth.files: {home}/.foo/... → ".foo"
     - home_dirs: explicit extras (e.g. ".openclaw")
 
-    Always includes ".local" (pip scripts, etc.).
+    Skill paths are excluded: deploy_skills() now links those paths directly to a
+    shared skills tree instead of relying on sandbox-home copies.
     """
-    dirs: set[str] = {".local"}
+    dirs: set[str] = set()
     for cfg in AGENTS.values():
-        for sp in cfg.skill_paths:
-            if sp.startswith("$HOME/."):
-                dirname = sp.removeprefix("$HOME/").split("/")[0]
-                dirs.add(dirname)
         for cf in cfg.credential_files:
             # path uses {home}/.foo/... placeholder
             path = cf.path

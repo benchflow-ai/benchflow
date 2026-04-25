@@ -50,6 +50,8 @@ env             = { OPENAI_API_KEY = "${OPENAI_API_KEY}" }  # host vars to injec
 
 **Built-in mock services** — if the Dockerfile references a service binary (`claw-gmail`, `claw-slack`, `claw-gcal`, `claw-gdoc`, `claw-gdrive`), BenchFlow starts it automatically. No `[services]` section needed.
 
+**Install tooling to shared prefixes, not `/root`** — when a task image ships Node.js, Python tools, or agent binaries that the sandbox user must execute, install them to `/usr/local/bin`, `/usr/local/lib`, or `/opt`, not `/root/.nvm` or `/root/.local/bin`. `setup_sandbox_user()` creates the non-root user, prepares small config/auth dirs, and chowns the workspace — it does not clone `/root` into the sandbox home. Legacy images that already install tools under `/root` still work via a narrow symlink fallback, but shared prefixes are the supported path. Pre-creating the sandbox user in the Dockerfile is an optional speedup, not a requirement.
+
 ---
 
 ## instruction.md
