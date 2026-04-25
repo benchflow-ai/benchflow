@@ -42,7 +42,7 @@ Start with [Getting started](./docs/getting-started.md), then [Concepts](./docs/
 | CLI flags + commands | [CLI reference](./docs/reference/cli.md) |
 | Python API surface | [Python API reference](./docs/reference/python-api.md) |
 
-Notebooks: [`docs/examples/`](./docs/examples/). Runnable example scripts: [`examples/`](./examples/).
+Notebooks and runnable example scripts: [`examples/`](./examples/).
 
 ## Featured
 
