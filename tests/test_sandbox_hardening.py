@@ -152,7 +152,7 @@ class TestHardenSequence:
         assert "sitecustomize.py" in cleanup_cmd and ".pth" in cleanup_cmd
         assert "-not -path '/tests/*'" in cleanup_cmd
         injected = task.config.verifier.env
-        assert "--rootdir" not in injected["PYTEST_ADDOPTS"]
+        assert "--rootdir=/app" in injected["PYTEST_ADDOPTS"]
         assert "-p no:cacheprovider" in injected["PYTEST_ADDOPTS"]
         assert injected["PYTHONPATH"] == ""
         assert "PYTHONHOME" not in injected  # breaks Py_Initialize if set to ""
@@ -171,7 +171,7 @@ class TestHardenSequence:
         assert all("pkill" not in c for c in cmds)
         assert any("conftest.py" in c for c in cmds)
         addopts = task.config.verifier.env["PYTEST_ADDOPTS"]
-        assert "--rootdir" not in addopts
+        assert "--rootdir=/app" in addopts
         assert "-p no:cacheprovider" in addopts
 
     @pytest.mark.asyncio
@@ -629,7 +629,7 @@ class TestVerifierEnv:
 
         assert "-c /dev/null" in addopts
         assert "--confcutdir=/tests" in addopts
-        assert "--rootdir" not in addopts
+        assert "--rootdir=/app" in addopts
         assert "-p no:cacheprovider" in addopts
         assert (
             "PYTHONSAFEPATH" not in VERIFIER_ENV
@@ -1111,6 +1111,69 @@ class TestVerifierEnv:
             f"-c /dev/null did not suppress hostile pyproject.toml — "
             f"plugin marker {plugin_marker!r} leaked into hardened output."
         )
+
+
+class TestHardeningOptOuts:
+    """Per-task [verifier.hardening] opt-outs from task.toml."""
+
+    def test_defaults_when_no_task_dir(self):
+        from benchflow._sandbox import _read_hardening_config, HARDENING_DEFAULTS
+
+        assert _read_hardening_config(None) == HARDENING_DEFAULTS
+
+    def test_defaults_when_no_hardening_section(self, tmp_path):
+        from benchflow._sandbox import _read_hardening_config, HARDENING_DEFAULTS
+
+        (tmp_path / "task.toml").write_text(
+            "[verifier]\ntimeout_sec = 60\n"
+        )
+        assert _read_hardening_config(tmp_path) == HARDENING_DEFAULTS
+
+    def test_opt_out_cleanup_conftests(self, tmp_path):
+        from benchflow._sandbox import _read_hardening_config
+
+        (tmp_path / "task.toml").write_text(
+            "[verifier.hardening]\ncleanup_conftests = false\n"
+        )
+        cfg = _read_hardening_config(tmp_path)
+        assert cfg["cleanup_conftests"] is False
+
+    def test_unknown_key_logged_not_applied(self, tmp_path, caplog):
+        from benchflow._sandbox import _read_hardening_config, HARDENING_DEFAULTS
+
+        (tmp_path / "task.toml").write_text(
+            "[verifier.hardening]\nbogus_flag = true\n"
+        )
+        cfg = _read_hardening_config(tmp_path)
+        assert cfg == HARDENING_DEFAULTS  # bogus key ignored
+        assert any("bogus_flag" in r.message for r in caplog.records)
+
+    def test_invalid_value_type_rejected(self, tmp_path, caplog):
+        from benchflow._sandbox import _read_hardening_config
+
+        (tmp_path / "task.toml").write_text(
+            '[verifier.hardening]\ncleanup_conftests = "false"\n'
+        )
+        cfg = _read_hardening_config(tmp_path)
+        # String "false" is not bool — rejected, default applied
+        assert cfg["cleanup_conftests"] is True
+
+    def test_build_cleanup_includes_conftest_by_default(self):
+        from benchflow._sandbox import _build_cleanup_cmd
+
+        cmd = _build_cleanup_cmd()
+        assert "find / -name conftest.py" in cmd
+        assert "find /tmp /var/tmp" in cmd
+        assert "sitecustomize.py" in cmd
+
+    def test_build_cleanup_skips_conftest_when_disabled(self):
+        from benchflow._sandbox import _build_cleanup_cmd
+
+        cmd = _build_cleanup_cmd({"cleanup_conftests": False})
+        assert "find / -name conftest.py" not in cmd
+        # Other steps still run
+        assert "find /tmp /var/tmp" in cmd
+        assert "sitecustomize.py" in cmd
 
 
 class TestSandboxFailureModes:

@@ -535,7 +535,7 @@ class Trial:
         verify() still does full hardening.
         """
         from harbor import Verifier
-        from benchflow._sandbox import CLEANUP_CMD
+        from benchflow._sandbox import _build_cleanup_cmd, _read_hardening_config
 
         self._trial_paths.verifier_dir.mkdir(parents=True, exist_ok=True)
         # Clean verifier output dir — chmod 777 so non-root verifier processes can write
@@ -544,8 +544,12 @@ class Trial:
             user="root", timeout_sec=10,
         )
         # Purge agent-injected conftest/sitecustomize/.pth without
-        # killing processes or restoring workspace
-        await self._env.exec(CLEANUP_CMD, user="root", timeout_sec=10)
+        # killing processes or restoring workspace.
+        # Honor per-task [verifier.hardening] opt-outs from task.toml.
+        hardening = _read_hardening_config(getattr(self._task, "task_dir", None))
+        await self._env.exec(
+            _build_cleanup_cmd(hardening), user="root", timeout_sec=10
+        )
 
         rewards = None
         verifier_output = None

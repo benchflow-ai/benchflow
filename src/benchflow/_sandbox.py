@@ -293,6 +293,7 @@ VERIFIER_ENV: dict[str, str] = {
     "PYTEST_ADDOPTS": (
         "-c /dev/null "  # block pyproject.toml/pytest.ini/tox.ini/setup.cfg discovery
         "--confcutdir=/tests "  # block conftest.py walk-up beyond /tests
+        "--rootdir=/app "  # anchor test node IDs to repo root (not /dev from -c)
         "-p no:cacheprovider"
     ),
     # Block pytest11 entry-point plugins. An agent can modify a pre-installed
@@ -582,26 +583,87 @@ _CLEAR_VERIFIER_DIR_CMD = (
     "rm -rf /logs/verifier && mkdir -p /logs/verifier && chmod 777 /logs/verifier"
 )
 
-# Remove injected conftest.py, sitecustomize.py/usercustomize.py, and .pth
-# files from writable sys.path entries (preserves /usr/lib, /usr/local/lib).
-# Also purge *.py from temp dirs: covers module-shadow via non-workspace cwd.
-CLEANUP_CMD = (
-    "find / -name conftest.py -not -path '/tests/*' -delete 2>/dev/null; "
-    "find /tmp /var/tmp -name '*.py' -delete 2>/dev/null; "
-    'python3 -c "'
-    "import sys,os;"
-    "[os.remove(os.path.join(d,f)) "
-    " for d in sys.path "
-    " for f in ('sitecustomize.py','usercustomize.py') "
-    " if d and not d.startswith('/usr/lib') and not d.startswith('/usr/local/lib') "
-    " and os.path.isfile(os.path.join(d,f))];"
-    "[os.remove(os.path.join(d,f)) "
-    " for d in sys.path if d and os.path.isdir(d) "
-    " for f in os.listdir(d) if f.endswith('.pth') "
-    " and not d.startswith('/usr/lib') and not d.startswith('/usr/local/lib') "
-    " and os.path.isfile(os.path.join(d,f))]"
-    '" 2>/dev/null || true'
-)
+# Per-task hardening opt-outs. Tasks declare these in task.toml under
+# [verifier.hardening] when their legitimate test setup conflicts with the
+# default cleanup (e.g. qutebrowser ships a real conftest.py that the cleanup
+# would otherwise delete, breaking pytest collection).
+#
+# Defaults are secure (all True). Tasks opt out individually:
+#
+#   [verifier.hardening]
+#   cleanup_conftests = false   # don't delete conftest.py before verify
+HARDENING_DEFAULTS: dict[str, bool] = {
+    "cleanup_conftests": True,
+}
+
+
+def _read_hardening_config(task_dir: "Path | str | None") -> dict[str, bool]:
+    """Read [verifier.hardening] section from task.toml. Returns merged defaults."""
+    import tomllib
+    from pathlib import Path as _Path
+
+    result = dict(HARDENING_DEFAULTS)
+    if task_dir is None:
+        return result
+    toml_path = _Path(task_dir) / "task.toml"
+    if not toml_path.exists():
+        return result
+    try:
+        with open(toml_path, "rb") as f:
+            data = tomllib.load(f)
+    except Exception as e:
+        logger.warning(f"task.toml parse error in {task_dir}: {e}")
+        return result
+    overrides = data.get("verifier", {}).get("hardening", {})
+    for k, v in overrides.items():
+        if k in result and isinstance(v, bool):
+            result[k] = v
+        else:
+            logger.warning(
+                f"task.toml [verifier.hardening] unknown/invalid: {k}={v!r}"
+            )
+    return result
+
+
+def _build_cleanup_cmd(hardening: dict[str, bool] | None = None) -> str:
+    """Build the cleanup shell command, honoring per-task hardening opt-outs.
+
+    Steps:
+      - conftest.py removal outside /tests (skippable via cleanup_conftests=false)
+      - *.py purge from /tmp /var/tmp (always — covers module-shadow via cwd)
+      - sitecustomize.py/usercustomize.py removal from writable sys.path
+      - .pth removal from writable sys.path
+
+    sitecustomize/usercustomize/.pth always run — opt-outs there would broaden
+    the attack surface beyond what real-world tasks need.
+    """
+    h = hardening or HARDENING_DEFAULTS
+    parts: list[str] = []
+    if h.get("cleanup_conftests", True):
+        parts.append(
+            "find / -name conftest.py -not -path '/tests/*' -delete 2>/dev/null"
+        )
+    parts.append("find /tmp /var/tmp -name '*.py' -delete 2>/dev/null")
+    parts.append(
+        'python3 -c "'
+        "import sys,os;"
+        "[os.remove(os.path.join(d,f)) "
+        " for d in sys.path "
+        " for f in ('sitecustomize.py','usercustomize.py') "
+        " if d and not d.startswith('/usr/lib') and not d.startswith('/usr/local/lib') "
+        " and os.path.isfile(os.path.join(d,f))];"
+        "[os.remove(os.path.join(d,f)) "
+        " for d in sys.path if d and os.path.isdir(d) "
+        " for f in os.listdir(d) if f.endswith('.pth') "
+        " and not d.startswith('/usr/lib') and not d.startswith('/usr/local/lib') "
+        " and os.path.isfile(os.path.join(d,f))]"
+        '" 2>/dev/null || true'
+    )
+    return "; ".join(parts)
+
+
+# Backward-compat: the all-defaults cleanup command.
+CLEANUP_CMD = _build_cleanup_cmd()
 
 
 async def harden_before_verify(
@@ -701,7 +763,8 @@ async def harden_before_verify(
             f"chown -R root:root {shlex.quote(workspace)}",
             user="root",
         )
-    await env.exec(CLEANUP_CMD, user="root", timeout_sec=10)
+    hardening = _read_hardening_config(getattr(task, "task_dir", None))
+    await env.exec(_build_cleanup_cmd(hardening), user="root", timeout_sec=10)
 
     hardened_path = await _trusted_verifier_path(env, sandbox_user, workspace)
     hardened_pythonpath = await _trusted_verifier_pythonpath(env, sandbox_user)

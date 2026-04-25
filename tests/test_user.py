@@ -328,12 +328,13 @@ class TestSoftVerify:
         mock_result = type("VR", (), {"rewards": {}})()
 
         with patch("harbor.Verifier") as MockVerifier, \
-             patch("benchflow._sandbox.CLEANUP_CMD", "echo cleanup_sentinel"):
+             patch("benchflow._sandbox._build_cleanup_cmd",
+                   return_value="echo cleanup_sentinel"):
             mock_instance = MockVerifier.return_value
             mock_instance.verify = AsyncMock(return_value=mock_result)
 
             await trial.soft_verify()
 
-        # Verify CLEANUP_CMD was executed
+        # Verify cleanup command was executed
         exec_log = trial._env._exec_log
         assert any("cleanup_sentinel" in cmd for cmd in exec_log)
