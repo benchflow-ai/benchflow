@@ -27,6 +27,7 @@ from benchflow._trajectory import _capture_session_trajectory
 from benchflow.acp.client import ACPClient
 from benchflow.acp.container_transport import ContainerTransport
 from benchflow.agents.providers import strip_provider_prefix
+from benchflow.agents.registry import AGENTS
 from benchflow.process import DaytonaProcess, DaytonaPtyProcess, DockerProcess
 
 logger = logging.getLogger(__name__)
@@ -120,13 +121,16 @@ async def connect_acp(
                     await acp_client.close()
             raise
 
-    if model:
+    agent_cfg = AGENTS.get(agent)
+    if model and (agent_cfg is None or agent_cfg.supports_acp_set_model):
         acp_model_id = strip_provider_prefix(model)
         try:
             await asyncio.wait_for(acp_client.set_model(acp_model_id), timeout=60)
             logger.info(f"Model set to: {acp_model_id} (from {model})")
         except Exception as e:
             logger.warning(f"Failed to set model via ACP: {e}")
+    elif model:
+        logger.info(f"Skipping ACP set_model for {agent} — launch/env config owns model selection")
 
     return acp_client, session, agent_name
 

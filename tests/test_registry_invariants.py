@@ -49,6 +49,7 @@ def test_agent_field_shapes(name, cfg):
         f"api_protocol={cfg.api_protocol!r} not in {VALID_API_PROTOCOLS}"
     )
     assert isinstance(cfg.install_timeout, int) and cfg.install_timeout > 0
+    assert isinstance(cfg.supports_acp_set_model, bool)
 
 
 @pytest.mark.parametrize("name,cfg", AGENTS.items(), ids=list(AGENTS.keys()))

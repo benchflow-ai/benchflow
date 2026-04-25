@@ -87,9 +87,7 @@ def build_priv_drop_cmd(agent_launch: str, sandbox_user: str) -> str:
     setpriv (util-linux) execs directly; su -l is the fallback for Alpine/BusyBox.
     No outer sh -c wrapper — DockerProcess wraps in bash -c already.
     """
-    inner = (
-        f"export HOME=/home/{sandbox_user} && {agent_launch}"
-    )
+    inner = f"export HOME=/home/{sandbox_user} && {agent_launch}"
     quoted = shlex.quote(inner)
     return (
         f"if setpriv --help 2>&1 | grep -q reuid; then"
