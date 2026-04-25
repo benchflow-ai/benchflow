@@ -157,9 +157,19 @@ class AgentConfig:
     home_dirs: list[str] = field(default_factory=list)
     # Extra dot-dirs under $HOME to copy to sandbox user (for dirs not
     # derivable from skill_paths or credential_files, e.g. ".openclaw").
+    acp_model_format: str = "bare"
+    # How the agent expects the modelId in session/set_model:
+    # "bare"           — just the model name (e.g. "claude-sonnet-4-6").
+    #                    Default; works for claude-agent-acp, codex-acp.
+    # "provider/model" — models.dev convention (e.g. "google/gemini-3.1-pro-preview").
+    #                    Required by opencode, which uses Provider.parseModel()
+    #                    to split on "/" and treats the first segment as provider ID.
     subscription_auth: SubscriptionAuth | None = None
     # Host CLI login that can substitute for an API key (e.g. OAuth tokens
     # from `claude login`). Detected automatically; API keys take precedence.
+    supports_acp_set_model: bool = True
+    # Some ACP agents configure the model through env/config at launch time and
+    # do not implement session/set_model (e.g. OpenHands CLI ACP).
 
 
 # Agent registry — all supported agents
@@ -308,16 +318,72 @@ AGENTS: dict[str, AgentConfig] = {
             ],
         ),
     ),
+    "opencode": AgentConfig(
+        name="opencode",
+        description="OpenCode via ACP — open-source coding agent (TypeScript)",
+        skill_paths=["$HOME/.opencode/skills"],
+        home_dirs=[".opencode"],
+        install_cmd=(
+            f"{_NODE_INSTALL} && "
+            "( command -v opencode >/dev/null 2>&1 || "
+            "npm install -g opencode-ai@latest >/dev/null 2>&1 ) && "
+            "command -v opencode >/dev/null 2>&1"
+        ),
+        launch_cmd="opencode acp",
+        protocol="acp",
+        requires_env=[],  # inferred from --model at runtime
+        acp_model_format="provider/model",
+        # OpenCode uses models.dev provider IDs — its parseModel() splits
+        # modelId on "/" so set_model must send "google/gemini-3.1-pro-preview",
+        # not just "gemini-3.1-pro-preview".
+        env_mapping={
+            "BENCHFLOW_PROVIDER_BASE_URL": "OPENAI_BASE_URL",
+        },
+    ),
     "openhands": AgentConfig(
         name="openhands",
         description="OpenHands agent via ACP (multi-model, Python-based)",
-        skill_paths=[],
+        skill_paths=["$HOME/.agents/skills", "$WORKSPACE/.agents/skills"],
+        home_dirs=[".openhands"],
         install_cmd=(
-            "( command -v openhands >/dev/null 2>&1 || "
-            "pip install openhands >/dev/null 2>&1 ) && "
+            "export DEBIAN_FRONTEND=noninteractive && "
+            "export PATH=\"$HOME/.local/bin:$PATH\" && "
+            "( command -v curl >/dev/null 2>&1 || "
+            "  ( apt-get update -qq && "
+            "    apt-get install -y -qq curl ca-certificates >/dev/null 2>&1 ) ) && "
+            "( command -v openhands >/dev/null 2>&1 || ( "
+            "  UV_OK=0; "
+            "  if command -v uv >/dev/null 2>&1; then "
+            "    UV_VER=$(uv --version 2>/dev/null | awk '{print $2}'); "
+            "    if [ -n \"$UV_VER\" ] && "
+            "       [ \"$(printf '%s\\n' 0.11.6 \"$UV_VER\" | sort -V | head -n1)\" = \"0.11.6\" ]; then "
+            "      UV_OK=1; "
+            "    fi; "
+            "  fi; "
+            "  if [ \"$UV_OK\" = 0 ]; then "
+            "    curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null 2>&1 && "
+            "    export PATH=\"$HOME/.local/bin:$PATH\"; "
+            "  fi && "
+            "  ( uv tool list 2>/dev/null | grep -q '^openhands\\b' || "
+            "    uv tool install openhands --python 3.12 >/dev/null 2>&1 || "
+            "    curl -fsSL https://install.openhands.dev/install.sh | sh >/dev/null 2>&1 ) "
+            ") ) && "
+            # Let sandbox user traverse to uv-managed Python interpreter path.
+            "chmod o+x /root /root/.local /root/.local/share "
+            "/root/.local/share/uv /root/.local/share/uv/tools 2>/dev/null; "
+            # Seed config so OpenHands ACP auth check passes before env override.
+            "mkdir -p ~/.openhands && "
+            "echo '{\"llm\":{\"model\":\"placeholder\",\"api_key\":\"placeholder\"}}' "
+            "> ~/.openhands/agent_settings.json && "
             "command -v openhands >/dev/null 2>&1"
         ),
-        launch_cmd="openhands acp --always-approve --override-with-envs",
+        launch_cmd=(
+            "export PATH=\"$HOME/.local/bin:$PATH\" && "
+            "mkdir -p ~/.openhands && "
+            "printf '{\"llm\":{\"model\":\"%s\",\"api_key\":\"%s\"}}' "
+            "\"$LLM_MODEL\" \"$LLM_API_KEY\" > ~/.openhands/agent_settings.json && "
+            "openhands acp --always-approve --override-with-envs"
+        ),
         protocol="acp",
         requires_env=["LLM_API_KEY"],
         api_protocol="",
@@ -325,6 +391,7 @@ AGENTS: dict[str, AgentConfig] = {
             "BENCHFLOW_PROVIDER_BASE_URL": "LLM_BASE_URL",
             "BENCHFLOW_PROVIDER_API_KEY": "LLM_API_KEY",
         },
+        supports_acp_set_model=False,
     ),
 }
 
@@ -336,21 +403,18 @@ AGENT_LAUNCH: dict[str, str] = {name: a.launch_cmd for name, a in AGENTS.items()
 
 
 def get_sandbox_home_dirs() -> set[str]:
-    """Collect all dot-dirs under $HOME that sandbox user setup should copy.
+    """Collect user home config/auth dirs BenchFlow may materialize for the sandbox user.
 
     Derives from three sources across all registered agents:
-    - skill_paths: $HOME/.foo/... → ".foo"
     - credential_files: {home}/.foo/... → ".foo"
+    - subscription_auth.files: {home}/.foo/... → ".foo"
     - home_dirs: explicit extras (e.g. ".openclaw")
 
-    Always includes ".local" (pip scripts, etc.).
+    Skill paths are excluded: deploy_skills() now links those paths directly to a
+    shared skills tree instead of relying on sandbox-home copies.
     """
-    dirs: set[str] = {".local"}
+    dirs: set[str] = set()
     for cfg in AGENTS.values():
-        for sp in cfg.skill_paths:
-            if sp.startswith("$HOME/."):
-                dirname = sp.removeprefix("$HOME/").split("/")[0]
-                dirs.add(dirname)
         for cf in cfg.credential_files:
             # path uses {home}/.foo/... placeholder
             path = cf.path
@@ -496,6 +560,8 @@ def register_agent(
     credential_files: list[CredentialFile] | None = None,
     home_dirs: list[str] | None = None,
     subscription_auth: SubscriptionAuth | None = None,
+    acp_model_format: str = "bare",
+    supports_acp_set_model: bool = True,
 ) -> AgentConfig:
     """Register a custom agent at runtime.
 
@@ -525,6 +591,8 @@ def register_agent(
         credential_files=credential_files or [],
         home_dirs=home_dirs or [],
         subscription_auth=subscription_auth,
+        acp_model_format=acp_model_format,
+        supports_acp_set_model=supports_acp_set_model,
     )
     AGENTS[name] = config
     AGENT_INSTALLERS[name] = install_cmd

@@ -5,7 +5,7 @@ The Trial/Scene API is the primary way to run agent benchmarks programmatically.
 ## Install
 
 ```bash
-pip install benchflow==0.3.0a3
+uv tool install benchflow
 ```
 
 ## Quick Start
@@ -34,6 +34,7 @@ config = TrialConfig(
     task_path=Path("tasks/my-task"),
     scenes=[Scene.single(agent="gemini", model="gemini-3.1-flash-lite-preview")],
     environment="daytona",
+    sandbox_setup_timeout=120,
 )
 
 # Multi-scene BYOS (skill-gen → solve)
@@ -46,8 +47,12 @@ config = TrialConfig(
               turns=[Turn("solver")]),
     ],
     environment="daytona",
+    sandbox_setup_timeout=120,
 )
 ```
+
+Set `sandbox_setup_timeout` when sandbox user setup needs more than the default 120 seconds.
+The same field is also available on `JobConfig` and `RuntimeConfig`.
 
 ### Scene
 
@@ -57,7 +62,9 @@ One interaction region — roles take turns executing prompts.
 # Single-role shortcut
 scene = Scene.single(agent="gemini", model="gemini-3.1-flash-lite-preview")
 
-# Multi-role with turn order
+# Multi-role with turn order (coder-reviewer pattern)
+# Agents communicate via outbox: write /app/.outbox/{recipient}.json
+# Scheduler reads outbox after each turn, injects into next role's prompt
 scene = Scene(
     name="coder-reviewer",
     roles=[
@@ -66,8 +73,9 @@ scene = Scene(
     ],
     turns=[
         Turn("coder"),                    # None prompt = instruction.md
-        Turn("reviewer", "Review..."),
-        Turn("coder", "Fix issues..."),
+        Turn("reviewer", "Review the code. Write feedback to "
+             '/app/.outbox/coder.json as {"to":"coder","content":"..."}'),
+        Turn("coder", "Fix the issues."), # reviewer's feedback auto-injected
     ],
 )
 ```
@@ -95,6 +103,20 @@ await trial.verify()
 await trial.cleanup()
 ```
 
+### RuntimeConfig
+
+Runtime-level configuration for the `Agent + Environment` execution path.
+
+```python
+from benchflow.runtime import Agent, Environment, Runtime, RuntimeConfig
+
+config = RuntimeConfig(sandbox_setup_timeout=300)
+agent = Agent("gemini", model="gemini-3.1-flash-lite-preview")
+env = Environment.from_task("tasks/X", backend="daytona")
+runtime = Runtime(env, agent, config=config)
+result = await runtime.execute()
+```
+
 ### bf.run()
 
 Convenience function — multiple calling conventions:
@@ -108,10 +130,16 @@ result = await bf.run(config)
 # 2. Agent + Environment (0.3 style)
 agent = bf.Agent("gemini", model="gemini-3.1-flash-lite-preview")
 env = bf.Environment.from_task("tasks/X", backend="daytona")
-result = await bf.run(agent, env)
+runtime_config = bf.RuntimeConfig(sandbox_setup_timeout=300)
+result = await bf.run(agent, env, runtime_config)
 
 # 3. String shortcut (simplest)
-result = await bf.run("gemini", task_path="tasks/X", model="gemini-3.1-flash-lite-preview")
+result = await bf.run(
+    "gemini",
+    task_path="tasks/X",
+    model="gemini-3.1-flash-lite-preview",
+    config=bf.RuntimeConfig(sandbox_setup_timeout=300),
+)
 ```
 
 ## Trial Lifecycle
@@ -122,16 +150,37 @@ Trial.run()
   ├─ setup()          — resolve config, create env object
   ├─ start()          — spin up sandbox, upload task files, start services
   ├─ install_agent()  — install agent binary, credentials, sandbox user
+  │                    (sandbox user setup: create non-root user, prepare
+  │                     small config/auth dirs, chown the workspace — no
+  │                     recursive copy of /root tool trees; agent binaries
+  │                     must live on shared prefixes like /usr/local/bin)
   ├─ for scene in scenes:
   │    └─ _run_scene(scene)
-  │         ├─ connect_as(role)    — open ACP session for this role
-  │         ├─ execute(prompts)    — send prompts, collect trajectory
-  │         └─ disconnect()        — kill agent process, clean up
+  │         ├─ setup /app/.outbox/ — (multi-role scenes only)
+  │         └─ for turn in scene.turns:
+  │              ├─ read outbox     — inject messages into prompt
+  │              ├─ connect_as(role) — open ACP session for this role
+  │              ├─ execute(prompts) — send prompts, collect trajectory
+  │              └─ disconnect()    — kill agent process, clean up
   ├─ verify()         — run verifier, collect rewards
   └─ cleanup()        — stop sandbox
 ```
 
 Key: `disconnect()` kills the agent process between scenes to prevent context bleed. Each scene gets a fresh agent session.
+
+## Multi-Turn vs Multi-Round
+
+| Pattern | Roles | Turns | Communication | Example |
+|---------|-------|-------|---------------|---------|
+| **Single-turn** | 1 | 1 | — | Baseline benchmark |
+| **Multi-turn** | 1 | 2+ | Same session, sequential prompts | Self-review |
+| **Multi-round** | 2+ | 2+ | Outbox files between roles | Coder + Reviewer |
+
+**Multi-turn** = same agent gets multiple prompts. Use when a second pass catches errors (self-review, iterative refinement). The agent keeps its context across turns.
+
+**Multi-round** = different agents exchange turns. Use when tasks need multiple perspectives (code review, client-advisor). The scheduler reads outbox files and injects messages.
+
+Both use the same API — `TrialConfig` with different `Scene` configurations.
 
 ## Multi-Agent Patterns
 
@@ -168,6 +217,17 @@ config = TrialConfig(
     environment="daytona",
 )
 ```
+
+## 0.3 Limitations
+
+The Scene API in 0.3 covers coder-reviewer and multi-turn patterns. It does **not** yet support:
+
+- **Dynamic termination** — turn count is fixed at config time. A "user" role cannot decide to stop early based on agent output. Workaround: use `max_rounds` in the standalone `_scene.py` scheduler.
+- **Oracle access** — no mechanism for a "user" role to read `/solution` during setup.
+- **Per-round verification** — `verify()` runs once after all scenes complete, not between rounds.
+- **Inter-round trajectory inspection** — a "user" role cannot read the agent's trajectory between turns.
+
+These are tracked for 0.4. See the [Harbor PR #1462 mapping](docs/notebooks/scene-patterns.ipynb) for details.
 
 ## YAML Trial Configs
 

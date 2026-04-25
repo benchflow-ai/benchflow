@@ -98,6 +98,8 @@ class TestResolveAgentEnvSubscription:
         """When host auth file exists and no API key, subscription auth is used."""
         for k in (
             "ANTHROPIC_API_KEY",
+            "ANTHROPIC_AUTH_TOKEN",
+            "CLAUDE_CODE_OAUTH_TOKEN",
             "OPENAI_API_KEY",
             "GOOGLE_API_KEY",
             "GEMINI_API_KEY",
@@ -118,6 +120,8 @@ class TestResolveAgentEnvSubscription:
         """When no API key and no host auth file, raises ValueError."""
         for k in (
             "ANTHROPIC_API_KEY",
+            "ANTHROPIC_AUTH_TOKEN",
+            "CLAUDE_CODE_OAUTH_TOKEN",
             "OPENAI_API_KEY",
             "GOOGLE_API_KEY",
             "GEMINI_API_KEY",

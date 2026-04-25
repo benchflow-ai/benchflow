@@ -84,6 +84,10 @@ result = await bf.run(config)
 - The user agent is a real LLM with full tool access -- it can read files, check outputs, and give nuanced feedback, not just templated responses.
 - Same task folder works for single-turn (baseline) and interactive (with user) via different YAML configs.
 
+### Lighter-weight alternative: `BaseUser` callback
+
+When you don't need a second LLM and your "user" logic is rule-based or oracle-guided (e.g. compress instruction → show test failures as hints → stop on pass), use a `BaseUser` Python callback instead of a multi-role Scene. See [progressive-disclosure.md](./progressive-disclosure.md). This is benchflow's no-second-LLM parity answer to Harbor #1316 and was built for the SWE-bench Pro progressive-disclosure use case.
+
 ---
 
 ## 2. Code Review Loop (followup-bench)

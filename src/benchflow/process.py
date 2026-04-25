@@ -12,6 +12,7 @@ import contextlib
 import logging
 import os
 import shlex
+import uuid
 from abc import ABC, abstractmethod
 from typing import Any
 
@@ -256,11 +257,16 @@ class DaytonaProcess(LiveProcess):
     """
 
     def __init__(
-        self, sandbox: Any, is_dind: bool = False, compose_cmd_prefix: str = ""
+        self,
+        sandbox: Any,
+        is_dind: bool = False,
+        compose_cmd_prefix: str = "",
+        compose_cmd_base: str = "",
     ):
         self._sandbox = sandbox
         self._is_dind = is_dind
         self._compose_cmd_prefix = compose_cmd_prefix
+        self._compose_cmd_base = compose_cmd_base
 
     @classmethod
     async def from_harbor_env(cls, env: Any) -> "DaytonaProcess":
@@ -273,6 +279,7 @@ class DaytonaProcess(LiveProcess):
         is_dind = hasattr(env, "_strategy") and hasattr(env._strategy, "_compose_cmd")
 
         compose_cmd_prefix = ""
+        compose_cmd_base = ""
         if is_dind:
             # Build compose env vars and command prefix for DinD
             strategy = env._strategy
@@ -280,9 +287,16 @@ class DaytonaProcess(LiveProcess):
                 f"{k}={shlex.quote(v)}" for k, v in strategy._compose_env_vars().items()
             )
             compose_cmd_prefix = compose_env
+            # Extract the full compose base command with project/file flags
+            # (e.g. "docker compose -p NAME --project-directory DIR -f F1 -f F2")
+            # so that `docker compose exec` can find the running project.
+            compose_cmd_base = strategy._compose_cmd([])
 
         return cls(
-            sandbox=sandbox, is_dind=is_dind, compose_cmd_prefix=compose_cmd_prefix
+            sandbox=sandbox,
+            is_dind=is_dind,
+            compose_cmd_prefix=compose_cmd_prefix,
+            compose_cmd_base=compose_cmd_base,
         )
 
     async def start(
@@ -296,19 +310,30 @@ class DaytonaProcess(LiveProcess):
         ssh_target = f"{ssh_access.token}@ssh.app.daytona.io"
 
         if self._is_dind:
-            # Build the docker compose exec command to run inside the DinD VM
-            inner_parts = ["docker", "compose", "exec", "-i", "-T"]
+            # Build the docker compose exec command to run inside the DinD VM.
+            # Use the full compose base command (with -p, --project-directory,
+            # and -f flags) so that exec can find the running project.
+            if self._compose_cmd_base:
+                inner_parts = [*shlex.split(self._compose_cmd_base), "exec", "-i", "-T"]
+            else:
+                inner_parts = ["docker", "compose", "exec", "-i", "-T"]
             if cwd:
                 inner_parts.extend(["-w", cwd])
             # Write env vars to a temp file on the remote VM instead of passing
             # as -e K=V args (which are visible in ps aux on the remote host).
+            # Use a Python-generated unique suffix instead of a shell `$$`
+            # expansion: shlex.join() (below) single-quotes the --env-file arg,
+            # so `$$` would survive as a literal in the docker compose call
+            # while the cat > ... heredoc would expand it — the file would be
+            # written to one path and read from another. uuid.uuid4 sidesteps
+            # the entire shell-expansion-vs-quoting problem.
             remote_env_path = None
             if env:
-                remote_env_path = "/tmp/benchflow_env_$$.env"
+                remote_env_path = f"/tmp/benchflow_env_{uuid.uuid4().hex[:16]}.env"
                 env_lines = "\n".join(f"{k}={v}" for k, v in env.items())
                 inner_parts.extend(["--env-file", remote_env_path])
-            inner_parts.extend(["main", "bash", "-c", shlex.quote(command)])
-            inner_cmd = " ".join(inner_parts)
+            inner_parts.extend(["main", "bash", "-c", command])
+            inner_cmd = shlex.join(inner_parts)
 
             if self._compose_cmd_prefix:
                 remote_cmd = f"{self._compose_cmd_prefix} {inner_cmd}"
@@ -331,7 +356,9 @@ class DaytonaProcess(LiveProcess):
             env_prefix = ""
             remote_env_path = None
             if env:
-                remote_env_path = "/tmp/benchflow_env_$$.env"
+                # Python-generated unique suffix; see DinD branch above for why
+                # $$ shell expansion is fragile across quoting boundaries.
+                remote_env_path = f"/tmp/benchflow_env_{uuid.uuid4().hex[:16]}.env"
                 env_lines = "\n".join(
                     f"export {k}={shlex.quote(v)}" for k, v in env.items()
                 )
@@ -371,3 +398,131 @@ class DaytonaProcess(LiveProcess):
             limit=_BUFFER_LIMIT,
         )
         logger.info(f"Daytona process started (pid={self._process.pid})")
+
+
+class DaytonaPtyProcess(LiveProcess):
+    """Live stdin/stdout via Daytona PTY WebSocket API.
+
+    Uses the Daytona SDK's PTY session (WebSocket) instead of SSH, which
+    maintains long-lived interactive pipes through DinD compose layers.
+    Falls back to this for DinD sandboxes where SSH pipes break.
+    """
+
+    _process = None  # Not used — override readline/writeline/close
+
+    def __init__(self, sandbox: Any, compose_cmd_prefix: str, compose_cmd_base: str):
+        self._sandbox = sandbox
+        self._compose_cmd_prefix = compose_cmd_prefix
+        self._compose_cmd_base = compose_cmd_base
+        self._pty = None
+        self._line_buffer = asyncio.Queue()
+        self._partial = b""
+        self._closed = False
+
+    @classmethod
+    async def from_harbor_env(cls, env: Any) -> "DaytonaPtyProcess":
+        sandbox = env._sandbox
+        if not sandbox:
+            raise RuntimeError("Daytona sandbox not started")
+        strategy = env._strategy
+        compose_env = " ".join(
+            f"{k}={shlex.quote(v)}" for k, v in strategy._compose_env_vars().items()
+        )
+        compose_cmd_base = strategy._compose_cmd([])
+        return cls(sandbox=sandbox, compose_cmd_prefix=compose_env, compose_cmd_base=compose_cmd_base)
+
+    async def _on_pty_data(self, data: bytes) -> None:
+        self._partial += data
+        while b"\n" in self._partial:
+            line, self._partial = self._partial.split(b"\n", 1)
+            line = line.replace(b"\r", b"")
+            await self._line_buffer.put(line + b"\n")
+
+    async def start(
+        self,
+        command: str,
+        env: dict[str, str] | None = None,
+        cwd: str | None = None,
+    ) -> None:
+        import uuid
+        session_id = f"acp-{uuid.uuid4().hex[:8]}"
+        pty_env = {}
+        if self._compose_cmd_prefix:
+            for part in shlex.split(self._compose_cmd_prefix):
+                if "=" in part:
+                    k, v = part.split("=", 1)
+                    pty_env[k] = v
+
+        self._pty = await self._sandbox.process.create_pty_session(
+            id=session_id,
+            on_data=self._on_pty_data,
+            envs=pty_env if pty_env else None,
+        )
+        await self._pty.wait_for_connection()
+        logger.info(f"DaytonaPtyProcess: PTY connected (session={session_id})")
+
+        compose_parts = shlex.split(self._compose_cmd_base) if self._compose_cmd_base else ["docker", "compose"]
+        exec_parts = [*compose_parts, "exec", "-i", "-T"]
+        if cwd:
+            exec_parts.extend(["-w", cwd])
+        # Write env vars to a file inside the container (not visible in ps aux),
+        # matching the approach in DaytonaProcess.start().
+        env_file_cmd = ""
+        if env:
+            env_lines = "\n".join(f"export {k}={shlex.quote(v)}" for k, v in env.items())
+            env_file_cmd = (
+                f"cat > /tmp/.benchflow_env <<'__EOF__'\n{env_lines}\n__EOF__\n"
+                f". /tmp/.benchflow_env && rm -f /tmp/.benchflow_env && "
+            )
+        exec_parts.extend(["main", "bash", "-lc", f"{env_file_cmd}{command}"])
+        exec_cmd = shlex.join(exec_parts)
+
+        # Use a marker + stty to cleanly hand over the PTY to the agent.
+        # 1. Disable echo so typed commands don't appear in output
+        # 2. Print marker so we know when to start reading ACP output
+        # 3. exec into compose exec so the agent owns the PTY
+        marker = f"__BENCHFLOW_ACP_{session_id}__"
+        setup = f"stty -echo 2>/dev/null; echo '{marker}'; exec {exec_cmd}\n"
+        await self._pty.send_input(setup)
+        logger.info("DaytonaPtyProcess: sent setup, waiting for marker...")
+
+        while True:
+            try:
+                line = await asyncio.wait_for(self._line_buffer.get(), timeout=120)
+                decoded = line.decode(errors="replace").strip()
+                logger.debug(f"DaytonaPtyProcess drain: {decoded[:120]}")
+                if marker in decoded:
+                    break
+            except TimeoutError as e:
+                raise ConnectionError("DaytonaPtyProcess: timeout waiting for agent start marker") from e
+
+        logger.info("DaytonaPtyProcess: marker seen, agent starting")
+
+    async def readline(self) -> bytes:
+        if self._closed:
+            raise ConnectionError("PTY closed")
+        try:
+            line = await asyncio.wait_for(self._line_buffer.get(), timeout=900)
+            return line
+        except TimeoutError as e:
+            raise ConnectionError("PTY readline timeout (900s)") from e
+        except Exception as e:
+            raise ConnectionError(f"PTY readline error: {e}") from e
+
+    async def writeline(self, data: str) -> None:
+        if not self._pty or self._closed:
+            raise RuntimeError("PTY not started")
+        await self._pty.send_input(data + "\n")
+
+    async def close(self) -> None:
+        self._closed = True
+        if self._pty:
+            with contextlib.suppress(Exception):
+                await self._pty.kill()
+            with contextlib.suppress(Exception):
+                await self._pty.disconnect()
+            logger.info("DaytonaPtyProcess terminated")
+
+    @property
+    def is_running(self) -> bool:
+        return self._pty is not None and not self._closed

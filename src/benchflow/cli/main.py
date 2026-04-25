@@ -433,9 +433,9 @@ def skills_eval(
         typer.Argument(help="Path to skill directory containing evals/evals.json"),
     ],
     agent: Annotated[
-        list[str],
+        list[str] | None,
         typer.Option("--agent", "-a", help="Agent(s) to evaluate (repeatable)"),
-    ] = ["claude-agent-acp"],
+    ] = None,
     model: Annotated[
         list[str] | None,
         typer.Option("--model", "-m", help="Model(s) (matched 1:1 with agents)"),
@@ -473,6 +473,8 @@ def skills_eval(
     """
     from benchflow.skill_eval import SkillEvaluator, export_gepa_traces
 
+    if agent is None:
+        agent = ["claude-agent-acp"]
     if not (skill_dir / "evals" / "evals.json").exists():
         console.print(
             f"[red]No evals/evals.json found in {skill_dir}[/red]\n"
@@ -738,6 +740,13 @@ def eval_create(
         str | None,
         typer.Option("--sandbox-user", help="Sandbox user (null for root)"),
     ] = "agent",
+    sandbox_setup_timeout: Annotated[
+        int,
+        typer.Option(
+            "--sandbox-setup-timeout",
+            help="Timeout (seconds) for sandbox user setup inside the environment.",
+        ),
+    ] = 120,
     skills_dir: Annotated[
         Path | None,
         typer.Option("--skills-dir", "-s", help="Skills directory to deploy"),
@@ -757,7 +766,7 @@ def eval_create(
         eff_model = effective_model(agent, model)
         # Smart detection: if tasks_dir has task.toml, it's a single task
         if (tasks_dir / "task.toml").exists():
-            from benchflow.trial import Trial, TrialConfig, Scene
+            from benchflow.trial import Scene, Trial, TrialConfig
 
             config = TrialConfig(
                 task_path=tasks_dir,
@@ -765,6 +774,7 @@ def eval_create(
                                      skills_dir=str(skills_dir) if skills_dir else None)],
                 environment=environment,
                 sandbox_user=sandbox_user,
+                sandbox_setup_timeout=sandbox_setup_timeout,
                 jobs_dir=jobs_dir,
                 agent=agent,
                 model=eff_model,
@@ -794,6 +804,7 @@ def eval_create(
                     environment=environment,
                     concurrency=concurrency,
                     sandbox_user=sandbox_user,
+                    sandbox_setup_timeout=sandbox_setup_timeout,
                     skills_dir=str(skills_dir) if skills_dir else None,
                 ),
             )

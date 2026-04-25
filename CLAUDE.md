@@ -2,7 +2,7 @@
 
 Multi-turn agent benchmarking with ACP.
 
-Docs: `docs/quickstart.md`, `docs/cli-reference.md`, `docs/api-reference.md`, `docs/task-authoring.md`, `docs/use-cases.md`.
+Docs: `docs/quickstart.md`, `docs/cli-reference.md`, `docs/api-reference.md`, `docs/task-authoring.md`, `docs/use-cases.md`, `docs/progressive-disclosure.md`.
 
 ## Setup
 

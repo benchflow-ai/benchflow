@@ -49,6 +49,7 @@ def test_agent_field_shapes(name, cfg):
         f"api_protocol={cfg.api_protocol!r} not in {VALID_API_PROTOCOLS}"
     )
     assert isinstance(cfg.install_timeout, int) and cfg.install_timeout > 0
+    assert isinstance(cfg.supports_acp_set_model, bool)
 
 
 @pytest.mark.parametrize("name,cfg", AGENTS.items(), ids=list(AGENTS.keys()))
@@ -73,6 +74,22 @@ def test_agent_collection_invariants(name, cfg):
         )
     for d in cfg.home_dirs:
         assert d.startswith("."), f"home_dirs entry {d!r} must start with '.'"
+
+
+@pytest.mark.parametrize("name,cfg", AGENTS.items(), ids=list(AGENTS.keys()))
+def test_agent_install_cmd_targets_shared_paths(name, cfg):
+    """Installed binaries must land in shared prefixes, not a root-only home.
+
+    setup_sandbox_user() no longer recursively copies /root/.nvm or
+    /root/.local/bin into the sandbox home. If an install_cmd placed its
+    binary there, the sandbox user would silently lose access to the agent.
+    """
+    forbidden_binary_prefixes = ("/root/.nvm/", "/root/.local/bin/", "$HOME/.nvm/")
+    for prefix in forbidden_binary_prefixes:
+        assert prefix not in cfg.install_cmd, (
+            f"{name!r} install_cmd writes under {prefix!r}; use /usr/local/bin "
+            f"or another shared prefix so the sandbox user inherits the tool"
+        )
 
 
 @pytest.mark.parametrize("name,cfg", AGENTS.items(), ids=list(AGENTS.keys()))

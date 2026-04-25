@@ -23,7 +23,7 @@ Arguments passed: `$ARGUMENTS`
 
 ### No args or `status` — show current state
 
-1. Check if benchflow is installed: `pip show benchflow`
+1. Check if benchflow is installed: `uv tool list | grep benchflow`
 2. Check if `.env` exists with API keys
 3. Check available agents: `benchflow agents`
 4. Show recent job results if any exist in `jobs/`
@@ -199,7 +199,7 @@ asyncio.run(main())
 ## Setup
 
 ```bash
-pip install benchflow    # or: pip install -e . (from source)
+uv tool install benchflow    # or: uv tool install -e . (from source)
 source .env              # ANTHROPIC_API_KEY, DAYTONA_API_KEY
 ```
 

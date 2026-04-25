@@ -36,7 +36,10 @@ Phases can be composed for multi-agent flows::
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import json
 import logging
+import shlex
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -55,7 +58,6 @@ from benchflow._sandbox import (
     _resolve_locked_paths,
     _seed_verifier_workspace,
     _snapshot_build_config,
-    harden_before_verify,
     lockdown_paths,
     setup_sandbox_user,
 )
@@ -64,8 +66,9 @@ from benchflow._trajectory import (
     _scrape_agent_trajectory,
 )
 from benchflow.acp.client import ACPClient, ACPError
-from benchflow.agents.registry import AGENT_LAUNCH, AGENTS
+from benchflow.agents.registry import AGENT_LAUNCH
 from benchflow.models import RunResult, TrajectorySource
+from benchflow.user import BaseUser, RoundResult
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +111,7 @@ class Scene:
         prompts: list[str | None] | None = None,
         role_name: str = "agent",
         skills_dir: str | Path | None = None,
-    ) -> "Scene":
+    ) -> Scene:
         """Shortcut for single-agent, single-role scene."""
         prompts = prompts or [None]
         return cls(
@@ -131,12 +134,18 @@ class TrialConfig:
     environment: str = "docker"
     sandbox_user: str | None = "agent"
     sandbox_locked_paths: list[str] | None = None
+    sandbox_setup_timeout: int = 120
     services: list[str] | None = None
     job_name: str | None = None
     trial_name: str | None = None
     jobs_dir: str | Path = "jobs"
     context_root: str | Path | None = None
     pre_agent_hooks: list | None = None
+
+    # User-driven progressive-disclosure loop
+    user: BaseUser | None = None
+    max_user_rounds: int = 5
+    oracle_access: bool = False
 
     # Legacy compat fields — used by SDK.run() shim. Ignored when scenes is set.
     agent: str = "claude-agent-acp"
@@ -155,7 +164,7 @@ class TrialConfig:
         prompts: list[str | None] | None = None,
         skills_dir: str | Path | None = None,
         **kwargs,
-    ) -> "TrialConfig":
+    ) -> TrialConfig:
         """Construct from flat SDK.run()-style args."""
         return cls(
             task_path=task_path,
@@ -273,6 +282,11 @@ class Trial:
             logger.warning(
                 "sandbox_user=None — agent runs as root with no path lockdown."
             )
+        if cfg.oracle_access and cfg.user is None:
+            logger.warning(
+                "oracle_access=True without a User — /solution stays visible "
+                "to the agent for the entire trial."
+            )
 
         self._effective_locked = _resolve_locked_paths(
             cfg.sandbox_user, cfg.sandbox_locked_paths
@@ -328,6 +342,7 @@ class Trial:
             sandbox_user=cfg.sandbox_user,
             context_root=cfg.context_root,
             sandbox_locked_paths=self._effective_locked,
+            sandbox_setup_timeout=cfg.sandbox_setup_timeout,
             timeout=self._timeout,
             started_at=self._started_at,
             agent_env=self._agent_env,
@@ -367,7 +382,10 @@ class Trial:
         if cfg.primary_agent == "oracle":
             if cfg.sandbox_user:
                 await setup_sandbox_user(
-                    self._env, cfg.sandbox_user, workspace=self._agent_cwd
+                    self._env,
+                    cfg.sandbox_user,
+                    workspace=self._agent_cwd,
+                    timeout_sec=cfg.sandbox_setup_timeout,
                 )
             await _snapshot_build_config(self._env, workspace=self._agent_cwd)
             await _seed_verifier_workspace(self._env, workspace=self._agent_cwd, sandbox_user=cfg.sandbox_user)
@@ -389,7 +407,10 @@ class Trial:
 
         if cfg.sandbox_user:
             self._agent_cwd = await setup_sandbox_user(
-                self._env, cfg.sandbox_user, workspace=self._agent_cwd
+                self._env,
+                cfg.sandbox_user,
+                workspace=self._agent_cwd,
+                timeout_sec=cfg.sandbox_setup_timeout,
             )
         await _snapshot_build_config(self._env, workspace=self._agent_cwd)
         await _seed_verifier_workspace(self._env, workspace=self._agent_cwd, sandbox_user=cfg.sandbox_user)
@@ -438,10 +459,8 @@ class Trial:
         # Kill any lingering agent processes to prevent context bleed between scenes
         if self._env and self._agent_launch.strip():
             agent_cmd = self._agent_launch.split()[0].split("/")[-1]
-            try:
+            with contextlib.suppress(Exception):
                 await self._env.exec(f"pkill -f '{agent_cmd}' || true", timeout_sec=10)
-            except Exception:
-                pass
         self._session_tool_count = 0
         self._session_traj_count = 0
         self._phase = "installed"
@@ -510,6 +529,69 @@ class Trial:
         self._phase = "verified"
         return self._rewards
 
+    async def soft_verify(self) -> tuple[dict | None, str | None, str | None]:
+        """Run the verifier without full hardening — for intermediate feedback.
+
+        Skips process kill and workspace restore/chown (so the sandbox
+        stays usable for the next round), but DOES purge agent-injected
+        conftest.py / sitecustomize.py / .pth files to prevent the agent
+        from gaming intermediate test results.
+
+        Returns (rewards, verifier_output, verifier_error). The final
+        verify() still does full hardening.
+        """
+        from harbor import Verifier
+
+        from benchflow._sandbox import _build_cleanup_cmd, _read_hardening_config
+
+        self._trial_paths.verifier_dir.mkdir(parents=True, exist_ok=True)
+        # Clean verifier output dir — chmod 777 so non-root verifier processes can write
+        await self._env.exec(
+            "rm -rf /logs/verifier && mkdir -p /logs/verifier && chmod 777 /logs/verifier",
+            user="root", timeout_sec=10,
+        )
+        # Purge agent-injected conftest/sitecustomize/.pth without
+        # killing processes or restoring workspace.
+        # Honor per-task [verifier.hardening] opt-outs from task.toml.
+        hardening = _read_hardening_config(getattr(self._task, "task_dir", None))
+        await self._env.exec(
+            _build_cleanup_cmd(hardening), user="root", timeout_sec=10
+        )
+
+        rewards = None
+        verifier_output = None
+        verifier_error = None
+        try:
+            verifier = Verifier(
+                task=self._task,
+                trial_paths=self._trial_paths,
+                environment=self._env,
+            )
+            verifier_result = await asyncio.wait_for(
+                verifier.verify(),
+                timeout=self._task.config.verifier.timeout_sec,
+            )
+            rewards = verifier_result.rewards
+            # Capture raw verifier output for the user
+            cat = await self._env.exec(
+                "cat /logs/verifier/*.log 2>/dev/null || "
+                "cat /logs/verifier/output.txt 2>/dev/null || true",
+                timeout_sec=10,
+            )
+            verifier_output = (cat.stdout or "").strip() or None
+            logger.info(f"[soft_verify] rewards={rewards}")
+        except TimeoutError:
+            verifier_error = (
+                f"soft verifier timed out after "
+                f"{self._task.config.verifier.timeout_sec}s"
+            )
+            logger.warning(verifier_error)
+        except Exception as e:
+            verifier_error = f"soft verifier crashed: {e}"
+            logger.warning(verifier_error)
+
+        return rewards, verifier_output, verifier_error
+
     # ── Phase 5: CLEANUP ──
 
     async def cleanup(self) -> None:
@@ -568,8 +650,18 @@ class Trial:
                 )
             else:
                 await self.install_agent()
-                for scene in cfg.effective_scenes:
-                    await self._run_scene(scene)
+                try:
+                    if cfg.user is not None:
+                        await self._run_user_loop()
+                    else:
+                        for scene in cfg.effective_scenes:
+                            await self._run_scene(scene)
+                finally:
+                    if cfg.oracle_access:
+                        await self._env.exec(
+                            "mv /solution_oracle_backup /solution 2>/dev/null || true",
+                            user="root", timeout_sec=10,
+                        )
 
             await self.verify()
 
@@ -598,20 +690,41 @@ class Trial:
 
     # ── Scene execution ──
 
+    _OUTBOX_DIR = "/app/.outbox"
+
     async def _run_scene(self, scene: Scene) -> None:
-        """Execute one scene: for each turn, connect as the turn's role, execute, disconnect."""
+        """Execute one scene: for each turn, connect as the turn's role, execute, disconnect.
+
+        For multi-role scenes, agents communicate via outbox files:
+        an agent writes ``/app/.outbox/{recipient}.json`` with
+        ``{"to": "role_name", "content": "..."}`` and the scheduler
+        injects received messages into the next turn's prompt.
+
+        Inter-role messages are persisted to ``trial_dir/scene_messages.jsonl``.
+        """
         cfg = self._config
         logger.info(f"[Scene] {scene.name} — {len(scene.turns)} turns, {len(scene.roles)} roles")
 
         role_map = {r.name: r for r in scene.roles}
         current_role: str | None = None
+        multi_role = len(scene.roles) > 1
+        scene_messages: list[dict] = []
 
-        for i, turn in enumerate(scene.turns):
+        if multi_role:
+            setup_cmd = f"rm -rf {self._OUTBOX_DIR} && mkdir -p {self._OUTBOX_DIR}"
+            if cfg.sandbox_user:
+                user = shlex.quote(cfg.sandbox_user)
+                setup_cmd += f" && chown {user}:{user} {self._OUTBOX_DIR}"
+            await self._env.exec(setup_cmd, timeout_sec=10)
+
+        inbox: dict[str, list[str]] = {r.name: [] for r in scene.roles}
+        turn_counter = 0
+
+        for _i, turn in enumerate(scene.turns):
             role = role_map.get(turn.role)
             if not role:
                 raise ValueError(f"Turn references unknown role {turn.role!r}")
 
-            # Reconnect if role changed or first turn
             if current_role != turn.role:
                 if current_role is not None:
                     await self.disconnect()
@@ -619,26 +732,236 @@ class Trial:
                 current_role = turn.role
 
             if turn.prompt:
-                prompts = [turn.prompt]
+                base_prompt = turn.prompt
             elif self._resolved_prompts:
-                prompts = [self._resolved_prompts[0]]
+                base_prompt = self._resolved_prompts[0]
             else:
-                prompts = ["Solve the task described in /app/instruction.md"]
+                base_prompt = "Solve the task described in /app/instruction.md"
+
+            pending = inbox.get(turn.role, [])
+            if pending:
+                parts = [base_prompt, "\n---\nMessages from other agents:\n"]
+                parts.extend(pending)
+                prompts = ["\n".join(parts)]
+                inbox[turn.role] = []
+            else:
+                prompts = [base_prompt]
+
             await self.execute(prompts=prompts)
+
+            if multi_role:
+                for recipient, content in await self._read_scene_outbox(current_role):
+                    turn_counter += 1
+                    inbox.setdefault(recipient, []).append(
+                        f"**From {current_role}:** {content}"
+                    )
+                    scene_messages.append({
+                        "scene": scene.name,
+                        "turn": turn_counter,
+                        "sender": current_role,
+                        "recipient": recipient,
+                        "content": content,
+                    })
 
         if current_role is not None:
             await self.disconnect()
 
+        if scene_messages and self._trial_dir:
+            msg_path = self._trial_dir / "scene_messages.jsonl"
+            with msg_path.open("a") as f:
+                for m in scene_messages:
+                    f.write(json.dumps(m) + "\n")
+            logger.info(
+                f"[Scene] {scene.name}: {len(scene_messages)} messages → {msg_path}"
+            )
+
+    async def _read_scene_outbox(self, sender: str) -> list[tuple[str, str]]:
+        """Read and clear outbox files left by *sender*. Returns [(recipient, content), ...]."""
+        result = await self._env.exec(
+            f"ls {self._OUTBOX_DIR}/*.json 2>/dev/null || true", timeout_sec=10,
+        )
+        files = [f.strip() for f in (result.stdout or "").strip().splitlines() if f.strip()]
+        messages: list[tuple[str, str]] = []
+        for fpath in files:
+            quoted = shlex.quote(fpath)
+            cat = await self._env.exec(f"cat {quoted}", timeout_sec=10)
+            try:
+                data = json.loads(cat.stdout or "{}")
+                recipient = data.get("to", "")
+                content = data.get("content", "")
+                if recipient and content:
+                    messages.append((recipient, content))
+                    logger.info(f"[Scene] outbox: {sender} → {recipient}: {content[:80]}")
+            except json.JSONDecodeError:
+                logger.warning(f"[Scene] invalid JSON in outbox: {fpath}")
+            await self._env.exec(f"rm -f {quoted}", timeout_sec=10)
+        return messages
+
+    async def _run_user_loop(self) -> None:
+        """Execute a user-driven progressive-disclosure loop.
+
+        Each round: user.run() → connect → agent.execute() → disconnect →
+        soft_verify() → build RoundResult → repeat. Stops when user.run()
+        returns None or max_user_rounds is reached.
+        """
+        cfg = self._config
+        user = cfg.user
+        assert user is not None
+
+        if len(cfg.effective_scenes) > 1:
+            raise ValueError(
+                "User-driven loops operate on a single scene. "
+                f"Got {len(cfg.effective_scenes)} scenes."
+            )
+        scene = cfg.effective_scenes[0]
+        if len(scene.roles) != 1:
+            raise ValueError(
+                "User-driven loops require a single-role scene. "
+                f"Got {len(scene.roles)} roles."
+            )
+        role = scene.roles[0]
+
+        instruction = self._resolved_prompts[0] if self._resolved_prompts else (
+            "Solve the task described in /app/instruction.md"
+        )
+
+        # Oracle access: read /solution before the agent runs, then remove it
+        solution: str | None = None
+        if cfg.oracle_access:
+            cat = await self._env.exec(
+                "cat /solution/solve.sh 2>/dev/null || true",
+                user="root", timeout_sec=10,
+            )
+            solution = (cat.stdout or "").strip() or None
+
+        await user.setup(instruction, solution)
+
+        # Hide oracle files from agent — move rather than delete so the
+        # final verify() can still access /solution if the verifier needs it.
+        if cfg.oracle_access:
+            await self._env.exec(
+                "mv /solution /solution_oracle_backup 2>/dev/null || true",
+                user="root", timeout_sec=10,
+            )
+
+        round_result: RoundResult | None = None
+        rounds_log: list[dict] = []
+
+        for round_num in range(cfg.max_user_rounds):
+            try:
+                prompt = await user.run(round_num, instruction, round_result)
+            except Exception as e:
+                self._error = f"user.run() failed at round {round_num}: {e}"
+                logger.error(self._error, exc_info=True)
+                break
+
+            if prompt is None:
+                logger.info(f"[User] stopped at round {round_num}")
+                break
+
+            logger.info(
+                f"[User] round {round_num}: prompt={prompt[:80]!r}..."
+                if len(prompt) > 80 else f"[User] round {round_num}: prompt={prompt!r}"
+            )
+
+            # Fresh ACP session each round — agent starts clean but sees
+            # its previous workspace changes in the shared sandbox.
+            traj_before = len(self._trajectory)
+            try:
+                await self.connect_as(role)
+                await self.execute(prompts=[prompt])
+            finally:
+                await self.disconnect()
+
+            round_trajectory = self._trajectory[traj_before:]
+            round_tools = sum(
+                1 for e in round_trajectory
+                if isinstance(e, dict) and e.get("type") == "tool_call"
+            )
+
+            # Soft verify: run tests after agent disconnected but before
+            # next round. Temporarily restore /solution so the verifier can
+            # access it, then re-hide before the next agent round.
+            if cfg.oracle_access:
+                await self._env.exec(
+                    "mv /solution_oracle_backup /solution 2>/dev/null || true",
+                    user="root", timeout_sec=10,
+                )
+            try:
+                rewards, verifier_output, verifier_error = await self.soft_verify()
+            finally:
+                if cfg.oracle_access:
+                    await self._env.exec(
+                        "mv /solution /solution_oracle_backup 2>/dev/null || true",
+                        user="root", timeout_sec=10,
+                    )
+
+            round_result = RoundResult(
+                round=round_num,
+                trajectory=round_trajectory,
+                rewards=rewards,
+                verifier_output=verifier_output,
+                verifier_error=verifier_error,
+                n_tool_calls=round_tools,
+            )
+
+            rounds_log.append({
+                "round": round_num,
+                "prompt": prompt,
+                "rewards": rewards,
+                "verifier_error": verifier_error,
+                "n_tool_calls": round_tools,
+                "n_trajectory_events": len(round_trajectory),
+            })
+
+            logger.info(
+                f"[User] round {round_num} done: "
+                f"rewards={rewards}, tools={round_tools}"
+            )
+
+        # Persist round log
+        if rounds_log and self._trial_dir:
+            log_path = self._trial_dir / "user_rounds.jsonl"
+            with log_path.open("w") as f:
+                for entry in rounds_log:
+                    f.write(json.dumps(entry) + "\n")
+            logger.info(f"[User] {len(rounds_log)} rounds → {log_path}")
+
     async def connect_as(self, role: Role) -> None:
-        """Open an ACP connection for a specific role."""
+        """Open an ACP connection for a specific role.
+
+        Installs the role's agent binary and credentials if it differs
+        from the primary agent (which was set up in install_agent()).
+        Updates _agent_launch so disconnect() kills the correct process.
+        """
         cfg = self._config
         t0 = datetime.now()
+
+        agent_launch = AGENT_LAUNCH.get(role.agent, role.agent)
+        # Merge cfg.agent_env (config-level) with role.env (role-specific) so
+        # provider creds from YAML reach the agent. role.env wins on overlap.
+        agent_env = resolve_agent_env(
+            role.agent, role.model,
+            {**(cfg.agent_env or {}), **(role.env or {})},
+        )
+
+        if role.agent != cfg.primary_agent:
+            agent_cfg = await install_agent(self._env, role.agent, self._trial_dir)
+            cred_home = f"/home/{cfg.sandbox_user}" if cfg.sandbox_user else "/root"
+            await write_credential_files(
+                self._env, role.agent, agent_env,
+                agent_cfg, role.model, cred_home,
+            )
+            if agent_env.get("_BENCHFLOW_SUBSCRIPTION_AUTH"):
+                await upload_subscription_auth(self._env, role.agent, cred_home)
+
+        self._agent_launch = agent_launch
 
         self._acp_client, self._session, self._agent_name = await connect_acp(
             env=self._env,
             agent=role.agent,
-            agent_launch=AGENT_LAUNCH.get(role.agent, role.agent),
-            agent_env=resolve_agent_env(role.agent, role.model, role.env or None),
+            agent_launch=agent_launch,
+            agent_env=agent_env,
             sandbox_user=cfg.sandbox_user,
             model=role.model,
             trial_dir=self._trial_dir,

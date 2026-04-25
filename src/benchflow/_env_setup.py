@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 # build) instead of erroring out. Override via env if running on a paid tier.
 _DAYTONA_MAX_CPUS = int(os.environ.get("BENCHFLOW_DAYTONA_MAX_CPUS", "4"))
 _DAYTONA_MAX_MEMORY_MB = int(os.environ.get("BENCHFLOW_DAYTONA_MAX_MEMORY_MB", "8192"))
+_DAYTONA_MAX_STORAGE_MB = int(os.environ.get("BENCHFLOW_DAYTONA_MAX_STORAGE_MB", "10240"))
 
 # Directories to ignore when copying deps
 _IGNORE_DIRS = {
@@ -260,6 +261,10 @@ def _create_environment(
     elif environment_type == "daytona":
         from harbor.environments.daytona import DaytonaEnvironment
 
+        from benchflow._daytona_patches import apply as _apply_daytona_patches
+
+        _apply_daytona_patches()
+
         env_config = task.config.environment
         if env_config.cpus > _DAYTONA_MAX_CPUS:
             logger.warning(
@@ -275,6 +280,13 @@ def _create_environment(
                 _DAYTONA_MAX_MEMORY_MB,
             )
             env_config.memory_mb = _DAYTONA_MAX_MEMORY_MB
+        if env_config.storage_mb > _DAYTONA_MAX_STORAGE_MB:
+            logger.warning(
+                "Clamping storage_mb %d -> %d for Daytona (override with BENCHFLOW_DAYTONA_MAX_STORAGE_MB)",
+                env_config.storage_mb,
+                _DAYTONA_MAX_STORAGE_MB,
+            )
+            env_config.storage_mb = _DAYTONA_MAX_STORAGE_MB
 
         return DaytonaEnvironment(
             environment_dir=task.paths.environment_dir,
