@@ -5,7 +5,7 @@ The Trial/Scene API is the primary way to run agent benchmarks programmatically.
 ## Install
 
 ```bash
-pip install benchflow==0.3.0a3
+uv tool install benchflow
 ```
 
 ## Quick Start
