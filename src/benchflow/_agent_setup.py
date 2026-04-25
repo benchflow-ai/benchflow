@@ -77,15 +77,29 @@ async def install_agent(env, agent: str, trial_dir: Path) -> AgentConfig | None:
     agent_cfg = AGENTS.get(agent_base)
     if agent_base not in AGENT_INSTALLERS:
         return agent_cfg
+    install_cmd = AGENT_INSTALLERS[agent_base]
     install_timeout = agent_cfg.install_timeout if agent_cfg else 900
     logger.info(f"Installing {agent_base} in sandbox (timeout={install_timeout}s)...")
     install_result = await env.exec(
-        AGENT_INSTALLERS[agent_base],
+        install_cmd,
         timeout_sec=install_timeout,
     )
     install_log = trial_dir / "agent" / "install-stdout.txt"
     install_log.parent.mkdir(parents=True, exist_ok=True)
-    install_log.write_text(install_result.stdout or "")
+    stdout = install_result.stdout or ""
+    stderr = install_result.stderr or ""
+    parts = [f"$ {install_cmd}\n"]
+    if stdout:
+        parts.append("=== stdout ===\n")
+        parts.append(stdout)
+        if not stdout.endswith("\n"):
+            parts.append("\n")
+    if stderr:
+        parts.append("=== stderr ===\n")
+        parts.append(stderr)
+        if not stderr.endswith("\n"):
+            parts.append("\n")
+    install_log.write_text("".join(parts))
     if install_result.return_code != 0:
         diag = await env.exec(
             "echo 'OS:' && cat /etc/os-release 2>/dev/null | head -2; "
@@ -96,7 +110,7 @@ async def install_agent(env, agent: str, trial_dir: Path) -> AgentConfig | None:
         raise AgentInstallError(
             agent=agent_base,
             return_code=install_result.return_code,
-            stdout=install_result.stdout or "",
+            stdout="".join(parts),
             diagnostics=diag.stdout or "",
             log_path=str(install_log),
         )

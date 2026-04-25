@@ -291,13 +291,13 @@ class Runtime:
 
 
 async def run(
-    subject: "Agent | TrialConfig | str",
-    env: "Environment | str | None" = None,
+    subject: Agent | TrialConfig | str,
+    env: Environment | str | None = None,
     config: RuntimeConfig | None = None,
     *,
-    task_path: "str | Path | None" = None,
+    task_path: str | Path | None = None,
     model: str | None = None,
-) -> "RuntimeResult | RunResult":
+) -> RuntimeResult | RunResult:
     """Primary user-facing API — multiple calling conventions.
 
     Usage::
@@ -313,7 +313,6 @@ async def run(
         # 3. Agent name string (simplest)
         result = await bf.run("gemini", task_path="tasks/X")
     """
-    from benchflow.models import RunResult
     from benchflow.trial import Scene, Trial, TrialConfig
 
     if isinstance(subject, TrialConfig):

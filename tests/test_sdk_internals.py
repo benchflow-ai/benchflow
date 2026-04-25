@@ -21,8 +21,26 @@ class TestResolveAgentEnv:
 
         return resolve_agent_env(agent, model, agent_env)
 
-    def test_env_mapping_applied_after_provider(self):
+    def _patch_expanduser(self, monkeypatch, tmp_path):
+        orig_expanduser = Path.expanduser
+
+        def fake_expanduser(self):
+            s = str(self)
+            if s.startswith("~"):
+                return tmp_path / s[2:]
+            return orig_expanduser(self)
+
+        monkeypatch.setattr(Path, "expanduser", fake_expanduser)
+
+    def test_env_mapping_applied_after_provider(self, monkeypatch):
         """env_mapping translates BENCHFLOW_PROVIDER_* → agent-native vars."""
+        for key in (
+            "ZAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_AUTH_TOKEN",
+            "CLAUDE_CODE_OAUTH_TOKEN",
+        ):
+            monkeypatch.delenv(key, raising=False)
         result = self._resolve(
             agent="claude-agent-acp",
             model="zai/glm-5",
@@ -33,21 +51,136 @@ class TestResolveAgentEnv:
         assert "ANTHROPIC_AUTH_TOKEN" in result
         assert result["ANTHROPIC_AUTH_TOKEN"] == "zk-test"
 
+    def test_agent_native_api_key_satisfies_model_check(self, monkeypatch):
+        """Agent-native mapped key (LLM_API_KEY) can satisfy provider auth check."""
+        for key in ("OPENAI_API_KEY", "LLM_API_KEY"):
+            monkeypatch.delenv(key, raising=False)
+        result = self._resolve(
+            agent="openhands",
+            model="openai/gpt-4.1-mini",
+            agent_env={"LLM_API_KEY": "test-llm-key"},
+        )
+        assert result["LLM_API_KEY"] == "test-llm-key"
+        assert result["BENCHFLOW_PROVIDER_API_KEY"] == "test-llm-key"
+
+    def test_same_provider_native_alias_satisfies_model_check(self, monkeypatch):
+        """Provider-native aliases remain valid for the same auth context."""
+        for key in ("GEMINI_API_KEY", "GOOGLE_API_KEY"):
+            monkeypatch.delenv(key, raising=False)
+        result = self._resolve(
+            agent="gemini",
+            model="gemini-2.5-flash",
+            agent_env={"GOOGLE_API_KEY": "test-google-key"},
+        )
+        assert result["GOOGLE_API_KEY"] == "test-google-key"
+        assert result["BENCHFLOW_PROVIDER_API_KEY"] == "test-google-key"
+
+    @pytest.mark.parametrize(
+        ("agent", "host_key"),
+        [
+            pytest.param("codex-acp", "OPENAI_API_KEY", id="codex-openai-key"),
+            pytest.param(
+                "claude-agent-acp",
+                "ANTHROPIC_AUTH_TOKEN",
+                id="claude-auth-token",
+            ),
+            pytest.param("gemini", "GOOGLE_API_KEY", id="gemini-google-key"),
+        ],
+    )
+    def test_cross_provider_host_native_key_does_not_bypass_required_key(
+        self, monkeypatch, tmp_path, agent, host_key
+    ):
+        """Host-native keys for another provider must not satisfy zai auth."""
+        for key in (
+            "ZAI_API_KEY",
+            "OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_AUTH_TOKEN",
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            "GOOGLE_API_KEY",
+            "GEMINI_API_KEY",
+        ):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv(host_key, "host-native-key")
+        self._patch_expanduser(monkeypatch, tmp_path)
+
+        with pytest.raises(ValueError, match="ZAI_API_KEY required"):
+            self._resolve(agent=agent, model="zai/glm-5", agent_env={})
+
+    def test_auto_inherited_generic_bridge_key_does_not_bypass_required_key(
+        self, monkeypatch, tmp_path
+    ):
+        """Generic agent-native keys must be passed explicitly to bridge auth."""
+        for key in ("ZAI_API_KEY", "LLM_API_KEY"):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("LLM_API_KEY", "host-llm-key")
+        self._patch_expanduser(monkeypatch, tmp_path)
+
+        with pytest.raises(ValueError, match="ZAI_API_KEY required"):
+            self._resolve(agent="openhands", model="zai/glm-5", agent_env={})
+
+    def test_openhands_gemini_model_is_prefixed_for_google_ai_studio(self, monkeypatch):
+        """OpenHands expects Gemini models in gemini/<model> format."""
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        result = self._resolve(
+            agent="openhands",
+            model="gemini-3.1-flash-lite-preview",
+            agent_env={"GEMINI_API_KEY": "test-gemini-key"},
+        )
+        assert result["LLM_MODEL"] == "gemini/gemini-3.1-flash-lite-preview"
+        assert result["LLM_API_KEY"] == "test-gemini-key"
+
+    def test_openhands_explicit_llm_model_is_preserved(self, monkeypatch):
+        """User-provided LLM_MODEL must win over derived normalization."""
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        result = self._resolve(
+            agent="openhands",
+            model="gemini-3.1-flash-lite-preview",
+            agent_env={
+                "GEMINI_API_KEY": "test-gemini-key",
+                "LLM_MODEL": "litellm/custom-format",
+            },
+        )
+        assert result["LLM_MODEL"] == "litellm/custom-format"
+
+    def test_openhands_vertex_model_is_prefixed_for_vertex(self, monkeypatch, tmp_path):
+        """OpenHands expects Vertex Gemini models in vertex_ai/<model> format."""
+        adc_dir = tmp_path / ".config" / "gcloud"
+        adc_dir.mkdir(parents=True)
+        (adc_dir / "application_default_credentials.json").write_text("{}")
+        monkeypatch.setattr("pathlib.Path.home", staticmethod(lambda: tmp_path))
+        result = self._resolve(
+            agent="openhands",
+            model="google-vertex/gemini-2.5-flash",
+            agent_env={"GOOGLE_CLOUD_PROJECT": "my-proj"},
+        )
+        assert result["LLM_MODEL"] == "vertex_ai/gemini-2.5-flash"
+
+    def test_provider_bridge_key_alone_does_not_bypass_required_model_key(
+        self, monkeypatch
+    ):
+        """Only mapped agent-native keys can bypass provider-specific key checks."""
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        with pytest.raises(ValueError, match="OPENAI_API_KEY required"):
+            self._resolve(
+                agent="openclaw",
+                model="openai/gpt-4.1-mini",
+                agent_env={"BENCHFLOW_PROVIDER_API_KEY": "x"},
+            )
+
     def test_required_key_missing_raises(self, monkeypatch, tmp_path):
         """Missing required API key raises ValueError when no subscription auth."""
         # Clear any auto-inherited keys from the environment
-        for key in ("ANTHROPIC_API_KEY", "ZAI_API_KEY", "OPENAI_API_KEY"):
+        for key in (
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_AUTH_TOKEN",
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            "ZAI_API_KEY",
+            "OPENAI_API_KEY",
+        ):
             monkeypatch.delenv(key, raising=False)
         # Ensure no host subscription auth files are found
-        orig_expanduser = Path.expanduser
-
-        def fake_expanduser(self):
-            s = str(self)
-            if s.startswith("~"):
-                return tmp_path / s[2:]
-            return orig_expanduser(self)
-
-        monkeypatch.setattr(Path, "expanduser", fake_expanduser)
+        self._patch_expanduser(monkeypatch, tmp_path)
         # Anthropic model
         with pytest.raises(ValueError, match="ANTHROPIC_API_KEY required"):
             self._resolve(

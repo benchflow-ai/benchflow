@@ -17,12 +17,17 @@ import logging
 import os
 import sys
 import time
-from datetime import datetime
 from pathlib import Path
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[0].parent / "src"))
+
+import contextlib
+
+from harbor.models.task.task import Task
+from harbor.models.trial.paths import TrialPaths
+from harbor.verifier.verifier import Verifier
 
 from benchflow._acp_run import connect_acp, execute_prompts
 from benchflow._agent_env import resolve_agent_env
@@ -30,12 +35,8 @@ from benchflow._agent_setup import install_agent
 from benchflow._credentials import upload_subscription_auth, write_credential_files
 from benchflow._env_setup import _create_environment
 from benchflow._sandbox import setup_sandbox_user
-from benchflow._scene import Role, Scene
-from benchflow.agents.registry import AGENTS, AGENT_LAUNCH
+from benchflow.agents.registry import AGENT_LAUNCH, AGENTS
 from benchflow.sdk import SDK
-from harbor.models.task.task import Task
-from harbor.verifier.verifier import Verifier
-from harbor.models.trial.paths import TrialPaths
 
 logger = logging.getLogger(__name__)
 
@@ -141,10 +142,8 @@ async def _run_acp(env, prompt: str, trial_dir: Path, timeout: int = 600) -> tup
     try:
         _, n_tools = await execute_prompts(acp_client, session, [prompt], timeout=timeout)
     finally:
-        try:
+        with contextlib.suppress(Exception):
             await acp_client.close()
-        except Exception:
-            pass
     return n_tools, int(time.time() - t0)
 
 
@@ -204,7 +203,7 @@ async def run_reviewer(task_path: Path, task_name: str, condition: str) -> dict:
         total_tools += n_tools
 
         # Read coder's outbox
-        outbox_result = await env.exec("cat /app/.outbox/reviewer.json 2>/dev/null || echo '{}'")
+        await env.exec("cat /app/.outbox/reviewer.json 2>/dev/null || echo '{}'")
         await env.exec("rm -rf /app/.outbox/*")
 
         # Phase 2: Reviewer

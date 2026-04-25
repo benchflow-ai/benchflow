@@ -476,9 +476,9 @@ class TestScrapedTrajectoryTrust:
     def _patch_sdk_run(self, sdk, mock_env, extra_patches):
         """Apply shared + extra patches for SDK.run() internals."""
         patches = [
-            patch("benchflow.sdk._create_environment", return_value=mock_env),
+            patch("benchflow.trial._create_environment", return_value=mock_env),
             patch(
-                "benchflow.sdk.install_agent",
+                "benchflow.trial.install_agent",
                 new_callable=AsyncMock,
                 return_value=MagicMock(
                     credential_files={},
@@ -487,8 +487,8 @@ class TestScrapedTrajectoryTrust:
                     env_mapping={},
                 ),
             ),
-            patch("benchflow.sdk.write_credential_files", new_callable=AsyncMock),
-            patch("benchflow.sdk.deploy_skills", new_callable=AsyncMock),
+            patch("benchflow.trial.write_credential_files", new_callable=AsyncMock),
+            patch("benchflow.trial.deploy_skills", new_callable=AsyncMock),
             *extra_patches,
         ]
         with contextlib.ExitStack() as stack:
@@ -516,23 +516,22 @@ class TestScrapedTrajectoryTrust:
                 mock_env,
                 [
                     patch(
-                        "benchflow.sdk.connect_acp",
+                        "benchflow.trial.connect_acp",
                         new_callable=AsyncMock,
                         return_value=(mock_acp, mock_session, "test-agent"),
                     ),
                     patch(
-                        "benchflow.sdk.execute_prompts",
+                        "benchflow.trial.execute_prompts",
                         new_callable=AsyncMock,
                         return_value=([], 5),
                     ),
                     patch(
-                        "benchflow.sdk._scrape_agent_trajectory",
+                        "benchflow.trial._scrape_agent_trajectory",
                         new_callable=AsyncMock,
                         return_value=forged,
                     ),
-                    patch.object(
-                        sdk,
-                        "_verify",
+                    patch(
+                        "benchflow.sdk.SDK._verify",
                         new_callable=AsyncMock,
                         return_value=({"reward": 1.0}, None),
                     ),
@@ -568,21 +567,21 @@ class TestScrapedTrajectoryTrust:
             mock_env,
             [
                 patch(
-                    "benchflow.sdk.connect_acp",
+                    "benchflow.trial.connect_acp",
                     new_callable=AsyncMock,
                     return_value=(mock_acp, mock_session, "test-agent"),
                 ),
                 patch(
-                    "benchflow.sdk.execute_prompts",
+                    "benchflow.trial.execute_prompts",
                     new_callable=AsyncMock,
                     side_effect=ConnectionError("lost"),
                 ),
                 patch(
-                    "benchflow.sdk._capture_session_trajectory",
+                    "benchflow.trial._capture_session_trajectory",
                     return_value=partial_events,
                 ),
                 patch(
-                    "benchflow.sdk._scrape_agent_trajectory",
+                    "benchflow.trial._scrape_agent_trajectory",
                     new_callable=AsyncMock,
                     return_value=[],
                 ),

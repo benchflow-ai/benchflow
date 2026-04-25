@@ -160,6 +160,9 @@ class AgentConfig:
     subscription_auth: SubscriptionAuth | None = None
     # Host CLI login that can substitute for an API key (e.g. OAuth tokens
     # from `claude login`). Detected automatically; API keys take precedence.
+    supports_acp_set_model: bool = True
+    # Some ACP agents configure the model through env/config at launch time and
+    # do not implement session/set_model (e.g. OpenHands CLI ACP).
 
 
 # Agent registry — all supported agents
@@ -311,13 +314,47 @@ AGENTS: dict[str, AgentConfig] = {
     "openhands": AgentConfig(
         name="openhands",
         description="OpenHands agent via ACP (multi-model, Python-based)",
-        skill_paths=[],
+        skill_paths=["$HOME/.agents/skills", "$WORKSPACE/.agents/skills"],
+        home_dirs=[".openhands"],
         install_cmd=(
-            "( command -v openhands >/dev/null 2>&1 || "
-            "pip install openhands >/dev/null 2>&1 ) && "
+            "export DEBIAN_FRONTEND=noninteractive && "
+            "export PATH=\"$HOME/.local/bin:$PATH\" && "
+            "( command -v curl >/dev/null 2>&1 || "
+            "  ( apt-get update -qq && "
+            "    apt-get install -y -qq curl ca-certificates >/dev/null 2>&1 ) ) && "
+            "( command -v openhands >/dev/null 2>&1 || ( "
+            "  UV_OK=0; "
+            "  if command -v uv >/dev/null 2>&1; then "
+            "    UV_VER=$(uv --version 2>/dev/null | awk '{print $2}'); "
+            "    if [ -n \"$UV_VER\" ] && "
+            "       [ \"$(printf '%s\\n' 0.11.6 \"$UV_VER\" | sort -V | head -n1)\" = \"0.11.6\" ]; then "
+            "      UV_OK=1; "
+            "    fi; "
+            "  fi; "
+            "  if [ \"$UV_OK\" = 0 ]; then "
+            "    curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null 2>&1 && "
+            "    export PATH=\"$HOME/.local/bin:$PATH\"; "
+            "  fi && "
+            "  ( uv tool list 2>/dev/null | grep -q '^openhands\\b' || "
+            "    uv tool install openhands --python 3.12 >/dev/null 2>&1 || "
+            "    curl -fsSL https://install.openhands.dev/install.sh | sh >/dev/null 2>&1 ) "
+            ") ) && "
+            # Let sandbox user traverse to uv-managed Python interpreter path.
+            "chmod o+x /root /root/.local /root/.local/share "
+            "/root/.local/share/uv /root/.local/share/uv/tools 2>/dev/null; "
+            # Seed config so OpenHands ACP auth check passes before env override.
+            "mkdir -p ~/.openhands && "
+            "echo '{\"llm\":{\"model\":\"placeholder\",\"api_key\":\"placeholder\"}}' "
+            "> ~/.openhands/agent_settings.json && "
             "command -v openhands >/dev/null 2>&1"
         ),
-        launch_cmd="openhands acp --always-approve --override-with-envs",
+        launch_cmd=(
+            "export PATH=\"$HOME/.local/bin:$PATH\" && "
+            "mkdir -p ~/.openhands && "
+            "printf '{\"llm\":{\"model\":\"%s\",\"api_key\":\"%s\"}}' "
+            "\"$LLM_MODEL\" \"$LLM_API_KEY\" > ~/.openhands/agent_settings.json && "
+            "openhands acp --always-approve --override-with-envs"
+        ),
         protocol="acp",
         requires_env=["LLM_API_KEY"],
         api_protocol="",
@@ -325,6 +362,7 @@ AGENTS: dict[str, AgentConfig] = {
             "BENCHFLOW_PROVIDER_BASE_URL": "LLM_BASE_URL",
             "BENCHFLOW_PROVIDER_API_KEY": "LLM_API_KEY",
         },
+        supports_acp_set_model=False,
     ),
 }
 
@@ -493,6 +531,7 @@ def register_agent(
     credential_files: list[CredentialFile] | None = None,
     home_dirs: list[str] | None = None,
     subscription_auth: SubscriptionAuth | None = None,
+    supports_acp_set_model: bool = True,
 ) -> AgentConfig:
     """Register a custom agent at runtime.
 
@@ -522,6 +561,7 @@ def register_agent(
         credential_files=credential_files or [],
         home_dirs=home_dirs or [],
         subscription_auth=subscription_auth,
+        supports_acp_set_model=supports_acp_set_model,
     )
     AGENTS[name] = config
     AGENT_INSTALLERS[name] = install_cmd

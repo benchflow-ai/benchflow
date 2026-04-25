@@ -53,9 +53,7 @@ def has_creds(agent_name: str) -> bool:
     if any(os.environ.get(k) for k in keys):
         return True
     sub_file = SUBSCRIPTION_AUTH_FILES.get(agent_name)
-    if sub_file and Path(sub_file).expanduser().exists():
-        return True
-    return False
+    return bool(sub_file and Path(sub_file).expanduser().exists())
 
 
 async def run_one(agent_name: str) -> dict:
