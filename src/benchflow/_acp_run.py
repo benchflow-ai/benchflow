@@ -229,9 +229,18 @@ async def _prompt_with_idle_watchdog(
     while the local process is still alive (no output to stdout, no tool calls
     appended).
     """
+    def _activity_count() -> int:
+        # Match the docstring contract: idle = no tool call AND no message
+        # AND no thought. Sum all three so streamed text resets the timer.
+        return (
+            len(session.tool_calls)
+            + len(session.message_chunks)
+            + len(session.thought_chunks)
+        )
+
     prompt_task = asyncio.create_task(acp_client.prompt(prompt))
     last_progress = asyncio.get_event_loop().time()
-    last_count = len(session.tool_calls)
+    last_count = _activity_count()
     poll_interval = min(30, max(5, idle_timeout // 4))
     deadline = last_progress + timeout
 
@@ -244,15 +253,16 @@ async def _prompt_with_idle_watchdog(
             if prompt_task.done():
                 break
             now = asyncio.get_event_loop().time()
-            cur_count = len(session.tool_calls)
+            cur_count = _activity_count()
             if cur_count > last_count:
                 last_progress = now
                 last_count = cur_count
             if now - last_progress >= idle_timeout:
                 raise TimeoutError(
-                    f"Agent idle for {idle_timeout}s with no new tool call "
+                    f"Agent idle for {idle_timeout}s with no new tool call, "
+                    f"message, or thought "
                     f"(last activity {int(now - last_progress)}s ago, "
-                    f"{cur_count} tool calls so far)"
+                    f"{len(session.tool_calls)} tool calls so far)"
                 )
             if now > deadline:
                 raise TimeoutError(
