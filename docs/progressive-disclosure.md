@@ -61,18 +61,18 @@ Rule-based, deterministic, and the "user" never needs to think — the disclosur
 
 | Task | Oracle | Single-round baseline | 3-round progressive (final) | Per-round soft-verify |
 |------|--------|-----------------------|------------------------------|------------------------|
-| ansible | ✅ 1.0 | ✅ 1.0 (23 tools, 207s) | error: stdout closed at 17min | (no rounds completed) |
+| ansible | ✅ 1.0 | ✅ 1.0 (23 tools, 207s) | ✅ 1.0 (126 tools, 3 rounds) | 0.0 / 0.0 / 0.0 |
 | flipt | ✅ 1.0 | ❌ 0.0 (61 tools, 1444s) | ❌ 0.0 (195 tools, 3 rounds) | 0.0 / 0.0 / 0.0 |
 | openlibrary | ✅ 1.0 | ✅ 1.0 (32 tools, 340s) | ✅ 1.0 (82 tools, 3 rounds) | 0.0 / 0.0 / 0.0 |
 | navidrome | ✅ 1.0 | (not tested) | ❌ 0.0 (145 tools, 3 rounds) | 0.0 / 0.0 / 0.0 |
-| qutebrowser | ✅ 1.0 (with `cleanup_conftests=false`) | ❌ 0.0 (verifier broken pre-fix) | error: agent timeout at 50min | (no rounds completed) |
+| qutebrowser | ✅ 1.0 (with `cleanup_conftests=false`) | ❌ 0.0 (verifier broken pre-fix) | ✅ 1.0 (183 tools, 3 rounds) | 0.0 / 0.0 / 0.0 |
 
 What this run shows and doesn't show:
 
-- **The infrastructure works.** Round trajectories are captured, soft_verify runs between rounds, the BaseUser callback drives the loop, multi-round results are reproducible.
-- **Two task setups failed for infrastructure reasons** (ansible's stdout-closed after 17 min, qutebrowser's hard 50 min agent timeout) — these are benchflow / Daytona reliability issues, not progressive-disclosure outcomes.
-- **flipt didn't unlock under progressive disclosure** with Gemini 3.1 Pro on this run. The agent burned 195 tool calls across 3 rounds and ended where it started. Whether a different model or hint schedule would lift it is an open question.
-- **openlibrary's per-round soft-verify scored 0.0 even though the final hardened verify scored 1.0.** Soft-verify runs between rounds without the full hardening sequence (it skips workspace restore + process kill so the sandbox stays alive), so its scoring can diverge from the final verifier. The user's hint schedule reacts to soft-verify, not the canonical reward.
+- **The infrastructure works on real SWE-bench Pro tasks.** All 5 tasks completed 3 rounds end-to-end (after one retry on ansible/qutebrowser to clear intermittent flake). Round trajectories captured, soft_verify runs between rounds, BaseUser callback drives the loop.
+- **3/5 hit the canonical reward** (ansible, openlibrary, qutebrowser). flipt and navidrome stayed at 0.0 across all three rounds — Gemini 3.1 Pro doesn't crack them with this hint schedule, and progressive disclosure didn't help.
+- **Per-round soft-verify scored 0.0 even on tasks where the final hardened verify scored 1.0.** Soft-verify runs between rounds without the full hardening sequence (no workspace restore, no process kill so the sandbox stays alive), so its scoring can diverge from the final verifier. The user's hint schedule reacts to soft-verify, not the canonical reward — something to keep in mind when designing the loop.
+- **First-run flake.** ansible's first run hit a transport EOF after 17min and qutebrowser timed out at 50min. Both succeeded on retry. v0.3.3 adds `agent_idle_timeout` (default 600s) and clearer EOF diagnostics so the next time a hang happens the failure is fast and actionable rather than silent.
 
 This is one model on one day, not a published comparison. The notebook at [`examples/swebench_pro_progressive_disclosure.ipynb`](../examples/swebench_pro_progressive_disclosure.ipynb) has the executable cells; raw aggregated results are at [`experiments/swebench-pro-progressive-results.json`](../experiments/swebench-pro-progressive-results.json).
 

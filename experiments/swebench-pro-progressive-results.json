@@ -1,10 +1,26 @@
 {
   "ansible": {
-    "final_reward": null,
-    "tool_calls": 0,
-    "error": "Process closed stdout (rc=None)",
-    "elapsed_s": 1045.5,
-    "rounds": []
+    "final_reward": 1.0,
+    "tool_calls": 126,
+    "error": null,
+    "elapsed_s": 938.1,
+    "rounds": [
+      {
+        "round": 0,
+        "reward": 0.0,
+        "tools": 38
+      },
+      {
+        "round": 1,
+        "reward": 0.0,
+        "tools": 47
+      },
+      {
+        "round": 2,
+        "reward": 0.0,
+        "tools": 41
+      }
+    ]
   },
   "flipt": {
     "final_reward": 0.0,
@@ -76,10 +92,26 @@
     ]
   },
   "qutebrowser": {
-    "final_reward": null,
-    "tool_calls": 0,
-    "error": "Agent timed out after 3000s",
-    "elapsed_s": 3046.4,
-    "rounds": []
+    "final_reward": 1.0,
+    "tool_calls": 183,
+    "error": null,
+    "elapsed_s": 1478.9,
+    "rounds": [
+      {
+        "round": 0,
+        "reward": 0.0,
+        "tools": 89
+      },
+      {
+        "round": 1,
+        "reward": 0.0,
+        "tools": 40
+      },
+      {
+        "round": 2,
+        "reward": 0.0,
+        "tools": 54
+      }
+    ]
   }
 }
