@@ -3,7 +3,7 @@ def test_arithmetic_is_broken():
 
 
 def test_false_is_true():
-    assert False
+    raise AssertionError()
 
 
 def test_pi_is_rational():

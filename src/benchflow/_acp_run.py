@@ -18,6 +18,7 @@ Does not own:
 """
 
 import asyncio
+import contextlib
 import logging
 from pathlib import Path
 
@@ -26,7 +27,7 @@ from benchflow._trajectory import _capture_session_trajectory
 from benchflow.acp.client import ACPClient
 from benchflow.acp.container_transport import ContainerTransport
 from benchflow.agents.providers import strip_provider_prefix
-from benchflow.process import DaytonaProcess, DockerProcess
+from benchflow.process import DaytonaProcess, DaytonaPtyProcess, DockerProcess
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +67,6 @@ async def connect_acp(
         agent_launch = build_priv_drop_cmd(agent_launch, sandbox_user)
         logger.info(f"Agent sandboxed as: {sandbox_user}")
 
-    last_err: Exception | None = None
     acp_client: ACPClient | None = None
     for attempt in range(_ACP_CONNECT_MAX_RETRIES + 1):
         if attempt > 0:
@@ -78,7 +78,12 @@ async def connect_acp(
             if environment == "docker":
                 live_proc = DockerProcess.from_harbor_env(env)
             else:
-                live_proc = await DaytonaProcess.from_harbor_env(env)
+                is_dind = hasattr(env, "_strategy") and hasattr(env._strategy, "_compose_cmd")
+                if is_dind:
+                    live_proc = await DaytonaPtyProcess.from_harbor_env(env)
+                    logger.info("Using PTY transport for DinD compose task")
+                else:
+                    live_proc = await DaytonaProcess.from_harbor_env(env)
 
             agent_log = trial_dir / "agent" / f"{agent.replace('-', '_')}.txt"
             transport = ContainerTransport(
@@ -101,12 +106,9 @@ async def connect_acp(
         except ConnectionError as e:
             # Close the failed client before retrying
             if acp_client:
-                try:
+                with contextlib.suppress(Exception):
                     await acp_client.close()
-                except Exception:
-                    pass
                 acp_client = None
-            last_err = e
             if attempt == _ACP_CONNECT_MAX_RETRIES:
                 raise
             logger.warning(f"ACP connect failed (attempt {attempt + 1}): {e}")
@@ -114,10 +116,8 @@ async def connect_acp(
         except Exception:
             # Non-retryable error — close client to prevent leak
             if acp_client:
-                try:
+                with contextlib.suppress(Exception):
                     await acp_client.close()
-                except Exception:
-                    pass
             raise
 
     if model:

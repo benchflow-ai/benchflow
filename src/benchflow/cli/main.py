@@ -433,9 +433,9 @@ def skills_eval(
         typer.Argument(help="Path to skill directory containing evals/evals.json"),
     ],
     agent: Annotated[
-        list[str],
+        list[str] | None,
         typer.Option("--agent", "-a", help="Agent(s) to evaluate (repeatable)"),
-    ] = ["claude-agent-acp"],
+    ] = None,
     model: Annotated[
         list[str] | None,
         typer.Option("--model", "-m", help="Model(s) (matched 1:1 with agents)"),
@@ -473,6 +473,8 @@ def skills_eval(
     """
     from benchflow.skill_eval import SkillEvaluator, export_gepa_traces
 
+    if agent is None:
+        agent = ["claude-agent-acp"]
     if not (skill_dir / "evals" / "evals.json").exists():
         console.print(
             f"[red]No evals/evals.json found in {skill_dir}[/red]\n"
@@ -757,7 +759,7 @@ def eval_create(
         eff_model = effective_model(agent, model)
         # Smart detection: if tasks_dir has task.toml, it's a single task
         if (tasks_dir / "task.toml").exists():
-            from benchflow.trial import Trial, TrialConfig, Scene
+            from benchflow.trial import Scene, Trial, TrialConfig
 
             config = TrialConfig(
                 task_path=tasks_dir,

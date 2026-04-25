@@ -133,7 +133,7 @@ class TestLoadEvalDataset:
     def test_missing_evals_json(self, tmp_path):
         skill = tmp_path / "no-evals"
         skill.mkdir()
-        with pytest.raises(FileNotFoundError, match="evals.json"):
+        with pytest.raises(FileNotFoundError, match=r"evals\.json"):
             load_eval_dataset(skill)
 
     def test_empty_cases(self, tmp_path):

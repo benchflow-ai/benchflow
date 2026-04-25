@@ -93,7 +93,7 @@ def test_rubric_plus_terminal_no_rubric_in_meta(tmp_path: Path) -> None:
         json.loads(ln)
         for ln in (tmp_path / "rewards.jsonl").read_text().strip().splitlines()
     ]
-    terminal = [ln for ln in lines if ln["type"] == "terminal"][0]
+    terminal = next(ln for ln in lines if ln["type"] == "terminal")
     assert "rubric" not in terminal["meta"]
 
 

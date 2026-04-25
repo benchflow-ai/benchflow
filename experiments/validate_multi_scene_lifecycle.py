@@ -162,7 +162,7 @@ async def main():
     r3 = await test_followup_bench()
     results["followup"] = r3.rewards
 
-    logger.info(f"\n=== DOGFOOD RESULTS ===")
+    logger.info("\n=== DOGFOOD RESULTS ===")
     for name, rewards in results.items():
         reward = (rewards or {}).get("reward", "N/A")
         logger.info(f"  {name}: reward={reward}")
