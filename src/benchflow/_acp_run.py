@@ -118,14 +118,18 @@ async def connect_acp(
     for attempt in range(_ACP_CONNECT_MAX_RETRIES + 1):
         if attempt > 0:
             delay = _ACP_CONNECT_BASE_DELAY * (2 ** (attempt - 1))
-            logger.info(f"ACP connect retry {attempt}/{_ACP_CONNECT_MAX_RETRIES} after {delay:.0f}s")
+            logger.info(
+                f"ACP connect retry {attempt}/{_ACP_CONNECT_MAX_RETRIES} after {delay:.0f}s"
+            )
             await asyncio.sleep(delay)
 
         try:
             if environment == "docker":
                 live_proc = DockerProcess.from_harbor_env(env)
             else:
-                is_dind = hasattr(env, "_strategy") and hasattr(env._strategy, "_compose_cmd")
+                is_dind = hasattr(env, "_strategy") and hasattr(
+                    env._strategy, "_compose_cmd"
+                )
                 if is_dind:
                     live_proc = await DaytonaPtyProcess.from_harbor_env(env)
                     logger.info("Using PTY transport for DinD compose task")
@@ -144,10 +148,14 @@ async def connect_acp(
             await acp_client.connect()
 
             init_result = await asyncio.wait_for(acp_client.initialize(), timeout=60)
-            agent_name = init_result.agent_info.name if init_result.agent_info else agent
+            agent_name = (
+                init_result.agent_info.name if init_result.agent_info else agent
+            )
             logger.info(f"ACP agent: {agent_name}")
 
-            session = await asyncio.wait_for(acp_client.session_new(cwd=agent_cwd), timeout=60)
+            session = await asyncio.wait_for(
+                acp_client.session_new(cwd=agent_cwd), timeout=60
+            )
             logger.info(f"Session: {session.session_id}")
             break
         except ConnectionError as e:
@@ -176,7 +184,9 @@ async def connect_acp(
         except Exception as e:
             logger.warning(f"Failed to set model via ACP: {e}")
     elif model:
-        logger.info(f"Skipping ACP set_model for {agent} — launch/env config owns model selection")
+        logger.info(
+            f"Skipping ACP set_model for {agent} — launch/env config owns model selection"
+        )
 
     return acp_client, session, agent_name
 
@@ -197,7 +207,9 @@ async def execute_prompts(
                    responding). None disables idle detection.
     """
     for i, prompt in enumerate(prompts):
-        logger.info(f"Prompt {i + 1}/{len(prompts)}: {(prompt or '<instruction.md>')[:80]}...")
+        logger.info(
+            f"Prompt {i + 1}/{len(prompts)}: {(prompt or '<instruction.md>')[:80]}..."
+        )
         if idle_timeout is None:
             prompt_result = await asyncio.wait_for(
                 acp_client.prompt(prompt),
@@ -229,6 +241,7 @@ async def _prompt_with_idle_watchdog(
     while the local process is still alive (no output to stdout, no tool calls
     appended).
     """
+
     def _activity_count() -> int:
         # Match the docstring contract: idle = no tool call AND no message
         # AND no thought. Sum all three so streamed text resets the timer.

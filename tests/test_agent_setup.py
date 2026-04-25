@@ -116,7 +116,10 @@ async def test_deploy_skills_falls_back_when_local_skills_dir_is_missing(tmp_pat
     env.exec.assert_awaited_once()
 
     distributed_link_cmd = env.exec.await_args.args[0]
-    assert "ln -sfn /opt/benchflow/skills /home/agent/.agents/skills" in distributed_link_cmd
+    assert (
+        "ln -sfn /opt/benchflow/skills /home/agent/.agents/skills"
+        in distributed_link_cmd
+    )
     assert "ln -sfn /opt/benchflow/skills /workspace/skills" in distributed_link_cmd
     assert "ln -sfn /skills /home/agent/.agents/skills" not in distributed_link_cmd
     assert "ln -sfn /skills /workspace/skills" not in distributed_link_cmd
@@ -147,7 +150,9 @@ async def test_deploy_skills_raises_when_skill_linking_fails(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_install_agent_writes_command_stdout_and_stderr_on_failure(tmp_path: Path):
+async def test_install_agent_writes_command_stdout_and_stderr_on_failure(
+    tmp_path: Path,
+):
     env = SimpleNamespace()
     env.exec = AsyncMock(
         side_effect=[

@@ -40,7 +40,10 @@ class TestEvalModuleNotWiredIntoCLI:
         """cli/main.py must not import from cli/eval — they are separate."""
         main_py = (
             Path(__file__).resolve().parent.parent
-            / "src" / "benchflow" / "cli" / "main.py"
+            / "src"
+            / "benchflow"
+            / "cli"
+            / "main.py"
         )
         text = main_py.read_text()
         assert "from benchflow.cli.eval" not in text
@@ -138,19 +141,12 @@ class TestOracleYamlLoaders:
 
         self._make_task(tmp_path)
         config = tmp_path / "config.yaml"
-        config.write_text(
-            "agents:\n"
-            "  - name: oracle\n"
-            "datasets:\n"
-            "  - path: tasks\n"
-        )
+        config.write_text("agents:\n  - name: oracle\ndatasets:\n  - path: tasks\n")
         job = Job.from_yaml(config)
         assert job._config.agent == "oracle"
         assert job._config.model is None
 
-    def test_native_yaml_non_oracle_keeps_default_when_omitted(
-        self, tmp_path: Path
-    ):
+    def test_native_yaml_non_oracle_keeps_default_when_omitted(self, tmp_path: Path):
         """Backwards-compat: omitting model for an LLM agent still gets DEFAULT_MODEL."""
         from benchflow.job import DEFAULT_MODEL, Job
 
@@ -193,9 +189,7 @@ class TestEvalCreateOracleCLI:
         ):
             monkeypatch.delenv(k, raising=False)
 
-    def test_oracle_single_task_no_api_key_no_error(
-        self, tmp_path: Path, monkeypatch
-    ):
+    def test_oracle_single_task_no_api_key_no_error(self, tmp_path: Path, monkeypatch):
         """The bug: oracle + missing API key → ANTHROPIC_API_KEY ValueError."""
         import asyncio
 

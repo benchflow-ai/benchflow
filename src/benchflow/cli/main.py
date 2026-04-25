@@ -770,8 +770,13 @@ def eval_create(
 
             config = TrialConfig(
                 task_path=tasks_dir,
-                scenes=[Scene.single(agent=agent, model=eff_model,
-                                     skills_dir=str(skills_dir) if skills_dir else None)],
+                scenes=[
+                    Scene.single(
+                        agent=agent,
+                        model=eff_model,
+                        skills_dir=str(skills_dir) if skills_dir else None,
+                    )
+                ],
                 environment=environment,
                 sandbox_user=sandbox_user,
                 sandbox_setup_timeout=sandbox_setup_timeout,

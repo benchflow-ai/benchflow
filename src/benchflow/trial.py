@@ -173,7 +173,11 @@ class TrialConfig:
         """Construct from flat SDK.run()-style args."""
         return cls(
             task_path=task_path,
-            scenes=[Scene.single(agent=agent, model=model, prompts=prompts, skills_dir=skills_dir)],
+            scenes=[
+                Scene.single(
+                    agent=agent, model=model, prompts=prompts, skills_dir=skills_dir
+                )
+            ],
             agent=agent,
             model=model,
             prompts=prompts,
@@ -186,8 +190,14 @@ class TrialConfig:
         """Scenes to execute — falls back to legacy fields if scenes is empty."""
         if self.scenes:
             return self.scenes
-        return [Scene.single(agent=self.agent, model=self.model, prompts=self.prompts,
-                             skills_dir=self.skills_dir)]
+        return [
+            Scene.single(
+                agent=self.agent,
+                model=self.model,
+                prompts=self.prompts,
+                skills_dir=self.skills_dir,
+            )
+        ]
 
     @property
     def primary_agent(self) -> str:
@@ -304,9 +314,7 @@ class Trial:
             self._started_at,
             self._job_name,
             self._trial_name,
-        ) = SDK._init_trial(
-            cfg.task_path, cfg.job_name, cfg.trial_name, cfg.jobs_dir
-        )
+        ) = SDK._init_trial(cfg.task_path, cfg.job_name, cfg.trial_name, cfg.jobs_dir)
 
         self._agent_env = resolve_agent_env(
             cfg.primary_agent, cfg.primary_model, cfg.agent_env
@@ -321,6 +329,7 @@ class Trial:
         if cfg.context_root or cfg.skills_dir:
             import shutil
             import tempfile
+
             tmp = Path(tempfile.mkdtemp(prefix="benchflow-task-"))
             shutil.copytree(cfg.task_path, tmp / cfg.task_path.name, dirs_exist_ok=True)
             effective_task_path = tmp / cfg.task_path.name
@@ -332,8 +341,11 @@ class Trial:
             _inject_skills_into_dockerfile(effective_task_path, Path(cfg.skills_dir))
 
         self._env = _create_environment(
-            cfg.environment, self._task, effective_task_path,
-            self._trial_name, self._trial_paths,
+            cfg.environment,
+            self._task,
+            effective_task_path,
+            self._trial_name,
+            self._trial_paths,
         )
         self._timeout = int(self._task.config.agent.timeout_sec or 0)
 
@@ -393,19 +405,23 @@ class Trial:
                     timeout_sec=cfg.sandbox_setup_timeout,
                 )
             await _snapshot_build_config(self._env, workspace=self._agent_cwd)
-            await _seed_verifier_workspace(self._env, workspace=self._agent_cwd, sandbox_user=cfg.sandbox_user)
+            await _seed_verifier_workspace(
+                self._env, workspace=self._agent_cwd, sandbox_user=cfg.sandbox_user
+            )
             await lockdown_paths(self._env, self._effective_locked)
             self._phase = "installed"
             return
 
         agent_name = cfg.primary_agent
-        self._agent_cfg = await install_agent(
-            self._env, agent_name, self._trial_dir
-        )
+        self._agent_cfg = await install_agent(self._env, agent_name, self._trial_dir)
         cred_home = f"/home/{cfg.sandbox_user}" if cfg.sandbox_user else "/root"
         await write_credential_files(
-            self._env, agent_name, self._agent_env,
-            self._agent_cfg, cfg.primary_model, cred_home,
+            self._env,
+            agent_name,
+            self._agent_env,
+            self._agent_cfg,
+            cfg.primary_model,
+            cred_home,
         )
         if self._agent_env.get("_BENCHFLOW_SUBSCRIPTION_AUTH"):
             await upload_subscription_auth(self._env, agent_name, cred_home)
@@ -418,11 +434,18 @@ class Trial:
                 timeout_sec=cfg.sandbox_setup_timeout,
             )
         await _snapshot_build_config(self._env, workspace=self._agent_cwd)
-        await _seed_verifier_workspace(self._env, workspace=self._agent_cwd, sandbox_user=cfg.sandbox_user)
+        await _seed_verifier_workspace(
+            self._env, workspace=self._agent_cwd, sandbox_user=cfg.sandbox_user
+        )
 
         await deploy_skills(
-            self._env, cfg.task_path, cfg.skills_dir,
-            self._agent_cfg, cfg.sandbox_user, self._agent_cwd, self._task,
+            self._env,
+            cfg.task_path,
+            cfg.skills_dir,
+            self._agent_cfg,
+            cfg.sandbox_user,
+            self._agent_cwd,
+            self._task,
         )
         await lockdown_paths(self._env, self._effective_locked)
 
@@ -494,7 +517,7 @@ class Trial:
         # trajectory and n_tool_calls are cumulative for this session.
         # Compute the delta since last execute() on this session.
         new_tools = n_tool_calls - prev_session_tools
-        new_events = trajectory[getattr(self, "_session_traj_count", 0):]
+        new_events = trajectory[getattr(self, "_session_traj_count", 0) :]
         self._session_tool_count = n_tool_calls
         self._session_traj_count = len(trajectory)
 
@@ -526,10 +549,15 @@ class Trial:
                 )
 
         from benchflow.sdk import SDK
+
         sdk = SDK()
         self._rewards, self._verifier_error = await sdk._verify(
-            self._env, self._task, self._trial_paths, self._timing,
-            sandbox_user=cfg.sandbox_user, workspace=self._agent_cwd,
+            self._env,
+            self._task,
+            self._trial_paths,
+            self._timing,
+            sandbox_user=cfg.sandbox_user,
+            workspace=self._agent_cwd,
         )
 
         self._phase = "verified"
@@ -554,15 +582,14 @@ class Trial:
         # Clean verifier output dir — chmod 777 so non-root verifier processes can write
         await self._env.exec(
             "rm -rf /logs/verifier && mkdir -p /logs/verifier && chmod 777 /logs/verifier",
-            user="root", timeout_sec=10,
+            user="root",
+            timeout_sec=10,
         )
         # Purge agent-injected conftest/sitecustomize/.pth without
         # killing processes or restoring workspace.
         # Honor per-task [verifier.hardening] opt-outs from task.toml.
         hardening = _read_hardening_config(getattr(self._task, "task_dir", None))
-        await self._env.exec(
-            _build_cleanup_cmd(hardening), user="root", timeout_sec=10
-        )
+        await self._env.exec(_build_cleanup_cmd(hardening), user="root", timeout_sec=10)
 
         rewards = None
         verifier_output = None
@@ -623,6 +650,7 @@ class Trial:
 
         if hasattr(self, "_task_tmp") and self._task_tmp:
             import shutil
+
             shutil.rmtree(self._task_tmp, ignore_errors=True)
 
         self._phase = "cleaned"
@@ -644,12 +672,15 @@ class Trial:
                 await self.install_agent()
                 # git safe.directory needed for SWE-bench tasks with sandbox_user
                 import shlex
+
                 await self._env.exec(
                     f"git config --global --add safe.directory "
                     f"{shlex.quote(self._agent_cwd)} 2>/dev/null || true",
-                    user="root", timeout_sec=10,
+                    user="root",
+                    timeout_sec=10,
                 )
                 from benchflow.sdk import SDK
+
                 sdk = SDK()
                 self._trajectory, self._agent_name = await sdk._run_oracle(
                     self._env, cfg.task_path, self._timeout, sandbox_user=None
@@ -666,7 +697,8 @@ class Trial:
                     if cfg.oracle_access:
                         await self._env.exec(
                             "mv /solution_oracle_backup /solution 2>/dev/null || true",
-                            user="root", timeout_sec=10,
+                            user="root",
+                            timeout_sec=10,
                         )
 
             await self.verify()
@@ -692,6 +724,7 @@ class Trial:
 
         if self._trial_dir is None:
             from benchflow.models import RunResult
+
             return RunResult(
                 task_name=self._config.task_path.name,
                 error=self._error or "Setup failed before trial directory was created",
@@ -713,7 +746,9 @@ class Trial:
         Inter-role messages are persisted to ``trial_dir/scene_messages.jsonl``.
         """
         cfg = self._config
-        logger.info(f"[Scene] {scene.name} — {len(scene.turns)} turns, {len(scene.roles)} roles")
+        logger.info(
+            f"[Scene] {scene.name} — {len(scene.turns)} turns, {len(scene.roles)} roles"
+        )
 
         role_map = {r.name: r for r in scene.roles}
         current_role: str | None = None
@@ -765,13 +800,15 @@ class Trial:
                     inbox.setdefault(recipient, []).append(
                         f"**From {current_role}:** {content}"
                     )
-                    scene_messages.append({
-                        "scene": scene.name,
-                        "turn": turn_counter,
-                        "sender": current_role,
-                        "recipient": recipient,
-                        "content": content,
-                    })
+                    scene_messages.append(
+                        {
+                            "scene": scene.name,
+                            "turn": turn_counter,
+                            "sender": current_role,
+                            "recipient": recipient,
+                            "content": content,
+                        }
+                    )
 
         if current_role is not None:
             await self.disconnect()
@@ -788,9 +825,12 @@ class Trial:
     async def _read_scene_outbox(self, sender: str) -> list[tuple[str, str]]:
         """Read and clear outbox files left by *sender*. Returns [(recipient, content), ...]."""
         result = await self._env.exec(
-            f"ls {self._OUTBOX_DIR}/*.json 2>/dev/null || true", timeout_sec=10,
+            f"ls {self._OUTBOX_DIR}/*.json 2>/dev/null || true",
+            timeout_sec=10,
         )
-        files = [f.strip() for f in (result.stdout or "").strip().splitlines() if f.strip()]
+        files = [
+            f.strip() for f in (result.stdout or "").strip().splitlines() if f.strip()
+        ]
         messages: list[tuple[str, str]] = []
         for fpath in files:
             quoted = shlex.quote(fpath)
@@ -801,7 +841,9 @@ class Trial:
                 content = data.get("content", "")
                 if recipient and content:
                     messages.append((recipient, content))
-                    logger.info(f"[Scene] outbox: {sender} → {recipient}: {content[:80]}")
+                    logger.info(
+                        f"[Scene] outbox: {sender} → {recipient}: {content[:80]}"
+                    )
             except json.JSONDecodeError:
                 logger.warning(f"[Scene] invalid JSON in outbox: {fpath}")
             await self._env.exec(f"rm -f {quoted}", timeout_sec=10)
@@ -831,8 +873,10 @@ class Trial:
             )
         role = scene.roles[0]
 
-        instruction = self._resolved_prompts[0] if self._resolved_prompts else (
-            "Solve the task described in /app/instruction.md"
+        instruction = (
+            self._resolved_prompts[0]
+            if self._resolved_prompts
+            else ("Solve the task described in /app/instruction.md")
         )
 
         # Oracle access: read /solution before the agent runs, then remove it
@@ -840,7 +884,8 @@ class Trial:
         if cfg.oracle_access:
             cat = await self._env.exec(
                 "cat /solution/solve.sh 2>/dev/null || true",
-                user="root", timeout_sec=10,
+                user="root",
+                timeout_sec=10,
             )
             solution = (cat.stdout or "").strip() or None
 
@@ -851,7 +896,8 @@ class Trial:
         if cfg.oracle_access:
             await self._env.exec(
                 "mv /solution /solution_oracle_backup 2>/dev/null || true",
-                user="root", timeout_sec=10,
+                user="root",
+                timeout_sec=10,
             )
 
         round_result: RoundResult | None = None
@@ -871,7 +917,8 @@ class Trial:
 
             logger.info(
                 f"[User] round {round_num}: prompt={prompt[:80]!r}..."
-                if len(prompt) > 80 else f"[User] round {round_num}: prompt={prompt!r}"
+                if len(prompt) > 80
+                else f"[User] round {round_num}: prompt={prompt!r}"
             )
 
             # Fresh ACP session each round — agent starts clean but sees
@@ -885,7 +932,8 @@ class Trial:
 
             round_trajectory = self._trajectory[traj_before:]
             round_tools = sum(
-                1 for e in round_trajectory
+                1
+                for e in round_trajectory
                 if isinstance(e, dict) and e.get("type") == "tool_call"
             )
 
@@ -895,7 +943,8 @@ class Trial:
             if cfg.oracle_access:
                 await self._env.exec(
                     "mv /solution_oracle_backup /solution 2>/dev/null || true",
-                    user="root", timeout_sec=10,
+                    user="root",
+                    timeout_sec=10,
                 )
             try:
                 rewards, verifier_output, verifier_error = await self.soft_verify()
@@ -903,7 +952,8 @@ class Trial:
                 if cfg.oracle_access:
                     await self._env.exec(
                         "mv /solution /solution_oracle_backup 2>/dev/null || true",
-                        user="root", timeout_sec=10,
+                        user="root",
+                        timeout_sec=10,
                     )
 
             round_result = RoundResult(
@@ -915,18 +965,19 @@ class Trial:
                 n_tool_calls=round_tools,
             )
 
-            rounds_log.append({
-                "round": round_num,
-                "prompt": prompt,
-                "rewards": rewards,
-                "verifier_error": verifier_error,
-                "n_tool_calls": round_tools,
-                "n_trajectory_events": len(round_trajectory),
-            })
+            rounds_log.append(
+                {
+                    "round": round_num,
+                    "prompt": prompt,
+                    "rewards": rewards,
+                    "verifier_error": verifier_error,
+                    "n_tool_calls": round_tools,
+                    "n_trajectory_events": len(round_trajectory),
+                }
+            )
 
             logger.info(
-                f"[User] round {round_num} done: "
-                f"rewards={rewards}, tools={round_tools}"
+                f"[User] round {round_num} done: rewards={rewards}, tools={round_tools}"
             )
 
         # Persist round log
@@ -951,7 +1002,8 @@ class Trial:
         # Merge cfg.agent_env (config-level) with role.env (role-specific) so
         # provider creds from YAML reach the agent. role.env wins on overlap.
         agent_env = resolve_agent_env(
-            role.agent, role.model,
+            role.agent,
+            role.model,
             {**(cfg.agent_env or {}), **(role.env or {})},
         )
 
@@ -959,8 +1011,12 @@ class Trial:
             agent_cfg = await install_agent(self._env, role.agent, self._trial_dir)
             cred_home = f"/home/{cfg.sandbox_user}" if cfg.sandbox_user else "/root"
             await write_credential_files(
-                self._env, role.agent, agent_env,
-                agent_cfg, role.model, cred_home,
+                self._env,
+                role.agent,
+                agent_env,
+                agent_cfg,
+                role.model,
+                cred_home,
             )
             if agent_env.get("_BENCHFLOW_SUBSCRIPTION_AUTH"):
                 await upload_subscription_auth(self._env, role.agent, cred_home)
@@ -991,7 +1047,11 @@ class Trial:
             from benchflow._agent_env import check_subscription_auth
             from benchflow.agents.registry import infer_env_key_for_model
 
-            key = infer_env_key_for_model(self._config.primary_model) if self._config.primary_model else None
+            key = (
+                infer_env_key_for_model(self._config.primary_model)
+                if self._config.primary_model
+                else None
+            )
             if key and check_subscription_auth(self._config.primary_agent, key):
                 return (
                     f"{key} was rejected as invalid. "

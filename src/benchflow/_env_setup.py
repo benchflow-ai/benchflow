@@ -20,7 +20,9 @@ logger = logging.getLogger(__name__)
 # build) instead of erroring out. Override via env if running on a paid tier.
 _DAYTONA_MAX_CPUS = int(os.environ.get("BENCHFLOW_DAYTONA_MAX_CPUS", "4"))
 _DAYTONA_MAX_MEMORY_MB = int(os.environ.get("BENCHFLOW_DAYTONA_MAX_MEMORY_MB", "8192"))
-_DAYTONA_MAX_STORAGE_MB = int(os.environ.get("BENCHFLOW_DAYTONA_MAX_STORAGE_MB", "10240"))
+_DAYTONA_MAX_STORAGE_MB = int(
+    os.environ.get("BENCHFLOW_DAYTONA_MAX_STORAGE_MB", "10240")
+)
 
 # Directories to ignore when copying deps
 _IGNORE_DIRS = {

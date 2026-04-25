@@ -27,8 +27,11 @@ async def snapshot(env, name: str, workspace: str = "/app") -> str:
     in trial metadata / rewards.jsonl.
     """
     import re
-    if not re.match(r'^[a-zA-Z0-9_-]+$', name):
-        raise ValueError(f"Snapshot name must be alphanumeric/dash/underscore, got: {name!r}")
+
+    if not re.match(r"^[a-zA-Z0-9_-]+$", name):
+        raise ValueError(
+            f"Snapshot name must be alphanumeric/dash/underscore, got: {name!r}"
+        )
     await env.exec(f"mkdir -p {_SNAP_DIR}")
     snap_path = f"{_SNAP_DIR}/{name}.tar.gz"
     result = await env.exec(

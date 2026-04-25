@@ -244,7 +244,7 @@ def generate_tasks(
             f"[environment]\n"
             f"cpus = 1\n"
             f"memory_mb = 2048\n"
-            f'allow_internet = true\n'
+            f"allow_internet = true\n"
         )
 
         # environment/
@@ -327,7 +327,12 @@ def _default_dockerfile(dataset: EvalDataset, with_skill: bool) -> str:
     ]
 
     # Forward judge API keys as ARG (build-time only, not persisted in image layers)
-    for key in ("GOOGLE_API_KEY", "GEMINI_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
+    for key in (
+        "GOOGLE_API_KEY",
+        "GEMINI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+    ):
         val = os.environ.get(key)
         if val:
             lines += [f"ARG {key}", f"ENV {key}=${{{key}}}", ""]
@@ -490,8 +495,14 @@ class SkillEvaluator:
         import os
 
         from benchflow.job import Job, JobConfig, RetryConfig
+
         judge_env = {}
-        for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY"):
+        for key in (
+            "ANTHROPIC_API_KEY",
+            "OPENAI_API_KEY",
+            "GOOGLE_API_KEY",
+            "GEMINI_API_KEY",
+        ):
             if os.environ.get(key):
                 judge_env[key] = os.environ[key]
 

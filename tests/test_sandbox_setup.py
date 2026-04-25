@@ -10,7 +10,9 @@ from benchflow._sandbox import setup_sandbox_user
 from benchflow.agents.registry import get_sandbox_home_dirs
 
 
-async def _run_setup_sandbox_user(*, sandbox_user: str = "agent", workspace: str = "/app"):
+async def _run_setup_sandbox_user(
+    *, sandbox_user: str = "agent", workspace: str = "/app"
+):
     env = MagicMock()
     env.exec = AsyncMock(return_value=MagicMock(stdout="", stderr="", exit_code=0))
 
@@ -46,7 +48,9 @@ class TestSetupSandboxUser:
         assert kwargs["timeout_sec"] == 120
 
     @pytest.mark.asyncio
-    async def test_setup_command_still_creates_user_prepares_home_and_chowns_workspace(self):
+    async def test_setup_command_still_creates_user_prepares_home_and_chowns_workspace(
+        self,
+    ):
         """The non-copy setup contract still creates the user and grants access."""
         cmd, _ = await _run_setup_sandbox_user()
 

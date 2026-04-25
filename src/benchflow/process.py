@@ -444,7 +444,11 @@ class DaytonaPtyProcess(LiveProcess):
             f"{k}={shlex.quote(v)}" for k, v in strategy._compose_env_vars().items()
         )
         compose_cmd_base = strategy._compose_cmd([])
-        return cls(sandbox=sandbox, compose_cmd_prefix=compose_env, compose_cmd_base=compose_cmd_base)
+        return cls(
+            sandbox=sandbox,
+            compose_cmd_prefix=compose_env,
+            compose_cmd_base=compose_cmd_base,
+        )
 
     async def _on_pty_data(self, data: bytes) -> None:
         self._partial += data
@@ -475,7 +479,11 @@ class DaytonaPtyProcess(LiveProcess):
         await self._pty.wait_for_connection()
         logger.info(f"DaytonaPtyProcess: PTY connected (session={session_id})")
 
-        compose_parts = shlex.split(self._compose_cmd_base) if self._compose_cmd_base else ["docker", "compose"]
+        compose_parts = (
+            shlex.split(self._compose_cmd_base)
+            if self._compose_cmd_base
+            else ["docker", "compose"]
+        )
         exec_parts = [*compose_parts, "exec", "-i", "-T"]
         if cwd:
             exec_parts.extend(["-w", cwd])
@@ -484,7 +492,9 @@ class DaytonaPtyProcess(LiveProcess):
         env_file_cmd = ""
         if env:
             env_file_path = f"/tmp/.benchflow_env_{uuid.uuid4().hex[:16]}"
-            env_lines = "\n".join(f"export {k}={shlex.quote(v)}" for k, v in env.items())
+            env_lines = "\n".join(
+                f"export {k}={shlex.quote(v)}" for k, v in env.items()
+            )
             env_file_cmd = (
                 f"cat > {env_file_path} <<'__EOF__'\n{env_lines}\n__EOF__\n"
                 f". {env_file_path} && rm -f {env_file_path} && "
@@ -509,7 +519,9 @@ class DaytonaPtyProcess(LiveProcess):
                 if marker in decoded:
                     break
             except TimeoutError as e:
-                raise ConnectionError("DaytonaPtyProcess: timeout waiting for agent start marker") from e
+                raise ConnectionError(
+                    "DaytonaPtyProcess: timeout waiting for agent start marker"
+                ) from e
 
         logger.info("DaytonaPtyProcess: marker seen, agent starting")
 
