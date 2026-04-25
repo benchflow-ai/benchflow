@@ -196,7 +196,9 @@ def resolve_agent_env(
     auto_inherit_env(agent_env)
     pre_provider_env = dict(agent_env)
     agent_cfg = AGENTS.get(agent)
-    if model:
+    # Oracle runs solve.sh and never calls an LLM — model env vars and
+    # API-key validation are skipped even if a caller forwards a model.
+    if model and agent != "oracle":
         inject_vertex_credentials(agent_env, model)
         resolve_provider_env(agent_env, model, agent)
         if agent_cfg and agent_cfg.env_mapping:

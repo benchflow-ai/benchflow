@@ -1,9 +1,9 @@
-"""Tests for `bf eval` — the new eval-runner CLI.
+"""Tests for ``benchflow.cli.eval`` — the future-facing eval CLI module.
 
-The create command takes a positional task reference and routes to either
-a single SDK.run or a batch Job based on whether the reference is a single
-task dir or a directory of task dirs. We don't exercise the actual runner
-here (that's the parity tests' job); we only verify the resolver.
+NOTE: ``cli/eval.py`` is **not wired into the live CLI** (the active
+``bench eval create`` lives in ``cli/main.py``).  These tests cover the
+task-reference resolver (``_resolve_task_ref``) which will be used once
+the module is promoted to the live entry point.
 """
 
 from __future__ import annotations

@@ -141,12 +141,25 @@ DEFAULT_AGENT = "claude-agent-acp"
 DEFAULT_MODEL = "claude-haiku-4-5-20251001"
 
 
+def effective_model(agent: str, model: str | None) -> str | None:
+    """Resolve the model an agent should run with.
+
+    Oracle runs solve.sh and never calls an LLM, so it never receives a model
+    (the chokepoint in resolve_agent_env defends, but callers should also stop
+    materializing DEFAULT_MODEL into oracle configs to keep the data honest —
+    e.g. result-summary JSON shows model=null instead of a bogus default).
+    """
+    if agent == "oracle":
+        return None
+    return model or DEFAULT_MODEL
+
+
 @dataclass
 class JobConfig:
     """Configuration for a benchmark job."""
 
     agent: str = DEFAULT_AGENT
-    model: str | None = DEFAULT_MODEL
+    model: str | None = None
     environment: str = "docker"
     concurrency: int = 4
     prompts: list[str | None] | None = None
@@ -281,9 +294,10 @@ class Job:
         sandbox_user = raw.get("sandbox_user", "agent")
         sandbox_locked_paths = raw.get("sandbox_locked_paths")
 
+        agent_name = raw.get("agent", DEFAULT_AGENT)
         config = JobConfig(
-            agent=raw.get("agent", DEFAULT_AGENT),
-            model=raw.get("model", DEFAULT_MODEL),
+            agent=agent_name,
+            model=effective_model(agent_name, raw.get("model")),
             environment=raw.get("environment", "docker"),
             concurrency=raw.get("concurrency", 4),
             prompts=prompts,
@@ -305,7 +319,7 @@ class Job:
         agent_name = agent_cfg.get("name", DEFAULT_AGENT)
 
         # Model — keep provider prefix intact for downstream resolution
-        model = agent_cfg.get("model_name", "") or DEFAULT_MODEL
+        model = effective_model(agent_name, agent_cfg.get("model_name") or None)
 
         # Environment
         env_cfg = raw.get("environment", {})
@@ -393,6 +407,13 @@ class Job:
         except Exception as e:
             logger.warning(f"Docker prune failed: {e}")
 
+    def _resolve_skills_dir(self, task_dir: Path, skills_dir: str | None) -> str | None:
+        """Resolve skills_dir — 'auto' means per-task environment/skills/."""
+        if skills_dir == "auto":
+            candidate = task_dir / "environment" / "skills"
+            return str(candidate) if candidate.is_dir() else None
+        return skills_dir
+
     async def _run_single_task(self, task_dir: Path, cfg: JobConfig) -> RunResult:
         """Execute one trial via Trial."""
         from benchflow.trial import Trial, TrialConfig
@@ -406,7 +427,7 @@ class Job:
             job_name=self._job_name,
             jobs_dir=str(self._jobs_dir),
             environment=cfg.environment,
-            skills_dir=cfg.skills_dir,
+            skills_dir=self._resolve_skills_dir(task_dir, cfg.skills_dir),
             sandbox_user=cfg.sandbox_user,
             sandbox_locked_paths=cfg.sandbox_locked_paths,
             context_root=cfg.context_root,
@@ -425,7 +446,7 @@ class Job:
             job_name=self._job_name,
             jobs_dir=str(self._jobs_dir),
             environment=cfg.environment,
-            skills_dir=cfg.skills_dir,
+            skills_dir=self._resolve_skills_dir(task_dir, cfg.skills_dir),
             sandbox_user=cfg.sandbox_user,
             sandbox_locked_paths=cfg.sandbox_locked_paths,
             context_root=cfg.context_root,
