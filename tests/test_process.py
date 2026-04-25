@@ -207,6 +207,9 @@ class TestDockerProcessEnv:
 class TestDaytonaProcessEnvFilePath:
     """Regression: env-file path must be unique without relying on shell `$$` expansion.
 
+    Guards the fix from PR #198 against the regression introduced by PR #193
+    (DinD compose ACP via Daytona PTY WebSocket, commit cdccac7).
+
     The DinD branch builds an inner `docker compose exec --env-file PATH ...`
     command and runs it through `shlex.join()`, which single-quotes any `$$`
     (preventing remote shell expansion). The `cat > PATH` heredoc that writes
