@@ -261,6 +261,10 @@ def _create_environment(
     elif environment_type == "daytona":
         from harbor.environments.daytona import DaytonaEnvironment
 
+        from benchflow._daytona_patches import apply as _apply_daytona_patches
+
+        _apply_daytona_patches()
+
         env_config = task.config.environment
         if env_config.cpus > _DAYTONA_MAX_CPUS:
             logger.warning(

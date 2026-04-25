@@ -493,10 +493,10 @@ class DaytonaPtyProcess(LiveProcess):
         if self._closed:
             raise ConnectionError("PTY closed")
         try:
-            line = await asyncio.wait_for(self._line_buffer.get(), timeout=300)
+            line = await asyncio.wait_for(self._line_buffer.get(), timeout=900)
             return line
         except TimeoutError as e:
-            raise ConnectionError("PTY readline timeout (300s)") from e
+            raise ConnectionError("PTY readline timeout (900s)") from e
         except Exception as e:
             raise ConnectionError(f"PTY readline error: {e}") from e
 
