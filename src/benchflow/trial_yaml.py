@@ -78,7 +78,7 @@ def trial_config_from_dict(
 
     # Scene-based format
     if "scenes" in raw:
-        scenes = [_parse_scene(s) for s in raw["scenes"]]
+        scenes = [parse_scene(s) for s in raw["scenes"]]
     elif "agent" in raw:
         # Legacy flat format
         prompts_raw = raw.get("prompts")
@@ -117,10 +117,10 @@ def trial_config_from_dict(
     )
 
 
-def _parse_scene(raw: dict) -> Scene:
+def parse_scene(raw: dict) -> Scene:
     """Parse a scene dict from YAML."""
-    roles = [_parse_role(r) for r in raw.get("roles", [])]
-    turns = [_parse_turn(t) for t in raw.get("turns", [])]
+    roles = [parse_role(r) for r in raw.get("roles", [])]
+    turns = [parse_turn(t) for t in raw.get("turns", [])]
 
     # If no turns specified but roles exist, create one turn per role
     if not turns and roles:
@@ -134,17 +134,17 @@ def _parse_scene(raw: dict) -> Scene:
     )
 
 
-def _parse_role(raw: dict) -> Role:
+def parse_role(raw: dict) -> Role:
     """Parse a role dict from YAML."""
     return Role(
         name=raw["name"],
         agent=raw["agent"],
-        model=raw.get("model"),
+        model=raw.get("model") or raw.get("model_name"),
         env=raw.get("env", {}),
     )
 
 
-def _parse_turn(raw: dict) -> Turn:
+def parse_turn(raw: dict) -> Turn:
     """Parse a turn dict from YAML."""
     return Turn(
         role=raw["role"],
