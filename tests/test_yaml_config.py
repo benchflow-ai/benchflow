@@ -1,10 +1,13 @@
 """Tests for YAML job config loading."""
 
+import logging
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
 from benchflow.job import Job
+from benchflow.models import RunResult
 
 
 @pytest.fixture
@@ -259,3 +262,213 @@ sandbox_user: testuser
         assert job._config.agent_env == {}
         assert job._config.sandbox_user == "agent"
         assert job._config.sandbox_setup_timeout == 120
+
+
+# ── Scenes parsing (issue #4) ──
+
+
+def _make_task_dir(tmp_path: Path, name: str = "task-a") -> Path:
+    """Create a tasks/<name> directory with task.toml."""
+    task_dir = tmp_path / "tasks" / name
+    task_dir.mkdir(parents=True)
+    (task_dir / "task.toml").write_text('version = "1.0"')
+    return task_dir
+
+
+def test_harbor_yaml_parses_issue_4_repro(tmp_path):
+    """Guards the fix from commit 22f52b4 against the silent-scenes-drop regression in issue #4 — mirrors the literal repro YAML."""
+    _make_task_dir(tmp_path)
+
+    config = tmp_path / "config.yaml"
+    config.write_text("""
+agent: pi-acp
+model_name: vllm/Qwen/Qwen3.6-27B
+datasets:
+  - path: tasks
+scenes:
+  - name: build-skill
+    roles:
+      - name: builder
+        agent: pi-acp
+        model: vllm/Qwen/Qwen3.6-27B
+    turns:
+      - role: builder
+        prompt: "build the skill ..."
+  - name: answer
+    roles:
+      - name: solver
+        agent: pi-acp
+        model: vllm/Qwen/Qwen3.6-27B
+    turns:
+      - role: solver
+""")
+
+    job = Job.from_yaml(config)
+    scenes = job._config.scenes
+
+    assert scenes is not None
+    assert len(scenes) == 2
+    assert scenes[0].name == "build-skill"
+    assert scenes[0].roles[0].agent == "pi-acp"
+    assert scenes[0].roles[0].model == "vllm/Qwen/Qwen3.6-27B"
+    assert scenes[0].turns[0].prompt == "build the skill ..."
+    assert scenes[1].name == "answer"
+    assert scenes[1].turns[0].prompt is None
+
+
+async def test_harbor_yaml_branch_passes_scenes_to_trial(tmp_path, monkeypatch):
+    """Guards the fix from commit 22f52b4 against the bug where Harbor scenes never reached Trial — exercises the path that would have failed pre-fix (issue #4)."""
+    task_dir = _make_task_dir(tmp_path)
+
+    config = tmp_path / "config.yaml"
+    config.write_text("""
+datasets:
+  - path: tasks
+scenes:
+  - name: build-skill
+    roles:
+      - name: builder
+        agent: claude-agent-acp
+        model: claude-haiku-4-5-20251001
+    turns:
+      - role: builder
+        prompt: "build it"
+  - name: answer
+    roles:
+      - name: solver
+        agent: claude-agent-acp
+        model: claude-haiku-4-5-20251001
+    turns:
+      - role: solver
+""")
+
+    job = Job.from_yaml(config)
+
+    seen: dict = {}
+
+    async def capturing_create(trial_config):
+        seen["config"] = trial_config
+        trial = AsyncMock()
+        trial.run = AsyncMock(
+            return_value=RunResult(task_name=task_dir.name, rewards={"reward": 1.0})
+        )
+        return trial
+
+    monkeypatch.setattr("benchflow.trial.Trial.create", capturing_create)
+
+    result = await job._run_single_task(task_dir, job._config)
+
+    assert result.rewards == {"reward": 1.0}
+    captured = seen["config"]
+    assert captured.scenes == job._config.scenes
+    assert [s.name for s in captured.scenes] == ["build-skill", "answer"]
+    assert len(captured.scenes[0].roles) == 1
+    assert len(captured.scenes[0].turns) == 1
+    assert len(captured.scenes[1].turns) == 1
+
+
+def test_harbor_yaml_without_scenes_unchanged(harbor_yaml):
+    """Guards commit 22f52b4: harbor YAML without scenes: still produces scenes=None (legacy single-turn path, issue #4)."""
+    job = Job.from_yaml(harbor_yaml)
+    assert job._config.scenes is None
+
+
+def test_native_yaml_parses_top_level_scenes(tmp_path):
+    """Guards commit 22f52b4: native YAML scenes: parses just like Harbor (decision 1A, issue #4)."""
+    _make_task_dir(tmp_path)
+
+    config = tmp_path / "config.yaml"
+    config.write_text("""
+tasks_dir: tasks
+scenes:
+  - name: solve
+    roles:
+      - name: solver
+        agent: claude-agent-acp
+        model: claude-haiku-4-5-20251001
+    turns:
+      - role: solver
+        prompt: "solve it"
+""")
+
+    job = Job.from_yaml(config)
+    scenes = job._config.scenes
+
+    assert scenes is not None
+    assert len(scenes) == 1
+    assert scenes[0].name == "solve"
+    assert scenes[0].roles[0].agent == "claude-agent-acp"
+    assert scenes[0].turns[0].prompt == "solve it"
+
+
+def test_native_yaml_without_scenes_unchanged(native_yaml):
+    """Guards commit 22f52b4: native YAML without scenes: still produces scenes=None (decision 1A, issue #4)."""
+    job = Job.from_yaml(native_yaml)
+    assert job._config.scenes is None
+
+
+def test_harbor_yaml_top_level_singular_agent_and_model_name(tmp_path):
+    """Guards commit 22f52b4: Harbor accepts singular top-level agent: + model_name: when agents[] is absent (TODO 1, issue #4)."""
+    _make_task_dir(tmp_path)
+
+    config = tmp_path / "config.yaml"
+    config.write_text("""
+agent: pi-acp
+model_name: vllm/Qwen/Qwen3.6-27B
+datasets:
+  - path: tasks
+""")
+
+    job = Job.from_yaml(config)
+    assert job._config.agent == "pi-acp"
+    assert job._config.model == "vllm/Qwen/Qwen3.6-27B"
+
+
+def test_harbor_yaml_empty_scenes_warns(tmp_path, caplog):
+    """Guards commit 22f52b4: scenes: [] logs a warning and falls through to legacy (TODO 2, issue #4)."""
+    _make_task_dir(tmp_path)
+
+    config = tmp_path / "config.yaml"
+    config.write_text("""
+agents:
+  - name: claude-agent-acp
+    model_name: claude-haiku-4-5-20251001
+datasets:
+  - path: tasks
+scenes: []
+""")
+
+    with caplog.at_level(logging.WARNING, logger="benchflow.job"):
+        job = Job.from_yaml(config)
+
+    assert job._config.scenes is None
+    assert any(
+        "scenes" in msg and "empty" in msg for msg in caplog.messages
+    ), f"Expected warning about empty scenes; got: {caplog.messages!r}"
+
+
+def test_harbor_yaml_summary_fields_match_first_scene_role(tmp_path):
+    """Guards commit 22f52b4: when scenes is non-empty, JobConfig.agent/model derive from scenes[0].roles[0] so summary.json reflects what runs (TODO 3, issue #4)."""
+    _make_task_dir(tmp_path)
+
+    config = tmp_path / "config.yaml"
+    config.write_text("""
+agents:
+  - name: claude-agent-acp
+    model_name: claude-haiku-4-5-20251001
+datasets:
+  - path: tasks
+scenes:
+  - name: solve
+    roles:
+      - name: solver
+        agent: pi-acp
+        model: vllm/Qwen/Qwen3.6-27B
+    turns:
+      - role: solver
+        prompt: "solve it"
+""")
+
+    job = Job.from_yaml(config)
+    assert job._config.agent == "pi-acp"
+    assert job._config.model == "vllm/Qwen/Qwen3.6-27B"
