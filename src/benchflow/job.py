@@ -90,6 +90,7 @@ from benchflow._scoring import (
 )
 from benchflow.models import RunResult
 from benchflow.sdk import SDK
+from benchflow.trial import Scene
 
 logger = logging.getLogger(__name__)
 
@@ -167,6 +168,9 @@ class JobConfig:
     sandbox_setup_timeout: int = 120
     context_root: str | None = None
     exclude_tasks: set[str] = field(default_factory=set)
+    # None = unspecified (legacy single-turn execution); non-empty list = multi-scene flow.
+    # Empty list `[]` is rejected at parse time (warning, treated as None).
+    scenes: list[Scene] | None = None
 
     def __post_init__(self):
         from benchflow.agents.registry import AGENTS
@@ -280,6 +284,8 @@ class Job:
     @classmethod
     def _from_native_yaml(cls, raw: dict, **kwargs) -> "Job":
         """Parse benchflow-native YAML."""
+        from benchflow.trial_yaml import parse_scene
+
         tasks_dir = Path(raw["tasks_dir"])
         jobs_dir = Path(raw.get("jobs_dir", "jobs"))
 
@@ -293,9 +299,31 @@ class Job:
         sandbox_setup_timeout = raw.get("sandbox_setup_timeout", 120)
 
         agent_name = raw.get("agent", DEFAULT_AGENT)
+        model = effective_model(agent_name, raw.get("model"))
+
+        # Parse scenes (decision 1A): None = legacy, [] = warn-then-legacy, list = multi-scene.
+        scenes_raw = raw.get("scenes")
+        scenes: list[Scene] | None
+        if scenes_raw is None:
+            scenes = None
+        elif not scenes_raw:
+            logger.warning(
+                "scenes: [] is empty — falling through to legacy single-turn execution. "
+                "Remove the key entirely if that is the intent."
+            )
+            scenes = None
+        else:
+            scenes = [parse_scene(s) for s in scenes_raw]
+
+        # Derive summary fields from scenes when present so summary.json reflects what runs.
+        if scenes and scenes[0].roles:
+            primary_role = scenes[0].roles[0]
+            agent_name = primary_role.agent
+            model = primary_role.model or model
+
         config = JobConfig(
             agent=agent_name,
-            model=effective_model(agent_name, raw.get("model")),
+            model=model,
             environment=raw.get("environment", "docker"),
             concurrency=raw.get("concurrency", 4),
             prompts=prompts,
@@ -306,19 +334,28 @@ class Job:
             sandbox_locked_paths=sandbox_locked_paths,
             sandbox_setup_timeout=sandbox_setup_timeout,
             exclude_tasks=exclude,
+            scenes=scenes,
         )
         return cls(tasks_dir=tasks_dir, jobs_dir=jobs_dir, config=config, **kwargs)
 
     @classmethod
     def _from_harbor_yaml(cls, raw: dict, **kwargs) -> "Job":
         """Parse Harbor-compatible YAML."""
-        # Agent
-        agents = raw.get("agents", [{}])
-        agent_cfg = agents[0] if agents else {}
-        agent_name = agent_cfg.get("name", DEFAULT_AGENT)
+        from benchflow.trial_yaml import parse_scene
 
+        # Agent — accept both Harbor-canonical agents[].name/model_name and the
+        # singular top-level fallback (issue #4: `agent: pi-acp` + top-level
+        # `model_name: vllm/...`). agents[].* wins when both are present.
+        agents = raw.get("agents") or []
+        agent_cfg = agents[0] if agents else {}
+        agent_name = agent_cfg.get("name") or raw.get("agent", DEFAULT_AGENT)
+        model_raw = (
+            agent_cfg.get("model_name")
+            or raw.get("model_name")
+            or raw.get("model")
+        )
         # Model — keep provider prefix intact for downstream resolution
-        model = effective_model(agent_name, agent_cfg.get("model_name") or None)
+        model = effective_model(agent_name, model_raw)
 
         # Environment
         env_cfg = raw.get("environment", {})
@@ -353,6 +390,26 @@ class Job:
         sandbox_locked_paths = raw.get("sandbox_locked_paths")
         sandbox_setup_timeout = raw.get("sandbox_setup_timeout", 120)
 
+        # Parse scenes (decision 1A): None = legacy, [] = warn-then-legacy, list = multi-scene.
+        scenes_raw = raw.get("scenes")
+        scenes: list[Scene] | None
+        if scenes_raw is None:
+            scenes = None
+        elif not scenes_raw:
+            logger.warning(
+                "scenes: [] is empty — falling through to legacy single-turn execution. "
+                "Remove the key entirely if that is the intent."
+            )
+            scenes = None
+        else:
+            scenes = [parse_scene(s) for s in scenes_raw]
+
+        # Derive summary fields from scenes when present so summary.json reflects what runs.
+        if scenes and scenes[0].roles:
+            primary_role = scenes[0].roles[0]
+            agent_name = primary_role.agent
+            model = primary_role.model or model
+
         config = JobConfig(
             agent=agent_name,
             model=model,
@@ -364,6 +421,7 @@ class Job:
             sandbox_user=sandbox_user,
             sandbox_locked_paths=sandbox_locked_paths,
             sandbox_setup_timeout=sandbox_setup_timeout,
+            scenes=scenes,
         )
         return cls(tasks_dir=tasks_dir, jobs_dir=jobs_dir, config=config, **kwargs)
 
@@ -416,23 +474,39 @@ class Job:
         return skills_dir
 
     async def _run_single_task(self, task_dir: Path, cfg: JobConfig) -> RunResult:
-        """Execute one trial via Trial."""
+        """Execute one trial via Trial.
+
+        Uses cfg.scenes when present (multi-scene flow); otherwise synthesizes
+        a single Scene from the legacy agent/model/prompts so single-turn jobs
+        keep working unchanged.
+        """
         from benchflow.trial import Trial, TrialConfig
 
-        trial_config = TrialConfig.from_legacy(
+        resolved_skills = self._resolve_skills_dir(task_dir, cfg.skills_dir)
+        scenes = cfg.scenes or [
+            Scene.single(
+                agent=cfg.agent,
+                model=cfg.model,
+                prompts=cfg.prompts,
+                skills_dir=resolved_skills,
+            )
+        ]
+        trial_config = TrialConfig(
             task_path=task_dir,
-            agent=cfg.agent,
-            model=cfg.model,
-            prompts=cfg.prompts,
-            agent_env=cfg.agent_env,
+            scenes=scenes,
             job_name=self._job_name,
             jobs_dir=str(self._jobs_dir),
             environment=cfg.environment,
-            skills_dir=self._resolve_skills_dir(task_dir, cfg.skills_dir),
             sandbox_user=cfg.sandbox_user,
             sandbox_locked_paths=cfg.sandbox_locked_paths,
             sandbox_setup_timeout=cfg.sandbox_setup_timeout,
             context_root=cfg.context_root,
+            agent_env=cfg.agent_env,
+            skills_dir=resolved_skills,
+            # Legacy mirror fields kept for any consumers reading them off TrialConfig:
+            agent=cfg.agent,
+            model=cfg.model,
+            prompts=cfg.prompts,
         )
         trial = await Trial.create(trial_config)
         return await trial.run()
