@@ -330,13 +330,68 @@ class SDK:
 
     @staticmethod
     def _resolve_prompts(
-        task_path: Path, prompts: list[str | None] | None
+        task_path: Path,
+        prompts: list[str | None] | None,
+        skills_dir: str | Path | None = None,
+        skill_nudge: str = "",
+        agent: str | None = None,
     ) -> list[str]:
-        """Read instruction.md and resolve prompt list."""
+        """Read instruction.md and resolve prompt list.
+
+        skill_nudge: "", "name", "description", or "full".
+        """
         instruction_path = task_path / "instruction.md"
         if not instruction_path.exists():
             raise FileNotFoundError(f"Task missing instruction.md: {task_path}")
         instruction = instruction_path.read_text().strip()
+
+        if skill_nudge:
+            from benchflow.agents.registry import AGENTS
+
+            skill_display_path = "~/.claude/skills"
+            if agent:
+                agent_cfg = AGENTS.get(agent)
+                if agent_cfg and agent_cfg.skill_paths:
+                    skill_display_path = agent_cfg.skill_paths[0].replace("$HOME", "~")
+
+            skills = []
+            for src in [skills_dir, task_path / "environment" / "skills"]:
+                if src and Path(src).is_dir():
+                    for d in sorted(Path(src).iterdir()):
+                        if d.is_dir() and (d / "SKILL.md").exists():
+                            content = d.joinpath("SKILL.md").read_text()
+                            name = d.name
+                            desc = ""
+                            if content.startswith("---"):
+                                parts = content.split("---", 2)
+                                if len(parts) >= 3:
+                                    import yaml
+                                    try:
+                                        fm = yaml.safe_load(parts[1])
+                                        desc = fm.get("description", "") if fm else ""
+                                    except Exception:
+                                        pass
+                            skills.append({"name": name, "desc": desc, "content": content})
+                    if skills:
+                        break
+
+            if skills:
+                if skill_nudge == "name":
+                    names = ", ".join(s["name"] for s in skills)
+                    nudge = f"Skills available at {skill_display_path}: {names}. Read them before starting."
+                    instruction = nudge + "\n\n" + instruction
+                elif skill_nudge == "description":
+                    lines = [f"Skills available at {skill_display_path}:\n"]
+                    for s in skills:
+                        lines.append(f"- **{s['name']}**: {s['desc']}")
+                    lines.append("\nRead the relevant skills before starting.")
+                    instruction = "\n".join(lines) + "\n\n" + instruction
+                elif skill_nudge == "full":
+                    blocks = []
+                    for s in skills:
+                        blocks.append(f"<skill name=\"{s['name']}\">\n{s['content']}\n</skill>")
+                    instruction = "\n\n".join(blocks) + "\n\n" + instruction
+
         if prompts is None:
             return [instruction]
         return [p if p is not None else instruction for p in prompts]

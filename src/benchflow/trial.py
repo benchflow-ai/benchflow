@@ -319,7 +319,12 @@ class Trial:
         self._agent_env = resolve_agent_env(
             cfg.primary_agent, cfg.primary_model, cfg.agent_env
         )
-        self._resolved_prompts = SDK._resolve_prompts(cfg.task_path, cfg.prompts)
+        self._resolved_prompts = SDK._resolve_prompts(
+            cfg.task_path, cfg.prompts,
+            skills_dir=cfg.skills_dir,
+            skill_nudge=cfg.agent_env.get("BENCHFLOW_SKILL_NUDGE", ""),
+            agent=cfg.primary_agent,
+        )
         self._agent_launch = AGENT_LAUNCH.get(cfg.primary_agent, cfg.primary_agent)
 
         # Copy task dir to temp when Dockerfile mutations are needed
