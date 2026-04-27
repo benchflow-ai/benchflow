@@ -626,3 +626,67 @@ async def test_run_single_task_legacy_branch_synthesizes_single_scene(
     assert captured.agent == "claude-agent-acp"
     assert captured.model == "claude-haiku-4-5-20251001"
     assert captured.prompts == ["do x", "review"]
+
+
+def test_trial_build_result_resolves_non_oracle_no_model_to_default(tmp_path):
+    """Follow-up to PR #5: Trial._build_result must surface the effective model in result.json. On the multi-scene path JobConfig.model is resolved via effective_model() (so summary.json shows DEFAULT_MODEL for a non-oracle role with no explicit model:), but Trial._build_result was reading scenes[0].roles[0].model raw — empty string in result.json, null in config.json. The three files disagreed for the same logical state."""
+    import json
+    from datetime import datetime
+
+    from benchflow.job import DEFAULT_MODEL
+    from benchflow.trial import Role, Scene, Trial, TrialConfig, Turn
+
+    cfg = TrialConfig(
+        task_path=tmp_path / "task-a",
+        scenes=[
+            Scene(
+                name="solve",
+                roles=[Role(name="solver", agent="claude-agent-acp", model=None)],
+                turns=[Turn(role="solver", prompt="do it")],
+            )
+        ],
+    )
+    trial = Trial(cfg)
+    trial._trial_dir = tmp_path
+    trial._trial_name = "t1"
+    trial._agent_name = "Claude"
+    trial._started_at = datetime(2026, 4, 26, 12, 0)
+
+    trial._build_result()
+
+    data = json.loads((tmp_path / "result.json").read_text())
+    assert data["model"] == DEFAULT_MODEL, (
+        f"result.json must report DEFAULT_MODEL for non-oracle role with no explicit "
+        f"model: (so it matches summary.json), got {data['model']!r}"
+    )
+
+
+def test_trial_build_result_keeps_oracle_model_unset(tmp_path):
+    """Follow-up to PR #5: oracle role must not gain a fabricated model in result.json — effective_model('oracle', ...) returns None, so the field must reflect that (currently '') and not leak DEFAULT_MODEL even after non-oracle resolution is added."""
+    import json
+    from datetime import datetime
+
+    from benchflow.trial import Role, Scene, Trial, TrialConfig, Turn
+
+    cfg = TrialConfig(
+        task_path=tmp_path / "task-a",
+        scenes=[
+            Scene(
+                name="verify",
+                roles=[Role(name="checker", agent="oracle", model=None)],
+                turns=[Turn(role="checker", prompt="run solve.sh")],
+            )
+        ],
+    )
+    trial = Trial(cfg)
+    trial._trial_dir = tmp_path
+    trial._trial_name = "t1"
+    trial._agent_name = "oracle"
+    trial._started_at = datetime(2026, 4, 26, 12, 0)
+
+    trial._build_result()
+
+    data = json.loads((tmp_path / "result.json").read_text())
+    assert data["model"] in ("", None), (
+        f"oracle result.json must not surface a synthetic model — got {data['model']!r}"
+    )

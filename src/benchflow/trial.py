@@ -349,11 +349,15 @@ class Trial:
         )
         self._timeout = int(self._task.config.agent.timeout_sec or 0)
 
+        from benchflow.job import effective_model
+
         SDK._write_config(
             self._trial_dir,
             task_path=cfg.task_path,
             agent=cfg.primary_agent,
-            model=cfg.primary_model,
+            # Surface the effective model (oracle → None, others → DEFAULT_MODEL when
+            # role.model is unset) so config.json agrees with summary.json (cfg.model).
+            model=effective_model(cfg.primary_agent, cfg.primary_model),
             environment=cfg.environment,
             skills_dir=cfg.skills_dir,
             sandbox_user=cfg.sandbox_user,
@@ -1061,6 +1065,7 @@ class Trial:
         return str(e)
 
     def _build_result(self) -> RunResult:
+        from benchflow.job import effective_model
         from benchflow.sdk import SDK
 
         return SDK._build_result(
@@ -1069,7 +1074,11 @@ class Trial:
             trial_name=self._trial_name or "",
             agent=self._config.primary_agent,
             agent_name=self._agent_name,
-            model=self._config.primary_model or "",
+            # Surface the effective model so result.json agrees with summary.json — the
+            # raw role.model is None for non-oracle roles with no explicit model:, which
+            # would otherwise leak '' into result.json while summary.json shows DEFAULT_MODEL.
+            model=effective_model(self._config.primary_agent, self._config.primary_model)
+            or "",
             n_tool_calls=self._n_tool_calls,
             prompts=self._resolved_prompts,
             error=self._error,
