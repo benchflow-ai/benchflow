@@ -30,25 +30,46 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _skill_link_cmd(source: str, dest: str) -> str:
-    """Link a shared skills tree into an agent discovery path."""
+def _skill_link_cmd(source: str, dest: str, sandbox_user: str | None) -> str:
+    """Link a shared skills tree into an agent discovery path.
+
+    When sandbox_user is set, mkdir runs as root but the resulting parent
+    directory is chowned so the agent (running as sandbox_user) can later
+    write into it. Guards against PR #208 / issue #7 — root-owned `.pi/agent`
+    blocking pi-acp's models.json write.
+    """
     if source == dest:
-        return f"mkdir -p {shlex.quote(dest)}"
+        q_dest = shlex.quote(dest)
+        if sandbox_user:
+            q_user = shlex.quote(sandbox_user)
+            return f"mkdir -p {q_dest} && chown -R {q_user}:{q_user} {q_dest}"
+        return f"mkdir -p {q_dest}"
 
     parent = shlex.quote(str(Path(dest).parent))
     q_source = shlex.quote(source)
     q_dest = shlex.quote(dest)
-    return f"mkdir -p {parent} && rm -rf {q_dest} && ln -sfn {q_source} {q_dest}"
+    chown = ""
+    if sandbox_user:
+        q_user = shlex.quote(sandbox_user)
+        chown = f"chown -R {q_user}:{q_user} {parent} && "
+    return (
+        f"mkdir -p {parent} && {chown}rm -rf {q_dest} && ln -sfn {q_source} {q_dest}"
+    )
 
 
 async def _link_skill_paths(
-    env, source: str, skill_paths: list[str], home: str, cwd: str
+    env,
+    source: str,
+    skill_paths: list[str],
+    home: str,
+    cwd: str,
+    sandbox_user: str | None,
 ) -> int:
     """Link one shared skills tree into each configured discovery path."""
     parts = []
     for sp in skill_paths:
         expanded = sp.replace("$HOME", home).replace("$WORKSPACE", cwd)
-        parts.append(_skill_link_cmd(source, expanded))
+        parts.append(_skill_link_cmd(source, expanded, sandbox_user))
     if parts:
         cmd = " && ".join(parts)
         result = await env.exec(cmd, timeout_sec=15)
@@ -156,6 +177,7 @@ async def deploy_skills(
             agent_cfg.skill_paths,
             home,
             agent_cwd,
+            sandbox_user,
         )
         if count:
             logger.info(f"Skills distributed to {count} paths for {agent_cfg.name}")
