@@ -169,7 +169,8 @@ class JobConfig:
     context_root: str | None = None
     exclude_tasks: set[str] = field(default_factory=set)
     # None = unspecified (legacy single-turn execution); non-empty list = multi-scene flow.
-    # Empty list `[]` is rejected at parse time (warning, treated as None).
+    # Empty list `[]` from YAML is coerced to None with a warning in _from_*_yaml; the
+    # dataclass itself does not enforce that — direct construction with [] is accepted.
     scenes: list[Scene] | None = None
 
     def __post_init__(self):
@@ -301,7 +302,7 @@ class Job:
         agent_name = raw.get("agent", DEFAULT_AGENT)
         model = effective_model(agent_name, raw.get("model"))
 
-        # Parse scenes (decision 1A): None = legacy, [] = warn-then-legacy, list = multi-scene.
+        # scenes_raw: None → legacy single-turn, [] → warn-then-legacy, list → multi-scene.
         scenes_raw = raw.get("scenes")
         scenes: list[Scene] | None
         if scenes_raw is None:
@@ -316,10 +317,13 @@ class Job:
             scenes = [parse_scene(s) for s in scenes_raw]
 
         # Derive summary fields from scenes when present so summary.json reflects what runs.
+        # Re-resolve through effective_model so the oracle short-circuit applies to the
+        # scene's agent (not the top-level one) — otherwise a non-oracle top-level + oracle
+        # role would leak DEFAULT_MODEL into JobConfig and disagree with result.json.
         if scenes and scenes[0].roles:
             primary_role = scenes[0].roles[0]
             agent_name = primary_role.agent
-            model = primary_role.model or model
+            model = effective_model(agent_name, primary_role.model)
 
         config = JobConfig(
             agent=agent_name,
@@ -345,7 +349,8 @@ class Job:
 
         # Agent — accept both Harbor-canonical agents[].name/model_name and the
         # singular top-level fallback (issue #4: `agent: pi-acp` + top-level
-        # `model_name: vllm/...`). agents[].* wins when both are present.
+        # `model_name: vllm/...`). agents[].* wins when truthy; falsy values
+        # (missing key, empty string) fall through to top-level keys.
         agents = raw.get("agents") or []
         agent_cfg = agents[0] if agents else {}
         agent_name = agent_cfg.get("name") or raw.get("agent", DEFAULT_AGENT)
@@ -390,7 +395,7 @@ class Job:
         sandbox_locked_paths = raw.get("sandbox_locked_paths")
         sandbox_setup_timeout = raw.get("sandbox_setup_timeout", 120)
 
-        # Parse scenes (decision 1A): None = legacy, [] = warn-then-legacy, list = multi-scene.
+        # scenes_raw: None → legacy single-turn, [] → warn-then-legacy, list → multi-scene.
         scenes_raw = raw.get("scenes")
         scenes: list[Scene] | None
         if scenes_raw is None:
@@ -405,10 +410,11 @@ class Job:
             scenes = [parse_scene(s) for s in scenes_raw]
 
         # Derive summary fields from scenes when present so summary.json reflects what runs.
+        # See _from_native_yaml: must re-resolve through effective_model so oracle stays None.
         if scenes and scenes[0].roles:
             primary_role = scenes[0].roles[0]
             agent_name = primary_role.agent
-            model = primary_role.model or model
+            model = effective_model(agent_name, primary_role.model)
 
         config = JobConfig(
             agent=agent_name,

@@ -374,7 +374,7 @@ def test_harbor_yaml_without_scenes_unchanged(harbor_yaml):
 
 
 def test_native_yaml_parses_top_level_scenes(tmp_path):
-    """Guards commit 22f52b4: native YAML scenes: parses just like Harbor (decision 1A, issue #4)."""
+    """Guards commit 22f52b4: native YAML scenes: parses just like Harbor (issue #4)."""
     _make_task_dir(tmp_path)
 
     config = tmp_path / "config.yaml"
@@ -402,13 +402,13 @@ scenes:
 
 
 def test_native_yaml_without_scenes_unchanged(native_yaml):
-    """Guards commit 22f52b4: native YAML without scenes: still produces scenes=None (decision 1A, issue #4)."""
+    """Guards commit 22f52b4: native YAML without scenes: still produces scenes=None (issue #4)."""
     job = Job.from_yaml(native_yaml)
     assert job._config.scenes is None
 
 
 def test_harbor_yaml_top_level_singular_agent_and_model_name(tmp_path):
-    """Guards commit 22f52b4: Harbor accepts singular top-level agent: + model_name: when agents[] is absent (TODO 1, issue #4)."""
+    """Guards commit 22f52b4: Harbor accepts singular top-level agent: + model_name: when agents[] is absent (issue #4)."""
     _make_task_dir(tmp_path)
 
     config = tmp_path / "config.yaml"
@@ -425,7 +425,7 @@ datasets:
 
 
 def test_harbor_yaml_empty_scenes_warns(tmp_path, caplog):
-    """Guards commit 22f52b4: scenes: [] logs a warning and falls through to legacy (TODO 2, issue #4)."""
+    """Guards commit 22f52b4: scenes: [] logs a warning and falls through to legacy (issue #4)."""
     _make_task_dir(tmp_path)
 
     config = tmp_path / "config.yaml"
@@ -448,7 +448,7 @@ scenes: []
 
 
 def test_harbor_yaml_summary_fields_match_first_scene_role(tmp_path):
-    """Guards commit 22f52b4: when scenes is non-empty, JobConfig.agent/model derive from scenes[0].roles[0] so summary.json reflects what runs (TODO 3, issue #4)."""
+    """Guards commit 22f52b4: when scenes is non-empty, JobConfig.agent/model derive from scenes[0].roles[0] so summary.json reflects what runs (issue #4)."""
     _make_task_dir(tmp_path)
 
     config = tmp_path / "config.yaml"
@@ -472,3 +472,157 @@ scenes:
     job = Job.from_yaml(config)
     assert job._config.agent == "pi-acp"
     assert job._config.model == "vllm/Qwen/Qwen3.6-27B"
+
+
+def test_harbor_yaml_oracle_role_keeps_model_none(tmp_path):
+    """Guards the fix from PR #5: scene-derived agent must re-resolve through effective_model so an oracle role does not inherit DEFAULT_MODEL from a non-oracle top-level (would otherwise make summary.json disagree with result.json)."""
+    _make_task_dir(tmp_path)
+
+    config = tmp_path / "config.yaml"
+    config.write_text("""
+agent: pi-acp
+datasets:
+  - path: tasks
+scenes:
+  - name: verify
+    roles:
+      - name: checker
+        agent: oracle
+    turns:
+      - role: checker
+        prompt: "run solve.sh"
+""")
+
+    job = Job.from_yaml(config)
+    assert job._config.agent == "oracle"
+    assert job._config.model is None
+
+
+def test_native_yaml_oracle_role_keeps_model_none(tmp_path):
+    """Guards the fix from PR #5: same oracle short-circuit as the Harbor parallel — the native loader carries a duplicate of the summary-field derivation block (issue #4)."""
+    _make_task_dir(tmp_path)
+
+    config = tmp_path / "config.yaml"
+    config.write_text("""
+tasks_dir: tasks
+agent: pi-acp
+scenes:
+  - name: verify
+    roles:
+      - name: checker
+        agent: oracle
+    turns:
+      - role: checker
+        prompt: "run solve.sh"
+""")
+
+    job = Job.from_yaml(config)
+    assert job._config.agent == "oracle"
+    assert job._config.model is None
+
+
+async def test_native_yaml_branch_passes_scenes_to_trial(tmp_path, monkeypatch):
+    """Guards the fix from PR #5: native loader's scenes-to-Trial wiring is verified end-to-end, mirroring the Harbor parallel — closes the duplicated-block coverage gap (issue #4)."""
+    task_dir = _make_task_dir(tmp_path)
+
+    config = tmp_path / "config.yaml"
+    config.write_text("""
+tasks_dir: tasks
+scenes:
+  - name: build
+    roles:
+      - name: builder
+        agent: claude-agent-acp
+        model: claude-haiku-4-5-20251001
+    turns:
+      - role: builder
+        prompt: "build it"
+  - name: verify
+    roles:
+      - name: solver
+        agent: claude-agent-acp
+        model: claude-haiku-4-5-20251001
+    turns:
+      - role: solver
+""")
+
+    job = Job.from_yaml(config)
+
+    seen: dict = {}
+
+    async def capturing_create(trial_config):
+        seen["config"] = trial_config
+        trial = AsyncMock()
+        trial.run = AsyncMock(
+            return_value=RunResult(task_name=task_dir.name, rewards={"reward": 1.0})
+        )
+        return trial
+
+    monkeypatch.setattr("benchflow.trial.Trial.create", capturing_create)
+
+    await job._run_single_task(task_dir, job._config)
+
+    captured = seen["config"]
+    assert captured.scenes == job._config.scenes
+    assert [s.name for s in captured.scenes] == ["build", "verify"]
+
+
+def test_native_yaml_empty_scenes_warns(tmp_path, caplog):
+    """Guards the fix from PR #5: native loader's scenes: [] warning matches Harbor (issue #4)."""
+    _make_task_dir(tmp_path)
+
+    config = tmp_path / "config.yaml"
+    config.write_text("""
+tasks_dir: tasks
+scenes: []
+""")
+
+    with caplog.at_level(logging.WARNING, logger="benchflow.job"):
+        job = Job.from_yaml(config)
+
+    assert job._config.scenes is None
+    assert any(
+        "scenes" in msg and "empty" in msg for msg in caplog.messages
+    ), f"Expected warning about empty scenes; got: {caplog.messages!r}"
+
+
+async def test_run_single_task_legacy_branch_synthesizes_single_scene(
+    tmp_path, monkeypatch
+):
+    """Guards the fix from PR #5: when cfg.scenes is None, _run_single_task must synthesize a single Scene from agent/model/prompts and pass it to Trial.create. The legacy single-turn path was previously TrialConfig.from_legacy(...); the refactor's correctness rides on this branch and existing job tests bypass it via the _sdk mock (issue #4)."""
+    from benchflow.job import JobConfig
+
+    task_dir = _make_task_dir(tmp_path)
+    job = Job(
+        tasks_dir=task_dir.parent,
+        jobs_dir=tmp_path / "out",
+        config=JobConfig(
+            agent="claude-agent-acp",
+            model="claude-haiku-4-5-20251001",
+            prompts=["do x", "review"],
+        ),
+    )
+
+    seen: dict = {}
+
+    async def capturing_create(trial_config):
+        seen["config"] = trial_config
+        trial = AsyncMock()
+        trial.run = AsyncMock(
+            return_value=RunResult(task_name=task_dir.name, rewards={"reward": 1.0})
+        )
+        return trial
+
+    monkeypatch.setattr("benchflow.trial.Trial.create", capturing_create)
+
+    await job._run_single_task(task_dir, job._config)
+
+    captured = seen["config"]
+    assert len(captured.scenes) == 1
+    assert captured.scenes[0].roles[0].agent == "claude-agent-acp"
+    assert captured.scenes[0].roles[0].model == "claude-haiku-4-5-20251001"
+    assert [t.prompt for t in captured.scenes[0].turns] == ["do x", "review"]
+    # Legacy mirror fields on TrialConfig must round-trip the same values.
+    assert captured.agent == "claude-agent-acp"
+    assert captured.model == "claude-haiku-4-5-20251001"
+    assert captured.prompts == ["do x", "review"]
