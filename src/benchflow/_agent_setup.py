@@ -35,23 +35,24 @@ def _skill_link_cmd(source: str, dest: str, sandbox_user: str | None) -> str:
 
     When sandbox_user is set, mkdir runs as root but the resulting parent
     directory is chowned so the agent (running as sandbox_user) can later
-    write into it. Guards against PR #208 / issue #7 — root-owned `.pi/agent`
+    write into it. Guards the fix for issue #7 — root-owned `.pi/agent`
     blocking pi-acp's models.json write.
     """
+    parent = shlex.quote(str(Path(dest).parent))
+
     if source == dest:
         q_dest = shlex.quote(dest)
         if sandbox_user:
             q_user = shlex.quote(sandbox_user)
-            return f"mkdir -p {q_dest} && chown -R {q_user}:{q_user} {q_dest}"
+            return f"mkdir -p {q_dest} && chown {q_user}:{q_user} {parent}"
         return f"mkdir -p {q_dest}"
 
-    parent = shlex.quote(str(Path(dest).parent))
     q_source = shlex.quote(source)
     q_dest = shlex.quote(dest)
     chown = ""
     if sandbox_user:
         q_user = shlex.quote(sandbox_user)
-        chown = f"chown -R {q_user}:{q_user} {parent} && "
+        chown = f"chown {q_user}:{q_user} {parent} && "
     return (
         f"mkdir -p {parent} && {chown}rm -rf {q_dest} && ln -sfn {q_source} {q_dest}"
     )
@@ -66,6 +67,13 @@ async def _link_skill_paths(
     sandbox_user: str | None,
 ) -> int:
     """Link one shared skills tree into each configured discovery path."""
+    _VALID_PREFIXES = ("$HOME/", "$WORKSPACE/")
+    for sp in skill_paths:
+        if not any(sp.startswith(p) for p in _VALID_PREFIXES):
+            raise ValueError(
+                f"skill_path {sp!r} must start with $HOME/ or $WORKSPACE/"
+            )
+
     parts = []
     for sp in skill_paths:
         expanded = sp.replace("$HOME", home).replace("$WORKSPACE", cwd)

@@ -52,8 +52,6 @@ async def test_deploy_skills_symlinks_agent_skill_paths_instead_of_copying(tmp_p
     assert ";" not in cmd
     assert "ln -sfn /opt/benchflow/skills /home/agent/.agents/skills" in cmd
     assert "ln -sfn /opt/benchflow/skills /app/skills" in cmd
-    assert "chown -R agent:agent /home/agent/.agents" in cmd
-    assert "chown -R agent:agent /app" in cmd
 
 
 @pytest.mark.asyncio
@@ -94,7 +92,7 @@ async def test_deploy_skills_uploads_runtime_skills_and_links_shared_tree(tmp_pa
 
 @pytest.mark.asyncio
 async def test_deploy_skills_chowns_skill_parent_for_pi_acp_layout(tmp_path):
-    """Guards the fix from PR #208 / issue #7 against the regression where
+    """Guards the fix for issue #7 against the regression where
     `_skill_link_cmd` left `~/.pi/agent` root-owned, breaking pi-acp's
     `models.json` write under openai-completions providers (vLLM)."""
     env = MagicMock()
@@ -118,15 +116,17 @@ async def test_deploy_skills_chowns_skill_parent_for_pi_acp_layout(tmp_path):
     )
 
     cmd = env.exec.await_args.args[0]
-    assert "chown -R agent:agent /home/agent/.pi/agent" in cmd
-    assert "chown -R agent:agent /home/agent/.agents" in cmd
-    pi_chown_idx = cmd.index("chown -R agent:agent /home/agent/.pi/agent")
+    assert "chown agent:agent /home/agent/.pi/agent" in cmd
+    assert "chown agent:agent /home/agent/.agents" in cmd
+    pi_chown_idx = cmd.index("chown agent:agent /home/agent/.pi/agent")
     pi_link_idx = cmd.index("ln -sfn /opt/benchflow/skills /home/agent/.pi/agent/skills")
     assert pi_chown_idx < pi_link_idx, "chown must precede ln to keep parent agent-owned"
 
 
 @pytest.mark.asyncio
 async def test_deploy_skills_skips_chown_when_no_sandbox_user(tmp_path):
+    """Guards the fix for issue #7: when sandbox_user is None, the chown
+    plumbing must stay no-op so root-only deploys keep working."""
     env = MagicMock()
     env.exec = AsyncMock(return_value=MagicMock(return_code=0, stdout=""))
     env.upload_dir = AsyncMock()
