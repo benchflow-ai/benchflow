@@ -351,9 +351,7 @@ _RUNTIME_PATH_PREFIXES = ("/tmp", "/var/tmp", "/logs", "/testbed")
 _DEFAULT_ROOTDIR = "/app"
 
 
-def _build_pytest_addopts(
-    workspace: str | None = None, plugin_flags: str = ""
-) -> str:
+def _build_pytest_addopts(workspace: str | None = None, plugin_flags: str = "") -> str:
     """Build PYTEST_ADDOPTS with a dynamic --rootdir based on the workspace.
 
     Without an explicit --rootdir, -c /dev/null causes pytest to fall back to
@@ -361,13 +359,11 @@ def _build_pytest_addopts(
     The rootdir must point to a directory that actually exists in the container.
     """
     rootdir = workspace or _DEFAULT_ROOTDIR
-    addopts = (
-        f"{VERIFIER_ENV['PYTEST_ADDOPTS']} "
-        f"--rootdir={shlex.quote(rootdir)}"
-    )
+    addopts = f"{VERIFIER_ENV['PYTEST_ADDOPTS']} --rootdir={shlex.quote(rootdir)}"
     if plugin_flags:
         addopts += f" {plugin_flags}"
     return addopts
+
 
 # Container-side script to enumerate pre-installed pytest11 entry points.
 # Runs after sandbox_user processes are killed, so the agent cannot install
