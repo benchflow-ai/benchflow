@@ -1,0 +1,30 @@
+schema_version = 1
+
+[agent]
+name = "codex-acp"
+description = "OpenAI Codex agent via ACP"
+protocol = "acp"
+api_protocol = "openai-completions"
+
+[install]
+cmd = "set -o pipefail; export DEBIAN_FRONTEND=noninteractive; NODE_OK=0; if command -v node >/dev/null 2>&1; then   NODE_VER=$(node -e 'console.log(process.versions.node.split(\".\")[0])' 2>/dev/null || echo 0);   [ \"$NODE_VER\" -ge 22 ] 2>/dev/null && NODE_OK=1; fi; if [ \"$NODE_OK\" = 0 ]; then   apt-get update -qq &&   apt-get install -y -qq curl ca-certificates &&   curl -fsSL https://deb.nodesource.com/setup_22.x | bash - &&   apt-get install -y -qq nodejs; fi >/dev/null 2>&1 && ( command -v codex-acp >/dev/null 2>&1 || npm install -g @zed-industries/codex-acp@latest >/dev/null 2>&1 ) && command -v codex-acp >/dev/null 2>&1"
+
+[launch]
+cmd = "codex-acp"
+
+[env]
+requires = ["OPENAI_API_KEY"]
+mapping = { BENCHFLOW_PROVIDER_BASE_URL = "OPENAI_BASE_URL", BENCHFLOW_PROVIDER_API_KEY = "OPENAI_API_KEY" }
+
+[skills]
+mount_paths = ["$HOME/.agents/skills"]
+
+[[credentials]]
+path = "{home}/.codex/auth.json"
+env_source = "OPENAI_API_KEY"
+template = "{{\"OPENAI_API_KEY\": \"{value}\"}}"
+
+[subscription_auth]
+replaces_env = "OPENAI_API_KEY"
+detect_file = "~/.codex/auth.json"
+files = [{ host_path = "~/.codex/auth.json", container_path = "{home}/.codex/auth.json" }]

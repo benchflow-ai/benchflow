@@ -1,0 +1,16 @@
+schema_version = 1
+
+[agent]
+name = "openhands"
+description = "OpenHands agent via ACP (multi-model, Python-based)"
+protocol = "acp"
+
+[install]
+cmd = "( command -v openhands >/dev/null 2>&1 || pip install openhands >/dev/null 2>&1 ) && command -v openhands >/dev/null 2>&1"
+
+[launch]
+cmd = "openhands acp --always-approve --override-with-envs"
+
+[env]
+requires = ["LLM_API_KEY"]
+mapping = { BENCHFLOW_PROVIDER_BASE_URL = "LLM_BASE_URL", BENCHFLOW_PROVIDER_API_KEY = "LLM_API_KEY" }

@@ -88,9 +88,8 @@ class ACPClient:
                 f"has_result={'result' in msg} has_error={'error' in msg}"
             )
 
-            # It's a response to our request (has id, no method — distinguishes
-            # from echoed requests when running through a PTY)
-            if "id" in msg and msg["id"] == request_id and "method" not in msg:
+            # It's a response to our request
+            if "id" in msg and msg["id"] == request_id:
                 if msg.get("error"):
                     raise ACPError(
                         msg["error"].get("code", -1),

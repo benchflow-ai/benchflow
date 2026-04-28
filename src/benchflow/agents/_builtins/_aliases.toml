@@ -1,0 +1,8 @@
+# alias → canonical agent name (see PLAN_V2_byoa.md §5)
+claude = "claude-agent-acp"
+codex = "codex-acp"
+gemini = "gemini"
+pi = "pi-acp"
+openclaw = "openclaw"
+openhands = "openhands"
+oh = "openhands"

@@ -1,0 +1,28 @@
+schema_version = 1
+
+[agent]
+name = "claude-agent-acp"
+description = "Claude Code via ACP (Anthropic's Agent Client Protocol)"
+protocol = "acp"
+api_protocol = "anthropic-messages"
+
+[install]
+cmd = "set -o pipefail; export DEBIAN_FRONTEND=noninteractive; NODE_OK=0; if command -v node >/dev/null 2>&1; then   NODE_VER=$(node -e 'console.log(process.versions.node.split(\".\")[0])' 2>/dev/null || echo 0);   [ \"$NODE_VER\" -ge 22 ] 2>/dev/null && NODE_OK=1; fi; if [ \"$NODE_OK\" = 0 ]; then   apt-get update -qq &&   apt-get install -y -qq curl ca-certificates &&   curl -fsSL https://deb.nodesource.com/setup_22.x | bash - &&   apt-get install -y -qq nodejs; fi >/dev/null 2>&1 && ( command -v claude-agent-acp >/dev/null 2>&1 || npm install -g @zed-industries/claude-agent-acp@latest >/dev/null 2>&1 ) && command -v claude-agent-acp >/dev/null 2>&1"
+
+[launch]
+cmd = "claude-agent-acp"
+
+[env]
+requires = ["ANTHROPIC_API_KEY"]
+mapping = { BENCHFLOW_PROVIDER_BASE_URL = "ANTHROPIC_BASE_URL", BENCHFLOW_PROVIDER_API_KEY = "ANTHROPIC_AUTH_TOKEN", BENCHFLOW_PROVIDER_MODEL = "ANTHROPIC_MODEL" }
+
+[skills]
+mount_paths = ["$HOME/.claude/skills"]
+
+[reporting]
+otel_enable_env = "CLAUDE_CODE_ENABLE_TELEMETRY"
+
+[subscription_auth]
+replaces_env = "ANTHROPIC_API_KEY"
+detect_file = "~/.claude/.credentials.json"
+files = [{ host_path = "~/.claude/.credentials.json", container_path = "{home}/.claude/.credentials.json" }]

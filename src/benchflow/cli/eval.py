@@ -1,29 +1,14 @@
-"""`bf eval` — the benchflow eval-runner command group.
+"""``bench eval {create,list}`` — single-task and batch evaluations.
 
-NOTE: This module is **not wired into the live CLI**.  The active
-``bench eval create`` command dispatches to ``cli/main.py:eval_create``.
-This file is kept as the future-facing design for the eval sub-command
-and must not be imported by ``cli/main.py`` (see
-``test_oracle_chokepoint.py::TestEvalModuleNotWiredIntoCLI``).
-
-Design shape — Anthropic-style resource creation:
-
-    bf eval create <task-ref> [flags]
-        One-shot eval — creates an Agent + Environment + Trajectory under
-        the hood and runs the task. `task-ref` can be:
-          - a path to a task directory (single task)
-          - a path to a directory of task directories (batch)
-          - a `harbor://<name>[@<version>]` ref (full Harbor dataset)
-          - a `harbor://<name>/<task>` ref (single task from a Harbor dataset)
-          - a `benchflow://<name>[@<version>]` ref (benchflow-owned dataset)
-
-    bf eval list          Show recent eval runs (reads the jobs/ dir)
-    bf eval retrieve ID   Look up a specific trajectory by trial name
+Extracted from cli/main.py per PLAN_V2_impl §13.4 / §13.6 commit 9.
+This file replaces the prior orphaned cli/eval.py — the new home is
+the live entry point for ``bench eval create`` and ``bench eval list``.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from typing import Annotated
 
@@ -31,346 +16,145 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from benchflow.job import DEFAULT_AGENT
-from benchflow.job import effective_model as _effective_model
+from benchflow.job import DEFAULT_AGENT, effective_model
 
 console = Console()
 
-app = typer.Typer(
-    name="eval",
-    help="Run evaluations. `bf eval create <task>` is the main entry point.",
-    no_args_is_help=True,
-)
+eval_app = typer.Typer(help="Evaluation commands.")
 
 
-def _resolve_task_ref(task_ref: str) -> tuple[Path, bool]:
-    """Resolve a positional task reference to a local directory.
-
-    Returns `(path, is_batch)`. `is_batch` is True when the reference
-    points at a directory containing multiple task dirs (each with its
-    own `task.toml`), False when the reference is a single task dir.
-    """
-
-    # Registry prefix: fetch the full dataset and treat as batch.
-    if task_ref.startswith("harbor://") or task_ref.startswith("benchflow://"):
-        from benchflow.task_download import ensure_tasks
-
-        # Allow `harbor://<name>/<task>` shorthand for a single task within
-        # a dataset. Split off the trailing segment if it matches a task.
-        prefix, _, tail = task_ref.partition("://")
-        head = tail
-        sub_task: str | None = None
-        if "/" in tail and "@" not in tail.split("/", 1)[1]:
-            dataset, sub_task = tail.split("/", 1)
-            head = dataset
-        dataset_ref = f"{prefix}://{head}"
-        dataset_dir = ensure_tasks(dataset_ref)
-        if sub_task is not None:
-            candidate = dataset_dir / sub_task
-            if not candidate.exists() or not (candidate / "task.toml").exists():
-                console.print(
-                    f"[red]Harbor dataset {head!r} has no task named {sub_task!r}.[/red]"
-                )
-                raise typer.Exit(1)
-            return candidate, False
-        return dataset_dir, True
-
-    # Filesystem path: single task if task.toml is present, batch otherwise.
-    path = Path(task_ref).expanduser().resolve()
-    if not path.exists():
-        console.print(f"[red]Task reference not found: {task_ref}[/red]")
-        raise typer.Exit(1)
-    if (path / "task.toml").exists():
-        return path, False
-    if any(
-        child.is_dir() and (child / "task.toml").exists() for child in path.iterdir()
-    ):
-        return path, True
-    console.print(
-        f"[red]{path} is neither a single task (no task.toml) "
-        f"nor a directory of tasks.[/red]"
-    )
-    raise typer.Exit(1)
-
-
-@app.command("create")
+@eval_app.command("create")
 def eval_create(
-    task: Annotated[
-        str,
-        typer.Argument(
-            help=(
-                "Task reference. Path to a task dir, a dir of tasks, or a "
-                "registry ref (harbor://name, benchflow://name)."
-            )
-        ),
-    ],
+    config_file: Annotated[
+        Path | None,
+        typer.Option("--config", "-f", help="YAML config file"),
+    ] = None,
+    tasks_dir: Annotated[
+        Path | None,
+        typer.Option("--tasks-dir", "-t", help="Tasks directory"),
+    ] = None,
     agent: Annotated[
-        str, typer.Option("--agent", "-a", help="Agent name from the registry")
+        str,
+        typer.Option("--agent", "-a", help="Agent name"),
     ] = DEFAULT_AGENT,
     model: Annotated[
         str | None,
-        typer.Option("--model", "-m", help="Model id; agent default if unset"),
+        typer.Option("--model", "-m", help="Model"),
     ] = None,
     environment: Annotated[
         str,
-        typer.Option(
-            "--environment",
-            "-e",
-            help="docker | daytona | ... (uses the agent's default if unset)",
-        ),
+        typer.Option("--env", "-e", help="Backend: docker or daytona"),
     ] = "docker",
-    prompt: Annotated[
-        list[str] | None,
-        typer.Option(
-            "--prompt",
-            "-p",
-            help="Prompt text; repeat for multi-turn. Default: instruction.md",
-        ),
-    ] = None,
     concurrency: Annotated[
         int,
-        typer.Option(
-            "--concurrency",
-            "-c",
-            help="Max parallel trials when task is a batch",
-        ),
+        typer.Option("--concurrency", "-c", help="Max concurrent tasks"),
     ] = 4,
-    max_retries: Annotated[
-        int,
-        typer.Option(
-            "--max-retries",
-            help="Per-trial retry count on transient errors",
-        ),
-    ] = 1,
     jobs_dir: Annotated[
         str,
-        typer.Option("--jobs-dir", "-o", help="Where to write result files"),
+        typer.Option("--jobs-dir", "-o", help="Output directory"),
     ] = "jobs",
-    skills_dir: Annotated[
-        Path | None,
-        typer.Option(
-            "--skills-dir",
-            "-s",
-            help="Skills directory to mount into the sandbox",
-        ),
-    ] = None,
     sandbox_user: Annotated[
         str | None,
-        typer.Option(
-            "--sandbox-user",
-            help="Non-root sandbox user (default 'agent'; 'none' = root)",
-        ),
+        typer.Option("--sandbox-user", help="Sandbox user (null for root)"),
     ] = "agent",
-    agent_env: Annotated[
-        list[str] | None,
-        typer.Option("--agent-env", help="Extra agent env var (KEY=VALUE)"),
+    skills_dir: Annotated[
+        Path | None,
+        typer.Option("--skills-dir", "-s", help="Skills directory to deploy"),
     ] = None,
 ) -> None:
-    """Create and run an eval — one-shot.
+    """Run an evaluation — single task or batch."""
+    from benchflow.job import Job, JobConfig
 
-    Under the hood:
-      1. Resolves `task` to a local directory (fetching from Harbor if needed).
-      2. If it's a single task: runs `SDK.run()` once and prints the reward.
-      3. If it's a batch: runs a `Job` at `--concurrency` and prints pass rate.
-
-    This is the idiomatic way to run evals going forward. `bf run` and
-    `bf job` remain as one-release deprecated aliases that forward here.
-    """
-
-    resolved, is_batch = _resolve_task_ref(task)
-
-    parsed_env: dict[str, str] = {}
-    for entry in agent_env or []:
-        if "=" not in entry:
-            console.print(f"[red]Invalid --agent-env value: {entry!r}[/red]")
-            raise typer.Exit(2)
-        k, v = entry.split("=", 1)
-        parsed_env[k] = v
-
-    if is_batch:
-        _run_batch(
-            tasks_dir=resolved,
-            agent=agent,
-            model=model,
-            environment=environment,
-            concurrency=concurrency,
-            max_retries=max_retries,
-            jobs_dir=jobs_dir,
-            skills_dir=skills_dir,
-            sandbox_user=sandbox_user,
-            agent_env=parsed_env,
+    if config_file:
+        j = Job.from_yaml(config_file)
+        result = asyncio.run(j.run())
+        console.print(
+            f"\n[bold]Score: {result.passed}/{result.total} "
+            f"({result.score:.1%})[/bold], errors={result.errored}"
         )
+    elif tasks_dir:
+        eff_model = effective_model(agent, model)
+        # Smart detection: if tasks_dir has task.toml, it's a single task
+        if (tasks_dir / "task.toml").exists():
+            from benchflow.trial import Scene, Trial, TrialConfig
+
+            config = TrialConfig(
+                task_path=tasks_dir,
+                scenes=[Scene.single(agent=agent, model=eff_model)],
+                environment=environment,
+                sandbox_user=sandbox_user,
+                jobs_dir=jobs_dir,
+                agent=agent,
+                model=eff_model,
+                skills_dir=str(skills_dir) if skills_dir else None,
+            )
+
+            async def _run():
+                trial = await Trial.create(config)
+                return await trial.run()
+
+            run_result = asyncio.run(_run())
+            reward = (run_result.rewards or {}).get("reward")
+            console.print(f"\n[bold]Task:[/bold] {tasks_dir.name}")
+            console.print(f"[bold]Agent:[/bold] {agent} ({eff_model or 'no model'})")
+            console.print(f"[bold]Reward:[/bold] {reward}")
+            console.print(f"[bold]Tool calls:[/bold] {run_result.n_tool_calls}")
+            if run_result.error:
+                console.print(f"[red]Error:[/red] {run_result.error}")
+        else:
+            # Directory of tasks — batch run
+            j = Job(
+                tasks_dir=str(tasks_dir),
+                jobs_dir=jobs_dir,
+                config=JobConfig(
+                    agent=agent,
+                    model=eff_model,
+                    environment=environment,
+                    concurrency=concurrency,
+                    sandbox_user=sandbox_user,
+                    skills_dir=str(skills_dir) if skills_dir else None,
+                ),
+            )
+            result = asyncio.run(j.run())
+            console.print(
+                f"\n[bold]Score: {result.passed}/{result.total} "
+                f"({result.score:.1%})[/bold], errors={result.errored}"
+            )
     else:
-        _run_single(
-            task_dir=resolved,
-            agent=agent,
-            model=model,
-            environment=environment,
-            prompt=prompt,
-            jobs_dir=jobs_dir,
-            skills_dir=skills_dir,
-            sandbox_user=sandbox_user,
-            agent_env=parsed_env,
-        )
-
-
-def _run_single(
-    *,
-    task_dir: Path,
-    agent: str,
-    model: str | None,
-    environment: str,
-    prompt: list[str] | None,
-    jobs_dir: str,
-    skills_dir: Path | None,
-    sandbox_user: str | None,
-    agent_env: dict[str, str],
-) -> None:
-    from typing import cast
-
-    from benchflow.sdk import SDK
-
-    sdk = SDK()
-    eff_model = _effective_model(agent, model)
-    result = asyncio.run(
-        sdk.run(
-            task_path=task_dir,
-            agent=agent,
-            model=eff_model,
-            environment=environment,
-            prompts=cast("list[str | None] | None", prompt),
-            agent_env=agent_env,
-            job_name="eval-create",
-            jobs_dir=jobs_dir,
-            skills_dir=skills_dir,
-            sandbox_user=None if sandbox_user == "none" else sandbox_user,
-        )
-    )
-    reward = getattr(result, "reward", None)
-    err = getattr(result, "error", None) or getattr(result, "verifier_error", None)
-    console.print()
-    if err:
-        console.print(f"[red]failed:[/red] {err}")
+        console.print("[red]Either --config or --tasks-dir is required[/red]")
         raise typer.Exit(1)
-    console.print(
-        f"[bold]reward={reward}[/bold]  tools={getattr(result, 'n_tool_calls', 0)}"
-    )
 
 
-def _run_batch(
-    *,
-    tasks_dir: Path,
-    agent: str,
-    model: str | None,
-    environment: str,
-    concurrency: int,
-    max_retries: int,
-    jobs_dir: str,
-    skills_dir: Path | None,
-    sandbox_user: str | None,
-    agent_env: dict[str, str],
-) -> None:
-    from benchflow.job import Job, JobConfig, RetryConfig
-
-    eff_model = _effective_model(agent, model)
-    config = JobConfig(
-        agent=agent,
-        model=eff_model,
-        environment=environment,
-        concurrency=concurrency,
-        retry=RetryConfig(max_retries=max_retries),
-        agent_env=agent_env,
-        sandbox_user=None if sandbox_user == "none" else sandbox_user,
-        skills_dir=str(skills_dir) if skills_dir else None,
-    )
-    job = Job(
-        tasks_dir=tasks_dir,
-        jobs_dir=Path(jobs_dir),
-        config=config,
-    )
-    result = asyncio.run(job.run())
-    console.print()
-    console.print(
-        f"[bold]{result.passed}/{result.total} "
-        f"({result.score:.1%})[/bold] errors={result.errored}"
-    )
-
-
-@app.command("list")
+@eval_app.command("list")
 def eval_list(
     jobs_dir: Annotated[
-        str,
-        typer.Option("--jobs-dir", "-o", help="Results directory to scan"),
-    ] = "jobs",
-    limit: Annotated[
-        int,
-        typer.Option("--limit", "-n", help="Max rows to show"),
-    ] = 20,
+        Path,
+        typer.Argument(help="Jobs directory to list"),
+    ] = Path("jobs"),
 ) -> None:
-    """List recent eval runs by scanning the jobs/ dir."""
-
-    root = Path(jobs_dir)
-    if not root.exists():
-        console.print(f"[yellow]{root} does not exist yet.[/yellow]")
+    """List completed evaluations."""
+    if not jobs_dir.exists():
+        console.print(f"[yellow]No jobs directory: {jobs_dir}[/yellow]")
         return
-    runs: list[tuple[str, int, int]] = []
-    for job_root in root.iterdir():
-        if not job_root.is_dir():
+
+    table = Table(title="Evaluations")
+    table.add_column("Job", style="cyan")
+    table.add_column("Tasks", justify="right")
+    table.add_column("Summary")
+
+    for d in sorted(jobs_dir.iterdir()):
+        if not d.is_dir():
             continue
-        for stamp in job_root.iterdir():
-            if not stamp.is_dir():
-                continue
-            trials = list(stamp.iterdir())
-            passed = 0
-            total = 0
-            for trial in trials:
-                result = trial / "result.json"
-                if not result.exists():
-                    continue
-                total += 1
-                try:
-                    import json
+        summary = d / "summary.json"
+        if summary.exists():
+            data = json.loads(summary.read_text())
+            table.add_row(
+                d.name,
+                str(data.get("total", "?")),
+                f"{data.get('passed', '?')}/{data.get('total', '?')} ({data.get('score', '?')})",
+            )
+        else:
+            sub_count = sum(1 for s in d.iterdir() if s.is_dir())
+            table.add_row(d.name, str(sub_count), "[dim]no summary[/dim]")
 
-                    data = json.loads(result.read_text())
-                    if (data.get("rewards") or {}).get("reward") == 1.0:
-                        passed += 1
-                except Exception:
-                    continue
-            if total:
-                runs.append((f"{job_root.name}/{stamp.name}", passed, total))
-    runs.sort(reverse=True)
-    table = Table(title=f"Recent evals in {root}")
-    table.add_column("run", style="cyan")
-    table.add_column("passed", justify="right", style="green")
-    table.add_column("total", justify="right")
-    table.add_column("rate", justify="right", style="yellow")
-    for run, passed, total in runs[:limit]:
-        rate = f"{100 * passed / total:.0f}%" if total else "-"
-        table.add_row(run, str(passed), str(total), rate)
     console.print(table)
-
-
-@app.command("retrieve")
-def eval_retrieve(
-    trial_name: Annotated[
-        str, typer.Argument(help="Trial dir name, e.g. my-task__abc")
-    ],
-    jobs_dir: Annotated[
-        str,
-        typer.Option("--jobs-dir", "-o"),
-    ] = "jobs",
-) -> None:
-    """Print the result.json for a specific trial."""
-
-    import json
-
-    root = Path(jobs_dir)
-    matches = list(root.rglob(f"{trial_name}/result.json"))
-    if not matches:
-        console.print(f"[red]no trial named {trial_name!r} under {root}[/red]")
-        raise typer.Exit(1)
-    console.print(f"[dim]{matches[0]}[/dim]")
-    data = json.loads(matches[0].read_text())
-    from rich import print_json
-
-    print_json(data=data)

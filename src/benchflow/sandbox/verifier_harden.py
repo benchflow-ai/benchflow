@@ -1,0 +1,519 @@
+"""Verifier hardening — neutralize agent tampering before verification.
+
+Owns the pre-verify hardening sequence: kill sandbox-user processes, wipe
+/logs/verifier, optionally restore workspace, purge symlinks and
+__pycache__, re-chown workspace to root, scrub injected conftest.py /
+sitecustomize / .pth files, and assemble the trusted verifier env (PATH,
+pytest options, pip/pythonpath lockdown). This is the churn hotspot of
+the sandbox package — ~400 LOC of helpers plus the one public entrypoint
+``harden_before_verify``.
+
+Does not own:
+    - Snapshot/restore of build-config files or the /testbed_verify seed
+      — see benchflow.sandbox.verifier_workspace.
+    - Path lockdown for the agent user — see benchflow.sandbox.lockdown.
+    - Sandbox user creation — see benchflow.sandbox.user.
+"""
+
+from __future__ import annotations
+
+import json as _json
+import logging
+import os
+import re
+import shlex
+import tomllib
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+from benchflow.sandbox.verifier_workspace import (
+    _refresh_verifier_workspace,
+    _restore_build_config,
+)
+
+if TYPE_CHECKING:
+    from benchflow.task import Task
+
+logger = logging.getLogger(__name__)
+
+
+# Trusted env vars for verifier execution — override any agent pollution.
+# Intentionally omitted (negative guard in test_verify.py explains why):
+# PYTHONHOME.
+VERIFIER_ENV: dict[str, str] = {
+    "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    "PYTEST_ADDOPTS": (
+        "-c /dev/null "  # block pyproject.toml/pytest.ini/tox.ini/setup.cfg discovery
+        "--confcutdir=/tests "  # block conftest.py walk-up beyond /tests
+        "--rootdir=/tests "
+        "-p no:cacheprovider"
+    ),
+    # Block pytest11 entry-point plugins. An agent can modify a pre-installed
+    # package's plugin source to forge a reward; -c /dev/null does not block
+    # entry-point registration. Tasks that need specific plugins declare them
+    # in task.toml [verifier] pytest_plugins = [...].
+    "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+    "PYTHONDONTWRITEBYTECODE": "1",
+    # Redirect .pyc cache reads/writes to a non-existent directory so
+    # agent-pre-compiled __pycache__ bytecode is never found or executed.
+    "PYTHONPYCACHEPREFIX": "/nonexistent",
+    "PYTHONPATH": "",
+    "PYTHONSTARTUP": "",
+    "LD_PRELOAD": "",
+    "LD_LIBRARY_PATH": "",
+    # Prevent pip from writing to user site-packages during pip install -e .
+    "PYTHONNOUSERSITE": "1",
+    "PIP_USER": "0",
+    "PIP_NO_USER_CONFIG": "1",
+    # PEP-668 base images (Fedora, recent Debian) refuse pip installs into
+    # system-site without this flag. Verifier runs as root and system-site is
+    # root-owned, so allowing it is safe; without it, tasks that pip-install
+    # pytest in test.sh either fail outright or fall back to a user-site path
+    # that PYTHONNOUSERSITE=1 hides at import time.
+    "PIP_BREAK_SYSTEM_PACKAGES": "1",
+    # /root is root-owned; sandbox_user cannot pre-stage caches there. Pip
+    # config is already blocked by the PIP_* / PYTHONNOUSERSITE vars above.
+    "HOME": "/root",
+    # Disable breakpoint() — any other value imports an arbitrary callable.
+    "PYTHONBREAKPOINT": "0",
+    # Prevent coverage.py from importing a config file as Python on startup.
+    "COVERAGE_PROCESS_START": "",
+    # Prevent Django/Celery from importing an agent-controlled module at startup.
+    "DJANGO_SETTINGS_MODULE": "",
+    "CELERY_CONFIG_MODULE": "",
+}
+
+_SAFE_VERIFIER_PATH = VERIFIER_ENV["PATH"]
+_SAFE_VERIFIER_PATH_PARTS = tuple(_SAFE_VERIFIER_PATH.split(":"))
+_RUNTIME_PATH_PREFIXES = ("/tmp", "/var/tmp", "/logs", "/testbed")
+
+# pytest plugin names are not always the same as the PyPI distribution name
+# or the option they register. These aliases cover the common benchmark
+# verifier plugins while preserving PYTEST_DISABLE_PLUGIN_AUTOLOAD=1.
+_PYTEST_PLUGIN_ALIASES = {
+    "ctrf": "ctrf",
+    "pytest-json-ctrf": "ctrf",
+    "pytest_json_ctrf": "ctrf",
+    "pytest_json_ctrf.plugin": "ctrf",
+    "pytest-json-report": "pytest_jsonreport",
+    "pytest_json_report": "pytest_jsonreport",
+    "pytest_jsonreport": "pytest_jsonreport",
+    "pytest_jsonreport.plugin": "pytest_jsonreport",
+}
+_PYTEST_OPTION_PLUGINS = {
+    "--ctrf": "ctrf",
+    "--json-report": "pytest_jsonreport",
+    "--json-report-file": "pytest_jsonreport",
+}
+
+# Pytest plugins worth auto-loading when test.sh pip-installs them but the
+# task author forgot to declare pytest_plugins in task.toml. Map distribution
+# name (as it appears in `pip install pytest-foo`) to importable plugin name.
+_PYTEST_INSTALLED_PLUGINS = {
+    "pytest-asyncio": "pytest_asyncio",
+    "pytest-anyio": "anyio.pytest_plugin",
+    "pytest-trio": "pytest_trio",
+}
+_PIP_INSTALL_RE = re.compile(r"\bpip3?\s+install\b[^\n;|&]*", re.IGNORECASE)
+
+
+def _under_path(path: str, prefix: str) -> bool:
+    prefix = prefix.rstrip("/")
+    return path == prefix or path.startswith(f"{prefix}/")
+
+
+def _blocked_verifier_path_prefixes(
+    sandbox_user: str | None, workspace: str | None
+) -> tuple[str, ...]:
+    """Paths that must never be preserved as verifier PATH extras."""
+    prefixes = list(_RUNTIME_PATH_PREFIXES)
+    if workspace:
+        prefixes.append(workspace)
+    if sandbox_user:
+        prefixes.append(f"/home/{sandbox_user}")
+    return tuple(dict.fromkeys(prefixes))
+
+
+def _merge_trusted_verifier_path(extras: list[str]) -> str:
+    """Prepend validated image PATH entries to the verifier allowlist."""
+    kept: list[str] = []
+    seen: set[str] = set(_SAFE_VERIFIER_PATH_PARTS)
+    for entry in extras:
+        if entry and entry not in seen:
+            seen.add(entry)
+            kept.append(entry)
+    return ":".join([*kept, *_SAFE_VERIFIER_PATH_PARTS])
+
+
+_TRUSTED_PATH_EXTRAS_SCRIPT = r"""
+import json
+import os
+import stat
+import sys
+
+raw_path = json.loads(sys.argv[1])
+safe_parts = set(json.loads(sys.argv[2]))
+blocked_prefixes = tuple(json.loads(sys.argv[3]))
+
+
+def under_path(path, prefix):
+    prefix = prefix.rstrip("/")
+    return path == prefix or path.startswith(prefix + "/")
+
+
+trusted = []
+seen = set(safe_parts)
+for entry in raw_path.split(":"):
+    entry = entry.strip()
+    if (
+        not entry
+        or entry in seen
+        or not entry.startswith("/")
+        or "\x00" in entry
+        or "\n" in entry
+    ):
+        continue
+    seen.add(entry)
+    try:
+        real = os.path.realpath(entry)
+        st = os.stat(real)
+    except OSError:
+        continue
+    if not stat.S_ISDIR(st.st_mode):
+        continue
+    if any(under_path(real, prefix) for prefix in blocked_prefixes):
+        continue
+    if st.st_uid != 0:
+        continue
+    if st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        continue
+    trusted.append(entry)
+print(json.dumps(trusted))
+""".strip()
+
+
+def _trusted_path_extras_cmd(raw_path: str, blocked_prefixes: tuple[str, ...]) -> str:
+    """Build the container-side command that validates verifier PATH extras."""
+    return (
+        f"python3 -c {shlex.quote(_TRUSTED_PATH_EXTRAS_SCRIPT)} "
+        f"{shlex.quote(_json.dumps(raw_path))} "
+        f"{shlex.quote(_json.dumps(_SAFE_VERIFIER_PATH_PARTS))} "
+        f"{shlex.quote(_json.dumps(blocked_prefixes))}"
+    )
+
+
+def _normalize_pytest_plugin(name: object) -> str | None:
+    """Return the importable pytest plugin name for a task declaration."""
+    if not isinstance(name, str):
+        return None
+    clean = name.strip()
+    if not clean:
+        return None
+    return _PYTEST_PLUGIN_ALIASES.get(clean, clean)
+
+
+def _plugins_from_verifier_script(task: "Task") -> list[str]:
+    """Infer known pytest plugins needed by legacy verifier scripts.
+
+    Older SkillsBench/TB2 tasks predate task-level pytest plugin metadata and
+    call options such as --ctrf directly from tests/test.sh. With pytest entry
+    point autoload disabled, those options must be backed by explicit -p flags.
+    """
+    task_dir = getattr(task, "task_dir", None)
+    if not isinstance(task_dir, (str, os.PathLike)):
+        return []
+    test_sh = Path(task_dir) / "tests" / "test.sh"
+    try:
+        content = test_sh.read_text()
+    except OSError:
+        return []
+
+    plugins: list[str] = []
+    for option, plugin in _PYTEST_OPTION_PLUGINS.items():
+        if option in content and plugin not in plugins:
+            plugins.append(plugin)
+    # Detect pip-installed pytest plugins so PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
+    # doesn't silently drop them. Only matches the exact installer line so
+    # arbitrary text mentioning the plugin name is ignored.
+    for match in _PIP_INSTALL_RE.findall(content):
+        for dist, plugin in _PYTEST_INSTALLED_PLUGINS.items():
+            if dist in match and plugin not in plugins:
+                plugins.append(plugin)
+    return plugins
+
+
+def _declared_pytest_plugins(task: "Task") -> list[object]:
+    """Return pytest_plugins from the model, falling back to raw task.toml."""
+    declared = getattr(task.config.verifier, "pytest_plugins", None)
+    if declared:
+        return list(declared)
+
+    task_dir = getattr(task, "task_dir", None)
+    if not isinstance(task_dir, (str, os.PathLike)):
+        return []
+    config_path = Path(task_dir) / "task.toml"
+    try:
+        data = tomllib.loads(config_path.read_text())
+    except (OSError, tomllib.TOMLDecodeError):
+        return []
+    plugins = data.get("verifier", {}).get("pytest_plugins", [])
+    if isinstance(plugins, list):
+        return plugins
+    return []
+
+
+def _pytest_plugin_flags(task: "Task") -> str:
+    """Build deterministic -p flags for inferred and declared pytest plugins."""
+    plugins: list[str] = []
+    for plugin in _plugins_from_verifier_script(task):
+        if plugin not in plugins:
+            plugins.append(plugin)
+    for plugin in _declared_pytest_plugins(task):
+        normalized = _normalize_pytest_plugin(plugin)
+        if normalized and normalized not in plugins:
+            plugins.append(normalized)
+    return " ".join(f"-p {shlex.quote(p)}" for p in plugins)
+
+
+_FEDORA_LIKE = ("fedora", "rhel", "centos", "rocky", "alma")
+
+
+async def _distro_pip_env(env) -> dict[str, str]:
+    """Distro-conditional pip env to neutralize Fedora's user-install fallback.
+
+    Fedora's downstream pip patch routes root pip-installs to ~/.local/lib
+    even with PIP_USER=0 + PIP_BREAK_SYSTEM_PACKAGES=1. PYTHONNOUSERSITE=1 then
+    hides those installs from python3 at import time. Pinning PIP_PREFIX on
+    Fedora-likes only writes them to /usr/local where python3 can find them.
+
+    Setting PIP_PREFIX on Debian/Ubuntu would double-prefix (their downstream
+    pip already injects --prefix=/usr/local for root), creating
+    /usr/local/usr/local/bin/pytest. So this is conditional on the image distro.
+    """
+    try:
+        result = await env.exec(
+            "cat /etc/os-release 2>/dev/null || true", user="root", timeout_sec=5
+        )
+    except Exception as e:
+        logger.warning("distro detection failed (%s); skipping pip env tweaks", e)
+        return {}
+    text = (result.stdout or "").lower()
+    ids: list[str] = []
+    for line in text.splitlines():
+        if line.startswith("id=") or line.startswith("id_like="):
+            value = line.split("=", 1)[1].strip().strip('"').strip("'")
+            ids.extend(value.split())
+    if any(d in ids for d in _FEDORA_LIKE):
+        return {"PIP_PREFIX": "/usr/local"}
+    return {}
+
+
+async def _trusted_verifier_path(
+    env, sandbox_user: str | None, workspace: str | None
+) -> str:
+    """Return verifier PATH with trusted image extras preserved.
+
+    Dockerfile PATH additions are accepted only after container-side stat
+    checks prove they are root-owned directories and not group/world writable.
+    Runtime locations and sandbox-user writable locations stay excluded.
+    """
+    path_result = await env.exec("printenv PATH", user="root", timeout_sec=10)
+    raw_path = path_result.stdout or ""
+    if not raw_path.strip():
+        return _SAFE_VERIFIER_PATH
+    cmd = _trusted_path_extras_cmd(
+        raw_path, _blocked_verifier_path_prefixes(sandbox_user, workspace)
+    )
+    result = await env.exec(cmd, user="root", timeout_sec=10)
+    try:
+        extras = _json.loads(result.stdout or "[]")
+    except _json.JSONDecodeError:
+        logger.warning("Could not parse trusted verifier PATH extras; using safe PATH")
+        extras = []
+    if not isinstance(extras, list):
+        logger.warning("Invalid trusted verifier PATH extras; using safe PATH")
+        extras = []
+    return _merge_trusted_verifier_path([e for e in extras if isinstance(e, str)])
+
+
+# Wipe and recreate /logs/verifier/ before the verifier runs.
+# rm -rf severs hardlinks, removes symlink replacements, and eliminates
+# variant filenames/subdirs the agent may have pre-staged.
+_CLEAR_VERIFIER_DIR_CMD = (
+    "rm -rf /logs/verifier && mkdir -p /logs/verifier && chmod 777 /logs/verifier"
+)
+
+# Remove injected conftest.py, sitecustomize.py/usercustomize.py, and .pth
+# files from writable sys.path entries (preserves /usr/lib, /usr/local/lib).
+# Also purge *.py from temp dirs: covers module-shadow via non-workspace cwd.
+CLEANUP_CMD = (
+    "find / -name conftest.py -not -path '/tests/*' -delete 2>/dev/null; "
+    "find /tmp /var/tmp -name '*.py' -delete 2>/dev/null; "
+    'python3 -c "'
+    "import sys,os;"
+    "[os.remove(os.path.join(d,f)) "
+    " for d in sys.path "
+    " for f in ('sitecustomize.py','usercustomize.py') "
+    " if d and not d.startswith('/usr/lib') and not d.startswith('/usr/local/lib') "
+    " and os.path.isfile(os.path.join(d,f))];"
+    "[os.remove(os.path.join(d,f)) "
+    " for d in sys.path if d and os.path.isdir(d) "
+    " for f in os.listdir(d) if f.endswith('.pth') "
+    " and not d.startswith('/usr/lib') and not d.startswith('/usr/local/lib') "
+    " and os.path.isfile(os.path.join(d,f))]"
+    '" 2>/dev/null || true'
+)
+
+
+async def harden_before_verify(
+    env,
+    task: "Task",
+    sandbox_user: str | None,
+    workspace: str | None = None,
+    # Default false because SkillsBench/TB2-style answers often are workspace
+    # edits. Going forward, enforce true only via an explicit task/benchmark
+    # contract, e.g. task.toml [verifier] restore_workspace = true after an
+    # oracle/diff audit proves the answer is not stored in the workspace.
+    restore_workspace: bool = False,
+) -> None:
+    """Neutralize agent tampering before running the verifier.
+
+    1. Kill sandbox-user processes (prevent concurrent writes during teardown).
+    2. Assert all sandbox-user processes are dead, then wipe/recreate
+       /logs/verifier/ with a clean root-owned directory.
+    3. Optionally restore the workspace from the pre-agent snapshot. This is
+       destructive to legitimate workspace-edit answers, so it is opt-in.
+    4. Purge symlinks and __pycache__ trees from workspace.
+    5. chown workspace to root (belt-and-suspenders against zombie sandbox writes).
+    6. Remove injected conftest.py, sitecustomize.py, .pth files.
+    7. Merge trusted env vars into task.config.verifier.env.
+
+    Task-level opt-out: task.toml [verifier] harden = false skips the entire
+    sequence, leaving the verifier to run in whatever state the agent phase
+    produced. Use only when hardening demonstrably breaks a task's verifier
+    and the task has been audited for the resulting reduction in isolation.
+    """
+    if not getattr(task.config.verifier, "harden", True):
+        logger.info(
+            "verifier hardening disabled for this task "
+            "(task.toml [verifier] harden = false); skipping entire sequence"
+        )
+        return
+
+    if sandbox_user:
+        await env.exec(
+            f"pkill -u {sandbox_user} 2>/dev/null; "
+            f"sleep 1; pkill -9 -u {sandbox_user} 2>/dev/null || true",
+            timeout_sec=10,
+        )
+        # Second pass: catch any processes that slipped through (e.g. cron/at jobs).
+        await env.exec(
+            f"! pgrep -u {sandbox_user} > /dev/null 2>&1 || "
+            f"(sleep 1 && pkill -9 -u {sandbox_user}; sleep 1)",
+            user="root",
+        )
+    # Wipe and recreate /logs/verifier/ with a clean root-owned directory.
+    await env.exec(_CLEAR_VERIFIER_DIR_CMD, user="root")
+    if workspace and restore_workspace:
+        await _restore_build_config(env, workspace)
+        await _refresh_verifier_workspace(env, workspace)
+        # Full workspace restore from /testbed_verify (the pre-agent canonical
+        # copy) so ALL source files — not just build-config files — are reset
+        # to their pre-agent state before freezing.  Closes the editable-install
+        # source modification vector (F2): agent rewrites /testbed/src/pkg/x.py
+        # during its phase; this step restores x.py to canonical before verify.
+        await env.exec(
+            f"if [ -d /testbed_verify ]; then "
+            f"  rsync -a --delete /testbed_verify/ {shlex.quote(workspace)}/ 2>/dev/null || "
+            f"  python3 -c 'import shutil,sys; shutil.copytree(\"/testbed_verify\",sys.argv[1],dirs_exist_ok=True)'"
+            f"  {shlex.quote(workspace)}; "
+            f"fi",
+            user="root",
+        )
+    if workspace:
+        # Purge symlinks whose realpath escapes the workspace (e.g. agent-planted
+        # utils.py -> /tmp/evil.py). In-tree symlinks are preserved — some
+        # source trees (OTP, lake-packages, etc.) ship them as fixtures.
+        # Residual risk: agent plants utils.py -> ./evil.py inside workspace.
+        # Mitigated by the workspace chown below + CLEANUP_CMD path scrubbing.
+        purge_external_symlinks = (
+            "import os, sys, pathlib;"
+            "root = pathlib.Path(sys.argv[1]).resolve();"
+            "root_str = str(root) + os.sep;"
+            "[p.unlink() for p in root.rglob('*')"
+            " if p.is_symlink()"
+            " and not (str(p.resolve()) + os.sep).startswith(root_str)"
+            " and str(p.resolve()) != str(root)]"
+        )
+        await env.exec(
+            f"python3 -c {shlex.quote(purge_external_symlinks)} "
+            f"{shlex.quote(workspace)} 2>/dev/null; true",
+            user="root",
+        )
+        # Purge __pycache__ trees that did not exist in the pre-agent baseline,
+        # so agent-planted .pyc bytecode cannot execute even if
+        # PYTHONPYCACHEPREFIX is bypassed. Baseline-present caches are kept so
+        # tasks whose tests diff workspace against /testbed_verify don't break.
+        await env.exec(
+            f"if [ -d /testbed_verify ]; then "
+            f"  find {shlex.quote(workspace)} -type d -name __pycache__ -print0 "
+            f"  | while IFS= read -r -d '' d; do "
+            f"      rel=${{d#{shlex.quote(workspace)}/}}; "
+            f'      [ -d "/testbed_verify/$rel" ] || rm -rf "$d"; '
+            f"  done; "
+            f"else "
+            f"  find {shlex.quote(workspace)} -type d -name '__pycache__'"
+            f" -exec rm -rf {{}} + 2>/dev/null; "
+            f"fi; true",
+            user="root",
+        )
+        # chown workspace to root: belt-and-suspenders against any zombie
+        # sandbox-user process that survived the pkill above.
+        await env.exec(
+            f"chown -R root:root {shlex.quote(workspace)}",
+            user="root",
+        )
+    await env.exec(CLEANUP_CMD, user="root", timeout_sec=10)
+
+    hardened_path = await _trusted_verifier_path(env, sandbox_user, workspace)
+    distro_env = await _distro_pip_env(env)
+
+    verifier_env = dict(VERIFIER_ENV)
+    verifier_env.update(distro_env)
+    if task.config.verifier.env:
+        verifier_env.update(task.config.verifier.env)
+    # Hard security invariants — re-pin after task-env merge so a task cannot
+    # replace PATH, strip -c /dev/null / --confcutdir, re-enable entry-point
+    # plugin loading, or inject code via breakpoint()/coverage/Django/Celery
+    # startup hooks.
+    verifier_env["PATH"] = hardened_path
+    verifier_env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
+    verifier_env["PYTHONBREAKPOINT"] = "0"
+    verifier_env["COVERAGE_PROCESS_START"] = ""
+    verifier_env["DJANGO_SETTINGS_MODULE"] = ""
+    verifier_env["CELERY_CONFIG_MODULE"] = ""
+    # Re-enable known verifier plugins by appending -p flags to the hardened
+    # base — never to a task-supplied PYTEST_ADDOPTS. Legacy task sets are
+    # inferred from tests/test.sh; newer tasks may declare pytest_plugins.
+    base_addopts = VERIFIER_ENV["PYTEST_ADDOPTS"]
+    flags = _pytest_plugin_flags(task)
+    if flags:
+        verifier_env["PYTEST_ADDOPTS"] = base_addopts + f" {flags}"
+    else:
+        verifier_env["PYTEST_ADDOPTS"] = base_addopts
+    task.config.verifier.env = verifier_env
+
+
+__all__ = [
+    "CLEANUP_CMD",
+    "VERIFIER_ENV",
+    "_SAFE_VERIFIER_PATH",
+    "_blocked_verifier_path_prefixes",
+    "_declared_pytest_plugins",
+    "_distro_pip_env",
+    "_merge_trusted_verifier_path",
+    "_plugins_from_verifier_script",
+    "_trusted_path_extras_cmd",
+    "_trusted_verifier_path",
+    "harden_before_verify",
+]

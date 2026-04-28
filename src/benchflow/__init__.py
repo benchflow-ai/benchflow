@@ -1,32 +1,29 @@
 """benchflow — ACP-native agent benchmarking framework.
 
-Re-exports environment APIs and adds:
-- ACP client for multi-turn agent communication
-- Trajectory capture (HTTP proxy, OTel collector, ACP native)
-- SDK for programmatic usage
-- Job orchestration with retries and concurrency
-- Metrics collection and aggregation
+The v0.4 public API is intentionally small. ``__all__`` exposes 8 names:
+
+  Verbs:        run, run_batch
+  Orchestrators: Trial, Job
+  Configs:      TrialConfig, JobConfig
+  Results:      TrialResult, JobResult
+
+Power users discover the rest via explicit submodule imports — see
+PLAN_V2_shaping §3.2:
+
+  from benchflow.multi_agent     import Scene, Turn, Role
+  from benchflow.agents          import register_agent, AGENTS, AgentConfig
+  from benchflow.skill_registry  import SkillInfo, discover_skills, parse_skill
+  from benchflow.errors          import AgentInstallError, AgentTimeoutError
+  from benchflow.trajectories    import OTelCollector, TrajectoryProxy
+  from benchflow.sandbox         import snapshot, restore, list_snapshots, SERVICES
 """
 
 from importlib.metadata import version as _version
 
 __version__ = _version("benchflow")
 
-# Re-export Harbor's core types for downstream task authors
-from harbor import (
-    BaseAgent,
-    BaseEnvironment,
-    ExecResult,
-    Task,
-    TaskConfig,
-    Verifier,
-    VerifierResult,
-)
-
-# benchflow's additions
-from benchflow._env_setup import stage_dockerfile_deps
-from benchflow._scene import MailboxTransport, Message, MessageTransport, Role, Scene
-from benchflow._snapshot import list_snapshots, restore, snapshot
+# Re-export benchflow's core sandbox/task types for downstream task authors
+from benchflow.sandbox.build import stage_dockerfile_deps
 from benchflow.acp.client import ACPClient
 from benchflow.acp.session import ACPSession
 from benchflow.agents.registry import (
@@ -34,133 +31,44 @@ from benchflow.agents.registry import (
     get_agent,
     infer_env_key_for_model,
     is_vertex_model,
-    list_agents,
     register_agent,
 )
-from benchflow.environments import (
+from benchflow.sandbox import (
     SERVICES,
     build_service_hooks,
-    detect_services_from_dockerfile,
-    register_service,
 )
 from benchflow.job import Job, JobConfig, JobResult, RetryConfig
 from benchflow.metrics import BenchmarkMetrics, collect_metrics
-from benchflow.models import AgentInstallError, AgentTimeoutError, RunResult
-from benchflow.runtime import (
+from benchflow.errors import AgentInstallError, AgentTimeoutError
+from benchflow.results import TrialResult
+from benchflow.api import (
     Agent,
     Environment,
-    Runtime,
-    RuntimeConfig,
-    RuntimeResult,
     run,  # bf.run(agent, env) — the primary 0.3 API
+    run_batch,  # bf.run_batch(tasks, agent, ...) — many-trial verb (v0.4)
 )
-from benchflow.sdk import SDK
-from benchflow.skills import SkillInfo, discover_skills, install_skill, parse_skill
+from benchflow.sandbox.snapshot import list_snapshots, restore, snapshot
+from benchflow.trial import Trial, TrialConfig
+from benchflow._utils.yaml_loader import trial_config_from_yaml
+from benchflow.skill_registry import SkillInfo, discover_skills, parse_skill
 from benchflow.trajectories.otel import OTelCollector
 from benchflow.trajectories.proxy import TrajectoryProxy
-from benchflow.trajectories.types import Trajectory
-from benchflow.trial import Role as TrialRole
-from benchflow.trial import Scene as TrialScene
-from benchflow.trial import Trial, TrialConfig, Turn
-from benchflow.trial_yaml import trial_config_from_yaml
-from benchflow.user import BaseUser, FunctionUser, PassthroughUser, RoundResult
 
-# Public API surface. Anything not in this list is implementation detail and
-# may change without notice. Names are grouped by source module to match the
-# imports above and to make it obvious to a future agent which module owns
-# what.
+# Public API surface — 8 names + __version__. Everything else is
+# implementation or accessed via explicit submodule imports (see module
+# docstring above). v0.4 trim per PLAN_V2_shaping §3.1.
 __all__ = [
     "__version__",
-    # Harbor re-exports
-    "BaseAgent",
-    "BaseEnvironment",
-    "ExecResult",
-    "Task",
-    "TaskConfig",
-    "Verifier",
-    "VerifierResult",
-    # ACP
-    "ACPClient",
-    "ACPSession",
-    # Agent registry
-    "AGENTS",
-    "get_agent",
-    "infer_env_key_for_model",
-    "is_vertex_model",
-    "list_agents",
-    "register_agent",
-    # Job orchestration
-    "Job",
-    "JobConfig",
-    "JobResult",
-    "RetryConfig",
-    # Metrics
-    "BenchmarkMetrics",
-    "collect_metrics",
-    # Models / errors
-    "AgentInstallError",
-    "AgentTimeoutError",
-    "RunResult",
-    # Runtime (0.3 primary API)
-    "Agent",
-    "Environment",
-    "Runtime",
-    "RuntimeConfig",
-    "RuntimeResult",
+    # 2 verbs
     "run",
-    # Multi-agent scene
-    "Scene",
-    "Role",
-    "Message",
-    "MessageTransport",
-    "MailboxTransport",
-    # Env snapshots
-    "snapshot",
-    "restore",
-    "list_snapshots",
-    # Trial (decomposed lifecycle)
+    "run_batch",
+    # 2 orchestrators
     "Trial",
+    "Job",
+    # 2 configs (public for serialization/replay)
     "TrialConfig",
-    "TrialRole",
-    "TrialScene",
-    "Turn",
-    "trial_config_from_yaml",
-    # User abstraction (progressive disclosure)
-    "BaseUser",
-    "FunctionUser",
-    "PassthroughUser",
-    "RoundResult",
-    # SDK (backwards compat)
-    "SDK",
-    # Environments / dep staging
-    "SERVICES",
-    "build_service_hooks",
-    "detect_services_from_dockerfile",
-    "register_service",
-    "stage_dockerfile_deps",
-    # Skills
-    "SkillInfo",
-    "discover_skills",
-    "install_skill",
-    "parse_skill",
-    # Trajectories
-    "OTelCollector",
-    "TrajectoryProxy",
-    "Trajectory",
+    "JobConfig",
+    # 2 result types (Trial→TrialResult, Job→JobResult)
+    "TrialResult",
+    "JobResult",
 ]
-
-
-def __getattr__(name: str):
-    """Fall through to harbor for names not explicitly re-exported."""
-    import harbor
-
-    if hasattr(harbor, name):
-        import warnings
-
-        warnings.warn(
-            f"'{name}' is not directly re-exported by benchflow. Use 'from harbor import {name}' instead.",
-            ImportWarning,
-            stacklevel=2,
-        )
-        return getattr(harbor, name)
-    raise AttributeError(f"module 'benchflow' has no attribute {name!r}")

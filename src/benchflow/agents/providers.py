@@ -64,8 +64,13 @@ class ProviderConfig:
     api_protocol: (
         str  # protocol for base_url: "openai-completions" | "anthropic-messages"
     )
-    auth_type: str  # "api_key" | "adc" | "none"
-    auth_env: str | None = None  # env var holding the API key (None for ADC)
+    auth_type: str
+    # "api_key" | "adc" | "none" | "aws_sigv4" | "oauth2_bearer".
+    # Tier-2 literals (aws_sigv4, oauth2_bearer) are reserved per
+    # PLAN_V2_byoa.md §4 — promotion from Tier 3 (BYOA shim.py) to Tier 1
+    # (central PROVIDERS) becomes a backwards-compatible enum extension
+    # rather than a schema break. Implementations land on rule-of-three.
+    auth_env: str | None = None  # env var holding the API key (None for ADC/sigv4/bearer)
     url_params: dict[str, str] = field(default_factory=dict)  # {placeholder: ENV_VAR}
     models: list[dict] = field(default_factory=list)  # model metadata for agents
     # Multi-protocol support: {protocol: base_url} for providers with multiple APIs.
@@ -246,6 +251,9 @@ def resolve_auth_env(model: str) -> str | None:
     if result is None:
         return None
     _, cfg = result
-    if cfg.auth_type == "adc":
+    # ADC, sigv4, and bearer auth all forgo a single env var holding the API
+    # key — sigv4 needs a 4-tuple of AWS env vars, bearer needs an OAuth flow.
+    # Tier-2 implementations land per PLAN_V2_byoa.md §4 rule-of-three.
+    if cfg.auth_type in {"adc", "aws_sigv4", "oauth2_bearer"}:
         return None
     return cfg.auth_env

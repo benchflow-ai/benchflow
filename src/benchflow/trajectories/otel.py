@@ -224,6 +224,16 @@ class OTelCollector:
             usage["input_tokens"] = int(attrs["input_tokens"])
         if attrs.get("output_tokens"):
             usage["output_tokens"] = int(attrs["output_tokens"])
+        # Cache tokens — must round-trip into the response body so
+        # Trajectory.total_cache_tokens (PR10) sees them. _LLM_ATTRS maps
+        # both Anthropic-style attribute names to "cache_read_tokens" /
+        # "cache_creation_tokens" — the body keys here mirror the raw
+        # gen_ai semantic-convention names so the totaller works for
+        # OTel-captured + proxy-captured exchanges uniformly.
+        if attrs.get("cache_read_tokens"):
+            usage["cache_read_input_tokens"] = int(attrs["cache_read_tokens"])
+        if attrs.get("cache_creation_tokens"):
+            usage["cache_creation_input_tokens"] = int(attrs["cache_creation_tokens"])
 
         resp = LLMResponse(
             timestamp=end_dt,

@@ -62,7 +62,7 @@ Critical invariants
   ``verifier_error``. The job-level config is *not* part of the resume
   key — see Known issues "Job resume config scoping" in CLAUDE.md.
 - Unexpected exceptions inside ``bounded`` are caught by
-  ``return_exceptions=True`` and turned into synthetic ``RunResult(error=...)``
+  ``return_exceptions=True`` and turned into synthetic ``TrialResult(error=...)``
   rows so the gather never raises and counts stay consistent.
 """
 
@@ -73,134 +73,52 @@ import os
 import subprocess
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
 import yaml
 
-from benchflow._scoring import (
-    ACP_ERROR,
-    INSTALL_FAILED,
-    PIPE_CLOSED,
-    classify_error,
+from benchflow.contracts.scoring import (
     extract_reward,
-    pass_rate,
-    pass_rate_excl_errors,
 )
-from benchflow.models import RunResult
-from benchflow.sdk import SDK
+from benchflow.contracts.job_config import (
+    DEFAULT_AGENT,
+    DEFAULT_MODEL,
+    JobConfig,
+    JobResult,
+    RetryConfig,
+    effective_model,
+)
+from benchflow.results import TrialResult
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class RetryConfig:
-    """Configuration for retry behavior.
+__all__ = [
+    "DEFAULT_AGENT",
+    "DEFAULT_MODEL",
+    "Job",
+    "JobConfig",
+    "JobResult",
+    "RetryConfig",
+    "effective_model",
+]
 
-    Matches Harbor's RetryConfig pattern: exponential backoff with
-    configurable exception filtering. Legacy boolean fields are
-    preserved for backwards compat but the category-based check
-    covers all cases.
+
+def _warn_if_unknown_agent(agent: str) -> None:
+    """Moved out of JobConfig.__post_init__ so contracts/ has no periphery dep.
+
+    Fires when Job is actually constructed; library users who build a JobConfig
+    without running a Job (e.g., tests, serialization) don't see the warning.
     """
+    from benchflow.agents.registry import AGENTS
 
-    max_retries: int = 2
-    retry_on_install: bool = True
-    retry_on_pipe: bool = True
-    retry_on_acp: bool = True
-    wait_multiplier: float = 2.0
-    min_wait_sec: float = 1.0
-    max_wait_sec: float = 30.0
-    exclude_categories: set[str] = field(default_factory=lambda: {"timeout"})
-
-    def should_retry(self, error: str | None) -> bool:
-        """Check if an error is retryable."""
-        category = classify_error(error)
-        if not category:
-            return False
-        if category in self.exclude_categories:
-            return False
-        if self.retry_on_install and category == INSTALL_FAILED:
-            return True
-        if self.retry_on_pipe and category == PIPE_CLOSED:
-            return True
-        return bool(self.retry_on_acp and category == ACP_ERROR)
-
-    def backoff_delay(self, attempt: int) -> float:
-        """Exponential backoff delay for retry attempt."""
-        delay = self.min_wait_sec * (self.wait_multiplier**attempt)
-        return min(delay, self.max_wait_sec)
-
-
-# Defaults: works out-of-the-box with `claude login` (subscription auth, no API key needed)
-DEFAULT_AGENT = "claude-agent-acp"
-DEFAULT_MODEL = "claude-haiku-4-5-20251001"
-
-
-def effective_model(agent: str, model: str | None) -> str | None:
-    """Resolve the model an agent should run with.
-
-    Oracle runs solve.sh and never calls an LLM, so it never receives a model
-    (the chokepoint in resolve_agent_env defends, but callers should also stop
-    materializing DEFAULT_MODEL into oracle configs to keep the data honest —
-    e.g. result-summary JSON shows model=null instead of a bogus default).
-    """
-    if agent == "oracle":
-        return None
-    return model or DEFAULT_MODEL
-
-
-@dataclass
-class JobConfig:
-    """Configuration for a benchmark job."""
-
-    agent: str = DEFAULT_AGENT
-    model: str | None = None
-    environment: str = "docker"
-    concurrency: int = 4
-    prompts: list[str | None] | None = None
-    agent_env: dict[str, str] = field(default_factory=dict)
-    retry: RetryConfig = field(default_factory=RetryConfig)
-    skills_dir: str | None = None
-    sandbox_user: str | None = "agent"
-    sandbox_locked_paths: list[str] | None = None
-    sandbox_setup_timeout: int = 120
-    context_root: str | None = None
-    exclude_tasks: set[str] = field(default_factory=set)
-
-    def __post_init__(self):
-        from benchflow.agents.registry import AGENTS
-
-        if self.agent not in AGENTS:
-            available = ", ".join(sorted(AGENTS.keys()))
-            logger.warning(
-                f"Unknown agent {self.agent!r} — not in registry. "
-                f"Available: {available}. Will attempt to use as raw command."
-            )
-
-
-@dataclass
-class JobResult:
-    """Aggregated results for a job."""
-
-    job_name: str
-    config: JobConfig
-    total: int = 0
-    passed: int = 0
-    failed: int = 0
-    errored: int = 0
-    verifier_errored: int = 0
-    elapsed_sec: float = 0.0
-
-    @property
-    def score(self) -> float:
-        """Pass rate over all tasks."""
-        return pass_rate(passed=self.passed, total=self.total)
-
-    @property
-    def score_excl_errors(self) -> float:
-        """Pass rate excluding errored tasks."""
-        return pass_rate_excl_errors(passed=self.passed, failed=self.failed)
+    if agent not in AGENTS:
+        available = ", ".join(sorted(AGENTS.keys()))
+        logger.warning(
+            f"Unknown agent {agent!r} — not in registry. "
+            f"Available: {available}. Will attempt to use as raw command."
+        )
 
 
 class Job:
@@ -226,14 +144,14 @@ class Job:
         jobs_dir: str | Path,
         config: JobConfig | None = None,
         job_name: str | None = None,
-        on_result: Callable[[str, RunResult], None] | None = None,
+        on_result: Callable[[str, TrialResult], None] | None = None,
     ):
         self._tasks_dir = Path(tasks_dir)
         self._jobs_dir = Path(jobs_dir)
         self._config = config or JobConfig()
         self._job_name = job_name or datetime.now().strftime("%Y-%m-%d__%H-%M-%S")
         self._on_result = on_result
-        self._sdk = SDK()  # kept for test mocking compat; _run_task prefers Trial
+        _warn_if_unknown_agent(self._config.agent)
 
     @classmethod
     def from_yaml(cls, path: str | Path, **kwargs) -> "Job":
@@ -290,7 +208,6 @@ class Job:
         exclude = set(raw.get("exclude", []))
         sandbox_user = raw.get("sandbox_user", "agent")
         sandbox_locked_paths = raw.get("sandbox_locked_paths")
-        sandbox_setup_timeout = raw.get("sandbox_setup_timeout", 120)
 
         agent_name = raw.get("agent", DEFAULT_AGENT)
         config = JobConfig(
@@ -304,7 +221,6 @@ class Job:
             skills_dir=str(Path(raw["skills_dir"])) if raw.get("skills_dir") else None,
             sandbox_user=sandbox_user,
             sandbox_locked_paths=sandbox_locked_paths,
-            sandbox_setup_timeout=sandbox_setup_timeout,
             exclude_tasks=exclude,
         )
         return cls(tasks_dir=tasks_dir, jobs_dir=jobs_dir, config=config, **kwargs)
@@ -351,7 +267,6 @@ class Job:
         skills_dir = str(Path(skills_dir_raw)) if skills_dir_raw else None
         sandbox_user = raw.get("sandbox_user", "agent")
         sandbox_locked_paths = raw.get("sandbox_locked_paths")
-        sandbox_setup_timeout = raw.get("sandbox_setup_timeout", 120)
 
         config = JobConfig(
             agent=agent_name,
@@ -363,7 +278,6 @@ class Job:
             skills_dir=skills_dir,
             sandbox_user=sandbox_user,
             sandbox_locked_paths=sandbox_locked_paths,
-            sandbox_setup_timeout=sandbox_setup_timeout,
         )
         return cls(tasks_dir=tasks_dir, jobs_dir=jobs_dir, config=config, **kwargs)
 
@@ -408,14 +322,7 @@ class Job:
         except Exception as e:
             logger.warning(f"Docker prune failed: {e}")
 
-    def _resolve_skills_dir(self, task_dir: Path, skills_dir: str | None) -> str | None:
-        """Resolve skills_dir — 'auto' means per-task environment/skills/."""
-        if skills_dir == "auto":
-            candidate = task_dir / "environment" / "skills"
-            return str(candidate) if candidate.is_dir() else None
-        return skills_dir
-
-    async def _run_single_task(self, task_dir: Path, cfg: JobConfig) -> RunResult:
+    async def _run_single_task(self, task_dir: Path, cfg: JobConfig) -> TrialResult:
         """Execute one trial via Trial."""
         from benchflow.trial import Trial, TrialConfig
 
@@ -428,39 +335,18 @@ class Job:
             job_name=self._job_name,
             jobs_dir=str(self._jobs_dir),
             environment=cfg.environment,
-            skills_dir=self._resolve_skills_dir(task_dir, cfg.skills_dir),
+            skills_dir=cfg.skills_dir,
             sandbox_user=cfg.sandbox_user,
             sandbox_locked_paths=cfg.sandbox_locked_paths,
-            sandbox_setup_timeout=cfg.sandbox_setup_timeout,
             context_root=cfg.context_root,
         )
         trial = await Trial.create(trial_config)
         return await trial.run()
 
-    async def _run_single_task_legacy(
-        self, task_dir: Path, cfg: JobConfig
-    ) -> RunResult:
-        """SDK.run() path — used when _sdk is mocked in tests."""
-        return await self._sdk.run(
-            task_path=task_dir,
-            agent=cfg.agent,
-            model=cfg.model,
-            prompts=cfg.prompts,
-            agent_env=cfg.agent_env,
-            job_name=self._job_name,
-            jobs_dir=str(self._jobs_dir),
-            environment=cfg.environment,
-            skills_dir=self._resolve_skills_dir(task_dir, cfg.skills_dir),
-            sandbox_user=cfg.sandbox_user,
-            sandbox_locked_paths=cfg.sandbox_locked_paths,
-            sandbox_setup_timeout=cfg.sandbox_setup_timeout,
-            context_root=cfg.context_root,
-        )
-
-    async def _run_task(self, task_dir: Path) -> RunResult:
+    async def _run_task(self, task_dir: Path) -> TrialResult:
         """Run a single task with retries."""
         cfg = self._config
-        last_result: RunResult | None = None
+        last_result: TrialResult | None = None
 
         for attempt in range(1, cfg.retry.max_retries + 2):
             if attempt > 1:
@@ -468,11 +354,7 @@ class Job:
                 logger.info(f"Retry backoff: {delay:.1f}s before attempt {attempt}")
                 await asyncio.sleep(delay)
                 self._prune_docker()
-            # Use legacy SDK path if _sdk has been replaced (test compat)
-            if not isinstance(self._sdk, SDK):
-                result = await self._run_single_task_legacy(task_dir, cfg)
-            else:
-                result = await self._run_single_task(task_dir, cfg)
+            result = await self._run_single_task(task_dir, cfg)
             last_result = result
 
             # If succeeded, verifier-errored (terminal), or non-retryable, stop
@@ -535,15 +417,12 @@ class Job:
         start = time.time()
         sem = asyncio.Semaphore(cfg.concurrency)
 
-        async def bounded(td: Path) -> tuple[str, RunResult]:
+        async def bounded(td: Path) -> tuple[str, TrialResult]:
             async with sem:
                 # Jitter start to avoid SSH connection storms at high concurrency
                 import random
-
                 if cfg.concurrency > 16:
-                    await asyncio.sleep(
-                        random.uniform(0, min(cfg.concurrency / 10, 10))
-                    )
+                    await asyncio.sleep(random.uniform(0, min(cfg.concurrency / 10, 10)))
                 result = await self._run_task(td)
                 self._prune_docker()
                 # Log result
@@ -565,7 +444,7 @@ class Job:
         elapsed = time.time() - start
 
         # Separate successful results from unexpected exceptions
-        pairs: list[tuple[str, RunResult]] = []
+        pairs: list[tuple[str, TrialResult]] = []
         for i, r in enumerate(results_or_errors):
             if isinstance(r, BaseException):
                 task_name = remaining[i].name
@@ -573,7 +452,7 @@ class Job:
                 pairs.append(
                     (
                         task_name,
-                        RunResult(
+                        TrialResult(
                             task_name=task_name,
                             error=f"Unexpected: {r}",
                         ),

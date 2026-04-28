@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from benchflow._scoring import (
+from benchflow.contracts.scoring import (
     classify_error,
     classify_verifier_error,
     pass_rate,
@@ -180,7 +180,7 @@ def collect_metrics(
     results_dir = Path(results_dir)
     best: dict[str, dict] = {}
 
-    for rfile in sorted(results_dir.rglob("result.json")):
+    for rfile in results_dir.rglob("result.json"):
         try:
             r = json.loads(rfile.read_text())
             task = r["task_name"]

@@ -1,0 +1,27 @@
+schema_version = 1
+
+[agent]
+name = "gemini"
+description = "Google Gemini CLI via ACP"
+protocol = "acp"
+
+[install]
+cmd = "set -o pipefail; export DEBIAN_FRONTEND=noninteractive; NODE_OK=0; if command -v node >/dev/null 2>&1; then   NODE_VER=$(node -e 'console.log(process.versions.node.split(\".\")[0])' 2>/dev/null || echo 0);   [ \"$NODE_VER\" -ge 22 ] 2>/dev/null && NODE_OK=1; fi; if [ \"$NODE_OK\" = 0 ]; then   apt-get update -qq &&   apt-get install -y -qq curl ca-certificates &&   curl -fsSL https://deb.nodesource.com/setup_22.x | bash - &&   apt-get install -y -qq nodejs; fi >/dev/null 2>&1 && ( command -v gemini >/dev/null 2>&1 || npm install -g @google/gemini-cli@latest >/dev/null 2>&1 ) && command -v gemini >/dev/null 2>&1"
+
+[launch]
+cmd = "gemini --acp --yolo"
+
+[env]
+requires = ["GOOGLE_API_KEY"]
+mapping = { BENCHFLOW_PROVIDER_BASE_URL = "GEMINI_API_BASE_URL", BENCHFLOW_PROVIDER_API_KEY = "GOOGLE_API_KEY" }
+
+[skills]
+mount_paths = ["$HOME/.gemini/skills"]
+
+[reporting]
+otel_enable_env = "GEMINI_OTEL_ENABLE"
+
+[subscription_auth]
+replaces_env = "GEMINI_API_KEY"
+detect_file = "~/.gemini/oauth_creds.json"
+files = [{ host_path = "~/.gemini/oauth_creds.json", container_path = "{home}/.gemini/oauth_creds.json" }, { host_path = "~/.gemini/settings.json", container_path = "{home}/.gemini/settings.json" }, { host_path = "~/.gemini/google_accounts.json", container_path = "{home}/.gemini/google_accounts.json" }]

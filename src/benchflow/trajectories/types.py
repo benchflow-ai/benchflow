@@ -60,9 +60,43 @@ class Trajectory(BaseModel):
         return total
 
     @property
+    def total_cache_tokens(self) -> int:
+        """Sum of cache-read + cache-creation across all exchanges.
+
+        Provider semantics vary: Anthropic emits both
+        ``cache_read_input_tokens`` and ``cache_creation_input_tokens``;
+        OpenAI emits ``cached_tokens``. We sum whatever's present and
+        leave the per-provider distinction to a future per-provider
+        breakdown if a consumer asks for it.
+        """
+        total = 0
+        for ex in self.exchanges:
+            usage = ex.response.body.get("usage", {})
+            total += (usage.get("cache_read_input_tokens", 0) or 0)
+            total += (usage.get("cache_creation_input_tokens", 0) or 0)
+            total += (usage.get("cached_tokens", 0) or 0)
+        return total
+
+    @property
     def total_cost_usd(self) -> float | None:
         """Extract cost if the API returns it (Anthropic does not, OpenAI does not)."""
         return self.metadata.get("cost_usd")
+
+    def usage_summary(self) -> dict[str, int | float | None]:
+        """Project totals onto the BENCHFLOW_USAGE_PATH sidecar shape (PR9).
+
+        Returns the same keys ``read_usage_sidecar`` produces so OTel and
+        sidecar capture paths feed identical fields into ``TrialResult``.
+        Empty/zero counts return as 0 (the agent ran but emitted no usage)
+        rather than None (no source) — distinct from the sidecar which
+        omits unknown fields.
+        """
+        return {
+            "input_tokens": self.total_input_tokens,
+            "output_tokens": self.total_output_tokens,
+            "cache_tokens": self.total_cache_tokens,
+            "cost_usd": self.total_cost_usd,
+        }
 
     @property
     def messages(self) -> list[dict[str, Any]]:
