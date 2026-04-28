@@ -91,10 +91,12 @@ async def test_deploy_skills_uploads_runtime_skills_and_links_shared_tree(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_deploy_skills_chowns_skill_parent_for_pi_acp_layout(tmp_path):
-    """Guards the fix from PR #210 against the regression where
-    `_skill_link_cmd` left `~/.pi/agent` root-owned, breaking pi-acp's
-    `models.json` write under openai-completions providers (vLLM)."""
+async def test_deploy_skills_chowns_full_dir_chain_for_pi_acp_layout(tmp_path):
+    """Guards the fix from PR #211 against the regression where only the
+    symlink's immediate parent (`~/.pi/agent`) was chowned, leaving the
+    intermediate `~/.pi/` root-owned. pi-acp's `session/new` then failed
+    when trying to mkdir `~/.pi/pi-acp` for session state. Earlier PR #210
+    landed half the fix; this test pins the full ancestor chain."""
     env = MagicMock()
     env.exec = AsyncMock(return_value=MagicMock(return_code=0, stdout=""))
     env.upload_dir = AsyncMock()
@@ -116,11 +118,16 @@ async def test_deploy_skills_chowns_skill_parent_for_pi_acp_layout(tmp_path):
     )
 
     cmd = env.exec.await_args.args[0]
-    assert "chown agent:agent /home/agent/.pi/agent" in cmd
-    assert "chown agent:agent /home/agent/.agents" in cmd
-    pi_chown_idx = cmd.index("chown agent:agent /home/agent/.pi/agent")
-    pi_link_idx = cmd.index("ln -sfn /opt/benchflow/skills /home/agent/.pi/agent/skills")
-    assert pi_chown_idx < pi_link_idx, "chown must precede ln to keep parent agent-owned"
+    # Both newly-created dirs must be chowned in one chain — without
+    # `/home/agent/.pi`, pi-acp can't mkdir `~/.pi/pi-acp` for session state.
+    assert "chown agent:agent /home/agent/.pi /home/agent/.pi/agent" in cmd
+    # Single-segment chain stays single-arg.
+    assert "chown agent:agent /home/agent/.agents " in cmd
+    pi_chown = "chown agent:agent /home/agent/.pi /home/agent/.pi/agent"
+    pi_link = "ln -sfn /opt/benchflow/skills /home/agent/.pi/agent/skills"
+    assert cmd.index(pi_chown) < cmd.index(pi_link), (
+        "chown must precede ln so the symlink's ancestors are agent-owned"
+    )
 
 
 @pytest.mark.asyncio
