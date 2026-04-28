@@ -304,8 +304,10 @@ VERIFIER_ENV: dict[str, str] = {
     "PYTEST_ADDOPTS": (
         "-c /dev/null "  # block pyproject.toml/pytest.ini/tox.ini/setup.cfg discovery
         "--confcutdir=/tests "  # block conftest.py walk-up beyond /tests
-        "--rootdir=/app "  # anchor test node IDs to repo root (not /dev from -c)
         "-p no:cacheprovider"
+        # --rootdir is injected dynamically by _build_pytest_addopts() based on
+        # the task's actual workspace, so it works for both /app (Harbor/SWE-bench)
+        # and /root (SkillsBench) conventions.
     ),
     # Block pytest11 entry-point plugins. An agent can modify a pre-installed
     # package's plugin source to forge a reward; -c /dev/null does not block
@@ -345,6 +347,27 @@ VERIFIER_ENV: dict[str, str] = {
 _SAFE_VERIFIER_PATH = VERIFIER_ENV["PATH"]
 _SAFE_VERIFIER_PATH_PARTS = tuple(_SAFE_VERIFIER_PATH.split(":"))
 _RUNTIME_PATH_PREFIXES = ("/tmp", "/var/tmp", "/logs", "/testbed")
+
+_DEFAULT_ROOTDIR = "/app"
+
+
+def _build_pytest_addopts(
+    workspace: str | None = None, plugin_flags: str = ""
+) -> str:
+    """Build PYTEST_ADDOPTS with a dynamic --rootdir based on the workspace.
+
+    Without an explicit --rootdir, -c /dev/null causes pytest to fall back to
+    /dev as rootdir, producing broken test node IDs (../dev/::test_foo).
+    The rootdir must point to a directory that actually exists in the container.
+    """
+    rootdir = workspace or _DEFAULT_ROOTDIR
+    addopts = (
+        f"{VERIFIER_ENV['PYTEST_ADDOPTS']} "
+        f"--rootdir={shlex.quote(rootdir)}"
+    )
+    if plugin_flags:
+        addopts += f" {plugin_flags}"
+    return addopts
 
 # Container-side script to enumerate pre-installed pytest11 entry points.
 # Runs after sandbox_user processes are killed, so the agent cannot install
@@ -800,10 +823,6 @@ async def harden_before_verify(
     verifier_env["CELERY_CONFIG_MODULE"] = ""
     # Auto-discover pytest plugins from root-owned system packages and
     # task.toml declarations. Appends -p flags to the hardened base.
-    base_addopts = VERIFIER_ENV["PYTEST_ADDOPTS"]
     flags = await _discover_pytest_plugin_flags(env, task)
-    if flags:
-        verifier_env["PYTEST_ADDOPTS"] = base_addopts + f" {flags}"
-    else:
-        verifier_env["PYTEST_ADDOPTS"] = base_addopts
+    verifier_env["PYTEST_ADDOPTS"] = _build_pytest_addopts(workspace, flags)
     task.config.verifier.env = verifier_env
