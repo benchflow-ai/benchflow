@@ -91,6 +91,75 @@ async def test_deploy_skills_uploads_runtime_skills_and_links_shared_tree(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_deploy_skills_chowns_full_dir_chain_for_pi_acp_layout(tmp_path):
+    """Guards the fix from PR #211 against the regression where only the
+    symlink's immediate parent (`~/.pi/agent`) was chowned, leaving the
+    intermediate `~/.pi/` root-owned. pi-acp's `session/new` then failed
+    when trying to mkdir `~/.pi/pi-acp` for session state. Earlier PR #210
+    landed half the fix; this test pins the full ancestor chain."""
+    env = MagicMock()
+    env.exec = AsyncMock(return_value=MagicMock(return_code=0, stdout=""))
+    env.upload_dir = AsyncMock()
+    agent_cfg = AgentConfig(
+        name="pi-acp",
+        install_cmd="true",
+        launch_cmd="true",
+        skill_paths=["$HOME/.pi/agent/skills", "$HOME/.agents/skills"],
+    )
+
+    await deploy_skills(
+        env=env,
+        task_path=tmp_path,
+        skills_dir=None,
+        agent_cfg=agent_cfg,
+        sandbox_user="agent",
+        agent_cwd="/workspace",
+        task=_make_task("/opt/benchflow/skills"),
+    )
+
+    cmd = env.exec.await_args.args[0]
+    # Both newly-created dirs must be chowned in one chain — without
+    # `/home/agent/.pi`, pi-acp can't mkdir `~/.pi/pi-acp` for session state.
+    assert "chown agent:agent /home/agent/.pi /home/agent/.pi/agent" in cmd
+    # Single-segment chain stays single-arg.
+    assert "chown agent:agent /home/agent/.agents " in cmd
+    pi_chown = "chown agent:agent /home/agent/.pi /home/agent/.pi/agent"
+    pi_link = "ln -sfn /opt/benchflow/skills /home/agent/.pi/agent/skills"
+    assert cmd.index(pi_chown) < cmd.index(pi_link), (
+        "chown must precede ln so the symlink's ancestors are agent-owned"
+    )
+
+
+@pytest.mark.asyncio
+async def test_deploy_skills_skips_chown_when_no_sandbox_user(tmp_path):
+    """Guards the fix from PR #210: when sandbox_user is None, the chown
+    plumbing must stay no-op so root-only deploys keep working."""
+    env = MagicMock()
+    env.exec = AsyncMock(return_value=MagicMock(return_code=0, stdout=""))
+    env.upload_dir = AsyncMock()
+    agent_cfg = AgentConfig(
+        name="test-agent",
+        install_cmd="true",
+        launch_cmd="true",
+        skill_paths=["$HOME/.agents/skills"],
+    )
+
+    await deploy_skills(
+        env=env,
+        task_path=tmp_path,
+        skills_dir=None,
+        agent_cfg=agent_cfg,
+        sandbox_user=None,
+        agent_cwd="/workspace",
+        task=_make_task("/opt/benchflow/skills"),
+    )
+
+    cmd = env.exec.await_args.args[0]
+    assert "chown" not in cmd
+    assert "ln -sfn /opt/benchflow/skills /root/.agents/skills" in cmd
+
+
+@pytest.mark.asyncio
 async def test_deploy_skills_falls_back_when_local_skills_dir_is_missing(tmp_path):
     env = MagicMock()
     env.exec = AsyncMock(return_value=MagicMock(return_code=0, stdout=""))

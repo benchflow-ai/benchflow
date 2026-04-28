@@ -30,25 +30,81 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _skill_link_cmd(source: str, dest: str) -> str:
-    """Link a shared skills tree into an agent discovery path."""
+def _intermediate_dirs(prefix: str, leaf: str) -> list[str]:
+    """Dirs strictly under prefix down to leaf inclusive, in creation order.
+
+    `mkdir -p {leaf}` creates every missing ancestor as root, but only the
+    dirs returned here get chowned. Without the full chain, pi-acp's
+    `mkdir ~/.pi/pi-acp` for session state hits EACCES on a root-owned
+    `~/.pi/`.
+    """
+    base = prefix.rstrip("/")
+    if not leaf.startswith(base + "/"):
+        return []
+    rel = leaf[len(base) + 1 :]
+    if not rel:
+        return []
+    out: list[str] = []
+    cur = base
+    for seg in rel.split("/"):
+        cur = f"{cur}/{seg}"
+        out.append(cur)
+    return out
+
+
+def _skill_link_cmd(
+    source: str,
+    dest: str,
+    sandbox_user: str | None,
+    chown_chain: list[str],
+) -> str:
+    """Link a shared skills tree into an agent discovery path.
+
+    When sandbox_user is set, mkdir runs as root and every newly-created
+    dir in chown_chain is chowned so the agent can later write into them.
+    Guards the fix for issue #7 — root-owned `~/.pi/` blocking pi-acp's
+    session-state mkdir.
+    """
     if source == dest:
-        return f"mkdir -p {shlex.quote(dest)}"
+        q_dest = shlex.quote(dest)
+        if sandbox_user and chown_chain:
+            q_user = shlex.quote(sandbox_user)
+            q_dirs = " ".join(shlex.quote(d) for d in chown_chain)
+            return f"mkdir -p {q_dest} && chown {q_user}:{q_user} {q_dirs}"
+        return f"mkdir -p {q_dest}"
 
     parent = shlex.quote(str(Path(dest).parent))
     q_source = shlex.quote(source)
     q_dest = shlex.quote(dest)
-    return f"mkdir -p {parent} && rm -rf {q_dest} && ln -sfn {q_source} {q_dest}"
+    chown = ""
+    if sandbox_user and chown_chain:
+        q_user = shlex.quote(sandbox_user)
+        q_dirs = " ".join(shlex.quote(d) for d in chown_chain)
+        chown = f"chown {q_user}:{q_user} {q_dirs} && "
+    return f"mkdir -p {parent} && {chown}rm -rf {q_dest} && ln -sfn {q_source} {q_dest}"
 
 
 async def _link_skill_paths(
-    env, source: str, skill_paths: list[str], home: str, cwd: str
+    env,
+    source: str,
+    skill_paths: list[str],
+    home: str,
+    cwd: str,
+    sandbox_user: str | None,
 ) -> int:
     """Link one shared skills tree into each configured discovery path."""
+    _VALID_PREFIXES = ("$HOME/", "$WORKSPACE/")
+    for sp in skill_paths:
+        if not any(sp.startswith(p) for p in _VALID_PREFIXES):
+            raise ValueError(f"skill_path {sp!r} must start with $HOME/ or $WORKSPACE/")
+
     parts = []
     for sp in skill_paths:
+        prefix = home if sp.startswith("$HOME/") else cwd
         expanded = sp.replace("$HOME", home).replace("$WORKSPACE", cwd)
-        parts.append(_skill_link_cmd(source, expanded))
+        leaf = expanded if source == expanded else str(Path(expanded).parent)
+        chain = _intermediate_dirs(prefix, leaf) if sandbox_user else []
+        parts.append(_skill_link_cmd(source, expanded, sandbox_user, chain))
     if parts:
         cmd = " && ".join(parts)
         result = await env.exec(cmd, timeout_sec=15)
@@ -156,6 +212,7 @@ async def deploy_skills(
             agent_cfg.skill_paths,
             home,
             agent_cwd,
+            sandbox_user,
         )
         if count:
             logger.info(f"Skills distributed to {count} paths for {agent_cfg.name}")
