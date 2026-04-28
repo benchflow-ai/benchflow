@@ -152,7 +152,7 @@ class TestHardenSequence:
         assert "sitecustomize.py" in cleanup_cmd and ".pth" in cleanup_cmd
         assert "-not -path '/tests/*'" in cleanup_cmd
         injected = task.config.verifier.env
-        assert "--rootdir=/app" in injected["PYTEST_ADDOPTS"]
+        assert "--rootdir=/testbed" in injected["PYTEST_ADDOPTS"]
         assert "-p no:cacheprovider" in injected["PYTEST_ADDOPTS"]
         assert injected["PYTHONPATH"] == ""
         assert "PYTHONHOME" not in injected  # breaks Py_Initialize if set to ""
@@ -629,7 +629,7 @@ class TestVerifierEnv:
 
         assert "-c /dev/null" in addopts
         assert "--confcutdir=/tests" in addopts
-        assert "--rootdir=/app" in addopts
+        assert "--rootdir" not in addopts  # injected dynamically by _build_pytest_addopts
         assert "-p no:cacheprovider" in addopts
         assert (
             "PYTHONSAFEPATH" not in VERIFIER_ENV
@@ -685,7 +685,7 @@ class TestVerifierEnv:
     @pytest.mark.asyncio
     async def test_plugin_discovery_failure_graceful(self):
         """If container-side discovery fails, hardening proceeds without extra plugins."""
-        from benchflow._sandbox import VERIFIER_ENV, harden_before_verify
+        from benchflow._sandbox import _build_pytest_addopts, harden_before_verify
 
         def side_effect(cmd, **kwargs):
             if "importlib.metadata" in str(cmd):
@@ -697,7 +697,8 @@ class TestVerifierEnv:
         await harden_before_verify(env, task, sandbox_user=None)
 
         assert (
-            task.config.verifier.env["PYTEST_ADDOPTS"] == VERIFIER_ENV["PYTEST_ADDOPTS"]
+            task.config.verifier.env["PYTEST_ADDOPTS"]
+            == _build_pytest_addopts(workspace=None)
         )
 
     @pytest.mark.asyncio
@@ -858,7 +859,7 @@ class TestVerifierEnv:
     @pytest.mark.parametrize("plugins", [None, []])
     async def test_no_extra_addopts_when_no_plugins(self, plugins):
         """PYTEST_ADDOPTS is not modified when pytest_plugins is None or empty list."""
-        from benchflow._sandbox import VERIFIER_ENV, harden_before_verify
+        from benchflow._sandbox import _build_pytest_addopts, harden_before_verify
 
         env = _make_env(side_effect=_manifest_env(_blank_manifest()))
         task = _make_task()
@@ -866,7 +867,8 @@ class TestVerifierEnv:
         await harden_before_verify(env, task, sandbox_user=None, workspace=None)
 
         assert (
-            task.config.verifier.env["PYTEST_ADDOPTS"] == VERIFIER_ENV["PYTEST_ADDOPTS"]
+            task.config.verifier.env["PYTEST_ADDOPTS"]
+            == _build_pytest_addopts(workspace=None)
         )
         assert task.config.verifier.env.get("PYTEST_DISABLE_PLUGIN_AUTOLOAD") == "1"
 
@@ -877,7 +879,7 @@ class TestVerifierEnv:
         The rebuild must happen unconditionally — not only when task env is populated.
         Without this, a None task env would leave PYTEST_ADDOPTS unset or lost.
         """
-        from benchflow._sandbox import VERIFIER_ENV, harden_before_verify
+        from benchflow._sandbox import _build_pytest_addopts, harden_before_verify
 
         env = _make_env()
         task = _make_task()
@@ -885,7 +887,8 @@ class TestVerifierEnv:
         await harden_before_verify(env, task, sandbox_user=None)
 
         assert (
-            task.config.verifier.env["PYTEST_ADDOPTS"] == VERIFIER_ENV["PYTEST_ADDOPTS"]
+            task.config.verifier.env["PYTEST_ADDOPTS"]
+            == _build_pytest_addopts(workspace=None)
         )
         assert "-c /dev/null" in task.config.verifier.env["PYTEST_ADDOPTS"]
         assert "--confcutdir=/tests" in task.config.verifier.env["PYTEST_ADDOPTS"]
@@ -897,7 +900,7 @@ class TestVerifierEnv:
         Without the re-pin the task could strip -c /dev/null and --confcutdir,
         re-enabling pyproject.toml discovery and conftest walk-up.
         """
-        from benchflow._sandbox import VERIFIER_ENV, harden_before_verify
+        from benchflow._sandbox import _build_pytest_addopts, harden_before_verify
 
         env = _make_env()
         task = _make_task()
@@ -905,7 +908,8 @@ class TestVerifierEnv:
         await harden_before_verify(env, task, sandbox_user=None)
 
         assert (
-            task.config.verifier.env["PYTEST_ADDOPTS"] == VERIFIER_ENV["PYTEST_ADDOPTS"]
+            task.config.verifier.env["PYTEST_ADDOPTS"]
+            == _build_pytest_addopts(workspace=None)
         )
 
     @pytest.mark.asyncio
@@ -920,9 +924,135 @@ class TestVerifierEnv:
         await harden_before_verify(env, task, sandbox_user=None)
 
         addopts = task.config.verifier.env["PYTEST_ADDOPTS"]
-        assert addopts.startswith(VERIFIER_ENV["PYTEST_ADDOPTS"])
+        assert VERIFIER_ENV["PYTEST_ADDOPTS"] in addopts
         assert "-p ctrf" in addopts
         assert "--rootdir=/evil" not in addopts
+
+    @pytest.mark.asyncio
+    async def test_rootdir_follows_workspace(self):
+        """--rootdir is set to the workspace path, not hardcoded /app."""
+        from benchflow._sandbox import harden_before_verify
+
+        env = _make_env()
+        task = _make_task()
+        await harden_before_verify(
+            env, task, sandbox_user=None, workspace="/root"
+        )
+        addopts = task.config.verifier.env["PYTEST_ADDOPTS"]
+        assert "--rootdir=/root" in addopts
+        assert "--rootdir=/app" not in addopts
+
+    @pytest.mark.asyncio
+    async def test_rootdir_defaults_to_app_when_no_workspace(self):
+        """Without a workspace, --rootdir falls back to /app (Harbor convention)."""
+        from benchflow._sandbox import harden_before_verify
+
+        env = _make_env()
+        task = _make_task()
+        await harden_before_verify(
+            env, task, sandbox_user=None, workspace=None
+        )
+        addopts = task.config.verifier.env["PYTEST_ADDOPTS"]
+        assert "--rootdir=/app" in addopts
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("workspace", ["/app", "/testbed", "/root", "/workspace"])
+    async def test_rootdir_matches_various_workspaces(self, workspace):
+        """--rootdir tracks the workspace for any conventional directory."""
+        from benchflow._sandbox import harden_before_verify
+
+        env = _make_env()
+        task = _make_task()
+        await harden_before_verify(
+            env, task, sandbox_user=None, workspace=workspace
+        )
+        addopts = task.config.verifier.env["PYTEST_ADDOPTS"]
+        assert f"--rootdir={workspace}" in addopts
+
+    def test_build_pytest_addopts_security_invariants(self):
+        """_build_pytest_addopts always includes the security-critical flags."""
+        from benchflow._sandbox import _build_pytest_addopts
+
+        for ws in [None, "/app", "/root", "/testbed"]:
+            addopts = _build_pytest_addopts(workspace=ws)
+            assert "-c /dev/null" in addopts
+            assert "--confcutdir=/tests" in addopts
+            assert "-p no:cacheprovider" in addopts
+            assert "--rootdir=" in addopts
+
+    def test_build_pytest_addopts_with_plugins(self):
+        """_build_pytest_addopts appends plugin flags after rootdir."""
+        from benchflow._sandbox import _build_pytest_addopts
+
+        addopts = _build_pytest_addopts(workspace="/root", plugin_flags="-p ctrf -p xdist")
+        assert "--rootdir=/root" in addopts
+        assert "-p ctrf" in addopts
+        assert "-p xdist" in addopts
+
+    def test_build_pytest_addopts_empty_workspace_falls_back(self):
+        """Empty string workspace is falsy — falls back to /app like None."""
+        from benchflow._sandbox import _build_pytest_addopts
+
+        assert "--rootdir=/app" in _build_pytest_addopts(workspace="")
+        assert "--rootdir=/app" in _build_pytest_addopts(workspace=None)
+
+    def test_build_pytest_addopts_no_trailing_space_without_plugins(self):
+        """No trailing whitespace when plugin_flags is empty."""
+        from benchflow._sandbox import _build_pytest_addopts
+
+        addopts = _build_pytest_addopts(workspace="/root", plugin_flags="")
+        assert not addopts.endswith(" ")
+        assert addopts.endswith("--rootdir=/root")
+
+    def test_build_pytest_addopts_quotes_special_chars(self):
+        """Workspace paths with spaces are shell-quoted."""
+        from benchflow._sandbox import _build_pytest_addopts
+
+        addopts = _build_pytest_addopts(workspace="/my workspace")
+        assert "--rootdir='/my workspace'" in addopts
+
+    def test_build_pytest_addopts_single_rootdir(self):
+        """Exactly one --rootdir flag in the output, no duplicates."""
+        from benchflow._sandbox import _build_pytest_addopts
+
+        addopts = _build_pytest_addopts(workspace="/root", plugin_flags="-p ctrf")
+        assert addopts.count("--rootdir") == 1
+
+    @pytest.mark.asyncio
+    async def test_rootdir_not_overridable_by_task_env(self):
+        """A task setting PYTEST_ADDOPTS with --rootdir=/evil cannot win.
+
+        The re-pin in harden_before_verify rebuilds PYTEST_ADDOPTS entirely,
+        so any task-injected rootdir is discarded.
+        """
+        from benchflow._sandbox import harden_before_verify
+
+        env = _make_env()
+        task = _make_task()
+        task.config.verifier.env = {"PYTEST_ADDOPTS": "--rootdir=/evil -p evil"}
+        await harden_before_verify(
+            env, task, sandbox_user=None, workspace="/root"
+        )
+        addopts = task.config.verifier.env["PYTEST_ADDOPTS"]
+        assert "--rootdir=/root" in addopts
+        assert "--rootdir=/evil" not in addopts
+        assert "-p evil" not in addopts
+
+    @pytest.mark.asyncio
+    async def test_successive_harden_calls_use_latest_workspace(self):
+        """Multiple harden_before_verify calls update rootdir to match the workspace."""
+        from benchflow._sandbox import harden_before_verify
+
+        env = _make_env()
+        task = _make_task()
+
+        await harden_before_verify(env, task, sandbox_user=None, workspace="/app")
+        assert "--rootdir=/app" in task.config.verifier.env["PYTEST_ADDOPTS"]
+
+        await harden_before_verify(env, task, sandbox_user=None, workspace="/root")
+        addopts = task.config.verifier.env["PYTEST_ADDOPTS"]
+        assert "--rootdir=/root" in addopts
+        assert "--rootdir=/app" not in addopts
 
     def test_pythonpycacheprefix_set_to_nonexistent(self):
         """PYTHONPYCACHEPREFIX must redirect .pyc lookups away from __pycache__ dirs.
