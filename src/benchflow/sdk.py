@@ -366,12 +366,15 @@ class SDK:
                                 parts = content.split("---", 2)
                                 if len(parts) >= 3:
                                     import yaml
+
                                     try:
                                         fm = yaml.safe_load(parts[1])
                                         desc = fm.get("description", "") if fm else ""
                                     except Exception:
                                         pass
-                            skills.append({"name": name, "desc": desc, "content": content})
+                            skills.append(
+                                {"name": name, "desc": desc, "content": content}
+                            )
                     if skills:
                         break
 
@@ -389,7 +392,9 @@ class SDK:
                 elif skill_nudge == "full":
                     blocks = []
                     for s in skills:
-                        blocks.append(f"<skill name=\"{s['name']}\">\n{s['content']}\n</skill>")
+                        blocks.append(
+                            f'<skill name="{s["name"]}">\n{s["content"]}\n</skill>'
+                        )
                     instruction = "\n\n".join(blocks) + "\n\n" + instruction
 
         if prompts is None:

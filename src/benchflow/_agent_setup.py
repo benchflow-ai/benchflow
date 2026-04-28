@@ -81,9 +81,7 @@ def _skill_link_cmd(
         q_user = shlex.quote(sandbox_user)
         q_dirs = " ".join(shlex.quote(d) for d in chown_chain)
         chown = f"chown {q_user}:{q_user} {q_dirs} && "
-    return (
-        f"mkdir -p {parent} && {chown}rm -rf {q_dest} && ln -sfn {q_source} {q_dest}"
-    )
+    return f"mkdir -p {parent} && {chown}rm -rf {q_dest} && ln -sfn {q_source} {q_dest}"
 
 
 async def _link_skill_paths(
@@ -98,9 +96,7 @@ async def _link_skill_paths(
     _VALID_PREFIXES = ("$HOME/", "$WORKSPACE/")
     for sp in skill_paths:
         if not any(sp.startswith(p) for p in _VALID_PREFIXES):
-            raise ValueError(
-                f"skill_path {sp!r} must start with $HOME/ or $WORKSPACE/"
-            )
+            raise ValueError(f"skill_path {sp!r} must start with $HOME/ or $WORKSPACE/")
 
     parts = []
     for sp in skill_paths:
