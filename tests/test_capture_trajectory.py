@@ -132,7 +132,7 @@ class TestCaptureSessionTrajectory:
         result = _capture_session_trajectory(session)
         assert len(result) == 3
         types = [e["type"] for e in result]
-        assert types == ["tool_call", "agent_message", "agent_thought"]
+        assert types == ["tool_call", "agent_thought", "agent_message"]
 
 
 class TestUserMessageRecording:
