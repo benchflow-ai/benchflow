@@ -552,3 +552,184 @@ class TestIdempotentCapture:
         second = _capture_session_trajectory(session)
         assert len(second) == 4  # P1 events + P2 events
         assert second[:2] == first
+
+
+class TestFlushArrivalOrder:
+    """Verify _flush_agent_text preserves chunk arrival order (PR #214)."""
+
+    def test_thought_before_message_in_same_flush(self) -> None:
+        """Real Claude pattern: thinking block → text block → tool_use block.
+
+        ACP server sends agent_thought_chunk, agent_message_chunk, then
+        tool_call. The flush at tool_call must output thought BEFORE message.
+        """
+        session = ACPSession("s1")
+        session.record_user_prompt("Go")
+        # Claude response: [thinking, text, tool_use]
+        session.handle_update(
+            {
+                "sessionUpdate": "agent_thought_chunk",
+                "content": {"type": "text", "text": "I should check the file"},
+            }
+        )
+        session.handle_update(
+            {
+                "sessionUpdate": "agent_message_chunk",
+                "content": {"type": "text", "text": "Let me look at that."},
+            }
+        )
+        session.handle_update(
+            {
+                "sessionUpdate": "tool_call",
+                "toolCallId": "tc_1",
+                "title": "cat file.txt",
+                "kind": "read",
+            }
+        )
+        session.mark_prompt_end()
+
+        result = _capture_session_trajectory(session)
+        types = [e["type"] for e in result]
+        assert types == ["user_message", "agent_thought", "agent_message", "tool_call"]
+
+    def test_message_before_thought_in_same_flush(self) -> None:
+        """Reverse order: message arrives before thought."""
+        session = ACPSession("s1")
+        session.record_user_prompt("Go")
+        session.handle_update(
+            {
+                "sessionUpdate": "agent_message_chunk",
+                "content": {"type": "text", "text": "Here is the result."},
+            }
+        )
+        session.handle_update(
+            {
+                "sessionUpdate": "agent_thought_chunk",
+                "content": {"type": "text", "text": "Now let me continue."},
+            }
+        )
+        session.handle_update(
+            {
+                "sessionUpdate": "tool_call",
+                "toolCallId": "tc_1",
+                "title": "ls",
+                "kind": "bash",
+            }
+        )
+        session.mark_prompt_end()
+
+        result = _capture_session_trajectory(session)
+        types = [e["type"] for e in result]
+        # message arrived first → message should be before thought
+        assert types == ["user_message", "agent_message", "agent_thought", "tool_call"]
+
+    def test_interleaved_thought_message_thought_not_merged(self) -> None:
+        """[thought, message, thought] must produce 3 events, not merge the thoughts."""
+        session = ACPSession("s1")
+        session.record_user_prompt("Go")
+        session.handle_update(
+            {
+                "sessionUpdate": "agent_thought_chunk",
+                "content": {"type": "text", "text": "first thought"},
+            }
+        )
+        session.handle_update(
+            {
+                "sessionUpdate": "agent_message_chunk",
+                "content": {"type": "text", "text": "a message"},
+            }
+        )
+        session.handle_update(
+            {
+                "sessionUpdate": "agent_thought_chunk",
+                "content": {"type": "text", "text": "second thought"},
+            }
+        )
+        session.mark_prompt_end()
+
+        result = _capture_session_trajectory(session)
+        types = [e["type"] for e in result]
+        assert types == [
+            "user_message",
+            "agent_thought",
+            "agent_message",
+            "agent_thought",
+        ]
+        thoughts = [e for e in result if e["type"] == "agent_thought"]
+        assert thoughts[0]["text"] == "first thought"
+        assert thoughts[1]["text"] == "second thought"
+
+    def test_consecutive_same_type_chunks_merged(self) -> None:
+        """Multiple thought chunks before a tool_call merge into one event."""
+        session = ACPSession("s1")
+        session.record_user_prompt("Go")
+        for i in range(5):
+            session.handle_update(
+                {
+                    "sessionUpdate": "agent_thought_chunk",
+                    "content": {"type": "text", "text": f"part{i} "},
+                }
+            )
+        session.handle_update(
+            {
+                "sessionUpdate": "tool_call",
+                "toolCallId": "tc_1",
+                "title": "ls",
+                "kind": "bash",
+            }
+        )
+        session.mark_prompt_end()
+
+        result = _capture_session_trajectory(session)
+        thoughts = [e for e in result if e["type"] == "agent_thought"]
+        assert len(thoughts) == 1
+        assert thoughts[0]["text"] == "part0 part1 part2 part3 part4 "
+
+    def test_only_user_message_no_agent_response(self) -> None:
+        """Agent timeout immediately: only user_message in trajectory."""
+        session = ACPSession("s1")
+        session.record_user_prompt("Solve it")
+        # Timeout — no agent response at all
+
+        result = _capture_session_trajectory(session)
+        assert len(result) == 1
+        assert result[0] == {"type": "user_message", "text": "Solve it"}
+
+    def test_pending_cleared_between_flushes(self) -> None:
+        """Chunks after a flush go into a fresh pending list."""
+        session = ACPSession("s1")
+        session.record_user_prompt("Go")
+
+        session.handle_update(
+            {
+                "sessionUpdate": "agent_thought_chunk",
+                "content": {"type": "text", "text": "before tool"},
+            }
+        )
+        session.handle_update(
+            {
+                "sessionUpdate": "tool_call",
+                "toolCallId": "tc_1",
+                "title": "ls",
+                "kind": "bash",
+            }
+        )
+        # After tool_call flush, new chunks start fresh
+        session.handle_update(
+            {
+                "sessionUpdate": "agent_message_chunk",
+                "content": {"type": "text", "text": "after tool"},
+            }
+        )
+        session.mark_prompt_end()
+
+        result = _capture_session_trajectory(session)
+        types = [e["type"] for e in result]
+        assert types == [
+            "user_message",
+            "agent_thought",
+            "tool_call",
+            "agent_message",
+        ]
+        assert result[1]["text"] == "before tool"
+        assert result[3]["text"] == "after tool"
