@@ -320,7 +320,8 @@ class Trial:
             cfg.primary_agent, cfg.primary_model, cfg.agent_env
         )
         self._resolved_prompts = SDK._resolve_prompts(
-            cfg.task_path, cfg.prompts,
+            cfg.task_path,
+            cfg.prompts,
             skills_dir=cfg.skills_dir,
             skill_nudge=(cfg.agent_env or {}).get("BENCHFLOW_SKILL_NUDGE", ""),
             agent=cfg.primary_agent,
