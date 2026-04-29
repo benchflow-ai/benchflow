@@ -136,7 +136,7 @@ class TestCaptureSessionTrajectory:
 
 
 class TestUserMessageRecording:
-    """Verify that user prompts appear in the trajectory (issue #745)."""
+    """Verify that user prompts appear in the trajectory (PR #214)."""
 
     def test_user_prompt_recorded(self) -> None:
         session = ACPSession("s1")
@@ -240,7 +240,7 @@ class TestUserMessageRecording:
         assert result[5]["text"] == "Answer 2"
 
     def test_message_not_cumulative_across_prompts(self) -> None:
-        """agent_message text must not accumulate previous prompts' text (issue #745 comment)."""
+        """agent_message text must not accumulate previous prompts' text (PR #214)."""
         session = ACPSession("s1")
 
         session.record_user_prompt("P1")

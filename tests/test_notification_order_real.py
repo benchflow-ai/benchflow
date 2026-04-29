@@ -5,7 +5,7 @@ notification order, then runs a real prompt through a mock agent.
 It confirms that agent_thought_chunk and agent_message_chunk arrive
 BETWEEN tool_call notifications, not all-at-the-end.
 
-This is the critical assumption behind the _flush_agent_text fix for #745:
+This is the critical assumption behind the _flush_agent_text fix in PR #214:
 if notifications were batched, flushing at tool_call boundaries wouldn't
 split the text.
 """

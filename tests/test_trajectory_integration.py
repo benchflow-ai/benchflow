@@ -4,7 +4,7 @@ Verifies the end-to-end flow: execute_prompts → session recording →
 _capture_session_trajectory → JSONL serialization. Uses real mock ACP
 agents over stdio, not mocked session objects.
 
-Covers issues reported in skillsbench#745:
+Guards the fix from PR #214 (skillsbench#745):
   - user messages must appear in trajectory
   - agent_message/agent_thought must not be cumulative across prompts
   - chronological interleaving must be preserved
