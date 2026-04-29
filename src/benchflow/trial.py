@@ -285,6 +285,16 @@ class Trial:
             return None
         return self._build_result()
 
+    def _require_trial_dir(self) -> Path:
+        if self._trial_dir is None:
+            raise RuntimeError("Trial.setup() must run before this phase")
+        return self._trial_dir
+
+    def _require_started_at(self) -> datetime:
+        if self._started_at is None:
+            raise RuntimeError("Trial.setup() must run before building a result")
+        return self._started_at
+
     # ── Phase 1: SETUP (host-side, no container yet) ──
 
     async def setup(self) -> None:
@@ -397,6 +407,7 @@ class Trial:
         This method installs the primary agent to set up the sandbox baseline.
         """
         cfg = self._config
+        trial_dir = self._require_trial_dir()
 
         cwd_result = await self._env.exec("pwd", timeout_sec=10)
         agent_cwd = (cwd_result.stdout or "").strip() or "/app"
@@ -419,7 +430,7 @@ class Trial:
             return
 
         agent_name = cfg.primary_agent
-        self._agent_cfg = await install_agent(self._env, agent_name, self._trial_dir)
+        self._agent_cfg = await install_agent(self._env, agent_name, trial_dir)
         cred_home = f"/home/{cfg.sandbox_user}" if cfg.sandbox_user else "/root"
         await write_credential_files(
             self._env,
@@ -462,6 +473,7 @@ class Trial:
     async def connect(self) -> None:
         """Open an ACP connection to the agent. Can be called multiple times."""
         cfg = self._config
+        trial_dir = self._require_trial_dir()
         t0 = datetime.now()
 
         self._acp_client, self._session, self._agent_name = await connect_acp(
@@ -471,7 +483,7 @@ class Trial:
             agent_env=self._agent_env,
             sandbox_user=cfg.sandbox_user,
             model=cfg.primary_model,
-            trial_dir=self._trial_dir,
+            trial_dir=trial_dir,
             environment=cfg.environment,
             agent_cwd=self._agent_cwd,
         )
@@ -509,6 +521,8 @@ class Trial:
         session is reused across multiple turns.
         """
         effective_prompts = prompts or self._resolved_prompts
+        if self._acp_client is None:
+            raise RuntimeError("Trial.connect() must run before execute()")
         prev_session_tools = getattr(self, "_session_tool_count", 0)
         t0 = datetime.now()
 
@@ -801,6 +815,8 @@ class Trial:
             await self.execute(prompts=prompts)
 
             if multi_role:
+                if current_role is None:
+                    raise RuntimeError("No active role after scene turn execution")
                 for recipient, content in await self._read_scene_outbox(current_role):
                     turn_counter += 1
                     inbox.setdefault(recipient, []).append(
@@ -1002,6 +1018,7 @@ class Trial:
         Updates _agent_launch so disconnect() kills the correct process.
         """
         cfg = self._config
+        trial_dir = self._require_trial_dir()
         t0 = datetime.now()
 
         agent_launch = AGENT_LAUNCH.get(role.agent, role.agent)
@@ -1014,7 +1031,7 @@ class Trial:
         )
 
         if role.agent != cfg.primary_agent:
-            agent_cfg = await install_agent(self._env, role.agent, self._trial_dir)
+            agent_cfg = await install_agent(self._env, role.agent, trial_dir)
             cred_home = f"/home/{cfg.sandbox_user}" if cfg.sandbox_user else "/root"
             await write_credential_files(
                 self._env,
@@ -1036,7 +1053,7 @@ class Trial:
             agent_env=agent_env,
             sandbox_user=cfg.sandbox_user,
             model=role.model,
-            trial_dir=self._trial_dir,
+            trial_dir=trial_dir,
             environment=cfg.environment,
             agent_cwd=self._agent_cwd,
         )
@@ -1069,8 +1086,9 @@ class Trial:
     def _build_result(self) -> RunResult:
         from benchflow.sdk import SDK
 
+        trial_dir = self._require_trial_dir()
         return SDK._build_result(
-            self._trial_dir,
+            trial_dir,
             task_name=self._config.task_path.name,
             trial_name=self._trial_name or "",
             agent=self._config.primary_agent,
@@ -1084,6 +1102,6 @@ class Trial:
             partial_trajectory=self._partial_trajectory,
             trajectory_source=self._trajectory_source,
             rewards=self._rewards,
-            started_at=self._started_at,
+            started_at=self._require_started_at(),
             timing=self._timing,
         )

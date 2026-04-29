@@ -93,6 +93,7 @@ import logging
 import shlex
 from datetime import datetime
 from pathlib import Path
+from typing import Any, cast
 
 from harbor.models.task.task import Task
 from harbor.models.trial.paths import TrialPaths
@@ -131,20 +132,25 @@ def _write_rewards_jsonl(
     """
     if not rewards:
         return
-    events: list[dict] = []
+    events: list[dict[str, Any]] = []
     rubric = rewards.get("rubric")
     if isinstance(rubric, list):
         for i, item in enumerate(rubric):
+            if not isinstance(item, dict):
+                continue
+            rubric_item = cast(dict[str, Any], item)
             events.append(
                 {
                     "ts": finished_at.isoformat(),
                     "type": "process",
                     "source": "verifier_rubric",
-                    "value": item.get("score", 0.0),
-                    "tag": item.get("name", f"rubric_{i}"),
+                    "value": rubric_item.get("score", 0.0),
+                    "tag": rubric_item.get("name", f"rubric_{i}"),
                     "step_index": i,
                     "meta": {
-                        k: v for k, v in item.items() if k not in ("score", "name")
+                        k: v
+                        for k, v in rubric_item.items()
+                        if k not in ("score", "name")
                     },
                 }
             )

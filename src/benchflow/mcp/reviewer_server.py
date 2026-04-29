@@ -49,7 +49,7 @@ def create_reviewer_server(
     Requires: pip install fastmcp
     """
     try:
-        from fastmcp import FastMCP
+        from fastmcp import FastMCP  # ty: ignore[unresolved-import]
     except ImportError as e:
         raise ImportError(
             "fastmcp required for MCP reviewer server. "
@@ -74,7 +74,7 @@ def create_reviewer_server(
         Returns:
             Structured review feedback as a string.
         """
-        import google.generativeai as genai
+        import google.generativeai as genai  # ty: ignore[unresolved-import]
 
         api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
         if not api_key:

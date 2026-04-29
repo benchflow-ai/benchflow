@@ -21,9 +21,13 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from benchflow.agents.registry import AGENT_LAUNCH, AGENTS, AgentConfig
+
+if TYPE_CHECKING:
+    from benchflow.models import RunResult
+    from benchflow.trial import TrialConfig
 
 logger = logging.getLogger(__name__)
 
@@ -65,12 +69,13 @@ class Environment:
         task_path = Path(task_path)
         task = Task(task_path)
         trial_name = trial_name or task_path.name
+        trial_paths: Any = None
         inner = _create_environment(
             environment_type=backend,
             task=task,
             task_path=task_path,
             trial_name=trial_name,
-            trial_paths=None,
+            trial_paths=trial_paths,  # ty: ignore[invalid-argument-type]
         )
         return cls(inner=inner, task_path=task_path, backend=backend)
 
