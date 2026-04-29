@@ -287,7 +287,7 @@ class TestUserMessageRecording:
 
 
 class TestChronologicalEventOrder:
-    """Verify events appear in the actual order they occurred."""
+    """Verify events appear in the actual order they occurred (PR #214)."""
 
     def test_thought_before_tool_call(self) -> None:
         """Agent thinks, then calls a tool — thought should appear first."""
@@ -475,7 +475,7 @@ class TestChronologicalEventOrder:
 
 
 class TestLegacyFallback:
-    """Sessions with no events log (direct tool_calls manipulation) still work."""
+    """Sessions with no events log (direct tool_calls manipulation) still work (PR #214)."""
 
     def test_direct_tool_calls_no_events(self) -> None:
         """Simulate an older shim that appends to session.tool_calls directly."""
@@ -497,7 +497,7 @@ class TestLegacyFallback:
 
 
 class TestIdempotentCapture:
-    """Calling _capture_session_trajectory multiple times is safe."""
+    """Calling _capture_session_trajectory multiple times is safe (PR #214)."""
 
     def test_repeated_capture_same_result(self) -> None:
         session = ACPSession("s1")
