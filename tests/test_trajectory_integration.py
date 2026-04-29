@@ -158,7 +158,7 @@ class TestTrajectoryJsonlSerialization:
             restored = [json.loads(line) for line in jsonl.splitlines()]
 
             assert len(restored) == len(trajectory)
-            for original, parsed in zip(trajectory, restored):
+            for original, parsed in zip(trajectory, restored, strict=True):
                 assert original["type"] == parsed["type"]
                 if "text" in original:
                     assert original["text"] == parsed["text"]
