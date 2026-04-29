@@ -107,9 +107,7 @@ class ACPSession:
             )
             self.tool_calls.append(record)
             self._tool_call_map[record.tool_call_id] = record
-            self.events.append(
-                {"type": "tool_call", "record": record}
-            )
+            self.events.append({"type": "tool_call", "record": record})
 
         elif update_type == "tool_call_update":
             tc_id = update.get("toolCallId", "")
@@ -123,9 +121,7 @@ class ACPSession:
                 )
                 self.tool_calls.append(record)
                 self._tool_call_map[tc_id] = record
-                self.events.append(
-                    {"type": "tool_call", "record": record}
-                )
+                self.events.append({"type": "tool_call", "record": record})
             try:
                 status = ToolCallStatus(update.get("status", "in_progress"))
             except ValueError:

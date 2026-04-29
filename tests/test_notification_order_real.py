@@ -46,9 +46,7 @@ class TestNotificationOrderReal:
 
             session.handle_update = logging_handle
 
-            await execute_prompts(
-                client, session, ["Prompt 1", "Prompt 2"], timeout=10
-            )
+            await execute_prompts(client, session, ["Prompt 1", "Prompt 2"], timeout=10)
 
             # Verify we got notifications
             assert len(raw_updates) > 0
@@ -57,9 +55,7 @@ class TestNotificationOrderReal:
             # For multi-turn agent: each prompt sends thought_chunk, tool_call,
             # tool_call_update, then message_chunk.
             # So we expect: [thought, tool_call, tool_call_update, message, thought, ...]
-            tc_indices = [
-                i for i, u in enumerate(raw_updates) if u == "tool_call"
-            ]
+            tc_indices = [i for i, u in enumerate(raw_updates) if u == "tool_call"]
             msg_indices = [
                 i for i, u in enumerate(raw_updates) if u == "agent_message_chunk"
             ]
@@ -69,7 +65,9 @@ class TestNotificationOrderReal:
 
             assert len(tc_indices) == 2, f"Expected 2 tool_calls, got {tc_indices}"
             assert len(msg_indices) == 2, f"Expected 2 messages, got {msg_indices}"
-            assert len(thought_indices) == 2, f"Expected 2 thoughts, got {thought_indices}"
+            assert len(thought_indices) == 2, (
+                f"Expected 2 thoughts, got {thought_indices}"
+            )
 
             # Thought for turn 1 must come BEFORE tool_call for turn 1
             assert thought_indices[0] < tc_indices[0], (

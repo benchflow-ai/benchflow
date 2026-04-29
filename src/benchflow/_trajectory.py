@@ -39,9 +39,7 @@ def _capture_session_trajectory(session: ACPSession | None) -> list[dict]:
                     }
                 )
             elif event["type"] in ("user_message", "agent_message", "agent_thought"):
-                trajectory.append(
-                    {"type": event["type"], "text": event["text"]}
-                )
+                trajectory.append({"type": event["type"], "text": event["text"]})
         return trajectory
 
     # Legacy fallback: session has no event log (e.g. older agent shims

@@ -126,9 +126,7 @@ class TestExecutePromptsTrajectory:
             await client.initialize()
             session = await client.session_new()
 
-            trajectory, _ = await execute_prompts(
-                client, session, ["Go"], timeout=10
-            )
+            trajectory, _ = await execute_prompts(client, session, ["Go"], timeout=10)
 
             again = _capture_session_trajectory(session)
             assert trajectory == again
