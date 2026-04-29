@@ -67,8 +67,7 @@ class ACPSession:
         self.stop_reason: StopReason | None = None
         self.created_at = datetime.now()
         self.events: list[dict] = []
-        self._msg_cursor: int = 0
-        self._thought_cursor: int = 0
+        self._pending_text: list[dict] = []
         self._events_active: bool = False
 
     def record_user_prompt(self, text: str) -> None:
@@ -82,16 +81,18 @@ class ACPSession:
         self._flush_agent_text()
 
     def _flush_agent_text(self) -> None:
-        """Flush accumulated message/thought chunks as events since the last flush."""
-        msg_text = "".join(self.message_chunks[self._msg_cursor :])
-        if msg_text:
-            self.events.append({"type": "agent_message", "text": msg_text})
-        self._msg_cursor = len(self.message_chunks)
-
-        thought_text = "".join(self.thought_chunks[self._thought_cursor :])
-        if thought_text:
-            self.events.append({"type": "agent_thought", "text": thought_text})
-        self._thought_cursor = len(self.thought_chunks)
+        """Flush pending text events, merging consecutive same-type chunks."""
+        if not self._pending_text:
+            return
+        current = self._pending_text[0].copy()
+        for event in self._pending_text[1:]:
+            if event["type"] == current["type"]:
+                current["text"] += event["text"]
+            else:
+                self.events.append(current)
+                current = event.copy()
+        self.events.append(current)
+        self._pending_text.clear()
 
     def handle_update(self, update: dict) -> None:
         """Process a session/update notification."""
@@ -136,24 +137,30 @@ class ACPSession:
         elif update_type == "agent_message_chunk":
             content = update.get("content", {})
             if content.get("type") == "text":
-                self.message_chunks.append(content.get("text", ""))
+                text = content.get("text", "")
+                self.message_chunks.append(text)
+                self._pending_text.append({"type": "agent_message", "text": text})
 
         elif update_type == "text_update":
             # Used by openclaw shim — full text (not chunked)
             text = update.get("text", "")
             if text:
                 self.message_chunks.append(text)
+                self._pending_text.append({"type": "agent_message", "text": text})
 
         elif update_type == "agent_thought":
             # Used by openclaw shim — full thought (not chunked)
             text = update.get("text", "")
             if text:
                 self.thought_chunks.append(text)
+                self._pending_text.append({"type": "agent_thought", "text": text})
 
         elif update_type == "agent_thought_chunk":
             content = update.get("content", {})
             if content.get("type") == "text":
-                self.thought_chunks.append(content.get("text", ""))
+                text = content.get("text", "")
+                self.thought_chunks.append(text)
+                self._pending_text.append({"type": "agent_thought", "text": text})
 
     @property
     def full_message(self) -> str:
