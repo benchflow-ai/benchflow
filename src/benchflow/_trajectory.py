@@ -12,11 +12,42 @@ logger = logging.getLogger(__name__)
 def _capture_session_trajectory(session: ACPSession | None) -> list[dict]:
     """Extract trajectory data from an ACP session.
 
+    Produces a chronologically ordered list of events: user_message,
+    tool_call, agent_message, and agent_thought — interleaved in the
+    order they actually occurred during the session.
+
     Safe to call even if the session is None or in a partial state (e.g. after timeout).
     """
     if session is None:
         return []
-    trajectory: list[dict] = []
+
+    if session._events_active:
+        # Flush any trailing agent text that hasn't been recorded yet.
+        session._flush_agent_text()
+        trajectory: list[dict] = []
+        for event in session.events:
+            if event["type"] == "tool_call":
+                tc = event["record"]
+                trajectory.append(
+                    {
+                        "type": "tool_call",
+                        "tool_call_id": tc.tool_call_id,
+                        "kind": tc.kind,
+                        "title": tc.title,
+                        "status": tc.status.value,
+                        "content": tc.content,
+                    }
+                )
+            elif event["type"] in ("user_message", "agent_message", "agent_thought"):
+                trajectory.append(
+                    {"type": event["type"], "text": event["text"]}
+                )
+        return trajectory
+
+    # Legacy fallback: session has no event log (e.g. older agent shims
+    # that manipulate session.tool_calls directly without going through
+    # handle_update). Preserves the old flat behaviour.
+    trajectory = []
     for tc in session.tool_calls:
         trajectory.append(
             {
@@ -29,19 +60,9 @@ def _capture_session_trajectory(session: ACPSession | None) -> list[dict]:
             }
         )
     if session.full_message:
-        trajectory.append(
-            {
-                "type": "agent_message",
-                "text": session.full_message,
-            }
-        )
+        trajectory.append({"type": "agent_message", "text": session.full_message})
     if session.full_thought:
-        trajectory.append(
-            {
-                "type": "agent_thought",
-                "text": session.full_thought,
-            }
-        )
+        trajectory.append({"type": "agent_thought", "text": session.full_thought})
     return trajectory
 
 
