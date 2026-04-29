@@ -128,6 +128,10 @@ class ACPClient:
 
         if method == "session/update" and self._session:
             update = params.get("update", {})
+            logger.debug(
+                f"ACPClient session/update: {update.get('sessionUpdate', '?')}"
+                f" toolCallId={update.get('toolCallId', '')}"
+            )
             self._session.handle_update(update)
 
     async def _handle_agent_request(self, msg: dict[str, Any]) -> None:
