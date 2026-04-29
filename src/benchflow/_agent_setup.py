@@ -171,6 +171,36 @@ async def install_agent(env, agent: str, trial_dir: Path) -> AgentConfig | None:
     return agent_cfg
 
 
+async def apply_web_tool_policy(
+    env,
+    agent: str,
+    agent_cfg: AgentConfig | None,
+    home: str,
+    *,
+    disallow: bool,
+) -> None:
+    """Apply an agent-specific hard web-tool disable in the agent home."""
+    if not disallow or not agent_cfg or not agent_cfg.disallow_web_tools_setup_cmd:
+        return
+
+    cmd = (
+        f"export BENCHFLOW_AGENT_HOME={shlex.quote(home)}; "
+        f"{agent_cfg.disallow_web_tools_setup_cmd}"
+    )
+    result = await env.exec(cmd, timeout_sec=15)
+    if result.return_code != 0:
+        stdout = (getattr(result, "stdout", "") or "").strip()
+        stderr = (getattr(result, "stderr", "") or "").strip()
+        details = [f"exit code {result.return_code}", f"command: {cmd}"]
+        if stdout:
+            details.append(f"stdout: {stdout}")
+        if stderr:
+            details.append(f"stderr: {stderr}")
+        raise RuntimeError(
+            f"Failed to apply no-web policy for {agent}: {'; '.join(details)}"
+        )
+
+
 async def deploy_skills(
     env,
     task_path: Path,

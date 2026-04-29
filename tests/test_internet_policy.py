@@ -1,5 +1,5 @@
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -8,6 +8,7 @@ from benchflow.trial import (
     Scene,
     Trial,
     TrialConfig,
+    _agent_launch_with_web_policy,
     _apply_web_policy,
     _skill_nudge,
     _task_disallows_internet,
@@ -46,6 +47,30 @@ def test_skill_nudge_falls_back_to_host_env(monkeypatch):
     monkeypatch.setenv("BENCHFLOW_SKILL_NUDGE", "name")
 
     assert _skill_nudge({}) == "name"
+
+
+def test_host_skill_nudge_is_only_prompt_mutation(monkeypatch, tmp_path):
+    from benchflow.sdk import SDK
+
+    monkeypatch.setenv("BENCHFLOW_SKILL_NUDGE", "name")
+    (tmp_path / "instruction.md").write_text("Do the thing.")
+    skill_dir = tmp_path / "environment" / "skills" / "alpha"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: alpha\ndescription: Alpha skill.\n---\n# Alpha\n"
+    )
+
+    prompts = SDK._resolve_prompts(
+        tmp_path,
+        prompts=None,
+        skill_nudge=_skill_nudge({}),
+        agent="claude-agent-acp",
+    )
+
+    assert prompts[0].startswith("Skills available at ~/.claude/skills: alpha.")
+    assert prompts[0].endswith("Do the thing.")
+    assert "Internet access is disabled" not in prompts[0]
+    assert "Do not browse" not in prompts[0]
 
 
 def test_create_environment_preserves_agent_network_for_llm_runs(tmp_path):
@@ -134,10 +159,80 @@ async def test_connect_as_applies_web_policy_to_role_env(tmp_path):
     )
 
 
-def test_openhands_launch_disables_browsing_when_policy_marker_is_set():
-    from benchflow.agents.registry import AGENT_LAUNCH
+def test_codex_launch_disable_is_gated_by_web_policy():
+    assert _agent_launch_with_web_policy("codex-acp", disallow=False) == "codex-acp"
+    assert _agent_launch_with_web_policy("codex-acp", disallow=True) == (
+        "codex-acp -c tools.web_search=false"
+    )
 
-    launch = AGENT_LAUNCH["openhands"]
 
-    assert "BENCHFLOW_DISALLOW_WEB_TOOLS" in launch
-    assert "enable_browsing = false" in launch
+def test_agent_registry_has_supported_hard_web_disable_snippets():
+    from benchflow.agents.registry import AGENT_LAUNCH, AGENTS
+
+    assert "enable_browsing = false" in AGENTS["openhands"].disallow_web_tools_setup_cmd
+    assert "BENCHFLOW_DISALLOW_WEB_TOOLS" not in AGENT_LAUNCH["openhands"]
+
+    claude_cmd = AGENTS["claude-agent-acp"].disallow_web_tools_setup_cmd
+    assert "WebSearch" in claude_cmd
+    assert "WebFetch" in claude_cmd
+    assert "permissions" in claude_cmd
+
+    gemini_cmd = AGENTS["gemini"].disallow_web_tools_setup_cmd
+    assert "google_web_search" in gemini_cmd
+    assert "web_fetch" in gemini_cmd
+
+    opencode_cmd = AGENTS["opencode"].disallow_web_tools_setup_cmd
+    assert "webfetch" in opencode_cmd
+
+
+@pytest.mark.asyncio
+async def test_connect_as_applies_hard_web_policy_to_role_agent(tmp_path):
+    from benchflow.agents.registry import AGENTS
+
+    role = Role(name="coder", agent="gemini", model="gemini/test")
+    cfg = TrialConfig(
+        task_path=tmp_path / "task",
+        scenes=[
+            Scene(
+                roles=[
+                    Role(name="primary", agent="claude-agent-acp", model="test-model"),
+                    role,
+                ]
+            )
+        ],
+    )
+    trial = Trial.__new__(Trial)
+    trial._config = cfg
+    trial._env = {}
+    trial._trial_dir = tmp_path
+    trial._timing = {}
+    trial._agent_cwd = "/app"
+    trial._phase = "idle"
+    trial._disallow_web_tools = True
+
+    with (
+        patch("benchflow.trial.resolve_agent_env", return_value={}),
+        patch(
+            "benchflow.trial.install_agent",
+            new=AsyncMock(return_value=AGENTS["gemini"]),
+        ),
+        patch("benchflow.trial.write_credential_files", new=AsyncMock()),
+        patch("benchflow.trial.upload_subscription_auth", new=AsyncMock()),
+        patch("benchflow.trial.apply_web_tool_policy", new=AsyncMock()) as apply_policy,
+        patch("benchflow.trial.connect_acp", new=AsyncMock()) as connect_acp,
+    ):
+        connect_acp.return_value = (MagicMock(), MagicMock(), "agent")
+        await trial.connect_as(role)
+
+    apply_policy.assert_awaited_once()
+    assert apply_policy.await_args.args[:4] == (
+        {},
+        "gemini",
+        AGENTS["gemini"],
+        "/home/agent",
+    )
+    assert apply_policy.await_args.kwargs["disallow"] is True
+    assert (
+        connect_acp.await_args.kwargs["agent_env"]["BENCHFLOW_DISALLOW_WEB_TOOLS"]
+        == "1"
+    )

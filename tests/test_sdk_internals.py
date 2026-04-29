@@ -276,14 +276,14 @@ class TestResolvePrompts:
         result = self._resolve(tmp_path, prompts=None)
         assert result == ["hello"]
 
-    def test_no_web_nudge_prepends_instruction(self, tmp_path):
+    def test_resolve_prompts_does_not_add_no_web_text(self, tmp_path):
         from benchflow.sdk import SDK
 
         (tmp_path / "instruction.md").write_text("Do the thing.")
-        result = SDK._resolve_prompts(tmp_path, prompts=None, no_web_nudge=True)
+        result = SDK._resolve_prompts(tmp_path, prompts=None)
 
-        assert result[0].startswith("Internet access is disabled for this task.")
-        assert result[0].endswith("Do the thing.")
+        assert result == ["Do the thing."]
+        assert "Internet access is disabled" not in result[0]
 
 
 # ── _init_trial ──

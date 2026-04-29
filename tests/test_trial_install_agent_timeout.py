@@ -87,3 +87,38 @@ async def test_install_agent_forwards_sandbox_setup_timeout(
     snapshot_build_config_mock.assert_awaited_once()
     seed_verifier_workspace_mock.assert_awaited_once()
     lockdown_paths_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_install_agent_applies_web_policy_after_sandbox_setup(
+    tmp_path, monkeypatch
+):
+    trial = _make_trial(tmp_path, agent="openhands", sandbox_setup_timeout=41)
+    trial._disallow_web_tools = True
+
+    order = []
+
+    async def setup_sandbox_user_mock(*args, **kwargs):
+        order.append("sandbox")
+        return "/home/agent"
+
+    async def apply_web_tool_policy_mock(*args, **kwargs):
+        order.append("web-policy")
+
+    install_agent_mock = AsyncMock(return_value=MagicMock())
+
+    monkeypatch.setattr("benchflow.trial.install_agent", install_agent_mock)
+    monkeypatch.setattr("benchflow.trial.write_credential_files", AsyncMock())
+    monkeypatch.setattr("benchflow.trial.upload_subscription_auth", AsyncMock())
+    monkeypatch.setattr("benchflow.trial._snapshot_build_config", AsyncMock())
+    monkeypatch.setattr("benchflow.trial._seed_verifier_workspace", AsyncMock())
+    monkeypatch.setattr("benchflow.trial.deploy_skills", AsyncMock())
+    monkeypatch.setattr("benchflow.trial.lockdown_paths", AsyncMock())
+    monkeypatch.setattr("benchflow.trial.setup_sandbox_user", setup_sandbox_user_mock)
+    monkeypatch.setattr(
+        "benchflow.trial.apply_web_tool_policy", apply_web_tool_policy_mock
+    )
+
+    await trial.install_agent()
+
+    assert order == ["sandbox", "web-policy"]

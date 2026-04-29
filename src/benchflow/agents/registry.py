@@ -45,6 +45,7 @@ Look at the existing entries below for worked examples:
 """
 
 import base64
+import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -94,6 +95,19 @@ _OPENCLAW_SHIM = (Path(__file__).parent / "openclaw_acp_shim.py").read_text()
 
 # Path to the Pi launch wrapper (bridges BENCHFLOW_PROVIDER_* → Pi config)
 _PI_LAUNCHER = (Path(__file__).parent / "pi_acp_launcher.py").read_text()
+
+
+def _json_settings_merge(path: str, mutator: str) -> str:
+    """Idempotent JSON-settings merge as a one-line bash snippet."""
+    py = (
+        "import json,os,pathlib;"
+        f"p=pathlib.Path(os.path.expandvars(os.path.expanduser({path!r})));"
+        "p.parent.mkdir(parents=True, exist_ok=True);"
+        "d=json.loads(p.read_text()) if p.exists() and p.read_text().strip() else {};"
+        f"{mutator};"
+        "p.write_text(json.dumps(d, indent=2) + '\\n')"
+    )
+    return f"python3 -c {shlex.quote(py)}"
 
 
 @dataclass
@@ -170,6 +184,13 @@ class AgentConfig:
     supports_acp_set_model: bool = True
     # Some ACP agents configure the model through env/config at launch time and
     # do not implement session/set_model (e.g. OpenHands CLI ACP).
+    disallow_web_tools_setup_cmd: str = ""
+    # Shell snippet run after credentials/subscription auth are written when
+    # BenchFlow's no-web policy is active. Uses BENCHFLOW_AGENT_HOME for the
+    # target home so settings land in the same home the agent will run from.
+    disallow_web_tools_launch_suffix: str = ""
+    # String appended to launch_cmd when BenchFlow's no-web policy is active.
+    # Use for agents whose supported toggle is a launch/config override.
 
 
 # Agent registry — all supported agents
@@ -201,6 +222,12 @@ AGENTS: dict[str, AgentConfig] = {
                     "~/.claude/.credentials.json", "{home}/.claude/.credentials.json"
                 ),
             ],
+        ),
+        disallow_web_tools_setup_cmd=_json_settings_merge(
+            "$BENCHFLOW_AGENT_HOME/.claude/settings.json",
+            'd.setdefault("permissions",{}).setdefault("deny",[]);'
+            '[d["permissions"]["deny"].append(t) for t in ["WebSearch","WebFetch"] '
+            'if t not in d["permissions"]["deny"]]',
         ),
     ),
     "pi-acp": AgentConfig(
@@ -281,6 +308,7 @@ AGENTS: dict[str, AgentConfig] = {
                 HostAuthFile("~/.codex/auth.json", "{home}/.codex/auth.json"),
             ],
         ),
+        disallow_web_tools_launch_suffix=" -c tools.web_search=false",
     ),
     "gemini": AgentConfig(
         name="gemini",
@@ -317,6 +345,13 @@ AGENTS: dict[str, AgentConfig] = {
                 ),
             ],
         ),
+        disallow_web_tools_setup_cmd=_json_settings_merge(
+            "$BENCHFLOW_AGENT_HOME/.gemini/settings.json",
+            'd.setdefault("tools",{}).setdefault("exclude",[]);'
+            '[d["tools"]["exclude"].append(t) for t in '
+            '["google_web_search","web_fetch"] '
+            'if t not in d["tools"]["exclude"]]',
+        ),
     ),
     "opencode": AgentConfig(
         name="opencode",
@@ -339,6 +374,10 @@ AGENTS: dict[str, AgentConfig] = {
         env_mapping={
             "BENCHFLOW_PROVIDER_BASE_URL": "OPENAI_BASE_URL",
         },
+        disallow_web_tools_setup_cmd=_json_settings_merge(
+            "$BENCHFLOW_AGENT_HOME/.config/opencode/opencode.json",
+            'd.setdefault("tools",{})["webfetch"]=False',
+        ),
     ),
     "openhands": AgentConfig(
         name="openhands",
@@ -382,9 +421,6 @@ AGENTS: dict[str, AgentConfig] = {
             "mkdir -p ~/.openhands && "
             'printf \'{"llm":{"model":"%s","api_key":"%s"}}\' '
             '"$LLM_MODEL" "$LLM_API_KEY" > ~/.openhands/agent_settings.json && '
-            'if [ "${BENCHFLOW_DISALLOW_WEB_TOOLS:-}" = "1" ]; then '
-            "printf '[agent]\\nenable_browsing = false\\n' > ~/.openhands/config.toml; "
-            "fi && "
             "openhands acp --always-approve --override-with-envs"
         ),
         protocol="acp",
@@ -395,6 +431,11 @@ AGENTS: dict[str, AgentConfig] = {
             "BENCHFLOW_PROVIDER_API_KEY": "LLM_API_KEY",
         },
         supports_acp_set_model=False,
+        disallow_web_tools_setup_cmd=(
+            'mkdir -p "$BENCHFLOW_AGENT_HOME/.openhands" && '
+            "printf '[agent]\\nenable_browsing = false\\n' "
+            '> "$BENCHFLOW_AGENT_HOME/.openhands/config.toml"'
+        ),
     ),
 }
 

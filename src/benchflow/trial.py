@@ -48,7 +48,11 @@ from typing import Any
 
 from benchflow._acp_run import connect_acp, execute_prompts
 from benchflow._agent_env import resolve_agent_env
-from benchflow._agent_setup import deploy_skills, install_agent
+from benchflow._agent_setup import (
+    apply_web_tool_policy,
+    deploy_skills,
+    install_agent,
+)
 from benchflow._credentials import upload_subscription_auth, write_credential_files
 from benchflow._env_setup import (
     _create_environment,
@@ -67,7 +71,7 @@ from benchflow._trajectory import (
     _scrape_agent_trajectory,
 )
 from benchflow.acp.client import ACPClient, ACPError
-from benchflow.agents.registry import AGENT_LAUNCH
+from benchflow.agents.registry import AGENT_LAUNCH, AGENTS
 from benchflow.models import RunResult, TrajectorySource
 from benchflow.user import BaseUser, RoundResult
 
@@ -87,6 +91,17 @@ def _apply_web_policy(agent_env: dict[str, str], *, disallow: bool) -> dict[str,
     if not disallow:
         return agent_env
     return {**agent_env, _DISALLOW_WEB_TOOLS_ENV: "1"}
+
+
+def _agent_launch_with_web_policy(agent: str, *, disallow: bool) -> str:
+    """Return launch command, appending the agent's no-web launch knob if any."""
+    launch = AGENT_LAUNCH.get(agent, agent)
+    if not disallow:
+        return launch
+    agent_cfg = AGENTS.get(agent)
+    if agent_cfg and agent_cfg.disallow_web_tools_launch_suffix:
+        return launch + agent_cfg.disallow_web_tools_launch_suffix
+    return launch
 
 
 def _skill_nudge(agent_env: dict[str, str] | None) -> str:
@@ -363,9 +378,11 @@ class Trial:
             skills_dir=cfg.skills_dir,
             skill_nudge=_skill_nudge(cfg.agent_env),
             agent=cfg.primary_agent,
-            no_web_nudge=self._disallow_web_tools,
         )
-        self._agent_launch = AGENT_LAUNCH.get(cfg.primary_agent, cfg.primary_agent)
+        self._agent_launch = _agent_launch_with_web_policy(
+            cfg.primary_agent,
+            disallow=self._disallow_web_tools,
+        )
 
         # Copy task dir to temp when Dockerfile mutations are needed
         # (_inject_skills writes into environment/_deps/, stage_dockerfile
@@ -480,6 +497,13 @@ class Trial:
                 workspace=self._agent_cwd,
                 timeout_sec=cfg.sandbox_setup_timeout,
             )
+        await apply_web_tool_policy(
+            self._env,
+            agent_name,
+            self._agent_cfg,
+            cred_home,
+            disallow=self._disallow_web_tools,
+        )
         await _snapshot_build_config(self._env, workspace=self._agent_cwd)
         await _seed_verifier_workspace(
             self._env, workspace=self._agent_cwd, sandbox_user=cfg.sandbox_user
@@ -1054,12 +1078,15 @@ class Trial:
         trial_dir = self._require_trial_dir()
         t0 = datetime.now()
 
-        agent_launch = AGENT_LAUNCH.get(role.agent, role.agent)
         # Merge cfg.agent_env (config-level) with role.env (role-specific) so
         # provider creds from YAML reach the agent. role.env wins on overlap.
-        disallow_web_tools = (
-            _task_disallows_internet(getattr(self, "_task", None))
-            and role.agent != "oracle"
+        disallow_web_tools = getattr(self, "_disallow_web_tools", None)
+        if disallow_web_tools is None:
+            disallow_web_tools = _task_disallows_internet(getattr(self, "_task", None))
+        disallow_web_tools = bool(disallow_web_tools and role.agent != "oracle")
+        agent_launch = _agent_launch_with_web_policy(
+            role.agent,
+            disallow=disallow_web_tools,
         )
         agent_env = _apply_web_policy(
             resolve_agent_env(
@@ -1083,6 +1110,13 @@ class Trial:
             )
             if agent_env.get("_BENCHFLOW_SUBSCRIPTION_AUTH"):
                 await upload_subscription_auth(self._env, role.agent, cred_home)
+            await apply_web_tool_policy(
+                self._env,
+                role.agent,
+                agent_cfg,
+                cred_home,
+                disallow=disallow_web_tools,
+            )
 
         self._agent_launch = agent_launch
 

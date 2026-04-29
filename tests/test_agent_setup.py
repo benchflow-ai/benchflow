@@ -1,12 +1,13 @@
 """Tests for agent install and skill deployment setup helpers."""
 
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from benchflow._agent_setup import deploy_skills, install_agent
+from benchflow._agent_setup import apply_web_tool_policy, deploy_skills, install_agent
 from benchflow.agents.registry import AgentConfig
 from benchflow.models import AgentInstallError
 
@@ -248,3 +249,73 @@ async def test_install_agent_writes_command_stdout_and_stderr_on_failure(
     assert "uv: command not found" in log_text
     assert err.stdout == log_text
     assert "ID=ubuntu" in err.diagnostics
+
+
+@pytest.mark.asyncio
+async def test_apply_web_tool_policy_runs_agent_setup_command(tmp_path):
+    calls = []
+
+    async def exec_cmd(cmd, *, timeout_sec=None, **kwargs):
+        calls.append((cmd, timeout_sec, kwargs))
+        result = subprocess.run(
+            cmd,
+            shell=True,
+            text=True,
+            capture_output=True,
+            timeout=timeout_sec,
+        )
+        return SimpleNamespace(
+            return_code=result.returncode,
+            stdout=result.stdout,
+            stderr=result.stderr,
+        )
+
+    env = SimpleNamespace(exec=exec_cmd)
+    home = tmp_path / "agent home"
+    agent_cfg = AgentConfig(
+        name="test-agent",
+        install_cmd="true",
+        launch_cmd="true",
+        disallow_web_tools_setup_cmd=(
+            'mkdir -p "$BENCHFLOW_AGENT_HOME" && '
+            'printf disabled > "$BENCHFLOW_AGENT_HOME/no-web"'
+        ),
+    )
+
+    await apply_web_tool_policy(
+        env,
+        "test-agent",
+        agent_cfg,
+        str(home),
+        disallow=True,
+    )
+
+    assert (home / "no-web").read_text() == "disabled"
+    assert len(calls) == 1
+    cmd, timeout_sec, kwargs = calls[0]
+    assert cmd.startswith("export BENCHFLOW_AGENT_HOME=")
+    assert 'printf disabled > "$BENCHFLOW_AGENT_HOME/no-web"' in cmd
+    assert timeout_sec == 15
+    assert kwargs == {}
+
+
+@pytest.mark.asyncio
+async def test_apply_web_tool_policy_is_gated_off_when_allowed():
+    env = MagicMock()
+    env.exec = AsyncMock()
+    agent_cfg = AgentConfig(
+        name="test-agent",
+        install_cmd="true",
+        launch_cmd="true",
+        disallow_web_tools_setup_cmd="false",
+    )
+
+    await apply_web_tool_policy(
+        env,
+        "test-agent",
+        agent_cfg,
+        "/home/agent",
+        disallow=False,
+    )
+
+    env.exec.assert_not_called()
