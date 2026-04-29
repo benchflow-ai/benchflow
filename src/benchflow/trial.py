@@ -66,11 +66,37 @@ from benchflow._trajectory import (
     _scrape_agent_trajectory,
 )
 from benchflow.acp.client import ACPClient, ACPError
-from benchflow.agents.registry import AGENT_LAUNCH
+from benchflow.agents.registry import AGENT_LAUNCH, AGENTS
 from benchflow.models import RunResult, TrajectorySource
 from benchflow.user import BaseUser, RoundResult
 
 logger = logging.getLogger(__name__)
+
+
+_NO_WEB_TOOLS_PROMPT = (
+    "You have no web access for this task. Do not use any web search or "
+    "web fetch tool; solve using only the local environment."
+)
+
+
+def _read_disallow_web_tools(task_path: Path) -> bool:
+    """Read [environment] disallow_web_tools from task.toml.
+
+    Harbor 0.3.0's ``EnvironmentConfig`` does not declare this field, so
+    pydantic drops it silently. Read raw TOML until the harbor pin bumps
+    to a release that preserves it.
+    """
+    import tomllib
+
+    toml_path = task_path / "task.toml"
+    if not toml_path.exists():
+        return False
+    try:
+        data = tomllib.loads(toml_path.read_text())
+    except Exception as e:
+        logger.warning("Failed to parse %s for disallow_web_tools: %s", toml_path, e)
+        return False
+    return bool(data.get("environment", {}).get("disallow_web_tools", False))
 
 
 @dataclass
@@ -219,6 +245,10 @@ class TrialConfig:
 class Trial:
     """Decomposed trial lifecycle with independently-callable phases."""
 
+    # Class-level default so test stubs that bypass __init__ via
+    # Trial.__new__() still see a sane value when connect_as() reads it.
+    _disallow_web_tools: bool = False
+
     def __init__(self, config: TrialConfig) -> None:
         self._config = config
         self._phase = "created"
@@ -237,6 +267,7 @@ class Trial:
         self._timeout: int = 0
         self._timing: dict[str, float] = {}
         self._effective_locked: list[str] = []
+        self._disallow_web_tools: bool = False
 
         # Populated by install_agent()
         self._agent_cfg: Any = None
@@ -320,12 +351,41 @@ class Trial:
             cfg.primary_agent, cfg.primary_model, cfg.agent_env
         )
         self._resolved_prompts = SDK._resolve_prompts(
-            cfg.task_path, cfg.prompts,
+            cfg.task_path,
+            cfg.prompts,
             skills_dir=cfg.skills_dir,
             skill_nudge=(cfg.agent_env or {}).get("BENCHFLOW_SKILL_NUDGE", ""),
             agent=cfg.primary_agent,
         )
         self._agent_launch = AGENT_LAUNCH.get(cfg.primary_agent, cfg.primary_agent)
+
+        # Read disallow_web_tools directly from task.toml — harbor 0.3.0's
+        # EnvironmentConfig silently drops unknown fields, so this can't be
+        # read off self._task.config.environment yet. Drop this block once
+        # benchflow's harbor pin includes the field.
+        self._disallow_web_tools = _read_disallow_web_tools(cfg.task_path)
+        if self._disallow_web_tools:
+            agent_cfg = AGENTS.get(cfg.primary_agent)
+            if agent_cfg and agent_cfg.disallow_web_tools_launch_suffix:
+                self._agent_launch = (
+                    self._agent_launch + agent_cfg.disallow_web_tools_launch_suffix
+                )
+            has_hard_knob = bool(
+                agent_cfg
+                and (
+                    agent_cfg.disallow_web_tools_install_suffix
+                    or agent_cfg.disallow_web_tools_launch_suffix
+                )
+            )
+            if not has_hard_knob:
+                logger.warning(
+                    "Agent %r has no upstream knob to disable web tools; "
+                    "falling back to a soft prompt prefix only.",
+                    cfg.primary_agent,
+                )
+            self._resolved_prompts = [
+                f"{_NO_WEB_TOOLS_PROMPT}\n\n{p}" for p in self._resolved_prompts
+            ]
 
         # Copy task dir to temp when Dockerfile mutations are needed
         # (_inject_skills writes into environment/_deps/, stage_dockerfile
@@ -418,7 +478,12 @@ class Trial:
             return
 
         agent_name = cfg.primary_agent
-        self._agent_cfg = await install_agent(self._env, agent_name, self._trial_dir)
+        self._agent_cfg = await install_agent(
+            self._env,
+            agent_name,
+            self._trial_dir,
+            disallow_web_tools=self._disallow_web_tools,
+        )
         cred_home = f"/home/{cfg.sandbox_user}" if cfg.sandbox_user else "/root"
         await write_credential_files(
             self._env,
@@ -1004,6 +1069,10 @@ class Trial:
         t0 = datetime.now()
 
         agent_launch = AGENT_LAUNCH.get(role.agent, role.agent)
+        if self._disallow_web_tools:
+            role_cfg = AGENTS.get(role.agent)
+            if role_cfg and role_cfg.disallow_web_tools_launch_suffix:
+                agent_launch = agent_launch + role_cfg.disallow_web_tools_launch_suffix
         # Merge cfg.agent_env (config-level) with role.env (role-specific) so
         # provider creds from YAML reach the agent. role.env wins on overlap.
         agent_env = resolve_agent_env(
@@ -1013,7 +1082,12 @@ class Trial:
         )
 
         if role.agent != cfg.primary_agent:
-            agent_cfg = await install_agent(self._env, role.agent, self._trial_dir)
+            agent_cfg = await install_agent(
+                self._env,
+                role.agent,
+                self._trial_dir,
+                disallow_web_tools=self._disallow_web_tools,
+            )
             cred_home = f"/home/{cfg.sandbox_user}" if cfg.sandbox_user else "/root"
             await write_credential_files(
                 self._env,

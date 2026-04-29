@@ -69,13 +69,27 @@ async def _link_skill_paths(
     return len(parts)
 
 
-async def install_agent(env, agent: str, trial_dir: Path) -> AgentConfig | None:
-    """Install agent in sandbox and return its config."""
+async def install_agent(
+    env,
+    agent: str,
+    trial_dir: Path,
+    *,
+    disallow_web_tools: bool = False,
+) -> AgentConfig | None:
+    """Install agent in sandbox and return its config.
+
+    When ``disallow_web_tools`` is True, the agent's
+    ``disallow_web_tools_install_suffix`` (if any) is appended to the install
+    command — typically writing a settings file that disables the agent's
+    built-in web tools.
+    """
     agent_base = agent.split()[0]
     agent_cfg = AGENTS.get(agent_base)
     if agent_base not in AGENT_INSTALLERS:
         return agent_cfg
     install_cmd = AGENT_INSTALLERS[agent_base]
+    if disallow_web_tools and agent_cfg and agent_cfg.disallow_web_tools_install_suffix:
+        install_cmd = install_cmd + agent_cfg.disallow_web_tools_install_suffix
     install_timeout = agent_cfg.install_timeout if agent_cfg else 900
     logger.info(f"Installing {agent_base} in sandbox (timeout={install_timeout}s)...")
     install_result = await env.exec(

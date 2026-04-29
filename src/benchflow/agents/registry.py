@@ -45,6 +45,7 @@ Look at the existing entries below for worked examples:
 """
 
 import base64
+import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -94,6 +95,27 @@ _OPENCLAW_SHIM = (Path(__file__).parent / "openclaw_acp_shim.py").read_text()
 
 # Path to the Pi launch wrapper (bridges BENCHFLOW_PROVIDER_* → Pi config)
 _PI_LAUNCHER = (Path(__file__).parent / "pi_acp_launcher.py").read_text()
+
+
+def _json_settings_merge(path: str, mutator: str) -> str:
+    """Idempotent JSON-settings merge as a one-line bash snippet.
+
+    ``path`` is the target file (under $HOME, supports ~ expansion).
+    ``mutator`` is a Python expression operating on the in-scope ``d`` dict
+    (loaded from the file or {}). Result is written back as JSON.
+
+    Used to enable the web-tool deny-list in claude / gemini / opencode
+    settings without overwriting user state from subscription-auth copy.
+    """
+    py = (
+        "import json,os,pathlib;"
+        f"p=pathlib.Path(os.path.expanduser({path!r}));"
+        "p.parent.mkdir(parents=True, exist_ok=True);"
+        "d=json.loads(p.read_text()) if p.exists() else {};"
+        f"{mutator};"
+        "p.write_text(json.dumps(d))"
+    )
+    return f"python3 -c {shlex.quote(py)}"
 
 
 @dataclass
@@ -170,6 +192,15 @@ class AgentConfig:
     supports_acp_set_model: bool = True
     # Some ACP agents configure the model through env/config at launch time and
     # do not implement session/set_model (e.g. OpenHands CLI ACP).
+    disallow_web_tools_install_suffix: str = ""
+    # Bash snippet appended to ``install_cmd`` when the task's
+    # ``disallow_web_tools`` flag is on. Use for agents whose web-tool toggle
+    # lives in a config file written at install time (claude settings.json,
+    # gemini settings.json, opencode opencode.json, openhands config.toml).
+    disallow_web_tools_launch_suffix: str = ""
+    # String appended to ``launch_cmd`` when ``disallow_web_tools`` is on.
+    # Use for agents whose toggle is a launch flag (codex-acp's
+    # ``-c tools.web_search=false``).
 
 
 # Agent registry — all supported agents
@@ -201,6 +232,17 @@ AGENTS: dict[str, AgentConfig] = {
                     "~/.claude/.credentials.json", "{home}/.claude/.credentials.json"
                 ),
             ],
+        ),
+        # claude-agent-acp loads ~/.claude/settings.json via the Claude Agent
+        # SDK's settingSources=["user","project","local"]; permissions.deny
+        # rules are honored without any wrapper change.
+        # See: https://github.com/zed-industries/claude-code-acp/blob/main/src/acp-agent.ts
+        disallow_web_tools_install_suffix=" && "
+        + _json_settings_merge(
+            "~/.claude/settings.json",
+            'd.setdefault("permissions",{}).setdefault("deny",[]);'
+            '[d["permissions"]["deny"].append(t) for t in ["WebSearch","WebFetch"] '
+            'if t not in d["permissions"]["deny"]]',
         ),
     ),
     "pi-acp": AgentConfig(
@@ -281,6 +323,10 @@ AGENTS: dict[str, AgentConfig] = {
                 HostAuthFile("~/.codex/auth.json", "{home}/.codex/auth.json"),
             ],
         ),
+        # codex-acp parses CliConfigOverrides::parse() and forwards `-c k=v`
+        # to the underlying codex runtime. Disables the built-in web_search
+        # tool. See: https://github.com/zed-industries/codex-acp/blob/main/src/main.rs
+        disallow_web_tools_launch_suffix=" -c tools.web_search=false",
     ),
     "gemini": AgentConfig(
         name="gemini",
@@ -317,6 +363,17 @@ AGENTS: dict[str, AgentConfig] = {
                 ),
             ],
         ),
+        # gemini-cli builds excludeTools from settings.tools.exclude. Merges
+        # with any settings.json copied from the host via subscription_auth.
+        # See: packages/cli/src/config/config.ts (mergeExcludeTools).
+        disallow_web_tools_install_suffix=" && "
+        + _json_settings_merge(
+            "~/.gemini/settings.json",
+            'd.setdefault("tools",{}).setdefault("exclude",[]);'
+            '[d["tools"]["exclude"].append(t) for t in '
+            '["google_web_search","web_fetch"] '
+            'if t not in d["tools"]["exclude"]]',
+        ),
     ),
     "opencode": AgentConfig(
         name="opencode",
@@ -339,6 +396,14 @@ AGENTS: dict[str, AgentConfig] = {
         env_mapping={
             "BENCHFLOW_PROVIDER_BASE_URL": "OPENAI_BASE_URL",
         },
+        # opencode honors per-tool permission overrides in opencode.json's
+        # ``tools`` map. Built-in is ``webfetch``; no built-in web search.
+        # See: https://github.com/sst/opencode/blob/dev/packages/opencode/src/config/config.ts
+        disallow_web_tools_install_suffix=" && "
+        + _json_settings_merge(
+            "~/.config/opencode/opencode.json",
+            'd.setdefault("tools",{})["webfetch"]=False',
+        ),
     ),
     "openhands": AgentConfig(
         name="openhands",
@@ -392,6 +457,14 @@ AGENTS: dict[str, AgentConfig] = {
             "BENCHFLOW_PROVIDER_API_KEY": "LLM_API_KEY",
         },
         supports_acp_set_model=False,
+        # OpenHands' BrowsingAgent / browser tool is disabled via
+        # ``[agent] enable_browsing = false`` in ~/.openhands/config.toml.
+        # See AgentConfig.enable_browsing in OpenHands core/config/agent_config.py.
+        disallow_web_tools_install_suffix=(
+            " && mkdir -p ~/.openhands && "
+            "printf '[agent]\\nenable_browsing = false\\n' "
+            "> ~/.openhands/config.toml"
+        ),
     ),
 }
 
