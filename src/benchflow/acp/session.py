@@ -49,6 +49,11 @@ class ACPSession:
     Accumulates streaming chunks (message_chunks, thought_chunks) and
     tool-call records as session/update notifications arrive.  Use
     ``full_message`` / ``full_thought`` to read the assembled text.
+
+    The ``events`` list records every significant event in chronological
+    order (user prompts, tool calls, message/thought boundaries) so that
+    ``_capture_session_trajectory`` can produce a faithful interleaved
+    trajectory instead of a flat blob.
     """
 
     def __init__(self, session_id: str):
@@ -61,12 +66,41 @@ class ACPSession:
         self._tool_call_map: dict[str, ToolCallRecord] = {}
         self.stop_reason: StopReason | None = None
         self.created_at = datetime.now()
+        self.events: list[dict] = []
+        self._pending_text: list[dict] = []
+        self._events_active: bool = False
+
+    def record_user_prompt(self, text: str) -> None:
+        """Record a user prompt. Call before sending each ACP prompt."""
+        self._events_active = True
+        self._flush_agent_text()
+        self.events.append({"type": "user_message", "text": text})
+
+    def mark_prompt_end(self) -> None:
+        """Flush pending agent text after a prompt completes."""
+        self._flush_agent_text()
+
+    def _flush_agent_text(self) -> None:
+        """Flush pending text events, merging consecutive same-type chunks."""
+        if not self._pending_text:
+            return
+        current = self._pending_text[0].copy()
+        for event in self._pending_text[1:]:
+            if event["type"] == current["type"]:
+                current["text"] += event["text"]
+            else:
+                self.events.append(current)
+                current = event.copy()
+        self.events.append(current)
+        self._pending_text.clear()
 
     def handle_update(self, update: dict) -> None:
         """Process a session/update notification."""
+        self._events_active = True
         update_type = update.get("sessionUpdate")
 
         if update_type == "tool_call":
+            self._flush_agent_text()
             record = ToolCallRecord(
                 tool_call_id=update.get("toolCallId", ""),
                 title=update.get("title", ""),
@@ -74,13 +108,13 @@ class ACPSession:
             )
             self.tool_calls.append(record)
             self._tool_call_map[record.tool_call_id] = record
+            self.events.append({"type": "tool_call", "record": record})
 
         elif update_type == "tool_call_update":
             tc_id = update.get("toolCallId", "")
             record = self._tool_call_map.get(tc_id)
             if not record:
-                # Auto-create record for agents that skip the initial tool_call
-                # notification (e.g. Gemini CLI sends only tool_call_update)
+                self._flush_agent_text()
                 record = ToolCallRecord(
                     tool_call_id=tc_id,
                     title=update.get("title", ""),
@@ -88,6 +122,7 @@ class ACPSession:
                 )
                 self.tool_calls.append(record)
                 self._tool_call_map[tc_id] = record
+                self.events.append({"type": "tool_call", "record": record})
             try:
                 status = ToolCallStatus(update.get("status", "in_progress"))
             except ValueError:
@@ -98,24 +133,30 @@ class ACPSession:
         elif update_type == "agent_message_chunk":
             content = update.get("content", {})
             if content.get("type") == "text":
-                self.message_chunks.append(content.get("text", ""))
+                text = content.get("text", "")
+                self.message_chunks.append(text)
+                self._pending_text.append({"type": "agent_message", "text": text})
 
         elif update_type == "text_update":
             # Used by openclaw shim — full text (not chunked)
             text = update.get("text", "")
             if text:
                 self.message_chunks.append(text)
+                self._pending_text.append({"type": "agent_message", "text": text})
 
         elif update_type == "agent_thought":
             # Used by openclaw shim — full thought (not chunked)
             text = update.get("text", "")
             if text:
                 self.thought_chunks.append(text)
+                self._pending_text.append({"type": "agent_thought", "text": text})
 
         elif update_type == "agent_thought_chunk":
             content = update.get("content", {})
             if content.get("type") == "text":
-                self.thought_chunks.append(content.get("text", ""))
+                text = content.get("text", "")
+                self.thought_chunks.append(text)
+                self._pending_text.append({"type": "agent_thought", "text": text})
 
     @property
     def full_message(self) -> str:

@@ -11,6 +11,7 @@ import json
 import logging
 import shutil
 import tempfile
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from string import Template
@@ -385,7 +386,7 @@ class SkillEvaluator:
     async def run(
         self,
         agents: list[str],
-        models: list[str] | None = None,
+        models: Sequence[str | None] | None = None,
         environment: str = "docker",
         jobs_dir: str = "jobs",
         no_baseline: bool = False,
@@ -406,13 +407,15 @@ class SkillEvaluator:
         """
         # Resolve models
         if models is None:
-            models = [None] * len(agents)
+            resolved_models: list[str | None] = [None] * len(agents)
         elif len(models) == 1 and len(agents) > 1:
-            models = models * len(agents)
+            resolved_models = list(models) * len(agents)
         elif len(models) != len(agents):
             raise ValueError(
                 f"models length ({len(models)}) must match agents ({len(agents)}) or be 1"
             )
+        else:
+            resolved_models = list(models)
 
         # Create temp directory for ephemeral tasks (local var, not instance)
         tmp_dir = Path(tempfile.mkdtemp(prefix="benchflow-skill-eval-"))
@@ -437,7 +440,7 @@ class SkillEvaluator:
             all_results: list[CaseResult] = []
 
             # Run each agent
-            for agent, model in zip(agents, models, strict=False):
+            for agent, model in zip(agents, resolved_models, strict=False):
                 agent_label = agent.split("/")[-1] if "/" in agent else agent
 
                 # With-skill run
@@ -466,7 +469,9 @@ class SkillEvaluator:
                     all_results.extend(baseline_results)
 
             # Compute lifts
-            agent_lifts = self._compute_lifts(all_results, agents, models, no_baseline)
+            agent_lifts = self._compute_lifts(
+                all_results, agents, resolved_models, no_baseline
+            )
 
             return SkillEvalResult(
                 skill_name=self.dataset.skill_name,

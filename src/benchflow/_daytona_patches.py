@@ -6,7 +6,7 @@ SDK is only touched when a Daytona environment is actually being built.
 
 import asyncio
 import logging
-from typing import Any
+from typing import Any, cast
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +97,7 @@ def apply() -> None:
         )
         return SessionCommandLogsResponse(output="", stdout="", stderr="")
 
-    AsyncProcess.get_session_command_logs = _patched_get_session_command_logs  # type: ignore[method-assign]
+    async_process_cls = cast(Any, AsyncProcess)
+    async_process_cls.get_session_command_logs = _patched_get_session_command_logs
     _PATCHED = True
     logger.debug("daytona SDK patches applied")

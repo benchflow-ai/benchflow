@@ -39,6 +39,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import os
 import shlex
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -47,7 +48,11 @@ from typing import Any
 
 from benchflow._acp_run import connect_acp, execute_prompts
 from benchflow._agent_env import resolve_agent_env
-from benchflow._agent_setup import deploy_skills, install_agent
+from benchflow._agent_setup import (
+    apply_web_tool_policy,
+    deploy_skills,
+    install_agent,
+)
 from benchflow._credentials import upload_subscription_auth, write_credential_files
 from benchflow._env_setup import (
     _create_environment,
@@ -66,11 +71,44 @@ from benchflow._trajectory import (
     _scrape_agent_trajectory,
 )
 from benchflow.acp.client import ACPClient, ACPError
-from benchflow.agents.registry import AGENT_LAUNCH
+from benchflow.agents.registry import AGENT_LAUNCH, AGENTS
 from benchflow.models import RunResult, TrajectorySource
 from benchflow.user import BaseUser, RoundResult
 
 logger = logging.getLogger(__name__)
+
+_DISALLOW_WEB_TOOLS_ENV = "BENCHFLOW_DISALLOW_WEB_TOOLS"
+
+
+def _task_disallows_internet(task: Any) -> bool:
+    """Return True when task.toml requests no internet for the agent task."""
+    env_config = getattr(getattr(task, "config", None), "environment", None)
+    return getattr(env_config, "allow_internet", True) is False
+
+
+def _apply_web_policy(agent_env: dict[str, str], *, disallow: bool) -> dict[str, str]:
+    """Inject BenchFlow's no-web policy marker into agent env when requested."""
+    if not disallow:
+        return agent_env
+    return {**agent_env, _DISALLOW_WEB_TOOLS_ENV: "1"}
+
+
+def _agent_launch_with_web_policy(agent: str, *, disallow: bool) -> str:
+    """Return launch command, appending the agent's no-web launch knob if any."""
+    launch = AGENT_LAUNCH.get(agent, agent)
+    if not disallow:
+        return launch
+    agent_cfg = AGENTS.get(agent)
+    if agent_cfg and agent_cfg.disallow_web_tools_launch_suffix:
+        return launch + agent_cfg.disallow_web_tools_launch_suffix
+    return launch
+
+
+def _skill_nudge(agent_env: dict[str, str] | None) -> str:
+    """Read skill nudge from explicit agent env or the host environment."""
+    return (agent_env or {}).get("BENCHFLOW_SKILL_NUDGE") or os.environ.get(
+        "BENCHFLOW_SKILL_NUDGE", ""
+    )
 
 
 @dataclass
@@ -237,6 +275,7 @@ class Trial:
         self._timeout: int = 0
         self._timing: dict[str, float] = {}
         self._effective_locked: list[str] = []
+        self._disallow_web_tools: bool = False
 
         # Populated by install_agent()
         self._agent_cfg: Any = None
@@ -285,6 +324,16 @@ class Trial:
             return None
         return self._build_result()
 
+    def _require_trial_dir(self) -> Path:
+        if self._trial_dir is None:
+            raise RuntimeError("Trial.setup() must run before this phase")
+        return self._trial_dir
+
+    def _require_started_at(self) -> datetime:
+        if self._started_at is None:
+            raise RuntimeError("Trial.setup() must run before building a result")
+        return self._started_at
+
     # ── Phase 1: SETUP (host-side, no container yet) ──
 
     async def setup(self) -> None:
@@ -316,16 +365,24 @@ class Trial:
             self._trial_name,
         ) = SDK._init_trial(cfg.task_path, cfg.job_name, cfg.trial_name, cfg.jobs_dir)
 
-        self._agent_env = resolve_agent_env(
-            cfg.primary_agent, cfg.primary_model, cfg.agent_env
+        self._disallow_web_tools = (
+            _task_disallows_internet(self._task) and cfg.primary_agent != "oracle"
+        )
+        self._agent_env = _apply_web_policy(
+            resolve_agent_env(cfg.primary_agent, cfg.primary_model, cfg.agent_env),
+            disallow=self._disallow_web_tools,
         )
         self._resolved_prompts = SDK._resolve_prompts(
-            cfg.task_path, cfg.prompts,
+            cfg.task_path,
+            cfg.prompts,
             skills_dir=cfg.skills_dir,
-            skill_nudge=(cfg.agent_env or {}).get("BENCHFLOW_SKILL_NUDGE", ""),
+            skill_nudge=_skill_nudge(cfg.agent_env),
             agent=cfg.primary_agent,
         )
-        self._agent_launch = AGENT_LAUNCH.get(cfg.primary_agent, cfg.primary_agent)
+        self._agent_launch = _agent_launch_with_web_policy(
+            cfg.primary_agent,
+            disallow=self._disallow_web_tools,
+        )
 
         # Copy task dir to temp when Dockerfile mutations are needed
         # (_inject_skills writes into environment/_deps/, stage_dockerfile
@@ -351,6 +408,7 @@ class Trial:
             effective_task_path,
             self._trial_name,
             self._trial_paths,
+            preserve_agent_network=self._disallow_web_tools,
         )
         self._timeout = int(self._task.config.agent.timeout_sec or 0)
 
@@ -396,6 +454,7 @@ class Trial:
         This method installs the primary agent to set up the sandbox baseline.
         """
         cfg = self._config
+        trial_dir = self._require_trial_dir()
 
         cwd_result = await self._env.exec("pwd", timeout_sec=10)
         agent_cwd = (cwd_result.stdout or "").strip() or "/app"
@@ -418,7 +477,7 @@ class Trial:
             return
 
         agent_name = cfg.primary_agent
-        self._agent_cfg = await install_agent(self._env, agent_name, self._trial_dir)
+        self._agent_cfg = await install_agent(self._env, agent_name, trial_dir)
         cred_home = f"/home/{cfg.sandbox_user}" if cfg.sandbox_user else "/root"
         await write_credential_files(
             self._env,
@@ -438,6 +497,13 @@ class Trial:
                 workspace=self._agent_cwd,
                 timeout_sec=cfg.sandbox_setup_timeout,
             )
+        await apply_web_tool_policy(
+            self._env,
+            agent_name,
+            self._agent_cfg,
+            cred_home,
+            disallow=self._disallow_web_tools,
+        )
         await _snapshot_build_config(self._env, workspace=self._agent_cwd)
         await _seed_verifier_workspace(
             self._env, workspace=self._agent_cwd, sandbox_user=cfg.sandbox_user
@@ -461,6 +527,7 @@ class Trial:
     async def connect(self) -> None:
         """Open an ACP connection to the agent. Can be called multiple times."""
         cfg = self._config
+        trial_dir = self._require_trial_dir()
         t0 = datetime.now()
 
         self._acp_client, self._session, self._agent_name = await connect_acp(
@@ -470,7 +537,7 @@ class Trial:
             agent_env=self._agent_env,
             sandbox_user=cfg.sandbox_user,
             model=cfg.primary_model,
-            trial_dir=self._trial_dir,
+            trial_dir=trial_dir,
             environment=cfg.environment,
             agent_cwd=self._agent_cwd,
         )
@@ -508,6 +575,8 @@ class Trial:
         session is reused across multiple turns.
         """
         effective_prompts = prompts or self._resolved_prompts
+        if self._acp_client is None:
+            raise RuntimeError("Trial.connect() must run before execute()")
         prev_session_tools = getattr(self, "_session_tool_count", 0)
         t0 = datetime.now()
 
@@ -584,9 +653,12 @@ class Trial:
         from benchflow._sandbox import _build_cleanup_cmd, _read_hardening_config
 
         self._trial_paths.verifier_dir.mkdir(parents=True, exist_ok=True)
-        # Clean verifier output dir — chmod 777 so non-root verifier processes can write
+        # Clean verifier output dir — chmod 777 so non-root verifier processes can write.
+        # Keep /app present for task/verifier paths that still use the legacy
+        # rootdir fallback; tasks that populate /app are unaffected.
         await self._env.exec(
-            "rm -rf /logs/verifier && mkdir -p /logs/verifier && chmod 777 /logs/verifier",
+            "rm -rf /logs/verifier && mkdir -p /logs/verifier /app && "
+            "chmod 777 /logs/verifier",
             user="root",
             timeout_sec=10,
         )
@@ -800,6 +872,8 @@ class Trial:
             await self.execute(prompts=prompts)
 
             if multi_role:
+                if current_role is None:
+                    raise RuntimeError("No active role after scene turn execution")
                 for recipient, content in await self._read_scene_outbox(current_role):
                     turn_counter += 1
                     inbox.setdefault(recipient, []).append(
@@ -1001,19 +1075,30 @@ class Trial:
         Updates _agent_launch so disconnect() kills the correct process.
         """
         cfg = self._config
+        trial_dir = self._require_trial_dir()
         t0 = datetime.now()
 
-        agent_launch = AGENT_LAUNCH.get(role.agent, role.agent)
         # Merge cfg.agent_env (config-level) with role.env (role-specific) so
         # provider creds from YAML reach the agent. role.env wins on overlap.
-        agent_env = resolve_agent_env(
+        disallow_web_tools = getattr(self, "_disallow_web_tools", None)
+        if disallow_web_tools is None:
+            disallow_web_tools = _task_disallows_internet(getattr(self, "_task", None))
+        disallow_web_tools = bool(disallow_web_tools and role.agent != "oracle")
+        agent_launch = _agent_launch_with_web_policy(
             role.agent,
-            role.model,
-            {**(cfg.agent_env or {}), **(role.env or {})},
+            disallow=disallow_web_tools,
+        )
+        agent_env = _apply_web_policy(
+            resolve_agent_env(
+                role.agent,
+                role.model,
+                {**(cfg.agent_env or {}), **(role.env or {})},
+            ),
+            disallow=disallow_web_tools,
         )
 
         if role.agent != cfg.primary_agent:
-            agent_cfg = await install_agent(self._env, role.agent, self._trial_dir)
+            agent_cfg = await install_agent(self._env, role.agent, trial_dir)
             cred_home = f"/home/{cfg.sandbox_user}" if cfg.sandbox_user else "/root"
             await write_credential_files(
                 self._env,
@@ -1025,6 +1110,13 @@ class Trial:
             )
             if agent_env.get("_BENCHFLOW_SUBSCRIPTION_AUTH"):
                 await upload_subscription_auth(self._env, role.agent, cred_home)
+            await apply_web_tool_policy(
+                self._env,
+                role.agent,
+                agent_cfg,
+                cred_home,
+                disallow=disallow_web_tools,
+            )
 
         self._agent_launch = agent_launch
 
@@ -1035,7 +1127,7 @@ class Trial:
             agent_env=agent_env,
             sandbox_user=cfg.sandbox_user,
             model=role.model,
-            trial_dir=self._trial_dir,
+            trial_dir=trial_dir,
             environment=cfg.environment,
             agent_cwd=self._agent_cwd,
         )
@@ -1068,8 +1160,9 @@ class Trial:
     def _build_result(self) -> RunResult:
         from benchflow.sdk import SDK
 
+        trial_dir = self._require_trial_dir()
         return SDK._build_result(
-            self._trial_dir,
+            trial_dir,
             task_name=self._config.task_path.name,
             trial_name=self._trial_name or "",
             agent=self._config.primary_agent,
@@ -1083,6 +1176,6 @@ class Trial:
             partial_trajectory=self._partial_trajectory,
             trajectory_source=self._trajectory_source,
             rewards=self._rewards,
-            started_at=self._started_at,
+            started_at=self._require_started_at(),
             timing=self._timing,
         )

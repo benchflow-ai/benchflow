@@ -214,10 +214,16 @@ class TestShimProviderFallback:
         BENCHFLOW_PROVIDER_BASE_URL being injectable by the SDK.
         Providers with user-supplied URLs (e.g. vllm) are excluded."""
         for name, cfg in PROVIDERS.items():
-            if cfg.auth_type == "none":
+            if not cfg.base_url:
                 continue  # user-supplied base_url (e.g. local inference servers)
             assert cfg.base_url, f"Provider {name!r} has no base_url"
             assert cfg.api_protocol, f"Provider {name!r} has no api_protocol"
+
+    def test_vllm_uses_openai_compatible_api_key(self):
+        """vLLM endpoints may require OpenAI-compatible bearer auth."""
+        cfg = PROVIDERS["vllm"]
+        assert cfg.auth_type == "api_key"
+        assert cfg.auth_env == "OPENAI_API_KEY"
 
 
 # ── Shim helper functions ──

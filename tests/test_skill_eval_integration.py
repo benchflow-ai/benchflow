@@ -9,6 +9,7 @@ For live e2e tests, use: pytest -m live tests/test_skill_eval_integration.py
 import json
 import tempfile
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -307,14 +308,23 @@ class TestSkillEvalCLI:
         from benchflow.cli.main import app
 
         runner = CliRunner()
-        # This will try to run the full eval (which requires Docker),
-        # but it should at least parse the dataset and print the header
-        # before failing on the Job run.
-        result = runner.invoke(
-            app, ["skills", "eval", str(mock_skill), "--no-baseline"]
+        fake_result = SkillEvalResult(
+            skill_name="mock-audit-skill",
+            n_cases=3,
+            agents=["claude-agent-acp"],
         )
-        # Should get past the dataset loading phase
-        assert "mock-audit-skill" in result.output or result.exit_code != 0
+        with patch.object(
+            SkillEvaluator,
+            "run",
+            new_callable=AsyncMock,
+            return_value=fake_result,
+        ):
+            result = runner.invoke(
+                app, ["skills", "eval", str(mock_skill), "--no-baseline"]
+            )
+
+        assert result.exit_code == 0
+        assert "mock-audit-skill" in result.output
 
     def test_skills_list_command(self):
         from typer.testing import CliRunner

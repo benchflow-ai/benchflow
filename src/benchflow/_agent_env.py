@@ -235,7 +235,7 @@ def resolve_agent_env(
                 )
             )
         )
-        if has_agent_native_bridge_key:
+        if has_agent_native_bridge_key and mapped_provider_key is not None:
             # Only pre-existing same-provider aliases or explicit generic bridge
             # keys can satisfy provider auth. Values synthesized by env_mapping
             # or inherited from another provider context must not bypass the

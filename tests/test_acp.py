@@ -375,3 +375,43 @@ class TestConnectAcpModelSelection:
             )
 
         mock_acp.set_model.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_daytona_dind_uses_pty_transport(self, tmp_path):
+        """Daytona compose tasks use PTY transport to avoid SSH pipe-closed failures."""
+        from benchflow._acp_run import connect_acp
+
+        mock_acp = self._make_mocks()
+        mock_env = MagicMock()
+        mock_env.exec = AsyncMock(return_value=MagicMock(return_code=1, stdout=""))
+        mock_env._strategy = MagicMock()
+        mock_env._strategy._compose_cmd = MagicMock(return_value="docker compose -p t")
+
+        with (
+            patch(
+                "benchflow._acp_run.DaytonaPtyProcess.from_harbor_env",
+                new_callable=AsyncMock,
+                return_value=MagicMock(),
+            ) as mock_pty,
+            patch(
+                "benchflow._acp_run.DaytonaProcess.from_harbor_env",
+                new_callable=AsyncMock,
+                return_value=MagicMock(),
+            ) as mock_ssh,
+            patch("benchflow._acp_run.ContainerTransport", return_value=MagicMock()),
+            patch("benchflow._acp_run.ACPClient", return_value=mock_acp),
+        ):
+            await connect_acp(
+                env=mock_env,
+                agent="test-agent",
+                agent_launch="test-agent",
+                agent_env={},
+                sandbox_user=None,
+                model=None,
+                trial_dir=tmp_path,
+                environment="daytona",
+                agent_cwd="/app",
+            )
+
+        mock_pty.assert_awaited_once_with(mock_env)
+        mock_ssh.assert_not_awaited()

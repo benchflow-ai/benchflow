@@ -44,7 +44,7 @@ timeout_sec = 120            # optional (default 600)
 cpus            = 1          # default 1
 memory_mb       = 2048       # default 2048
 storage_mb      = 10240      # default 10240
-allow_internet  = false      # default true
+allow_internet  = false      # default true; disables agent web use
 env             = { OPENAI_API_KEY = "${OPENAI_API_KEY}" }  # host vars to inject
 ```
 
@@ -129,7 +129,7 @@ if [ $? -eq 0 ]; then echo 1; else echo 0; fi > /logs/verifier/reward.txt
 python3 -c "print($PASSED / $TOTAL)" > /logs/verifier/reward.txt
 ```
 
-**Security:** don't let the agent write to `/logs/verifier/reward.txt` or modify `/tests/test.sh`. For tasks running arbitrary code, use `allow_internet = false` and verify output files only.
+**Security:** don't let the agent write to `/logs/verifier/reward.txt` or modify `/tests/test.sh`. For tasks running arbitrary code, use `allow_internet = false` and verify output files only. For LLM agent runs, BenchFlow preserves the network path needed for model APIs and agent startup, then disables supported agent web browsing/fetch tools through agent config or launch controls. Oracle runs still use the environment's network policy directly.
 
 ---
 

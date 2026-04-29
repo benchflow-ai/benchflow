@@ -25,7 +25,7 @@ Required fields
                      - "adc": Application Default Credentials (GCP). The
                        SDK writes the credential file from
                        ``credential_files`` and sets the corresponding env.
-                     - "none": no auth (e.g. local vllm).
+                     - "none": no auth.
 
 Common optional fields
 ----------------------
@@ -130,7 +130,8 @@ PROVIDERS: dict[str, ProviderConfig] = {
         name="vllm",
         base_url="",  # user-supplied via --ae BENCHFLOW_PROVIDER_BASE_URL=...
         api_protocol="openai-completions",
-        auth_type="none",
+        auth_type="api_key",
+        auth_env="OPENAI_API_KEY",  # vLLM uses OpenAI-compatible auth
     ),
     # ── Custom providers (need explicit endpoint config in agent shims) ──
     "zai": ProviderConfig(

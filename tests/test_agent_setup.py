@@ -1,12 +1,13 @@
 """Tests for agent install and skill deployment setup helpers."""
 
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from benchflow._agent_setup import deploy_skills, install_agent
+from benchflow._agent_setup import apply_web_tool_policy, deploy_skills, install_agent
 from benchflow.agents.registry import AgentConfig
 from benchflow.models import AgentInstallError
 
@@ -88,6 +89,75 @@ async def test_deploy_skills_uploads_runtime_skills_and_links_shared_tree(tmp_pa
     assert "ln -sfn /skills /workspace/skills" in distributed_link_cmd
     assert "/root/.agents/skills" not in distributed_link_cmd
     assert "/app/skills" not in distributed_link_cmd
+
+
+@pytest.mark.asyncio
+async def test_deploy_skills_chowns_full_dir_chain_for_pi_acp_layout(tmp_path):
+    """Guards the fix from PR #211 against the regression where only the
+    symlink's immediate parent (`~/.pi/agent`) was chowned, leaving the
+    intermediate `~/.pi/` root-owned. pi-acp's `session/new` then failed
+    when trying to mkdir `~/.pi/pi-acp` for session state. Earlier PR #210
+    landed half the fix; this test pins the full ancestor chain."""
+    env = MagicMock()
+    env.exec = AsyncMock(return_value=MagicMock(return_code=0, stdout=""))
+    env.upload_dir = AsyncMock()
+    agent_cfg = AgentConfig(
+        name="pi-acp",
+        install_cmd="true",
+        launch_cmd="true",
+        skill_paths=["$HOME/.pi/agent/skills", "$HOME/.agents/skills"],
+    )
+
+    await deploy_skills(
+        env=env,
+        task_path=tmp_path,
+        skills_dir=None,
+        agent_cfg=agent_cfg,
+        sandbox_user="agent",
+        agent_cwd="/workspace",
+        task=_make_task("/opt/benchflow/skills"),
+    )
+
+    cmd = env.exec.await_args.args[0]
+    # Both newly-created dirs must be chowned in one chain — without
+    # `/home/agent/.pi`, pi-acp can't mkdir `~/.pi/pi-acp` for session state.
+    assert "chown agent:agent /home/agent/.pi /home/agent/.pi/agent" in cmd
+    # Single-segment chain stays single-arg.
+    assert "chown agent:agent /home/agent/.agents " in cmd
+    pi_chown = "chown agent:agent /home/agent/.pi /home/agent/.pi/agent"
+    pi_link = "ln -sfn /opt/benchflow/skills /home/agent/.pi/agent/skills"
+    assert cmd.index(pi_chown) < cmd.index(pi_link), (
+        "chown must precede ln so the symlink's ancestors are agent-owned"
+    )
+
+
+@pytest.mark.asyncio
+async def test_deploy_skills_skips_chown_when_no_sandbox_user(tmp_path):
+    """Guards the fix from PR #210: when sandbox_user is None, the chown
+    plumbing must stay no-op so root-only deploys keep working."""
+    env = MagicMock()
+    env.exec = AsyncMock(return_value=MagicMock(return_code=0, stdout=""))
+    env.upload_dir = AsyncMock()
+    agent_cfg = AgentConfig(
+        name="test-agent",
+        install_cmd="true",
+        launch_cmd="true",
+        skill_paths=["$HOME/.agents/skills"],
+    )
+
+    await deploy_skills(
+        env=env,
+        task_path=tmp_path,
+        skills_dir=None,
+        agent_cfg=agent_cfg,
+        sandbox_user=None,
+        agent_cwd="/workspace",
+        task=_make_task("/opt/benchflow/skills"),
+    )
+
+    cmd = env.exec.await_args.args[0]
+    assert "chown" not in cmd
+    assert "ln -sfn /opt/benchflow/skills /root/.agents/skills" in cmd
 
 
 @pytest.mark.asyncio
@@ -179,3 +249,73 @@ async def test_install_agent_writes_command_stdout_and_stderr_on_failure(
     assert "uv: command not found" in log_text
     assert err.stdout == log_text
     assert "ID=ubuntu" in err.diagnostics
+
+
+@pytest.mark.asyncio
+async def test_apply_web_tool_policy_runs_agent_setup_command(tmp_path):
+    calls = []
+
+    async def exec_cmd(cmd, *, timeout_sec=None, **kwargs):
+        calls.append((cmd, timeout_sec, kwargs))
+        result = subprocess.run(
+            cmd,
+            shell=True,
+            text=True,
+            capture_output=True,
+            timeout=timeout_sec,
+        )
+        return SimpleNamespace(
+            return_code=result.returncode,
+            stdout=result.stdout,
+            stderr=result.stderr,
+        )
+
+    env = SimpleNamespace(exec=exec_cmd)
+    home = tmp_path / "agent home"
+    agent_cfg = AgentConfig(
+        name="test-agent",
+        install_cmd="true",
+        launch_cmd="true",
+        disallow_web_tools_setup_cmd=(
+            'mkdir -p "$BENCHFLOW_AGENT_HOME" && '
+            'printf disabled > "$BENCHFLOW_AGENT_HOME/no-web"'
+        ),
+    )
+
+    await apply_web_tool_policy(
+        env,
+        "test-agent",
+        agent_cfg,
+        str(home),
+        disallow=True,
+    )
+
+    assert (home / "no-web").read_text() == "disabled"
+    assert len(calls) == 1
+    cmd, timeout_sec, kwargs = calls[0]
+    assert cmd.startswith("export BENCHFLOW_AGENT_HOME=")
+    assert 'printf disabled > "$BENCHFLOW_AGENT_HOME/no-web"' in cmd
+    assert timeout_sec == 15
+    assert kwargs == {}
+
+
+@pytest.mark.asyncio
+async def test_apply_web_tool_policy_is_gated_off_when_allowed():
+    env = MagicMock()
+    env.exec = AsyncMock()
+    agent_cfg = AgentConfig(
+        name="test-agent",
+        install_cmd="true",
+        launch_cmd="true",
+        disallow_web_tools_setup_cmd="false",
+    )
+
+    await apply_web_tool_policy(
+        env,
+        "test-agent",
+        agent_cfg,
+        "/home/agent",
+        disallow=False,
+    )
+
+    env.exec.assert_not_called()

@@ -260,19 +260,31 @@ def _render_acp_trajectory(
 
     blocks = []
 
-    # Show prompts
-    for i, prompt in enumerate(prompts or []):
-        blocks.append(
-            f'<div class="step prompt">'
-            f'<div class="step-header"><span class="label prompt">PROMPT {i + 1}</span></div>'
-            f'<div class="msg">{html.escape(prompt[:500])}</div>'
-            f"</div>"
-        )
+    # Show prompts at top only if trajectory has no inline user_message events
+    has_inline_prompts = any(e.get("type") == "user_message" for e in events)
+    if not has_inline_prompts:
+        for i, prompt in enumerate(prompts or []):
+            blocks.append(
+                f'<div class="step prompt">'
+                f'<div class="step-header"><span class="label prompt">PROMPT {i + 1}</span></div>'
+                f'<div class="msg">{html.escape(prompt[:500])}</div>'
+                f"</div>"
+            )
 
     # Show events
+    prompt_counter = 0
     for event in events:
         etype = event.get("type", "")
-        if etype == "tool_call":
+        if etype == "user_message":
+            prompt_counter += 1
+            text = html.escape(event.get("text", ""))
+            blocks.append(
+                f'<div class="step prompt">'
+                f'<div class="step-header"><span class="label prompt">PROMPT {prompt_counter}</span></div>'
+                f'<div class="msg">{text[:500]}</div>'
+                f"</div>"
+            )
+        elif etype == "tool_call":
             kind = html.escape(event.get("kind", ""))
             title = html.escape(event.get("title", ""))
             status = event.get("status", "")

@@ -64,6 +64,22 @@ class TestResolveAgentEnv:
         assert result["LLM_API_KEY"] == "test-llm-key"
         assert result["BENCHFLOW_PROVIDER_API_KEY"] == "test-llm-key"
 
+    def test_vllm_openai_key_propagates_to_agent_native_key(self, monkeypatch):
+        """vLLM's OpenAI-compatible auth reaches OpenHands through env_mapping."""
+        for key in ("OPENAI_API_KEY", "LLM_API_KEY"):
+            monkeypatch.delenv(key, raising=False)
+        result = self._resolve(
+            agent="openhands",
+            model="vllm/Qwen/Qwen3-Coder",
+            agent_env={
+                "OPENAI_API_KEY": "test-openai-key",
+                "BENCHFLOW_PROVIDER_BASE_URL": "http://localhost:8000/v1",
+            },
+        )
+        assert result["BENCHFLOW_PROVIDER_API_KEY"] == "test-openai-key"
+        assert result["LLM_API_KEY"] == "test-openai-key"
+        assert result["LLM_BASE_URL"] == "http://localhost:8000/v1"
+
     def test_same_provider_native_alias_satisfies_model_check(self, monkeypatch):
         """Provider-native aliases remain valid for the same auth context."""
         for key in ("GEMINI_API_KEY", "GOOGLE_API_KEY"):
@@ -259,6 +275,15 @@ class TestResolvePrompts:
         (tmp_path / "instruction.md").write_text("  hello  \n")
         result = self._resolve(tmp_path, prompts=None)
         assert result == ["hello"]
+
+    def test_resolve_prompts_does_not_add_no_web_text(self, tmp_path):
+        from benchflow.sdk import SDK
+
+        (tmp_path / "instruction.md").write_text("Do the thing.")
+        result = SDK._resolve_prompts(tmp_path, prompts=None)
+
+        assert result == ["Do the thing."]
+        assert "Internet access is disabled" not in result[0]
 
 
 # ── _init_trial ──
