@@ -148,6 +148,7 @@ class TestHardenSequence:
         assert not any("rm -f /testbed/setup.py" in c for c in cmds)
         assert not any("rsync -a --delete /testbed_verify/" in c for c in cmds)
         assert any("mkdir -p /logs/verifier" in c for c in cmds)
+        assert any("mkdir -p /logs/verifier /app" in c for c in cmds)
         cleanup_cmd = next(c for c in cmds if "conftest.py" in c)
         assert "sitecustomize.py" in cleanup_cmd and ".pth" in cleanup_cmd
         assert "-not -path '/tests/*'" in cleanup_cmd
@@ -210,7 +211,7 @@ class TestVerifierDirWipe:
                 c
                 for c in env.exec.call_args_list
                 if "rm -rf /logs/verifier" in c.args[0]
-                and "mkdir -p /logs/verifier" in c.args[0]
+                and "mkdir -p /logs/verifier /app" in c.args[0]
                 and "chmod 777 /logs/verifier" in c.args[0]
             ),
             None,
@@ -629,7 +630,9 @@ class TestVerifierEnv:
 
         assert "-c /dev/null" in addopts
         assert "--confcutdir=/tests" in addopts
-        assert "--rootdir" not in addopts  # injected dynamically by _build_pytest_addopts
+        assert (
+            "--rootdir" not in addopts
+        )  # injected dynamically by _build_pytest_addopts
         assert "-p no:cacheprovider" in addopts
         assert (
             "PYTHONSAFEPATH" not in VERIFIER_ENV
@@ -696,9 +699,8 @@ class TestVerifierEnv:
         task = _make_task()
         await harden_before_verify(env, task, sandbox_user=None)
 
-        assert (
-            task.config.verifier.env["PYTEST_ADDOPTS"]
-            == _build_pytest_addopts(workspace=None)
+        assert task.config.verifier.env["PYTEST_ADDOPTS"] == _build_pytest_addopts(
+            workspace=None
         )
 
     @pytest.mark.asyncio
@@ -866,9 +868,8 @@ class TestVerifierEnv:
         task.config.verifier.pytest_plugins = plugins
         await harden_before_verify(env, task, sandbox_user=None, workspace=None)
 
-        assert (
-            task.config.verifier.env["PYTEST_ADDOPTS"]
-            == _build_pytest_addopts(workspace=None)
+        assert task.config.verifier.env["PYTEST_ADDOPTS"] == _build_pytest_addopts(
+            workspace=None
         )
         assert task.config.verifier.env.get("PYTEST_DISABLE_PLUGIN_AUTOLOAD") == "1"
 
@@ -886,9 +887,8 @@ class TestVerifierEnv:
         task.config.verifier.env = None
         await harden_before_verify(env, task, sandbox_user=None)
 
-        assert (
-            task.config.verifier.env["PYTEST_ADDOPTS"]
-            == _build_pytest_addopts(workspace=None)
+        assert task.config.verifier.env["PYTEST_ADDOPTS"] == _build_pytest_addopts(
+            workspace=None
         )
         assert "-c /dev/null" in task.config.verifier.env["PYTEST_ADDOPTS"]
         assert "--confcutdir=/tests" in task.config.verifier.env["PYTEST_ADDOPTS"]
@@ -907,9 +907,8 @@ class TestVerifierEnv:
         task.config.verifier.env = {"PYTEST_ADDOPTS": "--rootdir=/testbed"}
         await harden_before_verify(env, task, sandbox_user=None)
 
-        assert (
-            task.config.verifier.env["PYTEST_ADDOPTS"]
-            == _build_pytest_addopts(workspace=None)
+        assert task.config.verifier.env["PYTEST_ADDOPTS"] == _build_pytest_addopts(
+            workspace=None
         )
 
     @pytest.mark.asyncio
@@ -929,15 +928,51 @@ class TestVerifierEnv:
         assert "--rootdir=/evil" not in addopts
 
     @pytest.mark.asyncio
+    async def test_ctrf_plugin_inferred_from_test_script(self, tmp_path):
+        """test.sh using --ctrf gets json_ctrf loaded even with plugin autoload disabled."""
+        from benchflow._sandbox import harden_before_verify
+
+        tests_dir = tmp_path / "tests"
+        tests_dir.mkdir()
+        (tests_dir / "test.sh").write_text(
+            "uvx --with pytest-json-ctrf pytest "
+            "--ctrf /logs/verifier/ctrf.json /tests/test_outputs.py\n"
+        )
+
+        env = _make_env()
+        task = _make_task()
+        task.task_dir = tmp_path
+        await harden_before_verify(env, task, sandbox_user=None, workspace="/app")
+
+        addopts = task.config.verifier.env["PYTEST_ADDOPTS"]
+        assert "-p json_ctrf" in addopts
+        assert task.config.verifier.env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] == "1"
+
+    @pytest.mark.asyncio
+    async def test_ctrf_plugin_inference_ignores_comments(self, tmp_path):
+        """Commented --ctrf text does not opt a task into the plugin."""
+        from benchflow._sandbox import harden_before_verify
+
+        tests_dir = tmp_path / "tests"
+        tests_dir.mkdir()
+        (tests_dir / "test.sh").write_text("# pytest --ctrf ignored\npytest /tests\n")
+
+        env = _make_env()
+        task = _make_task()
+        task.task_dir = tmp_path
+        await harden_before_verify(env, task, sandbox_user=None, workspace="/app")
+
+        addopts = task.config.verifier.env["PYTEST_ADDOPTS"]
+        assert "-p json_ctrf" not in addopts
+
+    @pytest.mark.asyncio
     async def test_rootdir_follows_workspace(self):
         """--rootdir is set to the workspace path, not hardcoded /app."""
         from benchflow._sandbox import harden_before_verify
 
         env = _make_env()
         task = _make_task()
-        await harden_before_verify(
-            env, task, sandbox_user=None, workspace="/root"
-        )
+        await harden_before_verify(env, task, sandbox_user=None, workspace="/root")
         addopts = task.config.verifier.env["PYTEST_ADDOPTS"]
         assert "--rootdir=/root" in addopts
         assert "--rootdir=/app" not in addopts
@@ -949,9 +984,7 @@ class TestVerifierEnv:
 
         env = _make_env()
         task = _make_task()
-        await harden_before_verify(
-            env, task, sandbox_user=None, workspace=None
-        )
+        await harden_before_verify(env, task, sandbox_user=None, workspace=None)
         addopts = task.config.verifier.env["PYTEST_ADDOPTS"]
         assert "--rootdir=/app" in addopts
 
@@ -963,9 +996,7 @@ class TestVerifierEnv:
 
         env = _make_env()
         task = _make_task()
-        await harden_before_verify(
-            env, task, sandbox_user=None, workspace=workspace
-        )
+        await harden_before_verify(env, task, sandbox_user=None, workspace=workspace)
         addopts = task.config.verifier.env["PYTEST_ADDOPTS"]
         assert f"--rootdir={workspace}" in addopts
 
@@ -984,7 +1015,9 @@ class TestVerifierEnv:
         """_build_pytest_addopts appends plugin flags after rootdir."""
         from benchflow._sandbox import _build_pytest_addopts
 
-        addopts = _build_pytest_addopts(workspace="/root", plugin_flags="-p ctrf -p xdist")
+        addopts = _build_pytest_addopts(
+            workspace="/root", plugin_flags="-p ctrf -p xdist"
+        )
         assert "--rootdir=/root" in addopts
         assert "-p ctrf" in addopts
         assert "-p xdist" in addopts
@@ -1030,9 +1063,7 @@ class TestVerifierEnv:
         env = _make_env()
         task = _make_task()
         task.config.verifier.env = {"PYTEST_ADDOPTS": "--rootdir=/evil -p evil"}
-        await harden_before_verify(
-            env, task, sandbox_user=None, workspace="/root"
-        )
+        await harden_before_verify(env, task, sandbox_user=None, workspace="/root")
         addopts = task.config.verifier.env["PYTEST_ADDOPTS"]
         assert "--rootdir=/root" in addopts
         assert "--rootdir=/evil" not in addopts

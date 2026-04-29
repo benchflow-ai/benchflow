@@ -115,6 +115,8 @@ async def connect_acp(
         logger.info(f"Agent sandboxed as: {sandbox_user}")
 
     acp_client: ACPClient | None = None
+    session: object | None = None
+    agent_name = agent
     for attempt in range(_ACP_CONNECT_MAX_RETRIES + 1):
         if attempt > 0:
             delay = _ACP_CONNECT_BASE_DELAY * (2 ** (attempt - 1))
@@ -174,6 +176,9 @@ async def connect_acp(
                 with contextlib.suppress(Exception):
                     await acp_client.close()
             raise
+
+    if acp_client is None or session is None:
+        raise RuntimeError("ACP connection did not initialize")
 
     agent_cfg = AGENTS.get(agent)
     if model and (agent_cfg is None or agent_cfg.supports_acp_set_model):

@@ -441,9 +441,7 @@ class TestChronologicalEventOrder:
         session.handle_update(
             {"sessionUpdate": "agent_thought", "text": "full thought"}
         )
-        session.handle_update(
-            {"sessionUpdate": "text_update", "text": "full message"}
-        )
+        session.handle_update({"sessionUpdate": "text_update", "text": "full message"})
         session.mark_prompt_end()
 
         result = _capture_session_trajectory(session)

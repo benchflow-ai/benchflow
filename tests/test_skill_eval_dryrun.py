@@ -263,19 +263,30 @@ class TestDryRunPipeline:
         from benchflow.cli.main import app
 
         runner = CliRunner()
-        # Run with a non-existent agent to trigger early failure after dataset loads
-        result = runner.invoke(
-            app,
-            [
-                "skills",
-                "eval",
-                str(mock_skill),
-                "-a",
-                "claude-agent-acp",
-                "--no-baseline",
-            ],
+        fake_result = SkillEvalResult(
+            skill_name="mock-review",
+            n_cases=2,
+            agents=["claude-agent-acp"],
         )
-        # Should get past dataset loading (prints skill name)
+        with patch.object(
+            SkillEvaluator,
+            "run",
+            new_callable=AsyncMock,
+            return_value=fake_result,
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "skills",
+                    "eval",
+                    str(mock_skill),
+                    "-a",
+                    "claude-agent-acp",
+                    "--no-baseline",
+                ],
+            )
+
+        assert result.exit_code == 0
         assert "mock-review" in result.output or "2 cases" in result.output
 
     def test_summary_table_format(self):

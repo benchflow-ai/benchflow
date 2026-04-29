@@ -351,9 +351,7 @@ _RUNTIME_PATH_PREFIXES = ("/tmp", "/var/tmp", "/logs", "/testbed")
 _DEFAULT_ROOTDIR = "/app"
 
 
-def _build_pytest_addopts(
-    workspace: str | None = None, plugin_flags: str = ""
-) -> str:
+def _build_pytest_addopts(workspace: str | None = None, plugin_flags: str = "") -> str:
     """Build PYTEST_ADDOPTS with a dynamic --rootdir based on the workspace.
 
     Without an explicit --rootdir, -c /dev/null causes pytest to fall back to
@@ -361,13 +359,11 @@ def _build_pytest_addopts(
     The rootdir must point to a directory that actually exists in the container.
     """
     rootdir = workspace or _DEFAULT_ROOTDIR
-    addopts = (
-        f"{VERIFIER_ENV['PYTEST_ADDOPTS']} "
-        f"--rootdir={shlex.quote(rootdir)}"
-    )
+    addopts = f"{VERIFIER_ENV['PYTEST_ADDOPTS']} --rootdir={shlex.quote(rootdir)}"
     if plugin_flags:
         addopts += f" {plugin_flags}"
     return addopts
+
 
 # Container-side script to enumerate pre-installed pytest11 entry points.
 # Runs after sandbox_user processes are killed, so the agent cannot install
@@ -499,6 +495,11 @@ async def _discover_pytest_plugin_flags(env, task: "Task") -> str:
     """
     plugins: list[str] = []
 
+    def add_plugin(name: str) -> None:
+        name = name.strip()
+        if name and name not in plugins:
+            plugins.append(name)
+
     # Container-side auto-discovery
     try:
         result = await env.exec(
@@ -510,7 +511,9 @@ async def _discover_pytest_plugin_flags(env, task: "Task") -> str:
             logger.debug(f"Plugin discovery stderr: {result.stderr.strip()}")
         discovered = _json.loads(result.stdout or "[]")
         if isinstance(discovered, list):
-            plugins.extend(p for p in discovered if isinstance(p, str) and p.strip())
+            for p in discovered:
+                if isinstance(p, str):
+                    add_plugin(p)
         logger.info(f"Discovered {len(plugins)} pytest plugins from container")
     except Exception as e:
         logger.warning(f"Pytest plugin discovery failed, using task.toml fallback: {e}")
@@ -519,10 +522,35 @@ async def _discover_pytest_plugin_flags(env, task: "Task") -> str:
     declared = getattr(task.config.verifier, "pytest_plugins", None)
     if declared:
         for name in declared:
-            if isinstance(name, str) and name.strip() and name.strip() not in plugins:
-                plugins.append(name.strip())
+            if isinstance(name, str):
+                add_plugin(name)
+
+    # The standard task template runs pytest-json-ctrf through `uvx --with`,
+    # so the plugin is not visible during pre-verifier entry-point discovery.
+    # Infer only this known reporting plugin from test.sh while keeping
+    # PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 for all other entry points.
+    for name in _infer_pytest_plugins_from_test_script(task):
+        add_plugin(name)
 
     return " ".join(f"-p {shlex.quote(p)}" for p in plugins)
+
+
+def _infer_pytest_plugins_from_test_script(task: "Task") -> list[str]:
+    """Infer safe pytest plugins required by common task test.sh patterns."""
+    task_dir = getattr(task, "task_dir", None)
+    if not task_dir:
+        return []
+    test_sh = Path(task_dir) / "tests" / "test.sh"
+    try:
+        text = test_sh.read_text()
+    except OSError:
+        return []
+
+    uncommented = "\n".join(line.split("#", 1)[0] for line in text.splitlines())
+    plugins: list[str] = []
+    if re.search(r"(^|[^\w-])--ctrf([=\s]|$)", uncommented):
+        plugins.append("json_ctrf")
+    return plugins
 
 
 _FEDORA_LIKE = ("fedora", "rhel", "centos", "rocky", "alma")
@@ -618,7 +646,7 @@ async def _trusted_verifier_pythonpath(
 # rm -rf severs hardlinks, removes symlink replacements, and eliminates
 # variant filenames/subdirs the agent may have pre-staged.
 _CLEAR_VERIFIER_DIR_CMD = (
-    "rm -rf /logs/verifier && mkdir -p /logs/verifier && chmod 777 /logs/verifier"
+    "rm -rf /logs/verifier && mkdir -p /logs/verifier /app && chmod 777 /logs/verifier"
 )
 
 # Per-task hardening opt-outs. Tasks declare these in task.toml under

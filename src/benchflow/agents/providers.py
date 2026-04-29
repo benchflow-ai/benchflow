@@ -25,7 +25,7 @@ Required fields
                      - "adc": Application Default Credentials (GCP). The
                        SDK writes the credential file from
                        ``credential_files`` and sets the corresponding env.
-                     - "none": no auth (e.g. local vllm).
+                     - "none": no auth.
 
 Common optional fields
 ----------------------

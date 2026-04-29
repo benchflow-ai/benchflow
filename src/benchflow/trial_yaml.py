@@ -82,8 +82,13 @@ def trial_config_from_dict(
     elif "agent" in raw:
         # Legacy flat format
         prompts_raw = raw.get("prompts")
+        prompts: list[str | None]
         if isinstance(prompts_raw, list):
-            prompts = prompts_raw
+            prompts = []
+            for prompt in prompts_raw:
+                if prompt is not None and not isinstance(prompt, str):
+                    raise ValueError("YAML prompts entries must be strings or null")
+                prompts.append(prompt)
         elif isinstance(prompts_raw, str):
             prompts = [prompts_raw]
         else:
