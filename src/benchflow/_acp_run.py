@@ -210,6 +210,7 @@ async def execute_prompts(
         logger.info(
             f"Prompt {i + 1}/{len(prompts)}: {(prompt or '<instruction.md>')[:80]}..."
         )
+        session.record_user_prompt(prompt)
         if idle_timeout is None:
             prompt_result = await asyncio.wait_for(
                 acp_client.prompt(prompt),
@@ -219,6 +220,7 @@ async def execute_prompts(
             prompt_result = await _prompt_with_idle_watchdog(
                 acp_client, session, prompt, timeout, idle_timeout
             )
+        session.mark_prompt_end()
         logger.info(
             f"  → {prompt_result.stop_reason.value}, "
             f"{len(session.tool_calls)} total tool calls"
