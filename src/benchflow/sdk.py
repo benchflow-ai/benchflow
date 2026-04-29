@@ -341,6 +341,7 @@ class SDK:
         skills_dir: str | Path | None = None,
         skill_nudge: str = "",
         agent: str | None = None,
+        no_web_nudge: bool = False,
     ) -> list[str]:
         """Read instruction.md and resolve prompt list.
 
@@ -402,6 +403,14 @@ class SDK:
                             f'<skill name="{s["name"]}">\n{s["content"]}\n</skill>'
                         )
                     instruction = "\n\n".join(blocks) + "\n\n" + instruction
+
+        if no_web_nudge:
+            instruction = (
+                "Internet access is disabled for this task. Do not browse the web, "
+                "fetch external URLs, or rely on external network resources. Use only "
+                "the files and tools available in the sandbox."
+                "\n\n" + instruction
+            )
 
         if prompts is None:
             return [instruction]

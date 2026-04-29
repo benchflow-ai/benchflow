@@ -382,6 +382,9 @@ AGENTS: dict[str, AgentConfig] = {
             "mkdir -p ~/.openhands && "
             'printf \'{"llm":{"model":"%s","api_key":"%s"}}\' '
             '"$LLM_MODEL" "$LLM_API_KEY" > ~/.openhands/agent_settings.json && '
+            'if [ "${BENCHFLOW_DISALLOW_WEB_TOOLS:-}" = "1" ]; then '
+            "printf '[agent]\\nenable_browsing = false\\n' > ~/.openhands/config.toml; "
+            "fi && "
             "openhands acp --always-approve --override-with-envs"
         ),
         protocol="acp",

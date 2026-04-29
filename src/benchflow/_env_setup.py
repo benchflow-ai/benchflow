@@ -248,8 +248,18 @@ def _create_environment(
     task_path: Path,
     trial_name: str,
     trial_paths: TrialPaths,
+    preserve_agent_network: bool = False,
 ) -> Any:
     """Create a Harbor environment (Docker or Daytona)."""
+    env_config = task.config.environment
+    if preserve_agent_network and env_config.allow_internet is False:
+        # LLM agents run inside the sandbox and need outbound network for model
+        # APIs and first-run agent installation. BenchFlow enforces the task's
+        # no-web policy at the agent layer instead of applying Harbor's container
+        # network block for these runs.
+        env_config = env_config.model_copy(deep=True)
+        env_config.allow_internet = True
+
     if environment_type == "docker":
         from harbor.environments.docker.docker import DockerEnvironment
 
@@ -258,7 +268,7 @@ def _create_environment(
             environment_name=task_path.name,
             session_id=trial_name,
             trial_paths=trial_paths,
-            task_env_config=task.config.environment,
+            task_env_config=env_config,
         )
     elif environment_type == "daytona":
         from harbor.environments.daytona import DaytonaEnvironment
@@ -267,7 +277,6 @@ def _create_environment(
 
         _apply_daytona_patches()
 
-        env_config = task.config.environment
         if env_config.cpus > _DAYTONA_MAX_CPUS:
             logger.warning(
                 "Clamping cpus %d -> %d for Daytona (override with BENCHFLOW_DAYTONA_MAX_CPUS)",

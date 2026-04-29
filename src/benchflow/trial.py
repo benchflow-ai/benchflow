@@ -39,6 +39,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import os
 import shlex
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -71,6 +72,28 @@ from benchflow.models import RunResult, TrajectorySource
 from benchflow.user import BaseUser, RoundResult
 
 logger = logging.getLogger(__name__)
+
+_DISALLOW_WEB_TOOLS_ENV = "BENCHFLOW_DISALLOW_WEB_TOOLS"
+
+
+def _task_disallows_internet(task: Any) -> bool:
+    """Return True when task.toml requests no internet for the agent task."""
+    env_config = getattr(getattr(task, "config", None), "environment", None)
+    return getattr(env_config, "allow_internet", True) is False
+
+
+def _apply_web_policy(agent_env: dict[str, str], *, disallow: bool) -> dict[str, str]:
+    """Inject BenchFlow's no-web policy marker into agent env when requested."""
+    if not disallow:
+        return agent_env
+    return {**agent_env, _DISALLOW_WEB_TOOLS_ENV: "1"}
+
+
+def _skill_nudge(agent_env: dict[str, str] | None) -> str:
+    """Read skill nudge from explicit agent env or the host environment."""
+    return (agent_env or {}).get("BENCHFLOW_SKILL_NUDGE") or os.environ.get(
+        "BENCHFLOW_SKILL_NUDGE", ""
+    )
 
 
 @dataclass
@@ -237,6 +260,7 @@ class Trial:
         self._timeout: int = 0
         self._timing: dict[str, float] = {}
         self._effective_locked: list[str] = []
+        self._disallow_web_tools: bool = False
 
         # Populated by install_agent()
         self._agent_cfg: Any = None
@@ -326,15 +350,20 @@ class Trial:
             self._trial_name,
         ) = SDK._init_trial(cfg.task_path, cfg.job_name, cfg.trial_name, cfg.jobs_dir)
 
-        self._agent_env = resolve_agent_env(
-            cfg.primary_agent, cfg.primary_model, cfg.agent_env
+        self._disallow_web_tools = (
+            _task_disallows_internet(self._task) and cfg.primary_agent != "oracle"
+        )
+        self._agent_env = _apply_web_policy(
+            resolve_agent_env(cfg.primary_agent, cfg.primary_model, cfg.agent_env),
+            disallow=self._disallow_web_tools,
         )
         self._resolved_prompts = SDK._resolve_prompts(
             cfg.task_path,
             cfg.prompts,
             skills_dir=cfg.skills_dir,
-            skill_nudge=(cfg.agent_env or {}).get("BENCHFLOW_SKILL_NUDGE", ""),
+            skill_nudge=_skill_nudge(cfg.agent_env),
             agent=cfg.primary_agent,
+            no_web_nudge=self._disallow_web_tools,
         )
         self._agent_launch = AGENT_LAUNCH.get(cfg.primary_agent, cfg.primary_agent)
 
@@ -362,6 +391,7 @@ class Trial:
             effective_task_path,
             self._trial_name,
             self._trial_paths,
+            preserve_agent_network=self._disallow_web_tools,
         )
         self._timeout = int(self._task.config.agent.timeout_sec or 0)
 
@@ -1027,10 +1057,17 @@ class Trial:
         agent_launch = AGENT_LAUNCH.get(role.agent, role.agent)
         # Merge cfg.agent_env (config-level) with role.env (role-specific) so
         # provider creds from YAML reach the agent. role.env wins on overlap.
-        agent_env = resolve_agent_env(
-            role.agent,
-            role.model,
-            {**(cfg.agent_env or {}), **(role.env or {})},
+        disallow_web_tools = (
+            _task_disallows_internet(getattr(self, "_task", None))
+            and role.agent != "oracle"
+        )
+        agent_env = _apply_web_policy(
+            resolve_agent_env(
+                role.agent,
+                role.model,
+                {**(cfg.agent_env or {}), **(role.env or {})},
+            ),
+            disallow=disallow_web_tools,
         )
 
         if role.agent != cfg.primary_agent:
