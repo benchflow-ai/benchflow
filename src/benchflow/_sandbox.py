@@ -642,11 +642,16 @@ async def _trusted_verifier_pythonpath(
     return ":".join(e for e in extras if isinstance(e, str))
 
 
-# Wipe and recreate /logs/verifier/ before the verifier runs.
-# rm -rf severs hardlinks, removes symlink replacements, and eliminates
-# variant filenames/subdirs the agent may have pre-staged.
+# Wipe /logs/verifier/ contents before the verifier runs while preserving the
+# directory itself. Docker mounts the host trial verifier directory directly at
+# this path, so deleting/recreating the mountpoint would hide verifier outputs
+# from the host.
 _CLEAR_VERIFIER_DIR_CMD = (
-    "rm -rf /logs/verifier && mkdir -p /logs/verifier /app && chmod 777 /logs/verifier"
+    "if [ -L /logs/verifier ] || [ ! -d /logs/verifier ]; then "
+    "rm -rf /logs/verifier && mkdir -p /logs/verifier; "
+    "else "
+    "find /logs/verifier -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +; "
+    "fi && mkdir -p /app && chmod 777 /logs/verifier"
 )
 
 # Per-task hardening opt-outs. Tasks declare these in task.toml under

@@ -650,15 +650,18 @@ class Trial:
         """
         from harbor import Verifier
 
-        from benchflow._sandbox import _build_cleanup_cmd, _read_hardening_config
+        from benchflow._sandbox import (
+            _CLEAR_VERIFIER_DIR_CMD,
+            _build_cleanup_cmd,
+            _read_hardening_config,
+        )
 
         self._trial_paths.verifier_dir.mkdir(parents=True, exist_ok=True)
         # Clean verifier output dir — chmod 777 so non-root verifier processes can write.
         # Keep /app present for task/verifier paths that still use the legacy
         # rootdir fallback; tasks that populate /app are unaffected.
         await self._env.exec(
-            "rm -rf /logs/verifier && mkdir -p /logs/verifier /app && "
-            "chmod 777 /logs/verifier",
+            _CLEAR_VERIFIER_DIR_CMD,
             user="root",
             timeout_sec=10,
         )

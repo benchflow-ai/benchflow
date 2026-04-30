@@ -134,7 +134,7 @@ class TestHardenSequence:
         cmds = [c.args[0] for c in env.exec.call_args_list]
         assert "pkill -u agent" in cmds[0]
         wipe_idx = next(
-            (i for i, c in enumerate(cmds) if "rm -rf /logs/verifier" in c), None
+            (i for i, c in enumerate(cmds) if "find /logs/verifier" in c), None
         )
         chown_idx = next(
             (i for i, c in enumerate(cmds) if "chown -R root:root /testbed" in c),
@@ -148,7 +148,7 @@ class TestHardenSequence:
         assert not any("rm -f /testbed/setup.py" in c for c in cmds)
         assert not any("rsync -a --delete /testbed_verify/" in c for c in cmds)
         assert any("mkdir -p /logs/verifier" in c for c in cmds)
-        assert any("mkdir -p /logs/verifier /app" in c for c in cmds)
+        assert any("mkdir -p /app" in c for c in cmds)
         cleanup_cmd = next(c for c in cmds if "conftest.py" in c)
         assert "sitecustomize.py" in cleanup_cmd and ".pth" in cleanup_cmd
         assert "-not -path '/tests/*'" in cleanup_cmd
@@ -196,11 +196,11 @@ class TestHardenSequence:
 
 
 class TestVerifierDirWipe:
-    """Tier 1: /logs/verifier/ is wiped and recreated before the verifier runs."""
+    """Tier 1: /logs/verifier/ is wiped before the verifier runs."""
 
     @pytest.mark.asyncio
-    async def test_wipe_recreates_verifier_dir(self):
-        """rm -rf, mkdir -p, and chmod 777 are all in one atomic call; it runs as root."""
+    async def test_wipe_preserves_verifier_dir(self):
+        """The cleanup removes contents, preserves the mountpoint, and runs as root."""
         from benchflow._sandbox import harden_before_verify
 
         env = _make_env()
@@ -210,14 +210,15 @@ class TestVerifierDirWipe:
             (
                 c
                 for c in env.exec.call_args_list
-                if "rm -rf /logs/verifier" in c.args[0]
-                and "mkdir -p /logs/verifier /app" in c.args[0]
+                if "find /logs/verifier -mindepth 1 -maxdepth 1" in c.args[0]
+                and "mkdir -p /app" in c.args[0]
                 and "chmod 777 /logs/verifier" in c.args[0]
             ),
             None,
         )
         assert match is not None, (
-            "expected a single call with rm -rf, mkdir -p, and chmod 777 for /logs/verifier"
+            "expected a single call that clears /logs/verifier contents, "
+            "preserves the directory, and chmods it"
         )
         assert match.kwargs.get("user") == "root"
 
