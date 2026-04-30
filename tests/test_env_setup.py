@@ -7,12 +7,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from benchflow._env_setup import (
+    _MODAL_PYTHON_SYMLINK,
     _create_benchflow_modal_environment_class,
     _create_environment,
     _dep_local_name,
     _get_agent_skill_paths,
     _inject_skills_into_dockerfile,
     _modal_add_python_version,
+    _modal_builder_dockerfile,
     _modal_rewrite_dockerfile_heredocs,
     stage_dockerfile_deps,
 )
@@ -307,6 +309,23 @@ class TestCreateEnvironment:
         dockerfile.write_text("FROM python:3.12-slim\n")
 
         assert _modal_add_python_version(dockerfile) is None
+
+    def test_modal_add_python_skips_dockerfile_python_install(self, tmp_path):
+        dockerfile = tmp_path / "Dockerfile"
+        dockerfile.write_text(
+            "FROM ubuntu:24.04\n"
+            "RUN apt-get update && apt-get install -y python3 python3-pip\n"
+            "RUN pip3 install PyMuPDF==1.24.10\n"
+        )
+
+        assert _modal_add_python_version(dockerfile) is None
+
+        modal_dockerfile, cleanup = _modal_builder_dockerfile(dockerfile)
+        try:
+            assert modal_dockerfile != dockerfile
+            assert _MODAL_PYTHON_SYMLINK in modal_dockerfile.read_text()
+        finally:
+            cleanup()
 
     def test_modal_rewrites_run_python_heredoc(self):
         rewritten = _modal_rewrite_dockerfile_heredocs(

@@ -41,6 +41,11 @@ _IGNORE_DIRS = {
 
 
 _HEREDOC_RE = re.compile(r"<<-?\s*['\"]?([A-Za-z0-9_.-]+)['\"]?")
+_MODAL_PYTHON_SYMLINK = (
+    "RUN if command -v python3 >/dev/null 2>&1 "
+    "&& ! command -v python >/dev/null 2>&1; then "
+    'ln -sf "$(command -v python3)" /usr/local/bin/python || true; fi'
+)
 
 
 def _modal_dockerfile_uses_python_base(dockerfile_path: Path) -> bool:
@@ -63,10 +68,30 @@ def _modal_dockerfile_uses_python_base(dockerfile_path: Path) -> bool:
     return False
 
 
+def _modal_dockerfile_installs_python(dockerfile_path: Path) -> bool:
+    try:
+        text = dockerfile_path.read_text().lower()
+    except OSError:
+        return False
+    return any(
+        token in text
+        for token in (
+            "python3-pip",
+            "python-is-python3",
+            "pip3 install",
+            "python3 -m pip",
+            "pip install",
+        )
+    )
+
+
 def _modal_add_python_version(dockerfile_path: Path) -> str | None:
     """Python version Modal should add to Dockerfile images that lack Python."""
     configured = os.environ.get("BENCHFLOW_MODAL_ADD_PYTHON")
-    if configured is None and _modal_dockerfile_uses_python_base(dockerfile_path):
+    if configured is None and (
+        _modal_dockerfile_uses_python_base(dockerfile_path)
+        or _modal_dockerfile_installs_python(dockerfile_path)
+    ):
         return None
     value = (configured if configured is not None else "3.12").strip()
     return value or None
@@ -137,6 +162,12 @@ def _modal_builder_dockerfile(
 ) -> tuple[Path, Callable[[], None]]:
     text = dockerfile_path.read_text()
     rewritten = _modal_rewrite_dockerfile_heredocs(text)
+    if (
+        not _modal_dockerfile_uses_python_base(dockerfile_path)
+        and _modal_dockerfile_installs_python(dockerfile_path)
+        and _MODAL_PYTHON_SYMLINK not in rewritten
+    ):
+        rewritten = rewritten.rstrip() + "\n\n" + _MODAL_PYTHON_SYMLINK + "\n"
     if rewritten == text:
         return dockerfile_path, lambda: None
 
