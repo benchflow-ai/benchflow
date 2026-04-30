@@ -97,6 +97,7 @@ from typing import Any, cast
 
 from harbor.models.task.task import Task
 from harbor.models.trial.paths import TrialPaths
+from harbor.utils.env import resolve_env_vars
 from harbor.verifier.verifier import Verifier
 
 from benchflow._env_setup import (
@@ -433,9 +434,13 @@ class SDK:
             )
         else:
             cmd = "bash /solution/solve.sh"
+        oracle_env: dict[str, str] = {"DEBIAN_FRONTEND": "noninteractive"}
+        task = Task(task_path)
+        if task.config.solution.env:
+            oracle_env.update(resolve_env_vars(task.config.solution.env))
         result = await env.exec(
             f"{cmd} > /logs/agent/oracle.txt 2>&1",
-            env={"DEBIAN_FRONTEND": "noninteractive"},
+            env=oracle_env,
             timeout_sec=timeout,
         )
         if result.return_code != 0:

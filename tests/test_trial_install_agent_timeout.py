@@ -76,7 +76,7 @@ async def test_install_agent_forwards_sandbox_setup_timeout(
     if agent == "oracle":
         install_agent_mock.assert_not_awaited()
         write_credential_files_mock.assert_not_awaited()
-        deploy_skills_mock.assert_not_awaited()
+        deploy_skills_mock.assert_awaited_once()
         assert trial._agent_cwd == "/workspace"
     else:
         install_agent_mock.assert_awaited_once()

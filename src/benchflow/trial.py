@@ -472,6 +472,15 @@ class Trial:
             await _seed_verifier_workspace(
                 self._env, workspace=self._agent_cwd, sandbox_user=cfg.sandbox_user
             )
+            await deploy_skills(
+                self._env,
+                cfg.task_path,
+                cfg.skills_dir,
+                None,
+                cfg.sandbox_user,
+                self._agent_cwd,
+                self._task,
+            )
             await lockdown_paths(self._env, self._effective_locked)
             self._phase = "installed"
             return
