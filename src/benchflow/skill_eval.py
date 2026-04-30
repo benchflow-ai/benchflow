@@ -397,7 +397,7 @@ class SkillEvaluator:
         Args:
             agents: List of agent names to test.
             models: List of models (matched 1:1 with agents, or broadcast).
-            environment: docker or daytona.
+            environment: docker, daytona, or modal.
             jobs_dir: Base output directory.
             no_baseline: Skip baseline (no-skill) runs.
             concurrency: Max concurrent tasks per job.

@@ -929,7 +929,7 @@ class TestVerifierEnv:
 
     @pytest.mark.asyncio
     async def test_ctrf_plugin_inferred_from_test_script(self, tmp_path):
-        """test.sh using --ctrf gets json_ctrf loaded even with plugin autoload disabled."""
+        """test.sh using --ctrf gets ctrf loaded even with plugin autoload disabled."""
         from benchflow._sandbox import harden_before_verify
 
         tests_dir = tmp_path / "tests"
@@ -945,7 +945,7 @@ class TestVerifierEnv:
         await harden_before_verify(env, task, sandbox_user=None, workspace="/app")
 
         addopts = task.config.verifier.env["PYTEST_ADDOPTS"]
-        assert "-p json_ctrf" in addopts
+        assert "-p ctrf" in addopts
         assert task.config.verifier.env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] == "1"
 
     @pytest.mark.asyncio
@@ -963,7 +963,7 @@ class TestVerifierEnv:
         await harden_before_verify(env, task, sandbox_user=None, workspace="/app")
 
         addopts = task.config.verifier.env["PYTEST_ADDOPTS"]
-        assert "-p json_ctrf" not in addopts
+        assert "-p ctrf" not in addopts
 
     @pytest.mark.asyncio
     async def test_rootdir_follows_workspace(self):

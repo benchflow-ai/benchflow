@@ -16,7 +16,7 @@ Run loop (SDK.run, top to bottom)
     │  _resolve_prompts       prompt list (instruction.md fallback)│
     │  stage_dockerfile_deps  COPY rewrites for context_root       │  ← _env_setup
     │  _inject_skills_…       Dockerfile skill mount               │  ← _env_setup
-    │  _create_environment    Docker or Daytona, not yet started   │  ← _env_setup
+    │  _create_environment    Docker, Daytona, or Modal sandbox    │  ← _env_setup
     │  _write_config          config.json → trial_dir              │
     └──────────────────────────────────────────────────────────────┘
     ┌─ START (sandbox) ───────────────────────────────────────────┐
@@ -529,7 +529,7 @@ class SDK:
             job_name: Job name. Auto-generated if not provided.
             trial_name: Custom trial name. Auto-generated if not provided.
             jobs_dir: Directory for job output (Harbor convention).
-            environment: Environment type — "docker" or "daytona".
+            environment: Environment type — "docker", "daytona", or "modal".
             skills_dir: Path to skills directory. Copied into sandbox and symlinked
                 to agent-specific discovery paths (e.g. ~/.claude/skills/).
             sandbox_user: Run agent as this non-root user (e.g. "agent"). Uses

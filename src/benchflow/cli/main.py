@@ -37,7 +37,7 @@ def run(
     ] = None,
     environment: Annotated[
         str,
-        typer.Option("--backend", "-b", help="Backend: docker or daytona"),
+        typer.Option("--backend", "-b", help="Backend: docker, daytona, or modal"),
     ] = "docker",
     prompt: Annotated[
         list[str] | None,
@@ -132,7 +132,7 @@ def job(
     ] = None,
     environment: Annotated[
         str,
-        typer.Option("--env", "-e", help="Environment: docker or daytona"),
+        typer.Option("--env", "-e", help="Environment: docker, daytona, or modal"),
     ] = "docker",
     concurrency: Annotated[
         int,
@@ -311,7 +311,7 @@ def eval(
     ] = None,
     environment: Annotated[
         str,
-        typer.Option("--env", "-e", help="Environment: docker or daytona"),
+        typer.Option("--env", "-e", help="Environment: docker, daytona, or modal"),
     ] = "docker",
     concurrency: Annotated[
         int,
@@ -442,7 +442,7 @@ def skills_eval(
     ] = None,
     environment: Annotated[
         str,
-        typer.Option("--env", "-e", help="Environment: docker or daytona"),
+        typer.Option("--env", "-e", help="Environment: docker, daytona, or modal"),
     ] = "docker",
     concurrency: Annotated[
         int,
@@ -726,7 +726,7 @@ def eval_create(
     ] = None,
     environment: Annotated[
         str,
-        typer.Option("--env", "-e", help="Backend: docker or daytona"),
+        typer.Option("--env", "-e", help="Backend: docker, daytona, or modal"),
     ] = "docker",
     concurrency: Annotated[
         int,
@@ -995,7 +995,7 @@ def environment_create(
     ],
     backend: Annotated[
         str,
-        typer.Option("--backend", "-b", help="Backend: docker or daytona"),
+        typer.Option("--backend", "-b", help="Backend: docker, daytona, or modal"),
     ] = "daytona",
 ) -> None:
     """Create an environment from a task directory (does not start it)."""

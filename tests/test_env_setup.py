@@ -1,9 +1,11 @@
 """Tests for benchflow._env_setup — Dockerfile skills injection and dep staging."""
 
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 from benchflow._env_setup import (
+    _create_environment,
     _dep_local_name,
     _get_agent_skill_paths,
     _inject_skills_into_dockerfile,
@@ -189,6 +191,29 @@ class TestDepLocalName:
             _dep_local_name("tasks/email-foo/environment/skills")
             == "environment__skills"
         )
+
+
+class TestCreateEnvironment:
+    def test_modal_preflights_and_constructs_environment(self, tmp_path):
+        env_config = MagicMock()
+        trial_paths = MagicMock()
+        task = SimpleNamespace(
+            paths=SimpleNamespace(environment_dir=tmp_path / "environment"),
+            config=SimpleNamespace(environment=env_config),
+        )
+
+        with patch("harbor.environments.modal.ModalEnvironment") as modal_env:
+            result = _create_environment("modal", task, tmp_path, "trial", trial_paths)
+
+        modal_env.preflight.assert_called_once_with()
+        modal_env.assert_called_once_with(
+            environment_dir=tmp_path / "environment",
+            environment_name=tmp_path.name,
+            session_id="trial",
+            trial_paths=trial_paths,
+            task_env_config=env_config,
+        )
+        assert result is modal_env.return_value
 
 
 class TestStageDockerfileDeps:
