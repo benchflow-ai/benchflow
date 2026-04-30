@@ -36,6 +36,96 @@ _IGNORE_DIRS = {
 }
 
 
+def _modal_add_python_version() -> str | None:
+    """Python version Modal should add to Dockerfile images that lack Python."""
+    value = os.environ.get("BENCHFLOW_MODAL_ADD_PYTHON", "3.12").strip()
+    return value or None
+
+
+def _create_benchflow_modal_environment_class():
+    """Create a ModalEnvironment subclass with BenchFlow's image-build defaults."""
+    from harbor.environments.modal import ModalEnvironment
+
+    class BenchFlowModalEnvironment(ModalEnvironment):
+        async def start(self, force_build: bool) -> None:
+            """Starts the Modal sandbox, adding Python for plain Linux images."""
+            from harbor.models.trial.paths import EnvironmentPaths
+            from modal import App, Image, Secret, Volume
+
+            docker_image = self.task_env_config.docker_image
+
+            if docker_image:
+                registry_secret = (
+                    Secret.from_name(self._registry_secret)
+                    if self._registry_secret
+                    else None
+                )
+                if ".dkr.ecr." in docker_image:
+                    self._image = Image.from_aws_ecr(
+                        docker_image,
+                        secret=registry_secret,
+                    )
+                else:
+                    self._image = Image.from_registry(
+                        docker_image,
+                        secret=registry_secret,
+                    )
+            else:
+                self._image = Image.from_dockerfile(
+                    self._environment_definition_path,
+                    force_build=force_build,
+                    context_dir=self.environment_dir,
+                    add_python=_modal_add_python_version(),
+                )
+
+            self._app = await App.lookup.aio(
+                name="__harbor__",
+                create_if_missing=True,
+            )
+
+            gpu_config = None
+            gpu_type = "any"
+
+            if self.task_env_config.gpus > 0:
+                if self.task_env_config.gpu_types:
+                    if len(self.task_env_config.gpu_types) > 1:
+                        self.logger.debug(
+                            "Multiple GPU types specified but Modal only supports one GPU "
+                            "type. Using the first GPU type."
+                        )
+                    gpu_type = self.task_env_config.gpu_types[0]
+
+                gpu_config = f"{gpu_type}:{self.task_env_config.gpus}"
+
+            secrets_config = [Secret.from_name(secret) for secret in self._secrets]
+            volumes_config = {
+                mount_path: Volume.from_name(volume_name)
+                for mount_path, volume_name in self._volumes.items()
+            }
+
+            self._sandbox = await self._create_sandbox(
+                gpu_config=gpu_config,
+                secrets_config=secrets_config,
+                volumes_config=volumes_config,
+            )
+
+            await self._sandbox.mkdir.aio(
+                str(EnvironmentPaths.agent_dir),
+                parents=True,
+            )
+            await self._sandbox.mkdir.aio(
+                str(EnvironmentPaths.verifier_dir),
+                parents=True,
+            )
+
+            # Make log directories world-writable so non-root agents/verifiers can write to them.
+            await self.exec(
+                f"chmod 777 {EnvironmentPaths.agent_dir} {EnvironmentPaths.verifier_dir}"
+            )
+
+    return BenchFlowModalEnvironment
+
+
 def _get_agent_skill_paths() -> list[str]:
     """Derive Dockerfile skill symlink targets from all agents' skill_paths.
 
@@ -309,11 +399,10 @@ def _create_environment(
             auto_delete_interval_mins=1440,
         )
     elif environment_type == "modal":
-        from harbor.environments.modal import ModalEnvironment
+        modal_environment_class = _create_benchflow_modal_environment_class()
+        modal_environment_class.preflight()
 
-        ModalEnvironment.preflight()
-
-        return ModalEnvironment(
+        return modal_environment_class(
             environment_dir=task.paths.environment_dir,
             environment_name=task_path.name,
             session_id=trial_name,

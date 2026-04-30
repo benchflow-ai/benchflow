@@ -2,9 +2,12 @@
 
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from benchflow._env_setup import (
+    _create_benchflow_modal_environment_class,
     _create_environment,
     _dep_local_name,
     _get_agent_skill_paths,
@@ -202,7 +205,10 @@ class TestCreateEnvironment:
             config=SimpleNamespace(environment=env_config),
         )
 
-        with patch("harbor.environments.modal.ModalEnvironment") as modal_env:
+        with patch(
+            "benchflow._env_setup._create_benchflow_modal_environment_class"
+        ) as modal_env_class:
+            modal_env = modal_env_class.return_value
             result = _create_environment("modal", task, tmp_path, "trial", trial_paths)
 
         modal_env.preflight.assert_called_once_with()
@@ -214,6 +220,69 @@ class TestCreateEnvironment:
             task_env_config=env_config,
         )
         assert result is modal_env.return_value
+
+    @pytest.mark.asyncio
+    async def test_modal_dockerfile_build_adds_python(self, tmp_path, monkeypatch):
+        (tmp_path / "Dockerfile").write_text("FROM ubuntu:24.04\n")
+        env_config = SimpleNamespace(
+            docker_image=None,
+            gpus=0,
+            gpu_types=None,
+            allow_internet=True,
+            env={},
+        )
+        modal_env_class = _create_benchflow_modal_environment_class()
+        env = modal_env_class(
+            environment_dir=tmp_path,
+            environment_name=tmp_path.name,
+            session_id="trial",
+            trial_paths=MagicMock(),
+            task_env_config=env_config,
+        )
+
+        calls = {}
+
+        class FakeImage:
+            @staticmethod
+            def from_dockerfile(path, **kwargs):
+                calls["from_dockerfile"] = {"path": path, **kwargs}
+                return "image"
+
+        class FakeLookup:
+            @staticmethod
+            async def aio(**kwargs):
+                calls["app_lookup"] = kwargs
+                return "app"
+
+        class FakeApp:
+            lookup = FakeLookup
+
+        class FakeMkdir:
+            async def aio(self, *args, **kwargs):
+                calls.setdefault("mkdir", []).append((args, kwargs))
+
+        class FakeSandbox:
+            mkdir = FakeMkdir()
+
+        monkeypatch.setattr("modal.Image", FakeImage)
+        monkeypatch.setattr("modal.App", FakeApp)
+        env._create_sandbox = AsyncMock(return_value=FakeSandbox())
+        env.exec = AsyncMock()
+
+        await env.start(force_build=True)
+
+        assert calls["from_dockerfile"] == {
+            "path": tmp_path / "Dockerfile",
+            "force_build": True,
+            "context_dir": tmp_path,
+            "add_python": "3.12",
+        }
+        env._create_sandbox.assert_awaited_once_with(
+            gpu_config=None,
+            secrets_config=[],
+            volumes_config={},
+        )
+        env.exec.assert_awaited_once()
 
 
 class TestStageDockerfileDeps:
