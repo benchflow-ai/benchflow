@@ -457,6 +457,9 @@ def _create_environment(
 ) -> Any:
     """Create a Harbor environment (Docker, Daytona, or Modal)."""
     env_config = task.config.environment
+    environment_dir = task_path / "environment"
+    if not environment_dir.exists():
+        environment_dir = task.paths.environment_dir
     if preserve_agent_network and env_config.allow_internet is False:
         # LLM agents run inside the sandbox and need outbound network for model
         # APIs and first-run agent installation. BenchFlow enforces the task's
@@ -469,7 +472,7 @@ def _create_environment(
         from harbor.environments.docker.docker import DockerEnvironment
 
         return DockerEnvironment(
-            environment_dir=task.paths.environment_dir,
+            environment_dir=environment_dir,
             environment_name=task_path.name,
             session_id=trial_name,
             trial_paths=trial_paths,
@@ -505,7 +508,7 @@ def _create_environment(
             env_config.storage_mb = _DAYTONA_MAX_STORAGE_MB
 
         return DaytonaEnvironment(
-            environment_dir=task.paths.environment_dir,
+            environment_dir=environment_dir,
             environment_name=task_path.name,
             session_id=trial_name,
             trial_paths=trial_paths,
@@ -518,7 +521,7 @@ def _create_environment(
         modal_environment_class.preflight()
 
         return modal_environment_class(
-            environment_dir=task.paths.environment_dir,
+            environment_dir=environment_dir,
             environment_name=task_path.name,
             session_id=trial_name,
             trial_paths=trial_paths,
