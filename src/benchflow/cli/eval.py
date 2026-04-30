@@ -116,7 +116,7 @@ def eval_create(
         typer.Option(
             "--environment",
             "-e",
-            help="docker | daytona | ... (uses the agent's default if unset)",
+            help="docker | daytona | modal | ... (uses the agent's default if unset)",
         ),
     ] = "docker",
     prompt: Annotated[

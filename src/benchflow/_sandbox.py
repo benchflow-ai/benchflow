@@ -525,7 +525,7 @@ async def _discover_pytest_plugin_flags(env, task: "Task") -> str:
             if isinstance(name, str):
                 add_plugin(name)
 
-    # The standard task template runs pytest-json-ctrf through `uvx --with`,
+    # The standard task template runs pytest-ctrf through `uvx --with`,
     # so the plugin is not visible during pre-verifier entry-point discovery.
     # Infer only this known reporting plugin from test.sh while keeping
     # PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 for all other entry points.
@@ -549,7 +549,7 @@ def _infer_pytest_plugins_from_test_script(task: "Task") -> list[str]:
     uncommented = "\n".join(line.split("#", 1)[0] for line in text.splitlines())
     plugins: list[str] = []
     if re.search(r"(^|[^\w-])--ctrf([=\s]|$)", uncommented):
-        plugins.append("json_ctrf")
+        plugins.append("ctrf")
     return plugins
 
 

@@ -250,7 +250,7 @@ def _create_environment(
     trial_paths: TrialPaths,
     preserve_agent_network: bool = False,
 ) -> Any:
-    """Create a Harbor environment (Docker or Daytona)."""
+    """Create a Harbor environment (Docker, Daytona, or Modal)."""
     env_config = task.config.environment
     if preserve_agent_network and env_config.allow_internet is False:
         # LLM agents run inside the sandbox and need outbound network for model
@@ -308,7 +308,19 @@ def _create_environment(
             auto_stop_interval_mins=1440,
             auto_delete_interval_mins=1440,
         )
+    elif environment_type == "modal":
+        from harbor.environments.modal import ModalEnvironment
+
+        ModalEnvironment.preflight()
+
+        return ModalEnvironment(
+            environment_dir=task.paths.environment_dir,
+            environment_name=task_path.name,
+            session_id=trial_name,
+            trial_paths=trial_paths,
+            task_env_config=env_config,
+        )
     else:
         raise ValueError(
-            f"Unknown environment_type: {environment_type!r} (use 'docker' or 'daytona')"
+            f"Unknown environment_type: {environment_type!r} (use 'docker', 'daytona', or 'modal')"
         )
