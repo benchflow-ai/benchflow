@@ -1,10 +1,14 @@
 """Environment setup utilities: Dockerfile preprocessing, DinD patching, environment creation."""
 
+import base64
 import json
 import logging
 import os
 import re
+import shlex
 import shutil
+import tempfile
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -36,10 +40,110 @@ _IGNORE_DIRS = {
 }
 
 
-def _modal_add_python_version() -> str | None:
+_HEREDOC_RE = re.compile(r"<<-?\s*['\"]?([A-Za-z0-9_.-]+)['\"]?")
+
+
+def _modal_dockerfile_uses_python_base(dockerfile_path: Path) -> bool:
+    """Return True if any Dockerfile stage is based on a Python image."""
+    try:
+        lines = dockerfile_path.read_text().splitlines()
+    except OSError:
+        return False
+
+    for line in lines:
+        parts = line.strip().split()
+        if not parts or parts[0].upper() != "FROM":
+            continue
+        image_parts = [part for part in parts[1:] if not part.startswith("--")]
+        if not image_parts:
+            continue
+        image = image_parts[0].lower()
+        if image.startswith("python:") or "/python:" in image:
+            return True
+    return False
+
+
+def _modal_add_python_version(dockerfile_path: Path) -> str | None:
     """Python version Modal should add to Dockerfile images that lack Python."""
-    value = os.environ.get("BENCHFLOW_MODAL_ADD_PYTHON", "3.12").strip()
+    configured = os.environ.get("BENCHFLOW_MODAL_ADD_PYTHON")
+    if configured is None and _modal_dockerfile_uses_python_base(dockerfile_path):
+        return None
+    value = (configured if configured is not None else "3.12").strip()
     return value or None
+
+
+def _modal_heredoc_decoder(body: str) -> str:
+    encoded = base64.b64encode(body.encode()).decode()
+    code = f"import base64,sys;sys.stdout.buffer.write(base64.b64decode({encoded!r}))"
+    return f"python3 -c {shlex.quote(code)}"
+
+
+def _modal_rewrite_heredoc_line(line: str, match: re.Match[str], body: str) -> str:
+    before = line[: match.start()].rstrip()
+    decoder = _modal_heredoc_decoder(body)
+
+    cat_match = re.search(r"cat\s*>\s*(?P<target>\S+)\s*$", before)
+    if cat_match:
+        target = cat_match.group("target")
+        return f"{before[: cat_match.start()]}{decoder} > {target}"
+
+    stripped = before.strip()
+    if stripped.upper() == "RUN":
+        shell = "/bin/bash" if "pipefail" in body else "/bin/sh"
+        return f"RUN {decoder} | {shell}"
+    if stripped.upper().startswith("RUN "):
+        command = stripped[3:].strip()
+        if command.endswith("-"):
+            command = command[:-1].rstrip()
+        return f"RUN {decoder} | {command}"
+    return line
+
+
+def _modal_rewrite_dockerfile_heredocs(text: str) -> str:
+    """Rewrite Dockerfile heredocs into syntax accepted by Modal's parser."""
+    lines = text.splitlines()
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        match = _HEREDOC_RE.search(line)
+        if not match:
+            out.append(line)
+            i += 1
+            continue
+
+        delimiter = match.group(1)
+        body_lines: list[str] = []
+        i += 1
+        while i < len(lines) and lines[i].strip() != delimiter:
+            body_lines.append(lines[i])
+            i += 1
+
+        if i == len(lines):
+            out.append(line)
+            out.extend(body_lines)
+            break
+
+        body = "\n".join(body_lines) + "\n"
+        out.append(_modal_rewrite_heredoc_line(line, match, body))
+        i += 1
+
+    suffix = "\n" if text.endswith("\n") else ""
+    return "\n".join(out) + suffix
+
+
+def _modal_builder_dockerfile(
+    dockerfile_path: Path,
+) -> tuple[Path, Callable[[], None]]:
+    text = dockerfile_path.read_text()
+    rewritten = _modal_rewrite_dockerfile_heredocs(text)
+    if rewritten == text:
+        return dockerfile_path, lambda: None
+
+    tmpdir = tempfile.TemporaryDirectory(prefix="benchflow-modal-dockerfile-")
+    tmp_path = Path(tmpdir.name) / "Dockerfile"
+    tmp_path.write_text(rewritten)
+    return tmp_path, tmpdir.cleanup
 
 
 def _create_benchflow_modal_environment_class():
@@ -52,6 +156,10 @@ def _create_benchflow_modal_environment_class():
             from harbor.models.trial.paths import EnvironmentPaths
             from modal import App, Image, Secret, Volume
 
+            def noop_cleanup_dockerfile() -> None:
+                return None
+
+            cleanup_dockerfile: Callable[[], None] = noop_cleanup_dockerfile
             docker_image = self.task_env_config.docker_image
 
             if docker_image:
@@ -71,11 +179,15 @@ def _create_benchflow_modal_environment_class():
                         secret=registry_secret,
                     )
             else:
+                dockerfile_path = self._environment_definition_path
+                modal_dockerfile_path, cleanup_dockerfile = _modal_builder_dockerfile(
+                    dockerfile_path
+                )
                 self._image = Image.from_dockerfile(
-                    self._environment_definition_path,
+                    modal_dockerfile_path,
                     force_build=force_build,
                     context_dir=self.environment_dir,
-                    add_python=_modal_add_python_version(),
+                    add_python=_modal_add_python_version(dockerfile_path),
                 )
 
             self._app = await App.lookup.aio(
@@ -103,11 +215,14 @@ def _create_benchflow_modal_environment_class():
                 for mount_path, volume_name in self._volumes.items()
             }
 
-            self._sandbox = await self._create_sandbox(
-                gpu_config=gpu_config,
-                secrets_config=secrets_config,
-                volumes_config=volumes_config,
-            )
+            try:
+                self._sandbox = await self._create_sandbox(
+                    gpu_config=gpu_config,
+                    secrets_config=secrets_config,
+                    volumes_config=volumes_config,
+                )
+            finally:
+                cleanup_dockerfile()
 
             await self._sandbox.mkdir.aio(
                 str(EnvironmentPaths.agent_dir),
