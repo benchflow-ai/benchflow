@@ -199,6 +199,22 @@ class TestDepLocalName:
 
 
 class TestCreateEnvironment:
+    def test_prefers_effective_task_path_environment_dir(self, tmp_path):
+        original_env_dir = tmp_path / "original" / "environment"
+        effective_task = tmp_path / "effective-task"
+        effective_env_dir = effective_task / "environment"
+        effective_env_dir.mkdir(parents=True)
+        env_config = MagicMock()
+        task = SimpleNamespace(
+            paths=SimpleNamespace(environment_dir=original_env_dir),
+            config=SimpleNamespace(environment=env_config),
+        )
+
+        with patch("harbor.environments.docker.docker.DockerEnvironment") as docker_env:
+            _create_environment("docker", task, effective_task, "trial", MagicMock())
+
+        assert docker_env.call_args.kwargs["environment_dir"] == effective_env_dir
+
     def test_modal_preflights_and_constructs_environment(self, tmp_path):
         env_config = MagicMock()
         trial_paths = MagicMock()
