@@ -15,13 +15,26 @@ def _oracle_env():
     return env
 
 
+def _scaffold_task(tmp_path, solution_env=None):
+    """Create minimal task structure for Task() to parse."""
+    solve = tmp_path / "solution" / "solve.sh"
+    solve.parent.mkdir(parents=True, exist_ok=True)
+    solve.write_text("#!/bin/sh\necho ok\n")
+    (tmp_path / "instruction.md").write_text("Solve the task.\n")
+    env_section = ""
+    if solution_env:
+        env_section = "\n[solution.env]\n" + "\n".join(
+            f'{k} = "{v}"' for k, v in solution_env.items()
+        )
+    (tmp_path / "task.toml").write_text(f'version = "1.0"\n{env_section}\n')
+    (tmp_path / "environment").mkdir(exist_ok=True)
+
+
 @pytest.mark.asyncio
 async def test_run_oracle_redirects_to_container_log(tmp_path):
     from benchflow.sdk import SDK
 
-    solve = tmp_path / "solution" / "solve.sh"
-    solve.parent.mkdir()
-    solve.write_text("#!/bin/sh\necho ok\n")
+    _scaffold_task(tmp_path)
     env = _oracle_env()
 
     trajectory, agent_name = await SDK()._run_oracle(env, tmp_path, timeout=123)
@@ -47,9 +60,7 @@ async def test_run_oracle_redirects_to_container_log(tmp_path):
 async def test_run_oracle_redirects_sandbox_user_output(tmp_path):
     from benchflow.sdk import SDK
 
-    solve = tmp_path / "solution" / "solve.sh"
-    solve.parent.mkdir()
-    solve.write_text("#!/bin/sh\necho ok\n")
+    _scaffold_task(tmp_path)
     env = _oracle_env()
 
     await SDK()._run_oracle(env, tmp_path, timeout=123, sandbox_user="agent")
@@ -61,3 +72,52 @@ async def test_run_oracle_redirects_sandbox_user_output(tmp_path):
         "> /logs/agent/oracle.txt 2>&1"
     )
     assert "tee" not in solve_cmd
+
+
+@pytest.mark.asyncio
+async def test_run_oracle_passes_solution_env(tmp_path):
+    """solution.env from task.toml is forwarded to the oracle exec call."""
+    from benchflow.sdk import SDK
+
+    _scaffold_task(tmp_path, solution_env={
+        "MY_TOKEN": "secret123",
+        "REPO_ID": "org/repo",
+    })
+    env = _oracle_env()
+
+    await SDK()._run_oracle(env, tmp_path, timeout=60)
+
+    solve_call = env.exec.call_args_list[0]
+    passed_env = solve_call.kwargs["env"]
+    assert passed_env["MY_TOKEN"] == "secret123"
+    assert passed_env["REPO_ID"] == "org/repo"
+    assert passed_env["DEBIAN_FRONTEND"] == "noninteractive"
+
+
+@pytest.mark.asyncio
+async def test_run_oracle_no_solution_env_only_has_debian_frontend(tmp_path):
+    """Without [solution.env], only DEBIAN_FRONTEND is passed."""
+    from benchflow.sdk import SDK
+
+    _scaffold_task(tmp_path)
+    env = _oracle_env()
+
+    await SDK()._run_oracle(env, tmp_path, timeout=60)
+
+    solve_call = env.exec.call_args_list[0]
+    assert solve_call.kwargs["env"] == {"DEBIAN_FRONTEND": "noninteractive"}
+
+
+@pytest.mark.asyncio
+async def test_run_oracle_solution_env_resolves_host_vars(tmp_path, monkeypatch):
+    """${VAR} references in solution.env are resolved from the host environment."""
+    from benchflow.sdk import SDK
+
+    monkeypatch.setenv("HOST_SECRET", "resolved_value")
+    _scaffold_task(tmp_path, solution_env={"TOKEN": "${HOST_SECRET}"})
+    env = _oracle_env()
+
+    await SDK()._run_oracle(env, tmp_path, timeout=60)
+
+    solve_call = env.exec.call_args_list[0]
+    assert solve_call.kwargs["env"]["TOKEN"] == "resolved_value"

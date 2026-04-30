@@ -29,6 +29,14 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_ORACLE_SKILL_PATHS = [
+    "$HOME/.claude/skills",
+    "$HOME/.codex/skills",
+    "$HOME/.opencode/skills",
+    "$HOME/.agents/skills",
+    "$WORKSPACE/skills",
+]
+
 
 def _intermediate_dirs(prefix: str, leaf: str) -> list[str]:
     """Dirs strictly under prefix down to leaf inclusive, in creation order.
@@ -234,15 +242,23 @@ async def deploy_skills(
             logger.info("Skills already injected via Dockerfile")
 
     # Distribute to agent-specific discovery paths
-    if effective_skills and agent_cfg and agent_cfg.skill_paths:
-        home = f"/home/{sandbox_user}" if sandbox_user else "/root"
+    if agent_cfg is not None:
+        skill_paths = agent_cfg.skill_paths
+    else:
+        skill_paths = _ORACLE_SKILL_PATHS
+    if effective_skills and skill_paths:
+        if agent_cfg is None:
+            home = "/root"
+        else:
+            home = f"/home/{sandbox_user}" if sandbox_user else "/root"
         count = await _link_skill_paths(
             env,
             effective_skills,
-            agent_cfg.skill_paths,
+            skill_paths,
             home,
             agent_cwd,
             sandbox_user,
         )
+        label = agent_cfg.name if agent_cfg else "oracle"
         if count:
-            logger.info(f"Skills distributed to {count} paths for {agent_cfg.name}")
+            logger.info(f"Skills distributed to {count} paths for {label}")
