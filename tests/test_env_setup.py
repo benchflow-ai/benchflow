@@ -12,6 +12,8 @@ from benchflow._env_setup import (
     _dep_local_name,
     _get_agent_skill_paths,
     _inject_skills_into_dockerfile,
+    _modal_add_python_version,
+    _modal_rewrite_dockerfile_heredocs,
     stage_dockerfile_deps,
 )
 
@@ -283,6 +285,35 @@ class TestCreateEnvironment:
             volumes_config={},
         )
         env.exec.assert_awaited_once()
+
+    def test_modal_add_python_skips_python_base(self, tmp_path):
+        dockerfile = tmp_path / "Dockerfile"
+        dockerfile.write_text("FROM python:3.12-slim\n")
+
+        assert _modal_add_python_version(dockerfile) is None
+
+    def test_modal_rewrites_run_python_heredoc(self):
+        rewritten = _modal_rewrite_dockerfile_heredocs(
+            "FROM python:3.12-slim\nRUN python <<'PY'\nprint('hello')\nPY\n"
+        )
+
+        assert "<<'PY'" not in rewritten
+        assert "base64.b64decode" in rewritten
+        assert "| python" in rewritten
+        assert "print('hello')" not in rewritten
+
+    def test_modal_rewrites_cat_heredoc_inside_run(self):
+        rewritten = _modal_rewrite_dockerfile_heredocs(
+            "FROM ubuntu:24.04\n"
+            "RUN mkdir -p /x && \\\n"
+            "    cat > file.txt <<'EOF'\n"
+            "hello\n"
+            "EOF\n"
+        )
+
+        assert "<<'EOF'" not in rewritten
+        assert "base64.b64decode" in rewritten
+        assert "> file.txt" in rewritten
 
 
 class TestStageDockerfileDeps:
