@@ -79,10 +79,13 @@ async def test_run_oracle_passes_solution_env(tmp_path):
     """solution.env from task.toml is forwarded to the oracle exec call."""
     from benchflow.sdk import SDK
 
-    _scaffold_task(tmp_path, solution_env={
-        "MY_TOKEN": "secret123",
-        "REPO_ID": "org/repo",
-    })
+    _scaffold_task(
+        tmp_path,
+        solution_env={
+            "MY_TOKEN": "secret123",
+            "REPO_ID": "org/repo",
+        },
+    )
     env = _oracle_env()
 
     await SDK()._run_oracle(env, tmp_path, timeout=60)

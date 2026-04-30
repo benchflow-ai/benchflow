@@ -226,7 +226,9 @@ async def test_deploy_skills_oracle_uses_default_paths_and_root_home(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_deploy_skills_agent_with_empty_skill_paths_does_not_use_oracle_paths(tmp_path):
+async def test_deploy_skills_agent_with_empty_skill_paths_does_not_use_oracle_paths(
+    tmp_path,
+):
     """An agent with skill_paths=[] should NOT get oracle fallback paths."""
     env = MagicMock()
     env.exec = AsyncMock(return_value=MagicMock(return_code=0, stdout=""))
