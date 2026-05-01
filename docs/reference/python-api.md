@@ -1,4 +1,8 @@
-# Runtime API Guide
+---
+title: "Python API"
+description: "BenchFlow Python SDK reference."
+---
+
 
 The Trial/Scene API is the primary way to run agent benchmarks programmatically.
 
@@ -27,8 +31,6 @@ print(f"Tool calls: {result.n_tool_calls}")
 Declarative configuration for a trial — a sequence of Scenes in a shared sandbox.
 
 ```python
-from pathlib import Path
-
 from benchflow.trial import TrialConfig, Scene, Role, Turn
 
 # Single-agent (simplest)
@@ -220,43 +222,16 @@ config = TrialConfig(
 )
 ```
 
-## User-Driven Loops
+## 0.3 Limitations
 
-Use `BaseUser` or `FunctionUser` when one agent should run multiple rounds and
-Python should decide the next prompt from verifier feedback. This is the
-progressive-disclosure path: the user callback can stop early, read
-`RoundResult` after each `soft_verify()`, and optionally receive the oracle
-solution during `setup()` when `oracle_access=True`.
+The Scene API in 0.3 covers coder-reviewer and multi-turn patterns. It does **not** yet support:
 
-```python
-from pathlib import Path
+- **Dynamic termination** — turn count is fixed at config time. A "user" role cannot decide to stop early based on agent output. Workaround: use `max_rounds` in the standalone `_scene.py` scheduler.
+- **Oracle access** — no mechanism for a "user" role to read `/solution` during setup.
+- **Per-round verification** — `verify()` runs once after all scenes complete, not between rounds.
+- **Inter-round trajectory inspection** — a "user" role cannot read the agent's trajectory between turns.
 
-from benchflow import FunctionUser, RoundResult
-from benchflow.trial import Scene, TrialConfig
-
-
-def user(round: int, instruction: str, rr: RoundResult | None) -> str | None:
-    if round == 0:
-        return instruction.splitlines()[0]
-    if rr and (rr.rewards or {}).get("reward") == 1.0:
-        return None
-    return f"Tests failed:\n{rr.verifier_output}\n\nUse the full spec:\n{instruction}"
-
-
-config = TrialConfig(
-    task_path=Path("tasks/my-task"),
-    scenes=[Scene.single(agent="gemini", model="gemini-3.1-flash-lite-preview")],
-    user=FunctionUser(user),
-    max_user_rounds=3,
-    environment="daytona",
-)
-result = await bf.run(config)
-```
-
-Use multi-role Scenes when another LLM should act as the reviewer or simulated
-user. Use `BaseUser` when the loop is deterministic or verifier-driven. See
-[`progressive-disclosure.md`](../progressive-disclosure.md) and
-[`docs/examples/scene-patterns.ipynb`](../examples/scene-patterns.ipynb).
+These are tracked for 0.4.
 
 ## YAML Trial Configs
 
@@ -274,8 +249,6 @@ result = await bf.run(config)
 | `gemini` | ACP | GOOGLE_API_KEY | — |
 | `claude-agent-acp` | ACP | ANTHROPIC_API_KEY | `claude` |
 | `codex-acp` | ACP | OPENAI_API_KEY | `codex` |
-| `opencode` | ACP | inferred from model/provider | — |
-| `openhands` | ACP | LLM_API_KEY | — |
 | `pi-acp` | ACP | ANTHROPIC_API_KEY | `pi` |
 | `openclaw` | ACP | inferred from model | — |
 

@@ -1,4 +1,8 @@
-# Progressive Disclosure with `BaseUser`
+---
+title: "Progressive disclosure"
+description: "Lifecycle for environments that reveal information across rounds."
+---
+
 
 ## TL;DR
 
@@ -6,7 +10,7 @@
 
 It was built for the SWE-bench Pro progressive-disclosure use case: the dataset's instructions are long structured specs that overwhelm agents in a single turn. A `BaseUser` lets you compress the spec for round 0, watch which tests fail, then disclose hints from the spec on subsequent rounds — all driven by deterministic Python, not by another LLM acting as a "user."
 
-It is also benchflow's parity answer to the [Harbor simulated-user proposal (#1316)](https://github.com/harbor-ai/harbor/issues/1316) for the no-second-LLM case. The Harbor proposal required a FastMCP sidecar container; benchflow's `BaseUser` is in-process Python.
+Other agent-eval frameworks model this with a "simulated user" — a second LLM running in a sidecar container that talks to the agent over a side channel. benchflow's `BaseUser` is just in-process Python: no second LLM, no sidecar, no outbox protocol.
 
 ```python
 import benchflow as bf
@@ -74,13 +78,13 @@ What this run shows and doesn't show:
 - **Per-round soft-verify scored 0.0 even on tasks where the final hardened verify scored 1.0.** Soft-verify runs between rounds without the full hardening sequence (no workspace restore, no process kill so the sandbox stays alive), so its scoring can diverge from the final verifier. The user's hint schedule reacts to soft-verify, not the canonical reward — something to keep in mind when designing the loop.
 - **First-run flake.** ansible's first run hit a transport EOF after 17min and qutebrowser timed out at 50min. Both succeeded on retry. v0.3.3 adds `agent_idle_timeout` (default 600s) and clearer EOF diagnostics so the next time a hang happens the failure is fast and actionable rather than silent.
 
-This is one model on one day, not a published comparison. The notebook at [`docs/examples/swebench_pro_progressive_disclosure.ipynb`](./examples/swebench_pro_progressive_disclosure.ipynb) has the executable cells; raw aggregated results are at [`experiments/swebench-pro-progressive-results.json`](../experiments/swebench-pro-progressive-results.json).
+This is one model on one day, not a published comparison. The notebook at [`examples/swebench_pro_progressive_disclosure.ipynb`](../examples/swebench_pro_progressive_disclosure.ipynb) has the executable cells; raw aggregated results are at [`experiments/swebench-pro-progressive-results.json`](../experiments/swebench-pro-progressive-results.json).
 
 ---
 
 ## Where it lives in the trial lifecycle
 
-`BaseUser` plugs into the existing `Trial` lifecycle ([concepts](./concepts.md#trial-lifecycle)) without changing any of the existing phases. When `TrialConfig.user` is set, `Trial._run_user_loop()` replaces the single-pass `connect → execute → disconnect` block with a per-round version:
+`BaseUser` plugs into the existing `Trial` lifecycle ([concepts](/docs/concepts#trial-lifecycle)) without changing any of the existing phases. When `TrialConfig.user` is set, `Trial._run_user_loop()` replaces the single-pass `connect → execute → disconnect` block with a per-round version:
 
 ```
 setup() → start() → install_agent()
@@ -260,14 +264,14 @@ Trajectory and tool counts are sliced per round from `Trial._trajectory`. The se
 
 ---
 
-## Comparison with multi-agent simulated user (Harbor #1316 parity)
+## Comparison with multi-agent simulated user
 
-benchflow has two patterns for multi-round agent runs. Both are functionally at parity with [Harbor #1316](https://github.com/harbor-ai/harbor/issues/1316) — neither requires a FastMCP sidecar.
+benchflow has two patterns for multi-round agent runs. Neither requires a sidecar container.
 
 | Pattern | What "user" is | When to use |
 |---------|---------------|-------------|
 | **`BaseUser` callback (this doc)** | Python function in the scheduler process | Programmatic, deterministic, rule-based. No second LLM. Cheap. Best for progressive disclosure, curriculum, scripted hints. |
-| **Multi-role Scene with simulated-user role** ([use-cases §1](./use-cases.md#1-interactive-user-simulation-harbor-1316-equivalent)) | Another LLM with full tool access | Open-ended, conversational. The "user" can read files, check outputs, give nuanced feedback. Best when the user's behavior must itself be adaptive or LLM-quality. |
+| **Multi-role Scene with simulated-user role** ([use-cases §1](/docs/benchflow/use-cases#1-interactive-user-simulation)) | Another LLM with full tool access | Open-ended, conversational. The "user" can read files, check outputs, give nuanced feedback. Best when the user's behavior must itself be adaptive or LLM-quality. |
 
 The two coexist. Choose based on whether your "user" needs to think (Scene-based) or just decide (`BaseUser`). For the SWE-bench Pro use case, the disclosure schedule is fixed, the grading is the verifier, and there's nothing for a second LLM to add — `BaseUser` wins on cost and determinism.
 
@@ -275,7 +279,7 @@ The two coexist. Choose based on whether your "user" needs to think (Scene-based
 
 ## Worked examples
 
-- [`docs/examples/swebench_pro_progressive_disclosure.ipynb`](./examples/swebench_pro_progressive_disclosure.ipynb) — the SWE-bench Pro case study, executable end-to-end with the latest oracle/baseline data.
-- [`docs/examples/swebench_pro_user_dogfood.py`](./examples/swebench_pro_user_dogfood.py) — runnable script for any of the 5 SWE-bench Pro tasks. `--task flipt --max-rounds 3`.
-- [`docs/examples/user_dogfood.py`](./examples/user_dogfood.py) — minimal regex-log task with `FunctionUser`, useful as a starting template.
+- [`examples/swebench_pro_progressive_disclosure.ipynb`](../examples/swebench_pro_progressive_disclosure.ipynb) — the SWE-bench Pro case study, executable end-to-end with the latest oracle/baseline data.
+- [`examples/swebench_pro_user_dogfood.py`](../examples/swebench_pro_user_dogfood.py) — runnable script for any of the 5 SWE-bench Pro tasks. `--task flipt --max-rounds 3`.
+- [`examples/user_dogfood.py`](../examples/user_dogfood.py) — minimal regex-log task with `FunctionUser`, useful as a starting template.
 - [`experiments/swebench_pro_oracle_and_baseline.py`](../experiments/swebench_pro_oracle_and_baseline.py) — the oracle-validation + baseline experiment script that produced the table above.

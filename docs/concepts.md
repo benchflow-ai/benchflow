@@ -1,4 +1,8 @@
-# Concepts
+---
+title: "Concepts"
+description: "Tasks, harnesses, agents, environments, scenes, verifiers — the core BenchFlow vocabulary."
+---
+
 
 The mental model for benchflow. Read once, then refer back from the how-tos.
 
@@ -10,7 +14,7 @@ The mental model for benchflow. Read once, then refer back from the how-tos.
 |-----------|------------|
 | **Task** | A directory on disk: `instruction.md` for the agent + `tests/` for the verifier + (optional) `solution/solve.sh` for oracle runs + `environment/Dockerfile` for the sandbox. Authored once, evaluated many times. |
 | **Agent** | A registered ACP-speaking program (Claude Code, Gemini CLI, OpenCode, etc.). Identified by name (`"gemini"`, `"opencode"`) plus an optional model ID. |
-| **Environment** | The sandbox where the agent runs and the verifier checks the result. Backed by Harbor — Docker locally, Daytona for cloud, and Modal for serverless/GPU-backed task environments. |
+| **Environment** | The sandbox where the agent runs and the verifier checks the result. Docker locally, Daytona for cloud. |
 | **Verifier** | The test runner that scores the trial. By default `pytest /tests/...` against the workspace the agent left behind. Outputs `rewards: {reward: float}`. |
 | **Trial** | One agent run on one task. Holds the lifecycle (setup → start → install → execute → verify → cleanup). All higher-level primitives below are built on Trials. |
 
@@ -24,7 +28,7 @@ A `Trial` is decomposable: each phase is a callable method, you can either run t
 ┌──────────────────────────────────────────────────────────────┐
 │                    Trial.run()                               │
 │                                                              │
-│  setup()         resolve config, create Harbor env handle    │
+│  setup()         resolve config, create sandbox env handle   │
 │    ↓                                                         │
 │  start()         start container, upload task files          │
 │    ↓                                                         │
@@ -99,7 +103,7 @@ A User is a `BaseUser` subclass (or `FunctionUser` wrapping a function) with two
 
 Between rounds, benchflow runs `soft_verify()` (verifier without the destructive parts of full hardening), gives the user the round's `RoundResult` (trajectory, rewards, verifier output, tool count), and lets the user decide round N+1's prompt.
 
-The User is the lighter-weight alternative to a Scene with a simulated-user Role: no second LLM, no outbox protocol, just a Python function. Use it when the loop logic is rule-based (compress instruction → show test failures as hints → stop on pass). See [`progressive-disclosure.md`](./progressive-disclosure.md) for the full guide.
+The User is the lighter-weight alternative to a Scene with a simulated-user Role: no second LLM, no outbox protocol, just a Python function. Use it when the loop logic is rule-based (compress instruction → show test failures as hints → stop on pass). See [`progressive-disclosure.md`](/docs/progressive-disclosure) for the full guide.
 
 ---
 
@@ -123,7 +127,7 @@ When a task ships a legitimate `conftest.py` (e.g. qutebrowser uses one to break
 cleanup_conftests = false
 ```
 
-See [`progressive-disclosure.md`](./progressive-disclosure.md#per-task-hardening-opt-outs) for the full opt-out list.
+See [`progressive-disclosure.md`](/docs/progressive-disclosure#per-task-hardening-opt-outs) for the full opt-out list.
 
 ---
 
@@ -153,9 +157,9 @@ Trajectories are written to `<jobs_dir>/<job_name>/<trial_name>/trajectory/acp_t
 
 ## Where to go next
 
-- [Getting started](./getting-started.md) — install, run your first eval.
-- [Task authoring](./task-authoring.md) — write a task with `task.toml` + `tests/` + `solution/`.
-- [Progressive disclosure](./progressive-disclosure.md) — the User abstraction; SWE-bench Pro case study.
-- [Use cases](./use-cases.md) — multi-agent patterns (coder/reviewer, simulated user, BYOS, stateful environments).
-- [CLI reference](./reference/cli.md), [Python API reference](./reference/python-api.md).
-- [Skill evaluation](./skill-eval.md) — when the artifact is a skill, not a workspace.
+- [Getting started](/docs/getting-started) — install, run your first eval.
+- [Task authoring](/docs/task-authoring) — write a task with `task.toml` + `tests/` + `solution/`.
+- [Progressive disclosure](/docs/progressive-disclosure) — the User abstraction; SWE-bench Pro case study.
+- [Use cases](/docs/use-cases) — multi-agent patterns (coder/reviewer, simulated user, BYOS, stateful environments).
+- [CLI reference](/docs/reference/cli), [Python API reference](/docs/reference/python-api).
+- [Skill evaluation](/docs/skill-eval) — when the artifact is a skill, not a workspace.
