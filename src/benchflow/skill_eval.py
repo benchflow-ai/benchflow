@@ -206,7 +206,7 @@ def generate_tasks(
     output_dir: Path,
     with_skill: bool = True,
 ) -> list[Path]:
-    """Generate Harbor-format tasks from an EvalDataset.
+    """Generate BenchFlow-format tasks from an EvalDataset.
 
     Args:
         dataset: Parsed eval dataset.

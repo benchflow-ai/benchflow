@@ -526,7 +526,7 @@ class SDK:
         Trial directly for composable multi-phase execution.
 
         Args:
-            task_path: Path to Harbor-format task directory
+            task_path: Path to BenchFlow-format task directory
             agent: ACP agent name or command (e.g. "claude-agent-acp", "openclaw")
             prompts: List of prompts to send. Default: [instruction.md content]
             model: Model to use (e.g. "claude-haiku-4-5-20251001"). Set via ACP session/set_model.

@@ -5,7 +5,7 @@
 BenchFlow runs AI coding agents inside isolated sandboxes, evaluates their output with a task-specific verifier, and returns structured results. The SDK wraps Harbor environments (Docker or Daytona) and communicates with agents via ACP (Agent Client Protocol) — JSON-RPC 2.0 over stdio. Each trial is one task run by one agent; a `Job` fans out many trials concurrently and aggregates results.
 
 ```
-  Task (Harbor format) + TrialConfig (YAML or Python)
+  Task (BenchFlow task format) + TrialConfig (YAML or Python)
        |
        v
   bf.run(config) → Trial.create(config) → trial.run()
