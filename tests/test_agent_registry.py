@@ -28,6 +28,7 @@ class TestEnvMappingField:
         cfg = AGENTS["codex-acp"]
         assert cfg.env_mapping["BENCHFLOW_PROVIDER_BASE_URL"] == "OPENAI_BASE_URL"
         assert cfg.env_mapping["BENCHFLOW_PROVIDER_API_KEY"] == "OPENAI_API_KEY"
+        assert "openai_base_url=$OPENAI_BASE_URL" in cfg.launch_cmd
 
     def test_gemini_has_mapping(self):
         cfg = AGENTS["gemini"]

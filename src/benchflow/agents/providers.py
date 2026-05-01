@@ -18,7 +18,8 @@ Required fields
                      tokens that get expanded from env vars via
                      ``url_params``. Empty string is allowed for
                      "user-supplied at runtime" providers (e.g. ``vllm``).
-- ``api_protocol``   "anthropic-messages" or "openai-completions" — the
+- ``api_protocol``   "anthropic-messages", "openai-completions", or
+                     "openai-responses" — the
                      wire protocol the primary ``base_url`` speaks.
 - ``auth_type``      "api_key" | "adc" | "none".
                      - "api_key": ``auth_env`` **must** be set.
@@ -61,9 +62,7 @@ class ProviderConfig:
     base_url: (
         str  # primary endpoint; may contain {placeholders} expanded via url_params
     )
-    api_protocol: (
-        str  # protocol for base_url: "openai-completions" | "anthropic-messages"
-    )
+    api_protocol: str  # protocol for base_url: "openai-completions" | "openai-responses" | "anthropic-messages"
     auth_type: str  # "api_key" | "adc" | "none"
     auth_env: str | None = None  # env var holding the API key (None for ADC)
     url_params: dict[str, str] = field(default_factory=dict)  # {placeholder: ENV_VAR}
@@ -142,6 +141,7 @@ PROVIDERS: dict[str, ProviderConfig] = {
         auth_env="ZAI_API_KEY",
         endpoints={
             "openai-completions": "https://api.z.ai/api/paas/v4",
+            "openai-responses": "https://api.z.ai/api/paas/v4",
             "anthropic-messages": "https://api.z.ai/api/anthropic",
         },
         models=[
