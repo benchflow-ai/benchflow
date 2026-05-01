@@ -9,7 +9,7 @@ Demonstrates:
 Requirements:
   - pip install benchflow
   - GEMINI_API_KEY or DAYTONA_API_KEY set
-  - A Harbor-format task directory (e.g. .ref/terminal-bench-2/regex-log)
+  - A BenchFlow task directory (e.g. .ref/terminal-bench-2/regex-log)
 
 Usage:
   python docs/examples/coder-reviewer-demo.py --task .ref/terminal-bench-2/regex-log
