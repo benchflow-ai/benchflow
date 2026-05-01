@@ -44,6 +44,20 @@ Start with [Getting started](./docs/getting-started.md), then [Concepts](./docs/
 
 Notebooks and runnable example scripts live under [`docs/examples/`](./docs/examples/) so examples stay versioned with the docs that explain them.
 
+## Benchmark task sources
+
+BenchFlow's helper scripts can materialize benchmark task repos under `.ref/`.
+For SkillsBench, [`benchmarks/run_skillsbench.py`](./benchmarks/run_skillsbench.py)
+calls `ensure_tasks("skillsbench")`, which clones
+[`benchflow-ai/skillsbench`](https://github.com/benchflow-ai/skillsbench) from
+the `main` branch into `.ref/skillsbench/tasks` when the local task cache is
+missing.
+
+SkillsBench itself sources BenchFlow from GitHub `main` in its
+[`pyproject.toml`](https://github.com/benchflow-ai/skillsbench/blob/main/pyproject.toml).
+After a BenchFlow change lands, run `uv lock --upgrade-package benchflow` in
+SkillsBench when you need its lockfile to point at the newest BenchFlow commit.
+
 ## Featured
 
 - **Progressive disclosure on SWE-bench Pro** — the `BaseUser` abstraction drives a multi-round trial: terse round-0 prompt → failing-test hints → full spec. 5/5 oracle on Daytona, runnable demo at [`docs/examples/swebench_pro_progressive_disclosure.ipynb`](./docs/examples/swebench_pro_progressive_disclosure.ipynb). Also benchflow's [Harbor #1316](https://github.com/harbor-ai/harbor/issues/1316) parity answer for the no-second-LLM case. See [Progressive disclosure](./docs/progressive-disclosure.md).
