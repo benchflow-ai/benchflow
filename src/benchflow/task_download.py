@@ -10,6 +10,7 @@ logger = logging.getLogger(__name__)
 TASK_REPOS = {
     "skillsbench": {
         "repo": "https://github.com/benchflow-ai/skillsbench.git",
+        "ref": "main",
         "subdir": "tasks",
     },
     "terminal-bench-2": {
@@ -51,10 +52,11 @@ def ensure_tasks(benchmark: str) -> Path:
     clone_dir = target.parent / "_clone"
 
     try:
-        subprocess.run(
-            ["git", "clone", "--depth", "1", info["repo"], str(clone_dir)],
-            check=True,
-        )
+        clone_cmd = ["git", "clone", "--depth", "1"]
+        if ref := info.get("ref"):
+            clone_cmd.extend(["--branch", ref])
+        clone_cmd.extend([info["repo"], str(clone_dir)])
+        subprocess.run(clone_cmd, check=True)
         if info.get("subdir"):
             (clone_dir / info["subdir"]).rename(target)
         else:

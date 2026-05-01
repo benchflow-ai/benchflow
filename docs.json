@@ -1,0 +1,44 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "name": "BenchFlow",
+  "theme": "mint",
+  "colors": {
+    "primary": "#2563EB",
+    "light": "#2563EB",
+    "dark": "#60A5FA"
+  },
+  "navigation": {
+    "groups": [
+      {
+        "group": "Get Started",
+        "pages": [
+          "docs/getting-started",
+          "docs/concepts"
+        ]
+      },
+      {
+        "group": "Guides",
+        "pages": [
+          "docs/task-authoring",
+          "docs/skill-eval",
+          "docs/use-cases",
+          "docs/progressive-disclosure",
+          "docs/sandbox-hardening"
+        ]
+      },
+      {
+        "group": "Reference",
+        "pages": [
+          "docs/reference/cli",
+          "docs/reference/python-api"
+        ]
+      },
+      {
+        "group": "Examples",
+        "pages": [
+          "docs/examples/scene-patterns"
+        ]
+      }
+    ]
+  }
+}
