@@ -13,6 +13,8 @@ import logging
 import os
 import sys
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -27,7 +29,7 @@ AGENT_MODELS = {
     "claude-agent-acp": "claude-haiku-4-5-20251001",
     "pi-acp": "gemini-3.1-flash-lite-preview",
     "openclaw": "gemini-3.1-flash-lite-preview",
-    "codex-acp": "gpt-5.4-nano",
+    "codex-acp": "gpt-5.4-mini",
     "gemini": "gemini-3.1-flash-lite-preview",
 }
 
@@ -54,6 +56,30 @@ def has_creds(agent_name: str) -> bool:
         return True
     sub_file = SUBSCRIPTION_AUTH_FILES.get(agent_name)
     return bool(sub_file and Path(sub_file).expanduser().exists())
+
+
+def openai_model_preflight(model: str) -> str | None:
+    """Return an error string if OPENAI_API_KEY cannot access *model*."""
+    key = os.environ.get("OPENAI_API_KEY")
+    if not key:
+        return None
+    req = urllib.request.Request(
+        "https://api.openai.com/v1/models",
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            payload = json.loads(resp.read())
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", "replace")[:500]
+        return f"OpenAI model preflight failed ({exc.code}): {body}"
+    except Exception as exc:
+        return f"OpenAI model preflight failed: {type(exc).__name__}: {exc}"
+
+    model_ids = {item.get("id") for item in payload.get("data", [])}
+    if model not in model_ids:
+        return f"OpenAI model {model!r} is not available for this API key"
+    return None
 
 
 async def run_one(agent_name: str) -> dict:
@@ -104,8 +130,15 @@ async def main() -> None:
             print(f"SKIP {name} — no credentials in env ({ENV_KEYS[name]})")
             results.append({"agent": name, "status": "SKIP (no creds)"})
             continue
+        model = AGENT_MODELS.get(name, "claude-haiku-4-5-20251001")
+        if name == "codex-acp" and (reason := openai_model_preflight(model)):
+            print(f"ERROR {name} — {reason}")
+            results.append(
+                {"agent": name, "model": model, "status": f"ERROR: {reason}"}
+            )
+            continue
         print(f"\n{'=' * 60}")
-        print(f"CONFORMANCE: {name} (model={AGENT_MODELS.get(name, '?')})")
+        print(f"CONFORMANCE: {name} (model={model})")
         print(f"{'=' * 60}")
         r = await run_one(name)
         results.append(r)

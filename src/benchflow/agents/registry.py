@@ -20,7 +20,8 @@ Common optional fields
                          sandbox (e.g. ``["ANTHROPIC_API_KEY"]``). Validated at
                          run start; missing keys raise before the container
                          spins up.
-- ``api_protocol``       "anthropic-messages" | "openai-completions" | "" — the
+- ``api_protocol``       "anthropic-messages" | "openai-completions" |
+                         "openai-responses" | "" — the
                          LLM API the agent natively speaks. Used to pick the
                          right endpoint when a provider exposes multiple
                          (e.g. zai). Empty means "agent infers from model name".
@@ -160,7 +161,8 @@ class AgentConfig:
     default_model: str = ""  # default model ID when --model is omitted
     api_protocol: str = ""
     # The LLM API protocol the agent natively speaks:
-    # "anthropic-messages" | "openai-completions" | "" (runtime/native).
+    # "anthropic-messages" | "openai-completions" | "openai-responses" |
+    # "" (runtime/native).
     # Used to pick the correct provider endpoint when a provider exposes
     # multiple (e.g. zai has both anthropic-messages and openai-completions).
     env_mapping: dict[str, str] = field(default_factory=dict)
@@ -286,10 +288,12 @@ AGENTS: dict[str, AgentConfig] = {
             "npm install -g @zed-industries/codex-acp@latest >/dev/null 2>&1 ) && "
             "command -v codex-acp >/dev/null 2>&1"
         ),
-        launch_cmd="codex-acp",
+        launch_cmd=(
+            "codex-acp ${OPENAI_BASE_URL:+-c openai_base_url=$OPENAI_BASE_URL}"
+        ),
         protocol="acp",
         requires_env=["OPENAI_API_KEY"],
-        api_protocol="openai-completions",
+        api_protocol="openai-responses",
         env_mapping={
             "BENCHFLOW_PROVIDER_BASE_URL": "OPENAI_BASE_URL",
             "BENCHFLOW_PROVIDER_API_KEY": "OPENAI_API_KEY",

@@ -28,7 +28,12 @@ from benchflow.agents.registry import (
 VALID_AGENT_PROTOCOLS = {"acp", "cli"}
 # Empty api_protocol is valid for agents (they infer from the model name at
 # runtime); providers must always declare an explicit protocol.
-VALID_API_PROTOCOLS = {"", "anthropic-messages", "openai-completions"}
+VALID_API_PROTOCOLS = {
+    "",
+    "anthropic-messages",
+    "openai-completions",
+    "openai-responses",
+}
 VALID_PROVIDER_API_PROTOCOLS = VALID_API_PROTOCOLS - {""}
 VALID_AUTH_TYPES = {"api_key", "adc", "none"}
 

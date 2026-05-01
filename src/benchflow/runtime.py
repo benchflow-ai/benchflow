@@ -62,14 +62,20 @@ class Environment:
         trial_name: str | None = None,
     ) -> Environment:
         """Create an environment from a task directory."""
+        from uuid import uuid4
+
         from harbor.models.task.task import Task
+        from harbor.models.trial.paths import TrialPaths
 
         from benchflow._env_setup import _create_environment
 
         task_path = Path(task_path)
         task = Task(task_path)
         trial_name = trial_name or task_path.name
-        trial_paths: Any = None
+        trial_paths = TrialPaths(
+            Path.cwd() / "jobs" / "environment" / f"{trial_name}__{uuid4().hex[:8]}"
+        )
+        trial_paths.mkdir()
         inner = _create_environment(
             environment_type=backend,
             task=task,

@@ -7,8 +7,9 @@
 #
 # Usage:
 #   bash examples/test_codex.sh                  # run all
-#   bash examples/test_codex.sh subscription     # subscription auth only
-#   bash examples/test_codex.sh apikey           # API key only
+#   bash examples/test_codex.sh subscription     # subscription auth / API-key fallback
+#   bash examples/test_codex.sh apikey           # API key, full model
+#   bash examples/test_codex.sh apikey-mini      # API key, mini model
 #   bash examples/test_codex.sh --daytona        # use Daytona
 
 set -euo pipefail
@@ -57,11 +58,51 @@ show_failure() {
   fi
 }
 
+check_openai_model_available() {
+  local model="$1"
+  if [ -z "${OPENAI_API_KEY:-}" ]; then
+    return 0
+  fi
+
+  MODEL="$model" python3 - <<'PY'
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+
+model = os.environ["MODEL"]
+key = os.environ.get("OPENAI_API_KEY", "")
+req = urllib.request.Request(
+    "https://api.openai.com/v1/models",
+    headers={"Authorization": f"Bearer {key}"},
+)
+try:
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        payload = json.loads(resp.read())
+except urllib.error.HTTPError as exc:
+    body = exc.read().decode("utf-8", "replace")[:500]
+    print(f"ERROR: could not check OpenAI models ({exc.code}): {body}")
+    sys.exit(2)
+except Exception as exc:
+    print(f"ERROR: could not check OpenAI models: {type(exc).__name__}: {exc}")
+    sys.exit(2)
+
+models = {item.get("id") for item in payload.get("data", [])}
+if model not in models:
+    close = sorted(m for m in models if m.startswith(model.rsplit("-", 1)[0]))[:10]
+    suffix = f" Close matches: {', '.join(close)}" if close else ""
+    print(f"ERROR: OpenAI model '{model}' is not available for this API key.{suffix}")
+    sys.exit(1)
+PY
+}
+
 # ── Model definitions ──
 declare -A MODELS
 MODELS=(
-  [subscription]="gpt-5.4"
-  [apikey]="gpt-5.4"
+  [subscription]="gpt-5.5"
+  [apikey]="gpt-5.5"
+  [apikey-mini]="gpt-5.4-mini"
 )
 
 # Extra --ae flags per model
@@ -69,6 +110,7 @@ declare -A EXTRA_ARGS
 EXTRA_ARGS=(
   [subscription]="--ae OPENAI_REASONING_EFFORT=$REASONING"
   [apikey]="--ae OPENAI_REASONING_EFFORT=$REASONING"
+  [apikey-mini]="--ae OPENAI_REASONING_EFFORT=$REASONING"
 )
 
 # ── Pre-flight checks ──
@@ -101,6 +143,13 @@ check_env() {
         echo "SKIP: $label — OPENAI_API_KEY not set"
         return 1
       fi ;;
+    apikey-mini)
+      if [ -n "${OPENAI_API_KEY:-}" ]; then
+        echo "NOTE: $label — using OPENAI_API_KEY (API key auth)"
+      else
+        echo "SKIP: $label — OPENAI_API_KEY not set"
+        return 1
+      fi ;;
   esac
   return 0
 }
@@ -110,7 +159,7 @@ check_env() {
 if [ $# -gt 0 ]; then
   SELECTED=("$@")
 else
-  SELECTED=("subscription" "apikey")
+  SELECTED=("subscription" "apikey" "apikey-mini")
 fi
 
 echo "=== $AGENT provider sweep ==="
@@ -137,6 +186,12 @@ for label in "${SELECTED[@]}"; do
 
   if ! check_env "$label"; then
     SKIP=$((SKIP + 1))
+    echo ""
+    continue
+  fi
+
+  if ! check_openai_model_available "$model"; then
+    FAIL=$((FAIL + 1))
     echo ""
     continue
   fi
