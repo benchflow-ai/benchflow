@@ -77,8 +77,18 @@ If multiple credentials are set, benchflow / the agent CLI uses (high to low): c
 
 ```bash
 # Single task with Gemini
-GEMINI_API_KEY=... bench eval create -t .ref/terminal-bench-2/regex-log -a gemini \
-    -m gemini-3.1-pro-preview -e docker
+GEMINI_API_KEY=... bench run .ref/terminal-bench-2/regex-log \
+  --agent gemini \
+  --model gemini-3.1-pro-preview \
+  --backend docker
+
+# Single task with skills mounted
+GEMINI_API_KEY=... bench run tasks/pdf-fix \
+  --agent gemini \
+  --model gemini-3.1-pro-preview \
+  --backend daytona \
+  --skills-dir tasks/pdf-fix/environment/skills \
+  --ae BENCHFLOW_SKILL_NUDGE=name
 
 # A whole batch with concurrency
 GEMINI_API_KEY=... bench eval create -t .ref/terminal-bench-2 -a gemini \
@@ -88,7 +98,16 @@ GEMINI_API_KEY=... bench eval create -t .ref/terminal-bench-2 -a gemini \
 bench agent list
 ```
 
-`bench eval create -t <task>` runs once on a single task or, if the path contains multiple `task.toml`-bearing subdirectories, batches them. Results land under `jobs/<job-name>/<trial-name>/` — `result.json` for the verifier output, `trajectory/acp_trajectory.jsonl` for the full agent trace.
+`bench run <task>` is the direct path for one task. `bench eval create -t
+<tasks-dir>` runs once on a single task or batches a parent directory containing
+multiple `task.toml`-bearing subdirectories. Results land under
+`jobs/<job-name>/<trial-name>/` — `result.json` for the verifier output,
+`trajectory/acp_trajectory.jsonl` for the full agent trace.
+
+When you mount skills, use `BENCHFLOW_SKILL_NUDGE=name` as the default docs
+option. It tells the agent which skills are available and where to read them.
+For more context in the prompt, use `description` or `full`; omit the env var
+to keep BenchFlow's runtime default off.
 
 ## Run from Python
 

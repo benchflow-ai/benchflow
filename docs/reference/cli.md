@@ -24,11 +24,55 @@ bench agent show gemini
 
 ---
 
+## bench run
+
+### bench run
+
+Run one task directory with one agent. This is the most direct command for
+single-task local, Daytona, or Modal checks.
+
+```bash
+# Single task with Gemini on Daytona
+bench run tasks/regex-log \
+  --agent gemini \
+  --model gemini-3.1-flash-lite-preview \
+  --backend daytona
+
+# Single task with mounted skills and the recommended skill nudge
+bench run tasks/pdf-fix \
+  --agent gemini \
+  --model gemini-3.1-flash-lite-preview \
+  --backend daytona \
+  --skills-dir tasks/pdf-fix/environment/skills \
+  --ae BENCHFLOW_SKILL_NUDGE=name
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `TASK_DIR` | — | Task directory containing `task.toml` |
+| `--agent`, `-a` | `claude-agent-acp` | Agent name from the registry |
+| `--model`, `-m` | Agent default | Model ID |
+| `--backend`, `-b` | `docker` | Backend: docker, daytona, or modal |
+| `--prompt`, `-p` | `instruction.md` | Prompt text; repeat for multi-turn |
+| `--jobs-dir`, `-o` | `jobs` | Output directory |
+| `--agent-env`, `--ae` | — | Agent environment variable as `KEY=VALUE`; repeatable |
+| `--skills-dir`, `-s` | — | Skills directory to deploy into the sandbox |
+| `--sandbox-user` | `agent` | Non-root sandbox user; pass `none` for root |
+
+When mounting skills, the recommended docs default is
+`--ae BENCHFLOW_SKILL_NUDGE=name`. It prepends a short hint telling the agent
+which skills are available and where to read them. More verbose modes are
+`description` and `full`. Omit the env var to leave BenchFlow's runtime default
+off.
+
+---
+
 ## bench eval
 
 ### bench eval create
 
-Create and run an evaluation. This is the primary command for running benchmarks.
+Create and run an evaluation. Use it for YAML configs and batch runs; it also
+accepts a single task directory.
 
 ```bash
 # From YAML config
@@ -48,13 +92,14 @@ bench eval create \
 |------|---------|-------------|
 | `--config`, `-f` | — | YAML config file |
 | `--tasks-dir`, `-t` | — | Task dir (single task with task.toml, or parent of many tasks) |
-| `--agent`, `-a` | `gemini` | Agent name |
-| `--model`, `-m` | `gemini-3.1-flash-lite-preview` | Model ID |
+| `--agent`, `-a` | `claude-agent-acp` | Agent name |
+| `--model`, `-m` | Agent default | Model ID |
 | `--env`, `-e` | `docker` | Environment: docker, daytona, or modal |
 | `--concurrency`, `-c` | `4` | Max concurrent tasks (batch mode only) |
 | `--jobs-dir`, `-o` | `jobs` | Output directory |
 | `--sandbox-user` | `agent` | Sandbox user (null for root) |
 | `--sandbox-setup-timeout` | `120` | Timeout in seconds for sandbox user setup |
+| `--skills-dir`, `-s` | — | Skills directory to deploy into each task sandbox |
 
 ### bench eval list
 
@@ -141,42 +186,30 @@ bench environment list
 
 ## YAML Config Format
 
-### Scene-based (recommended)
+### Batch config with skills and skill nudge
 
 ```yaml
-task_dir: .ref/terminal-bench-2
+tasks_dir: .ref/terminal-bench-2
 environment: daytona
 concurrency: 64
 sandbox_setup_timeout: 300
-
-scenes:
-  - name: solve
-    roles:
-      - name: agent
-        agent: gemini
-        model: gemini-3.1-flash-lite-preview
-    turns:
-      - role: agent
-```
-
-### Legacy flat (auto-converted)
-
-```yaml
-task_dir: .ref/terminal-bench-2
 agent: gemini
 model: gemini-3.1-flash-lite-preview
-environment: daytona
-concurrency: 64
+skills_dir: shared-skills/
+agent_env:
+  BENCHFLOW_SKILL_NUDGE: name
 max_retries: 2
-sandbox_setup_timeout: 300
 ```
 
 ### Multi-scene (BYOS skill generation)
 
+Use the Python API for multi-scene experiments. `bench eval create -f` is for
+batch job configs; scene configs are loaded with `benchflow.trial_yaml` or built
+directly in Python.
+
 ```yaml
-task_dir: tasks/
+task_dir: tasks/my-task
 environment: daytona
-concurrency: 10
 sandbox_setup_timeout: 300
 
 scenes:
@@ -206,7 +239,7 @@ These still work but are hidden from `--help`:
 
 | Old command | Replacement |
 |-------------|-------------|
-| `benchflow run` | `bench eval create -t <task>` |
+| `benchflow run` | `bench run <task>` |
 | `benchflow job` | `bench eval create -f <yaml>` |
 | `benchflow agents` | `bench agent list` |
 | `benchflow eval` | `bench skills eval` |

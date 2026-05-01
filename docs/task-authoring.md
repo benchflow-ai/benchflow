@@ -77,7 +77,7 @@ config = TrialConfig(
             Turn("agent", "Review your solution and fix any test failures."),
         ],
     )],
-    backend="daytona",
+    environment="daytona",
 )
 result = await bf.run(config)
 ```
@@ -157,10 +157,17 @@ bench tasks init my-task --no-pytest --no-solution
 bench tasks check tasks/my-task/
 
 # Confirm oracle gets reward = 1.0
-bench eval create -t tasks/my-task/ -a oracle -e docker
+bench run tasks/my-task/ --agent oracle --backend docker
 
 # Run a real agent
-bench eval create -t tasks/my-task/ -a gemini -e daytona
+bench run tasks/my-task/ --agent gemini --backend daytona
+
+# Run with task-local skills mounted
+bench run tasks/my-task/ \
+  --agent gemini \
+  --backend daytona \
+  --skills-dir tasks/my-task/environment/skills \
+  --ae BENCHFLOW_SKILL_NUDGE=name
 ```
 
 `bench tasks check` validates that `task.toml`, `instruction.md` (non-empty), `environment/Dockerfile`, and `tests/` (non-empty) all exist, and that `[agent].timeout_sec` is set. Exits with code 1 on failure (CI-friendly).
