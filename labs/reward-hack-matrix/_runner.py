@@ -6,7 +6,7 @@ from the environment so the orchestrator can compose simple subprocess
 calls and parse a single JSON line off stdout.
 
 Required env:
-    RH_TASK_PATH         Absolute path to the task directory (Harbor format).
+    RH_TASK_PATH         Absolute path to the task directory (BenchFlow task format).
     RH_PATTERN_ID        Pattern label for logging only ("P1", "P7", ...).
     RH_BENCHMARK         Benchmark label ("skillsbench", ...).
     RH_VERSION_LABEL     Version label ("0.2.0", "0.2.1", "harbor-orig").
