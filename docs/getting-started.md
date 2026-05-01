@@ -6,7 +6,7 @@ A 5-minute path from install to first eval.
 
 - Python 3.12+
 - [`uv`](https://docs.astral.sh/uv/) (recommended) or `pip`
-- Docker (for local sandboxes) and/or `DAYTONA_API_KEY` (for cloud sandboxes)
+- Docker for local sandboxes, `DAYTONA_API_KEY` for Daytona cloud runs, or Modal auth for Modal-backed runs
 - An API key or subscription/OAuth auth for at least one agent (see below)
 
 ## Install

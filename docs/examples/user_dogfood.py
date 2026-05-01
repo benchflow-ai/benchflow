@@ -6,7 +6,7 @@ Demonstrates the BaseUser abstraction — a FunctionUser that:
   Stops when tests pass or max_rounds hit.
 
 Usage:
-    GEMINI_API_KEY=... python examples/user_dogfood.py
+    GEMINI_API_KEY=... python docs/examples/user_dogfood.py
 """
 
 import asyncio

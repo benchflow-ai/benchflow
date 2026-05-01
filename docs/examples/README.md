@@ -1,6 +1,7 @@
 # Examples
 
-This directory contains small demos for BenchFlow execution patterns.
+This directory contains the runnable examples referenced by the BenchFlow docs.
+They live under `docs/examples/` so examples and docs move together.
 
 ## Single Task
 
@@ -32,14 +33,15 @@ bench run tasks/my-task \
 Other nudge modes are `description` and `full`. Omit `--ae
 BENCHFLOW_SKILL_NUDGE=...` to leave BenchFlow's runtime default off.
 
-## Multi-Agent and Multi-Round Demos
+## Demos
 
 - `coder-reviewer-demo.py` runs a single-agent baseline and a coder-reviewer
   scene against a task directory.
 - `scene-patterns.md` explains single-agent, self-review, specialist-review,
   and client-advisor scene patterns.
+- `nanofirm-task/` is a tiny task directory you can use when checking task
+  layout, verifier behavior, and oracle execution.
 - `user_dogfood.py` demonstrates a rule-based `FunctionUser` progressive
   disclosure loop.
 - `swebench_pro_user_dogfood.py` runs the progressive-disclosure pattern on
   SWE-bench Pro-style tasks.
-
