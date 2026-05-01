@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Reward-hack matrix orchestrator.
 
-Pulls real tasks from three Harbor-format benchmarks (skillsbench,
+Pulls real tasks from three BenchFlow-task-format benchmarks (skillsbench,
 swebench-verified, terminal-bench-2), copies each into an isolated
 "cell" directory under .cells/, swaps the task's `solution/solve.sh`
 with one of our exploit payloads, and runs the cell under both
@@ -114,7 +114,7 @@ CELLS: list[Cell] = [
         exploit="pth_injection.sh",
     ),
     # swebench-verified: /testbed is in-image (created by the SWE-bench Docker
-    # image, not a Harbor mount), so writes during agent phase persist.
+    # image, not a host bind-mount), so writes during agent phase persist.
     # Conftest drop at /testbed/conftest.py works.
     Cell(
         pattern_id="P1",
