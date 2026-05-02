@@ -123,7 +123,7 @@ async def test_deploy_skills_uploads_runtime_skills_and_links_shared_tree(tmp_pa
 async def test_deploy_skills_skips_runtime_upload_when_dockerfile_already_injected(
     tmp_path,
 ):
-    """Guards the fix from PR for issue #11 against the regression where
+    """Guards the fix from PR #230 for issue #11 against the regression where
     skills got deployed twice — once baked into the image via
     `_inject_skills_into_dockerfile`, and again at runtime via
     `env.upload_dir(..., "/skills")`. The runtime cp failed with
