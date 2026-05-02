@@ -92,6 +92,51 @@ async def test_deploy_skills_uploads_runtime_skills_and_links_shared_tree(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_deploy_skills_skips_runtime_upload_when_dockerfile_already_injected(
+    tmp_path,
+):
+    """Guards the fix from PR for issue #11 against the regression where
+    skills got deployed twice — once baked into the image via
+    `_inject_skills_into_dockerfile`, and again at runtime via
+    `env.upload_dir(..., "/skills")`. The runtime cp failed with
+    `cannot overwrite directory "/skills/<entry>" with non-directory "/skills"`
+    when the source contained a symlink colliding with a baked entry.
+
+    The detection works only when `deploy_skills` receives the *effective*
+    task path — the temp copy whose Dockerfile actually carries the
+    injected `COPY _deps/skills /skills/` line.
+    """
+    env = MagicMock()
+    env.exec = AsyncMock(return_value=MagicMock(return_code=0, stdout=""))
+    env.upload_dir = AsyncMock()
+    agent_cfg = AgentConfig(
+        name="test-agent",
+        install_cmd="true",
+        launch_cmd="true",
+        skill_paths=["$HOME/.agents/skills"],
+    )
+    effective_task_path = tmp_path / "task"
+    (effective_task_path / "environment").mkdir(parents=True)
+    (effective_task_path / "environment" / "Dockerfile").write_text(
+        "FROM python:3.12\nCOPY _deps/skills /skills/\n"
+    )
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+
+    await deploy_skills(
+        env=env,
+        task_path=effective_task_path,
+        skills_dir=skills_dir,
+        agent_cfg=agent_cfg,
+        sandbox_user="agent",
+        agent_cwd="/workspace",
+        task=_make_task(None),
+    )
+
+    env.upload_dir.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_deploy_skills_chowns_full_dir_chain_for_pi_acp_layout(tmp_path):
     """Guards the fix from PR #211 against the regression where only the
     symlink's immediate parent (`~/.pi/agent`) was chowned, leaving the
