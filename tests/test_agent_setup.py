@@ -134,6 +134,9 @@ async def test_deploy_skills_skips_runtime_upload_when_dockerfile_already_inject
     )
 
     env.upload_dir.assert_not_called()
+    env.exec.assert_awaited_once()
+    link_cmd = env.exec.await_args.args[0]
+    assert "ln -sfn /skills /home/agent/.agents/skills" in link_cmd
 
 
 @pytest.mark.asyncio
