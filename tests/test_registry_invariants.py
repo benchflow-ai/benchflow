@@ -36,6 +36,14 @@ VALID_API_PROTOCOLS = {
 }
 VALID_PROVIDER_API_PROTOCOLS = VALID_API_PROTOCOLS - {""}
 VALID_AUTH_TYPES = {"api_key", "adc", "none"}
+JS_ACP_AGENTS = {
+    "claude-agent-acp",
+    "pi-acp",
+    "openclaw",
+    "codex-acp",
+    "gemini",
+    "opencode",
+}
 
 
 # ── AgentConfig invariants ──────────────────────────────────────────────────
@@ -95,6 +103,58 @@ def test_agent_install_cmd_targets_shared_paths(name, cfg):
             f"{name!r} install_cmd writes under {prefix!r}; use /usr/local/bin "
             f"or another shared prefix so the sandbox user inherits the tool"
         )
+
+
+@pytest.mark.parametrize("name", sorted(JS_ACP_AGENTS))
+def test_js_acp_agents_use_isolated_node_runtime(name):
+    """JS agents must not mutate task-owned Node/npm installations."""
+    install_cmd = AGENTS[name].install_cmd
+    launch_cmd = AGENTS[name].launch_cmd
+
+    assert "/opt/benchflow/node" in install_cmd
+    assert "BF_NODE_VERSION=22.14.0" in install_cmd
+    assert "/opt/benchflow/js-agents" in install_cmd
+    assert "/opt/benchflow/bin" in install_cmd
+    assert "--prefix /opt/benchflow/js-agents" in install_cmd
+    assert "/opt/benchflow/bin" in launch_cmd
+    assert "/opt/benchflow/js-agents/bin:/opt/benchflow/node/bin:$PATH" in install_cmd
+    assert (
+        "exec /opt/benchflow/node/bin/node /opt/benchflow/js-agents/bin/" in install_cmd
+    )
+    assert launch_cmd.split()[0].startswith("/opt/benchflow/bin/")
+    assert launch_cmd.split()[0] not in {"export", "env"}
+    assert not launch_cmd.startswith("PATH=")
+
+    forbidden_fragments = [
+        'export PATH="/opt/benchflow/node/bin:/opt/benchflow/js-agents/bin:$PATH"',
+        "exec /opt/benchflow/js-agents/bin/",
+        "deb.nodesource.com",
+        "apt-get install -y -qq nodejs",
+        "apt-get install -y nodejs",
+        "/usr/bin/node",
+        "/usr/bin/npm",
+        "/usr/bin/npx",
+        "/usr/local/bin/node",
+        "/usr/local/bin/npm",
+        "/usr/local/bin/npx",
+        "/usr/local/bin/pi-acp-launcher",
+        "/usr/local/bin/openclaw-acp-shim",
+        "command -v node",
+    ]
+    for fragment in forbidden_fragments:
+        assert fragment not in install_cmd, (
+            f"{name!r} JS agent install must not mutate task Node/npm via {fragment!r}"
+        )
+
+
+@pytest.mark.parametrize("name", sorted(JS_ACP_AGENTS))
+def test_js_acp_agent_npm_failures_are_visible(name):
+    """Npm stderr should reach agent/install-stdout.txt on install failure."""
+    install_cmd = AGENTS[name].install_cmd
+    assert "npm install" in install_cmd
+    assert not re.search(r"npm install[^;&|)]*(?:2?>|&>)", install_cmd), (
+        f"{name!r} install redirects npm output before BenchFlow can log it"
+    )
 
 
 @pytest.mark.parametrize("name,cfg", AGENTS.items(), ids=list(AGENTS.keys()))

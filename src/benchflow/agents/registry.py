@@ -66,30 +66,97 @@ def _install_python_script(container_path: str, source: str) -> str:
     after the third data point — divergence is cheap, premature abstraction isn't.
     """
     encoded = base64.b64encode(source.encode()).decode()
+    parent = shlex.quote(str(Path(container_path).parent))
+    q_path = shlex.quote(container_path)
     return (
         "( command -v python3 >/dev/null 2>&1 || "
         "(apt-get update -qq && apt-get install -y -qq python3 >/dev/null 2>&1) ) && "
-        f"echo {encoded} | base64 -d > {container_path} && "
-        f"chmod +x {container_path}"
+        f"mkdir -p {parent} && "
+        f"echo {encoded} | base64 -d > {q_path} && "
+        f"chmod +x {q_path}"
     )
 
 
-# Node.js bootstrap — handles missing node, old node (<22), Ubuntu + Debian slim
+# Isolated Node.js bootstrap for JavaScript-based ACP agents.
+#
+# Keep this out of system prefixes. Task images may need their own Node/npm
+# versions, so BenchFlow installs agent runtime bits under /opt/benchflow.
+# Install commands can put that prefix on PATH, but launch wrappers call the
+# private Node binary explicitly so task subprocesses keep the task's PATH.
+_BENCHFLOW_NODE_PREFIX = "/opt/benchflow/node"
+_BENCHFLOW_JS_AGENT_PREFIX = "/opt/benchflow/js-agents"
+_BENCHFLOW_BIN_PREFIX = "/opt/benchflow/bin"
+_JS_AGENT_PATH = (
+    f"{_BENCHFLOW_BIN_PREFIX}:{_BENCHFLOW_JS_AGENT_PREFIX}/bin:"
+    f"{_BENCHFLOW_NODE_PREFIX}/bin:$PATH"
+)
 _NODE_INSTALL = (
     "set -o pipefail; "
     "export DEBIAN_FRONTEND=noninteractive; "
-    "NODE_OK=0; "
-    "if command -v node >/dev/null 2>&1; then "
-    "  NODE_VER=$(node -e 'console.log(process.versions.node.split(\".\")[0])' 2>/dev/null || echo 0); "
-    '  [ "$NODE_VER" -ge 22 ] 2>/dev/null && NODE_OK=1; '
+    f"BF_NODE_DIR={_BENCHFLOW_NODE_PREFIX}; "
+    "BF_NODE_VERSION=22.14.0; "
+    'if [ ! -x "$BF_NODE_DIR/bin/node" ]; then '
+    "  if ! command -v curl >/dev/null 2>&1 || "
+    "     ! command -v tar >/dev/null 2>&1 || "
+    "     ! command -v xz >/dev/null 2>&1; then "
+    "    if command -v apt-get >/dev/null 2>&1; then "
+    "      apt-get update -qq && "
+    "      apt-get install -y -qq curl ca-certificates tar xz-utils; "
+    "    elif command -v dnf >/dev/null 2>&1; then "
+    "      dnf -y install curl ca-certificates tar xz; "
+    "    elif command -v apk >/dev/null 2>&1; then "
+    "      apk add --no-cache curl ca-certificates tar xz; "
+    "    else "
+    "      echo 'BenchFlow JS agent bootstrap requires curl, tar, and xz' >&2; "
+    "      exit 127; "
+    "    fi; "
+    "  fi; "
+    '  arch="$(uname -m)"; '
+    '  case "$arch" in '
+    "    x86_64|amd64) node_arch=x64 ;; "
+    "    aarch64|arm64) node_arch=arm64 ;; "
+    '    *) echo "Unsupported architecture for Node.js: $arch" >&2; exit 1 ;; '
+    "  esac; "
+    '  tmp="$(mktemp -d)"; '
+    "  mkdir -p /opt/benchflow; "
+    '  curl -fsSLo "$tmp/node.tar.xz" '
+    '"https://nodejs.org/dist/v${BF_NODE_VERSION}/node-v${BF_NODE_VERSION}-linux-${node_arch}.tar.xz"; '
+    '  rm -rf "$BF_NODE_DIR"; '
+    '  mkdir -p "$BF_NODE_DIR"; '
+    '  tar -xJf "$tmp/node.tar.xz" -C "$BF_NODE_DIR" --strip-components=1 --no-same-owner; '
+    '  rm -rf "$tmp"; '
     "fi; "
-    'if [ "$NODE_OK" = 0 ]; then '
-    "  apt-get update -qq && "
-    "  apt-get install -y -qq curl ca-certificates && "
-    "  curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && "
-    "  apt-get install -y -qq nodejs; "
-    "fi >/dev/null 2>&1"
+    f'export PATH="{_BENCHFLOW_NODE_PREFIX}/bin:$PATH"; '
+    '"$BF_NODE_DIR/bin/node" --version; '
+    '"$BF_NODE_DIR/bin/npm" --version'
 )
+
+
+def _js_agent_install(binary: str, package: str) -> str:
+    """Install an npm-distributed agent into BenchFlow's isolated prefix."""
+    agent_bin = f"{_BENCHFLOW_JS_AGENT_PREFIX}/bin/{binary}"
+    wrapper = f"{_BENCHFLOW_BIN_PREFIX}/{binary}"
+    return (
+        f"{_NODE_INSTALL} && "
+        f"mkdir -p {_BENCHFLOW_JS_AGENT_PREFIX} {_BENCHFLOW_BIN_PREFIX} && "
+        f'export PATH="{_JS_AGENT_PATH}" && '
+        f"( [ -x {agent_bin} ] || "
+        f"{_BENCHFLOW_NODE_PREFIX}/bin/npm install -g "
+        f"--prefix {_BENCHFLOW_JS_AGENT_PREFIX} {package}@latest ) && "
+        f"printf '%s\\n' '#!/bin/sh' "
+        f"'exec {_BENCHFLOW_NODE_PREFIX}/bin/node {agent_bin} \"$@\"' "
+        f"> {wrapper} && "
+        f"chmod +x {wrapper} && "
+        f"chmod -R a+rX /opt/benchflow && "
+        f"[ -x {agent_bin} ] && [ -x {wrapper} ]"
+    )
+
+
+def _js_agent_launch(binary: str, args: str = "") -> str:
+    """Launch a JS agent through its isolated BenchFlow wrapper."""
+    cmd = f"{_BENCHFLOW_BIN_PREFIX}/{binary}"
+    return f"{cmd} {args}".rstrip()
+
 
 # Path to the openclaw ACP shim script
 _OPENCLAW_SHIM = (Path(__file__).parent / "openclaw_acp_shim.py").read_text()
@@ -201,13 +268,10 @@ AGENTS: dict[str, AgentConfig] = {
         name="claude-agent-acp",
         description="Claude Code via ACP (Anthropic's Agent Client Protocol)",
         skill_paths=["$HOME/.claude/skills"],
-        install_cmd=(
-            f"{_NODE_INSTALL} && "
-            "( command -v claude-agent-acp >/dev/null 2>&1 || "
-            "npm install -g @zed-industries/claude-agent-acp@latest >/dev/null 2>&1 ) && "
-            "command -v claude-agent-acp >/dev/null 2>&1"
+        install_cmd=_js_agent_install(
+            "claude-agent-acp", "@zed-industries/claude-agent-acp"
         ),
-        launch_cmd="claude-agent-acp",
+        launch_cmd=_js_agent_launch("claude-agent-acp"),
         protocol="acp",
         requires_env=["ANTHROPIC_API_KEY"],
         api_protocol="anthropic-messages",
@@ -237,16 +301,14 @@ AGENTS: dict[str, AgentConfig] = {
         description="Pi agent via ACP",
         skill_paths=["$HOME/.pi/agent/skills", "$HOME/.agents/skills"],
         install_cmd=(
-            f"{_NODE_INSTALL} && "
-            "( command -v pi >/dev/null 2>&1 || "
-            "npm install -g @mariozechner/pi-coding-agent@latest >/dev/null 2>&1 ) && "
-            "( command -v pi-acp >/dev/null 2>&1 || "
-            "npm install -g pi-acp@latest >/dev/null 2>&1 ) && "
-            "command -v pi-acp >/dev/null 2>&1 && "
+            f"{_js_agent_install('pi', '@mariozechner/pi-coding-agent')} && "
+            f"{_js_agent_install('pi-acp', 'pi-acp')} && "
             # Deploy launch wrapper (bridges BENCHFLOW_PROVIDER_* → Pi config)
-            + _install_python_script("/usr/local/bin/pi-acp-launcher", _PI_LAUNCHER)
+            + _install_python_script(
+                f"{_BENCHFLOW_BIN_PREFIX}/pi-acp-launcher", _PI_LAUNCHER
+            )
         ),
-        launch_cmd="python3 /usr/local/bin/pi-acp-launcher",
+        launch_cmd=f"{_BENCHFLOW_BIN_PREFIX}/pi-acp-launcher",
         protocol="acp",
         requires_env=[],  # inferred from --model at runtime
         # Pi is multi-protocol: speaks Anthropic natively and OpenAI via
@@ -262,18 +324,17 @@ AGENTS: dict[str, AgentConfig] = {
         description="OpenClaw agent via ACP shim — model set at runtime via --model",
         skill_paths=["$HOME/.claude/skills", "$WORKSPACE/skills"],
         install_cmd=(
-            f"{_NODE_INSTALL} && "
-            "( command -v openclaw >/dev/null 2>&1 || "
-            "npm install -g openclaw@latest >/dev/null 2>&1 ) && "
-            "command -v openclaw >/dev/null 2>&1 && "
+            f"{_js_agent_install('openclaw', 'openclaw')} && "
             # Configure: auto-approve tools (no model — set at runtime via ACP set_model)
             "mkdir -p ~/.openclaw && "
             'echo \'{"version":1,"defaults":{"allow_all":true}}\''
             " > ~/.openclaw/exec-approvals.json && "
             # Deploy ACP shim
-            + _install_python_script("/usr/local/bin/openclaw-acp-shim", _OPENCLAW_SHIM)
+            + _install_python_script(
+                f"{_BENCHFLOW_BIN_PREFIX}/openclaw-acp-shim", _OPENCLAW_SHIM
+            )
         ),
-        launch_cmd="python3 /usr/local/bin/openclaw-acp-shim",
+        launch_cmd=f"{_BENCHFLOW_BIN_PREFIX}/openclaw-acp-shim",
         protocol="acp",
         requires_env=[],  # inferred from --model at runtime
         home_dirs=[".openclaw"],
@@ -282,14 +343,9 @@ AGENTS: dict[str, AgentConfig] = {
         name="codex-acp",
         description="OpenAI Codex agent via ACP",
         skill_paths=["$HOME/.agents/skills"],
-        install_cmd=(
-            f"{_NODE_INSTALL} && "
-            "( command -v codex-acp >/dev/null 2>&1 || "
-            "npm install -g @zed-industries/codex-acp@latest >/dev/null 2>&1 ) && "
-            "command -v codex-acp >/dev/null 2>&1"
-        ),
-        launch_cmd=(
-            "codex-acp ${OPENAI_BASE_URL:+-c openai_base_url=$OPENAI_BASE_URL}"
+        install_cmd=_js_agent_install("codex-acp", "@zed-industries/codex-acp"),
+        launch_cmd=_js_agent_launch(
+            "codex-acp", "${OPENAI_BASE_URL:+-c openai_base_url=$OPENAI_BASE_URL}"
         ),
         protocol="acp",
         requires_env=["OPENAI_API_KEY"],
@@ -318,13 +374,8 @@ AGENTS: dict[str, AgentConfig] = {
         name="gemini",
         description="Google Gemini CLI via ACP",
         skill_paths=["$HOME/.gemini/skills"],
-        install_cmd=(
-            f"{_NODE_INSTALL} && "
-            "( command -v gemini >/dev/null 2>&1 || "
-            "npm install -g @google/gemini-cli@latest >/dev/null 2>&1 ) && "
-            "command -v gemini >/dev/null 2>&1"
-        ),
-        launch_cmd="gemini --acp --yolo",
+        install_cmd=_js_agent_install("gemini", "@google/gemini-cli"),
+        launch_cmd=_js_agent_launch("gemini", "--acp --yolo"),
         protocol="acp",
         requires_env=["GOOGLE_API_KEY"],
         # api_protocol intentionally empty: Gemini speaks Google's native
@@ -362,13 +413,8 @@ AGENTS: dict[str, AgentConfig] = {
         description="OpenCode via ACP — open-source coding agent (TypeScript)",
         skill_paths=["$HOME/.opencode/skills"],
         home_dirs=[".opencode"],
-        install_cmd=(
-            f"{_NODE_INSTALL} && "
-            "( command -v opencode >/dev/null 2>&1 || "
-            "npm install -g opencode-ai@latest >/dev/null 2>&1 ) && "
-            "command -v opencode >/dev/null 2>&1"
-        ),
-        launch_cmd="opencode acp",
+        install_cmd=_js_agent_install("opencode", "opencode-ai"),
+        launch_cmd=_js_agent_launch("opencode", "acp"),
         protocol="acp",
         requires_env=[],  # inferred from --model at runtime
         acp_model_format="provider/model",

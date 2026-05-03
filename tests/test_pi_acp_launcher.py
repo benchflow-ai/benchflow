@@ -286,12 +286,12 @@ class TestSetupProviderNameDerivation:
 
 
 @pytest.mark.usefixtures("_pi_env")
-class TestMainExecvpFailure:
+class TestMainExecv:
     """Missing pi-acp binary must surface a clear error, not a bare FileNotFoundError."""
 
     def test_missing_binary_raises_sysexit(self, monkeypatch):
         monkeypatch.setattr(
-            "os.execvp",
+            "os.execv",
             lambda *_: (_ for _ in ()).throw(FileNotFoundError(2, "No such file")),
         )
 
@@ -299,3 +299,30 @@ class TestMainExecvpFailure:
 
         with pytest.raises(SystemExit, match="pi-acp"):
             main()
+
+    def test_pi_acp_can_find_paired_pi_wrapper_without_node_path(self, monkeypatch):
+        import os
+
+        import benchflow.agents.pi_acp_launcher as launcher
+
+        captured = {}
+        monkeypatch.setenv("PATH", "/usr/bin")
+        monkeypatch.setattr(launcher, "setup_provider", lambda: None)
+
+        def fake_execv(path, argv):
+            captured["path"] = path
+            captured["argv"] = argv
+            captured["PATH"] = os.environ["PATH"]
+            raise RuntimeError("stop")
+
+        monkeypatch.setattr("os.execv", fake_execv)
+
+        with pytest.raises(RuntimeError, match="stop"):
+            launcher.main()
+
+        assert captured["path"] == "/opt/benchflow/bin/pi-acp"
+        assert captured["argv"][0] == "/opt/benchflow/bin/pi-acp"
+        path_entries = captured["PATH"].split(":")
+        assert path_entries[:2] == ["/opt/benchflow/bin", "/usr/bin"]
+        assert "/opt/benchflow/node/bin" not in path_entries
+        assert "/opt/benchflow/js-agents/bin" not in path_entries

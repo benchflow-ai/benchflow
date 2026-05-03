@@ -19,6 +19,8 @@ from pathlib import Path
 # overrides supply values. Conservative — most modern models exceed these.
 _DEFAULT_CONTEXT_WINDOW = 128000
 _DEFAULT_MAX_TOKENS = 16384
+_BENCHFLOW_BIN_DIR = "/opt/benchflow/bin"
+_PI_ACP_BIN = "/opt/benchflow/bin/pi-acp"
 
 
 def _lookup_model_metadata(model: str) -> dict:
@@ -115,13 +117,24 @@ def setup_provider() -> None:
             os.environ.setdefault("ANTHROPIC_MODEL", model)
 
 
+def _prepend_benchflow_bin_path() -> None:
+    """Let pi-acp find the paired pi wrapper without exposing Node/npm."""
+    current = os.environ.get("PATH", "")
+    parts = current.split(":") if current else []
+    if _BENCHFLOW_BIN_DIR not in parts:
+        os.environ["PATH"] = (
+            f"{_BENCHFLOW_BIN_DIR}:{current}" if current else _BENCHFLOW_BIN_DIR
+        )
+
+
 def main() -> None:
     setup_provider()
+    _prepend_benchflow_bin_path()
     try:
-        os.execvp("pi-acp", ["pi-acp", *sys.argv[1:]])
+        os.execv(_PI_ACP_BIN, [_PI_ACP_BIN, *sys.argv[1:]])
     except FileNotFoundError as e:
         raise SystemExit(
-            "pi-acp: 'pi-acp' binary not found on PATH. It should have been "
+            f"pi-acp: {_PI_ACP_BIN!r} not found. It should have been "
             "installed by the registry's install_cmd via "
             "'npm install -g pi-acp'. Check the container's install log."
         ) from e
