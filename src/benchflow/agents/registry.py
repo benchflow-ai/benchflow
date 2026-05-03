@@ -134,20 +134,28 @@ _NODE_INSTALL = (
 def _js_agent_install(binary: str, package: str) -> str:
     """Install an npm-distributed agent into BenchFlow's isolated prefix."""
     agent_bin = f"{_BENCHFLOW_JS_AGENT_PREFIX}/bin/{binary}"
+    wrapper = f"{_BENCHFLOW_BIN_PREFIX}/{binary}"
     return (
         f"{_NODE_INSTALL} && "
-        f"mkdir -p {_BENCHFLOW_JS_AGENT_PREFIX} && "
+        f"mkdir -p {_BENCHFLOW_JS_AGENT_PREFIX} {_BENCHFLOW_BIN_PREFIX} && "
         f'export PATH="{_JS_AGENT_PATH}" && '
         f"( [ -x {agent_bin} ] || "
         f"{_BENCHFLOW_NODE_PREFIX}/bin/npm install -g "
         f"--prefix {_BENCHFLOW_JS_AGENT_PREFIX} {package}@latest ) && "
-        f"[ -x {agent_bin} ]"
+        f"printf '%s\\n' '#!/bin/sh' "
+        f"'export PATH=\"{_BENCHFLOW_NODE_PREFIX}/bin:"
+        f"{_BENCHFLOW_JS_AGENT_PREFIX}/bin:$PATH\"' "
+        f"'exec {agent_bin} \"$@\"' > {wrapper} && "
+        f"chmod +x {wrapper} && "
+        f"chmod -R a+rX /opt/benchflow && "
+        f"[ -x {agent_bin} ] && [ -x {wrapper} ]"
     )
 
 
-def _js_agent_launch(command: str) -> str:
-    """Launch a JS agent with BenchFlow's isolated runtime first on PATH."""
-    return f'export PATH="{_JS_AGENT_PATH}"; {command}'
+def _js_agent_launch(binary: str, args: str = "") -> str:
+    """Launch a JS agent through its isolated BenchFlow wrapper."""
+    cmd = f"{_BENCHFLOW_BIN_PREFIX}/{binary}"
+    return f"{cmd} {args}".rstrip()
 
 
 # Path to the openclaw ACP shim script
@@ -300,7 +308,7 @@ AGENTS: dict[str, AgentConfig] = {
                 f"{_BENCHFLOW_BIN_PREFIX}/pi-acp-launcher", _PI_LAUNCHER
             )
         ),
-        launch_cmd=_js_agent_launch(f"python3 {_BENCHFLOW_BIN_PREFIX}/pi-acp-launcher"),
+        launch_cmd=f"{_BENCHFLOW_BIN_PREFIX}/pi-acp-launcher",
         protocol="acp",
         requires_env=[],  # inferred from --model at runtime
         # Pi is multi-protocol: speaks Anthropic natively and OpenAI via
@@ -326,9 +334,7 @@ AGENTS: dict[str, AgentConfig] = {
                 f"{_BENCHFLOW_BIN_PREFIX}/openclaw-acp-shim", _OPENCLAW_SHIM
             )
         ),
-        launch_cmd=_js_agent_launch(
-            f"python3 {_BENCHFLOW_BIN_PREFIX}/openclaw-acp-shim"
-        ),
+        launch_cmd=f"{_BENCHFLOW_BIN_PREFIX}/openclaw-acp-shim",
         protocol="acp",
         requires_env=[],  # inferred from --model at runtime
         home_dirs=[".openclaw"],
@@ -339,7 +345,7 @@ AGENTS: dict[str, AgentConfig] = {
         skill_paths=["$HOME/.agents/skills"],
         install_cmd=_js_agent_install("codex-acp", "@zed-industries/codex-acp"),
         launch_cmd=_js_agent_launch(
-            "codex-acp ${OPENAI_BASE_URL:+-c openai_base_url=$OPENAI_BASE_URL}"
+            "codex-acp", "${OPENAI_BASE_URL:+-c openai_base_url=$OPENAI_BASE_URL}"
         ),
         protocol="acp",
         requires_env=["OPENAI_API_KEY"],
@@ -369,7 +375,7 @@ AGENTS: dict[str, AgentConfig] = {
         description="Google Gemini CLI via ACP",
         skill_paths=["$HOME/.gemini/skills"],
         install_cmd=_js_agent_install("gemini", "@google/gemini-cli"),
-        launch_cmd=_js_agent_launch("gemini --acp --yolo"),
+        launch_cmd=_js_agent_launch("gemini", "--acp --yolo"),
         protocol="acp",
         requires_env=["GOOGLE_API_KEY"],
         # api_protocol intentionally empty: Gemini speaks Google's native
@@ -408,7 +414,7 @@ AGENTS: dict[str, AgentConfig] = {
         skill_paths=["$HOME/.opencode/skills"],
         home_dirs=[".opencode"],
         install_cmd=_js_agent_install("opencode", "opencode-ai"),
-        launch_cmd=_js_agent_launch("opencode acp"),
+        launch_cmd=_js_agent_launch("opencode", "acp"),
         protocol="acp",
         requires_env=[],  # inferred from --model at runtime
         acp_model_format="provider/model",

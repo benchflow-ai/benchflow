@@ -35,12 +35,23 @@ logger = logging.getLogger(__name__)
 _DIAG_TRUNCATE = 2000  # max chars for diagnostic output in ACP updates
 _TOOL_RESULT_TRUNCATE = 1000  # max chars for tool result text
 _TOOL_INPUT_TRUNCATE = 500  # max chars for tool input echoed in ACP updates
+_BENCHFLOW_JS_PATH = (
+    "/opt/benchflow/bin:/opt/benchflow/js-agents/bin:/opt/benchflow/node/bin"
+)
 
 _PARAM_MAP = {
     "BENCHFLOW_MODEL_TEMPERATURE": "agents.defaults.params.temperature",
     "BENCHFLOW_MODEL_TOP_P": "agents.defaults.params.topP",
     "BENCHFLOW_MODEL_MAX_TOKENS": "agents.defaults.params.maxTokens",
 }
+
+
+def prepend_benchflow_js_path():
+    """Expose BenchFlow's isolated JS agent binaries to subprocess calls."""
+    current = os.environ.get("PATH", "")
+    os.environ["PATH"] = (
+        f"{_BENCHFLOW_JS_PATH}:{current}" if current else _BENCHFLOW_JS_PATH
+    )
 
 
 # ── ACP stdio I/O ─────────────────────────────────────────────────────────────
@@ -521,6 +532,7 @@ def parse_session_jsonl(path: Path, session_id: str) -> list[dict]:
 
 
 def main():
+    prepend_benchflow_js_path()
     setup_openai_auth()
     setup_gcloud_adc()
     session_id = "openclaw-shim"

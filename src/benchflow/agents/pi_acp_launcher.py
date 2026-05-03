@@ -19,6 +19,17 @@ from pathlib import Path
 # overrides supply values. Conservative — most modern models exceed these.
 _DEFAULT_CONTEXT_WINDOW = 128000
 _DEFAULT_MAX_TOKENS = 16384
+_BENCHFLOW_JS_PATH = (
+    "/opt/benchflow/bin:/opt/benchflow/js-agents/bin:/opt/benchflow/node/bin"
+)
+
+
+def _prepend_benchflow_js_path() -> None:
+    """Expose BenchFlow's isolated JS agent binaries to this launcher."""
+    current = os.environ.get("PATH", "")
+    os.environ["PATH"] = (
+        f"{_BENCHFLOW_JS_PATH}:{current}" if current else _BENCHFLOW_JS_PATH
+    )
 
 
 def _lookup_model_metadata(model: str) -> dict:
@@ -116,6 +127,7 @@ def setup_provider() -> None:
 
 
 def main() -> None:
+    _prepend_benchflow_js_path()
     setup_provider()
     try:
         os.execvp("pi-acp", ["pi-acp", *sys.argv[1:]])
