@@ -149,6 +149,7 @@ def _js_agent_launch(command: str) -> str:
     """Launch a JS agent with BenchFlow's isolated runtime first on PATH."""
     return f'export PATH="{_JS_AGENT_PATH}"; {command}'
 
+
 # Path to the openclaw ACP shim script
 _OPENCLAW_SHIM = (Path(__file__).parent / "openclaw_acp_shim.py").read_text()
 
@@ -299,9 +300,7 @@ AGENTS: dict[str, AgentConfig] = {
                 f"{_BENCHFLOW_BIN_PREFIX}/pi-acp-launcher", _PI_LAUNCHER
             )
         ),
-        launch_cmd=_js_agent_launch(
-            f"python3 {_BENCHFLOW_BIN_PREFIX}/pi-acp-launcher"
-        ),
+        launch_cmd=_js_agent_launch(f"python3 {_BENCHFLOW_BIN_PREFIX}/pi-acp-launcher"),
         protocol="acp",
         requires_env=[],  # inferred from --model at runtime
         # Pi is multi-protocol: speaks Anthropic natively and OpenAI via
