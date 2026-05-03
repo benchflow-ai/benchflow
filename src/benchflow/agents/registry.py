@@ -80,8 +80,9 @@ def _install_python_script(container_path: str, source: str) -> str:
 # Isolated Node.js bootstrap for JavaScript-based ACP agents.
 #
 # Keep this out of system prefixes. Task images may need their own Node/npm
-# versions, so BenchFlow installs agent runtime bits under /opt/benchflow and
-# scopes PATH only to agent install/launch commands.
+# versions, so BenchFlow installs agent runtime bits under /opt/benchflow.
+# Install commands can put that prefix on PATH, but launch wrappers call the
+# private Node binary explicitly so task subprocesses keep the task's PATH.
 _BENCHFLOW_NODE_PREFIX = "/opt/benchflow/node"
 _BENCHFLOW_JS_AGENT_PREFIX = "/opt/benchflow/js-agents"
 _BENCHFLOW_BIN_PREFIX = "/opt/benchflow/bin"
@@ -143,9 +144,8 @@ def _js_agent_install(binary: str, package: str) -> str:
         f"{_BENCHFLOW_NODE_PREFIX}/bin/npm install -g "
         f"--prefix {_BENCHFLOW_JS_AGENT_PREFIX} {package}@latest ) && "
         f"printf '%s\\n' '#!/bin/sh' "
-        f"'export PATH=\"{_BENCHFLOW_NODE_PREFIX}/bin:"
-        f"{_BENCHFLOW_JS_AGENT_PREFIX}/bin:$PATH\"' "
-        f"'exec {agent_bin} \"$@\"' > {wrapper} && "
+        f"'exec {_BENCHFLOW_NODE_PREFIX}/bin/node {agent_bin} \"$@\"' "
+        f"> {wrapper} && "
         f"chmod +x {wrapper} && "
         f"chmod -R a+rX /opt/benchflow && "
         f"[ -x {agent_bin} ] && [ -x {wrapper} ]"

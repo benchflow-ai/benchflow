@@ -117,11 +117,16 @@ def test_js_acp_agents_use_isolated_node_runtime(name):
     assert "--prefix /opt/benchflow/js-agents" in install_cmd
     assert "/opt/benchflow/bin" in launch_cmd
     assert "/opt/benchflow/js-agents/bin:/opt/benchflow/node/bin:$PATH" in install_cmd
+    assert (
+        "exec /opt/benchflow/node/bin/node /opt/benchflow/js-agents/bin/" in install_cmd
+    )
     assert launch_cmd.split()[0].startswith("/opt/benchflow/bin/")
     assert launch_cmd.split()[0] not in {"export", "env"}
     assert not launch_cmd.startswith("PATH=")
 
     forbidden_fragments = [
+        'export PATH="/opt/benchflow/node/bin:/opt/benchflow/js-agents/bin:$PATH"',
+        "exec /opt/benchflow/js-agents/bin/",
         "deb.nodesource.com",
         "apt-get install -y -qq nodejs",
         "apt-get install -y nodejs",

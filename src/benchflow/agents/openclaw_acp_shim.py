@@ -35,23 +35,13 @@ logger = logging.getLogger(__name__)
 _DIAG_TRUNCATE = 2000  # max chars for diagnostic output in ACP updates
 _TOOL_RESULT_TRUNCATE = 1000  # max chars for tool result text
 _TOOL_INPUT_TRUNCATE = 500  # max chars for tool input echoed in ACP updates
-_BENCHFLOW_JS_PATH = (
-    "/opt/benchflow/bin:/opt/benchflow/js-agents/bin:/opt/benchflow/node/bin"
-)
+_OPENCLAW_BIN = "/opt/benchflow/bin/openclaw"
 
 _PARAM_MAP = {
     "BENCHFLOW_MODEL_TEMPERATURE": "agents.defaults.params.temperature",
     "BENCHFLOW_MODEL_TOP_P": "agents.defaults.params.topP",
     "BENCHFLOW_MODEL_MAX_TOKENS": "agents.defaults.params.maxTokens",
 }
-
-
-def prepend_benchflow_js_path():
-    """Expose BenchFlow's isolated JS agent binaries to subprocess calls."""
-    current = os.environ.get("PATH", "")
-    os.environ["PATH"] = (
-        f"{_BENCHFLOW_JS_PATH}:{current}" if current else _BENCHFLOW_JS_PATH
-    )
 
 
 # ── ACP stdio I/O ─────────────────────────────────────────────────────────────
@@ -148,7 +138,7 @@ def setup_gcloud_adc():
     os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(adc_path)
     # Enable the google plugin so openclaw recognizes google-vertex/ models
     subprocess.run(
-        ["openclaw", "plugins", "enable", "google"],
+        [_OPENCLAW_BIN, "plugins", "enable", "google"],
         capture_output=True,
         timeout=10,
     )
@@ -532,7 +522,6 @@ def parse_session_jsonl(path: Path, session_id: str) -> list[dict]:
 
 
 def main():
-    prepend_benchflow_js_path()
     setup_openai_auth()
     setup_gcloud_adc()
     session_id = "openclaw-shim"
@@ -602,7 +591,7 @@ def main():
                     model = f"{_infer_provider_prefix(model)}/{model}"
 
                 subprocess.run(
-                    ["openclaw", "config", "set", "agents.defaults.model", model],
+                    [_OPENCLAW_BIN, "config", "set", "agents.defaults.model", model],
                     capture_output=True,
                     timeout=10,
                 )
@@ -612,7 +601,7 @@ def main():
                 val = os.environ.get(env_key)
                 if val:
                     subprocess.run(
-                        ["openclaw", "config", "set", config_path, val],
+                        [_OPENCLAW_BIN, "config", "set", config_path, val],
                         capture_output=True,
                         timeout=10,
                     )
@@ -629,7 +618,7 @@ def main():
             try:
                 result = subprocess.run(
                     [
-                        "openclaw",
+                        _OPENCLAW_BIN,
                         "agent",
                         "--local",
                         "--agent",
