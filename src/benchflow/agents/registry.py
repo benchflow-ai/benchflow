@@ -94,7 +94,7 @@ _NODE_INSTALL = (
     "set -o pipefail; "
     "export DEBIAN_FRONTEND=noninteractive; "
     f"BF_NODE_DIR={_BENCHFLOW_NODE_PREFIX}; "
-    "BF_NODE_VERSION=22.12.0; "
+    "BF_NODE_VERSION=22.14.0; "
     'if [ ! -x "$BF_NODE_DIR/bin/node" ]; then '
     "  if ! command -v curl >/dev/null 2>&1 || "
     "     ! command -v tar >/dev/null 2>&1 || "

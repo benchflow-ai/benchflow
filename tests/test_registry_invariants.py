@@ -112,6 +112,7 @@ def test_js_acp_agents_use_isolated_node_runtime(name):
     launch_cmd = AGENTS[name].launch_cmd
 
     assert "/opt/benchflow/node" in install_cmd
+    assert "BF_NODE_VERSION=22.14.0" in install_cmd
     assert "/opt/benchflow/js-agents" in install_cmd
     assert "/opt/benchflow/bin" in install_cmd
     assert "--prefix /opt/benchflow/js-agents" in install_cmd
