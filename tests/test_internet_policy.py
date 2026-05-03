@@ -160,9 +160,10 @@ async def test_connect_as_applies_web_policy_to_role_env(tmp_path):
 
 
 def test_codex_launch_disable_is_gated_by_web_policy():
-    from benchflow.agents.registry import AGENT_LAUNCH
-
-    base_cmd = AGENT_LAUNCH["codex-acp"]
+    base_cmd = (
+        "/opt/benchflow/bin/codex-acp "
+        "${OPENAI_BASE_URL:+-c openai_base_url=$OPENAI_BASE_URL}"
+    )
     assert _agent_launch_with_web_policy("codex-acp", disallow=False) == base_cmd
     assert _agent_launch_with_web_policy("codex-acp", disallow=True) == (
         f"{base_cmd} -c tools.web_search=false"
