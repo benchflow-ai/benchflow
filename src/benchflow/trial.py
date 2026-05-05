@@ -750,6 +750,7 @@ class Trial:
         scene containing one role — no special case.
         """
         cfg = self._config
+        agent_timed_out = False
         try:
             await self.setup()
             await self.start()
@@ -774,11 +775,17 @@ class Trial:
             else:
                 await self.install_agent()
                 try:
-                    if cfg.user is not None:
-                        await self._run_user_loop()
-                    else:
-                        for scene in cfg.effective_scenes:
-                            await self._run_scene(scene)
+                    try:
+                        if cfg.user is not None:
+                            await self._run_user_loop()
+                        else:
+                            for scene in cfg.effective_scenes:
+                                await self._run_scene(scene)
+                    except TimeoutError as e:
+                        agent_timed_out = True
+                        detail = str(e).strip()
+                        self._error = detail or f"Agent timed out after {self._timeout}s"
+                        logger.error(self._error)
                 finally:
                     if cfg.oracle_access:
                         await self._env.exec(
@@ -788,6 +795,9 @@ class Trial:
                         )
 
             await self.verify()
+            if agent_timed_out and self._rewards is None:
+                self._rewards = {"reward": 0.0}
+                self._verifier_error = None
 
         except TimeoutError as e:
             # Preserve the watchdog's diagnostic message ("Agent idle for 600s
