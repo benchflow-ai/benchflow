@@ -784,7 +784,9 @@ class Trial:
                     except TimeoutError as e:
                         agent_timed_out = True
                         detail = str(e).strip()
-                        self._error = detail or f"Agent timed out after {self._timeout}s"
+                        self._error = (
+                            detail or f"Agent timed out after {self._timeout}s"
+                        )
                         logger.error(self._error)
                 finally:
                     if cfg.oracle_access:
