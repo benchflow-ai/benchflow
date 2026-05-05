@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -120,6 +121,22 @@ async def test_sdk_self_gen_runs_creator_then_solver_in_one_trial_with_isolated_
     assert trial_cfg.prompts is None
     assert trial_cfg.self_gen_no_internet is True
     assert trial_cfg.export_generated_skills_to is None
+    assert len(trial_cfg.pre_agent_hooks or []) == 1
+
+    env_commands = []
+
+    class FakeEnv:
+        async def exec(self, cmd, **kwargs):
+            env_commands.append((cmd, kwargs))
+            return SimpleNamespace(return_code=0, stdout="", stderr="")
+
+    await trial_cfg.pre_agent_hooks[0](FakeEnv())
+    assert env_commands == [
+        (
+            "mkdir -p /app/generated-skills && chmod 777 /app/generated-skills",
+            {"timeout_sec": 10},
+        )
+    ]
 
     assert [scene.name for scene in trial_cfg.scenes] == [
         "self-gen-creator",
@@ -132,6 +149,8 @@ async def test_sdk_self_gen_runs_creator_then_solver_in_one_trial_with_isolated_
     assert _skill_dir_names(Path(creator_scene.skills_dir)) == {"skill-creator"}
     assert creator_scene.turns[0].prompt is not None
     assert "skill-creator" in creator_scene.turns[0].prompt
+    assert "/instruction.md" in creator_scene.turns[0].prompt
+    assert "/app/instruction.md" not in creator_scene.turns[0].prompt
     assert str(original_skills) not in creator_scene.turns[0].prompt
 
     assert solver_scene.name == "self-gen-solver"
@@ -186,6 +205,7 @@ async def test_job_self_gen_uses_strict_orchestration(
     assert seen_configs[0].skip_verify is False
     assert seen_configs[0].include_task_skills is False
     assert seen_configs[0].skills_dir is None
+    assert len(seen_configs[0].pre_agent_hooks or []) == 1
     assert [scene.name for scene in seen_configs[0].scenes] == [
         "self-gen-creator",
         "self-gen-solver",

@@ -195,7 +195,7 @@ def _self_gen_prompt(
     target_dir = f"{generated_skills_root}/{skill_dir_name}"
     return f"""Use the {skill_creator_name} skill exactly as provided.
 
-Read /app/instruction.md and inspect the task environment only as needed to understand the reusable workflow. Do not solve the task directly.
+Read /instruction.md and inspect the task environment only as needed to understand the reusable workflow. Do not solve the task directly.
 
 Create one or more complete Anthropic-standard skill packs as immediate child directories under:
 

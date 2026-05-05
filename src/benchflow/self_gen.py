@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shlex
 import shutil
 from dataclasses import replace
 from pathlib import Path
@@ -94,6 +95,21 @@ def _solver_scene(config: TrialConfig) -> Scene:
     )
 
 
+def _ensure_generated_skills_hook(config: TrialConfig):
+    generated_skills_root = config.generated_skills_root or GENERATED_SKILLS_ROOT
+
+    async def ensure_generated_skills(env):
+        q_root = shlex.quote(generated_skills_root)
+        result = await env.exec(f"mkdir -p {q_root} && chmod 777 {q_root}", timeout_sec=10)
+        if result.return_code != 0:
+            raise RuntimeError(
+                "Failed to create self-gen generated skills directory: "
+                f"{result.stderr or result.stdout}"
+            )
+
+    return ensure_generated_skills
+
+
 def _single_trial_config(
     config: TrialConfig, creator_skills_root: Path, skill_creator_name: str
 ) -> TrialConfig:
@@ -106,6 +122,10 @@ def _single_trial_config(
         skills_dir=None,
         skill_mode=SKILL_MODE_DEFAULT,
         skill_creator_dir=None,
+        pre_agent_hooks=[
+            *(config.pre_agent_hooks or []),
+            _ensure_generated_skills_hook(config),
+        ],
         include_task_skills=False,
     )
 
