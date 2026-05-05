@@ -454,6 +454,10 @@ class Job:
             skill_creator_dir=cfg.skill_creator_dir,
             self_gen_no_internet=cfg.self_gen_no_internet,
         )
+        if cfg.skill_mode == "self-gen":
+            from benchflow.self_gen import run_self_gen
+
+            return await run_self_gen(trial_config)
         trial = await Trial.create(trial_config)
         return await trial.run()
 
@@ -475,6 +479,9 @@ class Job:
             sandbox_locked_paths=cfg.sandbox_locked_paths,
             sandbox_setup_timeout=cfg.sandbox_setup_timeout,
             context_root=cfg.context_root,
+            skill_mode=cfg.skill_mode,
+            skill_creator_dir=cfg.skill_creator_dir,
+            self_gen_no_internet=cfg.self_gen_no_internet,
         )
 
     async def _run_task(self, task_dir: Path) -> RunResult:

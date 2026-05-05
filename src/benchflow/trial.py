@@ -191,13 +191,17 @@ def _self_gen_prompt(
 
 Read /app/instruction.md and inspect the task environment only as needed to understand the reusable workflow. Do not solve the task directly.
 
-Create one complete Anthropic-standard skill pack at:
+Create one or more complete Anthropic-standard skill packs as immediate child directories under:
+
+{generated_skills_root}
+
+Use this suggested path if one skill is enough:
 
 {target_dir}
 
-The generated pack must include SKILL.md with non-empty name and description frontmatter. It may include scripts/, references/, assets/, examples, or other bundled resources when they help a fresh solver avoid repeated work.
+Each generated skill pack path must look like {generated_skills_root}/<skill-name>/SKILL.md. It may include scripts/, references/, assets/, examples, or other bundled resources when they help a fresh solver avoid repeated work.
 
-The next run will start with a clean agent session and only the generated skill pack mounted. Make the skill useful for solving this task type from the same sandbox environment."""
+The next run will start with a clean agent session and only the generated skill packs mounted. Make the skills useful for solving this task type from the same sandbox environment."""
 
 
 async def _ensure_sandbox_dir(
@@ -306,6 +310,9 @@ class TrialConfig:
     skill_creator_dir: str | Path | None = None
     generated_skills_root: str = GENERATED_SKILLS_ROOT
     self_gen_no_internet: bool = False
+    include_task_skills: bool = True
+    skip_verify: bool = False
+    export_generated_skills_to: str | Path | None = None
 
     @classmethod
     def from_legacy(
@@ -338,7 +345,7 @@ class TrialConfig:
             agent=agent,
             model=model,
             prompts=prompts,
-            skills_dir=None if skill_mode == SKILL_MODE_SELF_GEN else skills_dir,
+            skills_dir=skills_dir,
             skill_mode=skill_mode,
             skill_creator_dir=skill_creator_dir,
             generated_skills_root=generated_skills_root,
@@ -349,47 +356,13 @@ class TrialConfig:
     @property
     def effective_scenes(self) -> list[Scene]:
         """Scenes to execute — falls back to legacy fields if scenes is empty."""
+        if self.skill_mode == SKILL_MODE_SELF_GEN:
+            raise ValueError(
+                "self-gen requires the two-phase orchestrator. Use SDK.run(), "
+                "Job.run(), or bf.run(TrialConfig(...)) instead of Trial scenes."
+            )
         if self.scenes:
             return self.scenes
-        if self.skill_mode == SKILL_MODE_SELF_GEN:
-            skill_creator_root, skill_creator_name = _resolve_skill_creator_root(
-                self.skill_creator_dir
-            )
-            return [
-                Scene(
-                    name="skill-gen",
-                    roles=[
-                        Role(
-                            name="skill_creator",
-                            agent=self.agent,
-                            model=self.model,
-                        )
-                    ],
-                    turns=[
-                        Turn(
-                            role="skill_creator",
-                            prompt=_self_gen_prompt(
-                                self.task_path,
-                                self.generated_skills_root,
-                                skill_creator_name,
-                            ),
-                        )
-                    ],
-                    skills_dir=skill_creator_root,
-                ),
-                Scene(
-                    name="solve",
-                    roles=[
-                        Role(
-                            name="solver",
-                            agent=self.agent,
-                            model=self.model,
-                        )
-                    ],
-                    turns=[Turn(role="solver")],
-                    skills_dir=self.generated_skills_root,
-                ),
-            ]
         if self.skill_mode != SKILL_MODE_DEFAULT:
             raise ValueError(f"Unknown skill_mode: {self.skill_mode}")
         return [
@@ -464,6 +437,11 @@ class Trial:
     @classmethod
     async def create(cls, config: TrialConfig) -> Trial:
         """Create a Trial instance. Preferred over __init__ for consistency."""
+        if config.skill_mode == SKILL_MODE_SELF_GEN:
+            raise ValueError(
+                "self-gen requires the two-phase orchestrator. Use SDK.run(), "
+                "Job.run(), or bf.run(TrialConfig(...)) instead of Trial.create()."
+            )
         return cls(config)
 
     @property
@@ -645,9 +623,9 @@ class Trial:
                 cfg.sandbox_user,
                 self._agent_cwd,
                 self._task,
-                include_task_skills=cfg.skill_mode != SKILL_MODE_SELF_GEN,
+                include_task_skills=cfg.include_task_skills,
             )
-            if cfg.skill_mode == SKILL_MODE_SELF_GEN:
+            if cfg.export_generated_skills_to:
                 await _ensure_sandbox_dir(
                     self._env, cfg.generated_skills_root, cfg.sandbox_user
                 )
@@ -696,9 +674,9 @@ class Trial:
             cfg.sandbox_user,
             self._agent_cwd,
             self._task,
-            include_task_skills=cfg.skill_mode != SKILL_MODE_SELF_GEN,
+            include_task_skills=cfg.include_task_skills,
         )
-        if cfg.skill_mode == SKILL_MODE_SELF_GEN:
+        if cfg.export_generated_skills_to:
             await _ensure_sandbox_dir(
                 self._env, cfg.generated_skills_root, cfg.sandbox_user
             )
@@ -903,6 +881,12 @@ class Trial:
 
         await self.disconnect()
 
+        if self._env and self._config.export_generated_skills_to:
+            try:
+                await self._export_generated_skills()
+            except Exception as e:
+                logger.warning(f"Generated skill export failed: {e}")
+
         if self._env:
             try:
                 await self._env.stop(delete=True)
@@ -925,6 +909,11 @@ class Trial:
         scene containing one role — no special case.
         """
         cfg = self._config
+        if cfg.skill_mode == SKILL_MODE_SELF_GEN:
+            raise ValueError(
+                "self-gen requires the two-phase orchestrator. Use SDK.run(), "
+                "Job.run(), or bf.run(TrialConfig(...)) instead of Trial.run()."
+            )
         try:
             await self.setup()
             await self.start()
@@ -962,7 +951,8 @@ class Trial:
                             timeout_sec=10,
                         )
 
-            await self.verify()
+            if not cfg.skip_verify:
+                await self.verify()
 
         except TimeoutError as e:
             # Preserve the watchdog's diagnostic message ("Agent idle for 600s
@@ -995,6 +985,15 @@ class Trial:
     # ── Scene execution ──
 
     _OUTBOX_DIR = "/app/.outbox"
+
+    async def _export_generated_skills(self) -> None:
+        """Download creator-produced skills before sandbox cleanup."""
+        export_target = self._config.export_generated_skills_to
+        if export_target is None:
+            return
+        target = Path(export_target)
+        target.mkdir(parents=True, exist_ok=True)
+        await self._env.download_dir(self._config.generated_skills_root, target)
 
     async def _activate_scene_skills(self, scene: Scene) -> None:
         """Activate scene-local skills by linking them into role discovery paths."""

@@ -15,7 +15,15 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from benchflow.trial import Role, Scene, Trial, TrialConfig, Turn
+from benchflow.trial import (
+    Role,
+    Scene,
+    Trial,
+    TrialConfig,
+    Turn,
+    _resolve_skill_creator_root,
+    _self_gen_prompt,
+)
 
 
 @dataclass
@@ -356,8 +364,8 @@ async def test_heterogeneous_agent_install(coder_reviewer_scene: Scene) -> None:
     assert "claude-agent-acp" in installed_agents
 
 
-def test_self_gen_mode_builds_creator_then_solver_scenes(tmp_path: Path) -> None:
-    """Self-gen mode mounts only skill-creator first, then generated skills."""
+def test_self_gen_mode_does_not_build_scene_orchestration(tmp_path: Path) -> None:
+    """Strict self-gen orchestration happens outside a single Trial sandbox."""
     skills_root = tmp_path / "skills"
     skill_creator = skills_root / "skill-creator"
     skill_creator.mkdir(parents=True)
@@ -373,15 +381,8 @@ def test_self_gen_mode_builds_creator_then_solver_scenes(tmp_path: Path) -> None
         skill_creator_dir=skill_creator,
     )
 
-    scenes = cfg.effective_scenes
-
-    assert [scene.name for scene in scenes] == ["skill-gen", "solve"]
-    assert scenes[0].skills_dir == skills_root
-    assert scenes[0].turns[0].role == "skill_creator"
-    assert "Use the skill-creator skill exactly as provided" in scenes[0].turns[0].prompt
-    assert "/app/generated-skills/" in scenes[0].turns[0].prompt
-    assert scenes[1].skills_dir == "/app/generated-skills"
-    assert scenes[1].turns == [Turn("solver")]
+    with pytest.raises(ValueError, match="two-phase orchestrator"):
+        _ = cfg.effective_scenes
 
 
 def test_self_gen_mode_defaults_to_bundled_skill_creator(
@@ -390,18 +391,11 @@ def test_self_gen_mode_defaults_to_bundled_skill_creator(
     """Self-gen mode defaults to BenchFlow's vendored skill-creator pack."""
     monkeypatch.delenv("BENCHFLOW_SKILL_CREATOR_DIR", raising=False)
 
-    cfg = TrialConfig.from_legacy(
-        task_path=Path("tasks/fake"),
-        agent="claude-agent-acp",
-        model="claude-haiku-4-5-20251001",
-        skill_mode="self-gen",
-    )
-
-    scenes = cfg.effective_scenes
-    skills_root = Path(scenes[0].skills_dir)
+    skills_root, skill_name = _resolve_skill_creator_root(None)
 
     assert skills_root.name == "bundled_skills"
     assert (skills_root / "skill-creator" / "SKILL.md").exists()
+    assert skill_name == "skill-creator"
 
 
 def test_self_gen_mode_uses_custom_creator_skill_name(tmp_path: Path) -> None:
@@ -413,20 +407,15 @@ def test_self_gen_mode_uses_custom_creator_skill_name(tmp_path: Path) -> None:
         "---\nname: custom-creator\ndescription: Create task skills\n---\n"
     )
 
-    cfg = TrialConfig.from_legacy(
-        task_path=Path("tasks/fake"),
-        agent="claude-agent-acp",
-        model="claude-haiku-4-5-20251001",
-        skill_mode="self-gen",
-        skill_creator_dir=skills_root,
+    resolved_root, skill_name = _resolve_skill_creator_root(skills_root)
+    prompt = _self_gen_prompt(
+        Path("tasks/fake"),
+        "/app/generated-skills",
+        skill_name,
     )
 
-    scenes = cfg.effective_scenes
-
-    assert scenes[0].skills_dir == skills_root
-    assert "Use the custom-creator skill exactly as provided" in scenes[0].turns[
-        0
-    ].prompt
+    assert resolved_root == skills_root
+    assert "Use the custom-creator skill exactly as provided" in prompt
 
 
 async def test_scene_skills_upload_local_root_and_link_agent_paths(tmp_path: Path) -> None:

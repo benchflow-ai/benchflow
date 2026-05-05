@@ -564,7 +564,7 @@ class SDK:
             trial_name=trial_name,
             jobs_dir=jobs_dir,
             environment=environment,
-            skills_dir=None if skill_mode == "self-gen" else skills_dir,
+            skills_dir=skills_dir,
             sandbox_user=sandbox_user,
             sandbox_locked_paths=sandbox_locked_paths,
             sandbox_setup_timeout=sandbox_setup_timeout,
@@ -574,5 +574,9 @@ class SDK:
             skill_creator_dir=skill_creator_dir,
             self_gen_no_internet=self_gen_no_internet,
         )
+        if skill_mode == "self-gen":
+            from benchflow.self_gen import run_self_gen
+
+            return await run_self_gen(config)
         trial = await Trial.create(config)
         return await trial.run()

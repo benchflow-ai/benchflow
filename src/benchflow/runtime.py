@@ -331,6 +331,10 @@ async def run(
     from benchflow.trial import Scene, Trial, TrialConfig
 
     if isinstance(subject, TrialConfig):
+        if subject.skill_mode == "self-gen":
+            from benchflow.self_gen import run_self_gen
+
+            return await run_self_gen(subject)
         trial = await Trial.create(subject)
         return await trial.run()
 

@@ -1,7 +1,7 @@
 """Tests for self-generated skill mode CLI wiring."""
 
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 from benchflow.models import RunResult
 
@@ -15,7 +15,7 @@ def _make_task(tmp_path: Path) -> Path:
 
 
 def test_eval_create_single_task_self_gen_passes_trial_config(tmp_path: Path):
-    """`bench eval create --mode self-gen` reaches the live TrialConfig path."""
+    """`bench eval create --mode self-gen` reaches strict self-gen orchestration."""
     import asyncio
 
     from benchflow.cli.main import eval_create
@@ -30,21 +30,17 @@ def test_eval_create_single_task_self_gen_passes_trial_config(tmp_path: Path):
     provided_skills.mkdir()
     captured = {}
 
-    async def fake_create(config):
+    async def fake_run_self_gen(config):
         captured["config"] = config
-        trial = type("FakeTrial", (), {})()
-        trial.run = AsyncMock(
-            return_value=RunResult(
-                task_name="task",
-                agent_name="claude-agent-acp",
-                rewards={"reward": 1.0},
-                n_tool_calls=0,
-            )
+        return RunResult(
+            task_name="task",
+            agent_name="claude-agent-acp",
+            rewards={"reward": 1.0},
+            n_tool_calls=0,
         )
-        return trial
 
     try:
-        with patch("benchflow.trial.Trial.create", new=fake_create):
+        with patch("benchflow.self_gen.run_self_gen", new=fake_run_self_gen):
             eval_create(
                 config_file=None,
                 tasks_dir=task,
@@ -65,6 +61,6 @@ def test_eval_create_single_task_self_gen_passes_trial_config(tmp_path: Path):
 
     cfg = captured["config"]
     assert cfg.skill_mode == "self-gen"
-    assert cfg.skills_dir is None
+    assert cfg.skills_dir == str(provided_skills)
     assert cfg.skill_creator_dir == str(skill_creator)
     assert cfg.self_gen_no_internet is True

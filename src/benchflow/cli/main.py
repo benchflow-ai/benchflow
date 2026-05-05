@@ -813,25 +813,26 @@ def eval_create(
         eff_model = effective_model(agent, model)
         # Smart detection: if tasks_dir has task.toml, it's a single task
         if (tasks_dir / "task.toml").exists():
-            from benchflow.trial import Trial, TrialConfig
-
-            config = TrialConfig.from_legacy(
-                task_path=tasks_dir,
-                agent=agent,
-                model=eff_model,
-                environment=environment,
-                sandbox_user=sandbox_user,
-                sandbox_setup_timeout=sandbox_setup_timeout,
-                jobs_dir=jobs_dir,
-                skills_dir=str(skills_dir) if skills_dir else None,
-                skill_mode=skill_mode,
-                skill_creator_dir=str(skill_creator_dir) if skill_creator_dir else None,
-                self_gen_no_internet=self_gen_no_internet,
-            )
+            from benchflow.sdk import SDK
 
             async def _run():
-                trial = await Trial.create(config)
-                return await trial.run()
+                return await SDK().run(
+                    task_path=tasks_dir,
+                    agent=agent,
+                    model=eff_model,
+                    job_name=None,
+                    trial_name=None,
+                    jobs_dir=jobs_dir,
+                    environment=environment,
+                    skills_dir=str(skills_dir) if skills_dir else None,
+                    sandbox_user=sandbox_user,
+                    sandbox_setup_timeout=sandbox_setup_timeout,
+                    skill_mode=skill_mode,
+                    skill_creator_dir=(
+                        str(skill_creator_dir) if skill_creator_dir else None
+                    ),
+                    self_gen_no_internet=self_gen_no_internet,
+                )
 
             run_result = asyncio.run(_run())
             reward = (run_result.rewards or {}).get("reward")
