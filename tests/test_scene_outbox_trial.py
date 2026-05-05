@@ -418,7 +418,9 @@ def test_self_gen_mode_uses_custom_creator_skill_name(tmp_path: Path) -> None:
     assert "Use the custom-creator skill exactly as provided" in prompt
 
 
-async def test_scene_skills_upload_local_root_and_link_agent_paths(tmp_path: Path) -> None:
+async def test_scene_skills_upload_local_root_and_link_agent_paths(
+    tmp_path: Path,
+) -> None:
     """Scene.skills_dir can activate a local skills root without global skills_dir."""
     skills_root = tmp_path / "skills"
     (skills_root / "skill-creator").mkdir(parents=True)

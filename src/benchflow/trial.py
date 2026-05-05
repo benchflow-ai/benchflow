@@ -514,9 +514,8 @@ class Trial:
         ) = SDK._init_trial(cfg.task_path, cfg.job_name, cfg.trial_name, cfg.jobs_dir)
 
         self._disallow_web_tools = (
-            (_task_disallows_internet(self._task) or cfg.self_gen_no_internet)
-            and cfg.primary_agent != "oracle"
-        )
+            _task_disallows_internet(self._task) or cfg.self_gen_no_internet
+        ) and cfg.primary_agent != "oracle"
         self._agent_env = _apply_web_policy(
             resolve_agent_env(cfg.primary_agent, cfg.primary_model, cfg.agent_env),
             disallow=self._disallow_web_tools,
@@ -1031,7 +1030,11 @@ class Trial:
         else:
             raise FileNotFoundError(f"Scene skills_dir not found: {scene.skills_dir}")
 
-        home = f"/home/{self._config.sandbox_user}" if self._config.sandbox_user else "/root"
+        home = (
+            f"/home/{self._config.sandbox_user}"
+            if self._config.sandbox_user
+            else "/root"
+        )
         for role in scene.roles:
             agent_cfg = AGENTS.get(role.agent)
             if not agent_cfg or not agent_cfg.skill_paths:

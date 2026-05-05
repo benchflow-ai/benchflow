@@ -87,9 +87,7 @@ def _solver_scene(config: TrialConfig) -> Scene:
         roles=[Role("solver", config.agent, config.model)],
         turns=[
             Turn("solver", prompt)
-            for prompt in (
-                config.prompts if config.prompts is not None else [None]
-            )
+            for prompt in (config.prompts if config.prompts is not None else [None])
         ],
         skills_dir=config.generated_skills_root or GENERATED_SKILLS_ROOT,
     )
@@ -100,7 +98,9 @@ def _ensure_generated_skills_hook(config: TrialConfig):
 
     async def ensure_generated_skills(env):
         q_root = shlex.quote(generated_skills_root)
-        result = await env.exec(f"mkdir -p {q_root} && chmod 777 {q_root}", timeout_sec=10)
+        result = await env.exec(
+            f"mkdir -p {q_root} && chmod 777 {q_root}", timeout_sec=10
+        )
         if result.return_code != 0:
             raise RuntimeError(
                 "Failed to create self-gen generated skills directory: "
