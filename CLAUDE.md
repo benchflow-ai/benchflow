@@ -5,10 +5,10 @@ Multi-turn agent benchmarking with ACP. Docs in [`docs/`](./docs/).
 ## Setup + test
 
 ```bash
-uv venv -p 3.12 .venv && uv pip install -e ".[dev]"
-.venv/bin/python -m pytest tests/
-.venv/bin/ty check src/
-ruff check .
+uv sync --extra dev --locked
+uv run python -m pytest tests/
+uv run ty check src/
+uv run ruff check .
 ```
 
 ## Conventions

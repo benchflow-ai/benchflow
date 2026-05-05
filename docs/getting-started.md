@@ -5,7 +5,7 @@ A 5-minute path from install to first eval.
 ## Prerequisites
 
 - Python 3.12+
-- [`uv`](https://docs.astral.sh/uv/) (recommended) or `pip`
+- [`uv`](https://docs.astral.sh/uv/)
 - Docker for local sandboxes, `DAYTONA_API_KEY` for Daytona cloud runs, or Modal auth for Modal-backed runs
 - An API key or subscription/OAuth auth for at least one agent (see below)
 
@@ -20,7 +20,7 @@ This gives you the `benchflow` (alias `bench`) CLI plus the Python SDK. To insta
 ```bash
 git clone https://github.com/benchflow-ai/benchflow
 cd benchflow
-uv venv -p 3.12 .venv && uv pip install -e ".[dev]"
+uv sync --extra dev --locked
 ```
 
 ## Auth: OAuth, long-lived token, or API key
