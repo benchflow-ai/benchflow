@@ -118,7 +118,10 @@ def trial_config_from_dict(
         agent=raw.get("agent", "claude-agent-acp"),
         model=raw.get("model"),
         agent_env=raw.get("agent_env"),
-        skills_dir=raw.get("skills_dir"),
+        skills_dir=None if raw.get("skill_mode") == "self-gen" else raw.get("skills_dir"),
+        skill_mode=raw.get("skill_mode", "default"),
+        skill_creator_dir=raw.get("skill_creator_dir"),
+        self_gen_no_internet=bool(raw.get("self_gen_no_internet", False)),
     )
 
 

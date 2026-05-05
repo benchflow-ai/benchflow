@@ -59,6 +59,28 @@ def run(
             "--skills-dir", "-s", help="Skills directory to deploy into sandbox"
         ),
     ] = None,
+    skill_mode: Annotated[
+        str,
+        typer.Option(
+            "--skill-mode",
+            "--mode",
+            help="Skill mode: default or self-gen",
+        ),
+    ] = "default",
+    skill_creator_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--skill-creator-dir",
+            help="Path to skill-creator or a skills root containing it",
+        ),
+    ] = None,
+    self_gen_no_internet: Annotated[
+        bool,
+        typer.Option(
+            "--self-gen-no-internet",
+            help="Disable web tools for the self-generated run",
+        ),
+    ] = False,
     sandbox_user: Annotated[
         str | None,
         typer.Option(
@@ -97,6 +119,9 @@ def run(
             environment=environment,
             skills_dir=str(skills_dir) if skills_dir else None,
             sandbox_user=sandbox_user,
+            skill_mode=skill_mode,
+            skill_creator_dir=str(skill_creator_dir) if skill_creator_dir else None,
+            self_gen_no_internet=self_gen_no_internet,
         )
     )
 
@@ -751,6 +776,28 @@ def eval_create(
         Path | None,
         typer.Option("--skills-dir", "-s", help="Skills directory to deploy"),
     ] = None,
+    skill_mode: Annotated[
+        str,
+        typer.Option(
+            "--skill-mode",
+            "--mode",
+            help="Skill mode: default or self-gen",
+        ),
+    ] = "default",
+    skill_creator_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--skill-creator-dir",
+            help="Path to skill-creator or a skills root containing it",
+        ),
+    ] = None,
+    self_gen_no_internet: Annotated[
+        bool,
+        typer.Option(
+            "--self-gen-no-internet",
+            help="Disable web tools for the self-generated run",
+        ),
+    ] = False,
 ) -> None:
     """Run an evaluation — single task or batch."""
     from benchflow.job import Job, JobConfig
@@ -766,24 +813,20 @@ def eval_create(
         eff_model = effective_model(agent, model)
         # Smart detection: if tasks_dir has task.toml, it's a single task
         if (tasks_dir / "task.toml").exists():
-            from benchflow.trial import Scene, Trial, TrialConfig
+            from benchflow.trial import Trial, TrialConfig
 
-            config = TrialConfig(
+            config = TrialConfig.from_legacy(
                 task_path=tasks_dir,
-                scenes=[
-                    Scene.single(
-                        agent=agent,
-                        model=eff_model,
-                        skills_dir=str(skills_dir) if skills_dir else None,
-                    )
-                ],
+                agent=agent,
+                model=eff_model,
                 environment=environment,
                 sandbox_user=sandbox_user,
                 sandbox_setup_timeout=sandbox_setup_timeout,
                 jobs_dir=jobs_dir,
-                agent=agent,
-                model=eff_model,
                 skills_dir=str(skills_dir) if skills_dir else None,
+                skill_mode=skill_mode,
+                skill_creator_dir=str(skill_creator_dir) if skill_creator_dir else None,
+                self_gen_no_internet=self_gen_no_internet,
             )
 
             async def _run():
@@ -811,6 +854,11 @@ def eval_create(
                     sandbox_user=sandbox_user,
                     sandbox_setup_timeout=sandbox_setup_timeout,
                     skills_dir=str(skills_dir) if skills_dir else None,
+                    skill_mode=skill_mode,
+                    skill_creator_dir=(
+                        str(skill_creator_dir) if skill_creator_dir else None
+                    ),
+                    self_gen_no_internet=self_gen_no_internet,
                 ),
             )
             result = asyncio.run(j.run())

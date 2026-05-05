@@ -198,6 +198,29 @@ def test_native_yaml_without_skills_dir(native_yaml):
     assert job._config.skills_dir is None
 
 
+def test_native_yaml_with_self_gen_skill_mode(tmp_path):
+    """Self-gen job config is parsed for batch runs."""
+    tasks = tmp_path / "tasks" / "task-a"
+    tasks.mkdir(parents=True)
+    (tasks / "task.toml").write_text('version = "1.0"')
+    skills = tmp_path / "skills"
+    skills.mkdir()
+
+    config = tmp_path / "config.yaml"
+    config.write_text("""
+tasks_dir: tasks
+agent: claude-agent-acp
+skill_mode: self-gen
+skill_creator_dir: skills
+self_gen_no_internet: true
+""")
+
+    job = Job.from_yaml(config)
+    assert job._config.skill_mode == "self-gen"
+    assert job._config.skill_creator_dir == "skills"
+    assert job._config.self_gen_no_internet is True
+
+
 def _make_tasks(tmp_path, names=("task-a", "task-b", "task-c")):
     """Create task dirs with task.toml files."""
     tasks_dir = tmp_path / "tasks"

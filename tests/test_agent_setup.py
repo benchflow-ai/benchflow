@@ -56,6 +56,34 @@ async def test_deploy_skills_symlinks_agent_skill_paths_instead_of_copying(tmp_p
 
 
 @pytest.mark.asyncio
+async def test_deploy_skills_can_skip_task_declared_skills(tmp_path):
+    """Self-gen starts from the no-skill task path, even if task.toml declares skills."""
+    env = MagicMock()
+    env.exec = AsyncMock(return_value=MagicMock(return_code=0, stdout=""))
+    env.upload_dir = AsyncMock()
+    agent_cfg = AgentConfig(
+        name="test-agent",
+        install_cmd="true",
+        launch_cmd="true",
+        skill_paths=["$HOME/.agents/skills"],
+    )
+
+    await deploy_skills(
+        env=env,
+        task_path=tmp_path,
+        skills_dir=None,
+        agent_cfg=agent_cfg,
+        sandbox_user="agent",
+        agent_cwd="/app",
+        task=_make_task("/opt/benchflow/skills"),
+        include_task_skills=False,
+    )
+
+    env.upload_dir.assert_not_called()
+    env.exec.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_deploy_skills_uploads_runtime_skills_and_links_shared_tree(tmp_path):
     env = MagicMock()
     env.exec = AsyncMock(return_value=MagicMock(return_code=0, stdout=""))
