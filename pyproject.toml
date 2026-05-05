@@ -79,7 +79,7 @@ markers = [
 
 [tool.ruff]
 target-version = "py312"
-extend-exclude = ["src/benchflow/bundled_skills"]
+extend-exclude = [".claude/skills/skill-creator"]
 
 [tool.ruff.lint]
 select = [
@@ -112,4 +112,3 @@ python-version = "3.12"
 
 [tool.ty.src]
 include = ["src"]
-exclude = ["src/benchflow/bundled_skills"]

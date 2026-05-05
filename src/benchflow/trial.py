@@ -149,7 +149,13 @@ def _resolve_skill_creator_root(path: str | Path | None) -> tuple[Path, str]:
         env_candidate = Path(env_path).expanduser()
         candidates.append(env_candidate)
         scan_single_skill_roots.add(env_candidate)
-    candidates.append(Path(__file__).parent / "bundled_skills" / "skill-creator")
+    repo_skill_creator = (
+        Path(__file__).resolve().parents[2] / ".claude" / "skills" / "skill-creator"
+    )
+    cwd_skill_creator = Path.cwd() / ".claude" / "skills" / "skill-creator"
+    candidates.append(repo_skill_creator)
+    if cwd_skill_creator != repo_skill_creator:
+        candidates.append(cwd_skill_creator)
     candidates.extend(
         [
             Path.home() / ".claude" / "skills" / "skill-creator",
@@ -201,7 +207,7 @@ Use this suggested path if one skill is enough:
 
 Each generated skill pack path must look like {generated_skills_root}/<skill-name>/SKILL.md. It may include scripts/, references/, assets/, examples, or other bundled resources when they help a fresh solver avoid repeated work.
 
-The next run will start with a clean agent session and only the generated skill packs mounted. Make the skills useful for solving this task type from the same sandbox environment."""
+The solver context will start with a clean agent session and only the generated skill packs mounted. Make the skills useful for solving this task type from the same sandbox environment."""
 
 
 async def _ensure_sandbox_dir(
@@ -358,7 +364,7 @@ class TrialConfig:
         """Scenes to execute — falls back to legacy fields if scenes is empty."""
         if self.skill_mode == SKILL_MODE_SELF_GEN:
             raise ValueError(
-                "self-gen requires the two-phase orchestrator. Use SDK.run(), "
+                "self-gen requires the runtime orchestrator. Use SDK.run(), "
                 "Job.run(), or bf.run(TrialConfig(...)) instead of Trial scenes."
             )
         if self.scenes:
@@ -439,7 +445,7 @@ class Trial:
         """Create a Trial instance. Preferred over __init__ for consistency."""
         if config.skill_mode == SKILL_MODE_SELF_GEN:
             raise ValueError(
-                "self-gen requires the two-phase orchestrator. Use SDK.run(), "
+                "self-gen requires the runtime orchestrator. Use SDK.run(), "
                 "Job.run(), or bf.run(TrialConfig(...)) instead of Trial.create()."
             )
         return cls(config)
@@ -911,7 +917,7 @@ class Trial:
         cfg = self._config
         if cfg.skill_mode == SKILL_MODE_SELF_GEN:
             raise ValueError(
-                "self-gen requires the two-phase orchestrator. Use SDK.run(), "
+                "self-gen requires the runtime orchestrator. Use SDK.run(), "
                 "Job.run(), or bf.run(TrialConfig(...)) instead of Trial.run()."
             )
         try:

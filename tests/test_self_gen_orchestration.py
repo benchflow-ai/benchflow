@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import AsyncMock
+from types import SimpleNamespace
 
 import pytest
 
@@ -43,10 +43,10 @@ def _skill_dir_names(root: Path) -> set[str]:
 
 
 @pytest.mark.asyncio
-async def test_sdk_self_gen_runs_creator_then_solver_in_fresh_trials(
+async def test_sdk_self_gen_runs_creator_then_solver_in_one_trial_with_isolated_contexts(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Self-gen creates skills in one trial and solves in a fresh with-skills trial."""
+    """Self-gen uses one sandbox but fresh creator/solver agent contexts."""
     task = _make_task(tmp_path)
     skill_creator_root = _make_skill_creator_root(tmp_path)
     original_skills = tmp_path / "original-skills"
@@ -63,32 +63,56 @@ async def test_sdk_self_gen_runs_creator_then_solver_in_fresh_trials(
         model="google/gemini-3.1-pro-preview",
         n_tool_calls=7,
     )
+    events = []
 
-    async def fake_create(config):
-        seen_configs.append(config)
-        trial = AsyncMock()
-        if getattr(config, "skip_verify", False):
-
-            async def creator_run():
-                export_root = Path(config.export_generated_skills_to)
-                (export_root / "skill-a").mkdir(parents=True)
-                (export_root / "skill-a" / "SKILL.md").write_text("# Skill A\n")
-                (export_root / "skill-b").mkdir()
-                (export_root / "skill-b" / "SKILL.md").write_text("# Skill B\n")
-                (export_root / "notes.txt").write_text("not a skill\n")
-                (export_root / "not-a-skill").mkdir()
-                (export_root / "skill-creator").mkdir()
-                (export_root / "skill-creator" / "SKILL.md").write_text(
-                    "# Must not reach solver\n"
+    class FakeEnv:
+        async def exec(self, cmd, **kwargs):
+            events.append(("exec", cmd, kwargs))
+            if "find /app/generated-skills" in cmd:
+                return SimpleNamespace(
+                    return_code=0,
+                    stdout=(
+                        "/app/generated-skills/skill-a/SKILL.md\n"
+                        "/app/generated-skills/skill-b/SKILL.md\n"
+                    ),
+                    stderr="",
                 )
-                return RunResult(task_name="task", error="ignored creator error")
+            return SimpleNamespace(return_code=0, stdout="", stderr="")
 
-            trial.run = AsyncMock(side_effect=creator_run)
-        else:
-            trial.run = AsyncMock(return_value=solver_result)
-        return trial
+    class FakeTrial:
+        def __init__(self, config):
+            self._config = config
+            self._env = FakeEnv()
+            self._agent_cwd = "/app"
+            self._trial_dir = tmp_path / "jobs" / "trial"
 
-    monkeypatch.setattr("benchflow.trial.Trial.create", fake_create)
+        @classmethod
+        async def create(cls, config):
+            seen_configs.append(config)
+            return cls(config)
+
+        async def setup(self):
+            events.append(("setup",))
+
+        async def start(self):
+            events.append(("start",))
+
+        async def install_agent(self):
+            events.append(("install_agent",))
+
+        async def _run_scene(self, scene):
+            events.append(("scene", scene))
+
+        async def verify(self):
+            events.append(("verify",))
+
+        async def cleanup(self):
+            events.append(("cleanup",))
+
+        def _build_result(self):
+            return solver_result
+
+    monkeypatch.setattr("benchflow.self_gen.Trial", FakeTrial)
 
     result = await SDK().run(
         task_path=task,
@@ -110,55 +134,48 @@ async def test_sdk_self_gen_runs_creator_then_solver_in_fresh_trials(
     )
 
     assert result is solver_result
-    assert len(seen_configs) == 2
+    assert len(seen_configs) == 1
 
-    creator_cfg, solver_cfg = seen_configs
-    assert creator_cfg.task_path == task
-    assert creator_cfg.agent == "opencode"
-    assert creator_cfg.model == "google/gemini-3.1-pro-preview"
-    assert creator_cfg.environment == "daytona"
-    assert creator_cfg.agent_env == {"GOOGLE_API_KEY": "secret"}
-    assert creator_cfg.sandbox_user == "worker"
-    assert creator_cfg.sandbox_locked_paths == ["/solution"]
-    assert creator_cfg.sandbox_setup_timeout == 321
-    assert creator_cfg.context_root == tmp_path
-    assert creator_cfg.trial_name == "trial-1__skill-gen"
-    assert creator_cfg.self_gen_no_internet is True
-    assert creator_cfg.skip_verify is True
-    assert creator_cfg.include_task_skills is False
-    assert creator_cfg.skill_mode == "default"
-    assert creator_cfg.skills_dir != original_skills
-    assert _skill_dir_names(Path(creator_cfg.skills_dir)) == {"skill-creator"}
-    assert creator_cfg.prompts and creator_cfg.prompts[0] is not None
-    assert "skill-creator" in creator_cfg.prompts[0]
-    assert str(original_skills) not in creator_cfg.prompts[0]
+    trial_cfg = seen_configs[0]
+    assert trial_cfg.task_path == task
+    assert trial_cfg.agent == "opencode"
+    assert trial_cfg.model == "google/gemini-3.1-pro-preview"
+    assert trial_cfg.environment == "daytona"
+    assert trial_cfg.agent_env == {"GOOGLE_API_KEY": "secret"}
+    assert trial_cfg.sandbox_user == "worker"
+    assert trial_cfg.sandbox_locked_paths == ["/solution"]
+    assert trial_cfg.sandbox_setup_timeout == 321
+    assert trial_cfg.context_root == tmp_path
+    assert trial_cfg.trial_name == "trial-1"
+    assert trial_cfg.skill_mode == "default"
+    assert trial_cfg.skill_creator_dir is None
+    assert trial_cfg.include_task_skills is False
+    assert trial_cfg.skills_dir is None
+    assert trial_cfg.prompts is None
 
-    assert solver_cfg.task_path == task
-    assert solver_cfg.agent == "opencode"
-    assert solver_cfg.model == "google/gemini-3.1-pro-preview"
-    assert solver_cfg.environment == "daytona"
-    assert solver_cfg.agent_env == {"GOOGLE_API_KEY": "secret"}
-    assert solver_cfg.sandbox_user == "worker"
-    assert solver_cfg.sandbox_locked_paths == ["/solution"]
-    assert solver_cfg.sandbox_setup_timeout == 321
-    assert solver_cfg.context_root == tmp_path
-    assert solver_cfg.trial_name == "trial-1"
-    assert solver_cfg.skill_mode == "default"
-    assert solver_cfg.skill_creator_dir is None
-    assert solver_cfg.self_gen_no_internet is False
-    assert solver_cfg.skip_verify is False
-    assert solver_cfg.include_task_skills is False
-    assert solver_cfg.prompts is None
-    assert _skill_dir_names(Path(solver_cfg.skills_dir)) == {"skill-a", "skill-b"}
-    assert not (Path(solver_cfg.skills_dir) / "not-a-skill").exists()
-    assert not (Path(solver_cfg.skills_dir) / "skill-creator").exists()
+    scene_events = [event for event in events if event[0] == "scene"]
+    assert len(scene_events) == 2
+    creator_scene = scene_events[0][1]
+    solver_scene = scene_events[1][1]
+
+    assert creator_scene.name == "self-gen-creator"
+    assert _skill_dir_names(Path(creator_scene.skills_dir)) == {"skill-creator"}
+    assert creator_scene.turns[0].prompt is not None
+    assert "skill-creator" in creator_scene.turns[0].prompt
+    assert str(original_skills) not in creator_scene.turns[0].prompt
+
+    assert solver_scene.name == "self-gen-solver"
+    assert solver_scene.skills_dir == "/app/generated-skills"
+    assert solver_scene.turns[0].prompt is None
+    assert [event[0] for event in events].count("verify") == 1
+    assert events[-1] == ("cleanup",)
 
 
 @pytest.mark.asyncio
 async def test_job_self_gen_uses_strict_orchestration(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Batch jobs route self-gen through the same two-trial orchestration."""
+    """Batch jobs route self-gen through the same one-trial orchestration."""
     task = _make_task(tmp_path)
     skill_creator_root = _make_skill_creator_root(tmp_path)
     job = Job(
@@ -175,35 +192,53 @@ async def test_job_self_gen_uses_strict_orchestration(
     )
 
     seen_configs = []
+    scenes = []
     solver_result = RunResult(task_name="task", rewards={"reward": 1.0})
 
-    async def fake_create(config):
-        seen_configs.append(config)
-        trial = AsyncMock()
-        if getattr(config, "skip_verify", False):
+    class FakeEnv:
+        async def exec(self, cmd, **kwargs):
+            if "find /app/generated-skills" in cmd:
+                return SimpleNamespace(
+                    return_code=0,
+                    stdout="/app/generated-skills/generated/SKILL.md\n",
+                    stderr="",
+                )
+            return SimpleNamespace(return_code=0, stdout="", stderr="")
 
-            async def creator_run():
-                export_root = Path(config.export_generated_skills_to)
-                (export_root / "generated").mkdir(parents=True)
-                (export_root / "generated" / "SKILL.md").write_text("# Generated\n")
-                return RunResult(task_name="task")
+    class FakeTrial:
+        def __init__(self, config):
+            self._config = config
+            self._env = FakeEnv()
+            self._agent_cwd = "/app"
+            self._trial_dir = tmp_path / "jobs" / "trial"
 
-            trial.run = AsyncMock(side_effect=creator_run)
-        else:
-            trial.run = AsyncMock(return_value=solver_result)
-        return trial
+        @classmethod
+        async def create(cls, config):
+            seen_configs.append(config)
+            return cls(config)
 
-    monkeypatch.setattr("benchflow.trial.Trial.create", fake_create)
+        async def setup(self): ...
+        async def start(self): ...
+        async def install_agent(self): ...
+        async def verify(self): ...
+        async def cleanup(self): ...
+
+        async def _run_scene(self, scene):
+            scenes.append(scene)
+
+        def _build_result(self):
+            return solver_result
+
+    monkeypatch.setattr("benchflow.self_gen.Trial", FakeTrial)
 
     result = await job._run_single_task(task, job._config)
 
     assert result is solver_result
-    assert len(seen_configs) == 2
-    assert seen_configs[0].skip_verify is True
+    assert len(seen_configs) == 1
+    assert seen_configs[0].skip_verify is False
     assert seen_configs[0].include_task_skills is False
-    assert seen_configs[1].skip_verify is False
-    assert seen_configs[1].include_task_skills is False
-    assert Path(seen_configs[1].skills_dir).is_dir()
+    assert seen_configs[0].skills_dir is None
+    assert [scene.name for scene in scenes] == ["self-gen-creator", "self-gen-solver"]
 
 
 @pytest.mark.asyncio
@@ -213,22 +248,42 @@ async def test_self_gen_requires_at_least_one_generated_skill_md(
     """Creator success only requires SKILL.md, but at least one is mandatory."""
     task = _make_task(tmp_path)
     skill_creator_root = _make_skill_creator_root(tmp_path)
-    seen_configs = []
+    scenes = []
+    verified = False
 
-    async def fake_create(config):
-        seen_configs.append(config)
-        trial = AsyncMock()
+    class FakeEnv:
+        async def exec(self, cmd, **kwargs):
+            if "find /app/generated-skills" in cmd:
+                return SimpleNamespace(return_code=0, stdout="", stderr="")
+            return SimpleNamespace(return_code=0, stdout="", stderr="")
 
-        async def creator_run():
-            export_root = Path(config.export_generated_skills_to)
-            (export_root / "notes-only").mkdir(parents=True)
-            (export_root / "notes-only" / "README.md").write_text("not enough\n")
-            return RunResult(task_name="task")
+    class FakeTrial:
+        def __init__(self, config):
+            self._config = config
+            self._env = FakeEnv()
+            self._agent_cwd = "/app"
+            self._trial_dir = tmp_path / "jobs" / "trial"
 
-        trial.run = AsyncMock(side_effect=creator_run)
-        return trial
+        @classmethod
+        async def create(cls, config):
+            return cls(config)
 
-    monkeypatch.setattr("benchflow.trial.Trial.create", fake_create)
+        async def setup(self): ...
+        async def start(self): ...
+        async def install_agent(self): ...
+        async def cleanup(self): ...
+
+        async def verify(self):
+            nonlocal verified
+            verified = True
+
+        async def _run_scene(self, scene):
+            scenes.append(scene)
+
+        def _build_result(self):
+            return RunResult(task_name="task", rewards={"reward": 1.0})
+
+    monkeypatch.setattr("benchflow.self_gen.Trial", FakeTrial)
 
     result = await SDK().run(
         task_path=task,
@@ -239,10 +294,11 @@ async def test_self_gen_requires_at_least_one_generated_skill_md(
         skill_creator_dir=skill_creator_root,
     )
 
-    assert len(seen_configs) == 1
     assert result.rewards is None
     assert result.error is not None
     assert "SKILL.md" in result.error
+    assert [scene.name for scene in scenes] == ["self-gen-creator"]
+    assert verified is False
 
 
 @pytest.mark.asyncio
@@ -285,8 +341,8 @@ async def test_trial_create_rejects_self_gen_without_orchestrator(
         skill_mode="self-gen",
     )
 
-    with pytest.raises(ValueError, match="two-phase orchestrator"):
+    with pytest.raises(ValueError, match="runtime orchestrator"):
         await Trial.create(config)
 
-    with pytest.raises(ValueError, match="two-phase orchestrator"):
+    with pytest.raises(ValueError, match="runtime orchestrator"):
         await Trial(config).run()

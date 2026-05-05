@@ -364,8 +364,8 @@ async def test_heterogeneous_agent_install(coder_reviewer_scene: Scene) -> None:
     assert "claude-agent-acp" in installed_agents
 
 
-def test_self_gen_mode_does_not_build_scene_orchestration(tmp_path: Path) -> None:
-    """Strict self-gen orchestration happens outside a single Trial sandbox."""
+def test_self_gen_mode_still_requires_runtime_orchestration(tmp_path: Path) -> None:
+    """Direct Trial scenes cannot silently skip self-gen setup."""
     skills_root = tmp_path / "skills"
     skill_creator = skills_root / "skill-creator"
     skill_creator.mkdir(parents=True)
@@ -381,19 +381,19 @@ def test_self_gen_mode_does_not_build_scene_orchestration(tmp_path: Path) -> Non
         skill_creator_dir=skill_creator,
     )
 
-    with pytest.raises(ValueError, match="two-phase orchestrator"):
+    with pytest.raises(ValueError, match="self-gen requires"):
         _ = cfg.effective_scenes
 
 
-def test_self_gen_mode_defaults_to_bundled_skill_creator(
+def test_self_gen_mode_defaults_to_repo_claude_skill_creator(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Self-gen mode defaults to BenchFlow's vendored skill-creator pack."""
+    """Self-gen mode defaults to the repo's official skill-creator pack."""
     monkeypatch.delenv("BENCHFLOW_SKILL_CREATOR_DIR", raising=False)
 
     skills_root, skill_name = _resolve_skill_creator_root(None)
 
-    assert skills_root.name == "bundled_skills"
+    assert skills_root.parts[-2:] == (".claude", "skills")
     assert (skills_root / "skill-creator" / "SKILL.md").exists()
     assert skill_name == "skill-creator"
 
