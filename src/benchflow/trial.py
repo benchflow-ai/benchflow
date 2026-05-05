@@ -49,6 +49,7 @@ from typing import Any
 from benchflow._acp_run import connect_acp, execute_prompts
 from benchflow._agent_env import resolve_agent_env
 from benchflow._agent_setup import (
+    _link_skill_paths,
     apply_web_tool_policy,
     deploy_skills,
     install_agent,
@@ -78,6 +79,9 @@ from benchflow.user import BaseUser, RoundResult
 logger = logging.getLogger(__name__)
 
 _DISALLOW_WEB_TOOLS_ENV = "BENCHFLOW_DISALLOW_WEB_TOOLS"
+SKILL_MODE_DEFAULT = "default"
+SKILL_MODE_SELF_GEN = "self-gen"
+GENERATED_SKILLS_ROOT = "/app/generated-skills"
 
 
 def _task_disallows_internet(task: Any) -> bool:
@@ -109,6 +113,118 @@ def _skill_nudge(agent_env: dict[str, str] | None) -> str:
     return (agent_env or {}).get("BENCHFLOW_SKILL_NUDGE") or os.environ.get(
         "BENCHFLOW_SKILL_NUDGE", ""
     )
+
+
+def _safe_skill_name(value: str) -> str:
+    """Return a filesystem-safe generated skill directory name."""
+    import re
+
+    name = re.sub(r"[^A-Za-z0-9_.-]+", "-", value.strip().lower()).strip("-")
+    return name or "generated-task"
+
+
+def _skill_frontmatter_name(skill_dir: Path) -> str:
+    """Read a skill's frontmatter name, falling back to the directory name."""
+    from benchflow.skills import parse_skill
+
+    info = parse_skill(skill_dir / "SKILL.md")
+    return info.name if info and info.name else skill_dir.name
+
+
+def _resolve_skill_creator_root(path: str | Path | None) -> tuple[Path, str]:
+    """Resolve a skills root containing the official skill-creator directory.
+
+    BenchFlow mounts skills as a root directory whose children are individual
+    skill directories. If the caller points directly at skill-creator, use its
+    parent as the mounted root and leave the skill pack contents unchanged.
+    """
+    candidates: list[Path] = []
+    scan_single_skill_roots: set[Path] = set()
+    if path:
+        explicit_path = Path(path).expanduser()
+        candidates.append(explicit_path)
+        scan_single_skill_roots.add(explicit_path)
+    env_path = os.environ.get("BENCHFLOW_SKILL_CREATOR_DIR")
+    if env_path:
+        env_candidate = Path(env_path).expanduser()
+        candidates.append(env_candidate)
+        scan_single_skill_roots.add(env_candidate)
+    repo_skill_creator = (
+        Path(__file__).resolve().parents[2] / ".claude" / "skills" / "skill-creator"
+    )
+    cwd_skill_creator = Path.cwd() / ".claude" / "skills" / "skill-creator"
+    candidates.append(repo_skill_creator)
+    if cwd_skill_creator != repo_skill_creator:
+        candidates.append(cwd_skill_creator)
+    candidates.extend(
+        [
+            Path.home() / ".claude" / "skills" / "skill-creator",
+            Path.home() / ".codex" / "skills" / ".system" / "skill-creator",
+            Path.home() / ".agents" / "skills" / "skill-creator",
+        ]
+    )
+
+    for candidate in candidates:
+        if (candidate / "SKILL.md").exists():
+            return candidate.parent, _skill_frontmatter_name(candidate)
+        if (candidate / "skill-creator" / "SKILL.md").exists():
+            skill_dir = candidate / "skill-creator"
+            return candidate, _skill_frontmatter_name(skill_dir)
+        if candidate in scan_single_skill_roots and candidate.is_dir():
+            skill_dirs = [
+                child
+                for child in candidate.iterdir()
+                if child.is_dir() and (child / "SKILL.md").exists()
+            ]
+            if len(skill_dirs) == 1:
+                skill_dir = skill_dirs[0]
+                return candidate, _skill_frontmatter_name(skill_dir)
+
+    checked = ", ".join(str(c) for c in candidates)
+    raise FileNotFoundError(
+        "Could not find skill-creator. Pass --skill-creator-dir or set "
+        f"BENCHFLOW_SKILL_CREATOR_DIR. Checked: {checked}"
+    )
+
+
+def _self_gen_prompt(
+    task_path: Path, generated_skills_root: str, skill_creator_name: str
+) -> str:
+    """Prompt the clean creator agent to use the mounted skill-creator skill."""
+    skill_dir_name = f"{_safe_skill_name(task_path.name)}-skill"
+    target_dir = f"{generated_skills_root}/{skill_dir_name}"
+    return f"""Use the {skill_creator_name} skill exactly as provided.
+
+Read /instruction.md and inspect the task environment only as needed to understand the reusable workflow. Do not solve the task directly.
+
+Create one or more complete Anthropic-standard skill packs as immediate child directories under:
+
+{generated_skills_root}
+
+Use this suggested path if one skill is enough:
+
+{target_dir}
+
+Each generated skill pack path must look like {generated_skills_root}/<skill-name>/SKILL.md. It may include scripts/, references/, assets/, examples, or other bundled resources when they help a fresh solver avoid repeated work.
+
+The solver context will start with a clean agent session and only the generated skill packs mounted. Make the skills useful for solving this task type from the same sandbox environment."""
+
+
+async def _ensure_sandbox_dir(
+    env: Any, path: str | Path, sandbox_user: str | None = None
+) -> None:
+    """Create a sandbox directory and optionally make it writable by the agent."""
+    q_path = shlex.quote(str(path))
+    cmd = f"mkdir -p {q_path}"
+    if sandbox_user:
+        q_user = shlex.quote(sandbox_user)
+        cmd += f" && chown -R {q_user}:{q_user} {q_path}"
+    result = await env.exec(cmd, timeout_sec=10)
+    if result.return_code != 0:
+        raise RuntimeError(
+            f"Failed to create sandbox directory {path}: "
+            f"{result.stderr or result.stdout}"
+        )
 
 
 @dataclass
@@ -196,6 +312,13 @@ class TrialConfig:
     model: str | None = None
     agent_env: dict[str, str] | None = None
     skills_dir: str | Path | None = None
+    skill_mode: str = SKILL_MODE_DEFAULT
+    skill_creator_dir: str | Path | None = None
+    generated_skills_root: str = GENERATED_SKILLS_ROOT
+    self_gen_no_internet: bool = False
+    include_task_skills: bool = True
+    skip_verify: bool = False
+    export_generated_skills_to: str | Path | None = None
 
     @classmethod
     def from_legacy(
@@ -206,28 +329,48 @@ class TrialConfig:
         model: str | None = None,
         prompts: list[str | None] | None = None,
         skills_dir: str | Path | None = None,
+        skill_mode: str = SKILL_MODE_DEFAULT,
+        skill_creator_dir: str | Path | None = None,
+        generated_skills_root: str = GENERATED_SKILLS_ROOT,
+        self_gen_no_internet: bool = False,
         **kwargs,
     ) -> TrialConfig:
         """Construct from flat SDK.run()-style args."""
-        return cls(
-            task_path=task_path,
-            scenes=[
+        scenes = []
+        if skill_mode not in {SKILL_MODE_DEFAULT, SKILL_MODE_SELF_GEN}:
+            raise ValueError(f"Unknown skill_mode: {skill_mode}")
+        if skill_mode == SKILL_MODE_DEFAULT:
+            scenes = [
                 Scene.single(
                     agent=agent, model=model, prompts=prompts, skills_dir=skills_dir
                 )
-            ],
+            ]
+        return cls(
+            task_path=task_path,
+            scenes=scenes,
             agent=agent,
             model=model,
             prompts=prompts,
             skills_dir=skills_dir,
+            skill_mode=skill_mode,
+            skill_creator_dir=skill_creator_dir,
+            generated_skills_root=generated_skills_root,
+            self_gen_no_internet=self_gen_no_internet,
             **kwargs,
         )
 
     @property
     def effective_scenes(self) -> list[Scene]:
         """Scenes to execute — falls back to legacy fields if scenes is empty."""
+        if self.skill_mode == SKILL_MODE_SELF_GEN:
+            raise ValueError(
+                "self-gen requires the runtime orchestrator. Use SDK.run(), "
+                "Job.run(), or bf.run(TrialConfig(...)) instead of Trial scenes."
+            )
         if self.scenes:
             return self.scenes
+        if self.skill_mode != SKILL_MODE_DEFAULT:
+            raise ValueError(f"Unknown skill_mode: {self.skill_mode}")
         return [
             Scene.single(
                 agent=self.agent,
@@ -300,6 +443,11 @@ class Trial:
     @classmethod
     async def create(cls, config: TrialConfig) -> Trial:
         """Create a Trial instance. Preferred over __init__ for consistency."""
+        if config.skill_mode == SKILL_MODE_SELF_GEN:
+            raise ValueError(
+                "self-gen requires the runtime orchestrator. Use SDK.run(), "
+                "Job.run(), or bf.run(TrialConfig(...)) instead of Trial.create()."
+            )
         return cls(config)
 
     @property
@@ -366,8 +514,8 @@ class Trial:
         ) = SDK._init_trial(cfg.task_path, cfg.job_name, cfg.trial_name, cfg.jobs_dir)
 
         self._disallow_web_tools = (
-            _task_disallows_internet(self._task) and cfg.primary_agent != "oracle"
-        )
+            _task_disallows_internet(self._task) or cfg.self_gen_no_internet
+        ) and cfg.primary_agent != "oracle"
         self._agent_env = _apply_web_policy(
             resolve_agent_env(cfg.primary_agent, cfg.primary_model, cfg.agent_env),
             disallow=self._disallow_web_tools,
@@ -480,7 +628,12 @@ class Trial:
                 cfg.sandbox_user,
                 self._agent_cwd,
                 self._task,
+                include_task_skills=cfg.include_task_skills,
             )
+            if cfg.export_generated_skills_to:
+                await _ensure_sandbox_dir(
+                    self._env, cfg.generated_skills_root, cfg.sandbox_user
+                )
             await lockdown_paths(self._env, self._effective_locked)
             self._phase = "installed"
             return
@@ -526,7 +679,12 @@ class Trial:
             cfg.sandbox_user,
             self._agent_cwd,
             self._task,
+            include_task_skills=cfg.include_task_skills,
         )
+        if cfg.export_generated_skills_to:
+            await _ensure_sandbox_dir(
+                self._env, cfg.generated_skills_root, cfg.sandbox_user
+            )
         await lockdown_paths(self._env, self._effective_locked)
 
         self._phase = "installed"
@@ -728,6 +886,12 @@ class Trial:
 
         await self.disconnect()
 
+        if self._env and self._config.export_generated_skills_to:
+            try:
+                await self._export_generated_skills()
+            except Exception as e:
+                logger.warning(f"Generated skill export failed: {e}")
+
         if self._env:
             try:
                 await self._env.stop(delete=True)
@@ -751,6 +915,11 @@ class Trial:
         """
         cfg = self._config
         agent_timed_out = False
+        if cfg.skill_mode == SKILL_MODE_SELF_GEN:
+            raise ValueError(
+                "self-gen requires the runtime orchestrator. Use SDK.run(), "
+                "Job.run(), or bf.run(TrialConfig(...)) instead of Trial.run()."
+            )
         try:
             await self.setup()
             await self.start()
@@ -796,10 +965,11 @@ class Trial:
                             timeout_sec=10,
                         )
 
-            await self.verify()
-            if agent_timed_out and self._rewards is None:
-                self._rewards = {"reward": 0.0}
-                self._verifier_error = None
+            if not cfg.skip_verify:
+                await self.verify()
+                if agent_timed_out and self._rewards is None:
+                    self._rewards = {"reward": 0.0}
+                    self._verifier_error = None
 
         except TimeoutError as e:
             # Preserve the watchdog's diagnostic message ("Agent idle for 600s
@@ -833,6 +1003,51 @@ class Trial:
 
     _OUTBOX_DIR = "/app/.outbox"
 
+    async def _export_generated_skills(self) -> None:
+        """Download creator-produced skills before sandbox cleanup."""
+        export_target = self._config.export_generated_skills_to
+        if export_target is None:
+            return
+        target = Path(export_target)
+        target.mkdir(parents=True, exist_ok=True)
+        await self._env.download_dir(self._config.generated_skills_root, target)
+
+    async def _activate_scene_skills(self, scene: Scene) -> None:
+        """Activate scene-local skills by linking them into role discovery paths."""
+        if not scene.skills_dir:
+            return
+        if self._env is None:
+            raise RuntimeError("Environment is not started")
+
+        source = str(scene.skills_dir)
+        local_source = Path(source).expanduser()
+        if local_source.is_dir():
+            remote_source = f"/skills/{_safe_skill_name(scene.name)}"
+            await _ensure_sandbox_dir(self._env, Path(remote_source).parent)
+            await self._env.upload_dir(local_source, remote_source)
+        elif source.startswith("/"):
+            remote_source = source
+        else:
+            raise FileNotFoundError(f"Scene skills_dir not found: {scene.skills_dir}")
+
+        home = (
+            f"/home/{self._config.sandbox_user}"
+            if self._config.sandbox_user
+            else "/root"
+        )
+        for role in scene.roles:
+            agent_cfg = AGENTS.get(role.agent)
+            if not agent_cfg or not agent_cfg.skill_paths:
+                continue
+            await _link_skill_paths(
+                self._env,
+                remote_source,
+                agent_cfg.skill_paths,
+                home,
+                self._agent_cwd,
+                self._config.sandbox_user,
+            )
+
     async def _run_scene(self, scene: Scene) -> None:
         """Execute one scene: for each turn, connect as the turn's role, execute, disconnect.
 
@@ -847,6 +1062,7 @@ class Trial:
         logger.info(
             f"[Scene] {scene.name} — {len(scene.turns)} turns, {len(scene.roles)} roles"
         )
+        await self._activate_scene_skills(scene)
 
         role_map = {r.name: r for r in scene.roles}
         current_role: str | None = None

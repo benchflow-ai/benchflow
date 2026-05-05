@@ -217,9 +217,12 @@ async def deploy_skills(
     sandbox_user: str | None,
     agent_cwd: str,
     task: "Task",
+    include_task_skills: bool = True,
 ) -> None:
     """Deploy and distribute skills into sandbox."""
-    task_skills_dir = task.config.environment.skills_dir
+    task_skills_dir = (
+        task.config.environment.skills_dir if include_task_skills else None
+    )
     effective_skills = task_skills_dir
 
     # Runtime upload (fallback if not baked into Dockerfile)

@@ -518,6 +518,9 @@ class SDK:
         sandbox_setup_timeout: int = 120,
         pre_agent_hooks: list | None = None,
         context_root: str | Path | None = None,
+        skill_mode: str = "default",
+        skill_creator_dir: str | Path | None = None,
+        self_gen_no_internet: bool = False,
     ) -> RunResult:
         """Run a task with an ACP agent inside a sandbox.
 
@@ -567,6 +570,13 @@ class SDK:
             sandbox_setup_timeout=sandbox_setup_timeout,
             pre_agent_hooks=pre_agent_hooks,
             context_root=context_root,
+            skill_mode=skill_mode,
+            skill_creator_dir=skill_creator_dir,
+            self_gen_no_internet=self_gen_no_internet,
         )
+        if skill_mode == "self-gen":
+            from benchflow.self_gen import run_self_gen
+
+            return await run_self_gen(config)
         trial = await Trial.create(config)
         return await trial.run()
