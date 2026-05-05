@@ -21,18 +21,16 @@ jobs:
         run: uv python install 3.12
 
       - name: Install dependencies
-        run: |
-          uv venv -p 3.12 .venv
-          uv pip install -e ".[dev]"
+        run: uv sync --extra dev --locked
 
       - name: Lint
-        run: .venv/bin/ruff check src tests
+        run: uv run ruff check src tests
 
       - name: Format check
-        run: .venv/bin/ruff format --check src tests
+        run: uv run ruff format --check src tests
 
       - name: Type check
-        run: .venv/bin/ty check
+        run: uv run ty check
 
       - name: Test
-        run: .venv/bin/python -m pytest tests/
+        run: uv run python -m pytest tests/

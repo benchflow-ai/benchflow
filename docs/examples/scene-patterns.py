@@ -64,7 +64,7 @@ def llm(prompt, model="gemini-3.1-flash-lite"):
     try:
         import google.generativeai as genai
     except ImportError:
-        print("  pip install google-generativeai")
+        print("  uv run --with google-generativeai python docs/examples/scene-patterns.py")
         return "[LLM unavailable]"
 
     api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
