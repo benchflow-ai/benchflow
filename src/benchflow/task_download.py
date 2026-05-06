@@ -122,7 +122,7 @@ def _ensure_generated(benchmark: str) -> Path:
         gen_path = root / "benchmarks" / "programbench"
         if str(gen_path.parent) not in sys.path:
             sys.path.insert(0, str(gen_path.parent))
-        generate = importlib.import_module("programbench.generate")
+        generate = importlib.import_module("programbench.benchflow")
 
         staging.mkdir(parents=True, exist_ok=True)
         generated = generate.generate_all(pb_tasks, staging)

@@ -14,7 +14,7 @@ import logging
 import sys
 from pathlib import Path
 
-from benchmarks.programbench.generate import generate_all
+from benchmarks.programbench.benchflow import generate_all
 
 
 def main() -> None:
@@ -34,8 +34,12 @@ def main() -> None:
         help="Path to ProgramBench repo or data/tasks directory.  "
         "If omitted, tries the installed programbench package.",
     )
-    parser.add_argument("--limit", type=int, default=None, help="Generate at most N tasks.")
-    parser.add_argument("--overwrite", action="store_true", help="Overwrite existing task directories.")
+    parser.add_argument(
+        "--limit", type=int, default=None, help="Generate at most N tasks."
+    )
+    parser.add_argument(
+        "--overwrite", action="store_true", help="Overwrite existing task directories."
+    )
     parser.add_argument(
         "--task-ids",
         nargs="*",

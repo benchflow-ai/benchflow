@@ -12,8 +12,10 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 
 
 async def main():
-    config = sys.argv[1] if len(sys.argv) > 1 else str(
-        Path(__file__).parent / "programbench-gemini-flash-lite.yaml"
+    config = (
+        sys.argv[1]
+        if len(sys.argv) > 1
+        else str(Path(__file__).parent / "programbench-gemini-flash-lite.yaml")
     )
     ensure_tasks("programbench")
     job = Job.from_yaml(config)
