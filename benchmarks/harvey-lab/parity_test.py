@@ -342,35 +342,36 @@ Respond with JSON only:
 """
 
 # Adapted BenchFlow prompt template (from benchflow.py's _build_evaluate_py,
+# after textwrap.dedent strips the 8-space common prefix;
 # uses string.Template $-style placeholders for single-pass substitution)
 _ADAPTED_PROMPT = string.Template("""\
 You are evaluating a legal AI agent's work product against a specific quality criterion.
 
-        ## Task
-        $task_description
+## Task
+$task_description
 
-        ## Agent's Output
-        $agent_output
+## Agent's Output
+$agent_output
 
-        ## Criterion
-        **$criterion_title**
+## Criterion
+**$criterion_title**
 
-        $match_criteria
+$match_criteria
 
-        ## Instructions
-        Evaluate the agent's output against the criterion above.
-        - **PASS**: The agent's output satisfies the criterion as described
-        - **FAIL**: The agent's output does not satisfy the criterion as described
+## Instructions
+Evaluate the agent's output against the criterion above.
+- **PASS**: The agent's output satisfies the criterion as described
+- **FAIL**: The agent's output does not satisfy the criterion as described
 
-        Respond with JSON only:
+Respond with JSON only:
 
-        ```json
-        {
-          "verdict": "pass" or "fail",
-          "reasoning": "Brief explanation"
-        }
-        ```
-        """)
+```json
+{
+  "verdict": "pass" or "fail",
+  "reasoning": "Brief explanation"
+}
+```
+""")
 
 
 def _call_gemini(prompt: str, api_key: str, retries: int = 3) -> str:
