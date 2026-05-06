@@ -1,0 +1,46 @@
+# benchmark.yaml — standard benchmark descriptor for BenchFlow.
+#
+# Every benchmark in benchmarks/<name>/ ships this file. It declares what
+# the benchmark is, where it comes from, how tasks are verified, and
+# parity validation results. Job configs (how to *run* the benchmark)
+# live in separate YAML files.
+
+name: harvey-lab
+description: "Harvey LAB (Legal Agent Benchmark) — 1,251 legal tasks across 24 practice areas"
+url: https://github.com/harveyai/harvey-labs
+author: BenchFlow
+
+# ── Tasks ────────────────────────────────────────────────────────────
+tasks:
+  count: 1251
+  categories: 24            # practice areas
+  tags: [analyze, draft, review, research]
+
+# ── Conversion ───────────────────────────────────────────────────────
+# How raw benchmark data is converted to BenchFlow task format.
+conversion:
+  script: benchflow.py      # CLI: --output-dir, --limit, --overwrite, --task-ids
+  source_format: task.json   # original benchmark format
+  has_oracle_solutions: false
+
+# ── Verification ─────────────────────────────────────────────────────
+verification:
+  method: llm-as-judge
+  judge_model: gemini-3.1-flash-lite-preview
+  reward: proportional       # passed_criteria / total_criteria
+
+# ── Parity ───────────────────────────────────────────────────────────
+# Results from validating that the conversion preserves benchmark semantics.
+parity:
+  structural:
+    tasks_tested: 1251
+    passed: 1251
+  eval_pipeline:
+    tasks_tested: 5
+    passed: 5
+  side_by_side:
+    tasks_tested: 5
+    criteria_compared: 25
+    agreed: 25
+    agreement_rate: 1.0
+    judge_model: gemini-3.1-flash-lite-preview
