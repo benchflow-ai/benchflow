@@ -92,8 +92,12 @@ GEMINI_API_KEY=... python benchmarks/harvey-lab/parity_test.py \
 # Via BenchFlow Job (downloads + converts + runs)
 python benchmarks/harvey-lab/run_harvey_lab.py
 
-# Or with YAML config
+# Or with YAML config (uses Gemini as BenchFlow agent)
 python -c "import asyncio; from benchflow.job import Job; asyncio.run(Job.from_yaml('benchmarks/harvey-lab/harvey-lab-gemini-flash-lite.yaml').run())"
+
+# Parity mode: uses the original Harvey LAB harness as the agent
+# (same tools, same system prompt, same agent loop — for true apples-to-apples comparison)
+python -c "import asyncio; from benchflow.job import Job; asyncio.run(Job.from_yaml('benchmarks/harvey-lab/harvey-lab-harness-parity.yaml').run())"
 ```
 
 ## Parity Results
