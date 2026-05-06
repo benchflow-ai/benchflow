@@ -14,19 +14,19 @@ Each subdirectory is one adapter: it knows how to read the upstream benchmark's 
 
 ```
 onramp/<adapter>/
-├── adapter.py             # parse upstream → emit BenchFlow task dirs
+├── benchflow.py           # parse upstream → emit BenchFlow task dirs
 ├── main.py                # CLI: `python -m onramp.<adapter>.main --output-dir <path>`
 ├── parity.py              # run parity check vs. upstream eval
 ├── README.md
 ├── run_<adapter>.yaml     # `benchflow.job.Job` config for the full converted dataset
-└── templates/             # static template fragments used by adapter.py
+└── templates/             # static template fragments used by benchflow.py
 ```
 
 ## Adding a new adapter
 
 1. Read the upstream benchmark's task schema and runner.
 2. Mirror the layout above under `onramp/<your-adapter>/`.
-3. In `adapter.py`, emit one directory per upstream task. Every `task.toml` must have a stable, lowercase, hyphenated `[task].name` so it survives re-runs and registry lookups.
+3. In `benchflow.py`, emit one directory per upstream task. Every `task.toml` must have a stable, lowercase, hyphenated `[task].name` so it survives re-runs and registry lookups.
 4. Run `bench tasks check <output>/` on the generated set — every task must pass.
 5. Add a `parity.py` that re-runs the same submission through both pipelines and reports score deltas.
 

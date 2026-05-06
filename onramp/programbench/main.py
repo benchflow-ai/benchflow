@@ -20,7 +20,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from onramp.programbench.adapter import convert
+from onramp.programbench.benchflow import convert
 
 UPSTREAM_REPO = "https://github.com/facebookresearch/ProgramBench.git"
 UPSTREAM_REF = "main"

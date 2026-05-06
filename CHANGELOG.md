@@ -6,11 +6,16 @@
 
 - **Onramp** (`onramp/`) — adapters that convert external benchmarks into BenchFlow's task format.
   - `onramp/programbench/` — first adapter, covers all 200 ProgramBench instances
-    (rebuild a program from binary + docs). Generates `task.toml` + `instruction.md` +
-    `environment/Dockerfile` + `tests/{test.sh,tests.json}` per instance, builds on the
-    upstream `programbench/<id>:task_cleanroom` images, fetches per-branch test blobs
-    from HuggingFace at verify time, and computes `reward = passed / (junit_cases +
-    missing_from_junit)` to match `programbench info`'s scoring.
+    (rebuild a program from binary + docs). `benchflow.py` generates `task.toml` +
+    `instruction.md` + `environment/Dockerfile` + `tests/{test.sh,tests.json}`
+    per instance, builds on the upstream `programbench/<id>:task_cleanroom`
+    images, fetches per-branch test blobs from HuggingFace at verify time, and
+    computes `reward = passed / (junit_cases + missing_from_junit)` to match
+    `programbench info`'s scoring.
+  - `parity_full.py` — full-set parity sweep: walks every converted instance,
+    scores each with both pipelines using a deterministic stub `compile.sh`,
+    and writes per-instance pass/total deltas to `parity_full_results.json`.
+    Resumable, disk-efficient (pull → run → cleanup per instance).
   - Parity verified end-to-end on the upstream-shipped `testorg__calculator.abc1234`
     fixture: BenchFlow and `programbench eval` produce identical `passed/total`
     on both correct (3/6 = 0.5) and incorrect (0/6 = 0.0) submissions.

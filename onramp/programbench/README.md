@@ -74,25 +74,36 @@ The cleanroom images are large (gigabytes per task) — Daytona is the practical
 
 ## Parity check
 
-[`parity.py`](./parity.py) re-runs the same submission archive through both pipelines and reports `passed/total` deltas:
+Two scripts share one goal: prove that, given the same submission archive, BenchFlow's verifier and `programbench eval` produce the same `passed/total`.
+
+### Full-set sweep (the default)
+
+[`parity_full.py`](./parity_full.py) walks every converted instance, scores each with both pipelines using a deterministic stub `compile.sh`, and writes per-instance pass/total to [`parity_full_results.json`](./parity_full_results.json). Resumable — re-running picks up where it stopped.
 
 ```bash
-# Drives the fixture instance shipped with ProgramBench (no HF blobs needed).
-python -m onramp.programbench.parity \
+uv run python -m onramp.programbench.main --output-dir .ref/programbench-bf
+uv run python -m onramp.programbench.parity_full \
     --upstream-repo .ref/programbench \
-    --limit 1
+    --tasks-dir .ref/programbench-bf \
+    --output onramp/programbench/parity_full_results.json
 ```
 
-For a real instance, supply your own submission tarball (the artifact your agent produced):
+`--limit N` / `--task-ids …` restrict the run; `--budget-min M` caps wall time. Each instance pulls one ~600 MB image, runs both pipelines (each ≈ 5–15 min depending on test count), and removes the image — so disk stays under ~2 GB at any time but wall time scales linearly.
+
+### Single-submission parity
+
+When you have a real model-generated submission and want a one-shot comparison, [`parity.py`](./parity.py) runs both pipelines on that one archive:
 
 ```bash
-python -m onramp.programbench.parity \
+uv run python -m onramp.programbench.parity \
     --upstream-repo .ref/programbench \
     --instance-id abishekvashok__cmatrix.5c082c6 \
     --submission /path/to/submission.tar.gz
 ```
 
-Live, model-driven parity (the case the user cares about) — generate submissions with Gemini through BenchFlow, then score those same submissions through the upstream evaluator:
+### Live model-driven runs
+
+Generate submissions with a real agent through BenchFlow, then feed each back through `parity.py`:
 
 ```bash
 export GEMINI_API_KEY=...
@@ -100,16 +111,15 @@ uv run python -m benchflow.job onramp/programbench/run_programbench.yaml \
     --override jobs_dir=../jobs/programbench-parity-subset \
     --tasks-glob '.ref/programbench-bf/abishekvashok__cmatrix.5c082c6'
 
-# Pull each submission out of the BenchFlow trial and feed it back through the upstream eval.
 for inst in $(ls ../jobs/programbench-parity-subset); do
-    python -m onramp.programbench.parity \
+    uv run python -m onramp.programbench.parity \
         --upstream-repo .ref/programbench \
         --instance-id "$inst" \
         --submission "../jobs/programbench-parity-subset/$inst/submission.tar.gz"
 done
 ```
 
-Results land in [`parity_experiment.json`](./parity_experiment.json).
+Recorded fixture parity lives in [`parity_experiment.json`](./parity_experiment.json); recorded full-set sweeps live in [`parity_full_results.json`](./parity_full_results.json).
 
 ## Resource sizing
 
@@ -122,7 +132,7 @@ Per-task limits in `task.toml` are picked from the upstream `difficulty` field:
 | hard     | 4 | 16 GB | 80 GB | 2 hr    | 1 hr |
 | unrated  | 4 | 8 GB  | 40 GB | 1 hr    | 1 hr |
 
-Override per-task by editing the generated `task.toml`, or change defaults in [`adapter.py`](./adapter.py).
+Override per-task by editing the generated `task.toml`, or change defaults in [`benchflow.py`](./benchflow.py).
 
 ## Notes
 

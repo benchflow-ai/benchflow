@@ -1,0 +1,112 @@
+{
+  "agreement_rate": 1.0,
+  "n_agreeing": 1,
+  "n_evaluated": 1,
+  "n_total": 1,
+  "n_with_score": 1,
+  "results": [
+    {
+      "agree": true,
+      "benchflow": {
+        "branches": [
+          {
+            "branch": "1b991a57d4e9",
+            "passed": 0,
+            "status": "ran",
+            "total": 77
+          },
+          {
+            "branch": "1d30a9bd67f8",
+            "passed": 1,
+            "status": "ran",
+            "total": 14
+          },
+          {
+            "branch": "28d2b640a014",
+            "passed": 0,
+            "status": "ran",
+            "total": 7
+          },
+          {
+            "branch": "2a51b65a0988",
+            "passed": 0,
+            "status": "ran",
+            "total": 52
+          },
+          {
+            "branch": "4325cb75f082",
+            "passed": 8,
+            "status": "ran",
+            "total": 17
+          },
+          {
+            "branch": "47e777b60c5e",
+            "passed": 0,
+            "status": "ran",
+            "total": 36
+          },
+          {
+            "branch": "60fce8bbb0c8",
+            "passed": 1,
+            "status": "ran",
+            "total": 5
+          },
+          {
+            "branch": "79b69dd3fd98",
+            "passed": 7,
+            "status": "ran",
+            "total": 141
+          },
+          {
+            "branch": "aa26a2ba3c36",
+            "passed": 0,
+            "status": "ran",
+            "total": 1
+          },
+          {
+            "branch": "b75df89939ed",
+            "passed": 0,
+            "status": "ran",
+            "total": 1
+          },
+          {
+            "branch": "bcaceaff5bda",
+            "passed": 0,
+            "status": "ran",
+            "total": 87
+          },
+          {
+            "branch": "c9a563c41e59",
+            "passed": 0,
+            "status": "ran",
+            "total": 45
+          },
+          {
+            "branch": "f40262460d4c",
+            "passed": 0,
+            "status": "ran",
+            "total": 4
+          },
+          {
+            "branch": "f53d318371c8",
+            "passed": 0,
+            "status": "ran",
+            "total": 21
+          }
+        ],
+        "passed": 17,
+        "score": 0.03346456692913386,
+        "total": 508
+      },
+      "delta": 0.0,
+      "instance_id": "abishekvashok__cmatrix.5c082c6",
+      "upstream": {
+        "error_code": null,
+        "passed": 17,
+        "score": 0.03346456692913386,
+        "total": 508
+      },
+      "wall_time_sec": 981.6
+    }
+  ]
+}

@@ -28,7 +28,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from onramp.programbench.adapter import convert
+from onramp.programbench.benchflow import convert
 
 logger = logging.getLogger(__name__)
 
