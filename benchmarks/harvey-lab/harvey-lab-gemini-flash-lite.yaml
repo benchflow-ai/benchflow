@@ -2,10 +2,7 @@
 # run_harvey_lab.py downloads + converts tasks to .ref/harvey-lab-benchflow.
 tasks_dir: .ref/harvey-lab-benchflow
 
-agent: oracle
+agent: gemini
+model: gemini/gemini-3.1-flash-lite-preview
 environment: docker
 concurrency: 4
-
-# To run with Gemini instead of oracle:
-# agent: gemini
-# model: gemini/gemini-3.1-flash-lite-preview
