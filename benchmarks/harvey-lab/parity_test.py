@@ -311,20 +311,21 @@ def check_eval_parity(
 
 # ── Side-by-Side Parity (Step 5) ─────────────────────────────────────
 
-# Original Harvey LAB prompt template (from evaluation/prompts/rubric_criterion.txt)
-_ORIGINAL_PROMPT = """\
+# Original Harvey LAB prompt template (from evaluation/prompts/rubric_criterion.txt).
+# Uses string.Template to avoid crashes on legal text containing { or }.
+_ORIGINAL_PROMPT = string.Template("""\
 You are evaluating a legal AI agent's work product against a specific quality criterion.
 
 ## Task
-{task_description}
+$task_description
 
 ## Agent's Output
-{agent_output}
+$agent_output
 
 ## Criterion
-**{criterion_title}**
+**$criterion_title**
 
-{match_criteria}
+$match_criteria
 
 ## Instructions
 Evaluate the agent's output against the criterion above.
@@ -334,12 +335,12 @@ Evaluate the agent's output against the criterion above.
 Respond with JSON only:
 
 ```json
-{{
+{
   "verdict": "pass" | "fail",
   "reasoning": "Brief explanation"
-}}
+}
 ```
-"""
+""")
 
 # Adapted BenchFlow prompt template (from benchflow.py's _build_evaluate_py,
 # after textwrap.dedent strips the 8-space common prefix;
@@ -483,7 +484,7 @@ def check_side_by_side_parity(
             match_criteria = criterion["match_criteria"]
 
             # Run original Harvey LAB prompt
-            orig_prompt = _ORIGINAL_PROMPT.format(
+            orig_prompt = _ORIGINAL_PROMPT.safe_substitute(
                 task_description=task_title,
                 agent_output=agent_output,
                 criterion_title=crit_title,
