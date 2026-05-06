@@ -1,22 +1,31 @@
 """Parity test for Harvey LAB adapter.
 
 Verifies that the BenchFlow adapter faithfully translates Harvey LAB
-tasks. Two phases:
+tasks.  Three modes:
+
   1. Structural parity — task directories have all required files, metadata
      matches the original task.json.
-  2. Evaluation parity — runs the LLM judge on a known (synthetic) agent
-     output and compares scores between the original Harvey LAB evaluator
-     and the BenchFlow adapter's evaluate.py.
+  2. Eval parity — runs the BenchFlow evaluate.py pipeline end-to-end on
+     synthetic deliverables and checks it produces valid rewards.
+  3. **Side-by-side parity** — runs the *original* Harvey LAB prompt
+     template and the *adapted* BenchFlow prompt template through the
+     same Gemini judge on identical agent output, then compares
+     per-criterion verdicts.  This is the experiment the Harbor adapter
+     guide calls for in Step 5.
 
 Usage:
-    # Subset parity (5 tasks from different practice areas)
+    # Subset structural (5 tasks)
     python benchmarks/harvey-lab/parity_test.py --mode subset
 
-    # Full parity (all 1251 tasks — structural only, no LLM calls)
+    # Full structural (all 1251 tasks)
     python benchmarks/harvey-lab/parity_test.py --mode full
 
-    # Evaluation parity (runs LLM judge on subset)
+    # Eval parity (BenchFlow pipeline end-to-end, LLM calls)
     python benchmarks/harvey-lab/parity_test.py --mode eval-parity \
+        --gemini-api-key AIza...
+
+    # Side-by-side parity (original vs adapted prompt, same judge)
+    python benchmarks/harvey-lab/parity_test.py --mode side-by-side \
         --gemini-api-key AIza...
 """
 
@@ -25,6 +34,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
+import string
 import subprocess
 import sys
 import tempfile
@@ -44,6 +55,8 @@ SUBSET_TASK_IDS = [
     "intellectual-property/review-enterprise-saas-agreement",
     "employment-labor/draft-workplace-policy-memorandum",
 ]
+
+GEMINI_MODEL = "gemini-3.1-flash-lite-preview"
 
 
 def _run_adapter(
@@ -73,7 +86,6 @@ def _run_adapter(
 
 
 def _sanitize_name(raw: str) -> str:
-    import re
     name = raw.lower().strip()
     name = re.sub(r"[^a-z0-9]+", "-", name)
     return name.strip("-")
@@ -191,12 +203,9 @@ def check_eval_parity(
     task_ids: list[str],
     gemini_api_key: str,
 ) -> tuple[int, int, list[str]]:
-    """Run the LLM judge on a synthetic deliverable to check evaluation works.
+    """Run the BenchFlow evaluate.py pipeline end-to-end on synthetic output.
 
-    For each task, creates a minimal placeholder deliverable, runs
-    evaluate.py, and verifies it produces a valid reward (0.0-1.0).
-    This does NOT check for score agreement with Harvey LAB's Anthropic
-    judge — it verifies the evaluation pipeline works end-to-end.
+    Verifies the evaluation pipeline produces valid rewards (0.0-1.0).
     """
     passed = 0
     failed = 0
@@ -226,10 +235,7 @@ def check_eval_parity(
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
 
-            # Create synthetic deliverables using .md extension so the
-            # evaluator can read them. Use the original stem so fuzzy
-            # matching picks them up when criteria reference the original
-            # filename.
+            # Create synthetic deliverables
             for name, filename in deliverables_config.items():
                 md_name = Path(filename).stem + ".md"
                 (tmp_path / md_name).write_text(
@@ -239,7 +245,6 @@ def check_eval_parity(
                 )
 
             if not any(tmp_path.iterdir()):
-                # No deliverables defined, create a generic one
                 (tmp_path / "output.md").write_text(
                     "# Output\n\nPlaceholder for parity testing.\n"
                 )
@@ -296,15 +301,246 @@ def check_eval_parity(
                 failed += 1
                 continue
 
-            # With placeholder deliverables, we expect mostly fails, so
-            # reward should be low. The key check is that the pipeline ran.
             print(f"  Reward: {reward:.3f} (expected low for placeholder)")
             passed += 1
 
-            # Rate limit between tasks
             time.sleep(2)
 
     return passed, failed, errors
+
+
+# ── Side-by-Side Parity (Harbor Step 5) ──────────────────────────────
+
+# Original Harvey LAB prompt template (from evaluation/prompts/rubric_criterion.txt)
+_ORIGINAL_PROMPT = """\
+You are evaluating a legal AI agent's work product against a specific quality criterion.
+
+## Task
+{task_description}
+
+## Agent's Output
+{agent_output}
+
+## Criterion
+**{criterion_title}**
+
+{match_criteria}
+
+## Instructions
+Evaluate the agent's output against the criterion above.
+- **PASS**: The agent's output satisfies the criterion as described
+- **FAIL**: The agent's output does not satisfy the criterion as described
+
+Respond with JSON only:
+
+```json
+{{
+  "verdict": "pass" | "fail",
+  "reasoning": "Brief explanation"
+}}
+```
+"""
+
+# Adapted BenchFlow prompt template (from benchflow.py's _build_evaluate_py,
+# uses string.Template $-style placeholders for single-pass substitution)
+_ADAPTED_PROMPT = string.Template("""\
+You are evaluating a legal AI agent's work product against a specific quality criterion.
+
+        ## Task
+        $task_description
+
+        ## Agent's Output
+        $agent_output
+
+        ## Criterion
+        **$criterion_title**
+
+        $match_criteria
+
+        ## Instructions
+        Evaluate the agent's output against the criterion above.
+        - **PASS**: The agent's output satisfies the criterion as described
+        - **FAIL**: The agent's output does not satisfy the criterion as described
+
+        Respond with JSON only:
+
+        ```json
+        {
+          "verdict": "pass" or "fail",
+          "reasoning": "Brief explanation"
+        }
+        ```
+        """)
+
+
+def _call_gemini(prompt: str, api_key: str, retries: int = 3) -> str:
+    """Call Gemini API and return the text response."""
+    from google import genai
+
+    client = genai.Client(api_key=api_key)
+
+    for attempt in range(retries):
+        try:
+            response = client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=prompt,
+            )
+            return response.text
+        except Exception as e:
+            if attempt < retries - 1:
+                time.sleep(2 ** attempt)
+                continue
+            raise RuntimeError(f"Gemini API failed after {retries} attempts: {e}") from e
+    raise RuntimeError("Unreachable")
+
+
+def _parse_verdict(text: str) -> dict:
+    """Extract JSON verdict from LLM response."""
+    match = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", text, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group(1).strip())
+        except json.JSONDecodeError:
+            pass
+    for i, ch in enumerate(text):
+        if ch == "{":
+            depth = 0
+            for j in range(i, len(text)):
+                if text[j] == "{":
+                    depth += 1
+                elif text[j] == "}":
+                    depth -= 1
+                if depth == 0:
+                    try:
+                        return json.loads(text[i:j + 1])
+                    except json.JSONDecodeError:
+                        break
+    raise ValueError(f"Could not parse verdict from: {text[:300]}")
+
+
+def check_side_by_side_parity(
+    harvey_root: Path,
+    task_ids: list[str],
+    gemini_api_key: str,
+) -> tuple[dict, int, int, list[str]]:
+    """Run the original and adapted prompt templates through the same Gemini
+    judge on identical synthetic agent output. Compare per-criterion verdicts.
+
+    Returns (results_dict, n_agreed, n_disagreed, errors).
+    """
+    agreed = 0
+    disagreed = 0
+    errors: list[str] = []
+    results: dict = {
+        "experiment": "side-by-side-parity",
+        "judge_model": GEMINI_MODEL,
+        "tasks": [],
+    }
+
+    for task_id in task_ids:
+        original_path = harvey_root / "tasks" / Path(*task_id.split("/")) / "task.json"
+        if not original_path.exists():
+            errors.append(f"{task_id}: task.json not found")
+            continue
+
+        config = json.loads(original_path.read_text())
+        task_title = config["title"]
+        criteria = config["criteria"]
+        deliverables = config.get("deliverables", {})
+
+        # Build synthetic agent output (same for both sides)
+        agent_output_parts = []
+        for name, filename in deliverables.items():
+            agent_output_parts.append(
+                f"--- {Path(filename).stem}.md ---\n"
+                f"# {name}\n\nThis is a placeholder deliverable for parity testing. "
+                f"The actual content would be a legal work product.\n"
+            )
+        if not agent_output_parts:
+            agent_output_parts.append(
+                "--- output.md ---\n"
+                "# Output\n\nPlaceholder for parity testing.\n"
+            )
+        agent_output = "\n\n".join(agent_output_parts)
+
+        task_result = {
+            "task_id": task_id,
+            "n_criteria": len(criteria),
+            "criteria_results": [],
+        }
+
+        print(f"\n{'='*60}")
+        print(f"Side-by-side: {task_id} ({len(criteria)} criteria)")
+        print(f"{'='*60}")
+
+        # Sample up to 5 criteria per task to keep API costs reasonable
+        sampled_criteria = criteria[:5] if len(criteria) > 5 else criteria
+
+        for criterion in sampled_criteria:
+            crit_id = criterion["id"]
+            crit_title = criterion["title"]
+            match_criteria = criterion["match_criteria"]
+
+            # Run original Harvey LAB prompt
+            orig_prompt = _ORIGINAL_PROMPT.format(
+                task_description=task_title,
+                agent_output=agent_output,
+                criterion_title=crit_title,
+                match_criteria=match_criteria,
+            )
+
+            # Run adapted BenchFlow prompt (uses string.Template, matching benchflow.py)
+            adapted_prompt = _ADAPTED_PROMPT.safe_substitute(
+                task_description=task_title,
+                agent_output=agent_output,
+                criterion_title=crit_title,
+                match_criteria=match_criteria,
+            )
+
+            try:
+                orig_response = _call_gemini(orig_prompt, gemini_api_key)
+                orig_verdict = _parse_verdict(orig_response)
+                time.sleep(1)  # rate limiting
+
+                adapted_response = _call_gemini(adapted_prompt, gemini_api_key)
+                adapted_verdict = _parse_verdict(adapted_response)
+                time.sleep(1)
+
+                orig_v = orig_verdict.get("verdict", "").lower()
+                adapted_v = adapted_verdict.get("verdict", "").lower()
+                match = orig_v == adapted_v
+
+                if match:
+                    agreed += 1
+                else:
+                    disagreed += 1
+
+                status = "AGREE" if match else "DISAGREE"
+                print(f"  [{crit_id}] original={orig_v} adapted={adapted_v} → {status}")
+
+                task_result["criteria_results"].append({
+                    "criterion_id": crit_id,
+                    "criterion_title": crit_title,
+                    "original_verdict": orig_v,
+                    "adapted_verdict": adapted_v,
+                    "agreement": match,
+                })
+
+            except Exception as e:
+                errors.append(f"{task_id}/{crit_id}: {e}")
+                print(f"  [{crit_id}] ERROR: {e}")
+
+        results["tasks"].append(task_result)
+
+    total = agreed + disagreed
+    results["summary"] = {
+        "total_criteria_compared": total,
+        "agreed": agreed,
+        "disagreed": disagreed,
+        "agreement_rate": agreed / total if total > 0 else 0.0,
+    }
+
+    return results, agreed, disagreed, errors
 
 
 # ── Main ──────────────────────────────────────────────────────────────
@@ -313,9 +549,9 @@ def main():
     parser = argparse.ArgumentParser(description="Harvey LAB adapter parity tests")
     parser.add_argument(
         "--mode",
-        choices=["subset", "full", "eval-parity"],
+        choices=["subset", "full", "eval-parity", "side-by-side"],
         default="subset",
-        help="Test mode: subset (5 tasks), full (all tasks), eval-parity (LLM judge)",
+        help="Test mode: subset, full, eval-parity, or side-by-side",
     )
     parser.add_argument(
         "--harvey-root",
@@ -325,7 +561,7 @@ def main():
     parser.add_argument(
         "--gemini-api-key",
         default=os.environ.get("GEMINI_API_KEY", ""),
-        help="Gemini API key (for eval-parity mode)",
+        help="Gemini API key (for eval-parity and side-by-side modes)",
     )
     args = parser.parse_args()
 
@@ -349,7 +585,6 @@ def main():
 
             if not valid_ids:
                 print("ERROR: No valid subset tasks found. Falling back to first 5 tasks.")
-                # Fallback: use first 5 tasks
                 all_tasks = sorted(
                     (harvey_root / "tasks").rglob("task.json")
                 )[:5]
@@ -367,7 +602,6 @@ def main():
         elif args.mode == "full":
             print("\n=== Full Structural Parity (all tasks) ===\n")
             _run_adapter(harvey_root, output_dir)
-            # Discover all generated task IDs
             all_tasks = sorted(
                 (harvey_root / "tasks").rglob("task.json")
             )
@@ -385,7 +619,6 @@ def main():
                       file=sys.stderr)
                 sys.exit(1)
 
-            # Use all subset tasks for eval parity
             eval_ids = []
             for tid in SUBSET_TASK_IDS:
                 orig = harvey_root / "tasks" / Path(*tid.split("/")) / "task.json"
@@ -407,20 +640,66 @@ def main():
                 harvey_root, output_dir, eval_ids, args.gemini_api_key
             )
 
+        elif args.mode == "side-by-side":
+            if not args.gemini_api_key:
+                print("ERROR: --gemini-api-key required for side-by-side mode",
+                      file=sys.stderr)
+                sys.exit(1)
+
+            eval_ids = []
+            for tid in SUBSET_TASK_IDS:
+                orig = harvey_root / "tasks" / Path(*tid.split("/")) / "task.json"
+                if orig.exists():
+                    eval_ids.append(tid)
+
+            if not eval_ids:
+                all_tasks = sorted(
+                    (harvey_root / "tasks").rglob("task.json")
+                )[:3]
+                eval_ids = [
+                    str(t.parent.relative_to(harvey_root / "tasks")).replace("\\", "/")
+                    for t in all_tasks
+                ]
+
+            print(f"\n=== Side-by-Side Parity ({len(eval_ids)} tasks) ===\n")
+
+            results, agreed, disagreed, errors = check_side_by_side_parity(
+                harvey_root, eval_ids, args.gemini_api_key
+            )
+
+            # Save parity_experiment.json
+            parity_path = _SCRIPT_DIR / "parity_experiment.json"
+            parity_path.write_text(json.dumps(results, indent=2) + "\n")
+            print(f"\nSaved parity results to {parity_path}")
+
+            passed = agreed
+            failed = disagreed
+
         else:
             print(f"Unknown mode: {args.mode}", file=sys.stderr)
             sys.exit(1)
 
         # Report results
         print(f"\n{'='*60}")
-        print(f"RESULTS: {passed} passed, {failed} failed")
+        if args.mode == "side-by-side":
+            total = passed + failed
+            rate = passed / total * 100 if total > 0 else 0
+            print(f"RESULTS: {passed}/{total} criteria agreed ({rate:.1f}% agreement)")
+        else:
+            print(f"RESULTS: {passed} passed, {failed} failed")
         if errors:
             print("\nErrors:")
             for e in errors:
                 print(f"  - {e}")
         print(f"{'='*60}")
 
-        if failed > 0:
+        # Side-by-side: allow some disagreement due to LLM stochasticity
+        if args.mode == "side-by-side":
+            total = passed + failed
+            if total > 0 and passed / total < 0.7:
+                print("\nFAIL: Agreement rate below 70% threshold")
+                sys.exit(1)
+        elif failed > 0:
             sys.exit(1)
 
 
