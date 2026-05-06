@@ -2,7 +2,7 @@
 
 Usage::
 
-    python -m benchmarks.programbench.main --output-dir .ref/programbench/tasks
+    python -m benchmarks.programbench.main --output-dir benchmarks/programbench/tasks
     python -m benchmarks.programbench.main --output-dir out --limit 5
     python -m benchmarks.programbench.main --output-dir out --task-ids jqlang__jq.b33a763
 """

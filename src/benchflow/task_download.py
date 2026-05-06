@@ -1,4 +1,4 @@
-"""Download benchmark task repos if not present under .ref/."""
+"""Download or generate benchmark task repos."""
 
 from __future__ import annotations
 
@@ -40,13 +40,12 @@ def _repo_root() -> Path:
 
 
 def ensure_tasks(benchmark: str) -> Path:
-    """Clone task repo into .ref/ if target directory is missing.
+    """Ensure benchmark tasks are available locally.
 
-    Always resolves paths relative to the repo root, so it works
-    regardless of the caller's working directory.
+    Cloned benchmarks go into ``.ref/``; generated benchmarks (e.g.
+    ``programbench``) go into ``benchmarks/<name>/tasks/``.
 
-    For generated benchmarks (e.g. ``programbench``), clones the upstream
-    repo and runs a local generation script to produce BenchFlow tasks.
+    Always resolves paths relative to the repo root.
     """
     if benchmark in _GENERATED_BENCHMARKS:
         return _ensure_generated(benchmark)
@@ -93,18 +92,18 @@ def _ensure_generated(benchmark: str) -> Path:
     """Clone upstream repo, run the generator, return the tasks directory."""
     info = _GENERATED_BENCHMARKS[benchmark]
     root = _repo_root()
-    target = root / ".ref" / benchmark / (info.get("subdir") or "")
+    target = root / "benchmarks" / benchmark / (info.get("subdir") or "")
 
     if target.exists() and any(target.iterdir()):
         return target
 
     logger.info("Generating %s tasks from %s...", benchmark, info["repo"])
-    clone_dir = root / ".ref" / benchmark / "_clone"
+    clone_dir = root / "benchmarks" / benchmark / "_clone"
     clone_dir.parent.mkdir(parents=True, exist_ok=True)
 
     # Generate into a temp directory and rename atomically so partial
     # failures never leave a cached target that looks complete.
-    staging = root / ".ref" / benchmark / "_gen_staging"
+    staging = root / "benchmarks" / benchmark / "_gen_staging"
     try:
         subprocess.run(
             ["git", "clone", "--depth", "1", info["repo"], str(clone_dir)],

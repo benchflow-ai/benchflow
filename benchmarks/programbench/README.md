@@ -16,12 +16,12 @@ to massive projects like FFmpeg, SQLite, and the PHP interpreter.
 # Generate all 200 tasks (requires programbench repo)
 python -m benchmarks.programbench.main \
     --programbench-dir ~/programbench \
-    --output-dir .ref/programbench/tasks
+    --output-dir benchmarks/programbench/tasks
 
 # Or generate a subset
 python -m benchmarks.programbench.main \
     --programbench-dir ~/programbench \
-    --output-dir .ref/programbench/tasks \
+    --output-dir benchmarks/programbench/tasks \
     --task-ids jqlang__jq.b33a763 burntsushi__ripgrep.3b7fd44
 
 # Run via BenchFlow
@@ -63,7 +63,7 @@ config. Key fields:
 
 | Field | Description |
 |-------|-------------|
-| `tasks_dir` | Path to generated tasks (`.ref/programbench/tasks`) |
+| `tasks_dir` | Path to generated tasks (`benchmarks/programbench/tasks`) |
 | `agent` | Agent name (e.g. `gemini`, `claude-agent-acp`) |
 | `model` | Model identifier |
 | `environment` | `docker` or `daytona` |

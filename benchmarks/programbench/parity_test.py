@@ -10,7 +10,7 @@ pipeline end-to-end by:
 Usage::
 
     GOOGLE_API_KEY=... python benchmarks/programbench/parity_test.py \\
-        --tasks-dir .ref/programbench/tasks \\
+        --tasks-dir benchmarks/programbench/tasks \\
         --task-ids abishekvashok__cmatrix.5c082c6
 """
 
