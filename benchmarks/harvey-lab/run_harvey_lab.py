@@ -1,4 +1,4 @@
-"""Run Harvey LAB benchmark — downloads raw tasks, converts via adapter, runs via Job.
+"""Run Harvey LAB benchmark — downloads raw tasks, converts to BenchFlow format, runs via Job.
 
 Usage:
     python benchmarks/harvey-lab/run_harvey_lab.py                # default config
@@ -18,7 +18,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger(__name__)
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
-_ADAPTER = _SCRIPT_DIR / "benchflow.py"
+_CONVERTER = _SCRIPT_DIR / "benchflow.py"
 
 
 def _repo_root() -> Path:
@@ -43,7 +43,7 @@ def ensure_converted_tasks() -> Path:
     logger.info("Converting Harvey LAB tasks to BenchFlow format...")
     result = subprocess.run(
         [
-            sys.executable, str(_ADAPTER),
+            sys.executable, str(_CONVERTER),
             "--output-dir", str(converted_dir),
             "--harvey-root", str(raw_dir.parent),
         ],
@@ -51,8 +51,8 @@ def ensure_converted_tasks() -> Path:
         text=True,
     )
     if result.returncode != 0:
-        logger.error("Adapter failed: %s", result.stderr)
-        raise RuntimeError(f"Harvey LAB adapter failed: {result.stderr}")
+        logger.error("Conversion failed: %s", result.stderr)
+        raise RuntimeError(f"Harvey LAB conversion failed: {result.stderr}")
 
     logger.info("Converted tasks to %s", converted_dir)
     return converted_dir
