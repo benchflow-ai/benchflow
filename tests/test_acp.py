@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from benchflow.acp.client import ACPClient, ACPError
+from benchflow.acp.container_transport import ContainerTransport
 from benchflow.acp.session import ACPSession
 from benchflow.acp.transport import StdioTransport
 from benchflow.acp.types import StopReason, ToolCallStatus
@@ -258,6 +259,56 @@ class TestStdioTransportOversizedLine:
         finally:
             await feeder
         assert msg == {"ok": True}
+
+
+class TestTransportProtocolFiltering:
+    """Transports skip JSON-encoded log scalars and wait for JSON-RPC objects."""
+
+    @pytest.mark.asyncio
+    async def test_stdio_transport_skips_json_scalars(self) -> None:
+        reader = asyncio.StreamReader()
+        reader.feed_data(b'"debug string from agent"\n')
+        reader.feed_data(b'["debug", "list"]\n')
+        reader.feed_data(b"123\n")
+        reader.feed_data(b'{"jsonrpc": "2.0", "id": 1, "result": {"ok": true}}\n')
+        reader.feed_eof()
+
+        transport = StdioTransport(sys.executable, [])
+        fake_process = MagicMock()
+        fake_process.stdout = reader
+        fake_process.stdin = MagicMock()
+        transport._process = fake_process
+
+        msg = await asyncio.wait_for(transport.receive(), timeout=5)
+        assert msg == {"jsonrpc": "2.0", "id": 1, "result": {"ok": True}}
+
+    @pytest.mark.asyncio
+    async def test_container_transport_skips_json_scalars(self, tmp_path) -> None:
+        fake_process = AsyncMock()
+        fake_process.readline = AsyncMock(
+            side_effect=[
+                b'"debug string from agent"\n',
+                b'["debug", "list"]\n',
+                b'{"jsonrpc": "2.0", "id": 2, "result": {"ok": true}}\n',
+            ]
+        )
+        agent_log = tmp_path / "agent.log"
+        transport = ContainerTransport(
+            container_process=fake_process,
+            command="agent acp",
+            agent_log_path=agent_log,
+        )
+
+        await transport.start()
+        try:
+            msg = await asyncio.wait_for(transport.receive(), timeout=5)
+        finally:
+            await transport.close()
+
+        assert msg == {"jsonrpc": "2.0", "id": 2, "result": {"ok": True}}
+        log_text = agent_log.read_text()
+        assert '"debug string from agent"' in log_text
+        assert '["debug", "list"]' in log_text
 
 
 class TestACPInterleaving:
