@@ -434,6 +434,38 @@ if __name__ == "__main__":
 '''
 
 
+def _render_solve_sh(task: ProgramBenchTask) -> str:
+    """Generate oracle solution script that checks out the original source."""
+    return f"""\
+#!/bin/bash
+# Oracle solution: check out the original source code from the upstream repo.
+# The task asks agents to reconstruct the program from a compiled binary —
+# the gold answer is the original source at the specified commit.
+set -euo pipefail
+
+cd /workspace
+
+# Clone the original repository at the exact commit
+git clone --depth 1 https://github.com/{task.repository}.git _oracle_src || {{
+    # If shallow clone at commit fails, do full clone + checkout
+    git clone https://github.com/{task.repository}.git _oracle_src
+    cd _oracle_src
+    git checkout {task.commit}
+    cd /workspace
+}}
+
+# Copy source into workspace (overwriting the cleanroom state)
+cp -a _oracle_src/. .
+rm -rf _oracle_src .git
+
+# Run the existing compile.sh to produce the executable
+if [ -f compile.sh ]; then
+    chmod +x compile.sh
+    bash compile.sh
+fi
+"""
+
+
 def generate_task(
     task: ProgramBenchTask, output_dir: Path, *, overwrite: bool = False
 ) -> Path:
@@ -457,6 +489,13 @@ def generate_task(
     env_dir = task_dir / "environment"
     env_dir.mkdir()
     (env_dir / "Dockerfile").write_text(_render_dockerfile(task))
+
+    # solution/
+    sol_dir = task_dir / "solution"
+    sol_dir.mkdir()
+    solve_sh = sol_dir / "solve.sh"
+    solve_sh.write_text(_render_solve_sh(task))
+    solve_sh.chmod(0o755)
 
     # tests/
     tests_dir = task_dir / "tests"

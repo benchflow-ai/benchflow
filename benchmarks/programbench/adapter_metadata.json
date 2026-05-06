@@ -12,8 +12,8 @@
   "evaluation_method": "deterministic_unit_tests",
   "reward_type": "partial_credit",
   "reward_range": [0.0, 1.0],
-  "has_oracle_solutions": false,
-  "oracle_notes": "ProgramBench tasks have a 0% resolve rate — no oracle solutions exist. Agents must reverse-engineer programs from compiled binaries.",
+  "has_oracle_solutions": true,
+  "oracle_notes": "The oracle is the original source code at the specified commit. The task asks agents to reconstruct the program from a compiled binary — the gold answer is the upstream repo source. solve.sh clones the original repo and runs compile.sh.",
   "test_source": "HuggingFace (programbench/ProgramBench-Tests)",
   "environment": {
     "base_images": "programbench/<repo>:task_cleanroom",
