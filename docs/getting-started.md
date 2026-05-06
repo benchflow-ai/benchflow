@@ -134,6 +134,7 @@ print(result.n_tool_calls)
 
 | If you want to… | Read |
 |------------------|------|
+| Run an existing benchmark (TB2, ProgramBench, etc.) | [`running-benchmarks.md`](./running-benchmarks.md) |
 | Understand the model — Trial, Scene, Role, Verifier | [`concepts.md`](./concepts.md) |
 | Author a task | [`task-authoring.md`](./task-authoring.md) |
 | Run multi-agent patterns (coder/reviewer, simulated user, BYOS) | [`use-cases.md`](./use-cases.md) |
