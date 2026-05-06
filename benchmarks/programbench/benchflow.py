@@ -109,8 +109,8 @@ timeout_sec = {agent_timeout}
 timeout_sec = {verifier_timeout}
 
 [environment]
-cpus = 4
-memory_mb = 8192
+cpus = 2
+memory_mb = 4096
 storage_mb = 20480
 allow_internet = false
 """
