@@ -1,0 +1,23 @@
+datasets:
+  - path: datasets/harvey-lab
+
+# Default: oracle agent for verification
+agents:
+  - name: oracle
+
+# Uncomment to run with other agents:
+# agents:
+#   - name: gemini
+#     model_name: gemini/gemini-2.5-flash-lite-preview-06-17
+#
+# agents:
+#   - name: claude-code
+#     model_name: anthropic/claude-sonnet-4-6
+
+environment:
+  type: docker
+  delete: true
+
+orchestrator:
+  type: local
+  n_concurrent_trials: 4
