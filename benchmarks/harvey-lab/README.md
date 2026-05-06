@@ -21,7 +21,7 @@ benchmarks/harvey-lab/
 ├── run_harvey_lab.py                # runner: download + convert + run via Job
 ├── harvey-lab-gemini-flash-lite.yaml # BenchFlow-native YAML config
 ├── parity_experiment.json           # side-by-side parity results (Step 5)
-├── benchmark_metadata.json          # benchmark metadata
+├── benchmark.yaml                   # standard benchmark descriptor
 └── README.md
 ```
 
@@ -34,7 +34,7 @@ benchmarks/harvey-lab/
 | `<name>.yaml` | BenchFlow-native YAML config (`tasks_dir`, `agent`, `model`, `environment`) |
 | `parity_test.py` | Validates structural, eval, and side-by-side parity |
 | `parity_experiment.json` | Records side-by-side parity results |
-| `benchmark_metadata.json` | Benchmark metadata (task count, verification method, parity summary) |
+| `benchmark.yaml` | Standard benchmark descriptor (metadata, verification, parity) |
 
 ## Task Mapping
 
@@ -110,7 +110,7 @@ python -c "import asyncio; from benchflow.job import Job; asyncio.run(Job.from_y
 | 6 | Record parity results | `parity_experiment.json` |
 | 7 | Upload results | Included in PR |
 | 8 | Register dataset | `harvey-lab` registered in `task_download.py` |
-| 9 | Document & submit | This README + `benchmark_metadata.json` |
+| 9 | Document & submit | This README + `benchmark.yaml` |
 
 ### Side-by-side parity details
 
