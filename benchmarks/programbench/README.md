@@ -28,6 +28,57 @@ python -m benchmarks.programbench.main \
 python benchmarks/run_programbench.py benchmarks/programbench-gemini-flash-lite.yaml
 ```
 
+## Format comparison: ProgramBench → BenchFlow
+
+### Directory structure
+
+| ProgramBench (original) | BenchFlow (generated) |
+|---|---|
+| `task.yaml` (repository, commit, language, difficulty, eval_clean_hashes) | `task.toml` (name, metadata, timeouts, resources) |
+| `tests.json` (per-branch test lists, ignored flags) | `tests/tests.json` (copied verbatim) |
+| Docker image `programbench/<repo>:task_cleanroom` (pre-built on DockerHub) | `environment/Dockerfile` (FROM the same cleanroom image) |
+| Agent produces `submission.tar.gz` (entire codebase) | Agent works directly in `/workspace` inside the container |
+| `programbench eval <run_dir>` (CLI evaluation) | `tests/test.sh` → `tests/verify.py` (self-contained verifier) |
+| Original source code at commit (gold answer) | `solution/solve.sh` (clones original repo at commit) |
+| No instruction file — agent receives Docker image | `instruction.md` (explicit agent-facing instructions) |
+
+### Evaluation pipeline
+
+| Step | ProgramBench | BenchFlow |
+|---|---|---|
+| **Environment** | Agent uses `programbench/<repo>:task_cleanroom` Docker image directly | Dockerfile wraps the same cleanroom image, adds verifier dependencies |
+| **Agent submission** | Agent produces `submission.tar.gz` extracted into container | Agent writes files directly in `/workspace` |
+| **Compilation** | `compile.sh` → `./executable` | Same — `compile.sh` → `./executable` |
+| **Anti-cheat** | Remove files matching `eval_clean_hashes` SHA-256 | Same — `verify.py` matches identical hashes |
+| **Test blobs** | Downloaded from HuggingFace by `programbench eval` CLI | Downloaded from HuggingFace by `verify.py` inside container |
+| **Test execution** | Per-branch: extract tar, patch timeout method, run `eval/run.sh`, parse JUnit XML | Same sequence in `verify.py` |
+| **Scoring** | `EvaluationResult` JSON with per-test pass/fail | `reward.txt` with float 0.0–1.0 (passed / total) |
+| **Oracle** | Original source at commit (`:task` image tag) | `solution/solve.sh` clones repo at commit, runs `compile.sh` |
+
+### Key fields mapping
+
+| ProgramBench `task.yaml` | BenchFlow `task.toml` |
+|---|---|
+| `repository` | Used in `instruction.md` and `solution/solve.sh` |
+| `commit` | Used in `solution/solve.sh` for oracle checkout |
+| `language` | `[metadata] tags` |
+| `difficulty` | `[metadata] difficulty` + determines `[agent] timeout_sec` and `[verifier] timeout_sec` |
+| `eval_clean_hashes` | Embedded in `verify.py` as `CLEAN_HASHES` |
+
+### What changes vs. what stays the same
+
+| Aspect | Changed? | Details |
+|---|---|---|
+| Docker base image | No | Same `programbench/<repo>:task_cleanroom` images from DockerHub |
+| Test archives | No | Same HuggingFace blobs (`programbench/ProgramBench-Tests`) |
+| Test execution | No | Same pytest + JUnit XML parsing + timeout patching |
+| Anti-cheat hashing | No | Same SHA-256 hash removal |
+| Scoring formula | No | Same passed/total partial credit |
+| Agent instructions | Yes | Explicit `instruction.md` instead of implicit Docker image |
+| Evaluation trigger | Yes | BenchFlow verifier (test.sh) instead of `programbench eval` CLI |
+| Result format | Yes | `reward.txt` float instead of `EvaluationResult` JSON |
+| Oracle format | Yes | `solve.sh` script instead of `:task` Docker image tag |
+
 ## How it works
 
 1. **Task generation** reads ProgramBench's `task.yaml` and `tests.json`
@@ -39,6 +90,8 @@ python benchmarks/run_programbench.py benchmarks/programbench-gemini-flash-lite.
    ├── instruction.md      # agent-facing instructions
    ├── environment/
    │   └── Dockerfile      # FROM programbench/<image>:task_cleanroom
+   ├── solution/
+   │   └── solve.sh        # oracle: clones original source at commit
    └── tests/
        ├── test.sh          # verifier entry point
        ├── verify.py        # downloads test blobs, runs pytest, writes reward
