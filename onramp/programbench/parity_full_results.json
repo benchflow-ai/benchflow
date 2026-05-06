@@ -1,9 +1,9 @@
 {
-  "agreement_rate": 1.0,
-  "n_agreeing": 1,
-  "n_evaluated": 1,
-  "n_total": 1,
-  "n_with_score": 1,
+  "agreement_rate": 0.23529411764705882,
+  "n_agreeing": 4,
+  "n_evaluated": 17,
+  "n_total": 200,
+  "n_with_score": 17,
   "results": [
     {
       "agree": true,
@@ -107,6 +107,1504 @@
         "total": 508
       },
       "wall_time_sec": 981.6
+    },
+    {
+      "agree": false,
+      "benchflow": {
+        "branches": [
+          {
+            "branch": "045fa65d8a17",
+            "passed": 0,
+            "status": "ran",
+            "total": 34
+          },
+          {
+            "branch": "0a5ff17822b7",
+            "passed": 0,
+            "status": "ran",
+            "total": 13
+          },
+          {
+            "branch": "0df6b4d747de",
+            "passed": 0,
+            "status": "ran",
+            "total": 9
+          },
+          {
+            "branch": "15241b94c9bf",
+            "passed": 1,
+            "status": "ran",
+            "total": 1
+          },
+          {
+            "branch": "1fb751a1a8a1",
+            "passed": 223,
+            "status": "ran",
+            "total": 228
+          },
+          {
+            "branch": "220f03dff485",
+            "passed": 0,
+            "status": "ran",
+            "total": 22
+          },
+          {
+            "branch": "3001c1482b82",
+            "passed": 0,
+            "status": "ran",
+            "total": 76
+          },
+          {
+            "branch": "40a4c29f1824",
+            "passed": 1,
+            "status": "ran",
+            "total": 46
+          },
+          {
+            "branch": "63078964cd3f",
+            "passed": 0,
+            "status": "ran",
+            "total": 11
+          },
+          {
+            "branch": "644934f68973",
+            "passed": 0,
+            "status": "ran",
+            "total": 91
+          },
+          {
+            "branch": "a6516d59468d",
+            "passed": 0,
+            "status": "ran",
+            "total": 0
+          },
+          {
+            "branch": "c77d1fe5cef8",
+            "passed": 2,
+            "status": "ran",
+            "total": 14
+          },
+          {
+            "branch": "c865682e93ee",
+            "passed": 7,
+            "status": "ran",
+            "total": 46
+          },
+          {
+            "branch": "ec5f2f35f276",
+            "passed": 7,
+            "status": "ran",
+            "total": 28
+          },
+          {
+            "branch": "f2ad8ae32d40",
+            "passed": 0,
+            "status": "ran",
+            "total": 61
+          },
+          {
+            "branch": "f83680a23703",
+            "passed": 0,
+            "status": "ran",
+            "total": 0
+          }
+        ],
+        "passed": 241,
+        "score": 0.35441176470588237,
+        "total": 680
+      },
+      "delta": 0.325,
+      "instance_id": "agourlay__zip-password-finder.704700d",
+      "upstream": {
+        "error_code": null,
+        "passed": 20,
+        "score": 0.029411764705882353,
+        "total": 680
+      },
+      "wall_time_sec": 1053.0
+    },
+    {
+      "agree": false,
+      "benchflow": {
+        "branches": [
+          {
+            "branch": "a9c8e0729570",
+            "passed": 0,
+            "status": "ran",
+            "total": 134
+          },
+          {
+            "branch": "aa89e180e290",
+            "passed": 0,
+            "status": "ran",
+            "total": 397
+          }
+        ],
+        "passed": 0,
+        "score": 0.0,
+        "total": 531
+      },
+      "delta": 0.011299435028248588,
+      "instance_id": "ajeetdsouza__zoxide.67ca1bc",
+      "upstream": {
+        "error_code": null,
+        "passed": 6,
+        "score": 0.011299435028248588,
+        "total": 531
+      },
+      "wall_time_sec": 627.1
+    },
+    {
+      "agree": false,
+      "benchflow": {
+        "branches": [
+          {
+            "branch": "06dabfabaea7",
+            "passed": 7,
+            "status": "ran",
+            "total": 515
+          }
+        ],
+        "passed": 7,
+        "score": 0.013592233009708738,
+        "total": 515
+      },
+      "delta": 0.013592233009708738,
+      "instance_id": "alecthomas__chroma.8d04def",
+      "upstream": {
+        "error_code": null,
+        "passed": 0,
+        "score": 0.0,
+        "total": 515
+      },
+      "wall_time_sec": 3650.1
+    },
+    {
+      "agree": false,
+      "benchflow": {
+        "branches": [
+          {
+            "branch": "20cfe2d37f0d",
+            "passed": 6,
+            "status": "ran",
+            "total": 27
+          },
+          {
+            "branch": "2e9e0a85b3b1",
+            "passed": 0,
+            "status": "ran",
+            "total": 16
+          },
+          {
+            "branch": "3007289124ea",
+            "passed": 14,
+            "status": "ran",
+            "total": 887
+          },
+          {
+            "branch": "4f43e146d462",
+            "passed": 0,
+            "status": "ran",
+            "total": 6
+          },
+          {
+            "branch": "4ff2391bad75",
+            "passed": 0,
+            "status": "ran",
+            "total": 32
+          },
+          {
+            "branch": "5f48c669398c",
+            "passed": 2,
+            "status": "ran",
+            "total": 234
+          },
+          {
+            "branch": "756ef31a4912",
+            "passed": 0,
+            "status": "ran",
+            "total": 42
+          },
+          {
+            "branch": "7a39011794d6",
+            "passed": 0,
+            "status": "ran",
+            "total": 29
+          },
+          {
+            "branch": "86582e2e370b",
+            "passed": 2,
+            "status": "ran",
+            "total": 140
+          },
+          {
+            "branch": "887e92af4ead",
+            "passed": 0,
+            "status": "ran",
+            "total": 27
+          },
+          {
+            "branch": "919f9056ebc8",
+            "passed": 0,
+            "status": "ran",
+            "total": 6
+          },
+          {
+            "branch": "92b21834419a",
+            "passed": 9,
+            "status": "ran",
+            "total": 26
+          },
+          {
+            "branch": "a478c749c070",
+            "passed": 0,
+            "status": "ran",
+            "total": 81
+          },
+          {
+            "branch": "bc9e04bf4f1d",
+            "passed": 2,
+            "status": "ran",
+            "total": 151
+          },
+          {
+            "branch": "c00b90a86801",
+            "passed": 3,
+            "status": "ran",
+            "total": 38
+          },
+          {
+            "branch": "ed6391483754",
+            "passed": 6,
+            "status": "ran",
+            "total": 101
+          },
+          {
+            "branch": "fa8b614ae705",
+            "passed": 2,
+            "status": "ran",
+            "total": 9
+          }
+        ],
+        "passed": 46,
+        "score": 0.024838012958963283,
+        "total": 1852
+      },
+      "delta": 0.0026997840172786162,
+      "instance_id": "alexpovel__srgn.89f943b",
+      "upstream": {
+        "error_code": null,
+        "passed": 51,
+        "score": 0.0275377969762419,
+        "total": 1852
+      },
+      "wall_time_sec": 2130.5
+    },
+    {
+      "agree": false,
+      "benchflow": {
+        "branches": [
+          {
+            "branch": "06340423a16b",
+            "passed": 6,
+            "status": "ran",
+            "total": 21
+          },
+          {
+            "branch": "06d015935138",
+            "passed": 4,
+            "status": "ran",
+            "total": 23
+          },
+          {
+            "branch": "0cd2a21d4603",
+            "passed": 1,
+            "status": "ran",
+            "total": 39
+          },
+          {
+            "branch": "0dba6bea7763",
+            "passed": 0,
+            "status": "ran",
+            "total": 10
+          },
+          {
+            "branch": "1ae1a446d287",
+            "passed": 1,
+            "status": "ran",
+            "total": 18
+          },
+          {
+            "branch": "1fb751a1a8a1",
+            "passed": 185,
+            "status": "ran",
+            "total": 185
+          },
+          {
+            "branch": "231705c07647",
+            "passed": 0,
+            "status": "ran",
+            "total": 17
+          },
+          {
+            "branch": "301ebfe739c9",
+            "passed": 5,
+            "status": "ran",
+            "total": 51
+          },
+          {
+            "branch": "4016cd0caeb6",
+            "passed": 0,
+            "status": "ran",
+            "total": 0
+          },
+          {
+            "branch": "58f5ccea701e",
+            "passed": 0,
+            "status": "ran",
+            "total": 16
+          },
+          {
+            "branch": "6cc6fb1e744c",
+            "passed": 0,
+            "status": "ran",
+            "total": 24
+          },
+          {
+            "branch": "790105b80ebd",
+            "passed": 0,
+            "status": "ran",
+            "total": 10
+          },
+          {
+            "branch": "befe648986cf",
+            "passed": 0,
+            "status": "ran",
+            "total": 2
+          },
+          {
+            "branch": "c13d6a02114a",
+            "passed": 0,
+            "status": "ran",
+            "total": 5
+          },
+          {
+            "branch": "d161b26b57a6",
+            "passed": 1,
+            "status": "ran",
+            "total": 52
+          },
+          {
+            "branch": "e15b889ee2d5",
+            "passed": 0,
+            "status": "ran",
+            "total": 6
+          },
+          {
+            "branch": "f4bda8734108",
+            "passed": 18,
+            "status": "ran",
+            "total": 60
+          }
+        ],
+        "passed": 221,
+        "score": 0.4100185528756957,
+        "total": 539
+      },
+      "delta": 0.3302411873840445,
+      "instance_id": "altdesktop__i3-style.f93821b",
+      "upstream": {
+        "error_code": null,
+        "passed": 43,
+        "score": 0.07977736549165121,
+        "total": 539
+      },
+      "wall_time_sec": 927.1
+    },
+    {
+      "agree": false,
+      "benchflow": {
+        "branches": [
+          {
+            "branch": "030accd10acf",
+            "passed": 0,
+            "status": "ran",
+            "total": 85
+          },
+          {
+            "branch": "09dec68d2f7c",
+            "passed": 0,
+            "status": "ran",
+            "total": 53
+          },
+          {
+            "branch": "16c4f1ed6bc2",
+            "passed": 1,
+            "status": "ran",
+            "total": 17
+          },
+          {
+            "branch": "250360dd03f1",
+            "passed": 426,
+            "status": "ran",
+            "total": 426
+          },
+          {
+            "branch": "2721dda3a4c0",
+            "passed": 0,
+            "status": "ran",
+            "total": 0
+          },
+          {
+            "branch": "3199837a8295",
+            "passed": 1,
+            "status": "ran",
+            "total": 102
+          },
+          {
+            "branch": "387ac1aec189",
+            "passed": 0,
+            "status": "ran",
+            "total": 25
+          },
+          {
+            "branch": "50747ecc0364",
+            "passed": 1,
+            "status": "ran",
+            "total": 114
+          },
+          {
+            "branch": "57a79244d999",
+            "passed": 0,
+            "status": "ran",
+            "total": 5
+          },
+          {
+            "branch": "5e755c60ae75",
+            "passed": 0,
+            "status": "ran",
+            "total": 4
+          },
+          {
+            "branch": "7521dd0ac2f0",
+            "passed": 0,
+            "status": "ran",
+            "total": 11
+          },
+          {
+            "branch": "79f15197b2d1",
+            "passed": 0,
+            "status": "ran",
+            "total": 18
+          },
+          {
+            "branch": "80255e0c882d",
+            "passed": 0,
+            "status": "ran",
+            "total": 37
+          },
+          {
+            "branch": "8d55d43683b6",
+            "passed": 2,
+            "status": "ran",
+            "total": 69
+          },
+          {
+            "branch": "8d7c9d8d6386",
+            "passed": 0,
+            "status": "ran",
+            "total": 25
+          },
+          {
+            "branch": "9514639016ae",
+            "passed": 1,
+            "status": "ran",
+            "total": 164
+          },
+          {
+            "branch": "a54992cb3aed",
+            "passed": 0,
+            "status": "ran",
+            "total": 6
+          },
+          {
+            "branch": "ae12ec616445",
+            "passed": 0,
+            "status": "ran",
+            "total": 36
+          },
+          {
+            "branch": "bc5b5e18d15a",
+            "passed": 0,
+            "status": "ran",
+            "total": 25
+          },
+          {
+            "branch": "f9adc4b60290",
+            "passed": 1,
+            "status": "ran",
+            "total": 103
+          },
+          {
+            "branch": "fe34cbf31685",
+            "passed": 0,
+            "status": "ran",
+            "total": 53
+          },
+          {
+            "branch": "fe700d4a55d7",
+            "passed": 0,
+            "status": "ran",
+            "total": 25
+          }
+        ],
+        "passed": 433,
+        "score": 0.308624376336422,
+        "total": 1403
+      },
+      "delta": 0.2822523164647185,
+      "instance_id": "ammarabouzor__tui-journal.2b4540d",
+      "upstream": {
+        "error_code": null,
+        "passed": 37,
+        "score": 0.026372059871703494,
+        "total": 1403
+      },
+      "wall_time_sec": 3190.8
+    },
+    {
+      "agree": false,
+      "benchflow": {
+        "branches": [
+          {
+            "branch": "0574468f33d5",
+            "passed": 0,
+            "status": "ran",
+            "total": 164
+          },
+          {
+            "branch": "2adea0c46a9f",
+            "passed": 0,
+            "status": "ran",
+            "total": 23
+          },
+          {
+            "branch": "4d189e44655d",
+            "passed": 1,
+            "status": "ran",
+            "total": 15
+          },
+          {
+            "branch": "5711eac1d37b",
+            "passed": 0,
+            "status": "ran",
+            "total": 48
+          },
+          {
+            "branch": "635f12958914",
+            "passed": 0,
+            "status": "ran",
+            "total": 63
+          },
+          {
+            "branch": "7d5a967832fe",
+            "passed": 7,
+            "status": "ran",
+            "total": 51
+          },
+          {
+            "branch": "84d2cb456a3c",
+            "passed": 1,
+            "status": "ran",
+            "total": 50
+          },
+          {
+            "branch": "9627e9fe75b9",
+            "passed": 0,
+            "status": "ran",
+            "total": 140
+          },
+          {
+            "branch": "995c83b0c12f",
+            "passed": 5,
+            "status": "ran",
+            "total": 14
+          },
+          {
+            "branch": "9d4d1ea3d183",
+            "passed": 0,
+            "status": "ran",
+            "total": 12
+          },
+          {
+            "branch": "ba09b63a5f8b",
+            "passed": 0,
+            "status": "ran",
+            "total": 11
+          },
+          {
+            "branch": "cabadeba7a79",
+            "passed": 0,
+            "status": "ran",
+            "total": 1
+          },
+          {
+            "branch": "db558337a6a1",
+            "passed": 464,
+            "status": "ran",
+            "total": 464
+          },
+          {
+            "branch": "f01414ef851c",
+            "passed": 0,
+            "status": "ran",
+            "total": 9
+          },
+          {
+            "branch": "f553439eb52c",
+            "passed": 3,
+            "status": "ran",
+            "total": 30
+          }
+        ],
+        "passed": 481,
+        "score": 0.4392694063926941,
+        "total": 1095
+      },
+      "delta": 0.42191780821917807,
+      "instance_id": "anordal__shellharden.6a6ffd4",
+      "upstream": {
+        "error_code": null,
+        "passed": 19,
+        "score": 0.017351598173515982,
+        "total": 1095
+      },
+      "wall_time_sec": 1373.6
+    },
+    {
+      "agree": true,
+      "benchflow": {
+        "branches": [
+          {
+            "branch": "2890f43fcbbb",
+            "passed": 0,
+            "status": "ran",
+            "total": 18
+          },
+          {
+            "branch": "2bc2ed503838",
+            "passed": 11,
+            "status": "ran",
+            "total": 286
+          },
+          {
+            "branch": "46fee7e86f4d",
+            "passed": 0,
+            "status": "ran",
+            "total": 29
+          },
+          {
+            "branch": "4edcf1438c5d",
+            "passed": 0,
+            "status": "ran",
+            "total": 60
+          },
+          {
+            "branch": "6bb5e54f6d4b",
+            "passed": 1,
+            "status": "ran",
+            "total": 19
+          },
+          {
+            "branch": "7db3471bef85",
+            "passed": 0,
+            "status": "ran",
+            "total": 54
+          },
+          {
+            "branch": "8337efff01b2",
+            "passed": 0,
+            "status": "ran",
+            "total": 15
+          },
+          {
+            "branch": "8557934c32db",
+            "passed": 16,
+            "status": "ran",
+            "total": 164
+          },
+          {
+            "branch": "884f76c3abe6",
+            "passed": 6,
+            "status": "ran",
+            "total": 82
+          },
+          {
+            "branch": "96de9f455882",
+            "passed": 0,
+            "status": "ran",
+            "total": 21
+          },
+          {
+            "branch": "b1361fd48c30",
+            "passed": 2,
+            "status": "ran",
+            "total": 39
+          },
+          {
+            "branch": "b956595d128a",
+            "passed": 0,
+            "status": "ran",
+            "total": 3
+          },
+          {
+            "branch": "c5c5b90118d0",
+            "passed": 4,
+            "status": "ran",
+            "total": 77
+          },
+          {
+            "branch": "df9af4ca1815",
+            "passed": 2,
+            "status": "ran",
+            "total": 11
+          },
+          {
+            "branch": "e4def75fb3ef",
+            "passed": 66,
+            "status": "ran",
+            "total": 1160
+          },
+          {
+            "branch": "f8869935eb9c",
+            "passed": 0,
+            "status": "ran",
+            "total": 9
+          }
+        ],
+        "passed": 108,
+        "score": 0.05276013678553981,
+        "total": 2047
+      },
+      "delta": 0.0,
+      "instance_id": "antonmedv__fx.86d0d34",
+      "upstream": {
+        "error_code": null,
+        "passed": 108,
+        "score": 0.05276013678553981,
+        "total": 2047
+      },
+      "wall_time_sec": 3590.9
+    },
+    {
+      "agree": true,
+      "benchflow": {
+        "branches": [
+          {
+            "branch": "03e585f50172",
+            "passed": 0,
+            "status": "ran",
+            "total": 6
+          },
+          {
+            "branch": "16ef6579ec7c",
+            "passed": 0,
+            "status": "ran",
+            "total": 7
+          },
+          {
+            "branch": "28cd6e6cc919",
+            "passed": 0,
+            "status": "ran",
+            "total": 17
+          },
+          {
+            "branch": "2d6ad78fdeb5",
+            "passed": 2,
+            "status": "ran",
+            "total": 60
+          },
+          {
+            "branch": "3b15aa9ee623",
+            "passed": 0,
+            "status": "ran",
+            "total": 30
+          },
+          {
+            "branch": "572a93d6cab7",
+            "passed": 2,
+            "status": "ran",
+            "total": 45
+          },
+          {
+            "branch": "5c30eb791924",
+            "passed": 1,
+            "status": "ran",
+            "total": 9
+          },
+          {
+            "branch": "5e812779a8a9",
+            "passed": 0,
+            "status": "ran",
+            "total": 5
+          },
+          {
+            "branch": "79d6b387c73d",
+            "passed": 1,
+            "status": "ran",
+            "total": 6
+          },
+          {
+            "branch": "7fbbb7c6b77c",
+            "passed": 1,
+            "status": "ran",
+            "total": 9
+          },
+          {
+            "branch": "88b674152033",
+            "passed": 0,
+            "status": "ran",
+            "total": 7
+          },
+          {
+            "branch": "8a948c3c5a7c",
+            "passed": 1,
+            "status": "ran",
+            "total": 14
+          },
+          {
+            "branch": "a56ac371fb39",
+            "passed": 1,
+            "status": "ran",
+            "total": 73
+          },
+          {
+            "branch": "b0bc9784b1c3",
+            "passed": 1,
+            "status": "ran",
+            "total": 20
+          },
+          {
+            "branch": "d64a44513afe",
+            "passed": 1,
+            "status": "ran",
+            "total": 7
+          },
+          {
+            "branch": "fcc1fea12b08",
+            "passed": 0,
+            "status": "ran",
+            "total": 155
+          }
+        ],
+        "passed": 11,
+        "score": 0.023404255319148935,
+        "total": 470
+      },
+      "delta": 0.0,
+      "instance_id": "antonmedv__walk.bf802ef",
+      "upstream": {
+        "error_code": null,
+        "passed": 11,
+        "score": 0.023404255319148935,
+        "total": 470
+      },
+      "wall_time_sec": 1591.0
+    },
+    {
+      "agree": false,
+      "benchflow": {
+        "branches": [
+          {
+            "branch": "0386d0614fb1",
+            "passed": 0,
+            "status": "ran",
+            "total": 11
+          },
+          {
+            "branch": "040ee76f34fd",
+            "passed": 2,
+            "status": "ran",
+            "total": 136
+          },
+          {
+            "branch": "239427da9840",
+            "passed": 2,
+            "status": "ran",
+            "total": 5
+          },
+          {
+            "branch": "5e483d7465e7",
+            "passed": 0,
+            "status": "ran",
+            "total": 100
+          },
+          {
+            "branch": "6188fe5b7e4d",
+            "passed": 0,
+            "status": "ran",
+            "total": 7
+          },
+          {
+            "branch": "6256695fac2d",
+            "passed": 3,
+            "status": "ran",
+            "total": 91
+          },
+          {
+            "branch": "6dd45c010e5d",
+            "passed": 0,
+            "status": "ran",
+            "total": 22
+          },
+          {
+            "branch": "96d1eb797f1c",
+            "passed": 18,
+            "status": "ran",
+            "total": 108
+          },
+          {
+            "branch": "99c1346c445d",
+            "passed": 0,
+            "status": "ran",
+            "total": 9
+          },
+          {
+            "branch": "bf96b63415cc",
+            "passed": 23,
+            "status": "ran",
+            "total": 65
+          },
+          {
+            "branch": "c46ae9b89fa0",
+            "passed": 0,
+            "status": "ran",
+            "total": 21
+          },
+          {
+            "branch": "cbaf9db6ea2e",
+            "passed": 602,
+            "status": "ran",
+            "total": 631
+          },
+          {
+            "branch": "d38253c926ee",
+            "passed": 0,
+            "status": "ran",
+            "total": 9
+          },
+          {
+            "branch": "dea01dd56536",
+            "passed": 13,
+            "status": "ran",
+            "total": 51
+          },
+          {
+            "branch": "efbed7268f1d",
+            "passed": 0,
+            "status": "ran",
+            "total": 1
+          },
+          {
+            "branch": "f24728ecf8a8",
+            "passed": 2,
+            "status": "ran",
+            "total": 51
+          }
+        ],
+        "passed": 665,
+        "score": 0.5045523520485584,
+        "total": 1318
+      },
+      "delta": 0.45144157814871017,
+      "instance_id": "ariga__atlas.6d81150",
+      "upstream": {
+        "error_code": null,
+        "passed": 70,
+        "score": 0.05311077389984825,
+        "total": 1318
+      },
+      "wall_time_sec": 1821.0
+    },
+    {
+      "agree": false,
+      "benchflow": {
+        "branches": [
+          {
+            "branch": "b0846e00e790",
+            "passed": 1053,
+            "status": "ran",
+            "total": 1053
+          }
+        ],
+        "passed": 1053,
+        "score": 1.0,
+        "total": 1053
+      },
+      "delta": 0.9990503323836657,
+      "instance_id": "arq5x__bedtools2.dd57059",
+      "upstream": {
+        "error_code": null,
+        "passed": 1,
+        "score": 0.000949667616334283,
+        "total": 1053
+      },
+      "wall_time_sec": 1152.2
+    },
+    {
+      "agree": true,
+      "benchflow": {
+        "branches": [
+          {
+            "branch": "0991433c996c",
+            "passed": 0,
+            "status": "ran",
+            "total": 15
+          },
+          {
+            "branch": "0f7af0de4f7e",
+            "passed": 0,
+            "status": "ran",
+            "total": 198
+          },
+          {
+            "branch": "1f9273a352f9",
+            "passed": 1,
+            "status": "ran",
+            "total": 7
+          },
+          {
+            "branch": "2135ece627a0",
+            "passed": 1,
+            "status": "ran",
+            "total": 87
+          },
+          {
+            "branch": "666041896444",
+            "passed": 3,
+            "status": "ran",
+            "total": 43
+          },
+          {
+            "branch": "71d7c1a6ac3f",
+            "passed": 0,
+            "status": "ran",
+            "total": 4
+          },
+          {
+            "branch": "9433793a57c6",
+            "passed": 0,
+            "status": "ran",
+            "total": 131
+          },
+          {
+            "branch": "ab2ed48ea0ad",
+            "passed": 3,
+            "status": "ran",
+            "total": 98
+          },
+          {
+            "branch": "ad017d14d49c",
+            "passed": 1,
+            "status": "ran",
+            "total": 34
+          },
+          {
+            "branch": "ad073adabe43",
+            "passed": 2,
+            "status": "ran",
+            "total": 46
+          },
+          {
+            "branch": "c94b989cb537",
+            "passed": 0,
+            "status": "ran",
+            "total": 20
+          },
+          {
+            "branch": "d479761eb97c",
+            "passed": 1,
+            "status": "ran",
+            "total": 45
+          },
+          {
+            "branch": "d9e1b0ed6a41",
+            "passed": 0,
+            "status": "ran",
+            "total": 4
+          },
+          {
+            "branch": "f70b3c7b288a",
+            "passed": 6,
+            "status": "ran",
+            "total": 13
+          },
+          {
+            "branch": "fcf880d70098",
+            "passed": 0,
+            "status": "ran",
+            "total": 10
+          }
+        ],
+        "passed": 18,
+        "score": 0.02384105960264901,
+        "total": 755
+      },
+      "delta": 0.0,
+      "instance_id": "arthursonzogni__json-tui.17a22b6",
+      "upstream": {
+        "error_code": null,
+        "passed": 18,
+        "score": 0.02384105960264901,
+        "total": 755
+      },
+      "wall_time_sec": 1344.5
+    },
+    {
+      "agree": false,
+      "benchflow": {
+        "branches": [
+          {
+            "branch": "5946c18eda4c",
+            "passed": 882,
+            "status": "ran",
+            "total": 882
+          }
+        ],
+        "passed": 882,
+        "score": 1.0,
+        "total": 882
+      },
+      "delta": 0.9773242630385488,
+      "instance_id": "ast-grep__ast-grep.dde0fe0",
+      "upstream": {
+        "error_code": null,
+        "passed": 20,
+        "score": 0.022675736961451247,
+        "total": 882
+      },
+      "wall_time_sec": 964.8
+    },
+    {
+      "agree": false,
+      "benchflow": {
+        "branches": [
+          {
+            "branch": "39dee6c2e271",
+            "passed": 0,
+            "status": "ran",
+            "total": 25
+          },
+          {
+            "branch": "3c9675c0f84e",
+            "passed": 0,
+            "status": "ran",
+            "total": 0
+          },
+          {
+            "branch": "492d929b9118",
+            "passed": 0,
+            "status": "ran",
+            "total": 6
+          },
+          {
+            "branch": "4e219826c927",
+            "passed": 0,
+            "status": "ran",
+            "total": 18
+          },
+          {
+            "branch": "576ea19c5b99",
+            "passed": 5,
+            "status": "ran",
+            "total": 195
+          },
+          {
+            "branch": "5bcfd10e370e",
+            "passed": 0,
+            "status": "ran",
+            "total": 10
+          },
+          {
+            "branch": "887e021a9afd",
+            "passed": 18,
+            "status": "ran",
+            "total": 22
+          },
+          {
+            "branch": "889188d5a491",
+            "passed": 0,
+            "status": "ran",
+            "total": 156
+          },
+          {
+            "branch": "a610e071591b",
+            "passed": 0,
+            "status": "ran",
+            "total": 27
+          },
+          {
+            "branch": "b085a6cde326",
+            "passed": 4,
+            "status": "ran",
+            "total": 126
+          },
+          {
+            "branch": "c2e6cec3647e",
+            "passed": 0,
+            "status": "ran",
+            "total": 20
+          },
+          {
+            "branch": "c37849812923",
+            "passed": 0,
+            "status": "ran",
+            "total": 22
+          },
+          {
+            "branch": "df5f5f14e9a6",
+            "passed": 0,
+            "status": "ran",
+            "total": 80
+          },
+          {
+            "branch": "ebb3d4162852",
+            "passed": 0,
+            "status": "ran",
+            "total": 21
+          },
+          {
+            "branch": "fcc1fea12b08",
+            "passed": 1,
+            "status": "ran",
+            "total": 363
+          }
+        ],
+        "passed": 28,
+        "score": 0.025664527956003668,
+        "total": 1091
+      },
+      "delta": 0.00458295142071494,
+      "instance_id": "astaxie__bat.17d1080",
+      "upstream": {
+        "error_code": null,
+        "passed": 33,
+        "score": 0.03024747937671861,
+        "total": 1091
+      },
+      "wall_time_sec": 2110.3
+    },
+    {
+      "agree": false,
+      "benchflow": {
+        "branches": [
+          {
+            "branch": "151142429bed",
+            "passed": 0,
+            "status": "ran",
+            "total": 2
+          },
+          {
+            "branch": "1850a587c56a",
+            "passed": 2,
+            "status": "ran",
+            "total": 10
+          },
+          {
+            "branch": "40d29f134084",
+            "passed": 0,
+            "status": "ran",
+            "total": 22
+          },
+          {
+            "branch": "473cc426ac1d",
+            "passed": 0,
+            "status": "ran",
+            "total": 48
+          },
+          {
+            "branch": "48f1aa1adb48",
+            "passed": 0,
+            "status": "ran",
+            "total": 17
+          },
+          {
+            "branch": "4bfe2d6b12de",
+            "passed": 0,
+            "status": "ran",
+            "total": 76
+          },
+          {
+            "branch": "7908e31cd09e",
+            "passed": 3,
+            "status": "ran",
+            "total": 8
+          },
+          {
+            "branch": "7e4732df1e1c",
+            "passed": 0,
+            "status": "ran",
+            "total": 49
+          },
+          {
+            "branch": "8a961ab581f3",
+            "passed": 5,
+            "status": "ran",
+            "total": 71
+          },
+          {
+            "branch": "aa685d96867e",
+            "passed": 0,
+            "status": "ran",
+            "total": 24
+          },
+          {
+            "branch": "d161b26b57a6",
+            "passed": 1,
+            "status": "ran",
+            "total": 70
+          },
+          {
+            "branch": "e3e25cae89e9",
+            "passed": 0,
+            "status": "ran",
+            "total": 12
+          },
+          {
+            "branch": "f69fe6cac123",
+            "passed": 0,
+            "status": "ran",
+            "total": 23
+          },
+          {
+            "branch": "fcc1fea12b08",
+            "passed": 4,
+            "status": "ran",
+            "total": 170
+          }
+        ],
+        "passed": 15,
+        "score": 0.024916943521594685,
+        "total": 602
+      },
+      "delta": 0.03156146179401993,
+      "instance_id": "astro__deadnix.d590041",
+      "upstream": {
+        "error_code": null,
+        "passed": 34,
+        "score": 0.05647840531561462,
+        "total": 602
+      },
+      "wall_time_sec": 781.8
+    },
+    {
+      "agree": false,
+      "benchflow": {
+        "branches": [
+          {
+            "branch": "045fa65d8a17",
+            "passed": 0,
+            "status": "ran",
+            "total": 16
+          },
+          {
+            "branch": "0c0fcfab9559",
+            "passed": 0,
+            "status": "ran",
+            "total": 35
+          },
+          {
+            "branch": "18769c6f19fa",
+            "passed": 6,
+            "status": "ran",
+            "total": 50
+          },
+          {
+            "branch": "3007289124ea",
+            "passed": 3,
+            "status": "ran",
+            "total": 309
+          },
+          {
+            "branch": "46b0a0f7dfd8",
+            "passed": 0,
+            "status": "ran",
+            "total": 8
+          },
+          {
+            "branch": "5f42a177c85c",
+            "passed": 0,
+            "status": "ran",
+            "total": 17
+          },
+          {
+            "branch": "6ac475511579",
+            "passed": 0,
+            "status": "ran",
+            "total": 13
+          },
+          {
+            "branch": "797ec2fcc5db",
+            "passed": 0,
+            "status": "ran",
+            "total": 80
+          },
+          {
+            "branch": "81ae6a6d4997",
+            "passed": 0,
+            "status": "ran",
+            "total": 9
+          },
+          {
+            "branch": "8ecaeaf9fb2b",
+            "passed": 0,
+            "status": "ran",
+            "total": 24
+          },
+          {
+            "branch": "b5fb01523724",
+            "passed": 0,
+            "status": "ran",
+            "total": 27
+          },
+          {
+            "branch": "cc10dbbec57f",
+            "passed": 0,
+            "status": "ran",
+            "total": 4
+          },
+          {
+            "branch": "d295ef7dad1f",
+            "passed": 0,
+            "status": "ran",
+            "total": 17
+          },
+          {
+            "branch": "dc06d449ee12",
+            "passed": 0,
+            "status": "ran",
+            "total": 51
+          },
+          {
+            "branch": "e9e8360a457c",
+            "passed": 1,
+            "status": "ran",
+            "total": 107
+          }
+        ],
+        "passed": 10,
+        "score": 0.01303780964797914,
+        "total": 767
+      },
+      "delta": 0.007822685788787483,
+      "instance_id": "axodotdev__oranda.27d60c7",
+      "upstream": {
+        "error_code": null,
+        "passed": 16,
+        "score": 0.020860495436766623,
+        "total": 767
+      },
+      "wall_time_sec": 1226.8
     }
   ]
 }
