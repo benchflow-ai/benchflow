@@ -1,7 +1,7 @@
 tasks_dir: .ref/programbench/tasks
 jobs_dir: jobs/programbench-gemini-flash-lite
 agent: gemini
-model: gemini-3.1-flash-lite
+model: gemini-3.1-flash-lite-preview
 environment: docker
 concurrency: 4
 max_retries: 1
