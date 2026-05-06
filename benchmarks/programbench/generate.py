@@ -73,7 +73,9 @@ def load_tasks(tasks_dir: Path) -> list[ProgramBenchTask]:
             continue
         cfg = yaml.safe_load(task_yaml.read_text())
         tests_json_path = d / "tests.json"
-        tests_json = json.loads(tests_json_path.read_text()) if tests_json_path.exists() else {}
+        tests_json = (
+            json.loads(tests_json_path.read_text()) if tests_json_path.exists() else {}
+        )
         tasks.append(
             ProgramBenchTask(
                 instance_id=d.name,
@@ -301,11 +303,15 @@ def _run_test_branch(
         print(f"  WARNING: failed to download blob for branch {branch}: {exc}")
         return 0, 0
 
-    subprocess.run(
-        ["tar", "xzf", str(blob_path), "-C", str(workspace)],
-        check=True,
-        timeout=120,
-    )
+    try:
+        subprocess.run(
+            ["tar", "xzf", str(blob_path), "-C", str(workspace)],
+            check=True,
+            timeout=120,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        print(f"  WARNING: failed to extract archive for branch {branch}: {exc}")
+        return 0, 0
 
     # Restore executable
     _restore_executable(stash, workspace)
@@ -421,7 +427,9 @@ if __name__ == "__main__":
 '''
 
 
-def generate_task(task: ProgramBenchTask, output_dir: Path, *, overwrite: bool = False) -> Path:
+def generate_task(
+    task: ProgramBenchTask, output_dir: Path, *, overwrite: bool = False
+) -> Path:
     """Generate a single BenchFlow task directory for one ProgramBench instance."""
     task_dir = output_dir / task.instance_id
     if task_dir.exists():

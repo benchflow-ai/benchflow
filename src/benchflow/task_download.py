@@ -53,9 +53,7 @@ def ensure_tasks(benchmark: str) -> Path:
 
     if benchmark not in TASK_REPOS:
         available = sorted({*TASK_REPOS, *_GENERATED_BENCHMARKS})
-        raise ValueError(
-            f"Unknown benchmark: {benchmark!r}. Available: {available}"
-        )
+        raise ValueError(f"Unknown benchmark: {benchmark!r}. Available: {available}")
 
     info = TASK_REPOS[benchmark]
     root = _repo_root()
@@ -104,19 +102,20 @@ def _ensure_generated(benchmark: str) -> Path:
     clone_dir = root / ".ref" / benchmark / "_clone"
     clone_dir.parent.mkdir(parents=True, exist_ok=True)
 
+    # Generate into a temp directory and rename atomically so partial
+    # failures never leave a cached target that looks complete.
+    staging = root / ".ref" / benchmark / "_gen_staging"
     try:
         subprocess.run(
             ["git", "clone", "--depth", "1", info["repo"], str(clone_dir)],
             check=True,
         )
-        # Resolve the ProgramBench tasks data directory
         pb_tasks = clone_dir / "src" / "programbench" / "data" / "tasks"
         if not pb_tasks.is_dir():
             raise FileNotFoundError(
                 f"ProgramBench tasks directory not found at {pb_tasks}"
             )
 
-        # Import the generator and produce BenchFlow tasks
         import importlib
         import sys
 
@@ -125,11 +124,17 @@ def _ensure_generated(benchmark: str) -> Path:
             sys.path.insert(0, str(gen_path.parent))
         generate = importlib.import_module("programbench.generate")
 
-        target.mkdir(parents=True, exist_ok=True)
-        generated = generate.generate_all(pb_tasks, target)
+        staging.mkdir(parents=True, exist_ok=True)
+        generated = generate.generate_all(pb_tasks, staging)
+
+        # Atomic swap: only expose target once generation fully succeeds
+        target.parent.mkdir(parents=True, exist_ok=True)
+        staging.rename(target)
         logger.info("Generated %d tasks to %s", len(generated), target)
     finally:
         if clone_dir.exists():
             shutil.rmtree(clone_dir, ignore_errors=True)
+        if staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
 
     return target
