@@ -1,23 +1,11 @@
-datasets:
-  - path: datasets/harvey-lab
+# Harvey LAB benchmark config.
+# run_harvey_lab.py downloads + converts tasks to .ref/harvey-lab-benchflow.
+tasks_dir: .ref/harvey-lab-benchflow
 
-# Default: oracle agent for verification
-agents:
-  - name: oracle
+agent: oracle
+environment: docker
+concurrency: 4
 
-# Uncomment to run with other agents:
-# agents:
-#   - name: gemini
-#     model_name: gemini/gemini-2.5-flash-lite-preview-06-17
-#
-# agents:
-#   - name: claude-code
-#     model_name: anthropic/claude-sonnet-4-6
-
-environment:
-  type: docker
-  delete: true
-
-orchestrator:
-  type: local
-  n_concurrent_trials: 4
+# To run with Gemini instead of oracle:
+# agent: gemini
+# model: gemini/gemini-3.1-flash-lite-preview
