@@ -76,8 +76,14 @@ class DirectSandbox:
     DOCUMENTS_PATH = "/workspace/documents"
     OUTPUT_PATH = "/workspace/output"
 
-    def __init__(self, documents_dir: Path, output_dir: Path,
-                 workspace_dir: Path, default_timeout: int = 60, **kwargs):
+    def __init__(
+        self,
+        documents_dir: Path,
+        output_dir: Path,
+        workspace_dir: Path,
+        default_timeout: int = 60,
+        **kwargs,
+    ):
         self.documents_dir = documents_dir
         self.output_dir = output_dir
         self.workspace_dir = workspace_dir
@@ -95,13 +101,13 @@ class DirectSandbox:
     def _to_host_path(self, sandbox_path: str) -> Path:
         """Map a /workspace/... path to a real host path."""
         if sandbox_path.startswith(self.DOCUMENTS_PATH):
-            rel = sandbox_path[len(self.DOCUMENTS_PATH):].lstrip("/")
+            rel = sandbox_path[len(self.DOCUMENTS_PATH) :].lstrip("/")
             return self.documents_dir / rel if rel else self.documents_dir
         if sandbox_path.startswith(self.OUTPUT_PATH):
-            rel = sandbox_path[len(self.OUTPUT_PATH):].lstrip("/")
+            rel = sandbox_path[len(self.OUTPUT_PATH) :].lstrip("/")
             return self.output_dir / rel if rel else self.output_dir
         if sandbox_path.startswith(self.WORKSPACE_PATH):
-            rel = sandbox_path[len(self.WORKSPACE_PATH):].lstrip("/")
+            rel = sandbox_path[len(self.WORKSPACE_PATH) :].lstrip("/")
             return self.workspace_dir / rel if rel else self.workspace_dir
         raise ValueError(f"Path outside sandbox: {sandbox_path}")
 
@@ -156,7 +162,9 @@ class DirectSandbox:
         host_path = self._to_host_path(sandbox_path)
         if not host_path.is_dir():
             return []
-        return [str(p.relative_to(host_path)) for p in host_path.rglob("*") if p.is_file()]
+        return [
+            str(p.relative_to(host_path)) for p in host_path.rglob("*") if p.is_file()
+        ]
 
     @staticmethod
     def assert_sandbox_path(path: str) -> None:
@@ -166,15 +174,17 @@ class DirectSandbox:
     @staticmethod
     def is_writable(path: str) -> bool:
         return path.startswith("/workspace/output") or (
-            path.startswith("/workspace") and not path.startswith("/workspace/documents")
+            path.startswith("/workspace")
+            and not path.startswith("/workspace/documents")
         )
 
 
 class ExecResult:
     """Mirrors sandbox.sandbox.ExecResult."""
 
-    def __init__(self, stdout: str, stderr: str, returncode: int | None,
-                 timed_out: bool = False):
+    def __init__(
+        self, stdout: str, stderr: str, returncode: int | None, timed_out: bool = False
+    ):
         self.stdout = stdout
         self.stderr = stderr
         self.returncode = returncode
@@ -230,8 +240,9 @@ def _patch_sandbox_module() -> None:
     sys.modules["sandbox.sandbox"] = inner
 
 
-def _create_adapter(model: str, temperature: float = 0.0,
-                    reasoning_effort: str | None = None):
+def _create_adapter(
+    model: str, temperature: float = 0.0, reasoning_effort: str | None = None
+):
     """Create a Harvey LAB model adapter for the given model string.
 
     Imports are dynamic (importlib) because the harness package is only
@@ -240,8 +251,9 @@ def _create_adapter(model: str, temperature: float = 0.0,
     sys.path.insert(0, str(_HARVEY_LABS_ROOT))
 
     model_id = model.split("/", 1)[-1] if "/" in model else model
-    kwargs = dict(model=model_id, temperature=temperature,
-                  reasoning_effort=reasoning_effort)
+    kwargs = dict(
+        model=model_id, temperature=temperature, reasoning_effort=reasoning_effort
+    )
 
     if model_id.startswith("claude"):
         mod = importlib.import_module("harness.adapters.anthropic")
@@ -302,6 +314,7 @@ def _run_harvey_lab_agent(
         ws_skills = workspace_dir / "skills"
         ws_skills.mkdir(parents=True, exist_ok=True)
         import shutil
+
         for skill_dir in skills_dir.iterdir():
             scripts_dir = skill_dir / "scripts"
             if scripts_dir.exists():
@@ -397,63 +410,75 @@ def _run_harvey_lab_agent(
 
 def _emit_text(session_id: str, text: str):
     """Emit agent text as ACP agent_message_chunk."""
-    send({
-        "jsonrpc": "2.0",
-        "method": "session/update",
-        "params": {
-            "sessionId": session_id,
-            "update": {
-                "sessionUpdate": "agent_message_chunk",
-                "content": {"type": "text", "text": text[:_DIAG_TRUNCATE]},
+    send(
+        {
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": session_id,
+                "update": {
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": {"type": "text", "text": text[:_DIAG_TRUNCATE]},
+                },
             },
-        },
-    })
+        }
+    )
 
 
 def _emit_tool_call(session_id: str, tool_call_id: str, name: str, arguments: str):
     """Emit ACP tool_call notification."""
     kind = {
-        "bash": "bash", "read": "read", "write": "write",
-        "edit": "write", "glob": "search", "grep": "search",
+        "bash": "bash",
+        "read": "read",
+        "write": "write",
+        "edit": "write",
+        "glob": "search",
+        "grep": "search",
     }.get(name, "other")
 
-    send({
-        "jsonrpc": "2.0",
-        "method": "session/update",
-        "params": {
-            "sessionId": session_id,
-            "update": {
-                "sessionUpdate": "tool_call",
-                "toolCallId": tool_call_id,
-                "title": name,
-                "kind": kind,
-                "status": "in_progress",
+    send(
+        {
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": session_id,
+                "update": {
+                    "sessionUpdate": "tool_call",
+                    "toolCallId": tool_call_id,
+                    "title": name,
+                    "kind": kind,
+                    "status": "in_progress",
+                },
             },
-        },
-    })
+        }
+    )
 
 
 def _emit_tool_result(session_id: str, tool_call_id: str, result: str):
     """Emit ACP tool_call_update with completion status."""
-    send({
-        "jsonrpc": "2.0",
-        "method": "session/update",
-        "params": {
-            "sessionId": session_id,
-            "update": {
-                "sessionUpdate": "tool_call_update",
-                "toolCallId": tool_call_id,
-                "status": "completed",
-                "content": [{
-                    "type": "content",
-                    "content": {
-                        "type": "text",
-                        "text": result[:_TOOL_RESULT_TRUNCATE],
-                    },
-                }],
+    send(
+        {
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": session_id,
+                "update": {
+                    "sessionUpdate": "tool_call_update",
+                    "toolCallId": tool_call_id,
+                    "status": "completed",
+                    "content": [
+                        {
+                            "type": "content",
+                            "content": {
+                                "type": "text",
+                                "text": result[:_TOOL_RESULT_TRUNCATE],
+                            },
+                        }
+                    ],
+                },
             },
-        },
-    })
+        }
+    )
 
 
 # ── Main ACP loop ─────────────────────────────────────────────────────────────
@@ -475,30 +500,34 @@ def main():
         params = msg.get("params", {})
 
         if method == "initialize":
-            send({
-                "jsonrpc": "2.0",
-                "id": req_id,
-                "result": {
-                    "protocolVersion": 1,
-                    "agentCapabilities": {
-                        "loadSession": False,
-                        "promptCapabilities": {"image": False, "audio": False},
+            send(
+                {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "result": {
+                        "protocolVersion": 1,
+                        "agentCapabilities": {
+                            "loadSession": False,
+                            "promptCapabilities": {"image": False, "audio": False},
+                        },
+                        "agentInfo": {
+                            "name": "harvey-lab-harness",
+                            "version": "1.0",
+                        },
                     },
-                    "agentInfo": {
-                        "name": "harvey-lab-harness",
-                        "version": "1.0",
-                    },
-                },
-            })
+                }
+            )
 
         elif method == "session/new":
             cwd = params.get("cwd", "/app")
             session_id = f"harvey-lab-{uuid.uuid4().hex[:8]}"
-            send({
-                "jsonrpc": "2.0",
-                "id": req_id,
-                "result": {"sessionId": session_id},
-            })
+            send(
+                {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "result": {"sessionId": session_id},
+                }
+            )
 
         elif method == "session/set_model":
             model = params.get("modelId", "")
@@ -539,17 +568,19 @@ def main():
                     session_id,
                     f"[Harvey LAB agent completed: {result['turn_count']} turns, "
                     f"{result['tool_call_count']} tool calls, "
-                    f"{result['wall_clock_seconds']}s]"
+                    f"{result['wall_clock_seconds']}s]",
                 )
             except Exception as e:
                 _emit_text(session_id, f"[Harvey LAB agent error: {e}]")
                 stop_reason = "end_turn"
 
-            send({
-                "jsonrpc": "2.0",
-                "id": req_id,
-                "result": {"stopReason": stop_reason},
-            })
+            send(
+                {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "result": {"stopReason": stop_reason},
+                }
+            )
 
         elif method == "session/prompt_cancel":
             send({"jsonrpc": "2.0", "id": req_id, "result": {}})
