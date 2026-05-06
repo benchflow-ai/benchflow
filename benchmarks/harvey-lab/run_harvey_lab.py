@@ -45,7 +45,7 @@ def ensure_converted_tasks() -> Path:
         [
             sys.executable, str(_ADAPTER),
             "--output-dir", str(converted_dir),
-            "--harvey-root", str(raw_dir.parent.parent),
+            "--harvey-root", str(raw_dir.parent),
         ],
         capture_output=True,
         text=True,

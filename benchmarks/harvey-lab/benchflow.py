@@ -263,10 +263,10 @@ def _build_evaluate_py() -> str:
         Respond with JSON only:
 
         ```json
-        {{
+        {
           "verdict": "pass" or "fail",
           "reasoning": "Brief explanation"
-        }}
+        }
         ```
         """
 
@@ -353,14 +353,13 @@ def _build_evaluate_py() -> str:
                 for name, content in relevant.items()
             )
 
-            prompt = VERDICT_PROMPT.format(
-                task_description=task_title,
-                agent_output=agent_output,
-                criterion_title=criterion["title"],
-                match_criteria=criterion["match_criteria"],
-            )
-
             try:
+                prompt = (VERDICT_PROMPT
+                    .replace("{task_description}", task_title)
+                    .replace("{agent_output}", agent_output)
+                    .replace("{criterion_title}", criterion["title"])
+                    .replace("{match_criteria}", criterion["match_criteria"])
+                )
                 response_text = call_gemini(prompt)
                 verdict = parse_verdict(response_text)
                 return {
