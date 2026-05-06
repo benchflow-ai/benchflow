@@ -454,9 +454,9 @@ AGENTS: dict[str, AgentConfig] = {
         launch_cmd=f"HARVEY_LABS_ROOT=/opt/harvey-labs python3 {_BENCHFLOW_BIN_PREFIX}/harvey-lab-acp-shim",
         protocol="acp",
         requires_env=[],  # inferred from model at runtime (ANTHROPIC_API_KEY, etc.)
-        env_mapping={
-            "BENCHFLOW_PROVIDER_API_KEY": "ANTHROPIC_API_KEY",
-        },
+        # env_mapping intentionally empty — Harvey LAB adapters read
+        # provider-specific env vars (ANTHROPIC_API_KEY, OPENAI_API_KEY,
+        # GOOGLE_API_KEY) directly; auto_inherit_env propagates these.
     ),
     "openhands": AgentConfig(
         name="openhands",
