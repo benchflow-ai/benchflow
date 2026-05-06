@@ -36,7 +36,7 @@ Branches and tests with `ignored: true` upstream are excluded, matching `program
 
 ```bash
 # From the repo root
-uv run python -m onramp.programbench.main --output-dir .ref/programbench-bf
+uv run python -m benchmarks.programbench.main --output-dir .ref/programbench-bf
 ```
 
 The first run clones `facebookresearch/ProgramBench` into `.ref/programbench/` to read the per-instance `task.yaml` + `tests.json`. Subsequent runs reuse the cache.
@@ -45,14 +45,14 @@ Useful flags:
 
 ```bash
 # Smoke-test a handful of tasks
-python -m onramp.programbench.main --output-dir .ref/programbench-bf --limit 5
+python -m benchmarks.programbench.main --output-dir .ref/programbench-bf --limit 5
 
 # Convert specific instances
-python -m onramp.programbench.main --output-dir .ref/programbench-bf \
+python -m benchmarks.programbench.main --output-dir .ref/programbench-bf \
     --task-ids abishekvashok__cmatrix.5c082c6 jq__jq.cff5336
 
 # Regenerate after touching the templates
-python -m onramp.programbench.main --output-dir .ref/programbench-bf --overwrite
+python -m benchmarks.programbench.main --output-dir .ref/programbench-bf --overwrite
 ```
 
 Validate the generated set:
@@ -66,7 +66,7 @@ for t in .ref/programbench-bf/*/; do bench tasks check "$t" || exit 1; done
 The default config in [`run_programbench.yaml`](./run_programbench.yaml) targets Gemini 3.1 Flash Lite and a local Docker backend. For a real run:
 
 ```bash
-uv run python -m benchflow.job onramp/programbench/run_programbench.yaml \
+uv run python -m benchflow.job benchmarks/programbench/run_programbench.yaml \
     --override agent=claude-agent-acp model=claude-haiku-4-5-20251001 environment=daytona
 ```
 
@@ -81,11 +81,11 @@ Two scripts share one goal: prove that, given the same submission archive, Bench
 [`parity_full.py`](./parity_full.py) walks every converted instance, scores each with both pipelines using a deterministic stub `compile.sh`, and writes per-instance pass/total to [`parity_full_results.json`](./parity_full_results.json). Resumable — re-running picks up where it stopped.
 
 ```bash
-uv run python -m onramp.programbench.main --output-dir .ref/programbench-bf
-uv run python -m onramp.programbench.parity_full \
+uv run python -m benchmarks.programbench.main --output-dir .ref/programbench-bf
+uv run python -m benchmarks.programbench.parity_full \
     --upstream-repo .ref/programbench \
     --tasks-dir .ref/programbench-bf \
-    --output onramp/programbench/parity_full_results.json
+    --output benchmarks/programbench/parity_full_results.json
 ```
 
 `--limit N` / `--task-ids …` restrict the run; `--budget-min M` caps wall time. Each instance pulls one ~600 MB image, runs both pipelines (each ≈ 5–15 min depending on test count), and removes the image — so disk stays under ~2 GB at any time but wall time scales linearly.
@@ -95,7 +95,7 @@ uv run python -m onramp.programbench.parity_full \
 When you have a real model-generated submission and want a one-shot comparison, [`parity.py`](./parity.py) runs both pipelines on that one archive:
 
 ```bash
-uv run python -m onramp.programbench.parity \
+uv run python -m benchmarks.programbench.parity \
     --upstream-repo .ref/programbench \
     --instance-id abishekvashok__cmatrix.5c082c6 \
     --submission /path/to/submission.tar.gz
@@ -107,12 +107,12 @@ Generate submissions with a real agent through BenchFlow, then feed each back th
 
 ```bash
 export GEMINI_API_KEY=...
-uv run python -m benchflow.job onramp/programbench/run_programbench.yaml \
+uv run python -m benchflow.job benchmarks/programbench/run_programbench.yaml \
     --override jobs_dir=../jobs/programbench-parity-subset \
     --tasks-glob '.ref/programbench-bf/abishekvashok__cmatrix.5c082c6'
 
 for inst in $(ls ../jobs/programbench-parity-subset); do
-    uv run python -m onramp.programbench.parity \
+    uv run python -m benchmarks.programbench.parity \
         --upstream-repo .ref/programbench \
         --instance-id "$inst" \
         --submission "../jobs/programbench-parity-subset/$inst/submission.tar.gz"

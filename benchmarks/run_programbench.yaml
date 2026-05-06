@@ -1,12 +1,9 @@
 # BenchFlow Job config for the full converted ProgramBench dataset.
 #
 # Usage:
-#   # 1. Materialize the converted task directories under .ref/ (the standard
-#   #    cache location for benchmark task repos — see benchmarks/run_skillsbench.py).
-#   uv run python -m onramp.programbench.main --output-dir .ref/programbench-bf
-#
-#   # 2. Run the job.
-#   uv run python -m benchflow.job onramp/programbench/run_programbench.yaml
+#   uv run python benchmarks/run_programbench.py
+#   # or, with a custom config:
+#   uv run python benchmarks/run_programbench.py path/to/config.yaml
 #
 # Override `agent` and `model` per run. The default is gemini-3.1-flash-lite-preview
 # because it has the largest context window we can afford and is the model the

@@ -1,4 +1,4 @@
-"""Full-set parity sweep: BenchFlow onramp vs. upstream `programbench eval`.
+"""Full-set parity sweep: BenchFlow programbench adapter vs. upstream `programbench eval`.
 
 For each upstream instance:
   1. Pull both image tags (`programbench/<id>:task` for upstream, `:task_cleanroom`
@@ -166,7 +166,6 @@ def upstream_score(instance_id: str, blob_cache: Path, stub_dir: Path,
 
 
 def _score_from_eval_json(data: dict, instance_id: str, upstream_repo: Path) -> dict:
-    upstream_task_yaml = upstream_repo / "src" / "programbench" / "data" / "tasks" / instance_id / "task.yaml"
     upstream_tests_json = upstream_repo / "src" / "programbench" / "data" / "tasks" / instance_id / "tests.json"
 
     active_branches: set[str] = set()
@@ -247,7 +246,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--tasks-dir", required=True, type=Path,
                    help="Where converted BenchFlow tasks live (`benchflow.py` output).")
     p.add_argument("--blob-cache", default=Path("/tmp/benchflow_blobs"), type=Path)
-    p.add_argument("--output", default=Path("onramp/programbench/parity_full_results.json"), type=Path)
+    p.add_argument("--output", default=Path("benchmarks/programbench/parity_full_results.json"), type=Path)
     p.add_argument("--task-ids", nargs="*", default=None,
                    help="Restrict to these instance IDs (default: all under --tasks-dir).")
     p.add_argument("--limit", type=int, default=None)

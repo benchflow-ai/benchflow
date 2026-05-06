@@ -1,5 +1,5 @@
 {
-  "_about": "Parity check: same submission archive scored by upstream `programbench eval` and by the BenchFlow onramp verifier. Each row pairs the upstream-recorded eval.json (.ref/programbench/src/programbench/data/test_runs/) with what tests/test.sh produces inside the BenchFlow image.",
+  "_about": "Parity check: same submission archive scored by upstream `programbench eval` and by the BenchFlow programbench adapter verifier. Each row pairs the upstream-recorded eval.json (.ref/programbench/src/programbench/data/test_runs/) with what tests/test.sh produces inside the BenchFlow image.",
   "_pipeline": "Generate task -> docker build -> stage submission to /app/ -> bash /tests/test.sh -> read /logs/verifier/{reward.txt,score.json}",
   "_methodology_match": "Both pipelines: (1) wipe /workspace, stage submission, run compile.sh -> ./executable; (2) snapshot the build, restore for each branch; (3) score = passed / (junit_cases + missing_from_junit), counting tests at full {classname}.{name}.",
   "subset": {
@@ -68,6 +68,6 @@
       "8.2 GB of test blobs from HuggingFace dataset programbench/ProgramBench-Tests fetched on-demand by the verifier.",
       "Per-task wall time on Gemini 3.1 Flash Lite is hours (programs span 30k–80k LoC); full set needs Daytona/Modal."
     ],
-    "_how_to_run": "uv run python -m benchflow.job onramp/programbench/run_programbench.yaml --override environment=daytona; then for each instance pull submission.tar.gz from the trial dir and feed it through `programbench eval` for upstream score, comparing in onramp/programbench/parity.py."
+    "_how_to_run": "uv run python -m benchflow.job benchmarks/programbench/run_programbench.yaml --override environment=daytona; then for each instance pull submission.tar.gz from the trial dir and feed it through `programbench eval` for upstream score, comparing in benchmarks/programbench/parity.py."
   }
 }

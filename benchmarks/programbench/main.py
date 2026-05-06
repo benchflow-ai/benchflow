@@ -1,8 +1,8 @@
-"""CLI entry point for the ProgramBench onramp adapter.
+"""CLI entry point for the ProgramBench adapter.
 
 Usage:
 
-    python -m onramp.programbench.main \\
+    python -m benchmarks.programbench.main \\
         --output-dir tasks/programbench \\
         --upstream-tasks-dir <path-to-programbench-clone>/src/programbench/data/tasks \\
         --limit 5
@@ -20,7 +20,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from onramp.programbench.benchflow import convert
+from benchmarks.programbench.benchflow import convert
 
 UPSTREAM_REPO = "https://github.com/facebookresearch/ProgramBench.git"
 UPSTREAM_REF = "main"

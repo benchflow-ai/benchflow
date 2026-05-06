@@ -28,7 +28,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from onramp.programbench.benchflow import convert
+from benchmarks.programbench.benchflow import convert
 
 logger = logging.getLogger(__name__)
 
@@ -100,13 +100,13 @@ def benchflow_oracle_score(task_dir: Path, submission_archive: Path) -> dict:
     and /logs/verifier/score.json. Equivalent to ``bench run <task> --agent oracle``
     but we provide the submission ourselves.
     """
-    image_tag = f"benchflow-onramp-{task_dir.name}".lower().replace("_", "-")
+    image_tag = f"benchflow-bench-pb-{task_dir.name}".lower().replace("_", "-")
     subprocess.run(
         ["docker", "build", "-t", image_tag, "-f", str(task_dir / "environment" / "Dockerfile"),
          str(task_dir / "environment")],
         check=True, timeout=1800,
     )
-    container = f"benchflow-onramp-{task_dir.name}".lower().replace("_", "-") + "-run"
+    container = f"benchflow-bench-pb-{task_dir.name}".lower().replace("_", "-") + "-run"
     subprocess.run(["docker", "rm", "-f", container], check=False)
     subprocess.run(
         ["docker", "run", "-d", "--name", container, image_tag, "sleep", "7200"],
@@ -170,10 +170,10 @@ def compare(upstream: dict, ours: dict, instance_id: str) -> dict:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Parity check: ProgramBench upstream vs. BenchFlow onramp.")
+    parser = argparse.ArgumentParser(description="Parity check: ProgramBench upstream vs. BenchFlow programbench adapter.")
     parser.add_argument("--upstream-repo", type=Path, required=True,
                         help="Path to a clone of facebookresearch/ProgramBench.")
-    parser.add_argument("--output", type=Path, default=Path("onramp/programbench/parity_experiment.json"))
+    parser.add_argument("--output", type=Path, default=Path("benchmarks/programbench/parity_experiment.json"))
     parser.add_argument("--tasks-dir", type=Path, default=Path(".ref/programbench-bf"),
                         help="Where converted BenchFlow tasks live.")
     parser.add_argument("--instance-id", default=None,

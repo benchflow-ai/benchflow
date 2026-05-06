@@ -1,4 +1,4 @@
-"""Tests for the ProgramBench onramp adapter."""
+"""Tests for the ProgramBench adapter."""
 
 from __future__ import annotations
 
@@ -6,12 +6,12 @@ import json
 import sys
 from pathlib import Path
 
-# Make `onramp` importable from the repo root.
+# Make `benchmarks` importable from the repo root.
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from onramp.programbench.benchflow import (
+from benchmarks.programbench.benchflow import (
     UpstreamInstance,
     cleanroom_image_name,
     convert,
