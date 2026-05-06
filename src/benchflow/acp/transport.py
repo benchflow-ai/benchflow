@@ -11,6 +11,32 @@ from benchflow.process import drain_oversized_line
 logger = logging.getLogger(__name__)
 
 
+def decode_json_rpc_message(text: str) -> dict[str, Any] | None:
+    """Decode one JSON-RPC message line.
+
+    ACP transports are line-delimited JSON, but the protocol message itself
+    must be a JSON-RPC 2.0 object. Some agents write JSON-encoded logs to
+    stdout; treat those like non-protocol output instead of returning them to
+    the client.
+    """
+    try:
+        message = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(message, dict) or message.get("jsonrpc") != "2.0":
+        return None
+
+    has_result = "result" in message
+    has_error = "error" in message
+    if "method" in message:
+        if isinstance(message["method"], str) and not has_result and not has_error:
+            return message
+        return None
+    if "id" in message and has_result != has_error:
+        return message
+    return None
+
+
 class Transport(ABC):
     """Base class for ACP transports."""
 
@@ -90,11 +116,10 @@ class StdioTransport(Transport):
             text = line.decode().strip()
             if not text:
                 continue
-            try:
-                return json.loads(text)
-            except json.JSONDecodeError:
-                logger.debug(f"Non-JSON line from agent: {text}")
-                continue
+            message = decode_json_rpc_message(text)
+            if message is not None:
+                return message
+            logger.debug(f"Non-JSON-RPC line from agent: {text[:200]}")
 
     async def close(self) -> None:
         if self._process:
