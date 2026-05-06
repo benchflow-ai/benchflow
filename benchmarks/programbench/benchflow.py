@@ -173,8 +173,8 @@ RUN apt-get update -qq && \\
     apt-get install -y -qq python3 python3-pip git jq && \\
     rm -rf /var/lib/apt/lists/* 2>/dev/null; true
 
-RUN pip3 install --break-system-packages --quiet \\
-    huggingface_hub pyyaml junitparser 2>/dev/null; true
+RUN pip3 install --quiet huggingface_hub pyyaml junitparser || \
+    pip3 install --break-system-packages --quiet huggingface_hub pyyaml junitparser
 """
 
 
