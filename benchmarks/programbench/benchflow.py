@@ -324,12 +324,15 @@ def _run_test_branch(
         run_sh.write_text(content)
         run_sh.chmod(0o755)
         # Run tests
-        subprocess.run(
-            ["bash", str(run_sh)],
-            cwd=str(workspace),
-            timeout=3600,
-            capture_output=False,
-        )
+        try:
+            subprocess.run(
+                ["bash", str(run_sh)],
+                cwd=str(workspace),
+                timeout=3600,
+                capture_output=False,
+            )
+        except subprocess.TimeoutExpired:
+            print(f"  WARNING: test run timed out for branch {branch}")
 
     # Parse results
     passed = 0
