@@ -15,7 +15,7 @@ def decode_json_rpc_message(text: str) -> dict[str, Any] | None:
     """Decode one JSON-RPC message line.
 
     ACP transports are line-delimited JSON, but the protocol message itself
-    must be a JSON object. Some agents write JSON-encoded log scalars to
+    must be a JSON-RPC 2.0 object. Some agents write JSON-encoded logs to
     stdout; treat those like non-protocol output instead of returning them to
     the client.
     """
@@ -23,7 +23,18 @@ def decode_json_rpc_message(text: str) -> dict[str, Any] | None:
         message = json.loads(text)
     except json.JSONDecodeError:
         return None
-    return message if isinstance(message, dict) else None
+    if not isinstance(message, dict) or message.get("jsonrpc") != "2.0":
+        return None
+
+    has_result = "result" in message
+    has_error = "error" in message
+    if "method" in message:
+        if isinstance(message["method"], str) and not has_result and not has_error:
+            return message
+        return None
+    if "id" in message and has_result != has_error:
+        return message
+    return None
 
 
 class Transport(ABC):

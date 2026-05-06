@@ -222,12 +222,12 @@ class TestStdioTransportOversizedLine:
 
     @pytest.mark.asyncio
     async def test_stdio_transport_drain_oversized_line(self) -> None:
-        """Oversized line on stdout is skipped; following valid JSON returns normally.
+        """Oversized line on stdout is skipped; following JSON-RPC returns normally.
 
         Feeds the oversized chunk first, lets receive() hit LimitOverrunError and
         call drain_oversized_line (which clears the buffer), then feeds the next
-        valid JSON line so readline() can find it. This matches the real ordering
-        (stdin -> drain -> next line) that a live process would produce.
+        valid JSON-RPC line so readline() can find it. This matches the real
+        ordering (stdin -> drain -> next line) that a live process would produce.
         """
         limit = 64
         reader = asyncio.StreamReader(limit=limit)
@@ -246,11 +246,11 @@ class TestStdioTransportOversizedLine:
             # drain_oversized_line clears the buffer and consumes up to the
             # next \n (the oversized newline was flushed with the clear), so
             # we feed a dummy newline to satisfy drain's readuntil, then the
-            # real JSON line that receive() should return.
+            # real JSON-RPC line that receive() should return.
             await asyncio.sleep(0.05)
             reader.feed_data(b"\n")
             await asyncio.sleep(0.05)
-            reader.feed_data(b'{"ok": true}\n')
+            reader.feed_data(b'{"jsonrpc": "2.0", "id": 1, "result": {"ok": true}}\n')
             reader.feed_eof()
 
         feeder = asyncio.create_task(feed_valid_later())
@@ -258,7 +258,7 @@ class TestStdioTransportOversizedLine:
             msg = await asyncio.wait_for(transport.receive(), timeout=5)
         finally:
             await feeder
-        assert msg == {"ok": True}
+        assert msg == {"jsonrpc": "2.0", "id": 1, "result": {"ok": True}}
 
 
 class TestTransportProtocolFiltering:
@@ -309,6 +309,54 @@ class TestTransportProtocolFiltering:
         log_text = agent_log.read_text()
         assert '"debug string from agent"' in log_text
         assert '["debug", "list"]' in log_text
+
+    @pytest.mark.asyncio
+    async def test_stdio_transport_skips_structured_json_logs(self) -> None:
+        """Guards PR #236 against treating JSON object logs as ACP responses."""
+        reader = asyncio.StreamReader()
+        reader.feed_data(b'{"id": 100001, "level": "info", "message": "startup"}\n')
+        reader.feed_data(b'{"jsonrpc": "2.0", "id": 100001, "result": {"ok": true}}\n')
+        reader.feed_eof()
+
+        transport = StdioTransport(sys.executable, [])
+        fake_process = MagicMock()
+        fake_process.stdout = reader
+        fake_process.stdin = MagicMock()
+        transport._process = fake_process
+        client = ACPClient(transport)
+
+        result = await asyncio.wait_for(client._read_until_response(100001), timeout=5)
+        assert result == {"ok": True}
+
+    @pytest.mark.asyncio
+    async def test_container_transport_logs_structured_json_logs(
+        self, tmp_path
+    ) -> None:
+        """Guards PR #236 against treating JSON object logs as ACP responses."""
+        fake_process = AsyncMock()
+        fake_process.readline = AsyncMock(
+            side_effect=[
+                b'{"id": 2, "level": "info", "message": "startup"}\n',
+                b'{"jsonrpc": "2.0", "id": 2, "result": {"ok": true}}\n',
+            ]
+        )
+        agent_log = tmp_path / "agent.log"
+        transport = ContainerTransport(
+            container_process=fake_process,
+            command="agent acp",
+            agent_log_path=agent_log,
+        )
+
+        await transport.start()
+        try:
+            msg = await asyncio.wait_for(transport.receive(), timeout=5)
+        finally:
+            await transport.close()
+
+        assert msg == {"jsonrpc": "2.0", "id": 2, "result": {"ok": True}}
+        assert '{"id": 2, "level": "info", "message": "startup"}' in (
+            agent_log.read_text()
+        )
 
 
 class TestACPInterleaving:
