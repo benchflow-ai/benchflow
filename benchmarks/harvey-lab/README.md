@@ -12,7 +12,31 @@ This adapter translates Harvey LAB tasks into BenchFlow format, preserving:
 - **Rubric criteria** → LLM-as-judge verifier (`tests/evaluate.py` using Gemini)
 - **Metadata** (practice area, work type, tags) → `task.toml` metadata
 
-## Task Structure
+## Adapter Structure
+
+```
+benchmarks/harvey-lab/
+├── benchflow.py                     # adapter: Harvey LAB task.json → BenchFlow task format
+├── parity_test.py                   # structural, eval, and side-by-side parity tests
+├── run_harvey_lab.py                # runner: download + convert + run via Job
+├── harvey-lab-gemini-flash-lite.yaml # BenchFlow-native YAML config
+├── parity_experiment.json           # side-by-side parity results (Step 5)
+├── adapter_metadata.json            # benchmark metadata
+└── README.md
+```
+
+### BenchFlow Adapter Convention
+
+| File | Purpose |
+|---|---|
+| `benchflow.py` | Adapter CLI: `--output-dir`, `--limit`, `--overwrite`, `--task-ids` |
+| `run_<name>.py` | Runner: downloads raw tasks via `ensure_tasks()`, converts, runs via `Job` |
+| `<name>.yaml` | BenchFlow-native YAML config (`tasks_dir`, `agent`, `model`, `environment`) |
+| `parity_test.py` | Validates structural, eval, and side-by-side parity |
+| `parity_experiment.json` | Records side-by-side parity results |
+| `adapter_metadata.json` | Benchmark metadata (task count, verification method, parity summary) |
+
+## Task Mapping
 
 | Harvey LAB | BenchFlow |
 |---|---|
@@ -36,37 +60,76 @@ python benchmarks/harvey-lab/benchflow.py \
     --output-dir /tmp/harvey-lab-tasks \
     --harvey-root /path/to/harvey-labs \
     --limit 10
+
+# Specific tasks
+python benchmarks/harvey-lab/benchflow.py \
+    --output-dir /tmp/harvey-lab-tasks \
+    --harvey-root /path/to/harvey-labs \
+    --task-ids "corporate-ma/analyze-cim-deal-teaser/scenario-01"
 ```
 
 ### Run parity tests
 
 ```bash
-# Structural parity (subset)
+# Structural parity (subset — 5 tasks)
 python benchmarks/harvey-lab/parity_test.py --mode subset
 
-# Structural parity (full)
+# Structural parity (full — all 1,251 tasks)
 python benchmarks/harvey-lab/parity_test.py --mode full
 
-# Evaluation parity (LLM judge — requires Gemini API key)
+# Eval pipeline end-to-end (requires Gemini API key)
 GEMINI_API_KEY=... python benchmarks/harvey-lab/parity_test.py \
     --mode eval-parity --gemini-api-key $GEMINI_API_KEY
+
+# Side-by-side parity (original vs adapted prompt, same judge)
+GEMINI_API_KEY=... python benchmarks/harvey-lab/parity_test.py \
+    --mode side-by-side --gemini-api-key $GEMINI_API_KEY
 ```
 
 ### Run benchmarks
 
 ```bash
-# Via BenchFlow CLI
-bench run datasets/harvey-lab --agent gemini --backend docker
-
-# Via script
+# Via BenchFlow Job (downloads + converts + runs)
 python benchmarks/harvey-lab/run_harvey_lab.py
+
+# Or with YAML config
+python -c "import asyncio; from benchflow.job import Job; asyncio.run(Job.from_yaml('benchmarks/harvey-lab/harvey-lab-gemini-flash-lite.yaml').run())"
 ```
+
+## Parity Results
+
+### Step-by-step validation
+
+| Step | Test | Result |
+|---|---|---|
+| 1 | Understand original benchmark | Harvey LAB: 1,251 tasks, 24 practice areas, LLM-judge evaluation |
+| 2 | Adapter code complete | `benchflow.py` with `--output-dir`, `--limit`, `--overwrite`, `--task-ids` |
+| 3 | Oracle verification | N/A — Harvey LAB has no oracle solutions; cheap agent pass validates solvability |
+| 4 | Plan parity & implement agents | Gemini 3.1 Flash Lite used as both agent model and judge |
+| 5 | **Side-by-side parity** | **25/25 criteria agree (100%)** across 5 practice areas |
+| 6 | Record parity results | `parity_experiment.json` |
+| 7 | Upload results | Included in PR |
+| 8 | Register dataset | `harvey-lab` registered in `task_download.py` |
+| 9 | Document & submit | This README + `adapter_metadata.json` |
+
+### Side-by-side parity details
+
+Ran the original Harvey LAB `rubric_criterion.txt` prompt template and the adapted BenchFlow `string.Template` prompt through the same Gemini 3.1 Flash Lite judge on identical synthetic agent output:
+
+| Task | Practice Area | Criteria Tested | Agreement |
+|---|---|---|---|
+| analyze-cim-deal-teaser | Corporate M&A | 5/5 | 100% |
+| compare-reinsurance-treaty | Insurance | 5/5 | 100% |
+| draft-construction-contract | Real Estate | 5/5 | 100% |
+| review-enterprise-saas | IP | 5/5 | 100% |
+| draft-workplace-policy | Employment | 5/5 | 100% |
+| **Total** | | **25/25** | **100%** |
 
 ## Evaluation
 
 The verifier uses Gemini as an LLM-as-judge. For each task criterion:
 1. Reads the agent's deliverable files (.docx, .xlsx, .pdf, .md, etc.)
-2. Formats a judge prompt with the criterion and deliverable content
+2. Formats a judge prompt via `string.Template.safe_substitute()` (safe against injection)
 3. Gets a PASS/FAIL verdict from Gemini
 4. Reward = (criteria passed) / (total criteria)
 

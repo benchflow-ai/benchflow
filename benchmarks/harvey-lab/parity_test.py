@@ -10,8 +10,8 @@ tasks.  Three modes:
   3. **Side-by-side parity** — runs the *original* Harvey LAB prompt
      template and the *adapted* BenchFlow prompt template through the
      same Gemini judge on identical agent output, then compares
-     per-criterion verdicts.  This is the experiment the Harbor adapter
-     guide calls for in Step 5.
+     per-criterion verdicts.  This is the core adapter validation
+     experiment (Step 5 of the adapter guide).
 
 Usage:
     # Subset structural (5 tasks)
@@ -309,7 +309,7 @@ def check_eval_parity(
     return passed, failed, errors
 
 
-# ── Side-by-Side Parity (Harbor Step 5) ──────────────────────────────
+# ── Side-by-Side Parity (Step 5) ─────────────────────────────────────
 
 # Original Harvey LAB prompt template (from evaluation/prompts/rubric_criterion.txt)
 _ORIGINAL_PROMPT = """\
