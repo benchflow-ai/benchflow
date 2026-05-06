@@ -1,8 +1,8 @@
-"""BenchFlow adapter for Harvey LAB (Legal Agent Benchmark).
+"""Harvey LAB → BenchFlow converter.
 
 Translates Harvey LAB tasks into BenchFlow task format. Each Harvey LAB
 task contains instructions, documents, and rubric criteria graded by an
-LLM judge. This adapter maps those to BenchFlow's task.toml /
+LLM judge. This converter maps those to BenchFlow's task.toml /
 instruction.md / environment / tests structure.
 
 Usage:

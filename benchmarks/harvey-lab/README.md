@@ -1,40 +1,40 @@
-# Harvey LAB Adapter
+# Harvey LAB
 
-BenchFlow adapter for [Harvey LAB (Legal Agent Benchmark)](https://github.com/harveyai/harvey-labs) — 1,251 legal tasks across 24 practice areas.
+[Harvey LAB (Legal Agent Benchmark)](https://github.com/harveyai/harvey-labs) in BenchFlow format — 1,251 legal tasks across 24 practice areas.
 
 ## Overview
 
 Harvey LAB is an open-source benchmark for evaluating agents on real legal work. Tasks span M&A, insurance, IP, tax, real estate, and more. Each task provides documents and rubric criteria graded by an LLM judge (all-pass scoring).
 
-This adapter translates Harvey LAB tasks into BenchFlow format, preserving:
+This benchmark converts Harvey LAB tasks into BenchFlow format, preserving:
 - **Instructions** → `instruction.md`
 - **Documents** → baked into the Docker environment
 - **Rubric criteria** → LLM-as-judge verifier (`tests/evaluate.py` using Gemini)
 - **Metadata** (practice area, work type, tags) → `task.toml` metadata
 
-## Adapter Structure
+## Directory Structure
 
 ```
 benchmarks/harvey-lab/
-├── benchflow.py                     # adapter: Harvey LAB task.json → BenchFlow task format
+├── benchflow.py                     # converter: Harvey LAB task.json → BenchFlow task format
 ├── parity_test.py                   # structural, eval, and side-by-side parity tests
 ├── run_harvey_lab.py                # runner: download + convert + run via Job
 ├── harvey-lab-gemini-flash-lite.yaml # BenchFlow-native YAML config
 ├── parity_experiment.json           # side-by-side parity results (Step 5)
-├── adapter_metadata.json            # benchmark metadata
+├── benchmark_metadata.json          # benchmark metadata
 └── README.md
 ```
 
-### BenchFlow Adapter Convention
+### BenchFlow Benchmark Convention
 
 | File | Purpose |
 |---|---|
-| `benchflow.py` | Adapter CLI: `--output-dir`, `--limit`, `--overwrite`, `--task-ids` |
+| `benchflow.py` | Converter CLI: `--output-dir`, `--limit`, `--overwrite`, `--task-ids` |
 | `run_<name>.py` | Runner: downloads raw tasks via `ensure_tasks()`, converts, runs via `Job` |
 | `<name>.yaml` | BenchFlow-native YAML config (`tasks_dir`, `agent`, `model`, `environment`) |
 | `parity_test.py` | Validates structural, eval, and side-by-side parity |
 | `parity_experiment.json` | Records side-by-side parity results |
-| `adapter_metadata.json` | Benchmark metadata (task count, verification method, parity summary) |
+| `benchmark_metadata.json` | Benchmark metadata (task count, verification method, parity summary) |
 
 ## Task Mapping
 
@@ -103,18 +103,18 @@ python -c "import asyncio; from benchflow.job import Job; asyncio.run(Job.from_y
 | Step | Test | Result |
 |---|---|---|
 | 1 | Understand original benchmark | Harvey LAB: 1,251 tasks, 24 practice areas, LLM-judge evaluation |
-| 2 | Adapter code complete | `benchflow.py` with `--output-dir`, `--limit`, `--overwrite`, `--task-ids` |
+| 2 | Converter code complete | `benchflow.py` with `--output-dir`, `--limit`, `--overwrite`, `--task-ids` |
 | 3 | Oracle verification | N/A — Harvey LAB has no oracle solutions; cheap agent pass validates solvability |
 | 4 | Plan parity & implement agents | Gemini 3.1 Flash Lite used as both agent model and judge |
 | 5 | **Side-by-side parity** | **25/25 criteria agree (100%)** across 5 practice areas |
 | 6 | Record parity results | `parity_experiment.json` |
 | 7 | Upload results | Included in PR |
 | 8 | Register dataset | `harvey-lab` registered in `task_download.py` |
-| 9 | Document & submit | This README + `adapter_metadata.json` |
+| 9 | Document & submit | This README + `benchmark_metadata.json` |
 
 ### Side-by-side parity details
 
-Ran the original Harvey LAB `rubric_criterion.txt` prompt template and the adapted BenchFlow `string.Template` prompt through the same Gemini 3.1 Flash Lite judge on identical synthetic agent output:
+Ran the original Harvey LAB `rubric_criterion.txt` prompt template and the converted BenchFlow `string.Template` prompt through the same Gemini 3.1 Flash Lite judge on identical synthetic agent output:
 
 | Task | Practice Area | Criteria Tested | Agreement |
 |---|---|---|---|

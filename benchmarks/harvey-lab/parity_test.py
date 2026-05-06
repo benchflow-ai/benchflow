@@ -1,6 +1,6 @@
-"""Parity test for Harvey LAB adapter.
+"""Parity test for Harvey LAB benchmark.
 
-Verifies that the BenchFlow adapter faithfully translates Harvey LAB
+Verifies that the BenchFlow converter faithfully translates Harvey LAB
 tasks.  Three modes:
 
   1. Structural parity — task directories have all required files, metadata
@@ -10,8 +10,8 @@ tasks.  Three modes:
   3. **Side-by-side parity** — runs the *original* Harvey LAB prompt
      template and the *adapted* BenchFlow prompt template through the
      same Gemini judge on identical agent output, then compares
-     per-criterion verdicts.  This is the core adapter validation
-     experiment (Step 5 of the adapter guide).
+     per-criterion verdicts.  This is the core parity validation
+     experiment (Step 5 of the conversion guide).
 
 Usage:
     # Subset structural (5 tasks)
@@ -59,13 +59,13 @@ SUBSET_TASK_IDS = [
 GEMINI_MODEL = "gemini-3.1-flash-lite-preview"
 
 
-def _run_adapter(
+def _run_converter(
     harvey_root: Path,
     output_dir: Path,
     task_ids: list[str] | None = None,
     limit: int | None = None,
 ) -> None:
-    """Run the benchflow.py adapter to generate tasks."""
+    """Run the benchflow.py converter to generate tasks."""
     cmd = [
         sys.executable,
         str(_SCRIPT_DIR / "benchflow.py"),
@@ -82,7 +82,7 @@ def _run_adapter(
     print(result.stdout)
     if result.returncode != 0:
         print(result.stderr, file=sys.stderr)
-        raise RuntimeError(f"Adapter failed with code {result.returncode}")
+        raise RuntimeError(f"Converter failed with code {result.returncode}")
 
 
 def _sanitize_name(raw: str) -> str:
@@ -547,7 +547,7 @@ def check_side_by_side_parity(
 # ── Main ──────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="Harvey LAB adapter parity tests")
+    parser = argparse.ArgumentParser(description="Harvey LAB parity tests")
     parser.add_argument(
         "--mode",
         choices=["subset", "full", "eval-parity", "side-by-side"],
@@ -595,14 +595,14 @@ def main():
                 ]
 
             print(f"\n=== Subset Structural Parity ({len(valid_ids)} tasks) ===\n")
-            _run_adapter(harvey_root, output_dir, task_ids=valid_ids)
+            _run_converter(harvey_root, output_dir, task_ids=valid_ids)
             passed, failed, errors = check_structural_parity(
                 harvey_root, output_dir, valid_ids
             )
 
         elif args.mode == "full":
             print("\n=== Full Structural Parity (all tasks) ===\n")
-            _run_adapter(harvey_root, output_dir)
+            _run_converter(harvey_root, output_dir)
             all_tasks = sorted(
                 (harvey_root / "tasks").rglob("task.json")
             )
@@ -636,7 +636,7 @@ def main():
                 ]
 
             print(f"\n=== Eval Parity ({len(eval_ids)} tasks) ===\n")
-            _run_adapter(harvey_root, output_dir, task_ids=eval_ids)
+            _run_converter(harvey_root, output_dir, task_ids=eval_ids)
             passed, failed, errors = check_eval_parity(
                 harvey_root, output_dir, eval_ids, args.gemini_api_key
             )
