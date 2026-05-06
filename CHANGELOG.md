@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Onramp** (`onramp/`) — adapters that convert external benchmarks into BenchFlow's task format.
+  - `onramp/programbench/` — first adapter, covers all 200 ProgramBench instances
+    (rebuild a program from binary + docs). Generates `task.toml` + `instruction.md` +
+    `environment/Dockerfile` + `tests/{test.sh,tests.json}` per instance, builds on the
+    upstream `programbench/<id>:task_cleanroom` images, fetches per-branch test blobs
+    from HuggingFace at verify time, and computes `reward = passed / (junit_cases +
+    missing_from_junit)` to match `programbench info`'s scoring.
+  - Parity verified end-to-end on the upstream-shipped `testorg__calculator.abc1234`
+    fixture: BenchFlow and `programbench eval` produce identical `passed/total`
+    on both correct (3/6 = 0.5) and incorrect (0/6 = 0.0) submissions.
+
 ## 0.2.3 — 2026-04-15
 
 ### Added

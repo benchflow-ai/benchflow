@@ -1,0 +1,25 @@
+version = "1.0"
+
+[task]
+name = "${task_name}"
+
+[metadata]
+author_name = "programbench"
+difficulty = "${difficulty}"
+category = "program-rebuild"
+tags = ["programbench", "${language}", "${difficulty}"]
+upstream_repository = "${repository}"
+upstream_commit = "${commit}"
+upstream_instance_id = "${instance_id}"
+
+[agent]
+timeout_sec = ${agent_timeout_sec}
+
+[verifier]
+timeout_sec = ${verifier_timeout_sec}
+
+[environment]
+cpus = ${cpus}
+memory_mb = ${memory_mb}
+storage_mb = ${storage_mb}
+allow_internet = false

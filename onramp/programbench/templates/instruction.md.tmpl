@@ -1,0 +1,42 @@
+# Rebuild ${repository}
+
+You are given:
+
+- The compiled reference binary at `/workspace/executable` (execute-only — you can run it but cannot read its source).
+- The original program's documentation under `/workspace/docs/` (man pages, README excerpts, sample invocations).
+
+You **do not** have:
+
+- Access to the original source code.
+- Internet access.
+- A decompiler.
+
+Your job is to **rebuild a program from scratch** that reproduces the reference binary's externally-observable behaviour: same flags, same outputs, same exit codes, same error messages where checked.
+
+## Submission format
+
+Write your codebase under `/app/`. When you are done, `/app/` must contain:
+
+1. **A `compile.sh` script** at `/app/compile.sh`. Running `bash compile.sh` from `/app/` must:
+   - Compile/build your implementation.
+   - Produce an executable file named `executable` at `/app/executable`.
+   - Return exit code 0 on success.
+
+2. **All source files and build artifacts** your `compile.sh` needs.
+
+You may write the implementation in any language (`${language}` is the upstream language, but you are not bound to it). The verifier only cares that `/app/executable` exists, is runnable, and reproduces the reference binary's behaviour against the held-out test suite.
+
+## Workflow tips
+
+- Run `/workspace/executable --help` (or whatever the reference binary supports) to enumerate flags.
+- Probe the reference binary with sample inputs — its behaviour, including error wording and exit codes, is the spec.
+- Read everything under `/workspace/docs/` carefully; it covers the documented surface but not undocumented quirks you may need to match.
+- Behavioural tests cover argument parsing, normal-path I/O, edge cases, and error handling. Plan for all four.
+
+## Constraints
+
+- No internet access during build or run.
+- Your `executable` must run on Linux x86_64.
+- Build time is bounded — keep `compile.sh` deterministic and avoid heavy installs.
+
+When you are confident, leave `/app/compile.sh` and your sources in place and finish.

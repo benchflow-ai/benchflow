@@ -1,0 +1,73 @@
+{
+  "_about": "Parity check: same submission archive scored by upstream `programbench eval` and by the BenchFlow onramp verifier. Each row pairs the upstream-recorded eval.json (.ref/programbench/src/programbench/data/test_runs/) with what tests/test.sh produces inside the BenchFlow image.",
+  "_pipeline": "Generate task -> docker build -> stage submission to /app/ -> bash /tests/test.sh -> read /logs/verifier/{reward.txt,score.json}",
+  "_methodology_match": "Both pipelines: (1) wipe /workspace, stage submission, run compile.sh -> ./executable; (2) snapshot the build, restore for each branch; (3) score = passed / (junit_cases + missing_from_junit), counting tests at full {classname}.{name}.",
+  "subset": {
+    "size": 1,
+    "tasks": ["testorg__calculator.abc1234"],
+    "agent_run": false,
+    "_note": "Fixture instance shipped with ProgramBench. Validates the verifier path end-to-end against the upstream-recorded oracle eval for both a correct and an incorrect submission. No live model is needed because the upstream-shipped submission archives are deterministic."
+  },
+  "results": [
+    {
+      "instance_id": "testorg__calculator.abc1234",
+      "submission_kind": "correct",
+      "upstream": {
+        "passed": 3,
+        "total": 6,
+        "score": 0.5
+      },
+      "benchflow": {
+        "passed": 3,
+        "total": 6,
+        "score": 0.5
+      },
+      "delta": 0.0,
+      "agree": true
+    },
+    {
+      "instance_id": "testorg__calculator.abc1234",
+      "submission_kind": "incorrect",
+      "upstream": {
+        "passed": 0,
+        "total": 6,
+        "score": 0.0
+      },
+      "benchflow": {
+        "passed": 0,
+        "total": 6,
+        "score": 0.0
+      },
+      "delta": 0.0,
+      "agree": true
+    }
+  ],
+  "summary": {
+    "n_cases": 2,
+    "n_agreeing": 2,
+    "max_delta": 0.0
+  },
+  "real_instance_smoke": {
+    "instance_id": "abishekvashok__cmatrix.5c082c6",
+    "_note": "End-to-end exercise of the verifier against a real ProgramBench cleanroom image, using a stub `compile.sh` that emits a no-op executable. Demonstrates: (a) the BenchFlow Dockerfile builds against the real :task_cleanroom image; (b) the verifier resolves all 14 active test branches; (c) HuggingFace blob fetch + per-branch tarball extract + pytest runs all succeed; (d) reward computation matches the expected 0/N for a non-functional submission.",
+    "benchflow": {
+      "branches_active": 14,
+      "branches_ran": 14,
+      "expected_tests": 508,
+      "passed": 0,
+      "score": 0.0
+    },
+    "upstream": {
+      "_note": "Upstream `programbench eval` against the same stub also reports score=0 — but as a top-level error (XmlParseError on the first branch's results.xml) rather than per-branch zeros. Both pipelines agree the submission is non-functional; they disagree on the granularity of the failure record. Full agreement is expected for any submission that produces parsable JUnit XML."
+    }
+  },
+  "full_set": {
+    "_status": "not_run_in_this_session",
+    "_blockers": [
+      "200 cleanroom Docker images, each multi-GB, gated behind Docker Hub pulls — out of scope for this sandbox.",
+      "8.2 GB of test blobs from HuggingFace dataset programbench/ProgramBench-Tests fetched on-demand by the verifier.",
+      "Per-task wall time on Gemini 3.1 Flash Lite is hours (programs span 30k–80k LoC); full set needs Daytona/Modal."
+    ],
+    "_how_to_run": "uv run python -m benchflow.job onramp/programbench/run_programbench.yaml --override environment=daytona; then for each instance pull submission.tar.gz from the trial dir and feed it through `programbench eval` for upstream score, comparing in onramp/programbench/parity.py."
+  }
+}

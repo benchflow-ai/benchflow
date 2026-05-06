@@ -1,0 +1,21 @@
+# BenchFlow task image for ${instance_id}
+# Built on the ProgramBench cleanroom image, which ships the reference binary
+# and documentation but not the source.
+FROM ${cleanroom_image}:task_cleanroom
+
+# BenchFlow expects /app/ as the agent's workspace and /logs/ for outputs.
+WORKDIR /app
+RUN mkdir -p /app /logs/verifier /logs/agent /logs/artifacts
+
+# Tools the verifier needs: python3 (XML parsing + HF download), tar, curl, git.
+RUN if command -v apt-get >/dev/null 2>&1; then \
+        apt-get update -qq && \
+        apt-get install -y -qq --no-install-recommends \
+            python3 python3-pip ca-certificates curl tar git && \
+        rm -rf /var/lib/apt/lists/*; \
+    fi
+
+# Per-task data consumed by tests/test.sh. The full tests.json is shipped as
+# a sidecar file (some tasks have hundreds of branches → JSON exceeds Docker's
+# 65 535-byte line limit when stuffed into an ENV).
+ENV BF_INSTANCE_ID="${instance_id}"
