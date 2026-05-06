@@ -36,7 +36,7 @@ python benchmarks/run_programbench.py benchmarks/programbench-gemini-flash-lite.
 |---|---|
 | `task.yaml` (repository, commit, language, difficulty, eval_clean_hashes) | `task.toml` (name, metadata, timeouts, resources) |
 | `tests.json` (per-branch test lists, ignored flags) | `tests/tests.json` (copied verbatim) |
-| Docker image `programbench/<repo>:task_cleanroom` (pre-built on DockerHub) | `environment/Dockerfile` (FROM the same cleanroom image) |
+| Docker image `programbench/<repo>:task` (pre-built on DockerHub) | `environment/Dockerfile` (FROM `:task`, workspace reset to cleanroom state) |
 | Agent produces `submission.tar.gz` (entire codebase) | Agent works directly in `/workspace` inside the container |
 | `programbench eval <run_dir>` (CLI evaluation) | `tests/test.sh` → `tests/verify.py` (self-contained verifier) |
 | Original source code at commit (gold answer) | `solution/solve.sh` (clones original repo at commit) |
@@ -46,7 +46,7 @@ python benchmarks/run_programbench.py benchmarks/programbench-gemini-flash-lite.
 
 | Step | ProgramBench | BenchFlow |
 |---|---|---|
-| **Environment** | Agent uses `programbench/<repo>:task_cleanroom` Docker image directly | Dockerfile wraps the same cleanroom image, adds verifier dependencies |
+| **Environment** | Agent uses `programbench/<repo>:task_cleanroom` Docker image directly | Dockerfile wraps the `:task` image (matching eval environment), resets workspace to cleanroom state |
 | **Agent submission** | Agent produces `submission.tar.gz` extracted into container | Agent writes files directly in `/workspace` |
 | **Compilation** | `compile.sh` → `./executable` | Same — `compile.sh` → `./executable` |
 | **Anti-cheat** | Remove files matching `eval_clean_hashes` SHA-256 | Same — `verify.py` matches identical hashes |
@@ -69,7 +69,7 @@ python benchmarks/run_programbench.py benchmarks/programbench-gemini-flash-lite.
 
 | Aspect | Changed? | Details |
 |---|---|---|
-| Docker base image | No | Same `programbench/<repo>:task_cleanroom` images from DockerHub |
+| Docker base image | Yes | Uses `:task` (has build toolchains) instead of `:task_cleanroom`, workspace reset to match cleanroom |
 | Test archives | No | Same HuggingFace blobs (`programbench/ProgramBench-Tests`) |
 | Test execution | No | Same pytest + JUnit XML parsing + timeout patching |
 | Anti-cheat hashing | No | Same SHA-256 hash removal |
@@ -89,7 +89,7 @@ python benchmarks/run_programbench.py benchmarks/programbench-gemini-flash-lite.
    ├── task.toml           # timeouts, metadata, resources
    ├── instruction.md      # agent-facing instructions
    ├── environment/
-   │   └── Dockerfile      # FROM programbench/<image>:task_cleanroom
+   │   └── Dockerfile      # FROM programbench/<image>:task
    ├── solution/
    │   └── solve.sh        # oracle: clones original source at commit
    └── tests/

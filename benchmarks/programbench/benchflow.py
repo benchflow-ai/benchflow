@@ -163,10 +163,27 @@ on the fraction of tests passed.
 
 def _render_dockerfile(task: ProgramBenchTask) -> str:
     image = _image_name(task.instance_id)
+    # Use :task (not :task_cleanroom) so the evaluation container has the
+    # same build toolchains and system libraries that ProgramBench's own
+    # ``programbench eval`` uses.  Wipe the workspace source and reset it
+    # to match the cleanroom state (binary + non-source assets only).
     return f"""\
-FROM {image}:task_cleanroom
+FROM {image}:task
 
 WORKDIR /workspace
+
+# Reset workspace to cleanroom state: wipe source, keep binary + assets.
+# ProgramBench eval does the same: start from :task, wipe workspace,
+# extract agent submission, then compile.
+RUN rm -rf /workspace/.git /workspace/src /workspace/Cargo.* /workspace/Makefile* \\
+           /workspace/CMakeLists.txt /workspace/configure* /workspace/meson* \\
+           /workspace/*.c /workspace/*.h /workspace/*.rs /workspace/*.go \\
+           /workspace/*.java /workspace/*.hs /workspace/*.cabal /workspace/go.* \\
+           /workspace/pom.xml /workspace/build.gradle /workspace/setup.py \\
+           /workspace/pyproject.toml /workspace/package.json 2>/dev/null; true
+# Re-initialize a clean git repo (matches cleanroom's single "Initial commit")
+RUN cd /workspace && git init -q && git add -A && \\
+    git -c user.email=clean@local -c user.name=clean commit -q --allow-empty -m 'Initial commit' 2>/dev/null; true
 
 # BenchFlow log directories
 RUN mkdir -p /logs/verifier /logs/agent /logs/artifacts
@@ -177,7 +194,7 @@ RUN apt-get update -qq && \\
     apt-get install -y -qq python3 python3-pip git jq && \\
     rm -rf /var/lib/apt/lists/* 2>/dev/null; true
 
-RUN pip3 install --quiet huggingface_hub pyyaml junitparser || \
+RUN pip3 install --quiet huggingface_hub pyyaml junitparser || \\
     pip3 install --break-system-packages --quiet huggingface_hub pyyaml junitparser
 """
 
@@ -387,19 +404,17 @@ def main() -> None:
     branches = tests_data.get("branches", {})
     clean_hashes: list[str] = json.loads(args.clean_hashes)
 
-    # Step 1: Compile
-    print("=== Step 1: Compiling submission ===")
-    if not _compile(args.workspace):
-        reward_file.write_text("0")
-        sys.exit(0)
-
-    # Step 2: Remove hash-matched files (anti-cheat)
-    print("=== Step 2: Checking for copied binaries ===")
+    # Step 1: Remove hash-matched files from submission (anti-cheat).
+    # Must happen BEFORE compile — matches ProgramBench's eval order.
+    # The hashes identify the original pre-compiled binary; removing them
+    # before compile prevents trivial copies while allowing a legitimate
+    # rebuild that happens to produce a byte-identical executable.
+    print("=== Step 1: Checking for copied binaries ===")
     _remove_hashed_files(args.workspace, clean_hashes)
 
-    # Verify executable still exists after hash removal
-    if not (args.workspace / "executable").exists():
-        print("ERROR: executable removed by hash check (trivial copy detected)")
+    # Step 2: Compile
+    print("=== Step 2: Compiling submission ===")
+    if not _compile(args.workspace):
         reward_file.write_text("0")
         sys.exit(0)
 
