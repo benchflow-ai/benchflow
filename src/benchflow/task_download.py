@@ -16,6 +16,11 @@ TASK_REPOS = {
     "terminal-bench-2": {
         "repo": "https://github.com/harbor-framework/terminal-bench-2.git",
     },
+    "harvey-lab": {
+        "repo": "https://github.com/harveyai/harvey-labs.git",
+        "ref": "main",
+        "subdir": "tasks",
+    },
 }
 
 
