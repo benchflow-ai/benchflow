@@ -1,0 +1,129 @@
+{
+  "experiment": "programbench_parity_stub",
+  "description": "Parity validation using a dummy C stub executable. Verifies the full pipeline: Docker image build, compilation, anti-cheat hash removal, HuggingFace test blob download, pytest execution, JUnit XML parsing, and reward computation. Test counts are compared against ProgramBench's tests.json manifests.",
+  "agent": "dummy_stub",
+  "agent_notes": "A minimal C program that prints 'stub' — used to validate the verifier pipeline, not to test agent capability.",
+  "date": "2026-05-06",
+  "tasks_tested": 10,
+  "tasks_total": 201,
+  "results": [
+    {
+      "task_id": "abishekvashok__cmatrix.5c082c6",
+      "language": "c",
+      "difficulty": "easy",
+      "active_branches": 14,
+      "tests_passed": 261,
+      "tests_total": 769,
+      "expected_total": 769,
+      "reward": 0.3394,
+      "parity": "exact_match"
+    },
+    {
+      "task_id": "agourlay__zip-password-finder.704700d",
+      "language": "rs",
+      "difficulty": "medium",
+      "active_branches": 16,
+      "tests_passed": 112,
+      "tests_total": 792,
+      "expected_total": 792,
+      "reward": 0.1414,
+      "parity": "exact_match"
+    },
+    {
+      "task_id": "alecthomas__chroma.8d04def",
+      "language": "go",
+      "difficulty": "unknown",
+      "active_branches": 1,
+      "tests_passed": 16,
+      "tests_total": 531,
+      "expected_total": 531,
+      "reward": 0.0301,
+      "parity": "exact_match"
+    },
+    {
+      "task_id": "arthursonzogni__json-tui.17a22b6",
+      "language": "cpp",
+      "difficulty": "easy",
+      "active_branches": 15,
+      "tests_passed": 139,
+      "tests_total": 894,
+      "expected_total": 894,
+      "reward": 0.1555,
+      "parity": "exact_match"
+    },
+    {
+      "task_id": "ajeetdsouza__zoxide.67ca1bc",
+      "language": "rs",
+      "difficulty": "unknown",
+      "active_branches": 2,
+      "tests_passed": 45,
+      "tests_total": 577,
+      "expected_total": 577,
+      "reward": 0.0780,
+      "parity": "exact_match"
+    },
+    {
+      "task_id": "alexpovel__srgn.89f943b",
+      "language": "rs",
+      "difficulty": "medium",
+      "active_branches": 17,
+      "tests_passed": 197,
+      "tests_total": 2076,
+      "expected_total": 2080,
+      "reward": 0.0949,
+      "parity": "minor_variance",
+      "parity_notes": "4 tests lost to pytest-xdist worker crashes (0.2% variance)"
+    },
+    {
+      "task_id": "altdesktop__i3-style.f93821b",
+      "language": "rs",
+      "difficulty": "medium",
+      "active_branches": 17,
+      "tests_passed": 78,
+      "tests_total": 750,
+      "expected_total": 750,
+      "reward": 0.1040,
+      "parity": "exact_match"
+    },
+    {
+      "task_id": "ammarabouzor__tui-journal.2b4540d",
+      "language": "rs",
+      "difficulty": "medium",
+      "active_branches": 22,
+      "tests_passed": 382,
+      "tests_total": 1831,
+      "expected_total": 1839,
+      "reward": 0.2086,
+      "parity": "minor_variance",
+      "parity_notes": "8 tests lost to pytest-xdist worker crashes (0.4% variance)"
+    },
+    {
+      "task_id": "anordal__shellharden.6a6ffd4",
+      "language": "rs",
+      "difficulty": "easy",
+      "active_branches": 15,
+      "tests_passed": 197,
+      "tests_total": 1292,
+      "expected_total": 1292,
+      "reward": 0.1525,
+      "parity": "exact_match"
+    },
+    {
+      "task_id": "stathissideris__ditaa.f2286c4",
+      "language": "java",
+      "difficulty": "unknown",
+      "active_branches": 2,
+      "tests_passed": 3,
+      "tests_total": 681,
+      "expected_total": 681,
+      "reward": 0.0044,
+      "parity": "exact_match"
+    }
+  ],
+  "summary": {
+    "exact_match": 8,
+    "minor_variance": 2,
+    "mismatch": 0,
+    "notes": "All 10 tasks completed successfully. 8 tasks had exact test count matches with ProgramBench's tests.json manifest. 2 tasks had minor variance (<0.5%) due to pytest-xdist worker crashes — this is expected and matches ProgramBench's own eval behavior."
+  }
+}

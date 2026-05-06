@@ -93,8 +93,12 @@ def load_tasks(tasks_dir: Path) -> list[ProgramBenchTask]:
 def _render_task_toml(task: ProgramBenchTask) -> str:
     agent_timeout, verifier_timeout = _TIMEOUTS.get(task.difficulty, _DEFAULT_TIMEOUT)
     lang_display = _LANG_DISPLAY.get(task.language, task.language)
+    name = f"programbench/{task.instance_id}"
     return f"""\
 version = "1.0"
+
+[task]
+name = "{name}"
 
 [metadata]
 author_name = "ProgramBench (Meta FAIR)"

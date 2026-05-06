@@ -1,0 +1,27 @@
+{
+  "adapter_name": "programbench",
+  "benchmark_name": "ProgramBench",
+  "benchmark_url": "https://programbench.com",
+  "benchmark_paper": "https://arxiv.org/abs/2501.15705",
+  "benchmark_repo": "https://github.com/facebookresearch/programbench",
+  "authors": ["Meta FAIR"],
+  "adapter_author": "BenchFlow",
+  "task_count": 201,
+  "languages": ["Rust", "Go", "C", "C++", "Haskell", "Java", "Bash"],
+  "difficulty_levels": ["easy", "medium", "hard"],
+  "evaluation_method": "deterministic_unit_tests",
+  "reward_type": "partial_credit",
+  "reward_range": [0.0, 1.0],
+  "has_oracle_solutions": false,
+  "oracle_notes": "ProgramBench tasks have a 0% resolve rate — no oracle solutions exist. Agents must reverse-engineer programs from compiled binaries.",
+  "test_source": "HuggingFace (programbench/ProgramBench-Tests)",
+  "environment": {
+    "base_images": "programbench/<repo>:task_cleanroom",
+    "platform": "linux/amd64",
+    "internet_access": false,
+    "cpus": 2,
+    "memory_mb": 4096,
+    "storage_mb": 20480
+  },
+  "cli_flags": ["--output-dir", "--programbench-dir", "--limit", "--overwrite", "--task-ids", "--verbose"]
+}
