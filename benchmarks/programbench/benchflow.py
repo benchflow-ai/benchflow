@@ -460,14 +460,11 @@ set -euo pipefail
 
 cd /workspace
 
-# Clone the original repository at the exact commit
-git clone --depth 1 https://github.com/{task.repository}.git _oracle_src || {{
-    # If shallow clone at commit fails, do full clone + checkout
-    git clone https://github.com/{task.repository}.git _oracle_src
-    cd _oracle_src
-    git checkout {task.commit}
-    cd /workspace
-}}
+# Clone the original repository and check out the exact commit
+git clone https://github.com/{task.repository}.git _oracle_src
+cd _oracle_src
+git checkout {task.commit}
+cd /workspace
 
 # Copy source into workspace (overwriting the cleanroom state)
 cp -a _oracle_src/. .
