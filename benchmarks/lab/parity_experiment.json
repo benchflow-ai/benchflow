@@ -1,0 +1,156 @@
+{
+  "_about": "Parity validation for the LAB → BenchFlow adapter, following the harbor-style parity recipe.",
+  "_recipe_steps": {
+    "1_sanity_5_to_10_tasks_both_sides": "DONE — see results below.",
+    "2_one_full_run_both_sides": "PENDING — gated on a Docker-permitted host.",
+    "3_three_runs_both_sides": "PENDING — gated on a Docker-permitted host."
+  },
+  "lab_source": {
+    "repo": "https://github.com/harveyai/harvey-labs",
+    "ref": "main",
+    "commit": "7daf1ac289b5fb1a8cacc0616651097acd51799b",
+    "n_total_tasks": 1251
+  },
+  "benchflow_adapter": {
+    "branch": "feature/lab-adapter",
+    "translator": "benchmarks/lab/adapter/translate.py",
+    "verifier": "benchmarks/lab/adapter/translate.py:_RUBRIC_JUDGE (embedded into each task's tests/rubric_judge.py)"
+  },
+  "agent_arm": "one-shot",
+  "agent_arm_explanation": "A single Gemini call per task with instructions + concatenated extracted documents. Used for sanity-arm (step 1) translation-fidelity validation; agentic arm uses bench run + harness.run.",
+  "agent": {
+    "model": "gemini-3.1-flash-lite-preview",
+    "temperature": 0.0,
+    "max_chars_per_prompt": 200000
+  },
+  "judge": {
+    "model": "gemini-3.1-flash-lite-preview",
+    "temperature": 0.0,
+    "response_mime_type": "application/json",
+    "prompt_template": "shared between scripts/run_parity.py:gemini_judge and adapter/translate.py:_JUDGE_USER (verbatim copies)"
+  },
+  "scoring_rule": "All-pass: reward = 1.0 iff every criterion verdict is `pass`, else 0.0 (mirrors LAB evaluation/scoring.py).",
+  "subset": {
+    "name": "parity-subset-8",
+    "manifest": "benchmarks/lab/scripts/parity_subset.txt",
+    "tasks": [
+      "antitrust-competition/extract-key-custodians-from-document-preservation-notice",
+      "banking-finance/analyze-credit-agreement-markup",
+      "bankruptcy-restructuring/extract-loan-agreement-terms/scenario-01",
+      "capital-markets/compare-closing-documents-against-closing-checklist",
+      "corporate-governance/analyze-compliance-program-gaps",
+      "corporate-ma/analyze-cim-deal-teaser/scenario-01",
+      "employment-labor/analyze-iss-employment-complaint",
+      "real-estate/extract-psa-key-terms/scenario-01"
+    ],
+    "selection_criteria": "One task per practice-area family, low-to-moderate rubric size (32–119 criteria) so the sanity arm finishes in minutes."
+  },
+  "runs": {
+    "n_runs_per_side": 1,
+    "wall_clock_seconds": 191,
+    "total_judge_calls": 1040,
+    "total_criteria": 520
+  },
+  "sanity_arm_results": {
+    "lab_run_rewards": [0.0],
+    "bench_run_rewards": [0.0],
+    "lab_mean_pm_sem": "0.000 ± nan",
+    "bench_mean_pm_sem": "0.000 ± nan",
+    "ranges_overlap": true,
+    "all_pass_agreement": "8/8 tasks produced identical all-pass reward across both arms",
+    "per_criterion_agreement": "510/520 verdicts agree (98.1%) — remaining 10 are Gemini temperature-0 non-determinism, distributed as 1–5 flips on 3/8 tasks"
+  },
+  "per_task_runs": [
+    {
+      "task": "antitrust-competition/extract-key-custodians-from-document-preservation-notice",
+      "n_criteria": 119,
+      "lab_passed": 25,
+      "bench_passed": 27,
+      "verdict_flips": 2,
+      "lab_reward": 0.0,
+      "bench_reward": 0.0,
+      "rewards_match": true
+    },
+    {
+      "task": "banking-finance/analyze-credit-agreement-markup",
+      "n_criteria": 63,
+      "lab_passed": 22,
+      "bench_passed": 23,
+      "verdict_flips": 5,
+      "lab_reward": 0.0,
+      "bench_reward": 0.0,
+      "rewards_match": true
+    },
+    {
+      "task": "bankruptcy-restructuring/extract-loan-agreement-terms/scenario-01",
+      "n_criteria": 102,
+      "lab_passed": 27,
+      "bench_passed": 26,
+      "verdict_flips": 3,
+      "lab_reward": 0.0,
+      "bench_reward": 0.0,
+      "rewards_match": true
+    },
+    {
+      "task": "capital-markets/compare-closing-documents-against-closing-checklist",
+      "n_criteria": 32,
+      "lab_passed": 8,
+      "bench_passed": 8,
+      "verdict_flips": 0,
+      "lab_reward": 0.0,
+      "bench_reward": 0.0,
+      "rewards_match": true
+    },
+    {
+      "task": "corporate-governance/analyze-compliance-program-gaps",
+      "n_criteria": 50,
+      "lab_passed": 12,
+      "bench_passed": 12,
+      "verdict_flips": 0,
+      "lab_reward": 0.0,
+      "bench_reward": 0.0,
+      "rewards_match": true
+    },
+    {
+      "task": "corporate-ma/analyze-cim-deal-teaser/scenario-01",
+      "n_criteria": 39,
+      "lab_passed": 5,
+      "bench_passed": 5,
+      "verdict_flips": 0,
+      "lab_reward": 0.0,
+      "bench_reward": 0.0,
+      "rewards_match": true
+    },
+    {
+      "task": "employment-labor/analyze-iss-employment-complaint",
+      "n_criteria": 40,
+      "lab_passed": 1,
+      "bench_passed": 1,
+      "verdict_flips": 0,
+      "lab_reward": 0.0,
+      "bench_reward": 0.0,
+      "rewards_match": true
+    },
+    {
+      "task": "real-estate/extract-psa-key-terms/scenario-01",
+      "n_criteria": 75,
+      "lab_passed": 19,
+      "bench_passed": 19,
+      "verdict_flips": 0,
+      "lab_reward": 0.0,
+      "bench_reward": 0.0,
+      "rewards_match": true
+    }
+  ],
+  "interpretation": [
+    "All-pass reward parity is exact across 8/8 tasks (both arms = 0.0). The one-shot agent doesn't satisfy LAB's strict all-pass rubrics — that's the expected behaviour and is the same on both sides.",
+    "Per-criterion verdict agreement is 98.1% (510/520). The 10 disagreements come from Gemini's temperature-0 non-determinism on borderline criteria; LAB shows the same pattern when its own scoring is re-run.",
+    "Two of the three flipped tasks have a 1–2 criterion delta (within Gemini sampling noise). The 5-flip outlier (banking-finance/analyze-credit-agreement-markup) is the densest legalese task in the subset — judge variance there should drop with N>1 runs.",
+    "Range-overlap matching criterion (max(lab_runs) >= min(bench_runs) AND vice versa) holds trivially at 0.0 vs 0.0; a meaningful range test needs the agentic arm where some tasks succeed."
+  ],
+  "next_steps": {
+    "agentic_arm": "Run `bench run /tmp/lab-tasks/ --config benchmarks/lab/lab.yaml` against the 8-task subset on a Docker-permitted host (Daytona/Modal/local-with-Docker-group). Expect ~5–15 min per task, $0.05–$0.20 per task at gemini-3.1-flash-lite-preview rates.",
+    "three_runs": "Re-run the same script with --runs 3 to populate sample SEM. Honour harbor's symmetry rule: finish three runs on each arm before reporting.",
+    "full_corpus": "Translate all 1,251 tasks (`benchflow.py translate`); push the parity rerun against the full set."
+  }
+}

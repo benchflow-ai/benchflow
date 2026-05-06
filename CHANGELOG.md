@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`benchmarks/lab/` — Harvey-LAB adapter.** Translates the 1,251-task
+  Legal Agent Bench (`harveyai/harvey-labs`) into BenchFlow's task format:
+  per-task `task.toml` + `instruction.md` + `environment/Dockerfile` +
+  `tests/rubric_judge.py` (Gemini-judged, all-pass scoring). Includes a
+  one-shot parity runner (`scripts/run_parity.py`) and an 8-task sanity
+  subset for the harbor-style parity recipe. Adapter unit tests live in
+  `tests/test_lab_adapter.py`.
+
 ## 0.2.3 — 2026-04-15
 
 ### Added

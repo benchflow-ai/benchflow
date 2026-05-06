@@ -1,0 +1,11 @@
+# Parity sanity-check subset (8 tasks, one per practice-area family).
+# Picked for low-to-moderate rubric size so the sanity arm finishes in
+# minutes rather than hours; the full ACP-agent arm uses lab.yaml.
+antitrust-competition/extract-key-custodians-from-document-preservation-notice
+banking-finance/analyze-credit-agreement-markup
+bankruptcy-restructuring/extract-loan-agreement-terms/scenario-01
+capital-markets/compare-closing-documents-against-closing-checklist
+corporate-governance/analyze-compliance-program-gaps
+corporate-ma/analyze-cim-deal-teaser/scenario-01
+employment-labor/analyze-iss-employment-complaint
+real-estate/extract-psa-key-terms/scenario-01

@@ -1,0 +1,18 @@
+# LAB benchmark — BenchFlow run config (Gemini 3.1 flash lite).
+#
+# After translating LAB into BenchFlow's task format, point this config
+# at the materialised tasks dir:
+#
+#   python benchmarks/lab/benchflow.py translate --output-dir /tmp/lab-tasks
+#   bench run /tmp/lab-tasks/ --config benchmarks/lab/lab.yaml
+#
+# The 8-task subset config swaps `tasks_dir` for the symlink farm produced
+# by the parity runner; otherwise the two configs are identical.
+
+tasks_dir: /tmp/lab-tasks
+jobs_dir: ../jobs/lab
+agent: gemini
+model: gemini-3.1-flash-lite-preview
+environment: docker
+concurrency: 4
+max_retries: 2
