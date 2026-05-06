@@ -266,6 +266,7 @@ class TestTransportProtocolFiltering:
 
     @pytest.mark.asyncio
     async def test_stdio_transport_skips_json_scalars(self) -> None:
+        """Guards PR #236 against treating JSON scalars as ACP responses."""
         reader = asyncio.StreamReader()
         reader.feed_data(b'"debug string from agent"\n')
         reader.feed_data(b'["debug", "list"]\n')
@@ -284,6 +285,7 @@ class TestTransportProtocolFiltering:
 
     @pytest.mark.asyncio
     async def test_container_transport_skips_json_scalars(self, tmp_path) -> None:
+        """Guards PR #236 against treating JSON scalars as ACP responses."""
         fake_process = AsyncMock()
         fake_process.readline = AsyncMock(
             side_effect=[
