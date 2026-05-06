@@ -540,13 +540,13 @@ def main():
                 if isinstance(part, dict) and part.get("type") == "text":
                     text += part.get("text", "")
 
-            # Determine workspace layout from BenchFlow's task directory
-            # BenchFlow uploads documents to /app (task root) and the
-            # instruction.md is sent as the prompt text.
+            # Determine workspace layout from BenchFlow's task directory.
+            # Harvey LAB's Dockerfile copies docs to /app/documents/.
             app_dir = Path(cwd)
-            documents_dir = app_dir / "environment" / "documents"
+            documents_dir = app_dir / "documents"
             if not documents_dir.exists():
-                # Fallback: some tasks put docs directly in cwd
+                documents_dir = app_dir / "environment" / "documents"
+            if not documents_dir.exists():
                 documents_dir = app_dir
 
             output_dir = app_dir / "output"
