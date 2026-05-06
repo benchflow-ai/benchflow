@@ -17,7 +17,6 @@ Usage::
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import subprocess
 import sys
@@ -80,7 +79,11 @@ def _get_task_context(task_dir: Path, tag: str) -> str:
         text=True,
         timeout=15,
     )
-    help_text = (result.stdout or result.stderr)[:2000] if result.returncode == 0 else "(help not available)"
+    help_text = (
+        (result.stdout or result.stderr)[:2000]
+        if result.returncode == 0
+        else "(help not available)"
+    )
 
     return f"""{instruction}
 
@@ -128,10 +131,7 @@ def _extract_files(response: str) -> dict[str, str]:
             current_lines = []
             in_code_block = False
         elif line.startswith("```") and current_file:
-            if in_code_block:
-                in_code_block = False
-            else:
-                in_code_block = True
+            in_code_block = not in_code_block
         elif in_code_block and current_file:
             current_lines.append(line)
 
@@ -170,7 +170,9 @@ def _run_parity(
         log.warning("[%s] No compile.sh in response, trying raw response", task_id)
         files["compile.sh"] = "#!/bin/bash\necho 'No compile.sh generated'"
 
-    log.info("[%s] Got %d files from Gemini: %s", task_id, len(files), list(files.keys()))
+    log.info(
+        "[%s] Got %d files from Gemini: %s", task_id, len(files), list(files.keys())
+    )
 
     # Step 4: Create submission and run verifier
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -188,15 +190,20 @@ def _run_parity(
         # Run container with agent files mounted + verifier
         container_name = f"parity-{task_id.replace('/', '_').replace('.', '-')}"
         cmd = [
-            "docker", "run",
-            "--name", container_name,
+            "docker",
+            "run",
+            "--name",
+            container_name,
             "--rm",
             # Mount agent submission files
-            "-v", f"{tmp}:/agent_submission:ro",
+            "-v",
+            f"{tmp}:/agent_submission:ro",
             # Mount test files
-            "-v", f"{tests_dir}:/tests:ro",
+            "-v",
+            f"{tests_dir}:/tests:ro",
             tag,
-            "bash", "-c",
+            "bash",
+            "-c",
             # Copy agent files to workspace, then run verifier
             "cp -r /agent_submission/* /workspace/ && "
             "chmod +x /workspace/compile.sh 2>/dev/null; "
@@ -230,11 +237,16 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="ProgramBench parity test")
     parser.add_argument("--tasks-dir", type=Path, required=True)
     parser.add_argument("--task-ids", nargs="+", required=True)
-    parser.add_argument("--api-key", default=None, help="Gemini API key (or set GOOGLE_API_KEY)")
-    parser.add_argument("--model", default="gemini-2.0-flash-lite", help="Gemini model name")
+    parser.add_argument(
+        "--api-key", default=None, help="Gemini API key (or set GOOGLE_API_KEY)"
+    )
+    parser.add_argument(
+        "--model", default="gemini-2.0-flash-lite", help="Gemini model name"
+    )
     args = parser.parse_args()
 
     import os
+
     api_key = args.api_key or os.environ.get("GOOGLE_API_KEY", "")
     if not api_key:
         print("ERROR: Set GOOGLE_API_KEY or pass --api-key", file=sys.stderr)
