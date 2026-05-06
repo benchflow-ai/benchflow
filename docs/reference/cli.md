@@ -80,7 +80,7 @@ bench eval create -f benchmarks/tb2-gemini-baseline.yaml
 
 # Inline
 bench eval create \
-  -t .ref/terminal-bench-2 \
+  -t benchmarks/skillsbench/tasks \
   -a gemini \
   -m gemini-3.1-flash-lite-preview \
   -e daytona \
@@ -189,7 +189,7 @@ bench environment list
 ### Batch config with skills and skill nudge
 
 ```yaml
-tasks_dir: .ref/terminal-bench-2
+tasks_dir: benchmarks/skillsbench/tasks
 environment: daytona
 concurrency: 64
 sandbox_setup_timeout: 300

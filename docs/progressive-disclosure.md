@@ -29,7 +29,7 @@ def progressive(round: int, instruction: str, rr: RoundResult | None) -> str | N
 
 
 config = TrialConfig(
-    task_path=Path(".ref/swebenchpro/instance_flipt-io__flipt-..."),
+    task_path=Path("benchmarks/swebenchpro/instance_flipt-io__flipt-..."),
     scenes=[Scene.single(agent="opencode", model="anthropic/claude-sonnet-4-6")],
     user=FunctionUser(progressive),
     max_user_rounds=3,

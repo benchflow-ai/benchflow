@@ -12,7 +12,7 @@ async def main():
     sdk = SDK()
     for agent in ["claude-agent-acp", "pi-acp", "openclaw"]:
         result = await sdk.run(
-            task_path=".ref/terminal-bench-2/log-summary-date-ranges",
+            task_path="benchmarks/skillsbench/tasks/log-summary-date-ranges",
             agent=agent,
             model="claude-haiku-4-5-20251001",
             environment="daytona",
@@ -31,8 +31,7 @@ import asyncio
 from benchflow import Job, JobConfig
 
 TASKS = {
-    "tb2": ".ref/terminal-bench-2",
-    "skills": ".ref/skillsbench/tasks",
+    "skills": "benchmarks/skillsbench/tasks",
 }
 
 async def main():
@@ -75,10 +74,10 @@ Every smoke test must verify:
 
 ## YAML configs
 
-TB2 single-turn:
+SkillsBench single-turn:
 ```yaml
-tasks_dir: .ref/terminal-bench-2
-jobs_dir: jobs/tb2-haiku
+tasks_dir: benchmarks/skillsbench/tasks
+jobs_dir: jobs/skillsbench-haiku
 agent: claude-agent-acp
 model: claude-haiku-4-5-20251001
 environment: daytona
@@ -86,10 +85,10 @@ concurrency: 64
 max_retries: 1
 ```
 
-TB2 multi-turn:
+SkillsBench multi-turn:
 ```yaml
-tasks_dir: .ref/terminal-bench-2
-jobs_dir: jobs/tb2-multiturn
+tasks_dir: benchmarks/skillsbench/tasks
+jobs_dir: jobs/skillsbench-multiturn
 agent: claude-agent-acp
 model: claude-haiku-4-5-20251001
 environment: daytona
@@ -100,13 +99,13 @@ prompts:
   - "Review your solution. Check for errors, test it, and fix any issues."
 ```
 
-SkillsBench:
+ProgramBench:
 ```yaml
-tasks_dir: .ref/skillsbench/tasks
-jobs_dir: jobs/skillsbench
-agent: claude-agent-acp
-model: claude-haiku-4-5-20251001
-environment: daytona
-concurrency: 64
+tasks_dir: benchmarks/programbench/tasks
+jobs_dir: jobs/programbench
+agent: gemini
+model: gemini-3.1-flash-lite-preview
+environment: docker
+concurrency: 4
 max_retries: 1
 ```
