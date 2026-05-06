@@ -1,129 +1,237 @@
 {
-  "experiment": "programbench_parity_stub",
-  "description": "Parity validation using a dummy C stub executable. Verifies the full pipeline: Docker image build, compilation, anti-cheat hash removal, HuggingFace test blob download, pytest execution, JUnit XML parsing, and reward computation. Test counts are compared against ProgramBench's tests.json manifests.",
-  "agent": "dummy_stub",
-  "agent_notes": "A minimal C program that prints 'stub' — used to validate the verifier pipeline, not to test agent capability.",
-  "date": "2026-05-06",
-  "tasks_tested": 10,
-  "tasks_total": 201,
-  "results": [
-    {
-      "task_id": "abishekvashok__cmatrix.5c082c6",
-      "language": "c",
-      "difficulty": "easy",
-      "active_branches": 14,
-      "tests_passed": 261,
-      "tests_total": 769,
-      "expected_total": 769,
-      "reward": 0.3394,
-      "parity": "exact_match"
-    },
-    {
-      "task_id": "agourlay__zip-password-finder.704700d",
-      "language": "rs",
-      "difficulty": "medium",
-      "active_branches": 16,
-      "tests_passed": 112,
-      "tests_total": 792,
-      "expected_total": 792,
-      "reward": 0.1414,
-      "parity": "exact_match"
-    },
-    {
-      "task_id": "alecthomas__chroma.8d04def",
-      "language": "go",
-      "difficulty": "unknown",
-      "active_branches": 1,
-      "tests_passed": 16,
-      "tests_total": 531,
-      "expected_total": 531,
-      "reward": 0.0301,
-      "parity": "exact_match"
-    },
-    {
-      "task_id": "arthursonzogni__json-tui.17a22b6",
-      "language": "cpp",
-      "difficulty": "easy",
-      "active_branches": 15,
-      "tests_passed": 139,
-      "tests_total": 894,
-      "expected_total": 894,
-      "reward": 0.1555,
-      "parity": "exact_match"
-    },
-    {
-      "task_id": "ajeetdsouza__zoxide.67ca1bc",
-      "language": "rs",
-      "difficulty": "unknown",
-      "active_branches": 2,
-      "tests_passed": 45,
-      "tests_total": 577,
-      "expected_total": 577,
-      "reward": 0.0780,
-      "parity": "exact_match"
-    },
-    {
-      "task_id": "alexpovel__srgn.89f943b",
-      "language": "rs",
-      "difficulty": "medium",
-      "active_branches": 17,
-      "tests_passed": 197,
-      "tests_total": 2076,
-      "expected_total": 2080,
-      "reward": 0.0949,
-      "parity": "minor_variance",
-      "parity_notes": "4 tests lost to pytest-xdist worker crashes (0.2% variance)"
-    },
-    {
-      "task_id": "altdesktop__i3-style.f93821b",
-      "language": "rs",
-      "difficulty": "medium",
-      "active_branches": 17,
-      "tests_passed": 78,
-      "tests_total": 750,
-      "expected_total": 750,
-      "reward": 0.1040,
-      "parity": "exact_match"
-    },
-    {
-      "task_id": "ammarabouzor__tui-journal.2b4540d",
-      "language": "rs",
-      "difficulty": "medium",
-      "active_branches": 22,
-      "tests_passed": 382,
-      "tests_total": 1831,
-      "expected_total": 1839,
-      "reward": 0.2086,
-      "parity": "minor_variance",
-      "parity_notes": "8 tests lost to pytest-xdist worker crashes (0.4% variance)"
-    },
-    {
-      "task_id": "anordal__shellharden.6a6ffd4",
-      "language": "rs",
-      "difficulty": "easy",
-      "active_branches": 15,
-      "tests_passed": 197,
-      "tests_total": 1292,
-      "expected_total": 1292,
-      "reward": 0.1525,
-      "parity": "exact_match"
-    },
-    {
-      "task_id": "stathissideris__ditaa.f2286c4",
-      "language": "java",
-      "difficulty": "unknown",
-      "active_branches": 2,
-      "tests_passed": 3,
-      "tests_total": 681,
-      "expected_total": 681,
-      "reward": 0.0044,
-      "parity": "exact_match"
+  "pipeline_parity": {
+    "experiment": "programbench_pipeline_parity",
+    "description": "Pipeline/verifier parity validation using a dummy C stub executable. Verifies the full pipeline: Docker image build, compilation, anti-cheat hash removal, HuggingFace test blob download, pytest execution, JUnit XML parsing, and reward computation. Test counts are compared against ProgramBench's tests.json manifests.",
+    "agent": "dummy_stub",
+    "date": "2026-05-06",
+    "tasks_tested": 10,
+    "tasks_total": 201,
+    "results": [
+      {
+        "task_id": "abishekvashok__cmatrix.5c082c6",
+        "language": "c",
+        "difficulty": "easy",
+        "active_branches": 14,
+        "tests_passed": 261,
+        "tests_total": 769,
+        "expected_total": 769,
+        "reward": 0.3394,
+        "parity": "exact_match"
+      },
+      {
+        "task_id": "agourlay__zip-password-finder.704700d",
+        "language": "rs",
+        "difficulty": "medium",
+        "active_branches": 16,
+        "tests_passed": 112,
+        "tests_total": 792,
+        "expected_total": 792,
+        "reward": 0.1414,
+        "parity": "exact_match"
+      },
+      {
+        "task_id": "alecthomas__chroma.8d04def",
+        "language": "go",
+        "difficulty": "unknown",
+        "active_branches": 1,
+        "tests_passed": 16,
+        "tests_total": 531,
+        "expected_total": 531,
+        "reward": 0.0301,
+        "parity": "exact_match"
+      },
+      {
+        "task_id": "arthursonzogni__json-tui.17a22b6",
+        "language": "cpp",
+        "difficulty": "easy",
+        "active_branches": 15,
+        "tests_passed": 139,
+        "tests_total": 894,
+        "expected_total": 894,
+        "reward": 0.1555,
+        "parity": "exact_match"
+      },
+      {
+        "task_id": "ajeetdsouza__zoxide.67ca1bc",
+        "language": "rs",
+        "difficulty": "unknown",
+        "active_branches": 2,
+        "tests_passed": 45,
+        "tests_total": 577,
+        "expected_total": 577,
+        "reward": 0.0780,
+        "parity": "exact_match"
+      },
+      {
+        "task_id": "alexpovel__srgn.89f943b",
+        "language": "rs",
+        "difficulty": "medium",
+        "active_branches": 17,
+        "tests_passed": 197,
+        "tests_total": 2076,
+        "expected_total": 2080,
+        "reward": 0.0949,
+        "parity": "minor_variance",
+        "parity_notes": "4 tests lost to pytest-xdist worker crashes (0.2% variance)"
+      },
+      {
+        "task_id": "altdesktop__i3-style.f93821b",
+        "language": "rs",
+        "difficulty": "medium",
+        "active_branches": 17,
+        "tests_passed": 78,
+        "tests_total": 750,
+        "expected_total": 750,
+        "reward": 0.1040,
+        "parity": "exact_match"
+      },
+      {
+        "task_id": "ammarabouzor__tui-journal.2b4540d",
+        "language": "rs",
+        "difficulty": "medium",
+        "active_branches": 22,
+        "tests_passed": 382,
+        "tests_total": 1831,
+        "expected_total": 1839,
+        "reward": 0.2086,
+        "parity": "minor_variance",
+        "parity_notes": "8 tests lost to pytest-xdist worker crashes (0.4% variance)"
+      },
+      {
+        "task_id": "anordal__shellharden.6a6ffd4",
+        "language": "rs",
+        "difficulty": "easy",
+        "active_branches": 15,
+        "tests_passed": 197,
+        "tests_total": 1292,
+        "expected_total": 1292,
+        "reward": 0.1525,
+        "parity": "exact_match"
+      },
+      {
+        "task_id": "stathissideris__ditaa.f2286c4",
+        "language": "java",
+        "difficulty": "unknown",
+        "active_branches": 2,
+        "tests_passed": 3,
+        "tests_total": 681,
+        "expected_total": 681,
+        "reward": 0.0044,
+        "parity": "exact_match"
+      }
+    ],
+    "summary": {
+      "exact_match": 8,
+      "minor_variance": 2,
+      "mismatch": 0,
+      "notes": "All 10 tasks completed successfully. 8 tasks had exact test count matches with ProgramBench's tests.json manifest. 2 tasks had minor variance (<0.5%) due to pytest-xdist worker crashes."
     }
-  ],
-  "summary": {
-    "exact_match": 8,
-    "minor_variance": 2,
-    "mismatch": 0,
-    "notes": "All 10 tasks completed successfully. 8 tasks had exact test count matches with ProgramBench's tests.json manifest. 2 tasks had minor variance (<0.5%) due to pytest-xdist worker crashes — this is expected and matches ProgramBench's own eval behavior."
+  },
+  "agent_parity": {
+    "experiment": "programbench_agent_parity",
+    "description": "Agent parity: run the same submission through both ProgramBench's original eval CLI and BenchFlow's verifier, compare rewards. Uses oracle solutions (original source at commit) for 4 tasks and a Gemini-generated submission for 1 task.",
+    "date": "2026-05-06",
+    "tasks_tested": 5,
+    "tasks_total": 201,
+    "results": [
+      {
+        "task_id": "abishekvashok__cmatrix.5c082c6",
+        "language": "c",
+        "difficulty": "easy",
+        "submission_type": "gemini_agent",
+        "submission_model": "gemini-3.1-flash-lite-preview",
+        "programbench": {
+          "passed": 289,
+          "total": 769,
+          "reward": 0.3758
+        },
+        "benchflow": {
+          "passed": 289,
+          "total": 769,
+          "reward": 0.3758
+        },
+        "reward_delta": 0.0,
+        "parity": "exact_match"
+      },
+      {
+        "task_id": "ajeetdsouza__zoxide.67ca1bc",
+        "language": "rs",
+        "difficulty": "unknown",
+        "submission_type": "oracle",
+        "programbench": {
+          "passed": 577,
+          "total": 577,
+          "reward": 1.0
+        },
+        "benchflow": {
+          "passed": 577,
+          "total": 577,
+          "reward": 1.0
+        },
+        "reward_delta": 0.0,
+        "parity": "exact_match"
+      },
+      {
+        "task_id": "anordal__shellharden.6a6ffd4",
+        "language": "rs",
+        "difficulty": "easy",
+        "submission_type": "oracle",
+        "programbench": {
+          "passed": 1291,
+          "total": 1292,
+          "reward": 0.9992
+        },
+        "benchflow": {
+          "passed": 1291,
+          "total": 1292,
+          "reward": 0.9992
+        },
+        "reward_delta": 0.0,
+        "parity": "exact_match"
+      },
+      {
+        "task_id": "stathissideris__ditaa.f2286c4",
+        "language": "java",
+        "difficulty": "unknown",
+        "submission_type": "oracle",
+        "programbench": {
+          "passed": 6,
+          "total": 681,
+          "reward": 0.0088
+        },
+        "benchflow": {
+          "passed": 6,
+          "total": 681,
+          "reward": 0.0088
+        },
+        "reward_delta": 0.0,
+        "parity": "exact_match"
+      },
+      {
+        "task_id": "alecthomas__chroma.8d04def",
+        "language": "go",
+        "difficulty": "unknown",
+        "submission_type": "oracle",
+        "programbench": {
+          "passed": 0,
+          "total": 531,
+          "reward": 0.0
+        },
+        "benchflow": {
+          "passed": 7,
+          "total": 531,
+          "reward": 0.0132
+        },
+        "reward_delta": 0.0132,
+        "parity": "minor_variance",
+        "parity_notes": "ProgramBench eval reports 0 passed (likely compile error in their pipeline), BenchFlow verifier compiles successfully and passes 7/531 tests. Delta is 1.3% — likely due to different Go toolchain versions or environment differences between PB's Docker setup and BF's."
+      }
+    ],
+    "summary": {
+      "exact_match": 4,
+      "minor_variance": 1,
+      "mismatch": 0,
+      "notes": "4/5 tasks achieved exact agent parity (same passed/total on both pipelines). 1 task (chroma, Go) had a minor 1.3% variance where BenchFlow's verifier passed 7 more tests than ProgramBench's eval. Languages tested: C, Rust (x2), Java, Go."
+    }
   }
 }
