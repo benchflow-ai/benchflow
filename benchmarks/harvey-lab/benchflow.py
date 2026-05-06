@@ -187,6 +187,7 @@ def _build_evaluate_py() -> str:
         import json
         import os
         import re
+        import string
         import subprocess
         import sys
         import time
@@ -242,18 +243,18 @@ def _build_evaluate_py() -> str:
 
         # ── Judge ─────────────────────────────────────────────────────────
 
-        VERDICT_PROMPT = """You are evaluating a legal AI agent\'s work product against a specific quality criterion.
+        VERDICT_PROMPT = string.Template("""You are evaluating a legal AI agent\'s work product against a specific quality criterion.
 
         ## Task
-        {task_description}
+        $task_description
 
         ## Agent\'s Output
-        {agent_output}
+        $agent_output
 
         ## Criterion
-        **{criterion_title}**
+        **$criterion_title**
 
-        {match_criteria}
+        $match_criteria
 
         ## Instructions
         Evaluate the agent\'s output against the criterion above.
@@ -268,7 +269,7 @@ def _build_evaluate_py() -> str:
           "reasoning": "Brief explanation"
         }
         ```
-        """
+        """)
 
 
         def call_gemini(prompt: str, retries: int = 3) -> str:
@@ -354,11 +355,11 @@ def _build_evaluate_py() -> str:
             )
 
             try:
-                prompt = (VERDICT_PROMPT
-                    .replace("{task_description}", task_title)
-                    .replace("{agent_output}", agent_output)
-                    .replace("{criterion_title}", criterion["title"])
-                    .replace("{match_criteria}", criterion["match_criteria"])
+                prompt = VERDICT_PROMPT.safe_substitute(
+                    task_description=task_title,
+                    agent_output=agent_output,
+                    criterion_title=criterion["title"],
+                    match_criteria=criterion["match_criteria"],
                 )
                 response_text = call_gemini(prompt)
                 verdict = parse_verdict(response_text)
