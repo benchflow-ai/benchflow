@@ -1,6 +1,27 @@
 {
+  "benchmark_name": "harvey-lab",
+  "benchmark_size": 1251,
+  "parity_benchmark_size": 5,
+  "parity_sampling_rate": 0.004,
+  "number_of_trials": 1,
+  "date": "2026-05-06",
+  "original_benchmark_repo": "https://github.com/harveyai/harvey-labs",
+  "converter_pr": "https://github.com/benchflow-ai/benchflow/pull/239",
+  "dataset_pr": "https://github.com/benchflow-ai/benchmarks/pull/1",
+  "parity_upload": "https://huggingface.co/datasets/benchflow/benchmarks",
   "experiment": "side-by-side-parity",
   "judge_model": "gemini-3.1-flash-lite-preview",
+  "has_oracle_solutions": false,
+  "verification_method": "llm-as-judge",
+  "metrics": [
+    {
+      "metric": "side_by_side_agreement",
+      "criteria_compared": 25,
+      "agreed": 25,
+      "agreement_rate": 1.0,
+      "notes": "Original Harvey LAB rubric_criterion.txt prompt vs converted BenchFlow prompt through same Gemini judge on identical synthetic output."
+    }
+  ],
   "tasks": [
     {
       "task_id": "corporate-ma/analyze-cim-deal-teaser/scenario-01",

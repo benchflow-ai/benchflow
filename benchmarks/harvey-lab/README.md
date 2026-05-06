@@ -125,6 +125,24 @@ Ran the original Harvey LAB `rubric_criterion.txt` prompt template and the conve
 | draft-workplace-policy | Employment | 5/5 | 100% |
 | **Total** | | **25/25** | **100%** |
 
+## Comparison with Original Benchmark (Parity)
+
+Full results are recorded in [`parity_experiment.json`](parity_experiment.json).
+
+| Judge Model | Metric | Dataset Size | Parity Size | Criteria Compared | Agreement |
+|---|---|---|---|---|---|
+| gemini-3.1-flash-lite-preview | side-by-side agreement | 1,251 | 5 tasks (5 practice areas) | 25 | **100%** |
+
+Links:
+- Original benchmark repo: https://github.com/harveyai/harvey-labs
+- Converter PR: https://github.com/benchflow-ai/benchflow/pull/239
+- Dataset PR: https://github.com/benchflow-ai/benchmarks/pull/1
+- Parity experiments (HF): https://huggingface.co/datasets/benchflow/benchmarks
+
+Reproduction:
+- **Original**: Clone `https://github.com/harveyai/harvey-labs`. Run `rubric_criterion.txt` judge prompt with Gemini 3.1 Flash Lite on the 5 representative tasks.
+- **BenchFlow**: Generate tasks via `benchflow.py`, run `parity_test.py --mode side-by-side`. Both sides use the same Gemini judge on identical synthetic agent output.
+
 ## Evaluation
 
 The verifier uses Gemini as an LLM-as-judge. For each task criterion:
