@@ -1,0 +1,8 @@
+# Harvey LAB parity config — uses the original Harvey LAB harness agent.
+# For true apples-to-apples parity: same agent loop, same tools, same model.
+tasks_dir: .ref/harvey-lab-benchflow
+
+agent: harvey-lab-harness
+model: anthropic/claude-sonnet-4-6
+environment: docker
+concurrency: 2
