@@ -76,8 +76,8 @@ If multiple credentials are set, benchflow / the agent CLI uses (high to low): c
 ## Run your first eval
 
 ```bash
-# Single task with Gemini
-GEMINI_API_KEY=... bench run .ref/terminal-bench-2/regex-log \
+# Single task
+GEMINI_API_KEY=... bench run benchmarks/skillsbench/tasks/regex-log \
   --agent gemini \
   --model gemini-3.1-pro-preview \
   --backend docker
@@ -91,7 +91,7 @@ GEMINI_API_KEY=... bench run tasks/pdf-fix \
   --ae BENCHFLOW_SKILL_NUDGE=name
 
 # A whole batch with concurrency
-GEMINI_API_KEY=... bench eval create -t .ref/terminal-bench-2 -a gemini \
+GEMINI_API_KEY=... bench eval create -t benchmarks/skillsbench/tasks -a gemini \
     -m gemini-3.1-pro-preview -e daytona -c 32
 
 # List the registered agents
@@ -119,7 +119,7 @@ from benchflow.trial import TrialConfig, Scene
 from pathlib import Path
 
 config = TrialConfig(
-    task_path=Path(".ref/terminal-bench-2/regex-log"),
+    task_path=Path("benchmarks/skillsbench/tasks/regex-log"),
     scenes=[Scene.single(agent="gemini", model="gemini-3.1-pro-preview")],
     environment="docker",
 )
@@ -134,7 +134,7 @@ print(result.n_tool_calls)
 
 | If you want to… | Read |
 |------------------|------|
-| Run an existing benchmark (TB2, ProgramBench, etc.) | [`running-benchmarks.md`](./running-benchmarks.md) |
+| Run an existing benchmark (SkillsBench, ProgramBench, etc.) | [`running-benchmarks.md`](./running-benchmarks.md) |
 | Understand the model — Trial, Scene, Role, Verifier | [`concepts.md`](./concepts.md) |
 | Author a task | [`task-authoring.md`](./task-authoring.md) |
 | Run multi-agent patterns (coder/reviewer, simulated user, BYOS) | [`use-cases.md`](./use-cases.md) |

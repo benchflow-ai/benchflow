@@ -8,7 +8,6 @@ How to run existing benchmark suites with BenchFlow.
 
 | Benchmark | Tasks | Description | Source |
 |-----------|-------|-------------|--------|
-| `terminal-bench-2` | ~50 | Terminal-based programming tasks | Cloned from git |
 | `skillsbench` | — | Skill evaluation tasks | Cloned from git |
 | `programbench` | 200 | Program reconstruction from compiled binaries | Generated from [ProgramBench](https://programbench.com) |
 
@@ -21,10 +20,6 @@ Every benchmark follows the same pattern: download/generate tasks, then run via 
 ### 1. CLI — single task
 
 ```bash
-# Terminal-Bench 2
-bench run .ref/terminal-bench-2/regex-log \
-  --agent gemini --model gemini-3.1-flash-lite-preview --backend docker
-
 # ProgramBench (generate first, then run one task)
 python -m benchmarks.programbench.main \
   --task-ids abishekvashok__cmatrix.5c082c6
@@ -84,22 +79,6 @@ config = TrialConfig(
 result = await bf.run(config)
 print(result.rewards)  # {'reward': 0.37}
 ```
-
----
-
-## Running Terminal-Bench 2
-
-Pre-built tasks cloned from git. No generation step needed.
-
-```bash
-# Download tasks (one-time)
-python -c "from benchflow.task_download import ensure_tasks; ensure_tasks('terminal-bench-2')"
-
-# Run with provided config
-python benchmarks/run_tb2.py benchmarks/tb2-gemini-baseline.yaml
-```
-
-**Config:** `benchmarks/tb2-gemini-baseline.yaml`
 
 ---
 

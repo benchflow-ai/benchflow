@@ -211,15 +211,15 @@ class Job:
 
     Usage:
         job = Job(
-            tasks_dir=".ref/terminal-bench-2",
-            jobs_dir="parity/tb2-haiku",
+            tasks_dir="benchmarks/skillsbench/tasks",
+            jobs_dir="parity/skillsbench-haiku",
             config=JobConfig(model="claude-haiku-4-5-20251001"),
         )
         result = await job.run()
         print(result.score)
 
     Or from YAML:
-        job = Job.from_yaml("experiments/tb2.yaml")
+        job = Job.from_yaml("benchmarks/programbench-gemini-flash-lite.yaml")
         result = await job.run()
     """
 
