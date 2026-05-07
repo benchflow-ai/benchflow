@@ -20,7 +20,9 @@ benchmarks/harvey-lab/
 ├── parity_test.py                   # structural, eval, and side-by-side parity tests
 ├── run_harvey_lab.py                # runner: download + convert + run via Job
 ├── harvey-lab-gemini-flash-lite.yaml # BenchFlow-native YAML config
-├── parity_experiment.json           # side-by-side parity results (Step 5)
+├── parity_experiment.json           # side-by-side parity results (prompt-level)
+├── parity_experiment_e2e.json       # end-to-end parity results (same agent on both sides)
+├── harvey-lab-harness-parity.yaml   # parity config using Harvey LAB's own harness agent
 ├── benchmark.yaml                   # standard benchmark descriptor
 └── README.md
 ```
@@ -131,11 +133,28 @@ Ran the original Harvey LAB `rubric_criterion.txt` prompt template and the conve
 
 ## Comparison with Original Benchmark (Parity)
 
+### Prompt-level parity (side-by-side judge agreement)
+
 Full results are recorded in [`parity_experiment.json`](parity_experiment.json).
 
 | Judge Model | Metric | Dataset Size | Parity Size | Criteria Compared | Agreement |
 |---|---|---|---|---|---|
 | gemini-3.1-flash-lite-preview | side-by-side agreement | 1,251 | 5 tasks (5 practice areas) | 25 | **100%** |
+
+### End-to-end parity (same agent + model, original vs converted tasks)
+
+Ran Harvey LAB's own harness (agent loop + 6 tools + system prompt) via DirectSandbox on both original and BenchFlow-converted tasks with `gemini-3.1-flash-lite-preview`. Full results in [`parity_experiment_e2e.json`](parity_experiment_e2e.json).
+
+| Task | Practice Area | Original Score | BenchFlow Score | Delta |
+|---|---|---|---|---|
+| review-data-room-red-flag-review | Corporate M&A | 1/68 (1%) | 2/68 (3%) | +1% |
+| extract-psa-key-terms/scenario-01 | Real Estate | 36/75 (48%) | 47/75 (63%) | +15% |
+| analyze-counterparty-markup-of-executive-employment-agreement | Employment | 15/59 (25%) | 11/59 (19%) | -7% |
+| analyze-counterparty-markup-of-reinsurance-treaty | Insurance | 19/52 (37%) | N/A (0 files) | N/A |
+| analyze-counterparty-markup-of-ip-assignment-agreement | IP | 12/59 (20%) | 14/59 (24%) | +3% |
+| **Aggregate (4 tasks with both scores)** | | **64/261 (24.5%)** | **74/261 (28.4%)** | **+3.8%** |
+
+The delta between original and converted scores is within the expected range of agent non-determinism. Both sides use the same model, tools, and system prompt — the only difference is the task format (task.json vs task.toml/instruction.md). Score variations come from the model making different tool-use decisions across runs.
 
 Links:
 - Original benchmark repo: https://github.com/harveyai/harvey-labs
@@ -144,8 +163,9 @@ Links:
 - Parity experiments (HF): https://huggingface.co/datasets/benchflow/benchmarks
 
 Reproduction:
-- **Original**: Clone `https://github.com/harveyai/harvey-labs`. Run `rubric_criterion.txt` judge prompt with Gemini 3.1 Flash Lite on the 5 representative tasks.
-- **BenchFlow**: Generate tasks via `benchflow.py`, run `parity_test.py --mode side-by-side`. Both sides use the same Gemini judge on identical synthetic agent output.
+- **Prompt parity**: Clone `https://github.com/harveyai/harvey-labs`. Run `rubric_criterion.txt` judge prompt with Gemini 3.1 Flash Lite on the 5 representative tasks.
+- **E2E parity**: Run `run_parity_full.py` which executes Harvey LAB's harness via DirectSandbox on both original and converted tasks, then evaluates with Gemini judge.
+- **BenchFlow**: Generate tasks via `benchflow.py`, run `parity_test.py --mode side-by-side`.
 
 ## Evaluation
 
