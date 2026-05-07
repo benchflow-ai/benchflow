@@ -1,7 +1,7 @@
 cff-version: 1.2.0
 message: "If you use benchflow in your research, please cite it as below."
-title: "benchflow: Multi-turn agent benchmarking with ACP"
-abstract: "Multi-turn agent benchmarking with ACP — run any agent, any model, any provider."
+title: "BenchFlow: framework for RL environments for LLM agents"
+abstract: "BenchFlow is a framework for building RL environments to evaluate and train LLM agents. Built on the Agent Client Protocol (ACP), it provides Scene-based multi-turn, multi-agent, and multi-model evaluation in shared sandboxes — without Docker Compose or sidecar containers. Supported use cases include interactive user simulation, code-review loops, bring-your-own-skill (BYOS) skill generation, multi-turn iterative refinement, cross-model review (cheap coder + strong reviewer), and stateful service tasks against live mock APIs (Gmail, Calendar, Docs, Drive, Slack). See docs/use-cases.md."
 type: software
 authors:
   - name: "BenchFlow team"
