@@ -1,0 +1,20 @@
+cff-version: 1.2.0
+message: "If you use benchflow in your research, please cite it as below."
+title: "benchflow: Multi-turn agent benchmarking with ACP"
+abstract: "Multi-turn agent benchmarking with ACP — run any agent, any model, any provider."
+type: software
+authors:
+  - name: "BenchFlow team"
+    website: "https://github.com/benchflow-ai/benchflow"
+repository-code: "https://github.com/benchflow-ai/benchflow"
+url: "https://github.com/benchflow-ai/benchflow"
+license: Apache-2.0
+version: 0.3.2
+keywords:
+  - benchmark
+  - llm-agents
+  - acp
+  - agent-evaluation
+  - multi-turn
+  - terminal-bench
+  - skillsbench
