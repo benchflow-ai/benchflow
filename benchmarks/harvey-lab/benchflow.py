@@ -118,7 +118,7 @@ def _build_instruction_md(
     lines.append("## Workspace Layout")
     lines.append("")
     lines.append("- Input documents are in `documents/` (read-only).")
-    lines.append("- Write deliverables to the current working directory (`/app/`).")
+    lines.append("- Write deliverables to `output/`.")
     lines.append("- Use the `read` tool for .docx, .xlsx, .pptx, .pdf files.")
     lines.append("")
 
@@ -152,7 +152,8 @@ def _build_dockerfile(task_id: str) -> str:
         # Copy rubric for the verifier
         COPY rubric.json /app/rubric.json
 
-        RUN mkdir -p /logs/verifier /logs/agent /logs/artifacts
+        # Create output directory (matches Harvey LAB's /workspace/output)
+        RUN mkdir -p /app/output /logs/verifier /logs/agent /logs/artifacts
     """)
 
 
@@ -163,9 +164,16 @@ def _build_test_sh() -> str:
         set -e
 
         # Run the LLM-as-judge evaluator
+        # Check /app/output first (Harvey LAB convention), fall back to /app
+        if [ -d /app/output ] && [ "$(ls -A /app/output 2>/dev/null)" ]; then
+            OUTPUT_DIR=/app/output
+        else
+            OUTPUT_DIR=/app
+        fi
+
         python3 /tests/evaluate.py \\
             --rubric /app/rubric.json \\
-            --output-dir /app \\
+            --output-dir "$OUTPUT_DIR" \\
             --reward-file /logs/verifier/reward.txt
 
         exit 0
