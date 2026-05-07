@@ -3,6 +3,6 @@
 tasks_dir: .ref/harvey-lab-benchflow
 
 agent: harvey-lab-harness
-model: anthropic/claude-sonnet-4-6
+model: gemini/gemini-3.1-flash-lite-preview
 environment: docker
 concurrency: 2
