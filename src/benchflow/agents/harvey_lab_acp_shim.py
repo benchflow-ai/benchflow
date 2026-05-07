@@ -398,12 +398,10 @@ def _run_harvey_lab_agent(
             # Emit tool_call completion
             _emit_tool_result(session_id, tool_call_id, result)
 
-            tool_results.append((tc, result))
+            tool_results.append((tool_call_id, result))
 
         # Feed results back via adapter
-        result_messages = adapter.make_tool_result_messages(
-            [(tc.id, result) for tc, result in tool_results]
-        )
+        result_messages = adapter.make_tool_result_messages(tool_results)
         messages.extend(result_messages)
 
     elapsed = time.time() - start_time
