@@ -23,6 +23,11 @@ _GENERATED_BENCHMARKS: dict[str, dict[str, str]] = {
         "repo": "https://github.com/facebookresearch/programbench.git",
         "subdir": "tasks",
     },
+    "harvey-lab": {
+        "repo": "https://github.com/harveyai/harvey-labs.git",
+        "ref": "main",
+        "subdir": "tasks",
+    },
 }
 
 

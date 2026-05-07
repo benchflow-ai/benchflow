@@ -164,6 +164,9 @@ _OPENCLAW_SHIM = (Path(__file__).parent / "openclaw_acp_shim.py").read_text()
 # Path to the Pi launch wrapper (bridges BENCHFLOW_PROVIDER_* → Pi config)
 _PI_LAUNCHER = (Path(__file__).parent / "pi_acp_launcher.py").read_text()
 
+# Path to the Harvey LAB ACP shim (runs Harvey LAB harness as an ACP agent)
+_HARVEY_LAB_SHIM = (Path(__file__).parent / "harvey_lab_acp_shim.py").read_text()
+
 
 def _json_settings_merge(path: str, mutator: str) -> str:
     """Idempotent JSON-settings merge as a one-line bash snippet."""
@@ -429,6 +432,32 @@ AGENTS: dict[str, AgentConfig] = {
             'd.setdefault("tools",{})["webfetch"]=False',
         ),
     ),
+    "harvey-lab-harness": AgentConfig(
+        name="harvey-lab-harness",
+        description="Harvey LAB harness — runs the original Harvey LAB agent loop "
+        "(6 tools: bash, read, write, edit, glob, grep) via ACP shim",
+        install_cmd=(
+            "export DEBIAN_FRONTEND=noninteractive && "
+            # Clone Harvey LAB repo
+            "( [ -d /opt/harvey-labs/.git ] || "
+            "  git clone --depth 1 https://github.com/harveyai/harvey-labs.git /opt/harvey-labs ) && "
+            # Install Harvey LAB's Python dependencies
+            "( command -v pip3 >/dev/null 2>&1 || "
+            "  (apt-get update -qq && apt-get install -y -qq python3-pip >/dev/null 2>&1) ) && "
+            "pip3 install -q anthropic openai google-genai "
+            "python-docx pdfplumber openpyxl python-pptx markitdown pandas && "
+            # Deploy ACP shim
+            + _install_python_script(
+                f"{_BENCHFLOW_BIN_PREFIX}/harvey-lab-acp-shim", _HARVEY_LAB_SHIM
+            )
+        ),
+        launch_cmd=f"HARVEY_LABS_ROOT=/opt/harvey-labs python3 {_BENCHFLOW_BIN_PREFIX}/harvey-lab-acp-shim",
+        protocol="acp",
+        requires_env=[],  # inferred from model at runtime (ANTHROPIC_API_KEY, etc.)
+        # env_mapping intentionally empty — Harvey LAB adapters read
+        # provider-specific env vars (ANTHROPIC_API_KEY, OPENAI_API_KEY,
+        # GOOGLE_API_KEY) directly; auto_inherit_env propagates these.
+    ),
     "openhands": AgentConfig(
         name="openhands",
         description="OpenHands agent via ACP (multi-model, Python-based)",
@@ -573,6 +602,7 @@ AGENT_ALIASES: dict[str, str] = {
     "openclaw": "openclaw",
     "openhands": "openhands",
     "oh": "openhands",
+    "harvey-lab": "harvey-lab-harness",
 }
 
 VALID_PROTOCOLS = {"acp", "harbor"}

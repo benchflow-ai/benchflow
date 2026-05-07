@@ -1,0 +1,238 @@
+{
+  "benchmark_name": "harvey-lab",
+  "benchmark_size": 1251,
+  "parity_benchmark_size": 5,
+  "parity_sampling_rate": 0.004,
+  "number_of_trials": 1,
+  "date": "2026-05-06",
+  "original_benchmark_repo": "https://github.com/harveyai/harvey-labs",
+  "converter_pr": "https://github.com/benchflow-ai/benchflow/pull/239",
+  "dataset_pr": "https://github.com/benchflow-ai/benchmarks/pull/1",
+  "parity_upload": "https://huggingface.co/datasets/benchflow/benchmarks",
+  "experiment": "side-by-side-parity",
+  "judge_model": "gemini-3.1-flash-lite-preview",
+  "has_oracle_solutions": false,
+  "verification_method": "llm-as-judge",
+  "metrics": [
+    {
+      "metric": "side_by_side_agreement",
+      "criteria_compared": 25,
+      "agreed": 25,
+      "agreement_rate": 1.0,
+      "notes": "Original Harvey LAB rubric_criterion.txt prompt vs converted BenchFlow prompt through same Gemini judge on identical synthetic output."
+    }
+  ],
+  "tasks": [
+    {
+      "task_id": "corporate-ma/analyze-cim-deal-teaser/scenario-01",
+      "n_criteria": 39,
+      "criteria_results": [
+        {
+          "criterion_id": "C-001",
+          "criterion_title": "ISSUE_001: Identifies EBITDA bridge arithmetic error ($17.1M vs $16.8M)",
+          "original_verdict": "fail",
+          "adapted_verdict": "fail",
+          "agreement": true
+        },
+        {
+          "criterion_id": "C-002",
+          "criterion_title": "ISSUE_001: Quantifies valuation impact of EBITDA arithmetic error",
+          "original_verdict": "fail",
+          "adapted_verdict": "fail",
+          "agreement": true
+        },
+        {
+          "criterion_id": "C-003",
+          "criterion_title": "ISSUE_002: Flags replacement CEO compensation assumption as too low",
+          "original_verdict": "fail",
+          "adapted_verdict": "fail",
+          "agreement": true
+        },
+        {
+          "criterion_id": "C-004",
+          "criterion_title": "ISSUE_002: Recalculates defensible owner compensation add-back",
+          "original_verdict": "fail",
+          "adapted_verdict": "fail",
+          "agreement": true
+        },
+        {
+          "criterion_id": "C-005",
+          "criterion_title": "ISSUE_003: Challenges the related-party lease normalization to $0.6M/year",
+          "original_verdict": "fail",
+          "adapted_verdict": "fail",
+          "agreement": true
+        }
+      ]
+    },
+    {
+      "task_id": "insurance/compare-reinsurance-treaty-against-underlying-policy",
+      "n_criteria": 39,
+      "criteria_results": [
+        {
+          "criterion_id": "C-001",
+          "criterion_title": "Identifies BI indemnity period mismatch (12 months vs. 6 months)",
+          "original_verdict": "fail",
+          "adapted_verdict": "fail",
+          "agreement": true
+        },
+        {
+          "criterion_id": "C-002",
+          "criterion_title": "Quantifies BI gap: $4.3M unceded in months 7-10",
+          "original_verdict": "fail",
+          "adapted_verdict": "fail",
+          "agreement": true
+        },
+        {
+          "criterion_id": "C-003",
+          "criterion_title": "Quantifies Pinnacle Re's unrecovered BI share: ~$1.72M",
+          "original_verdict": "fail",
+          "adapted_verdict": "fail",
+          "agreement": true
+        },
+        {
+          "criterion_id": "C-004",
+          "criterion_title": "Identifies debris removal costs exceed Master Policy sublimit",
+          "original_verdict": "fail",
+          "adapted_verdict": "fail",
+          "agreement": true
+        },
+        {
+          "criterion_id": "C-005",
+          "criterion_title": "Quantifies excess debris removal cost as $1.1M uninsured",
+          "original_verdict": "fail",
+          "adapted_verdict": "fail",
+          "agreement": true
+        }
+      ]
+    },
+    {
+      "task_id": "real-estate/draft-construction-contract",
+      "n_criteria": 81,
+      "criteria_results": [
+        {
+          "criterion_id": "C-001",
+          "criterion_title": "ISSUE_001: Identifies contingency rounding discrepancy ($2,700,000 vs $2,710,000)",
+          "original_verdict": "fail",
+          "adapted_verdict": "fail",
+          "agreement": true
+        },
+        {
+          "criterion_id": "C-002",
+          "criterion_title": "ISSUE_001: Contract resolves contingency discrepancy with clear controlling figure",
+          "original_verdict": "fail",
+          "adapted_verdict": "fail",
+          "agreement": true
+        },
+        {
+          "criterion_id": "C-003",
+          "criterion_title": "ISSUE_002: Identifies aggregate LD cap exceeds sum of component caps",
+          "original_verdict": "fail",
+          "adapted_verdict": "fail",
+          "agreement": true
+        },
+        {
+          "criterion_id": "C-004",
+          "criterion_title": "ISSUE_002: Contract reconciles or clarifies the LD cap discrepancy",
+          "original_verdict": "fail",
+          "adapted_verdict": "fail",
+          "agreement": true
+        },
+        {
+          "criterion_id": "C-005",
+          "criterion_title": "ISSUE_003: Identifies Texas Anti-Indemnity Statute issue with broad-form indemnity",
+          "original_verdict": "fail",
+          "adapted_verdict": "fail",
+          "agreement": true
+        }
+      ]
+    },
+    {
+      "task_id": "intellectual-property/review-enterprise-saas-agreement",
+      "n_criteria": 42,
+      "criteria_results": [
+        {
+          "criterion_id": "C-001",
+          "criterion_title": "Identifies excessive early termination fee (ISSUE_001)",
+          "original_verdict": "fail",
+          "adapted_verdict": "fail",
+          "agreement": true
+        },
+        {
+          "criterion_id": "C-002",
+          "criterion_title": "Identifies asymmetry in termination for convenience (ISSUE_001)",
+          "original_verdict": "fail",
+          "adapted_verdict": "fail",
+          "agreement": true
+        },
+        {
+          "criterion_id": "C-003",
+          "criterion_title": "Recommends reducing or restructuring early termination fee (ISSUE_001)",
+          "original_verdict": "fail",
+          "adapted_verdict": "fail",
+          "agreement": true
+        },
+        {
+          "criterion_id": "C-004",
+          "criterion_title": "Identifies liability cap excludes data breach (ISSUE_002)",
+          "original_verdict": "fail",
+          "adapted_verdict": "fail",
+          "agreement": true
+        },
+        {
+          "criterion_id": "C-005",
+          "criterion_title": "Identifies liability cap excludes willful misconduct/gross negligence (ISSUE_002)",
+          "original_verdict": "fail",
+          "adapted_verdict": "fail",
+          "agreement": true
+        }
+      ]
+    },
+    {
+      "task_id": "employment-labor/draft-workplace-policy-memorandum",
+      "n_criteria": 45,
+      "criteria_results": [
+        {
+          "criterion_id": "C-001",
+          "criterion_title": "Identifies failure to bargain with MTWU Local 407 union",
+          "original_verdict": "fail",
+          "adapted_verdict": "fail",
+          "agreement": true
+        },
+        {
+          "criterion_id": "C-002",
+          "criterion_title": "References CBA Article 12, Section 3 mandatory bargaining requirement",
+          "original_verdict": "fail",
+          "adapted_verdict": "fail",
+          "agreement": true
+        },
+        {
+          "criterion_id": "C-003",
+          "criterion_title": "Analyzes tension between CBA management-rights clause and bargaining obligation",
+          "original_verdict": "fail",
+          "adapted_verdict": "fail",
+          "agreement": true
+        },
+        {
+          "criterion_id": "C-004",
+          "criterion_title": "Recommends carving out union employees or initiating bargaining immediately",
+          "original_verdict": "fail",
+          "adapted_verdict": "fail",
+          "agreement": true
+        },
+        {
+          "criterion_id": "C-005",
+          "criterion_title": "Identifies breach of contract risk from offer letter remote designations",
+          "original_verdict": "fail",
+          "adapted_verdict": "fail",
+          "agreement": true
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "total_criteria_compared": 25,
+    "agreed": 25,
+    "disagreed": 0,
+    "agreement_rate": 1.0
+  }
+}
