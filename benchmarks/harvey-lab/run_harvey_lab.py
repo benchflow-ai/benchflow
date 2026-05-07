@@ -34,7 +34,7 @@ def ensure_converted_tasks() -> Path:
     """Download raw Harvey LAB tasks and convert to BenchFlow format."""
     raw_dir = ensure_tasks("harvey-lab")
     root = _repo_root()
-    converted_dir = root / ".ref" / "harvey-lab-benchflow"
+    converted_dir = root / "benchmarks" / "harvey-lab-benchflow"
 
     if converted_dir.exists() and any(converted_dir.iterdir()):
         logger.info("Converted tasks already exist at %s", converted_dir)

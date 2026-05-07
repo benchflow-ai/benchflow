@@ -175,6 +175,7 @@ cython_debug/
 # benchflow
 benchmarks/programbench/tasks/
 benchmarks/skillsbench/
+benchmarks/harvey-lab-benchflow/
 trials/
 jobs/
 .jobs/

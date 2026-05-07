@@ -1,6 +1,6 @@
 # Harvey LAB benchmark config.
-# run_harvey_lab.py downloads + converts tasks to .ref/harvey-lab-benchflow.
-tasks_dir: .ref/harvey-lab-benchflow
+# run_harvey_lab.py downloads + converts tasks to benchmarks/harvey-lab-benchflow.
+tasks_dir: benchmarks/harvey-lab-benchflow
 
 agent: gemini
 model: gemini/gemini-3.1-flash-lite-preview
