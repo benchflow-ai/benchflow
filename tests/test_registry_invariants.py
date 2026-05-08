@@ -36,6 +36,14 @@ VALID_API_PROTOCOLS = {
 }
 VALID_PROVIDER_API_PROTOCOLS = VALID_API_PROTOCOLS - {""}
 VALID_AUTH_TYPES = {"api_key", "adc", "aws", "none"}
+JS_ACP_AGENTS = {
+    "claude-agent-acp",
+    "pi-acp",
+    "openclaw",
+    "codex-acp",
+    "gemini",
+    "opencode",
+}
 
 
 # ── AgentConfig invariants ──────────────────────────────────────────────────
