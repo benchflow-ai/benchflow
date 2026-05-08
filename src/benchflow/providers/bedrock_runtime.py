@@ -224,9 +224,7 @@ def _tools_to_bedrock_tool_config(
         config["toolChoice"] = {"auto": {}}
     elif choice_type == "any":
         config["toolChoice"] = {"any": {}}
-    elif choice_type == "tool":
-        config["toolChoice"] = {"tool": {"name": tool_choice["name"]}}
-    elif choice_type == "function":
+    elif choice_type == "tool" or choice_type == "function":
         config["toolChoice"] = {"tool": {"name": tool_choice["name"]}}
     return config
 

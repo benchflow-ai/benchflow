@@ -234,7 +234,6 @@ async def connect_acp(
     if acp_client is None or session is None:
         raise RuntimeError("ACP connection did not initialize")
 
-    agent_cfg = AGENTS.get(agent)
     if model and not _should_skip_acp_set_model(agent, model, agent_env):
         acp_model_input = _resolve_acp_model_input(agent, model, agent_env)
         acp_model_id = _format_acp_model(acp_model_input, agent)

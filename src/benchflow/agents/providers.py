@@ -154,7 +154,6 @@ PROVIDERS: dict[str, ProviderConfig] = {
         auth_type="api_key",
         auth_env="ZAI_API_KEY",
         endpoints={
-            "openai-responses": "https://api.z.ai/api/paas/v4",
             "openai-completions": "https://api.z.ai/api/paas/v4",
             "openai-responses": "https://api.z.ai/api/paas/v4",
             "anthropic-messages": "https://api.z.ai/api/anthropic",
