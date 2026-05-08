@@ -18,13 +18,16 @@ Required fields
                      tokens that get expanded from env vars via
                      ``url_params``. Empty string is allowed for
                      "user-supplied at runtime" providers (e.g. ``vllm``).
-- ``api_protocol``   "anthropic-messages" or "openai-completions" — the
+- ``api_protocol``   "anthropic-messages" | "openai-responses" |
+                     "openai-completions" — the
                      wire protocol the primary ``base_url`` speaks.
-- ``auth_type``      "api_key" | "adc" | "none".
+- ``auth_type``      "api_key" | "adc" | "aws" | "none".
                      - "api_key": ``auth_env`` **must** be set.
                      - "adc": Application Default Credentials (GCP). The
                        SDK writes the credential file from
                        ``credential_files`` and sets the corresponding env.
+                     - "aws": Bedrock API-key auth via
+                       ``AWS_BEARER_TOKEN_BEDROCK`` plus region.
                      - "none": no auth.
 
 Common optional fields
@@ -35,9 +38,10 @@ Common optional fields
                        ``base_url`` (or any ``endpoints`` URL) must have an
                        entry, and every entry must be referenced somewhere.
 - ``endpoints``        ``{api_protocol: url}`` for providers that expose
-                       multiple protocol surfaces (e.g. zai serves both
-                       openai-completions and anthropic-messages). Picked
-                       at runtime based on the agent's ``api_protocol``.
+                       multiple protocol surfaces (e.g. zai serves
+                       openai-responses, openai-completions, and
+                       anthropic-messages). Picked at runtime based on the
+                       agent's ``api_protocol``.
 - ``models``           Optional list of model metadata dicts (id, name,
                        contextWindow, etc.) consumed by agent shims. ``id``
                        is required and must be unique within the provider.
@@ -62,9 +66,9 @@ class ProviderConfig:
         str  # primary endpoint; may contain {placeholders} expanded via url_params
     )
     api_protocol: (
-        str  # protocol for base_url: "openai-completions" | "anthropic-messages"
+        str  # protocol for base_url: "openai-responses" | "openai-completions" | "anthropic-messages"
     )
-    auth_type: str  # "api_key" | "adc" | "none"
+    auth_type: str  # "api_key" | "adc" | "aws" | "none"
     auth_env: str | None = None  # env var holding the API key (None for ADC)
     url_params: dict[str, str] = field(default_factory=dict)  # {placeholder: ENV_VAR}
     models: list[dict] = field(default_factory=list)  # model metadata for agents
@@ -133,6 +137,15 @@ PROVIDERS: dict[str, ProviderConfig] = {
         auth_type="api_key",
         auth_env="OPENAI_API_KEY",  # vLLM uses OpenAI-compatible auth
     ),
+    "aws-bedrock": ProviderConfig(
+        name="aws-bedrock",
+        base_url="",  # local Bedrock proxy supplies the runtime URL later
+        api_protocol="openai-responses",
+        auth_type="aws",
+        endpoints={
+            "anthropic-messages": "",
+        },
+    ),
     # ── Custom providers (need explicit endpoint config in agent shims) ──
     "zai": ProviderConfig(
         name="zai",
@@ -141,6 +154,7 @@ PROVIDERS: dict[str, ProviderConfig] = {
         auth_type="api_key",
         auth_env="ZAI_API_KEY",
         endpoints={
+            "openai-responses": "https://api.z.ai/api/paas/v4",
             "openai-completions": "https://api.z.ai/api/paas/v4",
             "anthropic-messages": "https://api.z.ai/api/anthropic",
         },
@@ -241,12 +255,12 @@ def strip_provider_prefix(model: str) -> str:
 def resolve_auth_env(model: str) -> str | None:
     """Return the env var name needed for a model's provider, or None.
 
-    Returns None for ADC-based providers and unknown models.
+    Returns None for ADC-based, AWS-auth providers, and unknown models.
     """
     result = find_provider(model)
     if result is None:
         return None
     _, cfg = result
-    if cfg.auth_type == "adc":
+    if cfg.auth_type in {"adc", "aws", "none"}:
         return None
     return cfg.auth_env

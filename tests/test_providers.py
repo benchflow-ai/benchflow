@@ -36,6 +36,11 @@ class TestFindProvider:
     def test_no_prefix_returns_none(self):
         assert find_provider("glm-5") is None
 
+    def test_aws_bedrock_prefix(self):
+        name, cfg = find_provider("aws-bedrock/anthropic.claude-sonnet-4-6")
+        assert name == "aws-bedrock"
+        assert cfg.auth_type == "aws"
+
 
 # ── resolve_base_url: template expansion ──
 
@@ -88,6 +93,10 @@ class TestResolveBaseUrl:
             resolve_base_url(p, {}, protocol="openai-completions")
             == "https://api.z.ai/api/paas/v4"
         )
+        assert (
+            resolve_base_url(p, {}, protocol="openai-responses")
+            == "https://api.z.ai/api/paas/v4"
+        )
 
     def test_protocol_fallback_to_base_url(self):
         """Unknown protocol falls back to primary base_url."""
@@ -112,6 +121,9 @@ class TestResolveAuthEnv:
         """Models without a custom provider fall through to None."""
         assert resolve_auth_env("some-unknown/model") is None
 
+    def test_aws_bedrock_returns_none(self):
+        assert resolve_auth_env("aws-bedrock/openai.gpt-oss-20b-1:0") is None
+
 
 # ── Integration: backward compat with registry.py ──
 
@@ -124,6 +136,11 @@ class TestRegistryIntegration:
         from benchflow.agents.registry import infer_env_key_for_model
 
         assert infer_env_key_for_model("zai/glm-5") == "ZAI_API_KEY"
+
+    def test_infer_env_key_for_aws_bedrock_is_none(self):
+        from benchflow.agents.registry import infer_env_key_for_model
+
+        assert infer_env_key_for_model("aws-bedrock/openai.gpt-oss-20b-1:0") is None
 
     def test_is_vertex_model_zai_direct(self):
         """zai/ (direct API) is NOT vertex."""
@@ -181,7 +198,6 @@ class TestStripProviderPrefix:
         assert (
             strip_provider_prefix("vllm/Qwen/Qwen3.5-35B-A3B") == "Qwen/Qwen3.5-35B-A3B"
         )
-
 
 # ── Shim provider fallback: stripped model + BENCHFLOW_PROVIDER_* env vars ──
 

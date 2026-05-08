@@ -377,6 +377,39 @@ class TestConnectAcpModelSelection:
         mock_acp.set_model.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_claude_bedrock_sets_model_from_provider_mapping(self, tmp_path):
+        from benchflow._acp_run import connect_acp
+
+        mock_acp = self._make_mocks()
+        mock_env = AsyncMock()
+        with (
+            patch(
+                "benchflow._acp_run.DockerProcess.from_harbor_env",
+                return_value=MagicMock(),
+            ),
+            patch("benchflow._acp_run.ContainerTransport", return_value=MagicMock()),
+            patch("benchflow._acp_run.ACPClient", return_value=mock_acp),
+        ):
+            await connect_acp(
+                env=mock_env,
+                agent="claude-agent-acp",
+                agent_launch="claude-agent-acp",
+                agent_env={
+                    "CLAUDE_CODE_USE_BEDROCK": "1",
+                    "ANTHROPIC_MODEL": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+                },
+                sandbox_user=None,
+                model="aws-bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+                trial_dir=tmp_path,
+                environment="docker",
+                agent_cwd="/app",
+            )
+
+        mock_acp.set_model.assert_awaited_once_with(
+            "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+        )
+
+    @pytest.mark.asyncio
     async def test_daytona_dind_uses_pty_transport(self, tmp_path):
         """Daytona compose tasks use PTY transport to avoid SSH pipe-closed failures."""
         from benchflow._acp_run import connect_acp

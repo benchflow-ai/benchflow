@@ -28,9 +28,14 @@ from benchflow.agents.registry import (
 VALID_AGENT_PROTOCOLS = {"acp", "cli"}
 # Empty api_protocol is valid for agents (they infer from the model name at
 # runtime); providers must always declare an explicit protocol.
-VALID_API_PROTOCOLS = {"", "anthropic-messages", "openai-completions"}
+VALID_API_PROTOCOLS = {
+    "",
+    "anthropic-messages",
+    "openai-responses",
+    "openai-completions",
+}
 VALID_PROVIDER_API_PROTOCOLS = VALID_API_PROTOCOLS - {""}
-VALID_AUTH_TYPES = {"api_key", "adc", "none"}
+VALID_AUTH_TYPES = {"api_key", "adc", "aws", "none"}
 
 
 # ── AgentConfig invariants ──────────────────────────────────────────────────
@@ -227,6 +232,7 @@ def test_provider_models_and_credentials(name, cfg):
     [
         ("google-vertex/gemini-2.5-pro", "google-vertex"),
         ("anthropic-vertex/claude-sonnet-4-6", "anthropic-vertex"),
+        ("aws-bedrock/openai.gpt-oss-20b-1:0", "aws-bedrock"),
         ("zai/glm-5", "zai"),
         ("vllm/local-model", "vllm"),
     ],

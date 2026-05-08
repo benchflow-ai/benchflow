@@ -31,6 +31,7 @@ _AUTH_CONTEXT_GROUPS = (
     frozenset({"GEMINI_API_KEY", "GOOGLE_API_KEY"}),
 )
 _EXPLICIT_AGENT_NATIVE_BRIDGE_KEYS = frozenset({"LLM_API_KEY"})
+_BEDROCK_PROXY_PLACEHOLDER_API_KEY = "bedrock-proxy"
 
 
 def _normalize_openhands_model(model: str) -> str:
@@ -57,9 +58,13 @@ def auto_inherit_env(agent_env: dict[str, str]) -> None:
     """Copy well-known API keys from host os.environ into agent_env."""
     from benchflow.agents.providers import PROVIDERS
 
+    explicit_keys = set(agent_env)
     keys = {
         "ANTHROPIC_API_KEY",
         "ANTHROPIC_AUTH_TOKEN",
+        "AWS_BEARER_TOKEN_BEDROCK",
+        "AWS_DEFAULT_REGION",
+        "AWS_REGION",
         "CLAUDE_CODE_OAUTH_TOKEN",
         "OPENAI_API_KEY",
         "GOOGLE_API_KEY",
@@ -87,6 +92,14 @@ def auto_inherit_env(agent_env: dict[str, str]) -> None:
         and "GOOGLE_GENERATIVE_AI_API_KEY" not in agent_env
     ):
         agent_env["GOOGLE_GENERATIVE_AI_API_KEY"] = agent_env["GEMINI_API_KEY"]
+    if "AWS_DEFAULT_REGION" in explicit_keys and "AWS_REGION" not in explicit_keys:
+        agent_env["AWS_REGION"] = agent_env["AWS_DEFAULT_REGION"]
+    elif "AWS_DEFAULT_REGION" in agent_env and "AWS_REGION" not in agent_env:
+        agent_env["AWS_REGION"] = agent_env["AWS_DEFAULT_REGION"]
+    if "AWS_REGION" in explicit_keys and "AWS_DEFAULT_REGION" not in explicit_keys:
+        agent_env["AWS_DEFAULT_REGION"] = agent_env["AWS_REGION"]
+    elif "AWS_REGION" in agent_env and "AWS_DEFAULT_REGION" not in agent_env:
+        agent_env["AWS_DEFAULT_REGION"] = agent_env["AWS_REGION"]
     # CLAUDE_CODE_OAUTH_TOKEN is a separate auth path — Claude CLI reads it
     # directly. Don't map to ANTHROPIC_API_KEY (different auth mechanism).
 
@@ -151,6 +164,11 @@ def resolve_provider_env(
             _key = agent_env.get(_prov_cfg.auth_env, "")
             if _key:
                 agent_env.setdefault("BENCHFLOW_PROVIDER_API_KEY", _key)
+        elif _prov_cfg.auth_type == "aws":
+            agent_env.setdefault(
+                "BENCHFLOW_PROVIDER_API_KEY",
+                _BEDROCK_PROXY_PLACEHOLDER_API_KEY,
+            )
     else:
         # No registered provider prefix — bridge the model's well-known API key
         # to BENCHFLOW_PROVIDER_API_KEY so env_mapping can translate it to
@@ -178,6 +196,24 @@ def check_subscription_auth(agent: str, required_key: str) -> bool:
     if sa.replaces_env != required_key:
         return False
     return Path(sa.detect_file).expanduser().is_file()
+
+
+def validate_aws_bedrock_env(agent_env: dict[str, str], model: str) -> None:
+    """Validate Bedrock API-key auth and normalize region aliases."""
+    token = agent_env.get("AWS_BEARER_TOKEN_BEDROCK")
+    region = agent_env.get("AWS_REGION") or agent_env.get("AWS_DEFAULT_REGION")
+    if not token:
+        raise ValueError(
+            f"AWS_BEARER_TOKEN_BEDROCK required for Bedrock model {model!r} but not set. "
+            "Export it or pass via agent_env."
+        )
+    if not region:
+        raise ValueError(
+            f"AWS_REGION or AWS_DEFAULT_REGION required for Bedrock model {model!r} "
+            "but not set. Export one of them or pass via agent_env."
+        )
+    agent_env.setdefault("AWS_REGION", region)
+    agent_env.setdefault("AWS_DEFAULT_REGION", region)
 
 
 def _shares_auth_context(required_key: str | None, candidate_key: str | None) -> bool:
@@ -208,6 +244,13 @@ def resolve_agent_env(
     if model and agent != "oracle":
         inject_vertex_credentials(agent_env, model)
         resolve_provider_env(agent_env, model, agent)
+        from benchflow.agents.providers import find_provider
+
+        provider = find_provider(model)
+        if provider is not None:
+            _, provider_cfg = provider
+            if provider_cfg.auth_type == "aws":
+                validate_aws_bedrock_env(agent_env, model)
         if agent_cfg and agent_cfg.env_mapping:
             for src, dst in agent_cfg.env_mapping.items():
                 if src in agent_env and dst not in explicit_agent_env_keys:

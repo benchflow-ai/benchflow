@@ -20,7 +20,8 @@ Common optional fields
                          sandbox (e.g. ``["ANTHROPIC_API_KEY"]``). Validated at
                          run start; missing keys raise before the container
                          spins up.
-- ``api_protocol``       "anthropic-messages" | "openai-completions" | "" — the
+- ``api_protocol``       "anthropic-messages" | "openai-responses" |
+                         "openai-completions" | "" — the
                          LLM API the agent natively speaks. Used to pick the
                          right endpoint when a provider exposes multiple
                          (e.g. zai). Empty means "agent infers from model name".
@@ -160,9 +161,11 @@ class AgentConfig:
     default_model: str = ""  # default model ID when --model is omitted
     api_protocol: str = ""
     # The LLM API protocol the agent natively speaks:
-    # "anthropic-messages" | "openai-completions" | "" (runtime/native).
+    # "anthropic-messages" | "openai-responses" | "openai-completions" |
+    # "" (runtime/native).
     # Used to pick the correct provider endpoint when a provider exposes
-    # multiple (e.g. zai has both anthropic-messages and openai-completions).
+    # multiple (e.g. zai has anthropic-messages, openai-responses, and
+    # openai-completions).
     env_mapping: dict[str, str] = field(default_factory=dict)
     # Maps BENCHFLOW_PROVIDER_* → agent-native env var names.
     # Applied by SDK after provider resolution.
@@ -289,7 +292,7 @@ AGENTS: dict[str, AgentConfig] = {
         launch_cmd="codex-acp",
         protocol="acp",
         requires_env=["OPENAI_API_KEY"],
-        api_protocol="openai-completions",
+        api_protocol="openai-responses",
         env_mapping={
             "BENCHFLOW_PROVIDER_BASE_URL": "OPENAI_BASE_URL",
             "BENCHFLOW_PROVIDER_API_KEY": "OPENAI_API_KEY",
@@ -487,12 +490,15 @@ def is_vertex_model(model: str) -> bool:
 
 def infer_env_key_for_model(model: str) -> str | None:
     """Infer the required API key environment variable from a model ID."""
-    # Check custom providers first
-    from benchflow.agents.providers import resolve_auth_env
+    # Registered providers are authoritative about auth mode.
+    from benchflow.agents.providers import find_provider, resolve_auth_env
 
-    custom = resolve_auth_env(model)
-    if custom is not None:
-        return custom
+    result = find_provider(model)
+    if result is not None:
+        _, cfg = result
+        if cfg.auth_type != "api_key":
+            return None
+        return resolve_auth_env(model)
     # ADC-based providers and built-in Vertex prefixes
     if is_vertex_model(model):
         return None

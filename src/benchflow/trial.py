@@ -59,6 +59,10 @@ from benchflow._env_setup import (
     _inject_skills_into_dockerfile,
     stage_dockerfile_deps,
 )
+from benchflow._provider_runtime import (
+    ensure_bedrock_proxy_runtime,
+    stop_provider_runtime,
+)
 from benchflow._sandbox import (
     _resolve_locked_paths,
     _seed_verifier_workspace,
@@ -530,6 +534,13 @@ class Trial:
         trial_dir = self._require_trial_dir()
         t0 = datetime.now()
 
+        self._agent_env, self._provider_runtime = await ensure_bedrock_proxy_runtime(
+            agent=cfg.primary_agent,
+            agent_env=self._agent_env,
+            model=cfg.primary_model,
+            runtime=getattr(self, "_provider_runtime", None),
+            environment=cfg.environment,
+        )
         self._acp_client, self._session, self._agent_name = await connect_acp(
             env=self._env,
             agent=cfg.primary_agent,
@@ -721,6 +732,8 @@ class Trial:
 
         if self._env:
             try:
+                await stop_provider_runtime(getattr(self, "_provider_runtime", None))
+                self._provider_runtime = None
                 await self._env.stop(delete=True)
             except Exception as e:
                 logger.warning(f"Cleanup failed: {e}")
@@ -1095,6 +1108,13 @@ class Trial:
                 {**(cfg.agent_env or {}), **(role.env or {})},
             ),
             disallow=disallow_web_tools,
+        )
+        agent_env, self._provider_runtime = await ensure_bedrock_proxy_runtime(
+            agent=role.agent,
+            agent_env=agent_env,
+            model=role.model,
+            runtime=getattr(self, "_provider_runtime", None),
+            environment=cfg.environment,
         )
 
         if role.agent != cfg.primary_agent:

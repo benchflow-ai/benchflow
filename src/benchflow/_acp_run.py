@@ -26,7 +26,7 @@ from benchflow._sandbox import build_priv_drop_cmd
 from benchflow._trajectory import _capture_session_trajectory
 from benchflow.acp.client import ACPClient
 from benchflow.acp.container_transport import ContainerTransport
-from benchflow.agents.providers import strip_provider_prefix
+from benchflow.agents.providers import find_provider, strip_provider_prefix
 from benchflow.agents.registry import AGENTS
 from benchflow.process import DaytonaProcess, DaytonaPtyProcess, DockerProcess
 
@@ -81,6 +81,60 @@ def _format_acp_model(model: str, agent: str) -> str:
         "Cannot infer models.dev provider for %r — defaulting to anthropic/", bare
     )
     return f"anthropic/{bare}"
+
+
+def _should_skip_acp_set_model(
+    agent: str,
+    model: str | None,
+    agent_env: dict[str, str],
+) -> bool:
+    """Return True when launch/env config should own model selection.
+
+    Custom provider runtimes such as Bedrock can expose a model ID through
+    agent-native env vars (for Claude ACP this is ``ANTHROPIC_MODEL``).
+    In that case ACP ``session/set_model`` can be actively harmful because the
+    agent validates the model ID against its native catalog before it ever hits
+    the custom provider endpoint.
+    """
+    if not model:
+        return False
+    agent_cfg = AGENTS.get(agent)
+    if not agent_cfg:
+        return False
+    if not agent_cfg.supports_acp_set_model:
+        return True
+    provider = find_provider(model)
+    if provider is None:
+        return False
+    _provider_name, provider_cfg = provider
+    if provider_cfg.auth_type != "aws":
+        return False
+    if agent_env.get("CLAUDE_CODE_USE_BEDROCK") in {"1", "true", "True"}:
+        return False
+    mapped_model_env = agent_cfg.env_mapping.get("BENCHFLOW_PROVIDER_MODEL")
+    if not mapped_model_env:
+        return False
+    override = agent_env.get(mapped_model_env)
+    if not override:
+        return True
+    return strip_provider_prefix(model) == override
+
+
+def _resolve_acp_model_input(agent: str, model: str, agent_env: dict[str, str]) -> str:
+    """Pick the model string that should be sent through ACP set_model."""
+    agent_cfg = AGENTS.get(agent)
+    if not agent_cfg:
+        return model
+    provider = find_provider(model)
+    if provider is None:
+        return model
+    _provider_name, provider_cfg = provider
+    if provider_cfg.auth_type != "aws":
+        return model
+    mapped_model_env = agent_cfg.env_mapping.get("BENCHFLOW_PROVIDER_MODEL")
+    if not mapped_model_env:
+        return model
+    return agent_env.get(mapped_model_env, model)
 
 
 async def connect_acp(
@@ -181,11 +235,12 @@ async def connect_acp(
         raise RuntimeError("ACP connection did not initialize")
 
     agent_cfg = AGENTS.get(agent)
-    if model and (agent_cfg is None or agent_cfg.supports_acp_set_model):
-        acp_model_id = _format_acp_model(model, agent)
+    if model and not _should_skip_acp_set_model(agent, model, agent_env):
+        acp_model_input = _resolve_acp_model_input(agent, model, agent_env)
+        acp_model_id = _format_acp_model(acp_model_input, agent)
         try:
             await asyncio.wait_for(acp_client.set_model(acp_model_id), timeout=60)
-            logger.info(f"Model set to: {acp_model_id} (from {model})")
+            logger.info(f"Model set to: {acp_model_id} (from {acp_model_input})")
         except Exception as e:
             logger.warning(f"Failed to set model via ACP: {e}")
     elif model:
