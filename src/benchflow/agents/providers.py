@@ -65,9 +65,7 @@ class ProviderConfig:
     base_url: (
         str  # primary endpoint; may contain {placeholders} expanded via url_params
     )
-    api_protocol: (
-        str  # protocol for base_url: "openai-responses" | "openai-completions" | "anthropic-messages"
-    )
+    api_protocol: str  # protocol for base_url: "openai-responses" | "openai-completions" | "anthropic-messages"
     auth_type: str  # "api_key" | "adc" | "aws" | "none"
     auth_env: str | None = None  # env var holding the API key (None for ADC)
     url_params: dict[str, str] = field(default_factory=dict)  # {placeholder: ENV_VAR}

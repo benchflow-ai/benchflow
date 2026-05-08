@@ -52,7 +52,10 @@ async def test_trial_connect_starts_bedrock_runtime_before_connect_acp(tmp_path)
 
     ensure_runtime.assert_awaited_once()
     assert ensure_runtime.await_args.kwargs["environment"] == "docker"
-    assert connect_acp.await_args.kwargs["agent_env"]["OPENAI_BASE_URL"] == "http://host.docker.internal:32123"
+    assert (
+        connect_acp.await_args.kwargs["agent_env"]["OPENAI_BASE_URL"]
+        == "http://host.docker.internal:32123"
+    )
 
 
 @pytest.mark.asyncio
@@ -79,7 +82,9 @@ async def test_trial_connect_as_starts_bedrock_runtime_for_role(tmp_path):
     trial._timing = {}
     trial._agent_cwd = "/app"
     trial._phase = "idle"
-    trial._task = SimpleNamespace(config=SimpleNamespace(environment=SimpleNamespace(allow_internet=True)))
+    trial._task = SimpleNamespace(
+        config=SimpleNamespace(environment=SimpleNamespace(allow_internet=True))
+    )
 
     with (
         patch(
@@ -105,7 +110,10 @@ async def test_trial_connect_as_starts_bedrock_runtime_for_role(tmp_path):
                 )
             ),
         ) as ensure_runtime,
-        patch("benchflow.trial.install_agent", new=AsyncMock(return_value=SimpleNamespace())),
+        patch(
+            "benchflow.trial.install_agent",
+            new=AsyncMock(return_value=SimpleNamespace()),
+        ),
         patch("benchflow.trial.write_credential_files", new=AsyncMock()),
         patch("benchflow.trial.apply_web_tool_policy", new=AsyncMock()),
         patch("benchflow.trial.connect_acp", new_callable=AsyncMock) as connect_acp,
@@ -115,4 +123,7 @@ async def test_trial_connect_as_starts_bedrock_runtime_for_role(tmp_path):
 
     ensure_runtime.assert_awaited_once()
     assert ensure_runtime.await_args.kwargs["environment"] == "docker"
-    assert connect_acp.await_args.kwargs["agent_env"]["ANTHROPIC_BASE_URL"] == "http://host.docker.internal:32123"
+    assert (
+        connect_acp.await_args.kwargs["agent_env"]["ANTHROPIC_BASE_URL"]
+        == "http://host.docker.internal:32123"
+    )

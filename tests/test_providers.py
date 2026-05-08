@@ -203,6 +203,7 @@ class TestStripProviderPrefix:
             strip_provider_prefix("vllm/Qwen/Qwen3.5-35B-A3B") == "Qwen/Qwen3.5-35B-A3B"
         )
 
+
 # ── Shim provider fallback: stripped model + BENCHFLOW_PROVIDER_* env vars ──
 
 

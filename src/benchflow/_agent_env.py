@@ -96,9 +96,9 @@ def auto_inherit_env(agent_env: dict[str, str]) -> None:
         "AWS_DEFAULT_REGION" in explicit_keys and "AWS_REGION" not in explicit_keys
     ) or ("AWS_DEFAULT_REGION" in agent_env and "AWS_REGION" not in agent_env):
         agent_env["AWS_REGION"] = agent_env["AWS_DEFAULT_REGION"]
-    if ("AWS_REGION" in explicit_keys and "AWS_DEFAULT_REGION" not in explicit_keys) or (
-        "AWS_REGION" in agent_env and "AWS_DEFAULT_REGION" not in agent_env
-    ):
+    if (
+        "AWS_REGION" in explicit_keys and "AWS_DEFAULT_REGION" not in explicit_keys
+    ) or ("AWS_REGION" in agent_env and "AWS_DEFAULT_REGION" not in agent_env):
         agent_env["AWS_DEFAULT_REGION"] = agent_env["AWS_REGION"]
     # CLAUDE_CODE_OAUTH_TOKEN is a separate auth path — Claude CLI reads it
     # directly. Don't map to ANTHROPIC_API_KEY (different auth mechanism).

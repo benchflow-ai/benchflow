@@ -268,7 +268,9 @@ class TestValidateAwsBedrockEnv:
             validate_aws_bedrock_env({"AWS_REGION": "us-east-1"}, "aws-bedrock/model")
 
     def test_requires_region(self):
-        with pytest.raises(ValueError, match="AWS_REGION or AWS_DEFAULT_REGION required"):
+        with pytest.raises(
+            ValueError, match="AWS_REGION or AWS_DEFAULT_REGION required"
+        ):
             validate_aws_bedrock_env(
                 {"AWS_BEARER_TOKEN_BEDROCK": "bedrock-token"},
                 "aws-bedrock/model",

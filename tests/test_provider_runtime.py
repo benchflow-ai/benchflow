@@ -82,7 +82,10 @@ class TestBedrockProxyRuntime:
         assert runtime.host == "host.docker.internal"
         assert runtime.port == 32123
         assert runtime.backend_model == "openai.gpt-oss-20b-1:0"
-        assert updated["BENCHFLOW_PROVIDER_BASE_URL"] == "http://host.docker.internal:32123"
+        assert (
+            updated["BENCHFLOW_PROVIDER_BASE_URL"]
+            == "http://host.docker.internal:32123"
+        )
         assert updated["OPENAI_BASE_URL"] == "http://host.docker.internal:32123"
         assert runtime.server.started is True
 
@@ -114,12 +117,17 @@ class TestBedrockProxyRuntime:
         )
 
         assert runtime is not None
-        assert updated["BENCHFLOW_PROVIDER_BASE_URL"] == "http://host.docker.internal:32123"
+        assert (
+            updated["BENCHFLOW_PROVIDER_BASE_URL"]
+            == "http://host.docker.internal:32123"
+        )
         assert "ANTHROPIC_BASE_URL" not in updated
         assert "ANTHROPIC_AUTH_TOKEN" not in updated
         assert updated["CLAUDE_CODE_USE_BEDROCK"] == "1"
         assert updated["CLAUDE_CODE_SKIP_BEDROCK_AUTH"] == "1"
-        assert updated["ANTHROPIC_BEDROCK_BASE_URL"] == "http://host.docker.internal:32123"
+        assert (
+            updated["ANTHROPIC_BEDROCK_BASE_URL"] == "http://host.docker.internal:32123"
+        )
         assert updated["ANTHROPIC_MODEL"] == "anthropic.claude-haiku-4-5-20251001-v1:0"
         assert "BENCHFLOW_CLAUDE_FRONTEND_MODEL" not in updated
 
@@ -154,10 +162,11 @@ class TestBedrockProxyRuntime:
         assert updated["ANTHROPIC_MODEL"] == "us.anthropic.claude-sonnet-4-5"
         assert "BENCHFLOW_CLAUDE_FRONTEND_MODEL" not in updated
 
-
     @pytest.mark.asyncio
     async def test_reuses_existing_runtime(self):
-        runtime = ProviderRuntime(kind="aws-bedrock", host="host.docker.internal", port=8099)
+        runtime = ProviderRuntime(
+            kind="aws-bedrock", host="host.docker.internal", port=8099
+        )
         updated, returned = await ensure_bedrock_proxy_runtime(
             agent="codex-acp",
             agent_env={"OPENAI_API_KEY": "bedrock-proxy"},

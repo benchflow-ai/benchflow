@@ -123,10 +123,11 @@ class TestAnthropicTranslation:
         assert payload["modelId"] == body["model"]
         assert payload["system"] == [{"text": "Be concise."}]
         assert payload["messages"][0]["content"] == [{"text": "Hello"}]
-        assert payload["messages"][1]["content"][0]["toolUse"]["name"] == "lookup_weather"
         assert (
-            payload["messages"][2]["content"][0]["toolResult"]["toolUseId"]
-            == "toolu_1"
+            payload["messages"][1]["content"][0]["toolUse"]["name"] == "lookup_weather"
+        )
+        assert (
+            payload["messages"][2]["content"][0]["toolResult"]["toolUseId"] == "toolu_1"
         )
         assert payload["inferenceConfig"] == {
             "maxTokens": 256,
@@ -134,7 +135,9 @@ class TestAnthropicTranslation:
             "topP": 0.9,
             "stopSequences": ["DONE"],
         }
-        assert payload["toolConfig"]["toolChoice"] == {"tool": {"name": "lookup_weather"}}
+        assert payload["toolConfig"]["toolChoice"] == {
+            "tool": {"name": "lookup_weather"}
+        }
 
     def test_bedrock_response_to_anthropic(self):
         response = {
@@ -183,7 +186,7 @@ class TestOpenAIResponsesTranslation:
                             "type": "function_call",
                             "call_id": "call_1",
                             "name": "lookup_weather",
-                            "arguments": "{\"city\":\"Boston\"}",
+                            "arguments": '{"city":"Boston"}',
                         }
                     ],
                 },
@@ -220,7 +223,9 @@ class TestOpenAIResponsesTranslation:
         assert payload["system"] == [{"text": "Be concise."}]
         assert payload["messages"][0]["content"] == [{"text": "Hello"}]
         assert payload["messages"][1]["content"][0]["toolUse"]["toolUseId"] == "call_1"
-        assert payload["messages"][2]["content"][0]["toolResult"]["toolUseId"] == "call_1"
+        assert (
+            payload["messages"][2]["content"][0]["toolResult"]["toolUseId"] == "call_1"
+        )
         assert payload["inferenceConfig"]["maxTokens"] == 128
         assert payload["toolConfig"]["toolChoice"] == {"auto": {}}
 

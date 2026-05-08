@@ -163,7 +163,9 @@ def _responses_content_to_bedrock(role: str, content: Any) -> list[dict[str, Any
     return blocks
 
 
-def _inference_config_from_request(body: dict[str, Any], *, max_tokens_key: str) -> dict[str, Any]:
+def _inference_config_from_request(
+    body: dict[str, Any], *, max_tokens_key: str
+) -> dict[str, Any]:
     config: dict[str, Any] = {}
     if body.get(max_tokens_key) is not None:
         config["maxTokens"] = body[max_tokens_key]
@@ -257,11 +259,15 @@ def anthropic_request_to_bedrock_converse(body: dict[str, Any]) -> dict[str, Any
     return payload
 
 
-def openai_responses_request_to_bedrock_converse(body: dict[str, Any]) -> dict[str, Any]:
+def openai_responses_request_to_bedrock_converse(
+    body: dict[str, Any],
+) -> dict[str, Any]:
     """Translate an OpenAI Responses request to Converse kwargs."""
     input_items = body.get("input", [])
     if isinstance(input_items, str):
-        input_items = [{"role": "user", "content": [{"type": "input_text", "text": input_items}]}]
+        input_items = [
+            {"role": "user", "content": [{"type": "input_text", "text": input_items}]}
+        ]
     messages = []
     for item in input_items:
         if item.get("type") == "message":
@@ -300,7 +306,9 @@ def openai_responses_request_to_bedrock_converse(body: dict[str, Any]) -> dict[s
     return payload
 
 
-def _bedrock_content_to_anthropic(content: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _bedrock_content_to_anthropic(
+    content: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
     blocks: list[dict[str, Any]] = []
     for block in content:
         if "text" in block:
@@ -369,7 +377,9 @@ def bedrock_response_to_openai_response(
                     "type": "message",
                     "status": "completed",
                     "role": "assistant",
-                    "content": [{"type": "output_text", "text": text, "annotations": []}],
+                    "content": [
+                        {"type": "output_text", "text": text, "annotations": []}
+                    ],
                 }
             )
         elif "toolUse" in block:
@@ -381,7 +391,9 @@ def bedrock_response_to_openai_response(
                     "status": "completed",
                     "call_id": tool["toolUseId"],
                     "name": tool["name"],
-                    "arguments": json.dumps(tool.get("input", {}), separators=(",", ":")),
+                    "arguments": json.dumps(
+                        tool.get("input", {}), separators=(",", ":")
+                    ),
                 }
             )
         elif "reasoningContent" in block:
@@ -567,7 +579,15 @@ def bedrock_stream_event_to_openai_response_sse(
                 "role": "assistant",
                 "content": [],
             }
-        return [_sse({"type": "response.output_item.added", "output_index": index, "item": item})]
+        return [
+            _sse(
+                {
+                    "type": "response.output_item.added",
+                    "output_index": index,
+                    "item": item,
+                }
+            )
+        ]
     if "contentBlockDelta" in event:
         delta = event["contentBlockDelta"]
         index = delta["contentBlockIndex"]

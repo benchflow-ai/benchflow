@@ -211,11 +211,15 @@ class BedrockProxyServer:
                 return
             model_id = _match_bedrock_model_path(path, "invoke-with-response-stream")
             if model_id is not None:
-                await self._handle_bedrock_invoke_stream(model_id, body_bytes, headers, writer)
+                await self._handle_bedrock_invoke_stream(
+                    model_id, body_bytes, headers, writer
+                )
                 return
             model_id = _match_bedrock_model_path(path, "count-tokens")
             if model_id is not None:
-                await self._handle_bedrock_count_tokens(model_id, body_bytes, headers, writer)
+                await self._handle_bedrock_count_tokens(
+                    model_id, body_bytes, headers, writer
+                )
                 return
 
             writer.write(_json_http_response(404, {"error": "not_found"}))
@@ -307,13 +311,20 @@ class BedrockProxyServer:
     def _bedrock_runtime_base_url(self) -> str:
         region = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION")
         if not region:
-            raise RuntimeError("AWS_REGION or AWS_DEFAULT_REGION required for Bedrock runtime proxy.")
-        return os.environ.get("ANTHROPIC_BEDROCK_BASE_URL") or f"https://bedrock-runtime.{region}.amazonaws.com"
+            raise RuntimeError(
+                "AWS_REGION or AWS_DEFAULT_REGION required for Bedrock runtime proxy."
+            )
+        return (
+            os.environ.get("ANTHROPIC_BEDROCK_BASE_URL")
+            or f"https://bedrock-runtime.{region}.amazonaws.com"
+        )
 
     def _bedrock_auth_headers(self, inbound_headers: dict[str, str]) -> dict[str, str]:
         token = os.environ.get("AWS_BEARER_TOKEN_BEDROCK")
         if not token:
-            raise RuntimeError("AWS_BEARER_TOKEN_BEDROCK required for Bedrock runtime proxy.")
+            raise RuntimeError(
+                "AWS_BEARER_TOKEN_BEDROCK required for Bedrock runtime proxy."
+            )
         headers = {
             "authorization": f"Bearer {token}",
             "content-type": inbound_headers.get("content-type", "application/json"),
@@ -452,10 +463,12 @@ class BedrockProxyServer:
         await writer.drain()
 
     def _model_response(self, model_id: str) -> dict[str, Any]:
-        created_at = datetime.now(UTC).replace(microsecond=0).isoformat().replace(
-            "+00:00", "Z"
+        created_at = (
+            datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
         )
-        display_name = model_id.replace("anthropic.", "").replace("claude-", "Claude ", 1)
+        display_name = model_id.replace("anthropic.", "").replace(
+            "claude-", "Claude ", 1
+        )
         return {
             "id": model_id,
             "type": "model",
