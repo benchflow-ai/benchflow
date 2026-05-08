@@ -10,7 +10,7 @@ The mental model for benchflow. Read once, then refer back from the how-tos.
 |-----------|------------|
 | **Task** | A directory on disk: `instruction.md` for the agent + `tests/` for the verifier + (optional) `solution/solve.sh` for oracle runs + `environment/Dockerfile` for the sandbox. Authored once, evaluated many times. |
 | **Agent** | A registered ACP-speaking program (Claude Code, Gemini CLI, OpenCode, etc.). Identified by name (`"gemini"`, `"opencode"`) plus an optional model ID. |
-| **Environment** | The sandbox where the agent runs and the verifier checks the result. Backed by Harbor — Docker locally, Daytona for cloud. |
+| **Environment** | The sandbox where the agent runs and the verifier checks the result. Backed by Harbor — Docker locally, Daytona for cloud, and Modal for serverless/GPU-backed task environments. |
 | **Verifier** | The test runner that scores the trial. By default `pytest /tests/...` against the workspace the agent left behind. Outputs `rewards: {reward: float}`. |
 | **Trial** | One agent run on one task. Holds the lifecycle (setup → start → install → execute → verify → cleanup). All higher-level primitives below are built on Trials. |
 

@@ -97,6 +97,7 @@ from typing import Any, cast
 
 from harbor.models.task.task import Task
 from harbor.models.trial.paths import TrialPaths
+from harbor.utils.env import resolve_env_vars
 from harbor.verifier.verifier import Verifier
 
 from benchflow._env_setup import (
@@ -433,9 +434,13 @@ class SDK:
             )
         else:
             cmd = "bash /solution/solve.sh"
+        oracle_env: dict[str, str] = {"DEBIAN_FRONTEND": "noninteractive"}
+        task = Task(task_path)
+        if task.config.solution.env:
+            oracle_env.update(resolve_env_vars(task.config.solution.env))
         result = await env.exec(
             f"{cmd} > /logs/agent/oracle.txt 2>&1",
-            env={"DEBIAN_FRONTEND": "noninteractive"},
+            env=oracle_env,
             timeout_sec=timeout,
         )
         if result.return_code != 0:
@@ -513,6 +518,9 @@ class SDK:
         sandbox_setup_timeout: int = 120,
         pre_agent_hooks: list | None = None,
         context_root: str | Path | None = None,
+        skill_mode: str = "default",
+        skill_creator_dir: str | Path | None = None,
+        self_gen_no_internet: bool = False,
     ) -> RunResult:
         """Run a task with an ACP agent inside a sandbox.
 
@@ -562,6 +570,13 @@ class SDK:
             sandbox_setup_timeout=sandbox_setup_timeout,
             pre_agent_hooks=pre_agent_hooks,
             context_root=context_root,
+            skill_mode=skill_mode,
+            skill_creator_dir=skill_creator_dir,
+            self_gen_no_internet=self_gen_no_internet,
         )
+        if skill_mode == "self-gen":
+            from benchflow.self_gen import run_self_gen
+
+            return await run_self_gen(config)
         trial = await Trial.create(config)
         return await trial.run()

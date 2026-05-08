@@ -2,7 +2,7 @@
   <h1>BenchFlow</h1>
   <p>Multi-turn agent benchmarking — Scene-based lifecycle for any ACP agent</p>
   <a href="https://pypi.org/project/benchflow/" target="_blank">
-    <img src="https://img.shields.io/badge/PyPI-0.3.2-blue?style=for-the-badge&logo=pypi" alt="PyPI">
+    <img src="https://img.shields.io/pypi/v/benchflow?style=for-the-badge&logo=pypi" alt="PyPI">
   </a>
   <a href="https://discord.gg/mZ9Rc8q8W3" target="_blank">
     <img src="https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord">
@@ -13,9 +13,9 @@
 
 BenchFlow runs AI agents against benchmark tasks in sandboxed environments. Single-agent, multi-agent, and multi-round patterns share one Scene-based lifecycle.
 
-- **Any ACP agent** — Gemini CLI, Claude Code, Codex, OpenCode, OpenClaw, Pi, or your own
+- **Any ACP agent** — Gemini CLI, Claude Code, Codex, OpenCode, OpenHands, OpenClaw, Pi, or your own
 - **Single + multi + progressive** — single-agent / multi-agent (coder + reviewer, simulated user) / multi-round with a Python `BaseUser` callback
-- **Cloud sandboxes** — Daytona backend for parallel execution at scale
+- **Sandbox backends** — Docker locally, Daytona for parallel cloud runs, Modal for serverless/GPU-backed task environments
 - **Hardened verifier** — defaults block BenchJack/Meerkat-style reward-hacking; tasks opt out per-feature
 
 ## Install
@@ -24,7 +24,7 @@ BenchFlow runs AI agents against benchmark tasks in sandboxed environments. Sing
 uv tool install benchflow
 ```
 
-Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/). Set `DAYTONA_API_KEY` for cloud sandboxes; export the relevant agent API key (`GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, etc.) or run `claude login` / `codex --login` for subscription auth.
+Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/). Set `DAYTONA_API_KEY` for Daytona runs or configure Modal auth for Modal runs; export the relevant agent API key (`GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, etc.) or run `claude login` / `codex --login` for subscription auth.
 
 ## Documentation
 
@@ -42,11 +42,25 @@ Start with [Getting started](./docs/getting-started.md), then [Concepts](./docs/
 | CLI flags + commands | [CLI reference](./docs/reference/cli.md) |
 | Python API surface | [Python API reference](./docs/reference/python-api.md) |
 
-Notebooks and runnable example scripts: [`examples/`](./examples/).
+Notebooks and runnable example scripts live under [`docs/examples/`](./docs/examples/) so examples stay versioned with the docs that explain them.
+
+## Benchmark task sources
+
+BenchFlow's helper scripts can materialize benchmark task repos under `.ref/`.
+For SkillsBench, [`benchmarks/run_skillsbench.py`](./benchmarks/run_skillsbench.py)
+calls `ensure_tasks("skillsbench")`, which clones
+[`benchflow-ai/skillsbench`](https://github.com/benchflow-ai/skillsbench) from
+the `main` branch into `.ref/skillsbench/tasks` when the local task cache is
+missing.
+
+SkillsBench itself sources BenchFlow from GitHub `main` in its
+[`pyproject.toml`](https://github.com/benchflow-ai/skillsbench/blob/main/pyproject.toml).
+After a BenchFlow change lands, run `uv lock --upgrade-package benchflow` in
+SkillsBench when you need its lockfile to point at the newest BenchFlow commit.
 
 ## Featured
 
-- **Progressive disclosure on SWE-bench Pro** — the `BaseUser` abstraction drives a multi-round trial: terse round-0 prompt → failing-test hints → full spec. 5/5 oracle on Daytona, runnable demo at [`examples/swebench_pro_progressive_disclosure.ipynb`](./examples/swebench_pro_progressive_disclosure.ipynb). Also benchflow's [Harbor #1316](https://github.com/harbor-ai/harbor/issues/1316) parity answer for the no-second-LLM case. See [Progressive disclosure](./docs/progressive-disclosure.md).
+- **Progressive disclosure on SWE-bench Pro** — the `BaseUser` abstraction drives a multi-round trial: terse round-0 prompt → failing-test hints → full spec. 5/5 oracle on Daytona, runnable demo at [`docs/examples/swebench_pro_progressive_disclosure.ipynb`](./docs/examples/swebench_pro_progressive_disclosure.ipynb). Also benchflow's [Harbor #1316](https://github.com/harbor-ai/harbor/issues/1316) parity answer for the no-second-LLM case. See [Progressive disclosure](./docs/progressive-disclosure.md).
 
 ## Research artifacts
 

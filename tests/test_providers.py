@@ -90,6 +90,10 @@ class TestResolveBaseUrl:
             == "https://api.z.ai/api/anthropic"
         )
         assert (
+            resolve_base_url(p, {}, protocol="openai-responses")
+            == "https://api.z.ai/api/paas/v4"
+        )
+        assert (
             resolve_base_url(p, {}, protocol="openai-completions")
             == "https://api.z.ai/api/paas/v4"
         )

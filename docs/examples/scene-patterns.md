@@ -105,9 +105,8 @@ Each pattern is a TrialConfig change — same API, same verifier, same trajector
 ## Running the Demo
 
 ```bash
-pip install google-generativeai
 export GEMINI_API_KEY="AIza..."
-python examples/scene-patterns.py
+uv run --with google-generativeai python docs/examples/scene-patterns.py
 ```
 
 The script constructs the contract inline and runs all 4 patterns with actual LLM calls. No Docker or Daytona needed — it demonstrates the interaction patterns directly.

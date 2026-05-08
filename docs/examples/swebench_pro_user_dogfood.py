@@ -10,8 +10,8 @@ The user:
   Stops when reward >= 1.0 or max_user_rounds hit.
 
 Usage:
-    GEMINI_API_KEY=... python examples/swebench_pro_user_dogfood.py
-    GEMINI_API_KEY=... python examples/swebench_pro_user_dogfood.py --task openlibrary
+    GEMINI_API_KEY=... python docs/examples/swebench_pro_user_dogfood.py
+    GEMINI_API_KEY=... python docs/examples/swebench_pro_user_dogfood.py --task openlibrary
 
 Tasks available (oracle-validated 5/5 on 2026-04-24):
     ansible, flipt, openlibrary, navidrome, qutebrowser

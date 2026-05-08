@@ -15,7 +15,15 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from benchflow.trial import Role, Scene, Trial, TrialConfig, Turn
+from benchflow.trial import (
+    Role,
+    Scene,
+    Trial,
+    TrialConfig,
+    Turn,
+    _resolve_skill_creator_root,
+    _self_gen_prompt,
+)
 
 
 @dataclass
@@ -31,6 +39,7 @@ class FakeEnv:
     def __init__(self) -> None:
         self._files: dict[str, str] = {}
         self._exec_log: list[str] = []
+        self._uploads: list[tuple[Path, str]] = []
 
     async def exec(self, cmd: str, **kwargs) -> FakeExecResult:
         self._exec_log.append(cmd)
@@ -52,6 +61,9 @@ class FakeEnv:
             self._files.pop(path, None)
             return FakeExecResult()
         return FakeExecResult()
+
+    async def upload_dir(self, src: Path, dst: str) -> None:
+        self._uploads.append((Path(src), dst))
 
     def stage_outbox(self, recipient: str, content: str) -> None:
         self._files[f"/app/.outbox/{recipient}.json"] = json.dumps(
@@ -350,3 +362,105 @@ async def test_heterogeneous_agent_install(coder_reviewer_scene: Scene) -> None:
     await trial._run_scene(scene)
 
     assert "claude-agent-acp" in installed_agents
+
+
+def test_self_gen_mode_still_requires_runtime_orchestration(tmp_path: Path) -> None:
+    """Direct Trial scenes cannot silently skip self-gen setup."""
+    skills_root = tmp_path / "skills"
+    skill_creator = skills_root / "skill-creator"
+    skill_creator.mkdir(parents=True)
+    (skill_creator / "SKILL.md").write_text(
+        "---\nname: skill-creator\ndescription: Create skills\n---\n# Skill Creator\n"
+    )
+
+    cfg = TrialConfig.from_legacy(
+        task_path=Path("tasks/fake"),
+        agent="claude-agent-acp",
+        model="claude-haiku-4-5-20251001",
+        skill_mode="self-gen",
+        skill_creator_dir=skill_creator,
+    )
+
+    with pytest.raises(ValueError, match="self-gen requires"):
+        _ = cfg.effective_scenes
+
+
+def test_self_gen_mode_defaults_to_repo_claude_skill_creator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Self-gen mode defaults to the repo's official skill-creator pack."""
+    monkeypatch.delenv("BENCHFLOW_SKILL_CREATOR_DIR", raising=False)
+
+    skills_root, skill_name = _resolve_skill_creator_root(None)
+
+    assert skills_root.parts[-2:] == (".claude", "skills")
+    assert (skills_root / "skill-creator" / "SKILL.md").exists()
+    assert skill_name == "skill-creator"
+
+
+def test_self_gen_mode_uses_custom_creator_skill_name(tmp_path: Path) -> None:
+    """User-assigned creator packs can use their own SKILL.md name."""
+    skills_root = tmp_path / "custom-skills"
+    creator = skills_root / "custom-creator"
+    creator.mkdir(parents=True)
+    (creator / "SKILL.md").write_text(
+        "---\nname: custom-creator\ndescription: Create task skills\n---\n"
+    )
+
+    resolved_root, skill_name = _resolve_skill_creator_root(skills_root)
+    prompt = _self_gen_prompt(
+        Path("tasks/fake"),
+        "/app/generated-skills",
+        skill_name,
+    )
+
+    assert resolved_root == skills_root
+    assert "Use the custom-creator skill exactly as provided" in prompt
+
+
+async def test_scene_skills_upload_local_root_and_link_agent_paths(
+    tmp_path: Path,
+) -> None:
+    """Scene.skills_dir can activate a local skills root without global skills_dir."""
+    skills_root = tmp_path / "skills"
+    (skills_root / "skill-creator").mkdir(parents=True)
+    (skills_root / "skill-creator" / "SKILL.md").write_text(
+        "---\nname: skill-creator\ndescription: Create skills\n---\n# Skill Creator\n"
+    )
+    scene = Scene(
+        name="skill-gen",
+        roles=[Role("skill_creator", "claude-agent-acp", "haiku")],
+        turns=[Turn("skill_creator", "create skill")],
+        skills_dir=skills_root,
+    )
+    trial = _make_trial(scene)
+    trial._agent_cwd = "/app"
+
+    await trial._activate_scene_skills(scene)
+
+    assert "mkdir -p /skills" in trial._env._exec_log
+    assert trial._env._uploads == [(skills_root, "/skills/skill-gen")]
+    assert any(
+        "ln -sfn /skills/skill-gen /home/agent/.claude/skills" in cmd
+        for cmd in trial._env._exec_log
+    )
+
+
+async def test_scene_skills_link_remote_generated_root() -> None:
+    """Scene.skills_dir can point at a sandbox path produced by an earlier scene."""
+    scene = Scene(
+        name="solve",
+        roles=[Role("solver", "claude-agent-acp", "haiku")],
+        turns=[Turn("solver")],
+        skills_dir="/app/generated-skills",
+    )
+    trial = _make_trial(scene)
+    trial._agent_cwd = "/app"
+
+    await trial._activate_scene_skills(scene)
+
+    assert trial._env._uploads == []
+    assert any(
+        "ln -sfn /app/generated-skills /home/agent/.claude/skills" in cmd
+        for cmd in trial._env._exec_log
+    )
