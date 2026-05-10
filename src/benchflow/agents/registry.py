@@ -58,12 +58,12 @@ def _install_python_script(container_path: str, source: str) -> str:
     like `SHIMEOF` or `LAUNCHEREOF` inside the Python source can't collide with
     a heredoc terminator.
 
-    Used by pi-acp and openclaw — both ship a Python launcher/shim baked into
-    install_cmd. Rule of three: if you're adding a THIRD agent that needs this
-    pattern, read both pi_acp_launcher.py and openclaw_acp_shim.py first and
-    reconcile their semantics (env bridging, provider-name derivation, model
-    metadata) before writing a new one. Only consider extracting a shared base
-    after the third data point — divergence is cheap, premature abstraction isn't.
+    Used by pi-acp, openclaw, and harvey-lab-harness — all three ship a Python
+    launcher/shim baked into install_cmd. Semantics differ intentionally:
+    pi and openclaw bridge BENCHFLOW_PROVIDER_* env vars to agent-native
+    config; harvey-lab delegates to Harvey LAB's own model adapters which
+    read provider env vars directly. A shared base is not yet justified —
+    divergence is cheap, premature abstraction isn't.
     """
     encoded = base64.b64encode(source.encode()).decode()
     parent = shlex.quote(str(Path(container_path).parent))

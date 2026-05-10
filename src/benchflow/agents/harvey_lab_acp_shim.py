@@ -20,6 +20,7 @@ The shim:
 import importlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -326,8 +327,6 @@ def _run_harvey_lab_agent(
     if skills_dir.exists():
         ws_skills = workspace_dir / "skills"
         ws_skills.mkdir(parents=True, exist_ok=True)
-        import shutil
-
         for skill_dir in skills_dir.iterdir():
             scripts_dir = skill_dir / "scripts"
             if scripts_dir.exists():
