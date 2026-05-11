@@ -111,6 +111,7 @@ async def ensure_bedrock_proxy_runtime(
             port=0,
             backend_model=backend_model,
             frontend_model=frontend_model,
+            runtime_env=agent_env,
         )
         await server.start()
         runtime = ProviderRuntime(

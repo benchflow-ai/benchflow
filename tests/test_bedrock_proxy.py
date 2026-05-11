@@ -80,7 +80,10 @@ class FakeBedrockClient:
                                         "content": [],
                                         "stop_reason": None,
                                         "stop_sequence": None,
-                                        "usage": {"input_tokens": 0, "output_tokens": 0},
+                                        "usage": {
+                                            "input_tokens": 0,
+                                            "output_tokens": 0,
+                                        },
                                     },
                                 }
                             ).encode()
@@ -190,17 +193,24 @@ async def test_bedrock_proxy_healthz_and_messages_route():
     await server.start()
     task = asyncio.create_task(server.serve_forever())
     try:
-        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{server.port}") as client:
+        async with httpx.AsyncClient(
+            base_url=f"http://127.0.0.1:{server.port}"
+        ) as client:
             health = await client.get("/healthz")
             assert health.json() == {"ok": True}
             models = await client.get("/v1/models")
-            assert models.json()["data"][0]["id"] == "anthropic.claude-haiku-4-5-20251001-v1:0"
+            assert (
+                models.json()["data"][0]["id"]
+                == "anthropic.claude-haiku-4-5-20251001-v1:0"
+            )
 
             resp = await client.post(
                 "/v1/messages",
                 json={
                     "model": "anthropic.claude-haiku-4-5-20251001-v1:0",
-                    "messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
+                    "messages": [
+                        {"role": "user", "content": [{"type": "text", "text": "hi"}]}
+                    ],
                     "max_tokens": 32,
                 },
             )
@@ -225,7 +235,9 @@ async def test_bedrock_proxy_responses_route():
     await server.start()
     task = asyncio.create_task(server.serve_forever())
     try:
-        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{server.port}") as client:
+        async with httpx.AsyncClient(
+            base_url=f"http://127.0.0.1:{server.port}"
+        ) as client:
             resp = await client.post(
                 "/v1/responses",
                 json={
@@ -251,19 +263,25 @@ async def test_bedrock_proxy_responses_route():
 
 @pytest.mark.asyncio
 async def test_bedrock_proxy_invoke_and_count_tokens_routes(monkeypatch):
-    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "bedrock-token")
-    monkeypatch.setenv("AWS_REGION", "us-east-1")
+    monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
+    monkeypatch.delenv("AWS_REGION", raising=False)
     server = BedrockProxyServer(
         host="127.0.0.1",
         port=0,
         client=FakeBedrockClient(),
         backend_model="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
         bedrock_http=FakeBedrockHTTPClient(),
+        runtime_env={
+            "AWS_BEARER_TOKEN_BEDROCK": "bedrock-token",
+            "AWS_REGION": "us-east-1",
+        },
     )
     await server.start()
     task = asyncio.create_task(server.serve_forever())
     try:
-        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{server.port}") as client:
+        async with httpx.AsyncClient(
+            base_url=f"http://127.0.0.1:{server.port}"
+        ) as client:
             invoke = await client.post(
                 "/model/us.anthropic.claude-sonnet-4-5-20250929-v1:0/invoke",
                 json={
@@ -317,18 +335,24 @@ async def test_bedrock_proxy_invoke_and_count_tokens_routes(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_bedrock_proxy_count_tokens_falls_back_to_invoke_usage(monkeypatch):
-    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "bedrock-token")
-    monkeypatch.setenv("AWS_REGION", "us-east-1")
+    monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
+    monkeypatch.delenv("AWS_REGION", raising=False)
     server = BedrockProxyServer(
         host="127.0.0.1",
         port=0,
         client=FakeUnsupportedCountTokensBedrockClient(),
         backend_model="us.anthropic.claude-sonnet-4-6",
+        runtime_env={
+            "AWS_BEARER_TOKEN_BEDROCK": "bedrock-token",
+            "AWS_REGION": "us-east-1",
+        },
     )
     await server.start()
     task = asyncio.create_task(server.serve_forever())
     try:
-        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{server.port}") as client:
+        async with httpx.AsyncClient(
+            base_url=f"http://127.0.0.1:{server.port}"
+        ) as client:
             resp = await client.post(
                 "/model/us.anthropic.claude-sonnet-4-6/count-tokens",
                 json={

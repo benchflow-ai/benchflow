@@ -116,6 +116,7 @@ class BedrockProxyServer:
         backend_model: str | None = None,
         frontend_model: str | None = None,
         bedrock_http: httpx.AsyncClient | None = None,
+        runtime_env: dict[str, str] | None = None,
     ):
         self._host = host
         self._port = port
@@ -125,6 +126,9 @@ class BedrockProxyServer:
         self._server: asyncio.Server | None = None
         self._bedrock_http = bedrock_http
         self._owns_bedrock_http = bedrock_http is None
+        self._runtime_env = (
+            dict(runtime_env) if runtime_env is not None else dict(os.environ)
+        )
 
     @property
     def port(self) -> int:
@@ -132,7 +136,7 @@ class BedrockProxyServer:
 
     async def start(self) -> None:
         if self._client is None:
-            self._client = build_bedrock_client(dict(os.environ))
+            self._client = build_bedrock_client(dict(self._runtime_env))
         if self._bedrock_http is None:
             self._bedrock_http = httpx.AsyncClient(timeout=None)
         self._server = await asyncio.start_server(
@@ -309,18 +313,20 @@ class BedrockProxyServer:
         await writer.drain()
 
     def _bedrock_runtime_base_url(self) -> str:
-        region = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION")
+        region = self._runtime_env.get("AWS_REGION") or self._runtime_env.get(
+            "AWS_DEFAULT_REGION"
+        )
         if not region:
             raise RuntimeError(
                 "AWS_REGION or AWS_DEFAULT_REGION required for Bedrock runtime proxy."
             )
         return (
-            os.environ.get("ANTHROPIC_BEDROCK_BASE_URL")
+            self._runtime_env.get("ANTHROPIC_BEDROCK_BASE_URL")
             or f"https://bedrock-runtime.{region}.amazonaws.com"
         )
 
     def _bedrock_auth_headers(self, inbound_headers: dict[str, str]) -> dict[str, str]:
-        token = os.environ.get("AWS_BEARER_TOKEN_BEDROCK")
+        token = self._runtime_env.get("AWS_BEARER_TOKEN_BEDROCK")
         if not token:
             raise RuntimeError(
                 "AWS_BEARER_TOKEN_BEDROCK required for Bedrock runtime proxy."

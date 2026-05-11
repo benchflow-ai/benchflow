@@ -5,7 +5,7 @@ beyond filesystem reads (Vertex ADC discovery, subscription-auth file probe).
 No state. Every function here is callable from a test in isolation.
 
 Owns:
-    - Auto-inheritance of well-known API keys from host os.environ
+    - Fallback inheritance of well-known agent env vars from .env
     - Vertex AI ADC injection for google-vertex/* models
     - Provider detection (BENCHFLOW_PROVIDER_*) and env_mapping translation
     - Subscription auth detection (host login files substituting for API keys)
@@ -32,6 +32,42 @@ _AUTH_CONTEXT_GROUPS = (
 )
 _EXPLICIT_AGENT_NATIVE_BRIDGE_KEYS = frozenset({"LLM_API_KEY"})
 _BEDROCK_PROXY_PLACEHOLDER_API_KEY = "bedrock-proxy"
+_DEFAULT_DOTENV_PATH = Path(".env")
+
+
+def load_dotenv_env(path: str | Path | None = None) -> dict[str, str]:
+    """Read a local .env file into a plain dict.
+
+    BenchFlow only uses this as a fallback source for agent env resolution.
+    Missing files are treated as empty input.
+    """
+    dotenv_path = Path(path) if path is not None else _DEFAULT_DOTENV_PATH
+    if not dotenv_path.exists() or not dotenv_path.is_file():
+        return {}
+
+    parsed: dict[str, str] = {}
+    for raw_line in dotenv_path.read_text().splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].lstrip()
+        if "=" not in line:
+            continue
+
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if not key:
+            continue
+
+        if value[:1] in {"'", '"'} and value[-1:] == value[:1]:
+            value = value[1:-1]
+        elif " #" in value:
+            value = value.split(" #", 1)[0].rstrip()
+
+        parsed[key] = value
+    return parsed
 
 
 def _normalize_openhands_model(model: str) -> str:
@@ -54,10 +90,15 @@ def _normalize_openhands_model(model: str) -> str:
     return stripped
 
 
-def auto_inherit_env(agent_env: dict[str, str]) -> None:
-    """Copy well-known API keys from host os.environ into agent_env."""
+def auto_inherit_env(
+    agent_env: dict[str, str],
+    *,
+    source_env: dict[str, str] | None = None,
+) -> None:
+    """Copy well-known agent env vars from a source mapping into agent_env."""
     from benchflow.agents.providers import PROVIDERS
 
+    source = source_env if source_env is not None else os.environ
     explicit_keys = set(agent_env)
     keys = {
         "ANTHROPIC_API_KEY",
@@ -81,8 +122,8 @@ def auto_inherit_env(agent_env: dict[str, str]) -> None:
         for env_var in cfg.url_params.values():
             keys.add(env_var)
     for key in keys:
-        if key in os.environ:
-            agent_env.setdefault(key, os.environ[key])
+        if key in source:
+            agent_env.setdefault(key, source[key])
     # Mirror GEMINI_API_KEY as GOOGLE_API_KEY (some agents expect one or the other)
     if "GEMINI_API_KEY" in agent_env and "GOOGLE_API_KEY" not in agent_env:
         agent_env["GOOGLE_API_KEY"] = agent_env["GEMINI_API_KEY"]
@@ -233,10 +274,10 @@ def resolve_agent_env(
     model: str | None,
     agent_env: dict[str, str] | None,
 ) -> dict[str, str]:
-    """Resolve agent environment: auto-inherit keys, provider vars, env_mapping."""
+    """Resolve agent environment from explicit overrides, then .env defaults."""
     agent_env = dict(agent_env or {})
     explicit_agent_env_keys = set(agent_env)
-    auto_inherit_env(agent_env)
+    auto_inherit_env(agent_env, source_env=load_dotenv_env())
     pre_provider_env = dict(agent_env)
     agent_cfg = AGENTS.get(agent)
     # Oracle runs solve.sh and never calls an LLM — model env vars and
@@ -254,8 +295,8 @@ def resolve_agent_env(
         if agent_cfg and agent_cfg.env_mapping:
             for src, dst in agent_cfg.env_mapping.items():
                 if src in agent_env and dst not in explicit_agent_env_keys:
-                    # Provider resolution must override unrelated host-native
-                    # vars auto-inherited from the environment, but preserve
+                    # Provider resolution must override unrelated fallback
+                    # vars auto-inherited from the source env, but preserve
                     # explicit agent_env overrides supplied by the caller.
                     agent_env[dst] = agent_env[src]
         # Validate required API key for the chosen model
@@ -297,30 +338,10 @@ def resolve_agent_env(
             and not has_oauth
             and not has_agent_native_bridge_key
         ):
-            if check_subscription_auth(agent, required_key):
-                agent_env["_BENCHFLOW_SUBSCRIPTION_AUTH"] = "1"
-                logger.info(
-                    "Using host subscription auth (no %s set)",
-                    required_key,
-                )
-            else:
-                raise ValueError(
-                    f"{required_key} required for model {model!r} but not set. "
-                    f"Export it, pass via agent_env, or log in with the "
-                    f"agent CLI (e.g. claude login, codex --login)."
-                )
-        elif (
-            required_key
-            and required_key in agent_env
-            and check_subscription_auth(agent, required_key)
-        ):
-            logger.warning(
-                "%s is set (possibly inherited from host env) AND "
-                "subscription auth credentials exist — the env var takes "
-                "precedence. If the key is stale, unset it: "
-                "env -u %s <command>",
-                required_key,
-                required_key,
+            raise ValueError(
+                f"{required_key} required for model {model!r} but not set. "
+                "Pass it explicitly (for example via --agent-env/agent_env) "
+                "or define it in .env."
             )
     else:
         # No model specified — still check subscription auth for required env vars

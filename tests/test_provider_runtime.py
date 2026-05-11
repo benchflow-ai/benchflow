@@ -51,11 +51,19 @@ class TestBedrockProxyRuntime:
     @pytest.mark.asyncio
     async def test_starts_proxy_and_rewrites_codex_env(self, monkeypatch):
         class FakeServer:
-            def __init__(self, host, port, backend_model=None, frontend_model=None):
+            def __init__(
+                self,
+                host,
+                port,
+                backend_model=None,
+                frontend_model=None,
+                runtime_env=None,
+            ):
                 self.host = host
                 self.port = 32123
                 self.backend_model = backend_model
                 self.frontend_model = frontend_model
+                self.runtime_env = runtime_env
                 self.started = False
                 self.stopped = False
 
@@ -87,15 +95,24 @@ class TestBedrockProxyRuntime:
             == "http://host.docker.internal:32123"
         )
         assert updated["OPENAI_BASE_URL"] == "http://host.docker.internal:32123"
+        assert runtime.server.runtime_env["AWS_BEARER_TOKEN_BEDROCK"] == "bedrock-token"
         assert runtime.server.started is True
 
     @pytest.mark.asyncio
     async def test_starts_proxy_and_rewrites_claude_env(self, monkeypatch):
         class FakeServer:
-            def __init__(self, host, port, backend_model=None, frontend_model=None):
+            def __init__(
+                self,
+                host,
+                port,
+                backend_model=None,
+                frontend_model=None,
+                runtime_env=None,
+            ):
                 self.port = 32123
                 self.backend_model = backend_model
                 self.frontend_model = frontend_model
+                self.runtime_env = runtime_env
 
             async def start(self):
                 return None
@@ -129,15 +146,24 @@ class TestBedrockProxyRuntime:
             updated["ANTHROPIC_BEDROCK_BASE_URL"] == "http://host.docker.internal:32123"
         )
         assert updated["ANTHROPIC_MODEL"] == "anthropic.claude-haiku-4-5-20251001-v1:0"
+        assert runtime.server.runtime_env["AWS_REGION"] == "us-east-1"
         assert "BENCHFLOW_CLAUDE_FRONTEND_MODEL" not in updated
 
     @pytest.mark.asyncio
     async def test_claude_bedrock_alias_preserves_backend_model(self, monkeypatch):
         class FakeServer:
-            def __init__(self, host, port, backend_model=None, frontend_model=None):
+            def __init__(
+                self,
+                host,
+                port,
+                backend_model=None,
+                frontend_model=None,
+                runtime_env=None,
+            ):
                 self.port = 32123
                 self.backend_model = backend_model
                 self.frontend_model = frontend_model
+                self.runtime_env = runtime_env
 
             async def start(self):
                 return None
