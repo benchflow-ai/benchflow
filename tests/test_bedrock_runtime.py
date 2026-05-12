@@ -328,6 +328,49 @@ class TestStreamTranslation:
         assert '"type":"response.output_text.delta"' in frames[0]
         assert '"delta":"Hi"' in frames[0]
 
+    def test_bedrock_stream_event_to_openai_response_sse_tool_use_stop(self):
+        block_types: dict[int, str] = {}
+
+        start_frames = bedrock_stream_event_to_openai_response_sse(
+            {
+                "contentBlockStart": {
+                    "contentBlockIndex": 1,
+                    "start": {
+                        "toolUse": {
+                            "toolUseId": "call_123",
+                            "name": "lookup_weather",
+                        }
+                    },
+                }
+            },
+            model="openai.gpt-oss-20b-1:0",
+            block_types=block_types,
+        )
+        delta_frames = bedrock_stream_event_to_openai_response_sse(
+            {
+                "contentBlockDelta": {
+                    "contentBlockIndex": 1,
+                    "delta": {"toolUse": {"input": '{"city":"Boston"}'}},
+                }
+            },
+            model="openai.gpt-oss-20b-1:0",
+            block_types=block_types,
+        )
+        stop_frames = bedrock_stream_event_to_openai_response_sse(
+            {"contentBlockStop": {"contentBlockIndex": 1}},
+            model="openai.gpt-oss-20b-1:0",
+            block_types=block_types,
+        )
+
+        assert len(start_frames) == 1
+        assert '"type":"function_call"' in start_frames[0]
+        assert len(delta_frames) == 1
+        assert '"type":"response.function_call_arguments.delta"' in delta_frames[0]
+        assert len(stop_frames) == 2
+        assert '"type":"response.function_call_arguments.done"' in stop_frames[0]
+        assert '"type":"response.output_item.done"' in stop_frames[1]
+        assert block_types == {}
+
     def test_bedrock_stream_event_to_openai_response_sse_completed(self):
         frames = bedrock_stream_event_to_openai_response_sse(
             {

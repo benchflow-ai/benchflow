@@ -134,6 +134,11 @@ class BedrockProxyServer:
     def port(self) -> int:
         return self._port
 
+    def _require_client(self) -> Any:
+        client = self._client
+        assert client is not None
+        return client
+
     async def start(self) -> None:
         if self._client is None:
             self._client = build_bedrock_client(dict(self._runtime_env))
@@ -244,10 +249,11 @@ class BedrockProxyServer:
         body: dict[str, Any],
         writer: asyncio.StreamWriter,
     ) -> None:
+        client = self._require_client()
         model = self._backend_model or body["model"]
         payload = anthropic_request_to_bedrock_converse({**body, "model": model})
         if body.get("stream"):
-            response = await asyncio.to_thread(self._client.converse_stream, **payload)
+            response = await asyncio.to_thread(client.converse_stream, **payload)
             writer.write(
                 b"HTTP/1.1 200 OK\r\n"
                 b"content-type: text/event-stream\r\n"
@@ -269,7 +275,7 @@ class BedrockProxyServer:
             await writer.drain()
             return
 
-        response = await asyncio.to_thread(self._client.converse, **payload)
+        response = await asyncio.to_thread(client.converse, **payload)
         normalized = bedrock_response_to_anthropic(response, model=body["model"])
         writer.write(_json_http_response(200, normalized))
         await writer.drain()
@@ -279,10 +285,11 @@ class BedrockProxyServer:
         body: dict[str, Any],
         writer: asyncio.StreamWriter,
     ) -> None:
+        client = self._require_client()
         model = self._backend_model or body["model"]
         payload = openai_responses_request_to_bedrock_converse({**body, "model": model})
         if body.get("stream"):
-            response = await asyncio.to_thread(self._client.converse_stream, **payload)
+            response = await asyncio.to_thread(client.converse_stream, **payload)
             writer.write(
                 b"HTTP/1.1 200 OK\r\n"
                 b"content-type: text/event-stream\r\n"
@@ -290,6 +297,7 @@ class BedrockProxyServer:
             )
             await writer.drain()
             iterator = iter(response["stream"])
+            block_types: dict[int, str] = {}
             while True:
                 event = await asyncio.to_thread(_next_stream_event, iterator)
                 if event is _STREAM_END:
@@ -297,6 +305,7 @@ class BedrockProxyServer:
                 for frame in bedrock_stream_event_to_openai_response_sse(
                     event,
                     model=body["model"],
+                    block_types=block_types,
                 ):
                     writer.write(_chunk_bytes(frame.encode()))
                     await writer.drain()
@@ -304,7 +313,7 @@ class BedrockProxyServer:
             await writer.drain()
             return
 
-        response = await asyncio.to_thread(self._client.converse, **payload)
+        response = await asyncio.to_thread(client.converse, **payload)
         normalized = bedrock_response_to_openai_response(
             response,
             model=body["model"],
@@ -432,10 +441,11 @@ class BedrockProxyServer:
         inbound_headers: dict[str, str],
         writer: asyncio.StreamWriter,
     ) -> None:
+        client = self._require_client()
         body = json.loads(body_bytes) if body_bytes else {}
         try:
             response = await asyncio.to_thread(
-                self._client.count_tokens,
+                client.count_tokens,
                 modelId=model_id,
                 input={"invokeModel": {"body": json.dumps(body)}},
             )
@@ -444,7 +454,7 @@ class BedrockProxyServer:
             if "doesn't support counting tokens" not in str(exc):
                 raise
             fallback = await asyncio.to_thread(
-                self._client.invoke_model,
+                client.invoke_model,
                 modelId=model_id,
                 body=json.dumps(body),
                 contentType=inbound_headers.get("content-type", "application/json"),

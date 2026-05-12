@@ -98,6 +98,7 @@ async def ensure_bedrock_proxy_runtime(
     """Start the host-side Bedrock proxy if needed and wire env vars to it."""
     if not needs_provider_runtime(model):
         return agent_env, runtime
+    assert model is not None
 
     if runtime is None:
         backend_model = strip_provider_prefix(model)

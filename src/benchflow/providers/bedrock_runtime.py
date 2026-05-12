@@ -276,6 +276,7 @@ def openai_responses_request_to_bedrock_converse(
         else:
             role = item["role"]
             content = item.get("content", [])
+        assert isinstance(role, str)
         messages.append(
             {
                 "role": role,
@@ -541,6 +542,7 @@ def bedrock_stream_event_to_openai_response_sse(
     *,
     model: str,
     response_id: str = "resp_bedrock",
+    block_types: dict[int, str] | None = None,
 ) -> list[str]:
     """Translate one ConverseStream event to OpenAI Responses SSE frames."""
     if "messageStart" in event:
@@ -562,6 +564,8 @@ def bedrock_stream_event_to_openai_response_sse(
         start = event["contentBlockStart"]
         index = start["contentBlockIndex"]
         if "toolUse" in start.get("start", {}):
+            if block_types is not None:
+                block_types[index] = "function_call"
             tool = start["start"]["toolUse"]
             item = {
                 "id": f"fc_{index}",
@@ -572,6 +576,8 @@ def bedrock_stream_event_to_openai_response_sse(
                 "arguments": "",
             }
         else:
+            if block_types is not None:
+                block_types[index] = "text"
             item = {
                 "id": f"msg_{index}",
                 "type": "message",
@@ -614,8 +620,20 @@ def bedrock_stream_event_to_openai_response_sse(
         ]
     if "contentBlockStop" in event:
         index = event["contentBlockStop"]["contentBlockIndex"]
+        block_type = "text"
+        if block_types is not None:
+            block_type = block_types.pop(index, "text")
         return [
-            _sse({"type": "response.output_text.done", "output_index": index}),
+            _sse(
+                {
+                    "type": (
+                        "response.function_call_arguments.done"
+                        if block_type == "function_call"
+                        else "response.output_text.done"
+                    ),
+                    "output_index": index,
+                }
+            ),
             _sse({"type": "response.output_item.done", "output_index": index}),
         ]
     if "messageStop" in event:
