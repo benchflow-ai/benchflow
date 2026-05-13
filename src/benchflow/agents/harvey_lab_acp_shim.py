@@ -120,7 +120,7 @@ class DirectSandbox:
 
     def exec(self, command: str, timeout: int | None = None) -> "ExecResult":
         """Run a shell command in the workspace directory."""
-        timeout = timeout or self.default_timeout
+        timeout = timeout if timeout is not None else self.default_timeout
         env = {
             **os.environ,
             "WORKSPACE_DIR": str(self.workspace_dir),
