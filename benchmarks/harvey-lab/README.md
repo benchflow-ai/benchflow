@@ -1,91 +1,66 @@
-# Harvey LAB
-
-[Harvey LAB (Legal Agent Benchmark)](https://github.com/harveyai/harvey-labs) in BenchFlow format — 1,251 legal tasks across 24 practice areas.
+# Harvey LAB Benchmark
 
 ## Overview
 
-Harvey LAB is an open-source benchmark for evaluating agents on real legal work. Tasks span M&A, insurance, IP, tax, real estate, and more. Each task provides documents and rubric criteria graded by an LLM judge (all-pass scoring).
+[Harvey LAB](https://github.com/harveyai/harvey-labs) is an open-source benchmark for
+evaluating agents on real legal work, maintained by Harvey AI. It contains **1,251 tasks
+across 24 practice areas** (corporate M&A, real estate, IP, tax, antitrust, litigation,
+ERISA, etc.). Each task gives the agent a synthetic data room of legal documents (contracts,
+financial statements, disclosure schedules, board minutes, regulatory correspondence) and
+asks for one or more deliverable files — typically a memo, table, or analysis — that are
+graded against a structured rubric of pass/fail criteria by an LLM judge.
 
-This benchmark converts Harvey LAB tasks into BenchFlow format, preserving:
-- **Instructions** → `instruction.md`
-- **Documents** → baked into the Docker environment
-- **Rubric criteria** → LLM-as-judge verifier (`tests/evaluate.py` using Gemini)
-- **Metadata** (practice area, work type, tags) → `task.toml` metadata
+Tasks span four work types: `analyze` (490), `draft` (444), `review` (293), `research` (24).
+Scoring is **per-criterion proportional**: reward = (criteria passed) / (total criteria).
 
-## Directory Structure
+## Features
+
+- Auto-discovers all 1,251 tasks from the `tasks/` directory
+- Mounts each task's `documents/` data room into the container at `/app/documents/`
+- Verifier: Gemini-based LLM judge, one call per rubric criterion, proportional scoring
+- Docker base image pinned by digest for reproducibility
+- Task selection: `--limit`, `--task-ids`, `--split parity` / `--split xlsx` / `--split <practice-area>`
+- Harvey LAB harness ported as BenchFlow ACP agent (`harvey-lab-harness`) for true parity
+
+## Generated Task Structure
 
 ```
-benchmarks/harvey-lab/
-├── benchflow.py                     # converter: Harvey LAB task.json → BenchFlow task format
-├── parity_test.py                   # structural, eval, and side-by-side parity tests
-├── run_harvey_lab.py                # runner: download + convert + run via Job
-├── harvey-lab-gemini-flash-lite.yaml # BenchFlow-native YAML config
-├── parity_experiment.json           # side-by-side parity results (prompt-level)
-├── parity_final_report.md           # 3-trial end-to-end parity report
-├── harvey-lab-harness-parity.yaml   # parity config using Harvey LAB's own harness agent
-├── benchmark.yaml                   # standard benchmark descriptor
-└── README.md
+corporate-ma-review-data-room-red-flag-review/
+├── task.toml                           # tags, work type, declared artifacts, timeouts
+├── instruction.md                      # agent instructions (from upstream task.json)
+├── environment/
+│   ├── Dockerfile                      # digest-pinned python:3.13-slim + doc toolchain
+│   └── documents/                      # synthetic data room (copied per-task)
+└── tests/
+    ├── test.sh                         # runs evaluate.py, writes reward to /logs/verifier/
+    ├── evaluate.py                     # Gemini-based LLM judge
+    └── rubric.json                     # per-criterion rubric from upstream task.json
 ```
 
-### BenchFlow Benchmark Convention
-
-| File | Purpose |
-|---|---|
-| `benchflow.py` | Converter CLI: `--output-dir`, `--limit`, `--overwrite`, `--task-ids` |
-| `run_<name>.py` | Runner: downloads raw tasks via `ensure_tasks()`, converts, runs via `Job` |
-| `<name>.yaml` | BenchFlow-native YAML config (`tasks_dir`, `agent`, `model`, `environment`) |
-| `parity_test.py` | Validates structural, eval, and side-by-side parity |
-| `parity_experiment.json` | Records side-by-side parity results |
-| `benchmark.yaml` | Standard benchmark descriptor (metadata, verification, parity) |
-
-## Task Mapping
-
-| Harvey LAB | BenchFlow |
-|---|---|
-| `task.json` (title, instructions, criteria) | `task.toml` + `instruction.md` |
-| `documents/` (input docs) | `environment/documents/` (COPY'd in Dockerfile) |
-| LLM judge with rubric criteria | `tests/evaluate.py` (Gemini-based judge) |
-| No oracle solutions provided | No `solution/` directory |
+No `solution/` directory: Harvey LAB ships no gold deliverables.
 
 ## Usage
 
 ### Generate tasks
 
 ```bash
-# All 1,251 tasks
-python benchmarks/harvey-lab/benchflow.py \
-    --output-dir /tmp/harvey-lab-tasks \
-    --harvey-root /path/to/harvey-labs
+cd benchmarks/harvey-lab
 
-# Subset
-python benchmarks/harvey-lab/benchflow.py \
-    --output-dir /tmp/harvey-lab-tasks \
-    --harvey-root /path/to/harvey-labs \
-    --limit 10
+# All 1,251 tasks (default: --split main)
+python benchflow.py --output-dir /tmp/harvey-lab-tasks --harvey-root /path/to/harvey-labs
+
+# Parity slice (first 50 tasks alphabetically)
+python benchflow.py --output-dir /tmp/parity --harvey-root /path/to/harvey-labs --split parity
+
+# XLSX slice (first 25 tasks with .xlsx deliverables)
+python benchflow.py --output-dir /tmp/xlsx --harvey-root /path/to/harvey-labs --split xlsx
+
+# Practice area filter
+python benchflow.py --output-dir /tmp/re --harvey-root /path/to/harvey-labs --split real-estate
 
 # Specific tasks
-python benchmarks/harvey-lab/benchflow.py \
-    --output-dir /tmp/harvey-lab-tasks \
-    --harvey-root /path/to/harvey-labs \
+python benchflow.py --output-dir /tmp/out --harvey-root /path/to/harvey-labs \
     --task-ids "corporate-ma/analyze-cim-deal-teaser/scenario-01"
-```
-
-### Run parity tests
-
-```bash
-# Structural parity (subset — 5 tasks)
-python benchmarks/harvey-lab/parity_test.py --mode subset
-
-# Structural parity (full — all 1,251 tasks)
-python benchmarks/harvey-lab/parity_test.py --mode full
-
-# Eval pipeline end-to-end (requires Gemini API key)
-GEMINI_API_KEY=... python benchmarks/harvey-lab/parity_test.py \
-    --mode eval-parity --gemini-api-key $GEMINI_API_KEY
-
-# Side-by-side parity (original vs adapted prompt, same judge)
-GEMINI_API_KEY=... python benchmarks/harvey-lab/parity_test.py \
-    --mode side-by-side --gemini-api-key $GEMINI_API_KEY
 ```
 
 ### Run benchmarks
@@ -98,75 +73,112 @@ python benchmarks/harvey-lab/run_harvey_lab.py
 python -c "import asyncio; from benchflow.job import Job; asyncio.run(Job.from_yaml('benchmarks/harvey-lab/harvey-lab-gemini-flash-lite.yaml').run())"
 
 # Parity mode: uses the original Harvey LAB harness as the agent
-# (same tools, same system prompt, same agent loop — for true apples-to-apples comparison)
 python -c "import asyncio; from benchflow.job import Job; asyncio.run(Job.from_yaml('benchmarks/harvey-lab/harvey-lab-harness-parity.yaml').run())"
 ```
 
-## Parity Results
+### Run parity tests
 
-### Step-by-step validation
+```bash
+# Structural parity (full — all 1,251 tasks)
+python benchmarks/harvey-lab/parity_test.py --mode full
 
-| Step | Test | Result |
-|---|---|---|
-| 1 | Understand original benchmark | Harvey LAB: 1,251 tasks, 24 practice areas, LLM-judge evaluation |
-| 2 | Converter code complete | `benchflow.py` with `--output-dir`, `--limit`, `--overwrite`, `--task-ids` |
-| 3 | Oracle verification | N/A — Harvey LAB has no oracle solutions; cheap agent pass validates solvability |
-| 4 | Plan parity & implement agents | Gemini 3.1 Flash Lite used as both agent model and judge |
-| 5 | **Side-by-side parity** | **25/25 criteria agree (100%)** across 5 practice areas |
-| 6 | Record parity results | `parity_experiment.json` |
-| 7 | Upload results | Included in PR |
-| 8 | Register dataset | `harvey-lab` registered in `task_download.py` |
-| 9 | Document & submit | This README + `benchmark.yaml` |
-
-### Side-by-side parity details
-
-Ran the original Harvey LAB `rubric_criterion.txt` prompt template and the converted BenchFlow `string.Template` prompt through the same Gemini 3.1 Flash Lite judge on identical synthetic agent output:
-
-| Task | Practice Area | Criteria Tested | Agreement |
-|---|---|---|---|
-| analyze-cim-deal-teaser | Corporate M&A | 5/5 | 100% |
-| compare-reinsurance-treaty | Insurance | 5/5 | 100% |
-| draft-construction-contract | Real Estate | 5/5 | 100% |
-| review-enterprise-saas | IP | 5/5 | 100% |
-| draft-workplace-policy | Employment | 5/5 | 100% |
-| **Total** | | **25/25** | **100%** |
+# Prompt-level side-by-side (requires Gemini API key)
+GEMINI_API_KEY=... python benchmarks/harvey-lab/parity_test.py --mode side-by-side
+```
 
 ## Comparison with Original Benchmark (Parity)
 
-### Prompt-level parity (side-by-side judge agreement)
-
-Full results are recorded in [`parity_experiment.json`](parity_experiment.json).
-
-| Judge Model | Metric | Dataset Size | Parity Size | Criteria Compared | Agreement |
-|---|---|---|---|---|---|
-| gemini-3.1-flash-lite-preview | side-by-side agreement | 1,251 | 5 tasks (5 practice areas) | 25 | **100%** |
-
 ### End-to-end parity (3 trials × 100 tasks)
 
-Ran Harvey LAB's own harness (agent loop + 6 tools + system prompt) via DirectSandbox on both original and BenchFlow-converted tasks with `gemini-3.1-flash-lite-preview`. Full report in [`parity_final_report.md`](parity_final_report.md). Raw trial data on [HuggingFace](https://huggingface.co/datasets/benchflow/benchmarks/tree/main/benchmarks/harvey-lab/benchflow_parity).
+Both sides ran Harvey LAB's own harness (agent loop + 6 tools + system prompt) via
+DirectSandbox ACP shim with `gemini-3.1-flash-lite-preview`. 100 tasks sampled with
+stratified selection across all 24 practice areas. Ran on Modal (concurrency=20).
+
+| Agent | Model | Metric | Runs | Dataset Size | Original (mean ± SEM) | BenchFlow (mean ± SEM) |
+|-------|-------|--------|------|--------------|-----------------------|------------------------|
+| harvey-lab-harness | gemini-3.1-flash-lite-preview | mean_per_criterion_pass_rate | 3 | 100 (8%) | **23.0 ± 0.5** | **22.2 ± 0.5** |
+
+Per-trial breakdown:
 
 | Trial | Original | BenchFlow | Delta |
-|---|---|---|---|
+|-------|----------|-----------|-------|
 | 1 | 22.0% | 22.7% | +0.6% |
 | 2 | 23.2% | 22.6% | -0.6% |
 | 3 | 23.7% | 21.2% | -2.6% |
 | **Aggregate** | **23.0%** | **22.2%** | **-0.8%** |
 
-14,799 criteria evaluated. No systematic conversion bias — all disagreements from model non-determinism.
+14,799 criteria evaluated. No systematic conversion bias — all 12 consistently-disagreeing
+tasks attributed to model non-determinism. Full report in
+[`parity_final_report.md`](parity_final_report.md). Raw trial data on
+[HuggingFace](https://huggingface.co/datasets/benchflow/benchmarks/tree/main/benchmarks/harvey-lab/benchflow_parity).
+
+### Prompt-level parity (side-by-side judge agreement)
+
+Ran the original Harvey LAB `rubric_criterion.txt` prompt and the converted BenchFlow
+`string.Template` prompt through the same Gemini judge on identical synthetic output.
+
+| Judge Model | Criteria Compared | Agreement |
+|-------------|-------------------|-----------|
+| gemini-3.1-flash-lite-preview | 25 (5 tasks × 5 practice areas) | **100%** |
 
 Links:
 - Original benchmark repo: https://github.com/harveyai/harvey-labs
-- Parity experiments (HF): https://huggingface.co/datasets/benchflow/benchmarks
+- Benchmark PR: https://github.com/benchflow-ai/benchflow/pull/239
+- Dataset PR: https://github.com/benchflow-ai/benchmarks/pull/1
+- HuggingFace parity data: https://huggingface.co/datasets/benchflow/benchmarks
 
-## Evaluation
+## Notes & Caveats
 
-The verifier uses Gemini as an LLM-as-judge. For each task criterion:
-1. Reads the agent's deliverable files (.docx, .xlsx, .pdf, .md, etc.)
-2. Formats a judge prompt via `string.Template.safe_substitute()` (safe against injection)
-3. Gets a PASS/FAIL verdict from Gemini
-4. Reward = (criteria passed) / (total criteria)
+#### Instruction
+Original `task.json.instructions` with minimal edits: deliverable section appended with
+`output/` path convention, workspace layout hint appended. Uses `string.Template.safe_substitute()`
+to avoid crashes on legal text with `{` or `}` characters.
 
-Set `GEMINI_API_KEY` in your environment or in `task.toml`'s `[verifier.env]`.
+#### Container image
+Digest-pinned `python:3.13-slim` with document toolchain: `pandoc`, `pdfplumber`, `openpyxl`,
+`python-docx`, `python-pptx`, `markitdown`, `pandas`, `google-genai`.
+
+#### Judge
+Gemini-based LLM judge (`evaluate.py`), one call per rubric criterion. Each criterion
+specifies deliverable files to grade against. Reward = (criteria passed) / (total criteria).
+Same per-criterion individual grading as Harvey LAB's original `evaluation/judge.py`.
+
+#### Task naming
+`harvey-lab/<practice-area>-<task-slug>[-scenario-NN]`. All lowercase, non-alphanumeric
+replaced with hyphens, collapsed.
+
+#### Agent timeout
+Scales with criteria count: `max(1800, criteria_count * 30)` seconds.
+
+#### No `solution/` folder
+Harvey LAB ships no gold deliverables. No oracle solutions generated.
+
+#### Harvey LAB harness agent
+Ported as `harvey-lab-harness` (alias: `harvey-lab`) in BenchFlow's agent registry.
+The ACP shim wraps Harvey LAB's native agent loop — same 6 tools (`bash`, `read`, `write`,
+`edit`, `glob`, `grep`), same system prompt, same model adapters. `DirectSandbox` replaces
+Podman with direct filesystem ops (BenchFlow's Docker provides equivalent sandboxing).
+
+## Troubleshooting
+
+- **Verifier returns 0 reward for all criteria.** Check that the agent produced output files
+  in `/app/output/`. The verifier checks `/app/output` first, falls back to `/app`.
+- **`parse-doc` not found in harness agent.** The Harvey LAB harness's `read` tool calls
+  `parse-doc` for .docx/.xlsx/.pdf parsing. Ensure it's installed in PATH when running
+  the ACP shim outside Docker.
+- **Rate limit errors from Gemini judge.** Lower concurrency or retry. The verifier calls
+  Gemini once per criterion (~60 calls per task).
+
+## Citation
+
+```bibtex
+@misc{harveyai-lab-2025,
+  title  = {Harvey LAB: An open-source benchmark for evaluating agents on real legal work},
+  author = {Harvey AI},
+  year   = {2025},
+  howpublished = {\url{https://github.com/harveyai/harvey-labs}}
+}
+```
 
 ## Statistics
 
@@ -174,3 +186,4 @@ Set `GEMINI_API_KEY` in your environment or in `task.toml`'s `[verifier.env]`.
 - **1,251** tasks
 - **4** work types: analyze (490), draft (444), review (293), research (24)
 - **~60** criteria per task (range: 23–194)
+- **Parity cost:** ~$50 (3 trials × 100 tasks on Gemini Flash Lite)

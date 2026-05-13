@@ -38,6 +38,7 @@ _HARD_THRESHOLD = 80
 def _sanitize_name(raw: str) -> str:
     """Lowercase, replace non-alphanumeric with hyphens, collapse runs."""
     import re
+
     name = raw.lower().strip()
     name = re.sub(r"[^a-z0-9]+", "-", name)
     return name.strip("-")
@@ -126,9 +127,13 @@ def _build_instruction_md(
 
 
 def _build_dockerfile(task_id: str) -> str:
-    """Generate a Dockerfile that sets up the evaluation environment."""
+    """Generate a Dockerfile that sets up the evaluation environment.
+
+    Uses a digest-pinned Python base image for reproducibility.
+    """
     return textwrap.dedent("""\
-        FROM python:3.13-slim
+        # Pinned by digest for reproducibility.
+        FROM python:3.13-slim@sha256:dc1546eefcbe8caaa1f004f16ab76b204b5e1dbd58ff81b899f21cd40541232f
 
         RUN apt-get update -qq && apt-get install -y -qq \\
             pandoc \\
@@ -484,12 +489,14 @@ def _discover_tasks(harvey_root: Path) -> list[dict]:
             print(f"  SKIP {task_id}: no documents/ directory", file=sys.stderr)
             continue
 
-        discovered.append({
-            "task_id": task_id,
-            "task_json_path": task_json,
-            "docs_dir": docs_dir,
-            "config": config,
-        })
+        discovered.append(
+            {
+                "task_id": task_id,
+                "task_json_path": task_json,
+                "docs_dir": docs_dir,
+                "config": config,
+            }
+        )
 
     return discovered
 
@@ -597,7 +604,17 @@ def main():
         "--task-ids",
         default=None,
         help="Comma-separated list of task IDs to generate (e.g., "
-             "'corporate-ma/analyze-cim-deal-teaser/scenario-01').",
+        "'corporate-ma/analyze-cim-deal-teaser/scenario-01').",
+    )
+    parser.add_argument(
+        "--split",
+        default="main",
+        help=(
+            "Which slice to generate. 'main' (default) = all 1,251 tasks; "
+            "'parity' = first 50 tasks alphabetically (for parity experiments); "
+            "'xlsx' = first 25 tasks with any .xlsx deliverable; "
+            "otherwise interpreted as a practice-area filter (e.g. 'corporate-ma')."
+        ),
     )
     args = parser.parse_args()
 
@@ -608,6 +625,32 @@ def main():
     print(f"Discovering Harvey LAB tasks in {harvey_root}/tasks/ ...")
     all_tasks = _discover_tasks(harvey_root)
     print(f"Found {len(all_tasks)} tasks.")
+
+    # Apply --split filter
+    split = args.split.lower()
+    if split == "parity":
+        all_tasks = all_tasks[:50]
+        print(f"Split 'parity': first 50 tasks alphabetically → {len(all_tasks)}.")
+    elif split == "xlsx":
+        xlsx_tasks = []
+        for t in all_tasks:
+            deliverables = t["config"].get("deliverables", {})
+            if isinstance(deliverables, dict):
+                filenames = list(deliverables.values())
+            elif isinstance(deliverables, list):
+                filenames = list(deliverables)
+            else:
+                filenames = []
+            if any(fn.endswith(".xlsx") for fn in filenames):
+                xlsx_tasks.append(t)
+        all_tasks = xlsx_tasks[:25]
+        print(
+            f"Split 'xlsx': first 25 tasks with .xlsx deliverables → {len(all_tasks)}."
+        )
+    elif split != "main":
+        # Treat as a practice-area filter
+        all_tasks = [t for t in all_tasks if t["task_id"].startswith(split)]
+        print(f"Split '{split}' (practice area): {len(all_tasks)} tasks.")
 
     # Filter by task IDs if specified
     if args.task_ids:
