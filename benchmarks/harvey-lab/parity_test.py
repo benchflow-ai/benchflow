@@ -69,8 +69,10 @@ def _run_converter(
     cmd = [
         sys.executable,
         str(_SCRIPT_DIR / "benchflow.py"),
-        "--output-dir", str(output_dir),
-        "--harvey-root", str(harvey_root),
+        "--output-dir",
+        str(output_dir),
+        "--harvey-root",
+        str(harvey_root),
         "--overwrite",
     ]
     if task_ids:
@@ -92,6 +94,7 @@ def _sanitize_name(raw: str) -> str:
 
 
 # ── Structural Parity Checks ─────────────────────────────────────────
+
 
 def check_structural_parity(
     harvey_root: Path,
@@ -169,8 +172,7 @@ def check_structural_parity(
             gen_count = sum(1 for _ in env_docs.iterdir()) if env_docs.exists() else 0
             if orig_count != gen_count:
                 errors.append(
-                    f"{task_id}: document count mismatch: "
-                    f"{gen_count} vs {orig_count}"
+                    f"{task_id}: document count mismatch: {gen_count} vs {orig_count}"
                 )
                 failed += 1
                 continue
@@ -179,7 +181,9 @@ def check_structural_parity(
         instr_text = (task_dir / "instruction.md").read_text()
         orig_instructions = original.get("instructions", "")
         if orig_instructions and orig_instructions[:50] not in instr_text:
-            errors.append(f"{task_id}: instruction.md doesn't contain original instructions")
+            errors.append(
+                f"{task_id}: instruction.md doesn't contain original instructions"
+            )
             failed += 1
             continue
 
@@ -196,6 +200,7 @@ def check_structural_parity(
 
 
 # ── Evaluation Parity ─────────────────────────────────────────────────
+
 
 def check_eval_parity(
     harvey_root: Path,
@@ -236,7 +241,15 @@ def check_eval_parity(
             tmp_path = Path(tmp_dir)
 
             # Create synthetic deliverables
-            for name, filename in deliverables_config.items():
+            if isinstance(deliverables_config, dict):
+                items = list(deliverables_config.items())
+            elif isinstance(deliverables_config, list):
+                items = [
+                    (f"deliverable-{i}", fn) for i, fn in enumerate(deliverables_config)
+                ]
+            else:
+                items = []
+            for name, filename in items:
                 md_name = Path(filename).stem + ".md"
                 (tmp_path / md_name).write_text(
                     f"# {name}\n\nThis is a placeholder deliverable "
@@ -251,22 +264,27 @@ def check_eval_parity(
 
             # Copy rubric
             import shutil
+
             shutil.copy2(rubric_path, tmp_path / "rubric.json")
 
             # Run evaluate.py
             reward_file = tmp_path / "reward.txt"
             evaluate_py = task_dir / "tests" / "evaluate.py"
 
-            print(f"\n{'='*60}")
+            print(f"\n{'=' * 60}")
             print(f"Eval parity: {task_id}")
-            print(f"{'='*60}")
+            print(f"{'=' * 60}")
 
             result = subprocess.run(
                 [
-                    sys.executable, str(evaluate_py),
-                    "--rubric", str(tmp_path / "rubric.json"),
-                    "--output-dir", str(tmp_path),
-                    "--reward-file", str(reward_file),
+                    sys.executable,
+                    str(evaluate_py),
+                    "--rubric",
+                    str(tmp_path / "rubric.json"),
+                    "--output-dir",
+                    str(tmp_path),
+                    "--reward-file",
+                    str(reward_file),
                 ],
                 capture_output=True,
                 text=True,
@@ -279,7 +297,9 @@ def check_eval_parity(
                 print(f"STDERR: {result.stderr[-300:]}", file=sys.stderr)
 
             if result.returncode != 0:
-                errors.append(f"{task_id}: evaluate.py exited with code {result.returncode}")
+                errors.append(
+                    f"{task_id}: evaluate.py exited with code {result.returncode}"
+                )
                 failed += 1
                 continue
 
@@ -390,9 +410,11 @@ def _call_gemini(prompt: str, api_key: str, retries: int = 3) -> str:
             return response.text
         except Exception as e:
             if attempt < retries - 1:
-                time.sleep(2 ** attempt)
+                time.sleep(2**attempt)
                 continue
-            raise RuntimeError(f"Gemini API failed after {retries} attempts: {e}") from e
+            raise RuntimeError(
+                f"Gemini API failed after {retries} attempts: {e}"
+            ) from e
     raise RuntimeError("Unreachable")
 
 
@@ -414,7 +436,7 @@ def _parse_verdict(text: str) -> dict:
                     depth -= 1
                 if depth == 0:
                     try:
-                        return json.loads(text[i:j + 1])
+                        return json.loads(text[i : j + 1])
                     except json.JSONDecodeError:
                         break
     raise ValueError(f"Could not parse verdict from: {text[:300]}")
@@ -452,7 +474,15 @@ def check_side_by_side_parity(
 
         # Build synthetic agent output (same for both sides)
         agent_output_parts = []
-        for name, filename in deliverables.items():
+        if isinstance(deliverables, dict):
+            deliv_items = list(deliverables.items())
+        elif isinstance(deliverables, list):
+            deliv_items = [
+                (f"deliverable-{i}", fn) for i, fn in enumerate(deliverables)
+            ]
+        else:
+            deliv_items = []
+        for name, filename in deliv_items:
             agent_output_parts.append(
                 f"--- {Path(filename).stem}.md ---\n"
                 f"# {name}\n\nThis is a placeholder deliverable for parity testing. "
@@ -460,8 +490,7 @@ def check_side_by_side_parity(
             )
         if not agent_output_parts:
             agent_output_parts.append(
-                "--- output.md ---\n"
-                "# Output\n\nPlaceholder for parity testing.\n"
+                "--- output.md ---\n# Output\n\nPlaceholder for parity testing.\n"
             )
         agent_output = "\n\n".join(agent_output_parts)
 
@@ -471,9 +500,9 @@ def check_side_by_side_parity(
             "criteria_results": [],
         }
 
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print(f"Side-by-side: {task_id} ({len(criteria)} criteria)")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
 
         # Sample up to 5 criteria per task to keep API costs reasonable
         sampled_criteria = criteria[:5] if len(criteria) > 5 else criteria
@@ -520,13 +549,15 @@ def check_side_by_side_parity(
                 status = "AGREE" if match else "DISAGREE"
                 print(f"  [{crit_id}] original={orig_v} adapted={adapted_v} → {status}")
 
-                task_result["criteria_results"].append({
-                    "criterion_id": crit_id,
-                    "criterion_title": crit_title,
-                    "original_verdict": orig_v,
-                    "adapted_verdict": adapted_v,
-                    "agreement": match,
-                })
+                task_result["criteria_results"].append(
+                    {
+                        "criterion_id": crit_id,
+                        "criterion_title": crit_title,
+                        "original_verdict": orig_v,
+                        "adapted_verdict": adapted_v,
+                        "agreement": match,
+                    }
+                )
 
             except Exception as e:
                 errors.append(f"{task_id}/{crit_id}: {e}")
@@ -546,6 +577,7 @@ def check_side_by_side_parity(
 
 
 # ── Main ──────────────────────────────────────────────────────────────
+
 
 def main():
     parser = argparse.ArgumentParser(description="Harvey LAB parity tests")
@@ -586,10 +618,10 @@ def main():
                     print(f"  SKIP subset task {tid}: not found")
 
             if not valid_ids:
-                print("ERROR: No valid subset tasks found. Falling back to first 5 tasks.")
-                all_tasks = sorted(
-                    (harvey_root / "tasks").rglob("task.json")
-                )[:5]
+                print(
+                    "ERROR: No valid subset tasks found. Falling back to first 5 tasks."
+                )
+                all_tasks = sorted((harvey_root / "tasks").rglob("task.json"))[:5]
                 valid_ids = [
                     str(t.parent.relative_to(harvey_root / "tasks")).replace("\\", "/")
                     for t in all_tasks
@@ -604,9 +636,7 @@ def main():
         elif args.mode == "full":
             print("\n=== Full Structural Parity (all tasks) ===\n")
             _run_converter(harvey_root, output_dir)
-            all_tasks = sorted(
-                (harvey_root / "tasks").rglob("task.json")
-            )
+            all_tasks = sorted((harvey_root / "tasks").rglob("task.json"))
             all_ids = [
                 str(t.parent.relative_to(harvey_root / "tasks")).replace("\\", "/")
                 for t in all_tasks
@@ -617,8 +647,10 @@ def main():
 
         elif args.mode == "eval-parity":
             if not args.gemini_api_key:
-                print("ERROR: --gemini-api-key required for eval-parity mode",
-                      file=sys.stderr)
+                print(
+                    "ERROR: --gemini-api-key required for eval-parity mode",
+                    file=sys.stderr,
+                )
                 sys.exit(1)
 
             eval_ids = []
@@ -628,9 +660,7 @@ def main():
                     eval_ids.append(tid)
 
             if not eval_ids:
-                all_tasks = sorted(
-                    (harvey_root / "tasks").rglob("task.json")
-                )[:3]
+                all_tasks = sorted((harvey_root / "tasks").rglob("task.json"))[:3]
                 eval_ids = [
                     str(t.parent.relative_to(harvey_root / "tasks")).replace("\\", "/")
                     for t in all_tasks
@@ -644,8 +674,10 @@ def main():
 
         elif args.mode == "side-by-side":
             if not args.gemini_api_key:
-                print("ERROR: --gemini-api-key required for side-by-side mode",
-                      file=sys.stderr)
+                print(
+                    "ERROR: --gemini-api-key required for side-by-side mode",
+                    file=sys.stderr,
+                )
                 sys.exit(1)
 
             eval_ids = []
@@ -655,9 +687,7 @@ def main():
                     eval_ids.append(tid)
 
             if not eval_ids:
-                all_tasks = sorted(
-                    (harvey_root / "tasks").rglob("task.json")
-                )[:3]
+                all_tasks = sorted((harvey_root / "tasks").rglob("task.json"))[:3]
                 eval_ids = [
                     str(t.parent.relative_to(harvey_root / "tasks")).replace("\\", "/")
                     for t in all_tasks
@@ -682,7 +712,7 @@ def main():
             sys.exit(1)
 
         # Report results
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         if args.mode == "side-by-side":
             total = passed + failed
             rate = passed / total * 100 if total > 0 else 0
@@ -693,7 +723,7 @@ def main():
             print("\nErrors:")
             for e in errors:
                 print(f"  - {e}")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
 
         # Side-by-side: allow some disagreement due to LLM stochasticity
         if args.mode == "side-by-side":
