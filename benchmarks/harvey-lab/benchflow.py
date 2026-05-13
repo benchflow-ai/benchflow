@@ -112,7 +112,13 @@ def _build_instruction_md(
     if deliverables:
         lines.append("## Expected Deliverables")
         lines.append("")
-        for _name, filename in deliverables.items():
+        if isinstance(deliverables, dict):
+            filenames = list(deliverables.values())
+        elif isinstance(deliverables, list):
+            filenames = list(deliverables)
+        else:
+            filenames = []
+        for filename in filenames:
             lines.append(f"- `{filename}`")
         lines.append("")
 

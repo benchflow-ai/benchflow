@@ -438,6 +438,9 @@ AGENTS: dict[str, AgentConfig] = {
         "(6 tools: bash, read, write, edit, glob, grep) via ACP shim",
         install_cmd=(
             "export DEBIAN_FRONTEND=noninteractive && "
+            # Ensure git is available
+            "( command -v git >/dev/null 2>&1 || "
+            "  (apt-get update -qq && apt-get install -y -qq git >/dev/null 2>&1) ) && "
             # Clone Harvey LAB repo
             "( [ -d /opt/harvey-labs/.git ] || "
             "  git clone --depth 1 https://github.com/harveyai/harvey-labs.git /opt/harvey-labs ) && "
