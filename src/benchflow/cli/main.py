@@ -688,10 +688,17 @@ app.add_typer(agent_app, name="agent")
 @agent_app.command("list")
 def agent_list() -> None:
     """List all registered agents."""
-    from benchflow.agents.registry import list_agents
+    from benchflow.agents.registry import AGENT_ALIASES, list_agents
+
+    # Build reverse map: canonical name -> list of aliases
+    reverse_aliases: dict[str, list[str]] = {}
+    for alias, canonical in AGENT_ALIASES.items():
+        if alias != canonical:
+            reverse_aliases.setdefault(canonical, []).append(alias)
 
     table = Table(title="Registered Agents")
     table.add_column("Name", style="cyan")
+    table.add_column("Aliases", style="dim")
     table.add_column("Description")
     table.add_column("Protocol", style="green")
     table.add_column("Requires", style="yellow")
@@ -699,7 +706,8 @@ def agent_list() -> None:
     for a in list_agents():
         sub_env = a.subscription_auth.replaces_env if a.subscription_auth else None
         requires = [f"{e} (or login)" if e == sub_env else e for e in a.requires_env]
-        table.add_row(a.name, a.description, a.protocol, ", ".join(requires))
+        aliases = ", ".join(sorted(reverse_aliases.get(a.name, [])))
+        table.add_row(a.name, aliases, a.description, a.protocol, ", ".join(requires))
 
     console.print(table)
 
@@ -709,14 +717,22 @@ def agent_show(
     name: Annotated[str, typer.Argument(help="Agent name")],
 ) -> None:
     """Show details for a registered agent."""
-    from benchflow.agents.registry import AGENTS
+    from benchflow.agents.registry import AGENT_ALIASES, AGENTS
 
-    cfg = AGENTS.get(name)
+    resolved = AGENT_ALIASES.get(name, name)
+    cfg = AGENTS.get(resolved)
     if not cfg:
         console.print(f"[red]Unknown agent: {name}[/red]")
         raise typer.Exit(1)
 
+    # Collect aliases that point to this agent
+    aliases = sorted(
+        a for a, c in AGENT_ALIASES.items() if c == cfg.name and a != cfg.name
+    )
+
     console.print(f"[bold]{cfg.name}[/bold]")
+    if aliases:
+        console.print(f"  Aliases:     {', '.join(aliases)}")
     console.print(f"  Description: {cfg.description}")
     console.print(f"  Protocol:    {cfg.protocol}")
     console.print(f"  Launch:      {cfg.launch_cmd}")
