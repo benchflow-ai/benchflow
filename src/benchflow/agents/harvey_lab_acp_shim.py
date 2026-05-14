@@ -593,7 +593,7 @@ def main():
                 }
             )
 
-        elif method == "session/prompt_cancel":
+        elif method == "session/cancel":
             send({"jsonrpc": "2.0", "id": req_id, "result": {}})
 
         else:
