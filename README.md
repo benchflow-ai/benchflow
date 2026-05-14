@@ -46,13 +46,19 @@ Notebooks and runnable example scripts live under [`docs/examples/`](./docs/exam
 
 ## Benchmark task sources
 
-BenchFlow's helper scripts can materialize benchmark task repos under `datasets/`.
-For SkillsBench, [`benchmarks/run_skillsbench.py`](./benchmarks/run_skillsbench.py)
-calls `ensure_tasks("skillsbench")`, which clones
-[`benchflow-ai/skillsbench`](https://github.com/benchflow-ai/skillsbench) from
-the `main` branch into `datasets/skillsbench/tasks` when the local task cache is
-missing. Canonical benchmark datasets live in
-[`benchflow-ai/benchmarks`](https://github.com/benchflow-ai/benchmarks).
+Benchmark datasets live in [`benchflow-ai/benchmarks`](https://github.com/benchflow-ai/benchmarks).
+Run any benchmark via the CLI:
+
+```bash
+# From a YAML config
+bench eval create -f benchmarks/tb2-gemini-baseline.yaml
+
+# Inline — auto-downloads tasks on first run
+bench eval create -t benchflow://terminal-bench-2 -a gemini \
+    -m gemini-3.1-flash-lite-preview -e daytona -c 64
+```
+
+Tasks are cached locally under `datasets/` after first download.
 
 SkillsBench itself sources BenchFlow from GitHub `main` in its
 [`pyproject.toml`](https://github.com/benchflow-ai/skillsbench/blob/main/pyproject.toml).

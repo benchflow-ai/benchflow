@@ -284,6 +284,15 @@ class Job:
     def _from_native_yaml(cls, raw: dict, **kwargs) -> "Job":
         """Parse benchflow-native YAML."""
         tasks_dir = Path(raw["tasks_dir"])
+
+        # Auto-download tasks if they reference a known benchmark under datasets/
+        if not tasks_dir.exists() and str(tasks_dir).startswith("datasets/"):
+            from benchflow.task_download import TASK_REPOS, ensure_tasks
+
+            benchmark_name = str(tasks_dir).split("/")[1]
+            if benchmark_name in TASK_REPOS:
+                ensure_tasks(benchmark_name)
+
         jobs_dir = Path(raw.get("jobs_dir", "jobs"))
 
         # Parse prompts — YAML null becomes Python None
