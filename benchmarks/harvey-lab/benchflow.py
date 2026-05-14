@@ -38,6 +38,7 @@ _HARD_THRESHOLD = 80
 def _sanitize_name(raw: str) -> str:
     """Lowercase, replace non-alphanumeric with hyphens, collapse runs."""
     import re
+
     name = raw.lower().strip()
     name = re.sub(r"[^a-z0-9]+", "-", name)
     return name.strip("-")
@@ -366,7 +367,7 @@ def _build_evaluate_py() -> str:
                 return {
                     "id": criterion["id"],
                     "title": criterion["title"],
-                    "verdict": verdict.get("verdict", "fail"),
+                    "verdict": verdict.get("verdict", "fail").lower(),
                     "reasoning": verdict.get("reasoning", ""),
                 }
             except Exception as e:
@@ -476,12 +477,14 @@ def _discover_tasks(harvey_root: Path) -> list[dict]:
             print(f"  SKIP {task_id}: no documents/ directory", file=sys.stderr)
             continue
 
-        discovered.append({
-            "task_id": task_id,
-            "task_json_path": task_json,
-            "docs_dir": docs_dir,
-            "config": config,
-        })
+        discovered.append(
+            {
+                "task_id": task_id,
+                "task_json_path": task_json,
+                "docs_dir": docs_dir,
+                "config": config,
+            }
+        )
 
     return discovered
 
@@ -589,7 +592,7 @@ def main():
         "--task-ids",
         default=None,
         help="Comma-separated list of task IDs to generate (e.g., "
-             "'corporate-ma/analyze-cim-deal-teaser/scenario-01').",
+        "'corporate-ma/analyze-cim-deal-teaser/scenario-01').",
     )
     args = parser.parse_args()
 

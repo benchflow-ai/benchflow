@@ -43,9 +43,12 @@ def ensure_converted_tasks() -> Path:
     logger.info("Converting Harvey LAB tasks to BenchFlow format...")
     result = subprocess.run(
         [
-            sys.executable, str(_CONVERTER),
-            "--output-dir", str(converted_dir),
-            "--harvey-root", str(raw_dir.parent),
+            sys.executable,
+            str(_CONVERTER),
+            "--output-dir",
+            str(converted_dir),
+            "--harvey-root",
+            str(raw_dir.parent),
         ],
         capture_output=True,
         text=True,
@@ -59,12 +62,17 @@ def ensure_converted_tasks() -> Path:
 
 
 async def main():
-    config = sys.argv[1] if len(sys.argv) > 1 else str(
-        _SCRIPT_DIR / "harvey-lab-gemini-flash-lite.yaml"
+    config = (
+        sys.argv[1]
+        if len(sys.argv) > 1
+        else str(_SCRIPT_DIR / "harvey-lab-gemini-flash-lite.yaml")
     )
     tasks_dir = ensure_converted_tasks()
     logger.info("Using tasks from %s", tasks_dir)
     job = Job.from_yaml(config)
+    # Override tasks_dir with the absolute path from conversion — the YAML's
+    # relative tasks_dir only works if CWD happens to be the repo root.
+    job._tasks_dir = tasks_dir
     result = await job.run()
     print(f"\nScore: {result.passed}/{result.total} ({result.score:.1%})")
 

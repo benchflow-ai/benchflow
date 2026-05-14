@@ -98,22 +98,27 @@ class DirectSandbox:
     def stop(self):
         """No-op: no container to stop."""
 
+    @staticmethod
+    def _matches_prefix(path: str, prefix: str) -> bool:
+        """Check if *path* is exactly *prefix* or a child of it."""
+        return path == prefix or path.startswith(prefix + "/")
+
     def _to_host_path(self, sandbox_path: str) -> Path:
         """Map a /workspace/... path to a real host path."""
-        if sandbox_path.startswith(self.DOCUMENTS_PATH):
+        if self._matches_prefix(sandbox_path, self.DOCUMENTS_PATH):
             rel = sandbox_path[len(self.DOCUMENTS_PATH) :].lstrip("/")
             return self.documents_dir / rel if rel else self.documents_dir
-        if sandbox_path.startswith(self.OUTPUT_PATH):
+        if self._matches_prefix(sandbox_path, self.OUTPUT_PATH):
             rel = sandbox_path[len(self.OUTPUT_PATH) :].lstrip("/")
             return self.output_dir / rel if rel else self.output_dir
-        if sandbox_path.startswith(self.WORKSPACE_PATH):
+        if self._matches_prefix(sandbox_path, self.WORKSPACE_PATH):
             rel = sandbox_path[len(self.WORKSPACE_PATH) :].lstrip("/")
             return self.workspace_dir / rel if rel else self.workspace_dir
         raise ValueError(f"Path outside sandbox: {sandbox_path}")
 
     def exec(self, command: str, timeout: int | None = None) -> "ExecResult":
         """Run a shell command in the workspace directory."""
-        timeout = timeout or self.default_timeout
+        timeout = timeout if timeout is not None else self.default_timeout
         env = {
             **os.environ,
             "WORKSPACE_DIR": str(self.workspace_dir),
