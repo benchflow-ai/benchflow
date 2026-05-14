@@ -175,7 +175,7 @@ class DirectSandbox:
 
     @staticmethod
     def assert_sandbox_path(path: str) -> None:
-        if not path.startswith("/workspace"):
+        if not (path == "/workspace" or path.startswith("/workspace/")):
             raise ValueError(f"Path outside sandbox: {path}")
 
     @staticmethod
