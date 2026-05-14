@@ -1,6 +1,9 @@
 # Harvey LAB parity config — uses the original Harvey LAB harness agent.
 # For true apples-to-apples parity: same agent loop, same tools, same model.
-tasks_dir: .ref/harvey-lab-benchflow
+source:
+  repo: harveyai/harvey-labs
+  path: tasks
+  ref: main
 
 agent: harvey-lab-harness
 model: gemini/gemini-3.1-flash-lite-preview

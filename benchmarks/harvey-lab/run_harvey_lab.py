@@ -3,6 +3,9 @@
 Usage:
     python benchmarks/harvey-lab/run_harvey_lab.py                # default config
     python benchmarks/harvey-lab/run_harvey_lab.py path/to/config.yaml
+
+Prefer using `bench eval create -f benchmarks/harvey-lab/harvey-lab-gemini-flash-lite.yaml`
+which handles downloading automatically via the source.repo field.
 """
 
 import asyncio
@@ -12,7 +15,7 @@ import sys
 from pathlib import Path
 
 from benchflow.job import Job
-from benchflow.task_download import ensure_tasks
+from benchflow.task_download import resolve_source
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -32,9 +35,9 @@ def _repo_root() -> Path:
 
 def ensure_converted_tasks() -> Path:
     """Download raw Harvey LAB tasks and convert to BenchFlow format."""
-    raw_dir = ensure_tasks("harvey-lab")
+    raw_dir = resolve_source("harveyai/harvey-labs", path="tasks", ref="main")
     root = _repo_root()
-    converted_dir = root / ".ref" / "harvey-lab-benchflow"
+    converted_dir = root / ".cache" / "harvey-lab-benchflow"
 
     if converted_dir.exists() and any(converted_dir.iterdir()):
         logger.info("Converted tasks already exist at %s", converted_dir)
