@@ -57,11 +57,12 @@ bench eval create \
   -c 4
 
 # SkillsBench — single task
-bench run \
+bench eval create \
   --source-repo benchflow-ai/skillsbench \
   --source-path tasks/edit-pdf \
-  --agent gemini \
-  --model gemini-3.1-flash-lite-preview
+  -a gemini \
+  -m gemini-3.1-flash-lite-preview \
+  -e docker
 
 # Or with Claude Code on Daytona
 bench eval create \
@@ -154,15 +155,15 @@ python benchmarks/harvey-lab/benchflow.py \
   --task-ids "corporate-ma/analyze-cim-deal-teaser/scenario-01,real-estate/draft-construction-contract"
 ```
 
-### Using `bench run` for a single task
+### Using `bench eval create` for a single task
 
 ```bash
-bench run \
+bench eval create \
   --source-repo benchflow-ai/skillsbench \
   --source-path tasks/edit-pdf \
-  --agent gemini \
-  --model gemini-3.1-flash-lite-preview \
-  --backend docker
+  -a gemini \
+  -m gemini-3.1-flash-lite-preview \
+  -e docker
 ```
 
 ---
