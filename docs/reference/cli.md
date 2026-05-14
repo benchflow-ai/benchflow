@@ -76,22 +76,29 @@ accepts a single task directory.
 
 ```bash
 # From YAML config
-bench eval create -f benchmarks/tb2-gemini-baseline.yaml
+bench eval create -f benchmarks/skillsbench-claude-glm51.yaml
 
-# Inline
+# From remote repo
 bench eval create \
-  -t harbor-framework/terminal-bench-2 \
+  --source-repo benchflow-ai/skillsbench \
+  --source-path tasks \
   -a gemini \
   -m gemini-3.1-flash-lite-preview \
   -e daytona \
   -c 64 \
   --sandbox-setup-timeout 300
+
+# From local directory
+bench eval create -t ./tasks -a gemini -m gemini-3.1-flash-lite-preview
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--config`, `-f` | — | YAML config file |
-| `--tasks-dir`, `-t` | — | Task dir (single task with task.toml, or parent of many tasks) |
+| `--tasks-dir`, `-t` | — | Local task dir (single task with task.toml, or parent of many) |
+| `--source-repo` | — | Remote repo as `org/repo` (e.g. `benchflow-ai/skillsbench`) |
+| `--source-path` | — | Subpath within the repo (e.g. `tasks`) |
+| `--source-ref` | — | Branch or tag to clone (e.g. `main`) |
 | `--agent`, `-a` | `claude-agent-acp` | Agent name |
 | `--model`, `-m` | Agent default | Model ID |
 | `--env`, `-e` | `docker` | Environment: docker, daytona, or modal |
@@ -190,7 +197,8 @@ bench environment list
 
 ```yaml
 source:
-  repo: harbor-framework/terminal-bench-2
+  repo: benchflow-ai/skillsbench
+  path: tasks
 environment: daytona
 concurrency: 64
 sandbox_setup_timeout: 300

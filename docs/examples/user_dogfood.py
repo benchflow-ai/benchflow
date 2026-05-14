@@ -53,7 +53,7 @@ def progressive_user(
 async def main():
     from benchflow.task_download import resolve_source
 
-    task_path = resolve_source("harbor-framework/terminal-bench-2", path="regex-log")
+    task_path = resolve_source("benchflow-ai/skillsbench", path="tasks/regex-log")
 
     config = TrialConfig(
         task_path=task_path,

@@ -20,7 +20,8 @@ In Harbor, this required a FastMCP sidecar container running a simulated-user pe
 
 ```yaml
 source:
-  repo: harbor-framework/terminal-bench-2
+  repo: benchflow-ai/skillsbench
+  path: tasks
 environment: daytona
 concurrency: 64
 
@@ -105,7 +106,8 @@ A coder agent solves the task, then an independent reviewer agent critiques the 
 
 ```yaml
 source:
-  repo: harbor-framework/terminal-bench-2
+  repo: benchflow-ai/skillsbench
+  path: tasks
 environment: daytona
 concurrency: 64
 
@@ -258,7 +260,8 @@ The same agent receives multiple prompts in sequence, maintaining full conversat
 
 ```yaml
 source:
-  repo: harbor-framework/terminal-bench-2
+  repo: benchflow-ai/skillsbench
+  path: tasks
 environment: daytona
 concurrency: 64
 
@@ -321,7 +324,8 @@ Different models fill different roles in the same scene. A cheap model codes, an
 
 ```yaml
 source:
-  repo: harbor-framework/terminal-bench-2
+  repo: benchflow-ai/skillsbench
+  path: tasks
 environment: daytona
 concurrency: 32
 

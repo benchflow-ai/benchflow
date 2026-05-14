@@ -49,24 +49,25 @@ Notebooks and runnable example scripts live under [`docs/examples/`](./docs/exam
 Benchmark datasets live in external Git repos and are referenced with two fields:
 
 ```yaml
-# benchmarks/tb2-gemini-baseline.yaml
+# benchmarks/skillsbench-claude-glm51.yaml
 source:
-  repo: harbor-framework/terminal-bench-2   # GitHub org/repo
-  # path: subdir                            # optional subpath within repo
-  # ref: main                               # optional branch/tag
-agent: gemini
-model: gemini-3.1-flash-lite-preview
+  repo: benchflow-ai/skillsbench   # GitHub org/repo
+  path: tasks                       # optional subpath within repo
+  ref: main                         # optional branch/tag
+agent: claude-agent-acp
+model: claude-sonnet-4-6
 ```
 
 Run any benchmark via the CLI:
 
 ```bash
 # From a YAML config
-bench eval create -f benchmarks/tb2-gemini-baseline.yaml
+bench eval create -f benchmarks/skillsbench-claude-glm51.yaml
 
-# Inline batch (still supports org/repo as -t shorthand)
-bench eval create -t harbor-framework/terminal-bench-2 -a gemini \
-    -m gemini-3.1-flash-lite-preview -e daytona -c 64
+# Inline — mirrors the YAML source fields
+bench eval create \
+    --source-repo benchflow-ai/skillsbench --source-path tasks \
+    -a gemini -m gemini-3.1-flash-lite-preview -e daytona -c 64
 ```
 
 Repos are cloned and cached locally under `.cache/datasets/` on first use.
