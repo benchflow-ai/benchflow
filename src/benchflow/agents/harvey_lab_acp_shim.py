@@ -458,6 +458,7 @@ def _emit_tool_call(session_id: str, tool_call_id: str, name: str, arguments: st
                     "title": name,
                     "kind": kind,
                     "status": "in_progress",
+                    "input": arguments[:_DIAG_TRUNCATE] if arguments else "",
                 },
             },
         }

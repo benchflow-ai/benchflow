@@ -270,15 +270,27 @@ Recorded parity results are in `parity_experiment.json` and `benchmark.yaml`.
 Job configs use the two-field `source` pattern to reference remote benchmark repos:
 
 ```yaml
-# benchmarks/harvey-lab/harvey-lab-gemini-flash-lite.yaml
+# benchmarks/skillsbench-claude-glm51.yaml — direct from remote repo
 source:
-  repo: harveyai/harvey-labs       # GitHub repo (org/repo)
+  repo: benchflow-ai/skillsbench   # GitHub repo (org/repo)
   path: tasks                      # subpath within the repo
   ref: main                        # branch/tag (optional)
-agent: gemini                      # agent from registry
-model: gemini/gemini-3.1-flash-lite-preview  # model ID
-environment: docker                # backend
-concurrency: 4                     # parallel tasks
+agent: claude-agent-acp            # agent from registry
+model: zai/glm-5.1                 # model ID
+environment: daytona               # backend
+concurrency: 8                     # parallel tasks
+```
+
+For benchmarks that require conversion (like Harvey LAB), use `tasks_dir` pointing
+at the converted output:
+
+```yaml
+# benchmarks/harvey-lab/harvey-lab-gemini-flash-lite.yaml
+# (conversion handled by run_harvey_lab.py)
+agent: gemini
+model: gemini/gemini-3.1-flash-lite-preview
+environment: docker
+concurrency: 4
 ```
 
 You can also use `tasks_dir:` for local paths:

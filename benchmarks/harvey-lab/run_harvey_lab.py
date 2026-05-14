@@ -4,8 +4,8 @@ Usage:
     python benchmarks/harvey-lab/run_harvey_lab.py                # default config
     python benchmarks/harvey-lab/run_harvey_lab.py path/to/config.yaml
 
-Prefer using `bench eval create -f benchmarks/harvey-lab/harvey-lab-gemini-flash-lite.yaml`
-which handles downloading automatically via the source.repo field.
+Prefer using `bench eval create -f` with a YAML config that has tasks_dir
+pointing to already-converted tasks if you've pre-converted them.
 """
 
 import asyncio
@@ -72,7 +72,12 @@ async def main():
     )
     tasks_dir = ensure_converted_tasks()
     logger.info("Using tasks from %s", tasks_dir)
+
+    # Load job config from YAML, then override tasks_dir with the converted path.
+    # The YAML doesn't specify source/tasks_dir since Harvey LAB requires conversion.
     job = Job.from_yaml(config)
+    job._tasks_dir = tasks_dir  # type: ignore[attr-defined]
+
     result = await job.run()
     print(f"\nScore: {result.passed}/{result.total} ({result.score:.1%})")
 
