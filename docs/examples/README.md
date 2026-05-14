@@ -10,7 +10,7 @@ Use `bench run` for one task:
 ```bash
 bench run \
   --source-repo benchflow-ai/skillsbench \
-  --source-path tasks/regex-log \
+  --source-path tasks/edit-pdf \
   --agent gemini \
   --model gemini-3.1-flash-lite-preview \
   --backend daytona

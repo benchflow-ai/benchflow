@@ -33,7 +33,7 @@ single-task local, Daytona, or Modal checks.
 
 ```bash
 # Single task with Gemini on Daytona
-bench run tasks/regex-log \
+bench run tasks/edit-pdf \
   --agent gemini \
   --model gemini-3.1-flash-lite-preview \
   --backend daytona

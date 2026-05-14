@@ -37,7 +37,7 @@ def run(
     source_path: Annotated[
         str | None,
         typer.Option(
-            "--source-path", help="Subpath within the repo (e.g. tasks/regex-log)"
+            "--source-path", help="Subpath within the repo (e.g. tasks/edit-pdf)"
         ),
     ] = None,
     source_ref: Annotated[
@@ -109,8 +109,8 @@ def run(
     """Run a single task with an ACP agent.
 
     Examples:
-        bench run --source-repo benchflow-ai/skillsbench --source-path tasks/regex-log
-        bench run tasks/regex-log --agent gemini --model gemini-3.1-flash-lite-preview
+        bench run --source-repo benchflow-ai/skillsbench --source-path tasks/edit-pdf
+        bench run tasks/edit-pdf --agent gemini --model gemini-3.1-flash-lite-preview
     """
     from benchflow.sdk import SDK
 

@@ -65,6 +65,7 @@ def get_tb2_tasks() -> list[str]:
         d.name for d in root.iterdir() if d.is_dir() and (d / "task.toml").exists()
     )
 
+
 RESULTS_FILE = Path(__file__).parent / "ablation-results.csv"
 JOBS_DIR = Path("/tmp/ablation-jobs")
 

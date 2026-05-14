@@ -1,4 +1,4 @@
-"""Dogfood: run regex-log task with progressive-disclosure User.
+"""Dogfood: run edit-pdf task with progressive-disclosure User.
 
 Demonstrates the BaseUser abstraction — a FunctionUser that:
   Round 0: gives a terse version of the instruction
@@ -53,7 +53,7 @@ def progressive_user(
 async def main():
     from benchflow.task_download import resolve_source
 
-    task_path = resolve_source("benchflow-ai/skillsbench", path="tasks/regex-log")
+    task_path = resolve_source("benchflow-ai/skillsbench", path="tasks/edit-pdf")
 
     config = TrialConfig(
         task_path=task_path,
@@ -63,7 +63,7 @@ async def main():
         max_user_rounds=4,
     )
 
-    print("Running progressive-disclosure trial on regex-log...")
+    print("Running progressive-disclosure trial on edit-pdf...")
     print("  Agent: gemini/flash")
     print(f"  Max rounds: {config.max_user_rounds}")
     print(f"  Environment: {config.environment}")

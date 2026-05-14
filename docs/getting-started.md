@@ -79,17 +79,17 @@ If multiple credentials are set, benchflow / the agent CLI uses (high to low): c
 # Single task from a remote repo
 GEMINI_API_KEY=... bench run \
   --source-repo benchflow-ai/skillsbench \
-  --source-path tasks/regex-log \
+  --source-path tasks/edit-pdf \
   --agent gemini \
   --model gemini-3.1-pro-preview \
   --backend docker
 
 # Single task from local path
-GEMINI_API_KEY=... bench run tasks/pdf-fix \
+GEMINI_API_KEY=... bench run tasks/edit-pdf \
   --agent gemini \
   --model gemini-3.1-pro-preview \
   --backend daytona \
-  --skills-dir tasks/pdf-fix/environment/skills \
+  --skills-dir tasks/edit-pdf/environment/skills \
   --ae BENCHFLOW_SKILL_NUDGE=name
 
 # A whole batch from YAML config
@@ -126,7 +126,7 @@ from benchflow.trial import TrialConfig, Scene
 from benchflow.task_download import resolve_source
 
 config = TrialConfig(
-    task_path=resolve_source("benchflow-ai/skillsbench", path="tasks/regex-log"),
+    task_path=resolve_source("benchflow-ai/skillsbench", path="tasks/edit-pdf"),
     scenes=[Scene.single(agent="gemini", model="gemini-3.1-pro-preview")],
     environment="docker",
 )
