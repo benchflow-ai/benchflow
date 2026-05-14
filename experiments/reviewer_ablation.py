@@ -44,7 +44,7 @@ MODEL = os.environ.get("ABLATION_MODEL", "gemini-3.1-flash-lite-preview")
 BACKEND = os.environ.get("ABLATION_BACKEND", "daytona")
 AGENT = os.environ.get("ABLATION_AGENT", "gemini")
 
-TB2_ROOT = Path(__file__).resolve().parents[1] / ".ref" / "terminal-bench-2"
+TB2_ROOT = Path(__file__).resolve().parents[1] / "datasets" / "terminal-bench-2"
 TB2_TASKS = sorted([
     d.name for d in TB2_ROOT.iterdir()
     if d.is_dir() and (d / "task.toml").exists()

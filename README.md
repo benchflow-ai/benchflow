@@ -46,12 +46,13 @@ Notebooks and runnable example scripts live under [`docs/examples/`](./docs/exam
 
 ## Benchmark task sources
 
-BenchFlow's helper scripts can materialize benchmark task repos under `.ref/`.
+BenchFlow's helper scripts can materialize benchmark task repos under `datasets/`.
 For SkillsBench, [`benchmarks/run_skillsbench.py`](./benchmarks/run_skillsbench.py)
 calls `ensure_tasks("skillsbench")`, which clones
 [`benchflow-ai/skillsbench`](https://github.com/benchflow-ai/skillsbench) from
-the `main` branch into `.ref/skillsbench/tasks` when the local task cache is
-missing.
+the `main` branch into `datasets/skillsbench/tasks` when the local task cache is
+missing. Canonical benchmark datasets live in
+[`benchflow-ai/benchmarks`](https://github.com/benchflow-ai/benchmarks).
 
 SkillsBench itself sources BenchFlow from GitHub `main` in its
 [`pyproject.toml`](https://github.com/benchflow-ai/skillsbench/blob/main/pyproject.toml).

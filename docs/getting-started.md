@@ -77,7 +77,7 @@ If multiple credentials are set, benchflow / the agent CLI uses (high to low): c
 
 ```bash
 # Single task with Gemini
-GEMINI_API_KEY=... bench run .ref/terminal-bench-2/regex-log \
+GEMINI_API_KEY=... bench run datasets/terminal-bench-2/regex-log \
   --agent gemini \
   --model gemini-3.1-pro-preview \
   --backend docker
@@ -91,7 +91,7 @@ GEMINI_API_KEY=... bench run tasks/pdf-fix \
   --ae BENCHFLOW_SKILL_NUDGE=name
 
 # A whole batch with concurrency
-GEMINI_API_KEY=... bench eval create -t .ref/terminal-bench-2 -a gemini \
+GEMINI_API_KEY=... bench eval create -t datasets/terminal-bench-2 -a gemini \
     -m gemini-3.1-pro-preview -e daytona -c 32
 
 # List the registered agents
@@ -119,7 +119,7 @@ from benchflow.trial import TrialConfig, Scene
 from pathlib import Path
 
 config = TrialConfig(
-    task_path=Path(".ref/terminal-bench-2/regex-log"),
+    task_path=Path("datasets/terminal-bench-2/regex-log"),
     scenes=[Scene.single(agent="gemini", model="gemini-3.1-pro-preview")],
     environment="docker",
 )

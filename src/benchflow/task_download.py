@@ -1,4 +1,4 @@
-"""Download benchmark task repos if not present under .ref/."""
+"""Download benchmark task repos if not present under datasets/."""
 
 import logging
 import shutil
@@ -30,7 +30,7 @@ def _repo_root() -> Path:
 
 
 def ensure_tasks(benchmark: str) -> Path:
-    """Clone task repo into .ref/ if target directory is missing.
+    """Clone task repo into datasets/ if target directory is missing.
 
     Always resolves paths relative to the repo root, so it works
     regardless of the caller's working directory.
@@ -42,7 +42,7 @@ def ensure_tasks(benchmark: str) -> Path:
 
     info = TASK_REPOS[benchmark]
     root = _repo_root()
-    target = root / ".ref" / benchmark / (info.get("subdir") or "")
+    target = root / "datasets" / benchmark / (info.get("subdir") or "")
 
     if target.exists() and any(target.iterdir()):
         return target

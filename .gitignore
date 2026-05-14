@@ -173,7 +173,7 @@ cython_debug/
 
 .DS_Store
 # benchflow
-.ref/
+datasets/
 trials/
 jobs/
 .jobs/

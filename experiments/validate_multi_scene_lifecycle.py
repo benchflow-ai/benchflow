@@ -26,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[0].parent / "src"))
 
 from benchflow.trial import Trial, TrialConfig
 
-TASK = Path(__file__).resolve().parents[0].parent / ".ref" / "terminal-bench-2" / "regex-log"
+TASK = Path(__file__).resolve().parents[0].parent / "datasets" / "terminal-bench-2" / "regex-log"
 AGENT = os.environ.get("ABLATION_AGENT", "gemini")
 MODEL = os.environ.get("ABLATION_MODEL", "gemini-3.1-flash-lite-preview")
 

@@ -1,4 +1,4 @@
-tasks_dir: .ref/terminal-bench-2
+tasks_dir: datasets/terminal-bench-2
 jobs_dir: jobs/tb2_multiturn-claude-haiku45
 agent: claude-agent-acp
 model: claude-haiku-4-5-20251001

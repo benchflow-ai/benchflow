@@ -99,7 +99,7 @@ async def main():
     args = parser.parse_args()
 
     task_dir = SWEBENCH_PRO_TASKS[args.task]
-    task_path = Path(".ref/swebenchpro") / task_dir
+    task_path = Path("datasets/swebenchpro") / task_dir
     if not task_path.exists():
         print(f"Task not found: {task_path}")
         return

@@ -20,7 +20,7 @@ def test_skillsbench_download_clones_main_branch(tmp_path, monkeypatch):
 
     target = task_download.ensure_tasks("skillsbench")
 
-    assert target == tmp_path / ".ref" / "skillsbench" / "tasks"
+    assert target == tmp_path / "datasets" / "skillsbench" / "tasks"
     assert target.exists()
     assert calls == [
         [
@@ -31,7 +31,7 @@ def test_skillsbench_download_clones_main_branch(tmp_path, monkeypatch):
             "--branch",
             "main",
             "https://github.com/benchflow-ai/skillsbench.git",
-            str(tmp_path / ".ref" / "skillsbench" / "_clone"),
+            str(tmp_path / "datasets" / "skillsbench" / "_clone"),
         ]
     ]
 
@@ -53,7 +53,7 @@ def test_download_without_ref_omits_branch_flag(tmp_path, monkeypatch):
 
     target = task_download.ensure_tasks("terminal-bench-2")
 
-    assert target == tmp_path / ".ref" / "terminal-bench-2"
+    assert target == tmp_path / "datasets" / "terminal-bench-2"
     assert target.exists()
     assert "--branch" not in calls[0]
     assert calls == [
@@ -63,6 +63,6 @@ def test_download_without_ref_omits_branch_flag(tmp_path, monkeypatch):
             "--depth",
             "1",
             "https://github.com/harbor-framework/terminal-bench-2.git",
-            str(tmp_path / ".ref" / "_clone"),
+            str(tmp_path / "datasets" / "_clone"),
         ]
     ]

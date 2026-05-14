@@ -54,7 +54,7 @@ def progressive_user(
 
 
 async def main():
-    task_path = Path(".ref/terminal-bench-2/regex-log")
+    task_path = Path("datasets/terminal-bench-2/regex-log")
     if not task_path.exists():
         print(f"Task not found at {task_path}")
         return

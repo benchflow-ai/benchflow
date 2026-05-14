@@ -9,11 +9,11 @@ Demonstrates:
 Requirements:
   - uv tool install benchflow, or run from a checkout with uv run
   - GEMINI_API_KEY or DAYTONA_API_KEY set
-  - A Harbor-format task directory (e.g. .ref/terminal-bench-2/regex-log)
+  - A Harbor-format task directory (e.g. datasets/terminal-bench-2/regex-log)
 
 Usage:
-  uv run python docs/examples/coder-reviewer-demo.py --task .ref/terminal-bench-2/regex-log
-  uv run python docs/examples/coder-reviewer-demo.py --task .ref/terminal-bench-2/regex-log --env docker
+  uv run python docs/examples/coder-reviewer-demo.py --task datasets/terminal-bench-2/regex-log
+  uv run python docs/examples/coder-reviewer-demo.py --task datasets/terminal-bench-2/regex-log --env docker
 
 Terminology:
   - Turn:        One prompt → one ACP session (one role acts)

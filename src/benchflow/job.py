@@ -211,7 +211,7 @@ class Job:
 
     Usage:
         job = Job(
-            tasks_dir=".ref/terminal-bench-2",
+            tasks_dir="datasets/terminal-bench-2",
             jobs_dir="parity/tb2-haiku",
             config=JobConfig(model="claude-haiku-4-5-20251001"),
         )
