@@ -12,7 +12,7 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-REF_TASKS = REPO_ROOT / "datasets" / "harbor" / "examples" / "tasks"
+REF_TASKS = REPO_ROOT / ".cache" / "datasets" / "harbor" / "examples" / "tasks"
 
 
 @pytest.fixture

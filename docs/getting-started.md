@@ -77,7 +77,7 @@ If multiple credentials are set, benchflow / the agent CLI uses (high to low): c
 
 ```bash
 # Single task with Gemini
-GEMINI_API_KEY=... bench run datasets/terminal-bench-2/regex-log \
+GEMINI_API_KEY=... bench run harbor-framework/terminal-bench-2/regex-log \
   --agent gemini \
   --model gemini-3.1-pro-preview \
   --backend docker
@@ -94,7 +94,7 @@ GEMINI_API_KEY=... bench run tasks/pdf-fix \
 bench eval create -f benchmarks/tb2-gemini-baseline.yaml
 
 # Batch inline with concurrency
-GEMINI_API_KEY=... bench eval create -t datasets/terminal-bench-2 -a gemini \
+GEMINI_API_KEY=... bench eval create -t harbor-framework/terminal-bench-2 -a gemini \
     -m gemini-3.1-pro-preview -e daytona -c 32
 
 # List the registered agents
@@ -119,10 +119,10 @@ The CLI is a thin shim over the Python API. For programmatic use:
 ```python
 import benchflow as bf
 from benchflow.trial import TrialConfig, Scene
-from pathlib import Path
+from benchflow.task_download import resolve_source
 
 config = TrialConfig(
-    task_path=Path("datasets/terminal-bench-2/regex-log"),
+    task_path=resolve_source("harbor-framework/terminal-bench-2", path="regex-log"),
     scenes=[Scene.single(agent="gemini", model="gemini-3.1-pro-preview")],
     environment="docker",
 )

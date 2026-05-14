@@ -3,9 +3,10 @@
 from pathlib import Path
 
 from benchflow import task_download
+from benchflow.task_download import Source, resolve_source
 
 
-def test_skillsbench_download_clones_main_branch(tmp_path, monkeypatch):
+def test_skillsbench_alias_clones_main_branch(tmp_path, monkeypatch):
     """Guards PR #226: SkillsBench downloads must track GitHub main explicitly."""
     monkeypatch.chdir(tmp_path)
     calls = []
@@ -14,13 +15,17 @@ def test_skillsbench_download_clones_main_branch(tmp_path, monkeypatch):
         calls.append(cmd)
         assert check is True
         clone_dir = Path(cmd[-1])
+        (clone_dir / ".git").mkdir(parents=True)
         (clone_dir / "tasks" / "sample-task").mkdir(parents=True)
 
     monkeypatch.setattr(task_download.subprocess, "run", fake_run)
 
     target = task_download.ensure_tasks("skillsbench")
 
-    assert target == tmp_path / "datasets" / "skillsbench" / "tasks"
+    assert (
+        target
+        == tmp_path / ".cache" / "datasets" / "benchflow-ai" / "skillsbench" / "tasks"
+    )
     assert target.exists()
     assert calls == [
         [
@@ -31,12 +36,14 @@ def test_skillsbench_download_clones_main_branch(tmp_path, monkeypatch):
             "--branch",
             "main",
             "https://github.com/benchflow-ai/skillsbench.git",
-            str(tmp_path / "datasets" / "skillsbench" / "_clone"),
+            str(
+                tmp_path / ".cache" / "datasets" / "benchflow-ai" / "_skillsbench_clone"
+            ),
         ]
     ]
 
 
-def test_download_without_ref_omits_branch_flag(tmp_path, monkeypatch):
+def test_terminal_bench_alias_omits_branch_flag(tmp_path, monkeypatch):
     """Guards PR #226: existing task repos without refs keep their clone shape."""
     monkeypatch.chdir(tmp_path)
     calls = []
@@ -53,7 +60,10 @@ def test_download_without_ref_omits_branch_flag(tmp_path, monkeypatch):
 
     target = task_download.ensure_tasks("terminal-bench-2")
 
-    assert target == tmp_path / "datasets" / "terminal-bench-2"
+    assert (
+        target
+        == tmp_path / ".cache" / "datasets" / "harbor-framework" / "terminal-bench-2"
+    )
     assert target.exists()
     assert "--branch" not in calls[0]
     assert calls == [
@@ -63,6 +73,118 @@ def test_download_without_ref_omits_branch_flag(tmp_path, monkeypatch):
             "--depth",
             "1",
             "https://github.com/harbor-framework/terminal-bench-2.git",
-            str(tmp_path / "datasets" / "_clone"),
+            str(
+                tmp_path
+                / ".cache"
+                / "datasets"
+                / "harbor-framework"
+                / "_terminal-bench-2_clone"
+            ),
         ]
     ]
+
+
+def test_resolve_source_with_path(tmp_path, monkeypatch):
+    """resolve_source with repo + path clones the repo and returns the subpath."""
+    monkeypatch.chdir(tmp_path)
+
+    def fake_run(cmd, check):
+        assert check is True
+        clone_dir = Path(cmd[-1])
+        clone_dir.mkdir(parents=True)
+        (clone_dir / ".git").mkdir()
+        (clone_dir / "my-benchmark" / "task.toml").parent.mkdir(parents=True)
+        (clone_dir / "my-benchmark" / "task.toml").write_text("[task]\n")
+
+    monkeypatch.setattr(task_download.subprocess, "run", fake_run)
+
+    target = resolve_source("acme-org/benchmarks", path="my-benchmark")
+
+    assert (
+        target
+        == tmp_path / ".cache" / "datasets" / "acme-org" / "benchmarks" / "my-benchmark"
+    )
+    assert target.exists()
+
+
+def test_resolve_source_without_path(tmp_path, monkeypatch):
+    """resolve_source without path returns repo root."""
+    monkeypatch.chdir(tmp_path)
+
+    def fake_run(cmd, check):
+        assert check is True
+        clone_dir = Path(cmd[-1])
+        clone_dir.mkdir(parents=True)
+        (clone_dir / ".git").mkdir()
+        (clone_dir / "task-1").mkdir()
+
+    monkeypatch.setattr(task_download.subprocess, "run", fake_run)
+
+    target = resolve_source("acme-org/my-tasks")
+
+    assert target == tmp_path / ".cache" / "datasets" / "acme-org" / "my-tasks"
+    assert target.exists()
+
+
+def test_resolve_source_with_ref(tmp_path, monkeypatch):
+    """resolve_source passes ref as --branch to git clone."""
+    monkeypatch.chdir(tmp_path)
+    calls = []
+
+    def fake_run(cmd, check):
+        calls.append(cmd)
+        assert check is True
+        clone_dir = Path(cmd[-1])
+        clone_dir.mkdir(parents=True)
+        (clone_dir / ".git").mkdir()
+
+    monkeypatch.setattr(task_download.subprocess, "run", fake_run)
+
+    resolve_source("org/repo", ref="v2.0")
+
+    assert "--branch" in calls[0]
+    assert "v2.0" in calls[0]
+
+
+def test_resolve_source_caches_on_second_call(tmp_path, monkeypatch):
+    """Second call to resolve_source should not clone again."""
+    monkeypatch.chdir(tmp_path)
+    call_count = 0
+
+    def fake_run(cmd, check):
+        nonlocal call_count
+        call_count += 1
+        clone_dir = Path(cmd[-1])
+        clone_dir.mkdir(parents=True)
+        (clone_dir / ".git").mkdir()
+        (clone_dir / "tasks" / "t1").mkdir(parents=True)
+
+    monkeypatch.setattr(task_download.subprocess, "run", fake_run)
+
+    resolve_source("test-org/test-repo", path="tasks")
+    resolve_source("test-org/test-repo", path="tasks")
+
+    assert call_count == 1
+
+
+def test_source_dataclass_resolve(tmp_path, monkeypatch):
+    """Source dataclass .resolve() delegates to resolve_source."""
+    monkeypatch.chdir(tmp_path)
+
+    def fake_run(cmd, check):
+        clone_dir = Path(cmd[-1])
+        clone_dir.mkdir(parents=True)
+        (clone_dir / ".git").mkdir()
+        (clone_dir / "tb2" / "task.toml").parent.mkdir(parents=True)
+        (clone_dir / "tb2" / "task.toml").write_text("[task]\n")
+
+    monkeypatch.setattr(task_download.subprocess, "run", fake_run)
+
+    src = Source(repo="benchflow-ai/benchmarks", path="tb2", ref="main")
+    target = src.resolve()
+
+    assert (
+        target
+        == tmp_path / ".cache" / "datasets" / "benchflow-ai" / "benchmarks" / "tb2"
+    )
+    assert target.exists()

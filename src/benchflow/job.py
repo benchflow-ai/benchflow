@@ -210,8 +210,10 @@ class Job:
     """Run a benchmark job across multiple tasks.
 
     Usage:
+        from benchflow.task_download import resolve_source
+
         job = Job(
-            tasks_dir="datasets/terminal-bench-2",
+            tasks_dir=resolve_source("harbor-framework/terminal-bench-2"),
             jobs_dir="parity/tb2-haiku",
             config=JobConfig(model="claude-haiku-4-5-20251001"),
         )
@@ -283,15 +285,24 @@ class Job:
     @classmethod
     def _from_native_yaml(cls, raw: dict, **kwargs) -> "Job":
         """Parse benchflow-native YAML."""
-        tasks_dir = Path(raw["tasks_dir"])
+        from benchflow.task_download import TASK_ALIASES, ensure_tasks, resolve_source
 
-        # Auto-download tasks if they reference a known benchmark under datasets/
-        if not tasks_dir.exists() and str(tasks_dir).startswith("datasets/"):
-            from benchflow.task_download import TASK_REPOS, ensure_tasks
-
-            benchmark_name = str(tasks_dir).split("/")[1]
-            if benchmark_name in TASK_REPOS:
-                ensure_tasks(benchmark_name)
+        # New two-field format: source.repo + source.path
+        if "source" in raw:
+            src = raw["source"]
+            tasks_dir = resolve_source(
+                repo=src["repo"],
+                path=src.get("path"),
+                ref=src.get("ref"),
+            )
+        elif "tasks_dir" in raw:
+            # Legacy single-string format (backward compat).
+            ref = raw["tasks_dir"]
+            tasks_dir = Path(ref)
+            if not tasks_dir.exists() and ref in TASK_ALIASES:
+                tasks_dir = ensure_tasks(ref)
+        else:
+            raise ValueError("YAML config must have 'source' or 'tasks_dir'")
 
         jobs_dir = Path(raw.get("jobs_dir", "jobs"))
 

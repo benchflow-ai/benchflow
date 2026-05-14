@@ -24,9 +24,10 @@ logger = logging.getLogger(__name__)
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[0].parent / "src"))
 
+from benchflow.task_download import resolve_source
 from benchflow.trial import Trial, TrialConfig
 
-TASK = Path(__file__).resolve().parents[0].parent / "datasets" / "terminal-bench-2" / "regex-log"
+TASK = resolve_source("harbor-framework/terminal-bench-2", path="regex-log")
 AGENT = os.environ.get("ABLATION_AGENT", "gemini")
 MODEL = os.environ.get("ABLATION_MODEL", "gemini-3.1-flash-lite-preview")
 
@@ -34,11 +35,18 @@ MODEL = os.environ.get("ABLATION_MODEL", "gemini-3.1-flash-lite-preview")
 async def test_single_agent():
     """Scene 1: single agent, one turn — baseline."""
     logger.info("=== TEST 1: Single-agent baseline ===")
-    trial = await Trial.create(TrialConfig(
-        task_path=TASK, agent=AGENT, model=MODEL, environment="daytona",
-    ))
+    trial = await Trial.create(
+        TrialConfig(
+            task_path=TASK,
+            agent=AGENT,
+            model=MODEL,
+            environment="daytona",
+        )
+    )
     result = await trial.run()
-    logger.info(f"Result: reward={result.rewards}, tools={result.n_tool_calls}, err={result.error}")
+    logger.info(
+        f"Result: reward={result.rewards}, tools={result.n_tool_calls}, err={result.error}"
+    )
     return result
 
 
@@ -52,9 +60,14 @@ async def test_two_stage_byos():
         "/app/generated-skill.md that captures the key steps and patterns needed."
     )
 
-    trial = await Trial.create(TrialConfig(
-        task_path=TASK, agent=AGENT, model=MODEL, environment="daytona",
-    ))
+    trial = await Trial.create(
+        TrialConfig(
+            task_path=TASK,
+            agent=AGENT,
+            model=MODEL,
+            environment="daytona",
+        )
+    )
 
     await trial.setup()
     await trial.start()
@@ -76,7 +89,9 @@ async def test_two_stage_byos():
     await trial.cleanup()
 
     result = trial._build_result()
-    logger.info(f"Result: reward={rewards}, tools={result.n_tool_calls}, err={result.error}")
+    logger.info(
+        f"Result: reward={rewards}, tools={result.n_tool_calls}, err={result.error}"
+    )
     return result
 
 
@@ -97,9 +112,14 @@ Review for correctness, completeness, and bugs.
 Write your review to /app/.outbox/coder.json:
   {"to": "coder", "content": "YOUR FEEDBACK"}"""
 
-    trial = await Trial.create(TrialConfig(
-        task_path=TASK, agent=AGENT, model=MODEL, environment="daytona",
-    ))
+    trial = await Trial.create(
+        TrialConfig(
+            task_path=TASK,
+            agent=AGENT,
+            model=MODEL,
+            environment="daytona",
+        )
+    )
 
     await trial.setup()
     await trial.start()
@@ -120,10 +140,15 @@ Write your review to /app/.outbox/coder.json:
     await trial.disconnect()
 
     # Read reviewer feedback
-    feedback_result = await trial.env.exec("cat /app/.outbox/coder.json 2>/dev/null || echo '{}'")
+    feedback_result = await trial.env.exec(
+        "cat /app/.outbox/coder.json 2>/dev/null || echo '{}'"
+    )
     import json
+
     try:
-        feedback = json.loads(feedback_result.stdout or "{}").get("content", "No feedback")
+        feedback = json.loads(feedback_result.stdout or "{}").get(
+            "content", "No feedback"
+        )
     except json.JSONDecodeError:
         feedback = "No structured feedback"
     await trial.env.exec("rm -rf /app/.outbox/*")
@@ -146,7 +171,9 @@ Please address the reviewer's feedback and fix any issues."""
     await trial.cleanup()
 
     result = trial._build_result()
-    logger.info(f"Result: reward={rewards}, tools={result.n_tool_calls}, err={result.error}")
+    logger.info(
+        f"Result: reward={rewards}, tools={result.n_tool_calls}, err={result.error}"
+    )
     return result
 
 

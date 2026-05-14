@@ -80,7 +80,7 @@ bench eval create -f benchmarks/tb2-gemini-baseline.yaml
 
 # Inline
 bench eval create \
-  -t datasets/terminal-bench-2 \
+  -t harbor-framework/terminal-bench-2 \
   -a gemini \
   -m gemini-3.1-flash-lite-preview \
   -e daytona \
@@ -189,7 +189,8 @@ bench environment list
 ### Batch config with skills and skill nudge
 
 ```yaml
-tasks_dir: datasets/terminal-bench-2
+source:
+  repo: harbor-framework/terminal-bench-2
 environment: daytona
 concurrency: 64
 sandbox_setup_timeout: 300

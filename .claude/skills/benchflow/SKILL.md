@@ -69,7 +69,8 @@ benchflow job -f examples/configs/tb2-haiku.yaml
 
 YAML format (benchflow-native):
 ```yaml
-tasks_dir: datasets/terminal-bench-2
+source:
+  repo: harbor-framework/terminal-bench-2
 jobs_dir: jobs/tb2-haiku
 agent: claude-agent-acp
 model: claude-haiku-4-5-20251001
@@ -90,12 +91,13 @@ agents:
   - name: claude-agent-acp
     model_name: anthropic/claude-haiku-4-5-20251001
 datasets:
-  - path: datasets/terminal-bench-2
+  - path: harbor-framework/terminal-bench-2
 ```
 
 Multi-turn (adds a recheck prompt):
 ```yaml
-tasks_dir: datasets/terminal-bench-2
+source:
+  repo: harbor-framework/terminal-bench-2
 jobs_dir: jobs/tb2-multiturn
 agent: claude-agent-acp
 model: claude-haiku-4-5-20251001

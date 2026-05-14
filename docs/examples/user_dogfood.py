@@ -11,7 +11,6 @@ Usage:
 
 import asyncio
 import logging
-from pathlib import Path
 
 import benchflow as bf
 from benchflow.trial import Scene, TrialConfig
@@ -46,18 +45,15 @@ def progressive_user(
         )
 
     if round == 2:
-        return (
-            "Still failing. Here's the full instruction:\n\n" + instruction
-        )
+        return "Still failing. Here's the full instruction:\n\n" + instruction
 
     return None
 
 
 async def main():
-    task_path = Path("datasets/terminal-bench-2/regex-log")
-    if not task_path.exists():
-        print(f"Task not found at {task_path}")
-        return
+    from benchflow.task_download import resolve_source
+
+    task_path = resolve_source("harbor-framework/terminal-bench-2", path="regex-log")
 
     config = TrialConfig(
         task_path=task_path,

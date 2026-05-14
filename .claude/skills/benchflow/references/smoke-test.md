@@ -12,7 +12,7 @@ async def main():
     sdk = SDK()
     for agent in ["claude-agent-acp", "pi-acp", "openclaw"]:
         result = await sdk.run(
-            task_path="datasets/terminal-bench-2/log-summary-date-ranges",
+            task_path="harbor-framework/terminal-bench-2/log-summary-date-ranges",
             agent=agent,
             model="claude-haiku-4-5-20251001",
             environment="daytona",
@@ -31,8 +31,8 @@ import asyncio
 from benchflow import Job, JobConfig
 
 TASKS = {
-    "tb2": "datasets/terminal-bench-2",
-    "skills": "datasets/skillsbench/tasks",
+    "tb2": "harbor-framework/terminal-bench-2",
+    "skills": "benchflow-ai/skillsbench/tasks",
 }
 
 async def main():
@@ -77,7 +77,8 @@ Every smoke test must verify:
 
 TB2 single-turn:
 ```yaml
-tasks_dir: datasets/terminal-bench-2
+source:
+  repo: harbor-framework/terminal-bench-2
 jobs_dir: jobs/tb2-haiku
 agent: claude-agent-acp
 model: claude-haiku-4-5-20251001
@@ -88,7 +89,8 @@ max_retries: 1
 
 TB2 multi-turn:
 ```yaml
-tasks_dir: datasets/terminal-bench-2
+source:
+  repo: harbor-framework/terminal-bench-2
 jobs_dir: jobs/tb2-multiturn
 agent: claude-agent-acp
 model: claude-haiku-4-5-20251001
@@ -102,7 +104,10 @@ prompts:
 
 SkillsBench:
 ```yaml
-tasks_dir: datasets/skillsbench/tasks
+source:
+  repo: benchflow-ai/skillsbench
+  path: tasks
+  ref: main
 jobs_dir: jobs/skillsbench
 agent: claude-agent-acp
 model: claude-haiku-4-5-20251001

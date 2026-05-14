@@ -37,7 +37,7 @@ from benchmarks.followup_bench.runner import run_followup_task
 from pathlib import Path
 
 result = await run_followup_task(
-    task_path=Path("datasets/terminal-bench-2/tasks/some-task"),
+    task_path=Path("harbor-framework/terminal-bench-2/tasks/some-task"),
     coder_agent="gemini",
     coder_model="gemini-3.1-flash-lite-preview",
     reviewer_agent="gemini",
