@@ -53,8 +53,8 @@ Run any benchmark via the CLI:
 # From a YAML config
 bench eval create -f benchmarks/tb2-gemini-baseline.yaml
 
-# Inline — auto-downloads tasks on first run
-bench eval create -t benchflow://terminal-bench-2 -a gemini \
+# Inline batch
+bench eval create -t datasets/terminal-bench-2 -a gemini \
     -m gemini-3.1-flash-lite-preview -e daytona -c 64
 ```
 
