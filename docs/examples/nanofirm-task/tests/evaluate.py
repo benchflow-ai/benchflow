@@ -1,8 +1,10 @@
 """Evaluate contract risk analysis quality."""
+
 import json
 
 ANALYSIS_PATH = "/app/analysis.json"
 REWARD_PATH = "/logs/verifier/reward.txt"
+
 
 def evaluate():
     try:
@@ -19,7 +21,11 @@ def evaluate():
     risks = analysis.get("risks", [])
     if len(risks) >= 3:
         score += 1.0
-        valid_risks = sum(1 for r in risks if all(k in r for k in ("clause", "severity", "issue", "recommendation")))
+        valid_risks = sum(
+            1
+            for r in risks
+            if all(k in r for k in ("clause", "severity", "issue", "recommendation"))
+        )
         if valid_risks >= 3:
             score += 0.5
     else:
@@ -29,7 +35,9 @@ def evaluate():
     compound = analysis.get("compound_risks", [])
     if len(compound) >= 1:
         score += 1.0
-        if all(k in compound[0] for k in ("clauses", "severity", "issue", "recommendation")):
+        if all(
+            k in compound[0] for k in ("clauses", "severity", "issue", "recommendation")
+        ):
             score += 0.5
     else:
         print("FAIL: Need >= 1 compound risk")
@@ -49,6 +57,7 @@ def evaluate():
     reward = score / max_score
     print(f"Score: {score}/{max_score} = {reward:.2f}")
     return reward
+
 
 if __name__ == "__main__":
     reward = evaluate()

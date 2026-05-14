@@ -19,7 +19,9 @@ In Harbor, this required a FastMCP sidecar container running a simulated-user pe
 ### YAML
 
 ```yaml
-task_dir: .ref/terminal-bench-2
+source:
+  repo: benchflow-ai/skillsbench
+  path: tasks
 environment: daytona
 concurrency: 64
 
@@ -103,7 +105,9 @@ A coder agent solves the task, then an independent reviewer agent critiques the 
 ### YAML
 
 ```yaml
-task_dir: .ref/terminal-bench-2
+source:
+  repo: benchflow-ai/skillsbench
+  path: tasks
 environment: daytona
 concurrency: 64
 
@@ -184,7 +188,10 @@ An agent generates a task-specific skill before solving. This is a two-scene tri
 ### YAML
 
 ```yaml
-task_dir: .ref/skillsbench/tasks
+source:
+  repo: benchflow-ai/skillsbench
+  path: tasks
+  ref: main
 environment: daytona
 concurrency: 64
 
@@ -252,7 +259,9 @@ The same agent receives multiple prompts in sequence, maintaining full conversat
 ### YAML
 
 ```yaml
-task_dir: .ref/terminal-bench-2
+source:
+  repo: benchflow-ai/skillsbench
+  path: tasks
 environment: daytona
 concurrency: 64
 
@@ -314,7 +323,9 @@ Different models fill different roles in the same scene. A cheap model codes, an
 ### YAML
 
 ```yaml
-task_dir: .ref/terminal-bench-2
+source:
+  repo: benchflow-ai/skillsbench
+  path: tasks
 environment: daytona
 concurrency: 32
 

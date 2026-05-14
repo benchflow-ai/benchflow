@@ -24,9 +24,26 @@ app = typer.Typer(
 @app.command()
 def run(
     task_dir: Annotated[
-        Path,
-        typer.Argument(help="Task directory (must contain task.toml)"),
-    ],
+        Path | None,
+        typer.Argument(help="Local task directory (must contain task.toml)"),
+    ] = None,
+    source_repo: Annotated[
+        str | None,
+        typer.Option(
+            "--source-repo",
+            help="Remote repo as org/repo (e.g. benchflow-ai/skillsbench)",
+        ),
+    ] = None,
+    source_path: Annotated[
+        str | None,
+        typer.Option(
+            "--source-path", help="Subpath within the repo (e.g. tasks/edit-pdf)"
+        ),
+    ] = None,
+    source_ref: Annotated[
+        str | None,
+        typer.Option("--source-ref", help="Branch or tag to clone (e.g. main)"),
+    ] = None,
     agent: Annotated[
         str,
         typer.Option("--agent", "-a", help="Agent name from registry"),
@@ -92,10 +109,22 @@ def run(
     """Run a single task with an ACP agent.
 
     Examples:
-        bench run tasks/regex-log --agent gemini --model gemini-3.1-flash-lite-preview
-        bench run tasks/X --agent openhands --backend daytona
+        bench run --source-repo benchflow-ai/skillsbench --source-path tasks/edit-pdf
+        bench run tasks/edit-pdf --agent gemini --model gemini-3.1-flash-lite-preview
     """
     from benchflow.sdk import SDK
+
+    if source_repo:
+        from benchflow.task_download import resolve_source
+
+        resolved_task_dir = resolve_source(
+            source_repo, path=source_path, ref=source_ref
+        )
+    elif task_dir:
+        resolved_task_dir = task_dir
+    else:
+        console.print("[red]Provide a task directory or --source-repo[/red]")
+        raise typer.Exit(1)
 
     parsed_env: dict[str, str] = {}
     for entry in agent_env or []:
@@ -110,7 +139,7 @@ def run(
     # `list[str | None] | None` API (None entries mean "use default").
     result = asyncio.run(
         sdk.run(
-            task_path=task_dir,
+            task_path=resolved_task_dir,
             agent=agent,
             model=model,
             prompts=cast("list[str | None] | None", prompt),
@@ -755,7 +784,22 @@ def eval_create(
     ] = None,
     tasks_dir: Annotated[
         Path | None,
-        typer.Option("--tasks-dir", "-t", help="Tasks directory"),
+        typer.Option("--tasks-dir", "-t", help="Local tasks directory"),
+    ] = None,
+    source_repo: Annotated[
+        str | None,
+        typer.Option(
+            "--source-repo",
+            help="Remote repo as org/repo (e.g. benchflow-ai/skillsbench)",
+        ),
+    ] = None,
+    source_path: Annotated[
+        str | None,
+        typer.Option("--source-path", help="Subpath within the repo (e.g. tasks)"),
+    ] = None,
+    source_ref: Annotated[
+        str | None,
+        typer.Option("--source-ref", help="Branch or tag to clone (e.g. main)"),
     ] = None,
     agent: Annotated[
         str,
@@ -825,15 +869,20 @@ def eval_create(
             f"\n[bold]Score: {result.passed}/{result.total} "
             f"({result.score:.1%})[/bold], errors={result.errored}"
         )
-    elif tasks_dir:
+    elif source_repo:
+        from benchflow.task_download import resolve_source
+
+        resolved_tasks_dir = resolve_source(
+            source_repo, path=source_path, ref=source_ref
+        )
         eff_model = effective_model(agent, model)
         # Smart detection: if tasks_dir has task.toml, it's a single task
-        if (tasks_dir / "task.toml").exists():
+        if (resolved_tasks_dir / "task.toml").exists():
             from benchflow.sdk import SDK
 
             async def _run():
                 return await SDK().run(
-                    task_path=tasks_dir,
+                    task_path=resolved_tasks_dir,
                     agent=agent,
                     model=eff_model,
                     job_name=None,
@@ -852,7 +901,7 @@ def eval_create(
 
             run_result = asyncio.run(_run())
             reward = (run_result.rewards or {}).get("reward")
-            console.print(f"\n[bold]Task:[/bold] {tasks_dir.name}")
+            console.print(f"\n[bold]Task:[/bold] {resolved_tasks_dir.name}")
             console.print(f"[bold]Agent:[/bold] {agent} ({eff_model or 'no model'})")
             console.print(f"[bold]Reward:[/bold] {reward}")
             console.print(f"[bold]Tool calls:[/bold] {run_result.n_tool_calls}")
@@ -861,7 +910,66 @@ def eval_create(
         else:
             # Directory of tasks — batch run
             j = Job(
-                tasks_dir=str(tasks_dir),
+                tasks_dir=str(resolved_tasks_dir),
+                jobs_dir=jobs_dir,
+                config=JobConfig(
+                    agent=agent,
+                    model=eff_model,
+                    environment=environment,
+                    concurrency=concurrency,
+                    sandbox_user=sandbox_user,
+                    sandbox_setup_timeout=sandbox_setup_timeout,
+                    skills_dir=str(skills_dir) if skills_dir else None,
+                    skill_mode=skill_mode,
+                    skill_creator_dir=(
+                        str(skill_creator_dir) if skill_creator_dir else None
+                    ),
+                    self_gen_no_internet=self_gen_no_internet,
+                ),
+            )
+            result = asyncio.run(j.run())
+            console.print(
+                f"\n[bold]Score: {result.passed}/{result.total} "
+                f"({result.score:.1%})[/bold], errors={result.errored}"
+            )
+    elif tasks_dir:
+        resolved_tasks_dir = tasks_dir
+        eff_model = effective_model(agent, model)
+        # Smart detection: if tasks_dir has task.toml, it's a single task
+        if (resolved_tasks_dir / "task.toml").exists():
+            from benchflow.sdk import SDK
+
+            async def _run():
+                return await SDK().run(
+                    task_path=resolved_tasks_dir,
+                    agent=agent,
+                    model=eff_model,
+                    job_name=None,
+                    trial_name=None,
+                    jobs_dir=jobs_dir,
+                    environment=environment,
+                    skills_dir=str(skills_dir) if skills_dir else None,
+                    sandbox_user=sandbox_user,
+                    sandbox_setup_timeout=sandbox_setup_timeout,
+                    skill_mode=skill_mode,
+                    skill_creator_dir=(
+                        str(skill_creator_dir) if skill_creator_dir else None
+                    ),
+                    self_gen_no_internet=self_gen_no_internet,
+                )
+
+            run_result = asyncio.run(_run())
+            reward = (run_result.rewards or {}).get("reward")
+            console.print(f"\n[bold]Task:[/bold] {resolved_tasks_dir.name}")
+            console.print(f"[bold]Agent:[/bold] {agent} ({eff_model or 'no model'})")
+            console.print(f"[bold]Reward:[/bold] {reward}")
+            console.print(f"[bold]Tool calls:[/bold] {run_result.n_tool_calls}")
+            if run_result.error:
+                console.print(f"[red]Error:[/red] {run_result.error}")
+        else:
+            # Directory of tasks — batch run
+            j = Job(
+                tasks_dir=str(resolved_tasks_dir),
                 jobs_dir=jobs_dir,
                 config=JobConfig(
                     agent=agent,
@@ -884,7 +992,7 @@ def eval_create(
                 f"({result.score:.1%})[/bold], errors={result.errored}"
             )
     else:
-        console.print("[red]Either --config or --tasks-dir is required[/red]")
+        console.print("[red]Provide --config, --tasks-dir, or --source-repo[/red]")
         raise typer.Exit(1)
 
 
