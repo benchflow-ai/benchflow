@@ -22,30 +22,32 @@ logging.basicConfig(level=logging.INFO, format="%(name)s %(message)s")
 def progressive_user(
     round: int, instruction: str, rr: RoundResult | None
 ) -> str | None:
+    # Round 0: give a terse version — first line of instruction.md.
     if round == 0:
+        first_line = instruction.split("\n", 1)[0].strip()
         return (
-            "Write a regex that matches dates (YYYY-MM-DD) in log lines "
-            "containing an IPv4 address. Save it to /app/regex.txt"
+            f"{first_line}\n\n"
+            "Read the task files to understand what's needed, then implement "
+            "the solution. Run tests when you think you're done."
         )
 
+    # Stop on success.
     if rr and rr.rewards:
         score = rr.rewards.get("exact_match", rr.rewards.get("reward", 0))
         if score >= 1.0:
             print(f"  [User] Tests passed at round {round}! Stopping.")
             return None
 
+    # Round 1: nudge with more detail from the full instruction.
     if round == 1:
         return (
-            "The tests failed. Important details you may have missed:\n"
-            "- Match only the LAST date in each line\n"
-            "- Feb can have up to 29 days\n"
-            "- Dates/IPs must not be preceded/followed by alphanumeric chars\n"
-            "- Use re.findall with re.MULTILINE\n"
-            "Fix /app/regex.txt"
+            "The tests failed. Re-read the full instruction carefully — "
+            "you may have missed important details:\n\n" + instruction
         )
 
-    if round == 2:
-        return "Still failing. Here's the full instruction:\n\n" + instruction
+    # Round 2+: give up.
+    if round >= 2:
+        return None
 
     return None
 
