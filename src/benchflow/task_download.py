@@ -165,6 +165,11 @@ def _ensure_generated(benchmark: str) -> Path:
     # failures never leave a cached target that looks complete.
     staging = root / "benchmarks" / benchmark / "_gen_staging"
     try:
+        # Clean up stale temp dirs from previous interrupted runs.
+        if clone_dir.exists():
+            shutil.rmtree(clone_dir)
+        if staging.exists():
+            shutil.rmtree(staging)
         subprocess.run(
             [
                 "git",
