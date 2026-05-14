@@ -403,9 +403,8 @@ def _build_evaluate_py() -> str:
             """Find and read all deliverable files in the output directory."""
             texts = {}
             for f in sorted(output_dir.iterdir()):
-                if f.is_file() and f.name not in ("rubric.json",) and not f.name.startswith("."):
-                    # Skip very large files and known non-deliverables
-                    if f.name == "rubric.json":
+                if f.is_file() and f.name != "rubric.json" and not f.name.startswith("."):
+                    if f.stat().st_size > 50_000_000:  # skip files > 50 MB
                         continue
                     if f.suffix.lower() in (".docx", ".xlsx", ".pptx", ".pdf",
                                              ".md", ".txt", ".json", ".csv"):
