@@ -219,7 +219,6 @@ def _ensure_generated(benchmark: str) -> Path:
 TASK_ALIASES: dict[str, tuple[str, str | None, str | None]] = {
     "skillsbench": ("benchflow-ai/skillsbench", "main", "tasks"),
     "terminal-bench-2": ("harbor-framework/terminal-bench-2", None, None),
-    "harvey-lab": ("harveyai/harvey-labs", "main", "tasks"),
 }
 
 # Old dict shape kept for imports that reference TASK_REPOS.

@@ -9,7 +9,7 @@ Converting a benchmark produces:
 - **`datasets/<name>/`** in the benchmarks repo — ready-to-run task directories
 - **HuggingFace upload** — parity experiments + task metadata
 
-Harvey LAB (`benchmarks/harvey-lab/`) is the reference implementation.
+ProgramBench (`benchmarks/programbench/`) is the reference implementation.
 
 ## Steps
 

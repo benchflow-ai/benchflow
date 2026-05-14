@@ -175,7 +175,6 @@ cython_debug/
 # benchflow
 .cache/
 benchmarks/programbench/tasks/
-benchmarks/harvey-lab-benchflow/
 trials/
 jobs/
 .jobs/
