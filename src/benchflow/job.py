@@ -210,8 +210,10 @@ class Job:
     """Run a benchmark job across multiple tasks.
 
     Usage:
+        from benchflow.task_download import resolve_source
+
         job = Job(
-            tasks_dir="benchmarks/skillsbench/tasks",
+            tasks_dir=resolve_source("benchflow-ai/skillsbench", path="tasks"),
             jobs_dir="parity/skillsbench-haiku",
             config=JobConfig(model="claude-haiku-4-5-20251001"),
         )
@@ -283,7 +285,25 @@ class Job:
     @classmethod
     def _from_native_yaml(cls, raw: dict, **kwargs) -> "Job":
         """Parse benchflow-native YAML."""
-        tasks_dir = Path(raw["tasks_dir"])
+        from benchflow.task_download import TASK_ALIASES, ensure_tasks, resolve_source
+
+        # New two-field format: source.repo + source.path
+        if "source" in raw:
+            src = raw["source"]
+            tasks_dir = resolve_source(
+                repo=src["repo"],
+                path=src.get("path"),
+                ref=src.get("ref"),
+            )
+        elif "tasks_dir" in raw:
+            # Legacy single-string format (backward compat).
+            ref = raw["tasks_dir"]
+            tasks_dir = Path(ref)
+            if not tasks_dir.exists() and ref in TASK_ALIASES:
+                tasks_dir = ensure_tasks(ref)
+        else:
+            raise ValueError("YAML config must have 'source' or 'tasks_dir'")
+
         jobs_dir = Path(raw.get("jobs_dir", "jobs"))
 
         # Parse prompts — YAML null becomes Python None

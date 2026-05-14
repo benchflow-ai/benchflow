@@ -8,7 +8,9 @@ They live under `docs/examples/` so examples and docs move together.
 Use `bench run` for one task:
 
 ```bash
-bench run benchmarks/skillsbench/tasks/regex-log \
+bench run \
+  --source-repo benchflow-ai/skillsbench \
+  --source-path tasks/edit-pdf \
   --agent gemini \
   --model gemini-3.1-flash-lite-preview \
   --backend daytona

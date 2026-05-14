@@ -173,8 +173,8 @@ cython_debug/
 
 .DS_Store
 # benchflow
+.cache/
 benchmarks/programbench/tasks/
-benchmarks/skillsbench/
 benchmarks/harvey-lab-benchflow/
 trials/
 jobs/

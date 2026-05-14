@@ -29,7 +29,7 @@ def progressive(round: int, instruction: str, rr: RoundResult | None) -> str | N
 
 
 config = TrialConfig(
-    task_path=Path("benchmarks/swebenchpro/instance_flipt-io__flipt-..."),
+    task_path=resolve_source("benchflow-ai/swebenchpro", path="instance_flipt-io__flipt-..."),
     scenes=[Scene.single(agent="opencode", model="anthropic/claude-sonnet-4-6")],
     user=FunctionUser(progressive),
     max_user_rounds=3,
@@ -277,5 +277,5 @@ The two coexist. Choose based on whether your "user" needs to think (Scene-based
 
 - [`docs/examples/swebench_pro_progressive_disclosure.ipynb`](./examples/swebench_pro_progressive_disclosure.ipynb) — the SWE-bench Pro case study, executable end-to-end with the latest oracle/baseline data.
 - [`docs/examples/swebench_pro_user_dogfood.py`](./examples/swebench_pro_user_dogfood.py) — runnable script for any of the 5 SWE-bench Pro tasks. `--task flipt --max-rounds 3`.
-- [`docs/examples/user_dogfood.py`](./examples/user_dogfood.py) — minimal regex-log task with `FunctionUser`, useful as a starting template.
+- [`docs/examples/user_dogfood.py`](./examples/user_dogfood.py) — minimal edit-pdf task with `FunctionUser`, useful as a starting template.
 - [`experiments/swebench_pro_oracle_and_baseline.py`](../experiments/swebench_pro_oracle_and_baseline.py) — the oracle-validation + baseline experiment script that produced the table above.

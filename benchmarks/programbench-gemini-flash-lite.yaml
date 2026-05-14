@@ -1,3 +1,5 @@
+# ProgramBench tasks are generated locally — use tasks_dir, not source.
+# Run `python -m benchmarks.programbench.main` first to generate tasks.
 tasks_dir: benchmarks/programbench/tasks
 jobs_dir: jobs/programbench-gemini-flash-lite
 agent: gemini

@@ -20,7 +20,6 @@ Tasks available (oracle-validated 5/5 on 2026-04-24):
 import argparse
 import asyncio
 import logging
-from pathlib import Path
 
 import benchflow as bf
 from benchflow.trial import Scene, TrialConfig
@@ -41,9 +40,7 @@ SWEBENCH_PRO_TASKS = {
 def make_progressive_user() -> FunctionUser:
     """User that compresses the instruction on round 0 and discloses hints on failure."""
 
-    def progressive(
-        round: int, instruction: str, rr: RoundResult | None
-    ) -> str | None:
+    def progressive(round: int, instruction: str, rr: RoundResult | None) -> str | None:
         # Round 0: terse — first line of the spec.
         if round == 0:
             first_line = instruction.split("\n", 1)[0].strip()
@@ -98,11 +95,10 @@ async def main():
     parser.add_argument("--max-rounds", type=int, default=3)
     args = parser.parse_args()
 
+    from benchflow.task_download import resolve_source
+
     task_dir = SWEBENCH_PRO_TASKS[args.task]
-    task_path = Path("benchmarks/swebenchpro") / task_dir
-    if not task_path.exists():
-        print(f"Task not found: {task_path}")
-        return
+    task_path = resolve_source("benchflow-ai/swebenchpro", path=task_dir)
 
     config = TrialConfig(
         task_path=task_path,

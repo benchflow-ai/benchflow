@@ -76,30 +76,37 @@ If multiple credentials are set, benchflow / the agent CLI uses (high to low): c
 ## Run your first eval
 
 ```bash
-# Single task
-GEMINI_API_KEY=... bench run benchmarks/skillsbench/tasks/regex-log \
+# Single task from a remote repo
+GEMINI_API_KEY=... bench run \
+  --source-repo benchflow-ai/skillsbench \
+  --source-path tasks/edit-pdf \
   --agent gemini \
   --model gemini-3.1-pro-preview \
   --backend docker
 
-# Single task with skills mounted
-GEMINI_API_KEY=... bench run tasks/pdf-fix \
+# Single task from local path
+GEMINI_API_KEY=... bench run tasks/edit-pdf \
   --agent gemini \
   --model gemini-3.1-pro-preview \
   --backend daytona \
-  --skills-dir tasks/pdf-fix/environment/skills \
+  --skills-dir tasks/edit-pdf/environment/skills \
   --ae BENCHFLOW_SKILL_NUDGE=name
 
-# A whole batch with concurrency
-GEMINI_API_KEY=... bench eval create -t benchmarks/skillsbench/tasks -a gemini \
-    -m gemini-3.1-pro-preview -e daytona -c 32
+# A whole batch from YAML config
+bench eval create -f benchmarks/skillsbench-claude-glm51.yaml
+
+# Batch from remote repo with concurrency
+GEMINI_API_KEY=... bench eval create \
+    --source-repo benchflow-ai/skillsbench --source-path tasks \
+    -a gemini -m gemini-3.1-pro-preview -e daytona -c 32
 
 # List the registered agents
 bench agent list
 ```
 
-`bench run <task>` is the direct path for one task. `bench eval create -t
-<tasks-dir>` runs once on a single task or batches a parent directory containing
+`bench run <task>` is the direct path for one local task. `bench eval create
+--source-repo <org/repo> --source-path <subpath>` fetches from a remote repo.
+`bench eval create -t <tasks-dir>` batches a local parent directory containing
 multiple `task.toml`-bearing subdirectories. Results land under
 `jobs/<job-name>/<trial-name>/` — `result.json` for the verifier output,
 `trajectory/acp_trajectory.jsonl` for the full agent trace.
@@ -116,10 +123,10 @@ The CLI is a thin shim over the Python API. For programmatic use:
 ```python
 import benchflow as bf
 from benchflow.trial import TrialConfig, Scene
-from pathlib import Path
+from benchflow.task_download import resolve_source
 
 config = TrialConfig(
-    task_path=Path("benchmarks/skillsbench/tasks/regex-log"),
+    task_path=resolve_source("benchflow-ai/skillsbench", path="tasks/edit-pdf"),
     scenes=[Scene.single(agent="gemini", model="gemini-3.1-pro-preview")],
     environment="docker",
 )
@@ -134,7 +141,6 @@ print(result.n_tool_calls)
 
 | If you want to… | Read |
 |------------------|------|
-| Run an existing benchmark (SkillsBench, ProgramBench, etc.) | [`running-benchmarks.md`](./running-benchmarks.md) |
 | Understand the model — Trial, Scene, Role, Verifier | [`concepts.md`](./concepts.md) |
 | Author a task | [`task-authoring.md`](./task-authoring.md) |
 | Run multi-agent patterns (coder/reviewer, simulated user, BYOS) | [`use-cases.md`](./use-cases.md) |

@@ -19,7 +19,7 @@ from benchflow import SDK
 async def main():
     sdk = SDK()
     result = await sdk.run(
-        task_path="benchmarks/skillsbench/tasks/log-summary-date-ranges",
+        task_path="harbor-framework/terminal-bench-2/log-summary-date-ranges",
         agent="claude-agent-acp",
         model="claude-haiku-4-5-20251001",
         prompts=[None],
@@ -43,7 +43,7 @@ Create a 5-task subset directory first, then run as a Job:
 mkdir -p dogfood/tb2-subset
 cd dogfood/tb2-subset
 for task in log-summary-date-ranges chess-best-move cancel-async-tasks break-filter-js-from-html circuit-fibsqrt; do
-    ln -sf "../../benchmarks/skillsbench/tasks/$task" "$task"
+    ln -sf "../../harbor-framework/terminal-bench-2/$task" "$task"
 done
 cd ../..
 ```

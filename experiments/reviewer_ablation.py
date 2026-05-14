@@ -10,6 +10,7 @@ Usage:
 
 Results written to experiments/ablation-results.csv
 """
+
 import asyncio
 import csv
 import json
@@ -44,11 +45,26 @@ MODEL = os.environ.get("ABLATION_MODEL", "gemini-3.1-flash-lite-preview")
 BACKEND = os.environ.get("ABLATION_BACKEND", "daytona")
 AGENT = os.environ.get("ABLATION_AGENT", "gemini")
 
-TB2_ROOT = Path(__file__).resolve().parents[1] / ".ref" / "terminal-bench-2"
-TB2_TASKS = sorted([
-    d.name for d in TB2_ROOT.iterdir()
-    if d.is_dir() and (d / "task.toml").exists()
-])
+_tb2_root: Path | None = None
+
+
+def get_tb2_root() -> Path:
+    """Lazily resolve terminal-bench-2 tasks (avoids network I/O at import time)."""
+    global _tb2_root
+    if _tb2_root is None:
+        from benchflow.task_download import resolve_source
+
+        _tb2_root = resolve_source("harbor-framework/terminal-bench-2")
+    return _tb2_root
+
+
+def get_tb2_tasks() -> list[str]:
+    """Return sorted list of task names in terminal-bench-2."""
+    root = get_tb2_root()
+    return sorted(
+        d.name for d in root.iterdir() if d.is_dir() and (d / "task.toml").exists()
+    )
+
 
 RESULTS_FILE = Path(__file__).parent / "ablation-results.csv"
 JOBS_DIR = Path("/tmp/ablation-jobs")
@@ -122,25 +138,37 @@ async def _ensure_agent(env, trial_dir: Path) -> None:
         agent_config = AGENTS.get(AGENT)
         await install_agent(env, AGENT, trial_dir)
         if agent_config:
-            await write_credential_files(env, AGENT, {}, agent_config, MODEL, "/home/agent")
+            await write_credential_files(
+                env, AGENT, {}, agent_config, MODEL, "/home/agent"
+            )
             await upload_subscription_auth(env, AGENT, "/home/agent")
         await setup_sandbox_user(env, sandbox_user="agent", workspace="/app")
         _agent_installed.add(AGENT)
 
 
-async def _run_acp(env, prompt: str, trial_dir: Path, timeout: int = 600) -> tuple[int, int]:
+async def _run_acp(
+    env, prompt: str, trial_dir: Path, timeout: int = 600
+) -> tuple[int, int]:
     """Run one ACP agent session. Returns (n_tool_calls, elapsed_sec)."""
     launch_cmd = AGENT_LAUNCH.get(AGENT, AGENT)
     agent_env = resolve_agent_env(AGENT, MODEL, None)
     agent_env.pop("_BENCHFLOW_SUBSCRIPTION_AUTH", None)
     t0 = time.time()
     acp_client, session, _ = await connect_acp(
-        env=env, agent=AGENT, agent_launch=launch_cmd, agent_env=agent_env,
-        sandbox_user="agent", model=MODEL, trial_dir=trial_dir,
-        environment=BACKEND, agent_cwd="/app",
+        env=env,
+        agent=AGENT,
+        agent_launch=launch_cmd,
+        agent_env=agent_env,
+        sandbox_user="agent",
+        model=MODEL,
+        trial_dir=trial_dir,
+        environment=BACKEND,
+        agent_cwd="/app",
     )
     try:
-        _, n_tools = await execute_prompts(acp_client, session, [prompt], timeout=timeout)
+        _, n_tools = await execute_prompts(
+            acp_client, session, [prompt], timeout=timeout
+        )
     finally:
         with contextlib.suppress(Exception):
             await acp_client.close()
@@ -175,11 +203,21 @@ async def run_baseline(task_path: Path, task_name: str) -> dict:
         )
         elapsed = int(time.time() - t0)
         reward = (result.rewards or {}).get("reward", 0.0)
-        return {"reward": reward, "wall_sec": elapsed, "tool_calls": result.n_tool_calls,
-                "rounds": 0, "error": result.error}
+        return {
+            "reward": reward,
+            "wall_sec": elapsed,
+            "tool_calls": result.n_tool_calls,
+            "rounds": 0,
+            "error": result.error,
+        }
     except Exception as e:
-        return {"reward": 0.0, "wall_sec": int(time.time() - t0), "tool_calls": 0,
-                "rounds": 0, "error": str(e)[:100]}
+        return {
+            "reward": 0.0,
+            "wall_sec": int(time.time() - t0),
+            "tool_calls": 0,
+            "rounds": 0,
+            "error": str(e)[:100],
+        }
 
 
 async def run_reviewer(task_path: Path, task_name: str, condition: str) -> dict:
@@ -187,7 +225,9 @@ async def run_reviewer(task_path: Path, task_name: str, condition: str) -> dict:
     trial_dir = JOBS_DIR / f"{condition}/{task_name}"
     trial_dir.mkdir(parents=True, exist_ok=True)
     task = Task(task_path)
-    env = _create_environment(BACKEND, task, task_path, f"{condition}-{task_name}", None)
+    env = _create_environment(
+        BACKEND, task, task_path, f"{condition}-{task_name}", None
+    )
     t0 = time.time()
     total_tools = 0
     try:
@@ -216,7 +256,9 @@ async def run_reviewer(task_path: Path, task_name: str, condition: str) -> dict:
         total_tools += n_tools
 
         # Read reviewer's outbox
-        feedback_result = await env.exec("cat /app/.outbox/coder.json 2>/dev/null || echo '{}'")
+        feedback_result = await env.exec(
+            "cat /app/.outbox/coder.json 2>/dev/null || echo '{}'"
+        )
         feedback = "{}"
         try:
             feedback_data = json.loads(feedback_result.stdout or "{}")
@@ -226,7 +268,9 @@ async def run_reviewer(task_path: Path, task_name: str, condition: str) -> dict:
         await env.exec("rm -rf /app/.outbox/*")
 
         # Phase 3: Coder revision
-        revision_prompt = CODER_REVISION.format(instruction=instruction, feedback=feedback)
+        revision_prompt = CODER_REVISION.format(
+            instruction=instruction, feedback=feedback
+        )
         n_tools, _ = await _run_acp(env, revision_prompt, trial_dir)
         total_tools += n_tools
 
@@ -234,17 +278,29 @@ async def run_reviewer(task_path: Path, task_name: str, condition: str) -> dict:
         rewards = await _verify(env, task_path, trial_dir)
         elapsed = int(time.time() - t0)
         reward = (rewards or {}).get("reward", 0.0)
-        return {"reward": reward, "wall_sec": elapsed, "tool_calls": total_tools,
-                "rounds": 1, "error": None}
+        return {
+            "reward": reward,
+            "wall_sec": elapsed,
+            "tool_calls": total_tools,
+            "rounds": 1,
+            "error": None,
+        }
     except Exception as e:
-        return {"reward": 0.0, "wall_sec": int(time.time() - t0), "tool_calls": total_tools,
-                "rounds": 1, "error": str(e)[:100]}
+        return {
+            "reward": 0.0,
+            "wall_sec": int(time.time() - t0),
+            "tool_calls": total_tools,
+            "rounds": 1,
+            "error": str(e)[:100],
+        }
     finally:
         _agent_installed.discard(AGENT)
         await env.stop(delete=True)
 
 
-async def _run_task_all_conditions(benchmark: str, task_dir_root: Path, task_name: str) -> list[dict]:
+async def _run_task_all_conditions(
+    benchmark: str, task_dir_root: Path, task_name: str
+) -> list[dict]:
     """Run all 3 conditions for one task, sequentially. Returns list of row dicts."""
     task_path = task_dir_root / task_name
     if not (task_path / "task.toml").exists():
@@ -257,7 +313,9 @@ async def _run_task_all_conditions(benchmark: str, task_dir_root: Path, task_nam
         ("reviewer", lambda tp, tn: run_reviewer(tp, tn, "reviewer")),
         ("reviewer+spec", lambda tp, tn: run_reviewer(tp, tn, "reviewer+spec")),
     ]:
-        logger.info(f"\n{'='*60}\n{benchmark} / {task_name} / {condition}\n{'='*60}")
+        logger.info(
+            f"\n{'=' * 60}\n{benchmark} / {task_name} / {condition}\n{'=' * 60}"
+        )
         result = await runner(task_path, task_name)
         row = {
             "benchmark": benchmark,
@@ -268,14 +326,18 @@ async def _run_task_all_conditions(benchmark: str, task_dir_root: Path, task_nam
             **result,
         }
         rows.append(row)
-        logger.info(f"  → reward={row['reward']} wall={row['wall_sec']}s tools={row['tool_calls']} err={row['error']}")
+        logger.info(
+            f"  → reward={row['reward']} wall={row['wall_sec']}s tools={row['tool_calls']} err={row['error']}"
+        )
     return rows
 
 
 _PHASE_SEM = asyncio.Semaphore(int(os.environ.get("ABLATION_CONCURRENCY", "64")))
 
 
-async def run_experiment(benchmark: str, task_dir_root: Path, task_names: list[str]) -> list[dict]:
+async def run_experiment(
+    benchmark: str, task_dir_root: Path, task_names: list[str]
+) -> list[dict]:
     """Run tasks with bounded concurrency to avoid Daytona sandbox contention."""
 
     async def _bounded(tn: str) -> list[dict]:
@@ -295,8 +357,18 @@ async def run_experiment(benchmark: str, task_dir_root: Path, task_names: list[s
 
 
 def _write_csv(rows: list[dict]) -> None:
-    cols = ["benchmark", "task", "condition", "model", "backend", "rounds",
-            "reward", "wall_sec", "tool_calls", "error"]
+    cols = [
+        "benchmark",
+        "task",
+        "condition",
+        "model",
+        "backend",
+        "rounds",
+        "reward",
+        "wall_sec",
+        "tool_calls",
+        "error",
+    ]
     with open(RESULTS_FILE, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=cols, extrasaction="ignore")
         w.writeheader()
@@ -306,20 +378,27 @@ def _write_csv(rows: list[dict]) -> None:
 async def main() -> None:
     JOBS_DIR.mkdir(parents=True, exist_ok=True)
 
-    logger.info(f"=== FOLLOWUP-BENCH: {len(TB2_TASKS)} TB2 tasks, agent={AGENT}, model={MODEL} ===")
-    all_rows = await run_experiment("tb2", TB2_ROOT, TB2_TASKS)
+    tb2_tasks = get_tb2_tasks()
+    logger.info(
+        f"=== FOLLOWUP-BENCH: {len(tb2_tasks)} TB2 tasks, agent={AGENT}, model={MODEL} ==="
+    )
+    all_rows = await run_experiment("tb2", get_tb2_root(), tb2_tasks)
 
     _print_table(all_rows)
     logger.info(f"\nResults: {RESULTS_FILE}")
 
 
 def _print_table(rows: list[dict]) -> None:
-    print(f"\n{'benchmark':<12} {'task':<30} {'condition':<16} {'reward':>7} {'wall_sec':>9} {'tools':>6} {'err'}")
+    print(
+        f"\n{'benchmark':<12} {'task':<30} {'condition':<16} {'reward':>7} {'wall_sec':>9} {'tools':>6} {'err'}"
+    )
     print("-" * 95)
     for r in rows:
         err = r.get("error", "")
         err_short = (err[:20] + "…") if err and len(err) > 20 else (err or "")
-        print(f"{r['benchmark']:<12} {r['task']:<30} {r['condition']:<16} {r['reward']:>7.1f} {r['wall_sec']:>8}s {r['tool_calls']:>6} {err_short}")
+        print(
+            f"{r['benchmark']:<12} {r['task']:<30} {r['condition']:<16} {r['reward']:>7.1f} {r['wall_sec']:>8}s {r['tool_calls']:>6} {err_short}"
+        )
 
 
 if __name__ == "__main__":
