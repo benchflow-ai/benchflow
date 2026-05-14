@@ -2,7 +2,9 @@
 # For true apples-to-apples parity: same agent loop, same tools, same model.
 #
 # Harvey LAB tasks require conversion before running.
-# Use run_harvey_lab.py which handles download + conversion.
+# Use run_harvey_lab.py which handles download + conversion automatically.
+tasks_dir: .cache/harvey-lab-benchflow
+
 agent: harvey-lab-harness
 model: gemini/gemini-3.1-flash-lite-preview
 environment: docker
