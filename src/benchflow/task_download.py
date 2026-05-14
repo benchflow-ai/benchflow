@@ -166,8 +166,14 @@ def _ensure_generated(benchmark: str) -> Path:
     staging = root / "benchmarks" / benchmark / "_gen_staging"
     try:
         subprocess.run(
-            ["git", "clone", "--depth", "1",
-             f"https://github.com/{repo}.git", str(clone_dir)],
+            [
+                "git",
+                "clone",
+                "--depth",
+                "1",
+                f"https://github.com/{repo}.git",
+                str(clone_dir),
+            ],
             check=True,
         )
         pb_tasks = clone_dir / "src" / "programbench" / "data" / "tasks"
