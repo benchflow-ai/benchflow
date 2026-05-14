@@ -24,12 +24,22 @@ logger = logging.getLogger(__name__)
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[0].parent / "src"))
 
-from benchflow.task_download import resolve_source
 from benchflow.trial import Trial, TrialConfig
 
-TASK = resolve_source("harbor-framework/terminal-bench-2", path="regex-log")
 AGENT = os.environ.get("ABLATION_AGENT", "gemini")
 MODEL = os.environ.get("ABLATION_MODEL", "gemini-3.1-flash-lite-preview")
+
+_task: Path | None = None
+
+
+def get_task() -> Path:
+    """Lazily resolve the task path (avoids network I/O at import time)."""
+    global _task
+    if _task is None:
+        from benchflow.task_download import resolve_source
+
+        _task = resolve_source("harbor-framework/terminal-bench-2", path="regex-log")
+    return _task
 
 
 async def test_single_agent():
@@ -37,7 +47,7 @@ async def test_single_agent():
     logger.info("=== TEST 1: Single-agent baseline ===")
     trial = await Trial.create(
         TrialConfig(
-            task_path=TASK,
+            task_path=get_task(),
             agent=AGENT,
             model=MODEL,
             environment="daytona",
@@ -62,7 +72,7 @@ async def test_two_stage_byos():
 
     trial = await Trial.create(
         TrialConfig(
-            task_path=TASK,
+            task_path=get_task(),
             agent=AGENT,
             model=MODEL,
             environment="daytona",
@@ -99,7 +109,7 @@ async def test_followup_bench():
     """Scene 3: coder → reviewer → revision. Three turns, same sandbox."""
     logger.info("=== TEST 3: Followup-bench (coder → reviewer → revision) ===")
 
-    instruction = (TASK / "instruction.md").read_text()
+    instruction = (get_task() / "instruction.md").read_text()
 
     coder_prompt = f"""{instruction}
 
@@ -114,7 +124,7 @@ Write your review to /app/.outbox/coder.json:
 
     trial = await Trial.create(
         TrialConfig(
-            task_path=TASK,
+            task_path=get_task(),
             agent=AGENT,
             model=MODEL,
             environment="daytona",

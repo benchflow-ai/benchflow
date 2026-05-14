@@ -42,10 +42,19 @@ logger = logging.getLogger(__name__)
 sys.path.insert(0, str(Path(__file__).resolve().parents[0].parent / "src"))
 
 import benchflow as bf
-from benchflow.task_download import resolve_source
 from benchflow.trial import Scene, TrialConfig
 
-SWEBENCH_PRO_ROOT = resolve_source("benchflow-ai/swebenchpro")
+_swebench_pro_root: Path | None = None
+
+
+def get_swebench_pro_root() -> Path:
+    """Lazily resolve swebenchpro tasks (avoids network I/O at import time)."""
+    global _swebench_pro_root
+    if _swebench_pro_root is None:
+        from benchflow.task_download import resolve_source
+
+        _swebench_pro_root = resolve_source("benchflow-ai/swebenchpro")
+    return _swebench_pro_root
 
 TASKS = [
     "instance_ansible__ansible-0ea40e09d1b35bcb69ff4d9cecf3d0defa4b36e8-v30a923fb5c164d6cd18280c02422f75e611e8fb2",
@@ -180,7 +189,7 @@ async def main():
     parser.add_argument("--concurrency", type=int, default=2)
     args = parser.parse_args()
 
-    task_paths = [SWEBENCH_PRO_ROOT / t for t in TASKS]
+    task_paths = [get_swebench_pro_root() / t for t in TASKS]
     missing = [p for p in task_paths if not p.exists()]
     if missing:
         logger.error(f"Missing tasks: {[p.name for p in missing]}")

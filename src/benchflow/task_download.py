@@ -83,6 +83,8 @@ def _clone_repo(org: str, repo: str, ref: str | None = None) -> Path:
     clone_tmp = cache.parent / f"_{repo}_clone"
 
     try:
+        if clone_tmp.exists():
+            shutil.rmtree(clone_tmp)
         cmd = ["git", "clone", "--depth", "1"]
         if ref:
             cmd.extend(["--branch", ref])

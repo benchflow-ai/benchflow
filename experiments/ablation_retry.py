@@ -24,7 +24,7 @@ sys.path.insert(0, str(_root / "src"))
 sys.path.insert(0, str(_root))
 
 from experiments.reviewer_ablation import (
-    TB2_ROOT,
+    get_tb2_root,
     run_baseline,
     run_reviewer,
 )
@@ -142,7 +142,7 @@ def _append_csv(row: dict) -> None:
 
 
 async def _run_one(task_name: str, condition: str) -> dict:
-    task_path = TB2_ROOT / task_name
+    task_path = get_tb2_root() / task_name
     logger.info(f"RETRY  {task_name} / {condition}")
 
     if condition == "baseline":

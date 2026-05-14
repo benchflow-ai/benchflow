@@ -45,12 +45,25 @@ MODEL = os.environ.get("ABLATION_MODEL", "gemini-3.1-flash-lite-preview")
 BACKEND = os.environ.get("ABLATION_BACKEND", "daytona")
 AGENT = os.environ.get("ABLATION_AGENT", "gemini")
 
-from benchflow.task_download import resolve_source
+_tb2_root: Path | None = None
 
-TB2_ROOT = resolve_source("harbor-framework/terminal-bench-2")
-TB2_TASKS = sorted(
-    [d.name for d in TB2_ROOT.iterdir() if d.is_dir() and (d / "task.toml").exists()]
-)
+
+def get_tb2_root() -> Path:
+    """Lazily resolve terminal-bench-2 tasks (avoids network I/O at import time)."""
+    global _tb2_root
+    if _tb2_root is None:
+        from benchflow.task_download import resolve_source
+
+        _tb2_root = resolve_source("harbor-framework/terminal-bench-2")
+    return _tb2_root
+
+
+def get_tb2_tasks() -> list[str]:
+    """Return sorted list of task names in terminal-bench-2."""
+    root = get_tb2_root()
+    return sorted(
+        d.name for d in root.iterdir() if d.is_dir() and (d / "task.toml").exists()
+    )
 
 RESULTS_FILE = Path(__file__).parent / "ablation-results.csv"
 JOBS_DIR = Path("/tmp/ablation-jobs")
@@ -364,10 +377,11 @@ def _write_csv(rows: list[dict]) -> None:
 async def main() -> None:
     JOBS_DIR.mkdir(parents=True, exist_ok=True)
 
+    tb2_tasks = get_tb2_tasks()
     logger.info(
-        f"=== FOLLOWUP-BENCH: {len(TB2_TASKS)} TB2 tasks, agent={AGENT}, model={MODEL} ==="
+        f"=== FOLLOWUP-BENCH: {len(tb2_tasks)} TB2 tasks, agent={AGENT}, model={MODEL} ==="
     )
-    all_rows = await run_experiment("tb2", TB2_ROOT, TB2_TASKS)
+    all_rows = await run_experiment("tb2", get_tb2_root(), tb2_tasks)
 
     _print_table(all_rows)
     logger.info(f"\nResults: {RESULTS_FILE}")
