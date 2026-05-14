@@ -51,10 +51,30 @@ def _cache_dir() -> Path:
 def _clone_repo(org: str, repo: str, ref: str | None = None) -> Path:
     """Clone a GitHub repo into the cache if not already present.
 
+    If the cache exists but is on a different ref, fetches and checks out
+    the requested ref.
+
     Returns the path to the cloned repo root.
     """
     cache = _cache_dir() / org / repo
     if cache.exists() and (cache / ".git").exists():
+        if ref:
+            # Ensure the cached clone is on the requested ref.
+            current = subprocess.run(
+                ["git", "-C", str(cache), "rev-parse", "--abbrev-ref", "HEAD"],
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            if current != ref:
+                logger.info("Switching %s/%s from %s to %s", org, repo, current, ref)
+                subprocess.run(
+                    ["git", "-C", str(cache), "fetch", "--depth", "1", "origin", ref],
+                    check=True,
+                )
+                subprocess.run(
+                    ["git", "-C", str(cache), "checkout", ref],
+                    check=True,
+                )
         return cache
 
     url = f"https://github.com/{org}/{repo}.git"
