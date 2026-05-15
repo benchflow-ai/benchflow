@@ -47,10 +47,18 @@ and runs the evaluation.
 Use the CLI flags for ad-hoc runs without a config file:
 
 ```bash
-# Harvey LAB — all converted tasks
+# Harvey LAB — single task (pre-converted, from benchflow-ai/benchmarks)
 bench eval create \
-  --source-repo harveyai/harvey-labs \
-  --source-path tasks \
+  --source-repo benchflow-ai/benchmarks \
+  --source-path datasets/harvey-lab/tasks/corporate-ma-analyze-cim-deal-teaser-scenario-01 \
+  -a gemini \
+  -m gemini-3.1-flash-lite-preview \
+  -e docker
+
+# Harvey LAB — all pre-converted tasks
+bench eval create \
+  --source-repo benchflow-ai/benchmarks \
+  --source-path datasets/harvey-lab/tasks \
   -a gemini \
   -m gemini-3.1-flash-lite-preview \
   -e docker \
@@ -73,6 +81,10 @@ bench eval create \
   -e daytona \
   -c 32
 ```
+
+> **Note:** Harvey LAB task names in `benchflow-ai/benchmarks` are flattened with
+> hyphens (e.g. `corporate-ma-analyze-cim-deal-teaser-scenario-01`), not nested
+> paths like the original repo (`corporate-ma/analyze-cim-deal-teaser/scenario-01`).
 
 ### Option 3: Python API
 
@@ -158,9 +170,18 @@ python benchmarks/harvey-lab/benchflow.py \
 ### Using `bench eval create` for a single task
 
 ```bash
+# SkillsBench single task
 bench eval create \
   --source-repo benchflow-ai/skillsbench \
   --source-path tasks/edit-pdf \
+  -a gemini \
+  -m gemini-3.1-flash-lite-preview \
+  -e docker
+
+# Harvey LAB single task (pre-converted)
+bench eval create \
+  --source-repo benchflow-ai/benchmarks \
+  --source-path datasets/harvey-lab/tasks/corporate-ma-analyze-cim-deal-teaser-scenario-01 \
   -a gemini \
   -m gemini-3.1-flash-lite-preview \
   -e docker
