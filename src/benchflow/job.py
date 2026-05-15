@@ -222,7 +222,7 @@ class Job:
         print(result.score)
 
     Or from YAML:
-        job = Job.from_yaml("benchmarks/programbench-gemini-flash-lite.yaml")
+        job = Job.from_yaml("benchmarks/programbench/programbench-gemini-flash-lite.yaml")
         result = await job.run()
     """
 

@@ -45,7 +45,7 @@ max_retries: 1
 Then run it:
 
 ```bash
-python benchmarks/run_programbench.py my-benchmark-run.yaml
+python benchmarks/programbench/run_programbench.py my-benchmark-run.yaml
 ```
 
 Or use the Python API directly:
@@ -118,7 +118,7 @@ bench run benchmarks/programbench/tasks/abishekvashok__cmatrix.5c082c6 \
   --agent gemini --model gemini-3.1-flash-lite-preview --backend docker
 
 # Batch run with config
-python benchmarks/run_programbench.py benchmarks/programbench-gemini-flash-lite.yaml
+python benchmarks/programbench/run_programbench.py benchmarks/programbench/programbench-gemini-flash-lite.yaml
 ```
 
 ### Oracle verification

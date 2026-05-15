@@ -25,7 +25,7 @@ python -m benchmarks.programbench.main \
     --task-ids jqlang__jq.b33a763 burntsushi__ripgrep.3b7fd44
 
 # Run via BenchFlow
-python benchmarks/run_programbench.py benchmarks/programbench-gemini-flash-lite.yaml
+python benchmarks/programbench/run_programbench.py benchmarks/programbench/programbench-gemini-flash-lite.yaml
 ```
 
 ## Format comparison: ProgramBench → BenchFlow
@@ -111,7 +111,7 @@ python benchmarks/run_programbench.py benchmarks/programbench-gemini-flash-lite.
 
 ## Configuration
 
-See `benchmarks/programbench-gemini-flash-lite.yaml` for the default
+See `benchmarks/programbench/programbench-gemini-flash-lite.yaml` for the default
 config. Key fields:
 
 | Field | Description |

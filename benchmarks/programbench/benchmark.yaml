@@ -1,0 +1,99 @@
+# benchmark.yaml — standard benchmark descriptor for BenchFlow.
+#
+# Every benchmark in benchmarks/<name>/ ships this file. It declares what
+# the benchmark is, where it comes from, how tasks are verified, and
+# parity validation results. Job configs (how to *run* the benchmark)
+# live in separate YAML files.
+
+name: programbench
+description: "ProgramBench — 201 program-reconstruction tasks across 7 languages (C, Rust, Go, C++, Java, Haskell, Bash)"
+url: https://programbench.com
+paper: https://arxiv.org/abs/2501.15705
+repo: https://github.com/facebookresearch/programbench
+author: Meta FAIR
+converted_by: BenchFlow
+
+# ── Tasks ────────────────────────────────────────────────────────────
+tasks:
+  count: 201
+  languages: [C, Rust, Go, C++, Java, Haskell, Bash]
+  difficulty_levels: [easy, medium, hard]
+  splits:
+    main: 201               # all tasks (default)
+    parity-pipeline: 10     # pipeline parity validation set
+    parity-agent: 5         # agent parity validation set
+
+# ── Conversion ───────────────────────────────────────────────────────
+# How raw benchmark data is converted to BenchFlow task format.
+conversion:
+  script: benchflow.py       # CLI: --output-dir, --limit, --overwrite, --task-ids
+  generator: main.py         # python -m benchmarks.programbench.main --output-dir ...
+  source_format: task.yaml + Docker images
+  has_oracle_solutions: true
+  oracle_notes: >
+    The oracle is the original source code at the specified commit. The task
+    asks agents to reconstruct a program from its compiled binary — the gold
+    answer is the upstream repo source. solve.sh clones the original repo and
+    runs compile.sh.
+  docker_image_pinned: false  # uses upstream programbench/<repo>:task images
+
+# ── Verification ─────────────────────────────────────────────────────
+verification:
+  method: deterministic_unit_tests
+  reward: partial_credit      # passed_tests / total_tests
+  aggregation: per-test       # each test scored individually
+  test_source: "HuggingFace (programbench/ProgramBench-Tests)"
+  anti_cheat: true            # pre-built binaries removed before compile
+
+# ── Environment ──────────────────────────────────────────────────────
+environment:
+  base_images: "programbench/<repo>:task"
+  platform: linux/amd64
+  allow_internet: false
+  cpus: 2
+  memory_mb: 4096
+  storage_mb: 20480
+
+# ── Parity ───────────────────────────────────────────────────────────
+# Results from validating that the conversion preserves benchmark semantics.
+parity:
+  pipeline:
+    description: "Verifier parity — dummy stub through full pipeline vs ProgramBench tests.json"
+    tasks_tested: 10
+    exact_match: 8
+    minor_variance: 2
+    variance_notes: "<0.5% due to pytest-xdist worker crashes"
+  agent:
+    description: "Agent parity — same submission through both ProgramBench eval CLI and BenchFlow verifier"
+    agent: "gemini (single-shot) + oracle (gold source)"
+    model: gemini-3.1-flash-lite-preview
+    tasks_tested: 5
+    exact_match: 4
+    minor_variance: 1
+    variance_notes: "chroma (Go) — 1.3% delta from test timing nondeterminism"
+    results:
+      - task: cmatrix (C)
+        submission: gemini_agent
+        pb_reward: 0.3758
+        bf_reward: 0.3758
+        delta: 0.0000
+      - task: zoxide (Rust)
+        submission: oracle
+        pb_reward: 1.0000
+        bf_reward: 1.0000
+        delta: 0.0000
+      - task: shellharden (Rust)
+        submission: oracle
+        pb_reward: 0.9992
+        bf_reward: 0.9992
+        delta: 0.0000
+      - task: ditaa (Java)
+        submission: oracle
+        pb_reward: 0.0088
+        bf_reward: 0.0088
+        delta: 0.0000
+      - task: chroma (Go)
+        submission: oracle
+        pb_reward: 0.0000
+        bf_reward: 0.0132
+        delta: 0.0132
