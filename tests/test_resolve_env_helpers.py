@@ -60,7 +60,7 @@ class TestAutoInheritEnv:
         assert "ANTHROPIC_API_KEY" not in env
 
     def test_inherits_openai_base_url(self, monkeypatch):
-        """Guards fix for skillsbench#817: OPENAI_BASE_URL must be inherited.
+        """Guards fix from PR #255: OPENAI_BASE_URL must be inherited.
 
         codex-acp and opencode map BENCHFLOW_PROVIDER_BASE_URL → OPENAI_BASE_URL,
         but OPENAI_BASE_URL was missing from auto_inherit_env's key set, so
