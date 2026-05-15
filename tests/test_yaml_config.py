@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from benchflow.job import Job
+from benchflow.rollouts.yaml import rollout_config_from_dict
 from benchflow.trial_yaml import trial_config_from_dict
 
 
@@ -286,7 +287,7 @@ sandbox_user: testuser
 
 
 def test_trial_yaml_parses_canonical_scene_role_fields() -> None:
-    cfg = trial_config_from_dict(
+    cfg = rollout_config_from_dict(
         {
             "task_dir": "tasks",
             "scenes": [
@@ -319,3 +320,10 @@ def test_trial_yaml_parses_canonical_scene_role_fields() -> None:
     assert role.capabilities == ["agent-as-tool"]
     assert role.instruction == "Write the solution."
     assert role.tools == ["bash"]
+
+
+def test_trial_yaml_compat_delegates_to_rollout_loader() -> None:
+    raw = {"task_dir": "tasks", "agent": "gemini"}
+    compat_cfg = trial_config_from_dict(raw)
+    rollout_cfg = rollout_config_from_dict(raw)
+    assert compat_cfg == rollout_cfg

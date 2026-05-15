@@ -15,6 +15,7 @@ from benchflow.rollouts.config import (
     Turn,
 )
 from benchflow.rollouts.result import RolloutResult, TrajectorySource
+from benchflow.rollouts.yaml import rollout_config_from_dict, rollout_config_from_yaml
 
 __all__ = [
     "GENERATED_SKILLS_ROOT",
@@ -26,4 +27,6 @@ __all__ = [
     "Scene",
     "TrajectorySource",
     "Turn",
+    "rollout_config_from_dict",
+    "rollout_config_from_yaml",
 ]

@@ -48,6 +48,7 @@ from benchflow.job import Job, JobConfig, JobResult, RetryConfig
 from benchflow.metrics import BenchmarkMetrics, collect_metrics
 from benchflow.models import AgentInstallError, AgentTimeoutError, RunResult
 from benchflow.rollouts import Role, RolloutConfig, RolloutResult, Scene, Turn
+from benchflow.rollouts.yaml import rollout_config_from_yaml
 from benchflow.runtime import (
     Agent,
     Environment,
@@ -126,6 +127,7 @@ __all__ = [
     "TrialConfig",
     "Turn",
     "trial_config_from_yaml",
+    "rollout_config_from_yaml",
     # User abstraction (progressive disclosure)
     "BaseUser",
     "FunctionUser",
