@@ -93,7 +93,7 @@ import logging
 import shlex
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import benchflow._harbor as harbor_compat
 from benchflow._env_setup import (
@@ -515,4 +515,4 @@ class SDK:
             skill_creator_dir=skill_creator_dir,
             self_gen_no_internet=self_gen_no_internet,
         )
-        return await run_rollout(config)
+        return cast(RunResult, await run_rollout(config))

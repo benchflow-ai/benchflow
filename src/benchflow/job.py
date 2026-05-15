@@ -76,6 +76,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import cast
 
 import yaml
 
@@ -477,7 +478,7 @@ class Job:
             skill_creator_dir=cfg.skill_creator_dir,
             self_gen_no_internet=cfg.self_gen_no_internet,
         )
-        return await self._run_rollout(rollout_config)
+        return cast(RunResult, await self._run_rollout(rollout_config))
 
     async def _run_task(self, task_dir: Path) -> RunResult:
         """Run a single task with retries."""

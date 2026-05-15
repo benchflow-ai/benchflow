@@ -442,8 +442,8 @@ def _patch_harbor_dind() -> None:
         return env
 
     # Monkey-patch Harbor's DockerEnvironmentEnvVars to rewrite host paths
-    # for DinD nesting. ty flags this as an implicit signature shadowing.
-    DockerEnvironmentEnvVars.to_env_dict = _patched  # ty: ignore[invalid-assignment]
+    # for DinD nesting.
+    DockerEnvironmentEnvVars.to_env_dict = _patched
 
 
 def _create_environment(

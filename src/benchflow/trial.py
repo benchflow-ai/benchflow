@@ -235,7 +235,7 @@ class TrialConfig(RolloutConfig):
 class Trial:
     """Decomposed trial lifecycle with independently-callable phases."""
 
-    def __init__(self, config: TrialConfig) -> None:
+    def __init__(self, config: RolloutConfig) -> None:
         self._config = config
         self._phase = "created"
 

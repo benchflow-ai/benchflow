@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import Any, cast
 
 
 @dataclass(frozen=True)
@@ -54,8 +54,9 @@ def rewards_from_verifier_dict(
         for i, item in enumerate(rubric):
             if not isinstance(item, dict):
                 continue
-            score = float(item.get("score", 0.0))
-            name = item.get("name", f"rubric_{i}")
+            rubric_item = cast(dict[str, Any], item)
+            score = float(rubric_item.get("score", 0.0))
+            name = rubric_item.get("name", f"rubric_{i}")
             events.append(
                 RewardEvent(
                     ts=ts,
@@ -64,7 +65,11 @@ def rewards_from_verifier_dict(
                     value=score,
                     tag=str(name),
                     step_index=i,
-                    meta={k: v for k, v in item.items() if k not in ("score", "name")},
+                    meta={
+                        k: v
+                        for k, v in rubric_item.items()
+                        if k not in ("score", "name")
+                    },
                 )
             )
     scalar = rewards.get("reward")
