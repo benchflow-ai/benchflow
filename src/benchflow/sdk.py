@@ -66,7 +66,11 @@ class SDK:
         agent: str | None = None,
     ) -> list[str]:
         return _resolve_prompts(
-            task_path, prompts, skills_dir=skills_dir, skill_nudge=skill_nudge, agent=agent
+            task_path,
+            prompts,
+            skills_dir=skills_dir,
+            skill_nudge=skill_nudge,
+            agent=agent,
         )
 
     @staticmethod
@@ -132,7 +136,12 @@ class SDK:
         workspace: str | None = None,
     ) -> tuple[dict | None, str | None]:
         return await _verify_rollout(
-            env, task, trial_paths, timing, sandbox_user=sandbox_user, workspace=workspace
+            env,
+            task,
+            trial_paths,
+            timing,
+            sandbox_user=sandbox_user,
+            workspace=workspace,
         )
 
     async def run(

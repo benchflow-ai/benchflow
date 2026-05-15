@@ -224,7 +224,9 @@ async def test_connect_as_applies_hard_web_policy_to_role_agent(tmp_path):
         ),
         patch("benchflow.rollout.write_credential_files", new=AsyncMock()),
         patch("benchflow.rollout.upload_subscription_auth", new=AsyncMock()),
-        patch("benchflow.rollout.apply_web_tool_policy", new=AsyncMock()) as apply_policy,
+        patch(
+            "benchflow.rollout.apply_web_tool_policy", new=AsyncMock()
+        ) as apply_policy,
         patch("benchflow.rollout.connect_acp", new=AsyncMock()) as connect_acp,
     ):
         connect_acp.return_value = (MagicMock(), MagicMock(), "agent")

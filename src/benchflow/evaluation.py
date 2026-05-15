@@ -402,7 +402,9 @@ class Evaluation:
             return str(candidate) if candidate.is_dir() else None
         return skills_dir
 
-    async def _run_single_task(self, task_dir: Path, cfg: EvaluationConfig) -> RunResult:
+    async def _run_single_task(
+        self, task_dir: Path, cfg: EvaluationConfig
+    ) -> RolloutResult:
         """Execute one rollout via Rollout."""
         from benchflow.rollout import Rollout, RolloutConfig
 

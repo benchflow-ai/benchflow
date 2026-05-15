@@ -462,9 +462,7 @@ def _resolve_prompts(
                                     desc = fm.get("description", "") if fm else ""
                                 except Exception:
                                     pass
-                        skills.append(
-                            {"name": name, "desc": desc, "content": content}
-                        )
+                        skills.append({"name": name, "desc": desc, "content": content})
                 if skills:
                     break
 
@@ -517,8 +515,7 @@ async def _run_oracle(
     if sandbox_user:
         oracle_cmd = "DEBIAN_FRONTEND=noninteractive bash /solution/solve.sh"
         cmd = (
-            f"su -s /bin/bash {shlex.quote(sandbox_user)} "
-            f"-c {shlex.quote(oracle_cmd)}"
+            f"su -s /bin/bash {shlex.quote(sandbox_user)} -c {shlex.quote(oracle_cmd)}"
         )
     else:
         cmd = "bash /solution/solve.sh"
@@ -578,9 +575,7 @@ async def _verify_rollout(
         logger.info(f"Rewards: {rewards}")
     except TimeoutError:
         timing["verifier"] = (datetime.now() - t0).total_seconds()
-        verifier_error = (
-            f"verifier timed out after {task.config.verifier.timeout_sec}s"
-        )
+        verifier_error = f"verifier timed out after {task.config.verifier.timeout_sec}s"
         rewards = None
         logger.error(verifier_error)
     except Exception as e:
@@ -594,6 +589,7 @@ async def _verify_rollout(
 # Apply Harbor DinD patch at import time.
 def _apply_dind_patch() -> None:
     from benchflow._env_setup import _patch_harbor_dind
+
     _patch_harbor_dind()
 
 
