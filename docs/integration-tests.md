@@ -107,9 +107,9 @@ uv run bench eval create -f tests/integration/configs/gemini.yaml
 ## Result Validation
 
 `check_results.py` checks:
-- Every `result.json` has required fields (`task_name`, `agent`, `model`, `rewards`, `timing`)
+- Every `result.json` has required fields (`task_name`, `agent`, `rewards`, `error`, `verifier_error`)
 - No infrastructure errors (sandbox failures vs. task failures)
-- `summary.json` exists with required keys (`total`, `passed`, `failed`, `score`)
+- `summary.json` exists with required keys (`total`, `passed`, `failed`, `errored`, `score`)
 
 ```bash
 # Run validator standalone
