@@ -18,6 +18,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -36,6 +37,8 @@ from benchflow.models import RolloutResult
 RunResult = RolloutResult
 
 logger = logging.getLogger(__name__)
+
+_SENTINEL: Any = object()  # default value for _sdk; tests replace with AsyncMock
 
 
 @dataclass

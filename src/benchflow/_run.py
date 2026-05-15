@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from benchflow.models import RolloutResult
 
@@ -10,7 +10,7 @@ if TYPE_CHECKING:
     from benchflow.rollout import RolloutConfig
 
 
-async def run(config: RolloutConfig | None = None, **kwargs: object) -> RolloutResult:
+async def run(config: RolloutConfig | None = None, **kwargs: Any) -> RolloutResult:
     """Execute a single rollout and return the result.
 
     This is the canonical entry point for running an agent on a task::
@@ -25,7 +25,7 @@ async def run(config: RolloutConfig | None = None, **kwargs: object) -> RolloutR
     from benchflow.rollout import RolloutConfig as _RolloutConfig
 
     if config is None:
-        config = _RolloutConfig.from_legacy(**kwargs)  # type: ignore[arg-type]
+        config = _RolloutConfig.from_legacy(**kwargs)
     if config.skill_mode == "self-gen":
         from benchflow.self_gen import run_self_gen
 
