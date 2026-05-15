@@ -101,9 +101,7 @@ async def run_agent_matrix(
 
     tasks_dir = resolve_source("benchflow-ai/skillsbench", path="tasks", ref="main")
     all_task_names = {
-        d.name
-        for d in tasks_dir.iterdir()
-        if d.is_dir() and (d / "task.toml").exists()
+        d.name for d in tasks_dir.iterdir() if d.is_dir() and (d / "task.toml").exists()
     }
     selected = set(tasks)
     exclude = all_task_names - selected

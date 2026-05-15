@@ -168,7 +168,5 @@ async def test_concurrency_bounded(
 def _all_task_names(tasks_dir: Path) -> set[str]:
     """Return all task names in a tasks directory."""
     return {
-        d.name
-        for d in tasks_dir.iterdir()
-        if d.is_dir() and (d / "task.toml").exists()
+        d.name for d in tasks_dir.iterdir() if d.is_dir() and (d / "task.toml").exists()
     }

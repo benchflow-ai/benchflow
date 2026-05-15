@@ -121,9 +121,7 @@ def test_harbor_trajectories_loadable() -> None:
     # Validate Harbor result schema
     for task_name, data in harbor_results.items():
         missing = HARBOR_REQUIRED_FIELDS - set(data.keys())
-        assert not missing, (
-            f"Harbor result for {task_name} missing fields: {missing}"
-        )
+        assert not missing, f"Harbor result for {task_name} missing fields: {missing}"
         # Verifier result has rewards
         vr = data.get("verifier_result", {})
         assert "rewards" in vr, f"Harbor {task_name}: no rewards in verifier_result"
@@ -184,9 +182,7 @@ async def test_parity_schema(
 
         # BenchFlow schema check
         bf_missing = BENCHFLOW_REQUIRED_FIELDS - set(bf.keys())
-        assert not bf_missing, (
-            f"BenchFlow {task_name} missing: {bf_missing}"
-        )
+        assert not bf_missing, f"BenchFlow {task_name} missing: {bf_missing}"
 
         # Rewards present and is a dict
         assert isinstance(bf.get("rewards"), dict), (

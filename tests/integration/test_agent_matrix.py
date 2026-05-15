@@ -57,9 +57,7 @@ async def test_agent_on_skillsbench_9(
     tasks_dir = skillsbench_tasks_dir
     selected = {t for t in SKILLSBENCH_TASKS}
     all_tasks = {
-        d.name
-        for d in tasks_dir.iterdir()
-        if d.is_dir() and (d / "task.toml").exists()
+        d.name for d in tasks_dir.iterdir() if d.is_dir() and (d / "task.toml").exists()
     }
     exclude = all_tasks - selected
 
@@ -121,9 +119,7 @@ async def test_matrix_summary_json(
     tasks_dir = skillsbench_tasks_dir
     selected = {t for t in SKILLSBENCH_TASKS[:3]}  # Low-complexity only for speed
     all_tasks = {
-        d.name
-        for d in tasks_dir.iterdir()
-        if d.is_dir() and (d / "task.toml").exists()
+        d.name for d in tasks_dir.iterdir() if d.is_dir() and (d / "task.toml").exists()
     }
     exclude = all_tasks - selected
 
