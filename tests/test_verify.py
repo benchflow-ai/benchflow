@@ -15,6 +15,7 @@ from benchflow._scoring import (
 )
 from benchflow.metrics import BenchmarkMetrics, TaskMetrics
 from benchflow.models import RunResult
+from benchflow.rollouts import RolloutResult
 
 # ---------------------------------------------------------------------------
 # classify_verifier_error
@@ -58,6 +59,11 @@ class TestRunResultVerifierError:
     def test_repr_shows_verifier_error(self):
         r = RunResult(task_name="t", verifier_error="verifier timed out after 900s")
         assert "ERROR: verifier timed out after 900s" in repr(r)
+
+    def test_rollout_result_native_name(self):
+        r = RolloutResult(task_name="t", trial_name="rollout-1")
+        assert r.rollout_name == "rollout-1"
+        assert r.success is True
 
 
 # ---------------------------------------------------------------------------

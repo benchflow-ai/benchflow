@@ -14,13 +14,16 @@ from benchflow.rollouts.config import (
     Scene,
     Turn,
 )
+from benchflow.rollouts.result import RolloutResult, TrajectorySource
 
 __all__ = [
     "GENERATED_SKILLS_ROOT",
     "Role",
     "RolloutConfig",
+    "RolloutResult",
     "SKILL_MODE_DEFAULT",
     "SKILL_MODE_SELF_GEN",
     "Scene",
+    "TrajectorySource",
     "Turn",
 ]
