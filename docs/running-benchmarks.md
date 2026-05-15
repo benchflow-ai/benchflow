@@ -6,6 +6,9 @@ BenchFlow ships with adapted benchmarks under `benchmarks/<name>/`. Each benchma
 includes a converter, parity tests, metadata, and one or more YAML job configs.
 This guide covers how to run them — from a single task to a full evaluation sweep.
 
+> **Working inside the benchflow repo?** Use `uv run bench` instead of `bench`
+> to run the CLI from your local editable install.
+
 ---
 
 ## Available benchmarks
@@ -29,49 +32,51 @@ Each adapted benchmark includes:
 
 ### Option 1: YAML config (`bench eval create -f`)
 
-The simplest path. Point at a YAML config that specifies the source repo:
+The simplest path. Point at a YAML config that specifies the benchmark source,
+agent, and model:
 
 ```bash
 # Harvey LAB with Gemini
 GEMINI_API_KEY=... bench eval create -f benchmarks/harvey-lab/harvey-lab-gemini-flash-lite.yaml
 
+# ProgramBench with Gemini (tasks auto-generated on first run)
+GEMINI_API_KEY=... bench eval create -f benchmarks/programbench/programbench-gemini-flash-lite.yaml
+
 # SkillsBench with Claude
 bench eval create -f benchmarks/skillsbench-claude-glm51.yaml
 ```
 
-The config handles everything — downloads the source repo, resolves the task path,
+The config handles everything — downloads/generates tasks, resolves the task path,
 and runs the evaluation.
 
-### Option 2: CLI with `--source-repo`
+### Option 2: CLI flags
 
-Use the CLI flags for ad-hoc runs without a config file:
+Use CLI flags for ad-hoc runs without a config file:
 
 ```bash
-# Harvey LAB — all converted tasks
+# Harvey LAB — all tasks
 bench eval create \
   --source-repo harveyai/harvey-labs \
   --source-path tasks \
-  -a gemini \
-  -m gemini-3.1-flash-lite-preview \
-  -e docker \
-  -c 4
+  -a gemini -m gemini-3.1-flash-lite-preview \
+  -e docker -c 4
 
 # SkillsBench — single task
-bench eval create \
+bench run \
   --source-repo benchflow-ai/skillsbench \
   --source-path tasks/edit-pdf \
-  -a gemini \
-  -m gemini-3.1-flash-lite-preview \
-  -e docker
+  -a gemini -m gemini-3.1-flash-lite-preview
 
-# Or with Claude Code on Daytona
+# ProgramBench — single task (from local generated dir)
+bench run benchmarks/programbench/tasks/abishekvashok__cmatrix.5c082c6 \
+  -a gemini -m gemini-3.1-flash-lite-preview -b docker
+
+# SkillsBench with Claude Code on Daytona
 bench eval create \
   --source-repo benchflow-ai/skillsbench \
   --source-path tasks \
-  -a claude-agent-acp \
-  -m anthropic/claude-sonnet-4-6 \
-  -e daytona \
-  -c 32
+  -a claude-agent-acp -m anthropic/claude-sonnet-4-6 \
+  -e daytona -c 32
 ```
 
 ### Option 3: Python API
@@ -113,61 +118,43 @@ print(result.rewards)
 
 ## Running a subset of tasks
 
-### Using `--split` (at conversion time)
-
-The Harvey LAB converter supports named splits for generating subsets:
+### Single task
 
 ```bash
-# Parity slice: first 50 tasks alphabetically
-python benchmarks/harvey-lab/benchflow.py \
-  --output-dir .cache/harvey-lab-parity \
-  --harvey-root .cache/datasets/harveyai/harvey-labs \
-  --split parity
+# SkillsBench — one task by source path
+bench run \
+  --source-repo benchflow-ai/skillsbench \
+  --source-path tasks/edit-pdf \
+  -a gemini -m gemini-3.1-flash-lite-preview
 
-# XLSX slice: first 25 tasks with .xlsx deliverables
-python benchmarks/harvey-lab/benchflow.py \
-  --output-dir .cache/harvey-lab-xlsx \
-  --harvey-root .cache/datasets/harveyai/harvey-labs \
-  --split xlsx
+# ProgramBench — one task from local dir
+bench run benchmarks/programbench/tasks/abishekvashok__cmatrix.5c082c6 \
+  -a gemini -m gemini-3.1-flash-lite-preview -b docker
 
-# Single practice area
-python benchmarks/harvey-lab/benchflow.py \
-  --output-dir .cache/harvey-lab-re \
-  --harvey-root .cache/datasets/harveyai/harvey-labs \
-  --split real-estate
+# Harvey LAB — one task from local converted dir
+bench run .cache/harvey-lab-tasks/corporate-ma-review-data-room-red-flag-review \
+  -a gemini -m gemini-3.1-flash-lite-preview -b docker
 ```
 
-Then point `bench eval create -t` at the generated directory.
+### Batch with a tasks directory
 
-### Using `--limit` and `--task-ids`
-
-```bash
-# First 10 tasks (Harvey LAB)
-python benchmarks/harvey-lab/benchflow.py \
-  --output-dir .cache/harvey-lab-small \
-  --harvey-root .cache/datasets/harveyai/harvey-labs \
-  --limit 10
-
-# Specific tasks (Harvey LAB)
-python benchmarks/harvey-lab/benchflow.py \
-  --output-dir .cache/harvey-lab-pick \
-  --harvey-root .cache/datasets/harveyai/harvey-labs \
-  --task-ids "corporate-ma/analyze-cim-deal-teaser/scenario-01,real-estate/draft-construction-contract"
-
-# ProgramBench — specific tasks
-python -m benchmarks.programbench.main \
-  --output-dir benchmarks/programbench/tasks \
-  --task-ids abishekvashok__cmatrix.5c082c6 ajeetdsouza__zoxide.67ca1bc
-```
-
-### Using `bench eval create` for a single task
+Point `bench eval create -t` at a directory containing only the tasks you want:
 
 ```bash
 bench eval create \
+  -t benchmarks/programbench/tasks \
+  -a gemini -m gemini-3.1-flash-lite-preview \
+  -e docker -c 4
+```
+
+### Using `--source-path` for remote subsets
+
+```bash
+# Run only the edit-pdf task from SkillsBench
+bench eval create \
   --source-repo benchflow-ai/skillsbench \
   --source-path tasks/edit-pdf \
-  -a gemini \
-  -m gemini-3.1-flash-lite-preview \
+  -a gemini -m gemini-3.1-flash-lite-preview \
   -e docker
 ```
 
@@ -184,45 +171,34 @@ Tasks are **generated** at runtime from the ProgramBench repo's metadata.
 - ~20GB disk for Docker images
 - Internet access for HuggingFace test blob downloads during verification
 
-### Generate tasks
+### Run all tasks
 
 ```bash
-# Generate all 201 tasks
-python -m benchmarks.programbench.main \
-  --output-dir benchmarks/programbench/tasks
-
-# Generate a subset
-python -m benchmarks.programbench.main \
-  --output-dir benchmarks/programbench/tasks \
-  --task-ids abishekvashok__cmatrix.5c082c6 ajeetdsouza__zoxide.67ca1bc
-
-# Or let ensure_tasks() handle it automatically
-python -c "from benchflow.task_download import ensure_tasks; ensure_tasks('programbench')"
+# Uses YAML config — tasks auto-generated on first run
+bench eval create -f benchmarks/programbench/programbench-gemini-flash-lite.yaml
 ```
 
-Tasks are written to `benchmarks/programbench/tasks/` (gitignored, cached across runs).
-
-### Run
+### Run a single task
 
 ```bash
-# Single task
 bench run benchmarks/programbench/tasks/abishekvashok__cmatrix.5c082c6 \
-  --agent gemini --model gemini-3.1-flash-lite-preview --backend docker
-
-# Batch run with config
-python benchmarks/programbench/run_programbench.py benchmarks/programbench/programbench-gemini-flash-lite.yaml
+  -a gemini -m gemini-3.1-flash-lite-preview -b docker
 ```
 
 ### Oracle verification
 
-Verify a task is solvable using the gold solution:
+Verify a task is solvable using the gold solution (original source at commit):
 
 ```bash
 bench run benchmarks/programbench/tasks/abishekvashok__cmatrix.5c082c6 \
-  --agent oracle --backend docker
+  -a oracle -b docker
 ```
 
-The oracle clones the original source at the specified commit and runs `compile.sh`.
+### Validate a task directory
+
+```bash
+bench tasks check benchmarks/programbench/tasks/abishekvashok__cmatrix.5c082c6
+```
 
 ---
 
@@ -305,19 +281,20 @@ bench eval list jobs/
 
 ## Running parity validation
 
-Before trusting results from an adapted benchmark, you can re-validate parity
-(verify the conversion preserves benchmark semantics):
+Parity validation is a **developer/maintainer workflow** for verifying that an
+adapter preserves benchmark semantics. These scripts live under each benchmark's
+directory:
 
 ```bash
 # Harvey LAB — structural parity
-python benchmarks/harvey-lab/parity_test.py --mode full \
+uv run python benchmarks/harvey-lab/parity_test.py --mode full \
   --harvey-root .cache/datasets/harveyai/harvey-labs
 
 # Harvey LAB — eval parity (runs verifier on synthetic output)
-GEMINI_API_KEY=... python benchmarks/harvey-lab/parity_test.py --mode eval-parity
+GEMINI_API_KEY=... uv run python benchmarks/harvey-lab/parity_test.py --mode eval-parity
 
 # Harvey LAB — side-by-side parity (original vs adapted prompts through same judge)
-GEMINI_API_KEY=... python benchmarks/harvey-lab/parity_test.py --mode side-by-side
+GEMINI_API_KEY=... uv run python benchmarks/harvey-lab/parity_test.py --mode side-by-side
 ```
 
 Recorded parity results are in `parity_experiment.json` and `benchmark.yaml`.
@@ -345,7 +322,7 @@ at the converted output:
 
 ```yaml
 # benchmarks/harvey-lab/harvey-lab-gemini-flash-lite.yaml
-# (conversion handled by run_harvey_lab.py)
+# (conversion handled automatically)
 agent: gemini
 model: gemini/gemini-3.1-flash-lite-preview
 environment: docker
