@@ -226,7 +226,7 @@ class TestEvalCreateOracleCLI:
             return trial
 
         try:
-            with patch("benchflow.trial.Trial.create", new=fake_create):
+            with patch("benchflow.rollouts.rollout.Rollout.create", new=fake_create):
                 eval_create(
                     config_file=None,
                     tasks_dir=task,
