@@ -1,4 +1,4 @@
-"""Live smoke test for SDK.run() against a real environment.
+"""Live smoke test for bf.run(RolloutConfig) against a real environment.
 
 Run:
     pytest -m live tests/test_smoke.py
@@ -6,10 +6,6 @@ Run:
 Bare ``pytest tests/test_smoke.py`` will silently report "1 deselected" because
 the ``addopts = "-m 'not live'"`` filter in pyproject.toml applies to direct
 file invocation too.
-
-Importing ``benchflow.sdk`` triggers ``_patch_harbor_dind()`` at sdk.py:135.
-That patch is gated on ``/.dockerenv`` and runs ``docker info`` with a 5s
-timeout, swallowing all exceptions — safe but worth flagging.
 
 Cost / runtime budget (for the green path against claude-agent-acp + Haiku 4.5):
 - Cold: 90-180s (apt + node 22 + npm install @zed-industries/claude-agent-acp,
@@ -30,7 +26,8 @@ from pathlib import Path
 
 import pytest
 
-from benchflow import SDK
+import benchflow as bf
+from benchflow import RolloutConfig
 from benchflow._env_setup import _detect_dind_mount
 
 HELLO_TASK = Path(__file__).parent / "examples" / "hello-world-task"
@@ -135,11 +132,13 @@ async def test_hello_world_smoke(smoke_prereqs: bool, smoke_jobs_dir: Path) -> N
       overwritten by scraped fallback — see sdk.py:83-84,540)
     - Trajectory file exists and is non-empty
     """
-    result = await SDK().run(
-        task_path=HELLO_TASK,
-        agent="claude-agent-acp",
-        model="claude-haiku-4-5-20251001",
-        jobs_dir=smoke_jobs_dir,
+    result = await bf.run(
+        RolloutConfig(
+            task_path=HELLO_TASK,
+            agent="claude-agent-acp",
+            model="claude-haiku-4-5-20251001",
+            jobs_dir=smoke_jobs_dir,
+        )
     )
 
     assert result.rewards is not None
@@ -148,7 +147,7 @@ async def test_hello_world_smoke(smoke_prereqs: bool, smoke_jobs_dir: Path) -> N
     assert result.verifier_error is None
     assert result.n_tool_calls > 0
 
-    # trial_dir = jobs_dir / job_name / trial_name (sdk.py:166).
+    # rollout_dir = jobs_dir / job_name / rollout_name.
     # job_name is an auto-generated timestamp, so glob for it.
     matches = list(
         smoke_jobs_dir.glob(f"*/{result.trial_name}/trajectory/acp_trajectory.jsonl")
