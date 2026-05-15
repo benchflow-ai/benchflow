@@ -73,7 +73,7 @@ What this run shows and doesn't show:
 - **Per-round soft-verify scored 0.0 even on tasks where the final hardened verify scored 1.0.** Soft-verify runs between rounds without the full hardening sequence (no workspace restore, no process kill so the sandbox stays alive), so its scoring can diverge from the final verifier. The user's hint schedule reacts to soft-verify, not the canonical reward — something to keep in mind when designing the loop.
 - **First-run flake.** ansible's first run hit a transport EOF after 17min and qutebrowser timed out at 50min. Both succeeded on retry. v0.3.3 adds `agent_idle_timeout` (default 600s) and clearer EOF diagnostics so the next time a hang happens the failure is fast and actionable rather than silent.
 
-This is one model on one day, not a published comparison. The notebook at [`examples/swebench_pro_progressive_disclosure.ipynb`](../examples/swebench_pro_progressive_disclosure.ipynb) has the executable cells; raw aggregated results are at [`experiments/swebench-pro-progressive-results.json`](../experiments/swebench-pro-progressive-results.json).
+This is one model on one day, not a published comparison. The notebook at [`examples/swebench_pro_progressive_disclosure.ipynb`](./examples/swebench_pro_progressive_disclosure.ipynb) has the executable cells; raw aggregated results are at [`experiments/swebench-pro-progressive-results.json`](../experiments/swebench-pro-progressive-results.json).
 
 ---
 
@@ -274,7 +274,7 @@ The two coexist. Choose based on whether your "user" needs to think (Scene-based
 
 ## Worked examples
 
-- [`examples/swebench_pro_progressive_disclosure.ipynb`](../examples/swebench_pro_progressive_disclosure.ipynb) — the SWE-bench Pro case study, executable end-to-end with the latest oracle/baseline data.
-- [`examples/swebench_pro_user_dogfood.py`](../examples/swebench_pro_user_dogfood.py) — runnable script for any of the 5 SWE-bench Pro tasks. `--task flipt --max-rounds 3`.
-- [`examples/user_dogfood.py`](../examples/user_dogfood.py) — minimal regex-log task with `FunctionUser`, useful as a starting template.
+- [`examples/swebench_pro_progressive_disclosure.ipynb`](./examples/swebench_pro_progressive_disclosure.ipynb) — the SWE-bench Pro case study, executable end-to-end with the latest oracle/baseline data.
+- [`examples/swebench_pro_user_dogfood.py`](./examples/swebench_pro_user_dogfood.py) — runnable script for any of the 5 SWE-bench Pro tasks. `--task flipt --max-rounds 3`.
+- [`examples/user_dogfood.py`](./examples/user_dogfood.py) — minimal regex-log task with `FunctionUser`, useful as a starting template.
 - [`experiments/swebench_pro_oracle_and_baseline.py`](../experiments/swebench_pro_oracle_and_baseline.py) — the oracle-validation + baseline experiment script that produced the table above.
