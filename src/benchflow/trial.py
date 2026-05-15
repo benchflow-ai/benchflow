@@ -419,6 +419,7 @@ class Trial:
         self._timing: dict[str, float] = {}
         self._effective_locked: list[str] = []
         self._disallow_web_tools: bool = False
+        self._effective_task_path: Path | None = None
 
         # Populated by install_agent()
         self._agent_cfg: Any = None
@@ -549,6 +550,7 @@ class Trial:
             stage_dockerfile_deps(effective_task_path, Path(cfg.context_root))
         if cfg.skills_dir:
             _inject_skills_into_dockerfile(effective_task_path, Path(cfg.skills_dir))
+        self._effective_task_path = effective_task_path
 
         self._env = _create_environment(
             cfg.environment,
@@ -622,7 +624,7 @@ class Trial:
             )
             await deploy_skills(
                 self._env,
-                cfg.task_path,
+                self._effective_task_path or cfg.task_path,
                 cfg.skills_dir,
                 None,
                 cfg.sandbox_user,
@@ -673,7 +675,7 @@ class Trial:
 
         await deploy_skills(
             self._env,
-            cfg.task_path,
+            self._effective_task_path or cfg.task_path,
             cfg.skills_dir,
             self._agent_cfg,
             cfg.sandbox_user,

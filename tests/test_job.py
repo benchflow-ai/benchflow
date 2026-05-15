@@ -209,7 +209,7 @@ class TestJobResume:
         with caplog.at_level(logging.WARNING):
             import asyncio
 
-            asyncio.get_event_loop().run_until_complete(job.run())
+            asyncio.run(job.run())
         assert any("old-agent" in msg for msg in caplog.messages)
 
     def test_no_rewards_is_incomplete(self, tmp_path):
@@ -294,3 +294,25 @@ class TestJobRunOrchestration:
 
         assert result.errored == 1
         assert any("unexpected exception: boom" in m for m in caplog.messages)
+
+    @pytest.mark.asyncio
+    async def test_error_plus_verifier_error_counts_once_as_verifier_errored(
+        self, tmp_path
+    ):
+        """Guards the fix from PR #244: an agent timeout followed by verifier
+        failure must not double-count as both errored and verifier_errored."""
+        job = self._make_job(tmp_path, n_tasks=1, concurrency=1)
+        job._sdk = AsyncMock()
+        job._sdk.run = AsyncMock(
+            return_value=RunResult(
+                task_name="task-0",
+                rewards=None,
+                error="Agent timed out after 300s",
+                verifier_error="verifier crashed: exit code 1",
+            )
+        )
+
+        result = await job.run()
+
+        assert result.errored == 0
+        assert result.verifier_errored == 1

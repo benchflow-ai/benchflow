@@ -21,6 +21,20 @@ from benchflow._scoring import (
 logger = logging.getLogger(__name__)
 
 
+def _safe_reward(result: dict) -> float:
+    """Return a comparable reward value for retry selection.
+
+    Some rubric verifiers can emit ``{"reward": None, ...}`` while still
+    including process/rubric detail. Treat missing/None rewards as 0.0 for
+    ordering so metrics collection never raises ``TypeError``.
+    """
+    rewards = result.get("rewards")
+    if not isinstance(rewards, dict):
+        return 0.0
+    value = rewards.get("reward")
+    return float(value) if isinstance(value, int | float) else 0.0
+
+
 @dataclass
 class TaskMetrics:
     """Metrics for a single task."""
@@ -190,8 +204,7 @@ def collect_metrics(
                 or (
                     r.get("rewards")
                     and best[task].get("rewards")
-                    and r["rewards"].get("reward", 0)
-                    > best[task]["rewards"].get("reward", 0)
+                    and _safe_reward(r) > _safe_reward(best[task])
                 )
             ):
                 best[task] = r

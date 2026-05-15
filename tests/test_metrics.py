@@ -265,3 +265,43 @@ def test_collect_metrics_partial_reward(tmp_path):
     # 0.5 is not 1.0, so not passed
     assert s["passed"] == 0
     assert s["failed"] == 1
+
+
+def test_collect_metrics_reward_none_does_not_crash_retry_comparison(tmp_path):
+    """Guards the fix from PR #243: rewards={"reward": None} must not
+    TypeError when compared against a numeric retry reward."""
+    trial_a = tmp_path / "attempt1" / "task-a__none"
+    trial_a.mkdir(parents=True)
+    (trial_a / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "task-a",
+                "rewards": {"reward": None, "rubric": []},
+                "error": None,
+                "n_tool_calls": 1,
+                "started_at": "2026-03-24 10:00:00.000000",
+                "finished_at": "2026-03-24 10:01:00.000000",
+            }
+        )
+    )
+    trial_b = tmp_path / "attempt2" / "task-a__numeric"
+    trial_b.mkdir(parents=True)
+    (trial_b / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "task-a",
+                "rewards": {"reward": 0.5},
+                "error": None,
+                "n_tool_calls": 2,
+                "started_at": "2026-03-24 10:02:00.000000",
+                "finished_at": "2026-03-24 10:03:00.000000",
+            }
+        )
+    )
+
+    metrics = collect_metrics(str(tmp_path))
+    s = metrics.summary()
+
+    assert s["total"] == 1
+    assert s["failed"] == 1
+    assert metrics.tasks[0].reward == 0.5

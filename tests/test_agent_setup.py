@@ -120,6 +120,43 @@ async def test_deploy_skills_uploads_runtime_skills_and_links_shared_tree(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_deploy_skills_skips_runtime_upload_when_already_injected(tmp_path):
+    """Guards the fix from PR #230/#229: deploy_skills must inspect the
+    effective post-injection Dockerfile, see the baked COPY line, and skip the
+    second runtime upload to /skills."""
+    env = MagicMock()
+    env.exec = AsyncMock(return_value=MagicMock(return_code=0, stdout=""))
+    env.upload_dir = AsyncMock()
+    agent_cfg = AgentConfig(
+        name="test-agent",
+        install_cmd="true",
+        launch_cmd="true",
+        skill_paths=["$HOME/.agents/skills"],
+    )
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    env_dir = tmp_path / "task" / "environment"
+    env_dir.mkdir(parents=True)
+    (env_dir / "Dockerfile").write_text(
+        "FROM python:3.12\nCOPY _deps/skills /skills/\n"
+    )
+
+    await deploy_skills(
+        env=env,
+        task_path=tmp_path / "task",
+        skills_dir=skills_dir,
+        agent_cfg=agent_cfg,
+        sandbox_user="agent",
+        agent_cwd="/workspace",
+        task=_make_task(None),
+    )
+
+    env.upload_dir.assert_not_called()
+    env.exec.assert_awaited_once()
+    assert "ln -sfn /skills /home/agent/.agents/skills" in env.exec.await_args.args[0]
+
+
+@pytest.mark.asyncio
 async def test_deploy_skills_chowns_full_dir_chain_for_pi_acp_layout(tmp_path):
     """Guards the fix from PR #211 against the regression where only the
     symlink's immediate parent (`~/.pi/agent`) was chowned, leaving the

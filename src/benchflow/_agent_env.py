@@ -62,6 +62,7 @@ def auto_inherit_env(agent_env: dict[str, str]) -> None:
         "ANTHROPIC_AUTH_TOKEN",
         "CLAUDE_CODE_OAUTH_TOKEN",
         "OPENAI_API_KEY",
+        "OPENAI_BASE_URL",
         "GOOGLE_API_KEY",
         "GEMINI_API_KEY",
         "GOOGLE_GENERATIVE_AI_API_KEY",
@@ -69,6 +70,8 @@ def auto_inherit_env(agent_env: dict[str, str]) -> None:
         "GOOGLE_CLOUD_LOCATION",
         "LLM_API_KEY",
         "LLM_BASE_URL",
+        "BENCHFLOW_PROVIDER_BASE_URL",
+        "BENCHFLOW_PROVIDER_API_KEY",
     }
     for cfg in PROVIDERS.values():
         if cfg.auth_env:

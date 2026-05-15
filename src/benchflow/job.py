@@ -656,7 +656,9 @@ class Job:
             errored=sum(
                 1
                 for r in all_results.values()
-                if r.get("error") and r.get("rewards") is None
+                if r.get("error")
+                and r.get("rewards") is None
+                and not r.get("verifier_error")
             ),
             verifier_errored=sum(
                 1 for r in all_results.values() if r.get("verifier_error")
