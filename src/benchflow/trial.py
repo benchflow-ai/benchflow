@@ -73,15 +73,10 @@ from benchflow._trajectory import (
 from benchflow.acp.client import ACPClient, ACPError
 from benchflow.agents.registry import AGENT_LAUNCH, AGENTS
 from benchflow.models import RunResult, TrajectorySource
-from benchflow.rollouts.config import (
-    GENERATED_SKILLS_ROOT,
-    SKILL_MODE_DEFAULT,
-    SKILL_MODE_SELF_GEN,
-    Role,
-    RolloutConfig,
-    Scene,
-    Turn,
-)
+from benchflow.rollouts.config import GENERATED_SKILLS_ROOT as GENERATED_SKILLS_ROOT
+from benchflow.rollouts.config import SKILL_MODE_DEFAULT as SKILL_MODE_DEFAULT
+from benchflow.rollouts.config import SKILL_MODE_SELF_GEN, Role, RolloutConfig, Scene
+from benchflow.rollouts.config import Turn as Turn
 from benchflow.user import RoundResult
 
 logger = logging.getLogger(__name__)

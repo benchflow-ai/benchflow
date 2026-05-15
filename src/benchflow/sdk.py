@@ -95,10 +95,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import benchflow._harbor as harbor_compat
 from benchflow._env_setup import (
     _patch_harbor_dind,
 )
-import benchflow._harbor as harbor_compat
 from benchflow._sandbox import (
     harden_before_verify,
 )

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Mapping, Protocol, Sequence
+from typing import Protocol
 
 from benchflow.sandboxes.specs import ExecResult, ImageConfig, ImageRef, SandboxSpec
 

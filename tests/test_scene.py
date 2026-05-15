@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from benchflow._scene import MailboxTransport, Message, SceneRuntime
-from benchflow.rollouts import RolloutConfig, Role, Scene, Turn
+from benchflow.rollouts import Role, RolloutConfig, Scene, Turn
 
 
 @pytest.fixture

@@ -64,8 +64,8 @@ class Environment:
         """Create an environment from a task directory."""
         from uuid import uuid4
 
-        from benchflow._env_setup import _create_environment
         import benchflow._harbor as harbor_compat
+        from benchflow._env_setup import _create_environment
 
         task_path = Path(task_path)
         task = harbor_compat.make_task(task_path)

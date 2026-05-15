@@ -4,7 +4,12 @@ Related: rollout execution produces RolloutResult, job.py aggregates results,
 _scoring.py extracts rewards and classifies errors from result dicts.
 """
 
-from benchflow.rollouts.result import RolloutResult, TrajectorySource
+from benchflow.rollouts.result import (
+    RolloutResult,
+)
+from benchflow.rollouts.result import (
+    TrajectorySource as TrajectorySource,
+)
 
 
 class AgentInstallError(RuntimeError):
