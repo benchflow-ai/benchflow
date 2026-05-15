@@ -64,15 +64,13 @@ class Environment:
         """Create an environment from a task directory."""
         from uuid import uuid4
 
-        from harbor.models.task.task import Task
-        from harbor.models.trial.paths import TrialPaths
-
         from benchflow._env_setup import _create_environment
+        import benchflow._harbor as harbor_compat
 
         task_path = Path(task_path)
-        task = Task(task_path)
+        task = harbor_compat.make_task(task_path)
         trial_name = trial_name or task_path.name
-        trial_paths = TrialPaths(
+        trial_paths = harbor_compat.make_trial_paths(
             Path.cwd() / "jobs" / "environment" / f"{trial_name}__{uuid4().hex[:8]}"
         )
         trial_paths.mkdir()
@@ -92,9 +90,9 @@ class Environment:
 
     @property
     def task(self) -> Any:
-        from harbor.models.task.task import Task
+        import benchflow._harbor as harbor_compat
 
-        return Task(self.task_path)
+        return harbor_compat.make_task(self.task_path)
 
     async def start(self, force_build: bool = False) -> None:
         await self._inner.start(force_build=force_build)

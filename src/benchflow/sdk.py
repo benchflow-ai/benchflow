@@ -95,14 +95,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
 
-from harbor.models.task.task import Task
-from harbor.models.trial.paths import TrialPaths
-from harbor.utils.env import resolve_env_vars
-from harbor.verifier.verifier import Verifier
-
 from benchflow._env_setup import (
     _patch_harbor_dind,
 )
+import benchflow._harbor as harbor_compat
 from benchflow._sandbox import (
     harden_before_verify,
 )
@@ -201,15 +197,15 @@ class SDK:
         job_name: str | None,
         trial_name: str | None,
         jobs_dir: str | Path,
-    ) -> tuple["Task", Path, "TrialPaths", datetime, str, str]:
+    ) -> tuple[Any, Path, Any, datetime, str, str]:
         """Set up trial directory tree and return core trial objects."""
         from uuid import uuid4
 
-        task = Task(task_path)
+        task = harbor_compat.make_task(task_path)
         job_name = job_name or datetime.now().strftime("%Y-%m-%d__%H-%M-%S")
         trial_name = trial_name or f"{task_path.name}__{uuid4().hex[:8]}"
         trial_dir = Path(jobs_dir) / job_name / trial_name
-        trial_paths = TrialPaths(trial_dir)
+        trial_paths = harbor_compat.make_trial_paths(trial_dir)
         started_at = datetime.now()
         # Pre-create trial directory tree so Docker doesn't create them as root.
         trial_dir.mkdir(parents=True, exist_ok=True)
@@ -435,9 +431,9 @@ class SDK:
         else:
             cmd = "bash /solution/solve.sh"
         oracle_env: dict[str, str] = {"DEBIAN_FRONTEND": "noninteractive"}
-        task = Task(task_path)
+        task = harbor_compat.make_task(task_path)
         if task.config.solution.env:
-            oracle_env.update(resolve_env_vars(task.config.solution.env))
+            oracle_env.update(harbor_compat.resolve_env_vars(task.config.solution.env))
         result = await env.exec(
             f"{cmd} > /logs/agent/oracle.txt 2>&1",
             env=oracle_env,
@@ -463,8 +459,8 @@ class SDK:
     async def _verify(
         self,
         env,
-        task: "Task",
-        trial_paths: "TrialPaths",
+        task: Any,
+        trial_paths: Any,
         timing: dict,
         sandbox_user: str | None = None,
         workspace: str | None = None,
@@ -476,7 +472,11 @@ class SDK:
         t0 = datetime.now()
         verifier_error = None
         try:
-            verifier = Verifier(task=task, trial_paths=trial_paths, environment=env)
+            verifier = harbor_compat.make_verifier(
+                task=task,
+                trial_paths=trial_paths,
+                environment=env,
+            )
             verifier_result = await asyncio.wait_for(
                 verifier.verify(),
                 timeout=task.config.verifier.timeout_sec,
