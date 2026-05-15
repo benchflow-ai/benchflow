@@ -1,0 +1,27 @@
+kind: skillsbench-e2e
+description: "ENG-6 SkillsBench E2E: 9 tasks across all registered BenchFlow agents"
+
+source:
+  repo: benchflow-ai/skillsbench
+  path: tasks
+  ref: main
+
+tasks_manifest: tasks.txt
+jobs_dir: jobs/skillsbench-e2e
+model: gemini-3.1-flash-lite-preview
+environment: daytona
+concurrency: 30
+max_retries: 0
+resume: true
+skills_dir: null
+agents: all
+
+baseline:
+  repo: benchflow-ai/skillsbench-trajectories
+  ref: main
+
+audit:
+  deterministic: true
+  audit_agent:
+    enabled: false
+    prompt: audit/trajectory-result-auditor.md

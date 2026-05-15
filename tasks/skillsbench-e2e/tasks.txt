@@ -1,0 +1,9 @@
+jax-computing-basics
+python-scala-translation
+jpg-ocr-stat
+grid-dispatch-operator
+threejs-to-obj
+data-to-d3
+lake-warming-attribution
+weighted-gdp-calc
+shock-analysis-supply
