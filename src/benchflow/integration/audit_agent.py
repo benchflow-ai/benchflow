@@ -100,6 +100,7 @@ def render_audit_prompt(run_dir: str | Path, prompt_path: str | Path | None) -> 
         "artifact_audit": _load_json(run_dir / "artifact_audit.json"),
         "parity_report": _load_json(run_dir / "parity_report.json"),
         "deterministic_findings": _load_json(run_dir / "audit_findings.json"),
+        "sampled_artifacts": _sample_artifacts(run_dir),
     }
     return (
         f"{rubric.strip()}\n\n"
@@ -108,6 +109,37 @@ def render_audit_prompt(run_dir: str | Path, prompt_path: str | Path | None) -> 
         f"{json.dumps(bundle, indent=2)[:120000]}\n"
         "```\n"
     )
+
+
+def _sample_text(path: Path, limit: int = 4000) -> str:
+    try:
+        return path.read_text(errors="replace")[:limit]
+    except Exception as exc:
+        return f"<could not read {path}: {exc}>"
+
+
+def _sample_artifacts(run_dir: Path, max_trials: int = 8) -> list[dict[str, Any]]:
+    """Collect small result/log/trajectory excerpts for the audit-agent prompt."""
+    samples: list[dict[str, Any]] = []
+    for result_path in sorted(run_dir.rglob("result.json"))[:max_trials]:
+        trial_dir = result_path.parent
+        agent_logs = sorted((trial_dir / "agent").glob("*.txt"))
+        verifier_logs = sorted((trial_dir / "verifier").glob("*.txt"))
+        trajectory = trial_dir / "trajectory" / "acp_trajectory.jsonl"
+        samples.append(
+            {
+                "trial_dir": str(trial_dir),
+                "result_json": _load_json(result_path),
+                "agent_log_excerpt": _sample_text(agent_logs[0]) if agent_logs else "",
+                "verifier_log_excerpt": (
+                    _sample_text(verifier_logs[0]) if verifier_logs else ""
+                ),
+                "trajectory_excerpt": _sample_text(trajectory)
+                if trajectory.exists()
+                else "",
+            }
+        )
+    return samples
 
 
 def write_audit_outputs(

@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from benchflow.integration.parity import normalize_result
+import json
+from pathlib import Path
+
+from benchflow.integration.parity import normalize_result, write_parity_report
 
 
 def test_parity_normalizes_current_benchflow_result() -> None:
@@ -59,3 +62,27 @@ def test_parity_normalizes_historical_skillsbench_result() -> None:
     assert record["environment"] == "docker"
     assert record["reward"] == 1.0
     assert record["n_input_tokens"] == 100
+
+
+def test_write_parity_report_records_baseline_error_and_jsonl(tmp_path: Path) -> None:
+    trial = tmp_path / "run" / "trial"
+    trial.mkdir(parents=True)
+    (trial / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "task-a",
+                "trial_name": "task-a__abc",
+                "rewards": {"reward": 1.0},
+                "agent": "gemini",
+                "model": "gemini-3.1-flash-lite-preview",
+                "n_tool_calls": 1,
+            }
+        )
+    )
+
+    report = write_parity_report(tmp_path / "run", baseline_error="clone failed")
+
+    assert report["baseline_error"] == "clone failed"
+    assert (tmp_path / "run" / "parity_report.json").exists()
+    normalized = (tmp_path / "run" / "normalized_results.jsonl").read_text()
+    assert '"schema": "benchflow"' in normalized

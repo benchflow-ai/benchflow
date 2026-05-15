@@ -325,6 +325,19 @@ def _write_json(path: Path, data: dict[str, Any]) -> None:
     path.write_text(json.dumps(data, indent=2))
 
 
+def _resolve_baseline(config: E2EConfig) -> tuple[Path | None, str | None]:
+    """Resolve the optional historical baseline repo for parity comparison."""
+    if not config.baseline_repo:
+        return None, None
+    try:
+        from benchflow.task_download import resolve_source
+
+        return resolve_source(config.baseline_repo, ref=config.baseline_ref), None
+    except Exception as exc:
+        logger.warning("Could not resolve E2E baseline repo: %s", exc)
+        return None, str(exc)
+
+
 async def run_from_config_file(
     config_path: str | Path,
     *,
@@ -383,7 +396,8 @@ async def run_from_config_file(
         },
     )
     write_artifact_audit(run_dir)
-    write_parity_report(run_dir)
+    baseline_dir, baseline_error = _resolve_baseline(config)
+    write_parity_report(run_dir, baseline_dir, baseline_error)
     write_audit_outputs(run_dir, config.audit_prompt)
     if config.audit_agent_enabled:
         await _run_audit_agent(run_dir, config)

@@ -10,7 +10,7 @@ import pytest
 from typer.testing import CliRunner
 
 from benchflow.cli.main import app
-from benchflow.integration.audit_agent import create_audit_task
+from benchflow.integration.audit_agent import create_audit_task, render_audit_prompt
 from benchflow.integration.skillsbench_e2e import (
     DEFAULT_MODEL,
     build_matrix,
@@ -119,6 +119,29 @@ def test_create_audit_task_uses_output_bundle(tmp_path: Path) -> None:
     assert "Audit rubric" in instruction
     assert "Output bundle JSON" in instruction
     assert "audit_review.md" in instruction
+
+
+def test_audit_prompt_includes_sampled_artifact_excerpts(tmp_path: Path) -> None:
+    trial = tmp_path / "trials" / "gemini" / "results" / "task-a__abc"
+    (trial / "agent").mkdir(parents=True)
+    (trial / "verifier").mkdir()
+    (trial / "trajectory").mkdir()
+    (trial / "result.json").write_text('{"task_name": "task-a"}')
+    (trial / "agent" / "gemini.txt").write_text("agent log sample")
+    (trial / "verifier" / "test-stdout.txt").write_text("verifier log sample")
+    (trial / "trajectory" / "acp_trajectory.jsonl").write_text(
+        '{"type": "tool_call"}\n'
+    )
+    (tmp_path / "matrix_summary.json").write_text('{"entries": []}')
+    (tmp_path / "artifact_audit.json").write_text("{}")
+    (tmp_path / "parity_report.json").write_text("{}")
+    (tmp_path / "audit_findings.json").write_text("{}")
+
+    prompt = render_audit_prompt(tmp_path, None)
+
+    assert "sampled_artifacts" in prompt
+    assert "agent log sample" in prompt
+    assert "verifier log sample" in prompt
 
 
 @pytest.mark.live

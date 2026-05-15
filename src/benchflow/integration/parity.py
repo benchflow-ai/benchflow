@@ -124,6 +124,7 @@ def _by_task(records: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
 def build_parity_report(
     run_dir: str | Path,
     baseline_dir: str | Path | None = None,
+    baseline_error: str | None = None,
 ) -> dict[str, Any]:
     """Build a broad parity report for current results and optional baselines."""
     run_dir = Path(run_dir)
@@ -159,6 +160,7 @@ def build_parity_report(
     return {
         "run_dir": str(run_dir),
         "baseline_dir": str(baseline_dir) if baseline_dir else None,
+        "baseline_error": baseline_error,
         "current_count": len(current),
         "baseline_count": len(baseline),
         "token_fields_present": token_fields_present,
@@ -170,9 +172,19 @@ def build_parity_report(
 def write_parity_report(
     run_dir: str | Path,
     baseline_dir: str | Path | None = None,
+    baseline_error: str | None = None,
 ) -> dict[str, Any]:
     """Write ``parity_report.json`` into *run_dir* and return the report."""
     run_dir = Path(run_dir)
-    report = build_parity_report(run_dir, baseline_dir)
+    report = build_parity_report(run_dir, baseline_dir, baseline_error)
     (run_dir / "parity_report.json").write_text(json.dumps(report, indent=2))
+    current = collect_normalized_results(run_dir)
+    (run_dir / "normalized_results.jsonl").write_text(
+        "".join(json.dumps(record, default=str) + "\n" for record in current)
+    )
+    if baseline_dir:
+        baseline = collect_normalized_results(baseline_dir)
+        (run_dir / "normalized_baseline.jsonl").write_text(
+            "".join(json.dumps(record, default=str) + "\n" for record in baseline)
+        )
     return report
