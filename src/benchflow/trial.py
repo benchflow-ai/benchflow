@@ -73,6 +73,7 @@ from benchflow._trajectory import (
 from benchflow.acp.client import ACPClient, ACPError
 from benchflow.agents.registry import AGENT_LAUNCH, AGENTS
 from benchflow.models import RunResult, TrajectorySource
+from benchflow.rollouts import _helpers as rollout_helpers
 from benchflow.rollouts.config import GENERATED_SKILLS_ROOT as GENERATED_SKILLS_ROOT
 from benchflow.rollouts.config import SKILL_MODE_DEFAULT as SKILL_MODE_DEFAULT
 from benchflow.rollouts.config import SKILL_MODE_SELF_GEN, Role, RolloutConfig, Scene
@@ -320,8 +321,6 @@ class Trial:
 
     async def setup(self) -> None:
         """Resolve config, create environment object (not yet started)."""
-        from benchflow.sdk import SDK
-
         cfg = self._config
 
         if cfg.sandbox_user is None:
@@ -345,7 +344,9 @@ class Trial:
             self._started_at,
             self._job_name,
             self._trial_name,
-        ) = SDK._init_trial(cfg.task_path, cfg.job_name, cfg.trial_name, cfg.jobs_dir)
+        ) = rollout_helpers.init_rollout(
+            cfg.task_path, cfg.job_name, cfg.trial_name, cfg.jobs_dir
+        )
 
         self._disallow_web_tools = (
             _task_disallows_internet(self._task) or cfg.self_gen_no_internet
@@ -354,7 +355,7 @@ class Trial:
             resolve_agent_env(cfg.primary_agent, cfg.primary_model, cfg.agent_env),
             disallow=self._disallow_web_tools,
         )
-        self._resolved_prompts = SDK._resolve_prompts(
+        self._resolved_prompts = rollout_helpers.resolve_prompts(
             cfg.task_path,
             cfg.prompts,
             skills_dir=cfg.skills_dir,
@@ -394,7 +395,7 @@ class Trial:
         )
         self._timeout = int(self._task.config.agent.timeout_sec or 0)
 
-        SDK._write_config(
+        rollout_helpers.write_config(
             self._trial_dir,
             task_path=cfg.task_path,
             agent=cfg.primary_agent,
@@ -416,10 +417,9 @@ class Trial:
 
     async def start(self) -> None:
         """Start the environment and upload task files."""
-        from benchflow.sdk import SDK
-
-        sdk = SDK()
-        await sdk._start_env_and_upload(self._env, self._config.task_path, self._timing)
+        await rollout_helpers.start_env_and_upload(
+            self._env, self._config.task_path, self._timing
+        )
 
         for hook in self._config.pre_agent_hooks or []:
             await hook(self._env)
@@ -623,10 +623,7 @@ class Trial:
                     f"Using scraped trajectory ({len(scraped)} events) — UNTRUSTED"
                 )
 
-        from benchflow.sdk import SDK
-
-        sdk = SDK()
-        self._rewards, self._verifier_error = await sdk._verify(
+        self._rewards, self._verifier_error = await rollout_helpers.verify(
             self._env,
             self._task,
             self._trial_paths,
@@ -768,10 +765,7 @@ class Trial:
                     user="root",
                     timeout_sec=10,
                 )
-                from benchflow.sdk import SDK
-
-                sdk = SDK()
-                self._trajectory, self._agent_name = await sdk._run_oracle(
+                self._trajectory, self._agent_name = await rollout_helpers.run_oracle(
                     self._env, cfg.task_path, self._timeout, sandbox_user=None
                 )
             else:
@@ -1228,13 +1222,11 @@ class Trial:
         return str(e)
 
     def _build_result(self) -> RunResult:
-        from benchflow.sdk import SDK
-
         trial_dir = self._require_trial_dir()
-        return SDK._build_result(
+        return rollout_helpers.build_result(
             trial_dir,
             task_name=self._config.task_path.name,
-            trial_name=self._trial_name or "",
+            rollout_name=self._trial_name or "",
             agent=self._config.primary_agent,
             agent_name=self._agent_name,
             model=self._config.primary_model or "",
