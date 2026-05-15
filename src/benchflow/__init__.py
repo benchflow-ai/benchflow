@@ -48,6 +48,18 @@ from benchflow.environments import (
 from benchflow.job import Job, JobConfig, JobResult, RetryConfig
 from benchflow.metrics import BenchmarkMetrics, collect_metrics
 from benchflow.models import AgentInstallError, AgentTimeoutError, RunResult
+
+# Rewards protocol (v0.4 — composable Rubric + RewardFunc)
+from benchflow.rewards import (
+    CodeExecRewardFunc,
+    LLMJudgeRewardFunc,
+    RewardEvent,
+    RewardFunc,
+    Rubric,
+    StringMatchRewardFunc,
+    TestRewardFunc,
+    VerifyResult,
+)
 from benchflow.runtime import (
     Agent,
     Environment,
@@ -79,6 +91,15 @@ TrialScene = Scene
 # what.
 __all__ = [
     "__version__",
+    # Rewards protocol (v0.4)
+    "Rubric",
+    "RewardFunc",
+    "RewardEvent",
+    "VerifyResult",
+    "TestRewardFunc",
+    "LLMJudgeRewardFunc",
+    "StringMatchRewardFunc",
+    "CodeExecRewardFunc",
     # Sandbox protocol (v0.4)
     "Sandbox",
     "SandboxExecResult",
