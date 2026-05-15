@@ -28,7 +28,11 @@ class TestAutoInheritEnv:
         [
             pytest.param("ANTHROPIC_API_KEY", "sk-host", id="anthropic"),
             pytest.param("OPENAI_API_KEY", "sk-oai", id="openai"),
-            pytest.param("OPENAI_BASE_URL", "https://openai-compatible.test", id="openai-base-url"),
+            pytest.param(
+                "OPENAI_BASE_URL",
+                "https://openai-compatible.test",
+                id="openai-base-url",
+            ),
             pytest.param(
                 "BENCHFLOW_PROVIDER_BASE_URL",
                 "https://provider.test",

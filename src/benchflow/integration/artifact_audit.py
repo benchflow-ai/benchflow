@@ -64,13 +64,17 @@ def audit_trial_result(result_path: str | Path) -> dict[str, Any]:
             "task_name": None,
             "agent": None,
             "ok": False,
-            "issues": [{"severity": "error", "message": f"invalid result.json: {error}"}],
+            "issues": [
+                {"severity": "error", "message": f"invalid result.json: {error}"}
+            ],
             "files": {},
         }
 
     missing_fields = sorted(REQUIRED_RESULT_FIELDS - set(data))
     for field in missing_fields:
-        issues.append({"severity": "error", "message": f"missing result field: {field}"})
+        issues.append(
+            {"severity": "error", "message": f"missing result field: {field}"}
+        )
 
     files: dict[str, Any] = {}
     for rel in REQUIRED_SIBLINGS:
@@ -105,7 +109,9 @@ def audit_trial_result(result_path: str | Path) -> dict[str, Any]:
 
     timing = data.get("timing")
     if not isinstance(timing, dict):
-        issues.append({"severity": "error", "message": "result timing is not an object"})
+        issues.append(
+            {"severity": "error", "message": "result timing is not an object"}
+        )
     elif "total" not in timing:
         issues.append({"severity": "warning", "message": "timing.total missing"})
 
@@ -130,16 +136,10 @@ def audit_run(run_dir: str | Path) -> dict[str, Any]:
         if path.name == "result.json"
     ]
     error_count = sum(
-        1
-        for t in trials
-        for issue in t["issues"]
-        if issue.get("severity") == "error"
+        1 for t in trials for issue in t["issues"] if issue.get("severity") == "error"
     )
     warning_count = sum(
-        1
-        for t in trials
-        for issue in t["issues"]
-        if issue.get("severity") == "warning"
+        1 for t in trials for issue in t["issues"] if issue.get("severity") == "warning"
     )
     return {
         "run_dir": str(run_dir),

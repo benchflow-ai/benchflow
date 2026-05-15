@@ -143,7 +143,9 @@ def load_config(path: str | Path) -> E2EConfig:
         audit_agent_enabled=bool(audit_agent.get("enabled", False)),
         audit_agent=audit_agent.get("agent", "gemini"),
         audit_model=audit_agent.get("model") or raw.get("model") or DEFAULT_MODEL,
-        audit_environment=audit_agent.get("environment", raw.get("environment", "daytona")),
+        audit_environment=audit_agent.get(
+            "environment", raw.get("environment", "daytona")
+        ),
     )
 
 

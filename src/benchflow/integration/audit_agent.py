@@ -20,7 +20,9 @@ def build_findings(run_dir: str | Path) -> dict[str, Any]:
     artifact = _load_json(run_dir / "artifact_audit.json")
     parity = _load_json(run_dir / "parity_report.json")
 
-    entries = matrix.get("entries", []) if isinstance(matrix.get("entries"), list) else []
+    entries = (
+        matrix.get("entries", []) if isinstance(matrix.get("entries"), list) else []
+    )
     failed_entries = [
         e
         for e in entries

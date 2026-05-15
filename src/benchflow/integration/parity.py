@@ -19,7 +19,9 @@ def _reward_from_mapping(rewards: Any) -> float | int | None:
     return None
 
 
-def normalize_result(data: dict[str, Any], *, path: str | None = None) -> dict[str, Any]:
+def normalize_result(
+    data: dict[str, Any], *, path: str | None = None
+) -> dict[str, Any]:
     """Normalize current BenchFlow and older SkillsBench trajectory result schemas."""
     # Current BenchFlow SDK._build_result schema.
     if "rewards" in data or "n_tool_calls" in data:
@@ -99,7 +101,9 @@ def collect_normalized_results(root: str | Path) -> list[dict[str, Any]]:
     records = []
     for path in sorted(root.rglob("result.json")):
         try:
-            records.append(normalize_result(json.loads(path.read_text()), path=str(path)))
+            records.append(
+                normalize_result(json.loads(path.read_text()), path=str(path))
+            )
         except Exception as exc:
             records.append(
                 {
