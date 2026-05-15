@@ -78,12 +78,44 @@ def _bedrock_frontend_model(*, agent: str, backend_model: str) -> str:
     return backend_model
 
 
+def _docker_host_address() -> str:
+    """Return the address containers should use to reach the host.
+
+    On Docker Desktop (macOS/Windows) ``host.docker.internal`` is defined
+    automatically.  On Linux it is not, so we query the Docker bridge
+    gateway which routes to the host.
+    """
+    import subprocess
+    import sys
+
+    if sys.platform != "linux":
+        return "host.docker.internal"
+    try:
+        out = subprocess.check_output(
+            [
+                "docker",
+                "network",
+                "inspect",
+                "bridge",
+                "--format",
+                "{{range .IPAM.Config}}{{.Gateway}}{{end}}",
+            ],
+            text=True,
+            timeout=10,
+        ).strip()
+        if out:
+            return out
+    except Exception:
+        logger.debug("Could not detect Docker bridge gateway, falling back")
+    return "host.docker.internal"
+
+
 def _bedrock_proxy_command(
     *,
     environment: str,
 ) -> str:
     if environment == "docker":
-        return "host.docker.internal"
+        return _docker_host_address()
     return BEDROCK_PROXY_LOCAL_HOST
 
 
