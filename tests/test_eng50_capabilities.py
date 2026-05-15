@@ -70,9 +70,7 @@ class TestRoleCapabilities:
 
 def _make_harbor_mock():
     mock = AsyncMock()
-    mock.exec = AsyncMock(
-        return_value=MagicMock(return_code=0, stdout="ok", stderr="")
-    )
+    mock.exec = AsyncMock(return_value=MagicMock(return_code=0, stdout="ok", stderr=""))
     mock.upload_file = AsyncMock()
     mock.upload_dir = AsyncMock()
     mock.download_file = AsyncMock()
@@ -131,7 +129,9 @@ class TestDaytonaSandboxExposePorts:
 
 
 class FakeExecResult:
-    def __init__(self, stdout: str = "", stderr: str = "", return_code: int = 0) -> None:
+    def __init__(
+        self, stdout: str = "", stderr: str = "", return_code: int = 0
+    ) -> None:
         self.stdout = stdout
         self.stderr = stderr
         self.return_code = return_code
@@ -146,7 +146,8 @@ class FakeEnv:
         self._exec_log.append(cmd)
         if "rm -rf" in cmd and "outbox" in cmd:
             self._files = {
-                k: v for k, v in self._files.items()
+                k: v
+                for k, v in self._files.items()
                 if not k.startswith("/app/.outbox/")
             }
             return FakeExecResult()
