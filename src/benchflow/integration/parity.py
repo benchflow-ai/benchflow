@@ -7,6 +7,10 @@ from pathlib import Path
 from typing import Any
 
 
+def _as_dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
 def _reward_from_mapping(rewards: Any) -> float | int | None:
     if isinstance(rewards, dict):
         value = rewards.get("reward")
@@ -42,17 +46,11 @@ def normalize_result(data: dict[str, Any], *, path: str | None = None) -> dict[s
         }
 
     # Historical SkillsBench / Harbor-like result schema.
-    cfg = data.get("config") if isinstance(data.get("config"), dict) else {}
-    agent_cfg = cfg.get("agent") if isinstance(cfg.get("agent"), dict) else {}
-    env_cfg = cfg.get("environment") if isinstance(cfg.get("environment"), dict) else {}
-    agent_result = (
-        data.get("agent_result") if isinstance(data.get("agent_result"), dict) else {}
-    )
-    verifier_result = (
-        data.get("verifier_result")
-        if isinstance(data.get("verifier_result"), dict)
-        else {}
-    )
+    cfg = _as_dict(data.get("config"))
+    agent_cfg = _as_dict(cfg.get("agent"))
+    env_cfg = _as_dict(cfg.get("environment"))
+    agent_result = _as_dict(data.get("agent_result"))
+    verifier_result = _as_dict(data.get("verifier_result"))
     exception_info = data.get("exception_info")
     error = None
     if exception_info:
