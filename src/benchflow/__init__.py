@@ -46,7 +46,7 @@ from benchflow.environments import (
 from benchflow.job import Job, JobConfig, JobResult, RetryConfig
 from benchflow.metrics import BenchmarkMetrics, collect_metrics
 from benchflow.models import AgentInstallError, AgentTimeoutError, RunResult
-from benchflow.rollouts import Role, Scene, Turn
+from benchflow.rollouts import Role, RolloutConfig, Scene, Turn
 from benchflow.runtime import (
     Agent,
     Environment,
@@ -100,6 +100,7 @@ __all__ = [
     "AgentInstallError",
     "AgentTimeoutError",
     "RunResult",
+    "RolloutConfig",
     # Runtime (0.3 primary API)
     "Agent",
     "Environment",

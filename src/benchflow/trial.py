@@ -41,7 +41,6 @@ import json
 import logging
 import os
 import shlex
-from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -74,15 +73,20 @@ from benchflow._trajectory import (
 from benchflow.acp.client import ACPClient, ACPError
 from benchflow.agents.registry import AGENT_LAUNCH, AGENTS
 from benchflow.models import RunResult, TrajectorySource
-from benchflow.rollouts.config import Role, Scene, Turn
-from benchflow.user import BaseUser, RoundResult
+from benchflow.rollouts.config import (
+    GENERATED_SKILLS_ROOT,
+    SKILL_MODE_DEFAULT,
+    SKILL_MODE_SELF_GEN,
+    Role,
+    RolloutConfig,
+    Scene,
+    Turn,
+)
+from benchflow.user import RoundResult
 
 logger = logging.getLogger(__name__)
 
 _DISALLOW_WEB_TOOLS_ENV = "BENCHFLOW_DISALLOW_WEB_TOOLS"
-SKILL_MODE_DEFAULT = "default"
-SKILL_MODE_SELF_GEN = "self-gen"
-GENERATED_SKILLS_ROOT = "/app/generated-skills"
 
 
 def _task_disallows_internet(task: Any) -> bool:
@@ -228,126 +232,8 @@ async def _ensure_sandbox_dir(
         )
 
 
-@dataclass
-class TrialConfig:
-    """Declarative trial configuration.
-
-    A trial is a sequence of scenes executed in a shared sandbox.
-    Single-agent runs are a trial with one scene containing one role.
-    """
-
-    task_path: Path
-    scenes: list[Scene] = field(default_factory=list)
-    environment: str = "docker"
-    sandbox_user: str | None = "agent"
-    sandbox_locked_paths: list[str] | None = None
-    sandbox_setup_timeout: int = 120
-    services: list[str] | None = None
-    job_name: str | None = None
-    trial_name: str | None = None
-    jobs_dir: str | Path = "jobs"
-    context_root: str | Path | None = None
-    pre_agent_hooks: list | None = None
-    # Abort the prompt if no tool call arrives for this many seconds.
-    # Catches agents that hung silently while the local process is alive
-    # (e.g. gemini-cli not responding). None disables idle detection and
-    # falls back to the agent's wall-clock timeout (task.toml [agent]).
-    agent_idle_timeout: int | None = 600
-
-    # User-driven progressive-disclosure loop
-    user: BaseUser | None = None
-    max_user_rounds: int = 5
-    oracle_access: bool = False
-
-    # Legacy compat fields — used by SDK.run() shim. Ignored when scenes is set.
-    agent: str = "claude-agent-acp"
-    prompts: list[str | None] | None = None
-    model: str | None = None
-    agent_env: dict[str, str] | None = None
-    skills_dir: str | Path | None = None
-    skill_mode: str = SKILL_MODE_DEFAULT
-    skill_creator_dir: str | Path | None = None
-    generated_skills_root: str = GENERATED_SKILLS_ROOT
-    self_gen_no_internet: bool = False
-    include_task_skills: bool = True
-    skip_verify: bool = False
-    export_generated_skills_to: str | Path | None = None
-
-    @classmethod
-    def from_legacy(
-        cls,
-        *,
-        task_path: Path,
-        agent: str = "claude-agent-acp",
-        model: str | None = None,
-        prompts: list[str | None] | None = None,
-        skills_dir: str | Path | None = None,
-        skill_mode: str = SKILL_MODE_DEFAULT,
-        skill_creator_dir: str | Path | None = None,
-        generated_skills_root: str = GENERATED_SKILLS_ROOT,
-        self_gen_no_internet: bool = False,
-        **kwargs,
-    ) -> TrialConfig:
-        """Construct from flat SDK.run()-style args."""
-        scenes = []
-        if skill_mode not in {SKILL_MODE_DEFAULT, SKILL_MODE_SELF_GEN}:
-            raise ValueError(f"Unknown skill_mode: {skill_mode}")
-        if skill_mode == SKILL_MODE_DEFAULT:
-            scenes = [
-                Scene.single(
-                    agent=agent, model=model, prompts=prompts, skills_dir=skills_dir
-                )
-            ]
-        return cls(
-            task_path=task_path,
-            scenes=scenes,
-            agent=agent,
-            model=model,
-            prompts=prompts,
-            skills_dir=skills_dir,
-            skill_mode=skill_mode,
-            skill_creator_dir=skill_creator_dir,
-            generated_skills_root=generated_skills_root,
-            self_gen_no_internet=self_gen_no_internet,
-            **kwargs,
-        )
-
-    @property
-    def effective_scenes(self) -> list[Scene]:
-        """Scenes to execute — falls back to legacy fields if scenes is empty."""
-        if self.skill_mode == SKILL_MODE_SELF_GEN:
-            raise ValueError(
-                "self-gen requires the runtime orchestrator. Use SDK.run(), "
-                "Job.run(), or bf.run(TrialConfig(...)) instead of Trial scenes."
-            )
-        if self.scenes:
-            return self.scenes
-        if self.skill_mode != SKILL_MODE_DEFAULT:
-            raise ValueError(f"Unknown skill_mode: {self.skill_mode}")
-        return [
-            Scene.single(
-                agent=self.agent,
-                model=self.model,
-                prompts=self.prompts,
-                skills_dir=self.skills_dir,
-            )
-        ]
-
-    @property
-    def primary_agent(self) -> str:
-        """Agent name for the first role of the first scene."""
-        scenes = self.effective_scenes
-        if scenes and scenes[0].roles:
-            return scenes[0].roles[0].agent
-        return self.agent
-
-    @property
-    def primary_model(self) -> str | None:
-        """Model for the first role of the first scene."""
-        scenes = self.effective_scenes
-        if scenes and scenes[0].roles:
-            return scenes[0].roles[0].model
-        return self.model
+class TrialConfig(RolloutConfig):
+    """Compatibility name while the lifecycle class migrates to Rollout."""
 
 
 class Trial:

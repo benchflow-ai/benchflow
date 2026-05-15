@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from benchflow._scene import MailboxTransport, Message, SceneRuntime
-from benchflow.rollouts import Role, Scene, Turn
+from benchflow.rollouts import RolloutConfig, Role, Scene, Turn
 
 
 @pytest.fixture
@@ -241,3 +241,22 @@ def test_canonical_scene_single_and_parallel_group() -> None:
         Turn(role="agent", prompt="Review your solution."),
     ]
     assert scene.parallel_group == "pass-k"
+
+
+def test_rollout_config_from_single_uses_canonical_scene() -> None:
+    config = RolloutConfig.from_single(
+        task_path=Path("tasks/example"),
+        agent="gemini",
+        model="gemini-3.1-flash-lite-preview",
+        prompts=[None],
+    )
+
+    assert config.primary_agent == "gemini"
+    assert config.primary_model == "gemini-3.1-flash-lite-preview"
+    assert config.effective_scenes == [
+        Scene.single(
+            agent="gemini",
+            model="gemini-3.1-flash-lite-preview",
+            prompts=[None],
+        )
+    ]

@@ -57,11 +57,13 @@ def test_public_api_reexports():
         SDK,
         AgentInstallError,
         AgentTimeoutError,
+        RolloutConfig,
         RunResult,
         stage_dockerfile_deps,
     )
 
     assert callable(SDK)
+    assert callable(RolloutConfig)
     assert callable(RunResult)
     assert callable(AgentInstallError)
     assert callable(AgentTimeoutError)

@@ -5,6 +5,22 @@ roles, turns, and scenes. Legacy modules may temporarily re-export them during
 the migration, but new code should import from ``benchflow.rollouts``.
 """
 
-from benchflow.rollouts.config import Role, Scene, Turn
+from benchflow.rollouts.config import (
+    GENERATED_SKILLS_ROOT,
+    SKILL_MODE_DEFAULT,
+    SKILL_MODE_SELF_GEN,
+    Role,
+    RolloutConfig,
+    Scene,
+    Turn,
+)
 
-__all__ = ["Role", "Scene", "Turn"]
+__all__ = [
+    "GENERATED_SKILLS_ROOT",
+    "Role",
+    "RolloutConfig",
+    "SKILL_MODE_DEFAULT",
+    "SKILL_MODE_SELF_GEN",
+    "Scene",
+    "Turn",
+]
