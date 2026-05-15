@@ -136,12 +136,13 @@ to avoid crashes on legal text with `{` or `}` characters.
 
 #### Container image
 Digest-pinned `python:3.13-slim` with document toolchain: `pandoc`, `pdfplumber`, `openpyxl`,
-`python-docx`, `python-pptx`, `markitdown`, `pandas`, `google-genai`.
+`python-docx`, `python-pptx`, `markitdown`, `pandas`, `anthropic`.
 
 #### Judge
-Gemini-based LLM judge (`evaluate.py`), one call per rubric criterion. Each criterion
-specifies deliverable files to grade against. Reward = (criteria passed) / (total criteria).
-Same per-criterion individual grading as Harvey LAB's original `evaluation/judge.py`.
+Claude-based LLM judge (`evaluate.py`, model: `claude-sonnet-4-6`), one call per rubric
+criterion. Each criterion specifies deliverable files to grade against.
+Reward = (criteria passed) / (total criteria). Same per-criterion individual grading and
+default judge model as Harvey LAB's original `evaluation/judge.py`.
 
 #### Task naming
 `harvey-lab/<practice-area>-<task-slug>[-scenario-NN]`. All lowercase, non-alphanumeric
@@ -166,8 +167,8 @@ Podman with direct filesystem ops (BenchFlow's Docker provides equivalent sandbo
 - **`parse-doc` not found in harness agent.** The Harvey LAB harness's `read` tool calls
   `parse-doc` for .docx/.xlsx/.pdf parsing. Ensure it's installed in PATH when running
   the ACP shim outside Docker.
-- **Rate limit errors from Gemini judge.** Lower concurrency or retry. The verifier calls
-  Gemini once per criterion (~60 calls per task).
+- **Rate limit errors from Claude judge.** Lower concurrency or retry. The verifier calls
+  Claude once per criterion (~60 calls per task).
 
 ## Citation
 

@@ -87,7 +87,7 @@ def _build_task_toml(
         timeout_sec = {verifier_timeout}
 
         [verifier.env]
-        GEMINI_API_KEY = "${{GEMINI_API_KEY}}"
+        ANTHROPIC_API_KEY = "${{ANTHROPIC_API_KEY}}"
 
         [environment]
         build_timeout_sec = 600
@@ -153,7 +153,7 @@ def _build_dockerfile(task_id: str) -> str:
             python-pptx \\
             markitdown \\
             pandas \\
-            google-genai
+            anthropic
 
         WORKDIR /app
 
@@ -192,7 +192,7 @@ def _build_test_sh() -> str:
 
 
 def _build_evaluate_py() -> str:
-    """Generate evaluate.py — LLM-as-judge scoring using Gemini."""
+    """Generate evaluate.py — LLM-as-judge scoring using Claude (Anthropic)."""
     return textwrap.dedent('''\
         """LLM-as-judge verifier for Harvey LAB tasks.
 
@@ -291,28 +291,29 @@ def _build_evaluate_py() -> str:
         """)
 
 
-        def call_gemini(prompt: str, retries: int = 3) -> str:
-            """Call Gemini API and return the text response."""
-            from google import genai
+        def call_judge(prompt: str, retries: int = 3) -> str:
+            """Call Anthropic Claude API and return the text response."""
+            import anthropic
 
-            api_key = os.environ.get("GEMINI_API_KEY", "")
+            api_key = os.environ.get("ANTHROPIC_API_KEY", "")
             if not api_key:
-                raise RuntimeError("GEMINI_API_KEY not set")
+                raise RuntimeError("ANTHROPIC_API_KEY not set")
 
-            client = genai.Client(api_key=api_key)
+            client = anthropic.Anthropic(api_key=api_key)
 
             for attempt in range(retries):
                 try:
-                    response = client.models.generate_content(
-                        model="gemini-3.1-flash-lite-preview",
-                        contents=prompt,
+                    response = client.messages.create(
+                        model="claude-sonnet-4-6",
+                        max_tokens=2048,
+                        messages=[{"role": "user", "content": prompt}],
                     )
-                    return response.text
+                    return response.content[0].text
                 except Exception as e:
                     if attempt < retries - 1:
                         time.sleep(2 ** attempt)
                         continue
-                    raise RuntimeError(f"Gemini API failed after {retries} attempts: {e}")
+                    raise RuntimeError(f"Anthropic API failed after {retries} attempts: {e}")
 
 
         def parse_verdict(text: str) -> dict:
@@ -380,7 +381,7 @@ def _build_evaluate_py() -> str:
                     criterion_title=criterion["title"],
                     match_criteria=criterion["match_criteria"],
                 )
-                response_text = call_gemini(prompt)
+                response_text = call_judge(prompt)
                 verdict = parse_verdict(response_text)
                 return {
                     "id": criterion["id"],
