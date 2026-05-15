@@ -144,6 +144,11 @@ criterion. Each criterion specifies deliverable files to grade against.
 Reward = (criteria passed) / (total criteria). Same per-criterion individual grading and
 default judge model as Harvey LAB's original `evaluation/judge.py`.
 
+> **Note:** The parity data below was recorded with the previous `gemini-3.1-flash-lite-preview`
+> judge. Those results validated prompt equivalence (same prompts → same verdicts), not
+> judge-model equivalence. The judge was switched to `claude-sonnet-4-6` in PR #264 to match
+> the original Harvey LAB benchmark's default.
+
 #### Task naming
 `harvey-lab/<practice-area>-<task-slug>[-scenario-NN]`. All lowercase, non-alphanumeric
 replaced with hyphens, collapsed.
