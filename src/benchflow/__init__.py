@@ -31,6 +31,12 @@ from benchflow._snapshot import list_snapshots, restore, snapshot
 from benchflow._types import Role, Scene, Turn
 from benchflow.acp.client import ACPClient
 from benchflow.acp.session import ACPSession
+from benchflow.adapters import (
+    InspectAdapter,
+    ORSAdapter,
+    to_inspect_task,
+    to_ors_reward,
+)
 from benchflow.agents.registry import (
     AGENTS,
     get_agent,
@@ -205,6 +211,11 @@ __all__ = [
     "OTelCollector",
     "TrajectoryProxy",
     "Trajectory",
+    # External adapters (ENG-51)
+    "InspectAdapter",
+    "ORSAdapter",
+    "to_inspect_task",
+    "to_ors_reward",
 ]
 
 
