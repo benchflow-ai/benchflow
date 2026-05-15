@@ -5,15 +5,15 @@ They live under `docs/examples/` so examples and docs move together.
 
 ## Single Task
 
-Use `bench run` for one task:
+Use `bench eval create` for one task:
 
 ```bash
-bench run \
+bench eval create \
   --source-repo benchflow-ai/skillsbench \
   --source-path tasks/edit-pdf \
-  --agent gemini \
-  --model gemini-3.1-flash-lite-preview \
-  --backend daytona
+  -a gemini \
+  -m gemini-3.1-flash-lite-preview \
+  -e daytona
 ```
 
 Backends are `docker`, `daytona`, and `modal`.
@@ -24,10 +24,11 @@ When an example or task has a skills directory, mount it and pass the skill
 nudge. The docs use `BENCHFLOW_SKILL_NUDGE=name` as the default recommendation:
 
 ```bash
-bench run tasks/my-task \
-  --agent gemini \
-  --model gemini-3.1-flash-lite-preview \
-  --backend daytona \
+bench eval create \
+  -t tasks/my-task \
+  -a gemini \
+  -m gemini-3.1-flash-lite-preview \
+  -e daytona \
   --skills-dir tasks/my-task/environment/skills \
   --ae BENCHFLOW_SKILL_NUDGE=name
 ```

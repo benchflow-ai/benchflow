@@ -837,7 +837,9 @@ async def harden_before_verify(
     verifier_env = dict(VERIFIER_ENV)
     verifier_env.update(distro_env)
     if task.config.verifier.env:
-        verifier_env.update(task.config.verifier.env)
+        verifier_env.update(
+            {k: os.path.expandvars(v) for k, v in task.config.verifier.env.items()}
+        )
     # Hard security invariants — re-pin after task-env merge so a task cannot
     # replace PATH, strip -c /dev/null / --confcutdir, re-enable entry-point
     # plugin loading, or inject code via breakpoint()/coverage/Django/Celery
