@@ -82,7 +82,7 @@ result = await bf.run(config)
 ### Why this design
 
 - One sandbox, one ACP session — no sidecar container, no Docker Compose networking, no extra server to maintain.
-- Both agents share the sandbox filesystem — the "user" reads `/solution/` (which is locked from the assistant by `lockdown_paths`).
+- Both agents share the sandbox filesystem and communicate through `/app/.outbox/{recipient}.json`.
 - The user agent is a real LLM with full tool access — it can read files, check outputs, and give nuanced feedback, not just templated responses.
 - Same task folder works for single-turn (baseline) and interactive (with user) via different YAML configs.
 

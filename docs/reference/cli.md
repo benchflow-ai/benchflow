@@ -106,8 +106,6 @@ bench eval create -t ./tasks -a gemini -m gemini-3.1-flash-lite-preview
 | `--sandbox-user` | `agent` | Sandbox user (null for root) |
 | `--sandbox-setup-timeout` | `120` | Timeout in seconds for sandbox user setup |
 | `--skills-dir`, `-s` | — | Skills directory to deploy into each task sandbox |
-| `--agent-env`, `--ae` | — | Agent environment variable as `KEY=VALUE`; repeatable |
-| `--exclude` | — | Task name to exclude from batch; repeatable |
 
 ### bench eval list
 
