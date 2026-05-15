@@ -128,7 +128,7 @@ if [ $? -eq 0 ]; then echo 1; else echo 0; fi > /logs/verifier/reward.txt
 python3 -c "print($PASSED / $TOTAL)" > /logs/verifier/reward.txt
 ```
 
-**Security:** don't let the agent write to `/logs/verifier/reward.txt` or modify `/tests/test.sh`. For tasks running arbitrary code, use `allow_internet = false` and verify output files only.
+**Security:** don't let the agent write to `/logs/verifier/reward.txt` or modify `/tests/test.sh`. For tasks running arbitrary code, use `allow_internet = false` and verify output files only. For LLM agent runs, BenchFlow preserves the network path needed for model APIs and agent startup, then disables supported agent web browsing/fetch tools through agent config or launch controls. Oracle runs still use the environment's network policy directly.
 
 ---
 
@@ -156,10 +156,17 @@ bench tasks init my-task --no-pytest --no-solution
 bench tasks check tasks/my-task/
 
 # Confirm oracle gets reward = 1.0
-bench eval create -t tasks/my-task/ -a oracle -e docker
+bench run tasks/my-task/ --agent oracle --backend docker
 
 # Run a real agent
-bench eval create -t tasks/my-task/ -a gemini -e daytona
+bench run tasks/my-task/ --agent gemini --backend daytona
+
+# Run with task-local skills mounted
+bench run tasks/my-task/ \
+  --agent gemini \
+  --backend daytona \
+  --skills-dir tasks/my-task/environment/skills \
+  --ae BENCHFLOW_SKILL_NUDGE=name
 ```
 
 `bench tasks check` validates that `task.toml`, `instruction.md` (non-empty), `environment/Dockerfile`, and `tests/` (non-empty) all exist, and that `[agent].timeout_sec` is set. Exits with code 1 on failure (CI-friendly).

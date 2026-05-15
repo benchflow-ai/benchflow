@@ -132,6 +132,8 @@ For stronger isolation, use the MCP reviewer server pattern. The reviewer runs a
 
 ```python
 from pathlib import Path
+
+from benchflow.mcp.hooks import mcp_reviewer_hook
 from benchflow.trial import TrialConfig, Scene, Role, Turn
 
 config = TrialConfig(
@@ -144,8 +146,8 @@ config = TrialConfig(
                   Turn("coder", "Call the review_code MCP tool to get feedback, then fix issues."),
               ]),
     ],
-    services=["benchflow-reviewer:8100"],
     environment="daytona",
+    pre_agent_hooks=[mcp_reviewer_hook(port=8100, model="gemini-3.1-flash-lite")],
 )
 result = await bf.run(config)
 ```
@@ -154,7 +156,7 @@ The MCP reviewer server (`benchflow.mcp.reviewer_server`) runs as a background p
 
 ### Results
 
-On Terminal-Bench 2, adding an independent reviewer approximately doubles the win rate on tasks where the baseline fails. Ablation experiments (`experiments/reviewer_ablation.py`) compare three conditions:
+Use `experiments/reviewer_ablation.py` to compare reviewer variants on your task set. The experiment template covers three conditions:
 
 | Condition | Description |
 |-----------|-------------|
@@ -162,13 +164,14 @@ On Terminal-Bench 2, adding an independent reviewer approximately doubles the wi
 | `reviewer` | Coder + plain reviewer + coder revision |
 | `reviewer+spec` | Coder + reviewer that re-reads instruction + coder revision |
 
-The reviewer condition consistently outperforms baseline on complex tasks that require debugging or multi-file coordination.
+Treat reviewer lift as an empirical question for the target benchmark. It is most relevant for tasks that require debugging or multi-file coordination, but it should be measured rather than assumed.
 
 ### Why this design
 
-- Both agents run in the same sandbox — cheaper, faster startup, no sidecar container or Compose networking.
-- The MCP pattern (`services: ["benchflow-reviewer:8100"]`) gives the reviewer tool-level isolation: it cannot write to the workspace, preventing reward hacking via reviewer collusion.
-- Same task, same verifier — just add the `scenes` key to your YAML.
+- No Docker Compose, no sidecar container, no FastMCP server to maintain.
+- The MCP hook pattern gives the reviewer tool-level isolation: it cannot write to the workspace, preventing reward hacking via reviewer collusion.
+- Same task, same verifier -- define roles and turns in `TrialConfig` or trial
+  YAML.
 
 ---
 
@@ -378,24 +381,9 @@ Each variant is just a different YAML file -- same task folder, same verifier, d
 
 ---
 
-## 6. Stateful Environment (ClawsBench)
+## 6. Stateful Service Tasks
 
 Tasks that require agents to interact with live services -- Gmail, Calendar, Docs, Drive, Slack. Services run as sidecar processes in the sandbox, exposing REST APIs on localhost. The agent interacts with real HTTP endpoints, not mocked tool calls.
-
-### YAML
-
-```yaml
-source:
-  repo: benchflow-ai/clawsbench
-  path: tasks
-environment: daytona
-concurrency: 32
-
-services:
-  - gmail
-  - gcal
-  - slack
-```
 
 ### Python
 
@@ -416,6 +404,9 @@ config = TrialConfig(
 result = await bf.run(config)
 ```
 
+Service hooks are explicit today. `TrialConfig.services` is reserved metadata;
+it does not start services unless you translate it into `pre_agent_hooks`.
+
 ### Service registry
 
 BenchFlow ships with 5 built-in services (from the SmolClaws project):
@@ -434,15 +425,20 @@ Each service:
 - Uses SQLite for state -- pre-seeded from the task's `environment/` directory.
 - Is indistinguishable from the real API from the agent's perspective.
 
-### How services run in BenchFlow
+### How it works vs Harbor
 
-Stateful services are lightweight processes inside the same sandbox the agent runs in — not separate containers wired by Compose networking:
+In Harbor, stateful services required Docker Compose with separate containers for each service. This meant:
+- Separate Dockerfiles per service container.
+- Docker Compose networking for inter-container communication.
+- Complex task setup with volume mounts for shared databases.
+
+In BenchFlow, services are lightweight processes in the same sandbox:
 - One Dockerfile with the services pre-installed.
 - `pre_agent_hooks` starts them before the agent connects.
 - The agent hits `localhost:9001` for Gmail -- no network complexity.
-- `detect_services_from_dockerfile()` is available for custom orchestration, but services are not auto-started by the CLI.
+- `detect_services_from_dockerfile()` can discover service binaries for custom orchestration, but the CLI does not auto-start them yet.
 
-### Example task structure (ClawsBench)
+### Example task structure
 
 ```
 tasks/schedule-meeting-from-email/
@@ -457,4 +453,24 @@ tasks/schedule-meeting-from-email/
 └── tests/
     └── test.sh             # Verify: check gcal.db has the new event
 ```
+
+---
+
+## Migration from Harbor
+
+| Harbor pattern | BenchFlow equivalent | Key difference |
+|----------------|---------------------|----------------|
+| Docker Compose + FastMCP sidecar (#1316) | Scene with user + agent roles | No Compose needed; agents share sandbox |
+| Multi-container multi-agent (#1462) | Scene with N roles + turns | Single container, process-level isolation via ACP |
+| `agent_timeout` + single prompt | Turn with `None` prompt | Same behavior, just wrapped in Scene |
+| Docker Compose services | `pre_agent_hooks` + `SERVICES` registry | Lightweight same-container sidecars; service hook wiring is explicit |
+| Separate verifier container | Same -- BenchFlow uses Harbor's `Verifier` | No change needed for task authors |
+
+### Porting a Harbor task
+
+1. **Task files**: No changes needed. BenchFlow reads the same `task.toml`, `instruction.md`, `Dockerfile`, and `tests/` structure.
+2. **Single-turn**: Works out of the box with `bench eval create -t your-task -a gemini`.
+3. **Multi-turn**: Add a `scenes` key to trial YAML loaded with `trial_config_from_yaml()` or pass `TrialConfig` in Python.
+4. **Multi-agent**: Define multiple roles in the scene. No Docker Compose required.
+5. **Services**: Start them explicitly with `pre_agent_hooks`; `detect_services_from_dockerfile()` is available for custom orchestration, but the CLI does not auto-start services today.
 

@@ -48,7 +48,7 @@ from benchflow.trial import TrialConfig, Scene
 from pathlib import Path
 
 config = TrialConfig(
-    task_path=Path("tasks/regex-log"),
+    task_path=Path("tasks/edit-pdf"),
     scenes=[Scene.single(agent="gemini", model="gemini-3.1-pro-preview")],
     environment="daytona",
 )
