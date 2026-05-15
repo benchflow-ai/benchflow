@@ -266,6 +266,49 @@ Recorded parity results are in `parity_experiment.json` and `benchmark.yaml`.
 
 ---
 
+## Running the SkillsBench E2E matrix
+
+BenchFlow's own ENG-6 E2E check is file-driven through the normal eval CLI:
+
+```bash
+bench eval create -f tasks/skillsbench-e2e/e2e.yaml --dry-run
+```
+
+The dry run validates the configured 9-task × all-agent matrix and writes a
+planned output bundle without creating sandboxes.
+
+The live run is intentionally gated and should not run on every commit:
+
+```bash
+export BENCHFLOW_RUN_SKILLSBENCH_E2E=1
+export DAYTONA_API_KEY=...
+export GEMINI_API_KEY=...
+bench eval create -f tasks/skillsbench-e2e/e2e.yaml
+```
+
+It runs the selected SkillsBench tasks across all registered BenchFlow agents
+with `gemini-3.1-flash-lite-preview`, Daytona backend, concurrency 30, and no
+skills. Agents that cannot run that Gemini model are recorded as findings rather
+than hidden.
+
+Each run writes:
+
+- `matrix_config.json`
+- `matrix_summary.json`
+- `artifact_audit.json`
+- `parity_report.json`
+- `audit_findings.json`
+- `findings.md`
+- `audit_agent_prompt.md`
+
+To re-run deterministic audits on an existing output directory:
+
+```bash
+python benchmarks/scripts/skillsbench_e2e_audit.py jobs/skillsbench-e2e/<run-id>
+```
+
+---
+
 ## YAML config reference
 
 Job configs use the two-field `source` pattern to reference remote benchmark repos:

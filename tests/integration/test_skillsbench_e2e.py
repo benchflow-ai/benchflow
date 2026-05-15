@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -94,3 +95,25 @@ audit:
     assert (run_dirs[0] / "artifact_audit.json").exists()
     assert (run_dirs[0] / "parity_report.json").exists()
     assert (run_dirs[0] / "findings.md").exists()
+
+
+@pytest.mark.live
+@pytest.mark.e2e
+def test_live_skillsbench_e2e_matrix_is_file_driven() -> None:
+    """Gated live E2E entrypoint.
+
+    This test intentionally invokes the same file-driven path operators use:
+    ``bench eval create -f tasks/skillsbench-e2e/e2e.yaml``. It is excluded by
+    default via the repository's ``not live`` pytest config.
+    """
+    if os.environ.get("BENCHFLOW_RUN_SKILLSBENCH_E2E") != "1":
+        pytest.skip("Set BENCHFLOW_RUN_SKILLSBENCH_E2E=1 to run the live E2E matrix")
+    if not os.environ.get("DAYTONA_API_KEY"):
+        pytest.skip("DAYTONA_API_KEY is required for the live E2E matrix")
+    if not (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")):
+        pytest.skip("GEMINI_API_KEY or GOOGLE_API_KEY is required")
+
+    result = CliRunner().invoke(app, ["eval", "create", "-f", str(E2E_CONFIG)])
+
+    assert result.exit_code == 0, result.output
+    assert "SkillsBench E2E output:" in result.output

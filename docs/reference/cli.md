@@ -78,6 +78,9 @@ accepts a single task directory.
 # From YAML config
 bench eval create -f benchmarks/skillsbench-claude-glm51.yaml
 
+# File-driven SkillsBench E2E matrix (dry run; no sandboxes)
+bench eval create -f tasks/skillsbench-e2e/e2e.yaml --dry-run
+
 # From remote repo
 bench eval create \
   --source-repo benchflow-ai/skillsbench \
@@ -107,6 +110,30 @@ bench eval create -t ./tasks -a gemini -m gemini-3.1-flash-lite-preview
 | `--sandbox-user` | `agent` | Sandbox user (null for root) |
 | `--sandbox-setup-timeout` | `120` | Timeout in seconds for sandbox user setup |
 | `--skills-dir`, `-s` | — | Skills directory to deploy into each task sandbox |
+| `--dry-run` | `false` | For supported file-driven E2E configs, build the matrix without running agents |
+
+### File-driven SkillsBench E2E configs
+
+BenchFlow includes a gated integration config for ENG-6:
+
+```bash
+bench eval create -f tasks/skillsbench-e2e/e2e.yaml --dry-run
+```
+
+The live run is intentionally not part of normal CI. It requires explicit
+credentials and runs 9 SkillsBench tasks across all registered agents on
+Daytona with `gemini-3.1-flash-lite-preview`:
+
+```bash
+export BENCHFLOW_RUN_SKILLSBENCH_E2E=1
+export DAYTONA_API_KEY=...
+export GEMINI_API_KEY=...
+bench eval create -f tasks/skillsbench-e2e/e2e.yaml
+```
+
+Outputs land under `jobs/skillsbench-e2e/<run-id>/` and include
+`matrix_summary.json`, `artifact_audit.json`, `parity_report.json`,
+`audit_findings.json`, and `findings.md`.
 
 ### bench eval list
 
