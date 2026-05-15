@@ -116,7 +116,3 @@ These are reference configs — `run.sh` uses CLI arguments directly for more co
 # Run validator standalone
 uv run python tests/integration/check_results.py jobs/integration gemini pi-acp
 ```
-
-## Cost
-
-Approximate cost per full run: ~$0.36 (9 tasks × 8 agents using flash-lite/haiku/nano models).
