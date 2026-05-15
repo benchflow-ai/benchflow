@@ -1,0 +1,21 @@
+# Integration test: 9 SkillsBench tasks with Gemini agent.
+# Driven by gemini-3.1-lite-preview on Daytona.
+#
+# Usage:
+#   GEMINI_API_KEY=... bench eval create -f tests/integration/configs/skillsbench-9-gemini.yaml
+
+source:
+  repo: benchflow-ai/skillsbench
+  path: tasks
+  ref: main
+
+jobs_dir: jobs/integration-skillsbench-9-gemini
+agent: gemini
+model: gemini-3.1-lite-preview
+environment: daytona
+concurrency: 30
+max_retries: 1
+
+# Only include the 9 selected tasks — exclude everything else.
+# Job._from_native_yaml uses exclude_tasks to filter; we instead
+# rely on the test harness to resolve task subsets.
