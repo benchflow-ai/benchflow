@@ -6,6 +6,28 @@ here.
 
 Merged from the duplicate definitions that lived in ``trial.py`` and
 ``_scene.py`` prior to ENG-47.
+
+.. rubric:: Capability boundary (ENG-50)
+
+BenchFlow provides **sandbox + instruction + observation** infrastructure.
+It does **not** orchestrate agent-internal loops, tool protocols, or
+agent-as-tool invocations. Those are per-agent capabilities declared via
+:pyattr:`Role.capabilities` and implemented by the agent itself.
+
+Concretely:
+
+* BenchFlow sets up the sandbox (Docker / Daytona / Modal), injects
+  environment variables and skills, and wires up the ACP transport.
+* BenchFlow ensures sandbox networking allows inter-agent communication
+  (all roles in a scene share a sandbox, so localhost is reachable).
+* The ``capabilities`` field on :class:`Role` is a **declaration** — it
+  tells downstream tooling / dashboards what the agent supports, but
+  BenchFlow itself does not act on it.
+* Agent-as-tool is a per-agent capability.  BenchFlow does not invoke
+  agents on behalf of other agents; the calling agent uses its own
+  native tool-use to reach a companion agent's endpoint.
+* Loop management is entirely the agent's responsibility.  BenchFlow
+  scenes define *turns* (prompts), not iteration.
 """
 
 from __future__ import annotations
@@ -16,7 +38,14 @@ from pathlib import Path
 
 @dataclass
 class Role:
-    """One agent participant in a scene."""
+    """One agent participant in a scene.
+
+    The ``capabilities`` field is a declarative list of strings describing
+    what the agent natively supports (e.g. ``["tool-use", "loop",
+    "agent-as-tool"]``).  BenchFlow records these in trial metadata but
+    does **not** act on them — the agent itself is responsible for
+    implementing whatever capabilities it advertises.
+    """
 
     name: str
     agent: str
@@ -25,6 +54,7 @@ class Role:
     timeout_sec: int | None = None  # None = inherit from task.toml
     idle_timeout_sec: int | None = None
     skills_dir: str | Path | None = None
+    capabilities: list[str] | None = None  # e.g. ["tool-use", "agent-as-tool", "loop"]
 
 
 @dataclass
