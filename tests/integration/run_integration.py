@@ -125,11 +125,12 @@ async def run_agent_matrix(
             continue
 
         if dry_run:
+            agent_model = AGENT_MODEL_OVERRIDES.get(agent, model)
             logger.info(
                 "[DRY RUN] Would run %d tasks with %s/%s on %s (concurrency=%d)",
                 len(tasks),
                 agent,
-                model,
+                agent_model,
                 environment,
                 concurrency,
             )
@@ -210,7 +211,7 @@ def main() -> None:
     parser.add_argument(
         "--model",
         type=str,
-        default="gemini-3.1-lite-preview",
+        default="gemini-3.1-flash-lite-preview",
     )
     parser.add_argument(
         "--environment",

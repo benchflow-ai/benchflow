@@ -1,5 +1,5 @@
 # Integration test: 9 SkillsBench tasks with Gemini agent.
-# Driven by gemini-3.1-lite-preview on Daytona.
+# Driven by gemini-3.1-flash-lite-preview on Daytona.
 #
 # Usage:
 #   GEMINI_API_KEY=... bench eval create -f tests/integration/configs/skillsbench-9-gemini.yaml
@@ -11,7 +11,7 @@ source:
 
 jobs_dir: jobs/integration-skillsbench-9-gemini
 agent: gemini
-model: gemini-3.1-lite-preview
+model: gemini-3.1-flash-lite-preview
 environment: daytona
 concurrency: 30
 max_retries: 1

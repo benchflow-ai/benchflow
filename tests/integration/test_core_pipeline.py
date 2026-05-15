@@ -1,7 +1,7 @@
 """Layer 1 — Core pipeline: single task × each agent.
 
 Validates that the SDK.run() pipeline completes end-to-end for every
-registered agent driven by gemini-3.1-lite-preview on Daytona.
+registered agent driven by gemini-3.1-flash-lite-preview on Daytona.
 
 Uses the hello-world-task (trivial, fast) to isolate agent/infra issues
 from task complexity.

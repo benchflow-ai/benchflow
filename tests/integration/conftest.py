@@ -57,7 +57,7 @@ ALL_AGENTS = [
     "openhands",
 ]
 
-DEFAULT_MODEL = "gemini-3.1-lite-preview"
+DEFAULT_MODEL = "gemini-3.1-flash-lite-preview"
 DEFAULT_ENVIRONMENT = "daytona"
 DEFAULT_CONCURRENCY = 30
 
@@ -113,7 +113,7 @@ def has_creds_for_agent(agent: str) -> bool:
     required = AGENT_REQUIRED_KEYS.get(agent, [])
     if not required:
         # Agents with no explicit key requirement need at least Gemini key
-        # since we drive them with gemini-3.1-lite-preview.
+        # since we drive them with gemini-3.1-flash-lite-preview.
         return _has_gemini_key()
     if any(os.environ.get(k) for k in required):
         return True

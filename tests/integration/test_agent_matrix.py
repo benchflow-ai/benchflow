@@ -1,7 +1,7 @@
 """Layer 2 — Agent matrix: 9 SkillsBench tasks × 8 agents.
 
 Runs the full 9-task SkillsBench subset against each registered agent
-on Daytona with gemini-3.1-lite-preview.  Validates that:
+on Daytona with gemini-3.1-flash-lite-preview.  Validates that:
 
 - Agent installs successfully
 - Verifier runs (rewards dict is present)
