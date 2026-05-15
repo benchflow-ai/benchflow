@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Integration test runner — drives bench eval create per agent config.
+# Integration test runner — drives bench eval create per agent.
 #
 # Usage:
 #   tests/integration/run.sh                    # all agents
@@ -15,8 +15,38 @@
 set -euo pipefail
 cd "$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
 
-CONFIGS_DIR="tests/integration/configs"
 JOBS_ROOT="jobs/integration"
+
+# The 9 selected SkillsBench tasks for integration testing.
+SELECTED_TASKS=(
+  jax-computing-basics
+  python-scala-translation
+  jpg-ocr-stat
+  grid-dispatch-operator
+  threejs-to-obj
+  data-to-d3
+  lake-warming-attribution
+  weighted-gdp-calc
+  shock-analysis-supply
+)
+
+# Agent → model mapping. Agents not listed use the default Gemini model.
+DEFAULT_MODEL="gemini-3.1-flash-lite-preview"
+declare -A AGENT_MODELS=(
+  [claude-agent-acp]="claude-haiku-4-5-20251001"
+  [codex-acp]="gpt-5.4-nano"
+)
+
+ALL_AGENTS=(
+  claude-agent-acp
+  pi-acp
+  openclaw
+  codex-acp
+  gemini
+  opencode
+  harvey-lab-harness
+  openhands
+)
 
 # ── Parse args ──────────────────────────────────────────────────────
 CHECK_ONLY=false
@@ -28,11 +58,8 @@ for arg in "$@"; do
   esac
 done
 
-# Default: all configs
 if [ ${#AGENTS[@]} -eq 0 ]; then
-  for f in "$CONFIGS_DIR"/*.yaml; do
-    AGENTS+=("$(basename "$f" .yaml)")
-  done
+  AGENTS=("${ALL_AGENTS[@]}")
 fi
 
 # ── Credential checks ──────────────────────────────────────────────
@@ -50,13 +77,30 @@ has_creds_for() {
     codex-acp)
       [ -n "${OPENAI_API_KEY:-}" ]
       ;;
-    gemini)
-      has_gemini_key
-      ;;
     *)
       has_gemini_key
       ;;
   esac
+}
+
+# ── Prepare task subset ────────────────────────────────────────────
+prepare_tasks_dir() {
+  local full_dir
+  full_dir=$(uv run python -c "
+from benchflow.task_download import resolve_source
+print(resolve_source('benchflow-ai/skillsbench', path='tasks', ref='main'))
+")
+  local subset_dir="$JOBS_ROOT/.tasks-subset"
+  rm -rf "$subset_dir"
+  mkdir -p "$subset_dir"
+  for task in "${SELECTED_TASKS[@]}"; do
+    if [ -d "$full_dir/$task" ]; then
+      ln -s "$full_dir/$task" "$subset_dir/$task"
+    else
+      echo "WARN: task $task not found in $full_dir" >&2
+    fi
+  done
+  echo "$subset_dir"
 }
 
 # ── Run evals ───────────────────────────────────────────────────────
@@ -66,22 +110,31 @@ if [ "$CHECK_ONLY" = false ]; then
     exit 1
   fi
 
+  echo "Resolving tasks..."
+  TASKS_DIR=$(prepare_tasks_dir)
+  echo "Using ${#SELECTED_TASKS[@]} tasks from $TASKS_DIR"
+
   for agent in "${AGENTS[@]}"; do
-    config="$CONFIGS_DIR/$agent.yaml"
-    if [ ! -f "$config" ]; then
-      echo "WARN: no config for $agent, skipping" >&2
-      continue
-    fi
     if ! has_creds_for "$agent"; then
       echo "SKIP $agent — no credentials"
       continue
     fi
-    echo "──── Running $agent ────"
-    uv run bench eval create -f "$config" || echo "FAIL $agent (exit $?)"
+
+    model="${AGENT_MODELS[$agent]:-$DEFAULT_MODEL}"
+    echo ""
+    echo "══════ $agent (model=$model) ══════"
+    uv run bench eval create \
+      -t "$TASKS_DIR" \
+      -a "$agent" \
+      -m "$model" \
+      -e daytona \
+      -c 30 \
+      -o "$JOBS_ROOT/$agent" \
+      || echo "FAIL $agent (exit $?)"
   done
 fi
 
 # ── Check results ───────────────────────────────────────────────────
 echo ""
-echo "──── Checking results ────"
+echo "══════ Results ══════"
 uv run python tests/integration/check_results.py "$JOBS_ROOT" "${AGENTS[@]}"

@@ -79,8 +79,10 @@ def check_agent(agent_dir: Path) -> dict:
         findings["issues"].extend(infra_errors)
         findings["ok"] = False
 
-    # Summary.json
-    summary_path = latest / "summary.json"
+    # Summary.json — bench eval create writes it at the agent_dir root
+    summary_path = agent_dir / "summary.json"
+    if not summary_path.exists():
+        summary_path = latest / "summary.json"
     if summary_path.exists():
         try:
             summary = json.loads(summary_path.read_text())
