@@ -1,0 +1,61 @@
+# benchmark.yaml — standard benchmark descriptor for BenchFlow.
+#
+# Every benchmark in benchmarks/<name>/ ships this file. It declares what
+# the benchmark is, where it comes from, how tasks are verified, and
+# parity validation results. Job configs (how to *run* the benchmark)
+# live in separate YAML files.
+
+name: harvey-lab
+description: "Harvey LAB (Legal Agent Benchmark) — 1,251 legal tasks across 24 practice areas"
+url: https://github.com/harveyai/harvey-labs
+author: Harvey AI
+converted_by: BenchFlow
+
+# ── Tasks ────────────────────────────────────────────────────────────
+tasks:
+  count: 1251
+  categories: 24            # practice areas
+  tags: [analyze, draft, review, research]
+  splits:
+    main: 1251              # all tasks (default)
+    parity: 50              # first 50 alphabetically
+    xlsx: 25                # first 25 with .xlsx deliverables
+
+# ── Conversion ───────────────────────────────────────────────────────
+# How raw benchmark data is converted to BenchFlow task format.
+conversion:
+  script: benchflow.py      # CLI: --output-dir, --limit, --overwrite, --task-ids, --split
+  source_format: task.json   # original benchmark format
+  has_oracle_solutions: false
+  docker_image_pinned: true  # Dockerfile uses digest-pinned base image
+
+# ── Verification ─────────────────────────────────────────────────────
+verification:
+  method: llm-as-judge
+  judge_model: gemini-3.1-flash-lite-preview
+  reward: proportional       # passed_criteria / total_criteria
+  aggregation: per-criterion # each criterion judged individually
+
+# ── Parity ───────────────────────────────────────────────────────────
+# Results from validating that the conversion preserves benchmark semantics.
+parity:
+  prompt_level:
+    tasks_tested: 5
+    criteria_compared: 25
+    agreement_rate: 1.0
+    judge_model: gemini-3.1-flash-lite-preview
+    notes: "Same judge, same output — original vs adapted prompt templates"
+  end_to_end:
+    agent: harvey-lab-harness (ACP shim)
+    model: gemini-3.1-flash-lite-preview
+    tasks_tested: 100
+    trials: 3
+    original_mean: 23.0
+    benchflow_mean: 22.2
+    delta: -0.8
+    delta_unit: percentage_points
+    original_runs: [22.0, 23.2, 23.7]
+    benchflow_runs: [22.7, 22.6, 21.2]
+    criteria_evaluated: 14799
+    notes: "Same agent loop, same tools, same system prompt on both sides via Modal (concurrency=20). All disagreements from model non-determinism."
+  costs: "$50"
