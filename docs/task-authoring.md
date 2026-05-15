@@ -1,5 +1,4 @@
-# Task Authoring Guide
-
+# Authoring tasks
 A BenchFlow task packages an instruction, a sandboxed environment, and a verifier into a directory that BenchFlow runs and scores automatically.
 
 ---
@@ -44,11 +43,11 @@ timeout_sec = 120            # optional (default 600)
 cpus            = 1          # default 1
 memory_mb       = 2048       # default 2048
 storage_mb      = 10240      # default 10240
-allow_internet  = false      # default true; disables agent web use
+allow_internet  = false      # default true
 env             = { OPENAI_API_KEY = "${OPENAI_API_KEY}" }  # host vars to inject
 ```
 
-**Service-backed tasks** — BenchFlow ships a small service registry for task-local APIs such as Gmail, Slack, Calendar, Docs, and Drive. The current runner does not auto-start services just because a Dockerfile references a binary. For Python-driven runs, start services explicitly with `pre_agent_hooks=build_service_hooks([...])`; for CLI-only task authoring, keep services inside the task's own Dockerfile/startup scripts until a dedicated service declaration is wired through the CLI.
+**Built-in mock services** — if the Dockerfile references a service binary (`claw-gmail`, `claw-slack`, `claw-gcal`, `claw-gdoc`, `claw-gdrive`), BenchFlow starts it automatically. No `[services]` section needed.
 
 **Install tooling to shared prefixes, not `/root`** — when a task image ships Node.js, Python tools, or agent binaries that the sandbox user must execute, install them to `/usr/local/bin`, `/usr/local/lib`, or `/opt`, not `/root/.nvm` or `/root/.local/bin`. `setup_sandbox_user()` creates the non-root user, prepares small config/auth dirs, and chowns the workspace — it does not clone `/root` into the sandbox home. Legacy images that already install tools under `/root` still work via a narrow symlink fallback, but shared prefixes are the supported path. Pre-creating the sandbox user in the Dockerfile is an optional speedup, not a requirement.
 
@@ -77,7 +76,7 @@ config = TrialConfig(
             Turn("agent", "Review your solution and fix any test failures."),
         ],
     )],
-    environment="daytona",
+    backend="daytona",
 )
 result = await bf.run(config)
 ```
@@ -86,7 +85,7 @@ result = await bf.run(config)
 
 ## Verifier contract (tests/test.sh)
 
-After the agent finishes, Harbor copies `tests/` to `/tests/` and runs `/tests/test.sh`. The working directory is the Dockerfile's `WORKDIR` (typically `/app/` in the example Dockerfile below).
+After the agent finishes, the BenchFlow runtime copies `tests/` to `/tests/` and runs `/tests/test.sh`. The working directory is the Dockerfile's `WORKDIR` (typically `/app/` in the example Dockerfile below).
 
 **Your script must write a single float (0.0–1.0) to `/logs/verifier/reward.txt`.**
 
@@ -129,7 +128,7 @@ if [ $? -eq 0 ]; then echo 1; else echo 0; fi > /logs/verifier/reward.txt
 python3 -c "print($PASSED / $TOTAL)" > /logs/verifier/reward.txt
 ```
 
-**Security:** don't let the agent write to `/logs/verifier/reward.txt` or modify `/tests/test.sh`. For tasks running arbitrary code, use `allow_internet = false` and verify output files only. For LLM agent runs, BenchFlow preserves the network path needed for model APIs and agent startup, then disables supported agent web browsing/fetch tools through agent config or launch controls. Oracle runs still use the environment's network policy directly.
+**Security:** don't let the agent write to `/logs/verifier/reward.txt` or modify `/tests/test.sh`. For tasks running arbitrary code, use `allow_internet = false` and verify output files only.
 
 ---
 
@@ -157,17 +156,10 @@ bench tasks init my-task --no-pytest --no-solution
 bench tasks check tasks/my-task/
 
 # Confirm oracle gets reward = 1.0
-bench run tasks/my-task/ --agent oracle --backend docker
+bench eval create -t tasks/my-task/ -a oracle -e docker
 
 # Run a real agent
-bench run tasks/my-task/ --agent gemini --backend daytona
-
-# Run with task-local skills mounted
-bench run tasks/my-task/ \
-  --agent gemini \
-  --backend daytona \
-  --skills-dir tasks/my-task/environment/skills \
-  --ae BENCHFLOW_SKILL_NUDGE=name
+bench eval create -t tasks/my-task/ -a gemini -e daytona
 ```
 
 `bench tasks check` validates that `task.toml`, `instruction.md` (non-empty), `environment/Dockerfile`, and `tests/` (non-empty) all exist, and that `[agent].timeout_sec` is set. Exits with code 1 on failure (CI-friendly).

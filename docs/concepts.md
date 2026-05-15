@@ -1,5 +1,4 @@
 # Concepts
-
 The mental model for benchflow. Read once, then refer back from the how-tos.
 
 ---
@@ -24,7 +23,7 @@ A `Trial` is decomposable: each phase is a callable method, you can either run t
 ┌──────────────────────────────────────────────────────────────┐
 │                    Trial.run()                               │
 │                                                              │
-│  setup()         resolve config, create Harbor env handle    │
+│  setup()         resolve config, create sandbox env handle   │
 │    ↓                                                         │
 │  start()         start container, upload task files          │
 │    ↓                                                         │
@@ -49,7 +48,7 @@ from benchflow.trial import TrialConfig, Scene
 from pathlib import Path
 
 config = TrialConfig(
-    task_path=Path("tasks/edit-pdf"),
+    task_path=Path("tasks/regex-log"),
     scenes=[Scene.single(agent="gemini", model="gemini-3.1-pro-preview")],
     environment="daytona",
 )

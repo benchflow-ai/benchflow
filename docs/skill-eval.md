@@ -1,5 +1,4 @@
-# Skill Eval Guide
-
+# Skill evals
 Test whether your agent skill actually helps agents perform better.
 
 ## Install

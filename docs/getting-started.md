@@ -1,5 +1,4 @@
 # Getting started
-
 A 5-minute path from install to first eval.
 
 ## Prerequisites
@@ -142,11 +141,11 @@ print(result.n_tool_calls)
 
 | If you want to… | Read |
 |------------------|------|
-| Understand the model — Trial, Scene, Role, Verifier | [`concepts.md`](./concepts.md) |
-| Author a task | [`task-authoring.md`](./task-authoring.md) |
-| Run multi-agent patterns (coder/reviewer, simulated user, BYOS) | [`use-cases.md`](./use-cases.md) |
-| Run multi-round single-agent (progressive disclosure) | [`progressive-disclosure.md`](./progressive-disclosure.md) |
-| Evaluate skills, not tasks | [`skill-eval.md`](./skill-eval.md) |
-| Understand the security model | [`sandbox-hardening.md`](./sandbox-hardening.md) |
-| CLI flags + commands | [`reference/cli.md`](./reference/cli.md) |
-| Python API surface | [`reference/python-api.md`](./reference/python-api.md) |
+| Understand the model — Trial, Scene, Role, Verifier | [Concepts](./concepts.md) |
+| Author a task | [Task authoring](./task-authoring.md) |
+| Run multi-agent patterns (coder/reviewer, simulated user, BYOS) | [Use cases](./use-cases.md) |
+| Run multi-round single-agent (progressive disclosure) | [Progressive disclosure](./progressive-disclosure.md) |
+| Evaluate skills, not tasks | [Skill eval](./skill-eval.md) |
+| Understand the security model | [Sandbox hardening](./sandbox-hardening.md) |
+| CLI flags + commands | [CLI reference](./reference/cli.md) |
+| Python API surface | [Python API reference](./reference/python-api.md) |
