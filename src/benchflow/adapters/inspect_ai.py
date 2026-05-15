@@ -37,10 +37,12 @@ class InspectAdapter:
         """
         samples = []
         for turn in self.scene.turns:
-            samples.append({
-                "input": turn.prompt or "",
-                "role": turn.role,
-            })
+            samples.append(
+                {
+                    "input": turn.prompt or "",
+                    "role": turn.role,
+                }
+            )
 
         result: dict = {
             "name": self.scene.name,

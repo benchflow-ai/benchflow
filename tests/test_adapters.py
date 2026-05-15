@@ -24,6 +24,7 @@ from benchflow.rewards.rubric import Rubric
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 class _ConstantReward:
     """Minimal RewardFunc stub that returns a fixed score."""
 
@@ -45,6 +46,7 @@ def _make_scene(*, name: str = "test-scene", n_turns: int = 2) -> Scene:
 # ---------------------------------------------------------------------------
 # InspectAdapter
 # ---------------------------------------------------------------------------
+
 
 class TestInspectAdapter:
     def test_scene_only(self) -> None:
@@ -95,10 +97,15 @@ class TestInspectAdapter:
 # ORSAdapter
 # ---------------------------------------------------------------------------
 
+
 class TestORSAdapter:
     def test_verify_result_success(self) -> None:
         event = RewardEvent(
-            type="terminal", reward=0.8, source="TestReward", step=None, ts="2025-01-01T00:00:00"
+            type="terminal",
+            reward=0.8,
+            source="TestReward",
+            step=None,
+            ts="2025-01-01T00:00:00",
         )
         vr = VerifyResult(
             reward=0.8,
@@ -123,7 +130,11 @@ class TestORSAdapter:
 
     def test_reward_event_to_ors(self) -> None:
         event = RewardEvent(
-            type="dense", reward=0.5, source="mid-check", step=3, ts="2025-06-01T12:00:00"
+            type="dense",
+            reward=0.5,
+            source="mid-check",
+            step=3,
+            ts="2025-06-01T12:00:00",
         )
         d = ORSAdapter.reward_event_to_ors(event)
 
@@ -145,6 +156,7 @@ class TestORSAdapter:
 # Convenience functions
 # ---------------------------------------------------------------------------
 
+
 class TestConvenienceFunctions:
     def test_to_inspect_task(self) -> None:
         scene = _make_scene(name="conv-test", n_turns=1)
@@ -163,6 +175,7 @@ class TestConvenienceFunctions:
 # Round-trip tests
 # ---------------------------------------------------------------------------
 
+
 class TestRoundTrip:
     def test_inspect_preserves_all_turns(self) -> None:
         """Every turn in the original Scene appears in the Inspect dataset."""
@@ -175,7 +188,9 @@ class TestRoundTrip:
     def test_ors_preserves_all_events(self) -> None:
         """Every RewardEvent maps to an ORS event dict."""
         events = [
-            RewardEvent(type="terminal", reward=float(i), source=f"src-{i}", step=i, ts=f"t{i}")
+            RewardEvent(
+                type="terminal", reward=float(i), source=f"src-{i}", step=i, ts=f"t{i}"
+            )
             for i in range(4)
         ]
         vr = VerifyResult(reward=0.5, items={}, events=events)
@@ -191,6 +206,7 @@ class TestRoundTrip:
 # ---------------------------------------------------------------------------
 # Top-level re-export
 # ---------------------------------------------------------------------------
+
 
 class TestReexport:
     def test_importable_from_benchflow(self) -> None:
