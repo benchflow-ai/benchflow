@@ -858,11 +858,29 @@ def eval_create(
             help="Disable web tools for the self-generated run",
         ),
     ] = False,
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run",
+            help="For supported file-driven E2E configs, build the matrix without running agents.",
+        ),
+    ] = False,
 ) -> None:
     """Run an evaluation — single task or batch."""
     from benchflow.job import Job, JobConfig
 
     if config_file:
+        from benchflow.integration.skillsbench_e2e import is_skillsbench_e2e_config
+
+        if is_skillsbench_e2e_config(config_file):
+            from benchflow.integration.skillsbench_e2e import run_from_config_file
+
+            run_dir = asyncio.run(run_from_config_file(config_file, dry_run=dry_run))
+            console.print(f"[green]SkillsBench E2E output:[/green] {run_dir}")
+            return
+        if dry_run:
+            console.print("[red]--dry-run is only supported for E2E config files[/red]")
+            raise typer.Exit(1)
         j = Job.from_yaml(config_file)
         result = asyncio.run(j.run())
         console.print(

@@ -75,6 +75,8 @@ addopts = "-m 'not live'"
 testpaths = ["tests"]
 markers = [
     "live: requires real Anthropic API and Docker daemon (run with -m live)",
+    "integration: larger integration tests",
+    "e2e: end-to-end benchmark/backend tests",
 ]
 
 [tool.ruff]
