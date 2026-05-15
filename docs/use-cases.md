@@ -440,7 +440,7 @@ Stateful services are lightweight processes inside the same sandbox the agent ru
 - One Dockerfile with the services pre-installed.
 - `pre_agent_hooks` starts them before the agent connects.
 - The agent hits `localhost:9001` for Gmail -- no network complexity.
-- Auto-detection: if a task's Dockerfile references `claw-gmail`, the service is started automatically.
+- `detect_services_from_dockerfile()` is available for custom orchestration, but services are not auto-started by the CLI.
 
 ### Example task structure (ClawsBench)
 
