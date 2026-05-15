@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Integration test runner — drives bench eval create per agent.
 #
+# All agents launch in parallel; each agent runs its 9 tasks concurrently
+# via Daytona (concurrency=30). The script waits for every agent to finish,
+# then runs check_results.py to validate outputs.
+#
 # Usage:
 #   tests/integration/run.sh                    # all agents
 #   tests/integration/run.sh gemini pi-acp      # specific agents
@@ -16,6 +20,7 @@ set -euo pipefail
 cd "$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
 
 JOBS_ROOT="jobs/integration"
+LOG_DIR="$JOBS_ROOT/.logs"
 
 # The 9 selected SkillsBench tasks for integration testing.
 SELECTED_TASKS=(
@@ -103,7 +108,7 @@ print(resolve_source('benchflow-ai/skillsbench', path='tasks', ref='main'))
   echo "$subset_dir"
 }
 
-# ── Run evals ───────────────────────────────────────────────────────
+# ── Run evals (all agents in parallel) ──────────────────────────────
 if [ "$CHECK_ONLY" = false ]; then
   if [ -z "${DAYTONA_API_KEY:-}" ]; then
     echo "ERROR: DAYTONA_API_KEY required" >&2
@@ -114,6 +119,10 @@ if [ "$CHECK_ONLY" = false ]; then
   TASKS_DIR=$(prepare_tasks_dir)
   echo "Using ${#SELECTED_TASKS[@]} tasks from $TASKS_DIR"
 
+  mkdir -p "$LOG_DIR"
+  PIDS=()
+  LAUNCHED=()
+
   for agent in "${AGENTS[@]}"; do
     if ! has_creds_for "$agent"; then
       echo "SKIP $agent — no credentials"
@@ -121,8 +130,7 @@ if [ "$CHECK_ONLY" = false ]; then
     fi
 
     model="${AGENT_MODELS[$agent]:-$DEFAULT_MODEL}"
-    echo ""
-    echo "══════ $agent (model=$model) ══════"
+    echo "Launching $agent (model=$model)..."
     uv run bench eval create \
       -t "$TASKS_DIR" \
       -a "$agent" \
@@ -130,8 +138,30 @@ if [ "$CHECK_ONLY" = false ]; then
       -e daytona \
       -c 30 \
       -o "$JOBS_ROOT/$agent" \
-      || echo "FAIL $agent (exit $?)"
+      > "$LOG_DIR/$agent.log" 2>&1 &
+    PIDS+=($!)
+    LAUNCHED+=("$agent")
   done
+
+  echo ""
+  echo "${#LAUNCHED[@]} agents launched in parallel. Waiting..."
+  echo ""
+
+  # Wait for all and report as each finishes.
+  FAILURES=0
+  for i in "${!PIDS[@]}"; do
+    pid="${PIDS[$i]}"
+    agent="${LAUNCHED[$i]}"
+    if wait "$pid"; then
+      echo "✓ $agent finished — $(tail -1 "$LOG_DIR/$agent.log")"
+    else
+      echo "✗ $agent failed (exit $?) — see $LOG_DIR/$agent.log"
+      FAILURES=$((FAILURES + 1))
+    fi
+  done
+
+  echo ""
+  echo "${#LAUNCHED[@]} agents done, $FAILURES failed."
 fi
 
 # ── Check results ───────────────────────────────────────────────────
