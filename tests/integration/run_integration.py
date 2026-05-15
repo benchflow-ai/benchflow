@@ -58,7 +58,11 @@ ALL_AGENTS = [
 ]
 
 AGENT_REQUIRED_KEYS: dict[str, list[str]] = {
-    "claude-agent-acp": ["ANTHROPIC_API_KEY"],
+    "claude-agent-acp": [
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+    ],
     "pi-acp": [],
     "openclaw": [],
     "codex-acp": ["OPENAI_API_KEY"],
@@ -66,6 +70,11 @@ AGENT_REQUIRED_KEYS: dict[str, list[str]] = {
     "opencode": [],
     "harvey-lab-harness": [],
     "openhands": [],
+}
+
+AGENT_MODEL_OVERRIDES: dict[str, str] = {
+    "claude-agent-acp": "claude-haiku-4-5-20251001",
+    "codex-acp": "gpt-5.4-nano",
 }
 
 SUBSCRIPTION_AUTH_FILES: dict[str, str] = {
@@ -133,9 +142,10 @@ async def run_agent_matrix(
         logger.info("Running %s with %d tasks...", agent, len(tasks))
         agent_start = time.monotonic()
 
+        agent_model = AGENT_MODEL_OVERRIDES.get(agent, model)
         config = JobConfig(
             agent=agent,
-            model=model,
+            model=agent_model,
             environment=environment,
             concurrency=concurrency,
             retry=RetryConfig(max_retries=1),

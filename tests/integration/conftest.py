@@ -62,8 +62,13 @@ DEFAULT_ENVIRONMENT = "daytona"
 DEFAULT_CONCURRENCY = 30
 
 # Agent → required env var(s). Agent is skipped when none are set.
+# For claude-agent-acp, OAuth tokens also count as valid credentials.
 AGENT_REQUIRED_KEYS: dict[str, list[str]] = {
-    "claude-agent-acp": ["ANTHROPIC_API_KEY"],
+    "claude-agent-acp": [
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+    ],
     "pi-acp": [],
     "openclaw": [],
     "codex-acp": ["OPENAI_API_KEY"],
@@ -71,6 +76,14 @@ AGENT_REQUIRED_KEYS: dict[str, list[str]] = {
     "opencode": [],
     "harvey-lab-harness": [],
     "openhands": [],
+}
+
+# Agent → model override when DEFAULT_MODEL is incompatible with the agent's
+# API protocol.  codex-acp speaks OpenAI Responses API and cannot use a
+# Gemini model string.
+AGENT_MODEL_OVERRIDES: dict[str, str] = {
+    "claude-agent-acp": "claude-haiku-4-5-20251001",
+    "codex-acp": "gpt-5.4-nano",
 }
 
 # Subscription auth files that substitute for API keys.
@@ -106,6 +119,11 @@ def has_creds_for_agent(agent: str) -> bool:
         return True
     sub_file = SUBSCRIPTION_AUTH_FILES.get(agent)
     return bool(sub_file and Path(sub_file).expanduser().is_file())
+
+
+def model_for_agent(agent: str) -> str:
+    """Return the model string appropriate for *agent*."""
+    return AGENT_MODEL_OVERRIDES.get(agent, DEFAULT_MODEL)
 
 
 # ---------------------------------------------------------------------------

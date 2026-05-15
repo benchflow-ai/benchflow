@@ -33,6 +33,7 @@ from tests.integration.conftest import (
     DEFAULT_MODEL,
     SKILLSBENCH_TASKS,
     has_creds_for_agent,
+    model_for_agent,
 )
 
 logger = logging.getLogger(__name__)
@@ -66,7 +67,7 @@ async def test_agent_on_skillsbench_9(
 
     config = JobConfig(
         agent=agent,
-        model=DEFAULT_MODEL,
+        model=model_for_agent(agent),
         environment=DEFAULT_ENVIRONMENT,
         concurrency=DEFAULT_CONCURRENCY,
         retry=RetryConfig(max_retries=1),
@@ -143,7 +144,7 @@ async def test_matrix_summary_json(
     await job.run()
 
     # Check summary.json was written
-    summary_files = list(summary_jobs_dir.glob("*/summary.json"))
+    summary_files = list(summary_jobs_dir.glob("summary.json"))
     assert len(summary_files) >= 1, "No summary.json produced"
 
     data = json.loads(summary_files[0].read_text())

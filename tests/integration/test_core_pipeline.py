@@ -24,6 +24,7 @@ from tests.integration.conftest import (
     DEFAULT_MODEL,
     HELLO_TASK,
     has_creds_for_agent,
+    model_for_agent,
 )
 
 
@@ -44,7 +45,7 @@ async def test_hello_world_per_agent(
     result = await SDK().run(
         task_path=HELLO_TASK,
         agent=agent,
-        model=DEFAULT_MODEL,
+        model=model_for_agent(agent),
         jobs_dir=jobs_dir,
         environment=DEFAULT_ENVIRONMENT,
     )
