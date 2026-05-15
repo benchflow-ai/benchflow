@@ -1,22 +1,36 @@
-"""Download benchmark task repos if not present under .ref/."""
+"""Resolve and cache benchmark task datasets.
+
+Datasets are referenced with two fields (inspired by Vercel's project config):
+
+    source:
+      repo: org/repo          # GitHub repository (org/repo)
+      path: sub/dir           # optional subpath within the repo
+      ref: main               # optional branch/tag (default: repo default)
+
+The repo is cloned once into ``.cache/datasets/org/repo/`` and reused on
+subsequent calls.
+"""
 
 import logging
 import shutil
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-TASK_REPOS = {
-    "skillsbench": {
-        "repo": "https://github.com/benchflow-ai/skillsbench.git",
-        "ref": "main",
-        "subdir": "tasks",
-    },
-    "terminal-bench-2": {
-        "repo": "https://github.com/harbor-framework/terminal-bench-2.git",
-    },
-}
+
+@dataclass(frozen=True, slots=True)
+class Source:
+    """A benchmark dataset source — identifies a repo and optional subpath."""
+
+    repo: str
+    path: str | None = None
+    ref: str | None = None
+
+    def resolve(self) -> Path:
+        """Clone the repo (if needed) and return the local filesystem path."""
+        return resolve_source(self.repo, self.path, self.ref)
 
 
 def _repo_root() -> Path:
@@ -29,46 +43,117 @@ def _repo_root() -> Path:
     return Path.cwd()
 
 
-def ensure_tasks(benchmark: str) -> Path:
-    """Clone task repo into .ref/ if target directory is missing.
+def _cache_dir() -> Path:
+    """Return the local cache directory for cloned dataset repos."""
+    return _repo_root() / ".cache" / "datasets"
 
-    Always resolves paths relative to the repo root, so it works
-    regardless of the caller's working directory.
+
+def _clone_repo(org: str, repo: str, ref: str | None = None) -> Path:
+    """Clone a GitHub repo into the cache if not already present.
+
+    If the cache exists but is on a different ref, fetches and checks out
+    the requested ref.
+
+    Returns the path to the cloned repo root.
     """
-    if benchmark not in TASK_REPOS:
-        raise ValueError(
-            f"Unknown benchmark: {benchmark!r}. Available: {sorted(TASK_REPOS)}"
-        )
+    cache = _cache_dir() / org / repo
+    if cache.exists() and (cache / ".git").exists():
+        if ref:
+            # Ensure the cached clone is on the requested ref.
+            current = subprocess.run(
+                ["git", "-C", str(cache), "rev-parse", "--abbrev-ref", "HEAD"],
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            if current != ref:
+                logger.info("Switching %s/%s from %s to %s", org, repo, current, ref)
+                subprocess.run(
+                    ["git", "-C", str(cache), "fetch", "--depth", "1", "origin", ref],
+                    check=True,
+                )
+                subprocess.run(
+                    ["git", "-C", str(cache), "checkout", ref],
+                    check=True,
+                )
+        return cache
 
-    info = TASK_REPOS[benchmark]
-    root = _repo_root()
-    target = root / ".ref" / benchmark / (info.get("subdir") or "")
-
-    if target.exists() and any(target.iterdir()):
-        return target
-
-    logger.info("Downloading %s tasks from %s...", benchmark, info["repo"])
-    target.parent.mkdir(parents=True, exist_ok=True)
-    clone_dir = target.parent / "_clone"
+    url = f"https://github.com/{org}/{repo}.git"
+    logger.info("Cloning %s/%s from %s ...", org, repo, url)
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    clone_tmp = cache.parent / f"_{repo}_clone"
 
     try:
-        clone_cmd = ["git", "clone", "--depth", "1"]
-        if ref := info.get("ref"):
-            clone_cmd.extend(["--branch", ref])
-        clone_cmd.extend([info["repo"], str(clone_dir)])
-        subprocess.run(clone_cmd, check=True)
-        if info.get("subdir"):
-            (clone_dir / info["subdir"]).rename(target)
-        else:
-            shutil.rmtree(clone_dir / ".git")
-            clone_dir.rename(target)
+        if clone_tmp.exists():
+            shutil.rmtree(clone_tmp)
+        cmd = ["git", "clone", "--depth", "1"]
+        if ref:
+            cmd.extend(["--branch", ref])
+        cmd.extend([url, str(clone_tmp)])
+        subprocess.run(cmd, check=True)
+        if cache.exists():
+            shutil.rmtree(cache)
+        clone_tmp.rename(cache)
     finally:
-        if clone_dir.exists():
-            shutil.rmtree(clone_dir, ignore_errors=True)
+        if clone_tmp.exists():
+            shutil.rmtree(clone_tmp, ignore_errors=True)
 
-    logger.info(
-        "Downloaded %d tasks to %s",
-        sum(1 for d in target.iterdir() if d.is_dir()),
-        target,
-    )
-    return target
+    return cache
+
+
+def resolve_source(repo: str, path: str | None = None, ref: str | None = None) -> Path:
+    """Resolve a dataset source to a local filesystem path.
+
+    Args:
+        repo: GitHub repository as ``org/repo`` (e.g. ``benchflow-ai/benchmarks``).
+        path: Optional subpath within the repo (e.g. ``terminal-bench-2``).
+        ref: Optional branch or tag to clone (e.g. ``main``, ``v2.0``).
+
+    Returns:
+        Path to the resolved directory on the local filesystem.
+    """
+    parts = repo.split("/", 1)
+    if len(parts) != 2:
+        raise ValueError(
+            f"Invalid repo format: {repo!r}. Expected 'org/repo' (e.g. 'benchflow-ai/benchmarks')."
+        )
+    org, repo_name = parts
+    root = _clone_repo(org, repo_name, ref)
+
+    if path:
+        target = root / path
+        if not target.exists():
+            raise FileNotFoundError(
+                f"Path {path!r} not found in {org}/{repo_name}. "
+                f"Available: {[p.name for p in root.iterdir() if p.is_dir() and p.name != '.git']}"
+            )
+        return target
+    return root
+
+
+# ---------------------------------------------------------------------------
+# Backward compatibility
+# ---------------------------------------------------------------------------
+
+# Legacy aliases for ensure_tasks("shortname") callers.
+TASK_ALIASES: dict[str, tuple[str, str | None, str | None]] = {
+    "skillsbench": ("benchflow-ai/skillsbench", "main", "tasks"),
+    "terminal-bench-2": ("harbor-framework/terminal-bench-2", None, None),
+}
+
+# Old dict shape kept for imports that reference TASK_REPOS.
+TASK_REPOS = {
+    name: {
+        "repo": f"https://github.com/{org_repo}.git",
+        **({"ref": branch} if branch else {}),
+        **({"subdir": subdir} if subdir else {}),
+    }
+    for name, (org_repo, branch, subdir) in TASK_ALIASES.items()
+}
+
+
+def ensure_tasks(benchmark: str) -> Path:
+    """Clone task repo if not present. Supports aliases and org/repo strings."""
+    if benchmark in TASK_ALIASES:
+        org_repo, ref, path = TASK_ALIASES[benchmark]
+        return resolve_source(org_repo, path, ref)
+    return resolve_source(benchmark)

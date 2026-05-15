@@ -1,5 +1,4 @@
 # Getting started
-
 A 5-minute path from install to first eval.
 
 ## Prerequisites
@@ -76,31 +75,39 @@ If multiple credentials are set, benchflow / the agent CLI uses (high to low): c
 ## Run your first eval
 
 ```bash
-# Single task with Gemini
-GEMINI_API_KEY=... bench run .ref/terminal-bench-2/regex-log \
-  --agent gemini \
-  --model gemini-3.1-pro-preview \
-  --backend docker
+# Single task from a remote repo
+GEMINI_API_KEY=... bench eval create \
+  --source-repo benchflow-ai/skillsbench \
+  --source-path tasks/edit-pdf \
+  -a gemini \
+  -m gemini-3.1-pro-preview \
+  -e docker
 
-# Single task with skills mounted
-GEMINI_API_KEY=... bench run tasks/pdf-fix \
-  --agent gemini \
-  --model gemini-3.1-pro-preview \
-  --backend daytona \
-  --skills-dir tasks/pdf-fix/environment/skills \
+# Single task from local path
+GEMINI_API_KEY=... bench eval create \
+  -t tasks/edit-pdf \
+  -a gemini \
+  -m gemini-3.1-pro-preview \
+  -e daytona \
+  --skills-dir tasks/edit-pdf/environment/skills \
   --ae BENCHFLOW_SKILL_NUDGE=name
 
-# A whole batch with concurrency
-GEMINI_API_KEY=... bench eval create -t .ref/terminal-bench-2 -a gemini \
-    -m gemini-3.1-pro-preview -e daytona -c 32
+# A whole batch from YAML config
+bench eval create -f benchmarks/skillsbench-claude-glm51.yaml
+
+# Batch from remote repo with concurrency
+GEMINI_API_KEY=... bench eval create \
+    --source-repo benchflow-ai/skillsbench --source-path tasks \
+    -a gemini -m gemini-3.1-pro-preview -e daytona -c 32
 
 # List the registered agents
 bench agent list
 ```
 
-`bench run <task>` is the direct path for one task. `bench eval create -t
-<tasks-dir>` runs once on a single task or batches a parent directory containing
-multiple `task.toml`-bearing subdirectories. Results land under
+`bench eval create` is the primary command for running evaluations — it works for
+single tasks, batch runs, and remote repos. Use `--source-repo <org/repo>
+--source-path <subpath>` to fetch from a remote repo, `-t <tasks-dir>` for a
+local directory, or `-f <config.yaml>` for a YAML config. Results land under
 `jobs/<job-name>/<trial-name>/` — `result.json` for the verifier output,
 `trajectory/acp_trajectory.jsonl` for the full agent trace.
 
@@ -116,10 +123,10 @@ The CLI is a thin shim over the Python API. For programmatic use:
 ```python
 import benchflow as bf
 from benchflow.trial import TrialConfig, Scene
-from pathlib import Path
+from benchflow.task_download import resolve_source
 
 config = TrialConfig(
-    task_path=Path(".ref/terminal-bench-2/regex-log"),
+    task_path=resolve_source("benchflow-ai/skillsbench", path="tasks/edit-pdf"),
     scenes=[Scene.single(agent="gemini", model="gemini-3.1-pro-preview")],
     environment="docker",
 )
@@ -134,11 +141,11 @@ print(result.n_tool_calls)
 
 | If you want to… | Read |
 |------------------|------|
-| Understand the model — Trial, Scene, Role, Verifier | [`concepts.md`](./concepts.md) |
-| Author a task | [`task-authoring.md`](./task-authoring.md) |
-| Run multi-agent patterns (coder/reviewer, simulated user, BYOS) | [`use-cases.md`](./use-cases.md) |
-| Run multi-round single-agent (progressive disclosure) | [`progressive-disclosure.md`](./progressive-disclosure.md) |
-| Evaluate skills, not tasks | [`skill-eval.md`](./skill-eval.md) |
-| Understand the security model | [`sandbox-hardening.md`](./sandbox-hardening.md) |
-| CLI flags + commands | [`reference/cli.md`](./reference/cli.md) |
-| Python API surface | [`reference/python-api.md`](./reference/python-api.md) |
+| Understand the model — Trial, Scene, Role, Verifier | [Concepts](./concepts.md) |
+| Author a task | [Task authoring](./task-authoring.md) |
+| Run multi-agent patterns (coder/reviewer, simulated user, BYOS) | [Use cases](./use-cases.md) |
+| Run multi-round single-agent (progressive disclosure) | [Progressive disclosure](./progressive-disclosure.md) |
+| Evaluate skills, not tasks | [Skill eval](./skill-eval.md) |
+| Understand the security model | [Sandbox hardening](./sandbox-hardening.md) |
+| CLI flags + commands | [CLI reference](./reference/cli.md) |
+| Python API surface | [Python API reference](./reference/python-api.md) |

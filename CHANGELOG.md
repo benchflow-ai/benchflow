@@ -66,7 +66,7 @@
 - **Vertex AI support** — ADC auth for `google-vertex/`, `anthropic-vertex/`, `vertex-zai/` prefixed models.
 - **Provider registry** — add a new LLM endpoint via a dict entry in `providers.py`, no code changes.
 - **`benchmarks/` directory** with reusable YAML configs and runner scripts for TB2 and SkillsBench.
-- **Auto task download** via `ensure_tasks()` — `terminal-bench-2` and `skillsbench` clone into `.ref/` on first run.
+- **Auto task download** — YAML configs reference datasets as `org/repo/path` (e.g. `harbor-framework/terminal-bench-2`). Repos are cloned on first use and cached under `.cache/datasets/`.
 - **`benchflow tasks init`** — scaffold new tasks.
 - **`benchflow tasks check`** — validate task structure.
 - **`benchflow cleanup`** — delete old sandboxes with `--max-age` filtering (default 24h).

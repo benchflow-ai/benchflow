@@ -1,0 +1,44 @@
+{
+  "benchmark": "harvey-lab",
+  "converted_by": "BenchFlow",
+  "source": {
+    "repo": "https://github.com/harveyai/harvey-labs",
+    "author": "Harvey AI",
+    "size": 1251,
+    "harness": "custom agent loop (harness/agent_loop.py)",
+    "supported_models": ["anthropic/*", "openai/*", "google/*"],
+    "notes": "1,251 tasks across 24 practice areas. Upstream ships its own agent loop with raw API integrations, not a standard CLI agent. BenchFlow ported the harness as an ACP agent shim (harvey_lab_acp_shim.py) for parity testing."
+  },
+  "conversion": {
+    "script": "benchflow.py",
+    "total_tasks": 1251,
+    "splits": {
+      "main": 1251,
+      "parity": 50,
+      "xlsx": 25
+    },
+    "docker_image_pinned": true,
+    "has_oracle_solutions": false,
+    "ported_agents": [
+      "harvey-lab-harness — ACP shim wrapping Harvey LAB's native agent loop (6 tools, same system prompt)"
+    ]
+  },
+  "parity": {
+    "agent": "harvey-lab-harness",
+    "model": "gemini-3.1-flash-lite-preview",
+    "tasks_tested": 100,
+    "sampling_rate": 0.08,
+    "trials": 3,
+    "original_mean_pct": 23.0,
+    "benchflow_mean_pct": 22.2,
+    "delta_pct": -0.8,
+    "criteria_evaluated": 14799,
+    "cost": "$50",
+    "notes": "Stratified across 24 practice areas, ran on Modal (concurrency=20). All disagreements from model non-determinism."
+  },
+  "links": {
+    "converter_pr": "https://github.com/benchflow-ai/benchflow/pull/239",
+    "dataset_pr": "https://github.com/benchflow-ai/benchmarks/pull/1",
+    "huggingface": "https://huggingface.co/datasets/benchflow/benchmarks"
+  }
+}

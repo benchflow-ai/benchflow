@@ -1,0 +1,50 @@
+[
+  {
+    "benchmark": "harvey-lab",
+    "experiment": "end-to-end",
+    "agent": "harvey-lab-harness (ACP shim)",
+    "model": "gemini-3.1-flash-lite-preview",
+    "date": "2026-05-06",
+    "total_tasks": 1251,
+    "parity_tasks": 100,
+    "trials": 3,
+    "source_repo": "https://github.com/harveyai/harvey-labs",
+    "pr": "https://github.com/benchflow-ai/benchflow/pull/239",
+    "dataset": "https://github.com/benchflow-ai/benchmarks/pull/1",
+    "raw_data": "https://huggingface.co/datasets/benchflow/benchmarks/tree/main/benchmarks/harvey-lab/benchflow_parity",
+    "notes": "100 tasks (stratified across 24 practice areas) × 3 trials via Modal (concurrency=20). Both sides ran Harvey LAB's native agent loop through DirectSandbox ACP shim — same 6 tools, same system prompt, same model. Delta -0.8% aggregate is within expected non-determinism. 12 tasks consistently disagree across trials — all model non-determinism, no conversion issues.",
+    "metrics": [
+      {
+        "name": "mean_per_criterion_pass_rate",
+        "original": "23.0 ± 0.5",
+        "converted": "22.2 ± 0.5",
+        "original_runs": [22.0, 23.2, 23.7],
+        "converted_runs": [22.7, 22.6, 21.2],
+        "criteria_evaluated": 14799
+      }
+    ]
+  },
+  {
+    "benchmark": "harvey-lab",
+    "experiment": "prompt-level",
+    "agent": "gemini-3.1-flash-lite-preview (judge)",
+    "model": "gemini-3.1-flash-lite-preview",
+    "date": "2026-05-06",
+    "total_tasks": 1251,
+    "parity_tasks": 5,
+    "trials": 1,
+    "source_repo": "https://github.com/harveyai/harvey-labs",
+    "pr": "https://github.com/benchflow-ai/benchflow/pull/239",
+    "dataset": "https://github.com/benchflow-ai/benchmarks/pull/1",
+    "raw_data": "https://huggingface.co/datasets/benchflow/benchmarks/tree/main/benchmarks/harvey-lab/benchflow_parity",
+    "notes": "Side-by-side judge agreement: original Harvey LAB rubric_criterion.txt prompt vs converted BenchFlow string.Template prompt through same Gemini judge on identical synthetic output. 25/25 criteria agreed (100%) across 5 practice areas.",
+    "metrics": [
+      {
+        "name": "side_by_side_agreement",
+        "original": "100%",
+        "converted": "100%",
+        "criteria_compared": 25
+      }
+    ]
+  }
+]

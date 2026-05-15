@@ -26,19 +26,37 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[0].parent / "src"))
 
 from benchflow.trial import Trial, TrialConfig
 
-TASK = Path(__file__).resolve().parents[0].parent / ".ref" / "terminal-bench-2" / "regex-log"
 AGENT = os.environ.get("ABLATION_AGENT", "gemini")
 MODEL = os.environ.get("ABLATION_MODEL", "gemini-3.1-flash-lite-preview")
+
+_task: Path | None = None
+
+
+def get_task() -> Path:
+    """Lazily resolve the task path (avoids network I/O at import time)."""
+    global _task
+    if _task is None:
+        from benchflow.task_download import resolve_source
+
+        _task = resolve_source("harbor-framework/terminal-bench-2", path="regex-log")
+    return _task
 
 
 async def test_single_agent():
     """Scene 1: single agent, one turn — baseline."""
     logger.info("=== TEST 1: Single-agent baseline ===")
-    trial = await Trial.create(TrialConfig(
-        task_path=TASK, agent=AGENT, model=MODEL, environment="daytona",
-    ))
+    trial = await Trial.create(
+        TrialConfig(
+            task_path=get_task(),
+            agent=AGENT,
+            model=MODEL,
+            environment="daytona",
+        )
+    )
     result = await trial.run()
-    logger.info(f"Result: reward={result.rewards}, tools={result.n_tool_calls}, err={result.error}")
+    logger.info(
+        f"Result: reward={result.rewards}, tools={result.n_tool_calls}, err={result.error}"
+    )
     return result
 
 
@@ -52,9 +70,14 @@ async def test_two_stage_byos():
         "/app/generated-skill.md that captures the key steps and patterns needed."
     )
 
-    trial = await Trial.create(TrialConfig(
-        task_path=TASK, agent=AGENT, model=MODEL, environment="daytona",
-    ))
+    trial = await Trial.create(
+        TrialConfig(
+            task_path=get_task(),
+            agent=AGENT,
+            model=MODEL,
+            environment="daytona",
+        )
+    )
 
     await trial.setup()
     await trial.start()
@@ -76,7 +99,9 @@ async def test_two_stage_byos():
     await trial.cleanup()
 
     result = trial._build_result()
-    logger.info(f"Result: reward={rewards}, tools={result.n_tool_calls}, err={result.error}")
+    logger.info(
+        f"Result: reward={rewards}, tools={result.n_tool_calls}, err={result.error}"
+    )
     return result
 
 
@@ -84,7 +109,7 @@ async def test_followup_bench():
     """Scene 3: coder → reviewer → revision. Three turns, same sandbox."""
     logger.info("=== TEST 3: Followup-bench (coder → reviewer → revision) ===")
 
-    instruction = (TASK / "instruction.md").read_text()
+    instruction = (get_task() / "instruction.md").read_text()
 
     coder_prompt = f"""{instruction}
 
@@ -97,9 +122,14 @@ Review for correctness, completeness, and bugs.
 Write your review to /app/.outbox/coder.json:
   {"to": "coder", "content": "YOUR FEEDBACK"}"""
 
-    trial = await Trial.create(TrialConfig(
-        task_path=TASK, agent=AGENT, model=MODEL, environment="daytona",
-    ))
+    trial = await Trial.create(
+        TrialConfig(
+            task_path=get_task(),
+            agent=AGENT,
+            model=MODEL,
+            environment="daytona",
+        )
+    )
 
     await trial.setup()
     await trial.start()
@@ -120,10 +150,15 @@ Write your review to /app/.outbox/coder.json:
     await trial.disconnect()
 
     # Read reviewer feedback
-    feedback_result = await trial.env.exec("cat /app/.outbox/coder.json 2>/dev/null || echo '{}'")
+    feedback_result = await trial.env.exec(
+        "cat /app/.outbox/coder.json 2>/dev/null || echo '{}'"
+    )
     import json
+
     try:
-        feedback = json.loads(feedback_result.stdout or "{}").get("content", "No feedback")
+        feedback = json.loads(feedback_result.stdout or "{}").get(
+            "content", "No feedback"
+        )
     except json.JSONDecodeError:
         feedback = "No structured feedback"
     await trial.env.exec("rm -rf /app/.outbox/*")
@@ -146,7 +181,9 @@ Please address the reviewer's feedback and fix any issues."""
     await trial.cleanup()
 
     result = trial._build_result()
-    logger.info(f"Result: reward={rewards}, tools={result.n_tool_calls}, err={result.error}")
+    logger.info(
+        f"Result: reward={rewards}, tools={result.n_tool_calls}, err={result.error}"
+    )
     return result
 
 

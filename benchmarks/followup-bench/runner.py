@@ -11,7 +11,7 @@ filesystem. The Scene scheduler manages turn-taking and outbox routing.
 
 Usage:
     python -m benchmarks.followup_bench.runner \
-        --task-dir .ref/terminal-bench-2/tasks/some-task \
+        --task-dir harbor-framework/terminal-bench-2/tasks/some-task \
         --coder gemini --coder-model gemini-3.1-flash-lite-preview \
         --reviewer gemini --reviewer-model gemini-3-pro-preview \
         --env daytona
@@ -136,7 +136,12 @@ async def run_followup_task(
         trajectory = await scene.run(env.inner, _role_runner)
 
     messages = [
-        {"sender": m.sender, "recipient": m.recipient, "content": m.content, "turn": m.turn}
+        {
+            "sender": m.sender,
+            "recipient": m.recipient,
+            "content": m.content,
+            "turn": m.turn,
+        }
         for m in trajectory
     ]
 
@@ -162,14 +167,16 @@ if __name__ == "__main__":
     parser.add_argument("--env", default="daytona")
     args = parser.parse_args()
 
-    result = asyncio.run(run_followup_task(
-        task_path=args.task_dir,
-        coder_agent=args.coder,
-        coder_model=args.coder_model,
-        reviewer_agent=args.reviewer,
-        reviewer_model=args.reviewer_model,
-        environment=args.env,
-    ))
+    result = asyncio.run(
+        run_followup_task(
+            task_path=args.task_dir,
+            coder_agent=args.coder,
+            coder_model=args.coder_model,
+            reviewer_agent=args.reviewer,
+            reviewer_model=args.reviewer_model,
+            environment=args.env,
+        )
+    )
 
     print(f"Task: {result.task_name}")
     print(f"Rounds: {result.n_rounds}")

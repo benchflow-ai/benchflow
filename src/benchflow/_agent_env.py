@@ -108,6 +108,7 @@ def auto_inherit_env(
         "AWS_REGION",
         "CLAUDE_CODE_OAUTH_TOKEN",
         "OPENAI_API_KEY",
+        "OPENAI_BASE_URL",
         "GOOGLE_API_KEY",
         "GEMINI_API_KEY",
         "GOOGLE_GENERATIVE_AI_API_KEY",

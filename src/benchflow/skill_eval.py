@@ -272,6 +272,11 @@ def generate_tasks(
                 ignore=shutil.ignore_patterns("evals", "__pycache__", ".git"),
             )
 
+        # Copy eval requirements.txt into build context so Docker COPY can find it
+        eval_reqs = dataset.skill_dir / "evals" / "requirements.txt"
+        if eval_reqs.exists():
+            shutil.copy2(eval_reqs, env_dir / "requirements.txt")
+
         # tests/
         tests_dir = task_dir / "tests"
         tests_dir.mkdir(exist_ok=True)

@@ -51,9 +51,7 @@ def _create_venv(venv_dir: Path, spec: list[str]) -> None:
 
     if _have_uv():
         subprocess.check_call(["uv", "venv", str(venv_dir)])
-        subprocess.check_call(
-            ["uv", "pip", "install", "--python", str(python), *spec]
-        )
+        subprocess.check_call(["uv", "pip", "install", "--python", str(python), *spec])
         return
 
     subprocess.check_call([sys.executable, "-m", "venv", str(venv_dir)])
@@ -147,10 +145,16 @@ def main() -> int:
     step = 3
     for pat_id, pat_name, task_path in PATTERNS:
         results[pat_id] = {}
-        print(f"[{step}/{total_steps}] run: benchflow 0.2.0 against {pat_id} {pat_name}")
-        results[pat_id]["0.2.0"] = _run_in_venv(VENVS_DIR / "bf-0.2.0", "0.2.0", task_path)
+        print(
+            f"[{step}/{total_steps}] run: benchflow 0.2.0 against {pat_id} {pat_name}"
+        )
+        results[pat_id]["0.2.0"] = _run_in_venv(
+            VENVS_DIR / "bf-0.2.0", "0.2.0", task_path
+        )
         step += 1
-        print(f"[{step}/{total_steps}] run: benchflow HEAD  against {pat_id} {pat_name}")
+        print(
+            f"[{step}/{total_steps}] run: benchflow HEAD  against {pat_id} {pat_name}"
+        )
         results[pat_id]["head"] = _run_in_venv(VENVS_DIR / "bf-head", "head", task_path)
         step += 1
 
@@ -174,19 +178,16 @@ def main() -> int:
     for pat_id, pat_name, _ in PATTERNS:
         r020 = results[pat_id]["0.2.0"].get("reward")
         rhead = results[pat_id]["head"].get("reward")
-        ok = (
-            r020 is not None
-            and rhead is not None
-            and r020 >= 0.999
-            and rhead < 0.001
-        )
+        ok = r020 is not None and rhead is not None and r020 >= 0.999 and rhead < 0.001
         if not ok:
             all_ok = False
-            failures.append({
-                "pattern": f"{pat_id} {pat_name}",
-                "0.2.0": results[pat_id]["0.2.0"],
-                "head": results[pat_id]["head"],
-            })
+            failures.append(
+                {
+                    "pattern": f"{pat_id} {pat_name}",
+                    "0.2.0": results[pat_id]["0.2.0"],
+                    "head": results[pat_id]["head"],
+                }
+            )
 
     if all_ok:
         print("✓ All patterns: exploit succeeded under 0.2.0, blocked under HEAD.")

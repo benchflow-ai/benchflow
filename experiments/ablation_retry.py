@@ -8,6 +8,7 @@ Usage:
   ABLATION_MODEL=gemini-3.1-flash-lite-preview ABLATION_AGENT=gemini \
     uv run python experiments/ablation_retry.py
 """
+
 import asyncio
 import csv
 import logging
@@ -23,7 +24,7 @@ sys.path.insert(0, str(_root / "src"))
 sys.path.insert(0, str(_root))
 
 from experiments.reviewer_ablation import (
-    TB2_ROOT,
+    get_tb2_root,
     run_baseline,
     run_reviewer,
 )
@@ -114,8 +115,18 @@ RETRY_LIST: list[tuple[str, str]] = [
     ("winning-avg-corewars", "reviewer+spec"),
 ]
 
-COLS = ["benchmark", "task", "condition", "model", "backend", "rounds",
-        "reward", "wall_sec", "tool_calls", "error"]
+COLS = [
+    "benchmark",
+    "task",
+    "condition",
+    "model",
+    "backend",
+    "rounds",
+    "reward",
+    "wall_sec",
+    "tool_calls",
+    "error",
+]
 
 _SEM = asyncio.Semaphore(16)
 
@@ -131,7 +142,7 @@ def _append_csv(row: dict) -> None:
 
 
 async def _run_one(task_name: str, condition: str) -> dict:
-    task_path = TB2_ROOT / task_name
+    task_path = get_tb2_root() / task_name
     logger.info(f"RETRY  {task_name} / {condition}")
 
     if condition == "baseline":
@@ -167,7 +178,9 @@ async def main() -> None:
     if RETRY_CSV.exists():
         RETRY_CSV.unlink()
 
-    logger.info(f"=== ABLATION RETRY: {len(RETRY_LIST)} trials, concurrency=16, agent={AGENT}, model={MODEL} ===")
+    logger.info(
+        f"=== ABLATION RETRY: {len(RETRY_LIST)} trials, concurrency=16, agent={AGENT}, model={MODEL} ==="
+    )
 
     tasks = [_bounded(tn, cond) for tn, cond in RETRY_LIST]
     results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -175,7 +188,9 @@ async def main() -> None:
     successes = sum(1 for r in results if isinstance(r, dict) and not r.get("error"))
     errors = sum(1 for r in results if isinstance(r, dict) and r.get("error"))
     exceptions = sum(1 for r in results if isinstance(r, Exception))
-    logger.info(f"=== RETRY COMPLETE: {successes} ok, {errors} errors, {exceptions} exceptions ===")
+    logger.info(
+        f"=== RETRY COMPLETE: {successes} ok, {errors} errors, {exceptions} exceptions ==="
+    )
     logger.info(f"Results: {RETRY_CSV}")
 
 
