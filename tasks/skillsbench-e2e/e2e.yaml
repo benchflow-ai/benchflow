@@ -24,4 +24,7 @@ audit:
   deterministic: true
   audit_agent:
     enabled: false
+    agent: gemini
+    model: gemini-3.1-flash-lite-preview
+    environment: daytona
     prompt: audit/trajectory-result-auditor.md

@@ -10,6 +10,7 @@ import pytest
 from typer.testing import CliRunner
 
 from benchflow.cli.main import app
+from benchflow.integration.audit_agent import create_audit_task
 from benchflow.integration.skillsbench_e2e import (
     DEFAULT_MODEL,
     build_matrix,
@@ -46,6 +47,10 @@ def test_e2e_config_builds_all_current_agents_matrix() -> None:
     assert cfg.model == DEFAULT_MODEL == "gemini-3.1-flash-lite-preview"
     assert cfg.concurrency == 30
     assert cfg.skills_dir is None
+    assert cfg.audit_agent_enabled is False
+    assert cfg.audit_agent == "gemini"
+    assert cfg.audit_model == DEFAULT_MODEL
+    assert cfg.audit_environment == "daytona"
     assert cfg.agents == registered_matrix_agents()
     assert len(matrix) == 9 * len(registered_matrix_agents())
     assert {entry.task_name for entry in matrix} == set(tasks)
@@ -95,6 +100,25 @@ audit:
     assert (run_dirs[0] / "artifact_audit.json").exists()
     assert (run_dirs[0] / "parity_report.json").exists()
     assert (run_dirs[0] / "findings.md").exists()
+
+
+def test_create_audit_task_uses_output_bundle(tmp_path: Path) -> None:
+    (tmp_path / "matrix_summary.json").write_text('{"entries": []}')
+    (tmp_path / "artifact_audit.json").write_text('{"error_count": 0}')
+    (tmp_path / "parity_report.json").write_text('{"tasks": []}')
+    (tmp_path / "audit_findings.json").write_text('{"failed_entries": 0}')
+    prompt = tmp_path / "rubric.md"
+    prompt.write_text("Audit rubric")
+
+    task_dir = create_audit_task(tmp_path, prompt)
+
+    assert (task_dir / "task.toml").exists()
+    assert (task_dir / "environment" / "Dockerfile").exists()
+    assert (task_dir / "tests" / "test.sh").exists()
+    instruction = (task_dir / "instruction.md").read_text()
+    assert "Audit rubric" in instruction
+    assert "Output bundle JSON" in instruction
+    assert "audit_review.md" in instruction
 
 
 @pytest.mark.live

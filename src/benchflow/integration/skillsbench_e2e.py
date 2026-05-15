@@ -73,6 +73,9 @@ class E2EConfig:
     baseline_ref: str | None
     audit_prompt: Path | None
     audit_agent_enabled: bool
+    audit_agent: str
+    audit_model: str
+    audit_environment: str
 
     @property
     def config_dir(self) -> Path:
@@ -138,6 +141,9 @@ def load_config(path: str | Path) -> E2EConfig:
         baseline_ref=baseline.get("ref"),
         audit_prompt=audit_prompt,
         audit_agent_enabled=bool(audit_agent.get("enabled", False)),
+        audit_agent=audit_agent.get("agent", "gemini"),
+        audit_model=audit_agent.get("model") or raw.get("model") or DEFAULT_MODEL,
+        audit_environment=audit_agent.get("environment", raw.get("environment", "daytona")),
     )
 
 
@@ -225,6 +231,12 @@ def _matrix_config_dict(config: E2EConfig, tasks: list[str]) -> dict[str, Any]:
         "max_retries": config.max_retries,
         "resume": config.resume,
         "skills_dir": config.skills_dir,
+        "audit_agent": {
+            "enabled": config.audit_agent_enabled,
+            "agent": config.audit_agent,
+            "model": config.audit_model,
+            "environment": config.audit_environment,
+        },
     }
 
 
@@ -373,4 +385,36 @@ async def run_from_config_file(
     write_artifact_audit(run_dir)
     write_parity_report(run_dir)
     write_audit_outputs(run_dir, config.audit_prompt)
+    if config.audit_agent_enabled:
+        await _run_audit_agent(run_dir, config)
     return run_dir
+
+
+async def _run_audit_agent(run_dir: Path, config: E2EConfig) -> None:
+    """Run the optional post-processing audit agent over deterministic outputs."""
+    from benchflow.integration.audit_agent import create_audit_task
+
+    task_dir = create_audit_task(run_dir, config.audit_prompt)
+    result = await SDK().run(
+        task_path=task_dir,
+        agent=config.audit_agent,
+        model=config.audit_model,
+        jobs_dir=run_dir / "audit_agent",
+        job_name="review",
+        environment=config.audit_environment,
+        sandbox_user="agent",
+    )
+    _write_json(
+        run_dir / "audit_agent_result.json",
+        {
+            "task_name": result.task_name,
+            "trial_name": result.trial_name,
+            "agent": result.agent,
+            "agent_name": result.agent_name,
+            "model": result.model,
+            "rewards": result.rewards,
+            "error": result.error,
+            "verifier_error": result.verifier_error,
+            "n_tool_calls": result.n_tool_calls,
+        },
+    )

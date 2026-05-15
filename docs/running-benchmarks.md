@@ -307,6 +307,12 @@ To re-run deterministic audits on an existing output directory:
 python benchmarks/scripts/skillsbench_e2e_audit.py jobs/skillsbench-e2e/<run-id>
 ```
 
+The config also supports an optional post-processing audit agent. Set
+`audit.audit_agent.enabled: true` in `tasks/skillsbench-e2e/e2e.yaml` to create
+an internal audit task from `audit/trajectory-result-auditor.md`; BenchFlow will
+run the configured audit agent after deterministic scripts finish and write
+`audit_agent_result.json`.
+
 ---
 
 ## YAML config reference

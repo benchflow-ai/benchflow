@@ -29,3 +29,8 @@ Outputs are written under `jobs/skillsbench-e2e/<run-id>/`:
 - `parity_report.json`
 - `audit_findings.json`
 - `findings.md`
+
+If `audit.audit_agent.enabled` is set to `true`, BenchFlow also creates an
+internal audit task from `audit/trajectory-result-auditor.md` and runs the
+configured audit agent after the deterministic scripts finish. That review is
+saved under `audit_agent/` and summarized in `audit_agent_result.json`.

@@ -124,3 +124,68 @@ def write_audit_outputs(
             render_audit_prompt(run_dir, prompt_path)
         )
     return findings
+
+
+def create_audit_task(
+    run_dir: str | Path,
+    prompt_path: str | Path | None = None,
+) -> Path:
+    """Create a temporary BenchFlow task that asks an agent to audit outputs.
+
+    The task is intentionally generated inside the E2E run directory so it is
+    reproducible with the exact deterministic reports produced by that run.
+    The verifier only checks that the audit agent wrote a review file; the
+    deterministic scripts remain the source of truth for pass/fail.
+    """
+    run_dir = Path(run_dir)
+    prompt = render_audit_prompt(run_dir, prompt_path)
+    task_dir = run_dir / "_audit_task"
+    tests_dir = task_dir / "tests"
+    env_dir = task_dir / "environment"
+    tests_dir.mkdir(parents=True, exist_ok=True)
+    env_dir.mkdir(parents=True, exist_ok=True)
+
+    (task_dir / "task.toml").write_text(
+        """version = "1.0"
+
+[metadata]
+author_name = "benchflow"
+difficulty = "easy"
+category = "integration"
+tags = ["e2e", "audit"]
+
+[agent]
+timeout_sec = 900
+
+[verifier]
+timeout_sec = 60
+
+[environment]
+cpus = 1
+memory_mb = 2048
+"""
+    )
+    (task_dir / "instruction.md").write_text(
+        prompt
+        + "\n\nWrite your final audit report to `/app/audit_review.md` in Markdown.\n"
+    )
+    (env_dir / "Dockerfile").write_text(
+        """FROM ubuntu:24.04
+
+WORKDIR /app
+RUN mkdir -p /logs/verifier /logs/agent /logs/artifacts
+"""
+    )
+    test_sh = tests_dir / "test.sh"
+    test_sh.write_text(
+        """#!/bin/bash
+set -e
+if [ -s /app/audit_review.md ]; then
+  echo 1 > /logs/verifier/reward.txt
+else
+  echo 0 > /logs/verifier/reward.txt
+fi
+"""
+    )
+    test_sh.chmod(0o755)
+    return task_dir
