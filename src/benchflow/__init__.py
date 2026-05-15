@@ -1,29 +1,12 @@
 """benchflow — ACP-native agent benchmarking framework.
 
-Re-exports environment APIs and adds:
-- ACP client for multi-turn agent communication
-- Trajectory capture (HTTP proxy, OTel collector, ACP native)
-- SDK for programmatic usage
-- Job orchestration with retries and concurrency
-- Metrics collection and aggregation
+Public API for rollout-based agent evaluation.
 """
 
 from importlib.metadata import version as _version
 
 __version__ = _version("benchflow")
 
-# Re-export Harbor's core types for downstream task authors
-from harbor import (
-    BaseAgent,
-    BaseEnvironment,
-    ExecResult,
-    Task,
-    TaskConfig,
-    Verifier,
-    VerifierResult,
-)
-
-# benchflow's additions
 from benchflow._env_setup import stage_dockerfile_deps
 from benchflow._scene import MailboxTransport, Message, MessageTransport
 from benchflow._snapshot import list_snapshots, restore, snapshot
@@ -50,7 +33,9 @@ from benchflow.models import AgentInstallError, AgentTimeoutError, RunResult
 from benchflow.rollouts import Role, RolloutConfig, RolloutResult, Scene, Turn
 from benchflow.rollouts.runner import run
 from benchflow.rollouts.yaml import rollout_config_from_yaml
+from benchflow.sandboxes import ExecResult, SandboxSpec
 from benchflow.skills import SkillInfo, discover_skills, install_skill, parse_skill
+from benchflow.tasks import Task, TaskConfig
 from benchflow.trajectories.otel import OTelCollector
 from benchflow.trajectories.proxy import TrajectoryProxy
 from benchflow.trajectories.types import Trajectory
@@ -63,14 +48,9 @@ from benchflow.user import BaseUser, FunctionUser, PassthroughUser, RoundResult
 # what.
 __all__ = [
     "__version__",
-    # Harbor re-exports
-    "BaseAgent",
-    "BaseEnvironment",
     "ExecResult",
     "Task",
     "TaskConfig",
-    "Verifier",
-    "VerifierResult",
     # ACP
     "ACPClient",
     "ACPSession",
@@ -96,6 +76,7 @@ __all__ = [
     "RunResult",
     "RolloutConfig",
     "RolloutResult",
+    "SandboxSpec",
     "run",
     # Multi-agent scene
     "Scene",
@@ -131,19 +112,3 @@ __all__ = [
     "TrajectoryProxy",
     "Trajectory",
 ]
-
-
-def __getattr__(name: str):
-    """Fall through to harbor for names not explicitly re-exported."""
-    import harbor
-
-    if hasattr(harbor, name):
-        import warnings
-
-        warnings.warn(
-            f"'{name}' is not directly re-exported by benchflow. Use 'from harbor import {name}' instead.",
-            ImportWarning,
-            stacklevel=2,
-        )
-        return getattr(harbor, name)
-    raise AttributeError(f"module 'benchflow' has no attribute {name!r}")

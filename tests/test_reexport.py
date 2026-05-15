@@ -1,15 +1,19 @@
-"""Verify Harbor re-exports and benchflow additions work."""
+"""Verify benchflow public API re-exports."""
 
 
-def test_harbor_reexports():
-    """Harbor classes should be importable from benchflow."""
+def test_native_task_and_sandbox_reexports():
+    """Native task and sandbox classes should be importable from benchflow."""
     from benchflow import (
-        BaseEnvironment,
+        ExecResult,
+        SandboxSpec,
+        Task,
         TaskConfig,
     )
 
-    assert TaskConfig.__module__.startswith("harbor")
-    assert BaseEnvironment.__module__.startswith("harbor")
+    assert Task.__module__.startswith("benchflow.tasks")
+    assert TaskConfig.__module__.startswith("benchflow.tasks")
+    assert ExecResult.__module__.startswith("benchflow.sandboxes")
+    assert SandboxSpec.__module__.startswith("benchflow.sandboxes")
 
 
 def test_benchflow_job_shadows_harbor():
@@ -59,11 +63,13 @@ def test_public_api_reexports():
         RolloutConfig,
         RolloutResult,
         RunResult,
+        SandboxSpec,
         stage_dockerfile_deps,
     )
 
     assert callable(RolloutConfig)
     assert callable(RolloutResult)
+    assert callable(SandboxSpec)
     assert callable(RunResult)
     assert callable(AgentInstallError)
     assert callable(AgentTimeoutError)
