@@ -277,9 +277,7 @@ def _run_setup_cmd(agent_name: str, tmp_path) -> dict:
         text=True,
         timeout=15,
     )
-    assert result.returncode == 0, (
-        f"{agent_name} setup_cmd failed: {result.stderr}"
-    )
+    assert result.returncode == 0, f"{agent_name} setup_cmd failed: {result.stderr}"
     return tmp_path
 
 
@@ -395,11 +393,7 @@ def test_task_toml_allow_internet_true_parsed_correctly(tmp_path):
     task_dir = tmp_path / "task"
     task_dir.mkdir()
     (task_dir / "task.toml").write_text(
-        "[task]\n"
-        'name = "test/internet-true"\n'
-        "\n"
-        "[environment]\n"
-        "allow_internet = true\n"
+        '[task]\nname = "test/internet-true"\n\n[environment]\nallow_internet = true\n'
     )
     (task_dir / "instruction.md").write_text("Test instruction.")
 
@@ -414,10 +408,7 @@ def test_task_toml_missing_allow_internet_defaults_to_allowed(tmp_path):
 
     task_dir = tmp_path / "task"
     task_dir.mkdir()
-    (task_dir / "task.toml").write_text(
-        "[task]\n"
-        'name = "test/internet-default"\n'
-    )
+    (task_dir / "task.toml").write_text('[task]\nname = "test/internet-default"\n')
     (task_dir / "instruction.md").write_text("Test instruction.")
 
     task = Task(task_dir)
