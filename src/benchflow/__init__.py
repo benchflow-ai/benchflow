@@ -57,7 +57,7 @@ from benchflow.runtime import (
 
 # Sandbox protocol (v0.4 — parallel types, Harbor not yet removed)
 from benchflow.sandbox import ExecResult as SandboxExecResult
-from benchflow.sandbox import ImageBuilder, ImageRef, Sandbox
+from benchflow.sandbox import ImageBuilder, ImageConfig, ImageRef, Sandbox
 from benchflow.sdk import SDK
 from benchflow.skills import SkillInfo, discover_skills, install_skill, parse_skill
 from benchflow.trajectories.otel import OTelCollector
@@ -79,6 +79,7 @@ __all__ = [
     "Sandbox",
     "SandboxExecResult",
     "ImageBuilder",
+    "ImageConfig",
     "ImageRef",
     # Harbor re-exports
     "BaseAgent",

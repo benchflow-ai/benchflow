@@ -32,6 +32,10 @@ class DaytonaSandbox:
 
     async def read_file(self, path: str) -> bytes:
         result = await self._inner.exec(f"cat {shlex.quote(path)}", timeout_sec=30)
+        if result.return_code != 0:
+            raise FileNotFoundError(
+                f"read_file failed (rc={result.return_code}): {result.stderr or ''}"
+            )
         return (result.stdout or "").encode()
 
     async def write_file(self, path: str, content: bytes) -> None:

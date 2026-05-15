@@ -223,3 +223,28 @@ class TestNoneToEmptyString:
         result = await adapter.exec("true")
         assert result.stdout == ""
         assert result.stderr == ""
+
+
+# ── read_file error handling ──────────────────────────────────────────────────
+
+
+class TestReadFileError:
+    @pytest.mark.asyncio
+    async def test_docker_read_file_raises_on_failure(self):
+        mock = _make_harbor_mock()
+        mock.exec.return_value = MagicMock(
+            return_code=1, stdout="", stderr="No such file"
+        )
+        adapter = DockerSandbox(mock)
+        with pytest.raises(FileNotFoundError, match="No such file"):
+            await adapter.read_file("/nonexistent")
+
+    @pytest.mark.asyncio
+    async def test_daytona_read_file_raises_on_failure(self):
+        mock = _make_harbor_mock()
+        mock.exec.return_value = MagicMock(
+            return_code=1, stdout="", stderr="No such file"
+        )
+        adapter = DaytonaSandbox(mock)
+        with pytest.raises(FileNotFoundError, match="No such file"):
+            await adapter.read_file("/nonexistent")
