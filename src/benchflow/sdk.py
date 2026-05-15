@@ -492,9 +492,10 @@ class SDK:
         Returns:
             RunResult with rewards, trajectory, and metadata.
         """
-        from benchflow.trial import Trial, TrialConfig
+        from benchflow.rollouts.config import RolloutConfig
+        from benchflow.rollouts.runner import run as run_rollout
 
-        config = TrialConfig(
+        config = RolloutConfig(
             task_path=Path(task_path),
             agent=agent,
             prompts=prompts,
@@ -514,9 +515,4 @@ class SDK:
             skill_creator_dir=skill_creator_dir,
             self_gen_no_internet=self_gen_no_internet,
         )
-        if skill_mode == "self-gen":
-            from benchflow.self_gen import run_self_gen
-
-            return await run_self_gen(config)
-        trial = await Trial.create(config)
-        return await trial.run()
+        return await run_rollout(config)
