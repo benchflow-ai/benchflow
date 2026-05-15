@@ -19,7 +19,7 @@ Files
                       ``Trajectory`` pydantic models — the shared schema
                       both proxy and otel write into.
 - ``atif.py``         **Backlog — not wired.** Agent-agnostic trajectory
-                      interchange format. See CLAUDE.md "Later" section.
+                      interchange format. See AGENTS.md "Backlog and known issues".
 - ``claude_code.py``  **Backlog — not wired.** Converts Claude Code
                       stream-json output → ATIF. Depends on ``atif.py``.
 
