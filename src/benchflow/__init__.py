@@ -48,21 +48,12 @@ from benchflow.job import Job, JobConfig, JobResult, RetryConfig
 from benchflow.metrics import BenchmarkMetrics, collect_metrics
 from benchflow.models import AgentInstallError, AgentTimeoutError, RunResult
 from benchflow.rollouts import Role, RolloutConfig, RolloutResult, Scene, Turn
+from benchflow.rollouts.runner import run
 from benchflow.rollouts.yaml import rollout_config_from_yaml
-from benchflow.runtime import (
-    Agent,
-    Environment,
-    Runtime,
-    RuntimeConfig,
-    RuntimeResult,
-    run,  # bf.run(agent, env) — the primary 0.3 API
-)
-from benchflow.sdk import SDK
 from benchflow.skills import SkillInfo, discover_skills, install_skill, parse_skill
 from benchflow.trajectories.otel import OTelCollector
 from benchflow.trajectories.proxy import TrajectoryProxy
 from benchflow.trajectories.types import Trajectory
-from benchflow.trial import Trial, TrialConfig
 from benchflow.trial_yaml import trial_config_from_yaml
 from benchflow.user import BaseUser, FunctionUser, PassthroughUser, RoundResult
 
@@ -105,12 +96,6 @@ __all__ = [
     "RunResult",
     "RolloutConfig",
     "RolloutResult",
-    # Runtime (0.3 primary API)
-    "Agent",
-    "Environment",
-    "Runtime",
-    "RuntimeConfig",
-    "RuntimeResult",
     "run",
     # Multi-agent scene
     "Scene",
@@ -122,9 +107,6 @@ __all__ = [
     "snapshot",
     "restore",
     "list_snapshots",
-    # Trial (decomposed lifecycle)
-    "Trial",
-    "TrialConfig",
     "Turn",
     "trial_config_from_yaml",
     "rollout_config_from_yaml",
@@ -133,8 +115,6 @@ __all__ = [
     "FunctionUser",
     "PassthroughUser",
     "RoundResult",
-    # SDK (backwards compat)
-    "SDK",
     # Environments / dep staging
     "SERVICES",
     "build_service_hooks",

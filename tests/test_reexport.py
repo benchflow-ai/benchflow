@@ -30,11 +30,11 @@ def test_benchflow_additions():
     assert TrajectoryProxy.__module__.startswith("benchflow")
 
 
-def test_sdk_importable():
-    from benchflow.sdk import SDK
+def test_rollout_runner_importable():
+    from benchflow import RolloutConfig, run
 
-    sdk = SDK()
-    assert hasattr(sdk, "run")
+    assert callable(run)
+    assert callable(RolloutConfig)
 
 
 def test_extracted_modules_importable():
@@ -54,7 +54,6 @@ def test_extracted_modules_importable():
 def test_public_api_reexports():
     """Public API symbols are still importable from benchflow top-level."""
     from benchflow import (
-        SDK,
         AgentInstallError,
         AgentTimeoutError,
         RolloutConfig,
@@ -63,7 +62,6 @@ def test_public_api_reexports():
         stage_dockerfile_deps,
     )
 
-    assert callable(SDK)
     assert callable(RolloutConfig)
     assert callable(RolloutResult)
     assert callable(RunResult)
