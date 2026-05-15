@@ -217,6 +217,19 @@ class SubscriptionAuth:
 
 
 @dataclass
+class AgentCapability:
+    """Capability declared by an agent integration.
+
+    BenchFlow records capabilities and validates sandbox preconditions; native
+    loops and agent-as-tool behavior remain agent-owned.
+    """
+
+    name: str
+    description: str = ""
+    metadata: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
 class AgentConfig:
     """Configuration for a supported agent."""
 
@@ -263,6 +276,8 @@ class AgentConfig:
     disallow_web_tools_launch_suffix: str = ""
     # String appended to launch_cmd when BenchFlow's no-web policy is active.
     # Use for agents whose supported toggle is a launch/config override.
+    capabilities: list[AgentCapability] = field(default_factory=list)
+    # Declarative capabilities such as native-loop, mcp, or agent-as-tool.
 
 
 # Agent registry — all supported agents
@@ -697,6 +712,7 @@ def register_agent(
     subscription_auth: SubscriptionAuth | None = None,
     acp_model_format: str = "bare",
     supports_acp_set_model: bool = True,
+    capabilities: list[AgentCapability] | None = None,
 ) -> AgentConfig:
     """Register a custom agent at runtime.
 
@@ -728,6 +744,7 @@ def register_agent(
         subscription_auth=subscription_auth,
         acp_model_format=acp_model_format,
         supports_acp_set_model=supports_acp_set_model,
+        capabilities=capabilities or [],
     )
     AGENTS[name] = config
     AGENT_INSTALLERS[name] = install_cmd

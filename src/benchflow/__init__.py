@@ -31,6 +31,7 @@ from benchflow.acp.client import ACPClient
 from benchflow.acp.session import ACPSession
 from benchflow.agents.registry import (
     AGENTS,
+    AgentCapability,
     get_agent,
     infer_env_key_for_model,
     is_vertex_model,
@@ -83,6 +84,7 @@ __all__ = [
     "ACPSession",
     # Agent registry
     "AGENTS",
+    "AgentCapability",
     "get_agent",
     "infer_env_key_for_model",
     "is_vertex_model",

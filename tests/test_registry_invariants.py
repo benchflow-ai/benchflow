@@ -23,6 +23,7 @@ from benchflow.agents.registry import (
     AGENT_INSTALLERS,
     AGENT_LAUNCH,
     AGENTS,
+    AgentCapability,
 )
 
 VALID_AGENT_PROTOCOLS = {"acp", "cli"}
@@ -63,6 +64,7 @@ def test_agent_field_shapes(name, cfg):
     )
     assert isinstance(cfg.install_timeout, int) and cfg.install_timeout > 0
     assert isinstance(cfg.supports_acp_set_model, bool)
+    assert all(isinstance(cap, AgentCapability) for cap in cfg.capabilities)
 
 
 @pytest.mark.parametrize("name,cfg", AGENTS.items(), ids=list(AGENTS.keys()))
@@ -87,6 +89,13 @@ def test_agent_collection_invariants(name, cfg):
         )
     for d in cfg.home_dirs:
         assert d.startswith("."), f"home_dirs entry {d!r} must start with '.'"
+    for cap in cfg.capabilities:
+        assert isinstance(cap.name, str) and cap.name
+        assert isinstance(cap.description, str)
+        assert all(
+            isinstance(k, str) and isinstance(v, str)
+            for k, v in cap.metadata.items()
+        )
 
 
 @pytest.mark.parametrize("name,cfg", AGENTS.items(), ids=list(AGENTS.keys()))
