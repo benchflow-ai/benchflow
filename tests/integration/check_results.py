@@ -74,7 +74,7 @@ def check_agent(agent_dir: Path) -> dict:
     for r in results:
         err = r.get("error")
         if err and any(tag in str(err).lower() for tag in INFRA_ERRORS):
-            infra_errors.append(f"{r['task_name']}: {err}")
+            infra_errors.append(f"{r.get('task_name', '?')}: {err}")
     if infra_errors:
         findings["issues"].extend(infra_errors)
         findings["ok"] = False
@@ -101,12 +101,12 @@ def check_agent(agent_dir: Path) -> dict:
     findings["passed"] = sum(
         1
         for r in results
-        if r.get("rewards", {}).get("reward", 0) > 0 and not r.get("error")
+        if (r.get("rewards") or {}).get("reward", 0) > 0 and not r.get("error")
     )
     findings["failed"] = sum(
         1
         for r in results
-        if r.get("rewards", {}).get("reward", 0) == 0 and not r.get("error")
+        if (r.get("rewards") or {}).get("reward", 0) == 0 and not r.get("error")
     )
     findings["errored"] = sum(1 for r in results if r.get("error"))
 
