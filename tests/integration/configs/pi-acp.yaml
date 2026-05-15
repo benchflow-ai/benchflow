@@ -1,0 +1,12 @@
+# Integration test: pi-acp on SkillsBench.
+source:
+  repo: benchflow-ai/skillsbench
+  path: tasks
+  ref: main
+
+jobs_dir: jobs/integration/pi-acp
+agent: pi-acp
+model: gemini-3.1-flash-lite-preview
+environment: daytona
+concurrency: 30
+max_retries: 1
