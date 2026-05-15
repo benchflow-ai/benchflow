@@ -74,10 +74,11 @@ only-include = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-addopts = "-m 'not live'"
+addopts = "-m 'not live and not integration'"
 testpaths = ["tests"]
 markers = [
     "live: requires real Anthropic API and Docker daemon (run with -m live)",
+    "integration: full integration tests — requires GEMINI_API_KEY + DAYTONA_API_KEY (run with -m integration)",
 ]
 
 [tool.ruff]

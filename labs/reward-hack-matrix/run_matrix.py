@@ -61,7 +61,10 @@ CORPORA_DIR = HERE / ".corpora"
 # fetch_corpora.sh populates these on first run.
 CORPORA = {
     "skillsbench": CORPORA_DIR / "harbor-datasets" / "datasets" / "skillsbench",
-    "swebench-verified": CORPORA_DIR / "harbor-datasets" / "datasets" / "swebench-verified",
+    "swebench-verified": CORPORA_DIR
+    / "harbor-datasets"
+    / "datasets"
+    / "swebench-verified",
     "terminal-bench-2": CORPORA_DIR / "terminal-bench-2",
 }
 
@@ -158,9 +161,7 @@ def _create_venv(venv_dir: Path, spec: list[str]) -> None:
 
     if _have_uv():
         subprocess.check_call(["uv", "venv", str(venv_dir)])
-        subprocess.check_call(
-            ["uv", "pip", "install", "--python", str(python), *spec]
-        )
+        subprocess.check_call(["uv", "pip", "install", "--python", str(python), *spec])
         return
 
     subprocess.check_call([sys.executable, "-m", "venv", str(venv_dir)])
@@ -198,7 +199,9 @@ def _prepare_cell(cell: Cell) -> None:
     exploit_src = HERE / "exploits" / cell.exploit
     exploit_dst = soln / "solve.sh"
     shutil.copyfile(exploit_src, exploit_dst)
-    exploit_dst.chmod(exploit_dst.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    exploit_dst.chmod(
+        exploit_dst.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH
+    )
 
     # conftest_payload.py is a standalone reference copy of the payload;
     # conftest_hook.sh inlines it as a heredoc and does not read this file.
@@ -242,7 +245,9 @@ def _run_cell_in_venv(
     env["RH_PATTERN_ID"] = cell.pattern_id
     env["RH_BENCHMARK"] = cell.benchmark
     env["RH_VERSION_LABEL"] = version_label
-    env["RH_JOBS_DIR"] = str(JOBS_DIR / version_label / cell.benchmark / cell.pattern_id)
+    env["RH_JOBS_DIR"] = str(
+        JOBS_DIR / version_label / cell.benchmark / cell.pattern_id
+    )
     env["RH_TRIAL_NAME"] = f"{version_label}-{cell.pattern_id}-{cell.task}"
     env["RH_ENVIRONMENT"] = environment
 
@@ -329,9 +334,7 @@ def _enumerate_sweep_cells(limit_per_bench: int | None) -> list[Cell]:
         task_dirs = sorted(
             p
             for p in corpus_dir.iterdir()
-            if p.is_dir()
-            and not p.name.startswith(".")
-            and (p / "task.toml").exists()
+            if p.is_dir() and not p.name.startswith(".") and (p / "task.toml").exists()
         )
         if limit_per_bench is not None:
             task_dirs = task_dirs[:limit_per_bench]
@@ -433,7 +436,9 @@ class _Worker:
             line = await self.proc.stderr.readline()
             if not line:
                 return
-            sys.stderr.write(f"[worker/{self.version_label}] {line.decode('utf-8', 'replace')}")
+            sys.stderr.write(
+                f"[worker/{self.version_label}] {line.decode('utf-8', 'replace')}"
+            )
 
     async def submit(self, req: dict) -> dict:
         assert self.proc is not None and self.proc.stdin is not None
@@ -579,7 +584,9 @@ async def _async_sweep(
             _write_summary_sync()
 
     try:
-        jobs = [one(cell, version_label) for cell in cells for version_label, _ in VERSIONS]
+        jobs = [
+            one(cell, version_label) for cell in cells for version_label, _ in VERSIONS
+        ]
         await asyncio.gather(*jobs)
     finally:
         for w in workers.values():
@@ -612,7 +619,9 @@ def _print_sweep_rollup(results: dict[str, dict[str, dict]]) -> None:
     print("=" * 78)
     print("Sweep rollup — exploit success rate per (benchmark, version)")
     print("=" * 78)
-    print(f"{'benchmark':<22} {'version':<10} {'exploited':>10} {'blocked':>8} {'err':>5} {'n':>5}")
+    print(
+        f"{'benchmark':<22} {'version':<10} {'exploited':>10} {'blocked':>8} {'err':>5} {'n':>5}"
+    )
     print("-" * 78)
     for (bench, version_label), a in sorted(agg.items()):
         print(
@@ -635,8 +644,15 @@ def _filter_cells(args_cells: str | None) -> list[Cell]:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--clean", action="store_true", help="delete .venvs/, .jobs/, .cells/ first")
-    ap.add_argument("--env", default="daytona", choices=["daytona", "docker"], help="benchflow environment backend")
+    ap.add_argument(
+        "--clean", action="store_true", help="delete .venvs/, .jobs/, .cells/ first"
+    )
+    ap.add_argument(
+        "--env",
+        default="daytona",
+        choices=["daytona", "docker"],
+        help="benchflow environment backend",
+    )
     ap.add_argument("--cells", help="comma-separated cell IDs to run (default: all)")
     ap.add_argument(
         "--sweep",
@@ -714,7 +730,11 @@ def main() -> int:
     JOBS_DIR.mkdir(parents=True, exist_ok=True)
 
     if args.sweep:
-        summary_path = Path(args.summary_path) if args.summary_path else (JOBS_DIR / "matrix_sweep.json")
+        summary_path = (
+            Path(args.summary_path)
+            if args.summary_path
+            else (JOBS_DIR / "matrix_sweep.json")
+        )
         print(
             f"[sweep] {len(cells)} cells x {len(VERSIONS)} versions = "
             f"{len(cells) * len(VERSIONS)} trials, concurrency={args.concurrency}"
@@ -747,7 +767,11 @@ def main() -> int:
             )
 
     _print_table(results)
-    summary_path = Path(args.summary_path) if args.summary_path else (JOBS_DIR / "matrix_summary.json")
+    summary_path = (
+        Path(args.summary_path)
+        if args.summary_path
+        else (JOBS_DIR / "matrix_summary.json")
+    )
     summary_path.write_text(json.dumps(results, indent=2, default=str))
     print(f"[summary] wrote {summary_path}")
     return 0

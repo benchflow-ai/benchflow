@@ -60,7 +60,7 @@ Critical invariants
   total``. Any drift means classification logic regressed.
 - Resume keys on result.json existence + ``rewards is not None`` or
   ``verifier_error``. The job-level config is *not* part of the resume
-  key — see Known issues "Job resume config scoping" in CLAUDE.md.
+  key.
 - Unexpected exceptions inside ``bounded`` are caught by
   ``return_exceptions=True`` and turned into synthetic ``RunResult(error=...)``
   rows so the gather never raises and counts stay consistent.
@@ -167,6 +167,7 @@ class JobConfig:
     sandbox_setup_timeout: int = 120
     context_root: str | None = None
     exclude_tasks: set[str] = field(default_factory=set)
+    include_tasks: set[str] = field(default_factory=set)
     skill_mode: str = "default"
     skill_creator_dir: str | None = None
     self_gen_no_internet: bool = False
@@ -210,8 +211,10 @@ class Job:
     """Run a benchmark job across multiple tasks.
 
     Usage:
+        from benchflow.task_download import resolve_source
+
         job = Job(
-            tasks_dir=".ref/terminal-bench-2",
+            tasks_dir=resolve_source("harbor-framework/terminal-bench-2"),
             jobs_dir="parity/tb2-haiku",
             config=JobConfig(model="claude-haiku-4-5-20251001"),
         )
@@ -283,7 +286,25 @@ class Job:
     @classmethod
     def _from_native_yaml(cls, raw: dict, **kwargs) -> "Job":
         """Parse benchflow-native YAML."""
-        tasks_dir = Path(raw["tasks_dir"])
+        from benchflow.task_download import TASK_ALIASES, ensure_tasks, resolve_source
+
+        # New two-field format: source.repo + source.path
+        if "source" in raw:
+            src = raw["source"]
+            tasks_dir = resolve_source(
+                repo=src["repo"],
+                path=src.get("path"),
+                ref=src.get("ref"),
+            )
+        elif "tasks_dir" in raw:
+            # Legacy single-string format (backward compat).
+            ref = raw["tasks_dir"]
+            tasks_dir = Path(ref)
+            if not tasks_dir.exists() and ref in TASK_ALIASES:
+                tasks_dir = ensure_tasks(ref)
+        else:
+            raise ValueError("YAML config must have 'source' or 'tasks_dir'")
+
         jobs_dir = Path(raw.get("jobs_dir", "jobs"))
 
         # Parse prompts — YAML null becomes Python None
@@ -291,6 +312,7 @@ class Job:
 
         agent_env_raw = raw.get("agent_env", {})
         exclude = set(raw.get("exclude", []))
+        include = set(raw.get("include", []))
         sandbox_user = raw.get("sandbox_user", "agent")
         sandbox_locked_paths = raw.get("sandbox_locked_paths")
         sandbox_setup_timeout = raw.get("sandbox_setup_timeout", 120)
@@ -309,6 +331,7 @@ class Job:
             sandbox_locked_paths=sandbox_locked_paths,
             sandbox_setup_timeout=sandbox_setup_timeout,
             exclude_tasks=exclude,
+            include_tasks=include,
             skill_mode=raw.get("skill_mode", "default"),
             skill_creator_dir=(
                 str(Path(raw["skill_creator_dir"]))
@@ -392,6 +415,7 @@ class Job:
             if d.is_dir()
             and (d / "task.toml").exists()
             and d.name not in self._config.exclude_tasks
+            and (not self._config.include_tasks or d.name in self._config.include_tasks)
         )
 
     def _get_completed_tasks(self) -> dict[str, dict]:

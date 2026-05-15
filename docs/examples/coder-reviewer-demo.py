@@ -9,11 +9,11 @@ Demonstrates:
 Requirements:
   - uv tool install benchflow, or run from a checkout with uv run
   - GEMINI_API_KEY or DAYTONA_API_KEY set
-  - A Harbor-format task directory (e.g. .ref/terminal-bench-2/regex-log)
+  - A Harbor-format task directory (e.g. benchflow-ai/skillsbench/tasks/edit-pdf)
 
 Usage:
-  uv run python docs/examples/coder-reviewer-demo.py --task .ref/terminal-bench-2/regex-log
-  uv run python docs/examples/coder-reviewer-demo.py --task .ref/terminal-bench-2/regex-log --env docker
+  uv run python docs/examples/coder-reviewer-demo.py --task benchflow-ai/skillsbench/tasks/edit-pdf
+  uv run python docs/examples/coder-reviewer-demo.py --task benchflow-ai/skillsbench/tasks/edit-pdf --env docker
 
 Terminology:
   - Turn:        One prompt → one ACP session (one role acts)
@@ -43,6 +43,7 @@ logger = logging.getLogger("coder-reviewer-demo")
 # ---------------------------------------------------------------------------
 # Scene definitions
 # ---------------------------------------------------------------------------
+
 
 def baseline_config(task_path: Path, env: str, agent: str, model: str) -> TrialConfig:
     """Pattern 1: Single agent, single turn — the baseline."""
@@ -75,24 +76,30 @@ def coder_reviewer_config(
     """
     return TrialConfig(
         task_path=task_path,
-        scenes=[Scene(
-            name="code-review",
-            roles=[
-                Role("coder", coder_agent, coder_model),
-                Role("reviewer", reviewer_agent, reviewer_model),
-            ],
-            turns=[
-                Turn("coder"),
-                Turn("reviewer",
-                     "Review the code in /app/. Check for correctness, edge cases, "
-                     "and adherence to the task requirements in /app/instruction.md. "
-                     "Write your feedback to /app/.outbox/coder.json as: "
-                     '{"to": "coder", "content": "Your specific feedback here."}'),
-                Turn("coder",
-                     "Read the reviewer's feedback and fix the issues. "
-                     "Focus only on what was flagged — don't start over."),
-            ],
-        )],
+        scenes=[
+            Scene(
+                name="code-review",
+                roles=[
+                    Role("coder", coder_agent, coder_model),
+                    Role("reviewer", reviewer_agent, reviewer_model),
+                ],
+                turns=[
+                    Turn("coder"),
+                    Turn(
+                        "reviewer",
+                        "Review the code in /app/. Check for correctness, edge cases, "
+                        "and adherence to the task requirements in /app/instruction.md. "
+                        "Write your feedback to /app/.outbox/coder.json as: "
+                        '{"to": "coder", "content": "Your specific feedback here."}',
+                    ),
+                    Turn(
+                        "coder",
+                        "Read the reviewer's feedback and fix the issues. "
+                        "Focus only on what was flagged — don't start over.",
+                    ),
+                ],
+            )
+        ],
         environment=env,
     )
 
@@ -100,6 +107,7 @@ def coder_reviewer_config(
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
+
 
 async def run_comparison(
     task_path: Path,
@@ -112,7 +120,9 @@ async def run_comparison(
     baseline = baseline_config(task_path, env, agent, model)
     baseline_result = await bf.run(baseline)
     baseline_reward = (baseline_result.rewards or {}).get("reward")
-    logger.info(f"Baseline: reward={baseline_reward}, tools={baseline_result.n_tool_calls}")
+    logger.info(
+        f"Baseline: reward={baseline_reward}, tools={baseline_result.n_tool_calls}"
+    )
 
     logger.info("=== Coder + Reviewer (multi-round) ===")
     review = coder_reviewer_config(task_path, env, agent, model, agent, model)
@@ -123,8 +133,12 @@ async def run_comparison(
     print("\n" + "=" * 60)
     print("Results")
     print("=" * 60)
-    print(f"  Baseline:  reward={baseline_reward}  tool_calls={baseline_result.n_tool_calls}")
-    print(f"  Reviewed:  reward={review_reward}  tool_calls={review_result.n_tool_calls}")
+    print(
+        f"  Baseline:  reward={baseline_reward}  tool_calls={baseline_result.n_tool_calls}"
+    )
+    print(
+        f"  Reviewed:  reward={review_reward}  tool_calls={review_result.n_tool_calls}"
+    )
     if baseline_reward is not None and review_reward is not None:
         lift = review_reward - baseline_reward
         print(f"  Lift:      {lift:+.2f}")
@@ -141,17 +155,32 @@ async def run_single(task_path: Path, env: str, agent: str, model: str) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Coder-Reviewer demo")
-    parser.add_argument("--task", type=Path, required=True, help="Path to task directory")
+    parser.add_argument(
+        "--task", required=True, help="Task ref (org/repo/path or local path)"
+    )
     parser.add_argument("--env", default="daytona", choices=["daytona", "docker"])
     parser.add_argument("--agent", default="gemini")
     parser.add_argument("--model", default="gemini-3.1-flash-lite-preview")
-    parser.add_argument("--compare", action="store_true",
-                        help="Run baseline and coder-reviewer side by side")
+    parser.add_argument(
+        "--compare",
+        action="store_true",
+        help="Run baseline and coder-reviewer side by side",
+    )
     args = parser.parse_args()
 
-    if not args.task.exists():
-        print(f"Task directory not found: {args.task}", file=sys.stderr)
-        sys.exit(1)
+    from benchflow.task_download import resolve_source
+
+    if "/" in args.task and not Path(args.task).exists():
+        # Treat as org/repo or org/repo/path ref.
+        parts = args.task.split("/", 2)
+        repo = f"{parts[0]}/{parts[1]}"
+        path = parts[2] if len(parts) > 2 else None
+        args.task = resolve_source(repo, path=path)
+    else:
+        args.task = Path(args.task)
+        if not args.task.exists():
+            print(f"Task directory not found: {args.task}", file=sys.stderr)
+            sys.exit(1)
 
     if args.compare:
         asyncio.run(run_comparison(args.task, args.env, args.agent, args.model))

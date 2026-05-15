@@ -72,6 +72,17 @@ class TestAutoInheritEnv:
         auto_inherit_env(env)
         assert env["AWS_DEFAULT_REGION"] == "us-east-1"
 
+    def test_inherits_openai_base_url(self, monkeypatch):
+        """Guards fix from PR #255: OPENAI_BASE_URL must be inherited.
+
+        codex-acp and opencode map BENCHFLOW_PROVIDER_BASE_URL → OPENAI_BASE_URL,
+        but OPENAI_BASE_URL was missing from auto_inherit_env's key set, so
+        users setting OPENAI_BASE_URL on the host had it silently dropped.
+        """
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://custom.openai.example/v1")
+        env: dict[str, str] = {}
+        auto_inherit_env(env)
+        assert env["OPENAI_BASE_URL"] == "https://custom.openai.example/v1"
 
 # ── inject_vertex_credentials ──
 
