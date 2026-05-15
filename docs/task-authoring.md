@@ -1,5 +1,4 @@
-# Task Authoring Guide
-
+# Authoring tasks
 A BenchFlow task packages an instruction, a sandboxed environment, and a verifier into a directory that BenchFlow runs and scores automatically.
 
 ---
@@ -44,11 +43,11 @@ timeout_sec = 120            # optional (default 600)
 cpus            = 1          # default 1
 memory_mb       = 2048       # default 2048
 storage_mb      = 10240      # default 10240
-allow_internet  = false      # default true; disables agent web use
+allow_internet  = false      # default true
 env             = { OPENAI_API_KEY = "${OPENAI_API_KEY}" }  # host vars to inject
 ```
 
-**Service-backed tasks** — BenchFlow ships a small service registry for task-local APIs such as Gmail, Slack, Calendar, Docs, and Drive. The current runner does not auto-start services just because a Dockerfile references a binary. For Python-driven runs, start services explicitly with `pre_agent_hooks=build_service_hooks([...])`; for CLI-only task authoring, keep services inside the task's own Dockerfile/startup scripts until a dedicated service declaration is wired through the CLI.
+**Service-backed tasks** — BenchFlow ships a small service registry for task-local APIs such as Gmail, Slack, Calendar, Docs, and Drive. The runner does not auto-start services just because a Dockerfile references a binary. For Python-driven runs, start services explicitly with `pre_agent_hooks=build_service_hooks([...])`; for CLI-only task authoring, keep services inside the task's own Dockerfile/startup scripts until a dedicated service declaration is wired through the CLI.
 
 **Install tooling to shared prefixes, not `/root`** — when a task image ships Node.js, Python tools, or agent binaries that the sandbox user must execute, install them to `/usr/local/bin`, `/usr/local/lib`, or `/opt`, not `/root/.nvm` or `/root/.local/bin`. `setup_sandbox_user()` creates the non-root user, prepares small config/auth dirs, and chowns the workspace — it does not clone `/root` into the sandbox home. Legacy images that already install tools under `/root` still work via a narrow symlink fallback, but shared prefixes are the supported path. Pre-creating the sandbox user in the Dockerfile is an optional speedup, not a requirement.
 
@@ -86,7 +85,7 @@ result = await bf.run(config)
 
 ## Verifier contract (tests/test.sh)
 
-After the agent finishes, Harbor copies `tests/` to `/tests/` and runs `/tests/test.sh`. The working directory is the Dockerfile's `WORKDIR` (typically `/app/` in the example Dockerfile below).
+After the agent finishes, the BenchFlow runtime copies `tests/` to `/tests/` and runs `/tests/test.sh`. The working directory is the Dockerfile's `WORKDIR` (typically `/app/` in the example Dockerfile below).
 
 **Your script must write a single float (0.0–1.0) to `/logs/verifier/reward.txt`.**
 

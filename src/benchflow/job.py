@@ -167,6 +167,7 @@ class JobConfig:
     sandbox_setup_timeout: int = 120
     context_root: str | None = None
     exclude_tasks: set[str] = field(default_factory=set)
+    include_tasks: set[str] = field(default_factory=set)
     skill_mode: str = "default"
     skill_creator_dir: str | None = None
     self_gen_no_internet: bool = False
@@ -311,6 +312,7 @@ class Job:
 
         agent_env_raw = raw.get("agent_env", {})
         exclude = set(raw.get("exclude", []))
+        include = set(raw.get("include", []))
         sandbox_user = raw.get("sandbox_user", "agent")
         sandbox_locked_paths = raw.get("sandbox_locked_paths")
         sandbox_setup_timeout = raw.get("sandbox_setup_timeout", 120)
@@ -329,6 +331,7 @@ class Job:
             sandbox_locked_paths=sandbox_locked_paths,
             sandbox_setup_timeout=sandbox_setup_timeout,
             exclude_tasks=exclude,
+            include_tasks=include,
             skill_mode=raw.get("skill_mode", "default"),
             skill_creator_dir=(
                 str(Path(raw["skill_creator_dir"]))
@@ -412,6 +415,7 @@ class Job:
             if d.is_dir()
             and (d / "task.toml").exists()
             and d.name not in self._config.exclude_tasks
+            and (not self._config.include_tasks or d.name in self._config.include_tasks)
         )
 
     def _get_completed_tasks(self) -> dict[str, dict]:

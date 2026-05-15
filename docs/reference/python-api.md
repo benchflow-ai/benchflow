@@ -1,5 +1,4 @@
-# Runtime API Guide
-
+# Python API
 The Trial/Scene API is the primary way to run agent benchmarks programmatically.
 
 ## Install
@@ -28,7 +27,6 @@ Declarative configuration for a trial — a sequence of Scenes in a shared sandb
 
 ```python
 from pathlib import Path
-
 from benchflow.trial import TrialConfig, Scene, Role, Turn
 
 # Single-agent (simplest)
@@ -275,7 +273,7 @@ result = await bf.run(config)
 | `claude-agent-acp` | ACP | ANTHROPIC_API_KEY | `claude` |
 | `codex-acp` | ACP | OPENAI_API_KEY | `codex` |
 | `opencode` | ACP | inferred from model/provider | — |
-| `openhands` | ACP | LLM_API_KEY | — |
+| `openhands` | ACP | LLM_API_KEY | `oh` |
 | `pi-acp` | ACP | ANTHROPIC_API_KEY | `pi` |
 | `openclaw` | ACP | inferred from model | — |
 

@@ -1,0 +1,23 @@
+# Integration test: codex-acp
+source:
+  repo: benchflow-ai/skillsbench
+  path: tasks
+  ref: main
+
+jobs_dir: jobs/integration/codex-acp
+agent: codex-acp
+model: gpt-5.4-nano
+environment: daytona
+concurrency: 30
+max_retries: 1
+
+include:
+  - jax-computing-basics
+  - python-scala-translation
+  - jpg-ocr-stat
+  - grid-dispatch-operator
+  - threejs-to-obj
+  - data-to-d3
+  - lake-warming-attribution
+  - weighted-gdp-calc
+  - shock-analysis-supply
