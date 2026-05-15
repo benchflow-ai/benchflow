@@ -131,7 +131,9 @@ def main() -> None:
     if agents:
         agent_dirs = [jobs_root / a for a in agents if (jobs_root / a).is_dir()]
     else:
-        agent_dirs = sorted(d for d in jobs_root.iterdir() if d.is_dir() and not d.name.startswith("."))
+        agent_dirs = sorted(
+            d for d in jobs_root.iterdir() if d.is_dir() and not d.name.startswith(".")
+        )
 
     if not agent_dirs:
         print("ERROR: no agent directories found")

@@ -415,10 +415,7 @@ class Job:
             if d.is_dir()
             and (d / "task.toml").exists()
             and d.name not in self._config.exclude_tasks
-            and (
-                not self._config.include_tasks
-                or d.name in self._config.include_tasks
-            )
+            and (not self._config.include_tasks or d.name in self._config.include_tasks)
         )
 
     def _get_completed_tasks(self) -> dict[str, dict]:
