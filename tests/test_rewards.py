@@ -330,6 +330,8 @@ class TestReexports:
         assert benchflow.VerifyResult.__module__ == "benchflow.rewards.protocol"
         assert benchflow.TestRewardFunc.__module__ == "benchflow.rewards.builtins"
         assert benchflow.LLMJudgeRewardFunc.__module__ == "benchflow.rewards.builtins"
-        assert benchflow.StringMatchRewardFunc.__module__ == "benchflow.rewards.builtins"
+        assert (
+            benchflow.StringMatchRewardFunc.__module__ == "benchflow.rewards.builtins"
+        )
         assert benchflow.CodeExecRewardFunc.__module__ == "benchflow.rewards.builtins"
         assert hasattr(benchflow, "RewardFunc")

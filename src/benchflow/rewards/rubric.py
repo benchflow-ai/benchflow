@@ -45,7 +45,9 @@ class Rubric:
         )
 
         weighted_sum = 0.0
-        for func, weight, result in zip(self.reward_funcs, weights, results, strict=True):
+        for func, weight, result in zip(
+            self.reward_funcs, weights, results, strict=True
+        ):
             name = type(func).__name__
             if isinstance(result, BaseException):
                 errors.append(f"{name}: {result}")
