@@ -2,9 +2,8 @@
 
 Multi-turn agent benchmarking with ACP. Docs live in [`docs/`](./docs/).
 
-`AGENTS.md` is the single source of truth for agent-facing repository
-instructions. `CLAUDE.md` is deprecated and kept only as a compatibility
-pointer for tools that still auto-load it.
+This file is the single source of truth for agent-facing repository
+instructions.
 
 ## Setup + test
 
