@@ -174,7 +174,7 @@ cython_debug/
 .DS_Store
 # benchflow
 .cache/
-benchmarks/programbench/tasks/
+
 trials/
 jobs/
 .jobs/

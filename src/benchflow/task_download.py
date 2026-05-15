@@ -9,9 +9,6 @@ Datasets are referenced with two fields (inspired by Vercel's project config):
 
 The repo is cloned once into ``.cache/datasets/org/repo/`` and reused on
 subsequent calls.
-
-Generated benchmarks (e.g. ``programbench``) clone the upstream repo and
-run a local generator script to produce task directories.
 """
 
 import logging
@@ -134,91 +131,15 @@ def resolve_source(repo: str, path: str | None = None, ref: str | None = None) -
 
 
 # ---------------------------------------------------------------------------
-# Generated benchmarks
+# Benchmark aliases
 # ---------------------------------------------------------------------------
 
-# Benchmarks whose tasks are produced by a local generator script rather
-# than cloned from a pre-built dataset repo.
-_GENERATED_BENCHMARKS: dict[str, dict[str, str]] = {
-    "programbench": {
-        "repo": "facebookresearch/programbench",
-        "subdir": "tasks",
-    },
-}
-
-
-def _ensure_generated(benchmark: str) -> Path:
-    """Clone upstream repo, run the generator, return the tasks directory."""
-    info = _GENERATED_BENCHMARKS[benchmark]
-    root = _repo_root()
-    target = root / "benchmarks" / benchmark / (info.get("subdir") or "")
-
-    if target.exists() and any(target.iterdir()):
-        return target
-
-    repo = info["repo"]
-    logger.info("Generating %s tasks from %s...", benchmark, repo)
-    clone_dir = root / "benchmarks" / benchmark / "_clone"
-    clone_dir.parent.mkdir(parents=True, exist_ok=True)
-
-    # Generate into a temp directory and rename atomically so partial
-    # failures never leave a cached target that looks complete.
-    staging = root / "benchmarks" / benchmark / "_gen_staging"
-    try:
-        # Clean up stale temp dirs from previous interrupted runs.
-        if clone_dir.exists():
-            shutil.rmtree(clone_dir)
-        if staging.exists():
-            shutil.rmtree(staging)
-        subprocess.run(
-            [
-                "git",
-                "clone",
-                "--depth",
-                "1",
-                f"https://github.com/{repo}.git",
-                str(clone_dir),
-            ],
-            check=True,
-        )
-        pb_tasks = clone_dir / "src" / "programbench" / "data" / "tasks"
-        if not pb_tasks.is_dir():
-            raise FileNotFoundError(
-                f"ProgramBench tasks directory not found at {pb_tasks}"
-            )
-
-        import importlib
-        import sys
-
-        gen_path = root / "benchmarks" / "programbench"
-        if str(gen_path.parent) not in sys.path:
-            sys.path.insert(0, str(gen_path.parent))
-        generate = importlib.import_module("programbench.benchflow")
-
-        staging.mkdir(parents=True, exist_ok=True)
-        generated = generate.generate_all(pb_tasks, staging)
-
-        # Atomic swap: only expose target once generation fully succeeds
-        target.parent.mkdir(parents=True, exist_ok=True)
-        staging.rename(target)
-        logger.info("Generated %d tasks to %s", len(generated), target)
-    finally:
-        if clone_dir.exists():
-            shutil.rmtree(clone_dir, ignore_errors=True)
-        if staging.exists():
-            shutil.rmtree(staging, ignore_errors=True)
-
-    return target
-
-
-# ---------------------------------------------------------------------------
-# Backward compatibility
-# ---------------------------------------------------------------------------
-
-# Legacy aliases for ensure_tasks("shortname") callers.
+# Aliases for ensure_tasks("shortname") callers.
+# Format: (org/repo, ref, subpath)
 TASK_ALIASES: dict[str, tuple[str, str | None, str | None]] = {
     "skillsbench": ("benchflow-ai/skillsbench", "main", "tasks"),
-    "terminal-bench-2": ("harbor-framework/terminal-bench-2", None, None),
+    "programbench": ("benchflow-ai/benchmarks", "main", "datasets/programbench/tasks"),
+    "harvey-lab": ("benchflow-ai/benchmarks", "main", "datasets/harvey-lab/tasks"),
 }
 
 # Old dict shape kept for imports that reference TASK_REPOS.
@@ -233,9 +154,7 @@ TASK_REPOS = {
 
 
 def ensure_tasks(benchmark: str) -> Path:
-    """Clone task repo if not present. Supports aliases, generated benchmarks, and org/repo strings."""
-    if benchmark in _GENERATED_BENCHMARKS:
-        return _ensure_generated(benchmark)
+    """Clone task repo if not present. Supports aliases and org/repo strings."""
     if benchmark in TASK_ALIASES:
         org_repo, ref, path = TASK_ALIASES[benchmark]
         return resolve_source(org_repo, path, ref)

@@ -261,24 +261,25 @@ environment: daytona               # backend
 concurrency: 8                     # parallel tasks
 ```
 
-For benchmarks that require conversion (like Harvey LAB), use `tasks_dir` pointing
-at the converted output:
+All adapted benchmarks use the same `source` pattern, pointing at the
+[benchmarks dataset repo](https://github.com/benchflow-ai/benchmarks):
 
 ```yaml
 # benchmarks/harvey-lab/harvey-lab-gemini-flash-lite.yaml
-# (conversion handled automatically)
+source:
+  repo: benchflow-ai/benchmarks
+  path: datasets/harvey-lab/tasks
 agent: gemini
 model: gemini/gemini-3.1-flash-lite-preview
 environment: docker
 concurrency: 4
 ```
 
-For generated benchmarks (like ProgramBench), use `tasks_dir` pointing at the
-generated output:
-
 ```yaml
 # benchmarks/programbench/programbench-gemini-flash-lite.yaml
-tasks_dir: benchmarks/programbench/tasks
+source:
+  repo: benchflow-ai/benchmarks
+  path: datasets/programbench/tasks
 agent: gemini
 model: gemini-3.1-flash-lite-preview
 environment: docker
@@ -288,7 +289,7 @@ concurrency: 4
 You can also use `tasks_dir:` for local paths:
 
 ```yaml
-tasks_dir: ./my-local-tasks        # local path (no download)
+tasks_dir: ./my-local-tasks
 agent: gemini
 model: gemini/gemini-3.1-flash-lite-preview
 ```
