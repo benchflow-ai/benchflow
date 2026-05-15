@@ -93,7 +93,7 @@ import logging
 import shlex
 from datetime import datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 from benchflow._env_setup import (
     _patch_harbor_dind,
@@ -103,71 +103,11 @@ from benchflow._sandbox import (
     harden_before_verify,
 )
 from benchflow.models import RunResult, TrajectorySource
+from benchflow.rewards import write_rewards_jsonl
 
 logger = logging.getLogger(__name__)
 
 _DIAG_TRUNCATE = 2000  # max chars for diagnostic stdout/stderr in logs
-
-
-def _write_rewards_jsonl(
-    trial_dir: Path,
-    rewards: dict | None,
-    finished_at: datetime,
-) -> None:
-    """Write rewards.jsonl — one JSON line per reward event.
-
-    Emits rubric items (if present) as type="process" lines, then the
-    terminal reward as the final type="terminal" line.  Schema is
-    ORS-reward-signal compatible: one streamed event per line.
-
-    Rubric format in rewards dict::
-
-        {"reward": 0.75, "rubric": [
-            {"name": "file_exists", "score": 1.0, "weight": 1.0},
-            {"name": "content_correct", "score": 0.5, "weight": 1.0}
-        ]}
-    """
-    if not rewards:
-        return
-    events: list[dict[str, Any]] = []
-    rubric = rewards.get("rubric")
-    if isinstance(rubric, list):
-        for i, item in enumerate(rubric):
-            if not isinstance(item, dict):
-                continue
-            rubric_item = cast(dict[str, Any], item)
-            events.append(
-                {
-                    "ts": finished_at.isoformat(),
-                    "type": "process",
-                    "source": "verifier_rubric",
-                    "value": rubric_item.get("score", 0.0),
-                    "tag": rubric_item.get("name", f"rubric_{i}"),
-                    "step_index": i,
-                    "meta": {
-                        k: v
-                        for k, v in rubric_item.items()
-                        if k not in ("score", "name")
-                    },
-                }
-            )
-    scalar = rewards.get("reward")
-    if scalar is not None:
-        non_event_keys = {"reward", "rubric"}
-        events.append(
-            {
-                "ts": finished_at.isoformat(),
-                "type": "terminal",
-                "source": "verifier",
-                "value": scalar,
-                "tag": "reward",
-                "step_index": None,
-                "meta": {k: v for k, v in rewards.items() if k not in non_event_keys},
-            }
-        )
-    if events:
-        path = trial_dir / "rewards.jsonl"
-        path.write_text("\n".join(json.dumps(e, default=str) for e in events) + "\n")
 
 
 # Apply at import time so any Harbor DockerEnvironment in this process
@@ -328,7 +268,7 @@ class SDK:
         )
         (trial_dir / "timing.json").write_text(json.dumps(timing, indent=2))
         (trial_dir / "prompts.json").write_text(json.dumps(prompts, indent=2))
-        _write_rewards_jsonl(trial_dir, rewards, finished_at)
+        write_rewards_jsonl(trial_dir, rewards, finished_at)
         return result
 
     @staticmethod
