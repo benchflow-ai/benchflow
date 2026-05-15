@@ -60,7 +60,7 @@ Critical invariants
   total``. Any drift means classification logic regressed.
 - Resume keys on result.json existence + ``rewards is not None`` or
   ``verifier_error``. The job-level config is *not* part of the resume
-  key — see Known issues "Job resume config scoping" in CLAUDE.md.
+  key.
 - Unexpected exceptions inside ``bounded`` are caught by
   ``return_exceptions=True`` and turned into synthetic ``RunResult(error=...)``
   rows so the gather never raises and counts stay consistent.
