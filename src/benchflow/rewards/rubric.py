@@ -45,10 +45,14 @@ class Rubric:
         )
 
         weighted_sum = 0.0
+        name_counts: dict[str, int] = {}
         for func, weight, result in zip(
             self.reward_funcs, weights, results, strict=True
         ):
-            name = type(func).__name__
+            base_name = type(func).__name__
+            count = name_counts.get(base_name, 0)
+            name_counts[base_name] = count + 1
+            name = f"{base_name}_{count}" if count > 0 else base_name
             if isinstance(result, BaseException):
                 errors.append(f"{name}: {result}")
                 items[name] = 0.0

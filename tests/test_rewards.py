@@ -106,7 +106,8 @@ class TestRubricEqualWeights:
         )
         result = asyncio.run(rubric.score(Path("/unused")))
         assert result.reward == pytest.approx(0.5)
-        assert result.items["ConstRewardFunc"] in (0.0, 1.0)
+        assert result.items["ConstRewardFunc"] == 1.0
+        assert result.items["ConstRewardFunc_1"] == 0.0
 
     def test_empty_rubric(self) -> None:
         rubric = Rubric(reward_funcs=[])
