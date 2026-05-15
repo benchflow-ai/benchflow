@@ -36,12 +36,7 @@ tests/integration/run.sh --check-only
 ```
 tests/integration/
 ├── run.sh              # Shell driver — parallel agent launch + wait
-├── check_results.py    # Result validator — schema checks + score table
-└── configs/            # Per-agent YAML configs (reference; run.sh uses CLI args)
-    ├── claude-agent-acp.yaml
-    ├── codex-acp.yaml
-    ├── gemini.yaml
-    └── ...
+└── check_results.py    # Result validator — schema checks + score table
 ```
 
 Output lands in `jobs/integration/<agent>/`:
@@ -94,16 +89,6 @@ All 8 registered agents run by default:
 | openhands | gemini-3.1-flash-lite-preview | |
 
 Agents missing credentials are automatically skipped.
-
-## Standalone YAML Configs
-
-The `configs/` directory has per-agent YAML files usable with `bench eval create -f`:
-
-```bash
-uv run bench eval create -f tests/integration/configs/gemini.yaml
-```
-
-These are reference configs — `run.sh` uses CLI arguments directly for more control over task filtering.
 
 ## Result Validation
 
