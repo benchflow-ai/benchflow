@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import shlex
+import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -28,16 +31,17 @@ class DockerSandbox:
         )
 
     async def read_file(self, path: str) -> bytes:
-        result = await self._inner.exec(f"cat {path}", timeout_sec=30)
+        result = await self._inner.exec(f"cat {shlex.quote(path)}", timeout_sec=30)
         return (result.stdout or "").encode()
 
     async def write_file(self, path: str, content: bytes) -> None:
-        import tempfile
-
         with tempfile.NamedTemporaryFile(delete=False) as tmp:
             tmp.write(content)
             tmp.flush()
-            await self._inner.upload_file(tmp.name, path)
+            try:
+                await self._inner.upload_file(tmp.name, path)
+            finally:
+                os.unlink(tmp.name)
 
     async def upload_file(self, src: Path, dst: str) -> None:
         await self._inner.upload_file(src, dst)
