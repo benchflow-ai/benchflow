@@ -8,14 +8,16 @@ from dataclasses import replace
 from pathlib import Path
 from uuid import uuid4
 
-from benchflow.trial import (
+from benchflow.rollouts.config import (
     GENERATED_SKILLS_ROOT,
     SKILL_MODE_DEFAULT,
     Role,
+    RolloutConfig,
     Scene,
-    Trial,
-    TrialConfig,
     Turn,
+)
+from benchflow.rollouts.rollout import Rollout
+from benchflow.trial import (
     _resolve_skill_creator_root,
     _safe_skill_name,
     _self_gen_prompt,
@@ -53,7 +55,7 @@ def _copy_single_skill(skill_dir: Path, dest_root: Path) -> Path:
     return dest_root
 
 
-def _self_gen_artifact_root(config: TrialConfig) -> Path:
+def _self_gen_artifact_root(config: RolloutConfig) -> Path:
     return (
         Path(config.jobs_dir)
         / "_self_gen"
@@ -62,7 +64,7 @@ def _self_gen_artifact_root(config: TrialConfig) -> Path:
 
 
 def _creator_scene(
-    config: TrialConfig, creator_skills_root: Path, skill_creator_name: str
+    config: RolloutConfig, creator_skills_root: Path, skill_creator_name: str
 ) -> Scene:
     return Scene(
         name="self-gen-creator",
@@ -81,7 +83,7 @@ def _creator_scene(
     )
 
 
-def _solver_scene(config: TrialConfig) -> Scene:
+def _solver_scene(config: RolloutConfig) -> Scene:
     return Scene(
         name="self-gen-solver",
         roles=[Role("solver", config.agent, config.model)],
@@ -93,7 +95,7 @@ def _solver_scene(config: TrialConfig) -> Scene:
     )
 
 
-def _ensure_generated_skills_hook(config: TrialConfig):
+def _ensure_generated_skills_hook(config: RolloutConfig):
     generated_skills_root = config.generated_skills_root or GENERATED_SKILLS_ROOT
 
     async def ensure_generated_skills(env):
@@ -111,8 +113,8 @@ def _ensure_generated_skills_hook(config: TrialConfig):
 
 
 def _single_trial_config(
-    config: TrialConfig, creator_skills_root: Path, skill_creator_name: str
-) -> TrialConfig:
+    config: RolloutConfig, creator_skills_root: Path, skill_creator_name: str
+) -> RolloutConfig:
     return replace(
         config,
         scenes=[
@@ -130,7 +132,7 @@ def _single_trial_config(
     )
 
 
-async def run_self_gen(config: TrialConfig):
+async def run_self_gen(config: RolloutConfig):
     """Run creator and solver as normal BYOS-style scenes in one trial.
 
     The creator scene gets only skill-creator. The solver scene gets only the
@@ -145,7 +147,7 @@ async def run_self_gen(config: TrialConfig):
     creator_skills_root = _copy_single_skill(
         skill_creator_dir, artifact_root / "creator-skills"
     )
-    trial = await Trial.create(
+    trial = await Rollout.create(
         _single_trial_config(config, creator_skills_root, skill_creator_name)
     )
     return await trial.run()

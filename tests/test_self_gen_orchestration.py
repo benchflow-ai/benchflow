@@ -78,7 +78,7 @@ async def test_sdk_self_gen_runs_creator_then_solver_in_one_trial_with_isolated_
             run_configs.append(self._config)
             return solver_result
 
-    monkeypatch.setattr("benchflow.self_gen.Trial", FakeTrial)
+    monkeypatch.setattr("benchflow.self_gen.Rollout", FakeTrial)
 
     result = await SDK().run(
         task_path=task,
@@ -195,7 +195,7 @@ async def test_job_self_gen_uses_strict_orchestration(
             run_configs.append(self._config)
             return solver_result
 
-    monkeypatch.setattr("benchflow.self_gen.Trial", FakeTrial)
+    monkeypatch.setattr("benchflow.self_gen.Rollout", FakeTrial)
 
     result = await job._run_single_task(task, job._config)
 
