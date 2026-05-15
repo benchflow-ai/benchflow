@@ -228,22 +228,24 @@ def _run_single(
 ) -> None:
     from typing import cast
 
-    from benchflow.sdk import SDK
+    from benchflow.rollouts.config import RolloutConfig
+    from benchflow.rollouts.runner import run as run_rollout
 
-    sdk = SDK()
     eff_model = _effective_model(agent, model)
     result = asyncio.run(
-        sdk.run(
-            task_path=task_dir,
-            agent=agent,
-            model=eff_model,
-            environment=environment,
-            prompts=cast("list[str | None] | None", prompt),
-            agent_env=agent_env,
-            job_name="eval-create",
-            jobs_dir=jobs_dir,
-            skills_dir=skills_dir,
-            sandbox_user=None if sandbox_user == "none" else sandbox_user,
+        run_rollout(
+            RolloutConfig(
+                task_path=task_dir,
+                agent=agent,
+                model=eff_model,
+                environment=environment,
+                prompts=cast("list[str | None] | None", prompt),
+                agent_env=agent_env,
+                job_name="eval-create",
+                jobs_dir=jobs_dir,
+                skills_dir=skills_dir,
+                sandbox_user=None if sandbox_user == "none" else sandbox_user,
+            )
         )
     )
     reward = getattr(result, "reward", None)

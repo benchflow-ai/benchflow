@@ -112,7 +112,8 @@ def run(
         bench run --source-repo benchflow-ai/skillsbench --source-path tasks/edit-pdf
         bench run tasks/edit-pdf --agent gemini --model gemini-3.1-flash-lite-preview
     """
-    from benchflow.sdk import SDK
+    from benchflow.rollouts.config import RolloutConfig
+    from benchflow.rollouts.runner import run as run_rollout
 
     if source_repo:
         from benchflow.task_download import resolve_source
@@ -134,23 +135,22 @@ def run(
         key, value = entry.split("=", 1)
         parsed_env[key] = value
 
-    sdk = SDK()
-    # CLI only ever passes plain strings; cast to widen for the SDK's
-    # `list[str | None] | None` API (None entries mean "use default").
     result = asyncio.run(
-        sdk.run(
-            task_path=resolved_task_dir,
-            agent=agent,
-            model=model,
-            prompts=cast("list[str | None] | None", prompt),
-            agent_env=parsed_env,
-            jobs_dir=jobs_dir,
-            environment=environment,
-            skills_dir=str(skills_dir) if skills_dir else None,
-            sandbox_user=sandbox_user,
-            skill_mode=skill_mode,
-            skill_creator_dir=str(skill_creator_dir) if skill_creator_dir else None,
-            self_gen_no_internet=self_gen_no_internet,
+        run_rollout(
+            RolloutConfig(
+                task_path=resolved_task_dir,
+                agent=agent,
+                model=model,
+                prompts=cast("list[str | None] | None", prompt),
+                agent_env=parsed_env,
+                jobs_dir=jobs_dir,
+                environment=environment,
+                skills_dir=str(skills_dir) if skills_dir else None,
+                sandbox_user=sandbox_user,
+                skill_mode=skill_mode,
+                skill_creator_dir=str(skill_creator_dir) if skill_creator_dir else None,
+                self_gen_no_internet=self_gen_no_internet,
+            )
         )
     )
 
@@ -878,25 +878,28 @@ def eval_create(
         eff_model = effective_model(agent, model)
         # Smart detection: if tasks_dir has task.toml, it's a single task
         if (resolved_tasks_dir / "task.toml").exists():
-            from benchflow.sdk import SDK
+            from benchflow.rollouts.config import RolloutConfig
+            from benchflow.rollouts.runner import run as run_rollout
 
             async def _run():
-                return await SDK().run(
-                    task_path=resolved_tasks_dir,
-                    agent=agent,
-                    model=eff_model,
-                    job_name=None,
-                    trial_name=None,
-                    jobs_dir=jobs_dir,
-                    environment=environment,
-                    skills_dir=str(skills_dir) if skills_dir else None,
-                    sandbox_user=sandbox_user,
-                    sandbox_setup_timeout=sandbox_setup_timeout,
-                    skill_mode=skill_mode,
-                    skill_creator_dir=(
-                        str(skill_creator_dir) if skill_creator_dir else None
-                    ),
-                    self_gen_no_internet=self_gen_no_internet,
+                return await run_rollout(
+                    RolloutConfig(
+                        task_path=resolved_tasks_dir,
+                        agent=agent,
+                        model=eff_model,
+                        job_name=None,
+                        trial_name=None,
+                        jobs_dir=jobs_dir,
+                        environment=environment,
+                        skills_dir=str(skills_dir) if skills_dir else None,
+                        sandbox_user=sandbox_user,
+                        sandbox_setup_timeout=sandbox_setup_timeout,
+                        skill_mode=skill_mode,
+                        skill_creator_dir=(
+                            str(skill_creator_dir) if skill_creator_dir else None
+                        ),
+                        self_gen_no_internet=self_gen_no_internet,
+                    )
                 )
 
             run_result = asyncio.run(_run())
@@ -937,25 +940,28 @@ def eval_create(
         eff_model = effective_model(agent, model)
         # Smart detection: if tasks_dir has task.toml, it's a single task
         if (resolved_tasks_dir / "task.toml").exists():
-            from benchflow.sdk import SDK
+            from benchflow.rollouts.config import RolloutConfig
+            from benchflow.rollouts.runner import run as run_rollout
 
             async def _run():
-                return await SDK().run(
-                    task_path=resolved_tasks_dir,
-                    agent=agent,
-                    model=eff_model,
-                    job_name=None,
-                    trial_name=None,
-                    jobs_dir=jobs_dir,
-                    environment=environment,
-                    skills_dir=str(skills_dir) if skills_dir else None,
-                    sandbox_user=sandbox_user,
-                    sandbox_setup_timeout=sandbox_setup_timeout,
-                    skill_mode=skill_mode,
-                    skill_creator_dir=(
-                        str(skill_creator_dir) if skill_creator_dir else None
-                    ),
-                    self_gen_no_internet=self_gen_no_internet,
+                return await run_rollout(
+                    RolloutConfig(
+                        task_path=resolved_tasks_dir,
+                        agent=agent,
+                        model=eff_model,
+                        job_name=None,
+                        trial_name=None,
+                        jobs_dir=jobs_dir,
+                        environment=environment,
+                        skills_dir=str(skills_dir) if skills_dir else None,
+                        sandbox_user=sandbox_user,
+                        sandbox_setup_timeout=sandbox_setup_timeout,
+                        skill_mode=skill_mode,
+                        skill_creator_dir=(
+                            str(skill_creator_dir) if skill_creator_dir else None
+                        ),
+                        self_gen_no_internet=self_gen_no_internet,
+                    )
                 )
 
             run_result = asyncio.run(_run())
