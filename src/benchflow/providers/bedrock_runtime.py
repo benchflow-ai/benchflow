@@ -51,7 +51,7 @@ def build_bedrock_client(
     normalized = validate_bedrock_runtime_env(env)
     if boto3_module is None:
         try:
-            import boto3 as boto3_module
+            import boto3 as boto3_module  # ty: ignore[unresolved-import]
         except ImportError as exc:  # pragma: no cover - exercised via monkeypatch
             raise RuntimeError(
                 "Bedrock support requires the optional 'bedrock' dependency group. "

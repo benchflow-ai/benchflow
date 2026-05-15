@@ -84,6 +84,7 @@ class TestAutoInheritEnv:
         auto_inherit_env(env)
         assert env["OPENAI_BASE_URL"] == "https://custom.openai.example/v1"
 
+
 # ── inject_vertex_credentials ──
 
 

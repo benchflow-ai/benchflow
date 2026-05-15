@@ -200,8 +200,7 @@ def collect_metrics(
                 or (
                     r.get("rewards")
                     and best[task].get("rewards")
-                    and _safe_reward(r["rewards"])
-                    > _safe_reward(best[task]["rewards"])
+                    and _safe_reward(r["rewards"]) > _safe_reward(best[task]["rewards"])
                 )
             ):
                 best[task] = r

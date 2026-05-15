@@ -129,7 +129,7 @@ class TestResolveAgentEnvSubscription:
             monkeypatch.delenv(k, raising=False)
         _patch_expanduser(monkeypatch, tmp_path)
 
-        with pytest.raises(ValueError, match="log in with the agent CLI"):
+        with pytest.raises(ValueError, match=r"required for model .* but not set"):
             self._resolve(
                 model="claude-haiku-4-5-20251001",
                 agent_env={},

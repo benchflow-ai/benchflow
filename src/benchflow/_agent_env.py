@@ -339,11 +339,18 @@ def resolve_agent_env(
             and not has_oauth
             and not has_agent_native_bridge_key
         ):
-            raise ValueError(
-                f"{required_key} required for model {model!r} but not set. "
-                "Pass it explicitly (for example via --agent-env/agent_env) "
-                "or define it in .env."
-            )
+            if check_subscription_auth(agent, required_key):
+                agent_env["_BENCHFLOW_SUBSCRIPTION_AUTH"] = "1"
+                logger.info(
+                    "Using host subscription auth (no %s set)",
+                    required_key,
+                )
+            else:
+                raise ValueError(
+                    f"{required_key} required for model {model!r} but not set. "
+                    "Pass it explicitly (for example via --agent-env/agent_env) "
+                    "or define it in .env."
+                )
     else:
         # No model specified — still check subscription auth for required env vars
         if agent_cfg:
