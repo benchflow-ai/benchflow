@@ -89,7 +89,8 @@ from benchflow._scoring import (
     pass_rate_excl_errors,
 )
 from benchflow.models import RunResult
-from benchflow.sdk import SDK
+from benchflow.rollouts.config import RolloutConfig
+from benchflow.rollouts.runner import run as run_rollout
 
 logger = logging.getLogger(__name__)
 
@@ -239,7 +240,7 @@ class Job:
         self._config = config or JobConfig()
         self._job_name = job_name or datetime.now().strftime("%Y-%m-%d__%H-%M-%S")
         self._on_result = on_result
-        self._sdk = SDK()  # kept for test mocking compat; _run_task prefers Trial
+        self._run_rollout = run_rollout
 
     @classmethod
     def from_yaml(cls, path: str | Path, **kwargs) -> "Job":
@@ -457,10 +458,8 @@ class Job:
         return skills_dir
 
     async def _run_single_task(self, task_dir: Path, cfg: JobConfig) -> RunResult:
-        """Execute one trial via Trial."""
-        from benchflow.trial import Trial, TrialConfig
-
-        trial_config = TrialConfig.from_legacy(
+        """Execute one task through the rollout-native run path."""
+        rollout_config = RolloutConfig.from_single(
             task_path=task_dir,
             agent=cfg.agent,
             model=cfg.model,
@@ -478,35 +477,7 @@ class Job:
             skill_creator_dir=cfg.skill_creator_dir,
             self_gen_no_internet=cfg.self_gen_no_internet,
         )
-        if cfg.skill_mode == "self-gen":
-            from benchflow.self_gen import run_self_gen
-
-            return await run_self_gen(trial_config)
-        trial = await Trial.create(trial_config)
-        return await trial.run()
-
-    async def _run_single_task_legacy(
-        self, task_dir: Path, cfg: JobConfig
-    ) -> RunResult:
-        """SDK.run() path — used when _sdk is mocked in tests."""
-        return await self._sdk.run(
-            task_path=task_dir,
-            agent=cfg.agent,
-            model=cfg.model,
-            prompts=cfg.prompts,
-            agent_env=cfg.agent_env,
-            job_name=self._job_name,
-            jobs_dir=str(self._jobs_dir),
-            environment=cfg.environment,
-            skills_dir=self._resolve_skills_dir(task_dir, cfg.skills_dir),
-            sandbox_user=cfg.sandbox_user,
-            sandbox_locked_paths=cfg.sandbox_locked_paths,
-            sandbox_setup_timeout=cfg.sandbox_setup_timeout,
-            context_root=cfg.context_root,
-            skill_mode=cfg.skill_mode,
-            skill_creator_dir=cfg.skill_creator_dir,
-            self_gen_no_internet=cfg.self_gen_no_internet,
-        )
+        return await self._run_rollout(rollout_config)
 
     async def _run_task(self, task_dir: Path) -> RunResult:
         """Run a single task with retries."""
@@ -519,11 +490,7 @@ class Job:
                 logger.info(f"Retry backoff: {delay:.1f}s before attempt {attempt}")
                 await asyncio.sleep(delay)
                 self._prune_docker()
-            # Use legacy SDK path if _sdk has been replaced (test compat)
-            if not isinstance(self._sdk, SDK):
-                result = await self._run_single_task_legacy(task_dir, cfg)
-            else:
-                result = await self._run_single_task(task_dir, cfg)
+            result = await self._run_single_task(task_dir, cfg)
             last_result = result
 
             # If succeeded, verifier-errored (terminal), or non-retryable, stop

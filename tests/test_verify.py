@@ -154,30 +154,28 @@ class TestRetry:
     async def test_verifier_error_is_terminal(self, job_factory):
         """Verifier errors exit after 1 attempt — no retry."""
         job, tasks_dir = job_factory(n_tasks=1, max_retries=2)
-        job._sdk = AsyncMock()
-        job._sdk.run = AsyncMock(
+        job._run_rollout = AsyncMock(
             return_value=RunResult(
                 task_name="task-0",
                 verifier_error="verifier crashed: x",
             )
         )
         result = await job._run_task(tasks_dir / "task-0")
-        assert job._sdk.run.call_count == 1
+        assert job._run_rollout.call_count == 1
         assert result.verifier_error == "verifier crashed: x"
 
     @pytest.mark.asyncio
     async def test_agent_error_still_retries(self, job_factory):
         """Agent install errors are retried."""
         job, tasks_dir = job_factory(n_tasks=1, max_retries=2)
-        job._sdk = AsyncMock()
-        job._sdk.run = AsyncMock(
+        job._run_rollout = AsyncMock(
             return_value=RunResult(
                 task_name="task-0",
                 error="Agent claude-agent-acp install failed (rc=1)",
             )
         )
         await job._run_task(tasks_dir / "task-0")
-        assert job._sdk.run.call_count == 3  # 1 + 2 retries
+        assert job._run_rollout.call_count == 3  # 1 + 2 retries
 
 
 class TestResume:
@@ -227,8 +225,7 @@ class TestJobRunLogs:
     @pytest.mark.asyncio
     async def test_bounded_log_shows_verifier_error(self, job_factory, caplog):
         job, _ = job_factory(n_tasks=1)
-        job._sdk = AsyncMock()
-        job._sdk.run = AsyncMock(
+        job._run_rollout = AsyncMock(
             return_value=RunResult(
                 task_name="task-0",
                 verifier_error="verifier crashed: KeyError",
@@ -243,7 +240,7 @@ class TestJobRunLogs:
         job, _ = job_factory(n_tasks=3)
         call_count = 0
 
-        async def make_result(**kwargs):
+        async def make_result(_config):
             nonlocal call_count
             r = RunResult(
                 task_name=f"task-{call_count}", verifier_error="verifier crashed: x"
@@ -251,8 +248,7 @@ class TestJobRunLogs:
             call_count += 1
             return r
 
-        job._sdk = AsyncMock()
-        job._sdk.run = make_result
+        job._run_rollout = make_result
         with caplog.at_level(logging.WARNING):
             await job.run()
         warning_records = [
@@ -270,14 +266,13 @@ class TestJobRunLogs:
         ] + [RunResult(task_name="task-4", verifier_error="verifier crashed: x")]
         idx = 0
 
-        async def make_result(**kwargs):
+        async def make_result(_config):
             nonlocal idx
             r = results[idx]
             idx += 1
             return r
 
-        job._sdk = AsyncMock()
-        job._sdk.run = make_result
+        job._run_rollout = make_result
         with caplog.at_level(logging.WARNING):
             await job.run()
         assert any("had verifier errors" in r.message for r in caplog.records)
@@ -286,8 +281,7 @@ class TestJobRunLogs:
     @pytest.mark.asyncio
     async def test_summary_json_includes_verifier_errored(self, job_factory):
         job, _ = job_factory(n_tasks=1)
-        job._sdk = AsyncMock()
-        job._sdk.run = AsyncMock(
+        job._run_rollout = AsyncMock(
             return_value=RunResult(
                 task_name="task-0",
                 verifier_error="verifier crashed: x",
