@@ -43,8 +43,9 @@ def test_skillsbench_alias_clones_main_branch(tmp_path, monkeypatch):
     ]
 
 
-def test_terminal_bench_alias_omits_branch_flag(tmp_path, monkeypatch):
-    """Guards PR #226: existing task repos without refs keep their clone shape."""
+def test_programbench_alias_resolves_to_benchmarks_repo(tmp_path, monkeypatch):
+    """Guards TB2-removal + source-pattern migration: programbench alias resolves
+    to benchflow-ai/benchmarks dataset repo."""
     monkeypatch.chdir(tmp_path)
     calls = []
 
@@ -54,34 +55,28 @@ def test_terminal_bench_alias_omits_branch_flag(tmp_path, monkeypatch):
         clone_dir = Path(cmd[-1])
         clone_dir.mkdir(parents=True)
         (clone_dir / ".git").mkdir()
-        (clone_dir / "README.md").write_text("tasks\n")
+        (clone_dir / "datasets" / "programbench" / "tasks" / "sample").mkdir(
+            parents=True
+        )
 
     monkeypatch.setattr(task_download.subprocess, "run", fake_run)
 
-    target = task_download.ensure_tasks("terminal-bench-2")
+    target = task_download.ensure_tasks("programbench")
 
     assert (
         target
-        == tmp_path / ".cache" / "datasets" / "harbor-framework" / "terminal-bench-2"
+        == tmp_path
+        / ".cache"
+        / "datasets"
+        / "benchflow-ai"
+        / "benchmarks"
+        / "datasets"
+        / "programbench"
+        / "tasks"
     )
     assert target.exists()
-    assert "--branch" not in calls[0]
-    assert calls == [
-        [
-            "git",
-            "clone",
-            "--depth",
-            "1",
-            "https://github.com/harbor-framework/terminal-bench-2.git",
-            str(
-                tmp_path
-                / ".cache"
-                / "datasets"
-                / "harbor-framework"
-                / "_terminal-bench-2_clone"
-            ),
-        ]
-    ]
+    assert "--branch" in calls[0]
+    assert "main" in calls[0]
 
 
 def test_resolve_source_with_path(tmp_path, monkeypatch):

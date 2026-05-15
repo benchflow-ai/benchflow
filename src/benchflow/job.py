@@ -214,15 +214,15 @@ class Job:
         from benchflow.task_download import resolve_source
 
         job = Job(
-            tasks_dir=resolve_source("harbor-framework/terminal-bench-2"),
-            jobs_dir="parity/tb2-haiku",
+            tasks_dir=resolve_source("benchflow-ai/skillsbench", path="tasks"),
+            jobs_dir="parity/skillsbench-haiku",
             config=JobConfig(model="claude-haiku-4-5-20251001"),
         )
         result = await job.run()
         print(result.score)
 
     Or from YAML:
-        job = Job.from_yaml("experiments/tb2.yaml")
+        job = Job.from_yaml("benchmarks/programbench/programbench-gemini-flash-lite.yaml")
         result = await job.run()
     """
 

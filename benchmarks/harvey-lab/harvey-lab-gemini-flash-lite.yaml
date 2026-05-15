@@ -1,8 +1,6 @@
-# Harvey LAB benchmark — Gemini agent on all tasks.
-#
-# Harvey LAB tasks require conversion before running (task.json → task.toml).
-# Use run_harvey_lab.py which handles download + conversion automatically.
-tasks_dir: .cache/harvey-lab-benchflow
+source:
+  repo: benchflow-ai/benchmarks
+  path: datasets/harvey-lab/tasks
 
 agent: gemini
 model: gemini/gemini-3.1-flash-lite-preview

@@ -131,13 +131,15 @@ def resolve_source(repo: str, path: str | None = None, ref: str | None = None) -
 
 
 # ---------------------------------------------------------------------------
-# Backward compatibility
+# Benchmark aliases
 # ---------------------------------------------------------------------------
 
-# Legacy aliases for ensure_tasks("shortname") callers.
+# Aliases for ensure_tasks("shortname") callers.
+# Format: (org/repo, ref, subpath)
 TASK_ALIASES: dict[str, tuple[str, str | None, str | None]] = {
     "skillsbench": ("benchflow-ai/skillsbench", "main", "tasks"),
-    "terminal-bench-2": ("harbor-framework/terminal-bench-2", None, None),
+    "programbench": ("benchflow-ai/benchmarks", "main", "datasets/programbench/tasks"),
+    "harvey-lab": ("benchflow-ai/benchmarks", "main", "datasets/harvey-lab/tasks"),
 }
 
 # Old dict shape kept for imports that reference TASK_REPOS.
