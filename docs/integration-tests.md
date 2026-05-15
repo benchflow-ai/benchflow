@@ -36,7 +36,11 @@ tests/integration/run.sh --check-only
 ```
 tests/integration/
 ├── run.sh              # Shell driver — parallel agent launch + wait
-└── check_results.py    # Result validator — schema checks + score table
+├── check_results.py    # Result validator — schema checks + score table
+└── configs/            # Per-agent YAML configs for standalone use
+    ├── gemini.yaml
+    ├── claude-agent-acp.yaml
+    └── ...
 ```
 
 Output lands in `jobs/integration/<agent>/`:
@@ -89,6 +93,16 @@ All 8 registered agents run by default:
 | openhands | gemini-3.1-flash-lite-preview | |
 
 Agents missing credentials are automatically skipped.
+
+## Standalone YAML Configs
+
+Each agent has a YAML config in `configs/` with an `include` list restricting to the 9 selected tasks. These can be used directly with `bench eval create -f`:
+
+```bash
+uv run bench eval create -f tests/integration/configs/gemini.yaml
+```
+
+`run.sh` uses CLI arguments instead of these configs for parallel execution, but both approaches run the same 9 tasks.
 
 ## Result Validation
 
