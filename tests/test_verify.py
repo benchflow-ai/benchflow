@@ -107,7 +107,7 @@ class TestSdkVerify:
         mock_v = MagicMock()
         mock_v.verify = lambda: asyncio.sleep(10)
         timing = {}
-        with patch("benchflow.sdk.Verifier", return_value=mock_v):
+        with patch("harbor.verifier.verifier.Verifier", return_value=mock_v):
             rewards, verifier_error = await sdk._verify(env, task, tp, timing)
         assert rewards is None
         assert "timed out" in verifier_error
@@ -119,7 +119,7 @@ class TestSdkVerify:
         mock_v = MagicMock()
         mock_v.verify = AsyncMock(side_effect=RuntimeError("kaboom"))
         timing = {}
-        with patch("benchflow.sdk.Verifier", return_value=mock_v):
+        with patch("harbor.verifier.verifier.Verifier", return_value=mock_v):
             rewards, verifier_error = await sdk._verify(env, task, tp, timing)
         assert rewards is None
         assert "crashed" in verifier_error and "kaboom" in verifier_error
@@ -132,7 +132,7 @@ class TestSdkVerify:
         mock_v = MagicMock()
         mock_v.verify = AsyncMock(return_value=mock_result)
         timing = {}
-        with patch("benchflow.sdk.Verifier", return_value=mock_v):
+        with patch("harbor.verifier.verifier.Verifier", return_value=mock_v):
             rewards, verifier_error = await sdk._verify(env, task, tp, timing)
         assert rewards == {"reward": 1.0}
         assert verifier_error is None
@@ -476,9 +476,9 @@ class TestScrapedTrajectoryTrust:
     def _patch_sdk_run(self, sdk, mock_env, extra_patches):
         """Apply shared + extra patches for SDK.run() internals."""
         patches = [
-            patch("benchflow.trial._create_environment", return_value=mock_env),
+            patch("benchflow.rollout._create_environment", return_value=mock_env),
             patch(
-                "benchflow.trial.install_agent",
+                "benchflow.rollout.install_agent",
                 new_callable=AsyncMock,
                 return_value=MagicMock(
                     credential_files={},
@@ -487,8 +487,8 @@ class TestScrapedTrajectoryTrust:
                     env_mapping={},
                 ),
             ),
-            patch("benchflow.trial.write_credential_files", new_callable=AsyncMock),
-            patch("benchflow.trial.deploy_skills", new_callable=AsyncMock),
+            patch("benchflow.rollout.write_credential_files", new_callable=AsyncMock),
+            patch("benchflow.rollout.deploy_skills", new_callable=AsyncMock),
             *extra_patches,
         ]
         with contextlib.ExitStack() as stack:
@@ -516,17 +516,17 @@ class TestScrapedTrajectoryTrust:
                 mock_env,
                 [
                     patch(
-                        "benchflow.trial.connect_acp",
+                        "benchflow.rollout.connect_acp",
                         new_callable=AsyncMock,
                         return_value=(mock_acp, mock_session, "test-agent"),
                     ),
                     patch(
-                        "benchflow.trial.execute_prompts",
+                        "benchflow.rollout.execute_prompts",
                         new_callable=AsyncMock,
                         return_value=([], 5),
                     ),
                     patch(
-                        "benchflow.trial._scrape_agent_trajectory",
+                        "benchflow.rollout._scrape_agent_trajectory",
                         new_callable=AsyncMock,
                         return_value=forged,
                     ),
@@ -567,21 +567,21 @@ class TestScrapedTrajectoryTrust:
             mock_env,
             [
                 patch(
-                    "benchflow.trial.connect_acp",
+                    "benchflow.rollout.connect_acp",
                     new_callable=AsyncMock,
                     return_value=(mock_acp, mock_session, "test-agent"),
                 ),
                 patch(
-                    "benchflow.trial.execute_prompts",
+                    "benchflow.rollout.execute_prompts",
                     new_callable=AsyncMock,
                     side_effect=ConnectionError("lost"),
                 ),
                 patch(
-                    "benchflow.trial._capture_session_trajectory",
+                    "benchflow.rollout._capture_session_trajectory",
                     return_value=partial_events,
                 ),
                 patch(
-                    "benchflow.trial._scrape_agent_trajectory",
+                    "benchflow.rollout._scrape_agent_trajectory",
                     new_callable=AsyncMock,
                     return_value=[],
                 ),

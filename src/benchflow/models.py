@@ -1,7 +1,7 @@
-"""Data classes and exceptions for benchflow SDK results.
+"""Data classes and exceptions for benchflow results.
 
-Related: sdk.py (produces RunResult), job.py (aggregates RunResults),
-_scoring.py (extracts rewards and classifies errors from RunResults).
+Related: rollout.py (produces RolloutResult), evaluation.py (aggregates results),
+_scoring.py (extracts rewards and classifies errors from results).
 """
 
 from datetime import datetime
@@ -48,8 +48,8 @@ class AgentTimeoutError(RuntimeError):
         super().__init__(f"Agent {agent} timed out after {timeout_sec}s")
 
 
-class RunResult:
-    """Outcome of a single SDK.run() trial.
+class RolloutResult:
+    """Outcome of a single rollout execution.
 
     Attributes:
         task_name:    Task directory name (e.g. "swe-bench/django__django-11848").
@@ -123,7 +123,11 @@ class RunResult:
     def __repr__(self) -> str:
         status = "OK" if self.success else f"ERROR: {self.error or self.verifier_error}"
         return (
-            f"RunResult(task={self.task_name}, {status}, "
+            f"RolloutResult(task={self.task_name}, {status}, "
             f"rewards={self.rewards}, "
             f"trajectory={len(self.trajectory)} events)"
         )
+
+
+# Backward-compat alias
+RunResult = RolloutResult

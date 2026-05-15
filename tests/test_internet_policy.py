@@ -148,8 +148,8 @@ async def test_connect_as_applies_web_policy_to_role_env(tmp_path):
         return env or {}
 
     with (
-        patch("benchflow.trial.resolve_agent_env", side_effect=fake_resolve),
-        patch("benchflow.trial.connect_acp") as connect_acp,
+        patch("benchflow.rollout.resolve_agent_env", side_effect=fake_resolve),
+        patch("benchflow.rollout.connect_acp") as connect_acp,
     ):
         connect_acp.return_value = (MagicMock(), MagicMock(), "agent")
         await trial.connect_as(cfg.scenes[0].roles[0])
@@ -217,15 +217,15 @@ async def test_connect_as_applies_hard_web_policy_to_role_agent(tmp_path):
     trial._disallow_web_tools = True
 
     with (
-        patch("benchflow.trial.resolve_agent_env", return_value={}),
+        patch("benchflow.rollout.resolve_agent_env", return_value={}),
         patch(
-            "benchflow.trial.install_agent",
+            "benchflow.rollout.install_agent",
             new=AsyncMock(return_value=AGENTS["gemini"]),
         ),
-        patch("benchflow.trial.write_credential_files", new=AsyncMock()),
-        patch("benchflow.trial.upload_subscription_auth", new=AsyncMock()),
-        patch("benchflow.trial.apply_web_tool_policy", new=AsyncMock()) as apply_policy,
-        patch("benchflow.trial.connect_acp", new=AsyncMock()) as connect_acp,
+        patch("benchflow.rollout.write_credential_files", new=AsyncMock()),
+        patch("benchflow.rollout.upload_subscription_auth", new=AsyncMock()),
+        patch("benchflow.rollout.apply_web_tool_policy", new=AsyncMock()) as apply_policy,
+        patch("benchflow.rollout.connect_acp", new=AsyncMock()) as connect_acp,
     ):
         connect_acp.return_value = (MagicMock(), MagicMock(), "agent")
         await trial.connect_as(role)
