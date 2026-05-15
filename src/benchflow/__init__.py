@@ -25,7 +25,7 @@ from harbor import (
 
 # benchflow's additions
 from benchflow._env_setup import stage_dockerfile_deps
-from benchflow._scene import MailboxTransport, Message, MessageTransport, Role, Scene
+from benchflow._scene import MailboxTransport, Message, MessageTransport
 from benchflow._snapshot import list_snapshots, restore, snapshot
 from benchflow.acp.client import ACPClient
 from benchflow.acp.session import ACPSession
@@ -46,6 +46,7 @@ from benchflow.environments import (
 from benchflow.job import Job, JobConfig, JobResult, RetryConfig
 from benchflow.metrics import BenchmarkMetrics, collect_metrics
 from benchflow.models import AgentInstallError, AgentTimeoutError, RunResult
+from benchflow.rollouts import Role, Scene, Turn
 from benchflow.runtime import (
     Agent,
     Environment,
@@ -59,9 +60,7 @@ from benchflow.skills import SkillInfo, discover_skills, install_skill, parse_sk
 from benchflow.trajectories.otel import OTelCollector
 from benchflow.trajectories.proxy import TrajectoryProxy
 from benchflow.trajectories.types import Trajectory
-from benchflow.trial import Role as TrialRole
-from benchflow.trial import Scene as TrialScene
-from benchflow.trial import Trial, TrialConfig, Turn
+from benchflow.trial import Trial, TrialConfig
 from benchflow.trial_yaml import trial_config_from_yaml
 from benchflow.user import BaseUser, FunctionUser, PassthroughUser, RoundResult
 
@@ -121,8 +120,6 @@ __all__ = [
     # Trial (decomposed lifecycle)
     "Trial",
     "TrialConfig",
-    "TrialRole",
-    "TrialScene",
     "Turn",
     "trial_config_from_yaml",
     # User abstraction (progressive disclosure)

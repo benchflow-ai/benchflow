@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from benchflow.job import Job
+from benchflow.trial_yaml import trial_config_from_dict
 
 
 @pytest.fixture
@@ -282,3 +283,39 @@ sandbox_user: testuser
         assert job._config.agent_env == {}
         assert job._config.sandbox_user == "agent"
         assert job._config.sandbox_setup_timeout == 120
+
+
+def test_trial_yaml_parses_canonical_scene_role_fields() -> None:
+    cfg = trial_config_from_dict(
+        {
+            "task_dir": "tasks",
+            "scenes": [
+                {
+                    "name": "review",
+                    "parallel_group": "pass-k",
+                    "roles": [
+                        {
+                            "name": "coder",
+                            "agent": "gemini",
+                            "model": "gemini-3.1-flash-lite-preview",
+                            "timeout_sec": 300,
+                            "idle_timeout_sec": 60,
+                            "capabilities": ["agent-as-tool"],
+                            "instruction": "Write the solution.",
+                            "tools": ["bash"],
+                        }
+                    ],
+                    "turns": [{"role": "coder", "prompt": None}],
+                }
+            ],
+        }
+    )
+
+    scene = cfg.scenes[0]
+    role = scene.roles[0]
+    assert scene.parallel_group == "pass-k"
+    assert role.timeout_sec == 300
+    assert role.idle_timeout_sec == 60
+    assert role.capabilities == ["agent-as-tool"]
+    assert role.instruction == "Write the solution."
+    assert role.tools == ["bash"]

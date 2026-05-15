@@ -28,21 +28,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from benchflow.rollouts.config import Role
+
 logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
 # Core types
 # ---------------------------------------------------------------------------
-
-
-@dataclass
-class Role:
-    name: str
-    agent: str
-    model: str
-    instruction: str
-    tools: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -90,12 +83,12 @@ class MailboxTransport(MessageTransport):
 
 
 # ---------------------------------------------------------------------------
-# Scene
+# Scene runtime
 # ---------------------------------------------------------------------------
 
 
-class Scene:
-    """Turn-based multi-agent scene.
+class SceneRuntime:
+    """Turn-based runtime for a canonical multi-agent scene.
 
     Scheduler rule (0.3):
       - exactly 2 roles (enforced at init)
@@ -160,7 +153,7 @@ class Scene:
 
     def build_prompt_for_role(self, role: Role, inbox: list[Message]) -> str:
         """Build the prompt for a role, injecting any pending messages."""
-        parts = [role.instruction]
+        parts = [role.instruction or f"You are the {role.name} role."]
         if inbox:
             parts.append("\n---\nYou have received the following messages:\n")
             for msg in inbox:
@@ -287,3 +280,8 @@ class Scene:
         ]
         path.write_text("\n".join(lines) + "\n" if lines else "")
         logger.info(f"Scene trajectory saved: {len(self.trajectory)} messages → {path}")
+
+
+# Backward-compatible module-local name for the 0.3 scene runtime. The
+# canonical scene config dataclass lives in benchflow.rollouts.config.
+Scene = SceneRuntime

@@ -43,7 +43,8 @@ from typing import Any
 
 import yaml
 
-from benchflow.trial import Role, Scene, TrialConfig, Turn
+from benchflow.rollouts.config import Role, Scene, Turn
+from benchflow.trial import TrialConfig
 
 logger = logging.getLogger(__name__)
 
@@ -139,6 +140,7 @@ def _parse_scene(raw: dict) -> Scene:
         roles=roles,
         turns=turns,
         skills_dir=raw.get("skills_dir"),
+        parallel_group=raw.get("parallel_group"),
     )
 
 
@@ -149,6 +151,12 @@ def _parse_role(raw: dict) -> Role:
         agent=raw["agent"],
         model=raw.get("model"),
         env=raw.get("env", {}),
+        timeout_sec=raw.get("timeout_sec"),
+        idle_timeout_sec=raw.get("idle_timeout_sec"),
+        skills_dir=raw.get("skills_dir"),
+        capabilities=raw.get("capabilities", []),
+        instruction=raw.get("instruction"),
+        tools=raw.get("tools", []),
     )
 
 
