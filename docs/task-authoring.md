@@ -76,7 +76,7 @@ config = TrialConfig(
             Turn("agent", "Review your solution and fix any test failures."),
         ],
     )],
-    backend="daytona",
+    environment="daytona",
 )
 result = await bf.run(config)
 ```

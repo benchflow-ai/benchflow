@@ -26,6 +26,7 @@ print(f"Tool calls: {result.n_tool_calls}")
 Declarative configuration for a trial — a sequence of Scenes in a shared sandbox.
 
 ```python
+from pathlib import Path
 from benchflow.trial import TrialConfig, Scene, Role, Turn
 
 # Single-agent (simplest)

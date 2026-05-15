@@ -56,6 +56,7 @@ scenes:
 ### Python
 
 ```python
+from pathlib import Path
 from benchflow.trial import TrialConfig, Scene, Role, Turn
 
 config = TrialConfig(
@@ -130,6 +131,7 @@ scenes:
 For stronger isolation, use the MCP reviewer server pattern. The reviewer runs as a sidecar service -- it has no filesystem write access at all. The coder calls the reviewer via a tool call:
 
 ```python
+from pathlib import Path
 from benchflow.trial import TrialConfig, Scene, Role, Turn
 
 config = TrialConfig(
@@ -208,6 +210,7 @@ scenes:
 ### Python
 
 ```python
+from pathlib import Path
 from benchflow.trial import TrialConfig, Scene, Role, Turn
 
 config = TrialConfig(
@@ -268,6 +271,7 @@ scenes:
 ### Python
 
 ```python
+from pathlib import Path
 from benchflow.trial import TrialConfig, Scene, Role, Turn
 
 config = TrialConfig(
@@ -337,6 +341,7 @@ scenes:
 ### Python
 
 ```python
+from pathlib import Path
 from benchflow.trial import TrialConfig, Scene, Role, Turn
 
 config = TrialConfig(
@@ -395,6 +400,7 @@ services:
 ### Python
 
 ```python
+from pathlib import Path
 from benchflow.trial import TrialConfig, Scene, Role, Turn
 from benchflow import SERVICES, build_service_hooks
 
