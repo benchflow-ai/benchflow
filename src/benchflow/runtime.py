@@ -262,7 +262,8 @@ class Runtime:
         Runtime is the stable user-facing surface. Trial owns the
         decomposed lifecycle phases underneath.
         """
-        from benchflow.trial import Scene, Trial, TrialConfig
+        from benchflow._types import Scene
+        from benchflow.trial import Trial, TrialConfig
 
         config = self.config
         trial_config = TrialConfig(
@@ -328,7 +329,8 @@ async def run(
         # 3. Agent name string (simplest)
         result = await bf.run("gemini", task_path="tasks/X")
     """
-    from benchflow.trial import Scene, Trial, TrialConfig
+    from benchflow._types import Scene
+    from benchflow.trial import Trial, TrialConfig
 
     if isinstance(subject, TrialConfig):
         if subject.skill_mode == "self-gen":

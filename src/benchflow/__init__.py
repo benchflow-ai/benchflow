@@ -25,8 +25,10 @@ from harbor import (
 
 # benchflow's additions
 from benchflow._env_setup import stage_dockerfile_deps
-from benchflow._scene import MailboxTransport, Message, MessageTransport, Role, Scene
+from benchflow._scene import MailboxTransport, Message, MessageTransport, SceneRole
+from benchflow._scene import Scene as SceneRuntime
 from benchflow._snapshot import list_snapshots, restore, snapshot
+from benchflow._types import Role, Scene, Turn
 from benchflow.acp.client import ACPClient
 from benchflow.acp.session import ACPSession
 from benchflow.agents.registry import (
@@ -59,11 +61,13 @@ from benchflow.skills import SkillInfo, discover_skills, install_skill, parse_sk
 from benchflow.trajectories.otel import OTelCollector
 from benchflow.trajectories.proxy import TrajectoryProxy
 from benchflow.trajectories.types import Trajectory
-from benchflow.trial import Role as TrialRole
-from benchflow.trial import Scene as TrialScene
-from benchflow.trial import Trial, TrialConfig, Turn
+from benchflow.trial import Trial, TrialConfig
 from benchflow.trial_yaml import trial_config_from_yaml
 from benchflow.user import BaseUser, FunctionUser, PassthroughUser, RoundResult
+
+# Backward-compat aliases (ENG-47)
+TrialRole = Role
+TrialScene = Scene
 
 # Public API surface. Anything not in this list is implementation detail and
 # may change without notice. Names are grouped by source module to match the
@@ -108,9 +112,13 @@ __all__ = [
     "RuntimeConfig",
     "RuntimeResult",
     "run",
-    # Multi-agent scene
-    "Scene",
+    # Canonical declarative types (_types.py — ENG-47)
     "Role",
+    "Scene",
+    "Turn",
+    # Multi-agent scene runtime
+    "SceneRole",
+    "SceneRuntime",
     "Message",
     "MessageTransport",
     "MailboxTransport",
@@ -123,7 +131,6 @@ __all__ = [
     "TrialConfig",
     "TrialRole",
     "TrialScene",
-    "Turn",
     "trial_config_from_yaml",
     # User abstraction (progressive disclosure)
     "BaseUser",
