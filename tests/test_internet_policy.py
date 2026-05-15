@@ -1,3 +1,5 @@
+import json
+import subprocess
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -240,3 +242,174 @@ async def test_connect_as_applies_hard_web_policy_to_role_agent(tmp_path):
         connect_acp.await_args.kwargs["agent_env"]["BENCHFLOW_DISALLOW_WEB_TOOLS"]
         == "1"
     )
+
+
+# ── Shell-command verification: setup_cmd produces valid agent config ──────
+
+
+def test_task_allows_internet_when_explicitly_true():
+    """allow_internet=True should not trigger web-tool disabling."""
+    task = SimpleNamespace(
+        config=SimpleNamespace(environment=SimpleNamespace(allow_internet=True))
+    )
+    assert _task_disallows_internet(task) is False
+
+
+def test_apply_web_policy_noop_when_not_disallowed():
+    """disallow=False should return the original env dict unchanged."""
+    env = {"KEY": "value"}
+    result = _apply_web_policy(env, disallow=False)
+    assert result is env
+    assert "BENCHFLOW_DISALLOW_WEB_TOOLS" not in result
+
+
+def _run_setup_cmd(agent_name: str, tmp_path) -> dict:
+    """Execute an agent's disallow_web_tools_setup_cmd and return the JSON it wrote."""
+    from benchflow.agents.registry import AGENTS
+
+    cfg = AGENTS[agent_name]
+    assert cfg.disallow_web_tools_setup_cmd, f"{agent_name} has no setup_cmd"
+
+    result = subprocess.run(
+        ["bash", "-c", cfg.disallow_web_tools_setup_cmd],
+        env={"BENCHFLOW_AGENT_HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert result.returncode == 0, f"{agent_name} setup_cmd failed: {result.stderr}"
+    return tmp_path
+
+
+def test_claude_setup_cmd_disables_web_tools(tmp_path):
+    """Claude setup_cmd should write settings.json denying WebSearch+WebFetch."""
+    _run_setup_cmd("claude-agent-acp", tmp_path)
+    settings = json.loads((tmp_path / ".claude" / "settings.json").read_text())
+
+    deny = settings["permissions"]["deny"]
+    assert "WebSearch" in deny
+    assert "WebFetch" in deny
+
+
+def test_gemini_setup_cmd_disables_web_tools(tmp_path):
+    """Gemini setup_cmd should write settings.json excluding google_web_search+web_fetch."""
+    _run_setup_cmd("gemini", tmp_path)
+    settings = json.loads((tmp_path / ".gemini" / "settings.json").read_text())
+
+    excluded = settings["tools"]["exclude"]
+    assert "google_web_search" in excluded
+    assert "web_fetch" in excluded
+
+
+def test_opencode_setup_cmd_disables_web_tools(tmp_path):
+    """OpenCode setup_cmd should write opencode.json with webfetch=False."""
+    _run_setup_cmd("opencode", tmp_path)
+    settings = json.loads(
+        (tmp_path / ".config" / "opencode" / "opencode.json").read_text()
+    )
+
+    assert settings["tools"]["webfetch"] is False
+
+
+def test_openhands_setup_cmd_disables_browsing(tmp_path):
+    """OpenHands setup_cmd should write config disabling browsing."""
+    _run_setup_cmd("openhands", tmp_path)
+    config = (tmp_path / ".openhands" / "config.toml").read_text()
+    assert "enable_browsing = false" in config
+
+
+def test_setup_cmd_is_idempotent(tmp_path):
+    """Running setup_cmd twice should produce the same config, not duplicate entries."""
+    _run_setup_cmd("claude-agent-acp", tmp_path)
+    _run_setup_cmd("claude-agent-acp", tmp_path)
+    settings = json.loads((tmp_path / ".claude" / "settings.json").read_text())
+
+    deny = settings["permissions"]["deny"]
+    assert deny.count("WebSearch") == 1
+    assert deny.count("WebFetch") == 1
+
+
+def test_setup_cmd_merges_with_existing_config(tmp_path):
+    """setup_cmd should merge into existing settings, not overwrite them."""
+    settings_dir = tmp_path / ".gemini"
+    settings_dir.mkdir(parents=True)
+    (settings_dir / "settings.json").write_text(
+        json.dumps({"theme": "dark", "tools": {"timeout": 30}})
+    )
+
+    _run_setup_cmd("gemini", tmp_path)
+    settings = json.loads((settings_dir / "settings.json").read_text())
+
+    assert settings["theme"] == "dark"
+    assert settings["tools"]["timeout"] == 30
+    assert "google_web_search" in settings["tools"]["exclude"]
+    assert "web_fetch" in settings["tools"]["exclude"]
+
+
+def test_create_environment_does_not_flip_when_internet_allowed(tmp_path):
+    """When allow_internet=True, preserve_agent_network should not modify env config."""
+    from benchflow._env_setup import _create_environment
+
+    original_env = MagicMock()
+    original_env.allow_internet = True
+    task = SimpleNamespace(
+        paths=SimpleNamespace(environment_dir=tmp_path / "environment"),
+        config=SimpleNamespace(environment=original_env),
+    )
+
+    with patch("harbor.environments.docker.docker.DockerEnvironment") as docker_env:
+        _create_environment(
+            "docker", task, tmp_path, "trial", MagicMock(), preserve_agent_network=True
+        )
+
+    original_env.model_copy.assert_not_called()
+    assert docker_env.call_args.kwargs["task_env_config"] is original_env
+
+
+def test_task_toml_allow_internet_false_parsed_correctly(tmp_path):
+    """A real task.toml with allow_internet=false should be correctly parsed by Harbor."""
+    from harbor.models.task.task import Task
+
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    (task_dir / "task.toml").write_text(
+        "[task]\n"
+        'name = "test/internet-false"\n'
+        "\n"
+        "[environment]\n"
+        "allow_internet = false\n"
+    )
+    (task_dir / "instruction.md").write_text("Test instruction.")
+
+    task = Task(task_dir)
+    assert task.config.environment.allow_internet is False
+    assert _task_disallows_internet(task) is True
+
+
+def test_task_toml_allow_internet_true_parsed_correctly(tmp_path):
+    """A real task.toml with allow_internet=true (default) should not trigger policy."""
+    from harbor.models.task.task import Task
+
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    (task_dir / "task.toml").write_text(
+        '[task]\nname = "test/internet-true"\n\n[environment]\nallow_internet = true\n'
+    )
+    (task_dir / "instruction.md").write_text("Test instruction.")
+
+    task = Task(task_dir)
+    assert task.config.environment.allow_internet is True
+    assert _task_disallows_internet(task) is False
+
+
+def test_task_toml_missing_allow_internet_defaults_to_allowed(tmp_path):
+    """A task.toml without allow_internet should default to internet allowed."""
+    from harbor.models.task.task import Task
+
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    (task_dir / "task.toml").write_text('[task]\nname = "test/internet-default"\n')
+    (task_dir / "instruction.md").write_text("Test instruction.")
+
+    task = Task(task_dir)
+    assert _task_disallows_internet(task) is False
