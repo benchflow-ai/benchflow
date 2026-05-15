@@ -17,12 +17,11 @@ import os
 import re
 import shlex
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import Any
 
 from benchflow.agents.registry import get_sandbox_home_dirs
 
-if TYPE_CHECKING:
-    from harbor.models.task.task import Task
+Task = Any
 
 logger = logging.getLogger(__name__)
 

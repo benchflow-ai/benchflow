@@ -768,8 +768,7 @@ class Trial:
         Returns (rewards, verifier_output, verifier_error). The final
         verify() still does full hardening.
         """
-        from harbor import Verifier
-
+        import benchflow._harbor as harbor_compat
         from benchflow._sandbox import _build_cleanup_cmd, _read_hardening_config
 
         self._trial_paths.verifier_dir.mkdir(parents=True, exist_ok=True)
@@ -792,7 +791,7 @@ class Trial:
         verifier_output = None
         verifier_error = None
         try:
-            verifier = Verifier(
+            verifier = harbor_compat.make_verifier(
                 task=self._task,
                 trial_paths=self._trial_paths,
                 environment=self._env,

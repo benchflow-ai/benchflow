@@ -339,10 +339,10 @@ class TestSoftVerify:
         trial = _make_user_trial(PassthroughUser())
 
         with (
-            patch("harbor.Verifier") as MockVerifier,
+            patch("benchflow._harbor.make_verifier") as make_verifier,
             patch("benchflow._sandbox.CLEANUP_CMD", "true"),
         ):
-            mock_instance = MockVerifier.return_value
+            mock_instance = make_verifier.return_value
             mock_instance.verify = AsyncMock(side_effect=TimeoutError())
 
             rewards, output, error = await trial.soft_verify()
@@ -356,10 +356,10 @@ class TestSoftVerify:
         trial = _make_user_trial(PassthroughUser())
 
         with (
-            patch("harbor.Verifier") as MockVerifier,
+            patch("benchflow._harbor.make_verifier") as make_verifier,
             patch("benchflow._sandbox.CLEANUP_CMD", "true"),
         ):
-            mock_instance = MockVerifier.return_value
+            mock_instance = make_verifier.return_value
             mock_instance.verify = AsyncMock(side_effect=RuntimeError("boom"))
 
             rewards, _output, error = await trial.soft_verify()
@@ -375,10 +375,10 @@ class TestSoftVerify:
         mock_result = type("VR", (), {"rewards": {"exact_match": 1.0}})()
 
         with (
-            patch("harbor.Verifier") as MockVerifier,
+            patch("benchflow._harbor.make_verifier") as make_verifier,
             patch("benchflow._sandbox.CLEANUP_CMD", "true"),
         ):
-            mock_instance = MockVerifier.return_value
+            mock_instance = make_verifier.return_value
             mock_instance.verify = AsyncMock(return_value=mock_result)
 
             rewards, _output, error = await trial.soft_verify()
@@ -393,13 +393,13 @@ class TestSoftVerify:
         mock_result = type("VR", (), {"rewards": {}})()
 
         with (
-            patch("harbor.Verifier") as MockVerifier,
+            patch("benchflow._harbor.make_verifier") as make_verifier,
             patch(
                 "benchflow._sandbox._build_cleanup_cmd",
                 return_value="echo cleanup_sentinel",
             ),
         ):
-            mock_instance = MockVerifier.return_value
+            mock_instance = make_verifier.return_value
             mock_instance.verify = AsyncMock(return_value=mock_result)
 
             await trial.soft_verify()

@@ -12,9 +12,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from harbor.models.task.task import Task
-from harbor.models.trial.paths import TrialPaths
-
+import benchflow._harbor as harbor_compat
 from benchflow.agents.registry import AGENTS
 
 logger = logging.getLogger(__name__)
@@ -148,13 +146,14 @@ def _modal_builder_dockerfile(
 
 def _create_benchflow_modal_environment_class():
     """Create a ModalEnvironment subclass with BenchFlow's image-build defaults."""
-    from harbor.environments.modal import ModalEnvironment
+    ModalEnvironment = harbor_compat.modal_environment_class()
 
     class BenchFlowModalEnvironment(ModalEnvironment):
         async def start(self, force_build: bool) -> None:
             """Starts the Modal sandbox, adding Python for plain Linux images."""
-            from harbor.models.trial.paths import EnvironmentPaths
             from modal import App, Image, Secret, Volume
+
+            EnvironmentPaths = harbor_compat.modal_environment_paths_class()
 
             def noop_cleanup_dockerfile() -> None:
                 return None
@@ -424,7 +423,7 @@ def _patch_harbor_dind() -> None:
     logger.info(f"DinD detected: {container_dest} → {host_source}")
 
     try:
-        from harbor.environments.docker.docker import DockerEnvironmentEnvVars
+        DockerEnvironmentEnvVars = harbor_compat.docker_environment_env_vars_class()
     except ImportError:
         return
 
@@ -449,10 +448,10 @@ def _patch_harbor_dind() -> None:
 
 def _create_environment(
     environment_type: str,
-    task: Task,
+    task: Any,
     task_path: Path,
     trial_name: str,
-    trial_paths: TrialPaths,
+    trial_paths: Any,
     preserve_agent_network: bool = False,
 ) -> Any:
     """Create a Harbor environment (Docker, Daytona, or Modal)."""
@@ -469,7 +468,7 @@ def _create_environment(
         env_config.allow_internet = True
 
     if environment_type == "docker":
-        from harbor.environments.docker.docker import DockerEnvironment
+        DockerEnvironment = harbor_compat.docker_environment_class()
 
         return DockerEnvironment(
             environment_dir=environment_dir,
@@ -479,7 +478,7 @@ def _create_environment(
             task_env_config=env_config,
         )
     elif environment_type == "daytona":
-        from harbor.environments.daytona import DaytonaEnvironment
+        DaytonaEnvironment = harbor_compat.daytona_environment_class()
 
         from benchflow._daytona_patches import apply as _apply_daytona_patches
 

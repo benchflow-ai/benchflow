@@ -39,3 +39,43 @@ def make_verifier(task: Any, trial_paths: Any, environment: Any) -> HarborVerifi
     """Create the current Harbor verifier."""
 
     return HarborVerifier(task=task, trial_paths=trial_paths, environment=environment)
+
+
+def docker_environment_env_vars_class() -> type:
+    """Return Harbor's Docker env-var helper class."""
+
+    from harbor.environments.docker.docker import DockerEnvironmentEnvVars
+
+    return DockerEnvironmentEnvVars
+
+
+def docker_environment_class() -> type:
+    """Return Harbor's Docker environment class."""
+
+    from harbor.environments.docker.docker import DockerEnvironment
+
+    return DockerEnvironment
+
+
+def daytona_environment_class() -> type:
+    """Return Harbor's Daytona environment class."""
+
+    from harbor.environments.daytona import DaytonaEnvironment
+
+    return DaytonaEnvironment
+
+
+def modal_environment_class() -> type:
+    """Return Harbor's Modal environment class."""
+
+    from harbor.environments.modal import ModalEnvironment
+
+    return ModalEnvironment
+
+
+def modal_environment_paths_class() -> type:
+    """Return Harbor's environment-path constants used by Modal setup."""
+
+    from harbor.models.trial.paths import EnvironmentPaths
+
+    return EnvironmentPaths
