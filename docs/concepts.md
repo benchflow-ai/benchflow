@@ -1,5 +1,4 @@
 # Concepts
-
 The mental model for benchflow. Read once, then refer back from the how-tos.
 
 ---
@@ -24,7 +23,7 @@ A `Trial` is decomposable: each phase is a callable method, you can either run t
 ┌──────────────────────────────────────────────────────────────┐
 │                    Trial.run()                               │
 │                                                              │
-│  setup()         resolve config, create Harbor env handle    │
+│  setup()         resolve config, create sandbox env handle   │
 │    ↓                                                         │
 │  start()         start container, upload task files          │
 │    ↓                                                         │

@@ -93,7 +93,7 @@ Two runnable labs validate the security story:
 - **Eval researchers / paper writers** → [Getting started](./docs/getting-started.md) → [Concepts](./docs/concepts.md) → [Use cases](./docs/use-cases.md)
 - **Task authors** → [Task authoring](./docs/task-authoring.md) → [Sandbox hardening](./docs/sandbox-hardening.md)
 - **Agent builders integrating with benchflow** → [Concepts](./docs/concepts.md) → [Python API reference](./docs/reference/python-api.md) → [`benchflow.agents.registry`](./src/benchflow/agents/registry.py)
-- **Existing Harbor users migrating** → [Use cases — migration section](./docs/use-cases.md#migration-from-harbor) → [Progressive disclosure (Harbor #1316 parity)](./docs/progressive-disclosure.md#comparison-with-multi-agent-simulated-user-harbor-1316-parity)
+- **Existing Harbor users migrating** → [Use cases — migration section](./docs/use-cases.md#migration-from-harbor) → [Progressive disclosure](./docs/progressive-disclosure.md#comparison-with-multi-agent-simulated-user)
 
 ## Contributing
 
