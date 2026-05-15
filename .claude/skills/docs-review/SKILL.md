@@ -153,7 +153,7 @@ All markdown links resolve:
 - **README.md**: outward-facing only. Install / quickstart / one-screen
   architecture pointer. No full internals tree (use `Key modules` + link
   to `docs/architecture.md`). No deep rationale.
-- **AGENTS.md**: AI entry-point. Stays compact (~60 lines max — it's
+- **AGENTS.md**: AI entry-point. Stays compact (~25 lines max — it's
   often loaded into agents' context). Links to design docs rather than
   inlining them. Encodes conventions, not reference material.
 - **docs/architecture.md**: sole deep reference for internals. All module
