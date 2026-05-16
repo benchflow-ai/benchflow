@@ -50,7 +50,10 @@ class TestBedrockProxyRuntime:
 
     @pytest.mark.asyncio
     async def test_starts_proxy_and_rewrites_codex_env(self, monkeypatch):
-        monkeypatch.setattr(provider_runtime_mod, "_docker_host_address", lambda: "host.docker.internal")
+        monkeypatch.setattr(
+            provider_runtime_mod, "_docker_host_address", lambda: "host.docker.internal"
+        )
+
         class FakeServer:
             def __init__(
                 self,
@@ -101,7 +104,10 @@ class TestBedrockProxyRuntime:
 
     @pytest.mark.asyncio
     async def test_starts_proxy_and_rewrites_claude_env(self, monkeypatch):
-        monkeypatch.setattr(provider_runtime_mod, "_docker_host_address", lambda: "host.docker.internal")
+        monkeypatch.setattr(
+            provider_runtime_mod, "_docker_host_address", lambda: "host.docker.internal"
+        )
+
         class FakeServer:
             def __init__(
                 self,
