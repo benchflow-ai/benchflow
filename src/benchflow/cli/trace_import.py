@@ -139,6 +139,10 @@ def register_tasks_generate(tasks_app: typer.Typer) -> None:
             assert from_hf is not None
             traces = _load_hf(from_hf, format, split, max_rows)
 
+        # Apply shared --limit across all sources
+        if limit and len(traces) > limit:
+            traces = traces[:limit]
+
         if not traces:
             console.print("[yellow]No traces found.[/yellow]")
             raise typer.Exit(1)
@@ -235,6 +239,9 @@ def _load_hf(
     from benchflow.traces.huggingface import KNOWN_DATASETS, load_hf_dataset
 
     fmt = None if format == "auto" else format
+    # CLI uses "claude-code"; HF loader uses "claude-messages"
+    if fmt == "claude-code":
+        fmt = "claude-messages"
     if dataset in KNOWN_DATASETS:
         info = KNOWN_DATASETS[dataset]
         console.print(
