@@ -10,6 +10,7 @@ Both are normalized into :class:`~benchflow.traces.models.ParsedTrace`.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import uuid
@@ -182,8 +183,10 @@ def parse_claude_code_session(
                     total_input += int(usage.get("input_tokens", 0))
                     total_output += int(usage.get("output_tokens", 0))
 
+    deterministic_id = hashlib.sha256(f"{sid}:{path.name}".encode()).hexdigest()[:16]
+
     return ParsedTrace(
-        trace_id=str(uuid.uuid4()),
+        trace_id=deterministic_id,
         session_id=sid,
         agent_name="claude-code",
         model=model,

@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+import shlex
 import textwrap
 from pathlib import Path
 
@@ -153,8 +154,9 @@ def _build_test_sh(trace: ParsedTrace) -> str | None:
 
     checks: list[str] = []
     for f in files[:10]:
-        checks.append(f'  if [ ! -f "{f}" ]; then')
-        checks.append(f'    echo "Missing: {f}"')
+        quoted = shlex.quote(f)
+        checks.append(f"  if [ ! -f {quoted} ]; then")
+        checks.append(f"    echo \"Missing: {quoted}\"")
         checks.append("    PASS=0")
         checks.append("  fi")
 

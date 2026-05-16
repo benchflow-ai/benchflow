@@ -48,11 +48,13 @@ KNOWN_DATASETS: dict[str, dict[str, str]] = {
 def _cache_dir() -> Path:
     """Local cache for downloaded datasets."""
     d = Path.cwd()
+    root = d
     while d != d.parent:
         if (d / ".git").exists():
+            root = d
             break
         d = d.parent
-    cache = d / ".cache" / "traces"
+    cache = root / ".cache" / "traces"
     cache.mkdir(parents=True, exist_ok=True)
     return cache
 
@@ -70,7 +72,8 @@ def _download_hf_dataset(
     """
     cache = cache or _cache_dir()
     safe_name = repo_id.replace("/", "__")
-    out_path = cache / f"{safe_name}__{split}.jsonl"
+    rows_suffix = f"_n{max_rows}" if max_rows else ""
+    out_path = cache / f"{safe_name}__{split}{rows_suffix}.jsonl"
 
     if out_path.exists():
         logger.info("Using cached dataset: %s", out_path)
