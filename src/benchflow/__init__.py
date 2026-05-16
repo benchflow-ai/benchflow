@@ -56,6 +56,10 @@ from benchflow.runtime import (
     RuntimeResult,
     run,  # bf.run(agent, env) — the primary 0.3 API
 )
+
+# Sandbox protocol (v0.4 — parallel types, Harbor not yet removed)
+from benchflow.sandbox import ExecResult as SandboxExecResult
+from benchflow.sandbox import ImageBuilder, ImageConfig, ImageRef, Sandbox
 from benchflow.sdk import SDK
 from benchflow.skills import SkillInfo, discover_skills, install_skill, parse_skill
 from benchflow.trajectories.otel import OTelCollector
@@ -75,6 +79,12 @@ TrialScene = Scene
 # what.
 __all__ = [
     "__version__",
+    # Sandbox protocol (v0.4)
+    "Sandbox",
+    "SandboxExecResult",
+    "ImageBuilder",
+    "ImageConfig",
+    "ImageRef",
     # Harbor re-exports
     "BaseAgent",
     "BaseEnvironment",
