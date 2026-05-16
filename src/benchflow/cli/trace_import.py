@@ -1,10 +1,12 @@
-"""`bench import` — import agent traces as BenchFlow tasks.
+"""`bench tasks generate` — generate BenchFlow tasks from agent traces.
 
-Supports three sources:
+Supports three trace sources:
 
-1. **Local Claude Code sessions** — ``bench import local``
-2. **opentraces JSONL files** — ``bench import file <path>``
-3. **HuggingFace datasets** — ``bench import hf <dataset>``
+1. **Local Claude Code sessions** — ``bench tasks generate --from-local``
+2. **JSONL trace files** — ``bench tasks generate --from-file <path>``
+3. **HuggingFace datasets** — ``bench tasks generate --from-hf <dataset>``
+
+Also adds ``bench tasks list-sources`` for discovering known HF datasets.
 """
 
 from __future__ import annotations
@@ -19,149 +21,195 @@ from rich.table import Table
 
 console = Console()
 
-app = typer.Typer(
-    name="import",
-    help="Import agent traces as BenchFlow benchmark tasks.",
-    no_args_is_help=True,
-)
+
+def register_tasks_generate(tasks_app: typer.Typer) -> None:
+    """Register ``generate`` and ``list-sources`` on the tasks sub-app."""
+
+    @tasks_app.command("generate")
+    def tasks_generate(
+        from_local: Annotated[
+            bool,
+            typer.Option(
+                "--from-local",
+                help="Generate from local Claude Code sessions (~/.claude/projects/)",
+            ),
+        ] = False,
+        from_file: Annotated[
+            Path | None,
+            typer.Option(
+                "--from-file",
+                help="Generate from a JSONL trace file (Claude Code or opentraces)",
+            ),
+        ] = None,
+        from_hf: Annotated[
+            str | None,
+            typer.Option(
+                "--from-hf",
+                help=(
+                    "Generate from a HuggingFace dataset "
+                    "(ID or alias; run `bench tasks list-sources` for aliases)"
+                ),
+            ),
+        ] = None,
+        output_dir: Annotated[
+            Path,
+            typer.Option("--output", "-o", help="Output directory for generated tasks"),
+        ] = Path("tasks"),
+        # ── source-specific options ──────────────────────────────────
+        projects_dir: Annotated[
+            Path | None,
+            typer.Option(
+                "--projects-dir",
+                help="Claude Code projects directory (default: ~/.claude/projects/)",
+            ),
+        ] = None,
+        project_filter: Annotated[
+            str | None,
+            typer.Option(
+                "--project",
+                "-p",
+                help="Filter local sessions by project path substring",
+            ),
+        ] = None,
+        format: Annotated[
+            str,
+            typer.Option(
+                "--format",
+                "-f",
+                help="Trace format override: auto, claude-code, opentraces",
+            ),
+        ] = "auto",
+        split: Annotated[
+            str,
+            typer.Option("--split", help="HuggingFace dataset split"),
+        ] = "train",
+        max_rows: Annotated[
+            int,
+            typer.Option("--max-rows", help="Max rows to download from HuggingFace"),
+        ] = 100,
+        # ── shared filtering / output options ────────────────────────
+        limit: Annotated[
+            int,
+            typer.Option("--limit", "-n", help="Max traces to process"),
+        ] = 20,
+        min_steps: Annotated[
+            int,
+            typer.Option("--min-steps", help="Minimum steps per trace"),
+        ] = 2,
+        outcome: Annotated[
+            str | None,
+            typer.Option(
+                "--outcome", help="Filter by outcome: success, failure, unknown"
+            ),
+        ] = None,
+        author: Annotated[
+            str,
+            typer.Option("--author", help="Author name for task.toml"),
+        ] = "benchflow-traces",
+        dry_run: Annotated[
+            bool,
+            typer.Option("--dry-run", help="Preview traces without generating tasks"),
+        ] = False,
+    ) -> None:
+        """Generate benchmark tasks from agent traces.
+
+        Exactly one source flag is required.
+
+        Examples:
+            bench tasks generate --from-local
+            bench tasks generate --from-local --project my-repo --limit 5
+            bench tasks generate --from-file session.jsonl --dry-run
+            bench tasks generate --from-hf opentraces-test -n 50 --outcome success
+        """
+        sources = sum([from_local, from_file is not None, from_hf is not None])
+        if sources == 0:
+            console.print(
+                "[red]Specify a source: --from-local, --from-file, or --from-hf[/red]"
+            )
+            raise typer.Exit(1)
+        if sources > 1:
+            console.print("[red]Only one source allowed at a time[/red]")
+            raise typer.Exit(1)
+
+        if from_local:
+            traces = _load_local(projects_dir, project_filter, limit)
+        elif from_file is not None:
+            traces = _load_file(from_file, format)
+        else:
+            assert from_hf is not None
+            traces = _load_hf(from_hf, format, split, max_rows)
+
+        if not traces:
+            console.print("[yellow]No traces found.[/yellow]")
+            raise typer.Exit(1)
+
+        console.print(f"Loaded {len(traces)} trace(s)")
+
+        if dry_run:
+            _print_traces_table(traces)
+            return
+
+        from benchflow.traces.task_gen import generate_tasks_from_traces
+
+        results = generate_tasks_from_traces(
+            traces,
+            output_dir,
+            author=author,
+            min_steps=min_steps,
+            outcome_filter=outcome,
+        )
+
+        console.print(
+            f"\n[green]Generated {len(results)} tasks[/green] → {output_dir}"
+        )
+        _print_task_summary(results)
+
+    @tasks_app.command("list-sources")
+    def tasks_list_sources() -> None:
+        """List known HuggingFace trace datasets.
+
+        These aliases can be passed to ``bench tasks generate --from-hf``.
+        """
+        from benchflow.traces.huggingface import KNOWN_DATASETS
+
+        table = Table(title="Known Trace Datasets")
+        table.add_column("Alias", style="cyan")
+        table.add_column("HuggingFace Repo", style="green")
+        table.add_column("Format", style="yellow")
+        table.add_column("Description")
+
+        for alias, info in KNOWN_DATASETS.items():
+            table.add_row(alias, info["repo"], info["format"], info["description"])
+
+        console.print(table)
 
 
-@app.command("local")
-def import_local(
-    output_dir: Annotated[
-        Path,
-        typer.Option("--output", "-o", help="Output directory for generated tasks"),
-    ] = Path("tasks"),
-    projects_dir: Annotated[
-        Path | None,
-        typer.Option(
-            "--projects-dir",
-            help="Claude Code projects directory (default: ~/.claude/projects/)",
-        ),
-    ] = None,
-    project_filter: Annotated[
-        str | None,
-        typer.Option(
-            "--project",
-            "-p",
-            help="Filter sessions by project path substring",
-        ),
-    ] = None,
-    limit: Annotated[
-        int,
-        typer.Option("--limit", "-n", help="Max sessions to import"),
-    ] = 20,
-    min_steps: Annotated[
-        int,
-        typer.Option("--min-steps", help="Minimum steps per trace"),
-    ] = 2,
-    outcome: Annotated[
-        str | None,
-        typer.Option("--outcome", help="Filter by outcome: success, failure, unknown"),
-    ] = None,
-    author: Annotated[
-        str,
-        typer.Option("--author", help="Author name for task.toml"),
-    ] = "benchflow-traces",
-    dry_run: Annotated[
-        bool,
-        typer.Option("--dry-run", help="Preview traces without generating tasks"),
-    ] = False,
-) -> None:
-    """Import local Claude Code sessions as BenchFlow tasks.
+# ---------------------------------------------------------------------------
+# Source loaders
+# ---------------------------------------------------------------------------
 
-    Scans ~/.claude/projects/ for JSONL session files and converts them
-    into task directories with task.toml + instruction.md.
 
-    Examples:
-        bench import local
-        bench import local --project my-repo --limit 5
-        bench import local --outcome success -o benchmarks/from-traces
-    """
+def _load_local(
+    projects_dir: Path | None, project_filter: str | None, limit: int
+) -> list:
     from benchflow.traces.local import load_local_sessions
-    from benchflow.traces.task_gen import generate_tasks_from_traces
 
     traces = load_local_sessions(
         projects_dir, project_filter=project_filter, limit=limit
     )
-
     if not traces:
-        console.print("[yellow]No Claude Code sessions found.[/yellow]")
         console.print(
-            "Make sure Claude Code is installed and you have sessions in "
-            "~/.claude/projects/"
+            "[dim]Tip: make sure Claude Code is installed and you have "
+            "sessions in ~/.claude/projects/[/dim]"
         )
-        raise typer.Exit(1)
-
-    if dry_run:
-        _print_traces_table(traces)
-        return
-
-    results = generate_tasks_from_traces(
-        traces,
-        output_dir,
-        author=author,
-        min_steps=min_steps,
-        outcome_filter=outcome,
-    )
-
-    console.print(
-        f"\n[green]Generated {len(results)} tasks[/green] "
-        f"from {len(traces)} sessions → {output_dir}"
-    )
-    _print_task_summary(results)
+    return traces
 
 
-@app.command("file")
-def import_file(
-    path: Annotated[
-        Path,
-        typer.Argument(help="Path to a JSONL trace file (Claude Code or opentraces)"),
-    ],
-    output_dir: Annotated[
-        Path,
-        typer.Option("--output", "-o", help="Output directory for generated tasks"),
-    ] = Path("tasks"),
-    format: Annotated[
-        str,
-        typer.Option(
-            "--format",
-            "-f",
-            help="Trace format: auto, claude-code, opentraces",
-        ),
-    ] = "auto",
-    min_steps: Annotated[
-        int,
-        typer.Option("--min-steps", help="Minimum steps per trace"),
-    ] = 2,
-    outcome: Annotated[
-        str | None,
-        typer.Option("--outcome", help="Filter by outcome: success, failure, unknown"),
-    ] = None,
-    author: Annotated[
-        str,
-        typer.Option("--author", help="Author name for task.toml"),
-    ] = "benchflow-traces",
-    dry_run: Annotated[
-        bool,
-        typer.Option("--dry-run", help="Preview traces without generating tasks"),
-    ] = False,
-) -> None:
-    """Import traces from a JSONL file.
-
-    Supports Claude Code session files and opentraces format. Use --format
-    to override auto-detection.
-
-    Examples:
-        bench import file ~/.claude/projects/-my-repo/abc123.jsonl
-        bench import file traces.jsonl --format opentraces
-        bench import file session.jsonl --dry-run
-    """
+def _load_file(path: Path, format: str) -> list:
     from benchflow.traces.parsers import (
         parse_claude_code_session,
         parse_opentraces_file,
     )
-    from benchflow.traces.task_gen import generate_tasks_from_traces
 
     if not path.exists():
         console.print(f"[red]File not found: {path}[/red]")
@@ -173,103 +221,20 @@ def import_file(
         console.print(f"[dim]Detected format: {detected_format}[/dim]")
 
     if detected_format == "claude-code":
-        traces = [parse_claude_code_session(path)]
+        return [parse_claude_code_session(path)]
     elif detected_format == "opentraces":
-        traces = parse_opentraces_file(path)
+        return parse_opentraces_file(path)
     else:
         console.print(f"[red]Unknown format: {detected_format}[/red]")
         raise typer.Exit(1)
 
-    if not traces:
-        console.print("[yellow]No traces found in file.[/yellow]")
-        raise typer.Exit(1)
 
-    console.print(f"Parsed {len(traces)} trace(s) from {path.name}")
-
-    if dry_run:
-        _print_traces_table(traces)
-        return
-
-    results = generate_tasks_from_traces(
-        traces,
-        output_dir,
-        author=author,
-        min_steps=min_steps,
-        outcome_filter=outcome,
-    )
-
-    console.print(
-        f"\n[green]Generated {len(results)} tasks[/green] → {output_dir}"
-    )
-    _print_task_summary(results)
-
-
-@app.command("hf")
-def import_hf(
-    dataset: Annotated[
-        str,
-        typer.Argument(
-            help=(
-                "HuggingFace dataset ID (e.g. nlile/misc-merged-claude-code-traces-v1) "
-                "or alias (opentraces-test, cc-traces-merged, claudeset-community)"
-            )
-        ),
-    ],
-    output_dir: Annotated[
-        Path,
-        typer.Option("--output", "-o", help="Output directory for generated tasks"),
-    ] = Path("tasks"),
-    format: Annotated[
-        str | None,
-        typer.Option(
-            "--format",
-            "-f",
-            help="Dataset format override: opentraces, claude-messages",
-        ),
-    ] = None,
-    split: Annotated[
-        str,
-        typer.Option("--split", help="Dataset split to load"),
-    ] = "train",
-    max_rows: Annotated[
-        int,
-        typer.Option("--max-rows", "-n", help="Max rows to download"),
-    ] = 100,
-    min_steps: Annotated[
-        int,
-        typer.Option("--min-steps", help="Minimum steps per trace"),
-    ] = 2,
-    outcome: Annotated[
-        str | None,
-        typer.Option("--outcome", help="Filter by outcome: success, failure, unknown"),
-    ] = None,
-    author: Annotated[
-        str,
-        typer.Option("--author", help="Author name for task.toml"),
-    ] = "benchflow-traces",
-    dry_run: Annotated[
-        bool,
-        typer.Option("--dry-run", help="Preview traces without generating tasks"),
-    ] = False,
-) -> None:
-    """Import traces from a HuggingFace dataset.
-
-    Downloads the dataset, parses traces, and generates BenchFlow tasks.
-
-    Aliases:
-        opentraces-test    → Jayfarei/opentraces-test (58 traces)
-        cc-traces-merged   → nlile/misc-merged-claude-code-traces-v1 (32k traces)
-        claudeset-community → lelouch0110/claudeset-community
-        cc-traces-weka     → semianalysisai/cc-traces-weka-no-subagents-051226
-
-    Examples:
-        bench import hf opentraces-test --dry-run
-        bench import hf nlile/misc-merged-claude-code-traces-v1 -n 50
-        bench import hf cc-traces-merged -n 100 --outcome success
-    """
+def _load_hf(
+    dataset: str, format: str | None, split: str, max_rows: int
+) -> list:
     from benchflow.traces.huggingface import KNOWN_DATASETS, load_hf_dataset
 
-    # Show known dataset info if alias
+    fmt = None if format == "auto" else format
     if dataset in KNOWN_DATASETS:
         info = KNOWN_DATASETS[dataset]
         console.print(
@@ -277,51 +242,7 @@ def import_hf(
             f"({info['description']})[/dim]"
         )
 
-    traces = load_hf_dataset(
-        dataset, format=format, split=split, max_rows=max_rows
-    )
-
-    if not traces:
-        console.print("[yellow]No traces found in dataset.[/yellow]")
-        raise typer.Exit(1)
-
-    console.print(f"Loaded {len(traces)} trace(s) from HuggingFace")
-
-    if dry_run:
-        _print_traces_table(traces)
-        return
-
-    from benchflow.traces.task_gen import generate_tasks_from_traces
-
-    results = generate_tasks_from_traces(
-        traces,
-        output_dir,
-        author=author,
-        min_steps=min_steps,
-        outcome_filter=outcome,
-    )
-
-    console.print(
-        f"\n[green]Generated {len(results)} tasks[/green] → {output_dir}"
-    )
-    _print_task_summary(results)
-
-
-@app.command("list-datasets")
-def list_datasets() -> None:
-    """List known HuggingFace trace datasets."""
-    from benchflow.traces.huggingface import KNOWN_DATASETS
-
-    table = Table(title="Known Trace Datasets")
-    table.add_column("Alias", style="cyan")
-    table.add_column("HuggingFace Repo", style="green")
-    table.add_column("Format", style="yellow")
-    table.add_column("Description")
-
-    for alias, info in KNOWN_DATASETS.items():
-        table.add_row(alias, info["repo"], info["format"], info["description"])
-
-    console.print(table)
+    return load_hf_dataset(dataset, format=fmt, split=split, max_rows=max_rows)
 
 
 # ---------------------------------------------------------------------------
@@ -347,11 +268,9 @@ def _detect_format(path: Path) -> str:
     except json.JSONDecodeError:
         return "claude-code"
 
-    # opentraces has schema_version and agent fields
     if "schema_version" in data or ("agent" in data and "steps" in data):
         return "opentraces"
 
-    # Claude Code has type field with user/assistant/system
     if data.get("type") in ("user", "assistant", "system"):
         return "claude-code"
 
@@ -369,7 +288,7 @@ def _print_traces_table(traces: list) -> None:
     table.add_column("Outcome", style="yellow")
     table.add_column("Files", justify="right")
 
-    for i, trace in enumerate(traces[:50], 1):  # Cap display at 50
+    for i, trace in enumerate(traces[:50], 1):
         prompt = trace.first_user_prompt or "(no prompt)"
         prompt = prompt[:80].replace("\n", " ")
         table.add_row(

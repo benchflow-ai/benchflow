@@ -592,10 +592,17 @@ def skills_eval(
 tasks_app = typer.Typer(help="Task authoring commands")
 app.add_typer(tasks_app, name="tasks")
 
-# Trace import commands (personal benchmark curation)
-from benchflow.cli.trace_import import app as import_app
+# Trace-based task generation (personal benchmark curation) — lazy import
+# so a broken traces package doesn't prevent the rest of the CLI from loading.
 
-app.add_typer(import_app, name="import")
+
+def _register_trace_commands() -> None:
+    from benchflow.cli.trace_import import register_tasks_generate
+
+    register_tasks_generate(tasks_app)
+
+
+_register_trace_commands()
 
 
 @tasks_app.command("init")
