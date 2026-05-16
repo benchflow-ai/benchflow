@@ -156,15 +156,15 @@ bench tasks init my-task --no-pytest --no-solution
 bench tasks check tasks/my-task/
 
 # Confirm oracle gets reward = 1.0
-bench run tasks/my-task/ --agent oracle --backend docker
+bench run tasks/my-task/ --agent oracle --sandbox docker
 
 # Run a real agent
-bench run tasks/my-task/ --agent gemini --backend daytona
+bench run tasks/my-task/ --agent gemini --sandbox daytona
 
 # Run with task-local skills mounted
 bench run tasks/my-task/ \
   --agent gemini \
-  --backend daytona \
+  --sandbox daytona \
   --skills-dir tasks/my-task/environment/skills \
   --ae BENCHFLOW_SKILL_NUDGE=name
 ```

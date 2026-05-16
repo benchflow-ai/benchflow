@@ -61,7 +61,7 @@ def run(
     ] = None,
     environment: Annotated[
         str,
-        typer.Option("--backend", "-b", help="Backend: docker, daytona, or modal"),
+        typer.Option("--sandbox", "-b", help="Sandbox: docker, daytona, or modal"),
     ] = "docker",
     prompt: Annotated[
         list[str] | None,
@@ -818,7 +818,7 @@ def eval_create(
     ] = None,
     environment: Annotated[
         str,
-        typer.Option("--env", "-e", help="Backend: docker, daytona, or modal"),
+        typer.Option("--env", "-e", help="Sandbox: docker, daytona, or modal"),
     ] = "docker",
     concurrency: Annotated[
         int,
@@ -1062,7 +1062,7 @@ def train_create(
     ] = None,
     environment: Annotated[
         str,
-        typer.Option("--env", "-e", help="Backend"),
+        typer.Option("--env", "-e", help="Sandbox"),
     ] = "daytona",
     sweeps: Annotated[
         int,
@@ -1173,18 +1173,18 @@ def environment_create(
         Path,
         typer.Argument(help="Task directory with task.toml + environment/Dockerfile"),
     ],
-    backend: Annotated[
+    sandbox: Annotated[
         str,
-        typer.Option("--backend", "-b", help="Backend: docker, daytona, or modal"),
+        typer.Option("--sandbox", "-b", help="Sandbox: docker, daytona, or modal"),
     ] = "daytona",
 ) -> None:
     """Create an environment from a task directory (does not start it)."""
     from benchflow.runtime import Environment
 
-    env = Environment.from_task(task_dir, backend=backend)
+    env = Environment.from_task(task_dir, sandbox=sandbox)
     console.print(f"[green]Environment created:[/green] {env}")
     console.print(f"  Task:    {env.task_path}")
-    console.print(f"  Backend: {env.backend}")
+    console.print(f"  Sandbox: {env.sandbox}")
     console.print(
         "  Use [cyan]bench environment start[/cyan] to launch, or pass to [cyan]bf.run()[/cyan]"
     )

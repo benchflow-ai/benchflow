@@ -112,7 +112,7 @@ from benchflow.runtime import Agent, Environment, Runtime, RuntimeConfig
 
 config = RuntimeConfig(sandbox_setup_timeout=300)
 agent = Agent("gemini", model="gemini-3.1-flash-lite-preview")
-env = Environment.from_task("tasks/X", backend="daytona")
+env = Environment.from_task("tasks/X", sandbox="daytona")
 runtime = Runtime(env, agent, config=config)
 result = await runtime.execute()
 ```
@@ -129,7 +129,7 @@ result = await bf.run(config)
 
 # 2. Agent + Environment (0.3 style)
 agent = bf.Agent("gemini", model="gemini-3.1-flash-lite-preview")
-env = bf.Environment.from_task("tasks/X", backend="daytona")
+env = bf.Environment.from_task("tasks/X", sandbox="daytona")
 runtime_config = bf.RuntimeConfig(sandbox_setup_timeout=300)
 result = await bf.run(agent, env, runtime_config)
 

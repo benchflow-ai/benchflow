@@ -37,28 +37,28 @@ class Environment:
 
     Usage::
 
-        env = Environment.from_task("tasks/my-task", backend="daytona")
+        env = Environment.from_task("tasks/my-task", sandbox="daytona")
         await env.start()
         # ... run agents ...
         await env.stop()
 
     Or as a context manager::
 
-        async with Environment.from_task("tasks/X", backend="daytona") as env:
+        async with Environment.from_task("tasks/X", sandbox="daytona") as env:
             result = await runtime.execute()
     """
 
-    def __init__(self, inner: Any, task_path: Path, backend: str) -> None:
+    def __init__(self, inner: Any, task_path: Path, sandbox: str) -> None:
         self._inner = inner
         self.task_path = task_path
-        self.backend = backend
+        self.sandbox = sandbox
         self._started = False
 
     @classmethod
     def from_task(
         cls,
         task_path: str | Path,
-        backend: str = "daytona",
+        sandbox: str = "daytona",
         trial_name: str | None = None,
     ) -> Environment:
         """Create an environment from a task directory."""
@@ -77,13 +77,13 @@ class Environment:
         )
         trial_paths.mkdir()
         inner = _create_environment(
-            environment_type=backend,
+            environment_type=sandbox,
             task=task,
             task_path=task_path,
             trial_name=trial_name,
             trial_paths=trial_paths,
         )
-        return cls(inner=inner, task_path=task_path, backend=backend)
+        return cls(inner=inner, task_path=task_path, sandbox=sandbox)
 
     @property
     def inner(self) -> Any:
@@ -125,7 +125,7 @@ class Environment:
         await self.stop()
 
     def __repr__(self) -> str:
-        return f"Environment({self.task_path.name!r}, backend={self.backend!r})"
+        return f"Environment({self.task_path.name!r}, sandbox={self.sandbox!r})"
 
 
 @dataclass
@@ -241,7 +241,7 @@ class Runtime:
     Usage::
 
         agent = Agent("gemini", model="gemini-3.1-flash-lite-preview")
-        env = Environment.from_task("tasks/X", backend="daytona")
+        env = Environment.from_task("tasks/X", sandbox="daytona")
         runtime = Runtime(env, agent)
         result = await runtime.execute()
     """
@@ -275,7 +275,7 @@ class Runtime:
                     skills_dir=config.skills_dir,
                 )
             ],
-            environment=self.env.backend,
+            environment=self.env.sandbox,
             sandbox_user=config.sandbox_user,
             sandbox_locked_paths=config.sandbox_locked_paths,
             sandbox_setup_timeout=config.sandbox_setup_timeout,

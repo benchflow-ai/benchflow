@@ -226,9 +226,9 @@ The **Harvey LAB harness** agent is special — it runs Harvey LAB's own agent l
 
 ---
 
-## Choosing a backend
+## Choosing a sandbox
 
-| Backend | Flag | Best for |
+| Sandbox | Flag | Best for |
 |---------|------|----------|
 | Docker | `-e docker` | Local development, small runs (≤10 tasks) |
 | Daytona | `-e daytona` | Cloud runs with concurrency (needs `DAYTONA_API_KEY`) |
@@ -312,7 +312,7 @@ source:
   ref: main                        # branch/tag (optional)
 agent: claude-agent-acp            # agent from registry
 model: zai/glm-5.1                 # model ID
-environment: daytona               # backend
+environment: daytona               # sandbox
 concurrency: 8                     # parallel tasks
 ```
 

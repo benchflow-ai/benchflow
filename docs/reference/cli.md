@@ -35,13 +35,13 @@ single-task local, Daytona, or Modal checks.
 bench run tasks/edit-pdf \
   --agent gemini \
   --model gemini-3.1-flash-lite-preview \
-  --backend daytona
+  --sandbox daytona
 
 # Single task with mounted skills and the recommended skill nudge
 bench run tasks/pdf-fix \
   --agent gemini \
   --model gemini-3.1-flash-lite-preview \
-  --backend daytona \
+  --sandbox daytona \
   --skills-dir tasks/pdf-fix/environment/skills \
   --ae BENCHFLOW_SKILL_NUDGE=name
 ```
@@ -51,7 +51,7 @@ bench run tasks/pdf-fix \
 | `TASK_DIR` | — | Task directory containing `task.toml` |
 | `--agent`, `-a` | `claude-agent-acp` | Agent name from the registry |
 | `--model`, `-m` | Agent default | Model ID |
-| `--backend`, `-b` | `docker` | Backend: docker, daytona, or modal |
+| `--sandbox`, `-b` | `docker` | Sandbox: docker, daytona, or modal |
 | `--prompt`, `-p` | `instruction.md` | Prompt text; repeat for multi-turn |
 | `--jobs-dir`, `-o` | `jobs` | Output directory |
 | `--agent-env`, `--ae` | — | Agent environment variable as `KEY=VALUE`; repeatable |
@@ -177,7 +177,7 @@ bench train create \
 Create an environment from a task directory (spins up sandbox).
 
 ```bash
-bench environment create tasks/my-task --backend daytona
+bench environment create tasks/my-task --sandbox daytona
 ```
 
 ### bench environment list

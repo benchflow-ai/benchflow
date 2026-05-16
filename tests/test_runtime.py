@@ -94,8 +94,8 @@ def test_environment_from_task() -> None:
     task_path = Path(__file__).parent / "conformance" / "acp_smoke"
     if not (task_path / "task.toml").exists():
         return  # skip if not available
-    env = Environment.from_task(task_path, backend="daytona")
-    assert env.backend == "daytona"
+    env = Environment.from_task(task_path, sandbox="daytona")
+    assert env.sandbox == "daytona"
     assert env.task_path == task_path
     assert not env._started
     assert "acp_smoke" in repr(env)
@@ -131,10 +131,10 @@ def test_runtime_init() -> None:
     task_path = Path(__file__).parent / "conformance" / "acp_smoke"
     if not (task_path / "task.toml").exists():
         return
-    env = Environment.from_task(task_path, backend="daytona")
+    env = Environment.from_task(task_path, sandbox="daytona")
     runtime = Runtime(env, agent)
     assert runtime.agent.name == "gemini"
-    assert runtime.env.backend == "daytona"
+    assert runtime.env.sandbox == "daytona"
     assert runtime.config.sandbox_user == "agent"
 
 
@@ -143,7 +143,7 @@ def test_runtime_custom_config() -> None:
     task_path = Path(__file__).parent / "conformance" / "acp_smoke"
     if not (task_path / "task.toml").exists():
         return
-    env = Environment.from_task(task_path, backend="daytona")
+    env = Environment.from_task(task_path, sandbox="daytona")
     config = RuntimeConfig(sandbox_user=None, timeout=1800, sandbox_setup_timeout=45)
     runtime = Runtime(env, agent, config)
     assert runtime.config.sandbox_user is None
