@@ -15,6 +15,7 @@ from benchflow._agent_env import (
     inject_vertex_credentials,
     resolve_agent_env,
     resolve_provider_env,
+    validate_aws_bedrock_env,
 )
 
 # ── auto_inherit_env ──
@@ -28,6 +29,8 @@ class TestAutoInheritEnv:
         [
             pytest.param("ANTHROPIC_API_KEY", "sk-host", id="anthropic"),
             pytest.param("OPENAI_API_KEY", "sk-oai", id="openai"),
+            pytest.param("AWS_BEARER_TOKEN_BEDROCK", "bedrock-token", id="bedrock"),
+            pytest.param("AWS_REGION", "us-east-1", id="bedrock-region"),
             pytest.param("ZAI_API_KEY", "zk-host", id="provider"),
         ],
     )
@@ -58,6 +61,16 @@ class TestAutoInheritEnv:
         env = {}
         auto_inherit_env(env)
         assert "ANTHROPIC_API_KEY" not in env
+
+    def test_aws_default_region_mirrored_to_aws_region(self):
+        env = {"AWS_DEFAULT_REGION": "us-east-1"}
+        auto_inherit_env(env)
+        assert env["AWS_REGION"] == "us-east-1"
+
+    def test_aws_region_mirrored_to_aws_default_region(self):
+        env = {"AWS_REGION": "us-east-1"}
+        auto_inherit_env(env)
+        assert env["AWS_DEFAULT_REGION"] == "us-east-1"
 
     def test_inherits_openai_base_url(self, monkeypatch):
         """Guards fix from PR #255: OPENAI_BASE_URL must be inherited.
@@ -162,6 +175,31 @@ class TestResolveProviderEnv:
         assert env["BENCHFLOW_PROVIDER_PROTOCOL"] == "openai-responses"
         assert env["OPENAI_BASE_URL"] == "https://api.z.ai/api/paas/v4"
 
+    def test_aws_bedrock_sets_placeholder_provider_key_for_codex(self):
+        env = {
+            "AWS_BEARER_TOKEN_BEDROCK": "bedrock-token",
+            "AWS_REGION": "us-east-1",
+        }
+        resolve_provider_env(env, "aws-bedrock/openai.gpt-oss-20b-1:0", "codex-acp")
+        assert env["BENCHFLOW_PROVIDER_NAME"] == "aws-bedrock"
+        assert env["BENCHFLOW_PROVIDER_MODEL"] == "openai.gpt-oss-20b-1:0"
+        assert env["BENCHFLOW_PROVIDER_PROTOCOL"] == "openai-responses"
+        assert env["BENCHFLOW_PROVIDER_API_KEY"] == "bedrock-proxy"
+        assert env["OPENAI_API_KEY"] == "bedrock-proxy"
+
+    def test_aws_bedrock_sets_placeholder_provider_key_for_claude(self):
+        env = {
+            "AWS_BEARER_TOKEN_BEDROCK": "bedrock-token",
+            "AWS_REGION": "us-east-1",
+        }
+        resolve_provider_env(
+            env,
+            "aws-bedrock/anthropic.claude-haiku-4-5-20251001-v1:0",
+            "claude-agent-acp",
+        )
+        assert env["BENCHFLOW_PROVIDER_PROTOCOL"] == "anthropic-messages"
+        assert env["ANTHROPIC_AUTH_TOKEN"] == "bedrock-proxy"
+
     def test_explicit_base_url_not_overwritten(self):
         """User-supplied ANTHROPIC_BASE_URL must win over derived value."""
         env = {
@@ -231,6 +269,33 @@ class TestCheckSubscriptionAuth:
         (codex_dir / "auth.json").write_text("{}")
         self._patch_expanduser(monkeypatch, tmp_path)
         assert check_subscription_auth("codex-acp", "OPENAI_API_KEY") is True
+
+
+# ── validate_aws_bedrock_env ──
+
+
+class TestValidateAwsBedrockEnv:
+    def test_requires_bearer_token(self):
+        with pytest.raises(ValueError, match="AWS_BEARER_TOKEN_BEDROCK required"):
+            validate_aws_bedrock_env({"AWS_REGION": "us-east-1"}, "aws-bedrock/model")
+
+    def test_requires_region(self):
+        with pytest.raises(
+            ValueError, match="AWS_REGION or AWS_DEFAULT_REGION required"
+        ):
+            validate_aws_bedrock_env(
+                {"AWS_BEARER_TOKEN_BEDROCK": "bedrock-token"},
+                "aws-bedrock/model",
+            )
+
+    def test_normalizes_region_aliases(self):
+        env = {
+            "AWS_BEARER_TOKEN_BEDROCK": "bedrock-token",
+            "AWS_DEFAULT_REGION": "us-east-1",
+        }
+        validate_aws_bedrock_env(env, "aws-bedrock/model")
+        assert env["AWS_REGION"] == "us-east-1"
+        assert env["AWS_DEFAULT_REGION"] == "us-east-1"
 
 
 # ── resolve_agent_env: no-model subscription auth ──

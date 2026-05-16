@@ -36,6 +36,11 @@ class TestFindProvider:
     def test_no_prefix_returns_none(self):
         assert find_provider("glm-5") is None
 
+    def test_aws_bedrock_prefix(self):
+        name, cfg = find_provider("aws-bedrock/anthropic.claude-sonnet-4-6")
+        assert name == "aws-bedrock"
+        assert cfg.auth_type == "aws"
+
 
 # ── resolve_base_url: template expansion ──
 
@@ -120,6 +125,9 @@ class TestResolveAuthEnv:
         """Models without a custom provider fall through to None."""
         assert resolve_auth_env("some-unknown/model") is None
 
+    def test_aws_bedrock_returns_none(self):
+        assert resolve_auth_env("aws-bedrock/openai.gpt-oss-20b-1:0") is None
+
 
 # ── Integration: backward compat with registry.py ──
 
@@ -132,6 +140,11 @@ class TestRegistryIntegration:
         from benchflow.agents.registry import infer_env_key_for_model
 
         assert infer_env_key_for_model("zai/glm-5") == "ZAI_API_KEY"
+
+    def test_infer_env_key_for_aws_bedrock_is_none(self):
+        from benchflow.agents.registry import infer_env_key_for_model
+
+        assert infer_env_key_for_model("aws-bedrock/openai.gpt-oss-20b-1:0") is None
 
     def test_is_vertex_model_zai_direct(self):
         """zai/ (direct API) is NOT vertex."""
