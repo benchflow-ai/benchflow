@@ -334,16 +334,16 @@ from benchflow import TestRewardFunc, StringMatchRewardFunc, LLMJudgeRewardFunc
 
 # Built-in reward functions
 test_reward = TestRewardFunc()          # runs pytest, binary pass/fail
-match_reward = StringMatchRewardFunc(expected="hello world", field="stdout")
+match_reward = StringMatchRewardFunc(expected="hello world")
 
 # Compose into a weighted Rubric
-rubric = Rubric(items=[
-    (test_reward, 0.7),      # 70% weight on test pass
-    (match_reward, 0.3),     # 30% weight on output match
-])
+rubric = Rubric(
+    reward_funcs=[test_reward, match_reward],
+    weights=[0.7, 0.3],
+)
 
 # Score a workspace
-result: VerifyResult = await rubric.score(sandbox=my_sandbox)
+result: VerifyResult = await rubric.score(rollout_dir=my_rollout_dir)
 print(result.reward)      # weighted float [0.0, 1.0]
 print(result.events)      # list[RewardEvent] — per-function breakdown
 ```
