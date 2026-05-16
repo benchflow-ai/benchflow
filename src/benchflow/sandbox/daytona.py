@@ -17,8 +17,11 @@ if TYPE_CHECKING:
 class DaytonaSandbox:
     """Adapts Harbor's DaytonaEnvironment to the Sandbox protocol."""
 
-    def __init__(self, inner: DaytonaEnvironment) -> None:
+    def __init__(
+        self, inner: DaytonaEnvironment, *, expose_ports: list[int] | None = None
+    ) -> None:
         self._inner = inner
+        self._expose_ports = expose_ports or []
 
     async def exec(
         self, cmd: str, *, user: str = "root", timeout_sec: int = 30
@@ -65,3 +68,7 @@ class DaytonaSandbox:
     @property
     def host(self) -> str:
         return "localhost"
+
+    @property
+    def expose_ports(self) -> list[int]:
+        return list(self._expose_ports)

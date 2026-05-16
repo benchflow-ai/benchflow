@@ -14,7 +14,17 @@ class ExecResult:
 
 @runtime_checkable
 class Sandbox(Protocol):
-    """Run-only: isolated execution environment."""
+    """Run-only: isolated execution environment.
+
+    All roles in a scene share one Sandbox instance, so inter-agent
+    communication over localhost is available by default.  If an agent
+    needs to expose additional ports (e.g. for an agent-as-tool HTTP
+    endpoint), configure ``expose_ports`` on the sandbox before
+    ``start()``.
+
+    BenchFlow provides the sandbox infrastructure; it does **not**
+    orchestrate agent-internal loops or tool protocols (ENG-50).
+    """
 
     async def exec(
         self, cmd: str, *, user: str = "root", timeout_sec: int = 30
@@ -32,6 +42,15 @@ class Sandbox(Protocol):
 
     @property
     def host(self) -> str: ...
+
+    @property
+    def expose_ports(self) -> list[int]:
+        """Ports the sandbox exposes for inter-agent communication.
+
+        Defaults to an empty list.  Sandbox implementations that support
+        port mapping should honour this list at ``start()`` time.
+        """
+        ...
 
 
 @dataclass(frozen=True)
