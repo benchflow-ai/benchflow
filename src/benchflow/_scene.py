@@ -37,7 +37,13 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class Role:
+class SceneRole:
+    """Runtime role for multi-agent scenes (internal to _scene.py).
+
+    Unlike the canonical ``Role`` in ``_types.py``, this carries the
+    instruction text and tool list needed by the scene scheduler.
+    """
+
     name: str
     agent: str
     model: str
@@ -106,7 +112,7 @@ class Scene:
 
     def __init__(
         self,
-        roles: dict[str, Role],
+        roles: dict[str, SceneRole],
         transport: MessageTransport | None = None,
         max_rounds: int = 10,
     ) -> None:
@@ -158,7 +164,7 @@ class Scene:
     def is_done(self) -> bool:
         return self._done or self._round >= self.max_rounds
 
-    def build_prompt_for_role(self, role: Role, inbox: list[Message]) -> str:
+    def build_prompt_for_role(self, role: SceneRole, inbox: list[Message]) -> str:
         """Build the prompt for a role, injecting any pending messages."""
         parts = [role.instruction]
         if inbox:
@@ -287,3 +293,7 @@ class Scene:
         ]
         path.write_text("\n".join(lines) + "\n" if lines else "")
         logger.info(f"Scene trajectory saved: {len(self.trajectory)} messages → {path}")
+
+
+# Backward-compat alias — existing code imports ``Role`` from this module.
+Role = SceneRole

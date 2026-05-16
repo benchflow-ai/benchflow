@@ -71,6 +71,7 @@ from benchflow._trajectory import (
     _capture_session_trajectory,
     _scrape_agent_trajectory,
 )
+from benchflow._types import Role, Scene, Turn
 from benchflow.acp.client import ACPClient, ACPError
 from benchflow.agents.registry import AGENT_LAUNCH, AGENTS
 from benchflow.models import RunResult, TrajectorySource
@@ -227,52 +228,13 @@ async def _ensure_sandbox_dir(
         )
 
 
-@dataclass
-class Role:
-    """One agent participant in a scene."""
-
-    name: str
-    agent: str
-    model: str | None = None
-    env: dict[str, str] = field(default_factory=dict)
-
-
-@dataclass
-class Turn:
-    """One prompt in a scene. role selects which Role acts."""
-
-    role: str
-    prompt: str | None = None  # None = expand from instruction.md
-
-
-@dataclass
-class Scene:
-    """One interaction region — roles take turns executing prompts."""
-
-    name: str = "default"
-    roles: list[Role] = field(default_factory=list)
-    turns: list[Turn] = field(default_factory=list)
-    skills_dir: str | Path | None = None
-    # Future (xiangyi li): snapshot_before, snapshot_after for stateful envs
-    # Future: scoring config (None = unscored warmup scene)
-
-    @classmethod
-    def single(
-        cls,
-        *,
-        agent: str,
-        model: str | None = None,
-        prompts: list[str | None] | None = None,
-        role_name: str = "agent",
-        skills_dir: str | Path | None = None,
-    ) -> Scene:
-        """Shortcut for single-agent, single-role scene."""
-        prompts = prompts or [None]
-        return cls(
-            roles=[Role(name=role_name, agent=agent, model=model)],
-            turns=[Turn(role=role_name, prompt=p) for p in prompts],
-            skills_dir=skills_dir,
-        )
+__all__ = [
+    "Role",
+    "Scene",
+    "Turn",
+    "Trial",
+    "TrialConfig",
+]
 
 
 @dataclass

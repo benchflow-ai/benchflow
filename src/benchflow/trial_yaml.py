@@ -43,7 +43,8 @@ from typing import Any
 
 import yaml
 
-from benchflow.trial import Role, Scene, TrialConfig, Turn
+from benchflow._types import Role, Scene, Turn
+from benchflow.trial import TrialConfig
 
 logger = logging.getLogger(__name__)
 
