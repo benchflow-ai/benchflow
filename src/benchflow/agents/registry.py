@@ -234,7 +234,8 @@ class AgentConfig:
     # "anthropic-messages" | "openai-completions" | "openai-responses" |
     # "" (runtime/native).
     # Used to pick the correct provider endpoint when a provider exposes
-    # multiple (e.g. zai has both anthropic-messages and openai-completions).
+    # multiple (e.g. zai has anthropic-messages, openai-responses, and
+    # openai-completions).
     env_mapping: dict[str, str] = field(default_factory=dict)
     # Maps BENCHFLOW_PROVIDER_* → agent-native env var names.
     # Applied by SDK after provider resolution.
@@ -577,12 +578,15 @@ def is_vertex_model(model: str) -> bool:
 
 def infer_env_key_for_model(model: str) -> str | None:
     """Infer the required API key environment variable from a model ID."""
-    # Check custom providers first
-    from benchflow.agents.providers import resolve_auth_env
+    # Registered providers are authoritative about auth mode.
+    from benchflow.agents.providers import find_provider, resolve_auth_env
 
-    custom = resolve_auth_env(model)
-    if custom is not None:
-        return custom
+    result = find_provider(model)
+    if result is not None:
+        _, cfg = result
+        if cfg.auth_type != "api_key":
+            return None
+        return resolve_auth_env(model)
     # ADC-based providers and built-in Vertex prefixes
     if is_vertex_model(model):
         return None

@@ -42,6 +42,9 @@ dev = [
     "ruff>=0.7.0",
     "ty>=0.0.1a1",
 ]
+bedrock = [
+    "boto3>=1.40",
+]
 
 [project.scripts]
 benchflow = "benchflow.cli.main:app"

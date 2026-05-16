@@ -26,6 +26,7 @@ class TestEnvMappingField:
 
     def test_codex_acp_has_mapping(self):
         cfg = AGENTS["codex-acp"]
+        assert cfg.api_protocol == "openai-responses"
         assert cfg.env_mapping["BENCHFLOW_PROVIDER_BASE_URL"] == "OPENAI_BASE_URL"
         assert cfg.env_mapping["BENCHFLOW_PROVIDER_API_KEY"] == "OPENAI_API_KEY"
         assert "openai_base_url=$OPENAI_BASE_URL" in cfg.launch_cmd

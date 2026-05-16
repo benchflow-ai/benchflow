@@ -18,6 +18,10 @@ from benchflow._credentials import (  # noqa: F401
     write_credential_files,
 )
 from benchflow._env_setup import _create_environment  # noqa: F401
+from benchflow._provider_runtime import (  # noqa: F401
+    ensure_bedrock_proxy_runtime,
+    stop_provider_runtime,
+)
 from benchflow.rollout import *  # noqa: F403
 from benchflow.rollout import (  # noqa: F401 — private helpers used by tests/self_gen
     GENERATED_SKILLS_ROOT,
