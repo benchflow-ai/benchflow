@@ -2,6 +2,45 @@
 
 ## [Unreleased]
 
+## 0.3.3 — 2026-05-15
+
+### Added
+
+- **Harvey LAB benchmark** — converter, agent shim, and parity validation for 1,251 legal AI tasks (#239).
+- **Harvey LAB Claude Sonnet judge** — switched verifier from Gemini to `claude-sonnet-4-6`, matching the original benchmark default (#264).
+- **ProgramBench integration** — new benchmark adapter; TB2 removed; `.ref/` migrated to `benchmarks/` (#237).
+- **CLI progress output** — `bench eval create` / `bench run` now show progress messages by default (#264).
+- **Skill nudge** — optional prompt injection for skill-enhanced agent runs (#207).
+- **Self-generated skill mode** for Codex agent (#233).
+- **Integration test suite** for ENG-6 + `OPENAI_BASE_URL` inheritance fix (#255).
+- **Modal backend support** — Dockerfile compatibility for Modal environments.
+- **CITATION.cff** (#246).
+- **`AGENTS.md`** — canonical contributor guide; `CLAUDE.md` deprecated (#258).
+
+### Changed
+
+- **Two-field source pattern** for dataset sourcing (#252).
+- **Docs overhaul** — synced from www.benchflow.ai; Mintlify config added then orphaned config removed (#259, #257, #226).
+- **`uv sync`** for package management (#232).
+
+### Fixed
+
+- Prevent `TypeError` in `metrics.collect_metrics` when reward is `None` (#243).
+- Copy eval `requirements.txt` into Docker build context (#245).
+- Resolve agent aliases in `bench agent show` and display aliases in `bench agent list` (#251).
+- Guard ACP transports against JSON scalar logs (#236).
+- Agent timeout reward fallback for Codex (#234).
+- Isolate JS agent runtime installs (#231).
+- Route Codex ACP through responses API (#224).
+- Deploy skills and forward `solution.env` for oracle runs (#223).
+- Honor no-internet tasks for agent runs; disable web tools without prompt mutation (#215).
+- Propagate `OPENAI_API_KEY` for vllm provider (#3).
+- Preserve arrival order of thought/message within flush windows (#214).
+- Record user messages and per-turn agent text in ACP trajectory (#745).
+- Chown skill-link parent dirs so sandbox user can write into them.
+- Dynamic `--rootdir` in `PYTEST_ADDOPTS` based on task workspace.
+- Unique env-file path in `DaytonaPtyProcess` to avoid race conditions (#200).
+
 ## 0.2.3 — 2026-04-15
 
 ### Added
