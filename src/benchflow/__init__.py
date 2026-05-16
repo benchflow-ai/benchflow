@@ -63,13 +63,18 @@ from benchflow.models import AgentInstallError, AgentTimeoutError, RolloutResult
 # Rewards protocol (v0.4 — composable Rubric + RewardFunc)
 from benchflow.rewards import (
     CodeExecRewardFunc,
+    Criterion,
+    JudgeConfig,
     LLMJudgeRewardFunc,
     RewardEvent,
     RewardFunc,
     Rubric,
+    RubricConfig,
+    ScoringConfig,
     StringMatchRewardFunc,
     TestRewardFunc,
     VerifyResult,
+    load_rubric_toml,
 )
 from benchflow.rollout import Rollout, RolloutConfig
 from benchflow.runtime import (
@@ -117,6 +122,12 @@ __all__ = [
     "LLMJudgeRewardFunc",
     "StringMatchRewardFunc",
     "CodeExecRewardFunc",
+    # Rubric config (ENG-55)
+    "Criterion",
+    "JudgeConfig",
+    "RubricConfig",
+    "ScoringConfig",
+    "load_rubric_toml",
     # Sandbox protocol (v0.4)
     "Sandbox",
     "SandboxExecResult",
