@@ -3,8 +3,8 @@
 Re-exports environment APIs and adds:
 - ACP client for multi-turn agent communication
 - Trajectory capture (HTTP proxy, OTel collector, ACP native)
-- SDK for programmatic usage
-- Job orchestration with retries and concurrency
+- Rollout lifecycle for single-task execution
+- Evaluation orchestration with retries and concurrency
 - Metrics collection and aggregation
 """
 
@@ -45,9 +45,14 @@ from benchflow.environments import (
     detect_services_from_dockerfile,
     register_service,
 )
-from benchflow.job import Job, JobConfig, JobResult, RetryConfig
+from benchflow.evaluation import (
+    Evaluation,
+    EvaluationConfig,
+    EvaluationResult,
+    RetryConfig,
+)
 from benchflow.metrics import BenchmarkMetrics, collect_metrics
-from benchflow.models import AgentInstallError, AgentTimeoutError, RunResult
+from benchflow.models import AgentInstallError, AgentTimeoutError, RolloutResult
 
 # Rewards protocol (v0.4 — composable Rubric + RewardFunc)
 from benchflow.rewards import (
@@ -60,14 +65,15 @@ from benchflow.rewards import (
     TestRewardFunc,
     VerifyResult,
 )
+from benchflow.rollout import Rollout, RolloutConfig
 from benchflow.runtime import (
     Agent,
     Environment,
     Runtime,
     RuntimeConfig,
     RuntimeResult,
-    run,  # bf.run(agent, env) — the primary 0.3 API
-)
+    run,
+)  # run is imported above
 
 # Sandbox protocol (v0.4 — parallel types, Harbor not yet removed)
 from benchflow.sandbox import ExecResult as SandboxExecResult
@@ -77,13 +83,18 @@ from benchflow.skills import SkillInfo, discover_skills, install_skill, parse_sk
 from benchflow.trajectories.otel import OTelCollector
 from benchflow.trajectories.proxy import TrajectoryProxy
 from benchflow.trajectories.types import Trajectory
-from benchflow.trial import Trial, TrialConfig
 from benchflow.trial_yaml import trial_config_from_yaml
 from benchflow.user import BaseUser, FunctionUser, PassthroughUser, RoundResult
 
-# Backward-compat aliases (ENG-47)
+# Backward-compat aliases
+Trial = Rollout
+TrialConfig = RolloutConfig
 TrialRole = Role
 TrialScene = Scene
+RunResult = RolloutResult
+Job = Evaluation
+JobConfig = EvaluationConfig
+JobResult = EvaluationResult
 
 # Public API surface. Anything not in this list is implementation detail and
 # may change without notice. Names are grouped by source module to match the
@@ -124,24 +135,30 @@ __all__ = [
     "is_vertex_model",
     "list_agents",
     "register_agent",
-    # Job orchestration
+    # Evaluation orchestration (new names)
+    "Evaluation",
+    "EvaluationConfig",
+    "EvaluationResult",
+    "RetryConfig",
+    # Backward-compat aliases for Job
     "Job",
     "JobConfig",
     "JobResult",
-    "RetryConfig",
     # Metrics
     "BenchmarkMetrics",
     "collect_metrics",
     # Models / errors
     "AgentInstallError",
     "AgentTimeoutError",
+    "RolloutResult",
     "RunResult",
-    # Runtime (0.3 primary API)
+    # Runtime (0.3 compat)
     "Agent",
     "Environment",
     "Runtime",
     "RuntimeConfig",
     "RuntimeResult",
+    # Single entry point
     "run",
     # Canonical declarative types (_types.py — ENG-47)
     "Role",
@@ -157,7 +174,10 @@ __all__ = [
     "snapshot",
     "restore",
     "list_snapshots",
-    # Trial (decomposed lifecycle)
+    # Rollout (single execution path — ENG-46)
+    "Rollout",
+    "RolloutConfig",
+    # Backward-compat aliases for Trial
     "Trial",
     "TrialConfig",
     "TrialRole",
@@ -190,6 +210,14 @@ __all__ = [
 
 def __getattr__(name: str):
     """Fall through to harbor for names not explicitly re-exported."""
+    # Let Python's normal submodule resolution handle subpackages first.
+    import importlib
+
+    try:
+        return importlib.import_module(f"benchflow.{name}")
+    except ModuleNotFoundError:
+        pass
+
     import harbor
 
     if hasattr(harbor, name):

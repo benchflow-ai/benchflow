@@ -14,6 +14,20 @@ reads the outbox after each agent exits, routes through the transport,
 and injects into the next agent's prompt.
 
 0.3 scope: exactly 2 roles, sequential execution, mailbox transport only.
+
+.. rubric:: Capability boundary (ENG-50)
+
+BenchFlow's scene scheduler handles **turn sequencing** and **message
+routing** only.  It does *not* manage:
+
+* Agent-internal loops — the agent decides when/how to iterate.
+* Tool protocols — tool-use is a per-agent capability.
+* Agent-as-tool invocation — if agent A wants to call agent B as a
+  tool, agent A is responsible for reaching B's endpoint (all roles
+  share the sandbox, so localhost networking is available).
+
+The scheduler ensures each role runs in order and that outbox messages
+are delivered.  Everything beyond that is the agent's responsibility.
 """
 
 from __future__ import annotations

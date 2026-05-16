@@ -16,7 +16,7 @@ def test_benchflow_job_shadows_harbor():
     """benchflow.Job is benchflow's own Job, not Harbor's."""
     from benchflow import Job
 
-    assert Job.__module__ == "benchflow.job"
+    assert Job.__module__ in ("benchflow.job", "benchflow.evaluation")
 
 
 def test_benchflow_additions():

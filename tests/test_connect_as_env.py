@@ -59,8 +59,8 @@ class TestConnectAsEnvMerge:
             return env or {}
 
         with (
-            patch("benchflow.trial.resolve_agent_env", side_effect=fake_resolve),
-            patch("benchflow.trial.connect_acp", new_callable=AsyncMock) as mock_conn,
+            patch("benchflow.rollout.resolve_agent_env", side_effect=fake_resolve),
+            patch("benchflow.rollout.connect_acp", new_callable=AsyncMock) as mock_conn,
         ):
             mock_conn.return_value = (AsyncMock(), AsyncMock(), "agent")
             role = _mock_trial._config.scenes[0].roles[0]
@@ -85,8 +85,8 @@ class TestConnectAsEnvMerge:
             return env or {}
 
         with (
-            patch("benchflow.trial.resolve_agent_env", side_effect=fake_resolve),
-            patch("benchflow.trial.connect_acp", new_callable=AsyncMock) as mock_conn,
+            patch("benchflow.rollout.resolve_agent_env", side_effect=fake_resolve),
+            patch("benchflow.rollout.connect_acp", new_callable=AsyncMock) as mock_conn,
         ):
             mock_conn.return_value = (AsyncMock(), AsyncMock(), "agent")
             role = _mock_trial._config.scenes[0].roles[0]
@@ -111,8 +111,8 @@ class TestConnectAsEnvMerge:
             return env or {}
 
         with (
-            patch("benchflow.trial.resolve_agent_env", side_effect=fake_resolve),
-            patch("benchflow.trial.connect_acp", new_callable=AsyncMock) as mock_conn,
+            patch("benchflow.rollout.resolve_agent_env", side_effect=fake_resolve),
+            patch("benchflow.rollout.connect_acp", new_callable=AsyncMock) as mock_conn,
         ):
             mock_conn.return_value = (AsyncMock(), AsyncMock(), "agent")
             role = _mock_trial._config.scenes[0].roles[0]
@@ -132,8 +132,8 @@ class TestConnectAsEnvMerge:
             return env or {}
 
         with (
-            patch("benchflow.trial.resolve_agent_env", side_effect=fake_resolve),
-            patch("benchflow.trial.connect_acp", new_callable=AsyncMock) as mock_conn,
+            patch("benchflow.rollout.resolve_agent_env", side_effect=fake_resolve),
+            patch("benchflow.rollout.connect_acp", new_callable=AsyncMock) as mock_conn,
         ):
             mock_conn.return_value = (AsyncMock(), AsyncMock(), "agent")
             role = _mock_trial._config.scenes[0].roles[0]
