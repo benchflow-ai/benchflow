@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 from datetime import UTC
 from pathlib import Path
 from typing import Annotated, cast
@@ -11,6 +12,12 @@ from rich.console import Console
 from rich.table import Table
 
 from benchflow.job import DEFAULT_AGENT, effective_model
+
+# Show progress messages (logger.info) from benchflow internals by default.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(message)s",
+)
 
 console = Console()
 

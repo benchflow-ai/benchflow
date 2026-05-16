@@ -22,7 +22,7 @@ Usage:
 
     # Eval parity (BenchFlow pipeline end-to-end, LLM calls)
     python benchmarks/harvey-lab/parity_test.py --mode eval-parity \
-        --gemini-api-key AIza...
+        --anthropic-api-key sk-ant-...
 
     # Side-by-side parity (original vs adapted prompt, same judge)
     python benchmarks/harvey-lab/parity_test.py --mode side-by-side \
@@ -206,7 +206,7 @@ def check_eval_parity(
     harvey_root: Path,
     output_dir: Path,
     task_ids: list[str],
-    gemini_api_key: str,
+    anthropic_api_key: str,
 ) -> tuple[int, int, list[str]]:
     """Run the BenchFlow evaluate.py pipeline end-to-end on synthetic output.
 
@@ -216,7 +216,7 @@ def check_eval_parity(
     failed = 0
     errors: list[str] = []
 
-    os.environ["GEMINI_API_KEY"] = gemini_api_key
+    os.environ["ANTHROPIC_API_KEY"] = anthropic_api_key
 
     for task_id in task_ids:
         task_name = _sanitize_name(task_id)
@@ -289,7 +289,7 @@ def check_eval_parity(
                 capture_output=True,
                 text=True,
                 timeout=600,
-                env={**os.environ, "GEMINI_API_KEY": gemini_api_key},
+                env={**os.environ, "ANTHROPIC_API_KEY": anthropic_api_key},
             )
 
             print(result.stdout[-500:] if len(result.stdout) > 500 else result.stdout)
@@ -595,7 +595,12 @@ def main():
     parser.add_argument(
         "--gemini-api-key",
         default=os.environ.get("GEMINI_API_KEY", ""),
-        help="Gemini API key (for eval-parity and side-by-side modes)",
+        help="Gemini API key (for side-by-side mode)",
+    )
+    parser.add_argument(
+        "--anthropic-api-key",
+        default=os.environ.get("ANTHROPIC_API_KEY", ""),
+        help="Anthropic API key (for eval-parity mode)",
     )
     args = parser.parse_args()
 
@@ -646,9 +651,9 @@ def main():
             )
 
         elif args.mode == "eval-parity":
-            if not args.gemini_api_key:
+            if not args.anthropic_api_key:
                 print(
-                    "ERROR: --gemini-api-key required for eval-parity mode",
+                    "ERROR: --anthropic-api-key required for eval-parity mode",
                     file=sys.stderr,
                 )
                 sys.exit(1)
@@ -669,7 +674,7 @@ def main():
             print(f"\n=== Eval Parity ({len(eval_ids)} tasks) ===\n")
             _run_converter(harvey_root, output_dir, task_ids=eval_ids)
             passed, failed, errors = check_eval_parity(
-                harvey_root, output_dir, eval_ids, args.gemini_api_key
+                harvey_root, output_dir, eval_ids, args.anthropic_api_key
             )
 
         elif args.mode == "side-by-side":
