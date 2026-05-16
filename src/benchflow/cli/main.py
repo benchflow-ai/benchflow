@@ -592,6 +592,11 @@ def skills_eval(
 tasks_app = typer.Typer(help="Task authoring commands")
 app.add_typer(tasks_app, name="tasks")
 
+# Trace import commands (personal benchmark curation)
+from benchflow.cli.trace_import import app as import_app
+
+app.add_typer(import_app, name="import")
+
 
 @tasks_app.command("init")
 def tasks_init(
