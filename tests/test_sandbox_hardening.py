@@ -126,7 +126,7 @@ class TestHardenSequence:
         env = _make_env(side_effect=_manifest_env(_blank_manifest()))
         mock_v = MagicMock()
         mock_v.verify = AsyncMock(return_value=MagicMock(rewards={"reward": 1.0}))
-        with patch("benchflow.sdk.Verifier", return_value=mock_v):
+        with patch("harbor.verifier.verifier.Verifier", return_value=mock_v):
             await sdk._verify(
                 env, task, tp, {}, sandbox_user="agent", workspace="/testbed"
             )
@@ -165,7 +165,7 @@ class TestHardenSequence:
         sdk, env, task, tp = harness
         mock_v = MagicMock()
         mock_v.verify = AsyncMock(return_value=MagicMock(rewards={"reward": 1.0}))
-        with patch("benchflow.sdk.Verifier", return_value=mock_v):
+        with patch("harbor.verifier.verifier.Verifier", return_value=mock_v):
             await sdk._verify(env, task, tp, {}, sandbox_user=None)
 
         cmds = [c.args[0] for c in env.exec.call_args_list]
@@ -184,7 +184,7 @@ class TestHardenSequence:
         task.config.verifier.env = {"PATH": "/custom/bin", "MY_VAR": "hello"}
         mock_v = MagicMock()
         mock_v.verify = AsyncMock(return_value=MagicMock(rewards={"reward": 1.0}))
-        with patch("benchflow.sdk.Verifier", return_value=mock_v):
+        with patch("harbor.verifier.verifier.Verifier", return_value=mock_v):
             await sdk._verify(env, task, tp, {})
         injected = task.config.verifier.env
         assert injected["PATH"] == VERIFIER_ENV["PATH"]

@@ -26,8 +26,8 @@ from typing import TYPE_CHECKING, Any
 from benchflow.agents.registry import AGENT_LAUNCH, AGENTS, AgentConfig
 
 if TYPE_CHECKING:
-    from benchflow.models import RunResult
-    from benchflow.trial import TrialConfig
+    from benchflow.models import RolloutResult as RunResult
+    from benchflow.rollout import RolloutConfig as TrialConfig
 
 logger = logging.getLogger(__name__)
 
@@ -263,10 +263,10 @@ class Runtime:
         decomposed lifecycle phases underneath.
         """
         from benchflow._types import Scene
-        from benchflow.trial import Trial, TrialConfig
+        from benchflow.rollout import Rollout, RolloutConfig
 
         config = self.config
-        trial_config = TrialConfig(
+        trial_config = RolloutConfig(
             task_path=self.env.task_path,
             scenes=[
                 Scene.single(
@@ -288,8 +288,8 @@ class Runtime:
             skills_dir=config.skills_dir,
         )
 
-        trial = await Trial.create(trial_config)
-        run_result = await trial.run()
+        rollout = await Rollout.create(trial_config)
+        run_result = await rollout.run()
 
         reward = (run_result.rewards or {}).get("reward")
         return RuntimeResult(
@@ -330,15 +330,15 @@ async def run(
         result = await bf.run("gemini", task_path="tasks/X")
     """
     from benchflow._types import Scene
-    from benchflow.trial import Trial, TrialConfig
+    from benchflow.rollout import Rollout, RolloutConfig
 
-    if isinstance(subject, TrialConfig):
+    if isinstance(subject, RolloutConfig):
         if subject.skill_mode == "self-gen":
             from benchflow.self_gen import run_self_gen
 
             return await run_self_gen(subject)
-        trial = await Trial.create(subject)
-        return await trial.run()
+        rollout = await Rollout.create(subject)
+        return await rollout.run()
 
     if isinstance(subject, Agent):
         if not isinstance(env, Environment):
@@ -353,7 +353,7 @@ async def run(
         if task_path is None:
             raise ValueError("task_path required when passing agent name as string")
         rc = config or RuntimeConfig()
-        trial_config = TrialConfig(
+        rollout_config = RolloutConfig(
             task_path=Path(task_path),
             scenes=[Scene.single(agent=subject, model=model)],
             environment=env if isinstance(env, str) else "docker",
@@ -367,7 +367,7 @@ async def run(
             agent=subject,
             model=model,
         )
-        trial = await Trial.create(trial_config)
-        return await trial.run()
+        rollout = await Rollout.create(rollout_config)
+        return await rollout.run()
 
     raise TypeError(f"Unsupported subject type: {type(subject).__name__}")
