@@ -25,10 +25,19 @@ from benchflow.providers.bedrock_runtime import (
 logger = logging.getLogger(__name__)
 
 
+_HTTP_REASONS: dict[int, str] = {
+    200: "OK",
+    404: "Not Found",
+    405: "Method Not Allowed",
+    500: "Internal Server Error",
+}
+
+
 def _json_http_response(status: int, body: dict[str, Any]) -> bytes:
     payload = json.dumps(body).encode()
+    reason = _HTTP_REASONS.get(status, "OK")
     return (
-        f"HTTP/1.1 {status} OK\r\n"
+        f"HTTP/1.1 {status} {reason}\r\n"
         "content-type: application/json\r\n"
         f"content-length: {len(payload)}\r\n"
         "\r\n"
