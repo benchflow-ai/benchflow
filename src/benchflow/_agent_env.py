@@ -61,10 +61,10 @@ def load_dotenv_env(path: str | Path | None = None) -> dict[str, str]:
         if not key:
             continue
 
-        if " #" in value:
-            value = value.split(" #", 1)[0].rstrip()
         if value[:1] in {"'", '"'} and value[-1:] == value[:1]:
             value = value[1:-1]
+        elif " #" in value:
+            value = value.split(" #", 1)[0].rstrip()
 
         parsed[key] = value
     return parsed

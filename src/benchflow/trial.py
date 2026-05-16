@@ -907,6 +907,9 @@ class Trial:
             try:
                 await stop_provider_runtime(getattr(self, "_provider_runtime", None))
                 self._provider_runtime = None
+            except Exception as e:
+                logger.warning(f"Provider runtime stop failed: {e}")
+            try:
                 await self._env.stop(delete=True)
             except Exception as e:
                 logger.warning(f"Cleanup failed: {e}")
