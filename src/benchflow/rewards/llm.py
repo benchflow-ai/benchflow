@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
-import time
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -123,7 +123,7 @@ async def call_judge(
             except Exception as e:
                 last_error = e
                 if attempt < retries - 1:
-                    time.sleep(2**attempt)
+                    await asyncio.sleep(2**attempt)
                     continue
                 logger.warning(
                     "%s call failed after %d attempts: %s",
@@ -147,8 +147,8 @@ async def call_judge(
 async def _call_anthropic(model: str, prompt: str, max_tokens: int) -> str:
     import anthropic
 
-    client = anthropic.Anthropic()
-    response = client.messages.create(
+    client = anthropic.AsyncAnthropic()
+    response = await client.messages.create(
         model=model,
         max_tokens=max_tokens,
         messages=[{"role": "user", "content": prompt}],
@@ -159,8 +159,8 @@ async def _call_anthropic(model: str, prompt: str, max_tokens: int) -> str:
 async def _call_openai(model: str, prompt: str, max_tokens: int) -> str:
     import openai
 
-    client = openai.OpenAI()
-    response = client.chat.completions.create(
+    client = openai.AsyncOpenAI()
+    response = await client.chat.completions.create(
         model=model,
         max_tokens=max_tokens,
         messages=[{"role": "user", "content": prompt}],
@@ -180,5 +180,7 @@ async def _call_google(model: str, prompt: str) -> str:
     if not api_key:
         raise RuntimeError("GOOGLE_API_KEY / GEMINI_API_KEY not set")
     client = genai.Client(api_key=api_key)
-    response = client.models.generate_content(model=model, contents=prompt)
+    response = await client.aio.models.generate_content(
+        model=model, contents=prompt
+    )
     return response.text

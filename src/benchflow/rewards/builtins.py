@@ -303,10 +303,12 @@ class LLMJudgeRewardFunc:
                 )
             )
 
-        # Write detailed results
-        self._write_details(rollout_dir, results)
+        aggregate_score = self._aggregate(results, rubric.scoring)
 
-        return self._aggregate(results, rubric.scoring)
+        # Write detailed results with the actual aggregated score
+        self._write_details(rollout_dir, results, aggregate_score)
+
+        return aggregate_score
 
     # -- helpers ------------------------------------------------------------
 
@@ -413,17 +415,18 @@ class LLMJudgeRewardFunc:
         return sum(s * w for s, w in zip(scores, weights, strict=True)) / total_w
 
     @staticmethod
-    def _write_details(rollout_dir: Path, results: list[dict]) -> None:
+    def _write_details(
+        rollout_dir: Path, results: list[dict], aggregate_score: float
+    ) -> None:
         """Write detailed evaluation results alongside the rollout."""
         try:
             total = len(results)
             n_passed = sum(1 for r in results if r["score"] >= 0.5)
-            reward = n_passed / total if total else 0.0
             details_path = rollout_dir / "evaluation_details.json"
             details_path.write_text(
                 json.dumps(
                     {
-                        "score": reward,
+                        "score": aggregate_score,
                         "n_passed": n_passed,
                         "n_total": total,
                         "results": results,
