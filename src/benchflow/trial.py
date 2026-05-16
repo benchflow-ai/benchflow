@@ -19,5 +19,17 @@ from benchflow._credentials import (  # noqa: F401
 )
 from benchflow._env_setup import _create_environment  # noqa: F401
 from benchflow.rollout import *  # noqa: F403
+from benchflow.rollout import (  # noqa: F401 — private helpers used by tests/self_gen
+    GENERATED_SKILLS_ROOT,
+    SKILL_MODE_DEFAULT,
+    _agent_launch_with_web_policy,
+    _apply_web_policy,
+    _resolve_skill_creator_root,
+    _safe_skill_name,
+    _self_gen_prompt,
+    _skill_frontmatter_name,
+    _skill_nudge,
+    _task_disallows_internet,
+)
 
 # Explicit re-exports of private helpers and constants used by tests and self_gen

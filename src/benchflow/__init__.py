@@ -226,8 +226,9 @@ def __getattr__(name: str):
 
     try:
         return importlib.import_module(f"benchflow.{name}")
-    except ModuleNotFoundError:
-        pass
+    except ModuleNotFoundError as e:
+        if e.name != f"benchflow.{name}":
+            raise
 
     import harbor
 

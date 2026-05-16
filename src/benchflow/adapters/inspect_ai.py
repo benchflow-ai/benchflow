@@ -12,22 +12,21 @@ method for custom field mappings.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from benchflow._types import Scene
     from benchflow.rewards.rubric import Rubric
 
 
-@dataclass
 class InspectAdapter:
     """Wraps a BenchFlow Scene + Rubric as an Inspect AI-compatible task."""
 
-    scene: Scene
-    rubric: Rubric | None = None
+    def __init__(self, scene: Scene, rubric: Rubric | None = None) -> None:
+        self.scene = scene
+        self.rubric = rubric
 
-    def to_inspect_task(self) -> dict:
+    def to_inspect_task(self) -> dict[str, Any]:
         """Convert to Inspect AI task format.
 
         Returns a dict with:
@@ -44,7 +43,7 @@ class InspectAdapter:
                 }
             )
 
-        result: dict = {
+        result: dict[str, Any] = {
             "name": self.scene.name,
             "dataset": samples,
         }
@@ -59,6 +58,6 @@ class InspectAdapter:
         return result
 
 
-def to_inspect_task(scene: Scene, rubric: Rubric | None = None) -> dict:
+def to_inspect_task(scene: Scene, rubric: Rubric | None = None) -> dict[str, Any]:
     """Convenience function to convert a Scene to Inspect AI format."""
     return InspectAdapter(scene=scene, rubric=rubric).to_inspect_task()

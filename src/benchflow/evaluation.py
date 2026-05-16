@@ -8,6 +8,8 @@ Backward-compat aliases: ``Job = Evaluation``, ``EvaluationConfig = EvaluationCo
 ``EvaluationResult = EvaluationResult``.
 """
 
+from __future__ import annotations
+
 import asyncio
 import json
 import logging
@@ -188,10 +190,11 @@ class Evaluation:
         self._on_result = on_result
         # Kept for test mocking compat; _run_task prefers Rollout
         from benchflow.sdk import SDK
+
         self._sdk = SDK()
 
     @classmethod
-    def from_yaml(cls, path: str | Path, **kwargs) -> "Evaluation":
+    def from_yaml(cls, path: str | Path, **kwargs) -> Evaluation:
         """Create a Job from a YAML config file.
 
         Supports both benchflow-native and Harbor-compatible YAML formats.
@@ -233,7 +236,7 @@ class Evaluation:
         return cls._from_native_yaml(raw, **kwargs)
 
     @classmethod
-    def _from_native_yaml(cls, raw: dict, **kwargs) -> "Job":
+    def _from_native_yaml(cls, raw: dict, **kwargs) -> Job:
         """Parse benchflow-native YAML."""
         from benchflow.task_download import TASK_ALIASES, ensure_tasks, resolve_source
 
@@ -292,7 +295,7 @@ class Evaluation:
         return cls(tasks_dir=tasks_dir, jobs_dir=jobs_dir, config=config, **kwargs)
 
     @classmethod
-    def _from_harbor_yaml(cls, raw: dict, **kwargs) -> "Job":
+    def _from_harbor_yaml(cls, raw: dict, **kwargs) -> Job:
         """Parse Harbor-compatible YAML."""
         # Agent
         agents = raw.get("agents", [{}])
@@ -472,6 +475,7 @@ class Evaluation:
                 self._prune_docker()
             # Use legacy SDK path if _sdk has been replaced (test compat)
             from benchflow.sdk import SDK
+
             if not isinstance(self._sdk, SDK):
                 result = await self._run_single_task_legacy(task_dir, cfg)
             else:

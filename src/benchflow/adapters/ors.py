@@ -11,15 +11,14 @@ custom field mappings.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from benchflow.rewards.events import RewardEvent
     from benchflow.rewards.protocol import VerifyResult
 
 
-def _event_to_dict(event: RewardEvent) -> dict:
+def _event_to_dict(event: RewardEvent) -> dict[str, Any]:
     return {
         "type": event.type,
         "reward": event.reward,
@@ -29,12 +28,11 @@ def _event_to_dict(event: RewardEvent) -> dict:
     }
 
 
-@dataclass
 class ORSAdapter:
     """Converts BenchFlow reward types to ORS-compatible format."""
 
     @staticmethod
-    def verify_result_to_ors(result: VerifyResult) -> dict:
+    def verify_result_to_ors(result: VerifyResult) -> dict[str, Any]:
         """Convert ``VerifyResult`` to ORS reward response format.
 
         Returns::
@@ -60,11 +58,11 @@ class ORSAdapter:
         }
 
     @staticmethod
-    def reward_event_to_ors(event: RewardEvent) -> dict:
+    def reward_event_to_ors(event: RewardEvent) -> dict[str, Any]:
         """Convert a single ``RewardEvent`` to ORS event format."""
         return _event_to_dict(event)
 
 
-def to_ors_reward(result: VerifyResult) -> dict:
+def to_ors_reward(result: VerifyResult) -> dict[str, Any]:
     """Convenience function to convert ``VerifyResult`` to ORS format."""
     return ORSAdapter.verify_result_to_ors(result)
