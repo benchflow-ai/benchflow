@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from benchflow._scoring import (
+from benchflow._utils.scoring import (
     VERIFIER_FAILED,
     VERIFIER_TIMEOUT,
     classify_verifier_error,

@@ -31,7 +31,7 @@ from pathlib import Path
 import pytest
 
 from benchflow import SDK
-from benchflow._env_setup import _detect_dind_mount
+from benchflow.sandbox.setup import _detect_dind_mount
 
 HELLO_TASK = Path(__file__).parent / "examples" / "hello-world-task"
 SMOKE_JOBS_BASE = Path(__file__).parent / ".smoke-jobs"

@@ -12,9 +12,9 @@ import json
 
 import pytest
 
-from benchflow._scene import Scene as SceneRuntime
-from benchflow._scene import SceneRole
 from benchflow._types import Role, Scene, Turn
+from benchflow.scenes import Scene as SceneRuntime
+from benchflow.scenes import SceneRole
 
 # ---------------------------------------------------------------------------
 # Role.capabilities

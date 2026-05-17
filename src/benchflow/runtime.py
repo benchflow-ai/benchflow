@@ -64,7 +64,7 @@ class Environment:
         """Create an environment from a task directory."""
         from uuid import uuid4
 
-        from benchflow._env_setup import _create_environment
+        from benchflow.sandbox.setup import _create_environment
         from benchflow.task import RolloutPaths, Task
 
         task_path = Path(task_path)

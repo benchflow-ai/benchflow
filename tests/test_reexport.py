@@ -37,8 +37,8 @@ def test_sdk_importable():
 
 def test_extracted_modules_importable():
     """Symbols moved to models, _trajectory, _env_setup are importable from canonical paths."""
-    from benchflow._env_setup import _dep_local_name, stage_dockerfile_deps
     from benchflow.models import AgentInstallError, AgentTimeoutError, RunResult
+    from benchflow.sandbox.setup import _dep_local_name, stage_dockerfile_deps
     from benchflow.trajectories._capture import _capture_session_trajectory
 
     assert RunResult.__module__ == "benchflow.models"

@@ -76,7 +76,7 @@ def test_host_skill_nudge_is_only_prompt_mutation(monkeypatch, tmp_path):
 
 
 def test_create_environment_preserves_agent_network_for_llm_runs(tmp_path):
-    from benchflow._env_setup import _create_environment
+    from benchflow.sandbox.setup import _create_environment
 
     original_env = MagicMock()
     original_env.allow_internet = False
@@ -104,7 +104,7 @@ def test_create_environment_preserves_agent_network_for_llm_runs(tmp_path):
 
 
 def test_create_environment_keeps_oracle_network_policy(tmp_path):
-    from benchflow._env_setup import _create_environment
+    from benchflow.sandbox.setup import _create_environment
 
     original_env = MagicMock()
     original_env.allow_internet = False
@@ -350,7 +350,7 @@ def test_setup_cmd_merges_with_existing_config(tmp_path):
 
 def test_create_environment_does_not_flip_when_internet_allowed(tmp_path):
     """When allow_internet=True, preserve_agent_network should not modify env config."""
-    from benchflow._env_setup import _create_environment
+    from benchflow.sandbox.setup import _create_environment
 
     original_env = MagicMock()
     original_env.allow_internet = True

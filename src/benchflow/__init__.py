@@ -15,9 +15,6 @@ from importlib.metadata import version as _version
 __version__ = _version("benchflow")
 
 # Core types
-from benchflow._env_setup import stage_dockerfile_deps
-from benchflow._scene import MailboxTransport, Message, MessageTransport, SceneRole
-from benchflow._scene import Scene as SceneRuntime
 from benchflow._types import Role, Scene, Turn
 from benchflow._utils.yaml_loader import trial_config_from_yaml
 from benchflow.acp.client import ACPClient
@@ -84,8 +81,11 @@ from benchflow.sandbox import (
 # Sandbox protocol (v0.4)
 from benchflow.sandbox import ExecResult as SandboxExecResult
 from benchflow.sandbox.protocol import ExecResult
+from benchflow.sandbox.setup import stage_dockerfile_deps
 from benchflow.sandbox.snapshot import list_snapshots, restore, snapshot
 from benchflow.sandbox.user import BaseUser, FunctionUser, PassthroughUser, RoundResult
+from benchflow.scenes import MailboxTransport, Message, MessageTransport, SceneRole
+from benchflow.scenes import Scene as SceneRuntime
 from benchflow.sdk import SDK
 from benchflow.skills import SkillInfo, discover_skills, install_skill, parse_skill
 from benchflow.task import (

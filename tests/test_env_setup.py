@@ -1,4 +1,4 @@
-"""Tests for benchflow._env_setup — Dockerfile skills injection and dep staging."""
+"""Tests for benchflow.sandbox.setup — Dockerfile skills injection and dep staging."""
 
 from pathlib import Path
 from types import SimpleNamespace
@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from benchflow._env_setup import (
+from benchflow.sandbox.setup import (
     _create_benchflow_modal_environment_class,
     _create_environment,
     _dep_local_name,
@@ -176,7 +176,7 @@ class TestGetAgentSkillPaths:
                 skill_paths=["$HOME/.a/skills", "$WORKSPACE/skills"],
             ),
         }
-        with patch("benchflow._env_setup.AGENTS", mock_agents):
+        with patch("benchflow.sandbox.setup.AGENTS", mock_agents):
             paths = _get_agent_skill_paths()
         assert paths == ["/root/.a/skills"]
 
@@ -224,7 +224,7 @@ class TestCreateEnvironment:
         )
 
         with patch(
-            "benchflow._env_setup._create_benchflow_modal_environment_class"
+            "benchflow.sandbox.setup._create_benchflow_modal_environment_class"
         ) as modal_env_class:
             modal_env = modal_env_class.return_value
             result = _create_environment(

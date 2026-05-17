@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 sys.path.insert(0, str(Path(__file__).resolve().parents[0].parent / "src"))
 
 import benchflow as bf
-from benchflow.rollout import Scene, RolloutConfig
+from benchflow.rollout import RolloutConfig, Scene
 
 _swebench_pro_root: Path | None = None
 

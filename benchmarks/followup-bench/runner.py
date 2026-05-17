@@ -27,10 +27,10 @@ from pathlib import Path
 
 from benchflow._agent_setup import install_agent
 
-from benchflow._acp_run import connect_acp, execute_prompts
-from benchflow._scene import Role, Scene
+from benchflow.acp.runtime import connect_acp, execute_prompts
 from benchflow.agents.registry import AGENT_LAUNCH, AGENTS
 from benchflow.runtime import Environment
+from benchflow.scenes import Scene, SceneRole
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +63,7 @@ Send your review by creating /app/.outbox/coder.json with:
 If correct, write: {"to": "coder", "content": "LGTM — no changes needed."}"""
 
 
-async def _role_runner(env, role: Role, prompt: str) -> None:
+async def _role_runner(env, role: SceneRole, prompt: str) -> None:
     """Run one agent turn inside the shared sandbox.
 
     Installs the agent (if not already), connects via ACP, sends prompt,
@@ -115,13 +115,13 @@ async def run_followup_task(
     """Run one task with the coder→reviewer→coder Scene flow in a shared sandbox."""
     scene = Scene(
         roles={
-            "coder": Role(
+            "coder": SceneRole(
                 name="coder",
                 agent=coder_agent,
                 model=coder_model,
                 instruction=CODER_INSTRUCTION,
             ),
-            "reviewer": Role(
+            "reviewer": SceneRole(
                 name="reviewer",
                 agent=reviewer_agent,
                 model=reviewer_model,

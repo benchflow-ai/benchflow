@@ -1,8 +1,8 @@
-"""Tests for benchflow._scoring — pure scoring/classification helpers."""
+"""Tests for benchflow._utils.scoring — pure scoring/classification helpers."""
 
 import pytest
 
-from benchflow._scoring import (
+from benchflow._utils.scoring import (
     classify_error,
     extract_reward,
     pass_rate,

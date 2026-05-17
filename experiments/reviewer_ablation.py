@@ -27,12 +27,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[0].parent / "src"))
 import contextlib
 
 from benchflow._acp_run import connect_acp, execute_prompts
+from benchflow._env_setup import _create_environment
+
+from benchflow.agents.credentials import (
+    upload_subscription_auth,
+    write_credential_files,
+)
 from benchflow.agents.env import resolve_agent_env
 from benchflow.agents.install import install_agent
-from benchflow.agents.credentials import upload_subscription_auth, write_credential_files
-from benchflow._env_setup import _create_environment
-from benchflow.sandbox.lockdown import setup_sandbox_user
 from benchflow.agents.registry import AGENT_LAUNCH, AGENTS
+from benchflow.sandbox.lockdown import setup_sandbox_user
 from benchflow.sdk import SDK
 from benchflow.task import RolloutPaths as TrialPaths
 from benchflow.task import Task, Verifier

@@ -278,7 +278,10 @@ def resolve_agent_env(
     """Resolve agent environment from explicit overrides, then .env defaults."""
     agent_env = dict(agent_env or {})
     explicit_agent_env_keys = set(agent_env)
+    # Inherit from .env file first, then from os.environ as fallback.
+    # Both sources use setdefault so explicit agent_env keys take priority.
     auto_inherit_env(agent_env, source_env=load_dotenv_env())
+    auto_inherit_env(agent_env)
     pre_provider_env = dict(agent_env)
     agent_cfg = AGENTS.get(agent)
     # Oracle runs solve.sh and never calls an LLM — model env vars and

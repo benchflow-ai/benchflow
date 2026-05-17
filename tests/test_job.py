@@ -48,7 +48,7 @@ class TestJobCounting:
 
     def _count(self, all_results: dict[str, dict]) -> dict:
         """Same counting logic as job.py, using the shared extract_reward."""
-        from benchflow._scoring import extract_reward
+        from benchflow._utils.scoring import extract_reward
 
         return {
             "passed": sum(1 for r in all_results.values() if extract_reward(r) == 1.0),

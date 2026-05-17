@@ -48,18 +48,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from benchflow._acp_run import connect_acp, execute_prompts
-from benchflow._env_setup import (
-    _create_environment,
-    _inject_skills_into_dockerfile,
-    stage_dockerfile_deps,
-)
-from benchflow._provider_runtime import (
-    ensure_bedrock_proxy_runtime,
-    stop_provider_runtime,
-)
 from benchflow._types import Role, Scene, Turn
 from benchflow.acp.client import ACPClient, ACPError
+from benchflow.acp.runtime import connect_acp, execute_prompts
 from benchflow.agents.credentials import (
     upload_subscription_auth,
     write_credential_files,
@@ -73,12 +64,21 @@ from benchflow.agents.install import (
 )
 from benchflow.agents.registry import AGENT_LAUNCH, AGENTS
 from benchflow.models import RolloutResult, TrajectorySource
+from benchflow.providers.runtime import (
+    ensure_bedrock_proxy_runtime,
+    stop_provider_runtime,
+)
 from benchflow.sandbox.lockdown import (
     _resolve_locked_paths,
     _seed_verifier_workspace,
     _snapshot_build_config,
     lockdown_paths,
     setup_sandbox_user,
+)
+from benchflow.sandbox.setup import (
+    _create_environment,
+    _inject_skills_into_dockerfile,
+    stage_dockerfile_deps,
 )
 from benchflow.sandbox.user import BaseUser, RoundResult
 from benchflow.trajectories._capture import (
@@ -592,7 +592,7 @@ async def _verify_rollout(
 
 # Apply Docker DinD patch at import time.
 def _apply_dind_patch() -> None:
-    from benchflow._env_setup import _patch_docker_dind
+    from benchflow.sandbox.setup import _patch_docker_dind
 
     _patch_docker_dind()
 

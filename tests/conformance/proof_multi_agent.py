@@ -20,9 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 import contextlib
 
-from benchflow._acp_run import connect_acp, execute_prompts
-from benchflow._env_setup import _create_environment
-from benchflow._scene import Role, Scene
+from benchflow.acp.runtime import connect_acp, execute_prompts
 from benchflow.agents.credentials import (
     upload_subscription_auth,
     write_credential_files,
@@ -30,6 +28,8 @@ from benchflow.agents.credentials import (
 from benchflow.agents.install import install_agent
 from benchflow.agents.registry import AGENT_LAUNCH, AGENTS
 from benchflow.sandbox.lockdown import setup_sandbox_user
+from benchflow.sandbox.setup import _create_environment
+from benchflow.scenes import Scene, SceneRole
 from benchflow.task import Task
 
 TASK_PATH = Path(__file__).parent / "acp_smoke"
@@ -57,7 +57,7 @@ You MUST create /app/.outbox/coder.json before stopping. Verify the file exists 
 _INSTALLED_AGENTS: set[str] = set()
 
 
-async def role_runner(env, role: Role, prompt: str) -> None:
+async def role_runner(env, role: SceneRole, prompt: str) -> None:
     """Run one role via ACP — thin wrapper around existing benchflow internals."""
     agent_config = AGENTS[role.agent]
     if role.agent not in _INSTALLED_AGENTS:
@@ -115,13 +115,13 @@ async def main() -> None:
 
         scene = Scene(
             roles={
-                "coder": Role(
+                "coder": SceneRole(
                     name="coder",
                     agent="claude-agent-acp",
                     model="claude-haiku-4-5-20251001",
                     instruction=CODER_INSTRUCTION,
                 ),
-                "reviewer": Role(
+                "reviewer": SceneRole(
                     name="reviewer",
                     agent="claude-agent-acp",
                     model="claude-haiku-4-5-20251001",

@@ -24,7 +24,7 @@ from typing import Any
 
 import yaml
 
-from benchflow._scoring import (
+from benchflow._utils.scoring import (
     ACP_ERROR,
     INSTALL_FAILED,
     PIPE_CLOSED,
