@@ -10,14 +10,14 @@ The mental model for benchflow. Read once, then refer back from the how-tos.
 | **Task** | A directory on disk: `instruction.md` for the agent + `tests/` for the verifier + (optional) `solution/solve.sh` for oracle runs + `environment/Dockerfile` for the sandbox. Authored once, evaluated many times. |
 | **Agent** | A registered ACP-speaking program (Claude Code, Gemini CLI, OpenCode, etc.). Identified by name (`"gemini"`, `"opencode"`) plus an optional model ID. |
 | **Environment** | The sandbox where the agent runs and the verifier checks the result. Docker locally, Daytona for cloud, Modal for serverless/GPU. Abstracted behind the `Sandbox` protocol — bring your own sandbox backend. |
-| **Verifier** | The test runner that scores the trial. By default `pytest /tests/...` against the workspace the agent left behind. For subjective tasks, use an [LLM-as-judge](./llm-judge.md) verifier with a `rubric.toml`. Outputs `rewards: {reward: float}`. |
-| **Rollout** | One agent run on one task. Holds the lifecycle (setup → start → install → execute → verify → cleanup). All higher-level primitives below are built on Rollouts. (Canonical name since v0.4; `Trial` remains as a backward-compat alias.) |
+| **Verifier** | The test runner that scores the rollout. By default `pytest /tests/...` against the workspace the agent left behind. For subjective tasks, use an [LLM-as-judge](./llm-judge.md) verifier with a `rubric.toml`. Outputs `rewards: {reward: float}`. |
+| **Rollout** | One agent run on one task. Holds the lifecycle (setup → start → install → execute → verify → cleanup). All higher-level primitives below are built on Rollouts. |
 
 ---
 
 ## Rollout lifecycle
 
-A `Rollout` (aliased as `Trial` for backward compat) is decomposable: each phase is a callable method, you can either run them in sequence or invoke `Rollout.run()` to execute all six in order. Multi-agent flows reuse phases (e.g. `connect` + `execute` + `disconnect` repeats per role).
+A `Rollout` is decomposable: each phase is a callable method, you can either run them in sequence or invoke `Rollout.run()` to execute all six in order. Multi-agent flows reuse phases (e.g. `connect` + `execute` + `disconnect` repeats per role).
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -134,7 +134,7 @@ Three different axes — easy to confuse, worth pinning down:
 |------|--------------|---------|
 | **Multi-turn** | Same Role, multiple prompts within one Scene. The ACP session persists; the agent has continuous memory. | One coder gets prompted twice: "fix the bug", then "now write a test". |
 | **Multi-round** | Same Role, multiple `connect → execute → disconnect` cycles. New ACP session each round; sandbox state persists; a Python `User` callback decides each round's prompt. | Progressive disclosure on SWE-bench Pro: round 0 terse spec, round 1 hints with failing tests, round 2 full spec. |
-| **Multi-scene** | Multiple Scenes in one Trial. Sandbox state persists; agent process and ACP session restart between Scenes. | BYOS: Scene 1 generates a skill, Scene 2 solves the task using it. |
+| **Multi-scene** | Multiple Scenes in one Rollout. Sandbox state persists; agent process and ACP session restart between Scenes. | BYOS: Scene 1 generates a skill, Scene 2 solves the task using it. |
 
 Single-agent simple runs use none of these. Pick the axis based on what state needs to persist (memory? sandbox? both?).
 
@@ -146,7 +146,7 @@ Every agent action is captured as an event in the **trajectory** — tool calls,
 
 `rewards` is a dict produced by the task's verifier. Convention: `{"reward": float}` where 1.0 = pass, 0.0 = fail. Tasks may add additional metrics (e.g. `exact_match`, `partial_credit`).
 
-Trajectories are written to `<jobs_dir>/<job_name>/<trial_name>/trajectory/acp_trajectory.jsonl`. Use them for replay, debugging, or training data.
+Trajectories are written to `<evaluations_dir>/<evaluation_name>/<rollout_name>/trajectory/acp_trajectory.jsonl`. Use them for replay, debugging, or training data.
 
 ---
 

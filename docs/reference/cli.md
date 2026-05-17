@@ -162,7 +162,7 @@ max_retries: 2
 ### Multi-scene (BYOS skill generation)
 
 Use the Python API for multi-scene experiments. `bench eval create --config` is for
-batch job configs; scene configs are loaded with `benchflow.trial_yaml` or built
+batch job configs; scene configs are loaded with `benchflow._utils.yaml_loader` or built
 directly in Python.
 
 ```yaml

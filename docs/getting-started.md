@@ -108,7 +108,7 @@ bench agent list
 single tasks, batch runs, and remote repos. Use `--source-repo <org/repo>
 --source-path <subpath>` to fetch from a remote repo, `--tasks-dir <dir>` for a
 local directory, or `--config <config.yaml>` for a YAML config. Results land under
-`jobs/<job-name>/<trial-name>/` — `result.json` for the verifier output,
+`evaluations/<eval-name>/<rollout-name>/` — `result.json` for the verifier output,
 `trajectory/acp_trajectory.jsonl` for the full agent trace.
 
 When you mount skills, use `BENCHFLOW_SKILL_NUDGE=name` as the default docs
@@ -135,7 +135,7 @@ print(result.rewards)         # {'reward': 1.0}
 print(result.n_tool_calls)
 ```
 
-`Rollout` (aliased as `Trial`) is decomposable — invoke each lifecycle phase individually for custom flows. See [Concepts: rollout lifecycle](./concepts.md#rollout-lifecycle).
+`Rollout` is decomposable — invoke each lifecycle phase individually for custom flows. See [Concepts: rollout lifecycle](./concepts.md#rollout-lifecycle).
 
 ## What to read next
 

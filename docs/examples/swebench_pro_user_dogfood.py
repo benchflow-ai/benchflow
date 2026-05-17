@@ -22,7 +22,7 @@ import asyncio
 import logging
 
 import benchflow as bf
-from benchflow.trial import Scene, TrialConfig
+from benchflow.rollout import Scene, RolloutConfig
 from benchflow.user import FunctionUser, RoundResult
 
 logging.basicConfig(level=logging.INFO, format="%(name)s %(message)s")
@@ -100,7 +100,7 @@ async def main():
     task_dir = SWEBENCH_PRO_TASKS[args.task]
     task_path = resolve_source("benchflow-ai/swebenchpro", path=task_dir)
 
-    config = TrialConfig(
+    config = RolloutConfig(
         task_path=task_path,
         scenes=[Scene.single(agent=args.agent, model=args.model)],
         environment=args.sandbox,

@@ -13,7 +13,7 @@ import asyncio
 import logging
 
 import benchflow as bf
-from benchflow.trial import Scene, TrialConfig
+from benchflow.rollout import Scene, RolloutConfig
 from benchflow.user import FunctionUser, RoundResult
 
 logging.basicConfig(level=logging.INFO, format="%(name)s %(message)s")
@@ -57,7 +57,7 @@ async def main():
 
     task_path = resolve_source("benchflow-ai/skillsbench", path="tasks/edit-pdf")
 
-    config = TrialConfig(
+    config = RolloutConfig(
         task_path=task_path,
         scenes=[Scene.single(agent="gemini", model="gemini-2.5-flash")],
         environment="daytona",

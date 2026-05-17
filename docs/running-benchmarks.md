@@ -100,7 +100,7 @@ For programmatic use, custom pipelines, or integration with other tools:
 
 ```python
 import asyncio
-from benchflow.job import Job
+from benchflow.evaluation import Evaluation
 
 async def main():
     job = Job.from_yaml("benchmarks/harvey-lab/harvey-lab-gemini-flash-lite.yaml")

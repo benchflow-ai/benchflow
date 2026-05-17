@@ -4,7 +4,7 @@
 Demonstrates:
   - Multi-role Scene (coder + reviewer) in a shared sandbox
   - Outbox-based message passing between roles
-  - Standard bf.run(TrialConfig) API — same path for single or multi-agent
+  - Standard bf.run(RolloutConfig) API — same path for single or multi-agent
 
 Requirements:
   - uv tool install benchflow, or run from a checkout with uv run
@@ -31,7 +31,7 @@ import sys
 from pathlib import Path
 
 import benchflow as bf
-from benchflow.trial import Role, Scene, TrialConfig, Turn
+from benchflow.rollout import Role, Scene, RolloutConfig, Turn
 
 logging.basicConfig(
     level=logging.INFO,
@@ -45,9 +45,9 @@ logger = logging.getLogger("coder-reviewer-demo")
 # ---------------------------------------------------------------------------
 
 
-def baseline_config(task_path: Path, env: str, agent: str, model: str) -> TrialConfig:
+def baseline_config(task_path: Path, env: str, agent: str, model: str) -> RolloutConfig:
     """Pattern 1: Single agent, single turn — the baseline."""
-    return TrialConfig(
+    return RolloutConfig(
         task_path=task_path,
         scenes=[Scene.single(agent=agent, model=model)],
         environment=env,
@@ -61,7 +61,7 @@ def coder_reviewer_config(
     coder_model: str = "gemini-3.1-flash-lite-preview",
     reviewer_agent: str = "gemini",
     reviewer_model: str = "gemini-3.1-flash-lite-preview",
-) -> TrialConfig:
+) -> RolloutConfig:
     """Pattern 3: Coder + Reviewer — multi-round with outbox messaging.
 
     Flow:
@@ -74,7 +74,7 @@ def coder_reviewer_config(
       - Format: {"to": "role_name", "content": "your message"}
       - Scheduler reads, clears, and injects into next role's prompt
     """
-    return TrialConfig(
+    return RolloutConfig(
         task_path=task_path,
         scenes=[
             Scene(
