@@ -14,7 +14,6 @@ import tomllib
 import warnings
 from typing import Any
 
-import toml
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 ORG_NAME_PATTERN = r"^[a-zA-Z0-9][a-zA-Z0-9._-]*/[a-zA-Z0-9][a-zA-Z0-9._-]*$"
@@ -226,7 +225,9 @@ class TaskConfig(BaseModel):
         return cls.model_validate(toml_dict)
 
     def model_dump_toml(self) -> str:
-        return toml.dumps(self.model_dump(mode="json", by_alias=True))
+        import toml as _toml  # optional dep — only needed for TOML serialisation
+
+        return _toml.dumps(self.model_dump(mode="json", by_alias=True))
 
     @property
     def environment(self) -> SandboxConfig:

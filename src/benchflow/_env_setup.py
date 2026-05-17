@@ -145,10 +145,10 @@ def _modal_builder_dockerfile(
 
 
 def _create_benchflow_modal_environment_class():
-    """Create a ModalEnvironment subclass with BenchFlow's image-build defaults."""
-    from benchflow.sandbox.modal_impl import ModalEnvironment
+    """Create a ModalSandbox subclass with BenchFlow's image-build defaults."""
+    from benchflow.sandbox.modal_impl import ModalSandbox
 
-    class BenchFlowModalEnvironment(ModalEnvironment):
+    class BenchFlowModalSandbox(ModalSandbox):
         async def start(self, force_build: bool) -> None:
             """Starts the Modal sandbox, adding Python for plain Linux images."""
             from modal import App, Image, Secret, Volume
@@ -237,7 +237,7 @@ def _create_benchflow_modal_environment_class():
                 f"chmod 777 {SandboxPaths.agent_dir} {SandboxPaths.verifier_dir}"
             )
 
-    return BenchFlowModalEnvironment
+    return BenchFlowModalSandbox
 
 
 def _get_agent_skill_paths() -> list[str]:
@@ -410,7 +410,7 @@ def _detect_dind_mount() -> tuple[str, str] | None:
 
 
 def _patch_docker_dind() -> None:
-    """Monkey-patch DockerEnvironmentEnvVars for DinD path translation.
+    """Monkey-patch DockerSandboxEnvVars for DinD path translation.
 
     When running inside a devcontainer, HOST_*_PATH env vars need to use
     host filesystem paths, not container paths. Applied once at import time.
@@ -422,9 +422,9 @@ def _patch_docker_dind() -> None:
     host_source, container_dest = dind_mount
     logger.info(f"DinD detected: {container_dest} → {host_source}")
 
-    from benchflow.sandbox.docker import DockerEnvironmentEnvVars
+    from benchflow.sandbox.docker import DockerSandboxEnvVars
 
-    _original = DockerEnvironmentEnvVars.to_env_dict
+    _original = DockerSandboxEnvVars.to_env_dict
 
     def _patched(self, include_os_env=True):  # type: ignore[override]
         env = _original(self, include_os_env=include_os_env)
@@ -438,7 +438,7 @@ def _patch_docker_dind() -> None:
                 env[key] = host_source + val[len(container_dest) :]
         return env
 
-    DockerEnvironmentEnvVars.to_env_dict = _patched  # type: ignore[assignment]
+    DockerSandboxEnvVars.to_env_dict = _patched  # type: ignore[assignment]
 
 
 def _create_sandbox_environment(
@@ -463,9 +463,9 @@ def _create_sandbox_environment(
         env_config.allow_internet = True
 
     if sandbox_type == "docker":
-        from benchflow.sandbox.docker import DockerEnvironment
+        from benchflow.sandbox.docker import DockerSandbox
 
-        return DockerEnvironment(
+        return DockerSandbox(
             environment_dir=environment_dir,
             environment_name=task_path.name,
             session_id=rollout_name,
@@ -474,7 +474,7 @@ def _create_sandbox_environment(
         )
     elif sandbox_type == "daytona":
         from benchflow.sandbox._sdk_ops import apply as _apply_daytona_patches
-        from benchflow.sandbox.daytona import DaytonaEnvironment
+        from benchflow.sandbox.daytona import DaytonaSandbox
 
         _apply_daytona_patches()
 
@@ -500,7 +500,7 @@ def _create_sandbox_environment(
             )
             env_config.storage_mb = _DAYTONA_MAX_STORAGE_MB
 
-        return DaytonaEnvironment(
+        return DaytonaSandbox(
             environment_dir=environment_dir,
             environment_name=task_path.name,
             session_id=rollout_name,

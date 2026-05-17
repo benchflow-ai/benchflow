@@ -1,4 +1,4 @@
-"""BaseSandboxEnvironment — abstract base for sandbox backends.
+"""BaseSandbox — abstract base for sandbox backends.
 
 Internalized from Harbor's BaseEnvironment with RL-first terminology:
 - environment -> sandbox
@@ -29,7 +29,7 @@ class ExecResult(BaseModel):
     return_code: int
 
 
-class BaseSandboxEnvironment(ABC):
+class BaseSandbox(ABC):
     """Abstract base for sandbox environments (Docker, Daytona, Modal).
 
     Provides the containerized execution environment for agent rollouts.

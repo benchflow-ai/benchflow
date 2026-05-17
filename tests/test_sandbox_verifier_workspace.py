@@ -149,11 +149,11 @@ def test_oracle_branch_setup_calls():
     """
     import inspect
 
-    from benchflow import trial as trial_mod
+    from benchflow import rollout as rollout_mod
 
-    source = inspect.getsource(trial_mod.Trial.install_agent)
+    source = inspect.getsource(rollout_mod.Rollout.install_agent)
     oracle_pos = source.find('agent == "oracle"')
-    assert oracle_pos != -1, "oracle branch not found in Trial.install_agent"
+    assert oracle_pos != -1, "oracle branch not found in Rollout.install_agent"
     oracle_block = source[oracle_pos:]
 
     assert "_seed_verifier_workspace" in oracle_block, (

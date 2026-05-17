@@ -143,7 +143,7 @@ class DockerProcess(LiveProcess):
 
     @classmethod
     def from_sandbox_env(cls, env: Any) -> "DockerProcess":
-        """Create from a sandbox environment (DockerEnvironment)."""
+        """Create from a sandbox environment (DockerSandbox)."""
         project_name = env.session_id.lower().replace(".", "-")
         project_dir = str(env.environment_dir.resolve().absolute())
         compose_files = [str(p.resolve().absolute()) for p in env._docker_compose_paths]
@@ -285,7 +285,7 @@ class DaytonaProcess(LiveProcess):
 
     @classmethod
     async def from_sandbox_env(cls, env: Any) -> "DaytonaProcess":
-        """Create from a sandbox environment (DaytonaEnvironment)."""
+        """Create from a sandbox environment (DaytonaSandbox)."""
         sandbox = env._sandbox
         if not sandbox:
             raise RuntimeError("Daytona sandbox not started")

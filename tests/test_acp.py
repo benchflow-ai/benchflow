@@ -442,7 +442,7 @@ class TestConnectAcpModelSelection:
                 agent_env={},
                 sandbox_user=None,
                 model=model_in,
-                trial_dir=tmp_path,
+                rollout_dir=tmp_path,
                 environment="docker",
                 agent_cwd="/app",
             )
@@ -470,7 +470,7 @@ class TestConnectAcpModelSelection:
                 agent_env={},
                 sandbox_user=None,
                 model="gemini-3.1-flash-lite-preview",
-                trial_dir=tmp_path,
+                rollout_dir=tmp_path,
                 environment="docker",
                 agent_cwd="/app",
             )
@@ -501,7 +501,7 @@ class TestConnectAcpModelSelection:
                 },
                 sandbox_user=None,
                 model="aws-bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0",
-                trial_dir=tmp_path,
+                rollout_dir=tmp_path,
                 environment="docker",
                 agent_cwd="/app",
             )
@@ -542,7 +542,7 @@ class TestConnectAcpModelSelection:
                 agent_env={},
                 sandbox_user=None,
                 model=None,
-                trial_dir=tmp_path,
+                rollout_dir=tmp_path,
                 environment="daytona",
                 agent_cwd="/app",
             )

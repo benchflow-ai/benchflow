@@ -107,7 +107,13 @@ class TestSdkVerify:
         mock_v = MagicMock()
         mock_v.verify = lambda: asyncio.sleep(10)
         timing = {}
-        with patch("benchflow.task.verifier.Verifier", return_value=mock_v):
+        with (
+            patch("benchflow.task.Verifier", return_value=mock_v),
+            patch(
+                "benchflow.sandbox.lockdown.harden_before_verify",
+                new_callable=AsyncMock,
+            ),
+        ):
             rewards, verifier_error = await sdk._verify(env, task, tp, timing)
         assert rewards is None
         assert "timed out" in verifier_error
@@ -119,7 +125,13 @@ class TestSdkVerify:
         mock_v = MagicMock()
         mock_v.verify = AsyncMock(side_effect=RuntimeError("kaboom"))
         timing = {}
-        with patch("benchflow.task.verifier.Verifier", return_value=mock_v):
+        with (
+            patch("benchflow.task.Verifier", return_value=mock_v),
+            patch(
+                "benchflow.sandbox.lockdown.harden_before_verify",
+                new_callable=AsyncMock,
+            ),
+        ):
             rewards, verifier_error = await sdk._verify(env, task, tp, timing)
         assert rewards is None
         assert "crashed" in verifier_error and "kaboom" in verifier_error
@@ -132,7 +144,13 @@ class TestSdkVerify:
         mock_v = MagicMock()
         mock_v.verify = AsyncMock(return_value=mock_result)
         timing = {}
-        with patch("benchflow.task.verifier.Verifier", return_value=mock_v):
+        with (
+            patch("benchflow.task.Verifier", return_value=mock_v),
+            patch(
+                "benchflow.sandbox.lockdown.harden_before_verify",
+                new_callable=AsyncMock,
+            ),
+        ):
             rewards, verifier_error = await sdk._verify(env, task, tp, timing)
         assert rewards == {"reward": 1.0}
         assert verifier_error is None

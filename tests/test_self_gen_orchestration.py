@@ -57,7 +57,7 @@ async def test_sdk_self_gen_runs_creator_then_solver_in_one_trial_with_isolated_
     seen_configs = []
     solver_result = RunResult(
         task_name="task",
-        trial_name="solver",
+        rollout_name="solver",
         rewards={"reward": 1.0},
         agent="opencode",
         model="google/gemini-3.1-pro-preview",
@@ -86,7 +86,7 @@ async def test_sdk_self_gen_runs_creator_then_solver_in_one_trial_with_isolated_
         model="google/gemini-3.1-pro-preview",
         agent_env={"GOOGLE_API_KEY": "secret"},
         job_name="job-1",
-        trial_name="trial-1",
+        rollout_name="trial-1",
         jobs_dir=tmp_path / "jobs",
         environment="daytona",
         skills_dir=original_skills,
@@ -113,7 +113,7 @@ async def test_sdk_self_gen_runs_creator_then_solver_in_one_trial_with_isolated_
     assert trial_cfg.sandbox_locked_paths == ["/solution"]
     assert trial_cfg.sandbox_setup_timeout == 321
     assert trial_cfg.context_root == tmp_path
-    assert trial_cfg.trial_name == "trial-1"
+    assert trial_cfg.rollout_name == "trial-1"
     assert trial_cfg.skill_mode == "default"
     assert trial_cfg.skill_creator_dir is None
     assert trial_cfg.include_task_skills is False

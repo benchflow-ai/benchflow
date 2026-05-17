@@ -88,7 +88,7 @@ def test_create_environment_preserves_agent_network_for_llm_runs(tmp_path):
         config=SimpleNamespace(environment=original_env),
     )
 
-    with patch("benchflow.sandbox.docker.DockerEnvironment") as docker_env:
+    with patch("benchflow.sandbox.docker.DockerSandbox") as docker_env:
         _create_environment(
             "docker",
             task,
@@ -113,7 +113,7 @@ def test_create_environment_keeps_oracle_network_policy(tmp_path):
         config=SimpleNamespace(environment=original_env),
     )
 
-    with patch("benchflow.sandbox.docker.DockerEnvironment") as docker_env:
+    with patch("benchflow.sandbox.docker.DockerSandbox") as docker_env:
         _create_environment("docker", task, tmp_path, "trial", MagicMock())
 
     original_env.model_copy.assert_not_called()
@@ -134,7 +134,7 @@ async def test_connect_as_applies_web_policy_to_role_env(tmp_path):
     trial = Rollout.__new__(Rollout)
     trial._config = cfg
     trial._env = {}
-    trial._trial_dir = tmp_path
+    trial._rollout_dir = tmp_path
     trial._timing = {}
     trial._agent_cwd = "/app"
     trial._phase = "idle"
@@ -210,7 +210,7 @@ async def test_connect_as_applies_hard_web_policy_to_role_agent(tmp_path):
     trial = Rollout.__new__(Rollout)
     trial._config = cfg
     trial._env = {}
-    trial._trial_dir = tmp_path
+    trial._rollout_dir = tmp_path
     trial._timing = {}
     trial._agent_cwd = "/app"
     trial._phase = "idle"
@@ -359,7 +359,7 @@ def test_create_environment_does_not_flip_when_internet_allowed(tmp_path):
         config=SimpleNamespace(environment=original_env),
     )
 
-    with patch("benchflow.sandbox.docker.DockerEnvironment") as docker_env:
+    with patch("benchflow.sandbox.docker.DockerSandbox") as docker_env:
         _create_environment(
             "docker", task, tmp_path, "trial", MagicMock(), preserve_agent_network=True
         )

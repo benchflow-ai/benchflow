@@ -4,8 +4,8 @@ Public API:
     Sandbox, ExecResult      — protocol types
     ImageBuilder/Config/Ref  — image building protocol
     ServiceConfig, SERVICES  — sandbox service registry
-    DockerEnvironment        — local Docker backend
-    DaytonaEnvironment       — Daytona cloud backend
+    DockerSandbox        — local Docker backend
+    DaytonaSandbox       — Daytona cloud backend
 """
 
 from benchflow.sandbox.protocol import (

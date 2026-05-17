@@ -210,14 +210,14 @@ class TestCreateEnvironment:
             config=SimpleNamespace(environment=env_config),
         )
 
-        with patch("benchflow.sandbox.docker.DockerEnvironment") as docker_env:
+        with patch("benchflow.sandbox.docker.DockerSandbox") as docker_env:
             _create_environment("docker", task, effective_task, "trial", MagicMock())
 
         assert docker_env.call_args.kwargs["environment_dir"] == effective_env_dir
 
     def test_modal_preflights_and_constructs_environment(self, tmp_path):
         env_config = MagicMock()
-        trial_paths = MagicMock()
+        rollout_paths = MagicMock()
         task = SimpleNamespace(
             paths=SimpleNamespace(environment_dir=tmp_path / "environment"),
             config=SimpleNamespace(environment=env_config),
@@ -227,14 +227,16 @@ class TestCreateEnvironment:
             "benchflow._env_setup._create_benchflow_modal_environment_class"
         ) as modal_env_class:
             modal_env = modal_env_class.return_value
-            result = _create_environment("modal", task, tmp_path, "trial", trial_paths)
+            result = _create_environment(
+                "modal", task, tmp_path, "trial", rollout_paths
+            )
 
         modal_env.preflight.assert_called_once_with()
         modal_env.assert_called_once_with(
             environment_dir=tmp_path / "environment",
             environment_name=tmp_path.name,
             session_id="trial",
-            trial_paths=trial_paths,
+            rollout_paths=rollout_paths,
             task_env_config=env_config,
         )
         assert result is modal_env.return_value
@@ -254,7 +256,7 @@ class TestCreateEnvironment:
             environment_dir=tmp_path,
             environment_name=tmp_path.name,
             session_id="trial",
-            trial_paths=MagicMock(),
+            rollout_paths=MagicMock(),
             task_env_config=env_config,
         )
 

@@ -46,7 +46,7 @@ def test_runtime_config_defaults() -> None:
 def test_runtime_result_passed() -> None:
     r = RuntimeResult(
         task_name="test-task",
-        trial_name="trial-1",
+        rollout_name="trial-1",
         reward=1.0,
         rewards={"reward": 1.0},
         n_tool_calls=5,
@@ -61,7 +61,7 @@ def test_runtime_result_passed() -> None:
 def test_runtime_result_failed() -> None:
     r = RuntimeResult(
         task_name="test-task",
-        trial_name="trial-1",
+        rollout_name="trial-1",
         reward=0.0,
         rewards={"reward": 0.0},
         n_tool_calls=3,
@@ -76,7 +76,7 @@ def test_runtime_result_failed() -> None:
 def test_runtime_result_error() -> None:
     r = RuntimeResult(
         task_name="test-task",
-        trial_name="trial-1",
+        rollout_name="trial-1",
         reward=None,
         rewards=None,
         n_tool_calls=0,
@@ -110,7 +110,7 @@ def test_environment_context_manager_interface() -> None:
 def test_runtime_result_to_run_result() -> None:
     r = RuntimeResult(
         task_name="test-task",
-        trial_name="trial-1",
+        rollout_name="trial-1",
         reward=1.0,
         rewards={"reward": 1.0},
         n_tool_calls=5,

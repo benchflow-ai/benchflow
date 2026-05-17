@@ -20,9 +20,9 @@ async def test_agent_timeout_without_verifier_reward_counts_as_zero(
 
     async def setup():
         calls.append("setup")
-        trial._trial_dir = tmp_path / "trial"
-        trial._trial_dir.mkdir()
-        trial._trial_name = "trial-1"
+        trial._rollout_dir = tmp_path / "trial"
+        trial._rollout_dir.mkdir()
+        trial._rollout_name = "trial-1"
 
     async def start():
         calls.append("start")
@@ -47,7 +47,7 @@ async def test_agent_timeout_without_verifier_reward_counts_as_zero(
         calls.append("build_result")
         return RunResult(
             task_name="task",
-            trial_name=trial._trial_name or "",
+            rollout_name=trial._rollout_name or "",
             rewards=trial._rewards,
             error=trial._error,
             verifier_error=trial._verifier_error,

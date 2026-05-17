@@ -1,4 +1,4 @@
-"""Native DaytonaEnvironment — internalized from Harbor with RL-first terminology.
+"""Native DaytonaSandbox — internalized from Harbor with RL-first terminology.
 
 Supports two strategies:
 - Direct: single-container sandbox (Dockerfile only)
@@ -31,7 +31,7 @@ from daytona import (
 from daytona._async.snapshot import SnapshotState
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-from benchflow.sandbox._base import BaseSandboxEnvironment, ExecResult
+from benchflow.sandbox._base import BaseSandbox, ExecResult
 from benchflow.sandbox._compose import (
     COMPOSE_BASE_PATH,
     COMPOSE_BUILD_PATH,
@@ -110,7 +110,7 @@ class DaytonaClientManager:
 class _DaytonaStrategy:
     """Base for Daytona implementation strategies."""
 
-    def __init__(self, env: DaytonaEnvironment) -> None:
+    def __init__(self, env: DaytonaSandbox) -> None:
         self._env = env
 
     @abstractmethod
@@ -316,7 +316,7 @@ class _DaytonaDinD(_DaytonaStrategy):
     _ENVIRONMENT_DIR = "/benchflow/environment"
     _LOGS_DIR = "/benchflow/logs"
 
-    def __init__(self, env: DaytonaEnvironment) -> None:
+    def __init__(self, env: DaytonaSandbox) -> None:
         super().__init__(env)
         self._use_prebuilt = False
 
@@ -700,7 +700,7 @@ class _DaytonaDinD(_DaytonaStrategy):
 # ── Main environment class ─────────────────────────────────────────────
 
 
-class DaytonaEnvironment(BaseSandboxEnvironment):
+class DaytonaSandbox(BaseSandbox):
     @classmethod
     def preflight(cls) -> None:
         _daytona_preflight()

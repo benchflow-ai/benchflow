@@ -18,9 +18,9 @@ def _make_trial(tmp_path, *, agent: str, sandbox_setup_timeout: int) -> Rollout:
     trial = Rollout(config)
     trial._env = MagicMock()
     trial._env.exec = AsyncMock(return_value=MagicMock(stdout="/workspace\n"))
-    trial._trial_dir = tmp_path / "trial"
-    trial._trial_dir.mkdir()
-    trial._trial_paths = MagicMock()
+    trial._rollout_dir = tmp_path / "trial"
+    trial._rollout_dir.mkdir()
+    trial._rollout_paths = MagicMock()
     trial._task = MagicMock()
     trial._effective_locked = []
     return trial

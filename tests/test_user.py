@@ -123,11 +123,11 @@ def _make_user_trial(
     trial = Rollout(config)
     trial._env = FakeEnv()
     trial._resolved_prompts = ["Solve the task described in /app/instruction.md"]
-    trial_dir = tmp_path or Path(tempfile.mkdtemp(prefix="benchflow-test-"))
-    trial._trial_dir = trial_dir
-    verifier_dir = trial_dir / "verifier"
+    rollout_dir = tmp_path or Path(tempfile.mkdtemp(prefix="benchflow-test-"))
+    trial._rollout_dir = rollout_dir
+    verifier_dir = rollout_dir / "verifier"
     verifier_dir.mkdir(parents=True, exist_ok=True)
-    trial._trial_paths = type("P", (), {"verifier_dir": verifier_dir})()
+    trial._rollout_paths = type("P", (), {"verifier_dir": verifier_dir})()
     trial._task = type(
         "T",
         (),
@@ -339,8 +339,9 @@ class TestSoftVerify:
         trial = _make_user_trial(PassthroughUser())
 
         with (
-            patch("benchflow.task.verifier.Verifier") as MockVerifier,
-            patch("benchflow.sandbox.lockdown.CLEANUP_CMD", "true"),
+            patch("benchflow.task.Verifier") as MockVerifier,
+            patch("benchflow.sandbox.lockdown._read_hardening_config", return_value={}),
+            patch("benchflow.sandbox.lockdown._build_cleanup_cmd", return_value="true"),
         ):
             mock_instance = MockVerifier.return_value
             mock_instance.verify = AsyncMock(side_effect=TimeoutError())
@@ -356,8 +357,9 @@ class TestSoftVerify:
         trial = _make_user_trial(PassthroughUser())
 
         with (
-            patch("benchflow.task.verifier.Verifier") as MockVerifier,
-            patch("benchflow.sandbox.lockdown.CLEANUP_CMD", "true"),
+            patch("benchflow.task.Verifier") as MockVerifier,
+            patch("benchflow.sandbox.lockdown._read_hardening_config", return_value={}),
+            patch("benchflow.sandbox.lockdown._build_cleanup_cmd", return_value="true"),
         ):
             mock_instance = MockVerifier.return_value
             mock_instance.verify = AsyncMock(side_effect=RuntimeError("boom"))
@@ -375,8 +377,9 @@ class TestSoftVerify:
         mock_result = type("VR", (), {"rewards": {"exact_match": 1.0}})()
 
         with (
-            patch("benchflow.task.verifier.Verifier") as MockVerifier,
-            patch("benchflow.sandbox.lockdown.CLEANUP_CMD", "true"),
+            patch("benchflow.task.Verifier") as MockVerifier,
+            patch("benchflow.sandbox.lockdown._read_hardening_config", return_value={}),
+            patch("benchflow.sandbox.lockdown._build_cleanup_cmd", return_value="true"),
         ):
             mock_instance = MockVerifier.return_value
             mock_instance.verify = AsyncMock(return_value=mock_result)

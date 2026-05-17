@@ -152,7 +152,7 @@ async def test_hello_world_smoke(smoke_jobs_dir: Path) -> None:
     # trial_dir = jobs_dir / job_name / trial_name (sdk.py:166).
     # job_name is an auto-generated timestamp, so glob for it.
     matches = list(
-        smoke_jobs_dir.glob(f"*/{result.trial_name}/trajectory/acp_trajectory.jsonl")
+        smoke_jobs_dir.glob(f"*/{result.rollout_name}/trajectory/acp_trajectory.jsonl")
     )
     assert len(matches) == 1, f"expected exactly one trajectory, found {matches}"
     assert matches[0].stat().st_size > 0

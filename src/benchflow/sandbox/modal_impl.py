@@ -1,4 +1,4 @@
-"""Native ModalEnvironment — internalized from Harbor with RL-first terminology.
+"""Native ModalSandbox — internalized from Harbor with RL-first terminology.
 
 Uses Modal sandboxes for cloud-based container execution.
 """
@@ -12,12 +12,12 @@ from pathlib import Path, PurePosixPath
 
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-from benchflow.sandbox._base import BaseSandboxEnvironment, ExecResult
+from benchflow.sandbox._base import BaseSandbox, ExecResult
 from benchflow.task.config import SandboxConfig
 from benchflow.task.paths import RolloutPaths, SandboxPaths
 
 
-class ModalEnvironment(BaseSandboxEnvironment):
+class ModalSandbox(BaseSandbox):
     @classmethod
     def preflight(cls) -> None:
         modal_config = Path.home() / ".modal.toml"

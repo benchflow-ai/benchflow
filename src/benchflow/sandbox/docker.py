@@ -1,4 +1,4 @@
-"""Native DockerEnvironment — internalized from Harbor with RL-first terminology.
+"""Native DockerSandbox — internalized from Harbor with RL-first terminology.
 
 Uses docker-compose for container orchestration on local Docker.
 """
@@ -21,7 +21,7 @@ from typing import ClassVar
 
 from pydantic import BaseModel
 
-from benchflow.sandbox._base import BaseSandboxEnvironment, ExecResult
+from benchflow.sandbox._base import BaseSandbox, ExecResult
 from benchflow.sandbox._compose import (
     COMPOSE_BASE_PATH,
     COMPOSE_BUILD_PATH,
@@ -51,7 +51,7 @@ def _sanitize_docker_compose_project_name(name: str) -> str:
     return name
 
 
-class DockerEnvironmentEnvVars(BaseModel):
+class DockerSandboxEnvVars(BaseModel):
     main_image_name: str
     context_dir: str
     host_verifier_logs_path: str
@@ -75,7 +75,7 @@ class DockerEnvironmentEnvVars(BaseModel):
         return env_dict
 
 
-class DockerEnvironment(BaseSandboxEnvironment):
+class DockerSandbox(BaseSandbox):
     _DOCKER_COMPOSE_BASE_PATH = COMPOSE_BASE_PATH
     _DOCKER_COMPOSE_BUILD_PATH = COMPOSE_BUILD_PATH
     _DOCKER_COMPOSE_PREBUILT_PATH = COMPOSE_PREBUILT_PATH
@@ -143,7 +143,7 @@ class DockerEnvironment(BaseSandboxEnvironment):
             else "/tmp/artifacts"
         )
 
-        self._env_vars = DockerEnvironmentEnvVars(
+        self._env_vars = DockerSandboxEnvVars(
             main_image_name=_sanitize_docker_image_name(f"bf__{environment_name}"),
             context_dir=str(self.environment_dir.resolve().absolute()),
             host_verifier_logs_path=verifier_dir,

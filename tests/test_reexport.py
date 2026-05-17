@@ -10,11 +10,11 @@ def test_core_reexports():
     assert TaskConfig.__module__.startswith("benchflow")
 
 
-def test_benchflow_job():
-    """benchflow.Job is benchflow's own Job."""
-    from benchflow import Job
+def test_benchflow_evaluation():
+    """benchflow.Evaluation is benchflow's own Evaluation."""
+    from benchflow import Evaluation
 
-    assert Job.__module__ in ("benchflow.job", "benchflow.evaluation")
+    assert Evaluation.__module__ in ("benchflow.evaluation",)
 
 
 def test_benchflow_additions():
@@ -55,12 +55,12 @@ def test_public_api_reexports():
         SDK,
         AgentInstallError,
         AgentTimeoutError,
-        RunResult,
+        RolloutResult,
         stage_dockerfile_deps,
     )
 
     assert callable(SDK)
-    assert callable(RunResult)
+    assert callable(RolloutResult)
     assert callable(AgentInstallError)
     assert callable(AgentTimeoutError)
     assert callable(stage_dockerfile_deps)

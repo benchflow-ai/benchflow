@@ -25,7 +25,7 @@ async def test_trial_connect_starts_bedrock_runtime_before_connect_acp(tmp_path)
     trial = Rollout.__new__(Rollout)
     trial._config = cfg
     trial._env = SimpleNamespace()
-    trial._trial_dir = tmp_path
+    trial._rollout_dir = tmp_path
     trial._timing = {}
     trial._agent_launch = "codex-acp"
     trial._agent_cwd = "/app"
@@ -78,7 +78,7 @@ async def test_trial_connect_as_starts_bedrock_runtime_for_role(tmp_path):
     trial = Rollout.__new__(Rollout)
     trial._config = cfg
     trial._env = SimpleNamespace()
-    trial._trial_dir = tmp_path
+    trial._rollout_dir = tmp_path
     trial._timing = {}
     trial._agent_cwd = "/app"
     trial._phase = "idle"

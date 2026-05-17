@@ -293,9 +293,9 @@ async def test_empty_outbox_no_injection() -> None:
 async def test_scene_messages_persisted(
     coder_reviewer_scene: Scene, tmp_path: Path
 ) -> None:
-    """Inter-role messages are saved to scene_messages.jsonl in trial_dir."""
+    """Inter-role messages are saved to scene_messages.jsonl in rollout_dir."""
     trial = _make_trial(coder_reviewer_scene)
-    trial._trial_dir = tmp_path
+    trial._rollout_dir = tmp_path
     call_count = 0
 
     async def fake_execute(prompts=None):

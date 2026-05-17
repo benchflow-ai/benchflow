@@ -43,7 +43,7 @@ class TestConnectAsEnvMerge:
         trial = Rollout.__new__(Rollout)
         trial._config = cfg
         trial._env = {}
-        trial._trial_dir = tmp_path
+        trial._rollout_dir = tmp_path
         trial._timing = {}
         trial._agent_cwd = None
         trial._phase = "idle"
