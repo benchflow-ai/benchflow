@@ -292,10 +292,10 @@ class TestResolvePrompts:
 class TestInitTrial:
     """Tests for SDK._init_trial — trial directory setup."""
 
-    def _init(self, task_path, job_name=None, trial_name=None, jobs_dir="jobs"):
+    def _init(self, task_path, job_name=None, rollout_name=None, jobs_dir="jobs"):
         from benchflow.sdk import SDK
 
-        return SDK._init_trial(task_path, job_name, trial_name, jobs_dir)
+        return SDK._init_trial(task_path, job_name, rollout_name, jobs_dir)
 
     @pytest.fixture()
     def task_dir(self, tmp_path):
@@ -309,11 +309,11 @@ class TestInitTrial:
         (td / "instruction.md").write_text("Do the thing.")
         return td
 
-    def test_trial_dir_created(self, task_dir, tmp_path):
-        _, trial_dir, _, _, _, _ = self._init(task_dir, jobs_dir=tmp_path / "jobs")
-        assert trial_dir.exists()
+    def test_rollout_dir_created(self, task_dir, tmp_path):
+        _, rollout_dir, _, _, _, _ = self._init(task_dir, jobs_dir=tmp_path / "jobs")
+        assert rollout_dir.exists()
         for subdir in ("agent", "verifier", "artifacts", "trajectory"):
-            assert (trial_dir / subdir).is_dir()
+            assert (rollout_dir / subdir).is_dir()
 
     def test_default_job_name_format(self, task_dir, tmp_path):
         _, _, _, _, job_name, _ = self._init(task_dir, jobs_dir=tmp_path / "jobs")
@@ -329,17 +329,17 @@ class TestInitTrial:
         )
         assert job_name == "my-job"
 
-    def test_trial_name_includes_task(self, task_dir, tmp_path):
-        _, _, _, _, _, trial_name = self._init(task_dir, jobs_dir=tmp_path / "jobs")
-        assert "my-task" in trial_name
+    def test_rollout_name_includes_task(self, task_dir, tmp_path):
+        _, _, _, _, _, rollout_name = self._init(task_dir, jobs_dir=tmp_path / "jobs")
+        assert "my-task" in rollout_name
 
-    def test_custom_trial_name(self, task_dir, tmp_path):
-        _, _, _, _, _, trial_name = self._init(
+    def test_custom_rollout_name(self, task_dir, tmp_path):
+        _, _, _, _, _, rollout_name = self._init(
             task_dir,
-            trial_name="custom-trial",
+            rollout_name="custom-trial",
             jobs_dir=tmp_path / "jobs",
         )
-        assert trial_name == "custom-trial"
+        assert rollout_name == "custom-trial"
 
     def test_started_at_is_datetime(self, task_dir, tmp_path):
         _, _, _, started_at, _, _ = self._init(task_dir, jobs_dir=tmp_path / "jobs")
@@ -350,12 +350,12 @@ class TestInitTrial:
 
 
 class TestWriteConfig:
-    """Tests for SDK._write_config — writes config.json to trial_dir."""
+    """Tests for SDK._write_config — writes config.json to rollout_dir."""
 
-    def _write(self, trial_dir, **kwargs):
+    def _write(self, rollout_dir, **kwargs):
         from benchflow.sdk import SDK
 
-        return SDK._write_config(trial_dir, **kwargs)
+        return SDK._write_config(rollout_dir, **kwargs)
 
     def test_config_json_written(self, tmp_path):
         self._write(
@@ -469,12 +469,12 @@ class TestRunWiring:
 class TestBuildResult:
     """Tests for SDK._build_result — builds RunResult and writes output files."""
 
-    def _build(self, trial_dir, **kwargs):
+    def _build(self, rollout_dir, **kwargs):
         from benchflow.sdk import SDK
 
         defaults = dict(
             task_name="my-task",
-            trial_name="my-trial",
+            rollout_name="my-trial",
             agent="claude-agent-acp",
             agent_name="Claude",
             model="claude-haiku-4-5-20251001",
@@ -489,7 +489,7 @@ class TestBuildResult:
             timing={"agent_setup": 1.5, "agent_execution": 10.2},
         )
         defaults.update(kwargs)
-        return SDK._build_result(trial_dir, **defaults)
+        return SDK._build_result(rollout_dir, **defaults)
 
     def test_result_json_written(self, tmp_path):
         self._build(tmp_path)

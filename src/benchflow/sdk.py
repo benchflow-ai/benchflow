@@ -45,17 +45,17 @@ class SDK:
     def _init_trial(
         task_path: Path,
         job_name: str | None,
-        trial_name: str | None,
+        rollout_name: str | None,
         jobs_dir: str | Path,
     ) -> tuple[Any, Path, Any, datetime, str, str]:
-        return _init_rollout(task_path, job_name, trial_name, jobs_dir)
+        return _init_rollout(task_path, job_name, rollout_name, jobs_dir)
 
     @staticmethod
     def _write_config(
-        trial_dir: Path,
+        rollout_dir: Path,
         **kwargs: Any,
     ) -> None:
-        _write_config(trial_dir, **kwargs)
+        _write_config(rollout_dir, **kwargs)
 
     @staticmethod
     def _resolve_prompts(
@@ -75,10 +75,10 @@ class SDK:
 
     @staticmethod
     def _build_result(
-        trial_dir: Path,
+        rollout_dir: Path,
         *,
         task_name: str,
-        trial_name: str,
+        rollout_name: str,
         agent: str,
         agent_name: str,
         model: str,
@@ -94,9 +94,9 @@ class SDK:
         timing: dict[str, float],
     ) -> RolloutResult:
         return _build_rollout_result(
-            trial_dir,
+            rollout_dir,
             task_name=task_name,
-            trial_name=trial_name,
+            rollout_name=rollout_name,
             agent=agent,
             agent_name=agent_name,
             model=model,
@@ -153,7 +153,7 @@ class SDK:
         model: str | None = None,
         agent_env: dict[str, str] | None = None,
         job_name: str | None = None,
-        trial_name: str | None = None,
+        rollout_name: str | None = None,
         jobs_dir: str | Path = "jobs",
         environment: str = "docker",
         skills_dir: str | Path | None = None,
@@ -177,7 +177,7 @@ class SDK:
             model=model,
             agent_env=agent_env,
             job_name=job_name,
-            trial_name=trial_name,
+            rollout_name=rollout_name,
             jobs_dir=jobs_dir,
             environment=environment,
             skills_dir=skills_dir,

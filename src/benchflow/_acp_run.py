@@ -144,7 +144,7 @@ async def connect_acp(
     agent_env: dict,
     sandbox_user: str | None,
     model: str | None,
-    trial_dir: Path,
+    rollout_dir: Path,
     environment: str,
     agent_cwd: str,
 ) -> tuple[ACPClient, object, str]:
@@ -192,7 +192,7 @@ async def connect_acp(
                 else:
                     live_proc = await DaytonaProcess.from_sandbox_env(env)
 
-            agent_log = trial_dir / "agent" / f"{agent.replace('-', '_')}.txt"
+            agent_log = rollout_dir / "agent" / f"{agent.replace('-', '_')}.txt"
             transport = ContainerTransport(
                 container_process=live_proc,
                 command=agent_launch,

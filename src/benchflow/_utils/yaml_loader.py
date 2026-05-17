@@ -113,7 +113,7 @@ def trial_config_from_dict(
         sandbox_locked_paths=raw.get("sandbox_locked_paths"),
         sandbox_setup_timeout=raw.get("sandbox_setup_timeout", 120),
         job_name=raw.get("job_name"),
-        trial_name=raw.get("trial_name"),
+        rollout_name=raw.get("rollout_name"),
         jobs_dir=raw.get("jobs_dir", "jobs"),
         context_root=raw.get("context_root"),
         agent=raw.get("agent", "claude-agent-acp"),

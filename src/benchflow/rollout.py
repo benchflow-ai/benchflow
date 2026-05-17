@@ -241,7 +241,7 @@ _DIAG_TRUNCATE = 2000
 
 
 def _write_rewards_jsonl(
-    trial_dir: Path,
+    rollout_dir: Path,
     rewards: dict | None,
     finished_at: datetime,
 ) -> None:
@@ -287,14 +287,14 @@ def _write_rewards_jsonl(
             }
         )
     if events:
-        path = trial_dir / "rewards.jsonl"
+        path = rollout_dir / "rewards.jsonl"
         path.write_text("\n".join(json.dumps(e, default=str) for e in events) + "\n")
 
 
 def _init_rollout(
     task_path: Path,
     job_name: str | None,
-    trial_name: str | None,
+    rollout_name: str | None,
     jobs_dir: str | Path,
 ) -> tuple[Any, Path, Any, datetime, str, str]:
     """Set up trial directory tree and return core trial objects."""
@@ -304,18 +304,18 @@ def _init_rollout(
 
     task = Task(task_path)
     job_name = job_name or datetime.now().strftime("%Y-%m-%d__%H-%M-%S")
-    trial_name = trial_name or f"{task_path.name}__{uuid4().hex[:8]}"
-    trial_dir = Path(jobs_dir) / job_name / trial_name
-    rollout_paths = RolloutPaths(rollout_dir=trial_dir)
+    rollout_name = rollout_name or f"{task_path.name}__{uuid4().hex[:8]}"
+    rollout_dir = Path(jobs_dir) / job_name / rollout_name
+    rollout_paths = RolloutPaths(rollout_dir=rollout_dir)
     started_at = datetime.now()
-    trial_dir.mkdir(parents=True, exist_ok=True)
+    rollout_dir.mkdir(parents=True, exist_ok=True)
     for subdir in ("agent", "verifier", "artifacts", "trajectory"):
-        (trial_dir / subdir).mkdir(exist_ok=True)
-    return task, trial_dir, rollout_paths, started_at, job_name, trial_name
+        (rollout_dir / subdir).mkdir(exist_ok=True)
+    return task, rollout_dir, rollout_paths, started_at, job_name, rollout_name
 
 
 def _write_config(
-    trial_dir: Path,
+    rollout_dir: Path,
     *,
     task_path: Path,
     agent: str,
@@ -330,7 +330,7 @@ def _write_config(
     started_at: datetime,
     agent_env: dict[str, str],
 ) -> None:
-    """Write config.json to trial_dir with secrets filtered out."""
+    """Write config.json to rollout_dir with secrets filtered out."""
     _secret_substrings = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIALS")
     recorded_env = {
         k: v
@@ -351,14 +351,14 @@ def _write_config(
         "started_at": str(started_at),
         "agent_env": recorded_env,
     }
-    (trial_dir / "config.json").write_text(json.dumps(config_data, indent=2))
+    (rollout_dir / "config.json").write_text(json.dumps(config_data, indent=2))
 
 
 def _build_rollout_result(
-    trial_dir: Path,
+    rollout_dir: Path,
     *,
     task_name: str,
-    trial_name: str,
+    rollout_name: str,
     agent: str,
     agent_name: str,
     model: str,
@@ -377,7 +377,7 @@ def _build_rollout_result(
     finished_at = datetime.now()
     result = RolloutResult(
         task_name=task_name,
-        trial_name=trial_name,
+        rollout_name=rollout_name,
         rewards=rewards,
         trajectory=trajectory,
         agent=agent,
@@ -394,17 +394,17 @@ def _build_rollout_result(
     )
     timing["total"] = (finished_at - started_at).total_seconds()
     timing = {k: round(v, 1) for k, v in timing.items()}
-    traj_dir = trial_dir / "trajectory"
+    traj_dir = rollout_dir / "trajectory"
     traj_dir.mkdir(parents=True, exist_ok=True)
     (traj_dir / "acp_trajectory.jsonl").write_text(
         "\n".join(json.dumps(e, default=str) for e in trajectory)
     )
-    trial_dir.mkdir(parents=True, exist_ok=True)
-    (trial_dir / "result.json").write_text(
+    rollout_dir.mkdir(parents=True, exist_ok=True)
+    (rollout_dir / "result.json").write_text(
         json.dumps(
             {
                 "task_name": result.task_name,
-                "trial_name": result.trial_name,
+                "rollout_name": result.rollout_name,
                 "rewards": result.rewards,
                 "agent": result.agent,
                 "agent_name": result.agent_name,
@@ -422,9 +422,9 @@ def _build_rollout_result(
             indent=2,
         )
     )
-    (trial_dir / "timing.json").write_text(json.dumps(timing, indent=2))
-    (trial_dir / "prompts.json").write_text(json.dumps(prompts, indent=2))
-    _write_rewards_jsonl(trial_dir, rewards, finished_at)
+    (rollout_dir / "timing.json").write_text(json.dumps(timing, indent=2))
+    (rollout_dir / "prompts.json").write_text(json.dumps(prompts, indent=2))
+    _write_rewards_jsonl(rollout_dir, rewards, finished_at)
     return result
 
 
@@ -625,7 +625,7 @@ class RolloutConfig:
     sandbox_setup_timeout: int = 120
     services: list[str] | None = None
     job_name: str | None = None
-    trial_name: str | None = None
+    rollout_name: str | None = None
     jobs_dir: str | Path = "jobs"
     context_root: str | Path | None = None
     pre_agent_hooks: list | None = None
@@ -740,11 +740,11 @@ class Rollout:
 
         # Populated by setup()
         self._task: Any = None
-        self._trial_dir: Path | None = None
+        self._rollout_dir: Path | None = None
         self._rollout_paths: Any = None
         self._started_at: datetime | None = None
         self._job_name: str | None = None
-        self._trial_name: str | None = None
+        self._rollout_name: str | None = None
         self._agent_env: dict[str, str] = {}
         self._resolved_prompts: list[str] = []
         self._agent_launch: str = ""
@@ -806,10 +806,10 @@ class Rollout:
             return None
         return self._build_result()
 
-    def _require_trial_dir(self) -> Path:
-        if self._trial_dir is None:
+    def _require_rollout_dir(self) -> Path:
+        if self._rollout_dir is None:
             raise RuntimeError("Rollout.setup() must run before this phase")
-        return self._trial_dir
+        return self._rollout_dir
 
     def _require_started_at(self) -> datetime:
         if self._started_at is None:
@@ -838,12 +838,12 @@ class Rollout:
 
         (
             self._task,
-            self._trial_dir,
+            self._rollout_dir,
             self._rollout_paths,
             self._started_at,
             self._job_name,
-            self._trial_name,
-        ) = _init_rollout(cfg.task_path, cfg.job_name, cfg.trial_name, cfg.jobs_dir)
+            self._rollout_name,
+        ) = _init_rollout(cfg.task_path, cfg.job_name, cfg.rollout_name, cfg.jobs_dir)
 
         self._disallow_web_tools = (
             _task_disallows_internet(self._task) or cfg.self_gen_no_internet
@@ -888,14 +888,14 @@ class Rollout:
             cfg.environment,
             self._task,
             effective_task_path,
-            self._trial_name,
+            self._rollout_name,
             self._rollout_paths,
             preserve_agent_network=self._disallow_web_tools,
         )
         self._timeout = int(self._task.config.agent.timeout_sec or 0)
 
         _write_config(
-            self._trial_dir,
+            self._rollout_dir,
             task_path=cfg.task_path,
             agent=cfg.primary_agent,
             model=cfg.primary_model,
@@ -933,7 +933,7 @@ class Rollout:
         This method installs the primary agent to set up the sandbox baseline.
         """
         cfg = self._config
-        trial_dir = self._require_trial_dir()
+        rollout_dir = self._require_rollout_dir()
 
         cwd_result = await self._env.exec("pwd", timeout_sec=10)
         agent_cwd = (cwd_result.stdout or "").strip() or "/app"
@@ -970,7 +970,7 @@ class Rollout:
             return
 
         agent_name = cfg.primary_agent
-        self._agent_cfg = await install_agent(self._env, agent_name, trial_dir)
+        self._agent_cfg = await install_agent(self._env, agent_name, rollout_dir)
         cred_home = f"/home/{cfg.sandbox_user}" if cfg.sandbox_user else "/root"
         await write_credential_files(
             self._env,
@@ -1025,7 +1025,7 @@ class Rollout:
     async def connect(self) -> None:
         """Open an ACP connection to the agent. Can be called multiple times."""
         cfg = self._config
-        trial_dir = self._require_trial_dir()
+        rollout_dir = self._require_rollout_dir()
         t0 = datetime.now()
 
         self._agent_env, self._provider_runtime = await ensure_bedrock_proxy_runtime(
@@ -1042,7 +1042,7 @@ class Rollout:
             agent_env=self._agent_env,
             sandbox_user=cfg.sandbox_user,
             model=cfg.primary_model,
-            trial_dir=trial_dir,
+            rollout_dir=rollout_dir,
             environment=cfg.environment,
             agent_cwd=self._agent_cwd,
         )
@@ -1329,7 +1329,7 @@ class Rollout:
         finally:
             await self.cleanup()
 
-        if self._trial_dir is None:
+        if self._rollout_dir is None:
             return RolloutResult(
                 task_name=self._config.task_path.name,
                 error=self._error or "Setup failed before trial directory was created",
@@ -1393,7 +1393,7 @@ class Rollout:
         ``{"to": "role_name", "content": "..."}`` and the scheduler
         injects received messages into the next turn's prompt.
 
-        Inter-role messages are persisted to ``trial_dir/scene_messages.jsonl``.
+        Inter-role messages are persisted to ``rollout_dir/scene_messages.jsonl``.
         """
         cfg = self._config
         logger.info(
@@ -1466,8 +1466,8 @@ class Rollout:
         if current_role is not None:
             await self.disconnect()
 
-        if scene_messages and self._trial_dir:
-            msg_path = self._trial_dir / "scene_messages.jsonl"
+        if scene_messages and self._rollout_dir:
+            msg_path = self._rollout_dir / "scene_messages.jsonl"
             with msg_path.open("a") as f:
                 for m in scene_messages:
                     f.write(json.dumps(m) + "\n")
@@ -1634,8 +1634,8 @@ class Rollout:
             )
 
         # Persist round log
-        if rounds_log and self._trial_dir:
-            log_path = self._trial_dir / "user_rounds.jsonl"
+        if rounds_log and self._rollout_dir:
+            log_path = self._rollout_dir / "user_rounds.jsonl"
             with log_path.open("w") as f:
                 for entry in rounds_log:
                     f.write(json.dumps(entry) + "\n")
@@ -1649,7 +1649,7 @@ class Rollout:
         Updates _agent_launch so disconnect() kills the correct process.
         """
         cfg = self._config
-        trial_dir = self._require_trial_dir()
+        rollout_dir = self._require_rollout_dir()
         t0 = datetime.now()
 
         # Merge cfg.agent_env (config-level) with role.env (role-specific) so
@@ -1679,7 +1679,7 @@ class Rollout:
         )
 
         if role.agent != cfg.primary_agent:
-            agent_cfg = await install_agent(self._env, role.agent, trial_dir)
+            agent_cfg = await install_agent(self._env, role.agent, rollout_dir)
             cred_home = f"/home/{cfg.sandbox_user}" if cfg.sandbox_user else "/root"
             await write_credential_files(
                 self._env,
@@ -1708,7 +1708,7 @@ class Rollout:
             agent_env=agent_env,
             sandbox_user=cfg.sandbox_user,
             model=role.model,
-            trial_dir=trial_dir,
+            rollout_dir=rollout_dir,
             environment=cfg.environment,
             agent_cwd=self._agent_cwd,
         )
@@ -1739,11 +1739,11 @@ class Rollout:
         return str(e)
 
     def _build_result(self) -> RolloutResult:
-        trial_dir = self._require_trial_dir()
+        rollout_dir = self._require_rollout_dir()
         return _build_rollout_result(
-            trial_dir,
+            rollout_dir,
             task_name=self._config.task_path.name,
-            trial_name=self._trial_name or "",
+            rollout_name=self._rollout_name or "",
             agent=self._config.primary_agent,
             agent_name=self._agent_name,
             model=self._config.primary_model or "",

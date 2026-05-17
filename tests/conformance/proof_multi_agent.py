@@ -61,10 +61,10 @@ async def role_runner(env, role: Role, prompt: str) -> None:
     """Run one role via ACP — thin wrapper around existing benchflow internals."""
     agent_config = AGENTS[role.agent]
     if role.agent not in _INSTALLED_AGENTS:
-        trial_dir = Path(f"/tmp/multi-agent-proof/{role.name}")
-        trial_dir.mkdir(parents=True, exist_ok=True)
+        rollout_dir = Path(f"/tmp/multi-agent-proof/{role.name}")
+        rollout_dir.mkdir(parents=True, exist_ok=True)
         agent_config = AGENTS.get(role.agent)
-        await install_agent(env, role.agent, trial_dir)
+        await install_agent(env, role.agent, rollout_dir)
         if agent_config:
             await write_credential_files(
                 env, role.agent, {}, agent_config, role.model, "/home/agent"
@@ -74,8 +74,8 @@ async def role_runner(env, role: Role, prompt: str) -> None:
         _INSTALLED_AGENTS.add(role.agent)
     await env.exec("mkdir -p /app/.outbox && chmod 777 /app/.outbox")
 
-    trial_dir = Path(f"/tmp/multi-agent-proof/{role.name}")
-    trial_dir.mkdir(parents=True, exist_ok=True)
+    rollout_dir = Path(f"/tmp/multi-agent-proof/{role.name}")
+    rollout_dir.mkdir(parents=True, exist_ok=True)
     launch_cmd = AGENT_LAUNCH.get(role.agent, role.agent)
     acp_client, session, _agent_name = await connect_acp(
         env=env,
@@ -84,7 +84,7 @@ async def role_runner(env, role: Role, prompt: str) -> None:
         agent_env={},
         sandbox_user="agent",
         model=role.model,
-        trial_dir=trial_dir,
+        rollout_dir=rollout_dir,
         environment="daytona",
         agent_cwd="/app",
     )

@@ -59,7 +59,7 @@ class Environment:
         cls,
         task_path: str | Path,
         sandbox: str = "daytona",
-        trial_name: str | None = None,
+        rollout_name: str | None = None,
     ) -> Environment:
         """Create an environment from a task directory."""
         from uuid import uuid4
@@ -69,19 +69,19 @@ class Environment:
 
         task_path = Path(task_path)
         task = Task(task_path)
-        trial_name = trial_name or task_path.name
+        rollout_name = rollout_name or task_path.name
         rollout_paths = RolloutPaths(
             rollout_dir=Path.cwd()
             / "jobs"
             / "environment"
-            / f"{trial_name}__{uuid4().hex[:8]}"
+            / f"{rollout_name}__{uuid4().hex[:8]}"
         )
         rollout_paths.mkdir()
         inner = _create_environment(
             sandbox_type=sandbox,
             task=task,
             task_path=task_path,
-            rollout_name=trial_name,
+            rollout_name=rollout_name,
             rollout_paths=rollout_paths,
         )
         return cls(inner=inner, task_path=task_path, sandbox=sandbox)
@@ -160,7 +160,7 @@ class RuntimeConfig:
     reward_stream: bool = True
     timeout: int = 900
     jobs_dir: str | Path = "jobs"
-    trial_name: str | None = None
+    rollout_name: str | None = None
     skills_dir: str | Path | None = None
     context_root: str | Path | None = None
     pre_agent_hooks: list | None = None
@@ -175,20 +175,20 @@ class RuntimeResult:
     not only in-memory objects.
 
     Guaranteed artifacts (when run completes):
-        trial_dir/result.json       — reward, timing, error, metadata
-        trial_dir/rewards.jsonl     — terminal + rubric reward events
-        trial_dir/trajectory/       — ACP trajectory JSONL
-        trial_dir/timing.json       — phase-level timing
-        trial_dir/config.json       — run configuration snapshot
-        trial_dir/prompts.json      — prompts sent to agent
+        rollout_dir/result.json       — reward, timing, error, metadata
+        rollout_dir/rewards.jsonl     — terminal + rubric reward events
+        rollout_dir/trajectory/       — ACP trajectory JSONL
+        rollout_dir/timing.json       — phase-level timing
+        rollout_dir/config.json       — run configuration snapshot
+        rollout_dir/prompts.json      — prompts sent to agent
 
     Optional artifacts:
-        trial_dir/scene_trajectory.jsonl — inter-agent messages (multi-agent)
-        trial_dir/snapshots/             — checkpoint refs (if snapshot_policy != "none")
+        rollout_dir/scene_trajectory.jsonl — inter-agent messages (multi-agent)
+        rollout_dir/snapshots/             — checkpoint refs (if snapshot_policy != "none")
     """
 
     task_name: str
-    trial_name: str
+    rollout_name: str
     reward: float | None
     rewards: dict | None
     n_tool_calls: int
@@ -197,7 +197,7 @@ class RuntimeResult:
     trajectory: list[dict]
     messages: list[dict] = field(default_factory=list)
     snapshots: list[str] = field(default_factory=list)
-    trial_dir: Path | None = None
+    rollout_dir: Path | None = None
     started_at: datetime | None = None
     finished_at: datetime | None = None
 
@@ -215,7 +215,7 @@ class RuntimeResult:
 
         return RunResult(
             task_name=self.task_name,
-            trial_name=self.trial_name,
+            rollout_name=self.rollout_name,
             rewards=self.rewards,
             trajectory=self.trajectory,
             agent="",
@@ -295,7 +295,7 @@ class Runtime:
         reward = (run_result.rewards or {}).get("reward")
         return RuntimeResult(
             task_name=run_result.task_name,
-            trial_name=run_result.trial_name,
+            rollout_name=run_result.rollout_name,
             reward=reward,
             rewards=run_result.rewards,
             n_tool_calls=run_result.n_tool_calls,

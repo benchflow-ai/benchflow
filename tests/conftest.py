@@ -28,18 +28,18 @@ def build_result_json(tmp_path):
     """Factory: call SDK._build_result with 14-field defaults and return parsed result.json.
 
     Accepts `trajectory_source` override so callers that care about that field can
-    set it; otherwise defaults to None. The `trial_dir` used is `tmp_path / "trial"`
+    set it; otherwise defaults to None. The `rollout_dir` used is `tmp_path / "trial"`
     (created if missing). Any override via kwargs is merged on top of the defaults.
     """
 
     def _build(**overrides) -> dict:
         from benchflow.sdk import SDK
 
-        trial_dir = tmp_path / "trial"
-        trial_dir.mkdir(exist_ok=True)
+        rollout_dir = tmp_path / "trial"
+        rollout_dir.mkdir(exist_ok=True)
         defaults = dict(
             task_name="t1",
-            trial_name="trial-1",
+            rollout_name="trial-1",
             agent="test",
             agent_name="",
             model="",
@@ -55,8 +55,8 @@ def build_result_json(tmp_path):
             timing={},
         )
         defaults.update(overrides)
-        SDK._build_result(trial_dir, **defaults)
-        return json.loads((trial_dir / "result.json").read_text())
+        SDK._build_result(rollout_dir, **defaults)
+        return json.loads((rollout_dir / "result.json").read_text())
 
     return _build
 

@@ -133,7 +133,7 @@ async def _link_skill_paths(
     return len(parts)
 
 
-async def install_agent(env, agent: str, trial_dir: Path) -> AgentConfig | None:
+async def install_agent(env, agent: str, rollout_dir: Path) -> AgentConfig | None:
     """Install agent in sandbox and return its config."""
     agent_base = agent.split()[0]
     agent_cfg = AGENTS.get(agent_base)
@@ -146,7 +146,7 @@ async def install_agent(env, agent: str, trial_dir: Path) -> AgentConfig | None:
         install_cmd,
         timeout_sec=install_timeout,
     )
-    install_log = trial_dir / "agent" / "install-stdout.txt"
+    install_log = rollout_dir / "agent" / "install-stdout.txt"
     install_log.parent.mkdir(parents=True, exist_ok=True)
     stdout = install_result.stdout or ""
     stderr = install_result.stderr or ""

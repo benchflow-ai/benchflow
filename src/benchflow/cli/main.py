@@ -330,7 +330,7 @@ def metrics(
 
 @app.command(hidden=True, deprecated=True)
 def view(
-    trial_dir: Annotated[
+    rollout_dir: Annotated[
         Path,
         typer.Argument(help="Rollout or job directory with trajectories"),
     ],
@@ -339,7 +339,7 @@ def view(
     """View a trial trajectory in the browser."""
     from benchflow.trajectories.viewer import serve
 
-    serve(str(trial_dir), port)
+    serve(str(rollout_dir), port)
 
 
 @app.command(hidden=True, deprecated=True)
@@ -895,7 +895,7 @@ def eval_create(
                     agent=agent,
                     model=eff_model,
                     job_name=None,
-                    trial_name=None,
+                    rollout_name=None,
                     jobs_dir=jobs_dir,
                     environment=environment,
                     agent_env=parsed_env,
@@ -956,7 +956,7 @@ def eval_create(
                     agent=agent,
                     model=eff_model,
                     job_name=None,
-                    trial_name=None,
+                    rollout_name=None,
                     jobs_dir=jobs_dir,
                     environment=environment,
                     agent_env=parsed_env,
