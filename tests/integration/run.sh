@@ -135,7 +135,7 @@ if [ "$CHECK_ONLY" = false ]; then
       -t "$TASKS_DIR" \
       -a "$agent" \
       -m "$model" \
-      -e daytona \
+      --sandbox daytona \
       -c 30 \
       -o "$JOBS_ROOT/$agent" \
       > "$LOG_DIR/$agent.log" 2>&1 &

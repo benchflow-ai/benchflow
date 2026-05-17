@@ -53,13 +53,13 @@ Use CLI flags for ad-hoc runs without a config file:
 bench eval create \
   --source-repo benchflow-ai/benchmarks \
   --source-path datasets/harvey-lab/tasks/corporate-ma-analyze-cim-deal-teaser-scenario-01 \
-  -a gemini -m gemini-3.1-flash-lite-preview -e docker
+  -a gemini -m gemini-3.1-flash-lite-preview --sandbox docker
 
 # Harvey LAB — all pre-converted tasks
 bench eval create \
   --source-repo benchflow-ai/benchmarks \
   --source-path datasets/harvey-lab/tasks \
-  -a gemini -m gemini-3.1-flash-lite-preview -e docker -c 4
+  -a gemini -m gemini-3.1-flash-lite-preview --sandbox docker -c 4
 
 # SkillsBench
 bench run \
@@ -69,13 +69,13 @@ bench run \
 
 # ProgramBench — single task
 bench run benchmarks/programbench/tasks/abishekvashok__cmatrix.5c082c6 \
-  -a gemini -m gemini-3.1-flash-lite-preview -b docker
+  -a gemini -m gemini-3.1-flash-lite-preview --sandbox docker
 
 # Claude Code on Daytona
 bench eval create \
   --source-repo benchflow-ai/skillsbench \
   --source-path tasks \
-  -a claude-agent-acp -m anthropic/claude-sonnet-4-6 -e daytona -c 32
+  -a claude-agent-acp -m anthropic/claude-sonnet-4-6 --sandbox daytona -c 32
 ```
 
 > **Note:** Harvey LAB task names in `benchflow-ai/benchmarks` are flattened with
@@ -129,10 +129,10 @@ bench run \
   -a gemini -m gemini-3.1-flash-lite-preview
 
 bench run benchmarks/programbench/tasks/abishekvashok__cmatrix.5c082c6 \
-  -a gemini -m gemini-3.1-flash-lite-preview -b docker
+  -a gemini -m gemini-3.1-flash-lite-preview --sandbox docker
 
 bench run .cache/harvey-lab-tasks/corporate-ma-review-data-room-red-flag-review \
-  -a gemini -m gemini-3.1-flash-lite-preview -b docker
+  -a gemini -m gemini-3.1-flash-lite-preview --sandbox docker
 ```
 
 ### Batch with a tasks directory
@@ -141,7 +141,7 @@ Point `bench eval create -t` at a directory containing only the tasks you want:
 
 ```bash
 bench eval create -t benchmarks/programbench/tasks \
-  -a gemini -m gemini-3.1-flash-lite-preview -e docker -c 4
+  -a gemini -m gemini-3.1-flash-lite-preview --sandbox docker -c 4
 ```
 
 ### Using `--source-path` for remote subsets
@@ -151,13 +151,13 @@ bench eval create -t benchmarks/programbench/tasks \
 bench eval create \
   --source-repo benchflow-ai/skillsbench \
   --source-path tasks/edit-pdf \
-  -a gemini -m gemini-3.1-flash-lite-preview -e docker
+  -a gemini -m gemini-3.1-flash-lite-preview --sandbox docker
 
 # Harvey LAB single task (pre-converted)
 bench eval create \
   --source-repo benchflow-ai/benchmarks \
   --source-path datasets/harvey-lab/tasks/corporate-ma-analyze-cim-deal-teaser-scenario-01 \
-  -a gemini -m gemini-3.1-flash-lite-preview -e docker
+  -a gemini -m gemini-3.1-flash-lite-preview --sandbox docker
 ```
 
 ---
@@ -183,7 +183,7 @@ bench eval create -f benchmarks/programbench/programbench-gemini-flash-lite.yaml
 
 ```bash
 bench run benchmarks/programbench/tasks/abishekvashok__cmatrix.5c082c6 \
-  -a gemini -m gemini-3.1-flash-lite-preview -b docker
+  -a gemini -m gemini-3.1-flash-lite-preview --sandbox docker
 ```
 
 ### Oracle verification
@@ -191,7 +191,7 @@ bench run benchmarks/programbench/tasks/abishekvashok__cmatrix.5c082c6 \
 Verify a task is solvable using the gold solution (original source at commit):
 
 ```bash
-bench run benchmarks/programbench/tasks/abishekvashok__cmatrix.5c082c6 -a oracle -b docker
+bench run benchmarks/programbench/tasks/abishekvashok__cmatrix.5c082c6 -a oracle --sandbox docker
 ```
 
 ### Validate a task directory
@@ -230,9 +230,9 @@ The **Harvey LAB harness** agent is special — it runs Harvey LAB's own agent l
 
 | Sandbox | Flag | Best for |
 |---------|------|----------|
-| Docker | `-e docker` | Local development, small runs (≤10 tasks) |
-| Daytona | `-e daytona` | Cloud runs with concurrency (needs `DAYTONA_API_KEY`) |
-| Modal | `-e modal` | Serverless, high concurrency (needs Modal auth) |
+| Docker | `--sandbox docker` | Local development, small runs (≤10 tasks) |
+| Daytona | `--sandbox daytona` | Cloud runs with concurrency (needs `DAYTONA_API_KEY`) |
+| Modal | `--sandbox modal` | Serverless, high concurrency (needs Modal auth) |
 
 For large-scale runs (100+ tasks), use Daytona or Modal with high concurrency:
 
@@ -240,7 +240,7 @@ For large-scale runs (100+ tasks), use Daytona or Modal with high concurrency:
 bench eval create \
   --source-repo benchflow-ai/skillsbench \
   --source-path tasks \
-  -a gemini -m gemini-3.1-flash-lite-preview -e daytona -c 64
+  -a gemini -m gemini-3.1-flash-lite-preview --sandbox daytona -c 64
 ```
 
 ---

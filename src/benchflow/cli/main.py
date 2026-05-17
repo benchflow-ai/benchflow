@@ -61,7 +61,7 @@ def run(
     ] = None,
     environment: Annotated[
         str,
-        typer.Option("--sandbox", "-b", help="Sandbox: docker, daytona, or modal"),
+        typer.Option("--sandbox", help="Sandbox: docker, daytona, or modal"),
     ] = "docker",
     prompt: Annotated[
         list[str] | None,
@@ -193,7 +193,7 @@ def job(
     ] = None,
     environment: Annotated[
         str,
-        typer.Option("--env", "-e", help="Environment: docker, daytona, or modal"),
+        typer.Option("--sandbox", help="Sandbox: docker, daytona, or modal"),
     ] = "docker",
     concurrency: Annotated[
         int,
@@ -372,7 +372,7 @@ def eval(
     ] = None,
     environment: Annotated[
         str,
-        typer.Option("--env", "-e", help="Environment: docker, daytona, or modal"),
+        typer.Option("--sandbox", help="Sandbox: docker, daytona, or modal"),
     ] = "docker",
     concurrency: Annotated[
         int,
@@ -389,8 +389,8 @@ def eval(
     Simpler than `benchflow job` — designed for skill evaluation workflows.
 
     Examples:
-        benchflow eval -t tasks/ --skill skills/gws/SKILL.md -a claude-agent-acp -e daytona
-        benchflow eval -t tasks/ --skills-dir skills/ -a gemini -e daytona -c 64
+        benchflow eval -t tasks/ --skill skills/gws/SKILL.md -a claude-agent-acp --sandbox daytona
+        benchflow eval -t tasks/ --skills-dir skills/ -a gemini --sandbox daytona -c 64
     """
     from benchflow.job import Job, JobConfig
 
@@ -503,7 +503,7 @@ def skills_eval(
     ] = None,
     environment: Annotated[
         str,
-        typer.Option("--env", "-e", help="Environment: docker, daytona, or modal"),
+        typer.Option("--sandbox", help="Sandbox: docker, daytona, or modal"),
     ] = "docker",
     concurrency: Annotated[
         int,
@@ -529,7 +529,7 @@ def skills_eval(
 
     Examples:
         benchflow skills eval ./my-skill/ -a claude-agent-acp
-        benchflow skills eval ./my-skill/ -a claude-agent-acp -a codex-acp -e daytona -c 4
+        benchflow skills eval ./my-skill/ -a claude-agent-acp -a codex-acp --sandbox daytona -c 4
         benchflow skills eval ./my-skill/ -a claude-agent-acp --no-baseline --export-gepa
     """
     from benchflow.skill_eval import SkillEvaluator, export_gepa_traces
@@ -818,7 +818,7 @@ def eval_create(
     ] = None,
     environment: Annotated[
         str,
-        typer.Option("--env", "-e", help="Sandbox: docker, daytona, or modal"),
+        typer.Option("--sandbox", help="Sandbox: docker, daytona, or modal"),
     ] = "docker",
     concurrency: Annotated[
         int,
@@ -1062,7 +1062,7 @@ def train_create(
     ] = None,
     environment: Annotated[
         str,
-        typer.Option("--env", "-e", help="Sandbox"),
+        typer.Option("--sandbox", help="Sandbox: docker, daytona, or modal"),
     ] = "daytona",
     sweeps: Annotated[
         int,
@@ -1175,7 +1175,7 @@ def environment_create(
     ],
     sandbox: Annotated[
         str,
-        typer.Option("--sandbox", "-b", help="Sandbox: docker, daytona, or modal"),
+        typer.Option("--sandbox", help="Sandbox: docker, daytona, or modal"),
     ] = "daytona",
 ) -> None:
     """Create an environment from a task directory (does not start it)."""

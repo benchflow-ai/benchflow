@@ -81,14 +81,14 @@ GEMINI_API_KEY=... bench eval create \
   --source-path tasks/edit-pdf \
   -a gemini \
   -m gemini-3.1-pro-preview \
-  -e docker
+  --sandbox docker
 
 # Single task from local path
 GEMINI_API_KEY=... bench eval create \
   -t tasks/edit-pdf \
   -a gemini \
   -m gemini-3.1-pro-preview \
-  -e daytona \
+  --sandbox daytona \
   --skills-dir tasks/edit-pdf/environment/skills \
   --ae BENCHFLOW_SKILL_NUDGE=name
 
@@ -98,7 +98,7 @@ bench eval create -f benchmarks/skillsbench-claude-glm51.yaml
 # Batch from remote repo with concurrency
 GEMINI_API_KEY=... bench eval create \
     --source-repo benchflow-ai/skillsbench --source-path tasks \
-    -a gemini -m gemini-3.1-pro-preview -e daytona -c 32
+    -a gemini -m gemini-3.1-pro-preview --sandbox daytona -c 32
 
 # List the registered agents
 bench agent list
