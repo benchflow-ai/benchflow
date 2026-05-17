@@ -31,7 +31,7 @@ import sys
 from pathlib import Path
 
 import benchflow as bf
-from benchflow.rollout import Role, Scene, RolloutConfig, Turn
+from benchflow.rollout import Role, RolloutConfig, Scene, Turn
 
 logging.basicConfig(
     level=logging.INFO,
@@ -168,7 +168,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    from benchflow.task_download import resolve_source
+    from benchflow._utils.benchmark_repos import resolve_source
 
     if "/" in args.task and not Path(args.task).exists():
         # Treat as org/repo or org/repo/path ref.

@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from benchflow import task_download
+from benchflow._utils import benchmark_repos as task_download
 from benchflow._utils.benchmark_repos import Source, resolve_source
 
 

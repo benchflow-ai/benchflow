@@ -103,7 +103,7 @@ import asyncio
 from benchflow.evaluation import Evaluation
 
 async def main():
-    job = Job.from_yaml("benchmarks/harvey-lab/harvey-lab-gemini-flash-lite.yaml")
+    job = Evaluation.from_yaml("benchmarks/harvey-lab/harvey-lab-gemini-flash-lite.yaml")
     result = await job.run()
     print(f"Score: {result.passed}/{result.total} ({result.score:.1%})")
 
@@ -115,7 +115,7 @@ For single-task runs:
 ```python
 import benchflow as bf
 from benchflow import RolloutConfig, Scene
-from benchflow.task_download import resolve_source
+from benchflow._utils.benchmark_repos import resolve_source
 
 task_path = resolve_source("benchflow-ai/skillsbench", path="tasks/edit-pdf")
 

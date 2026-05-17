@@ -5,8 +5,8 @@ import logging
 import sys
 from pathlib import Path
 
+from benchflow._utils.benchmark_repos import ensure_tasks
 from benchflow.evaluation import Evaluation
-from benchflow.task_download import ensure_tasks
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 

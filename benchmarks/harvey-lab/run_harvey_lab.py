@@ -14,8 +14,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from benchflow._utils.benchmark_repos import resolve_source
 from benchflow.evaluation import Evaluation
-from benchflow.task_download import resolve_source
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)

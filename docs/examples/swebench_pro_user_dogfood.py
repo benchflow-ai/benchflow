@@ -21,9 +21,10 @@ import argparse
 import asyncio
 import logging
 
-import benchflow as bf
-from benchflow.rollout import Scene, RolloutConfig
 from benchflow.user import FunctionUser, RoundResult
+
+import benchflow as bf
+from benchflow.rollout import RolloutConfig, Scene
 
 logging.basicConfig(level=logging.INFO, format="%(name)s %(message)s")
 
@@ -95,7 +96,7 @@ async def main():
     parser.add_argument("--max-rounds", type=int, default=3)
     args = parser.parse_args()
 
-    from benchflow.task_download import resolve_source
+    from benchflow._utils.benchmark_repos import resolve_source
 
     task_dir = SWEBENCH_PRO_TASKS[args.task]
     task_path = resolve_source("benchflow-ai/swebenchpro", path=task_dir)

@@ -160,7 +160,7 @@ class TestGenerateTask:
 
     def test_passes_bench_tasks_check(self, simple_trace: ParsedTrace, tmp_path: Path) -> None:
         """Generated tasks pass bench tasks check structural validation."""
-        from benchflow.tasks import check_task
+        from benchflow._utils.task_authoring import check_task
 
         task_dir = generate_task(simple_trace, tmp_path)
         issues = check_task(task_dir)

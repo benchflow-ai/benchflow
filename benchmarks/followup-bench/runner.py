@@ -25,8 +25,9 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from benchflow._acp_run import connect_acp, execute_prompts
 from benchflow._agent_setup import install_agent
+
+from benchflow._acp_run import connect_acp, execute_prompts
 from benchflow._scene import Role, Scene
 from benchflow.agents.registry import AGENT_LAUNCH, AGENTS
 from benchflow.runtime import Environment

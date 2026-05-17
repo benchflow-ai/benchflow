@@ -11,7 +11,7 @@ Other agent-eval frameworks model this with a "simulated user" — a second LLM 
 import benchflow as bf
 from benchflow import FunctionUser, RoundResult
 from benchflow.rollout import RolloutConfig, Scene
-from benchflow.task_download import resolve_source
+from benchflow._utils.benchmark_repos import resolve_source
 
 
 def progressive(round: int, instruction: str, rr: RoundResult | None) -> str | None:
