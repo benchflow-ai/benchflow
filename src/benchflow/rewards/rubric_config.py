@@ -52,9 +52,9 @@ class Criterion:
 class ScoringConfig:
     """How criteria scores are aggregated."""
 
-    aggregation: Literal["weighted_mean", "all_pass", "any_pass", "threshold"] = (
-        "weighted_mean"
-    )
+    aggregation: Literal[
+        "weighted_mean", "all_pass", "any_pass", "threshold"
+    ] = "weighted_mean"
     threshold: float = 0.7
 
 

@@ -245,7 +245,9 @@ class LLMJudgeRewardFunc:
 
     # -- rubric path --------------------------------------------------------
 
-    async def _rubric_score(self, rubric: RubricConfig, rollout_dir: Path) -> float:
+    async def _rubric_score(
+        self, rubric: RubricConfig, rollout_dir: Path
+    ) -> float:
         from benchflow.rewards.file_readers import find_deliverables
         from benchflow.rewards.llm import call_judge, parse_verdict
 
@@ -275,7 +277,9 @@ class LLMJudgeRewardFunc:
                 verdict = parse_verdict(raw_response)
                 norm_score = self._extract_score(criterion, verdict)
             except Exception as exc:
-                logger.warning("Judge error on criterion %s: %s", criterion.id, exc)
+                logger.warning(
+                    "Judge error on criterion %s: %s", criterion.id, exc
+                )
                 norm_score = 0.0
                 verdict = {
                     "verdict": "fail",
@@ -345,7 +349,9 @@ class LLMJudgeRewardFunc:
         return "\n\n".join(parts)
 
     @staticmethod
-    def _build_prompt(criterion: Criterion, agent_output: str, context: str) -> str:
+    def _build_prompt(
+        criterion: Criterion, agent_output: str, context: str
+    ) -> str:
         """Build the appropriate prompt for the criterion type."""
         if criterion.type == "likert":
             return _LIKERT_PROMPT.safe_substitute(
@@ -402,9 +408,7 @@ class LLMJudgeRewardFunc:
 
         if scoring.aggregation == "threshold":
             total_w = sum(weights) or 1.0
-            weighted = (
-                sum(s * w for s, w in zip(scores, weights, strict=True)) / total_w
-            )
+            weighted = sum(s * w for s, w in zip(scores, weights, strict=True)) / total_w
             return 1.0 if weighted >= scoring.threshold else 0.0
 
         # weighted_mean (default)

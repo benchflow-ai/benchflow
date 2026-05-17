@@ -174,9 +174,13 @@ async def _call_google(model: str, prompt: str) -> str:
 
     from google import genai  # ty: ignore[unresolved-import]
 
-    api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
+    api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get(
+        "GEMINI_API_KEY"
+    )
     if not api_key:
         raise RuntimeError("GOOGLE_API_KEY / GEMINI_API_KEY not set")
     client = genai.Client(api_key=api_key)
-    response = await client.aio.models.generate_content(model=model, contents=prompt)
+    response = await client.aio.models.generate_content(
+        model=model, contents=prompt
+    )
     return response.text
