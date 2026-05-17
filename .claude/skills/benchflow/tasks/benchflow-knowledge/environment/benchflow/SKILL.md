@@ -64,7 +64,7 @@ benchflow job --tasks-dir <tasks-dir> --agent claude-agent-acp --sandbox daytona
 
 Or via YAML config:
 ```bash
-benchflow job -f examples/configs/tb2-haiku.yaml
+benchflow job --config examples/configs/tb2-haiku.yaml
 ```
 
 YAML format (benchflow-native):
