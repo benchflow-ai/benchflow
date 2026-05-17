@@ -275,7 +275,7 @@ def _build_task_toml(
         f'source_session_id = "{safe_session_id}"',
     ]
 
-    if trace.model:
+    if trace.model and trace.model != "None":
         toml_lines.append(f'source_model = "{_sanitize_toml_string(trace.model)}"')
     if trace.outcome:
         toml_lines.append(f'source_outcome = "{_sanitize_toml_string(trace.outcome)}"')
@@ -303,10 +303,9 @@ def _build_task_toml(
 def _build_test_sh(trace: ParsedTrace) -> str:
     """Generate a test.sh verifier from the trace.
 
-    If the trace has files_edited, checks those files exist.
-    Paths with timestamp-bearing segments use ``find`` glob patterns
-    so verifiers tolerate agent-generated timestamp variants.
-    Otherwise generates a minimal pass-through verifier.
+    When git context is available (repo was cloned), checks that files
+    were **modified** relative to the base commit — not just that they
+    exist.  Otherwise falls back to file-existence checks.
     Writes reward to /logs/verifier/reward.txt per BenchFlow contract.
     """
     files = [_relativize_path(f) for f in trace.files_edited]
@@ -318,6 +317,8 @@ def _build_test_sh(trace: ParsedTrace) -> str:
             'echo "1.0" > /logs/verifier/reward.txt\n'
         )
 
+    has_git = bool(trace.git.repo and trace.git.commit_before)
+
     checks: list[str] = []
     for f in files[:20]:
         if _has_dynamic_segments(f):
@@ -325,6 +326,12 @@ def _build_test_sh(trace: ParsedTrace) -> str:
             quoted_pattern = shlex.quote(pattern)
             checks.append(f'if ! compgen -G {quoted_pattern} > /dev/null 2>&1; then')
             checks.append(f'  echo "Missing (pattern): {quoted_pattern}"')
+            checks.append('  PASS=0')
+            checks.append('fi')
+        elif has_git:
+            quoted = shlex.quote(f)
+            checks.append(f'if ! git diff --name-only HEAD {quoted} 2>/dev/null | grep -q .; then')
+            checks.append(f'  echo "Not modified: {quoted}"')
             checks.append('  PASS=0')
             checks.append('fi')
         else:
@@ -335,10 +342,18 @@ def _build_test_sh(trace: ParsedTrace) -> str:
             checks.append('fi')
 
     checks_block = "\n".join(checks)
-    return (
+
+    header = (
         "#!/bin/bash\n"
         f"# Auto-generated verifier from trace {trace.trace_id}\n"
-        "# Checks that expected files were created/modified.\n"
+    )
+    if has_git:
+        header += "# Checks that expected files were modified vs base commit.\n"
+    else:
+        header += "# Checks that expected files were created/modified.\n"
+
+    return (
+        f"{header}"
         "set -euo pipefail\n"
         "\n"
         "PASS=1\n"
@@ -353,17 +368,35 @@ def _build_test_sh(trace: ParsedTrace) -> str:
     )
 
 
-def _build_dockerfile() -> str:
-    """Generate a default Dockerfile for trace-generated tasks."""
-    return textwrap.dedent("""\
+def _build_dockerfile(trace: ParsedTrace | None = None) -> str:
+    """Generate a Dockerfile for trace-generated tasks.
+
+    When the trace has git context (repo + commit), clones the repo at
+    the specified commit so the agent has the actual codebase to work with.
+    """
+    base = textwrap.dedent("""\
         FROM ubuntu:24.04
 
         RUN apt-get update -qq && apt-get install -y -qq curl git python3 && rm -rf /var/lib/apt/lists/*
 
-        WORKDIR /app
-
         RUN mkdir -p /logs/verifier /logs/agent /logs/artifacts
     """)
+
+    if trace and trace.git.repo and trace.git.commit_before:
+        repo = trace.git.repo
+        commit = trace.git.commit_before
+        # Use HTTPS clone URL for public repos
+        clone_url = f"https://github.com/{repo}.git"
+        base += textwrap.dedent(f"""\
+            RUN git clone --depth 50 {clone_url} /app && \\
+                cd /app && git checkout {commit} || true
+
+            WORKDIR /app
+        """)
+    else:
+        base += "\nWORKDIR /app\n"
+
+    return base
 
 
 def generate_task(
@@ -416,7 +449,7 @@ def generate_task(
     # Write environment/Dockerfile
     env_dir = task_dir / "environment"
     env_dir.mkdir(exist_ok=True)
-    (env_dir / "Dockerfile").write_text(_build_dockerfile())
+    (env_dir / "Dockerfile").write_text(_build_dockerfile(trace))
 
     # Write tests/test.sh
     tests_dir = task_dir / "tests"

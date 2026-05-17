@@ -18,7 +18,7 @@ import logging
 import re
 from pathlib import Path
 
-from benchflow.traces.models import ParsedTrace, ToolCall, TraceStep
+from benchflow.traces.models import GitContext, ParsedTrace, ToolCall, TraceStep
 from benchflow.traces.parsers import parse_opentraces_record
 
 logger = logging.getLogger(__name__)
@@ -195,29 +195,61 @@ def _strip_system_reminders(text: str) -> str:
     return _SYSTEM_REMINDER_RE.sub("", text).strip()
 
 
+_GITDIFF_FILE_RE = re.compile(r"^diff --git a/(.+?) b/", re.MULTILINE)
+
+_TASK_DESCRIPTION_RE = re.compile(
+    r"TASK DESCRIPTION:\s*\n(.*)",
+    re.DOTALL,
+)
+
+_REPO_RE = re.compile(r"Repository:\s*(\S+)")
+_COMMIT_RE = re.compile(r"Base commit:\s*(\S+)")
+
+
+_TRAILING_BOILERPLATE_RE = re.compile(
+    r"\n\s*CRITICAL INSTRUCTIONS.*",
+    re.DOTALL | re.IGNORECASE,
+)
+
+
+def _extract_task_from_prompt(prompt: str) -> str:
+    """Extract the actionable task from a structured user prompt.
+
+    Many HuggingFace traces wrap the real task inside boilerplate
+    (repo setup, base commit, task ID, "CRITICAL INSTRUCTIONS").
+    This extracts just the ``TASK DESCRIPTION:`` section and strips
+    trailing agent instructions.
+    """
+    m = _TASK_DESCRIPTION_RE.search(prompt)
+    text = m.group(1).strip() if m else prompt.strip()
+    # Remove trailing boilerplate like "CRITICAL INSTRUCTIONS - WORK FAST..."
+    text = _TRAILING_BOILERPLATE_RE.sub("", text).strip()
+    return text
+
+
 def _parse_claude_messages_row(row: dict[str, object], idx: int = 0) -> ParsedTrace | None:
     """Parse a row from a Claude Code merged-messages dataset.
 
-    These datasets store messages under ``messages`` or ``messages_json``
-    as a list of ``{role, content}`` dicts, sometimes with ``tool_use``
-    blocks.  User prompts often contain ``<system-reminder>`` wrappers
-    that are stripped before task generation.
+    Handles two sub-formats found in datasets like cc-traces-merged:
+
+    1. Rows with ``messages`` / ``messages_json`` — a list of
+       ``{role, content}`` dicts, sometimes with ``tool_use`` blocks.
+    2. Rows with ``user_prompt`` + ``assistant_response`` + ``gitdiff``
+       but no messages array. File paths are extracted from the diff.
     """
     import uuid
 
     messages = row.get("messages") or row.get("messages_json")
-    if not isinstance(messages, (list, str)):
-        return None
-
-    # Some datasets store messages as a JSON string
     if isinstance(messages, str):
         try:
             messages = json.loads(messages)
         except json.JSONDecodeError:
-            return None
+            messages = None
 
     if not isinstance(messages, list) or not messages:
-        return None
+        # Fall back to user_prompt + assistant_response + gitdiff format
+        return _parse_prompt_diff_row(row, idx=idx)
+
 
     steps: list[TraceStep] = []
     for msg in messages:
@@ -273,8 +305,21 @@ def _parse_claude_messages_row(row: dict[str, object], idx: int = 0) -> ParsedTr
     if source:
         tags.append(f"source:{source}")
 
-    # Infer outcome from last assistant step
-    outcome = "unknown"
+    outcome = _infer_outcome(steps)
+
+    return ParsedTrace(
+        trace_id=trace_id,
+        session_id=session_id,
+        agent_name="claude-code",
+        model=model,
+        steps=steps,
+        outcome=outcome,
+        tags=tags,
+    )
+
+
+def _infer_outcome(steps: list[TraceStep]) -> str:
+    """Infer task outcome from the last assistant step."""
     for step in reversed(steps):
         if step.role == "assistant":
             lower = step.content.lower()
@@ -294,10 +339,81 @@ def _parse_claude_messages_row(row: dict[str, object], idx: int = 0) -> ParsedTr
                     "added",
                 )
             ):
-                outcome = "success"
-            elif any(w in lower for w in ("error", "failed", "cannot")):
-                outcome = "failure"
+                return "success"
+            if any(w in lower for w in ("error", "failed", "cannot")):
+                return "failure"
             break
+    return "unknown"
+
+
+def _parse_prompt_diff_row(row: dict[str, object], idx: int = 0) -> ParsedTrace | None:
+    """Parse a row that uses ``user_prompt`` + ``gitdiff`` instead of messages.
+
+    Many rows in cc-traces-merged store the prompt in ``user_prompt``,
+    the response in ``assistant_response``, and the actual code changes
+    in ``gitdiff``.  File paths are extracted from the diff headers.
+    """
+    import uuid
+
+    user_prompt = row.get("user_prompt")
+    if not isinstance(user_prompt, str) or not user_prompt.strip():
+        return None
+
+    assistant_response = row.get("assistant_response", "") or ""
+    gitdiff = row.get("gitdiff", "") or ""
+
+    # Extract the actionable task from boilerplate
+    task_text = _extract_task_from_prompt(str(user_prompt))
+    if not task_text:
+        return None
+
+    steps: list[TraceStep] = [
+        TraceStep(role="user", content=task_text),
+    ]
+
+    # Build synthetic tool calls from gitdiff file paths
+    diff_files = _GITDIFF_FILE_RE.findall(str(gitdiff))
+    tool_calls: list[ToolCall] = []
+    for fp in diff_files:
+        tool_calls.append(
+            ToolCall(name="Edit", input={"file_path": fp})
+        )
+
+    # Strip <think> blocks from assistant response
+    clean_response = re.sub(
+        r"<think>.*?</think>", "", str(assistant_response), flags=re.DOTALL
+    ).strip()
+    if clean_response or tool_calls:
+        steps.append(
+            TraceStep(
+                role="assistant",
+                content=clean_response[:2000] if clean_response else "",
+                tool_calls=tool_calls,
+            )
+        )
+
+    trace_id = str(row.get("id", f"hf-{idx}-{uuid.uuid4().hex[:8]}"))
+    session_id = str(row.get("session_id", trace_id))
+    model = str(row.get("model", "")) or None
+    source_repo = str(row.get("source_repo", "")) or None
+
+    tags: list[str] = ["huggingface"]
+    if source_repo:
+        tags.append(f"source:{source_repo}")
+
+    # Extract git context from structured prompt
+    raw_prompt = str(user_prompt)
+    repo_m = _REPO_RE.search(raw_prompt)
+    commit_m = _COMMIT_RE.search(raw_prompt)
+    git_ctx = GitContext(
+        repo=repo_m.group(1) if repo_m else None,
+        commit_before=commit_m.group(1) if commit_m else None,
+    )
+
+    outcome = _infer_outcome(steps)
+    # If we have a non-empty gitdiff, it's likely a success
+    if outcome == "unknown" and gitdiff.strip():
+        outcome = "success"
 
     return ParsedTrace(
         trace_id=trace_id,
@@ -305,6 +421,7 @@ def _parse_claude_messages_row(row: dict[str, object], idx: int = 0) -> ParsedTr
         agent_name="claude-code",
         model=model,
         steps=steps,
+        git=git_ctx,
         outcome=outcome,
         tags=tags,
     )
