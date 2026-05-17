@@ -10,7 +10,7 @@ The mental model for benchflow. Read once, then refer back from the how-tos.
 | **Task** | A directory on disk: `instruction.md` for the agent + `tests/` for the verifier + (optional) `solution/solve.sh` for oracle runs + `environment/Dockerfile` for the sandbox. Authored once, evaluated many times. |
 | **Agent** | A registered ACP-speaking program (Claude Code, Gemini CLI, OpenCode, etc.). Identified by name (`"gemini"`, `"opencode"`) plus an optional model ID. |
 | **Environment** | The sandbox where the agent runs and the verifier checks the result. Backed by Harbor — Docker locally, Daytona for cloud, and Modal for serverless/GPU-backed task environments. |
-| **Verifier** | The test runner that scores the trial. By default `pytest /tests/...` against the workspace the agent left behind. Outputs `rewards: {reward: float}`. |
+| **Verifier** | The test runner that scores the trial. By default `pytest /tests/...` against the workspace the agent left behind. For subjective tasks, use an [LLM-as-judge](./llm-judge.md) verifier with a `rubric.toml`. Outputs `rewards: {reward: float}`. |
 | **Trial** | One agent run on one task. Holds the lifecycle (setup → start → install → execute → verify → cleanup). All higher-level primitives below are built on Trials. |
 
 ---
@@ -154,6 +154,7 @@ Trajectories are written to `<jobs_dir>/<job_name>/<trial_name>/trajectory/acp_t
 
 - [Getting started](./getting-started.md) — install, run your first eval.
 - [Task authoring](./task-authoring.md) — write a task with `task.toml` + `tests/` + `solution/`.
+- [LLM-as-judge](./llm-judge.md) — use an LLM to score subjective tasks with `rubric.toml`.
 - [Progressive disclosure](./progressive-disclosure.md) — the User abstraction; SWE-bench Pro case study.
 - [Use cases](./use-cases.md) — multi-agent patterns (coder/reviewer, simulated user, BYOS, stateful environments).
 - [CLI reference](./reference/cli.md), [Python API reference](./reference/python-api.md).
