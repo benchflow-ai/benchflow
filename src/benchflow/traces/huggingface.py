@@ -121,7 +121,9 @@ def _download_hf_dataset(
     return out_path
 
 
-def _parquet_to_jsonl(parquet_path: Path, out_path: Path, *, max_rows: int | None = None) -> None:
+def _parquet_to_jsonl(
+    parquet_path: Path, out_path: Path, *, max_rows: int | None = None
+) -> None:
     """Convert a parquet file to JSONL."""
     try:
         import pyarrow.parquet as pq
@@ -185,9 +187,7 @@ def _download_via_api(
 # ---------------------------------------------------------------------------
 
 
-_SYSTEM_REMINDER_RE = re.compile(
-    r"<system-reminder>.*?</system-reminder>", re.DOTALL
-)
+_SYSTEM_REMINDER_RE = re.compile(r"<system-reminder>.*?</system-reminder>", re.DOTALL)
 
 
 def _strip_system_reminders(text: str) -> str:
@@ -227,7 +227,9 @@ def _extract_task_from_prompt(prompt: str) -> str:
     return text
 
 
-def _parse_claude_messages_row(row: dict[str, object], idx: int = 0) -> ParsedTrace | None:
+def _parse_claude_messages_row(
+    row: dict[str, object], idx: int = 0
+) -> ParsedTrace | None:
     """Parse a row from a Claude Code merged-messages dataset.
 
     Handles two sub-formats found in datasets like cc-traces-merged:
@@ -249,7 +251,6 @@ def _parse_claude_messages_row(row: dict[str, object], idx: int = 0) -> ParsedTr
     if not isinstance(messages, list) or not messages:
         # Fall back to user_prompt + assistant_response + gitdiff format
         return _parse_prompt_diff_row(row, idx=idx)
-
 
     steps: list[TraceStep] = []
     for msg in messages:
@@ -291,12 +292,16 @@ def _parse_claude_messages_row(row: dict[str, object], idx: int = 0) -> ParsedTr
             content_str = _strip_system_reminders(content_str)
 
         if content_str.strip() or tool_calls:
-            steps.append(TraceStep(role=role, content=content_str, tool_calls=tool_calls))
+            steps.append(
+                TraceStep(role=role, content=content_str, tool_calls=tool_calls)
+            )
 
     if not steps:
         return None
 
-    trace_id = str(row.get("id", row.get("trace_id", f"hf-{idx}-{uuid.uuid4().hex[:8]}")))
+    trace_id = str(
+        row.get("id", row.get("trace_id", f"hf-{idx}-{uuid.uuid4().hex[:8]}"))
+    )
     session_id = str(row.get("session_id", trace_id))
     model = str(row.get("model", "")) or None
     source = str(row.get("source", "")) or None
@@ -375,9 +380,7 @@ def _parse_prompt_diff_row(row: dict[str, object], idx: int = 0) -> ParsedTrace 
     diff_files = _GITDIFF_FILE_RE.findall(str(gitdiff))
     tool_calls: list[ToolCall] = []
     for fp in diff_files:
-        tool_calls.append(
-            ToolCall(name="Edit", input={"file_path": fp})
-        )
+        tool_calls.append(ToolCall(name="Edit", input={"file_path": fp}))
 
     # Strip <think> blocks from assistant response
     clean_response = re.sub(
@@ -427,7 +430,9 @@ def _parse_prompt_diff_row(row: dict[str, object], idx: int = 0) -> ParsedTrace 
     )
 
 
-def _parse_claude_requests_row(row: dict[str, object], idx: int = 0) -> ParsedTrace | None:
+def _parse_claude_requests_row(
+    row: dict[str, object], idx: int = 0
+) -> ParsedTrace | None:
     """Parse a row from the cc-traces-weka request-metadata dataset.
 
     These datasets have a ``requests`` list with API-level metadata

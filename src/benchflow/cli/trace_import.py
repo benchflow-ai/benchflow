@@ -165,9 +165,7 @@ def register_tasks_generate(tasks_app: typer.Typer) -> None:
             outcome_filter=outcome,
         )
 
-        console.print(
-            f"\n[green]Generated {len(results)} tasks[/green] → {output_dir}"
-        )
+        console.print(f"\n[green]Generated {len(results)} tasks[/green] → {output_dir}")
         _print_task_summary(results)
 
     @tasks_app.command("list-sources")
@@ -244,9 +242,7 @@ def _load_file(path: Path, format: str) -> list:
         raise typer.Exit(1)
 
 
-def _load_hf(
-    dataset: str, format: str | None, split: str, max_rows: int
-) -> list:
+def _load_hf(dataset: str, format: str | None, split: str, max_rows: int) -> list:
     """Load traces from a HuggingFace dataset."""
     from benchflow.traces.huggingface import KNOWN_DATASETS, load_hf_dataset
 
@@ -257,8 +253,7 @@ def _load_hf(
     if dataset in KNOWN_DATASETS:
         info = KNOWN_DATASETS[dataset]
         console.print(
-            f"[dim]Using known dataset: {info['repo']} "
-            f"({info['description']})[/dim]"
+            f"[dim]Using known dataset: {info['repo']} ({info['description']})[/dim]"
         )
 
     return load_hf_dataset(dataset, format=fmt, split=split, max_rows=max_rows)

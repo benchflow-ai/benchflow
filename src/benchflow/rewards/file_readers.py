@@ -108,9 +108,7 @@ def _read_xlsx(path: Path) -> str:
             ws = wb[sheet_name]
             parts.append(f"=== Sheet: {sheet_name} ===")
             for row in ws.iter_rows(values_only=True):
-                parts.append(
-                    "\t".join(str(c) if c is not None else "" for c in row)
-                )
+                parts.append("\t".join(str(c) if c is not None else "" for c in row))
         return "\n".join(parts)
     except ImportError:
         return f"(unsupported: {path.name} — install openpyxl)"

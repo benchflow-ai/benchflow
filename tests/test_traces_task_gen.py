@@ -58,9 +58,7 @@ def complex_trace() -> ParsedTrace:
         TraceStep(
             role="assistant",
             content=f"Editing file {i}",
-            tool_calls=[
-                ToolCall(name="Edit", input={"file_path": f"src/file_{i}.py"})
-            ],
+            tool_calls=[ToolCall(name="Edit", input={"file_path": f"src/file_{i}.py"})],
         )
         for i in range(25)
     ]
@@ -92,7 +90,9 @@ def no_prompt_trace() -> ParsedTrace:
 
 
 class TestGenerateTask:
-    def test_creates_task_directory(self, simple_trace: ParsedTrace, tmp_path: Path) -> None:
+    def test_creates_task_directory(
+        self, simple_trace: ParsedTrace, tmp_path: Path
+    ) -> None:
         task_dir = generate_task(simple_trace, tmp_path)
 
         assert task_dir.exists()
@@ -118,13 +118,17 @@ class TestGenerateTask:
         assert "build_timeout_sec = 600" in toml_text
         assert "storage_mb = 10240" in toml_text
 
-    def test_instruction_md_content(self, simple_trace: ParsedTrace, tmp_path: Path) -> None:
+    def test_instruction_md_content(
+        self, simple_trace: ParsedTrace, tmp_path: Path
+    ) -> None:
         task_dir = generate_task(simple_trace, tmp_path)
         instruction = (task_dir / "instruction.md").read_text()
 
         assert "Create a hello.txt file" in instruction
 
-    def test_instruction_includes_files(self, simple_trace: ParsedTrace, tmp_path: Path) -> None:
+    def test_instruction_includes_files(
+        self, simple_trace: ParsedTrace, tmp_path: Path
+    ) -> None:
         task_dir = generate_task(simple_trace, tmp_path)
         instruction = (task_dir / "instruction.md").read_text()
 
@@ -140,7 +144,9 @@ class TestGenerateTask:
         assert "hello.txt" in content
         assert "/logs/verifier/reward.txt" in content
 
-    def test_test_sh_is_executable(self, simple_trace: ParsedTrace, tmp_path: Path) -> None:
+    def test_test_sh_is_executable(
+        self, simple_trace: ParsedTrace, tmp_path: Path
+    ) -> None:
         task_dir = generate_task(simple_trace, tmp_path)
         test_sh = task_dir / "tests" / "test.sh"
 
@@ -149,7 +155,9 @@ class TestGenerateTask:
         mode = test_sh.stat().st_mode
         assert mode & stat.S_IXUSR
 
-    def test_dockerfile_generated(self, simple_trace: ParsedTrace, tmp_path: Path) -> None:
+    def test_dockerfile_generated(
+        self, simple_trace: ParsedTrace, tmp_path: Path
+    ) -> None:
         task_dir = generate_task(simple_trace, tmp_path)
         dockerfile = task_dir / "environment" / "Dockerfile"
 
@@ -158,7 +166,9 @@ class TestGenerateTask:
         assert "FROM ubuntu:24.04" in content
         assert "/logs/verifier" in content
 
-    def test_passes_bench_tasks_check(self, simple_trace: ParsedTrace, tmp_path: Path) -> None:
+    def test_passes_bench_tasks_check(
+        self, simple_trace: ParsedTrace, tmp_path: Path
+    ) -> None:
         """Generated tasks pass bench tasks check structural validation."""
         from benchflow._utils.task_authoring import check_task
 
@@ -166,9 +176,7 @@ class TestGenerateTask:
         issues = check_task(task_dir)
         assert issues == [], f"bench tasks check found issues: {issues}"
 
-    def test_test_sh_fallback_when_no_files(
-        self, tmp_path: Path
-    ) -> None:
+    def test_test_sh_fallback_when_no_files(self, tmp_path: Path) -> None:
         """Tasks with no files_edited still get a pass-through test.sh."""
         trace = ParsedTrace(
             trace_id="no-files",
@@ -189,7 +197,9 @@ class TestGenerateTask:
         toml_text = (task_dir / "task.toml").read_text()
 
         # 25 tool calls + 25 files → weighted score should be hard or expert
-        assert 'difficulty = "hard"' in toml_text or 'difficulty = "expert"' in toml_text
+        assert (
+            'difficulty = "hard"' in toml_text or 'difficulty = "expert"' in toml_text
+        )
 
     def test_timeout_scales_with_difficulty(
         self, simple_trace: ParsedTrace, complex_trace: ParsedTrace, tmp_path: Path
@@ -220,7 +230,9 @@ class TestGenerateTask:
         generate_task(simple_trace, tmp_path, overwrite=False)
         assert marker.read_text() == "original"
 
-    def test_overwrite_existing(self, simple_trace: ParsedTrace, tmp_path: Path) -> None:
+    def test_overwrite_existing(
+        self, simple_trace: ParsedTrace, tmp_path: Path
+    ) -> None:
         task_dir = generate_task(simple_trace, tmp_path)
         # Add a marker
         (task_dir / "marker.txt").write_text("old")
@@ -235,7 +247,9 @@ class TestGenerateTask:
 
         assert 'author_name = "my-team"' in toml_text
 
-    def test_category_from_repo(self, simple_trace: ParsedTrace, tmp_path: Path) -> None:
+    def test_category_from_repo(
+        self, simple_trace: ParsedTrace, tmp_path: Path
+    ) -> None:
         task_dir = generate_task(simple_trace, tmp_path)
         toml_text = (task_dir / "task.toml").read_text()
 
@@ -280,7 +294,9 @@ class TestGenerateTasksFromTraces:
 
         assert len(results) == 0
 
-    def test_filters_no_prompt(self, no_prompt_trace: ParsedTrace, tmp_path: Path) -> None:
+    def test_filters_no_prompt(
+        self, no_prompt_trace: ParsedTrace, tmp_path: Path
+    ) -> None:
         results = generate_tasks_from_traces([no_prompt_trace], tmp_path, min_steps=1)
 
         assert len(results) == 0
@@ -357,7 +373,9 @@ class TestVerifierGlobPatterns:
                     tool_calls=[
                         ToolCall(
                             name="Write",
-                            input={"file_path": "migrations/2025-11-28-131040_create_invoices/up.sql"},
+                            input={
+                                "file_path": "migrations/2025-11-28-131040_create_invoices/up.sql"
+                            },
                         )
                     ],
                 ),

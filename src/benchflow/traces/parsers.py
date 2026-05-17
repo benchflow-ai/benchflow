@@ -60,7 +60,9 @@ def _extract_tool_calls(content: object) -> list[ToolCall]:
             calls.append(
                 ToolCall(
                     name=str(block.get("name", "unknown")),
-                    input=block.get("input", {}) if isinstance(block.get("input"), dict) else {},
+                    input=block.get("input", {})
+                    if isinstance(block.get("input"), dict)
+                    else {},
                 )
             )
     return calls
@@ -367,7 +369,9 @@ def parse_opentraces_record(
                 if isinstance(tc_data, dict):
                     tool_calls.append(
                         ToolCall(
-                            name=str(tc_data.get("name", tc_data.get("tool", "unknown"))),
+                            name=str(
+                                tc_data.get("name", tc_data.get("tool", "unknown"))
+                            ),
                             input=tc_data.get("input", tc_data.get("arguments", {}))
                             if isinstance(
                                 tc_data.get("input", tc_data.get("arguments")), dict
@@ -380,7 +384,9 @@ def parse_opentraces_record(
             observation = raw_step.get("observation")
             obs_text = ""
             if isinstance(observation, dict):
-                obs_text = str(observation.get("content", observation.get("output", "")))
+                obs_text = str(
+                    observation.get("content", observation.get("output", ""))
+                )
             elif isinstance(observation, str):
                 obs_text = observation
 
