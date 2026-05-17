@@ -232,7 +232,13 @@ def _render_instruction(task: BFCLTask) -> str:
 
 
 def _render_dockerfile() -> str:
-    """Generate Dockerfile for the evaluation environment."""
+    """Generate Dockerfile for the evaluation environment.
+
+    Test files (test.sh, evaluate.py, ground_truth.json) are uploaded
+    at runtime by BenchFlow/Harbor — they are NOT copied during the
+    Docker build. The build context is ``environment/`` which does not
+    include the sibling ``tests/`` directory.
+    """
     return """\
 # Pinned by digest for reproducibility.
 FROM python:3.13-slim@sha256:dc1546eefcbe8caaa1f004f16ab76b204b5e1dbd58ff81b899f21cd40541232f
@@ -240,12 +246,6 @@ FROM python:3.13-slim@sha256:dc1546eefcbe8caaa1f004f16ab76b204b5e1dbd58ff81b899f
 WORKDIR /app
 
 RUN mkdir -p /logs/verifier /logs/agent /logs/artifacts /app/output
-
-# Copy test files
-COPY ground_truth.json /tests/ground_truth.json
-COPY evaluate.py /tests/evaluate.py
-COPY test.sh /tests/test.sh
-RUN chmod +x /tests/test.sh
 """
 
 
