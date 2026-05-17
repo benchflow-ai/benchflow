@@ -122,10 +122,10 @@ The CLI is a thin shim over the Python API. For programmatic use:
 
 ```python
 import benchflow as bf
-from benchflow.trial import TrialConfig, Scene
+from benchflow import RolloutConfig, Scene
 from benchflow.task_download import resolve_source
 
-config = TrialConfig(
+config = RolloutConfig(
     task_path=resolve_source("benchflow-ai/skillsbench", path="tasks/edit-pdf"),
     scenes=[Scene.single(agent="gemini", model="gemini-3.1-pro-preview")],
     environment="docker",
@@ -135,13 +135,13 @@ print(result.rewards)         # {'reward': 1.0}
 print(result.n_tool_calls)
 ```
 
-`Trial` is decomposable — invoke each lifecycle phase individually for custom flows. See [Concepts: trial lifecycle](./concepts.md#trial-lifecycle).
+`Rollout` (aliased as `Trial`) is decomposable — invoke each lifecycle phase individually for custom flows. See [Concepts: rollout lifecycle](./concepts.md#rollout-lifecycle).
 
 ## What to read next
 
 | If you want to… | Read |
 |------------------|------|
-| Understand the model — Trial, Scene, Role, Verifier | [Concepts](./concepts.md) |
+| Understand the model — Rollout, Scene, Role, Verifier | [Concepts](./concepts.md) |
 | Author a task from scratch | [Task authoring](./task-authoring.md) |
 | Generate tasks from Claude Code / agent traces | [Task authoring — CLI](./task-authoring.md#cli) · [CLI reference](./reference/cli.md#bench-tasks-generate) |
 | Run multi-agent patterns (coder/reviewer, simulated user, BYOS) | [Use cases](./use-cases.md) |

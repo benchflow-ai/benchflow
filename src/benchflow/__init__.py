@@ -79,7 +79,7 @@ from benchflow.runtime import (
     RuntimeConfig,
     RuntimeResult,
     run,
-)  # run is imported above
+)  # bf.run() — supports Agent, RolloutConfig, and str calling conventions
 
 # Sandbox protocol (v0.4 — parallel types, Harbor not yet removed)
 from benchflow.sandbox import ExecResult as SandboxExecResult
