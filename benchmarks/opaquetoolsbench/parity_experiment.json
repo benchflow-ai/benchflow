@@ -64,5 +64,43 @@
       "passed": 150,
       "failed": 0
     }
-  ]
+  ],
+  "eval_parity": {
+    "experiment": "opaquetoolsbench_eval_parity",
+    "description": "End-to-end evaluation parity: build Docker image, run evaluate.py with correct/wrong/missing agent responses, verify binary rewards.",
+    "date": "2026-05-17",
+    "status": "passed",
+    "docker_build": "success (python:3.13-slim pinned by digest)",
+    "test_cases": [
+      {
+        "name": "correct_response",
+        "input": "calc_binomial_probability(n=20, k=5, p=0.6)",
+        "expected_reward": 1.0,
+        "actual_reward": 1.0,
+        "result": "pass"
+      },
+      {
+        "name": "wrong_response",
+        "input": "wrong_function(x=1)",
+        "expected_reward": 0.0,
+        "actual_reward": 0.0,
+        "result": "pass"
+      },
+      {
+        "name": "missing_response",
+        "input": null,
+        "expected_reward": 0.0,
+        "actual_reward": 0.0,
+        "result": "pass"
+      },
+      {
+        "name": "multi_function_correct",
+        "input": "calculate_cosine_similarity(...)",
+        "expected_reward": 1.0,
+        "actual_reward": 1.0,
+        "result": "pass"
+      }
+    ],
+    "notes": "AST-based deterministic matching. All test cases produce correct binary rewards (1.0/0.0). No LLM judge variance."
+  }
 }
