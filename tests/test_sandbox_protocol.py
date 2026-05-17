@@ -134,6 +134,14 @@ class TestDockerSandboxProtocol:
         assert issubclass(DockerSandbox, BaseSandbox)
 
 
+_daytona_available = True
+try:
+    import daytona as _daytona_mod  # noqa: F401
+except ImportError:
+    _daytona_available = False
+
+
+@pytest.mark.skipif(not _daytona_available, reason="daytona not installed")
 class TestDaytonaSandboxProtocol:
     """Verify DaytonaSandbox is a structural subtype of Sandbox."""
 

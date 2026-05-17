@@ -242,6 +242,12 @@ class TestCreateEnvironment:
         assert result is modal_env.return_value
 
     @pytest.mark.asyncio
+    @pytest.mark.skipif(
+        not all(
+            __import__("importlib").util.find_spec(m) for m in ("modal", "tenacity")
+        ),
+        reason="modal/tenacity not installed",
+    )
     async def test_modal_dockerfile_build_adds_python(self, tmp_path, monkeypatch):
         (tmp_path / "Dockerfile").write_text("FROM ubuntu:24.04\n")
         env_config = SimpleNamespace(

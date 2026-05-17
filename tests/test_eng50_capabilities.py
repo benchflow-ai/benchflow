@@ -91,6 +91,14 @@ class TestDockerSandboxExposePorts:
         assert hasattr(DockerSandbox, "download_file")
 
 
+_daytona_available = True
+try:
+    import daytona as _daytona_mod  # noqa: F401
+except ImportError:
+    _daytona_available = False
+
+
+@pytest.mark.skipif(not _daytona_available, reason="daytona not installed")
 class TestDaytonaSandboxExposePorts:
     """Guards ENG-50 expose_ports — verified via protocol conformance."""
 
