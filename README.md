@@ -15,7 +15,7 @@ BenchFlow runs AI agents against benchmark tasks in sandboxed environments. Sing
 
 - **Any ACP agent** — Gemini CLI, Claude Code, Codex, OpenCode, OpenHands, OpenClaw, Pi, or your own
 - **Single + multi + progressive** — single-agent / multi-agent (coder + reviewer, simulated user) / multi-round with a Python `BaseUser` callback
-- **Sandbox backends** — Docker locally, Daytona for parallel cloud runs, Modal for serverless/GPU-backed task environments
+- **Sandboxes** — Docker locally, Daytona for parallel cloud runs, Modal for serverless/GPU-backed task environments
 - **Hardened verifier** — defaults block BenchJack/Meerkat-style reward-hacking; tasks opt out per-feature
 
 ## Install
@@ -33,7 +33,7 @@ Start with [Getting started](./docs/getting-started.md), then [Concepts](./docs/
 | If you want to… | Read |
 |------------------|------|
 | Run an eval on an existing task | [Getting started](./docs/getting-started.md) |
-| Understand Trial / Scene / Role / Verifier | [Concepts](./docs/concepts.md) |
+| Understand Rollout / Scene / Role / Verifier | [Concepts](./docs/concepts.md) |
 | Author a new task | [Task authoring](./docs/task-authoring.md) |
 | Multi-agent: coder + reviewer, simulated user, BYOS, stateful envs | [Use cases](./docs/use-cases.md) |
 | Multi-round single-agent (progressive disclosure, oracle access) | [Progressive disclosure](./docs/progressive-disclosure.md) |

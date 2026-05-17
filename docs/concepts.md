@@ -9,19 +9,19 @@ The mental model for benchflow. Read once, then refer back from the how-tos.
 |-----------|------------|
 | **Task** | A directory on disk: `instruction.md` for the agent + `tests/` for the verifier + (optional) `solution/solve.sh` for oracle runs + `environment/Dockerfile` for the sandbox. Authored once, evaluated many times. |
 | **Agent** | A registered ACP-speaking program (Claude Code, Gemini CLI, OpenCode, etc.). Identified by name (`"gemini"`, `"opencode"`) plus an optional model ID. |
-| **Environment** | The sandbox where the agent runs and the verifier checks the result. Backed by Harbor — Docker locally, Daytona for cloud, and Modal for serverless/GPU-backed task environments. |
+| **Environment** | The sandbox where the agent runs and the verifier checks the result. Docker locally, Daytona for cloud, Modal for serverless/GPU. Abstracted behind the `Sandbox` protocol — bring your own sandbox backend. |
 | **Verifier** | The test runner that scores the trial. By default `pytest /tests/...` against the workspace the agent left behind. For subjective tasks, use an [LLM-as-judge](./llm-judge.md) verifier with a `rubric.toml`. Outputs `rewards: {reward: float}`. |
-| **Trial** | One agent run on one task. Holds the lifecycle (setup → start → install → execute → verify → cleanup). All higher-level primitives below are built on Trials. |
+| **Rollout** | One agent run on one task. Holds the lifecycle (setup → start → install → execute → verify → cleanup). All higher-level primitives below are built on Rollouts. (Canonical name since v0.4; `Trial` remains as a backward-compat alias.) |
 
 ---
 
-## Trial lifecycle
+## Rollout lifecycle
 
-A `Trial` is decomposable: each phase is a callable method, you can either run them in sequence or invoke `Trial.run()` to execute all six in order. Multi-agent flows reuse phases (e.g. `connect` + `execute` + `disconnect` repeats per role).
+A `Rollout` (aliased as `Trial` for backward compat) is decomposable: each phase is a callable method, you can either run them in sequence or invoke `Rollout.run()` to execute all six in order. Multi-agent flows reuse phases (e.g. `connect` + `execute` + `disconnect` repeats per role).
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│                    Trial.run()                               │
+│                    Rollout.run()                             │
 │                                                              │
 │  setup()         resolve config, create sandbox env handle   │
 │    ↓                                                         │
@@ -40,14 +40,14 @@ A `Trial` is decomposable: each phase is a callable method, you can either run t
 └──────────────────────────────────────────────────────────────┘
 ```
 
-Each phase has a name, a clear contract, and is independently testable. `Trial.run()` is the convenience that calls them in order.
+Each phase has a name, a clear contract, and is independently testable. `Rollout.run()` is the convenience that calls them in order.
 
 ```python
 import benchflow as bf
-from benchflow.trial import TrialConfig, Scene
+from benchflow import RolloutConfig, Scene
 from pathlib import Path
 
-config = TrialConfig(
+config = RolloutConfig(
     task_path=Path("tasks/edit-pdf"),
     scenes=[Scene.single(agent="gemini", model="gemini-3.1-pro-preview")],
     environment="daytona",
@@ -84,7 +84,7 @@ Scene(
 
 Roles communicate via **outbox files**: write JSON to `/app/.outbox/{recipient}.json` and the scheduler injects it into the next Turn's prompt.
 
-A Trial may have multiple Scenes — used for staged flows like "skill generation → solve" (BYOS / Bring Your Own Skill). Same sandbox, sequential Scenes.
+A Rollout may have multiple Scenes — used for staged flows like "skill generation → solve" (BYOS / Bring Your Own Skill). Same sandbox, sequential Scenes.
 
 ---
 
@@ -142,7 +142,7 @@ Single-agent simple runs use none of these. Pick the axis based on what state ne
 
 ## Trajectories and rewards
 
-Every agent action is captured as an event in the **trajectory** — tool calls, agent messages, agent thoughts. A `RunResult` has the full trajectory plus tool count, plus rewards from the verifier and any error.
+Every agent action is captured as an event in the **trajectory** — tool calls, agent messages, agent thoughts. A `RolloutResult` (aliased as `RunResult`) has the full trajectory plus tool count, plus rewards from the verifier and any error.
 
 `rewards` is a dict produced by the task's verifier. Convention: `{"reward": float}` where 1.0 = pass, 0.0 = fail. Tasks may add additional metrics (e.g. `exact_match`, `partial_credit`).
 

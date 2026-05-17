@@ -4,8 +4,8 @@ An ``Evaluation`` wraps ``bf.run()`` with everything needed to drive a benchmark
 to completion: task discovery, parallelism, retry policy, resume from
 disk, summary aggregation.
 
-Backward-compat aliases: ``Job = Evaluation``, ``EvaluationConfig = EvaluationConfig``,
-``EvaluationResult = EvaluationResult``.
+Backward-compat aliases: ``Job = Evaluation``, ``JobConfig = EvaluationConfig``,
+``JobResult = EvaluationResult``.
 """
 
 from __future__ import annotations
