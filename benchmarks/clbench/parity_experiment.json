@@ -9,20 +9,60 @@
     "checks": [
       "task.toml valid with clbench/ prefix",
       "instruction.md non-empty",
-      "Dockerfile has correct base image",
+      "Dockerfile has correct base image and task-specific pip extras",
       "run_task.py present",
       "test.sh executable",
-      "evaluate.py present"
+      "evaluate.py present with per-task R_MAX normalization"
     ]
   },
   "eval_parity": {
     "tasks_tested": 3,
     "passed": 3,
-    "tests": [
-      {"name": "valid_results", "expected_reward": "0.75", "result": "pass"},
-      {"name": "missing_results", "expected_reward": "0.0", "result": "pass"},
-      {"name": "malformed_results", "expected_reward": "0.0", "result": "pass"},
-      {"name": "clamped_results", "expected_reward": "1.0", "result": "pass"}
+    "note": "evaluate.py normalizes score/R_MAX then clamps to [0,1]. Parity test runs actual generated evaluate.py (not inline wrapper).",
+    "tests_per_task": [
+      {
+        "task": "clbench-exploitable-poker",
+        "r_max": 9.4875,
+        "results": [
+          {"name": "valid_results", "score": 0.75, "expected_reward": 0.079051, "result": "pass"},
+          {"name": "missing_results", "expected_reward": 0.0, "result": "pass"},
+          {"name": "malformed_results", "expected_reward": 0.0, "result": "pass"},
+          {"name": "clamped_results", "score": 18.975, "expected_reward": 1.0, "result": "pass"}
+        ]
+      },
+      {
+        "task": "clbench-database-exploration",
+        "r_max": 1.0,
+        "results": [
+          {"name": "valid_results", "score": 0.75, "expected_reward": 0.75, "result": "pass"},
+          {"name": "missing_results", "expected_reward": 0.0, "result": "pass"},
+          {"name": "malformed_results", "expected_reward": 0.0, "result": "pass"},
+          {"name": "clamped_results", "score": 2.0, "expected_reward": 1.0, "result": "pass"}
+        ]
+      },
+      {
+        "task": "clbench-cohort-studies",
+        "r_max": 0.162202,
+        "results": [
+          {"name": "valid_results", "score": 0.75, "expected_reward": 1.0, "result": "pass"},
+          {"name": "missing_results", "expected_reward": 0.0, "result": "pass"},
+          {"name": "malformed_results", "expected_reward": 0.0, "result": "pass"},
+          {"name": "clamped_results", "score": 0.324404, "expected_reward": 1.0, "result": "pass"}
+        ]
+      }
     ]
+  },
+  "dogfooding": {
+    "docker_build": {
+      "task": "clbench-exploitable-poker",
+      "image": "clbench-poker-test",
+      "result": "success",
+      "notes": "Fixed uv --all-extras -> pip install '.[poker]'. Build completes in ~41s."
+    },
+    "docker_eval": {
+      "task": "clbench-exploitable-poker",
+      "result": "success",
+      "notes": "Ran evaluator inside container with synthetic results.json (score=0.85). Wrote 0.85 to /logs/verifier/reward.txt."
+    }
   }
 }
