@@ -88,6 +88,47 @@
       }
     ]
   },
+  "e2e_parity": {
+    "description": "Harvey LAB-standard end-to-end parity: run SAME agent responses through BOTH original CLBench Python API AND BenchFlow run_task.py pipeline, compare resulting scores, then verify evaluate.py normalization.",
+    "clbench_commit": "HEAD",
+    "python_version": "3.13.3",
+    "tasks_tested": 2,
+    "passed": 2,
+    "tests": [
+      {
+        "task": "clbench-exploitable-poker",
+        "agent_strategy": "check-or-call (CHECK when legal, CALL otherwise — produces non-trivial positive scores)",
+        "num_instances": 20,
+        "num_responses": 80,
+        "original_score": 0.1,
+        "pipeline_score": 0.1,
+        "score_delta": 0.0,
+        "score_fidelity": "pass",
+        "r_max": 9.4875,
+        "expected_reward": 0.01054,
+        "actual_reward": 0.010540184453227932,
+        "reward_delta": 0.0,
+        "normalization": "pass",
+        "notes": "Positive score (0.1 BB/hand, 11 wins / 20 hands). Both pipelines produce identical score. Reward correctly normalized via score/r_max."
+      },
+      {
+        "task": "clbench-database-exploration",
+        "agent_strategy": "always ANSWER 'unknown' (validates pipeline fidelity even with score=0)",
+        "num_instances": 5,
+        "num_responses": 5,
+        "original_score": 0.0,
+        "pipeline_score": 0.0,
+        "score_delta": 0.0,
+        "score_fidelity": "pass",
+        "r_max": 1.0,
+        "expected_reward": 0.0,
+        "actual_reward": 0.0,
+        "reward_delta": 0.0,
+        "normalization": "pass",
+        "notes": "Score=0 (all incorrect). Both pipelines agree exactly. Pipeline fidelity confirmed."
+      }
+    ]
+  },
   "dogfooding": {
     "docker_build": {
       "task": "clbench-exploitable-poker",

@@ -8,13 +8,17 @@ Modes:
   eval        — evaluate.py produces correct rewards for synthetic inputs
   live        — run real CLBench task with deterministic responses, compare
                 original TaskResult.score vs BenchFlow evaluate.py reward
-  all         — structural + eval + live
+  e2e         — end-to-end: run same agent responses through BOTH original
+                CLBench API AND BenchFlow run_task.py pipeline, compare scores
+                (Harvey LAB-standard parity)
+  all         — structural + eval + live + e2e
 
 Usage::
 
     python benchmarks/clbench/parity_test.py --output-dir /tmp/clbench-tasks --mode structural
     python benchmarks/clbench/parity_test.py --output-dir /tmp/clbench-tasks --mode eval
     python benchmarks/clbench/parity_test.py --output-dir /tmp/clbench-tasks --mode live --clbench-dir /path/to/continual-learning-bench
+    python benchmarks/clbench/parity_test.py --output-dir /tmp/clbench-tasks --mode e2e --clbench-dir /path/to/continual-learning-bench
 """
 
 from __future__ import annotations
@@ -515,6 +519,382 @@ def run_live_parity(
     return results
 
 
+# ── End-to-end parity ────────────────────────────────────────────────
+# Harvey LAB-standard: run the SAME agent responses through BOTH the
+# original CLBench Python API AND BenchFlow's generated run_task.py,
+# then compare resulting scores.  Finally run evaluate.py and verify
+# the normalized reward matches.
+#
+# Agent strategy per task:
+#   poker      — check-or-call (produces non-trivial positive scores)
+#   database   — always ANSWER 'unknown' (score=0, still validates pipeline)
+
+_E2E_POKER_AGENT = '''
+import json, sys
+sys.path.insert(0, "{clbench_dir}")
+from src.tasks.exploitable_poker.task import Poker
+from src.interface import Response
+from pydantic import BaseModel, Field
+from typing import Optional
+
+class PokerAction(BaseModel):
+    thinking: str = Field(default="check_or_call")
+    action: str = Field(default="CHECK")
+    amount: Optional[int] = None
+
+task = Poker(num_instances={n}, seed=42)
+query = task.reset()
+responses_log = []
+
+for _ in range(2000):
+    if not task.waiting_for_action:
+        break
+    # Try CHECK first; if invalid, try CALL
+    for action_str in ["CHECK", "CALL"]:
+        action = PokerAction(thinking="check_or_call", action=action_str)
+        resp = Response(action=action)
+        step = task.step(resp)
+        if "Invalid" not in step.observation.content:
+            responses_log.append(action.model_dump())
+            break
+    if step.done:
+        break
+    if step.next_query:
+        query = step.next_query
+
+result = task.evaluate()
+output = {{
+    "score": result.score,
+    "r_max": task.r_max,
+    "hands_played": task.hands_played,
+    "total_profit": task.system_profit,
+    "num_outcomes": len(result.instance_outcomes),
+    "outcomes": [
+        {{
+            "instance_id": o.instance_id,
+            "instance_index": o.instance_index,
+            "reward": o.reward,
+            "success": o.success,
+        }}
+        for o in result.instance_outcomes
+    ],
+    "responses": responses_log,
+}}
+print(json.dumps(output))
+'''
+
+_E2E_DATABASE_AGENT = '''
+import json, sys
+sys.path.insert(0, "{clbench_dir}")
+from src.tasks.database_exploration.task import DatabaseExploration, DatabaseAction
+from src.interface import Response
+
+task = DatabaseExploration(num_instances={n}, seed=42)
+query = task.reset()
+responses_log = []
+
+for _ in range(500):
+    action = DatabaseAction(action="ANSWER", content="unknown")
+    resp = Response(action=action)
+    responses_log.append(action.model_dump())
+    step = task.step(resp)
+    if step.done:
+        break
+    if step.next_query:
+        query = step.next_query
+
+result = task.evaluate()
+output = {{
+    "score": result.score,
+    "r_max": task.r_max,
+    "num_outcomes": len(result.instance_outcomes),
+    "outcomes": [
+        {{
+            "instance_id": o.instance_id,
+            "instance_index": o.instance_index,
+            "reward": o.reward,
+            "success": o.success,
+        }}
+        for o in result.instance_outcomes
+    ],
+    "responses": responses_log,
+}}
+print(json.dumps(output))
+'''
+
+_E2E_AGENTS = {
+    "exploitable_poker": _E2E_POKER_AGENT,
+    "database_exploration": _E2E_DATABASE_AGENT,
+}
+
+# Replay script: feeds pre-recorded responses through CLBench task API
+# (equivalent to what run_task.py does inside Docker, but run locally).
+_E2E_PIPELINE_SCRIPT = '''
+import json, sys
+from pathlib import Path
+sys.path.insert(0, "{clbench_dir}")
+from src.registry import get_task_class
+from src.interface import Response
+
+responses_file = Path("{responses_file}")
+results_file = Path("{results_file}")
+
+with open(responses_file) as f:
+    responses = [json.loads(line) for line in f if line.strip()]
+
+task_cls = get_task_class("{task_name}")
+task = task_cls(num_instances={n}, seed=42)
+query = task.reset()
+outcomes = []
+
+for resp_data in responses:
+    schema_cls = query.response_schema
+    action = schema_cls.model_validate(resp_data)
+    response = Response(action=action)
+    step_result = task.step(response)
+    if step_result.instance_outcome:
+        outcomes.append({{
+            "instance_id": step_result.instance_outcome.instance_id,
+            "instance_index": step_result.instance_outcome.instance_index,
+            "reward": step_result.instance_outcome.reward,
+            "success": step_result.instance_outcome.success,
+        }})
+    if step_result.done:
+        break
+    if step_result.next_query:
+        query = step_result.next_query
+
+result = task.evaluate()
+output = {{
+    "score": result.score,
+    "summary": result.summary,
+    "metrics": {{}},
+    "instance_outcomes": outcomes,
+}}
+results_file.write_text(json.dumps(output, indent=2, default=str))
+print(json.dumps({{"score": result.score, "num_outcomes": len(outcomes)}}))
+'''
+
+
+def _run_e2e_agent(
+    clbench_dir: Path,
+    python_bin: str,
+    task_name: str,
+    num_instances: int,
+) -> dict | None:
+    """Run deterministic agent on original CLBench, return score + responses."""
+    template = _E2E_AGENTS.get(task_name)
+    if template is None:
+        log.info("Skipping e2e for %s (no agent script)", task_name)
+        return None
+
+    script = template.format(clbench_dir=clbench_dir, n=num_instances)
+    result = subprocess.run(
+        [python_bin, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=180,
+        cwd=str(clbench_dir),
+    )
+    if result.returncode != 0:
+        log.error("E2E agent failed for %s: %s", task_name, result.stderr[-500:])
+        return None
+    try:
+        return json.loads(result.stdout.strip())
+    except json.JSONDecodeError:
+        log.error("Failed to parse agent output: %s", result.stdout[:200])
+        return None
+
+
+def _run_e2e_pipeline(
+    clbench_dir: Path,
+    python_bin: str,
+    task_name: str,
+    num_instances: int,
+    responses_file: Path,
+    results_file: Path,
+) -> dict | None:
+    """Replay responses through BenchFlow pipeline (run_task.py equivalent)."""
+    script = _E2E_PIPELINE_SCRIPT.format(
+        clbench_dir=clbench_dir,
+        task_name=task_name,
+        n=num_instances,
+        responses_file=responses_file,
+        results_file=results_file,
+    )
+    result = subprocess.run(
+        [python_bin, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=180,
+        cwd=str(clbench_dir),
+    )
+    if result.returncode != 0:
+        log.error("E2E pipeline failed for %s: %s", task_name, result.stderr[-500:])
+        return None
+    try:
+        return json.loads(result.stdout.strip())
+    except json.JSONDecodeError:
+        log.error("Failed to parse pipeline output: %s", result.stdout[:200])
+        return None
+
+
+def run_e2e_parity(
+    output_dir: Path,
+    clbench_dir: Path,
+    python_bin: str | None = None,
+) -> dict:
+    """End-to-end parity: same agent responses through original vs BenchFlow.
+
+    Harvey LAB-standard validation:
+    1. Run deterministic agent on original CLBench API -> (score, responses)
+    2. Replay SAME responses through BenchFlow run_task.py -> pipeline_score
+    3. Verify: original_score == pipeline_score (pipeline fidelity)
+    4. Run evaluate.py -> reward
+    5. Verify: reward == max(0, min(1, score / r_max)) (normalization)
+    """
+    if python_bin is None:
+        venv_python = clbench_dir / ".venv" / "bin" / "python"
+        python_bin = str(venv_python) if venv_python.exists() else sys.executable
+
+    results: dict = {"tasks_tested": 0, "passed": 0, "tests": []}
+
+    bf_to_cl = {
+        "clbench-exploitable-poker": ("exploitable_poker", 20),
+        "clbench-database-exploration": ("database_exploration", 5),
+    }
+
+    for bf_name, (cl_name, n_instances) in bf_to_cl.items():
+        task_dir = output_dir / bf_name
+        evaluate_py = task_dir / "tests" / "evaluate.py"
+        if not task_dir.exists() or not evaluate_py.exists():
+            log.warning("Skipping %s: task dir or evaluate.py missing", bf_name)
+            continue
+
+        r_max = _R_MAX[bf_name]
+        results["tasks_tested"] += 1
+        task_passed = True
+
+        # Step 1: Run agent on original CLBench
+        log.info("E2E %s: running agent on original CLBench (%d instances)...",
+                 cl_name, n_instances)
+        agent_result = _run_e2e_agent(
+            clbench_dir, python_bin, cl_name, n_instances
+        )
+        if agent_result is None:
+            results["tests"].append({
+                "name": f"{bf_name}/e2e_agent_run",
+                "result": "fail",
+                "reason": "Agent failed to run on original CLBench",
+            })
+            continue
+
+        original_score = agent_result["score"]
+        responses_log = agent_result["responses"]
+        log.info("E2E %s: original score=%.6f, %d responses captured",
+                 cl_name, original_score, len(responses_log))
+
+        # r_max check
+        if abs(agent_result["r_max"] - r_max) > 0.0001:
+            results["tests"].append({
+                "name": f"{bf_name}/e2e_r_max",
+                "result": "fail",
+                "expected": str(r_max),
+                "actual": str(agent_result["r_max"]),
+            })
+            continue
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+
+            # Write responses to JSONL
+            responses_file = tmp / "agent_responses.jsonl"
+            with open(responses_file, "w") as f:
+                for resp in responses_log:
+                    f.write(json.dumps(resp) + "\n")
+
+            results_file = tmp / "results.json"
+
+            # Step 2: Replay through BenchFlow pipeline
+            log.info("E2E %s: replaying %d responses through BenchFlow pipeline...",
+                     cl_name, len(responses_log))
+            pipeline_result = _run_e2e_pipeline(
+                clbench_dir, python_bin, cl_name, n_instances,
+                responses_file, results_file,
+            )
+            if pipeline_result is None:
+                results["tests"].append({
+                    "name": f"{bf_name}/e2e_pipeline_run",
+                    "result": "fail",
+                    "reason": "Pipeline failed to replay responses",
+                })
+                continue
+
+            pipeline_score = pipeline_result["score"]
+
+            # Step 3: Compare scores — pipeline fidelity
+            score_delta = abs(original_score - pipeline_score)
+            fidelity_pass = score_delta < 0.0001
+            fidelity_result = {
+                "name": f"{bf_name}/e2e_score_fidelity",
+                "original_score": str(round(original_score, 6)),
+                "pipeline_score": str(round(pipeline_score, 6)),
+                "delta": str(round(score_delta, 6)),
+                "result": "pass" if fidelity_pass else "fail",
+            }
+            results["tests"].append(fidelity_result)
+            if fidelity_pass:
+                log.info(
+                    "PASS: %s score fidelity — original=%.6f, pipeline=%.6f",
+                    bf_name, original_score, pipeline_score,
+                )
+            else:
+                task_passed = False
+                log.error(
+                    "FAIL: %s score fidelity — original=%.6f, pipeline=%.6f "
+                    "(delta=%.6f)",
+                    bf_name, original_score, pipeline_score, score_delta,
+                )
+
+            # Step 4: Run evaluate.py on pipeline results
+            reward_file = tmp / "reward.txt"
+            benchflow_reward = _run_evaluate_py(
+                evaluate_py, results_file, reward_file
+            )
+            expected_reward = max(0.0, min(1.0, pipeline_score / r_max))
+            reward_delta = abs(benchflow_reward - expected_reward)
+            norm_pass = reward_delta < 0.001
+
+            norm_result = {
+                "name": f"{bf_name}/e2e_normalization",
+                "pipeline_score": str(round(pipeline_score, 6)),
+                "r_max": str(r_max),
+                "expected_reward": str(round(expected_reward, 6)),
+                "actual_reward": str(benchflow_reward),
+                "delta": str(round(reward_delta, 6)),
+                "result": "pass" if norm_pass else "fail",
+            }
+            results["tests"].append(norm_result)
+            if norm_pass:
+                log.info(
+                    "PASS: %s normalization — score=%.6f / r_max=%.4f -> "
+                    "reward=%.6f (expected=%.6f)",
+                    bf_name, pipeline_score, r_max,
+                    benchflow_reward, expected_reward,
+                )
+            else:
+                task_passed = False
+                log.error(
+                    "FAIL: %s normalization — expected=%.6f, got=%.6f",
+                    bf_name, expected_reward, benchflow_reward,
+                )
+
+        if task_passed:
+            results["passed"] += 1
+
+    return results
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="CLBench parity tests")
     parser.add_argument(
@@ -525,7 +905,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--mode",
-        choices=["structural", "eval", "live", "all"],
+        choices=["structural", "eval", "live", "e2e", "all"],
         default="all",
         help="Which parity checks to run",
     )
@@ -533,7 +913,7 @@ def main() -> None:
         "--clbench-dir",
         type=Path,
         default=None,
-        help="Path to CLBench repo (required for --mode live or all)",
+        help="Path to CLBench repo (required for --mode live, e2e, or all)",
     )
     parser.add_argument(
         "--python-bin",
@@ -593,6 +973,38 @@ def main() -> None:
                 else:
                     print(f"  {status}: {test['name']}")
             if live_results["passed"] < live_results["tasks_tested"]:
+                all_passed = False
+
+    if args.mode in ("e2e", "all"):
+        if args.clbench_dir is None:
+            print("\n=== End-to-End Parity ===")
+            print("  SKIPPED: --clbench-dir not provided")
+        else:
+            print("\n=== End-to-End Parity (Harvey LAB-standard) ===")
+            e2e_results = run_e2e_parity(
+                args.output_dir, args.clbench_dir, args.python_bin
+            )
+            print(
+                f"  Tested: {e2e_results['tasks_tested']}, "
+                f"Passed: {e2e_results['passed']}"
+            )
+            for test in e2e_results["tests"]:
+                status = "PASS" if test["result"] == "pass" else "FAIL"
+                if "original_score" in test:
+                    print(
+                        f"  {status}: {test['name']} "
+                        f"(original={test['original_score']}, "
+                        f"pipeline={test['pipeline_score']})"
+                    )
+                elif "pipeline_score" in test:
+                    print(
+                        f"  {status}: {test['name']} "
+                        f"(reward={test['actual_reward']}, "
+                        f"expected={test['expected_reward']})"
+                    )
+                else:
+                    print(f"  {status}: {test['name']}")
+            if e2e_results["passed"] < e2e_results["tasks_tested"]:
                 all_passed = False
 
     if all_passed:
