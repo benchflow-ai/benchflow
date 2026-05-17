@@ -4,7 +4,7 @@ Usage:
     python benchmarks/harvey-lab/run_harvey_lab.py                # default config
     python benchmarks/harvey-lab/run_harvey_lab.py path/to/config.yaml
 
-Prefer using `bench eval create -f` with a YAML config that has tasks_dir
+Prefer using `bench eval create --config` with a YAML config that has tasks_dir
 pointing to already-converted tasks if you've pre-converted them.
 """
 

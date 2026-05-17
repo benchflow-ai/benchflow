@@ -30,15 +30,15 @@ Each adapted benchmark includes:
 
 ## Quick start
 
-### Option 1: YAML config (`bench eval create -f`)
+### Option 1: YAML config (`bench eval create --config`)
 
 The simplest path. Point at a YAML config that specifies the benchmark source,
 agent, and model:
 
 ```bash
-GEMINI_API_KEY=... bench eval create -f benchmarks/harvey-lab/harvey-lab-gemini-flash-lite.yaml
-GEMINI_API_KEY=... bench eval create -f benchmarks/programbench/programbench-gemini-flash-lite.yaml
-bench eval create -f benchmarks/skillsbench-claude-glm51.yaml
+GEMINI_API_KEY=... bench eval create --config benchmarks/harvey-lab/harvey-lab-gemini-flash-lite.yaml
+GEMINI_API_KEY=... bench eval create --config benchmarks/programbench/programbench-gemini-flash-lite.yaml
+bench eval create --config benchmarks/skillsbench-claude-glm51.yaml
 ```
 
 The config handles everything — downloads/generates tasks, resolves the task path,
@@ -53,29 +53,41 @@ Use CLI flags for ad-hoc runs without a config file:
 bench eval create \
   --source-repo benchflow-ai/benchmarks \
   --source-path datasets/harvey-lab/tasks/corporate-ma-analyze-cim-deal-teaser-scenario-01 \
-  -a gemini -m gemini-3.1-flash-lite-preview -e docker
+  --agent gemini --model gemini-3.1-flash-lite-preview --sandbox docker
+
+# Harvey LAB harness adapter smoke test.
+# Requires GEMINI_API_KEY for the agent and ANTHROPIC_API_KEY for the verifier.
+uv run bench eval create \
+  --source-repo benchflow-ai/benchmarks \
+  --source-path datasets/harvey-lab/tasks/corporate-ma-analyze-cim-deal-teaser-scenario-01 \
+  --agent harvey-lab-harness \
+  --model gemini-3.1-flash-lite-preview \
+  --sandbox docker \
+  --concurrency 1 \
+  --jobs-dir jobs/smoke-test/harvey-harness
 
 # Harvey LAB — all pre-converted tasks
 bench eval create \
   --source-repo benchflow-ai/benchmarks \
   --source-path datasets/harvey-lab/tasks \
-  -a gemini -m gemini-3.1-flash-lite-preview -e docker -c 4
+  --agent gemini --model gemini-3.1-flash-lite-preview --sandbox docker --concurrency 4
 
 # SkillsBench
-bench run \
+bench eval create \
   --source-repo benchflow-ai/skillsbench \
   --source-path tasks/edit-pdf \
-  -a gemini -m gemini-3.1-flash-lite-preview
+  --agent gemini --model gemini-3.1-flash-lite-preview
 
 # ProgramBench — single task
-bench run benchmarks/programbench/tasks/abishekvashok__cmatrix.5c082c6 \
-  -a gemini -m gemini-3.1-flash-lite-preview -b docker
+bench eval create \
+  benchmarks/programbench/tasks/abishekvashok__cmatrix.5c082c6 \
+  --agent gemini --model gemini-3.1-flash-lite-preview --sandbox docker
 
 # Claude Code on Daytona
 bench eval create \
   --source-repo benchflow-ai/skillsbench \
   --source-path tasks \
-  -a claude-agent-acp -m anthropic/claude-sonnet-4-6 -e daytona -c 32
+  --agent claude-agent-acp --model anthropic/claude-sonnet-4-6 --sandbox daytona --concurrency 32
 ```
 
 > **Note:** Harvey LAB task names in `benchflow-ai/benchmarks` are flattened with
@@ -102,12 +114,12 @@ For single-task runs:
 
 ```python
 import benchflow as bf
-from benchflow.trial import TrialConfig, Scene
+from benchflow import RolloutConfig, Scene
 from benchflow.task_download import resolve_source
 
 task_path = resolve_source("benchflow-ai/skillsbench", path="tasks/edit-pdf")
 
-config = TrialConfig(
+config = RolloutConfig(
     task_path=task_path,
     scenes=[Scene.single(agent="gemini", model="gemini-3.1-flash-lite-preview")],
     environment="docker",
@@ -123,25 +135,27 @@ print(result.rewards)
 ### Single task
 
 ```bash
-bench run \
+bench eval create \
   --source-repo benchflow-ai/skillsbench \
   --source-path tasks/edit-pdf \
-  -a gemini -m gemini-3.1-flash-lite-preview
+  --agent gemini --model gemini-3.1-flash-lite-preview
 
-bench run benchmarks/programbench/tasks/abishekvashok__cmatrix.5c082c6 \
-  -a gemini -m gemini-3.1-flash-lite-preview -b docker
+bench eval create \
+  --tasks-dir benchmarks/programbench/tasks/abishekvashok__cmatrix.5c082c6 \
+  --agent gemini --model gemini-3.1-flash-lite-preview --sandbox docker
 
-bench run .cache/harvey-lab-tasks/corporate-ma-review-data-room-red-flag-review \
-  -a gemini -m gemini-3.1-flash-lite-preview -b docker
+bench eval create \
+  --tasks-dir .cache/harvey-lab-tasks/corporate-ma-review-data-room-red-flag-review \
+  --agent gemini --model gemini-3.1-flash-lite-preview --sandbox docker
 ```
 
 ### Batch with a tasks directory
 
-Point `bench eval create -t` at a directory containing only the tasks you want:
+Point `bench eval create --tasks-dir` at a directory containing only the tasks you want:
 
 ```bash
-bench eval create -t benchmarks/programbench/tasks \
-  -a gemini -m gemini-3.1-flash-lite-preview -e docker -c 4
+bench eval create --tasks-dir benchmarks/programbench/tasks \
+  --agent gemini --model gemini-3.1-flash-lite-preview --sandbox docker --concurrency 4
 ```
 
 ### Using `--source-path` for remote subsets
@@ -151,13 +165,13 @@ bench eval create -t benchmarks/programbench/tasks \
 bench eval create \
   --source-repo benchflow-ai/skillsbench \
   --source-path tasks/edit-pdf \
-  -a gemini -m gemini-3.1-flash-lite-preview -e docker
+  --agent gemini --model gemini-3.1-flash-lite-preview --sandbox docker
 
 # Harvey LAB single task (pre-converted)
 bench eval create \
   --source-repo benchflow-ai/benchmarks \
   --source-path datasets/harvey-lab/tasks/corporate-ma-analyze-cim-deal-teaser-scenario-01 \
-  -a gemini -m gemini-3.1-flash-lite-preview -e docker
+  --agent gemini --model gemini-3.1-flash-lite-preview --sandbox docker
 ```
 
 ---
@@ -176,14 +190,15 @@ Tasks are **generated** at runtime from the ProgramBench repo's metadata.
 ### Run all tasks
 
 ```bash
-bench eval create -f benchmarks/programbench/programbench-gemini-flash-lite.yaml
+bench eval create --config benchmarks/programbench/programbench-gemini-flash-lite.yaml
 ```
 
 ### Run a single task
 
 ```bash
-bench run benchmarks/programbench/tasks/abishekvashok__cmatrix.5c082c6 \
-  -a gemini -m gemini-3.1-flash-lite-preview -b docker
+bench eval create \
+  --tasks-dir benchmarks/programbench/tasks/abishekvashok__cmatrix.5c082c6 \
+  --agent gemini --model gemini-3.1-flash-lite-preview --sandbox docker
 ```
 
 ### Oracle verification
@@ -191,7 +206,9 @@ bench run benchmarks/programbench/tasks/abishekvashok__cmatrix.5c082c6 \
 Verify a task is solvable using the gold solution (original source at commit):
 
 ```bash
-bench run benchmarks/programbench/tasks/abishekvashok__cmatrix.5c082c6 -a oracle -b docker
+bench eval create \
+  --tasks-dir benchmarks/programbench/tasks/abishekvashok__cmatrix.5c082c6 \
+  --agent oracle --sandbox docker
 ```
 
 ### Validate a task directory
@@ -230,9 +247,9 @@ The **Harvey LAB harness** agent is special — it runs Harvey LAB's own agent l
 
 | Sandbox | Flag | Best for |
 |---------|------|----------|
-| Docker | `-e docker` | Local development, small runs (≤10 tasks) |
-| Daytona | `-e daytona` | Cloud runs with concurrency (needs `DAYTONA_API_KEY`) |
-| Modal | `-e modal` | Serverless, high concurrency (needs Modal auth) |
+| Docker | `--sandbox docker` | Local development, small runs (≤10 tasks) |
+| Daytona | `--sandbox daytona` | Cloud runs with concurrency (needs `DAYTONA_API_KEY`) |
+| Modal | `--sandbox modal` | Serverless, high concurrency (needs Modal auth) |
 
 For large-scale runs (100+ tasks), use Daytona or Modal with high concurrency:
 
@@ -240,14 +257,14 @@ For large-scale runs (100+ tasks), use Daytona or Modal with high concurrency:
 bench eval create \
   --source-repo benchflow-ai/skillsbench \
   --source-path tasks \
-  -a gemini -m gemini-3.1-flash-lite-preview -e daytona -c 64
+  --agent gemini --model gemini-3.1-flash-lite-preview --sandbox daytona --concurrency 64
 ```
 
 ---
 
 ## Reading results
 
-Results land under `jobs/<job-name>/<trial-name>/`:
+Results land under `jobs/<job-name>/<rollout-name>/`:
 
 ```
 jobs/

@@ -135,7 +135,7 @@ class TestSetupProviderAnthropic:
         """Pre-existing ANTHROPIC_* values take precedence.
 
         Users routing through a proxy set ANTHROPIC_BASE_URL directly (e.g.
-        via --ae); the launcher must not clobber that.
+        via --agent-env); the launcher must not clobber that.
         """
         monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://keep-this.example.com")
         monkeypatch.setenv("BENCHFLOW_PROVIDER_BASE_URL", "https://new.example.com")

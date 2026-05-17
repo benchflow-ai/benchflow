@@ -125,7 +125,8 @@ def smoke_jobs_dir(tmp_path: Path) -> Iterator[Path]:
 
 @pytest.mark.live
 @pytest.mark.asyncio
-async def test_hello_world_smoke(smoke_prereqs: bool, smoke_jobs_dir: Path) -> None:
+@pytest.mark.usefixtures("smoke_prereqs")
+async def test_hello_world_smoke(smoke_jobs_dir: Path) -> None:
     """End-to-end: claude-agent-acp + Haiku 4.5 solves hello-world-task.
 
     Asserts the minimal set that proves the orchestration pipeline ran:

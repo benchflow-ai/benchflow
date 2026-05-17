@@ -162,17 +162,18 @@ bench tasks list-sources                                    # list known HF trac
 bench tasks check tasks/my-task/
 
 # Confirm oracle gets reward = 1.0
-bench run tasks/my-task/ --agent oracle --sandbox docker
+bench eval create --tasks-dir tasks/my-task/ --agent oracle --sandbox docker
 
 # Run a real agent
-bench run tasks/my-task/ --agent gemini --sandbox daytona
+bench eval create --tasks-dir tasks/my-task/ --agent gemini --sandbox daytona
 
 # Run with task-local skills mounted
-bench run tasks/my-task/ \
+bench eval create \
+  --tasks-dir tasks/my-task/ \
   --agent gemini \
   --sandbox daytona \
   --skills-dir tasks/my-task/environment/skills \
-  --ae BENCHFLOW_SKILL_NUDGE=name
+  --agent-env BENCHFLOW_SKILL_NUDGE=name
 ```
 
 `bench tasks generate` converts agent traces (Claude Code sessions, opentraces records, or HuggingFace datasets) into task directories with `task.toml`, `instruction.md`, and a file-existence `test.sh`. Use `--dry-run` to preview traces before generating. See [CLI reference](./reference/cli.md#bench-tasks-generate) for all flags.

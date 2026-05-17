@@ -885,6 +885,8 @@ class Rollout:
         if cfg.skills_dir:
             _inject_skills_into_dockerfile(effective_task_path, Path(cfg.skills_dir))
 
+        self._effective_task_path = effective_task_path
+
         self._env = _create_environment(
             cfg.environment,
             self._task,
@@ -954,7 +956,7 @@ class Rollout:
             )
             await deploy_skills(
                 self._env,
-                cfg.task_path,
+                getattr(self, "_effective_task_path", cfg.task_path),
                 cfg.skills_dir,
                 None,
                 cfg.sandbox_user,
@@ -1005,7 +1007,7 @@ class Rollout:
 
         await deploy_skills(
             self._env,
-            cfg.task_path,
+            getattr(self, "_effective_task_path", cfg.task_path),
             cfg.skills_dir,
             self._agent_cfg,
             cfg.sandbox_user,

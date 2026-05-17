@@ -132,12 +132,12 @@ if [ "$CHECK_ONLY" = false ]; then
     model="${AGENT_MODELS[$agent]:-$DEFAULT_MODEL}"
     echo "Launching $agent (model=$model)..."
     uv run bench eval create \
-      -t "$TASKS_DIR" \
-      -a "$agent" \
-      -m "$model" \
-      -e daytona \
-      -c 30 \
-      -o "$JOBS_ROOT/$agent" \
+      --tasks-dir "$TASKS_DIR" \
+      --agent "$agent" \
+      --model "$model" \
+      --sandbox daytona \
+      --concurrency 30 \
+      --jobs-dir "$JOBS_ROOT/$agent" \
       > "$LOG_DIR/$agent.log" 2>&1 &
     PIDS+=($!)
     LAUNCHED+=("$agent")
