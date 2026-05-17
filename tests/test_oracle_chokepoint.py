@@ -4,15 +4,13 @@ Pins the fix from this branch (post-PR #173 follow-up):
 
   Layer 1 — restore `agent != "oracle"` guard in resolve_agent_env so the
             chokepoint defends against any caller that forwards a model.
-  Layer 2 — delete the orphaned src/benchflow/cli/eval.py whose oracle fix
-            was unreachable because nothing wired it into the live CLI.
+  Layer 2 — keep `bench eval create` routed through the live CLI entry point.
   Layer 3 — funnel all CLI/YAML-loader sites through effective_model() so
             oracle gets honest model=None end-to-end.
 
 The classes below pin each layer at the right altitude:
-- TestOrphanRemoval       — proves cli/eval.py is gone and stays gone.
 - TestEvalCreateRouting   — proves `bench eval create` dispatches to
-                            cli/main.py (the file that PR #173 missed).
+                            cli/main.py.
 - TestEffectiveModel      — unit tests for the helper.
 - TestOracleYamlLoaders   — Job.from_yaml(oracle config) → model is None.
 - TestEvalCreateOracleCLI — end-to-end: invoke `bench eval create --agent oracle`
@@ -27,36 +25,11 @@ from unittest.mock import AsyncMock, patch
 from typer.testing import CliRunner
 
 
-class TestEvalModuleNotWiredIntoCLI:
-    """src/benchflow/cli/eval.py exists but is NOT wired into the live CLI.
-
-    The live `bench eval create` dispatches to cli/main.py:eval_create.
-    cli/eval.py is a standalone module (with its own resolver logic and tests)
-    but must not be imported by the CLI entry-point code — doing so is what
-    caused PR #173 to land its fix in dead code.
-    """
-
-    def test_cli_main_does_not_import_cli_eval(self):
-        """cli/main.py must not import from cli/eval — they are separate."""
-        main_py = (
-            Path(__file__).resolve().parent.parent
-            / "src"
-            / "benchflow"
-            / "cli"
-            / "main.py"
-        )
-        text = main_py.read_text()
-        assert "from benchflow.cli.eval" not in text
-        assert "import benchflow.cli.eval" not in text
-
-
 class TestEvalCreateRouting:
     """`bench eval create` must dispatch to cli/main.py:eval_create.
 
     The pyproject.toml `bench`/`benchflow` scripts both resolve to
-    `benchflow.cli.main:app`. PR #173 patched a different `eval_create` in
-    `benchflow.cli.eval` that no entry point ever loaded — these tests
-    pin the routing so that mistake can't happen again.
+    `benchflow.cli.main:app`; these tests pin the live command callback.
     """
 
     def test_entry_point_app_is_cli_main(self):
@@ -192,6 +165,7 @@ class TestEvalCreateOracleCLI:
     def test_oracle_single_task_no_api_key_no_error(self, tmp_path: Path, monkeypatch):
         """The bug: oracle + missing API key → ANTHROPIC_API_KEY ValueError."""
         import asyncio
+        from types import SimpleNamespace
 
         from benchflow.cli.main import eval_create
         from benchflow.models import RunResult
@@ -214,13 +188,14 @@ class TestEvalCreateOracleCLI:
             captured["agent_env"] = resolve_agent_env(
                 config.primary_agent, config.primary_model, config.agent_env
             )
-            trial = type("FakeTrial", (), {})()
-            trial.run = AsyncMock(
-                return_value=RunResult(
-                    task_name="task",
-                    agent_name="oracle",
-                    rewards={"reward": 1.0},
-                    n_tool_calls=0,
+            trial = SimpleNamespace(
+                run=AsyncMock(
+                    return_value=RunResult(
+                        task_name="task",
+                        agent_name="oracle",
+                        rewards={"reward": 1.0},
+                        n_tool_calls=0,
+                    )
                 )
             )
             return trial

@@ -21,51 +21,6 @@ Show details for a specific agent.
 bench agent show gemini
 ```
 
----
-
-## bench run
-
-### bench run
-
-Run one task directory with one agent. This is the most direct command for
-single-task local, Daytona, or Modal checks.
-
-```bash
-# Single task with Gemini on Daytona
-bench run tasks/edit-pdf \
-  --agent gemini \
-  --model gemini-3.1-flash-lite-preview \
-  --sandbox daytona
-
-# Single task with mounted skills and the recommended skill nudge
-bench run tasks/pdf-fix \
-  --agent gemini \
-  --model gemini-3.1-flash-lite-preview \
-  --sandbox daytona \
-  --skills-dir tasks/pdf-fix/environment/skills \
-  --ae BENCHFLOW_SKILL_NUDGE=name
-```
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `TASK_DIR` | — | Task directory containing `task.toml` |
-| `--agent` | `claude-agent-acp` | Agent name from the registry |
-| `--model` | Agent default | Model ID |
-| `--sandbox` | `docker` | Sandbox: docker, daytona, or modal |
-| `--prompt` | `instruction.md` | Prompt text; repeat for multi-turn |
-| `--jobs-dir` | `jobs` | Output directory |
-| `--agent-env`, `--ae` | — | Agent environment variable as `KEY=VALUE`; repeatable |
-| `--skills-dir` | — | Skills directory to deploy into the sandbox |
-| `--sandbox-user` | `agent` | Non-root sandbox user; pass `none` for root |
-
-When mounting skills, the recommended docs default is
-`--ae BENCHFLOW_SKILL_NUDGE=name`. It prepends a short hint telling the agent
-which skills are available and where to read them. More verbose modes are
-`description` and `full`. Omit the env var to leave BenchFlow's runtime default
-off.
-
----
-
 ## bench eval
 
 ### bench eval create
@@ -89,6 +44,15 @@ bench eval create \
 
 # From local directory
 bench eval create --tasks-dir ./tasks --agent gemini --model gemini-3.1-flash-lite-preview
+
+# Single task with mounted skills and the recommended skill nudge
+bench eval create \
+  --tasks-dir tasks/pdf-fix \
+  --agent gemini \
+  --model gemini-3.1-flash-lite-preview \
+  --sandbox daytona \
+  --skills-dir tasks/pdf-fix/environment/skills \
+  --agent-env BENCHFLOW_SKILL_NUDGE=name
 ```
 
 | Flag | Default | Description |
@@ -106,6 +70,13 @@ bench eval create --tasks-dir ./tasks --agent gemini --model gemini-3.1-flash-li
 | `--sandbox-user` | `agent` | Sandbox user (null for root) |
 | `--sandbox-setup-timeout` | `120` | Timeout in seconds for sandbox user setup |
 | `--skills-dir` | — | Skills directory to deploy into each task sandbox |
+| `--agent-env` | — | Agent environment variable as `KEY=VALUE`; repeatable |
+
+When mounting skills, the recommended docs default is
+`--agent-env BENCHFLOW_SKILL_NUDGE=name`. It prepends a short hint telling the agent
+which skills are available and where to read them. More verbose modes are
+`description` and `full`. Omit the env var to leave BenchFlow's runtime default
+off.
 
 ### bench eval list
 
@@ -114,8 +85,6 @@ List completed evaluations from a jobs directory.
 ```bash
 bench eval list jobs/
 ```
-
----
 
 ## bench skills
 
@@ -150,32 +119,14 @@ Validate a task directory (Dockerfile, instruction.md, tests/).
 
 ```bash
 bench tasks check tasks/my-task
-bench tasks check tasks/my-task --rubric rubrics/quality.md
 ```
-
----
-
-## bench train
-
-### bench train create
-
-Run a reward-based training sweep.
-
-```bash
-bench train create \
-  --tasks-dir tasks/ \
-  --agent gemini \
-  --sweeps 5 \
-  --export ./training-data
-```
-
----
 
 ## bench environment
 
 ### bench environment create
 
-Create an environment from a task directory (spins up sandbox).
+Create an environment object from a task directory. This validates environment
+construction but does not start the sandbox.
 
 ```bash
 bench environment create tasks/my-task --sandbox daytona
@@ -188,8 +139,6 @@ List active Daytona sandboxes.
 ```bash
 bench environment list
 ```
-
----
 
 ## YAML Config Format
 
@@ -239,20 +188,3 @@ scenes:
     turns:
       - role: solver
 ```
-
----
-
-## Deprecated Commands
-
-These still work but are hidden from `--help`:
-
-| Old command | Replacement |
-|-------------|-------------|
-| `benchflow run` | `bench run <task>` |
-| `benchflow job` | `bench eval create --config <yaml>` |
-| `benchflow agents` | `bench agent list` |
-| `benchflow eval` | `bench skills eval` |
-| `benchflow metrics` | `bench eval list --detail` |
-| `benchflow view` | (planned: `bench trajectory show`) |
-| `benchflow cleanup` | `bench environment list` + delete |
-| `benchflow skills install` | Skills are folders, not packages |

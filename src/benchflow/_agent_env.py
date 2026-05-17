@@ -163,7 +163,7 @@ def inject_vertex_credentials(agent_env: dict[str, str], model: str) -> None:
     if "GOOGLE_CLOUD_PROJECT" not in agent_env:
         raise ValueError(
             f"GOOGLE_CLOUD_PROJECT required for Vertex AI model {model!r}. "
-            f"Export it or pass via --ae GOOGLE_CLOUD_PROJECT=<project>"
+            f"Export it or pass via --agent-env GOOGLE_CLOUD_PROJECT=<project>"
         )
 
 

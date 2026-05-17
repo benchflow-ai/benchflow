@@ -21,10 +21,6 @@ Files
                      --local`` as an ACP server over stdio. Needed
                      because openclaw's native ACP bridge requires a
                      gateway.
-- ``user_agent.py``  Interactive stdin/stdout ACP agent for manual
-                     debugging. **Backlog — not wired into SDK or CLI.**
-                     Greppable but inert.
-
 Nothing is re-exported from this ``__init__``: importers go through
 ``benchflow.agents.registry`` / ``benchflow.agents.providers`` directly,
 which is what the registry-only-change rule depends on.

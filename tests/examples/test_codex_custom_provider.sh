@@ -58,13 +58,13 @@ echo ""
 set +e
 env -u CODEX_API_KEY -u OPENAI_BASE_URL -u OPENAI_API_KEY \
   OPENAI_API_KEY="dummy-local-key" \
-  uv run benchflow run \
-    "$TASK" \
+  uv run bench eval create \
+    --tasks-dir "$TASK" \
     --agent codex-acp \
     --model vllm/mock-model \
     --sandbox docker \
     --jobs-dir "$JOBS_DIR" \
-    --ae "BENCHFLOW_PROVIDER_BASE_URL=${STUB_URL}"
+    --agent-env "BENCHFLOW_PROVIDER_BASE_URL=${STUB_URL}"
 RUN_RC=$?
 set -e
 

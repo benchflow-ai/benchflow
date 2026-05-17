@@ -659,7 +659,7 @@ class TestVerifierEnv:
         from benchflow._sandbox import _distro_pip_env
 
         env = _make_env(
-            side_effect=lambda *a, **kw: MagicMock(
+            side_effect=lambda *_args, **_kwargs: MagicMock(
                 stdout='ID=fedora\nID_LIKE="rhel centos"\n', stderr="", exit_code=0
             )
         )
@@ -709,7 +709,7 @@ class TestVerifierEnv:
         from benchflow._sandbox import _distro_pip_env
 
         env = _make_env(
-            side_effect=lambda *a, **kw: MagicMock(
+            side_effect=lambda *_args, **_kwargs: MagicMock(
                 stdout="ID=ubuntu\nID_LIKE=debian\n", stderr="", exit_code=0
             )
         )
@@ -1344,7 +1344,7 @@ class TestSandboxFailureModes:
         from benchflow._sandbox import _discover_pytest_plugin_flags
 
         env = _make_env(
-            side_effect=lambda cmd, **kw: MagicMock(
+            side_effect=lambda _cmd, **_kwargs: MagicMock(
                 stdout="not valid json", stderr="", exit_code=0
             )
         )

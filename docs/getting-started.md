@@ -90,7 +90,7 @@ GEMINI_API_KEY=... bench eval create \
   --model gemini-3.1-pro-preview \
   --sandbox daytona \
   --skills-dir tasks/edit-pdf/environment/skills \
-  --ae BENCHFLOW_SKILL_NUDGE=name
+  --agent-env BENCHFLOW_SKILL_NUDGE=name
 
 # A whole batch from YAML config
 bench eval create --config benchmarks/skillsbench-claude-glm51.yaml

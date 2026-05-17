@@ -55,6 +55,17 @@ bench eval create \
   --source-path datasets/harvey-lab/tasks/corporate-ma-analyze-cim-deal-teaser-scenario-01 \
   --agent gemini --model gemini-3.1-flash-lite-preview --sandbox docker
 
+# Harvey LAB harness adapter smoke test.
+# Requires GEMINI_API_KEY for the agent and ANTHROPIC_API_KEY for the verifier.
+uv run bench eval create \
+  --source-repo benchflow-ai/benchmarks \
+  --source-path datasets/harvey-lab/tasks/corporate-ma-analyze-cim-deal-teaser-scenario-01 \
+  --agent harvey-lab-harness \
+  --model gemini-3.1-flash-lite-preview \
+  --sandbox docker \
+  --concurrency 1 \
+  --jobs-dir jobs/smoke-test/harvey-harness
+
 # Harvey LAB — all pre-converted tasks
 bench eval create \
   --source-repo benchflow-ai/benchmarks \
@@ -103,12 +114,12 @@ For single-task runs:
 
 ```python
 import benchflow as bf
-from benchflow.trial import TrialConfig, Scene
+from benchflow import RolloutConfig, Scene
 from benchflow.task_download import resolve_source
 
 task_path = resolve_source("benchflow-ai/skillsbench", path="tasks/edit-pdf")
 
-config = TrialConfig(
+config = RolloutConfig(
     task_path=task_path,
     scenes=[Scene.single(agent="gemini", model="gemini-3.1-flash-lite-preview")],
     environment="docker",
@@ -253,7 +264,7 @@ bench eval create \
 
 ## Reading results
 
-Results land under `jobs/<job-name>/<trial-name>/`:
+Results land under `jobs/<job-name>/<rollout-name>/`:
 
 ```
 jobs/
