@@ -142,7 +142,8 @@ print(result.n_tool_calls)
 | If you want to… | Read |
 |------------------|------|
 | Understand the model — Trial, Scene, Role, Verifier | [Concepts](./concepts.md) |
-| Author a task | [Task authoring](./task-authoring.md) |
+| Author a task from scratch | [Task authoring](./task-authoring.md) |
+| Generate tasks from Claude Code / agent traces | [Task authoring — CLI](./task-authoring.md#cli) · [CLI reference](./reference/cli.md#bench-tasks-generate) |
 | Run multi-agent patterns (coder/reviewer, simulated user, BYOS) | [Use cases](./use-cases.md) |
 | Run multi-round single-agent (progressive disclosure) | [Progressive disclosure](./progressive-disclosure.md) |
 | Evaluate skills, not tasks | [Skill eval](./skill-eval.md) |
