@@ -1,0 +1,68 @@
+{
+  "experiment": "structural-parity",
+  "benchmark": "opaquetoolsbench",
+  "environment": "bfcl",
+  "date": "2026-05-17",
+  "description": "Structural parity validation of generated BenchFlow task directories from OpaqueToolsBench BFCL base configs",
+  "source": {
+    "repo": "https://github.com/shallinan1/OpaqueToolsBench",
+    "configs": [
+      "executable_simple_base_config.json",
+      "executable_multiple_function_base_config.json"
+    ]
+  },
+  "results": {
+    "total_tasks": 150,
+    "passed": 150,
+    "failed": 0,
+    "pass_rate": 1.0,
+    "categories": {
+      "executable_simple": {
+        "count": 100,
+        "passed": 100
+      },
+      "executable_multiple_function": {
+        "count": 50,
+        "passed": 50
+      }
+    }
+  },
+  "checks": [
+    {
+      "name": "required_files_present",
+      "description": "task.toml, instruction.md, Dockerfile, test.sh, evaluate.py, ground_truth.json all exist and are non-empty",
+      "passed": 150,
+      "failed": 0
+    },
+    {
+      "name": "task_toml_valid",
+      "description": "task.toml contains opaquetoolsbench/ prefix, [agent], [verifier], timeout_sec",
+      "passed": 150,
+      "failed": 0
+    },
+    {
+      "name": "instruction_md_valid",
+      "description": "instruction.md contains ## Query, ## Available Functions, and output path reference",
+      "passed": 150,
+      "failed": 0
+    },
+    {
+      "name": "ground_truth_valid",
+      "description": "ground_truth.json is valid JSON with non-empty ground_truth key",
+      "passed": 150,
+      "failed": 0
+    },
+    {
+      "name": "test_sh_executable",
+      "description": "test.sh has executable permission bit set",
+      "passed": 150,
+      "failed": 0
+    },
+    {
+      "name": "dockerfile_valid",
+      "description": "Dockerfile contains FROM directive and /logs/verifier directory creation",
+      "passed": 150,
+      "failed": 0
+    }
+  ]
+}
