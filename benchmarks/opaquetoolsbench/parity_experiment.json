@@ -102,5 +102,23 @@
       }
     ],
     "notes": "AST-based deterministic matching. All test cases produce correct binary rewards (1.0/0.0). No LLM judge variance."
+  },
+  "security_parity": {
+    "experiment": "opaquetoolsbench_security_eval",
+    "description": "Verify that adversarial agent payloads cannot execute arbitrary code via eval() in the verifier. After removing eval() fallbacks in parse_python_call(), ast.unparse() is used instead.",
+    "date": "2026-05-17",
+    "status": "passed",
+    "test_cases": [
+      {
+        "name": "adversarial_payload",
+        "input": "__import__(\"os\").system(\"echo PWNED\")",
+        "expected_reward": 0.0,
+        "actual_reward": 0.0,
+        "code_executed": false,
+        "result": "pass"
+      }
+    ],
+    "fix_applied": "Replaced eval(compile(ast.Expression(...), '', 'eval')) with ast.unparse() at both keyword-arg and positional-arg locations in parse_python_call()",
+    "notes": "ast.unparse() returns a safe string representation without executing the AST node. Adversarial payloads are treated as non-matching function names and receive reward 0.0."
   }
 }
