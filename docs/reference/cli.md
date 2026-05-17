@@ -121,6 +121,49 @@ Validate a task directory (Dockerfile, instruction.md, tests/).
 bench tasks check tasks/my-task
 ```
 
+### bench tasks generate
+
+Generate benchmark tasks from agent traces. Supports local Claude Code sessions,
+JSONL trace files, and HuggingFace datasets.
+
+```bash
+# From local Claude Code sessions
+bench tasks generate --from-local
+bench tasks generate --from-local --project my-repo --limit 5
+
+# From a JSONL trace file (auto-detects Claude Code vs opentraces format)
+bench tasks generate --from-file session.jsonl --dry-run
+bench tasks generate --from-file traces.jsonl --format opentraces
+
+# From a HuggingFace dataset (use alias or full repo ID)
+bench tasks generate --from-hf opentraces-test -n 50 --outcome success
+bench tasks generate --from-hf nlile/misc-merged-claude-code-traces-v1 -n 100
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--from-local` | — | Generate from local Claude Code sessions |
+| `--from-file` | — | Generate from a JSONL trace file |
+| `--from-hf` | — | Generate from a HuggingFace dataset (ID or alias) |
+| `--output`, `-o` | `tasks` | Output directory for generated tasks |
+| `--project`, `-p` | — | Filter local sessions by project path substring |
+| `--projects-dir` | `~/.claude/projects/` | Claude Code projects directory |
+| `--format`, `-f` | `auto` | Trace format: auto, claude-code, opentraces |
+| `--split` | `train` | HuggingFace dataset split |
+| `--max-rows` | `100` | Max rows to download from HuggingFace |
+| `--limit`, `-n` | `20` | Max traces to process |
+| `--min-steps` | `2` | Minimum steps per trace |
+| `--outcome` | — | Filter by outcome: success, failure, unknown |
+| `--author` | `benchflow-traces` | Author name for task.toml |
+| `--dry-run` | — | Preview traces without generating tasks |
+
+### bench tasks list-sources
+
+List known HuggingFace trace datasets and their aliases.
+
+```bash
+bench tasks list-sources
+```
 ## bench environment
 
 ### bench environment create
