@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import re
 import shlex
 import textwrap
@@ -87,6 +88,71 @@ def _task_id_from_trace(trace: ParsedTrace) -> str:
     return f"{slug}-{h}"
 
 
+_SESSION_CONTINUATION_RE = re.compile(
+    r"^This session is being continued from a previous conversation.*?"
+    r"(?:Please continue|Continue with).*?$",
+    re.DOTALL | re.IGNORECASE,
+)
+
+
+def _clean_user_prompt(prompt: str) -> str:
+    """Clean session artifacts from a user prompt.
+
+    Strips session-continuation boilerplate that leaks from multi-turn
+    trace formats and extracts the actionable instruction.
+    """
+    # Remove session continuation wrapper — extract the actual task
+    m = _SESSION_CONTINUATION_RE.search(prompt)
+    if m:
+        # Try to find the real task content between summary markers
+        # e.g. "## Final Solution" or "### Implementation Required"
+        sections = re.split(r"\n##+ ", prompt)
+        if len(sections) > 1:
+            # Use the section that looks most like an instruction
+            for section in sections[1:]:
+                if any(
+                    kw in section.lower()
+                    for kw in ("solution", "implementation", "required", "code")
+                ):
+                    prompt = section.strip()
+                    break
+
+    return prompt.strip()
+
+
+def _relativize_path(path: str) -> str:
+    """Convert an absolute workspace path to a relative project path.
+
+    Traces from real environments contain absolute paths like
+    ``/workspace/archit/trace_generation/repos/hyperswitch_pool_3/crates/...``.
+    This strips everything up to and including the repo root directory,
+    returning just the project-relative portion.
+    """
+    # Common workspace prefixes from known trace sources
+    patterns = [
+        r"/workspace/[^/]+/trace_generation/repos/[^/]+/",
+        r"/workspace/[^/]+/repos/[^/]+/",
+        r"/workspace/[^/]+/[^/]+/",
+        r"/home/[^/]+/repos/[^/]+/",
+        r"/home/[^/]+/[^/]+/",
+        r"/tmp/[^/]+/",
+    ]
+    for pattern in patterns:
+        m = re.match(pattern, path)
+        if m:
+            return path[m.end():]
+    # If it's an absolute path but no pattern matched, strip leading /
+    if path.startswith("/"):
+        parts = path.split("/")
+        # Heuristic: skip to the first directory that looks like project code
+        for i, part in enumerate(parts):
+            if part in ("src", "crates", "lib", "app", "tests", "migrations", "pkg"):
+                return "/".join(parts[i:])
+        # Fallback: just use the basename
+        return os.path.basename(path)
+    return path
+
+
 def _build_instruction(trace: ParsedTrace) -> str:
     """Synthesize instruction.md content from the trace.
 
@@ -97,17 +163,19 @@ def _build_instruction(trace: ParsedTrace) -> str:
     prompt = trace.first_user_prompt
     if not prompt:
         prompt = "(No user prompt found in trace — manual instruction needed)"
+    else:
+        prompt = _clean_user_prompt(prompt)
 
     lines = [prompt, ""]
 
     # Add context about what the agent actually did as implicit requirements
-    files = trace.files_edited
+    files = [_relativize_path(f) for f in trace.files_edited]
     if files:
         lines.append("## Expected Changes")
         lines.append("")
         lines.append("The following files should be created or modified:")
         lines.append("")
-        for f in files[:20]:  # cap at 20 files
+        for f in files[:20]:
             lines.append(f"- `{f}`")
         if len(files) > 20:
             lines.append(f"- ... and {len(files) - 20} more files")
@@ -202,8 +270,9 @@ def _build_test_sh(trace: ParsedTrace) -> str:
     If the trace has files_edited, checks those files exist.
     Otherwise generates a minimal pass-through verifier.
     Writes reward to /logs/verifier/reward.txt per BenchFlow contract.
+    File paths are relativized to remove workspace-specific prefixes.
     """
-    files = trace.files_edited
+    files = [_relativize_path(f) for f in trace.files_edited]
     if not files:
         return (
             "#!/bin/bash\n"

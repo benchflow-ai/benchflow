@@ -1,10 +1,12 @@
 """Download and parse trace datasets from HuggingFace Hub.
 
-Supports two dataset layouts:
+Supports three dataset layouts:
 
 1. **opentraces format** — JSONL with ``TraceRecord`` schema
-2. **Claude Code merged traces** — JSONL with ``messages`` field
-   (e.g. ``nlile/misc-merged-claude-code-traces-v1``)
+2. **Claude Code merged traces** — JSONL with ``messages`` or
+   ``messages_json`` field (e.g. ``nlile/misc-merged-claude-code-traces-v1``)
+3. **Claude Code request traces** — rows with ``requests`` list containing
+   API-level request metadata (e.g. ``semianalysisai/cc-traces-weka-…``)
 
 Datasets are cached locally under ``.cache/traces/``.
 """
@@ -13,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 
 from benchflow.traces.models import ParsedTrace, ToolCall, TraceStep
@@ -39,8 +42,8 @@ KNOWN_DATASETS: dict[str, dict[str, str]] = {
     },
     "cc-traces-weka": {
         "repo": "semianalysisai/cc-traces-weka-no-subagents-051226",
-        "format": "claude-messages",
-        "description": "949 production traces, 136k requests",
+        "format": "claude-requests",
+        "description": "949 production traces, 136k requests (metadata only)",
     },
 }
 
@@ -182,15 +185,27 @@ def _download_via_api(
 # ---------------------------------------------------------------------------
 
 
+_SYSTEM_REMINDER_RE = re.compile(
+    r"<system-reminder>.*?</system-reminder>", re.DOTALL
+)
+
+
+def _strip_system_reminders(text: str) -> str:
+    """Remove ``<system-reminder>…</system-reminder>`` blocks from text."""
+    return _SYSTEM_REMINDER_RE.sub("", text).strip()
+
+
 def _parse_claude_messages_row(row: dict[str, object], idx: int = 0) -> ParsedTrace | None:
     """Parse a row from a Claude Code merged-messages dataset.
 
-    These datasets have a ``messages`` field containing a list of
-    ``{role, content}`` dicts, sometimes with ``tool_use`` blocks.
+    These datasets store messages under ``messages`` or ``messages_json``
+    as a list of ``{role, content}`` dicts, sometimes with ``tool_use``
+    blocks.  User prompts often contain ``<system-reminder>`` wrappers
+    that are stripped before task generation.
     """
     import uuid
 
-    messages = row.get("messages")
+    messages = row.get("messages") or row.get("messages_json")
     if not isinstance(messages, (list, str)):
         return None
 
@@ -229,11 +244,19 @@ def _parse_claude_messages_row(row: dict[str, object], idx: int = 0) -> ParsedTr
                                 else {},
                             )
                         )
+                    elif block.get("type") == "tool_result":
+                        result_content = block.get("content", "")
+                        if isinstance(result_content, str):
+                            text_parts.append(result_content)
                 elif isinstance(block, str):
                     text_parts.append(block)
             content_str = "\n".join(text_parts)
         else:
             content_str = str(content) if content else ""
+
+        # Strip system-reminder blocks from user messages
+        if role == "user" and content_str:
+            content_str = _strip_system_reminders(content_str)
 
         if content_str.strip() or tool_calls:
             steps.append(TraceStep(role=role, content=content_str, tool_calls=tool_calls))
@@ -250,14 +273,88 @@ def _parse_claude_messages_row(row: dict[str, object], idx: int = 0) -> ParsedTr
     if source:
         tags.append(f"source:{source}")
 
+    # Infer outcome from last assistant step
+    outcome = "unknown"
+    for step in reversed(steps):
+        if step.role == "assistant":
+            lower = step.content.lower()
+            if any(
+                w in lower
+                for w in (
+                    "complete",
+                    "done",
+                    "finished",
+                    "success",
+                    "fixed",
+                    "created",
+                    "built",
+                    "updated",
+                    "refactored",
+                    "implemented",
+                    "added",
+                )
+            ):
+                outcome = "success"
+            elif any(w in lower for w in ("error", "failed", "cannot")):
+                outcome = "failure"
+            break
+
     return ParsedTrace(
         trace_id=trace_id,
         session_id=session_id,
         agent_name="claude-code",
         model=model,
         steps=steps,
+        outcome=outcome,
+        tags=tags,
+    )
+
+
+def _parse_claude_requests_row(row: dict[str, object], idx: int = 0) -> ParsedTrace | None:
+    """Parse a row from the cc-traces-weka request-metadata dataset.
+
+    These datasets have a ``requests`` list with API-level metadata
+    (token counts, timing, model) but no message content. Useful for
+    difficulty estimation but produces minimal task instructions.
+    """
+    import uuid
+
+    requests = row.get("requests")
+    if not isinstance(requests, list) or not requests:
+        return None
+
+    trace_id = str(row.get("id", f"hf-req-{idx}-{uuid.uuid4().hex[:8]}"))
+    models = row.get("models", [])
+    model = str(models[0]) if isinstance(models, list) and models else None
+
+    total_input = 0
+    total_output = 0
+    steps: list[TraceStep] = []
+    for req in requests:
+        if not isinstance(req, dict):
+            continue
+        total_input += int(req.get("in", 0))
+        total_output += int(req.get("out", 0))
+        req_model = str(req.get("model", ""))
+        steps.append(
+            TraceStep(
+                role="assistant",
+                content=f"API request: model={req_model}, "
+                f"in={req.get('in', 0)}, out={req.get('out', 0)}",
+            )
+        )
+
+    tags = ["huggingface", "request-metadata"]
+    return ParsedTrace(
+        trace_id=trace_id,
+        session_id=trace_id,
+        agent_name="claude-code",
+        model=model,
+        steps=steps,
         outcome="unknown",
         tags=tags,
+        total_input_tokens=total_input,
+        total_output_tokens=total_output,
     )
 
 
@@ -311,6 +408,10 @@ def load_hf_dataset(
                 traces.append(parse_opentraces_record(row))
             elif format == "claude-messages":
                 parsed = _parse_claude_messages_row(row, idx=i)
+                if parsed:
+                    traces.append(parsed)
+            elif format == "claude-requests":
+                parsed = _parse_claude_requests_row(row, idx=i)
                 if parsed:
                     traces.append(parsed)
             else:

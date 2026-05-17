@@ -76,7 +76,7 @@ def register_tasks_generate(tasks_app: typer.Typer) -> None:
             typer.Option(
                 "--format",
                 "-f",
-                help="Trace format override: auto, claude-code, opentraces",
+                help="Trace format override: auto, claude-code, opentraces, claude-messages",
             ),
         ] = "auto",
         split: Annotated[
@@ -216,7 +216,8 @@ def _load_file(path: Path, format: str) -> list:
     """Load traces from a single JSONL file.
 
     For Claude Code format, splits by ``sessionId`` so multi-session
-    files produce one trace per session.
+    files produce one trace per session.  Also supports HuggingFace
+    ``claude-messages`` rows (with ``messages_json`` field).
     """
     from benchflow.traces.parsers import (
         parse_claude_code_file,
@@ -236,6 +237,8 @@ def _load_file(path: Path, format: str) -> list:
         return parse_claude_code_file(path)
     elif detected_format == "opentraces":
         return parse_opentraces_file(path)
+    elif detected_format == "claude-messages":
+        return _parse_hf_messages_file(path)
     else:
         console.print(f"[red]Unknown format: {detected_format}[/red]")
         raise typer.Exit(1)
@@ -266,6 +269,29 @@ def _load_hf(
 # ---------------------------------------------------------------------------
 
 
+def _parse_hf_messages_file(path: Path) -> list:
+    """Parse a JSONL file of HuggingFace ``claude-messages`` rows."""
+    import json as _json
+
+    from benchflow.traces.huggingface import _parse_claude_messages_row
+
+    traces = []
+    with path.open() as f:
+        for i, line in enumerate(f):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = _json.loads(line)
+            except _json.JSONDecodeError:
+                continue
+            if isinstance(row, dict):
+                parsed = _parse_claude_messages_row(row, idx=i)
+                if parsed:
+                    traces.append(parsed)
+    return traces
+
+
 def _detect_format(path: Path) -> str:
     """Auto-detect trace file format from the first non-empty JSONL line."""
     first_line = ""
@@ -289,6 +315,10 @@ def _detect_format(path: Path) -> str:
 
     if data.get("type") in ("user", "assistant", "system"):
         return "claude-code"
+
+    # HuggingFace merged-messages format
+    if "messages_json" in data or ("messages" in data and "model" in data):
+        return "claude-messages"
 
     return "claude-code"
 
