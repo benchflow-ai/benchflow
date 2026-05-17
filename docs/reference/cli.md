@@ -83,7 +83,7 @@ bench eval create \
   --source-path tasks \
   -a gemini \
   -m gemini-3.1-flash-lite-preview \
-  -e daytona \
+  --sandbox daytona \
   -c 64 \
   --sandbox-setup-timeout 300
 
@@ -100,7 +100,7 @@ bench eval create -t ./tasks -a gemini -m gemini-3.1-flash-lite-preview
 | `--source-ref` | — | Branch or tag to clone (e.g. `main`) |
 | `--agent`, `-a` | `claude-agent-acp` | Agent name |
 | `--model`, `-m` | Agent default | Model ID |
-| `--sandbox`, `-e` | `docker` | Sandbox: docker, daytona, or modal |
+| `--sandbox` | `docker` | Sandbox: docker, daytona, or modal |
 | `--concurrency`, `-c` | `4` | Max concurrent tasks (batch mode only) |
 | `--jobs-dir`, `-o` | `jobs` | Output directory |
 | `--sandbox-user` | `agent` | Sandbox user (null for root) |
@@ -129,6 +129,7 @@ bench skills eval skills/my-skill/ \
   -m gemini-3.1-flash-lite-preview \
   --sandbox daytona
 ```
+
 
 ---
 

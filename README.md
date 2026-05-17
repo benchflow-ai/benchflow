@@ -67,7 +67,7 @@ bench eval create -f benchmarks/skillsbench-claude-glm51.yaml
 # Inline — mirrors the YAML source fields
 bench eval create \
     --source-repo benchflow-ai/skillsbench --source-path tasks \
-    -a gemini -m gemini-3.1-flash-lite-preview -e daytona -c 64
+    -a gemini -m gemini-3.1-flash-lite-preview --sandbox daytona -c 64
 ```
 
 Repos are cloned and cached locally under `.cache/datasets/` on first use.

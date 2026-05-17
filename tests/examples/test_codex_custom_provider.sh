@@ -62,7 +62,7 @@ env -u CODEX_API_KEY -u OPENAI_BASE_URL -u OPENAI_API_KEY \
     "$TASK" \
     -a codex-acp \
     -m vllm/mock-model \
-    -b docker \
+    --sandbox docker \
     -o "$JOBS_DIR" \
     --ae "BENCHFLOW_PROVIDER_BASE_URL=${STUB_URL}"
 RUN_RC=$?

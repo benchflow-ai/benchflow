@@ -13,7 +13,7 @@ bench eval create \
   --source-path tasks/edit-pdf \
   -a gemini \
   -m gemini-3.1-flash-lite-preview \
-  -e daytona
+  --sandbox daytona
 ```
 
 Sandboxes are `docker`, `daytona`, and `modal`.
@@ -28,7 +28,7 @@ bench eval create \
   -t tasks/my-task \
   -a gemini \
   -m gemini-3.1-flash-lite-preview \
-  -e daytona \
+  --sandbox daytona \
   --skills-dir tasks/my-task/environment/skills \
   --ae BENCHFLOW_SKILL_NUDGE=name
 ```
