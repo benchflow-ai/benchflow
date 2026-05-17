@@ -13,8 +13,8 @@ filesystem approach covers the rewind use case and is provable now.
 """
 
 import logging
-import shlex
 import re as _re
+import shlex
 from pathlib import PurePosixPath
 
 logger = logging.getLogger(__name__)
