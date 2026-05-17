@@ -438,7 +438,7 @@ def _patch_docker_dind() -> None:
                 env[key] = host_source + val[len(container_dest) :]
         return env
 
-    DockerSandboxEnvVars.to_env_dict = _patched  # type: ignore[assignment]
+    DockerSandboxEnvVars.to_env_dict = _patched  # type: ignore[assignment, ty:invalid-assignment]
 
 
 def _create_sandbox_environment(
