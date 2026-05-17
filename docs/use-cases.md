@@ -425,19 +425,6 @@ Each service:
 - Uses SQLite for state -- pre-seeded from the task's `environment/` directory.
 - Is indistinguishable from the real API from the agent's perspective.
 
-### How it works vs Harbor
-
-In Harbor, stateful services required Docker Compose with separate containers for each service. This meant:
-- Separate Dockerfiles per service container.
-- Docker Compose networking for inter-container communication.
-- Complex task setup with volume mounts for shared databases.
-
-In BenchFlow, services are lightweight processes in the same sandbox:
-- One Dockerfile with the services pre-installed.
-- `pre_agent_hooks` starts them before the agent connects.
-- The agent hits `localhost:9001` for Gmail -- no network complexity.
-- `detect_services_from_dockerfile()` can discover service binaries for custom orchestration, but the CLI does not auto-start them yet.
-
 ### Example task structure
 
 ```
@@ -454,23 +441,5 @@ tasks/schedule-meeting-from-email/
     └── test.sh             # Verify: check gcal.db has the new event
 ```
 
----
 
-## Migration from Harbor
-
-| Harbor pattern | BenchFlow equivalent | Key difference |
-|----------------|---------------------|----------------|
-| Docker Compose + FastMCP sidecar (#1316) | Scene with user + agent roles | No Compose needed; agents share sandbox |
-| Multi-container multi-agent (#1462) | Scene with N roles + turns | Single container, process-level isolation via ACP |
-| `agent_timeout` + single prompt | Turn with `None` prompt | Same behavior, just wrapped in Scene |
-| Docker Compose services | `pre_agent_hooks` + `SERVICES` registry | Lightweight same-container sidecars; service hook wiring is explicit |
-| Separate verifier container | Same -- BenchFlow uses Harbor's `Verifier` | No change needed for task authors |
-
-### Porting a Harbor task
-
-1. **Task files**: No changes needed. BenchFlow reads the same `task.toml`, `instruction.md`, `Dockerfile`, and `tests/` structure.
-2. **Single-turn**: Works out of the box with `bench eval create -t your-task -a gemini`.
-3. **Multi-turn**: Add a `scenes` key to trial YAML loaded with `trial_config_from_yaml()` or pass `TrialConfig` in Python.
-4. **Multi-agent**: Define multiple roles in the scene. No Docker Compose required.
-5. **Services**: Start them explicitly with `pre_agent_hooks`; `detect_services_from_dockerfile()` is available for custom orchestration, but the CLI does not auto-start services today.
 

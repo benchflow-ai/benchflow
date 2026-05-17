@@ -9,7 +9,7 @@ Demonstrates:
 Requirements:
   - uv tool install benchflow, or run from a checkout with uv run
   - GEMINI_API_KEY or DAYTONA_API_KEY set
-  - A Harbor-format task directory (e.g. benchflow-ai/skillsbench/tasks/edit-pdf)
+  - A BenchFlow task directory (e.g. benchflow-ai/skillsbench/tasks/edit-pdf)
 
 Usage:
   uv run python docs/examples/coder-reviewer-demo.py --task benchflow-ai/skillsbench/tasks/edit-pdf
