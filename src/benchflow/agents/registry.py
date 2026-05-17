@@ -612,14 +612,15 @@ AGENT_ALIASES: dict[str, str] = {
     "harvey-lab": "harvey-lab-harness",
 }
 
-VALID_PROTOCOLS = {"acp", "harbor"}  # harbor kept for legacy compat
+VALID_PROTOCOLS = {"acp", "acpx"}
 
 
 def parse_agent_spec(spec: str) -> tuple[str, str]:
-    """Parse an agent spec like 'acp/claude-agent-acp' or 'claude'.
+    """Parse an agent spec like 'acp/claude-agent-acp', 'acpx/claude', or 'claude'.
 
     Returns (protocol, agent_name) with alias resolution.
     Bare names default to 'acp' protocol.
+    The 'acpx' protocol routes through the acpx CLI (https://acpx.sh/).
     """
     if "/" in spec:
         protocol, name = spec.split("/", 1)
@@ -630,10 +631,54 @@ def parse_agent_spec(spec: str) -> tuple[str, str]:
     return protocol, name
 
 
+_ACPX_INSTALL = (
+    f"{_NODE_INSTALL} && "
+    f'export PATH="{_JS_AGENT_PATH}" && '
+    f"( command -v acpx >/dev/null 2>&1 || "
+    f"{_BENCHFLOW_NODE_PREFIX}/bin/npm install -g acpx@latest ) "
+)
+
+
+def _acpx_wrap(config: AgentConfig) -> AgentConfig:
+    """Wrap an agent config to launch via acpx instead of direct ACP.
+
+    acpx (https://acpx.sh/) is a headless CLI client for ACP that adds
+    persistent sessions, crash recovery, and structured NDJSON output.
+    The underlying agent's install, env, and credentials are preserved.
+    """
+    acpx_agent_name = config.name
+    for alias, canonical in AGENT_ALIASES.items():
+        if canonical == config.name:
+            acpx_agent_name = alias
+            break
+
+    return AgentConfig(
+        name=f"acpx:{config.name}",
+        install_cmd=f"{config.install_cmd} && {_ACPX_INSTALL}",
+        launch_cmd=(
+            f'export PATH="{_JS_AGENT_PATH}" && '
+            f"acpx {acpx_agent_name} --approve-all"
+        ),
+        protocol="acp",
+        requires_env=config.requires_env,
+        description=f"{config.description} (via acpx)",
+        skill_paths=config.skill_paths,
+        install_timeout=config.install_timeout,
+        env_mapping=config.env_mapping,
+        credential_files=config.credential_files,
+        home_dirs=config.home_dirs,
+        acp_model_format=config.acp_model_format,
+        subscription_auth=config.subscription_auth,
+        supports_acp_set_model=config.supports_acp_set_model,
+        disallow_web_tools_setup_cmd=config.disallow_web_tools_setup_cmd,
+        disallow_web_tools_launch_suffix=config.disallow_web_tools_launch_suffix,
+    )
+
+
 def resolve_agent(spec: str) -> AgentConfig:
     """Resolve an agent spec to an AgentConfig.
 
-    Supports: bare name, alias, protocol/name.
+    Supports: bare name, alias, protocol/name, acpx/name.
     Raises KeyError with suggestions for unknown agents.
     """
     protocol, name = parse_agent_spec(spec)
@@ -643,28 +688,20 @@ def resolve_agent(spec: str) -> AgentConfig:
             f"Unknown protocol: {protocol!r}. Valid: {', '.join(sorted(VALID_PROTOCOLS))}"
         )
 
-    if protocol == "harbor":
-        return AgentConfig(
-            name=name,
-            install_cmd="",
-            launch_cmd="",
-            protocol="harbor",
-            requires_env=[],
-            description=f"Legacy agent: {name}",
+    if name not in AGENTS:
+        from difflib import get_close_matches
+
+        close = get_close_matches(name, list(AGENTS.keys()), n=1, cutoff=0.6)
+        if close:
+            raise KeyError(f"Unknown agent: {name!r}. Did you mean: {close[0]!r}?")
+        raise KeyError(
+            f"Unknown agent: {name!r}. Available: {', '.join(sorted(AGENTS.keys()))}"
         )
 
-    if name in AGENTS:
-        return AGENTS[name]
-
-    # Fuzzy suggestion
-    from difflib import get_close_matches
-
-    close = get_close_matches(name, list(AGENTS.keys()), n=1, cutoff=0.6)
-    if close:
-        raise KeyError(f"Unknown agent: {name!r}. Did you mean: {close[0]!r}?")
-    raise KeyError(
-        f"Unknown agent: {name!r}. Available: {', '.join(sorted(AGENTS.keys()))}"
-    )
+    config = AGENTS[name]
+    if protocol == "acpx":
+        return _acpx_wrap(config)
+    return config
 
 
 def get_agent(name: str) -> tuple[AgentConfig, str]:

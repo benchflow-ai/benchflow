@@ -18,8 +18,8 @@ class TestParseAgentSpec:
     def test_explicit_acp(self):
         assert parse_agent_spec("acp/claude-agent-acp") == ("acp", "claude-agent-acp")
 
-    def test_legacy_protocol(self):
-        assert parse_agent_spec("harbor/claude-code") == ("harbor", "claude-code")
+    def test_acpx_protocol(self):
+        assert parse_agent_spec("acpx/claude") == ("acpx", "claude-agent-acp")
 
     def test_alias_bare(self):
         assert parse_agent_spec("claude") == ("acp", "claude-agent-acp")
@@ -36,8 +36,8 @@ class TestParseAgentSpec:
     def test_unknown_name_passes_through(self):
         assert parse_agent_spec("my-custom-agent") == ("acp", "my-custom-agent")
 
-    def test_legacy_unknown_agent(self):
-        assert parse_agent_spec("harbor/openhands") == ("harbor", "openhands")
+    def test_acpx_unknown_agent(self):
+        assert parse_agent_spec("acpx/openhands") == ("acpx", "openhands")
 
 
 class TestResolveAgent:
@@ -56,10 +56,11 @@ class TestResolveAgent:
         config = resolve_agent("acp/codex-acp")
         assert config.name == "codex-acp"
 
-    def test_resolve_legacy_agent(self):
-        config = resolve_agent("harbor/claude-code")
-        assert config.protocol == "harbor"
-        assert config.name == "claude-code"
+    def test_resolve_acpx_agent(self):
+        config = resolve_agent("acpx/claude")
+        assert config.protocol == "acp"
+        assert config.name == "acpx:claude-agent-acp"
+        assert "acpx" in config.launch_cmd
 
     def test_resolve_unknown_raises(self):
         with pytest.raises(KeyError, match="Unknown agent"):
