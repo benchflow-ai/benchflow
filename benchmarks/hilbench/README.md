@@ -71,7 +71,7 @@ The tasks are loaded from HuggingFace: [`ScaleAI/hil-bench`](https://huggingface
 |---|---|
 | `task_id` | `task.toml` name field `hilbench/<sanitized-id>` |
 | `problem` | `instruction.md` |
-| `repo_or_db_download_link` (Docker image tarball) | `environment/Dockerfile` (base Ubuntu image) |
+| `repo_or_db_download_link` (Docker image tarball) | `environment/Dockerfile` (uses pre-built image as `BASE_IMAGE`) |
 | `test_patch` + `tests_to_pass` | `tests/test_patch.diff` + `tests/verify.py` |
 | `ground_truth_answer` (gold patch) | Not used for verification (could be oracle) |
 
@@ -79,7 +79,7 @@ The tasks are loaded from HuggingFace: [`ScaleAI/hil-bench`](https://huggingface
 
 | Step | HILBench | BenchFlow |
 |---|---|---|
-| **Environment** | Docker image loaded from HF bucket tarball | Dockerfile with Ubuntu base; repo loaded separately |
+| **Environment** | Docker image loaded from HF bucket tarball | Dockerfile uses pre-built image via `BASE_IMAGE` build arg |
 | **Agent submission** | Agent modifies code in the repo | Agent works in `/workspace/` |
 | **Test execution** | Apply test_patch, run tests_to_pass | Same — verify.py applies patch, runs pytest per test |
 | **Scoring** | Count tests_to_pass that pass | Same — reward = passed / total |
@@ -96,11 +96,22 @@ HILBench defines three modes per task:
 
 This adapter implements **baseline mode only**.
 
+## Docker image setup
+
+Each HILBench SWE task ships a pre-built Docker image tarball on
+HuggingFace (`ScaleAI/hil-bench-swe-images`).  These images contain
+the repository at the correct commit plus the SWEAP test harness.
+
+**Access is gated** — you need a HuggingFace token with access to the
+`ScaleAI/hil-bench-swe-images` bucket.  Set `HF_TOKEN` in your
+environment before running.
+
+The runner (`run_hilbench.py`) handles downloading and loading images
+automatically.  Each task's `Dockerfile` uses an `ARG BASE_IMAGE` that
+the runner passes via `docker build --build-arg BASE_IMAGE=<tag>`.
+
 ## Notes
 
-- Docker image tarballs are referenced via `repo_or_db_download_link` but
-  not automatically downloaded by the converter.  The generated Dockerfile
-  uses a generic Ubuntu base; repo setup must be handled separately.
 - The `blocker_registry` field contains structured information about
   ambiguities in the task — these are used in `full_info` and `ask_human`
   modes but ignored in baseline mode.

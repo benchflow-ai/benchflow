@@ -146,10 +146,20 @@ Your changes will be evaluated by running the project's test suite.
 
 
 def _render_dockerfile(task: HILBenchTask) -> str:
-    return """\
+    """Generate Dockerfile using the pre-built HILBench Docker image as base.
+
+    Each HILBench SWE task ships a Docker image tarball on HuggingFace
+    (``ScaleAI/hil-bench-swe-images``) that contains the repository at the
+    correct commit plus the SWEAP test harness.  The runner downloads and
+    loads the tarball via ``docker load``, then passes the resulting image
+    tag as the ``BASE_IMAGE`` build arg.
+    """
+    return f"""\
 # HILBench SWE task environment.
-# The repo snapshot is loaded at runtime via the docker image tarball.
-FROM ubuntu:22.04
+# BASE_IMAGE is the pre-built image loaded from the HuggingFace tarball.
+# The runner passes it via: docker build --build-arg BASE_IMAGE=<loaded_tag>
+ARG BASE_IMAGE
+FROM ${{BASE_IMAGE}}
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -160,12 +170,16 @@ RUN apt-get update -qq && \\
         python3-pip \\
         curl \\
         jq \\
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* || true
 
 WORKDIR /workspace
 
 # BenchFlow log directories
 RUN mkdir -p /logs/verifier /logs/agent /logs/artifacts
+
+# Label with the HuggingFace download link for traceability
+LABEL hilbench.download_link="{task.download_link}"
+LABEL hilbench.uid="{task.uid}"
 """
 
 
