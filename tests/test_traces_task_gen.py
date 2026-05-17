@@ -96,6 +96,8 @@ class TestGenerateTask:
         assert task_dir.exists()
         assert (task_dir / "task.toml").exists()
         assert (task_dir / "instruction.md").exists()
+        assert (task_dir / "environment" / "Dockerfile").exists()
+        assert (task_dir / "tests" / "test.sh").exists()
 
     def test_task_toml_content(self, simple_trace: ParsedTrace, tmp_path: Path) -> None:
         task_dir = generate_task(simple_trace, tmp_path)
@@ -125,26 +127,80 @@ class TestGenerateTask:
     def test_generates_test_sh(self, simple_trace: ParsedTrace, tmp_path: Path) -> None:
         task_dir = generate_task(simple_trace, tmp_path)
 
-        test_sh = task_dir / "test.sh"
+        test_sh = task_dir / "tests" / "test.sh"
         assert test_sh.exists()
         content = test_sh.read_text()
         assert "#!/bin/bash" in content
         assert "hello.txt" in content
+        assert "/logs/verifier/reward.txt" in content
 
     def test_test_sh_is_executable(self, simple_trace: ParsedTrace, tmp_path: Path) -> None:
         task_dir = generate_task(simple_trace, tmp_path)
-        test_sh = task_dir / "test.sh"
+        test_sh = task_dir / "tests" / "test.sh"
 
         import stat
 
         mode = test_sh.stat().st_mode
         assert mode & stat.S_IXUSR
 
+    def test_dockerfile_generated(self, simple_trace: ParsedTrace, tmp_path: Path) -> None:
+        task_dir = generate_task(simple_trace, tmp_path)
+        dockerfile = task_dir / "environment" / "Dockerfile"
+
+        assert dockerfile.exists()
+        content = dockerfile.read_text()
+        assert "FROM ubuntu:24.04" in content
+        assert "/logs/verifier" in content
+
+    def test_passes_bench_tasks_check(self, simple_trace: ParsedTrace, tmp_path: Path) -> None:
+        """Generated tasks pass bench tasks check structural validation."""
+        from benchflow.tasks import check_task
+
+        task_dir = generate_task(simple_trace, tmp_path)
+        issues = check_task(task_dir)
+        assert issues == [], f"bench tasks check found issues: {issues}"
+
+    def test_test_sh_fallback_when_no_files(
+        self, tmp_path: Path
+    ) -> None:
+        """Tasks with no files_edited still get a pass-through test.sh."""
+        trace = ParsedTrace(
+            trace_id="no-files",
+            session_id="s",
+            steps=[
+                TraceStep(role="user", content="Do something"),
+                TraceStep(role="assistant", content="Done"),
+            ],
+        )
+        task_dir = generate_task(trace, tmp_path)
+        test_sh = task_dir / "tests" / "test.sh"
+        assert test_sh.exists()
+        content = test_sh.read_text()
+        assert "/logs/verifier/reward.txt" in content
+
     def test_hard_difficulty(self, complex_trace: ParsedTrace, tmp_path: Path) -> None:
         task_dir = generate_task(complex_trace, tmp_path)
         toml_text = (task_dir / "task.toml").read_text()
 
-        assert 'difficulty = "hard"' in toml_text
+        # 25 tool calls + 25 files → weighted score should be hard or expert
+        assert 'difficulty = "hard"' in toml_text or 'difficulty = "expert"' in toml_text
+
+    def test_timeout_scales_with_difficulty(
+        self, simple_trace: ParsedTrace, complex_trace: ParsedTrace, tmp_path: Path
+    ) -> None:
+        """Harder tasks get longer timeouts when timeout_sec=0 (auto)."""
+        easy_dir = generate_task(simple_trace, tmp_path / "easy")
+        hard_dir = generate_task(complex_trace, tmp_path / "hard")
+
+        easy_toml = (easy_dir / "task.toml").read_text()
+        hard_toml = (hard_dir / "task.toml").read_text()
+
+        # Extract timeout values
+        import re
+
+        easy_timeout = int(re.search(r"timeout_sec = (\d+)", easy_toml).group(1))
+        hard_timeout = int(re.search(r"timeout_sec = (\d+)", hard_toml).group(1))
+        assert hard_timeout >= easy_timeout
 
     def test_skip_existing_without_overwrite(
         self, simple_trace: ParsedTrace, tmp_path: Path

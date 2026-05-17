@@ -18,23 +18,56 @@ from benchflow.traces.models import ParsedTrace
 
 logger = logging.getLogger(__name__)
 
-# Default difficulty heuristics based on trace properties
-_DIFFICULTY_THRESHOLDS = {
-    "easy": (0, 5),       # <=5 tool calls
-    "medium": (6, 20),    # 6-20 tool calls
-    "hard": (21, 50),     # 21-50 tool calls
-    "expert": (51, None), # >50 tool calls
+# Difficulty heuristics — weighted score from multiple trace signals
+_DIFFICULTY_WEIGHTS = {
+    "tool_calls": 0.4,
+    "files_edited": 0.3,
+    "tokens": 0.2,
+    "duration": 0.1,
+}
+
+_DIFFICULTY_LEVELS = [
+    ("easy", 0, 15),
+    ("medium", 16, 45),
+    ("hard", 46, 75),
+    ("expert", 76, None),
+]
+
+# Timeout scaling by difficulty (seconds)
+_TIMEOUT_BY_DIFFICULTY = {
+    "easy": 300,
+    "medium": 600,
+    "hard": 1200,
+    "expert": 1800,
 }
 
 
 def _estimate_difficulty(trace: ParsedTrace) -> str:
-    """Estimate task difficulty from trace complexity signals."""
-    n = trace.n_tool_calls
-    for level, (lo, hi) in _DIFFICULTY_THRESHOLDS.items():
+    """Estimate task difficulty from multiple trace complexity signals.
+
+    Combines tool call count, files edited, token usage, and duration
+    into a weighted score mapped to easy/medium/hard/expert.
+    """
+    # Normalize each signal to 0-100 scale
+    tool_score = min(trace.n_tool_calls * 2, 100)
+    file_score = min(len(trace.files_edited) * 10, 100)
+    total_tokens = trace.total_input_tokens + trace.total_output_tokens
+    token_score = min(total_tokens / 100, 100) if total_tokens else 0
+    duration = trace.duration_sec
+    duration_score = min(duration / 6, 100) if duration else 0
+
+    score = (
+        tool_score * _DIFFICULTY_WEIGHTS["tool_calls"]
+        + file_score * _DIFFICULTY_WEIGHTS["files_edited"]
+        + token_score * _DIFFICULTY_WEIGHTS["tokens"]
+        + duration_score * _DIFFICULTY_WEIGHTS["duration"]
+    )
+
+    for level, lo, hi in _DIFFICULTY_LEVELS:
         if hi is None:
-            if n >= lo:
+            if score >= lo:
                 return level
-        elif lo <= n <= hi:
+        elif lo <= score <= hi:
             return level
     return "medium"
 
@@ -83,46 +116,60 @@ def _build_instruction(trace: ParsedTrace) -> str:
     return "\n".join(lines)
 
 
+def _sanitize_toml_string(value: str) -> str:
+    """Escape a string for safe embedding in a TOML quoted value."""
+    return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+
 def _build_task_toml(
     trace: ParsedTrace,
     *,
     author: str = "benchflow-traces",
-    timeout_sec: int = 300,
+    timeout_sec: int | None = None,
     verifier_timeout_sec: int = 60,
 ) -> str:
-    """Generate task.toml content from a trace."""
+    """Generate task.toml content from a trace.
+
+    If timeout_sec is None, scales automatically by estimated difficulty.
+    """
     difficulty = _estimate_difficulty(trace)
+    if timeout_sec is None:
+        timeout_sec = _TIMEOUT_BY_DIFFICULTY.get(difficulty, 300)
+
     tags = list(trace.tags) if trace.tags else []
     tags.append("from-trace")
     if trace.agent_name:
         tags.append(f"agent:{trace.agent_name}")
 
-    # Build tags line
-    tags_str = ", ".join(f'"{t}"' for t in tags)
+    tags_str = ", ".join(f'"{ _sanitize_toml_string(t)}"' for t in tags)
 
     category = "trace-import"
     if trace.git.repo:
-        # Use repo name as category
         repo_name = trace.git.repo.rstrip("/").split("/")[-1]
         if repo_name:
             category = repo_name
+
+    safe_author = _sanitize_toml_string(author)
+    safe_trace_id = _sanitize_toml_string(trace.trace_id)
+    safe_session_id = _sanitize_toml_string(trace.session_id)
+    safe_category = _sanitize_toml_string(category)
 
     toml_lines = [
         'version = "1.0"',
         "",
         "[metadata]",
-        f'author_name = "{author}"',
+        f'author_name = "{safe_author}"',
         f'difficulty = "{difficulty}"',
-        f'category = "{category}"',
+        f'category = "{safe_category}"',
         f"tags = [{tags_str}]",
-        f'source_trace_id = "{trace.trace_id}"',
-        f'source_session_id = "{trace.session_id}"',
+        f'source_trace_id = "{safe_trace_id}"',
+        f'source_session_id = "{safe_session_id}"',
     ]
 
     if trace.model:
-        toml_lines.append(f'source_model = "{trace.model}"')
+        toml_lines.append(f'source_model = "{_sanitize_toml_string(trace.model)}"')
     if trace.outcome:
-        toml_lines.append(f'source_outcome = "{trace.outcome}"')
+        toml_lines.append(f'source_outcome = "{_sanitize_toml_string(trace.outcome)}"')
 
     toml_lines.extend(
         [
@@ -142,15 +189,21 @@ def _build_task_toml(
     return "\n".join(toml_lines) + "\n"
 
 
-def _build_test_sh(trace: ParsedTrace) -> str | None:
-    """Generate a basic test.sh verifier from the trace.
+def _build_test_sh(trace: ParsedTrace) -> str:
+    """Generate a test.sh verifier from the trace.
 
-    If the trace has files_edited, generates a verifier that checks
-    those files exist. Returns None if no verifier can be generated.
+    If the trace has files_edited, checks those files exist.
+    Otherwise generates a minimal pass-through verifier.
+    Writes reward to /logs/verifier/reward.txt per BenchFlow contract.
     """
     files = trace.files_edited
     if not files:
-        return None
+        return textwrap.dedent("""\
+            #!/bin/bash
+            # Auto-generated verifier from trace {trace_id}
+            # No file checks available — manual verification needed.
+            echo "1.0" > /logs/verifier/reward.txt
+        """).format(trace_id=trace.trace_id)
 
     checks: list[str] = []
     for f in files[:10]:
@@ -171,9 +224,9 @@ def _build_test_sh(trace: ParsedTrace) -> str | None:
         {checks}
 
         if [ "$PASS" = "1" ]; then
-            echo "1.0" > reward.txt
+            echo "1.0" > /logs/verifier/reward.txt
         else
-            echo "0.0" > reward.txt
+            echo "0.0" > /logs/verifier/reward.txt
         fi
     """).format(
         trace_id=trace.trace_id,
@@ -181,6 +234,19 @@ def _build_test_sh(trace: ParsedTrace) -> str | None:
     )
 
     return script
+
+
+def _build_dockerfile() -> str:
+    """Generate a default Dockerfile for trace-generated tasks."""
+    return textwrap.dedent("""\
+        FROM ubuntu:24.04
+
+        RUN apt-get update -qq && apt-get install -y -qq curl git python3 && rm -rf /var/lib/apt/lists/*
+
+        WORKDIR /app
+
+        RUN mkdir -p /logs/verifier /logs/agent /logs/artifacts
+    """)
 
 
 def generate_task(
@@ -202,7 +268,7 @@ def generate_task(
         trace: Parsed trace to convert.
         output_dir: Parent directory for generated tasks.
         author: Author name for task.toml metadata.
-        timeout_sec: Agent timeout in seconds.
+        timeout_sec: Agent timeout in seconds (0 = auto-scale by difficulty).
         overwrite: If True, overwrite existing task directories.
 
     Returns:
@@ -219,19 +285,26 @@ def generate_task(
     task_dir.mkdir(parents=True, exist_ok=True)
 
     # Write task.toml
-    toml_content = _build_task_toml(trace, author=author, timeout_sec=timeout_sec)
+    effective_timeout = timeout_sec if timeout_sec > 0 else None
+    toml_content = _build_task_toml(trace, author=author, timeout_sec=effective_timeout)
     (task_dir / "task.toml").write_text(toml_content)
 
     # Write instruction.md
     instruction = _build_instruction(trace)
     (task_dir / "instruction.md").write_text(instruction)
 
-    # Write test.sh if we can generate a verifier
+    # Write environment/Dockerfile
+    env_dir = task_dir / "environment"
+    env_dir.mkdir(exist_ok=True)
+    (env_dir / "Dockerfile").write_text(_build_dockerfile())
+
+    # Write tests/test.sh
+    tests_dir = task_dir / "tests"
+    tests_dir.mkdir(exist_ok=True)
     test_sh = _build_test_sh(trace)
-    if test_sh:
-        test_path = task_dir / "test.sh"
-        test_path.write_text(test_sh)
-        test_path.chmod(0o755)
+    test_path = tests_dir / "test.sh"
+    test_path.write_text(test_sh)
+    test_path.chmod(0o755)
 
     logger.info(
         "Generated task %s (difficulty=%s, outcome=%s, tools=%d)",
