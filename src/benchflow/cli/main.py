@@ -61,7 +61,7 @@ def run(
     ] = None,
     environment: Annotated[
         str,
-        typer.Option("--sandbox", "-b", help="Sandbox: docker, daytona, or modal"),
+        typer.Option("--sandbox", "-e", help="Sandbox: docker, daytona, or modal"),
     ] = "docker",
     prompt: Annotated[
         list[str] | None,
@@ -193,7 +193,7 @@ def job(
     ] = None,
     environment: Annotated[
         str,
-        typer.Option("--env", "-e", help="Environment: docker, daytona, or modal"),
+        typer.Option("--sandbox", "-e", help="Sandbox: docker, daytona, or modal"),
     ] = "docker",
     concurrency: Annotated[
         int,
@@ -372,7 +372,7 @@ def eval(
     ] = None,
     environment: Annotated[
         str,
-        typer.Option("--env", "-e", help="Environment: docker, daytona, or modal"),
+        typer.Option("--sandbox", "-e", help="Sandbox: docker, daytona, or modal"),
     ] = "docker",
     concurrency: Annotated[
         int,
@@ -503,7 +503,7 @@ def skills_eval(
     ] = None,
     environment: Annotated[
         str,
-        typer.Option("--env", "-e", help="Environment: docker, daytona, or modal"),
+        typer.Option("--sandbox", "-e", help="Sandbox: docker, daytona, or modal"),
     ] = "docker",
     concurrency: Annotated[
         int,
@@ -818,7 +818,7 @@ def eval_create(
     ] = None,
     environment: Annotated[
         str,
-        typer.Option("--env", "-e", help="Sandbox: docker, daytona, or modal"),
+        typer.Option("--sandbox", "-e", help="Sandbox: docker, daytona, or modal"),
     ] = "docker",
     concurrency: Annotated[
         int,
@@ -1062,7 +1062,7 @@ def train_create(
     ] = None,
     environment: Annotated[
         str,
-        typer.Option("--env", "-e", help="Sandbox"),
+        typer.Option("--sandbox", "-e", help="Sandbox: docker, daytona, or modal"),
     ] = "daytona",
     sweeps: Annotated[
         int,
@@ -1175,7 +1175,7 @@ def environment_create(
     ],
     sandbox: Annotated[
         str,
-        typer.Option("--sandbox", "-b", help="Sandbox: docker, daytona, or modal"),
+        typer.Option("--sandbox", "-e", help="Sandbox: docker, daytona, or modal"),
     ] = "daytona",
 ) -> None:
     """Create an environment from a task directory (does not start it)."""

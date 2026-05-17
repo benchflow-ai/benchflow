@@ -13,7 +13,7 @@ Requirements:
 
 Usage:
   uv run python docs/examples/coder-reviewer-demo.py --task benchflow-ai/skillsbench/tasks/edit-pdf
-  uv run python docs/examples/coder-reviewer-demo.py --task benchflow-ai/skillsbench/tasks/edit-pdf --env docker
+  uv run python docs/examples/coder-reviewer-demo.py --task benchflow-ai/skillsbench/tasks/edit-pdf --sandbox docker
 
 Terminology:
   - Turn:        One prompt → one ACP session (one role acts)
@@ -158,7 +158,7 @@ def main() -> None:
     parser.add_argument(
         "--task", required=True, help="Task ref (org/repo/path or local path)"
     )
-    parser.add_argument("--env", default="daytona", choices=["daytona", "docker"])
+    parser.add_argument("--sandbox", default="daytona", choices=["daytona", "docker"])
     parser.add_argument("--agent", default="gemini")
     parser.add_argument("--model", default="gemini-3.1-flash-lite-preview")
     parser.add_argument(
@@ -183,9 +183,9 @@ def main() -> None:
             sys.exit(1)
 
     if args.compare:
-        asyncio.run(run_comparison(args.task, args.env, args.agent, args.model))
+        asyncio.run(run_comparison(args.task, args.sandbox, args.agent, args.model))
     else:
-        asyncio.run(run_single(args.task, args.env, args.agent, args.model))
+        asyncio.run(run_single(args.task, args.sandbox, args.agent, args.model))
 
 
 if __name__ == "__main__":

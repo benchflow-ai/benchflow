@@ -16,7 +16,7 @@ bench eval create \
   -e daytona
 ```
 
-Backends are `docker`, `daytona`, and `modal`.
+Sandboxes are `docker`, `daytona`, and `modal`.
 
 ## Skills
 
