@@ -160,7 +160,7 @@ class Evaluation:
     """Run a benchmark job across multiple tasks.
 
     Usage:
-        from benchflow.task_download import resolve_source
+        from benchflow._utils.benchmark_repos import resolve_source
 
         evaluation = Evaluation(
             tasks_dir=resolve_source("harbor-framework/terminal-bench-2"),
@@ -238,7 +238,11 @@ class Evaluation:
     @classmethod
     def _from_native_yaml(cls, raw: dict, **kwargs) -> Job:
         """Parse benchflow-native YAML."""
-        from benchflow.task_download import TASK_ALIASES, ensure_tasks, resolve_source
+        from benchflow._utils.benchmark_repos import (
+            TASK_ALIASES,
+            ensure_tasks,
+            resolve_source,
+        )
 
         # New two-field format: source.repo + source.path
         if "source" in raw:

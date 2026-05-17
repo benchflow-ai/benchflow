@@ -105,7 +105,6 @@ class RolloutPaths:
         self.verifier_dir.mkdir(parents=True, exist_ok=True)
         self.artifacts_dir.mkdir(parents=True, exist_ok=True)
 
-
     @property
     def config_path(self) -> Path:
         return self.rollout_dir / "config.json"
@@ -160,13 +159,13 @@ class SandboxPaths:
     """Static mount points inside the sandbox container.
 
     These are always POSIX paths since sandboxes run Linux.
-"""
+    """
 
-    logs_dir: PurePosixPath = PurePosixPath("/logs")
+    logs_dir: PurePosixPath = PurePosixPath("/logs")  # noqa: RUF009
     agent_dir: PurePosixPath = logs_dir / "agent"
     verifier_dir: PurePosixPath = logs_dir / "verifier"
     artifacts_dir: PurePosixPath = logs_dir / "artifacts"
-    tests_dir: PurePosixPath = PurePosixPath("/tests")
-    solution_dir: PurePosixPath = PurePosixPath("/solution")
+    tests_dir: PurePosixPath = PurePosixPath("/tests")  # noqa: RUF009
+    solution_dir: PurePosixPath = PurePosixPath("/solution")  # noqa: RUF009
     reward_text_path: PurePosixPath = verifier_dir / "reward.txt"
     reward_json_path: PurePosixPath = verifier_dir / "reward.json"

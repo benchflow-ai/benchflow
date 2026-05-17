@@ -11,17 +11,17 @@ pull in every name that rollout.py uses at module scope.
 # Re-export names that rollout.py imports at module scope so that
 # ``patch("benchflow.trial.<name>", ...)`` in tests keeps working.
 from benchflow._acp_run import connect_acp, execute_prompts  # noqa: F401
-from benchflow._agent_env import resolve_agent_env  # noqa: F401
-from benchflow._agent_setup import apply_web_tool_policy, deploy_skills  # noqa: F401
-from benchflow._credentials import (  # noqa: F401
-    upload_subscription_auth,
-    write_credential_files,
-)
 from benchflow._env_setup import _create_environment  # noqa: F401
 from benchflow._provider_runtime import (  # noqa: F401
     ensure_bedrock_proxy_runtime,
     stop_provider_runtime,
 )
+from benchflow.agents.credentials import (  # noqa: F401
+    upload_subscription_auth,
+    write_credential_files,
+)
+from benchflow.agents.env import resolve_agent_env  # noqa: F401
+from benchflow.agents.install import apply_web_tool_policy, deploy_skills  # noqa: F401
 from benchflow.rollout import *  # noqa: F403
 from benchflow.rollout import (  # noqa: F401 — private helpers used by tests/self_gen
     GENERATED_SKILLS_ROOT,

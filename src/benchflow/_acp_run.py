@@ -7,7 +7,7 @@ Owns the live agent-side of a run:
       ACP-native trajectory, and report tool-call counts
 
 The one allowed horizontal phase import in this refactor lives here:
-``from benchflow._sandbox import build_priv_drop_cmd``. connect_acp wraps
+``from benchflow.sandbox.lockdown import build_priv_drop_cmd``. connect_acp wraps
 the agent launch command in the sandbox user's privilege-drop prefix
 before handing it to the transport. It is a single pure-function call
 with no shared state — not a coupling of concerns.
@@ -22,13 +22,13 @@ import contextlib
 import logging
 from pathlib import Path
 
-from benchflow._sandbox import build_priv_drop_cmd
-from benchflow._trajectory import _capture_session_trajectory
 from benchflow.acp.client import ACPClient
 from benchflow.acp.container_transport import ContainerTransport
 from benchflow.agents.providers import find_provider, strip_provider_prefix
 from benchflow.agents.registry import AGENTS
-from benchflow.process import DaytonaProcess, DaytonaPtyProcess, DockerProcess
+from benchflow.sandbox.lockdown import build_priv_drop_cmd
+from benchflow.sandbox.process import DaytonaProcess, DaytonaPtyProcess, DockerProcess
+from benchflow.trajectories._capture import _capture_session_trajectory
 
 logger = logging.getLogger(__name__)
 

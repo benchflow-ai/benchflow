@@ -51,7 +51,7 @@ def get_swebench_pro_root() -> Path:
     """Lazily resolve swebenchpro tasks (avoids network I/O at import time)."""
     global _swebench_pro_root
     if _swebench_pro_root is None:
-        from benchflow.task_download import resolve_source
+        from benchflow._utils.benchmark_repos import resolve_source
 
         _swebench_pro_root = resolve_source("benchflow-ai/swebenchpro")
     return _swebench_pro_root

@@ -27,11 +27,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[0].parent / "src"))
 import contextlib
 
 from benchflow._acp_run import connect_acp, execute_prompts
-from benchflow._agent_env import resolve_agent_env
-from benchflow._agent_setup import install_agent
-from benchflow._credentials import upload_subscription_auth, write_credential_files
+from benchflow.agents.env import resolve_agent_env
+from benchflow.agents.install import install_agent
+from benchflow.agents.credentials import upload_subscription_auth, write_credential_files
 from benchflow._env_setup import _create_environment
-from benchflow._sandbox import setup_sandbox_user
+from benchflow.sandbox.lockdown import setup_sandbox_user
 from benchflow.agents.registry import AGENT_LAUNCH, AGENTS
 from benchflow.sdk import SDK
 from benchflow.task import RolloutPaths as TrialPaths
@@ -50,7 +50,7 @@ def get_tb2_root() -> Path:
     """Lazily resolve terminal-bench-2 tasks (avoids network I/O at import time)."""
     global _tb2_root
     if _tb2_root is None:
-        from benchflow.task_download import resolve_source
+        from benchflow._utils.benchmark_repos import resolve_source
 
         _tb2_root = resolve_source("harbor-framework/terminal-bench-2")
     return _tb2_root

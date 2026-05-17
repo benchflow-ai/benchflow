@@ -1,11 +1,11 @@
 """Task package — native BenchFlow types with RL-first terminology.
 
-    - Task, TaskPaths: problem specification ($T$)
-    - TaskConfig, SandboxConfig, VerifierConfig, AgentConfig: configuration ($C$)
-    - RolloutPaths: rollout output paths
-    - SandboxPaths: container mount points
-    - Verifier, VerifierResult: reward function ($V$)
-    - resolve_env_vars: env template resolution
+- Task, TaskPaths: problem specification ($T$)
+- TaskConfig, SandboxConfig, VerifierConfig, AgentConfig: configuration ($C$)
+- RolloutPaths: rollout output paths
+- SandboxPaths: container mount points
+- Verifier, VerifierResult: reward function ($V$)
+- resolve_env_vars: env template resolution
 """
 
 from benchflow.task.config import (

@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-COMPOSE_DIR = Path(__file__).parent
+COMPOSE_DIR = Path(__file__).parent / "_compose_files"
 COMPOSE_BASE_PATH = COMPOSE_DIR / "docker-compose-base.yaml"
 COMPOSE_BUILD_PATH = COMPOSE_DIR / "docker-compose-build.yaml"
 COMPOSE_PREBUILT_PATH = COMPOSE_DIR / "docker-compose-prebuilt.yaml"

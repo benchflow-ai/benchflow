@@ -71,7 +71,10 @@ class Environment:
         task = Task(task_path)
         trial_name = trial_name or task_path.name
         rollout_paths = RolloutPaths(
-            rollout_dir=Path.cwd() / "jobs" / "environment" / f"{trial_name}__{uuid4().hex[:8]}"
+            rollout_dir=Path.cwd()
+            / "jobs"
+            / "environment"
+            / f"{trial_name}__{uuid4().hex[:8]}"
         )
         rollout_paths.mkdir()
         inner = _create_environment(

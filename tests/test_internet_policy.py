@@ -88,7 +88,7 @@ def test_create_environment_preserves_agent_network_for_llm_runs(tmp_path):
         config=SimpleNamespace(environment=original_env),
     )
 
-    with patch("benchflow.sandbox.docker_impl.DockerEnvironment") as docker_env:
+    with patch("benchflow.sandbox.docker.DockerEnvironment") as docker_env:
         _create_environment(
             "docker",
             task,
@@ -113,7 +113,7 @@ def test_create_environment_keeps_oracle_network_policy(tmp_path):
         config=SimpleNamespace(environment=original_env),
     )
 
-    with patch("benchflow.sandbox.docker_impl.DockerEnvironment") as docker_env:
+    with patch("benchflow.sandbox.docker.DockerEnvironment") as docker_env:
         _create_environment("docker", task, tmp_path, "trial", MagicMock())
 
     original_env.model_copy.assert_not_called()
@@ -359,7 +359,7 @@ def test_create_environment_does_not_flip_when_internet_allowed(tmp_path):
         config=SimpleNamespace(environment=original_env),
     )
 
-    with patch("benchflow.sandbox.docker_impl.DockerEnvironment") as docker_env:
+    with patch("benchflow.sandbox.docker.DockerEnvironment") as docker_env:
         _create_environment(
             "docker", task, tmp_path, "trial", MagicMock(), preserve_agent_network=True
         )

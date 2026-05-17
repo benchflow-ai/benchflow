@@ -12,7 +12,7 @@ from pathlib import Path, PurePosixPath
 
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-from benchflow.sandbox.base import BaseSandboxEnvironment, ExecResult
+from benchflow.sandbox._base import BaseSandboxEnvironment, ExecResult
 from benchflow.task.config import SandboxConfig
 from benchflow.task.paths import RolloutPaths, SandboxPaths
 
@@ -248,9 +248,7 @@ class ModalEnvironment(BaseSandboxEnvironment):
         wait=wait_exponential(multiplier=1, min=1, max=10),
         reraise=True,
     )
-    async def download_file(
-        self, source_path: str, target_path: Path | str
-    ) -> None:
+    async def download_file(self, source_path: str, target_path: Path | str) -> None:
         if not self._sandbox:
             raise RuntimeError("Sandbox not found. Please start the environment first.")
 
@@ -265,9 +263,7 @@ class ModalEnvironment(BaseSandboxEnvironment):
                         break
                     local_file.write(chunk)
 
-    async def download_dir(
-        self, source_dir: str, target_dir: Path | str
-    ) -> None:
+    async def download_dir(self, source_dir: str, target_dir: Path | str) -> None:
         if not self._sandbox:
             raise RuntimeError("Sandbox not found. Please start the environment first.")
 

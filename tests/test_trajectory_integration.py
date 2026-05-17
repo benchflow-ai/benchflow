@@ -17,9 +17,9 @@ from pathlib import Path
 import pytest
 
 from benchflow._acp_run import execute_prompts
-from benchflow._trajectory import _capture_session_trajectory
 from benchflow.acp.client import ACPClient
 from benchflow.acp.transport import StdioTransport
+from benchflow.trajectories._capture import _capture_session_trajectory
 
 MOCK_AGENT = str(Path(__file__).parent / "fixtures" / "mock_acp_agent.py")
 MOCK_AGENT_MULTI = str(
@@ -208,7 +208,7 @@ class TestViewerCompatibility:
     """Verify viewer renders user_message events without duplication."""
 
     def test_viewer_renders_user_message(self) -> None:
-        from benchflow.viewer import _render_acp_trajectory
+        from benchflow.trajectories.viewer import _render_acp_trajectory
 
         events = [
             {"type": "user_message", "text": "Solve it"},
@@ -236,7 +236,7 @@ class TestViewerCompatibility:
 
     def test_viewer_legacy_prompts_header(self) -> None:
         """Old trajectory without user_message: prompts shown at top from prompts.json."""
-        from benchflow.viewer import _render_acp_trajectory
+        from benchflow.trajectories.viewer import _render_acp_trajectory
 
         events = [
             {"type": "tool_call", "kind": "bash", "title": "ls", "status": "completed"},

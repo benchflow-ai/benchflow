@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from benchflow._sandbox import (
+from benchflow.sandbox.lockdown import (
     _resolve_locked_paths,
     _validate_locked_path,
     build_priv_drop_cmd,

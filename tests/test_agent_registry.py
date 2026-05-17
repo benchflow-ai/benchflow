@@ -5,7 +5,7 @@ Negative invariants ("agent X should NOT have feature Y configured") live in
 test_registry_invariants.py — search there for the consolidated tripwire.
 """
 
-from benchflow._agent_env import resolve_provider_env
+from benchflow.agents.env import resolve_provider_env
 from benchflow.agents.providers import PROVIDERS
 from benchflow.agents.registry import AGENTS
 

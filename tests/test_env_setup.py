@@ -210,7 +210,7 @@ class TestCreateEnvironment:
             config=SimpleNamespace(environment=env_config),
         )
 
-        with patch("benchflow.sandbox.docker_impl.DockerEnvironment") as docker_env:
+        with patch("benchflow.sandbox.docker.DockerEnvironment") as docker_env:
             _create_environment("docker", task, effective_task, "trial", MagicMock())
 
         assert docker_env.call_args.kwargs["environment_dir"] == effective_env_dir

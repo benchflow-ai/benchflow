@@ -98,9 +98,7 @@ class Verifier:
                 target_dir="/tests",
             )
         except Exception as e:
-            raise AddTestsDirError(
-                "Failed to add tests directory to sandbox."
-            ) from e
+            raise AddTestsDirError("Failed to add tests directory to sandbox.") from e
 
         self._rollout_paths.test_stdout_path.touch()
 

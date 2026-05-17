@@ -161,9 +161,7 @@ class BaseSandboxEnvironment(ABC):
     ) -> None: ...
 
     @abstractmethod
-    async def download_dir(
-        self, source_dir: str, target_dir: Path | str
-    ) -> None: ...
+    async def download_dir(self, source_dir: str, target_dir: Path | str) -> None: ...
 
     @abstractmethod
     async def exec(

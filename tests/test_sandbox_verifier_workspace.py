@@ -19,7 +19,7 @@ def _cmds(env):
 @pytest.mark.asyncio
 async def test_seed_verifier_workspace_locks_logs_parent():
     """/logs/ is chowned to root:root and chmod 755; the lock call runs as root."""
-    from benchflow._sandbox import _seed_verifier_workspace
+    from benchflow.sandbox.lockdown import _seed_verifier_workspace
 
     env = _make_env()
     await _seed_verifier_workspace(env)
@@ -49,7 +49,7 @@ async def test_seed_verifier_workspace_locks_logs_parent():
 @pytest.mark.asyncio
 async def test_seed_verifier_workspace_creates_testbed_verify():
     """/testbed_verify is wiped, seeded from workspace, chowned root, made world-readable; runs as root."""
-    from benchflow._sandbox import _seed_verifier_workspace
+    from benchflow.sandbox.lockdown import _seed_verifier_workspace
 
     env = _make_env()
     await _seed_verifier_workspace(env, workspace="/testbed")
@@ -88,7 +88,7 @@ async def test_seed_verifier_workspace_creates_testbed_verify():
 @pytest.mark.asyncio
 async def test_seed_verifier_workspace_seeds_from_workspace_param():
     """workspace param controls which directory is copied to /testbed_verify."""
-    from benchflow._sandbox import _seed_verifier_workspace
+    from benchflow.sandbox.lockdown import _seed_verifier_workspace
 
     env = _make_env()
     await _seed_verifier_workspace(env, workspace="/app")
@@ -107,14 +107,14 @@ async def test_seed_verifier_workspace_seeds_from_workspace_param():
 @pytest.mark.asyncio
 async def test_harden_restore_fallback_uses_shutil():
     """Fallback must use shutil not rm -rf — rm -rf crashes with EOVERFLOW on old LFS images."""
-    from benchflow._sandbox import harden_before_verify
+    from benchflow.sandbox.lockdown import harden_before_verify
 
     env = _make_env()
     task = MagicMock()
     task.config.verifier.env = {}
     with (
-        patch("benchflow._sandbox._restore_build_config", AsyncMock()),
-        patch("benchflow._sandbox._refresh_verifier_workspace", AsyncMock()),
+        patch("benchflow.sandbox.lockdown._restore_build_config", AsyncMock()),
+        patch("benchflow.sandbox.lockdown._refresh_verifier_workspace", AsyncMock()),
     ):
         await harden_before_verify(
             env, task, sandbox_user=None, workspace="/testbed", restore_workspace=True

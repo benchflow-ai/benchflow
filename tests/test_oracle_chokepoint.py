@@ -183,7 +183,7 @@ class TestEvalCreateOracleCLI:
             captured["config"] = config
             # Exercise the real chokepoint with the config the CLI built —
             # that's the specific call site the bug manifested at.
-            from benchflow._agent_env import resolve_agent_env
+            from benchflow.agents.env import resolve_agent_env
 
             captured["agent_env"] = resolve_agent_env(
                 config.primary_agent, config.primary_model, config.agent_env

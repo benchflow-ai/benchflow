@@ -76,9 +76,7 @@ def run(
     ] = "docker",
     prompt: Annotated[
         list[str] | None,
-        typer.Option(
-            "--prompt", help="Prompt(s) to send (default: instruction.md)"
-        ),
+        typer.Option("--prompt", help="Prompt(s) to send (default: instruction.md)"),
     ] = None,
     jobs_dir: Annotated[
         str,
@@ -90,9 +88,7 @@ def run(
     ] = None,
     skills_dir: Annotated[
         Path | None,
-        typer.Option(
-            "--skills-dir", help="Skills directory to deploy into sandbox"
-        ),
+        typer.Option("--skills-dir", help="Skills directory to deploy into sandbox"),
     ] = None,
     skill_mode: Annotated[
         str,
@@ -132,7 +128,7 @@ def run(
     from benchflow.sdk import SDK
 
     if source_repo:
-        from benchflow.task_download import resolve_source
+        from benchflow._utils.benchmark_repos import resolve_source
 
         resolved_task_dir = resolve_source(
             source_repo, path=source_path, ref=source_ref
@@ -183,9 +179,7 @@ def job(
     ] = None,
     config_file: Annotated[
         Path | None,
-        typer.Option(
-            "--config", help="YAML config file (benchflow or legacy format)"
-        ),
+        typer.Option("--config", help="YAML config file (benchflow or legacy format)"),
     ] = None,
     agent: Annotated[
         str,
@@ -213,9 +207,7 @@ def job(
     ] = "jobs",
     skills_dir: Annotated[
         Path | None,
-        typer.Option(
-            "--skills-dir", help="Skills directory to deploy into sandbox"
-        ),
+        typer.Option("--skills-dir", help="Skills directory to deploy into sandbox"),
     ] = None,
 ) -> None:
     """Run all tasks in a directory with concurrency and retries.
@@ -345,7 +337,7 @@ def view(
     port: Annotated[int, typer.Option(help="Server port")] = 8888,
 ) -> None:
     """View a trial trajectory in the browser."""
-    from benchflow.viewer import serve
+    from benchflow.trajectories.viewer import serve
 
     serve(str(trial_dir), port)
 
@@ -612,7 +604,7 @@ def tasks_init(
     ] = False,
 ) -> None:
     """Scaffold a new benchmark task."""
-    from benchflow.tasks import init_task
+    from benchflow._utils.task_authoring import init_task
 
     try:
         task_dir = init_task(
@@ -634,7 +626,7 @@ def tasks_check(
     task_dir: Annotated[Path, typer.Argument(help="Path to task directory")],
 ) -> None:
     """Validate a task directory structure."""
-    from benchflow.tasks import check_task
+    from benchflow._utils.task_authoring import check_task
 
     issues = check_task(task_dir)
     if not issues:
@@ -887,7 +879,7 @@ def eval_create(
             f"({result.score:.1%})[/bold], errors={result.errored}"
         )
     elif source_repo:
-        from benchflow.task_download import resolve_source
+        from benchflow._utils.benchmark_repos import resolve_source
 
         resolved_tasks_dir = resolve_source(
             source_repo, path=source_path, ref=source_ref

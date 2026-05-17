@@ -49,14 +49,6 @@ from pathlib import Path
 from typing import Any
 
 from benchflow._acp_run import connect_acp, execute_prompts
-from benchflow._agent_env import resolve_agent_env
-from benchflow._agent_setup import (
-    _link_skill_paths,
-    apply_web_tool_policy,
-    deploy_skills,
-    install_agent,
-)
-from benchflow._credentials import upload_subscription_auth, write_credential_files
 from benchflow._env_setup import (
     _create_environment,
     _inject_skills_into_dockerfile,
@@ -66,22 +58,33 @@ from benchflow._provider_runtime import (
     ensure_bedrock_proxy_runtime,
     stop_provider_runtime,
 )
-from benchflow._sandbox import (
+from benchflow._types import Role, Scene, Turn
+from benchflow.acp.client import ACPClient, ACPError
+from benchflow.agents.credentials import (
+    upload_subscription_auth,
+    write_credential_files,
+)
+from benchflow.agents.env import resolve_agent_env
+from benchflow.agents.install import (
+    _link_skill_paths,
+    apply_web_tool_policy,
+    deploy_skills,
+    install_agent,
+)
+from benchflow.agents.registry import AGENT_LAUNCH, AGENTS
+from benchflow.models import RolloutResult, TrajectorySource
+from benchflow.sandbox.lockdown import (
     _resolve_locked_paths,
     _seed_verifier_workspace,
     _snapshot_build_config,
     lockdown_paths,
     setup_sandbox_user,
 )
-from benchflow._trajectory import (
+from benchflow.sandbox.user import BaseUser, RoundResult
+from benchflow.trajectories._capture import (
     _capture_session_trajectory,
     _scrape_agent_trajectory,
 )
-from benchflow._types import Role, Scene, Turn
-from benchflow.acp.client import ACPClient, ACPError
-from benchflow.agents.registry import AGENT_LAUNCH, AGENTS
-from benchflow.models import RolloutResult, TrajectorySource
-from benchflow.user import BaseUser, RoundResult
 
 logger = logging.getLogger(__name__)
 
@@ -557,7 +560,7 @@ async def _verify_rollout(
     workspace: str | None = None,
 ) -> tuple[dict | None, str | None]:
     """Run verifier with pre-verification hardening."""
-    from benchflow._sandbox import harden_before_verify
+    from benchflow.sandbox.lockdown import harden_before_verify
     from benchflow.task import Verifier
 
     rollout_paths.verifier_dir.mkdir(parents=True, exist_ok=True)
@@ -1150,7 +1153,10 @@ class Rollout:
         Returns (rewards, verifier_output, verifier_error). The final
         verify() still does full hardening.
         """
-        from benchflow._sandbox import _build_cleanup_cmd, _read_hardening_config
+        from benchflow.sandbox.lockdown import (
+            _build_cleanup_cmd,
+            _read_hardening_config,
+        )
         from benchflow.task import Verifier
 
         self._rollout_paths.verifier_dir.mkdir(parents=True, exist_ok=True)
@@ -1719,7 +1725,7 @@ class Rollout:
 
     def _classify_acp_error(self, e: ACPError) -> str:
         if "Invalid API key" in e.message:
-            from benchflow._agent_env import check_subscription_auth
+            from benchflow.agents.env import check_subscription_auth
             from benchflow.agents.registry import infer_env_key_for_model
 
             key = (

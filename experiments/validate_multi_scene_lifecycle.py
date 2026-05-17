@@ -36,7 +36,7 @@ def get_task() -> Path:
     """Lazily resolve the task path (avoids network I/O at import time)."""
     global _task
     if _task is None:
-        from benchflow.task_download import resolve_source
+        from benchflow._utils.benchmark_repos import resolve_source
 
         _task = resolve_source("harbor-framework/terminal-bench-2", path="regex-log")
     return _task

@@ -18,7 +18,7 @@ class TestResolveAgentEnv:
     """Tests for SDK._resolve_agent_env — env var resolution logic."""
 
     def _resolve(self, agent="claude-agent-acp", model=None, agent_env=None):
-        from benchflow._agent_env import resolve_agent_env
+        from benchflow.agents.env import resolve_agent_env
 
         return resolve_agent_env(agent, model, agent_env)
 

@@ -1,10 +1,12 @@
 """benchflow — ACP-native agent benchmarking framework.
 
-Re-exports environment APIs and adds:
+Public API surface:
+- Sandbox protocol for isolated execution environments
 - ACP client for multi-turn agent communication
 - Trajectory capture (HTTP proxy, OTel collector, ACP native)
 - Rollout lifecycle for single-task execution
 - Evaluation orchestration with retries and concurrency
+- Rewards protocol (composable Rubric + RewardFunc)
 - Metrics collection and aggregation
 """
 
@@ -12,13 +14,12 @@ from importlib.metadata import version as _version
 
 __version__ = _version("benchflow")
 
-# Core types — internalized from Harbor with RL-first terminology
-# benchflow's additions
+# Core types
 from benchflow._env_setup import stage_dockerfile_deps
 from benchflow._scene import MailboxTransport, Message, MessageTransport, SceneRole
 from benchflow._scene import Scene as SceneRuntime
-from benchflow._snapshot import list_snapshots, restore, snapshot
 from benchflow._types import Role, Scene, Turn
+from benchflow._utils.yaml_loader import trial_config_from_yaml
 from benchflow.acp.client import ACPClient
 from benchflow.acp.session import ACPSession
 from benchflow.adapters import (
@@ -34,12 +35,6 @@ from benchflow.agents.registry import (
     is_vertex_model,
     list_agents,
     register_agent,
-)
-from benchflow.environments import (
-    SERVICES,
-    build_service_hooks,
-    detect_services_from_dockerfile,
-    register_service,
 )
 from benchflow.evaluation import (
     Evaluation,
@@ -75,11 +70,22 @@ from benchflow.runtime import (
     RuntimeResult,
     run,
 )  # bf.run() — supports Agent, RolloutConfig, and str calling conventions
+from benchflow.sandbox import (
+    SERVICES,
+    ImageBuilder,
+    ImageConfig,
+    ImageRef,
+    Sandbox,
+    build_service_hooks,
+    detect_services_from_dockerfile,
+    register_service,
+)
 
 # Sandbox protocol (v0.4)
 from benchflow.sandbox import ExecResult as SandboxExecResult
-from benchflow.sandbox import ImageBuilder, ImageConfig, ImageRef, Sandbox
 from benchflow.sandbox.protocol import ExecResult
+from benchflow.sandbox.snapshot import list_snapshots, restore, snapshot
+from benchflow.sandbox.user import BaseUser, FunctionUser, PassthroughUser, RoundResult
 from benchflow.sdk import SDK
 from benchflow.skills import SkillInfo, discover_skills, install_skill, parse_skill
 from benchflow.task import (
@@ -91,23 +97,9 @@ from benchflow.task import (
 from benchflow.trajectories.otel import OTelCollector
 from benchflow.trajectories.proxy import TrajectoryProxy
 from benchflow.trajectories.types import Trajectory
-from benchflow.trial_yaml import trial_config_from_yaml
-from benchflow.user import BaseUser, FunctionUser, PassthroughUser, RoundResult
-
-# Backward-compat aliases
-Trial = Rollout
-TrialConfig = RolloutConfig
-TrialRole = Role
-TrialScene = Scene
-RunResult = RolloutResult
-Job = Evaluation
-JobConfig = EvaluationConfig
-JobResult = EvaluationResult
 
 # Public API surface. Anything not in this list is implementation detail and
-# may change without notice. Names are grouped by source module to match the
-# imports above and to make it obvious to a future agent which module owns
-# what.
+# may change without notice.
 __all__ = [
     "__version__",
     # Rewards protocol (v0.4)
@@ -119,19 +111,17 @@ __all__ = [
     "LLMJudgeRewardFunc",
     "StringMatchRewardFunc",
     "CodeExecRewardFunc",
-    # Rubric config (ENG-55)
     "Criterion",
     "JudgeConfig",
     "RubricConfig",
     "ScoringConfig",
     "load_rubric_toml",
-    # Sandbox protocol (v0.4)
+    # Sandbox protocol
     "Sandbox",
     "SandboxExecResult",
     "ImageBuilder",
     "ImageConfig",
     "ImageRef",
-    # Core types (internalized from Harbor)
     "ExecResult",
     "Task",
     "TaskConfig",
@@ -147,15 +137,11 @@ __all__ = [
     "is_vertex_model",
     "list_agents",
     "register_agent",
-    # Evaluation orchestration (new names)
+    # Evaluation orchestration
     "Evaluation",
     "EvaluationConfig",
     "EvaluationResult",
     "RetryConfig",
-    # Backward-compat aliases for Job
-    "Job",
-    "JobConfig",
-    "JobResult",
     # Metrics
     "BenchmarkMetrics",
     "collect_metrics",
@@ -163,8 +149,7 @@ __all__ = [
     "AgentInstallError",
     "AgentTimeoutError",
     "RolloutResult",
-    "RunResult",
-    # Runtime (0.3 compat)
+    # Runtime
     "Agent",
     "Environment",
     "Runtime",
@@ -172,7 +157,7 @@ __all__ = [
     "RuntimeResult",
     # Single entry point
     "run",
-    # Canonical declarative types (_types.py — ENG-47)
+    # Declarative types
     "Role",
     "Scene",
     "Turn",
@@ -186,23 +171,18 @@ __all__ = [
     "snapshot",
     "restore",
     "list_snapshots",
-    # Rollout (single execution path — ENG-46)
+    # Rollout
     "Rollout",
     "RolloutConfig",
-    # Backward-compat aliases for Trial
-    "Trial",
-    "TrialConfig",
-    "TrialRole",
-    "TrialScene",
     "trial_config_from_yaml",
     # User abstraction (progressive disclosure)
     "BaseUser",
     "FunctionUser",
     "PassthroughUser",
     "RoundResult",
-    # SDK (backwards compat)
+    # SDK
     "SDK",
-    # Environments / dep staging
+    # Sandbox services
     "SERVICES",
     "build_service_hooks",
     "detect_services_from_dockerfile",
@@ -217,7 +197,7 @@ __all__ = [
     "OTelCollector",
     "TrajectoryProxy",
     "Trajectory",
-    # External adapters (ENG-51)
+    # External adapters
     "InspectAdapter",
     "ORSAdapter",
     "to_inspect_task",

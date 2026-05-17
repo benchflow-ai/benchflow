@@ -422,7 +422,7 @@ def _patch_docker_dind() -> None:
     host_source, container_dest = dind_mount
     logger.info(f"DinD detected: {container_dest} → {host_source}")
 
-    from benchflow.sandbox.docker_impl import DockerEnvironmentEnvVars
+    from benchflow.sandbox.docker import DockerEnvironmentEnvVars
 
     _original = DockerEnvironmentEnvVars.to_env_dict
 
@@ -463,7 +463,7 @@ def _create_sandbox_environment(
         env_config.allow_internet = True
 
     if sandbox_type == "docker":
-        from benchflow.sandbox.docker_impl import DockerEnvironment
+        from benchflow.sandbox.docker import DockerEnvironment
 
         return DockerEnvironment(
             environment_dir=environment_dir,
@@ -473,8 +473,8 @@ def _create_sandbox_environment(
             task_env_config=env_config,
         )
     elif sandbox_type == "daytona":
-        from benchflow._daytona_patches import apply as _apply_daytona_patches
-        from benchflow.sandbox.daytona_impl import DaytonaEnvironment
+        from benchflow.sandbox._sdk_ops import apply as _apply_daytona_patches
+        from benchflow.sandbox.daytona import DaytonaEnvironment
 
         _apply_daytona_patches()
 

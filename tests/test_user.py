@@ -9,8 +9,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from benchflow.sandbox.user import BaseUser, FunctionUser, PassthroughUser, RoundResult
 from benchflow.trial import Role, Scene, Trial, TrialConfig, Turn
-from benchflow.user import BaseUser, FunctionUser, PassthroughUser, RoundResult
 
 # ── Unit tests for User types ──
 
@@ -340,7 +340,7 @@ class TestSoftVerify:
 
         with (
             patch("benchflow.task.verifier.Verifier") as MockVerifier,
-            patch("benchflow._sandbox.CLEANUP_CMD", "true"),
+            patch("benchflow.sandbox.lockdown.CLEANUP_CMD", "true"),
         ):
             mock_instance = MockVerifier.return_value
             mock_instance.verify = AsyncMock(side_effect=TimeoutError())
@@ -357,7 +357,7 @@ class TestSoftVerify:
 
         with (
             patch("benchflow.task.verifier.Verifier") as MockVerifier,
-            patch("benchflow._sandbox.CLEANUP_CMD", "true"),
+            patch("benchflow.sandbox.lockdown.CLEANUP_CMD", "true"),
         ):
             mock_instance = MockVerifier.return_value
             mock_instance.verify = AsyncMock(side_effect=RuntimeError("boom"))
@@ -376,7 +376,7 @@ class TestSoftVerify:
 
         with (
             patch("benchflow.task.verifier.Verifier") as MockVerifier,
-            patch("benchflow._sandbox.CLEANUP_CMD", "true"),
+            patch("benchflow.sandbox.lockdown.CLEANUP_CMD", "true"),
         ):
             mock_instance = MockVerifier.return_value
             mock_instance.verify = AsyncMock(return_value=mock_result)
@@ -395,7 +395,7 @@ class TestSoftVerify:
         with (
             patch("benchflow.task.verifier.Verifier") as MockVerifier,
             patch(
-                "benchflow._sandbox._build_cleanup_cmd",
+                "benchflow.sandbox.lockdown._build_cleanup_cmd",
                 return_value="echo cleanup_sentinel",
             ),
         ):
