@@ -9,6 +9,8 @@ import pytest
 
 from benchflow.traces.models import GitContext, ParsedTrace, ToolCall, TraceStep
 from benchflow.traces.task_gen import (
+    _globify_path,
+    _has_dynamic_segments,
     generate_task,
     generate_tasks_from_traces,
 )
@@ -297,6 +299,99 @@ class TestGenerateTasksFromTraces:
         results = generate_tasks_from_traces([explanation_trace], tmp_path)
 
         assert len(results) == 0
+
+
+# ---------------------------------------------------------------------------
+# Model property tests
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Verifier robustness tests (timestamp-bearing paths)
+# ---------------------------------------------------------------------------
+
+
+class TestGlobifyPath:
+    def test_replaces_timestamp_segment(self) -> None:
+        path = "migrations/2025-11-28-131040_create_invoices/up.sql"
+        assert _globify_path(path) == "migrations/*_create_invoices/up.sql"
+
+    def test_date_only_segment(self) -> None:
+        path = "backups/2025-01-15/dump.sql"
+        assert _globify_path(path) == "backups/*/dump.sql"
+
+    def test_underscore_date_segment(self) -> None:
+        path = "data/2025_03_22_export/results.csv"
+        assert _globify_path(path) == "data/*_export/results.csv"
+
+    def test_no_timestamp_unchanged(self) -> None:
+        path = "src/main.py"
+        assert _globify_path(path) == "src/main.py"
+
+    def test_mixed_segments(self) -> None:
+        path = "migrations/2025-11-28-131040_create_invoices/src/schema.rs"
+        assert _globify_path(path) == "migrations/*_create_invoices/src/schema.rs"
+
+
+class TestHasDynamicSegments:
+    def test_timestamp_path(self) -> None:
+        assert _has_dynamic_segments("migrations/2025-11-28-131040_create/up.sql")
+
+    def test_static_path(self) -> None:
+        assert not _has_dynamic_segments("src/main.py")
+
+    def test_date_path(self) -> None:
+        assert _has_dynamic_segments("backups/2025-01-15/dump.sql")
+
+
+class TestVerifierGlobPatterns:
+    def test_test_sh_uses_compgen_for_timestamp_paths(self, tmp_path: Path) -> None:
+        trace = ParsedTrace(
+            trace_id="ts-trace",
+            session_id="s",
+            steps=[
+                TraceStep(role="user", content="Create migration"),
+                TraceStep(
+                    role="assistant",
+                    content="Done",
+                    tool_calls=[
+                        ToolCall(
+                            name="Write",
+                            input={"file_path": "migrations/2025-11-28-131040_create_invoices/up.sql"},
+                        )
+                    ],
+                ),
+            ],
+            outcome="success",
+        )
+        task_dir = generate_task(trace, tmp_path)
+        test_sh = (task_dir / "tests" / "test.sh").read_text()
+        assert "compgen -G" in test_sh
+        assert "*_create_invoices/up.sql" in test_sh
+
+    def test_test_sh_uses_exact_check_for_static_paths(self, tmp_path: Path) -> None:
+        trace = ParsedTrace(
+            trace_id="static-trace",
+            session_id="s",
+            steps=[
+                TraceStep(role="user", content="Create file"),
+                TraceStep(
+                    role="assistant",
+                    content="Done",
+                    tool_calls=[
+                        ToolCall(
+                            name="Write",
+                            input={"file_path": "src/main.py"},
+                        )
+                    ],
+                ),
+            ],
+            outcome="success",
+        )
+        task_dir = generate_task(trace, tmp_path)
+        test_sh = (task_dir / "tests" / "test.sh").read_text()
+        assert "[ ! -f" in test_sh
+        assert "compgen" not in test_sh
 
 
 # ---------------------------------------------------------------------------

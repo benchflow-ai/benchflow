@@ -34,6 +34,13 @@ _DIFFICULTY_LEVELS = [
     ("expert", 76, None),
 ]
 
+# Regex matching path segments that contain dates/timestamps and should
+# be replaced with globs so verifiers tolerate agent-generated variants.
+_TIMESTAMP_SEGMENT_RE = re.compile(
+    r"^\d{4}[-_]\d{2}[-_]\d{2}"
+    r"(?:[-_T]\d{2,6})?"
+)
+
 # Timeout scaling by difficulty (seconds)
 _TIMEOUT_BY_DIFFICULTY = {
     "easy": 300,
@@ -153,6 +160,34 @@ def _relativize_path(path: str) -> str:
     return path
 
 
+def _globify_path(path: str) -> str:
+    """Replace timestamp-bearing directory segments with globs.
+
+    For example::
+
+        migrations/2025-11-28-131040_create_invoices/up.sql
+        → migrations/*_create_invoices/up.sql
+
+    This lets verifiers match agent-generated files that use different
+    timestamps than the original trace.
+    """
+    parts = path.split("/")
+    out: list[str] = []
+    for part in parts:
+        if _TIMESTAMP_SEGMENT_RE.match(part):
+            # Keep the meaningful suffix after the timestamp prefix
+            rest = _TIMESTAMP_SEGMENT_RE.sub("", part).lstrip("-_")
+            out.append(f"*_{rest}" if rest else "*")
+        else:
+            out.append(part)
+    return "/".join(out)
+
+
+def _has_dynamic_segments(path: str) -> bool:
+    """Return True if the path contains timestamp-like directory segments."""
+    return any(_TIMESTAMP_SEGMENT_RE.match(p) for p in path.split("/"))
+
+
 def _build_instruction(trace: ParsedTrace) -> str:
     """Synthesize instruction.md content from the trace.
 
@@ -176,7 +211,8 @@ def _build_instruction(trace: ParsedTrace) -> str:
         lines.append("The following files should be created or modified:")
         lines.append("")
         for f in files[:20]:
-            lines.append(f"- `{f}`")
+            display = _globify_path(f) if _has_dynamic_segments(f) else f
+            lines.append(f"- `{display}`")
         if len(files) > 20:
             lines.append(f"- ... and {len(files) - 20} more files")
         lines.append("")
@@ -268,9 +304,10 @@ def _build_test_sh(trace: ParsedTrace) -> str:
     """Generate a test.sh verifier from the trace.
 
     If the trace has files_edited, checks those files exist.
+    Paths with timestamp-bearing segments use ``find`` glob patterns
+    so verifiers tolerate agent-generated timestamp variants.
     Otherwise generates a minimal pass-through verifier.
     Writes reward to /logs/verifier/reward.txt per BenchFlow contract.
-    File paths are relativized to remove workspace-specific prefixes.
     """
     files = [_relativize_path(f) for f in trace.files_edited]
     if not files:
@@ -283,11 +320,19 @@ def _build_test_sh(trace: ParsedTrace) -> str:
 
     checks: list[str] = []
     for f in files[:20]:
-        quoted = shlex.quote(f)
-        checks.append(f'if [ ! -f {quoted} ]; then')
-        checks.append(f'  echo "Missing: {quoted}"')
-        checks.append('  PASS=0')
-        checks.append('fi')
+        if _has_dynamic_segments(f):
+            pattern = _globify_path(f)
+            quoted_pattern = shlex.quote(pattern)
+            checks.append(f'if ! compgen -G {quoted_pattern} > /dev/null 2>&1; then')
+            checks.append(f'  echo "Missing (pattern): {quoted_pattern}"')
+            checks.append('  PASS=0')
+            checks.append('fi')
+        else:
+            quoted = shlex.quote(f)
+            checks.append(f'if [ ! -f {quoted} ]; then')
+            checks.append(f'  echo "Missing: {quoted}"')
+            checks.append('  PASS=0')
+            checks.append('fi')
 
     checks_block = "\n".join(checks)
     return (
