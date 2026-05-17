@@ -169,5 +169,5 @@ def test_oracle_branch_setup_calls():
     # pwd detection happens before the oracle branch in install_agent
     assert '"pwd"' in source or "'pwd'" in source, (
         "agent_cwd must be detected via pwd (not hardcoded) — "
-        "different Harbor tasks use different WORKDIR values (/testbed, /app, etc.)"
+        "different tasks use different WORKDIR values (/testbed, /app, etc.)"
     )

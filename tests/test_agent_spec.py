@@ -18,7 +18,7 @@ class TestParseAgentSpec:
     def test_explicit_acp(self):
         assert parse_agent_spec("acp/claude-agent-acp") == ("acp", "claude-agent-acp")
 
-    def test_harbor_protocol(self):
+    def test_legacy_protocol(self):
         assert parse_agent_spec("harbor/claude-code") == ("harbor", "claude-code")
 
     def test_alias_bare(self):
@@ -36,7 +36,7 @@ class TestParseAgentSpec:
     def test_unknown_name_passes_through(self):
         assert parse_agent_spec("my-custom-agent") == ("acp", "my-custom-agent")
 
-    def test_harbor_unknown_agent(self):
+    def test_legacy_unknown_agent(self):
         assert parse_agent_spec("harbor/openhands") == ("harbor", "openhands")
 
 
@@ -56,7 +56,7 @@ class TestResolveAgent:
         config = resolve_agent("acp/codex-acp")
         assert config.name == "codex-acp"
 
-    def test_resolve_harbor_agent(self):
+    def test_resolve_legacy_agent(self):
         config = resolve_agent("harbor/claude-code")
         assert config.protocol == "harbor"
         assert config.name == "claude-code"

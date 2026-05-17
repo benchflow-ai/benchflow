@@ -184,7 +184,7 @@ def job(
     config_file: Annotated[
         Path | None,
         typer.Option(
-            "--config", help="YAML config file (Harbor or benchflow format)"
+            "--config", help="YAML config file (benchflow or legacy format)"
         ),
     ] = None,
     agent: Annotated[

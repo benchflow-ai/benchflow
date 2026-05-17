@@ -181,16 +181,16 @@ async def connect_acp(
 
         try:
             if environment == "docker":
-                live_proc = DockerProcess.from_harbor_env(env)
+                live_proc = DockerProcess.from_sandbox_env(env)
             else:
                 is_dind = hasattr(env, "_strategy") and hasattr(
                     env._strategy, "_compose_cmd"
                 )
                 if is_dind:
-                    live_proc = await DaytonaPtyProcess.from_harbor_env(env)
+                    live_proc = await DaytonaPtyProcess.from_sandbox_env(env)
                     logger.info("Using PTY transport for DinD compose task")
                 else:
-                    live_proc = await DaytonaProcess.from_harbor_env(env)
+                    live_proc = await DaytonaProcess.from_sandbox_env(env)
 
             agent_log = trial_dir / "agent" / f"{agent.replace('-', '_')}.txt"
             transport = ContainerTransport(

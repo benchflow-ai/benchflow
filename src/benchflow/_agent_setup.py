@@ -25,7 +25,7 @@ from benchflow.agents.registry import AGENT_INSTALLERS, AGENTS, AgentConfig
 from benchflow.models import AgentInstallError
 
 if TYPE_CHECKING:
-    from harbor.models.task.task import Task
+    from benchflow.task import Task
 
 logger = logging.getLogger(__name__)
 

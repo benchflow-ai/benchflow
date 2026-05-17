@@ -130,7 +130,7 @@ class SDK:
         self,
         env: Any,
         task: Any,
-        trial_paths: Any,
+        rollout_paths: Any,
         timing: dict,
         sandbox_user: str | None = None,
         workspace: str | None = None,
@@ -138,7 +138,7 @@ class SDK:
         return await _verify_rollout(
             env,
             task,
-            trial_paths,
+            rollout_paths,
             timing,
             sandbox_user=sandbox_user,
             workspace=workspace,

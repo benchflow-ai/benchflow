@@ -12,17 +12,7 @@ from importlib.metadata import version as _version
 
 __version__ = _version("benchflow")
 
-# Re-export Harbor's core types for downstream task authors
-from harbor import (
-    BaseAgent,
-    BaseEnvironment,
-    ExecResult,
-    Task,
-    TaskConfig,
-    Verifier,
-    VerifierResult,
-)
-
+# Core types — internalized from Harbor with RL-first terminology
 # benchflow's additions
 from benchflow._env_setup import stage_dockerfile_deps
 from benchflow._scene import MailboxTransport, Message, MessageTransport, SceneRole
@@ -86,11 +76,18 @@ from benchflow.runtime import (
     run,
 )  # bf.run() — supports Agent, RolloutConfig, and str calling conventions
 
-# Sandbox protocol (v0.4 — parallel types, Harbor not yet removed)
+# Sandbox protocol (v0.4)
 from benchflow.sandbox import ExecResult as SandboxExecResult
 from benchflow.sandbox import ImageBuilder, ImageConfig, ImageRef, Sandbox
+from benchflow.sandbox.protocol import ExecResult
 from benchflow.sdk import SDK
 from benchflow.skills import SkillInfo, discover_skills, install_skill, parse_skill
+from benchflow.task import (
+    Task,
+    TaskConfig,
+    Verifier,
+    VerifierResult,
+)
 from benchflow.trajectories.otel import OTelCollector
 from benchflow.trajectories.proxy import TrajectoryProxy
 from benchflow.trajectories.types import Trajectory
@@ -134,9 +131,7 @@ __all__ = [
     "ImageBuilder",
     "ImageConfig",
     "ImageRef",
-    # Harbor re-exports
-    "BaseAgent",
-    "BaseEnvironment",
+    # Core types (internalized from Harbor)
     "ExecResult",
     "Task",
     "TaskConfig",
@@ -231,8 +226,7 @@ __all__ = [
 
 
 def __getattr__(name: str):
-    """Fall through to harbor for names not explicitly re-exported."""
-    # Let Python's normal submodule resolution handle subpackages first.
+    """Lazy submodule resolution."""
     import importlib
 
     try:
@@ -240,16 +234,4 @@ def __getattr__(name: str):
     except ModuleNotFoundError as e:
         if e.name != f"benchflow.{name}":
             raise
-
-    import harbor
-
-    if hasattr(harbor, name):
-        import warnings
-
-        warnings.warn(
-            f"'{name}' is not directly re-exported by benchflow. Use 'from harbor import {name}' instead.",
-            ImportWarning,
-            stacklevel=2,
-        )
-        return getattr(harbor, name)
     raise AttributeError(f"module 'benchflow' has no attribute {name!r}")

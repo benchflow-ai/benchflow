@@ -136,7 +136,7 @@ class TestDryRunPipeline:
         tasks = generate_tasks(dataset, out, with_skill=True)
 
         for task_dir in tasks:
-            # Every generated task must be a valid Harbor task
+            # Every generated task must be a valid BenchFlow task
             assert (task_dir / "task.toml").exists()
             assert (task_dir / "instruction.md").exists()
             assert (task_dir / "environment" / "Dockerfile").exists()

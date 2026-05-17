@@ -33,8 +33,8 @@ prompts:
 
 
 @pytest.fixture
-def harbor_yaml(tmp_path):
-    """Create a Harbor-compatible YAML config."""
+def legacy_yaml(tmp_path):
+    """Create a legacy-format YAML config (agents + datasets style)."""
     tasks = tmp_path / "tasks" / "task-a"
     tasks.mkdir(parents=True)
     (tasks / "task.toml").write_text('version = "1.0"')
@@ -77,9 +77,9 @@ def test_from_native_yaml(native_yaml):
     assert job._jobs_dir == Path("output")
 
 
-def test_from_harbor_yaml(harbor_yaml):
-    """Test loading Harbor-compatible YAML."""
-    job = Job.from_yaml(harbor_yaml)
+def test_from_legacy_yaml(legacy_yaml):
+    """Test loading legacy-format YAML."""
+    job = Job.from_yaml(legacy_yaml)
     cfg = job._config
 
     assert cfg.agent == "claude-agent-acp"
@@ -93,8 +93,8 @@ def test_from_harbor_yaml(harbor_yaml):
     assert job._jobs_dir == Path("output")
 
 
-def test_harbor_yaml_preserves_provider_prefix(tmp_path):
-    """Provider prefix must survive _from_harbor_yaml for downstream resolution."""
+def test_legacy_yaml_preserves_provider_prefix(tmp_path):
+    """Provider prefix must survive _from_legacy_yaml for downstream resolution."""
     tasks = tmp_path / "tasks" / "task-a"
     tasks.mkdir(parents=True)
     (tasks / "task.toml").write_text('version = "1.0"')
@@ -112,8 +112,8 @@ datasets:
     assert job._config.model == "vllm/Qwen/Qwen3.5-35B-A3B"
 
 
-def test_from_harbor_yaml_defaults(tmp_path):
-    """Test Harbor YAML with minimal config."""
+def test_from_legacy_yaml_defaults(tmp_path):
+    """Test legacy YAML with minimal config."""
     tasks = tmp_path / "tasks" / "task-a"
     tasks.mkdir(parents=True)
     (tasks / "task.toml").write_text('version = "1.0"')
@@ -172,8 +172,8 @@ skills_dir: skills
     assert job._config.skills_dir == "skills"
 
 
-def test_harbor_yaml_paths_are_cwd_relative(tmp_path):
-    """Harbor relative paths match CLI and SDK path behavior."""
+def test_legacy_yaml_paths_are_cwd_relative(tmp_path):
+    """Legacy relative paths match CLI and SDK path behavior."""
     config_dir = tmp_path / "configs"
     config_dir.mkdir()
     config = config_dir / "config.yaml"

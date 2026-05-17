@@ -1,4 +1,4 @@
-"""BenchFlow Runtime — the 0.3 execution center.
+"""BenchFlow Runtime — the execution center.
 
 ``Runtime.execute()`` is the single execution path for both single-agent
 and multi-agent runs. Everything else layers on top:
@@ -9,7 +9,7 @@ and multi-agent runs. Everything else layers on top:
 
 Architecture:
     Agent  → thin wrapper around registry entry + model + creds
-    Environment → wraps harbor Docker/Daytona env, owns lifecycle
+    Environment → wraps Docker/Daytona sandbox, owns lifecycle
     Scene → 1+ roles + transport + scheduler (from _scene.py)
     Runtime → env + scene + execute loop + verify
     RuntimeResult → trajectories + messages + rewards + snapshots
@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 
 class Environment:
-    """Wraps a Harbor Docker/Daytona environment, owns lifecycle.
+    """Wraps a Docker/Daytona sandbox environment, owns lifecycle.
 
     Usage::
 
@@ -64,24 +64,22 @@ class Environment:
         """Create an environment from a task directory."""
         from uuid import uuid4
 
-        from harbor.models.task.task import Task
-        from harbor.models.trial.paths import TrialPaths
-
         from benchflow._env_setup import _create_environment
+        from benchflow.task import RolloutPaths, Task
 
         task_path = Path(task_path)
         task = Task(task_path)
         trial_name = trial_name or task_path.name
-        trial_paths = TrialPaths(
-            Path.cwd() / "jobs" / "environment" / f"{trial_name}__{uuid4().hex[:8]}"
+        rollout_paths = RolloutPaths(
+            rollout_dir=Path.cwd() / "jobs" / "environment" / f"{trial_name}__{uuid4().hex[:8]}"
         )
-        trial_paths.mkdir()
+        rollout_paths.mkdir()
         inner = _create_environment(
             environment_type=sandbox,
             task=task,
             task_path=task_path,
             trial_name=trial_name,
-            trial_paths=trial_paths,
+            rollout_paths=rollout_paths,
         )
         return cls(inner=inner, task_path=task_path, sandbox=sandbox)
 
@@ -92,7 +90,7 @@ class Environment:
 
     @property
     def task(self) -> Any:
-        from harbor.models.task.task import Task
+        from benchflow.task import Task
 
         return Task(self.task_path)
 

@@ -7,7 +7,7 @@ Bare ``pytest tests/test_smoke.py`` will silently report "1 deselected" because
 the ``addopts = "-m 'not live'"`` filter in pyproject.toml applies to direct
 file invocation too.
 
-Importing ``benchflow.sdk`` triggers ``_patch_harbor_dind()`` at sdk.py:135.
+Importing ``benchflow.sdk`` triggers ``_patch_dind()`` at sdk.py:135.
 That patch is gated on ``/.dockerenv`` and runs ``docker info`` with a 5s
 timeout, swallowing all exceptions — safe but worth flagging.
 
@@ -95,9 +95,9 @@ def smoke_jobs_dir(tmp_path: Path) -> Iterator[Path]:
 
     Inside DinD (devcontainer that shares the host docker socket): pytest's
     ``tmp_path`` is on the container's overlay/tmpfs and has no host-side
-    equivalent, so Harbor's ``HOST_VERIFIER_LOGS_PATH`` bind mount silently
+    equivalent, so the ``HOST_VERIFIER_LOGS_PATH`` bind mount silently
     maps to nothing — verifier writes to the bind, the host loses them, and
-    ``reward.txt`` never appears. ``_patch_harbor_dind`` only translates paths
+    ``reward.txt`` never appears. ``_patch_dind`` only translates paths
     under the workspace mount, so we use a workspace-rooted directory in that
     case.
 

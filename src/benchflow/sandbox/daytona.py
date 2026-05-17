@@ -1,4 +1,4 @@
-"""DaytonaSandbox — adapts Harbor's DaytonaEnvironment to the Sandbox protocol."""
+"""DaytonaSandbox — adapts a DaytonaEnvironment to the Sandbox protocol."""
 
 from __future__ import annotations
 
@@ -11,14 +11,14 @@ from typing import TYPE_CHECKING
 from benchflow.sandbox.protocol import ExecResult
 
 if TYPE_CHECKING:
-    from harbor.environments.daytona import DaytonaEnvironment
+    from typing import Any
 
 
 class DaytonaSandbox:
-    """Adapts Harbor's DaytonaEnvironment to the Sandbox protocol."""
+    """Adapts a DaytonaEnvironment to the Sandbox protocol."""
 
     def __init__(
-        self, inner: DaytonaEnvironment, *, expose_ports: list[int] | None = None
+        self, inner: Any, *, expose_ports: list[int] | None = None
     ) -> None:
         self._inner = inner
         self._expose_ports = expose_ports or []

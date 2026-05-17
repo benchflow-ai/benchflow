@@ -612,7 +612,7 @@ AGENT_ALIASES: dict[str, str] = {
     "harvey-lab": "harvey-lab-harness",
 }
 
-VALID_PROTOCOLS = {"acp", "harbor"}
+VALID_PROTOCOLS = {"acp", "harbor"}  # harbor kept for legacy compat
 
 
 def parse_agent_spec(spec: str) -> tuple[str, str]:
@@ -650,7 +650,7 @@ def resolve_agent(spec: str) -> AgentConfig:
             launch_cmd="",
             protocol="harbor",
             requires_env=[],
-            description=f"Harbor agent: {name}",
+            description=f"Legacy agent: {name}",
         )
 
     if name in AGENTS:

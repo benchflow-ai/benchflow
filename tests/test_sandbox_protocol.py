@@ -73,8 +73,8 @@ class TestImageConfig:
 # ── Protocol conformance ──────────────────────────────────────────────────────
 
 
-def _make_harbor_mock():
-    """Build a mock that looks like a Harbor BaseEnvironment subclass."""
+def _make_sandbox_mock():
+    """Build a mock that looks like a BaseSandboxEnvironment subclass."""
     mock = AsyncMock()
     mock.exec = AsyncMock(
         return_value=MagicMock(return_code=0, stdout="hello", stderr="")
@@ -89,13 +89,13 @@ def _make_harbor_mock():
 
 class TestDockerSandboxProtocol:
     def test_isinstance_check(self):
-        mock = _make_harbor_mock()
+        mock = _make_sandbox_mock()
         adapter = DockerSandbox(mock)
         assert isinstance(adapter, Sandbox)
 
     @pytest.mark.asyncio
     async def test_exec_delegates(self):
-        mock = _make_harbor_mock()
+        mock = _make_sandbox_mock()
         adapter = DockerSandbox(mock)
         result = await adapter.exec("echo hi", user="root", timeout_sec=10)
         mock.exec.assert_awaited_once_with("echo hi", user="root", timeout_sec=10)
@@ -105,7 +105,7 @@ class TestDockerSandboxProtocol:
 
     @pytest.mark.asyncio
     async def test_read_file_delegates(self):
-        mock = _make_harbor_mock()
+        mock = _make_sandbox_mock()
         adapter = DockerSandbox(mock)
         data = await adapter.read_file("/tmp/test.txt")
         mock.exec.assert_awaited_once_with("cat /tmp/test.txt", timeout_sec=30)
@@ -113,54 +113,54 @@ class TestDockerSandboxProtocol:
 
     @pytest.mark.asyncio
     async def test_upload_file_delegates(self):
-        mock = _make_harbor_mock()
+        mock = _make_sandbox_mock()
         adapter = DockerSandbox(mock)
         await adapter.upload_file(Path("/local/file"), "/remote/file")
         mock.upload_file.assert_awaited_once_with(Path("/local/file"), "/remote/file")
 
     @pytest.mark.asyncio
     async def test_upload_dir_delegates(self):
-        mock = _make_harbor_mock()
+        mock = _make_sandbox_mock()
         adapter = DockerSandbox(mock)
         await adapter.upload_dir(Path("/local/dir"), "/remote/dir")
         mock.upload_dir.assert_awaited_once_with(Path("/local/dir"), "/remote/dir")
 
     @pytest.mark.asyncio
     async def test_download_file_delegates(self):
-        mock = _make_harbor_mock()
+        mock = _make_sandbox_mock()
         adapter = DockerSandbox(mock)
         await adapter.download_file("/remote/file", Path("/local/file"))
         mock.download_file.assert_awaited_once_with("/remote/file", Path("/local/file"))
 
     @pytest.mark.asyncio
     async def test_start_delegates(self):
-        mock = _make_harbor_mock()
+        mock = _make_sandbox_mock()
         adapter = DockerSandbox(mock)
         await adapter.start()
         mock.start.assert_awaited_once_with(force_build=False)
 
     @pytest.mark.asyncio
     async def test_stop_delegates(self):
-        mock = _make_harbor_mock()
+        mock = _make_sandbox_mock()
         adapter = DockerSandbox(mock)
         await adapter.stop(delete=False)
         mock.stop.assert_awaited_once_with(delete=False)
 
     def test_host_property(self):
-        mock = _make_harbor_mock()
+        mock = _make_sandbox_mock()
         adapter = DockerSandbox(mock)
         assert adapter.host == "localhost"
 
 
 class TestDaytonaSandboxProtocol:
     def test_isinstance_check(self):
-        mock = _make_harbor_mock()
+        mock = _make_sandbox_mock()
         adapter = DaytonaSandbox(mock)
         assert isinstance(adapter, Sandbox)
 
     @pytest.mark.asyncio
     async def test_exec_delegates(self):
-        mock = _make_harbor_mock()
+        mock = _make_sandbox_mock()
         adapter = DaytonaSandbox(mock)
         result = await adapter.exec("ls -la", user="agent", timeout_sec=60)
         mock.exec.assert_awaited_once_with("ls -la", user="agent", timeout_sec=60)
@@ -169,7 +169,7 @@ class TestDaytonaSandboxProtocol:
 
     @pytest.mark.asyncio
     async def test_read_file_delegates(self):
-        mock = _make_harbor_mock()
+        mock = _make_sandbox_mock()
         adapter = DaytonaSandbox(mock)
         data = await adapter.read_file("/etc/hostname")
         mock.exec.assert_awaited_once_with("cat /etc/hostname", timeout_sec=30)
@@ -177,27 +177,27 @@ class TestDaytonaSandboxProtocol:
 
     @pytest.mark.asyncio
     async def test_upload_file_delegates(self):
-        mock = _make_harbor_mock()
+        mock = _make_sandbox_mock()
         adapter = DaytonaSandbox(mock)
         await adapter.upload_file(Path("/local/file"), "/remote/file")
         mock.upload_file.assert_awaited_once_with(Path("/local/file"), "/remote/file")
 
     @pytest.mark.asyncio
     async def test_start_delegates(self):
-        mock = _make_harbor_mock()
+        mock = _make_sandbox_mock()
         adapter = DaytonaSandbox(mock)
         await adapter.start()
         mock.start.assert_awaited_once_with(force_build=False)
 
     @pytest.mark.asyncio
     async def test_stop_delegates(self):
-        mock = _make_harbor_mock()
+        mock = _make_sandbox_mock()
         adapter = DaytonaSandbox(mock)
         await adapter.stop()
         mock.stop.assert_awaited_once_with(delete=True)
 
     def test_host_property(self):
-        mock = _make_harbor_mock()
+        mock = _make_sandbox_mock()
         adapter = DaytonaSandbox(mock)
         assert adapter.host == "localhost"
 
@@ -208,7 +208,7 @@ class TestDaytonaSandboxProtocol:
 class TestNoneToEmptyString:
     @pytest.mark.asyncio
     async def test_docker_none_stdout(self):
-        mock = _make_harbor_mock()
+        mock = _make_sandbox_mock()
         mock.exec.return_value = MagicMock(return_code=0, stdout=None, stderr=None)
         adapter = DockerSandbox(mock)
         result = await adapter.exec("true")
@@ -217,7 +217,7 @@ class TestNoneToEmptyString:
 
     @pytest.mark.asyncio
     async def test_daytona_none_stdout(self):
-        mock = _make_harbor_mock()
+        mock = _make_sandbox_mock()
         mock.exec.return_value = MagicMock(return_code=0, stdout=None, stderr=None)
         adapter = DaytonaSandbox(mock)
         result = await adapter.exec("true")
@@ -231,7 +231,7 @@ class TestNoneToEmptyString:
 class TestReadFileError:
     @pytest.mark.asyncio
     async def test_docker_read_file_raises_on_failure(self):
-        mock = _make_harbor_mock()
+        mock = _make_sandbox_mock()
         mock.exec.return_value = MagicMock(
             return_code=1, stdout="", stderr="No such file"
         )
@@ -241,7 +241,7 @@ class TestReadFileError:
 
     @pytest.mark.asyncio
     async def test_daytona_read_file_raises_on_failure(self):
-        mock = _make_harbor_mock()
+        mock = _make_sandbox_mock()
         mock.exec.return_value = MagicMock(
             return_code=1, stdout="", stderr="No such file"
         )

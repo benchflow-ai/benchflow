@@ -297,19 +297,18 @@ def _init_rollout(
     """Set up trial directory tree and return core trial objects."""
     from uuid import uuid4
 
-    from harbor.models.task.task import Task
-    from harbor.models.trial.paths import TrialPaths
+    from benchflow.task import RolloutPaths, Task
 
     task = Task(task_path)
     job_name = job_name or datetime.now().strftime("%Y-%m-%d__%H-%M-%S")
     trial_name = trial_name or f"{task_path.name}__{uuid4().hex[:8]}"
     trial_dir = Path(jobs_dir) / job_name / trial_name
-    trial_paths = TrialPaths(trial_dir)
+    rollout_paths = RolloutPaths(rollout_dir=trial_dir)
     started_at = datetime.now()
     trial_dir.mkdir(parents=True, exist_ok=True)
     for subdir in ("agent", "verifier", "artifacts", "trajectory"):
         (trial_dir / subdir).mkdir(exist_ok=True)
-    return task, trial_dir, trial_paths, started_at, job_name, trial_name
+    return task, trial_dir, rollout_paths, started_at, job_name, trial_name
 
 
 def _write_config(
@@ -510,8 +509,7 @@ async def _run_oracle(
     env: Any, task_path: Path, timeout: int, sandbox_user: str | None = None
 ) -> tuple[list[dict], str]:
     """Run oracle mode (solution/solve.sh), return (trajectory, agent_name)."""
-    from harbor.models.task.task import Task
-    from harbor.utils.env import resolve_env_vars
+    from benchflow.task import Task, resolve_env_vars
 
     logger.info("Oracle mode: running solution/solve.sh")
     if not (task_path / "solution" / "solve.sh").exists():
@@ -553,23 +551,22 @@ async def _run_oracle(
 async def _verify_rollout(
     env: Any,
     task: Any,
-    trial_paths: Any,
+    rollout_paths: Any,
     timing: dict,
     sandbox_user: str | None = None,
     workspace: str | None = None,
 ) -> tuple[dict | None, str | None]:
     """Run verifier with pre-verification hardening."""
-    from harbor.verifier.verifier import Verifier
-
     from benchflow._sandbox import harden_before_verify
+    from benchflow.task import Verifier
 
-    trial_paths.verifier_dir.mkdir(parents=True, exist_ok=True)
+    rollout_paths.verifier_dir.mkdir(parents=True, exist_ok=True)
     await harden_before_verify(env, task, sandbox_user, workspace=workspace)
     logger.info("Running verifier...")
     t0 = datetime.now()
     verifier_error = None
     try:
-        verifier = Verifier(task=task, trial_paths=trial_paths, environment=env)
+        verifier = Verifier(task=task, rollout_paths=rollout_paths, sandbox=env)
         verifier_result = await asyncio.wait_for(
             verifier.verify(),
             timeout=task.config.verifier.timeout_sec,
@@ -590,11 +587,11 @@ async def _verify_rollout(
     return rewards, verifier_error
 
 
-# Apply Harbor DinD patch at import time.
+# Apply Docker DinD patch at import time.
 def _apply_dind_patch() -> None:
-    from benchflow._env_setup import _patch_harbor_dind
+    from benchflow._env_setup import _patch_docker_dind
 
-    _patch_harbor_dind()
+    _patch_docker_dind()
 
 
 _apply_dind_patch()
@@ -744,7 +741,7 @@ class Rollout:
         # Populated by setup()
         self._task: Any = None
         self._trial_dir: Path | None = None
-        self._trial_paths: Any = None
+        self._rollout_paths: Any = None
         self._started_at: datetime | None = None
         self._job_name: str | None = None
         self._trial_name: str | None = None
@@ -842,7 +839,7 @@ class Rollout:
         (
             self._task,
             self._trial_dir,
-            self._trial_paths,
+            self._rollout_paths,
             self._started_at,
             self._job_name,
             self._trial_name,
@@ -892,7 +889,7 @@ class Rollout:
             self._task,
             effective_task_path,
             self._trial_name,
-            self._trial_paths,
+            self._rollout_paths,
             preserve_agent_network=self._disallow_web_tools,
         )
         self._timeout = int(self._task.config.agent.timeout_sec or 0)
@@ -1133,7 +1130,7 @@ class Rollout:
         self._rewards, self._verifier_error = await _verify_rollout(
             self._env,
             self._task,
-            self._trial_paths,
+            self._rollout_paths,
             self._timing,
             sandbox_user=cfg.sandbox_user,
             workspace=self._agent_cwd,
@@ -1153,11 +1150,10 @@ class Rollout:
         Returns (rewards, verifier_output, verifier_error). The final
         verify() still does full hardening.
         """
-        from harbor import Verifier
-
         from benchflow._sandbox import _build_cleanup_cmd, _read_hardening_config
+        from benchflow.task import Verifier
 
-        self._trial_paths.verifier_dir.mkdir(parents=True, exist_ok=True)
+        self._rollout_paths.verifier_dir.mkdir(parents=True, exist_ok=True)
         # Clean verifier output dir — chmod 777 so non-root verifier processes can write.
         # Keep /app present for task/verifier paths that still use the legacy
         # rootdir fallback; tasks that populate /app are unaffected.
@@ -1179,8 +1175,8 @@ class Rollout:
         try:
             verifier = Verifier(
                 task=self._task,
-                trial_paths=self._trial_paths,
-                environment=self._env,
+                rollout_paths=self._rollout_paths,
+                sandbox=self._env,
             )
             verifier_result = await asyncio.wait_for(
                 verifier.verify(),

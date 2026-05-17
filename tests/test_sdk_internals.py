@@ -299,7 +299,7 @@ class TestInitTrial:
 
     @pytest.fixture()
     def task_dir(self, tmp_path):
-        """Minimal Harbor task directory."""
+        """Minimal task directory."""
         td = tmp_path / "my-task"
         td.mkdir()
         (td / "task.toml").write_text(

@@ -1,4 +1,4 @@
-"""Environment setup utilities: Dockerfile preprocessing, DinD patching, environment creation."""
+"""Sandbox setup utilities: Dockerfile preprocessing, DinD patching, sandbox creation."""
 
 import base64
 import json
@@ -12,10 +12,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from harbor.models.task.task import Task
-from harbor.models.trial.paths import TrialPaths
-
 from benchflow.agents.registry import AGENTS
+from benchflow.task import RolloutPaths, Task
 
 logger = logging.getLogger(__name__)
 
@@ -148,13 +146,14 @@ def _modal_builder_dockerfile(
 
 def _create_benchflow_modal_environment_class():
     """Create a ModalEnvironment subclass with BenchFlow's image-build defaults."""
-    from harbor.environments.modal import ModalEnvironment
+    from benchflow.sandbox.modal_impl import ModalEnvironment
 
     class BenchFlowModalEnvironment(ModalEnvironment):
         async def start(self, force_build: bool) -> None:
             """Starts the Modal sandbox, adding Python for plain Linux images."""
-            from harbor.models.trial.paths import EnvironmentPaths
             from modal import App, Image, Secret, Volume
+
+            from benchflow.task import SandboxPaths
 
             def noop_cleanup_dockerfile() -> None:
                 return None
@@ -191,7 +190,7 @@ def _create_benchflow_modal_environment_class():
                 )
 
             self._app = await App.lookup.aio(
-                name="__harbor__",
+                name="__benchflow__",
                 create_if_missing=True,
             )
 
@@ -225,17 +224,17 @@ def _create_benchflow_modal_environment_class():
                 cleanup_dockerfile()
 
             await self._sandbox.mkdir.aio(
-                str(EnvironmentPaths.agent_dir),
+                str(SandboxPaths.agent_dir),
                 parents=True,
             )
             await self._sandbox.mkdir.aio(
-                str(EnvironmentPaths.verifier_dir),
+                str(SandboxPaths.verifier_dir),
                 parents=True,
             )
 
             # Make log directories world-writable so non-root agents/verifiers can write to them.
             await self.exec(
-                f"chmod 777 {EnvironmentPaths.agent_dir} {EnvironmentPaths.verifier_dir}"
+                f"chmod 777 {SandboxPaths.agent_dir} {SandboxPaths.verifier_dir}"
             )
 
     return BenchFlowModalEnvironment
@@ -410,8 +409,8 @@ def _detect_dind_mount() -> tuple[str, str] | None:
         return None
 
 
-def _patch_harbor_dind() -> None:
-    """Monkey-patch Harbor's DockerEnvironmentEnvVars for DinD path translation.
+def _patch_docker_dind() -> None:
+    """Monkey-patch DockerEnvironmentEnvVars for DinD path translation.
 
     When running inside a devcontainer, HOST_*_PATH env vars need to use
     host filesystem paths, not container paths. Applied once at import time.
@@ -423,14 +422,11 @@ def _patch_harbor_dind() -> None:
     host_source, container_dest = dind_mount
     logger.info(f"DinD detected: {container_dest} → {host_source}")
 
-    try:
-        from harbor.environments.docker.docker import DockerEnvironmentEnvVars
-    except ImportError:
-        return
+    from benchflow.sandbox.docker_impl import DockerEnvironmentEnvVars
 
     _original = DockerEnvironmentEnvVars.to_env_dict
 
-    def _patched(self, include_os_env=True):
+    def _patched(self, include_os_env=True):  # type: ignore[override]
         env = _original(self, include_os_env=include_os_env)
         for key in (
             "HOST_VERIFIER_LOGS_PATH",
@@ -442,20 +438,18 @@ def _patch_harbor_dind() -> None:
                 env[key] = host_source + val[len(container_dest) :]
         return env
 
-    # Monkey-patch Harbor's DockerEnvironmentEnvVars to rewrite host paths
-    # for DinD nesting. ty flags this as an implicit signature shadowing.
-    DockerEnvironmentEnvVars.to_env_dict = _patched  # ty: ignore[invalid-assignment]
+    DockerEnvironmentEnvVars.to_env_dict = _patched  # type: ignore[assignment]
 
 
-def _create_environment(
-    environment_type: str,
+def _create_sandbox_environment(
+    sandbox_type: str,
     task: Task,
     task_path: Path,
-    trial_name: str,
-    trial_paths: TrialPaths,
+    rollout_name: str,
+    rollout_paths: RolloutPaths,
     preserve_agent_network: bool = False,
 ) -> Any:
-    """Create a Harbor environment (Docker, Daytona, or Modal)."""
+    """Create a sandbox environment (Docker, Daytona, or Modal)."""
     env_config = task.config.environment
     environment_dir = task_path / "environment"
     if not environment_dir.exists():
@@ -463,25 +457,24 @@ def _create_environment(
     if preserve_agent_network and env_config.allow_internet is False:
         # LLM agents run inside the sandbox and need outbound network for model
         # APIs and first-run agent installation. BenchFlow enforces the task's
-        # no-web policy at the agent layer instead of applying Harbor's container
+        # no-web policy at the agent layer instead of applying the container
         # network block for these runs.
         env_config = env_config.model_copy(deep=True)
         env_config.allow_internet = True
 
-    if environment_type == "docker":
-        from harbor.environments.docker.docker import DockerEnvironment
+    if sandbox_type == "docker":
+        from benchflow.sandbox.docker_impl import DockerEnvironment
 
         return DockerEnvironment(
             environment_dir=environment_dir,
             environment_name=task_path.name,
-            session_id=trial_name,
-            trial_paths=trial_paths,
+            session_id=rollout_name,
+            rollout_paths=rollout_paths,
             task_env_config=env_config,
         )
-    elif environment_type == "daytona":
-        from harbor.environments.daytona import DaytonaEnvironment
-
+    elif sandbox_type == "daytona":
         from benchflow._daytona_patches import apply as _apply_daytona_patches
+        from benchflow.sandbox.daytona_impl import DaytonaEnvironment
 
         _apply_daytona_patches()
 
@@ -510,24 +503,28 @@ def _create_environment(
         return DaytonaEnvironment(
             environment_dir=environment_dir,
             environment_name=task_path.name,
-            session_id=trial_name,
-            trial_paths=trial_paths,
+            session_id=rollout_name,
+            rollout_paths=rollout_paths,
             task_env_config=env_config,
             auto_stop_interval_mins=1440,
             auto_delete_interval_mins=1440,
         )
-    elif environment_type == "modal":
+    elif sandbox_type == "modal":
         modal_environment_class = _create_benchflow_modal_environment_class()
         modal_environment_class.preflight()
 
         return modal_environment_class(
             environment_dir=environment_dir,
             environment_name=task_path.name,
-            session_id=trial_name,
-            trial_paths=trial_paths,
+            session_id=rollout_name,
+            rollout_paths=rollout_paths,
             task_env_config=env_config,
         )
     else:
         raise ValueError(
-            f"Unknown environment_type: {environment_type!r} (use 'docker', 'daytona', or 'modal')"
+            f"Unknown sandbox_type: {sandbox_type!r} (use 'docker', 'daytona', or 'modal')"
         )
+
+
+# Backward compatibility alias
+_create_environment = _create_sandbox_environment

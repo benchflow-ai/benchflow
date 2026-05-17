@@ -339,7 +339,7 @@ class TestSoftVerify:
         trial = _make_user_trial(PassthroughUser())
 
         with (
-            patch("harbor.Verifier") as MockVerifier,
+            patch("benchflow.task.verifier.Verifier") as MockVerifier,
             patch("benchflow._sandbox.CLEANUP_CMD", "true"),
         ):
             mock_instance = MockVerifier.return_value
@@ -356,7 +356,7 @@ class TestSoftVerify:
         trial = _make_user_trial(PassthroughUser())
 
         with (
-            patch("harbor.Verifier") as MockVerifier,
+            patch("benchflow.task.verifier.Verifier") as MockVerifier,
             patch("benchflow._sandbox.CLEANUP_CMD", "true"),
         ):
             mock_instance = MockVerifier.return_value
@@ -375,7 +375,7 @@ class TestSoftVerify:
         mock_result = type("VR", (), {"rewards": {"exact_match": 1.0}})()
 
         with (
-            patch("harbor.Verifier") as MockVerifier,
+            patch("benchflow.task.verifier.Verifier") as MockVerifier,
             patch("benchflow._sandbox.CLEANUP_CMD", "true"),
         ):
             mock_instance = MockVerifier.return_value
@@ -393,7 +393,7 @@ class TestSoftVerify:
         mock_result = type("VR", (), {"rewards": {}})()
 
         with (
-            patch("harbor.Verifier") as MockVerifier,
+            patch("benchflow.task.verifier.Verifier") as MockVerifier,
             patch(
                 "benchflow._sandbox._build_cleanup_cmd",
                 return_value="echo cleanup_sentinel",

@@ -15,10 +15,9 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-from harbor.models.task.task import Task
-
 from benchflow._env_setup import _create_environment
 from benchflow._snapshot import list_snapshots, restore, snapshot
+from benchflow.task import Task
 
 TASK_PATH = Path(__file__).parent / "acp_smoke"
 

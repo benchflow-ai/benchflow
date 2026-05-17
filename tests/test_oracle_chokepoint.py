@@ -79,7 +79,7 @@ class TestEffectiveModel:
         assert effective_model("codex-acp", "gpt-5") == "gpt-5"
 
     def test_non_oracle_empty_model_falls_back_to_default(self):
-        """Empty string == "no model" — Harbor YAML can produce this shape."""
+        """Empty string == "no model" — legacy YAML can produce this shape."""
         from benchflow.job import DEFAULT_MODEL, effective_model
 
         assert effective_model("claude-agent-acp", "") == DEFAULT_MODEL
@@ -88,7 +88,7 @@ class TestEffectiveModel:
 class TestOracleYamlLoaders:
     """YAML configs for oracle must produce JobConfig.model is None.
 
-    Both loader paths (_from_native_yaml, _from_harbor_yaml) previously
+    Both loader paths (_from_native_yaml, _from_legacy_yaml) previously
     coalesced missing model to DEFAULT_MODEL unconditionally — Layer 3
     routes them through effective_model() so oracle drops the default.
     """
@@ -109,7 +109,7 @@ class TestOracleYamlLoaders:
         assert job._config.agent == "oracle"
         assert job._config.model is None
 
-    def test_harbor_yaml_oracle_no_model(self, tmp_path: Path):
+    def test_legacy_yaml_oracle_no_model(self, tmp_path: Path):
         from benchflow.job import Job
 
         self._make_task(tmp_path)

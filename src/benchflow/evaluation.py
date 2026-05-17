@@ -197,7 +197,7 @@ class Evaluation:
     def from_yaml(cls, path: str | Path, **kwargs) -> Evaluation:
         """Create a Job from a YAML config file.
 
-        Supports both benchflow-native and Harbor-compatible YAML formats.
+        Supports both benchflow-native and legacy YAML formats.
 
         benchflow format:
             tasks_dir: path/to/tasks
@@ -211,7 +211,7 @@ class Evaluation:
               - null
               - "Review your solution and fix any issues."
 
-        Harbor-compatible format:
+        Legacy format (agents + datasets style):
             jobs_dir: jobs
             n_attempts: 1
             orchestrator:
@@ -230,9 +230,9 @@ class Evaluation:
         with open(path) as f:
             raw = yaml.safe_load(f)
 
-        # Detect format: Harbor uses "agents" + "datasets", benchflow uses "agent"
+        # Detect format: legacy uses "agents" + "datasets", benchflow uses "agent"
         if "agents" in raw or "datasets" in raw:
-            return cls._from_harbor_yaml(raw, **kwargs)
+            return cls._from_legacy_yaml(raw, **kwargs)
         return cls._from_native_yaml(raw, **kwargs)
 
     @classmethod
@@ -295,8 +295,8 @@ class Evaluation:
         return cls(tasks_dir=tasks_dir, jobs_dir=jobs_dir, config=config, **kwargs)
 
     @classmethod
-    def _from_harbor_yaml(cls, raw: dict, **kwargs) -> Job:
-        """Parse Harbor-compatible YAML."""
+    def _from_legacy_yaml(cls, raw: dict, **kwargs) -> Job:
+        """Parse legacy-format YAML (agents + datasets style)."""
         # Agent
         agents = raw.get("agents", [{}])
         agent_cfg = agents[0] if agents else {}
@@ -329,7 +329,7 @@ class Evaluation:
         jobs_dir = Path(raw.get("jobs_dir", "jobs"))
         max_retries = (
             raw.get("n_attempts", 1) - 1
-        )  # Harbor n_attempts includes first try
+        )  # legacy n_attempts includes first try
 
         # Skills dir (shared with benchflow-native format)
         skills_dir_raw = raw.get("skills_dir")

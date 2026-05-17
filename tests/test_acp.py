@@ -429,7 +429,7 @@ class TestConnectAcpModelSelection:
         mock_env = AsyncMock()
         with (
             patch(
-                "benchflow._acp_run.DockerProcess.from_harbor_env",
+                "benchflow._acp_run.DockerProcess.from_sandbox_env",
                 return_value=MagicMock(),
             ),
             patch("benchflow._acp_run.ContainerTransport", return_value=MagicMock()),
@@ -457,7 +457,7 @@ class TestConnectAcpModelSelection:
         mock_env = AsyncMock()
         with (
             patch(
-                "benchflow._acp_run.DockerProcess.from_harbor_env",
+                "benchflow._acp_run.DockerProcess.from_sandbox_env",
                 return_value=MagicMock(),
             ),
             patch("benchflow._acp_run.ContainerTransport", return_value=MagicMock()),
@@ -485,7 +485,7 @@ class TestConnectAcpModelSelection:
         mock_env = AsyncMock()
         with (
             patch(
-                "benchflow._acp_run.DockerProcess.from_harbor_env",
+                "benchflow._acp_run.DockerProcess.from_sandbox_env",
                 return_value=MagicMock(),
             ),
             patch("benchflow._acp_run.ContainerTransport", return_value=MagicMock()),
@@ -523,12 +523,12 @@ class TestConnectAcpModelSelection:
 
         with (
             patch(
-                "benchflow._acp_run.DaytonaPtyProcess.from_harbor_env",
+                "benchflow._acp_run.DaytonaPtyProcess.from_sandbox_env",
                 new_callable=AsyncMock,
                 return_value=MagicMock(),
             ) as mock_pty,
             patch(
-                "benchflow._acp_run.DaytonaProcess.from_harbor_env",
+                "benchflow._acp_run.DaytonaProcess.from_sandbox_env",
                 new_callable=AsyncMock,
                 return_value=MagicMock(),
             ) as mock_ssh,

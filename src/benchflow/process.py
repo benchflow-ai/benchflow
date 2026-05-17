@@ -142,8 +142,8 @@ class DockerProcess(LiveProcess):
         self._service = service
 
     @classmethod
-    def from_harbor_env(cls, env: Any) -> "DockerProcess":
-        """Create from a Harbor DockerEnvironment."""
+    def from_sandbox_env(cls, env: Any) -> "DockerProcess":
+        """Create from a sandbox environment (DockerEnvironment)."""
         project_name = env.session_id.lower().replace(".", "-")
         project_dir = str(env.environment_dir.resolve().absolute())
         compose_files = [str(p.resolve().absolute()) for p in env._docker_compose_paths]
@@ -284,8 +284,8 @@ class DaytonaProcess(LiveProcess):
         self._compose_cmd_base = compose_cmd_base
 
     @classmethod
-    async def from_harbor_env(cls, env: Any) -> "DaytonaProcess":
-        """Create from a Harbor DaytonaEnvironment."""
+    async def from_sandbox_env(cls, env: Any) -> "DaytonaProcess":
+        """Create from a sandbox environment (DaytonaEnvironment)."""
         sandbox = env._sandbox
         if not sandbox:
             raise RuntimeError("Daytona sandbox not started")
@@ -435,7 +435,7 @@ class DaytonaPtyProcess(LiveProcess):
         self._closed = False
 
     @classmethod
-    async def from_harbor_env(cls, env: Any) -> "DaytonaPtyProcess":
+    async def from_sandbox_env(cls, env: Any) -> "DaytonaPtyProcess":
         sandbox = env._sandbox
         if not sandbox:
             raise RuntimeError("Daytona sandbox not started")

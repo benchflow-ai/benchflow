@@ -26,10 +26,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[0].parent / "src"))
 
 import contextlib
 
-from harbor.models.task.task import Task
-from harbor.models.trial.paths import TrialPaths
-from harbor.verifier.verifier import Verifier
-
 from benchflow._acp_run import connect_acp, execute_prompts
 from benchflow._agent_env import resolve_agent_env
 from benchflow._agent_setup import install_agent
@@ -38,6 +34,8 @@ from benchflow._env_setup import _create_environment
 from benchflow._sandbox import setup_sandbox_user
 from benchflow.agents.registry import AGENT_LAUNCH, AGENTS
 from benchflow.sdk import SDK
+from benchflow.task import RolloutPaths as TrialPaths
+from benchflow.task import Task, Verifier
 
 logger = logging.getLogger(__name__)
 

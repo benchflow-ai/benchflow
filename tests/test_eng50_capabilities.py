@@ -68,7 +68,7 @@ class TestRoleCapabilities:
 # ---------------------------------------------------------------------------
 
 
-def _make_harbor_mock():
+def _make_sandbox_mock():
     mock = AsyncMock()
     mock.exec = AsyncMock(return_value=MagicMock(return_code=0, stdout="ok", stderr=""))
     mock.upload_file = AsyncMock()
@@ -83,21 +83,21 @@ class TestDockerSandboxExposePorts:
     """Guards ENG-50 expose_ports on DockerSandbox."""
 
     def test_defaults_to_empty(self) -> None:
-        adapter = DockerSandbox(_make_harbor_mock())
+        adapter = DockerSandbox(_make_sandbox_mock())
         assert adapter.expose_ports == []
 
     def test_accepts_port_list(self) -> None:
-        adapter = DockerSandbox(_make_harbor_mock(), expose_ports=[8080, 9090])
+        adapter = DockerSandbox(_make_sandbox_mock(), expose_ports=[8080, 9090])
         assert adapter.expose_ports == [8080, 9090]
 
     def test_returns_copy(self) -> None:
-        adapter = DockerSandbox(_make_harbor_mock(), expose_ports=[8080])
+        adapter = DockerSandbox(_make_sandbox_mock(), expose_ports=[8080])
         ports = adapter.expose_ports
         ports.append(9999)
         assert adapter.expose_ports == [8080]
 
     def test_still_satisfies_protocol(self) -> None:
-        adapter = DockerSandbox(_make_harbor_mock(), expose_ports=[3000])
+        adapter = DockerSandbox(_make_sandbox_mock(), expose_ports=[3000])
         assert isinstance(adapter, Sandbox)
 
 
@@ -105,21 +105,21 @@ class TestDaytonaSandboxExposePorts:
     """Guards ENG-50 expose_ports on DaytonaSandbox."""
 
     def test_defaults_to_empty(self) -> None:
-        adapter = DaytonaSandbox(_make_harbor_mock())
+        adapter = DaytonaSandbox(_make_sandbox_mock())
         assert adapter.expose_ports == []
 
     def test_accepts_port_list(self) -> None:
-        adapter = DaytonaSandbox(_make_harbor_mock(), expose_ports=[5000])
+        adapter = DaytonaSandbox(_make_sandbox_mock(), expose_ports=[5000])
         assert adapter.expose_ports == [5000]
 
     def test_returns_copy(self) -> None:
-        adapter = DaytonaSandbox(_make_harbor_mock(), expose_ports=[5000])
+        adapter = DaytonaSandbox(_make_sandbox_mock(), expose_ports=[5000])
         ports = adapter.expose_ports
         ports.append(9999)
         assert adapter.expose_ports == [5000]
 
     def test_still_satisfies_protocol(self) -> None:
-        adapter = DaytonaSandbox(_make_harbor_mock(), expose_ports=[3000])
+        adapter = DaytonaSandbox(_make_sandbox_mock(), expose_ports=[3000])
         assert isinstance(adapter, Sandbox)
 
 
