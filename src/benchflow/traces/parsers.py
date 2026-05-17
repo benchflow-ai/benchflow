@@ -16,6 +16,7 @@ import logging
 import uuid
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from benchflow.traces.models import GitContext, ParsedTrace, ToolCall, TraceStep
 
@@ -27,7 +28,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-def _extract_content_text(content: object) -> str:
+def _extract_content_text(content: Any) -> str:
     """Extract plain text from Claude Code message content.
 
     Content can be a string, a list of content blocks, or missing.
@@ -50,7 +51,7 @@ def _extract_content_text(content: object) -> str:
     return ""
 
 
-def _extract_tool_calls(content: object) -> list[ToolCall]:
+def _extract_tool_calls(content: Any) -> list[ToolCall]:
     """Extract tool_use blocks from Claude Code assistant message content."""
     calls: list[ToolCall] = []
     if not isinstance(content, list):
@@ -89,7 +90,7 @@ def parse_claude_code_session(
     if not path.exists():
         raise FileNotFoundError(f"Session file not found: {path}")
 
-    entries: list[dict[str, object]] = []
+    entries: list[dict[str, Any]] = []
     for line in path.read_text().splitlines():
         line = line.strip()
         if not line:
@@ -107,7 +108,7 @@ def parse_claude_code_session(
 
 
 def _parse_claude_entries(
-    entries: list[dict[str, object]],
+    entries: list[dict[str, Any]],
     *,
     session_id: str | None = None,
     source_path: Path | None = None,
@@ -257,7 +258,7 @@ def parse_claude_code_file(path: Path) -> list[ParsedTrace]:
     if not path.exists():
         raise FileNotFoundError(f"Session file not found: {path}")
 
-    entries: list[dict[str, object]] = []
+    entries: list[dict[str, Any]] = []
     for line in path.read_text().splitlines():
         line = line.strip()
         if not line:
@@ -272,7 +273,7 @@ def parse_claude_code_file(path: Path) -> list[ParsedTrace]:
         raise ValueError(f"No valid entries in {path}")
 
     # Group entries by sessionId
-    session_groups: dict[str, list[dict[str, object]]] = {}
+    session_groups: dict[str, list[dict[str, Any]]] = {}
     no_session_id = []
     for entry in entries:
         sid = entry.get("sessionId")
@@ -299,7 +300,7 @@ def parse_claude_code_file(path: Path) -> list[ParsedTrace]:
 
 
 def parse_opentraces_record(
-    record: dict[str, object],
+    record: dict[str, Any],
 ) -> ParsedTrace:
     """Parse a single opentraces ``TraceRecord`` dict into a ``ParsedTrace``.
 
@@ -419,7 +420,7 @@ def parse_opentraces_record(
             total_input = int(tokens.get("input", 0))
             total_output = int(tokens.get("output", 0))
 
-    metadata: dict[str, object] = {}
+    metadata: dict[str, Any] = {}
     if agent_version:
         metadata["agent_version"] = agent_version
     schema_version = record.get("schema_version")
@@ -474,7 +475,7 @@ def parse_opentraces_file(path: Path) -> list[ParsedTrace]:
 # ---------------------------------------------------------------------------
 
 
-def _parse_iso(value: object) -> datetime | None:
+def _parse_iso(value: Any) -> datetime | None:
     """Parse an ISO-8601 string, returning None on failure."""
     if not isinstance(value, str) or not value:
         return None

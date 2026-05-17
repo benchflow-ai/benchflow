@@ -17,6 +17,7 @@ import json
 import logging
 import re
 from pathlib import Path
+from typing import Any
 
 from benchflow.traces.models import GitContext, ParsedTrace, ToolCall, TraceStep
 from benchflow.traces.parsers import parse_opentraces_record
@@ -227,9 +228,7 @@ def _extract_task_from_prompt(prompt: str) -> str:
     return text
 
 
-def _parse_claude_messages_row(
-    row: dict[str, object], idx: int = 0
-) -> ParsedTrace | None:
+def _parse_claude_messages_row(row: dict[str, Any], idx: int = 0) -> ParsedTrace | None:
     """Parse a row from a Claude Code merged-messages dataset.
 
     Handles two sub-formats found in datasets like cc-traces-merged:
@@ -351,7 +350,7 @@ def _infer_outcome(steps: list[TraceStep]) -> str:
     return "unknown"
 
 
-def _parse_prompt_diff_row(row: dict[str, object], idx: int = 0) -> ParsedTrace | None:
+def _parse_prompt_diff_row(row: dict[str, Any], idx: int = 0) -> ParsedTrace | None:
     """Parse a row that uses ``user_prompt`` + ``gitdiff`` instead of messages.
 
     Many rows in cc-traces-merged store the prompt in ``user_prompt``,
@@ -430,9 +429,7 @@ def _parse_prompt_diff_row(row: dict[str, object], idx: int = 0) -> ParsedTrace 
     )
 
 
-def _parse_claude_requests_row(
-    row: dict[str, object], idx: int = 0
-) -> ParsedTrace | None:
+def _parse_claude_requests_row(row: dict[str, Any], idx: int = 0) -> ParsedTrace | None:
     """Parse a row from the cc-traces-weka request-metadata dataset.
 
     These datasets have a ``requests`` list with API-level metadata
