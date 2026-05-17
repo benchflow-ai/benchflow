@@ -656,8 +656,7 @@ def _acpx_wrap(config: AgentConfig) -> AgentConfig:
         name=f"acpx:{config.name}",
         install_cmd=f"{config.install_cmd} && {_ACPX_INSTALL}",
         launch_cmd=(
-            f'export PATH="{_JS_AGENT_PATH}" && '
-            f"acpx {acpx_agent_name} --approve-all"
+            f'export PATH="{_JS_AGENT_PATH}" && acpx {acpx_agent_name} --approve-all'
         ),
         protocol="acp",
         requires_env=config.requires_env,
