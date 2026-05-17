@@ -243,6 +243,7 @@ async def deploy_skills(
                 logger.warning(f"Skills dir not found: {skills_path}")
         else:
             logger.info("Skills already injected via Dockerfile")
+            effective_skills = "/skills"
 
     # Distribute to agent-specific discovery paths
     if agent_cfg is not None:
