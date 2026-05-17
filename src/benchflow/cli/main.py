@@ -28,7 +28,7 @@ app = typer.Typer(
 )
 
 
-@app.command()
+@app.command(hidden=True, deprecated=True)
 def run(
     task_dir: Annotated[
         Path | None,
