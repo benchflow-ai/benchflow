@@ -115,3 +115,12 @@ python-version = "3.12"
 
 [tool.ty.src]
 include = ["src"]
+# Sandbox backends depend on optional packages (daytona, modal, docker)
+# that aren't dev dependencies — exclude from type checking.
+exclude = [
+    "src/benchflow/sandbox/daytona.py",
+    "src/benchflow/sandbox/modal_impl.py",
+    "src/benchflow/sandbox/docker.py",
+    "src/benchflow/sandbox/_base.py",
+    "src/benchflow/_env_setup.py",
+]
