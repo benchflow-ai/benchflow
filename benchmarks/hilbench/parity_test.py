@@ -84,12 +84,16 @@ def _check_task(task_dir: Path) -> list[str]:
         if not (mode & stat.S_IEXEC):
             errors.append(f"{task_id}: test.sh is not executable")
 
-    # Check Dockerfile references ubuntu base
+    # Check Dockerfile uses predictable hilbench-base tag
     dockerfile = task_dir / "environment" / "Dockerfile"
     if dockerfile.exists():
         content = dockerfile.read_text()
         if "FROM" not in content:
             errors.append(f"{task_id}: Dockerfile missing FROM directive")
+        elif f"FROM hilbench-base:{task_id}" not in content:
+            errors.append(
+                f"{task_id}: Dockerfile FROM does not reference hilbench-base:{task_id}"
+            )
 
     return errors
 

@@ -53,9 +53,7 @@ def _download_and_load_image(download_link: str, cache_dir: Path) -> str:
 
     # download_link format: hf://buckets/ScaleAI/hil-bench-swe-images/images/<uid>.tar.zst
     # Extract repo_id and filename from the link.
-    match = re.match(
-        r"hf://buckets/([^/]+/[^/]+)/(.+)", download_link
-    )
+    match = re.match(r"hf://buckets/([^/]+/[^/]+)/(.+)", download_link)
     if not match:
         raise ValueError(f"Cannot parse download_link: {download_link}")
 
@@ -93,7 +91,14 @@ def _download_and_load_image(download_link: str, cache_dir: Path) -> str:
 
 
 def load_and_tag_images(tasks_dir: Path, cache_dir: Path) -> dict[str, str]:
-    """Load Docker images for all tasks.  Returns {task_dir_name: image_tag}."""
+    """Load Docker images for all tasks and tag them for Dockerfile use.
+
+    Each loaded image is re-tagged as ``hilbench-base:<task_dir_name>`` so
+    that the generated Dockerfile's ``FROM hilbench-base:<task_dir_name>``
+    resolves correctly during ``docker build``.
+
+    Returns {task_dir_name: original_image_tag}.
+    """
     image_map: dict[str, str] = {}
     for task_dir in sorted(tasks_dir.iterdir()):
         meta_file = task_dir / "tests" / "task_metadata.json"
@@ -102,13 +107,33 @@ def load_and_tag_images(tasks_dir: Path, cache_dir: Path) -> dict[str, str]:
         meta = json.loads(meta_file.read_text())
         download_link = meta.get("download_link", "")
         if not download_link:
-            logger.warning("No download_link for %s, skipping image load", task_dir.name)
+            logger.warning(
+                "No download_link for %s, skipping image load", task_dir.name
+            )
             continue
 
         try:
             tag = _download_and_load_image(download_link, cache_dir)
             image_map[task_dir.name] = tag
             logger.info("Loaded image for %s -> %s", task_dir.name, tag)
+
+            # Tag to the predictable name the Dockerfile expects
+            predictable_tag = f"hilbench-base:{task_dir.name}"
+            result = subprocess.run(
+                ["docker", "tag", tag, predictable_tag],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if result.returncode != 0:
+                logger.error(
+                    "docker tag %s -> %s failed: %s",
+                    tag,
+                    predictable_tag,
+                    result.stderr,
+                )
+            else:
+                logger.info("Tagged %s -> %s", tag, predictable_tag)
         except Exception:
             logger.exception("Failed to load image for %s", task_dir.name)
     return image_map
