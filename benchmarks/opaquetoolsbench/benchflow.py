@@ -304,24 +304,14 @@ def parse_python_call(call_str: str) -> tuple[str, dict] | None:
                 try:
                     val = ast.literal_eval(kw.value)
                 except (ValueError, SyntaxError):
-                    try:
-                        val = eval(  # noqa: S307
-                            compile(ast.Expression(kw.value), "", "eval")
-                        )
-                    except Exception:
-                        val = ast.unparse(kw.value)
+                    val = ast.unparse(kw.value)
                 kwargs[kw.arg] = val
 
         for i, arg in enumerate(node.args):
             try:
                 val = ast.literal_eval(arg)
             except (ValueError, SyntaxError):
-                try:
-                    val = eval(  # noqa: S307
-                        compile(ast.Expression(arg), "", "eval")
-                    )
-                except Exception:
-                    val = ast.unparse(arg)
+                val = ast.unparse(arg)
             kwargs[f"_positional_{i}"] = val
 
         return func_name, kwargs
