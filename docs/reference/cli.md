@@ -49,13 +49,13 @@ bench run tasks/pdf-fix \
 | Flag | Default | Description |
 |------|---------|-------------|
 | `TASK_DIR` | — | Task directory containing `task.toml` |
-| `--agent`, `-a` | `claude-agent-acp` | Agent name from the registry |
-| `--model`, `-m` | Agent default | Model ID |
-| `--sandbox`, `-b` | `docker` | Sandbox: docker, daytona, or modal |
-| `--prompt`, `-p` | `instruction.md` | Prompt text; repeat for multi-turn |
-| `--jobs-dir`, `-o` | `jobs` | Output directory |
+| `--agent` | `claude-agent-acp` | Agent name from the registry |
+| `--model` | Agent default | Model ID |
+| `--sandbox` | `docker` | Sandbox: docker, daytona, or modal |
+| `--prompt` | `instruction.md` | Prompt text; repeat for multi-turn |
+| `--jobs-dir` | `jobs` | Output directory |
 | `--agent-env`, `--ae` | — | Agent environment variable as `KEY=VALUE`; repeatable |
-| `--skills-dir`, `-s` | — | Skills directory to deploy into the sandbox |
+| `--skills-dir` | — | Skills directory to deploy into the sandbox |
 | `--sandbox-user` | `agent` | Non-root sandbox user; pass `none` for root |
 
 When mounting skills, the recommended docs default is
@@ -75,37 +75,37 @@ accepts a single task directory.
 
 ```bash
 # From YAML config
-bench eval create -f benchmarks/skillsbench-claude-glm51.yaml
+bench eval create --config benchmarks/skillsbench-claude-glm51.yaml
 
 # From remote repo
 bench eval create \
   --source-repo benchflow-ai/skillsbench \
   --source-path tasks \
-  -a gemini \
-  -m gemini-3.1-flash-lite-preview \
+  --agent gemini \
+  --model gemini-3.1-flash-lite-preview \
   --sandbox daytona \
-  -c 64 \
+  --concurrency 64 \
   --sandbox-setup-timeout 300
 
 # From local directory
-bench eval create -t ./tasks -a gemini -m gemini-3.1-flash-lite-preview
+bench eval create --tasks-dir ./tasks --agent gemini --model gemini-3.1-flash-lite-preview
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--config`, `-f` | — | YAML config file |
-| `--tasks-dir`, `-t` | — | Local task dir (single task with task.toml, or parent of many) |
+| `--config` | — | YAML config file |
+| `--tasks-dir` | — | Local task dir (single task with task.toml, or parent of many) |
 | `--source-repo` | — | Remote repo as `org/repo` (e.g. `benchflow-ai/skillsbench`) |
 | `--source-path` | — | Subpath within the repo (e.g. `tasks`) |
 | `--source-ref` | — | Branch or tag to clone (e.g. `main`) |
-| `--agent`, `-a` | `claude-agent-acp` | Agent name |
-| `--model`, `-m` | Agent default | Model ID |
+| `--agent` | `claude-agent-acp` | Agent name |
+| `--model` | Agent default | Model ID |
 | `--sandbox` | `docker` | Sandbox: docker, daytona, or modal |
-| `--concurrency`, `-c` | `4` | Max concurrent tasks (batch mode only) |
-| `--jobs-dir`, `-o` | `jobs` | Output directory |
+| `--concurrency` | `4` | Max concurrent tasks (batch mode only) |
+| `--jobs-dir` | `jobs` | Output directory |
 | `--sandbox-user` | `agent` | Sandbox user (null for root) |
 | `--sandbox-setup-timeout` | `120` | Timeout in seconds for sandbox user setup |
-| `--skills-dir`, `-s` | — | Skills directory to deploy into each task sandbox |
+| `--skills-dir` | — | Skills directory to deploy into each task sandbox |
 
 ### bench eval list
 
@@ -125,8 +125,8 @@ Evaluate a skill against its evals.json test cases.
 
 ```bash
 bench skills eval skills/my-skill/ \
-  -a gemini \
-  -m gemini-3.1-flash-lite-preview \
+  --agent gemini \
+  --model gemini-3.1-flash-lite-preview \
   --sandbox daytona
 ```
 
@@ -163,8 +163,8 @@ Run a reward-based training sweep.
 
 ```bash
 bench train create \
-  -t tasks/ \
-  -a gemini \
+  --tasks-dir tasks/ \
+  --agent gemini \
   --sweeps 5 \
   --export ./training-data
 ```
@@ -212,7 +212,7 @@ max_retries: 2
 
 ### Multi-scene (BYOS skill generation)
 
-Use the Python API for multi-scene experiments. `bench eval create -f` is for
+Use the Python API for multi-scene experiments. `bench eval create --config` is for
 batch job configs; scene configs are loaded with `benchflow.trial_yaml` or built
 directly in Python.
 
@@ -249,7 +249,7 @@ These still work but are hidden from `--help`:
 | Old command | Replacement |
 |-------------|-------------|
 | `benchflow run` | `bench run <task>` |
-| `benchflow job` | `bench eval create -f <yaml>` |
+| `benchflow job` | `bench eval create --config <yaml>` |
 | `benchflow agents` | `bench agent list` |
 | `benchflow eval` | `bench skills eval` |
 | `benchflow metrics` | `bench eval list --detail` |

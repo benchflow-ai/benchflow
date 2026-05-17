@@ -60,10 +60,10 @@ env -u CODEX_API_KEY -u OPENAI_BASE_URL -u OPENAI_API_KEY \
   OPENAI_API_KEY="dummy-local-key" \
   uv run benchflow run \
     "$TASK" \
-    -a codex-acp \
-    -m vllm/mock-model \
+    --agent codex-acp \
+    --model vllm/mock-model \
     --sandbox docker \
-    -o "$JOBS_DIR" \
+    --jobs-dir "$JOBS_DIR" \
     --ae "BENCHFLOW_PROVIDER_BASE_URL=${STUB_URL}"
 RUN_RC=$?
 set -e

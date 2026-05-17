@@ -62,12 +62,12 @@ Run any benchmark via the CLI:
 
 ```bash
 # From a YAML config
-bench eval create -f benchmarks/skillsbench-claude-glm51.yaml
+bench eval create --config benchmarks/skillsbench-claude-glm51.yaml
 
 # Inline — mirrors the YAML source fields
 bench eval create \
     --source-repo benchflow-ai/skillsbench --source-path tasks \
-    -a gemini -m gemini-3.1-flash-lite-preview --sandbox daytona -c 64
+    --agent gemini --model gemini-3.1-flash-lite-preview --sandbox daytona --concurrency 64
 ```
 
 Repos are cloned and cached locally under `.cache/datasets/` on first use.

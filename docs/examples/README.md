@@ -11,8 +11,8 @@ Use `bench eval create` for one task:
 bench eval create \
   --source-repo benchflow-ai/skillsbench \
   --source-path tasks/edit-pdf \
-  -a gemini \
-  -m gemini-3.1-flash-lite-preview \
+  --agent gemini \
+  --model gemini-3.1-flash-lite-preview \
   --sandbox daytona
 ```
 
@@ -25,9 +25,9 @@ nudge. The docs use `BENCHFLOW_SKILL_NUDGE=name` as the default recommendation:
 
 ```bash
 bench eval create \
-  -t tasks/my-task \
-  -a gemini \
-  -m gemini-3.1-flash-lite-preview \
+  --tasks-dir tasks/my-task \
+  --agent gemini \
+  --model gemini-3.1-flash-lite-preview \
   --sandbox daytona \
   --skills-dir tasks/my-task/environment/skills \
   --ae BENCHFLOW_SKILL_NUDGE=name
