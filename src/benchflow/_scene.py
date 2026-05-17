@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+import shlex
 import uuid
 from abc import ABC, abstractmethod
 from collections.abc import Callable
@@ -190,7 +191,8 @@ class Scene:
         ]
         messages = []
         for fpath in files:
-            cat_result = await env.exec(f"cat {fpath}")
+            qpath = shlex.quote(fpath)
+            cat_result = await env.exec(f"cat {qpath}")
             try:
                 data = json.loads(cat_result.stdout or "{}")
                 recipient = data.get("to", "")
@@ -212,7 +214,7 @@ class Scene:
                     messages.append(msg)
             except json.JSONDecodeError:
                 logger.warning(f"[Scene] invalid JSON in outbox file: {fpath}")
-            await env.exec(f"rm -f {fpath}")
+            await env.exec(f"rm -f {qpath}")
         return messages
 
     # ------------------------------------------------------------------
