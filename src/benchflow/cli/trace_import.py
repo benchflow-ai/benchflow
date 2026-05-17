@@ -113,9 +113,11 @@ def register_tasks_generate(tasks_app: typer.Typer) -> None:
     ) -> None:
         """Generate benchmark tasks from agent traces.
 
-        Exactly one source flag is required.
+        Exactly one source flag (``--from-local``, ``--from-file``, or
+        ``--from-hf``) is required.
 
-        Examples:
+        Examples::
+
             bench tasks generate --from-local
             bench tasks generate --from-local --project my-repo --limit 5
             bench tasks generate --from-file session.jsonl --dry-run
@@ -196,6 +198,7 @@ def register_tasks_generate(tasks_app: typer.Typer) -> None:
 def _load_local(
     projects_dir: Path | None, project_filter: str | None, limit: int
 ) -> list:
+    """Load traces from local Claude Code sessions."""
     from benchflow.traces.local import load_local_sessions
 
     traces = load_local_sessions(
@@ -210,6 +213,7 @@ def _load_local(
 
 
 def _load_file(path: Path, format: str) -> list:
+    """Load traces from a single JSONL file."""
     from benchflow.traces.parsers import (
         parse_claude_code_session,
         parse_opentraces_file,
@@ -236,6 +240,7 @@ def _load_file(path: Path, format: str) -> list:
 def _load_hf(
     dataset: str, format: str | None, split: str, max_rows: int
 ) -> list:
+    """Load traces from a HuggingFace dataset."""
     from benchflow.traces.huggingface import KNOWN_DATASETS, load_hf_dataset
 
     fmt = None if format == "auto" else format
@@ -258,7 +263,7 @@ def _load_hf(
 
 
 def _detect_format(path: Path) -> str:
-    """Auto-detect trace file format from first line."""
+    """Auto-detect trace file format from the first non-empty JSONL line."""
     first_line = ""
     with path.open() as f:
         for line in f:
@@ -285,7 +290,7 @@ def _detect_format(path: Path) -> str:
 
 
 def _print_traces_table(traces: list) -> None:
-    """Print a summary table of parsed traces."""
+    """Print a Rich summary table of parsed traces."""
     table = Table(title=f"Parsed Traces ({len(traces)})")
     table.add_column("#", style="dim", justify="right")
     table.add_column("Agent", style="cyan")
@@ -315,7 +320,7 @@ def _print_traces_table(traces: list) -> None:
 
 
 def _print_task_summary(task_dirs: list[Path]) -> None:
-    """Print summary of generated tasks."""
+    """Print a Rich summary table of generated task directories."""
     if not task_dirs:
         return
 

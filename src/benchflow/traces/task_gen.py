@@ -124,13 +124,14 @@ def _sanitize_toml_string(value: str) -> str:
 def _build_task_toml(
     trace: ParsedTrace,
     *,
+    task_name: str = "",
     author: str = "benchflow-traces",
     timeout_sec: int | None = None,
     verifier_timeout_sec: int = 60,
 ) -> str:
     """Generate task.toml content from a trace.
 
-    If timeout_sec is None, scales automatically by estimated difficulty.
+    If *timeout_sec* is ``None``, scales automatically by estimated difficulty.
     """
     difficulty = _estimate_difficulty(trace)
     if timeout_sec is None:
@@ -153,9 +154,13 @@ def _build_task_toml(
     safe_trace_id = _sanitize_toml_string(trace.trace_id)
     safe_session_id = _sanitize_toml_string(trace.session_id)
     safe_category = _sanitize_toml_string(category)
+    safe_name = _sanitize_toml_string(task_name)
 
     toml_lines = [
         'version = "1.0"',
+        "",
+        "[task]",
+        f'name = "{safe_name}"',
         "",
         "[metadata]",
         f'author_name = "{safe_author}"',
@@ -181,8 +186,10 @@ def _build_task_toml(
             f"timeout_sec = {verifier_timeout_sec}",
             "",
             "[environment]",
+            "build_timeout_sec = 600",
             "cpus = 1",
             "memory_mb = 2048",
+            "storage_mb = 10240",
         ]
     )
 
@@ -198,42 +205,38 @@ def _build_test_sh(trace: ParsedTrace) -> str:
     """
     files = trace.files_edited
     if not files:
-        return textwrap.dedent("""\
-            #!/bin/bash
-            # Auto-generated verifier from trace {trace_id}
-            # No file checks available — manual verification needed.
-            echo "1.0" > /logs/verifier/reward.txt
-        """).format(trace_id=trace.trace_id)
+        return (
+            "#!/bin/bash\n"
+            f"# Auto-generated verifier from trace {trace.trace_id}\n"
+            "# No file checks available — manual verification needed.\n"
+            'echo "1.0" > /logs/verifier/reward.txt\n'
+        )
 
     checks: list[str] = []
     for f in files[:10]:
         quoted = shlex.quote(f)
-        checks.append(f"  if [ ! -f {quoted} ]; then")
-        checks.append(f"    echo \"Missing: {quoted}\"")
-        checks.append("    PASS=0")
-        checks.append("  fi")
+        checks.append(f'if [ ! -f {quoted} ]; then')
+        checks.append(f'  echo "Missing: {quoted}"')
+        checks.append('  PASS=0')
+        checks.append('fi')
 
-    script = textwrap.dedent("""\
-        #!/bin/bash
-        # Auto-generated verifier from trace {trace_id}
-        # Checks that expected files were created/modified.
-        set -euo pipefail
-
-        PASS=1
-
-        {checks}
-
-        if [ "$PASS" = "1" ]; then
-            echo "1.0" > /logs/verifier/reward.txt
-        else
-            echo "0.0" > /logs/verifier/reward.txt
-        fi
-    """).format(
-        trace_id=trace.trace_id,
-        checks="\n".join(checks),
+    checks_block = "\n".join(checks)
+    return (
+        "#!/bin/bash\n"
+        f"# Auto-generated verifier from trace {trace.trace_id}\n"
+        "# Checks that expected files were created/modified.\n"
+        "set -euo pipefail\n"
+        "\n"
+        "PASS=1\n"
+        "\n"
+        f"{checks_block}\n"
+        "\n"
+        'if [ "$PASS" = "1" ]; then\n'
+        '  echo "1.0" > /logs/verifier/reward.txt\n'
+        "else\n"
+        '  echo "0.0" > /logs/verifier/reward.txt\n'
+        "fi\n"
     )
-
-    return script
 
 
 def _build_dockerfile() -> str:
@@ -286,7 +289,10 @@ def generate_task(
 
     # Write task.toml
     effective_timeout = timeout_sec if timeout_sec > 0 else None
-    toml_content = _build_task_toml(trace, author=author, timeout_sec=effective_timeout)
+    task_name = f"trace-import/{task_id}"
+    toml_content = _build_task_toml(
+        trace, task_name=task_name, author=author, timeout_sec=effective_timeout,
+    )
     (task_dir / "task.toml").write_text(toml_content)
 
     # Write instruction.md
@@ -322,7 +328,7 @@ def generate_tasks_from_traces(
     output_dir: Path,
     *,
     author: str = "benchflow-traces",
-    timeout_sec: int = 300,
+    timeout_sec: int = 0,
     overwrite: bool = False,
     min_steps: int = 2,
     outcome_filter: str | None = None,
@@ -333,8 +339,8 @@ def generate_tasks_from_traces(
         traces: List of parsed traces.
         output_dir: Parent directory for generated tasks.
         author: Author name for task.toml metadata.
-        timeout_sec: Agent timeout in seconds.
-        overwrite: If True, overwrite existing task directories.
+        timeout_sec: Agent timeout in seconds (0 = auto-scale by difficulty).
+        overwrite: If ``True``, overwrite existing task directories.
         min_steps: Minimum number of steps to include a trace.
         outcome_filter: If set, only include traces with this outcome.
 

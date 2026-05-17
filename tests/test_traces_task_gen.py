@@ -104,6 +104,8 @@ class TestGenerateTask:
         toml_text = (task_dir / "task.toml").read_text()
 
         assert 'version = "1.0"' in toml_text
+        assert "[task]" in toml_text
+        assert 'name = "trace-import/' in toml_text
         assert "[metadata]" in toml_text
         assert 'difficulty = "easy"' in toml_text
         assert '"from-trace"' in toml_text
@@ -111,6 +113,8 @@ class TestGenerateTask:
         assert "[agent]" in toml_text
         assert "[verifier]" in toml_text
         assert "[environment]" in toml_text
+        assert "build_timeout_sec = 600" in toml_text
+        assert "storage_mb = 10240" in toml_text
 
     def test_instruction_md_content(self, simple_trace: ParsedTrace, tmp_path: Path) -> None:
         task_dir = generate_task(simple_trace, tmp_path)
@@ -189,8 +193,8 @@ class TestGenerateTask:
         self, simple_trace: ParsedTrace, complex_trace: ParsedTrace, tmp_path: Path
     ) -> None:
         """Harder tasks get longer timeouts when timeout_sec=0 (auto)."""
-        easy_dir = generate_task(simple_trace, tmp_path / "easy")
-        hard_dir = generate_task(complex_trace, tmp_path / "hard")
+        easy_dir = generate_task(simple_trace, tmp_path / "easy", timeout_sec=0)
+        hard_dir = generate_task(complex_trace, tmp_path / "hard", timeout_sec=0)
 
         easy_toml = (easy_dir / "task.toml").read_text()
         hard_toml = (hard_dir / "task.toml").read_text()
@@ -200,7 +204,7 @@ class TestGenerateTask:
 
         easy_timeout = int(re.search(r"timeout_sec = (\d+)", easy_toml).group(1))
         hard_timeout = int(re.search(r"timeout_sec = (\d+)", hard_toml).group(1))
-        assert hard_timeout >= easy_timeout
+        assert hard_timeout > easy_timeout
 
     def test_skip_existing_without_overwrite(
         self, simple_trace: ParsedTrace, tmp_path: Path

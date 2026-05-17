@@ -68,7 +68,7 @@ def _download_hf_dataset(
 ) -> Path:
     """Download a HuggingFace dataset to a local JSONL file.
 
-    Uses ``huggingface_hub`` if available, falls back to the HF API.
+    Uses ``huggingface_hub`` if available, falls back to the datasets API.
     """
     cache = cache or _cache_dir()
     safe_name = repo_id.replace("/", "__")
@@ -183,10 +183,10 @@ def _download_via_api(
 
 
 def _parse_claude_messages_row(row: dict[str, object], idx: int = 0) -> ParsedTrace | None:
-    """Parse a row from a Claude Code messages dataset.
+    """Parse a row from a Claude Code merged-messages dataset.
 
-    These datasets typically have a ``messages`` field containing a list of
-    {role, content} dicts, sometimes with tool_use blocks.
+    These datasets have a ``messages`` field containing a list of
+    ``{role, content}`` dicts, sometimes with ``tool_use`` blocks.
     """
     import uuid
 
