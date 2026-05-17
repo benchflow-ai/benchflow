@@ -213,7 +213,7 @@ def _build_test_sh(trace: ParsedTrace) -> str:
         )
 
     checks: list[str] = []
-    for f in files[:10]:
+    for f in files[:20]:
         quoted = shlex.quote(f)
         checks.append(f'if [ ! -f {quoted} ]; then')
         checks.append(f'  echo "Missing: {quoted}"')
