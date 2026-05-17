@@ -211,7 +211,7 @@ ${description}
 
 - **Number of instances**: ${num_instances}
 - **Response format**: `${response_schema}`
-- **Reward metric**: ${reward_description} (0-1 per instance, higher is better)
+- **Reward metric**: ${reward_description} (higher is better)
 - **Maximum per-instance reward**: ${r_max}
 
 ## How It Works
@@ -366,7 +366,7 @@ if __name__ == "__main__":
 """
 
 
-_EVALUATE_PY = """\
+_EVALUATE_PY_TEMPLATE = Template("""\
 #!/usr/bin/env python3
 \"\"\"Evaluate CLBench task results and write reward.\"\"\"
 import json
@@ -374,14 +374,15 @@ import sys
 
 RESULTS_FILE = "/opt/results.json"
 REWARD_FILE = "/logs/verifier/reward.txt"
+R_MAX = ${r_max}
 
 
 def main():
     try:
         with open(RESULTS_FILE) as f:
             results = json.load(f)
-        reward = results.get("score", 0.0)
-        reward = max(0.0, min(1.0, float(reward)))
+        score = float(results.get("score", 0.0))
+        reward = max(0.0, min(1.0, score / R_MAX)) if R_MAX > 0 else 0.0
     except Exception:
         reward = 0.0
 
@@ -393,7 +394,7 @@ def main():
 
 if __name__ == "__main__":
     main()
-"""
+""")
 
 
 _TEST_SH = """\
@@ -442,7 +443,9 @@ def generate_task(
     test_sh = tests_dir / "test.sh"
     test_sh.write_text(_TEST_SH)
     test_sh.chmod(0o755)
-    (tests_dir / "evaluate.py").write_text(_EVALUATE_PY)
+    (tests_dir / "evaluate.py").write_text(
+        _EVALUATE_PY_TEMPLATE.safe_substitute(r_max=str(task.r_max))
+    )
 
     return task_dir
 

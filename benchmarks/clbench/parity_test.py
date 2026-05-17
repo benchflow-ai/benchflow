@@ -30,6 +30,13 @@ EXPECTED_TASKS = [
     "clbench-cohort-studies",
 ]
 
+# r_max values per task — must match benchflow.py _CLBENCH_TASKS
+_R_MAX = {
+    "clbench-exploitable-poker": 9.4875,
+    "clbench-database-exploration": 1.0,
+    "clbench-cohort-studies": 0.162202,
+}
+
 
 def _check_structural(task_dir: Path) -> list[str]:
     """Check structural parity for a single task directory. Returns list of errors."""
@@ -127,29 +134,22 @@ def run_structural_parity(output_dir: Path) -> dict:
 
 
 def _run_evaluate_py(evaluate_py: Path, results_file: Path, reward_file: Path) -> float:
-    """Run evaluate.py with the given results file and return the reward."""
-    env = os.environ.copy()
-    # Patch the paths in evaluate.py via a wrapper
-    wrapper = f"""\
-import json, sys
-RESULTS_FILE = "{results_file}"
-REWARD_FILE = "{reward_file}"
-try:
-    with open(RESULTS_FILE) as f:
-        results = json.load(f)
-    reward = results.get("score", 0.0)
-    reward = max(0.0, min(1.0, float(reward)))
-except Exception:
-    reward = 0.0
-with open(REWARD_FILE, "w") as f:
-    f.write(str(reward))
-"""
+    """Run the actual generated evaluate.py with patched file paths."""
+    content = evaluate_py.read_text()
+    content = content.replace(
+        'RESULTS_FILE = "/opt/results.json"',
+        f'RESULTS_FILE = "{results_file}"',
+    )
+    content = content.replace(
+        'REWARD_FILE = "/logs/verifier/reward.txt"',
+        f'REWARD_FILE = "{reward_file}"',
+    )
     result = subprocess.run(
-        [sys.executable, "-c", wrapper],
+        [sys.executable, "-c", content],
         capture_output=True,
         text=True,
         timeout=30,
-        env=env,
+        env=os.environ.copy(),
     )
     if result.returncode != 0:
         log.error("evaluate.py failed: %s", result.stderr)
@@ -174,28 +174,34 @@ def run_eval_parity(output_dir: Path) -> dict:
         if not evaluate_py.exists():
             continue
 
+        r_max = _R_MAX[task_name]
         results["tasks_tested"] += 1
         task_passed = True
 
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
 
-            # Test 1: Valid results -> correct reward
+            # Test 1: Valid results -> normalized reward (score / r_max)
             results_file = tmp / "results_valid.json"
             reward_file = tmp / "reward_valid.txt"
-            results_file.write_text(json.dumps({"score": 0.75}))
+            test_score = 0.75
+            results_file.write_text(json.dumps({"score": test_score}))
             reward = _run_evaluate_py(evaluate_py, results_file, reward_file)
+            expected = max(0.0, min(1.0, test_score / r_max))
             test_result = {
                 "name": f"{task_name}/valid_results",
-                "expected_reward": "0.75",
+                "expected_reward": str(round(expected, 6)),
                 "actual_reward": str(reward),
-                "result": "pass" if abs(reward - 0.75) < 0.001 else "fail",
+                "result": "pass" if abs(reward - expected) < 0.001 else "fail",
             }
             results["tests"].append(test_result)
             if test_result["result"] == "fail":
                 task_passed = False
                 log.error(
-                    "FAIL: %s valid_results: expected 0.75, got %s", task_name, reward
+                    "FAIL: %s valid_results: expected %s, got %s",
+                    task_name,
+                    expected,
+                    reward,
                 )
 
             # Test 2: Missing results -> 0.0
@@ -236,10 +242,10 @@ def run_eval_parity(output_dir: Path) -> dict:
                     reward,
                 )
 
-            # Test 4: Out-of-range score -> clamped to 1.0
+            # Test 4: Score above r_max -> clamped to 1.0
             results_file = tmp / "results_clamped.json"
             reward_file = tmp / "reward_clamped.txt"
-            results_file.write_text(json.dumps({"score": 5.0}))
+            results_file.write_text(json.dumps({"score": r_max * 2.0}))
             reward = _run_evaluate_py(evaluate_py, results_file, reward_file)
             test_result = {
                 "name": f"{task_name}/clamped_results",
