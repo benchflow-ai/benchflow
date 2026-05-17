@@ -1,0 +1,23 @@
+{
+  "structural_parity": {
+    "experiment": "hilbench_structural_parity",
+    "description": "Structural parity validation: verify all 100 SWE baseline tasks have required files (task.toml, instruction.md, Dockerfile, test.sh, verify.py, test_patch.diff, task_metadata.json) and valid metadata.",
+    "date": "2026-05-17",
+    "tasks_tested": 100,
+    "tasks_total": 100,
+    "results_summary": {
+      "passed": 100,
+      "failed": 0,
+      "checks_per_task": [
+        "required files present",
+        "task.toml has required fields",
+        "instruction.md non-empty",
+        "test_patch.diff non-empty",
+        "task_metadata.json valid JSON with required keys",
+        "test.sh is executable",
+        "Dockerfile has FROM directive"
+      ]
+    },
+    "notes": "All 100 SWE baseline tasks passed structural validation. Eval parity and side-by-side parity not yet performed — requires running agents against HILBench docker images."
+  }
+}
