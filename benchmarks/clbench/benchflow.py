@@ -39,6 +39,7 @@ _CLBENCH_TASKS: dict[str, dict] = {
         "r_max": 9.4875,
         "response_schema": "PokerAction(thinking: str, action: str, amount: Optional[int])",
         "reward_description": "profit / big_blind per hand",
+        "pip_extras": "poker",
         "extra_pip": "",
         "setup_cmd": "",
         "description": (
@@ -61,6 +62,7 @@ _CLBENCH_TASKS: dict[str, dict] = {
         "r_max": 1.0,
         "response_schema": "DatabaseAction(action: str, content: str)",
         "reward_description": "1 - (regret / max_queries_per_question)",
+        "pip_extras": "database_exploration",
         "extra_pip": "",
         "setup_cmd": "cd /opt/clbench && python -m src.cli setup database_exploration",
         "description": (
@@ -83,6 +85,7 @@ _CLBENCH_TASKS: dict[str, dict] = {
         "r_max": 0.162202,
         "response_schema": "ToolCallResponse (discriminated union of tool calls)",
         "reward_description": "information gain in bits over flat baseline",
+        "pip_extras": "cohort_studies",
         "extra_pip": "",
         "setup_cmd": "",
         "description": (
@@ -110,6 +113,7 @@ class CLBenchTaskInfo:
     r_max: float
     response_schema: str
     reward_description: str
+    pip_extras: str
     extra_pip: str
     setup_cmd: str
     description: str
@@ -147,6 +151,7 @@ def load_tasks(
                 r_max=meta["r_max"],
                 response_schema=meta["response_schema"],
                 reward_description=meta["reward_description"],
+                pip_extras=meta["pip_extras"],
                 extra_pip=meta["extra_pip"],
                 setup_cmd=meta["setup_cmd"],
                 description=meta["description"],
@@ -250,6 +255,11 @@ def _render_dockerfile(task: CLBenchTaskInfo) -> str:
     if task.extra_pip:
         extra_pip_lines = f"\nRUN pip install --no-cache-dir {task.extra_pip}\n"
 
+    # Build pip install spec with task-specific extras
+    pip_spec = "."
+    if task.pip_extras:
+        pip_spec = f".[{task.pip_extras}]"
+
     return f"""\
 FROM python:3.13-slim
 
@@ -260,11 +270,10 @@ RUN apt-get update -qq && \\
     apt-get install -y -qq git curl jq && \\
     rm -rf /var/lib/apt/lists/*
 
-# Clone CLBench and install
+# Clone CLBench and install with task-specific extras
 RUN git clone https://github.com/pgasawa/continual-learning-bench /opt/clbench && \\
     cd /opt/clbench && \\
-    pip install --no-cache-dir uv && \\
-    uv pip install --system --all-extras .
+    pip install --no-cache-dir "{pip_spec}"
 {extra_pip_lines}{setup_lines}
 # Copy task-specific files
 COPY run_task.py /opt/run_task.py
