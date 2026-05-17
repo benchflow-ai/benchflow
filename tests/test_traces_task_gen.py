@@ -283,6 +283,21 @@ class TestGenerateTasksFromTraces:
 
         assert len(results) == 0
 
+    def test_filters_zero_tool_calls(self, tmp_path: Path) -> None:
+        """Traces with no tool calls (e.g. pure explanations) are filtered out."""
+        explanation_trace = ParsedTrace(
+            trace_id="explain-only",
+            session_id="s-explain",
+            steps=[
+                TraceStep(role="user", content="Explain asyncio"),
+                TraceStep(role="assistant", content="Here is how asyncio works..."),
+            ],
+            outcome="success",
+        )
+        results = generate_tasks_from_traces([explanation_trace], tmp_path)
+
+        assert len(results) == 0
+
 
 # ---------------------------------------------------------------------------
 # Model property tests

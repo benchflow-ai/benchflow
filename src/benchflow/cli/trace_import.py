@@ -213,9 +213,13 @@ def _load_local(
 
 
 def _load_file(path: Path, format: str) -> list:
-    """Load traces from a single JSONL file."""
+    """Load traces from a single JSONL file.
+
+    For Claude Code format, splits by ``sessionId`` so multi-session
+    files produce one trace per session.
+    """
     from benchflow.traces.parsers import (
-        parse_claude_code_session,
+        parse_claude_code_file,
         parse_opentraces_file,
     )
 
@@ -229,7 +233,7 @@ def _load_file(path: Path, format: str) -> list:
         console.print(f"[dim]Detected format: {detected_format}[/dim]")
 
     if detected_format == "claude-code":
-        return [parse_claude_code_session(path)]
+        return parse_claude_code_file(path)
     elif detected_format == "opentraces":
         return parse_opentraces_file(path)
     else:

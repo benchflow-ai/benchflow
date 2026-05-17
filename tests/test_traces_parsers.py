@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from benchflow.traces.parsers import (
+    parse_claude_code_file,
     parse_claude_code_session,
     parse_opentraces_file,
     parse_opentraces_record,
@@ -211,6 +212,179 @@ class TestClaudeCodeParser:
 
         trace = parse_claude_code_session(path)
         assert len(trace.steps) == 1
+
+    def test_outcome_detects_fixed(self, tmp_path: Path) -> None:
+        """Outcome detection recognizes 'fixed' as success."""
+        entries = [
+            {
+                "type": "user",
+                "sessionId": "s1",
+                "message": {"role": "user", "content": "Fix the bug"},
+            },
+            {
+                "type": "assistant",
+                "sessionId": "s1",
+                "message": {"role": "assistant", "content": "Fixed the SQL injection."},
+            },
+        ]
+        path = tmp_path / "fixed.jsonl"
+        path.write_text("\n".join(json.dumps(e) for e in entries))
+
+        trace = parse_claude_code_session(path)
+        assert trace.outcome == "success"
+
+    def test_outcome_detects_refactored(self, tmp_path: Path) -> None:
+        """Outcome detection recognizes 'refactored' as success."""
+        entries = [
+            {
+                "type": "user",
+                "sessionId": "s1",
+                "message": {"role": "user", "content": "Refactor config"},
+            },
+            {
+                "type": "assistant",
+                "sessionId": "s1",
+                "message": {
+                    "role": "assistant",
+                    "content": "Refactored config to use dataclasses.",
+                },
+            },
+        ]
+        path = tmp_path / "refactored.jsonl"
+        path.write_text("\n".join(json.dumps(e) for e in entries))
+
+        trace = parse_claude_code_session(path)
+        assert trace.outcome == "success"
+
+
+# ---------------------------------------------------------------------------
+# Multi-session file parser tests
+# ---------------------------------------------------------------------------
+
+
+class TestClaudeCodeFileParser:
+    def test_splits_by_session_id(self, tmp_path: Path) -> None:
+        """Multi-session JSONL file produces one trace per sessionId."""
+        entries = [
+            {
+                "type": "user",
+                "sessionId": "sess-A",
+                "message": {"role": "user", "content": "Task A"},
+            },
+            {
+                "type": "assistant",
+                "sessionId": "sess-A",
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "name": "Write",
+                            "input": {"file_path": "a.py"},
+                        },
+                    ],
+                },
+            },
+            {
+                "type": "user",
+                "sessionId": "sess-B",
+                "message": {"role": "user", "content": "Task B"},
+            },
+            {
+                "type": "assistant",
+                "sessionId": "sess-B",
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "name": "Edit",
+                            "input": {"file_path": "b.py"},
+                        },
+                    ],
+                },
+            },
+        ]
+        path = tmp_path / "multi.jsonl"
+        path.write_text("\n".join(json.dumps(e) for e in entries))
+
+        traces = parse_claude_code_file(path)
+        assert len(traces) == 2
+        assert traces[0].session_id == "sess-A"
+        assert traces[1].session_id == "sess-B"
+
+    def test_each_session_has_own_files(self, tmp_path: Path) -> None:
+        """Each parsed session only contains its own tool calls / files."""
+        entries = [
+            {
+                "type": "user",
+                "sessionId": "sess-A",
+                "message": {"role": "user", "content": "Create foo"},
+            },
+            {
+                "type": "assistant",
+                "sessionId": "sess-A",
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "name": "Write",
+                            "input": {"file_path": "foo.py"},
+                        },
+                    ],
+                },
+            },
+            {
+                "type": "user",
+                "sessionId": "sess-B",
+                "message": {"role": "user", "content": "Create bar"},
+            },
+            {
+                "type": "assistant",
+                "sessionId": "sess-B",
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "name": "Write",
+                            "input": {"file_path": "bar.py"},
+                        },
+                    ],
+                },
+            },
+        ]
+        path = tmp_path / "multi.jsonl"
+        path.write_text("\n".join(json.dumps(e) for e in entries))
+
+        traces = parse_claude_code_file(path)
+        assert traces[0].files_edited == ["foo.py"]
+        assert traces[1].files_edited == ["bar.py"]
+
+    def test_single_session_file(self, claude_session_file: Path) -> None:
+        """Single-session file returns a list with one trace."""
+        traces = parse_claude_code_file(claude_session_file)
+        assert len(traces) == 1
+        assert traces[0].session_id == "sess-001"
+
+    def test_no_session_id_fallback(self, tmp_path: Path) -> None:
+        """File with no sessionId fields falls back to single-session parse."""
+        entries = [
+            {
+                "type": "user",
+                "message": {"role": "user", "content": "Hello"},
+            },
+            {
+                "type": "assistant",
+                "message": {"role": "assistant", "content": "Hi there!"},
+            },
+        ]
+        path = tmp_path / "no-sid.jsonl"
+        path.write_text("\n".join(json.dumps(e) for e in entries))
+
+        traces = parse_claude_code_file(path)
+        assert len(traces) == 1
 
 
 # ---------------------------------------------------------------------------

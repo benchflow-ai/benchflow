@@ -366,6 +366,11 @@ def generate_tasks_from_traces(
             skipped += 1
             continue
 
+        # Skip traces with no tool calls (e.g. pure explanation sessions)
+        if trace.n_tool_calls == 0:
+            skipped += 1
+            continue
+
         task_dir = generate_task(
             trace,
             output_dir,

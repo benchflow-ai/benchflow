@@ -73,6 +73,9 @@ def parse_claude_code_session(
 ) -> ParsedTrace:
     """Parse a Claude Code JSONL session file into a ``ParsedTrace``.
 
+    Assumes the file contains entries for a single session. For files
+    with multiple sessions interleaved, use :func:`parse_claude_code_file`.
+
     Args:
         path: Path to a ``.jsonl`` file from ``~/.claude/projects/``.
         session_id: Override session ID (default: derived from filename).
@@ -98,8 +101,22 @@ def parse_claude_code_session(
     if not entries:
         raise ValueError(f"No valid entries in {path}")
 
-    # Derive metadata from entries
-    sid = session_id or str(entries[0].get("sessionId", path.stem))
+    return _parse_claude_entries(entries, session_id=session_id, source_path=path)
+
+
+def _parse_claude_entries(
+    entries: list[dict[str, object]],
+    *,
+    session_id: str | None = None,
+    source_path: Path | None = None,
+) -> ParsedTrace:
+    """Parse a list of Claude Code JSONL entries into a ``ParsedTrace``.
+
+    Shared implementation used by both :func:`parse_claude_code_session`
+    (single file) and :func:`parse_claude_code_file` (multi-session split).
+    """
+    sid = session_id or str(entries[0].get("sessionId", "unknown"))
+    source_name = source_path.name if source_path else sid
     cwd = None
     git_branch = None
     started_at = None
@@ -166,7 +183,22 @@ def parse_claude_code_session(
     for step in reversed(steps):
         if step.role == "assistant":
             lower = step.content.lower()
-            if any(w in lower for w in ("complete", "done", "finished", "success")):
+            if any(
+                w in lower
+                for w in (
+                    "complete",
+                    "done",
+                    "finished",
+                    "success",
+                    "fixed",
+                    "created",
+                    "built",
+                    "updated",
+                    "refactored",
+                    "implemented",
+                    "added",
+                )
+            ):
                 outcome = "success"
             elif any(w in lower for w in ("error", "failed", "cannot")):
                 outcome = "failure"
@@ -183,7 +215,7 @@ def parse_claude_code_session(
                     total_input += int(usage.get("input_tokens", 0))
                     total_output += int(usage.get("output_tokens", 0))
 
-    deterministic_id = hashlib.sha256(f"{sid}:{path.name}".encode()).hexdigest()[:16]
+    deterministic_id = hashlib.sha256(f"{sid}:{source_name}".encode()).hexdigest()[:16]
 
     return ParsedTrace(
         trace_id=deterministic_id,
@@ -204,6 +236,64 @@ def parse_claude_code_session(
 # ---------------------------------------------------------------------------
 # opentraces JSONL parser
 # ---------------------------------------------------------------------------
+
+
+def parse_claude_code_file(path: Path) -> list[ParsedTrace]:
+    """Parse a Claude Code JSONL file that may contain multiple sessions.
+
+    Groups entries by ``sessionId`` and parses each group as a separate
+    trace. Falls back to treating the whole file as one session if no
+    ``sessionId`` field is present.
+
+    Args:
+        path: Path to a ``.jsonl`` file containing Claude Code entries.
+
+    Returns:
+        List of parsed traces, one per unique session.
+    """
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(f"Session file not found: {path}")
+
+    entries: list[dict[str, object]] = []
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entries.append(json.loads(line))
+        except json.JSONDecodeError:
+            logger.debug("Skipping malformed JSONL line in %s", path)
+            continue
+
+    if not entries:
+        raise ValueError(f"No valid entries in {path}")
+
+    # Group entries by sessionId
+    session_groups: dict[str, list[dict[str, object]]] = {}
+    no_session_id = []
+    for entry in entries:
+        sid = entry.get("sessionId")
+        if isinstance(sid, str) and sid:
+            session_groups.setdefault(sid, []).append(entry)
+        else:
+            no_session_id.append(entry)
+
+    # If no sessionId found at all, treat as single session
+    if not session_groups:
+        return [parse_claude_code_session(path)]
+
+    # Append ungrouped entries to the first session (context lines, etc.)
+    if no_session_id and session_groups:
+        first_key = next(iter(session_groups))
+        session_groups[first_key] = no_session_id + session_groups[first_key]
+
+    traces: list[ParsedTrace] = []
+    for sid, group_entries in session_groups.items():
+        traces.append(
+            _parse_claude_entries(group_entries, session_id=sid, source_path=path)
+        )
+    return traces
 
 
 def parse_opentraces_record(

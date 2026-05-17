@@ -11,13 +11,18 @@ Submodules:
 """
 
 from benchflow.traces.models import ParsedTrace, TraceStep
-from benchflow.traces.parsers import parse_claude_code_session, parse_opentraces_record
+from benchflow.traces.parsers import (
+    parse_claude_code_file,
+    parse_claude_code_session,
+    parse_opentraces_record,
+)
 from benchflow.traces.task_gen import generate_task
 
 __all__ = [
     "ParsedTrace",
     "TraceStep",
     "generate_task",
+    "parse_claude_code_file",
     "parse_claude_code_session",
     "parse_opentraces_record",
 ]
