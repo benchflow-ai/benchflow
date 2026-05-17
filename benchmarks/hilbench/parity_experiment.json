@@ -1,12 +1,12 @@
 {
   "structural_parity": {
     "experiment": "hilbench_structural_parity",
-    "description": "Structural parity validation: verify all 100 SWE baseline tasks have required files (task.toml, instruction.md, Dockerfile, test.sh, verify.py, test_patch.diff, task_metadata.json) and valid metadata.",
+    "description": "Structural parity validation: verify generated tasks have required files (task.toml, instruction.md, Dockerfile, test.sh, verify.py, test_patch.diff, task_metadata.json) and valid metadata.",
     "date": "2026-05-17",
-    "tasks_tested": 100,
+    "tasks_tested": 3,
     "tasks_total": 100,
     "results_summary": {
-      "passed": 100,
+      "passed": 3,
       "failed": 0,
       "checks_per_task": [
         "required files present",
@@ -15,17 +15,17 @@
         "test_patch.diff non-empty",
         "task_metadata.json valid JSON with required keys",
         "test.sh is executable",
-        "Dockerfile has FROM and ARG BASE_IMAGE directives"
+        "Dockerfile has FROM hilbench-base:<task_id> directive"
       ]
     },
-    "notes": "All 100 SWE baseline tasks passed structural validation. Dockerfile uses ARG BASE_IMAGE / FROM ${BASE_IMAGE} to reference pre-built Docker images from HuggingFace."
+    "notes": "3/3 tasks passed structural validation after bug fixes. Dockerfile now uses FROM hilbench-base:<task_id> (predictable tag, no build arg). Runner tags loaded images to match. Removed || true from apt-get install."
   },
   "eval_parity": {
     "experiment": "hilbench_eval_parity",
     "description": "End-to-end evaluation parity: build Docker image, run test.sh, verify correct rewards.",
     "date": "2026-05-17",
     "status": "blocked",
-    "blocker": "Docker image tarballs are stored in gated HuggingFace repo ScaleAI/hil-bench-swe-images. Requires HF_TOKEN with access to download.",
-    "notes": "Dockerfile fixed to use pre-built images via BASE_IMAGE build arg. Runner (run_hilbench.py) handles download/load. Cannot validate without HF access."
+    "blocker": "Docker image tarballs are stored in gated HuggingFace repo ScaleAI/hil-bench-swe-images. HUGGINGFACE_TOKEN returns 404 — token lacks access to the gated dataset.",
+    "notes": "Dockerfile fixed: FROM hilbench-base:<task_id> replaces dead ARG BASE_IMAGE. Runner (run_hilbench.py) tags loaded images to predictable names. Cannot validate Docker build or verifier without HF access to download base images."
   }
 }
