@@ -611,10 +611,10 @@ __all__ = [
 
 @dataclass
 class RolloutConfig:
-    """Declarative trial configuration.
+    """Declarative rollout configuration.
 
-    A trial is a sequence of scenes executed in a shared sandbox.
-    Single-agent runs are a trial with one scene containing one role.
+    A rollout is a sequence of scenes executed in a shared sandbox.
+    Single-agent runs are a rollout with one scene containing one role.
     """
 
     task_path: Path

@@ -66,7 +66,7 @@ async def main():
         max_user_rounds=4,
     )
 
-    print("Running progressive-disclosure trial on edit-pdf...")
+    print("Running progressive-disclosure rollout on edit-pdf...")
     print("  Agent: gemini/flash")
     print(f"  Max rounds: {config.max_user_rounds}")
     print(f"  Environment: {config.environment}")

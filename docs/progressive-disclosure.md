@@ -115,7 +115,7 @@ Multi-scene / multi-role configs are not compatible with `User` — the loop ass
 
 Between rounds, benchflow needs to score the agent's progress so the user can react. But the final, end-of-rollout verifier does destructive things (kills the agent, restores the workspace, chowns to root) that would prevent the next round from running. So benchflow runs **two** verifier passes:
 
-| | Soft-verify (between rounds) | Full-verify (end of trial) |
+| | Soft-verify (between rounds) | Full-verify (end of rollout) |
 |---|---|---|
 | Kills agent processes | ❌ no | ✅ yes |
 | Restores workspace from snapshot | ❌ no | ✅ optional, task-driven |
@@ -208,7 +208,7 @@ oracle_access: bool = False      # expose gold solution to user.setup()
 When `oracle_access=True`:
 
 1. Before round 0, the rollout reads `/solution/solve.sh` and passes its contents to `user.setup(instruction, solution=...)`.
-2. The trial moves `/solution` → `/solution_oracle_backup` so the agent can't read it during its rounds.
+2. The rollout moves `/solution` → `/solution_oracle_backup` so the agent can't read it during its rounds.
 3. Between rounds, soft-verify temporarily restores `/solution` (some verifiers consult it) then re-hides it.
 4. Before the final `verify()`, the rollout permanently restores `/solution`.
 

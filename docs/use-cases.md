@@ -170,7 +170,7 @@ Treat reviewer lift as an empirical question for the target benchmark. It is mos
 
 - No Docker Compose, no sidecar container, no FastMCP server to maintain.
 - The MCP hook pattern gives the reviewer tool-level isolation: it cannot write to the workspace, preventing reward hacking via reviewer collusion.
-- Same task, same verifier -- define roles and turns in `RolloutConfig` or trial
+- Same task, same verifier -- define roles and turns in `RolloutConfig` or rollout
   YAML.
 
 ---

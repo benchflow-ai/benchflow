@@ -237,6 +237,15 @@ Common choices:
 | OpenHands | `openhands` (alias: `oh`) | `LLM_API_KEY` |
 | Harvey LAB harness | `harvey-lab-harness` (alias: `harvey-lab`) | Provider key matching model |
 
+Any agent can also be run via [ACPX](https://acpx.sh/) by prefixing with `acpx/`:
+
+```bash
+bench eval create --tasks-dir tasks/edit-pdf --agent acpx/gemini --model gemini-3.1-flash-lite-preview --sandbox daytona
+```
+
+ACPX is a headless ACP client that adds persistent sessions and crash recovery.
+The underlying agent's install, env vars, credentials, and skill paths are all preserved.
+
 The **Harvey LAB harness** agent is special — it runs Harvey LAB's own agent loop
 (6 tools, system prompt) inside BenchFlow's sandbox. Use it for parity testing
 (same agent on both original and converted tasks).
