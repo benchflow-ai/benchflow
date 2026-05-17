@@ -26,6 +26,7 @@ REQUIRED_FILES = [
     "tests/test.sh",
     "tests/verify.py",
     "tests/test_patch.diff",
+    "tests/tests_to_pass.json",
     "tests/task_metadata.json",
 ]
 

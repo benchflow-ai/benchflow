@@ -170,7 +170,6 @@ RUN mkdir -p /logs/verifier /logs/agent /logs/artifacts
 
 
 def _render_test_sh(task: HILBenchTask) -> str:
-    tests_json = json.dumps(task.tests_to_pass)
     return Template("""\
 #!/bin/bash
 # Verifier for HILBench SWE task: $task_id
@@ -181,9 +180,9 @@ exec > >(tee /logs/verifier/verifier.log) 2>&1
 python3 /tests/verify.py \\
     --task-id "$task_id" \\
     --workspace /workspace \\
-    --tests-to-pass '$tests_json' \\
+    --tests-to-pass-file /tests/tests_to_pass.json \\
     --reward-file /logs/verifier/reward.txt
-""").safe_substitute(task_id=task.task_id, tests_json=tests_json)
+""").safe_substitute(task_id=task.task_id)
 
 
 # ── verify.py (copied into every task's tests/) ──────────────────────
@@ -266,14 +265,14 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--task-id", required=True)
     parser.add_argument("--workspace", required=True, type=Path)
-    parser.add_argument("--tests-to-pass", required=True)
+    parser.add_argument("--tests-to-pass-file", required=True, type=Path)
     parser.add_argument("--reward-file", required=True, type=Path)
     args = parser.parse_args()
 
     reward_file: Path = args.reward_file
     reward_file.parent.mkdir(parents=True, exist_ok=True)
 
-    tests_to_pass: list[str] = json.loads(args.tests_to_pass)
+    tests_to_pass: list[str] = json.loads(args.tests_to_pass_file.read_text())
 
     # Step 1: Apply test patch
     print("=== Step 1: Applying test patch ===")
@@ -331,6 +330,11 @@ def generate_task(
     test_sh.chmod(test_sh.stat().st_mode | stat.S_IEXEC)
 
     (tests_dir / "verify.py").write_text(VERIFY_PY)
+
+    # Save tests_to_pass as a separate JSON file (avoids shell quoting issues)
+    (tests_dir / "tests_to_pass.json").write_text(
+        json.dumps(task.tests_to_pass, indent=2)
+    )
 
     # Save the test patch
     (tests_dir / "test_patch.diff").write_text(task.test_patch)
