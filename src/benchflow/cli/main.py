@@ -53,11 +53,11 @@ def run(
     ] = None,
     agent: Annotated[
         str,
-        typer.Option("--agent", "-a", help="Agent name from registry"),
+        typer.Option("--agent", help="Agent name from registry"),
     ] = DEFAULT_AGENT,
     model: Annotated[
         str | None,
-        typer.Option("--model", "-m", help="Model to use"),
+        typer.Option("--model", help="Model to use"),
     ] = None,
     environment: Annotated[
         str,
@@ -66,12 +66,12 @@ def run(
     prompt: Annotated[
         list[str] | None,
         typer.Option(
-            "--prompt", "-p", help="Prompt(s) to send (default: instruction.md)"
+            "--prompt", help="Prompt(s) to send (default: instruction.md)"
         ),
     ] = None,
     jobs_dir: Annotated[
         str,
-        typer.Option("--jobs-dir", "-o", help="Output directory for results"),
+        typer.Option("--jobs-dir", help="Output directory for results"),
     ] = "jobs",
     agent_env: Annotated[
         list[str] | None,
@@ -80,7 +80,7 @@ def run(
     skills_dir: Annotated[
         Path | None,
         typer.Option(
-            "--skills-dir", "-s", help="Skills directory to deploy into sandbox"
+            "--skills-dir", help="Skills directory to deploy into sandbox"
         ),
     ] = None,
     skill_mode: Annotated[
@@ -175,21 +175,21 @@ def run(
 def job(
     tasks_dir: Annotated[
         Path | None,
-        typer.Option("--tasks-dir", "-t", help="Directory of tasks to run"),
+        typer.Option("--tasks-dir", help="Directory of tasks to run"),
     ] = None,
     config_file: Annotated[
         Path | None,
         typer.Option(
-            "--config", "-f", help="YAML config file (Harbor or benchflow format)"
+            "--config", help="YAML config file (Harbor or benchflow format)"
         ),
     ] = None,
     agent: Annotated[
         str,
-        typer.Option("--agent", "-a", help="Agent name from registry"),
+        typer.Option("--agent", help="Agent name from registry"),
     ] = DEFAULT_AGENT,
     model: Annotated[
         str | None,
-        typer.Option("--model", "-m", help="Model to use"),
+        typer.Option("--model", help="Model to use"),
     ] = None,
     environment: Annotated[
         str,
@@ -197,7 +197,7 @@ def job(
     ] = "docker",
     concurrency: Annotated[
         int,
-        typer.Option("--concurrency", "-c", help="Max concurrent tasks"),
+        typer.Option("--concurrency", help="Max concurrent tasks"),
     ] = 4,
     max_retries: Annotated[
         int,
@@ -205,18 +205,18 @@ def job(
     ] = 0,
     jobs_dir: Annotated[
         str,
-        typer.Option("--jobs-dir", "-o", help="Output directory for results"),
+        typer.Option("--jobs-dir", help="Output directory for results"),
     ] = "jobs",
     skills_dir: Annotated[
         Path | None,
         typer.Option(
-            "--skills-dir", "-s", help="Skills directory to deploy into sandbox"
+            "--skills-dir", help="Skills directory to deploy into sandbox"
         ),
     ] = None,
 ) -> None:
     """Run all tasks in a directory with concurrency and retries.
 
-    Use --config/-f for YAML config, or --tasks-dir/-t for direct invocation.
+    Use --config for YAML config, or --tasks-dir for direct invocation.
     """
     from benchflow.job import Job, JobConfig, RetryConfig
 
@@ -284,15 +284,15 @@ def metrics(
     ],
     benchmark: Annotated[
         str,
-        typer.Option("--benchmark", "-b", help="Benchmark name"),
+        typer.Option("--benchmark", help="Benchmark name"),
     ] = "",
     agent: Annotated[
         str,
-        typer.Option("--agent", "-a", help="Agent name"),
+        typer.Option("--agent", help="Agent name"),
     ] = "",
     model: Annotated[
         str,
-        typer.Option("--model", "-m", help="Model name"),
+        typer.Option("--model", help="Model name"),
     ] = "",
     output_json: Annotated[
         bool,
@@ -350,7 +350,7 @@ def view(
 def eval(
     tasks_dir: Annotated[
         Path,
-        typer.Option("--tasks-dir", "-t", help="Directory of tasks"),
+        typer.Option("--tasks-dir", help="Directory of tasks"),
     ],
     skill: Annotated[
         Path | None,
@@ -360,15 +360,15 @@ def eval(
     ] = None,
     skills_dir: Annotated[
         Path | None,
-        typer.Option("--skills-dir", "-s", help="Skills directory for agent discovery"),
+        typer.Option("--skills-dir", help="Skills directory for agent discovery"),
     ] = None,
     agent: Annotated[
         str,
-        typer.Option("--agent", "-a", help="Agent name"),
+        typer.Option("--agent", help="Agent name"),
     ] = DEFAULT_AGENT,
     model: Annotated[
         str | None,
-        typer.Option("--model", "-m", help="Model"),
+        typer.Option("--model", help="Model"),
     ] = None,
     environment: Annotated[
         str,
@@ -376,11 +376,11 @@ def eval(
     ] = "docker",
     concurrency: Annotated[
         int,
-        typer.Option("--concurrency", "-c", help="Max concurrent tasks"),
+        typer.Option("--concurrency", help="Max concurrent tasks"),
     ] = 4,
     jobs_dir: Annotated[
         str,
-        typer.Option("--jobs-dir", "-o", help="Output directory"),
+        typer.Option("--jobs-dir", help="Output directory"),
     ] = "jobs",
 ) -> None:
     """Evaluate a skill against multiple tasks.
@@ -389,8 +389,8 @@ def eval(
     Simpler than `benchflow job` — designed for skill evaluation workflows.
 
     Examples:
-        benchflow eval -t tasks/ --skill skills/gws/SKILL.md -a claude-agent-acp --sandbox daytona
-        benchflow eval -t tasks/ --skills-dir skills/ -a gemini --sandbox daytona -c 64
+        benchflow eval --tasks-dir tasks/ --skill skills/gws/SKILL.md --agent claude-agent-acp --sandbox daytona
+        benchflow eval --tasks-dir tasks/ --skills-dir skills/ --agent gemini --sandbox daytona --concurrency 64
     """
     from benchflow.job import Job, JobConfig
 
@@ -434,7 +434,7 @@ app.add_typer(skills_app, name="skills")
 def skills_list(
     directory: Annotated[
         Path | None,
-        typer.Option("--dir", "-d", help="Skills directory to scan"),
+        typer.Option("--dir", help="Skills directory to scan"),
     ] = None,
 ) -> None:
     """List discovered skills."""
@@ -472,7 +472,7 @@ def skills_install(
     ],
     directory: Annotated[
         Path | None,
-        typer.Option("--dir", "-d", help="Target directory"),
+        typer.Option("--dir", help="Target directory"),
     ] = None,
 ) -> None:
     """Install a skill from the registry."""
@@ -495,11 +495,11 @@ def skills_eval(
     ],
     agent: Annotated[
         list[str] | None,
-        typer.Option("--agent", "-a", help="Agent(s) to evaluate (repeatable)"),
+        typer.Option("--agent", help="Agent(s) to evaluate (repeatable)"),
     ] = None,
     model: Annotated[
         list[str] | None,
-        typer.Option("--model", "-m", help="Model(s) (matched 1:1 with agents)"),
+        typer.Option("--model", help="Model(s) (matched 1:1 with agents)"),
     ] = None,
     environment: Annotated[
         str,
@@ -507,11 +507,11 @@ def skills_eval(
     ] = "docker",
     concurrency: Annotated[
         int,
-        typer.Option("--concurrency", "-c", help="Max concurrent tasks"),
+        typer.Option("--concurrency", help="Max concurrent tasks"),
     ] = 1,
     jobs_dir: Annotated[
         str,
-        typer.Option("--jobs-dir", "-o", help="Output directory for results"),
+        typer.Option("--jobs-dir", help="Output directory for results"),
     ] = "jobs",
     no_baseline: Annotated[
         bool,
@@ -528,9 +528,9 @@ def skills_eval(
     with and without the skill installed, and reports the lift.
 
     Examples:
-        benchflow skills eval ./my-skill/ -a claude-agent-acp
-        benchflow skills eval ./my-skill/ -a claude-agent-acp -a codex-acp --sandbox daytona -c 4
-        benchflow skills eval ./my-skill/ -a claude-agent-acp --no-baseline --export-gepa
+        benchflow skills eval ./my-skill/ --agent claude-agent-acp
+        benchflow skills eval ./my-skill/ --agent claude-agent-acp --agent codex-acp --sandbox daytona --concurrency 4
+        benchflow skills eval ./my-skill/ --agent claude-agent-acp --no-baseline --export-gepa
     """
     from benchflow.skill_eval import SkillEvaluator, export_gepa_traces
 
@@ -598,7 +598,7 @@ def tasks_init(
     name: Annotated[str, typer.Argument(help="Task name")],
     parent_dir: Annotated[
         Path,
-        typer.Option("--dir", "-p", help="Parent directory (default: tasks/)"),
+        typer.Option("--dir", help="Parent directory (default: tasks/)"),
     ] = Path("tasks"),
     no_pytest: Annotated[
         bool, typer.Option("--no-pytest", help="Skip pytest template")
@@ -787,11 +787,11 @@ app.add_typer(eval_app, name="eval")
 def eval_create(
     config_file: Annotated[
         Path | None,
-        typer.Option("--config", "-f", help="YAML config file"),
+        typer.Option("--config", help="YAML config file"),
     ] = None,
     tasks_dir: Annotated[
         Path | None,
-        typer.Option("--tasks-dir", "-t", help="Local tasks directory"),
+        typer.Option("--tasks-dir", help="Local tasks directory"),
     ] = None,
     source_repo: Annotated[
         str | None,
@@ -810,11 +810,11 @@ def eval_create(
     ] = None,
     agent: Annotated[
         str,
-        typer.Option("--agent", "-a", help="Agent name"),
+        typer.Option("--agent", help="Agent name"),
     ] = DEFAULT_AGENT,
     model: Annotated[
         str | None,
-        typer.Option("--model", "-m", help="Model"),
+        typer.Option("--model", help="Model"),
     ] = None,
     environment: Annotated[
         str,
@@ -822,11 +822,11 @@ def eval_create(
     ] = "docker",
     concurrency: Annotated[
         int,
-        typer.Option("--concurrency", "-c", help="Max concurrent tasks"),
+        typer.Option("--concurrency", help="Max concurrent tasks"),
     ] = 4,
     jobs_dir: Annotated[
         str,
-        typer.Option("--jobs-dir", "-o", help="Output directory"),
+        typer.Option("--jobs-dir", help="Output directory"),
     ] = "jobs",
     sandbox_user: Annotated[
         str | None,
@@ -841,7 +841,7 @@ def eval_create(
     ] = 120,
     skills_dir: Annotated[
         Path | None,
-        typer.Option("--skills-dir", "-s", help="Skills directory to deploy"),
+        typer.Option("--skills-dir", help="Skills directory to deploy"),
     ] = None,
     skill_mode: Annotated[
         str,
@@ -1046,19 +1046,19 @@ app.add_typer(train_app, name="train")
 def train_create(
     config_file: Annotated[
         Path | None,
-        typer.Option("--config", "-f", help="Job config YAML"),
+        typer.Option("--config", help="Job config YAML"),
     ] = None,
     tasks_dir: Annotated[
         Path | None,
-        typer.Option("--tasks-dir", "-t", help="Tasks directory"),
+        typer.Option("--tasks-dir", help="Tasks directory"),
     ] = None,
     agent: Annotated[
         str,
-        typer.Option("--agent", "-a", help="Agent name"),
+        typer.Option("--agent", help="Agent name"),
     ] = DEFAULT_AGENT,
     model: Annotated[
         str | None,
-        typer.Option("--model", "-m", help="Model"),
+        typer.Option("--model", help="Model"),
     ] = None,
     environment: Annotated[
         str,
@@ -1070,7 +1070,7 @@ def train_create(
     ] = 3,
     concurrency: Annotated[
         int,
-        typer.Option("--concurrency", "-c", help="Max concurrent tasks"),
+        typer.Option("--concurrency", help="Max concurrent tasks"),
     ] = 64,
     export_dir: Annotated[
         Path | None,
@@ -1078,7 +1078,7 @@ def train_create(
     ] = None,
     jobs_dir: Annotated[
         str,
-        typer.Option("--jobs-dir", "-o", help="Output directory"),
+        typer.Option("--jobs-dir", help="Output directory"),
     ] = "jobs",
 ) -> None:
     """Run a training sweep — successive eval runs with reward-based filtering.
@@ -1091,7 +1091,7 @@ def train_create(
     Integrates with rewards.jsonl (ORS-compatible) for dense reward export.
 
     Example:
-        bench train create -t tasks/ -a gemini --sweeps 3 --export ./training-data
+        bench train create --tasks-dir tasks/ --agent gemini --sweeps 3 --export ./training-data
     """
     from benchflow.job import Job, JobConfig
 

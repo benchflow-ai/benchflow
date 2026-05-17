@@ -79,26 +79,26 @@ If multiple credentials are set, benchflow / the agent CLI uses (high to low): c
 GEMINI_API_KEY=... bench eval create \
   --source-repo benchflow-ai/skillsbench \
   --source-path tasks/edit-pdf \
-  -a gemini \
-  -m gemini-3.1-pro-preview \
+  --agent gemini \
+  --model gemini-3.1-pro-preview \
   --sandbox docker
 
 # Single task from local path
 GEMINI_API_KEY=... bench eval create \
-  -t tasks/edit-pdf \
-  -a gemini \
-  -m gemini-3.1-pro-preview \
+  --tasks-dir tasks/edit-pdf \
+  --agent gemini \
+  --model gemini-3.1-pro-preview \
   --sandbox daytona \
   --skills-dir tasks/edit-pdf/environment/skills \
   --ae BENCHFLOW_SKILL_NUDGE=name
 
 # A whole batch from YAML config
-bench eval create -f benchmarks/skillsbench-claude-glm51.yaml
+bench eval create --config benchmarks/skillsbench-claude-glm51.yaml
 
 # Batch from remote repo with concurrency
 GEMINI_API_KEY=... bench eval create \
     --source-repo benchflow-ai/skillsbench --source-path tasks \
-    -a gemini -m gemini-3.1-pro-preview --sandbox daytona -c 32
+    --agent gemini --model gemini-3.1-pro-preview --sandbox daytona --concurrency 32
 
 # List the registered agents
 bench agent list
@@ -106,8 +106,8 @@ bench agent list
 
 `bench eval create` is the primary command for running evaluations — it works for
 single tasks, batch runs, and remote repos. Use `--source-repo <org/repo>
---source-path <subpath>` to fetch from a remote repo, `-t <tasks-dir>` for a
-local directory, or `-f <config.yaml>` for a YAML config. Results land under
+--source-path <subpath>` to fetch from a remote repo, `--tasks-dir <dir>` for a
+local directory, or `--config <config.yaml>` for a YAML config. Results land under
 `jobs/<job-name>/<trial-name>/` — `result.json` for the verifier output,
 `trajectory/acp_trajectory.jsonl` for the full agent trace.
 

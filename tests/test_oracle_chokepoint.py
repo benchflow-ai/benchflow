@@ -15,7 +15,7 @@ The classes below pin each layer at the right altitude:
                             cli/main.py (the file that PR #173 missed).
 - TestEffectiveModel      — unit tests for the helper.
 - TestOracleYamlLoaders   — Job.from_yaml(oracle config) → model is None.
-- TestEvalCreateOracleCLI — end-to-end: invoke `bench eval create -a oracle`
+- TestEvalCreateOracleCLI — end-to-end: invoke `bench eval create --agent oracle`
                             and assert no API-key validation error.
 """
 
@@ -158,7 +158,7 @@ class TestOracleYamlLoaders:
 
 
 class TestEvalCreateOracleCLI:
-    """End-to-end: `bench eval create -a oracle` must not trip API key validation.
+    """End-to-end: `bench eval create --agent oracle` must not trip API key validation.
 
     This is the user-visible bug the chokepoint test guards against at the
     unit level. Here we call the live handler (cli/main.py:eval_create)

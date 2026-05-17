@@ -145,7 +145,7 @@ def test_placeholder():
         sol_dir.mkdir()
         (sol_dir / "solve.sh").write_text("""#!/bin/bash
 # Oracle solution — demonstrates the task is solvable.
-# Used by: benchflow run -a oracle -t tasks/{name}
+# Used by: benchflow run --agent oracle --tasks-dir tasks/{name}
 
 echo "TODO: implement oracle solution"
 """)
