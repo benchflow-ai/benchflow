@@ -348,14 +348,14 @@ async def test_heterogeneous_agent_install(coder_reviewer_scene: Scene) -> None:
 
     installed_agents: list[str] = []
 
-    async def tracking_connect_as(self_inner, role):
+    async def tracking_connect_as(role):
         if role.agent != config.primary_agent:
             installed_agents.append(role.agent)
 
     async def fake_execute(prompts=None):
         return [], 0
 
-    trial.connect_as = lambda role: tracking_connect_as(trial, role)
+    trial.connect_as = tracking_connect_as
     trial.disconnect = AsyncMock()
     trial.execute = fake_execute
 

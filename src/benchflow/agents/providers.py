@@ -130,7 +130,7 @@ PROVIDERS: dict[str, ProviderConfig] = {
     # ── OpenAI-compatible inference servers (user-supplied base_url) ──
     "vllm": ProviderConfig(
         name="vllm",
-        base_url="",  # user-supplied via --ae BENCHFLOW_PROVIDER_BASE_URL=...
+        base_url="",  # user-supplied via --agent-env BENCHFLOW_PROVIDER_BASE_URL=...
         api_protocol="openai-completions",
         auth_type="api_key",
         auth_env="OPENAI_API_KEY",  # vLLM uses OpenAI-compatible auth

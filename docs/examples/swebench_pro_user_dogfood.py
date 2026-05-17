@@ -91,7 +91,7 @@ async def main():
     )
     parser.add_argument("--agent", default="gemini")
     parser.add_argument("--model", default="gemini-3.1-pro-preview")
-    parser.add_argument("--backend", default="daytona")
+    parser.add_argument("--sandbox", default="daytona")
     parser.add_argument("--max-rounds", type=int, default=3)
     args = parser.parse_args()
 
@@ -103,7 +103,7 @@ async def main():
     config = TrialConfig(
         task_path=task_path,
         scenes=[Scene.single(agent=args.agent, model=args.model)],
-        environment=args.backend,
+        environment=args.sandbox,
         sandbox_user="agent",
         user=make_progressive_user(),
         max_user_rounds=args.max_rounds,
@@ -112,7 +112,7 @@ async def main():
 
     print(f"Progressive disclosure on {args.task}")
     print(f"  Agent:  {args.agent} / {args.model}")
-    print(f"  Backend: {args.backend}")
+    print(f"  Sandbox: {args.sandbox}")
     print(f"  Rounds:  up to {args.max_rounds}")
     print()
 

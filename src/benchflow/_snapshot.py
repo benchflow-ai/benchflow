@@ -1,10 +1,10 @@
 """Sandbox snapshot/restore — filesystem-level checkpointing.
 
 Provides snapshot(name) -> ref and restore(ref) for any environment that
-supports env.exec().  Works on both Docker and Daytona backends.
+supports env.exec().  Works on both Docker and Daytona sandboxes.
 
 Implementation: tar the workspace directory into /tmp/.benchflow_snapshots/.
-In-place restore by clearing and untarring.  Backend-agnostic — no Docker
+In-place restore by clearing and untarring.  Sandbox-agnostic — no Docker
 daemon or Daytona snapshot API required.
 
 For 0.3+, Daytona's _experimental_create_snapshot can be swapped in as an

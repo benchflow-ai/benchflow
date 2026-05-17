@@ -451,7 +451,7 @@ class TestRunWiring:
             )
             return trial
 
-        monkeypatch.setattr("benchflow.trial.Trial.create", fake_create)
+        monkeypatch.setattr("benchflow.rollout.Trial.create", fake_create)
 
         result = await SDK().run(
             task_path=tmp_path,

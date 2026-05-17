@@ -3,8 +3,8 @@
 Re-exports environment APIs and adds:
 - ACP client for multi-turn agent communication
 - Trajectory capture (HTTP proxy, OTel collector, ACP native)
-- SDK for programmatic usage
-- Job orchestration with retries and concurrency
+- Rollout lifecycle for single-task execution
+- Evaluation orchestration with retries and concurrency
 - Metrics collection and aggregation
 """
 
@@ -25,10 +25,18 @@ from harbor import (
 
 # benchflow's additions
 from benchflow._env_setup import stage_dockerfile_deps
-from benchflow._scene import MailboxTransport, Message, MessageTransport, Role, Scene
+from benchflow._scene import MailboxTransport, Message, MessageTransport, SceneRole
+from benchflow._scene import Scene as SceneRuntime
 from benchflow._snapshot import list_snapshots, restore, snapshot
+from benchflow._types import Role, Scene, Turn
 from benchflow.acp.client import ACPClient
 from benchflow.acp.session import ACPSession
+from benchflow.adapters import (
+    InspectAdapter,
+    ORSAdapter,
+    to_inspect_task,
+    to_ors_reward,
+)
 from benchflow.agents.registry import (
     AGENTS,
     get_agent,
@@ -43,27 +51,61 @@ from benchflow.environments import (
     detect_services_from_dockerfile,
     register_service,
 )
-from benchflow.job import Job, JobConfig, JobResult, RetryConfig
+from benchflow.evaluation import (
+    Evaluation,
+    EvaluationConfig,
+    EvaluationResult,
+    RetryConfig,
+)
 from benchflow.metrics import BenchmarkMetrics, collect_metrics
-from benchflow.models import AgentInstallError, AgentTimeoutError, RunResult
+from benchflow.models import AgentInstallError, AgentTimeoutError, RolloutResult
+
+# Rewards protocol (v0.4 — composable Rubric + RewardFunc)
+from benchflow.rewards import (
+    CodeExecRewardFunc,
+    Criterion,
+    JudgeConfig,
+    LLMJudgeRewardFunc,
+    RewardEvent,
+    RewardFunc,
+    Rubric,
+    RubricConfig,
+    ScoringConfig,
+    StringMatchRewardFunc,
+    TestRewardFunc,
+    VerifyResult,
+    load_rubric_toml,
+)
+from benchflow.rollout import Rollout, RolloutConfig
 from benchflow.runtime import (
     Agent,
     Environment,
     Runtime,
     RuntimeConfig,
     RuntimeResult,
-    run,  # bf.run(agent, env) — the primary 0.3 API
-)
+    run,
+)  # bf.run() — supports Agent, RolloutConfig, and str calling conventions
+
+# Sandbox protocol (v0.4 — parallel types, Harbor not yet removed)
+from benchflow.sandbox import ExecResult as SandboxExecResult
+from benchflow.sandbox import ImageBuilder, ImageConfig, ImageRef, Sandbox
 from benchflow.sdk import SDK
 from benchflow.skills import SkillInfo, discover_skills, install_skill, parse_skill
 from benchflow.trajectories.otel import OTelCollector
 from benchflow.trajectories.proxy import TrajectoryProxy
 from benchflow.trajectories.types import Trajectory
-from benchflow.trial import Role as TrialRole
-from benchflow.trial import Scene as TrialScene
-from benchflow.trial import Trial, TrialConfig, Turn
 from benchflow.trial_yaml import trial_config_from_yaml
 from benchflow.user import BaseUser, FunctionUser, PassthroughUser, RoundResult
+
+# Backward-compat aliases
+Trial = Rollout
+TrialConfig = RolloutConfig
+TrialRole = Role
+TrialScene = Scene
+RunResult = RolloutResult
+Job = Evaluation
+JobConfig = EvaluationConfig
+JobResult = EvaluationResult
 
 # Public API surface. Anything not in this list is implementation detail and
 # may change without notice. Names are grouped by source module to match the
@@ -71,6 +113,27 @@ from benchflow.user import BaseUser, FunctionUser, PassthroughUser, RoundResult
 # what.
 __all__ = [
     "__version__",
+    # Rewards protocol (v0.4)
+    "Rubric",
+    "RewardFunc",
+    "RewardEvent",
+    "VerifyResult",
+    "TestRewardFunc",
+    "LLMJudgeRewardFunc",
+    "StringMatchRewardFunc",
+    "CodeExecRewardFunc",
+    # Rubric config (ENG-55)
+    "Criterion",
+    "JudgeConfig",
+    "RubricConfig",
+    "ScoringConfig",
+    "load_rubric_toml",
+    # Sandbox protocol (v0.4)
+    "Sandbox",
+    "SandboxExecResult",
+    "ImageBuilder",
+    "ImageConfig",
+    "ImageRef",
     # Harbor re-exports
     "BaseAgent",
     "BaseEnvironment",
@@ -89,28 +152,38 @@ __all__ = [
     "is_vertex_model",
     "list_agents",
     "register_agent",
-    # Job orchestration
+    # Evaluation orchestration (new names)
+    "Evaluation",
+    "EvaluationConfig",
+    "EvaluationResult",
+    "RetryConfig",
+    # Backward-compat aliases for Job
     "Job",
     "JobConfig",
     "JobResult",
-    "RetryConfig",
     # Metrics
     "BenchmarkMetrics",
     "collect_metrics",
     # Models / errors
     "AgentInstallError",
     "AgentTimeoutError",
+    "RolloutResult",
     "RunResult",
-    # Runtime (0.3 primary API)
+    # Runtime (0.3 compat)
     "Agent",
     "Environment",
     "Runtime",
     "RuntimeConfig",
     "RuntimeResult",
+    # Single entry point
     "run",
-    # Multi-agent scene
-    "Scene",
+    # Canonical declarative types (_types.py — ENG-47)
     "Role",
+    "Scene",
+    "Turn",
+    # Multi-agent scene runtime
+    "SceneRole",
+    "SceneRuntime",
     "Message",
     "MessageTransport",
     "MailboxTransport",
@@ -118,12 +191,14 @@ __all__ = [
     "snapshot",
     "restore",
     "list_snapshots",
-    # Trial (decomposed lifecycle)
+    # Rollout (single execution path — ENG-46)
+    "Rollout",
+    "RolloutConfig",
+    # Backward-compat aliases for Trial
     "Trial",
     "TrialConfig",
     "TrialRole",
     "TrialScene",
-    "Turn",
     "trial_config_from_yaml",
     # User abstraction (progressive disclosure)
     "BaseUser",
@@ -147,11 +222,25 @@ __all__ = [
     "OTelCollector",
     "TrajectoryProxy",
     "Trajectory",
+    # External adapters (ENG-51)
+    "InspectAdapter",
+    "ORSAdapter",
+    "to_inspect_task",
+    "to_ors_reward",
 ]
 
 
 def __getattr__(name: str):
     """Fall through to harbor for names not explicitly re-exported."""
+    # Let Python's normal submodule resolution handle subpackages first.
+    import importlib
+
+    try:
+        return importlib.import_module(f"benchflow.{name}")
+    except ModuleNotFoundError as e:
+        if e.name != f"benchflow.{name}":
+            raise
+
     import harbor
 
     if hasattr(harbor, name):

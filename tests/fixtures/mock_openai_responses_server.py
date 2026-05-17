@@ -9,8 +9,8 @@ Responses API or support WebSockets. Its job is to:
 3. Return a deterministic OpenAI-style 401 error
 
 That is enough to prove whether codex-acp actually routed to the custom base
-URL. The expected benchflow run still fails; the test passes if the request
-hits this server instead of api.openai.com.
+URL. The expected BenchFlow invocation still fails; the test passes if the
+request hits this server instead of api.openai.com.
 """
 
 from __future__ import annotations

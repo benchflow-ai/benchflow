@@ -105,12 +105,12 @@ MODELS=(
   [apikey-mini]="gpt-5.4-mini"
 )
 
-# Extra --ae flags per model
+# Extra --agent-env flags per model
 declare -A EXTRA_ARGS
 EXTRA_ARGS=(
-  [subscription]="--ae OPENAI_REASONING_EFFORT=$REASONING"
-  [apikey]="--ae OPENAI_REASONING_EFFORT=$REASONING"
-  [apikey-mini]="--ae OPENAI_REASONING_EFFORT=$REASONING"
+  [subscription]="--agent-env OPENAI_REASONING_EFFORT=$REASONING"
+  [apikey]="--agent-env OPENAI_REASONING_EFFORT=$REASONING"
+  [apikey-mini]="--agent-env OPENAI_REASONING_EFFORT=$REASONING"
 )
 
 # ── Pre-flight checks ──
@@ -199,11 +199,11 @@ for label in "${SELECTED[@]}"; do
   extra="${EXTRA_ARGS[$label]:-}"
 
   # shellcheck disable=SC2086
-  if uv run benchflow run \
-    -t "$TASK" \
-    -a "$AGENT" \
-    -m "$model" \
-    -e "$ENV" \
+  if uv run bench eval create \
+    --tasks-dir "$TASK" \
+    --agent "$AGENT" \
+    --model "$model" \
+    --sandbox "$ENV" \
     --jobs-dir "$JOBS_DIR" \
     $extra; then
     echo "PASS: $label"

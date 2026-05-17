@@ -314,7 +314,7 @@ class TestDryRunPipeline:
                     "skills",
                     "eval",
                     str(mock_skill),
-                    "-a",
+                    "--agent",
                     "claude-agent-acp",
                     "--no-baseline",
                 ],

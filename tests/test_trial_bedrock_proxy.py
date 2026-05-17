@@ -33,7 +33,7 @@ async def test_trial_connect_starts_bedrock_runtime_before_connect_acp(tmp_path)
 
     with (
         patch(
-            "benchflow.trial.ensure_bedrock_proxy_runtime",
+            "benchflow.rollout.ensure_bedrock_proxy_runtime",
             new=AsyncMock(
                 return_value=(
                     {
@@ -45,7 +45,7 @@ async def test_trial_connect_starts_bedrock_runtime_before_connect_acp(tmp_path)
                 )
             ),
         ) as ensure_runtime,
-        patch("benchflow.trial.connect_acp", new_callable=AsyncMock) as connect_acp,
+        patch("benchflow.rollout.connect_acp", new_callable=AsyncMock) as connect_acp,
     ):
         connect_acp.return_value = (AsyncMock(), AsyncMock(), "codex-acp")
         await trial.connect()
@@ -88,7 +88,7 @@ async def test_trial_connect_as_starts_bedrock_runtime_for_role(tmp_path):
 
     with (
         patch(
-            "benchflow.trial.resolve_agent_env",
+            "benchflow.rollout.resolve_agent_env",
             return_value={
                 "AWS_BEARER_TOKEN_BEDROCK": "bedrock-token",
                 "AWS_REGION": "us-east-1",
@@ -96,7 +96,7 @@ async def test_trial_connect_as_starts_bedrock_runtime_for_role(tmp_path):
             },
         ),
         patch(
-            "benchflow.trial.ensure_bedrock_proxy_runtime",
+            "benchflow.rollout.ensure_bedrock_proxy_runtime",
             new=AsyncMock(
                 return_value=(
                     {
@@ -111,12 +111,12 @@ async def test_trial_connect_as_starts_bedrock_runtime_for_role(tmp_path):
             ),
         ) as ensure_runtime,
         patch(
-            "benchflow.trial.install_agent",
+            "benchflow.rollout.install_agent",
             new=AsyncMock(return_value=SimpleNamespace()),
         ),
-        patch("benchflow.trial.write_credential_files", new=AsyncMock()),
-        patch("benchflow.trial.apply_web_tool_policy", new=AsyncMock()),
-        patch("benchflow.trial.connect_acp", new_callable=AsyncMock) as connect_acp,
+        patch("benchflow.rollout.write_credential_files", new=AsyncMock()),
+        patch("benchflow.rollout.apply_web_tool_policy", new=AsyncMock()),
+        patch("benchflow.rollout.connect_acp", new_callable=AsyncMock) as connect_acp,
     ):
         connect_acp.return_value = (AsyncMock(), AsyncMock(), "claude-agent-acp")
         await trial.connect_as(role)
