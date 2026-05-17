@@ -349,7 +349,9 @@ def _join_with_divider(blocks: list[str]) -> str:
     return '<div class="turn-divider"></div>'.join(blocks)
 
 
-def serve(rollout_path: str, port: int = 8888, prompts: list[str] | None = None) -> None:
+def serve(
+    rollout_path: str, port: int = 8888, prompts: list[str] | None = None
+) -> None:
     """Serve a trial directory as a web page."""
     from http.server import HTTPServer, SimpleHTTPRequestHandler
 
