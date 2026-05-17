@@ -15,9 +15,17 @@
         "test_patch.diff non-empty",
         "task_metadata.json valid JSON with required keys",
         "test.sh is executable",
-        "Dockerfile has FROM directive"
+        "Dockerfile has FROM and ARG BASE_IMAGE directives"
       ]
     },
-    "notes": "All 100 SWE baseline tasks passed structural validation. Eval parity and side-by-side parity not yet performed — requires running agents against HILBench docker images."
+    "notes": "All 100 SWE baseline tasks passed structural validation. Dockerfile uses ARG BASE_IMAGE / FROM ${BASE_IMAGE} to reference pre-built Docker images from HuggingFace."
+  },
+  "eval_parity": {
+    "experiment": "hilbench_eval_parity",
+    "description": "End-to-end evaluation parity: build Docker image, run test.sh, verify correct rewards.",
+    "date": "2026-05-17",
+    "status": "blocked",
+    "blocker": "Docker image tarballs are stored in gated HuggingFace repo ScaleAI/hil-bench-swe-images. Requires HF_TOKEN with access to download.",
+    "notes": "Dockerfile fixed to use pre-built images via BASE_IMAGE build arg. Runner (run_hilbench.py) handles download/load. Cannot validate without HF access."
   }
 }
