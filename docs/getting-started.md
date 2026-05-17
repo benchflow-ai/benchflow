@@ -93,7 +93,7 @@ GEMINI_API_KEY=... bench eval create \
   --agent-env BENCHFLOW_SKILL_NUDGE=name
 
 # A whole batch from YAML config
-bench eval create --config benchmarks/skillsbench-claude-glm51.yaml
+bench eval create --config benchmarks/harvey-lab/harvey-lab-gemini-flash-lite.yaml
 
 # Batch from remote repo with concurrency
 GEMINI_API_KEY=... bench eval create \
@@ -123,7 +123,7 @@ The CLI is a thin shim over the Python API. For programmatic use:
 ```python
 import benchflow as bf
 from benchflow import RolloutConfig, Scene
-from benchflow.task_download import resolve_source
+from benchflow._utils.benchmark_repos import resolve_source
 
 config = RolloutConfig(
     task_path=resolve_source("benchflow-ai/skillsbench", path="tasks/edit-pdf"),

@@ -30,7 +30,7 @@ accepts a single task directory.
 
 ```bash
 # From YAML config
-bench eval create --config benchmarks/skillsbench-claude-glm51.yaml
+bench eval create --config benchmarks/harvey-lab/harvey-lab-gemini-flash-lite.yaml
 
 # From remote repo
 bench eval create \

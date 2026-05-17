@@ -38,7 +38,7 @@ agent, and model:
 ```bash
 GEMINI_API_KEY=... bench eval create --config benchmarks/harvey-lab/harvey-lab-gemini-flash-lite.yaml
 GEMINI_API_KEY=... bench eval create --config benchmarks/programbench/programbench-gemini-flash-lite.yaml
-bench eval create --config benchmarks/skillsbench-claude-glm51.yaml
+bench eval create --config benchmarks/harvey-lab/harvey-lab-gemini-flash-lite.yaml
 ```
 
 The config handles everything — downloads/generates tasks, resolves the task path,
@@ -322,7 +322,7 @@ Recorded parity results are in `parity_experiment.json` and `benchmark.yaml`.
 Job configs use the two-field `source` pattern to reference remote benchmark repos:
 
 ```yaml
-# benchmarks/skillsbench-claude-glm51.yaml — direct from remote repo
+# Example: SkillsBench config — direct from remote repo
 source:
   repo: benchflow-ai/skillsbench   # GitHub repo (org/repo)
   path: tasks                      # subpath within the repo
