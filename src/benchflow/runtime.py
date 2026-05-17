@@ -78,10 +78,10 @@ class Environment:
         )
         rollout_paths.mkdir()
         inner = _create_environment(
-            environment_type=sandbox,
+            sandbox_type=sandbox,
             task=task,
             task_path=task_path,
-            trial_name=trial_name,
+            rollout_name=trial_name,
             rollout_paths=rollout_paths,
         )
         return cls(inner=inner, task_path=task_path, sandbox=sandbox)

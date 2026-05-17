@@ -1,6 +1,6 @@
 """YAML trial config loader.
 
-Parses trial YAML files into TrialConfig with Scene support.
+Parses trial YAML files into RolloutConfig with Scene support.
 Handles both new scene-based format and legacy flat format.
 
 New format::
@@ -44,7 +44,7 @@ from typing import Any
 import yaml
 
 from benchflow._types import Role, Scene, Turn
-from benchflow.trial import TrialConfig
+from benchflow.rollout import RolloutConfig
 
 logger = logging.getLogger(__name__)
 
@@ -61,8 +61,8 @@ def load_trial_yaml(path: str | Path) -> dict:
 def trial_config_from_yaml(
     path: str | Path,
     task_path: Path | None = None,
-) -> TrialConfig:
-    """Parse a YAML file into a TrialConfig.
+) -> RolloutConfig:
+    """Parse a YAML file into a RolloutConfig.
 
     If task_path is provided, it overrides task_dir from the YAML.
     """
@@ -73,8 +73,8 @@ def trial_config_from_yaml(
 def trial_config_from_dict(
     raw: dict[str, Any],
     task_path: Path | None = None,
-) -> TrialConfig:
-    """Convert a raw dict (from YAML or programmatic) into a TrialConfig."""
+) -> RolloutConfig:
+    """Convert a raw dict (from YAML or programmatic) into a RolloutConfig."""
     tp = task_path or Path(raw.get("task_dir", raw.get("task_path", ".")))
 
     # Scene-based format
@@ -105,7 +105,7 @@ def trial_config_from_dict(
     else:
         raise ValueError("YAML must have either 'scenes' or 'agent' at top level")
 
-    return TrialConfig(
+    return RolloutConfig(
         task_path=tp,
         scenes=scenes,
         environment=raw.get("environment", "docker"),
@@ -165,7 +165,7 @@ def job_config_from_yaml(path: str | Path) -> dict:
     """Parse a YAML file and return both job-level and trial-level config.
 
     Returns a dict with keys: task_dir, concurrency, max_retries,
-    trial_config (TrialConfig), and any other job-level fields.
+    trial_config (RolloutConfig), and any other job-level fields.
     """
     raw = load_trial_yaml(path)
     task_dir = Path(raw.get("task_dir", raw.get("tasks_dir", ".")))

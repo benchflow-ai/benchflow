@@ -1,9 +1,9 @@
-"""Tests for outbox-based inter-role messaging in Trial._run_scene().
+"""Tests for outbox-based inter-role messaging in Rollout._run_scene().
 
-Verifies that when bf.run(TrialConfig) executes a multi-role Scene,
+Verifies that when bf.run(RolloutConfig) executes a multi-role Scene,
 outbox files written by one role are read and injected into the next
 role's prompt — bridging the _scene.py outbox convention with the
-Trial lifecycle.
+Rollout lifecycle.
 """
 
 from __future__ import annotations
@@ -15,11 +15,11 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from benchflow.trial import (
+from benchflow.rollout import (
     Role,
+    Rollout,
+    RolloutConfig,
     Scene,
-    Trial,
-    TrialConfig,
     Turn,
     _resolve_skill_creator_root,
     _self_gen_prompt,
@@ -71,13 +71,13 @@ class FakeEnv:
         )
 
 
-def _make_trial(scene: Scene) -> Trial:
-    config = TrialConfig(
+def _make_trial(scene: Scene) -> Rollout:
+    config = RolloutConfig(
         task_path=Path("tasks/fake"),
         scenes=[scene],
         environment="docker",
     )
-    trial = Trial(config)
+    trial = Rollout(config)
     trial._env = FakeEnv()
     trial._resolved_prompts = ["Solve the task"]
     return trial
@@ -336,13 +336,13 @@ async def test_heterogeneous_agent_install(coder_reviewer_scene: Scene) -> None:
         ],
         turns=[Turn("coder"), Turn("reviewer", "Review.")],
     )
-    config = TrialConfig(
+    config = RolloutConfig(
         task_path=Path("tasks/fake"),
         scenes=[scene],
         environment="docker",
         agent="gemini",
     )
-    trial = Trial(config)
+    trial = Rollout(config)
     trial._env = FakeEnv()
     trial._resolved_prompts = ["Solve the task"]
 
@@ -365,7 +365,7 @@ async def test_heterogeneous_agent_install(coder_reviewer_scene: Scene) -> None:
 
 
 def test_self_gen_mode_still_requires_runtime_orchestration(tmp_path: Path) -> None:
-    """Direct Trial scenes cannot silently skip self-gen setup."""
+    """Direct Rollout scenes cannot silently skip self-gen setup."""
     skills_root = tmp_path / "skills"
     skill_creator = skills_root / "skill-creator"
     skill_creator.mkdir(parents=True)
@@ -373,7 +373,7 @@ def test_self_gen_mode_still_requires_runtime_orchestration(tmp_path: Path) -> N
         "---\nname: skill-creator\ndescription: Create skills\n---\n# Skill Creator\n"
     )
 
-    cfg = TrialConfig.from_legacy(
+    cfg = RolloutConfig.from_legacy(
         task_path=Path("tasks/fake"),
         agent="claude-agent-acp",
         model="claude-haiku-4-5-20251001",

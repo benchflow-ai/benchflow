@@ -139,7 +139,7 @@ class TestSdkVerify:
 
 
 # ---------------------------------------------------------------------------
-# Job: retry, resume, bounded log, threshold warning
+# Evaluation: retry, resume, bounded log, threshold warning
 # ---------------------------------------------------------------------------
 
 
@@ -188,9 +188,11 @@ class TestResume:
                 }
             )
         )
-        from benchflow.job import Job, JobConfig
+        from benchflow.evaluation import Evaluation, EvaluationConfig
 
-        job = Job(tasks_dir=tmp_path, jobs_dir=tmp_path, config=JobConfig())
+        job = Evaluation(
+            tasks_dir=tmp_path, jobs_dir=tmp_path, config=EvaluationConfig()
+        )
         with caplog.at_level(logging.INFO):
             completed = job._get_completed_tasks()
         assert "task1" in completed
@@ -209,14 +211,16 @@ class TestResume:
                 }
             )
         )
-        from benchflow.job import Job, JobConfig
+        from benchflow.evaluation import Evaluation, EvaluationConfig
 
-        job = Job(tasks_dir=tmp_path, jobs_dir=tmp_path, config=JobConfig())
+        job = Evaluation(
+            tasks_dir=tmp_path, jobs_dir=tmp_path, config=EvaluationConfig()
+        )
         assert "task2" not in job._get_completed_tasks()
 
 
 class TestJobRunLogs:
-    """Tests that exercise actual Job.run() and check log output."""
+    """Tests that exercise actual Evaluation.run() and check log output."""
 
     @pytest.mark.asyncio
     async def test_bounded_log_shows_verifier_error(self, job_factory, caplog):
@@ -293,16 +297,16 @@ class TestJobRunLogs:
 
 
 # ---------------------------------------------------------------------------
-# JobResult invariant
+# EvaluationResult invariant
 # ---------------------------------------------------------------------------
 
 
 def test_total_invariant():
-    from benchflow.job import JobConfig, JobResult
+    from benchflow.evaluation import EvaluationConfig, EvaluationResult
 
-    jr = JobResult(
+    jr = EvaluationResult(
         job_name="t",
-        config=JobConfig(),
+        config=EvaluationConfig(),
         total=4,
         passed=1,
         failed=1,

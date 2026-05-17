@@ -1,10 +1,10 @@
 """Dry-run test for skill-eval pipeline — proves end-to-end without LLM calls.
 
-Mocks the Job.run() to avoid Docker/API dependencies while verifying:
+Mocks the Evaluation.run() to avoid Docker/API dependencies while verifying:
 1. Dataset loads correctly
 2. Ephemeral tasks generated with correct structure
 3. With-skill vs baseline task dirs differ (skill copied vs not)
-4. Job is configured correctly (agent, model, concurrency)
+4. Evaluation is configured correctly (agent, model, concurrency)
 5. Results collected and lift computed
 6. GEPA export produces expected structure
 7. CLI wiring works end-to-end
@@ -175,9 +175,9 @@ class TestDryRunPipeline:
         assert "COPY skills/" in with_df
         assert "COPY skills/" not in without_df
 
-    @patch("benchflow.job.Job")
+    @patch("benchflow.evaluation.Evaluation")
     def test_evaluator_configures_job_correctly(self, MockJob, mock_skill):
-        """Verify SkillEvaluator passes correct config to Job."""
+        """Verify SkillEvaluator passes correct config to Evaluation."""
         mock_job_instance = MockJob.return_value
         mock_job_instance.run = AsyncMock(
             return_value=type(
@@ -205,7 +205,7 @@ class TestDryRunPipeline:
             )
         )
 
-        # Job was called at least once (with-skill run)
+        # Evaluation was called at least once (with-skill run)
         assert MockJob.call_count >= 1
         call_kwargs = MockJob.call_args
         config = call_kwargs.kwargs.get("config") or call_kwargs[1].get("config")

@@ -32,7 +32,7 @@ Phases can be composed for multi-agent flows::
     result = await rollout.verify()
     await rollout.cleanup()
 
-Backward-compat aliases: ``Trial = Rollout``, ``TrialConfig = RolloutConfig``.
+See also: ``RolloutConfig`` for configuration dataclass.
 """
 
 from __future__ import annotations
@@ -606,9 +606,6 @@ __all__ = [
     "Turn",
     "Rollout",
     "RolloutConfig",
-    # Backward-compat aliases
-    "Trial",
-    "TrialConfig",
 ]
 
 
@@ -1761,8 +1758,3 @@ class Rollout:
             started_at=self._require_started_at(),
             timing=self._timing,
         )
-
-
-# Backward-compat aliases
-Trial = Rollout
-TrialConfig = RolloutConfig

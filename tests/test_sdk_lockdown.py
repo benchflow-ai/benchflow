@@ -145,7 +145,7 @@ class TestLockdownPaths:
 
 
 # ---------------------------------------------------------------------------
-# JobConfig YAML parsing
+# EvaluationConfig YAML parsing
 # ---------------------------------------------------------------------------
 
 
@@ -163,9 +163,9 @@ class TestJobConfigYAML:
         (tmp_path / "config.yaml").write_text(yaml_content)
         (tmp_path / "tasks").mkdir()
 
-        from benchflow.job import Job
+        from benchflow.evaluation import Evaluation
 
-        job = Job.from_yaml(tmp_path / "config.yaml")
+        job = Evaluation.from_yaml(tmp_path / "config.yaml")
         assert job._config.sandbox_locked_paths == ["/tasks", "/data"]
         assert job._config.sandbox_user == "agent"
 
@@ -174,9 +174,9 @@ class TestJobConfigYAML:
         (tmp_path / "config.yaml").write_text(yaml_content)
         (tmp_path / "tasks").mkdir()
 
-        from benchflow.job import Job
+        from benchflow.evaluation import Evaluation
 
-        job = Job.from_yaml(tmp_path / "config.yaml")
+        job = Evaluation.from_yaml(tmp_path / "config.yaml")
         assert job._config.sandbox_locked_paths is None
 
     def test_harbor_yaml_with_locked_paths(self, tmp_path):
@@ -192,9 +192,9 @@ class TestJobConfigYAML:
         (tmp_path / "config.yaml").write_text(yaml_content)
         (tmp_path / "tasks").mkdir()
 
-        from benchflow.job import Job
+        from benchflow.evaluation import Evaluation
 
-        job = Job.from_yaml(tmp_path / "config.yaml")
+        job = Evaluation.from_yaml(tmp_path / "config.yaml")
         assert job._config.sandbox_locked_paths == ["/data"]
         assert job._config.sandbox_user == "agent"
 
@@ -203,9 +203,9 @@ class TestJobConfigYAML:
         (tmp_path / "config.yaml").write_text(yaml_content)
         (tmp_path / "tasks").mkdir()
 
-        from benchflow.job import Job
+        from benchflow.evaluation import Evaluation
 
-        job = Job.from_yaml(tmp_path / "config.yaml")
+        job = Evaluation.from_yaml(tmp_path / "config.yaml")
         assert job._config.sandbox_user == "agent"
 
 

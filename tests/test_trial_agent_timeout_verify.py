@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from benchflow.models import RunResult
-from benchflow.trial import Scene, Trial, TrialConfig
+from benchflow.rollout import Rollout, RolloutConfig, Scene
 
 
 @pytest.mark.asyncio
@@ -11,11 +11,11 @@ async def test_agent_timeout_without_verifier_reward_counts_as_zero(
     tmp_path: Path, monkeypatch
 ):
     """Guards the 2026-05-05 agent-timeout reward fallback fix."""
-    cfg = TrialConfig(
+    cfg = RolloutConfig(
         task_path=tmp_path / "task",
         scenes=[Scene.single(agent="dummy")],
     )
-    trial = Trial(cfg)
+    trial = Rollout(cfg)
     calls: list[str] = []
 
     async def setup():

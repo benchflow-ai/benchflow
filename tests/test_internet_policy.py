@@ -5,11 +5,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from benchflow.trial import (
+from benchflow.rollout import (
     Role,
+    Rollout,
+    RolloutConfig,
     Scene,
-    Trial,
-    TrialConfig,
     _agent_launch_with_web_policy,
     _apply_web_policy,
     _skill_nudge,
@@ -122,7 +122,7 @@ def test_create_environment_keeps_oracle_network_policy(tmp_path):
 
 @pytest.mark.asyncio
 async def test_connect_as_applies_web_policy_to_role_env(tmp_path):
-    cfg = TrialConfig(
+    cfg = RolloutConfig(
         task_path=tmp_path / "task",
         scenes=[
             Scene(
@@ -131,7 +131,7 @@ async def test_connect_as_applies_web_policy_to_role_env(tmp_path):
         ],
         agent_env={"BENCHFLOW_PROVIDER_BASE_URL": "http://localhost:8080/v1"},
     )
-    trial = Trial.__new__(Trial)
+    trial = Rollout.__new__(Rollout)
     trial._config = cfg
     trial._env = {}
     trial._trial_dir = tmp_path
@@ -196,7 +196,7 @@ async def test_connect_as_applies_hard_web_policy_to_role_agent(tmp_path):
     from benchflow.agents.registry import AGENTS
 
     role = Role(name="coder", agent="gemini", model="gemini/test")
-    cfg = TrialConfig(
+    cfg = RolloutConfig(
         task_path=tmp_path / "task",
         scenes=[
             Scene(
@@ -207,7 +207,7 @@ async def test_connect_as_applies_hard_web_policy_to_role_agent(tmp_path):
             )
         ],
     )
-    trial = Trial.__new__(Trial)
+    trial = Rollout.__new__(Rollout)
     trial._config = cfg
     trial._env = {}
     trial._trial_dir = tmp_path

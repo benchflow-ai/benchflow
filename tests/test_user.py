@@ -9,8 +9,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from benchflow.rollout import Role, Rollout, RolloutConfig, Scene, Turn
 from benchflow.sandbox.user import BaseUser, FunctionUser, PassthroughUser, RoundResult
-from benchflow.trial import Role, Scene, Trial, TrialConfig, Turn
 
 # ── Unit tests for User types ──
 
@@ -74,7 +74,7 @@ class TestBaseUser:
             await user.run(0, "task")
 
 
-# ── Integration tests for user loop in Trial ──
+# ── Integration tests for user loop in Rollout ──
 
 
 @dataclass
@@ -111,8 +111,8 @@ def _make_user_trial(
     max_rounds: int = 5,
     oracle: bool = False,
     tmp_path: Path | None = None,
-) -> Trial:
-    config = TrialConfig(
+) -> Rollout:
+    config = RolloutConfig(
         task_path=Path("tasks/fake"),
         scenes=[Scene.single(agent="gemini", model="flash")],
         environment="docker",
@@ -120,7 +120,7 @@ def _make_user_trial(
         max_user_rounds=max_rounds,
         oracle_access=oracle,
     )
-    trial = Trial(config)
+    trial = Rollout(config)
     trial._env = FakeEnv()
     trial._resolved_prompts = ["Solve the task described in /app/instruction.md"]
     trial_dir = tmp_path or Path(tempfile.mkdtemp(prefix="benchflow-test-"))
@@ -289,7 +289,7 @@ class TestUserLoop:
     @pytest.mark.asyncio
     async def test_multi_role_raises(self):
         user = RecordingUser()
-        config = TrialConfig(
+        config = RolloutConfig(
             task_path=Path("tasks/fake"),
             scenes=[
                 Scene(
@@ -300,7 +300,7 @@ class TestUserLoop:
             ],
             user=user,
         )
-        trial = Trial(config)
+        trial = Rollout(config)
         trial._env = FakeEnv()
         trial._resolved_prompts = ["task"]
 

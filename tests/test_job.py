@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from benchflow.job import Job, JobConfig, RetryConfig
+from benchflow.evaluation import Evaluation, EvaluationConfig, RetryConfig
 from benchflow.models import RunResult
 
 
@@ -44,7 +44,7 @@ class TestRetryConfig:
 
 
 class TestJobCounting:
-    """Test the counting logic used in Job.run() — calls the real extract_reward."""
+    """Test the counting logic used in Evaluation.run() — calls the real extract_reward."""
 
     def _count(self, all_results: dict[str, dict]) -> dict:
         """Same counting logic as job.py, using the shared extract_reward."""
@@ -94,7 +94,7 @@ class TestJobCounting:
 
 
 class TestRunTaskLoop:
-    """Tests for Job._run_task — retry loop behavior."""
+    """Tests for Evaluation._run_task — retry loop behavior."""
 
     @pytest.mark.asyncio
     async def test_exhausts_retries(self, job_factory):
@@ -141,7 +141,7 @@ class TestRunTaskLoop:
 
 
 class TestJobResume:
-    """Tests for Job._get_completed_tasks — resume logic."""
+    """Tests for Evaluation._get_completed_tasks — resume logic."""
 
     def _setup_jobs_dir(self, tmp_path):
         jobs_dir = tmp_path / "jobs"
@@ -162,7 +162,7 @@ class TestJobResume:
 
         tasks_dir = tmp_path / "tasks"
         tasks_dir.mkdir()
-        job = Job(tasks_dir=tasks_dir, jobs_dir=jobs_dir)
+        job = Evaluation(tasks_dir=tasks_dir, jobs_dir=jobs_dir)
         completed = job._get_completed_tasks()
         assert "task-a" in completed
         assert "task-b" in completed
@@ -178,7 +178,7 @@ class TestJobResume:
 
         tasks_dir = tmp_path / "tasks"
         tasks_dir.mkdir()
-        job = Job(tasks_dir=tasks_dir, jobs_dir=jobs_dir)
+        job = Evaluation(tasks_dir=tasks_dir, jobs_dir=jobs_dir)
         completed = job._get_completed_tasks()
         assert "task-a" in completed
         assert len(completed) == 1
@@ -199,8 +199,8 @@ class TestJobResume:
         (tasks_dir / "task-b" / "task.toml").write_text(
             'version = "1.0"\n[verifier]\ntimeout_sec = 60\n[agent]\ntimeout_sec = 60\n[environment]\n'
         )
-        cfg = JobConfig(agent="new-agent")
-        job = Job(tasks_dir=tasks_dir, jobs_dir=jobs_dir, config=cfg)
+        cfg = EvaluationConfig(agent="new-agent")
+        job = Evaluation(tasks_dir=tasks_dir, jobs_dir=jobs_dir, config=cfg)
         # Patch _run_task so run() doesn't actually run anything real
         job._sdk = AsyncMock()
         job._sdk.run = AsyncMock(
@@ -219,16 +219,16 @@ class TestJobResume:
 
         tasks_dir = tmp_path / "tasks"
         tasks_dir.mkdir()
-        job = Job(tasks_dir=tasks_dir, jobs_dir=jobs_dir)
+        job = Evaluation(tasks_dir=tasks_dir, jobs_dir=jobs_dir)
         completed = job._get_completed_tasks()
         assert "task-a" not in completed
         assert len(completed) == 0
 
 
 class TestJobRunOrchestration:
-    """Tests for Job.run() orchestration: semaphore overlap, exception catching."""
+    """Tests for Evaluation.run() orchestration: semaphore overlap, exception catching."""
 
-    def _make_job(self, tmp_path, n_tasks: int, concurrency: int = 2) -> Job:
+    def _make_job(self, tmp_path, n_tasks: int, concurrency: int = 2) -> Evaluation:
         tasks_dir = tmp_path / "tasks"
         tasks_dir.mkdir()
         for i in range(n_tasks):
@@ -236,8 +236,10 @@ class TestJobRunOrchestration:
             (tasks_dir / f"task-{i}" / "task.toml").write_text(
                 'version = "1.0"\n[verifier]\ntimeout_sec = 60\n[agent]\ntimeout_sec = 60\n[environment]\n'
             )
-        cfg = JobConfig(concurrency=concurrency, retry=RetryConfig(max_retries=0))
-        return Job(tasks_dir=tasks_dir, jobs_dir=tmp_path / "jobs", config=cfg)
+        cfg = EvaluationConfig(
+            concurrency=concurrency, retry=RetryConfig(max_retries=0)
+        )
+        return Evaluation(tasks_dir=tasks_dir, jobs_dir=tmp_path / "jobs", config=cfg)
 
     @pytest.mark.asyncio
     async def test_concurrency_semaphore_actually_overlaps_at_bound(self, tmp_path):
@@ -283,7 +285,7 @@ class TestJobRunOrchestration:
 
         The synthesized RunResult(error="Unexpected: ...") is built in-Python
         and never written to result.json (SDK._build_result never runs when
-        SDK.run raises), so we assert via JobResult and caplog, not disk.
+        SDK.run raises), so we assert via EvaluationResult and caplog, not disk.
         """
         job = self._make_job(tmp_path, n_tasks=1, concurrency=1)
         job._sdk = AsyncMock()

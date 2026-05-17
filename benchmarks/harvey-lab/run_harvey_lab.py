@@ -1,4 +1,4 @@
-"""Run Harvey LAB benchmark — downloads raw tasks, converts to BenchFlow format, runs via Job.
+"""Run Harvey LAB benchmark — downloads raw tasks, converts to BenchFlow format, runs via Evaluation.
 
 Usage:
     python benchmarks/harvey-lab/run_harvey_lab.py                # default config
@@ -14,7 +14,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from benchflow.job import Job
+from benchflow.evaluation import Evaluation
 from benchflow.task_download import resolve_source
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -75,7 +75,7 @@ async def main():
 
     # Load job config from YAML, then override tasks_dir with the converted path.
     # The YAML doesn't specify source/tasks_dir since Harvey LAB requires conversion.
-    job = Job.from_yaml(config)
+    job = Evaluation.from_yaml(config)
     job._tasks_dir = tasks_dir  # type: ignore[attr-defined]
 
     result = await job.run()

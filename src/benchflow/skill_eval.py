@@ -501,10 +501,10 @@ class SkillEvaluator:
         concurrency: int,
         with_skill: bool,
     ) -> list[CaseResult]:
-        """Run a batch of tasks using Job for concurrency and retries."""
+        """Run a batch of tasks using Evaluation for concurrency and retries."""
         import os
 
-        from benchflow.job import Job, JobConfig, RetryConfig
+        from benchflow.evaluation import Evaluation, EvaluationConfig, RetryConfig
 
         judge_env = {}
         for key in (
@@ -516,10 +516,10 @@ class SkillEvaluator:
             if os.environ.get(key):
                 judge_env[key] = os.environ[key]
 
-        j = Job(
+        j = Evaluation(
             tasks_dir=str(tasks_dir),
             jobs_dir=jobs_dir,
-            config=JobConfig(
+            config=EvaluationConfig(
                 agent=agent,
                 model=model or "",
                 environment=environment,

@@ -25,11 +25,11 @@ TASK_PATH = Path(__file__).parent / "acp_smoke"
 async def main() -> None:
     task = Task(TASK_PATH)
     env = _create_environment(
-        environment_type="daytona",
+        sandbox_type="daytona",
         task=task,
         task_path=TASK_PATH,
-        trial_name="snapshot-proof",
-        trial_paths=None,
+        rollout_name="snapshot-proof",
+        rollout_paths=None,
     )
     try:
         await env.start(force_build=False)

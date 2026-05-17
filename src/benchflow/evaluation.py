@@ -236,7 +236,7 @@ class Evaluation:
         return cls._from_native_yaml(raw, **kwargs)
 
     @classmethod
-    def _from_native_yaml(cls, raw: dict, **kwargs) -> Job:
+    def _from_native_yaml(cls, raw: dict, **kwargs) -> Evaluation:
         """Parse benchflow-native YAML."""
         from benchflow._utils.benchmark_repos import (
             TASK_ALIASES,
@@ -299,7 +299,7 @@ class Evaluation:
         return cls(tasks_dir=tasks_dir, jobs_dir=jobs_dir, config=config, **kwargs)
 
     @classmethod
-    def _from_legacy_yaml(cls, raw: dict, **kwargs) -> Job:
+    def _from_legacy_yaml(cls, raw: dict, **kwargs) -> Evaluation:
         """Parse legacy-format YAML (agents + datasets style)."""
         # Agent
         agents = raw.get("agents", [{}])
@@ -675,9 +675,3 @@ class Evaluation:
         )
 
         return job_result
-
-
-# Backward-compat aliases
-Job = Evaluation
-JobConfig = EvaluationConfig
-JobResult = EvaluationResult

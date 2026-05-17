@@ -7,11 +7,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from benchflow.job import Job, JobConfig, RetryConfig
+from benchflow.evaluation import Evaluation, EvaluationConfig, RetryConfig
 from benchflow.models import RunResult
+from benchflow.rollout import Rollout, RolloutConfig
 from benchflow.runtime import run as runtime_run
 from benchflow.sdk import SDK
-from benchflow.trial import Trial, TrialConfig
 
 
 def _make_task(tmp_path: Path) -> Path:
@@ -78,7 +78,7 @@ async def test_sdk_self_gen_runs_creator_then_solver_in_one_trial_with_isolated_
             run_configs.append(self._config)
             return solver_result
 
-    monkeypatch.setattr("benchflow.self_gen.Trial", FakeTrial)
+    monkeypatch.setattr("benchflow.self_gen.Rollout", FakeTrial)
 
     result = await SDK().run(
         task_path=task,
@@ -165,10 +165,10 @@ async def test_job_self_gen_uses_strict_orchestration(
     """Guards PR #233: batch self-gen delegates to the BYOS scene trial."""
     task = _make_task(tmp_path)
     skill_creator_root = _make_skill_creator_root(tmp_path)
-    job = Job(
+    job = Evaluation(
         tasks_dir=task.parent,
         jobs_dir=tmp_path / "jobs",
-        config=JobConfig(
+        config=EvaluationConfig(
             agent="opencode",
             model="google/gemini-3.1-pro-preview",
             environment="docker",
@@ -195,7 +195,7 @@ async def test_job_self_gen_uses_strict_orchestration(
             run_configs.append(self._config)
             return solver_result
 
-    monkeypatch.setattr("benchflow.self_gen.Trial", FakeTrial)
+    monkeypatch.setattr("benchflow.self_gen.Rollout", FakeTrial)
 
     result = await job._run_single_task(task, job._config)
 
@@ -216,7 +216,7 @@ async def test_job_self_gen_uses_strict_orchestration(
 async def test_runtime_trial_config_self_gen_routes_to_orchestrator(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """bf.run(TrialConfig(... self-gen ...)) also uses strict orchestration."""
+    """bf.run(RolloutConfig(... self-gen ...)) also uses strict orchestration."""
     task = _make_task(tmp_path)
     expected = RunResult(task_name="task", rewards={"reward": 1.0})
     captured = {}
@@ -226,7 +226,7 @@ async def test_runtime_trial_config_self_gen_routes_to_orchestrator(
         return expected
 
     monkeypatch.setattr("benchflow.self_gen.run_self_gen", fake_run_self_gen)
-    config = TrialConfig.from_legacy(
+    config = RolloutConfig.from_legacy(
         task_path=task,
         agent="opencode",
         model="google/gemini-3.1-pro-preview",
@@ -243,9 +243,9 @@ async def test_runtime_trial_config_self_gen_routes_to_orchestrator(
 async def test_trial_create_rejects_self_gen_without_orchestrator(
     tmp_path: Path,
 ) -> None:
-    """Direct Trial execution cannot silently collapse self-gen into one sandbox."""
+    """Direct Rollout execution cannot silently collapse self-gen into one sandbox."""
     task = _make_task(tmp_path)
-    config = TrialConfig.from_legacy(
+    config = RolloutConfig.from_legacy(
         task_path=task,
         agent="opencode",
         model="google/gemini-3.1-pro-preview",
@@ -253,7 +253,7 @@ async def test_trial_create_rejects_self_gen_without_orchestrator(
     )
 
     with pytest.raises(ValueError, match="runtime orchestrator"):
-        await Trial.create(config)
+        await Rollout.create(config)
 
     with pytest.raises(ValueError, match="runtime orchestrator"):
-        await Trial(config).run()
+        await Rollout(config).run()

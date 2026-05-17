@@ -63,8 +63,8 @@ def build_result_json(tmp_path):
 
 @pytest.fixture
 def job_factory(tmp_path):
-    """Create a Job with n task directories and a mocked SDK."""
-    from benchflow.job import Job, JobConfig, RetryConfig
+    """Create a Evaluation with n task directories and a mocked SDK."""
+    from benchflow.evaluation import Evaluation, EvaluationConfig, RetryConfig
 
     def _make(n_tasks=1, max_retries=0):
         tasks_dir = tmp_path / "tasks"
@@ -76,8 +76,8 @@ def job_factory(tmp_path):
                 'version = "1.0"\n[verifier]\ntimeout_sec = 60\n'
                 "[agent]\ntimeout_sec = 60\n[environment]\n"
             )
-        cfg = JobConfig(retry=RetryConfig(max_retries=max_retries))
-        job = Job(tasks_dir=tasks_dir, jobs_dir=tmp_path / "jobs", config=cfg)
+        cfg = EvaluationConfig(retry=RetryConfig(max_retries=max_retries))
+        job = Evaluation(tasks_dir=tasks_dir, jobs_dir=tmp_path / "jobs", config=cfg)
         return job, tasks_dir
 
     return _make

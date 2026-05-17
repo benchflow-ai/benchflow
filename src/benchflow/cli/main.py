@@ -11,7 +11,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from benchflow.job import DEFAULT_AGENT, effective_model
+from benchflow.evaluation import DEFAULT_AGENT, effective_model
 
 # Show progress messages (logger.info) from benchflow internals by default.
 logging.basicConfig(
@@ -214,15 +214,15 @@ def job(
 
     Use --config for YAML config, or --tasks-dir for direct invocation.
     """
-    from benchflow.job import Job, JobConfig, RetryConfig
+    from benchflow.evaluation import Evaluation, EvaluationConfig, RetryConfig
 
     if config_file:
-        j = Job.from_yaml(config_file)
+        j = Evaluation.from_yaml(config_file)
     elif tasks_dir:
-        j = Job(
+        j = Evaluation(
             tasks_dir=str(tasks_dir),
             jobs_dir=jobs_dir,
-            config=JobConfig(
+            config=EvaluationConfig(
                 agent=agent,
                 model=effective_model(agent, model),
                 environment=environment,
@@ -332,7 +332,7 @@ def metrics(
 def view(
     trial_dir: Annotated[
         Path,
-        typer.Argument(help="Trial or job directory with trajectories"),
+        typer.Argument(help="Rollout or job directory with trajectories"),
     ],
     port: Annotated[int, typer.Option(help="Server port")] = 8888,
 ) -> None:
@@ -388,17 +388,17 @@ def eval(
         benchflow eval --tasks-dir tasks/ --skill skills/gws/SKILL.md --agent claude-agent-acp --sandbox daytona
         benchflow eval --tasks-dir tasks/ --skills-dir skills/ --agent gemini --sandbox daytona --concurrency 64
     """
-    from benchflow.job import Job, JobConfig
+    from benchflow.evaluation import Evaluation, EvaluationConfig
 
     # Use --skill as skills_dir if --skills-dir not provided
     effective_skills = (
         str(skills_dir) if skills_dir else (str(skill.parent) if skill else None)
     )
 
-    j = Job(
+    j = Evaluation(
         tasks_dir=str(tasks_dir),
         jobs_dir=jobs_dir,
-        config=JobConfig(
+        config=EvaluationConfig(
             agent=agent,
             model=effective_model(agent, model),
             environment=environment,
@@ -866,12 +866,12 @@ def eval_create(
     ] = None,
 ) -> None:
     """Run an evaluation — single task or batch."""
-    from benchflow.job import Job, JobConfig
+    from benchflow.evaluation import Evaluation, EvaluationConfig
 
     parsed_env = _parse_agent_env(agent_env)
 
     if config_file:
-        j = Job.from_yaml(config_file)
+        j = Evaluation.from_yaml(config_file)
         j._config.agent_env = {**j._config.agent_env, **parsed_env}
         result = asyncio.run(j.run())
         console.print(
@@ -919,10 +919,10 @@ def eval_create(
                 console.print(f"[red]Error:[/red] {run_result.error}")
         else:
             # Directory of tasks — batch run
-            j = Job(
+            j = Evaluation(
                 tasks_dir=str(resolved_tasks_dir),
                 jobs_dir=jobs_dir,
-                config=JobConfig(
+                config=EvaluationConfig(
                     agent=agent,
                     model=eff_model,
                     environment=environment,
@@ -980,10 +980,10 @@ def eval_create(
                 console.print(f"[red]Error:[/red] {run_result.error}")
         else:
             # Directory of tasks — batch run
-            j = Job(
+            j = Evaluation(
                 tasks_dir=str(resolved_tasks_dir),
                 jobs_dir=jobs_dir,
-                config=JobConfig(
+                config=EvaluationConfig(
                     agent=agent,
                     model=eff_model,
                     environment=environment,
@@ -1022,7 +1022,7 @@ def eval_list(
         return
 
     table = Table(title="Evaluations")
-    table.add_column("Job", style="cyan")
+    table.add_column("Evaluation", style="cyan")
     table.add_column("Tasks", justify="right")
     table.add_column("Summary")
 
