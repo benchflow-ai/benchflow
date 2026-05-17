@@ -1,0 +1,28 @@
+{
+  "benchmark": "continual-learning-bench",
+  "source_url": "https://github.com/pgasawa/continual-learning-bench",
+  "conversion_date": "2026-05-17",
+  "tasks_converted": ["exploitable_poker", "database_exploration", "cohort_studies"],
+  "structural_parity": {
+    "tasks_tested": 3,
+    "passed": 3,
+    "checks": [
+      "task.toml valid with clbench/ prefix",
+      "instruction.md non-empty",
+      "Dockerfile has correct base image",
+      "run_task.py present",
+      "test.sh executable",
+      "evaluate.py present"
+    ]
+  },
+  "eval_parity": {
+    "tasks_tested": 3,
+    "passed": 3,
+    "tests": [
+      {"name": "valid_results", "expected_reward": "0.75", "result": "pass"},
+      {"name": "missing_results", "expected_reward": "0.0", "result": "pass"},
+      {"name": "malformed_results", "expected_reward": "0.0", "result": "pass"},
+      {"name": "clamped_results", "expected_reward": "1.0", "result": "pass"}
+    ]
+  }
+}
