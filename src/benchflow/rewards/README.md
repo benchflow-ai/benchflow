@@ -1,6 +1,6 @@
 # benchflow.rewards — LLM-as-Judge & Reward Functions
 
-Composable reward functions for scoring agent outputs. The primary addition in ENG-55 is `LLMJudgeRewardFunc`, which uses an LLM to evaluate agent work against a declarative rubric.
+Composable reward functions for scoring agent outputs. The module includes `LLMJudgeRewardFunc`, which uses an LLM to evaluate agent work against a declarative rubric.
 
 ## Module layout
 

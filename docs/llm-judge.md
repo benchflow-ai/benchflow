@@ -292,7 +292,7 @@ The judge automatically discovers deliverable files in the rollout directory. Su
 | `.pptx` | markitdown | `pip install markitdown` |
 | `.pdf` | pdfplumber | `pip install pdfplumber` |
 
-Files larger than 50 MB are skipped. Hidden files (starting with `.`) and `rubric.json` are excluded. File content is truncated at 15,000 characters per file when sent to the judge.
+Files larger than 50 MB are skipped. Hidden files (starting with `.`) and internal metadata files (`rubric.json`) are excluded. File content is truncated at 15,000 characters per file when sent to the judge.
 
 To scope a criterion to specific files:
 
