@@ -52,6 +52,42 @@
       }
     ]
   },
+  "live_parity": {
+    "description": "Run real CLBench tasks with deterministic agent responses, compare original TaskResult.score vs BenchFlow evaluate.py reward",
+    "clbench_commit": "HEAD",
+    "python_version": "3.13.3",
+    "tasks_tested": 2,
+    "passed": 2,
+    "note": "cohort_studies skipped (requires frozen dataset build). Deterministic strategies produce degenerate scores (<=0), so live tests verify r_max match and pipeline fidelity. Normalization math verified separately in eval_parity with synthetic positive scores.",
+    "tests": [
+      {
+        "task": "clbench-exploitable-poker",
+        "strategy": "always FOLD",
+        "original_score": -0.8,
+        "r_max": 9.4875,
+        "r_max_match": true,
+        "expected_reward": 0.0,
+        "actual_reward": 0.0,
+        "delta": 0.0,
+        "result": "pass",
+        "num_instances": 5,
+        "num_outcomes": 5
+      },
+      {
+        "task": "clbench-database-exploration",
+        "strategy": "always ANSWER 'unknown'",
+        "original_score": 0.0,
+        "r_max": 1.0,
+        "r_max_match": true,
+        "expected_reward": 0.0,
+        "actual_reward": 0.0,
+        "delta": 0.0,
+        "result": "pass",
+        "num_instances": 5,
+        "num_outcomes": 5
+      }
+    ]
+  },
   "dogfooding": {
     "docker_build": {
       "task": "clbench-exploitable-poker",
