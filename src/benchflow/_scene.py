@@ -211,7 +211,8 @@ class Scene:
         ]
         messages = []
         for fpath in files:
-            cat_result = await env.exec(f"cat {shlex.quote(fpath)}")
+            qpath = shlex.quote(fpath)
+            cat_result = await env.exec(f"cat {qpath}")
             try:
                 data = json.loads(cat_result.stdout or "{}")
                 recipient = data.get("to", "")
@@ -233,7 +234,7 @@ class Scene:
                     messages.append(msg)
             except json.JSONDecodeError:
                 logger.warning(f"[Scene] invalid JSON in outbox file: {fpath}")
-            await env.exec(f"rm -f {shlex.quote(fpath)}")
+            await env.exec(f"rm -f {qpath}")
         return messages
 
     # ------------------------------------------------------------------

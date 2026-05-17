@@ -145,7 +145,7 @@ async def call_judge(
 
 
 async def _call_anthropic(model: str, prompt: str, max_tokens: int) -> str:
-    import anthropic
+    import anthropic  # ty: ignore[unresolved-import]
 
     client = anthropic.AsyncAnthropic()
     response = await client.messages.create(
@@ -172,7 +172,7 @@ async def _call_openai(model: str, prompt: str, max_tokens: int) -> str:
 async def _call_google(model: str, prompt: str) -> str:
     import os
 
-    from google import genai
+    from google import genai  # ty: ignore[unresolved-import]
 
     api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get(
         "GEMINI_API_KEY"

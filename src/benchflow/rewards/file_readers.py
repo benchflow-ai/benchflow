@@ -90,7 +90,7 @@ def _read_docx(path: Path) -> str:
         pass  # pandoc not installed
 
     try:
-        from docx import Document  # type: ignore[import-untyped]
+        from docx import Document  # ty: ignore[unresolved-import]
 
         doc = Document(str(path))
         return "\n".join(p.text for p in doc.paragraphs)
@@ -100,7 +100,7 @@ def _read_docx(path: Path) -> str:
 
 def _read_xlsx(path: Path) -> str:
     try:
-        from openpyxl import load_workbook  # type: ignore[import-untyped]
+        from openpyxl import load_workbook  # ty: ignore[unresolved-import]
 
         wb = load_workbook(str(path), data_only=True)
         parts: list[str] = []
@@ -118,7 +118,7 @@ def _read_xlsx(path: Path) -> str:
 
 def _read_pptx(path: Path) -> str:
     try:
-        from markitdown import MarkItDown  # type: ignore[import-untyped]
+        from markitdown import MarkItDown  # ty: ignore[unresolved-import]
 
         md = MarkItDown()
         result = md.convert(str(path))
@@ -129,7 +129,7 @@ def _read_pptx(path: Path) -> str:
 
 def _read_pdf(path: Path) -> str:
     try:
-        import pdfplumber  # type: ignore[import-untyped]
+        import pdfplumber  # ty: ignore[unresolved-import]
 
         parts: list[str] = []
         with pdfplumber.open(path) as pdf:

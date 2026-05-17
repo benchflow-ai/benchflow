@@ -7,6 +7,7 @@ import logging
 import string
 from collections.abc import Callable
 from pathlib import Path
+from typing import Literal
 
 from benchflow.rewards.events import RewardEvent
 from benchflow.rewards.rubric_config import (
@@ -160,7 +161,7 @@ class LLMJudgeRewardFunc:
         *,
         rubric_path: Path | None = None,
         criteria: list[dict] | None = None,
-        mode: str = "individual",
+        mode: Literal["batched", "individual"] = "individual",
         judge_model: str | None = None,
     ) -> None:
         self.prompt = prompt

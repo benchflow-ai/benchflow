@@ -59,7 +59,9 @@ async def restore(env, ref: str, workspace: str = "/app") -> None:
         raise ValueError(f"invalid snapshot ref: path must be under {_SNAP_DIR}")
     if ".." in snap_path.split("/"):
         raise ValueError("invalid snapshot ref: path traversal not allowed")
-    check = await env.exec(f"test -f {shlex.quote(snap_path)} && echo ok || echo missing")
+    check = await env.exec(
+        f"test -f {shlex.quote(snap_path)} && echo ok || echo missing"
+    )
     if "missing" in (check.stdout or ""):
         raise FileNotFoundError(f"snapshot not found: {snap_path}")
     result = await env.exec(

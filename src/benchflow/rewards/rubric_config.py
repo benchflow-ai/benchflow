@@ -9,7 +9,7 @@ from typing import Literal
 try:
     import tomllib
 except ModuleNotFoundError:  # Python < 3.11
-    import tomli as tomllib  # type: ignore[no-redef]
+    import tomli as tomllib  # type: ignore[no-redef]  # ty: ignore[unresolved-import]
 
 
 # ------------------------------------------------------------------
