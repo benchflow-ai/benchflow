@@ -16,7 +16,7 @@ __version__ = _version("benchflow")
 
 # Core types
 from benchflow._types import Role, Scene, Turn
-from benchflow._utils.yaml_loader import trial_config_from_yaml
+from benchflow._utils.yaml_loader import rollout_config_from_yaml
 from benchflow.acp.client import ACPClient
 from benchflow.acp.session import ACPSession
 from benchflow.adapters import (
@@ -174,7 +174,7 @@ __all__ = [
     # Rollout
     "Rollout",
     "RolloutConfig",
-    "trial_config_from_yaml",
+    "rollout_config_from_yaml",
     # User abstraction (progressive disclosure)
     "BaseUser",
     "FunctionUser",
