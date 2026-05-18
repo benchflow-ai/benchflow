@@ -190,4 +190,4 @@ class SDK:
             skill_creator_dir=skill_creator_dir,
             self_gen_no_internet=self_gen_no_internet,
         )
-        return await run(config)
+        return await run(config)  # type: ignore[return-value]  # ty: ignore[invalid-return-type]
