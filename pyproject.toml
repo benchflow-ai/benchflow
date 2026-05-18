@@ -41,6 +41,12 @@ dev = [
     "ruff>=0.7.0",
     "ty>=0.0.1a1",
 ]
+sandbox-daytona = [
+    "daytona>=0.153.0",
+]
+sandbox-modal = [
+    "modal>=0.73",
+]
 bedrock = [
     "boto3>=1.40",
 ]

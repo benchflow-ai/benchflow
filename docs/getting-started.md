@@ -5,7 +5,7 @@ A 5-minute path from install to first eval.
 
 - Python 3.12+
 - [`uv`](https://docs.astral.sh/uv/)
-- Docker for local sandboxes, `DAYTONA_API_KEY` + `pip install daytona` for Daytona cloud runs, or Modal auth for Modal-backed runs
+- Docker for local sandboxes, `pip install benchflow[sandbox-daytona]` + `DAYTONA_API_KEY` for Daytona cloud runs, or `pip install benchflow[sandbox-modal]` for Modal-backed runs
 - An API key or subscription/OAuth auth for at least one agent (see below)
 
 ## Install
