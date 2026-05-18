@@ -64,6 +64,8 @@ from benchflow._env_setup import (
 )
 from benchflow._provider_runtime import (
     ensure_bedrock_proxy_runtime,
+    ensure_usage_proxy_runtime,
+    extract_usage,
     stop_provider_runtime,
 )
 from benchflow._sandbox import (
@@ -370,6 +372,14 @@ def _build_rollout_result(
     rewards: dict | None,
     started_at: datetime,
     timing: dict[str, float],
+    n_input_tokens: int | None = None,
+    n_output_tokens: int | None = None,
+    n_cache_read_tokens: int | None = None,
+    n_cache_creation_tokens: int | None = None,
+    total_tokens: int | None = None,
+    cost_usd: float | None = None,
+    usage_source: str = "unavailable",
+    price_source: str | None = None,
 ) -> RolloutResult:
     """Build RolloutResult and write result.json, timing.json, prompts.json, trajectory."""
     finished_at = datetime.now()
@@ -383,6 +393,14 @@ def _build_rollout_result(
         model=model,
         n_tool_calls=n_tool_calls,
         n_prompts=len(prompts),
+        n_input_tokens=n_input_tokens,
+        n_output_tokens=n_output_tokens,
+        n_cache_read_tokens=n_cache_read_tokens,
+        n_cache_creation_tokens=n_cache_creation_tokens,
+        total_tokens=total_tokens,
+        cost_usd=cost_usd,
+        usage_source=usage_source,
+        price_source=price_source,
         error=error,
         verifier_error=verifier_error,
         partial_trajectory=partial_trajectory,
@@ -409,6 +427,18 @@ def _build_rollout_result(
                 "model": result.model,
                 "n_tool_calls": result.n_tool_calls,
                 "n_prompts": result.n_prompts,
+                "agent_result": {
+                    "n_tool_calls": result.n_tool_calls,
+                    "n_prompts": result.n_prompts,
+                    "n_input_tokens": result.n_input_tokens,
+                    "n_output_tokens": result.n_output_tokens,
+                    "n_cache_read_tokens": result.n_cache_read_tokens,
+                    "n_cache_creation_tokens": result.n_cache_creation_tokens,
+                    "total_tokens": result.total_tokens,
+                    "cost_usd": result.cost_usd,
+                    "usage_source": result.usage_source,
+                    "price_source": result.price_source,
+                },
                 "error": result.error,
                 "verifier_error": result.verifier_error,
                 "partial_trajectory": result.partial_trajectory,
@@ -756,6 +786,8 @@ class Rollout:
         self._timing: dict[str, float] = {}
         self._effective_locked: list[str] = []
         self._disallow_web_tools: bool = False
+        self._usage_runtime: Any = None
+        self._usage_metrics: dict[str, int | float | None | str] = extract_usage(None)
 
         # Populated by install_agent()
         self._agent_cfg: Any = None
@@ -1038,6 +1070,14 @@ class Rollout:
             runtime=getattr(self, "_provider_runtime", None),
             environment=cfg.environment,
         )
+        self._agent_env, self._usage_runtime = await ensure_usage_proxy_runtime(
+            agent=cfg.primary_agent,
+            agent_env=self._agent_env,
+            model=cfg.primary_model,
+            runtime=getattr(self, "_usage_runtime", None),
+            environment=cfg.environment,
+            session_id=getattr(self, "_trial_name", "") or "",
+        )
         self._acp_client, self._session, self._agent_name = await connect_acp(
             env=self._env,
             agent=cfg.primary_agent,
@@ -1229,6 +1269,18 @@ class Rollout:
                 await self._export_generated_skills()
             except Exception as e:
                 logger.warning(f"Generated skill export failed: {e}")
+
+        usage_runtime = getattr(self, "_usage_runtime", None)
+        if usage_runtime is not None:
+            try:
+                await stop_provider_runtime(usage_runtime)
+                self._usage_metrics = extract_usage(usage_runtime)
+                self._write_llm_trajectory(usage_runtime)
+            except Exception as e:
+                logger.warning(f"Usage telemetry runtime stop failed: {e}")
+                self._usage_metrics = extract_usage(None)
+            finally:
+                self._usage_runtime = None
 
         if self._env:
             try:
@@ -1678,6 +1730,14 @@ class Rollout:
             runtime=getattr(self, "_provider_runtime", None),
             environment=cfg.environment,
         )
+        agent_env, self._usage_runtime = await ensure_usage_proxy_runtime(
+            agent=role.agent,
+            agent_env=agent_env,
+            model=role.model,
+            runtime=getattr(self, "_usage_runtime", None),
+            environment=cfg.environment,
+            session_id=getattr(self, "_trial_name", "") or "",
+        )
 
         if role.agent != cfg.primary_agent:
             agent_cfg = await install_agent(self._env, role.agent, trial_dir)
@@ -1739,8 +1799,22 @@ class Rollout:
                 )
         return str(e)
 
+    def _write_llm_trajectory(self, usage_runtime: Any) -> None:
+        """Persist captured provider HTTP exchanges as JSONL."""
+        if self._trial_dir is None:
+            return
+        trajectory = getattr(getattr(usage_runtime, "server", None), "trajectory", None)
+        if trajectory is None or not trajectory.exchanges:
+            return
+        traj_dir = self._trial_dir / "trajectory"
+        traj_dir.mkdir(parents=True, exist_ok=True)
+        (traj_dir / "llm_trajectory.jsonl").write_text(
+            trajectory.to_jsonl(redact_keys=True)
+        )
+
     def _build_result(self) -> RolloutResult:
         trial_dir = self._require_trial_dir()
+        usage_metrics = getattr(self, "_usage_metrics", extract_usage(None))
         return _build_rollout_result(
             trial_dir,
             task_name=self._config.task_path.name,
@@ -1758,6 +1832,7 @@ class Rollout:
             rewards=self._rewards,
             started_at=self._require_started_at(),
             timing=self._timing,
+            **usage_metrics,
         )
 
 

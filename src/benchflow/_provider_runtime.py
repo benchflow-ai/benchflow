@@ -9,11 +9,40 @@ from typing import Any
 from benchflow.agents.providers import find_provider, strip_provider_prefix
 from benchflow.agents.registry import AGENTS
 from benchflow.providers.bedrock_proxy import BedrockProxyServer
+from benchflow.trajectories.proxy import TrajectoryProxy
 
 logger = logging.getLogger(__name__)
 
 BEDROCK_PROXY_BIND_HOST = "0.0.0.0"
 BEDROCK_PROXY_LOCAL_HOST = "127.0.0.1"
+USAGE_PROXY_BIND_HOST = "0.0.0.0"
+PRICING_TABLE_VERSION = "pricing_table_2026-05"
+PROMPT_CACHE_RETENTION_ENV = "BENCHFLOW_PROVIDER_PROMPT_CACHE_RETENTION"
+_PROMPT_CACHE_RETENTION_VALUES = {"in_memory", "24h"}
+
+# Per-million token prices. Cache prices are separate because providers often
+# discount cache reads and surcharge cache writes. The table is deliberately
+# small; unknown models still get token telemetry but no cost estimate.
+_PRICING_USD_PER_MTOK: dict[str, dict[str, float]] = {
+    "claude-haiku-4-5": {
+        "input": 1.0,
+        "output": 5.0,
+        "cache_read": 0.1,
+        "cache_creation": 1.25,
+    },
+    "gpt-4.1-mini": {
+        "input": 0.4,
+        "output": 1.6,
+        "cache_read": 0.1,
+        "cache_creation": 0.4,
+    },
+    "gemini-2.5-flash": {
+        "input": 0.3,
+        "output": 2.5,
+        "cache_read": 0.075,
+        "cache_creation": 0.3,
+    },
+}
 
 
 @dataclass
@@ -119,6 +148,221 @@ def _bedrock_proxy_command(
     return BEDROCK_PROXY_LOCAL_HOST
 
 
+def _usage_unavailable() -> dict[str, int | float | None | str]:
+    return {
+        "n_input_tokens": None,
+        "n_output_tokens": None,
+        "n_cache_read_tokens": None,
+        "n_cache_creation_tokens": None,
+        "total_tokens": None,
+        "cost_usd": None,
+        "usage_source": "unavailable",
+        "price_source": None,
+    }
+
+
+def _agent_base_url_envs(agent: str) -> list[str]:
+    envs: list[str] = []
+    agent_cfg = AGENTS.get(agent)
+    if agent_cfg:
+        mapped = agent_cfg.env_mapping.get("BENCHFLOW_PROVIDER_BASE_URL")
+        if mapped:
+            envs.append(mapped)
+    envs.extend(
+        [
+            "ANTHROPIC_BASE_URL",
+            "ANTHROPIC_BEDROCK_BASE_URL",
+            "OPENAI_BASE_URL",
+            "GEMINI_API_BASE_URL",
+            "LLM_BASE_URL",
+        ]
+    )
+    seen: set[str] = set()
+    return [e for e in envs if not (e in seen or seen.add(e))]
+
+
+def _infer_default_provider_url(agent: str, model: str | None) -> str | None:
+    bare = strip_provider_prefix(model) if model else ""
+    m = bare.lower()
+    if "claude" in m or "anthropic" in m or agent == "claude-agent-acp":
+        return "https://api.anthropic.com"
+    if (
+        "gpt" in m
+        or "openai" in m
+        or m.startswith(("o1", "o3", "o4"))
+        or agent in {"codex-acp", "opencode"}
+    ):
+        return "https://api.openai.com/v1"
+    if "gemini" in m or "gemma" in m or agent == "gemini":
+        return "https://generativelanguage.googleapis.com"
+    return None
+
+
+def _resolve_usage_proxy_target(
+    agent: str,
+    agent_env: dict[str, str],
+    model: str | None,
+) -> str | None:
+    if agent_env.get("BENCHFLOW_PROVIDER_BASE_URL"):
+        return agent_env["BENCHFLOW_PROVIDER_BASE_URL"]
+    for env_name in _agent_base_url_envs(agent):
+        if agent_env.get(env_name):
+            return agent_env[env_name]
+    return _infer_default_provider_url(agent, model)
+
+
+def _pricing_for_model(model: str | None) -> dict[str, float] | None:
+    if not model:
+        return None
+    bare = strip_provider_prefix(model).lower()
+    for prefix, pricing in _PRICING_USD_PER_MTOK.items():
+        if bare.startswith(prefix):
+            return pricing
+    return None
+
+
+def _estimate_cost_usd(
+    *,
+    model: str | None,
+    input_tokens: int,
+    output_tokens: int,
+    cache_read_tokens: int,
+    cache_creation_tokens: int,
+    cache_tokens_included_in_input: bool = False,
+) -> float | None:
+    pricing = _pricing_for_model(model)
+    if pricing is None:
+        return None
+    priced_input_tokens = input_tokens
+    if cache_tokens_included_in_input:
+        priced_input_tokens = max(
+            input_tokens - cache_read_tokens - cache_creation_tokens, 0
+        )
+    cost = (
+        priced_input_tokens * pricing["input"]
+        + output_tokens * pricing["output"]
+        + cache_read_tokens * pricing["cache_read"]
+        + cache_creation_tokens * pricing["cache_creation"]
+    ) / 1_000_000
+    return round(cost, 10)
+
+
+def _model_from_trajectory(runtime: ProviderRuntime) -> str | None:
+    if runtime.backend_model:
+        return runtime.backend_model
+    trajectory = getattr(runtime.server, "trajectory", None)
+    if not trajectory:
+        return None
+    for exchange in trajectory.exchanges:
+        response_model = exchange.response.body.get("model")
+        if response_model:
+            return response_model
+        request_model = exchange.request.body.get("model")
+        if request_model:
+            return request_model
+    return None
+
+
+def _cache_tokens_are_input_breakdown(trajectory: Any) -> bool:
+    for exchange in trajectory.exchanges:
+        usage = exchange.response.body.get("usage", {})
+        if (usage.get("prompt_tokens_details") or {}).get("cached_tokens") is not None:
+            return True
+        if (usage.get("input_tokens_details") or {}).get("cached_tokens") is not None:
+            return True
+    return False
+
+
+async def ensure_usage_proxy_runtime(
+    *,
+    agent: str,
+    agent_env: dict[str, str],
+    model: str | None,
+    runtime: ProviderRuntime | None,
+    environment: str,
+    session_id: str = "",
+) -> tuple[dict[str, str], ProviderRuntime | None]:
+    """Start the host-side usage proxy and wire env vars to it."""
+    if agent == "oracle":
+        return agent_env, runtime
+    target = _resolve_usage_proxy_target(agent, agent_env, model)
+    if not target:
+        return agent_env, runtime
+
+    if runtime is None:
+        prompt_cache_retention = agent_env.get(PROMPT_CACHE_RETENTION_ENV)
+        if (
+            prompt_cache_retention is not None
+            and prompt_cache_retention not in _PROMPT_CACHE_RETENTION_VALUES
+        ):
+            raise ValueError(
+                f"{PROMPT_CACHE_RETENTION_ENV} must be one of: "
+                f"{', '.join(sorted(_PROMPT_CACHE_RETENTION_VALUES))}"
+            )
+        logger.info("Starting host-side usage telemetry proxy")
+        server = TrajectoryProxy(
+            target=target,
+            session_id=session_id,
+            agent_name=agent,
+            host=USAGE_PROXY_BIND_HOST,
+            port=0,
+            prompt_cache_retention=prompt_cache_retention,
+        )
+        await server.start()
+        runtime = ProviderRuntime(
+            kind="usage-proxy",
+            host=_bedrock_proxy_command(environment=environment),
+            port=server.port,
+            backend_model=strip_provider_prefix(model) if model else None,
+            server=server,
+        )
+
+    updated = dict(agent_env)
+    updated["BENCHFLOW_PROVIDER_BASE_URL"] = runtime.base_url
+    agent_cfg = AGENTS.get(agent)
+    mapped_base = (
+        agent_cfg.env_mapping.get("BENCHFLOW_PROVIDER_BASE_URL") if agent_cfg else None
+    )
+    for env_name in _agent_base_url_envs(agent):
+        if env_name in updated or env_name == mapped_base:
+            updated[env_name] = runtime.base_url
+    return updated, runtime
+
+
+def extract_usage(runtime: ProviderRuntime | None) -> dict[str, int | float | None | str]:
+    """Extract aggregate token/cost metrics from a usage proxy runtime."""
+    if runtime is None or runtime.kind != "usage-proxy" or runtime.server is None:
+        return _usage_unavailable()
+    trajectory = getattr(runtime.server, "trajectory", None)
+    if trajectory is None or not trajectory.exchanges:
+        return _usage_unavailable()
+
+    input_tokens = trajectory.total_input_tokens
+    output_tokens = trajectory.total_output_tokens
+    cache_read_tokens = trajectory.total_cache_read_tokens
+    cache_creation_tokens = trajectory.total_cache_creation_tokens
+    total_tokens = trajectory.total_provider_tokens
+    model = _model_from_trajectory(runtime)
+    cost_usd = _estimate_cost_usd(
+        model=model,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_read_tokens=cache_read_tokens,
+        cache_creation_tokens=cache_creation_tokens,
+        cache_tokens_included_in_input=_cache_tokens_are_input_breakdown(trajectory),
+    )
+    return {
+        "n_input_tokens": input_tokens,
+        "n_output_tokens": output_tokens,
+        "n_cache_read_tokens": cache_read_tokens,
+        "n_cache_creation_tokens": cache_creation_tokens,
+        "total_tokens": total_tokens,
+        "cost_usd": cost_usd,
+        "usage_source": "provider_response",
+        "price_source": PRICING_TABLE_VERSION if cost_usd is not None else None,
+    }
+
+
 async def ensure_bedrock_proxy_runtime(
     *,
     agent: str,
@@ -169,4 +413,6 @@ async def stop_provider_runtime(runtime: ProviderRuntime | None) -> None:
     if runtime is None:
         return
     if runtime.kind == "aws-bedrock" and runtime.server is not None:
+        await runtime.server.stop()
+    if runtime.kind == "usage-proxy" and runtime.server is not None:
         await runtime.server.stop()
