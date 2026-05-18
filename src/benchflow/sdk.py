@@ -167,8 +167,8 @@ class SDK:
         self_gen_no_internet: bool = False,
     ) -> RolloutResult:
         """Run a task — delegates to :func:`benchflow.run`."""
-        from benchflow.runtime import run
         from benchflow.rollout import RolloutConfig
+        from benchflow.runtime import run
 
         config = RolloutConfig(
             task_path=Path(task_path),
