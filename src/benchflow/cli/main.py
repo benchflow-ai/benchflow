@@ -41,6 +41,14 @@ def _parse_agent_env(entries: list[str] | None) -> dict[str, str]:
     return parsed
 
 
+def _normalize_eval_agent_or_exit(agent_spec: str) -> str:
+    protocol, canonical_agent = parse_agent_spec(agent_spec)
+    if protocol != "acp":
+        console.print(f"[red]Unsupported eval agent protocol: {protocol}[/red]")
+        raise typer.Exit(1)
+    return canonical_agent
+
+
 @app.command(hidden=True, deprecated=True)
 def run(
     task_dir: Annotated[
@@ -873,15 +881,12 @@ def eval_create(
     from benchflow.evaluation import Evaluation, EvaluationConfig
 
     parsed_env = _parse_agent_env(agent_env)
-    protocol, canonical_agent = parse_agent_spec(agent)
-    if protocol != "acp":
-        console.print(f"[red]Unsupported eval agent protocol: {protocol}[/red]")
-        raise typer.Exit(1)
-    agent = canonical_agent
+    agent = _normalize_eval_agent_or_exit(agent)
 
     if config_file:
         j = Evaluation.from_yaml(config_file)
-        j._config.agent = parse_agent_spec(j._config.agent)[1]
+        j._config.agent = _normalize_eval_agent_or_exit(j._config.agent)
+        j._config.model = effective_model(j._config.agent, j._config.model)
         j._config.agent_env = {**j._config.agent_env, **parsed_env}
         result = asyncio.run(j.run())
         console.print(

@@ -109,6 +109,51 @@ class TestEvalCreateRouting:
 
         assert captured["agent"] == "codex-acp"
 
+    def test_eval_create_config_rejects_unsupported_agent_protocol(
+        self, tmp_path: Path
+    ):
+        """Guards the ENG-86 fix from commit b69bdf4 against config bypass."""
+        from benchflow.cli.main import app
+
+        tasks = tmp_path / "tasks"
+        tasks.mkdir()
+        config = tmp_path / "config.yaml"
+        config.write_text(f"tasks_dir: {tasks}\nagent: openai/codex\n")
+
+        result = CliRunner().invoke(app, ["eval", "create", "--config", str(config)])
+
+        assert result.exit_code == 1
+        assert "Unsupported eval agent protocol: openai" in result.stdout
+
+    def test_eval_create_config_recomputes_model_after_agent_normalization(
+        self, tmp_path: Path
+    ):
+        """Guards the ENG-86 fix from commit b69bdf4 for config-file agents."""
+        import asyncio
+        from types import SimpleNamespace
+
+        from benchflow.cli.main import eval_create
+        from benchflow.evaluation import Evaluation
+
+        tasks = tmp_path / "tasks"
+        tasks.mkdir()
+        config = tmp_path / "config.yaml"
+        config.write_text(f"tasks_dir: {tasks}\nagent: acp/oracle\n")
+        captured = {}
+
+        async def fake_run(self):
+            captured["agent"] = self._config.agent
+            captured["model"] = self._config.model
+            return SimpleNamespace(passed=0, total=0, score=0.0, errored=0)
+
+        try:
+            with patch.object(Evaluation, "run", new=fake_run):
+                eval_create(config_file=config)
+        finally:
+            asyncio.set_event_loop(asyncio.new_event_loop())
+
+        assert captured == {"agent": "oracle", "model": None}
+
     def test_eval_create_inherits_host_provider_key_without_agent_env(
         self, tmp_path: Path, monkeypatch
     ):
