@@ -211,7 +211,7 @@ def test_extract_usage_with_anthropic_exchanges():
     assert usage["total_tokens"] == 193
     assert usage["cost_usd"] > 0
     assert usage["usage_source"] == "provider_response"
-    assert usage["price_source"] == "pricing_table_2026-05"
+    assert str(usage["price_source"]).startswith("https://www.anthropic.com/pricing@")
 
 
 def test_extract_usage_with_openai_exchanges():
@@ -256,6 +256,7 @@ def test_extract_usage_with_openai_exchanges():
     assert usage["total_tokens"] == 120
     assert usage["cost_usd"] == 0.000048
     assert usage["usage_source"] == "provider_response"
+    assert str(usage["price_source"]).startswith("https://openai.com/api/pricing/@")
 
 
 def test_extract_usage_with_gemini_exchanges():

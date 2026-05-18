@@ -9,6 +9,7 @@ from typing import Any
 from benchflow.agents.providers import find_provider, strip_provider_prefix
 from benchflow.agents.registry import AGENTS
 from benchflow.providers.bedrock_proxy import BedrockProxyServer
+from benchflow.trajectories.pricing import PRICING_USD_PER_MTOK, PricingEntry
 from benchflow.trajectories.proxy import TrajectoryProxy
 
 logger = logging.getLogger(__name__)
@@ -16,33 +17,8 @@ logger = logging.getLogger(__name__)
 BEDROCK_PROXY_BIND_HOST = "0.0.0.0"
 BEDROCK_PROXY_LOCAL_HOST = "127.0.0.1"
 USAGE_PROXY_BIND_HOST = "0.0.0.0"
-PRICING_TABLE_VERSION = "pricing_table_2026-05"
 PROMPT_CACHE_RETENTION_ENV = "BENCHFLOW_PROVIDER_PROMPT_CACHE_RETENTION"
 _PROMPT_CACHE_RETENTION_VALUES = {"in_memory", "24h"}
-
-# Per-million token prices. Cache prices are separate because providers often
-# discount cache reads and surcharge cache writes. The table is deliberately
-# small; unknown models still get token telemetry but no cost estimate.
-_PRICING_USD_PER_MTOK: dict[str, dict[str, float]] = {
-    "claude-haiku-4-5": {
-        "input": 1.0,
-        "output": 5.0,
-        "cache_read": 0.1,
-        "cache_creation": 1.25,
-    },
-    "gpt-4.1-mini": {
-        "input": 0.4,
-        "output": 1.6,
-        "cache_read": 0.1,
-        "cache_creation": 0.4,
-    },
-    "gemini-2.5-flash": {
-        "input": 0.3,
-        "output": 2.5,
-        "cache_read": 0.075,
-        "cache_creation": 0.3,
-    },
-}
 
 
 @dataclass
@@ -211,11 +187,11 @@ def _resolve_usage_proxy_target(
     return _infer_default_provider_url(agent, model)
 
 
-def _pricing_for_model(model: str | None) -> dict[str, float] | None:
+def _pricing_for_model(model: str | None) -> PricingEntry | None:
     if not model:
         return None
     bare = strip_provider_prefix(model).lower()
-    for prefix, pricing in _PRICING_USD_PER_MTOK.items():
+    for prefix, pricing in PRICING_USD_PER_MTOK.items():
         if bare.startswith(prefix):
             return pricing
     return None
@@ -239,10 +215,10 @@ def _estimate_cost_usd(
             input_tokens - cache_read_tokens - cache_creation_tokens, 0
         )
     cost = (
-        priced_input_tokens * pricing["input"]
-        + output_tokens * pricing["output"]
-        + cache_read_tokens * pricing["cache_read"]
-        + cache_creation_tokens * pricing["cache_creation"]
+        priced_input_tokens * pricing.input
+        + output_tokens * pricing.output
+        + cache_read_tokens * pricing.cache_read
+        + cache_creation_tokens * pricing.cache_creation
     ) / 1_000_000
     return round(cost, 10)
 
@@ -343,6 +319,7 @@ def extract_usage(runtime: ProviderRuntime | None) -> dict[str, int | float | No
     cache_creation_tokens = trajectory.total_cache_creation_tokens
     total_tokens = trajectory.total_provider_tokens
     model = _model_from_trajectory(runtime)
+    pricing = _pricing_for_model(model)
     cost_usd = _estimate_cost_usd(
         model=model,
         input_tokens=input_tokens,
@@ -359,7 +336,7 @@ def extract_usage(runtime: ProviderRuntime | None) -> dict[str, int | float | No
         "total_tokens": total_tokens,
         "cost_usd": cost_usd,
         "usage_source": "provider_response",
-        "price_source": PRICING_TABLE_VERSION if cost_usd is not None else None,
+        "price_source": pricing.price_source if cost_usd is not None and pricing else None,
     }
 
 
