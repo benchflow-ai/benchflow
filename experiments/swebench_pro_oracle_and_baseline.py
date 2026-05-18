@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 sys.path.insert(0, str(Path(__file__).resolve().parents[0].parent / "src"))
 
 import benchflow as bf
-from benchflow.trial import Scene, TrialConfig
+from benchflow.rollout import RolloutConfig, Scene
 
 _swebench_pro_root: Path | None = None
 
@@ -51,7 +51,7 @@ def get_swebench_pro_root() -> Path:
     """Lazily resolve swebenchpro tasks (avoids network I/O at import time)."""
     global _swebench_pro_root
     if _swebench_pro_root is None:
-        from benchflow.task_download import resolve_source
+        from benchflow._utils.benchmark_repos import resolve_source
 
         _swebench_pro_root = resolve_source("benchflow-ai/swebenchpro")
     return _swebench_pro_root
@@ -88,7 +88,7 @@ async def run_oracle(task_path: Path, backend: str) -> dict:
     logger.info(f"[oracle] {label}: starting")
     t0 = time.time()
 
-    config = TrialConfig(
+    config = RolloutConfig(
         task_path=task_path,
         agent="oracle",
         environment=backend,
@@ -134,7 +134,7 @@ async def run_baseline(task_path: Path, agent: str, model: str, backend: str) ->
     logger.info(f"[baseline] {label}: starting ({agent}/{model})")
     t0 = time.time()
 
-    config = TrialConfig(
+    config = RolloutConfig(
         task_path=task_path,
         scenes=[Scene.single(agent=agent, model=model)],
         environment=backend,

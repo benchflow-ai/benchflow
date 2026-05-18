@@ -309,7 +309,3 @@ class Scene:
         ]
         path.write_text("\n".join(lines) + "\n" if lines else "")
         logger.info(f"Scene trajectory saved: {len(self.trajectory)} messages → {path}")
-
-
-# Backward-compat alias — existing code imports ``Role`` from this module.
-Role = SceneRole

@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING
 from benchflow.agents.registry import get_sandbox_home_dirs
 
 if TYPE_CHECKING:
-    from harbor.models.task.task import Task
+    from benchflow.task import Task
 
 logger = logging.getLogger(__name__)
 

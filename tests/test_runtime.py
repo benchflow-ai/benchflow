@@ -3,6 +3,8 @@
 from datetime import datetime
 from pathlib import Path
 
+import pytest
+
 from benchflow.runtime import (
     Agent,
     Environment,
@@ -11,6 +13,12 @@ from benchflow.runtime import (
     RuntimeResult,
     run,
 )
+
+_daytona_available = True
+try:
+    import daytona as _daytona_mod  # noqa: F401
+except ImportError:
+    _daytona_available = False
 
 
 def test_agent_basic() -> None:
@@ -46,7 +54,7 @@ def test_runtime_config_defaults() -> None:
 def test_runtime_result_passed() -> None:
     r = RuntimeResult(
         task_name="test-task",
-        trial_name="trial-1",
+        rollout_name="trial-1",
         reward=1.0,
         rewards={"reward": 1.0},
         n_tool_calls=5,
@@ -61,7 +69,7 @@ def test_runtime_result_passed() -> None:
 def test_runtime_result_failed() -> None:
     r = RuntimeResult(
         task_name="test-task",
-        trial_name="trial-1",
+        rollout_name="trial-1",
         reward=0.0,
         rewards={"reward": 0.0},
         n_tool_calls=3,
@@ -76,7 +84,7 @@ def test_runtime_result_failed() -> None:
 def test_runtime_result_error() -> None:
     r = RuntimeResult(
         task_name="test-task",
-        trial_name="trial-1",
+        rollout_name="trial-1",
         reward=None,
         rewards=None,
         n_tool_calls=0,
@@ -88,6 +96,7 @@ def test_runtime_result_error() -> None:
     assert r.verified is False
 
 
+@pytest.mark.skipif(not _daytona_available, reason="daytona not installed")
 def test_environment_from_task() -> None:
     """Environment.from_task creates a wrapper with correct metadata."""
     # Use the conformance task as a real task.toml source
@@ -110,7 +119,7 @@ def test_environment_context_manager_interface() -> None:
 def test_runtime_result_to_run_result() -> None:
     r = RuntimeResult(
         task_name="test-task",
-        trial_name="trial-1",
+        rollout_name="trial-1",
         reward=1.0,
         rewards={"reward": 1.0},
         n_tool_calls=5,
@@ -126,6 +135,7 @@ def test_runtime_result_to_run_result() -> None:
     assert legacy.n_tool_calls == 5
 
 
+@pytest.mark.skipif(not _daytona_available, reason="daytona not installed")
 def test_runtime_init() -> None:
     agent = Agent(name="gemini", model="gemini-3.1-flash-lite-preview")
     task_path = Path(__file__).parent / "conformance" / "acp_smoke"
@@ -138,6 +148,7 @@ def test_runtime_init() -> None:
     assert runtime.config.sandbox_user == "agent"
 
 
+@pytest.mark.skipif(not _daytona_available, reason="daytona not installed")
 def test_runtime_custom_config() -> None:
     agent = Agent(name="gemini", model="gemini-3.1-flash-lite-preview")
     task_path = Path(__file__).parent / "conformance" / "acp_smoke"

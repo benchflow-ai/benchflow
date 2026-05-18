@@ -1,6 +1,5 @@
 # Python API
 The Rollout/Scene API is the primary way to run agent benchmarks programmatically.
-(`Trial` remains as a backward-compat alias for `Rollout`; both work interchangeably.)
 
 ## Install
 
@@ -22,15 +21,13 @@ print(f"Tool calls: {result.n_tool_calls}")
 
 ## Core Types
 
-### RolloutConfig (aliased as TrialConfig)
+### RolloutConfig
 
 Declarative configuration for a rollout — a sequence of Scenes in a shared sandbox.
 
 ```python
 from pathlib import Path
 from benchflow import RolloutConfig, Scene, Role, Turn
-# Or via backward-compat path:
-# from benchflow.trial import TrialConfig, Scene, Role, Turn
 
 # Single-agent (simplest)
 config = RolloutConfig(
@@ -83,13 +80,12 @@ scene = Scene(
 )
 ```
 
-### Rollout (aliased as Trial)
+### Rollout
 
 The execution engine — decomposed into independently-callable phases.
 
 ```python
 from benchflow import Rollout
-# Or: from benchflow.trial import Trial  (backward-compat alias)
 
 rollout = await Rollout.create(config)
 
@@ -259,12 +255,12 @@ user. Use `BaseUser` when the loop is deterministic or verifier-driven. See
 [`progressive-disclosure.md`](../progressive-disclosure.md) and
 [`docs/examples/scene-patterns.ipynb`](../examples/scene-patterns.ipynb).
 
-## YAML Trial Configs
+## YAML Rollout Configs
 
 ```python
-from benchflow.trial_yaml import trial_config_from_yaml
+from benchflow._utils.yaml_loader import rollout_config_from_yaml
 
-config = trial_config_from_yaml("trial.yaml")
+config = rollout_config_from_yaml("rollout.yaml")
 result = await bf.run(config)
 ```
 
@@ -272,7 +268,7 @@ result = await bf.run(config)
 
 | Agent | Protocol | Auth | Aliases |
 |-------|----------|------|---------|
-| `gemini` | ACP | GOOGLE_API_KEY | — |
+| `gemini` | ACP | GEMINI_API_KEY | — |
 | `claude-agent-acp` | ACP | ANTHROPIC_API_KEY | `claude` |
 | `codex-acp` | ACP | OPENAI_API_KEY | `codex` |
 | `opencode` | ACP | inferred from model/provider | — |
@@ -280,18 +276,20 @@ result = await bf.run(config)
 | `pi-acp` | ACP | ANTHROPIC_API_KEY | `pi` |
 | `openclaw` | ACP | inferred from model | — |
 
+Any agent can be prefixed with `acpx/` to run via [ACPX](https://acpx.sh/) (e.g. `acpx/gemini`, `acpx/claude`). ACPX is a headless ACP client with persistent sessions and crash recovery. The underlying agent's install, env, credentials, and skill paths are preserved.
+
 ## Retry and Error Handling
 
-Trial.run() catches common errors:
+Rollout.run() catches common errors:
 - `TimeoutError` — agent exceeded timeout
 - `ConnectionError` — SSH/ACP pipe closed (retried 3x with exponential backoff)
 - `ACPError` — agent protocol error
 
-Job-level retry with `RetryConfig`:
+Evaluation-level retry with `RetryConfig`:
 ```python
-from benchflow.job import Job, JobConfig, RetryConfig
+from benchflow.evaluation import Evaluation, EvaluationConfig, RetryConfig
 
-config = JobConfig(
+config = EvaluationConfig(
     retry=RetryConfig(
         max_retries=2,
         wait_multiplier=2.0,
@@ -362,7 +360,7 @@ inspect_task = to_inspect_task(scene, rubric=rubric)
 ors_payload = to_ors_reward(verify_result)
 ```
 
-### Evaluation (aliased as Job)
+### Evaluation
 
 Batch orchestration with concurrency and retries.
 
@@ -376,17 +374,4 @@ config = EvaluationConfig(
     retry=RetryConfig(max_retries=2),
 )
 eval_result: EvaluationResult = await Evaluation.run(config)
-```
-
-### Backward Compatibility
-
-All old names work as identity-equal aliases:
-
-```python
-from benchflow import Trial, TrialConfig, Job, JobConfig, RunResult
-
-assert Trial is Rollout
-assert TrialConfig is RolloutConfig
-assert Job is Evaluation
-assert RunResult is RolloutResult
 ```

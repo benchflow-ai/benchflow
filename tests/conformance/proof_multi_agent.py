@@ -20,15 +20,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 import contextlib
 
-from harbor.models.task.task import Task
-
-from benchflow._acp_run import connect_acp, execute_prompts
-from benchflow._agent_setup import install_agent
-from benchflow._credentials import upload_subscription_auth, write_credential_files
-from benchflow._env_setup import _create_environment
-from benchflow._sandbox import setup_sandbox_user
-from benchflow._scene import Role, Scene
+from benchflow.acp.runtime import connect_acp, execute_prompts
+from benchflow.agents.credentials import (
+    upload_subscription_auth,
+    write_credential_files,
+)
+from benchflow.agents.install import install_agent
 from benchflow.agents.registry import AGENT_LAUNCH, AGENTS
+from benchflow.sandbox.lockdown import setup_sandbox_user
+from benchflow.sandbox.setup import _create_environment
+from benchflow.scenes import Scene, SceneRole
+from benchflow.task import Task
 
 TASK_PATH = Path(__file__).parent / "acp_smoke"
 
@@ -55,14 +57,14 @@ You MUST create /app/.outbox/coder.json before stopping. Verify the file exists 
 _INSTALLED_AGENTS: set[str] = set()
 
 
-async def role_runner(env, role: Role, prompt: str) -> None:
+async def role_runner(env, role: SceneRole, prompt: str) -> None:
     """Run one role via ACP — thin wrapper around existing benchflow internals."""
     agent_config = AGENTS[role.agent]
     if role.agent not in _INSTALLED_AGENTS:
-        trial_dir = Path(f"/tmp/multi-agent-proof/{role.name}")
-        trial_dir.mkdir(parents=True, exist_ok=True)
+        rollout_dir = Path(f"/tmp/multi-agent-proof/{role.name}")
+        rollout_dir.mkdir(parents=True, exist_ok=True)
         agent_config = AGENTS.get(role.agent)
-        await install_agent(env, role.agent, trial_dir)
+        await install_agent(env, role.agent, rollout_dir)
         if agent_config:
             await write_credential_files(
                 env, role.agent, {}, agent_config, role.model, "/home/agent"
@@ -72,8 +74,8 @@ async def role_runner(env, role: Role, prompt: str) -> None:
         _INSTALLED_AGENTS.add(role.agent)
     await env.exec("mkdir -p /app/.outbox && chmod 777 /app/.outbox")
 
-    trial_dir = Path(f"/tmp/multi-agent-proof/{role.name}")
-    trial_dir.mkdir(parents=True, exist_ok=True)
+    rollout_dir = Path(f"/tmp/multi-agent-proof/{role.name}")
+    rollout_dir.mkdir(parents=True, exist_ok=True)
     launch_cmd = AGENT_LAUNCH.get(role.agent, role.agent)
     acp_client, session, _agent_name = await connect_acp(
         env=env,
@@ -82,7 +84,7 @@ async def role_runner(env, role: Role, prompt: str) -> None:
         agent_env={},
         sandbox_user="agent",
         model=role.model,
-        trial_dir=trial_dir,
+        rollout_dir=rollout_dir,
         environment="daytona",
         agent_cwd="/app",
     )
@@ -102,24 +104,24 @@ async def role_runner(env, role: Role, prompt: str) -> None:
 async def main() -> None:
     task = Task(TASK_PATH)
     env = _create_environment(
-        environment_type="daytona",
+        sandbox_type="daytona",
         task=task,
         task_path=TASK_PATH,
-        trial_name="multi-agent-proof",
-        trial_paths=None,
+        rollout_name="multi-agent-proof",
+        rollout_paths=None,
     )
     try:
         await env.start(force_build=False)
 
         scene = Scene(
             roles={
-                "coder": Role(
+                "coder": SceneRole(
                     name="coder",
                     agent="claude-agent-acp",
                     model="claude-haiku-4-5-20251001",
                     instruction=CODER_INSTRUCTION,
                 ),
-                "reviewer": Role(
+                "reviewer": SceneRole(
                     name="reviewer",
                     agent="claude-agent-acp",
                     model="claude-haiku-4-5-20251001",

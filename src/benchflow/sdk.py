@@ -45,17 +45,17 @@ class SDK:
     def _init_trial(
         task_path: Path,
         job_name: str | None,
-        trial_name: str | None,
+        rollout_name: str | None,
         jobs_dir: str | Path,
     ) -> tuple[Any, Path, Any, datetime, str, str]:
-        return _init_rollout(task_path, job_name, trial_name, jobs_dir)
+        return _init_rollout(task_path, job_name, rollout_name, jobs_dir)
 
     @staticmethod
     def _write_config(
-        trial_dir: Path,
+        rollout_dir: Path,
         **kwargs: Any,
     ) -> None:
-        _write_config(trial_dir, **kwargs)
+        _write_config(rollout_dir, **kwargs)
 
     @staticmethod
     def _resolve_prompts(
@@ -75,10 +75,10 @@ class SDK:
 
     @staticmethod
     def _build_result(
-        trial_dir: Path,
+        rollout_dir: Path,
         *,
         task_name: str,
-        trial_name: str,
+        rollout_name: str,
         agent: str,
         agent_name: str,
         model: str,
@@ -94,9 +94,9 @@ class SDK:
         timing: dict[str, float],
     ) -> RolloutResult:
         return _build_rollout_result(
-            trial_dir,
+            rollout_dir,
             task_name=task_name,
-            trial_name=trial_name,
+            rollout_name=rollout_name,
             agent=agent,
             agent_name=agent_name,
             model=model,
@@ -130,7 +130,7 @@ class SDK:
         self,
         env: Any,
         task: Any,
-        trial_paths: Any,
+        rollout_paths: Any,
         timing: dict,
         sandbox_user: str | None = None,
         workspace: str | None = None,
@@ -138,7 +138,7 @@ class SDK:
         return await _verify_rollout(
             env,
             task,
-            trial_paths,
+            rollout_paths,
             timing,
             sandbox_user=sandbox_user,
             workspace=workspace,
@@ -153,7 +153,7 @@ class SDK:
         model: str | None = None,
         agent_env: dict[str, str] | None = None,
         job_name: str | None = None,
-        trial_name: str | None = None,
+        rollout_name: str | None = None,
         jobs_dir: str | Path = "jobs",
         environment: str = "docker",
         skills_dir: str | Path | None = None,
@@ -167,8 +167,8 @@ class SDK:
         self_gen_no_internet: bool = False,
     ) -> RolloutResult:
         """Run a task — delegates to :func:`benchflow.run`."""
-        from benchflow._run import run
         from benchflow.rollout import RolloutConfig
+        from benchflow.runtime import run
 
         config = RolloutConfig(
             task_path=Path(task_path),
@@ -177,7 +177,7 @@ class SDK:
             model=model,
             agent_env=agent_env,
             job_name=job_name,
-            trial_name=trial_name,
+            rollout_name=rollout_name,
             jobs_dir=jobs_dir,
             environment=environment,
             skills_dir=skills_dir,
@@ -190,4 +190,4 @@ class SDK:
             skill_creator_dir=skill_creator_dir,
             self_gen_no_internet=self_gen_no_internet,
         )
-        return await run(config)
+        return await run(config)  # type: ignore[return-value]  # ty: ignore[invalid-return-type]

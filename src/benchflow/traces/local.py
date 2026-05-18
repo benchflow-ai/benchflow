@@ -98,9 +98,7 @@ def load_local_sessions(
     Returns:
         List of parsed traces.
     """
-    paths = discover_sessions(
-        projects_dir, project_filter=project_filter, limit=limit
-    )
+    paths = discover_sessions(projects_dir, project_filter=project_filter, limit=limit)
 
     traces: list[ParsedTrace] = []
     errors = 0

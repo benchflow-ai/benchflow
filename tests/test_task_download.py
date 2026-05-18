@@ -2,8 +2,8 @@
 
 from pathlib import Path
 
-from benchflow import task_download
-from benchflow.task_download import Source, resolve_source
+from benchflow._utils import benchmark_repos as task_download
+from benchflow._utils.benchmark_repos import Source, resolve_source
 
 
 def test_skillsbench_alias_clones_main_branch(tmp_path, monkeypatch):

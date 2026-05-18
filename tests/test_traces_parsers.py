@@ -119,7 +119,11 @@ def opentraces_file(tmp_path: Path, opentraces_record: dict) -> Path:
     path = tmp_path / "traces.jsonl"
     lines = [json.dumps(opentraces_record)]
     # Add a second record with different trace_id
-    rec2 = {**opentraces_record, "trace_id": "trace-def-456", "session_id": "sess-ot-002"}
+    rec2 = {
+        **opentraces_record,
+        "trace_id": "trace-def-456",
+        "session_id": "sess-ot-002",
+    }
     lines.append(json.dumps(rec2))
     path.write_text("\n".join(lines))
     return path
@@ -143,7 +147,10 @@ class TestClaudeCodeParser:
     def test_extracts_user_prompt(self, claude_session_file: Path) -> None:
         trace = parse_claude_code_session(claude_session_file)
 
-        assert trace.first_user_prompt == "Create a hello.txt file with the text 'Hello World'"
+        assert (
+            trace.first_user_prompt
+            == "Create a hello.txt file with the text 'Hello World'"
+        )
 
     def test_extracts_tool_calls(self, claude_session_file: Path) -> None:
         trace = parse_claude_code_session(claude_session_file)

@@ -92,7 +92,7 @@ has_creds_for() {
 prepare_tasks_dir() {
   local full_dir
   full_dir=$(uv run python -c "
-from benchflow.task_download import resolve_source
+from benchflow._utils.benchmark_repos import resolve_source
 print(resolve_source('benchflow-ai/skillsbench', path='tasks', ref='main'))
 ")
   local subset_dir="$JOBS_ROOT/.tasks-subset"

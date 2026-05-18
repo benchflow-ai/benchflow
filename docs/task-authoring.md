@@ -65,9 +65,9 @@ The first prompt sent to the agent. Write it as you would for a skilled develope
 **Multi-turn prompts** — use a Scene with multiple Turns. A `None` prompt means "use `instruction.md`":
 
 ```python
-from benchflow.trial import TrialConfig, Scene, Role, Turn
+from benchflow.rollout import RolloutConfig, Scene, Role, Turn
 
-config = TrialConfig(
+config = RolloutConfig(
     task_path="tasks/my-task",
     scenes=[Scene(
         roles=[Role("agent", "gemini", "gemini-3.1-flash-lite-preview")],

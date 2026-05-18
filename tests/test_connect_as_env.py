@@ -11,18 +11,18 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from benchflow.trial import Role, Scene, TrialConfig
+from benchflow.rollout import Role, RolloutConfig, Scene
 
 
 def _make_config(agent_env=None, role_env=None):
-    """Build a minimal TrialConfig with one scene."""
+    """Build a minimal RolloutConfig with one scene."""
     role = Role(name="agent", agent="claude-agent-acp", model="test-model")
     if role_env is not None:
         role = Role(
             name="agent", agent="claude-agent-acp", model="test-model", env=role_env
         )
     scene = Scene(roles=[role])
-    return TrialConfig(
+    return RolloutConfig(
         task_path=Path("/fake/task"),
         scenes=[scene],
         agent_env=agent_env,
@@ -34,16 +34,16 @@ class TestConnectAsEnvMerge:
 
     @pytest.fixture()
     def _mock_trial(self, tmp_path):
-        """Return a Trial stub wired to capture the agent_env passed to connect_acp."""
-        from benchflow.trial import Trial
+        """Return a Rollout stub wired to capture the agent_env passed to connect_acp."""
+        from benchflow.rollout import Rollout
 
         cfg = _make_config(
             agent_env={"BENCHFLOW_PROVIDER_BASE_URL": "http://localhost:8080/v1"},
         )
-        trial = Trial.__new__(Trial)
+        trial = Rollout.__new__(Rollout)
         trial._config = cfg
         trial._env = {}
-        trial._trial_dir = tmp_path
+        trial._rollout_dir = tmp_path
         trial._timing = {}
         trial._agent_cwd = None
         trial._phase = "idle"

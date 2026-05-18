@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from benchflow.job import Job
+from benchflow.evaluation import Evaluation
 
 
 @pytest.fixture
@@ -33,8 +33,8 @@ prompts:
 
 
 @pytest.fixture
-def harbor_yaml(tmp_path):
-    """Create a Harbor-compatible YAML config."""
+def legacy_yaml(tmp_path):
+    """Create a legacy-format YAML config (agents + datasets style)."""
     tasks = tmp_path / "tasks" / "task-a"
     tasks.mkdir(parents=True)
     (tasks / "task.toml").write_text('version = "1.0"')
@@ -63,7 +63,7 @@ datasets:
 
 def test_from_native_yaml(native_yaml):
     """Test loading benchflow-native YAML."""
-    job = Job.from_yaml(native_yaml)
+    job = Evaluation.from_yaml(native_yaml)
     cfg = job._config
 
     assert cfg.agent == "pi-acp"
@@ -77,9 +77,9 @@ def test_from_native_yaml(native_yaml):
     assert job._jobs_dir == Path("output")
 
 
-def test_from_harbor_yaml(harbor_yaml):
-    """Test loading Harbor-compatible YAML."""
-    job = Job.from_yaml(harbor_yaml)
+def test_from_legacy_yaml(legacy_yaml):
+    """Test loading legacy-format YAML."""
+    job = Evaluation.from_yaml(legacy_yaml)
     cfg = job._config
 
     assert cfg.agent == "claude-agent-acp"
@@ -93,8 +93,8 @@ def test_from_harbor_yaml(harbor_yaml):
     assert job._jobs_dir == Path("output")
 
 
-def test_harbor_yaml_preserves_provider_prefix(tmp_path):
-    """Provider prefix must survive _from_harbor_yaml for downstream resolution."""
+def test_legacy_yaml_preserves_provider_prefix(tmp_path):
+    """Provider prefix must survive _from_legacy_yaml for downstream resolution."""
     tasks = tmp_path / "tasks" / "task-a"
     tasks.mkdir(parents=True)
     (tasks / "task.toml").write_text('version = "1.0"')
@@ -108,12 +108,12 @@ datasets:
   - path: tasks
 """)
 
-    job = Job.from_yaml(config)
+    job = Evaluation.from_yaml(config)
     assert job._config.model == "vllm/Qwen/Qwen3.5-35B-A3B"
 
 
-def test_from_harbor_yaml_defaults(tmp_path):
-    """Test Harbor YAML with minimal config."""
+def test_from_legacy_yaml_defaults(tmp_path):
+    """Test legacy YAML with minimal config."""
     tasks = tmp_path / "tasks" / "task-a"
     tasks.mkdir(parents=True)
     (tasks / "task.toml").write_text('version = "1.0"')
@@ -126,7 +126,7 @@ datasets:
   - path: tasks
 """)
 
-    job = Job.from_yaml(config)
+    job = Evaluation.from_yaml(config)
     cfg = job._config
     assert cfg.agent == "pi-acp"
     assert cfg.environment == "docker"
@@ -151,7 +151,7 @@ agent: claude-agent-acp
 skills_dir: my-skills
 """)
 
-    job = Job.from_yaml(config)
+    job = Evaluation.from_yaml(config)
     assert job._config.skills_dir == "my-skills"
 
 
@@ -166,14 +166,14 @@ jobs_dir: jobs/my-run
 skills_dir: skills
 """)
 
-    job = Job.from_yaml(config)
+    job = Evaluation.from_yaml(config)
     assert job._tasks_dir == Path("tasks")
     assert job._jobs_dir == Path("jobs/my-run")
     assert job._config.skills_dir == "skills"
 
 
-def test_harbor_yaml_paths_are_cwd_relative(tmp_path):
-    """Harbor relative paths match CLI and SDK path behavior."""
+def test_legacy_yaml_paths_are_cwd_relative(tmp_path):
+    """Legacy relative paths match CLI and SDK path behavior."""
     config_dir = tmp_path / "configs"
     config_dir.mkdir()
     config = config_dir / "config.yaml"
@@ -186,7 +186,7 @@ datasets:
   - path: tasks
 """)
 
-    job = Job.from_yaml(config)
+    job = Evaluation.from_yaml(config)
     assert job._tasks_dir == Path("tasks")
     assert job._jobs_dir == Path("jobs/my-run")
     assert job._config.skills_dir == "skills"
@@ -194,7 +194,7 @@ datasets:
 
 def test_native_yaml_without_skills_dir(native_yaml):
     """Test that skills_dir defaults to None."""
-    job = Job.from_yaml(native_yaml)
+    job = Evaluation.from_yaml(native_yaml)
     assert job._config.skills_dir is None
 
 
@@ -215,7 +215,7 @@ skill_creator_dir: skills
 self_gen_no_internet: true
 """)
 
-    job = Job.from_yaml(config)
+    job = Evaluation.from_yaml(config)
     assert job._config.skill_mode == "self-gen"
     assert job._config.skill_creator_dir == "skills"
     assert job._config.self_gen_no_internet is True
@@ -243,7 +243,7 @@ exclude:
   - task-a
   - task-c
 """)
-        job = Job.from_yaml(config)
+        job = Evaluation.from_yaml(config)
         assert job._config.exclude_tasks == {"task-a", "task-c"}
         dirs = job._get_task_dirs()
         assert [d.name for d in dirs] == ["task-b"]
@@ -257,7 +257,7 @@ agent_env:
   MY_KEY: my-value
   OTHER_KEY: other-value
 """)
-        job = Job.from_yaml(config)
+        job = Evaluation.from_yaml(config)
         assert job._config.agent_env == {
             "MY_KEY": "my-value",
             "OTHER_KEY": "other-value",
@@ -270,14 +270,14 @@ agent_env:
 tasks_dir: tasks
 sandbox_user: testuser
 """)
-        job = Job.from_yaml(config)
+        job = Evaluation.from_yaml(config)
         assert job._config.sandbox_user == "testuser"
 
     def test_defaults_when_omitted(self, tmp_path):
         _make_tasks(tmp_path)
         config = tmp_path / "config.yaml"
         config.write_text("tasks_dir: tasks\n")
-        job = Job.from_yaml(config)
+        job = Evaluation.from_yaml(config)
         assert job._config.exclude_tasks == set()
         assert job._config.agent_env == {}
         assert job._config.sandbox_user == "agent"

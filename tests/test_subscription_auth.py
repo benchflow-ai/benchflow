@@ -82,7 +82,7 @@ def _patch_expanduser(monkeypatch, tmp_path):
 
 class TestResolveAgentEnvSubscription:
     def _resolve(self, agent="claude-agent-acp", model=None, agent_env=None):
-        from benchflow._agent_env import resolve_agent_env
+        from benchflow.agents.env import resolve_agent_env
 
         return resolve_agent_env(agent, model, agent_env)
 

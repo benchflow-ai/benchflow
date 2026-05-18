@@ -1,4 +1,4 @@
-"""Tests for benchflow._env_setup — Dockerfile skills injection and dep staging."""
+"""Tests for benchflow.sandbox.setup — Dockerfile skills injection and dep staging."""
 
 from pathlib import Path
 from types import SimpleNamespace
@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from benchflow._env_setup import (
+from benchflow.sandbox.setup import (
     _create_benchflow_modal_environment_class,
     _create_environment,
     _dep_local_name,
@@ -176,7 +176,7 @@ class TestGetAgentSkillPaths:
                 skill_paths=["$HOME/.a/skills", "$WORKSPACE/skills"],
             ),
         }
-        with patch("benchflow._env_setup.AGENTS", mock_agents):
+        with patch("benchflow.sandbox.setup.AGENTS", mock_agents):
             paths = _get_agent_skill_paths()
         assert paths == ["/root/.a/skills"]
 
@@ -210,36 +210,44 @@ class TestCreateEnvironment:
             config=SimpleNamespace(environment=env_config),
         )
 
-        with patch("harbor.environments.docker.docker.DockerEnvironment") as docker_env:
+        with patch("benchflow.sandbox.docker.DockerSandbox") as docker_env:
             _create_environment("docker", task, effective_task, "trial", MagicMock())
 
         assert docker_env.call_args.kwargs["environment_dir"] == effective_env_dir
 
     def test_modal_preflights_and_constructs_environment(self, tmp_path):
         env_config = MagicMock()
-        trial_paths = MagicMock()
+        rollout_paths = MagicMock()
         task = SimpleNamespace(
             paths=SimpleNamespace(environment_dir=tmp_path / "environment"),
             config=SimpleNamespace(environment=env_config),
         )
 
         with patch(
-            "benchflow._env_setup._create_benchflow_modal_environment_class"
+            "benchflow.sandbox.setup._create_benchflow_modal_environment_class"
         ) as modal_env_class:
             modal_env = modal_env_class.return_value
-            result = _create_environment("modal", task, tmp_path, "trial", trial_paths)
+            result = _create_environment(
+                "modal", task, tmp_path, "trial", rollout_paths
+            )
 
         modal_env.preflight.assert_called_once_with()
         modal_env.assert_called_once_with(
             environment_dir=tmp_path / "environment",
             environment_name=tmp_path.name,
             session_id="trial",
-            trial_paths=trial_paths,
+            rollout_paths=rollout_paths,
             task_env_config=env_config,
         )
         assert result is modal_env.return_value
 
     @pytest.mark.asyncio
+    @pytest.mark.skipif(
+        not all(
+            __import__("importlib").util.find_spec(m) for m in ("modal", "tenacity")
+        ),
+        reason="modal/tenacity not installed",
+    )
     async def test_modal_dockerfile_build_adds_python(self, tmp_path, monkeypatch):
         (tmp_path / "Dockerfile").write_text("FROM ubuntu:24.04\n")
         env_config = SimpleNamespace(
@@ -254,7 +262,7 @@ class TestCreateEnvironment:
             environment_dir=tmp_path,
             environment_name=tmp_path.name,
             session_id="trial",
-            trial_paths=MagicMock(),
+            rollout_paths=MagicMock(),
             task_env_config=env_config,
         )
 

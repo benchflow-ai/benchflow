@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from benchflow._agent_env import (
+from benchflow.agents.env import (
     auto_inherit_env,
     check_subscription_auth,
     inject_vertex_credentials,

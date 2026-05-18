@@ -501,10 +501,10 @@ class SkillEvaluator:
         concurrency: int,
         with_skill: bool,
     ) -> list[CaseResult]:
-        """Run a batch of tasks using Job for concurrency and retries."""
+        """Run a batch of tasks using Evaluation for concurrency and retries."""
         import os
 
-        from benchflow.job import Job, JobConfig, RetryConfig
+        from benchflow.evaluation import Evaluation, EvaluationConfig, RetryConfig
 
         judge_env = {}
         for key in (
@@ -516,10 +516,10 @@ class SkillEvaluator:
             if os.environ.get(key):
                 judge_env[key] = os.environ[key]
 
-        j = Job(
+        j = Evaluation(
             tasks_dir=str(tasks_dir),
             jobs_dir=jobs_dir,
-            config=JobConfig(
+            config=EvaluationConfig(
                 agent=agent,
                 model=model or "",
                 environment=environment,
@@ -536,10 +536,10 @@ class SkillEvaluator:
         for case in self.dataset.cases:
             case_id = case.id
             # Find the trial directory for this case
-            trial_dirs = list(jobs_path.glob(f"{case_id}*"))
-            if trial_dirs:
-                trial_dir = trial_dirs[0]
-                result_file = trial_dir / "result.json"
+            rollout_dirs = list(jobs_path.glob(f"{case_id}*"))
+            if rollout_dirs:
+                rollout_dir = rollout_dirs[0]
+                result_file = rollout_dir / "result.json"
                 reward = None
                 error = None
                 n_tool_calls = 0
@@ -559,7 +559,7 @@ class SkillEvaluator:
                         error = f"Failed to parse result.json: {e}"
 
                 # Read judge rubric details if available
-                judge_file = trial_dir / "verifier" / "judge_result.json"
+                judge_file = rollout_dir / "verifier" / "judge_result.json"
                 if judge_file.exists():
                     with contextlib.suppress(json.JSONDecodeError, KeyError):
                         rubric_results = json.loads(judge_file.read_text()).get("items")

@@ -147,7 +147,7 @@ def _relativize_path(path: str) -> str:
     for pattern in patterns:
         m = re.match(pattern, path)
         if m:
-            return path[m.end():]
+            return path[m.end() :]
     # If it's an absolute path but no pattern matched, strip leading /
     if path.startswith("/"):
         parts = path.split("/")
@@ -246,7 +246,7 @@ def _build_task_toml(
     if trace.agent_name:
         tags.append(f"agent:{trace.agent_name}")
 
-    tags_str = ", ".join(f'"{ _sanitize_toml_string(t)}"' for t in tags)
+    tags_str = ", ".join(f'"{_sanitize_toml_string(t)}"' for t in tags)
 
     category = "trace-import"
     if trace.git.repo:
@@ -324,29 +324,28 @@ def _build_test_sh(trace: ParsedTrace) -> str:
         if _has_dynamic_segments(f):
             pattern = _globify_path(f)
             quoted_pattern = shlex.quote(pattern)
-            checks.append(f'if ! compgen -G {quoted_pattern} > /dev/null 2>&1; then')
+            checks.append(f"if ! compgen -G {quoted_pattern} > /dev/null 2>&1; then")
             checks.append(f'  echo "Missing (pattern): {quoted_pattern}"')
-            checks.append('  PASS=0')
-            checks.append('fi')
+            checks.append("  PASS=0")
+            checks.append("fi")
         elif has_git:
             quoted = shlex.quote(f)
-            checks.append(f'if ! git diff --name-only HEAD {quoted} 2>/dev/null | grep -q .; then')
+            checks.append(
+                f"if ! git diff --name-only HEAD {quoted} 2>/dev/null | grep -q .; then"
+            )
             checks.append(f'  echo "Not modified: {quoted}"')
-            checks.append('  PASS=0')
-            checks.append('fi')
+            checks.append("  PASS=0")
+            checks.append("fi")
         else:
             quoted = shlex.quote(f)
-            checks.append(f'if [ ! -f {quoted} ]; then')
+            checks.append(f"if [ ! -f {quoted} ]; then")
             checks.append(f'  echo "Missing: {quoted}"')
-            checks.append('  PASS=0')
-            checks.append('fi')
+            checks.append("  PASS=0")
+            checks.append("fi")
 
     checks_block = "\n".join(checks)
 
-    header = (
-        "#!/bin/bash\n"
-        f"# Auto-generated verifier from trace {trace.trace_id}\n"
-    )
+    header = f"#!/bin/bash\n# Auto-generated verifier from trace {trace.trace_id}\n"
     if has_git:
         header += "# Checks that expected files were modified vs base commit.\n"
     else:
@@ -438,7 +437,10 @@ def generate_task(
     effective_timeout = timeout_sec if timeout_sec > 0 else None
     task_name = f"trace-import/{task_id}"
     toml_content = _build_task_toml(
-        trace, task_name=task_name, author=author, timeout_sec=effective_timeout,
+        trace,
+        task_name=task_name,
+        author=author,
+        timeout_sec=effective_timeout,
     )
     (task_dir / "task.toml").write_text(toml_content)
 

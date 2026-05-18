@@ -173,9 +173,7 @@ weight = 0.3
         assert len(func.events) == 2
 
     @patch("benchflow.rewards.llm.call_judge", new_callable=AsyncMock)
-    def test_all_pass_aggregation(
-        self, mock_judge: AsyncMock, tmp_path: Path
-    ) -> None:
+    def test_all_pass_aggregation(self, mock_judge: AsyncMock, tmp_path: Path) -> None:
         mock_judge.side_effect = [_MOCK_PASS_RESPONSE, _MOCK_FAIL_RESPONSE]
         (tmp_path / "output.txt").write_text("output")
 
@@ -198,9 +196,7 @@ description = "B"
         assert score == 0.0  # Not all passed
 
     @patch("benchflow.rewards.llm.call_judge", new_callable=AsyncMock)
-    def test_any_pass_aggregation(
-        self, mock_judge: AsyncMock, tmp_path: Path
-    ) -> None:
+    def test_any_pass_aggregation(self, mock_judge: AsyncMock, tmp_path: Path) -> None:
         mock_judge.side_effect = [_MOCK_PASS_RESPONSE, _MOCK_FAIL_RESPONSE]
         (tmp_path / "output.txt").write_text("output")
 
@@ -223,9 +219,7 @@ description = "B"
         assert score == 1.0  # At least one passed
 
     @patch("benchflow.rewards.llm.call_judge", new_callable=AsyncMock)
-    def test_likert_criterion(
-        self, mock_judge: AsyncMock, tmp_path: Path
-    ) -> None:
+    def test_likert_criterion(self, mock_judge: AsyncMock, tmp_path: Path) -> None:
         mock_judge.return_value = '{"score": 4, "reasoning": "pretty good"}'
         (tmp_path / "output.txt").write_text("output")
 
@@ -245,9 +239,7 @@ points = 5
         assert score == pytest.approx(0.75)
 
     @patch("benchflow.rewards.llm.call_judge", new_callable=AsyncMock)
-    def test_numeric_criterion(
-        self, mock_judge: AsyncMock, tmp_path: Path
-    ) -> None:
+    def test_numeric_criterion(self, mock_judge: AsyncMock, tmp_path: Path) -> None:
         mock_judge.return_value = '{"score": 70, "reasoning": "decent"}'
         (tmp_path / "output.txt").write_text("output")
 
@@ -274,9 +266,7 @@ max = 100
 
 class TestLLMJudgeInlineCriteria:
     @patch("benchflow.rewards.llm.call_judge", new_callable=AsyncMock)
-    def test_inline_criteria_list(
-        self, mock_judge: AsyncMock, tmp_path: Path
-    ) -> None:
+    def test_inline_criteria_list(self, mock_judge: AsyncMock, tmp_path: Path) -> None:
         mock_judge.return_value = _MOCK_PASS_RESPONSE
         (tmp_path / "output.txt").write_text("answer")
 
@@ -393,9 +383,7 @@ class TestEvaluationDetails:
 
 class TestDenseRewardEvents:
     @patch("benchflow.rewards.llm.call_judge", new_callable=AsyncMock)
-    def test_per_criterion_events(
-        self, mock_judge: AsyncMock, tmp_path: Path
-    ) -> None:
+    def test_per_criterion_events(self, mock_judge: AsyncMock, tmp_path: Path) -> None:
         mock_judge.side_effect = [
             _MOCK_PASS_RESPONSE,
             _MOCK_FAIL_RESPONSE,
@@ -453,9 +441,7 @@ class TestAggregation:
             {"score": 0.0, "weight": 1.0},
         ]
         s = ScoringConfig(aggregation="weighted_mean")
-        assert LLMJudgeRewardFunc._aggregate(results, s) == pytest.approx(
-            2.0 / 3.0
-        )
+        assert LLMJudgeRewardFunc._aggregate(results, s) == pytest.approx(2.0 / 3.0)
 
     def test_all_pass_true(self) -> None:
         results = [

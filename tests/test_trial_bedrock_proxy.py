@@ -1,4 +1,4 @@
-"""Trial-side tests for Bedrock proxy startup integration."""
+"""Rollout-side tests for Bedrock proxy startup integration."""
 
 from __future__ import annotations
 
@@ -7,12 +7,12 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from benchflow.trial import Role, Scene, Trial, TrialConfig
+from benchflow.rollout import Role, Rollout, RolloutConfig, Scene
 
 
 @pytest.mark.asyncio
 async def test_trial_connect_starts_bedrock_runtime_before_connect_acp(tmp_path):
-    cfg = TrialConfig(
+    cfg = RolloutConfig(
         task_path=tmp_path / "task",
         agent="codex-acp",
         model="aws-bedrock/openai.gpt-oss-20b-1:0",
@@ -22,10 +22,10 @@ async def test_trial_connect_starts_bedrock_runtime_before_connect_acp(tmp_path)
             "OPENAI_API_KEY": "bedrock-proxy",
         },
     )
-    trial = Trial.__new__(Trial)
+    trial = Rollout.__new__(Rollout)
     trial._config = cfg
     trial._env = SimpleNamespace()
-    trial._trial_dir = tmp_path
+    trial._rollout_dir = tmp_path
     trial._timing = {}
     trial._agent_launch = "codex-acp"
     trial._agent_cwd = "/app"
@@ -69,16 +69,16 @@ async def test_trial_connect_as_starts_bedrock_runtime_for_role(tmp_path):
             "AWS_REGION": "us-east-1",
         },
     )
-    cfg = TrialConfig(
+    cfg = RolloutConfig(
         task_path=tmp_path / "task",
         scenes=[Scene(roles=[role])],
         agent="codex-acp",
         model="gpt-4.1-mini",
     )
-    trial = Trial.__new__(Trial)
+    trial = Rollout.__new__(Rollout)
     trial._config = cfg
     trial._env = SimpleNamespace()
-    trial._trial_dir = tmp_path
+    trial._rollout_dir = tmp_path
     trial._timing = {}
     trial._agent_cwd = "/app"
     trial._phase = "idle"
