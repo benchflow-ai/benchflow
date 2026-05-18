@@ -1,13 +1,14 @@
 """Tests for trajectory proxy, OTel collector, and types."""
 
 import asyncio
+import gzip
 import json
 
 import httpx
 import pytest
 
 from benchflow.trajectories.otel import OTelCollector
-from benchflow.trajectories.proxy import TrajectoryProxy
+from benchflow.trajectories.proxy import TrajectoryProxy, _parse_request_body
 from benchflow.trajectories.types import (
     LLMExchange,
     LLMRequest,
@@ -104,8 +105,39 @@ class TestTrajectoryTypes:
         assert "request" in parsed
         assert "response" in parsed
 
+    def test_to_jsonl_redacts_bearer_authorization(self) -> None:
+        traj = Trajectory(session_id="s1")
+        traj.exchanges.append(
+            LLMExchange(
+                request=LLMRequest(
+                    headers={"authorization": "Bearer secret.jwt.token"},
+                    body={"messages": []},
+                ),
+                response=LLMResponse(body={"content": []}),
+            )
+        )
+
+        jsonl = traj.to_jsonl()
+
+        assert "secret.jwt.token" not in jsonl
+        assert "Bearer ***REDACTED***" in jsonl
+
 
 class TestTrajectoryProxy:
+    def test_proxy_parses_zstd_compressed_request_body(self) -> None:
+        """Guards commit 3e8b06c telemetry proxy work against zstd request bodies."""
+        zstd = pytest.importorskip("zstandard")
+        compressed_body = zstd.ZstdCompressor().compress(
+            json.dumps({"stream": True, "messages": []}).encode()
+        )
+
+        body = _parse_request_body(
+            compressed_body,
+            {"content-encoding": "zstd"},
+        )
+
+        assert body["stream"] is True
+
     @pytest.mark.asyncio
     async def test_proxy_captures_exchange(self) -> None:
         """Test proxy with a real HTTP request to a mock target."""
@@ -167,6 +199,254 @@ class TestTrajectoryProxy:
         await proxy.stop()
         echo_server.close()
         await echo_server.wait_closed()
+
+    @pytest.mark.asyncio
+    async def test_proxy_detects_streaming_from_compressed_request(self) -> None:
+        """Guards commit 3e8b06c telemetry proxy work against compressed requests."""
+
+        async def stream_handler(
+            reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+        ) -> None:
+            await reader.readline()
+            headers = {}
+            while True:
+                line = await reader.readline()
+                if line in (b"\r\n", b"\n", b""):
+                    break
+                k, _, v = line.decode().partition(":")
+                headers[k.strip().lower()] = v.strip()
+            cl = int(headers.get("content-length", "0"))
+            if cl > 0:
+                await reader.readexactly(cl)
+
+            frames = [
+                {
+                    "type": "message_start",
+                    "message": {
+                        "model": "claude-haiku-4-5-20251001",
+                        "usage": {"input_tokens": 7, "output_tokens": 1},
+                    },
+                },
+                {
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "text", "text": ""},
+                },
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "text_delta", "text": "ok"},
+                },
+                {"type": "message_delta", "usage": {"output_tokens": 2}},
+            ]
+            body = b"".join(
+                f"data: {json.dumps(frame)}\n\n".encode() for frame in frames
+            )
+            writer.write(
+                b"HTTP/1.1 200 OK\r\n"
+                b"content-type: text/event-stream\r\n"
+                + f"content-length: {len(body)}\r\n\r\n".encode()
+                + body
+            )
+            await writer.drain()
+            writer.close()
+
+        stream_server = await asyncio.start_server(stream_handler, "127.0.0.1", 0)
+        stream_port = stream_server.sockets[0].getsockname()[1]
+
+        proxy = TrajectoryProxy(
+            target=f"http://127.0.0.1:{stream_port}",
+            session_id="test-compressed",
+        )
+        await proxy.start()
+
+        try:
+            compressed_body = gzip.compress(
+                json.dumps(
+                    {
+                        "model": "claude-haiku-4-5-20251001",
+                        "stream": True,
+                        "messages": [{"role": "user", "content": "hi"}],
+                    }
+                ).encode()
+            )
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    f"{proxy.base_url}/v1/messages",
+                    content=compressed_body,
+                    headers={
+                        "content-type": "application/json",
+                        "content-encoding": "gzip",
+                    },
+                )
+                assert resp.status_code == 200
+
+            traj = proxy.trajectory
+            assert len(traj.exchanges) == 1
+            assert traj.exchanges[0].request.body["stream"] is True
+            assert traj.total_input_tokens == 7
+            assert traj.total_output_tokens == 2
+        finally:
+            await proxy.stop()
+            stream_server.close()
+            await stream_server.wait_closed()
+
+    @pytest.mark.asyncio
+    async def test_proxy_injects_prompt_cache_retention_for_openai_requests(
+        self,
+    ) -> None:
+        forwarded: dict[str, object] = {}
+
+        async def openai_handler(
+            reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+        ) -> None:
+            request_line = (await reader.readline()).decode().strip()
+            headers = {}
+            while True:
+                line = await reader.readline()
+                if line in (b"\r\n", b"\n", b""):
+                    break
+                k, _, v = line.decode().partition(":")
+                headers[k.strip().lower()] = v.strip()
+            cl = int(headers.get("content-length", "0"))
+            body_bytes = await reader.readexactly(cl)
+            forwarded["request_line"] = request_line
+            forwarded["headers"] = headers
+            forwarded["body"] = json.loads(body_bytes)
+
+            resp_body = json.dumps(
+                {
+                    "model": "gpt-5.5",
+                    "usage": {
+                        "prompt_tokens": 1200,
+                        "completion_tokens": 20,
+                        "total_tokens": 1220,
+                        "prompt_tokens_details": {"cached_tokens": 1024},
+                    },
+                }
+            ).encode()
+            writer.write(
+                b"HTTP/1.1 200 OK\r\n"
+                b"content-type: application/json\r\n"
+                + f"content-length: {len(resp_body)}\r\n\r\n".encode()
+                + resp_body
+            )
+            await writer.drain()
+            writer.close()
+
+        openai_server = await asyncio.start_server(openai_handler, "127.0.0.1", 0)
+        openai_port = openai_server.sockets[0].getsockname()[1]
+        proxy = TrajectoryProxy(
+            target=f"http://127.0.0.1:{openai_port}",
+            session_id="test-cache-retention",
+            prompt_cache_retention="24h",
+        )
+        await proxy.start()
+
+        try:
+            compressed_body = gzip.compress(
+                json.dumps(
+                    {
+                        "model": "gpt-5.5",
+                        "input": "Your prompt goes here...",
+                    }
+                ).encode()
+            )
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    f"{proxy.base_url}/responses",
+                    content=compressed_body,
+                    headers={
+                        "content-type": "application/json",
+                        "content-encoding": "gzip",
+                    },
+                )
+                assert resp.status_code == 200
+
+            assert forwarded["request_line"] == "POST /responses HTTP/1.1"
+            headers = forwarded["headers"]
+            assert isinstance(headers, dict)
+            assert "content-encoding" not in headers
+            body = forwarded["body"]
+            assert isinstance(body, dict)
+            assert body["prompt_cache_retention"] == "24h"
+            captured_body = proxy.trajectory.exchanges[0].request.body
+            assert captured_body["prompt_cache_retention"] == "24h"
+        finally:
+            await proxy.stop()
+            openai_server.close()
+            await openai_server.wait_closed()
+
+    @pytest.mark.asyncio
+    async def test_proxy_reconstructs_openai_responses_completed_usage(self) -> None:
+        async def stream_handler(
+            reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+        ) -> None:
+            await reader.readline()
+            headers = {}
+            while True:
+                line = await reader.readline()
+                if line in (b"\r\n", b"\n", b""):
+                    break
+                k, _, v = line.decode().partition(":")
+                headers[k.strip().lower()] = v.strip()
+            cl = int(headers.get("content-length", "0"))
+            if cl > 0:
+                await reader.readexactly(cl)
+
+            completed = {
+                "type": "response.completed",
+                "response": {
+                    "model": "gpt-4.1",
+                    "usage": {
+                        "input_tokens": 123,
+                        "output_tokens": 45,
+                        "total_tokens": 168,
+                        "input_tokens_details": {"cached_tokens": 12},
+                    },
+                },
+            }
+            body = f"data: {json.dumps(completed)}\n\n".encode()
+            writer.write(
+                b"HTTP/1.1 200 OK\r\n"
+                b"content-type: text/event-stream\r\n"
+                b"transfer-encoding: chunked\r\n\r\n"
+            )
+            await writer.drain()
+            first, second = body[:15], body[15:]
+            for chunk in (first, second):
+                writer.write(f"{len(chunk):x}\r\n".encode() + chunk + b"\r\n")
+                await writer.drain()
+            writer.write(b"0\r\n\r\n")
+            await writer.drain()
+            writer.close()
+
+        stream_server = await asyncio.start_server(stream_handler, "127.0.0.1", 0)
+        stream_port = stream_server.sockets[0].getsockname()[1]
+        proxy = TrajectoryProxy(
+            target=f"http://127.0.0.1:{stream_port}",
+            session_id="test-openai-responses",
+        )
+        await proxy.start()
+
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    f"{proxy.base_url}/responses",
+                    json={"model": "gpt-4.1", "input": "hi", "stream": True},
+                )
+                assert resp.status_code == 200
+
+            traj = proxy.trajectory
+            assert len(traj.exchanges) == 1
+            assert traj.total_input_tokens == 123
+            assert traj.total_output_tokens == 45
+            assert traj.total_cache_read_tokens == 12
+            assert traj.total_provider_tokens == 168
+        finally:
+            await proxy.stop()
+            stream_server.close()
+            await stream_server.wait_closed()
 
 
 class TestOTelCollector:

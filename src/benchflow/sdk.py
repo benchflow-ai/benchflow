@@ -92,6 +92,14 @@ class SDK:
         rewards: dict | None,
         started_at: datetime,
         timing: dict[str, float],
+        n_input_tokens: int | None = None,
+        n_output_tokens: int | None = None,
+        n_cache_read_tokens: int | None = None,
+        n_cache_creation_tokens: int | None = None,
+        total_tokens: int | None = None,
+        cost_usd: float | None = None,
+        usage_source: str = "unavailable",
+        price_source: str | None = None,
     ) -> RolloutResult:
         return _build_rollout_result(
             trial_dir,
@@ -110,6 +118,14 @@ class SDK:
             rewards=rewards,
             started_at=started_at,
             timing=timing,
+            n_input_tokens=n_input_tokens,
+            n_output_tokens=n_output_tokens,
+            n_cache_read_tokens=n_cache_read_tokens,
+            n_cache_creation_tokens=n_cache_creation_tokens,
+            total_tokens=total_tokens,
+            cost_usd=cost_usd,
+            usage_source=usage_source,
+            price_source=price_source,
         )
 
     async def _start_env_and_upload(
