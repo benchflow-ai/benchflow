@@ -268,7 +268,7 @@ result = await bf.run(config)
 
 | Agent | Protocol | Auth | Aliases |
 |-------|----------|------|---------|
-| `gemini` | ACP | GOOGLE_API_KEY | — |
+| `gemini` | ACP | GEMINI_API_KEY | — |
 | `claude-agent-acp` | ACP | ANTHROPIC_API_KEY | `claude` |
 | `codex-acp` | ACP | OPENAI_API_KEY | `codex` |
 | `opencode` | ACP | inferred from model/provider | — |
