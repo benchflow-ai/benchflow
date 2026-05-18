@@ -4,6 +4,15 @@ from pathlib import Path
 
 import pytest
 
+from tests.integration.check_adapter_evidence import (
+    check_clbench,
+    check_hilbench,
+    check_programbench,
+    check_skillsbench_result,
+)
+from tests.integration.check_adapter_evidence import (
+    main as adapter_evidence_main,
+)
 from tests.integration.run_suite import (
     expand_lane,
     load_suite,
@@ -88,3 +97,85 @@ def test_requires_dry_run_until_execution_exists(
 
     err = capsys.readouterr().err
     assert "execution is not implemented yet" in err
+
+
+def test_adapter_evidence_checker_validates_programbench_fixture() -> None:
+    """Guards ENG-89 adapter-release-set evidence for merged ProgramBench."""
+    finding = check_programbench(Path.cwd())
+
+    assert finding.status == "pass"
+    assert "pipeline parity" in finding.message
+
+
+def test_adapter_evidence_checker_accepts_skillsbench_result(tmp_path: Path) -> None:
+    """Guards ENG-89 adapter-release-set evidence for SkillsBench smoke runs."""
+    result = tmp_path / "result.json"
+    result.write_text(
+        """{
+  "task_name": "jax-computing-basics",
+  "rewards": {"reward": 1.0},
+  "agent": "oracle",
+  "error": null,
+  "verifier_error": null
+}
+"""
+    )
+
+    finding = check_skillsbench_result(result)
+
+    assert finding.status == "pass"
+    assert "reward=1" in finding.message
+
+
+def test_adapter_evidence_checker_marks_hilbench_eval_blocked(tmp_path: Path) -> None:
+    """Guards ENG-89 adapter-release-set blocker reporting for HILBench."""
+    evidence = tmp_path / "benchmarks" / "hilbench"
+    evidence.mkdir(parents=True)
+    (evidence / "parity_experiment.json").write_text(
+        """{
+  "structural_parity": {
+    "results_summary": {"passed": 3, "failed": 0}
+  },
+  "eval_parity": {
+    "status": "blocked",
+    "blocker": "gated image access"
+  }
+}
+"""
+    )
+
+    finding = check_hilbench(tmp_path)
+
+    assert finding.status == "blocked"
+    assert "gated image access" in finding.message
+
+
+def test_adapter_evidence_checker_requires_clbench_dogfood(tmp_path: Path) -> None:
+    """Guards ENG-89 adapter-release-set evidence for CLBench dogfood."""
+    evidence = tmp_path / "benchmarks" / "clbench"
+    evidence.mkdir(parents=True)
+    (evidence / "parity_experiment.json").write_text(
+        """{
+  "structural_parity": {"tasks_tested": 3, "passed": 3},
+  "eval_parity": {"tasks_tested": 3, "passed": 3},
+  "e2e_parity": {"tasks_tested": 10, "passed": 10}
+}
+"""
+    )
+
+    finding = check_clbench(tmp_path)
+
+    assert finding.status == "fail"
+    assert "dogfooding" in finding.message
+
+
+def test_adapter_evidence_main_fails_without_skillsbench_result(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Guards ENG-89 adapter-release-set evidence CLI failure behavior."""
+    rc = adapter_evidence_main(["--repo-root", str(Path.cwd())])
+
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "SkillsBench" in out
+    assert "representative result.json is required" in out
