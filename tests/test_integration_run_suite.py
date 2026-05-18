@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -17,6 +18,7 @@ from tests.integration.run_suite import (
     expand_lane,
     load_suite,
     main,
+    run_adapter_evidence,
     select_lanes,
 )
 
@@ -96,7 +98,85 @@ def test_requires_dry_run_until_execution_exists(
         main(["--suite", str(SUITE_PATH), "--lane", "shared-sandbox-smoke"])
 
     err = capsys.readouterr().err
-    assert "execution is not implemented yet" in err
+    assert "--dry-run or --execute-adapter-evidence" in err
+
+
+def test_adapter_evidence_execution_requires_adapter_lane(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Guards ENG-89 release runner execution is scoped to adapter evidence."""
+    rc = main(
+        [
+            "--suite",
+            str(SUITE_PATH),
+            "--profile",
+            "near-term",
+            "--execute-adapter-evidence",
+        ]
+    )
+
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "unsupported selected lane(s): skillsbench-agent-matrix" in err
+
+
+def test_adapter_evidence_execution_invokes_checker(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Guards ENG-89 adapter-release-set execution plumbing."""
+    captured = {}
+
+    def fake_checker(argv: list[str]) -> int:
+        captured["argv"] = argv
+        return 0
+
+    monkeypatch.setattr(
+        "tests.integration.run_suite._run_adapter_evidence_checker", fake_checker
+    )
+    result = tmp_path / "result.json"
+    result.write_text("{}")
+
+    rc = main(
+        [
+            "--suite",
+            str(SUITE_PATH),
+            "--lane",
+            "adapter-release-set",
+            "--execute-adapter-evidence",
+            "--adapter-evidence-repo-root",
+            str(tmp_path),
+            "--skillsbench-result",
+            str(result),
+            "--open-pr-root",
+            f"CLBench={tmp_path}",
+            "--allow-blocked",
+        ]
+    )
+
+    assert rc == 0
+    assert captured["argv"] == [
+        "--repo-root",
+        str(tmp_path),
+        "--skillsbench-result",
+        str(result),
+        "--open-pr-root",
+        f"CLBench={tmp_path}",
+        "--allow-blocked",
+    ]
+
+
+def test_run_adapter_evidence_rejects_empty_selection() -> None:
+    """Guards ENG-89 adapter-release-set execution rejects missing lane."""
+    args = SimpleNamespace(
+        adapter_evidence_repo_root=Path.cwd(),
+        skillsbench_result=None,
+        open_pr_root=[],
+        allow_blocked=False,
+    )
+
+    with pytest.raises(ValueError, match="requires lane adapter-release-set"):
+        run_adapter_evidence([], args)
 
 
 def test_adapter_evidence_checker_validates_programbench_fixture() -> None:

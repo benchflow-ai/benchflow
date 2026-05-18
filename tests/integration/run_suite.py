@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Plan integration suite lanes from a declarative manifest.
+"""Plan and run supported integration suite lanes from a declarative manifest.
 
-This runner intentionally starts in dry-run mode only. It validates a suite
-manifest, expands named lane axes, and prints an auditable execution plan
-without launching benchmark jobs.
+Most lanes are still plan-only. The adapter-release-set lane has an executable
+evidence checker because the v0.4 release audit already produces parity/smoke
+artifacts for adapters and open adapter PRs.
 """
 
 from __future__ import annotations
@@ -291,6 +291,40 @@ def _render_value(value: Any) -> str:
     return str(value)
 
 
+def _run_adapter_evidence_checker(argv: list[str]) -> int:
+    try:
+        from tests.integration.check_adapter_evidence import main as evidence_main
+    except ModuleNotFoundError:
+        from check_adapter_evidence import main as evidence_main
+
+    return evidence_main(argv)
+
+
+def run_adapter_evidence(
+    lanes: list[Mapping[str, Any]], args: argparse.Namespace
+) -> int:
+    """Run adapter-release-set evidence validation for selected lanes."""
+    lane_ids = [lane["id"] for lane in lanes]
+    unsupported = [lane_id for lane_id in lane_ids if lane_id != "adapter-release-set"]
+    if unsupported:
+        raise SuiteError(
+            "--execute-adapter-evidence only supports adapter-release-set; "
+            f"unsupported selected lane(s): {', '.join(unsupported)}"
+        )
+    if "adapter-release-set" not in lane_ids:
+        raise SuiteError("--execute-adapter-evidence requires lane adapter-release-set")
+
+    checker_args = ["--repo-root", str(args.adapter_evidence_repo_root)]
+    if args.skillsbench_result:
+        checker_args.extend(["--skillsbench-result", str(args.skillsbench_result)])
+    for root in args.open_pr_root or []:
+        checker_args.extend(["--open-pr-root", root])
+    if args.allow_blocked:
+        checker_args.append("--allow-blocked")
+
+    return _run_adapter_evidence_checker(checker_args)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Plan BenchFlow integration suite lanes from a manifest."
@@ -326,6 +360,34 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print the expanded lane plan without executing jobs.",
     )
+    parser.add_argument(
+        "--execute-adapter-evidence",
+        action="store_true",
+        help="Execute adapter-release-set evidence validation.",
+    )
+    parser.add_argument(
+        "--adapter-evidence-repo-root",
+        type=Path,
+        default=Path.cwd(),
+        help="Repo root for merged adapter evidence (default: current directory).",
+    )
+    parser.add_argument(
+        "--skillsbench-result",
+        type=Path,
+        help="Representative SkillsBench result.json for adapter evidence.",
+    )
+    parser.add_argument(
+        "--open-pr-root",
+        action="append",
+        default=[],
+        metavar="NAME=PATH",
+        help="Open adapter PR worktree root for adapter evidence.",
+    )
+    parser.add_argument(
+        "--allow-blocked",
+        action="store_true",
+        help="For adapter evidence mode, exit zero when evidence is blocked but otherwise valid.",
+    )
     return parser
 
 
@@ -345,9 +407,8 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.profile and args.lanes:
             parser.error("use either --profile or --lane, not both")
-
-        if not args.dry_run:
-            parser.error("execution is not implemented yet; pass --dry-run")
+        if args.dry_run and args.execute_adapter_evidence:
+            parser.error("use either --dry-run or --execute-adapter-evidence, not both")
 
         profile = None
         lane_ids = args.lanes
@@ -356,7 +417,17 @@ def main(argv: list[str] | None = None) -> int:
             profile = suite["execution_profiles"][args.profile]
 
         lanes = select_lanes(suite, lane_ids)
-        print_plan(suite, lanes, profile_id=args.profile, profile=profile)
+        if args.dry_run:
+            print_plan(suite, lanes, profile_id=args.profile, profile=profile)
+            return 0
+
+        if args.execute_adapter_evidence:
+            return run_adapter_evidence(lanes, args)
+
+        parser.error(
+            "execution is not implemented yet; pass --dry-run or "
+            "--execute-adapter-evidence"
+        )
     except SuiteError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
