@@ -330,6 +330,7 @@ def _write_config(
     timeout: int,
     started_at: datetime,
     agent_env: dict[str, str],
+    scenes: list[Scene] | None = None,
 ) -> None:
     """Write config.json to rollout_dir with secrets filtered out."""
     _secret_substrings = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIALS")
@@ -351,8 +352,38 @@ def _write_config(
         "timeout_sec": timeout,
         "started_at": str(started_at),
         "agent_env": recorded_env,
+        "scenes": _scene_metadata(scenes or []),
     }
     (rollout_dir / "config.json").write_text(json.dumps(config_data, indent=2))
+
+
+def _role_metadata(role: Role) -> dict[str, Any]:
+    return {
+        "name": role.name,
+        "agent": role.agent,
+        "model": role.model,
+        "timeout_sec": role.timeout_sec,
+        "idle_timeout_sec": role.idle_timeout_sec,
+        "skills_dir": str(role.skills_dir) if role.skills_dir else None,
+        "capabilities": role.capabilities,
+        "env_keys": sorted(role.env),
+    }
+
+
+def _scene_metadata(scenes: list[Scene]) -> list[dict[str, Any]]:
+    return [
+        {
+            "name": scene.name,
+            "skills_dir": str(scene.skills_dir) if scene.skills_dir else None,
+            "parallel_group": scene.parallel_group,
+            "roles": [_role_metadata(role) for role in scene.roles],
+            "turns": [
+                {"role": turn.role, "has_prompt": turn.prompt is not None}
+                for turn in scene.turns
+            ],
+        }
+        for scene in scenes
+    ]
 
 
 def _build_rollout_result(
@@ -373,6 +404,7 @@ def _build_rollout_result(
     rewards: dict | None,
     started_at: datetime,
     timing: dict[str, float],
+    scenes: list[Scene] | None = None,
 ) -> RolloutResult:
     """Build RolloutResult and write result.json, timing.json, prompts.json, trajectory."""
     finished_at = datetime.now()
@@ -419,6 +451,7 @@ def _build_rollout_result(
                 "started_at": str(result.started_at),
                 "finished_at": str(result.finished_at),
                 "timing": timing,
+                "scenes": _scene_metadata(scenes or []),
             },
             indent=2,
         )
@@ -773,6 +806,7 @@ class Rollout:
         self._acp_client: ACPClient | None = None
         self._session: Any = None
         self._agent_name: str = ""
+        self._active_role: Role | None = None
 
         # Populated by execute()
         self._trajectory: list[dict] = []
@@ -919,6 +953,7 @@ class Rollout:
             timeout=self._timeout,
             started_at=self._started_at,
             agent_env=self._agent_env,
+            scenes=cfg.effective_scenes,
         )
 
         self._phase = "setup"
@@ -1076,6 +1111,7 @@ class Rollout:
             agent_cmd = self._agent_launch.split()[0].split("/")[-1]
             with contextlib.suppress(Exception):
                 await self._env.exec(f"pkill -f '{agent_cmd}' || true", timeout_sec=10)
+        self._active_role = None
         self._session_tool_count = 0
         self._session_traj_count = 0
         self._phase = "installed"
@@ -1094,13 +1130,24 @@ class Rollout:
             raise RuntimeError("Rollout.connect() must run before execute()")
         prev_session_tools = getattr(self, "_session_tool_count", 0)
         t0 = datetime.now()
+        active_role = getattr(self, "_active_role", None)
+        timeout = (
+            active_role.timeout_sec
+            if active_role and active_role.timeout_sec is not None
+            else self._timeout
+        )
+        idle_timeout = (
+            active_role.idle_timeout_sec
+            if active_role and active_role.idle_timeout_sec is not None
+            else self._config.agent_idle_timeout
+        )
 
         trajectory, n_tool_calls = await execute_prompts(
             self._acp_client,
             self._session,
             effective_prompts,
-            self._timeout,
-            idle_timeout=self._config.agent_idle_timeout,
+            timeout,
+            idle_timeout=idle_timeout,
         )
 
         # trajectory and n_tool_calls are cumulative for this session.
@@ -1729,6 +1776,7 @@ class Rollout:
             environment=cfg.environment,
             agent_cwd=self._agent_cwd,
         )
+        self._active_role = role
 
         if "agent_setup" not in self._timing:
             self._timing["agent_setup"] = (datetime.now() - t0).total_seconds()
@@ -1774,4 +1822,5 @@ class Rollout:
             rewards=self._rewards,
             started_at=self._require_started_at(),
             timing=self._timing,
+            scenes=self._config.effective_scenes,
         )
