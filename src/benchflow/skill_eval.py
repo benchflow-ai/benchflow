@@ -86,6 +86,7 @@ class AgentLift:
     baseline_passed: int
     avg_rubric_with: float = 0.0
     avg_rubric_without: float = 0.0
+    baseline_ran: bool = True
 
 
 @dataclass
@@ -110,6 +111,8 @@ class SkillEvalResult:
                     "avg_reward": f"{lift.with_skill_score:.2f}",
                 }
             )
+            if not lift.baseline_ran:
+                continue
             rows.append(
                 {
                     "agent": lift.agent,
@@ -639,6 +642,7 @@ class SkillEvaluator:
                     n_cases=len(self.dataset.cases),
                     with_skill_passed=with_passed,
                     baseline_passed=baseline_passed if not no_baseline else 0,
+                    baseline_ran=not no_baseline,
                 )
             )
 
@@ -713,6 +717,7 @@ def export_gepa_traces(
                 "lift": lift.lift,
                 "with_skill_passed": lift.with_skill_passed,
                 "baseline_passed": lift.baseline_passed,
+                "baseline_ran": lift.baseline_ran,
             }
             for lift in result.agent_lifts
         ],

@@ -509,34 +509,13 @@ def generate_tasks_from_traces(
         List of paths to created task directories.
     """
     results: list[Path] = []
-    skipped = 0
+    eligible_traces, skipped = filter_traces_for_generation(
+        traces,
+        min_steps=min_steps,
+        outcome_filter=outcome_filter,
+    )
 
-    for trace in traces:
-        # Filter by minimum complexity
-        if len(trace.steps) < min_steps:
-            skipped += 1
-            continue
-
-        # Filter by outcome
-        if outcome_filter and trace.outcome != outcome_filter:
-            skipped += 1
-            continue
-
-        # Skip traces with no user prompt
-        if not trace.first_user_prompt:
-            skipped += 1
-            continue
-
-        # Skip traces with no tool calls (e.g. pure explanation sessions)
-        if trace.n_tool_calls == 0:
-            skipped += 1
-            continue
-
-        # Skip traces that cannot produce an objective file-based verifier.
-        if not trace.files_edited:
-            skipped += 1
-            continue
-
+    for trace in eligible_traces:
         task_dir = generate_task(
             trace,
             output_dir,
@@ -550,3 +529,34 @@ def generate_tasks_from_traces(
         logger.info("Skipped %d traces (filtered by steps/outcome/prompt)", skipped)
 
     return results
+
+
+def filter_traces_for_generation(
+    traces: list[ParsedTrace],
+    *,
+    min_steps: int = 2,
+    outcome_filter: str | None = None,
+) -> tuple[list[ParsedTrace], int]:
+    """Return traces that would produce objective task directories."""
+    eligible: list[ParsedTrace] = []
+    skipped = 0
+
+    for trace in traces:
+        if len(trace.steps) < min_steps:
+            skipped += 1
+            continue
+        if outcome_filter and trace.outcome != outcome_filter:
+            skipped += 1
+            continue
+        if not trace.first_user_prompt:
+            skipped += 1
+            continue
+        if trace.n_tool_calls == 0:
+            skipped += 1
+            continue
+        if not trace.files_edited:
+            skipped += 1
+            continue
+        eligible.append(trace)
+
+    return eligible, skipped

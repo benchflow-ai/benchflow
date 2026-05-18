@@ -12,6 +12,7 @@ from benchflow.traces.task_gen import (
     _github_clone_url,
     _globify_path,
     _has_dynamic_segments,
+    filter_traces_for_generation,
     generate_task,
     generate_tasks_from_traces,
 )
@@ -304,6 +305,17 @@ class TestGenerateTasksFromTraces:
 
         assert len(results) == 1
         assert results[0].exists()
+
+    def test_filter_traces_matches_generation_eligibility(
+        self, simple_trace: ParsedTrace, no_prompt_trace: ParsedTrace
+    ) -> None:
+        eligible, skipped = filter_traces_for_generation(
+            [simple_trace, no_prompt_trace],
+            min_steps=1,
+        )
+
+        assert eligible == [simple_trace]
+        assert skipped == 1
 
     def test_filters_by_min_steps(self, tmp_path: Path) -> None:
         short_trace = ParsedTrace(

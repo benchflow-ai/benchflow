@@ -361,3 +361,34 @@ class TestDryRunPipeline:
         assert len(lift_rows) == 2
         assert lift_rows[0]["score"] == "+2"
         assert lift_rows[1]["score"] == "+2"
+
+    def test_summary_table_no_baseline_omits_fake_baseline_rows(self):
+        result = SkillEvalResult(
+            skill_name="code-review",
+            n_cases=5,
+            agents=["claude-agent-acp"],
+            agent_lifts=[
+                AgentLift(
+                    agent="claude-agent-acp",
+                    model="haiku",
+                    with_skill_score=0.85,
+                    baseline_score=0.0,
+                    lift=0.85,
+                    n_cases=5,
+                    with_skill_passed=4,
+                    baseline_passed=0,
+                    baseline_ran=False,
+                ),
+            ],
+        )
+
+        rows = result.summary_table()
+
+        assert rows == [
+            {
+                "agent": "claude-agent-acp",
+                "mode": "with-skill",
+                "score": "4/5",
+                "avg_reward": "0.85",
+            }
+        ]
