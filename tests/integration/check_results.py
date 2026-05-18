@@ -103,14 +103,28 @@ def check_agent(agent_dir: Path) -> dict:
     findings["passed"] = sum(
         1
         for r in results
-        if (r.get("rewards") or {}).get("reward", 0) > 0 and not r.get("error")
+        if (r.get("rewards") or {}).get("reward") == 1.0
+        and not r.get("error")
+        and not r.get("verifier_error")
     )
     findings["failed"] = sum(
         1
         for r in results
-        if (r.get("rewards") or {}).get("reward", 0) == 0 and not r.get("error")
+        if (r.get("rewards") or {}).get("reward") is not None
+        and (r.get("rewards") or {}).get("reward") != 1.0
+        and not r.get("error")
+        and not r.get("verifier_error")
     )
     findings["errored"] = sum(1 for r in results if r.get("error"))
+    findings["verifier_errored"] = sum(1 for r in results if r.get("verifier_error"))
+
+    if summary := findings.get("summary"):
+        for key in ("total", "passed", "failed", "errored", "verifier_errored"):
+            if key in summary and summary[key] != findings[key]:
+                findings["issues"].append(
+                    f"summary.json {key}={summary[key]} but results imply {findings[key]}"
+                )
+                findings["ok"] = False
 
     return findings
 

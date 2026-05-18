@@ -109,6 +109,55 @@ class TestEvalCreateRouting:
 
         assert captured["agent"] == "codex-acp"
 
+    def test_eval_create_normalizes_sandbox_user_none(self, tmp_path: Path):
+        """Guards ENG-91 P0 dogfood sandbox-user CLI regression."""
+        import asyncio
+
+        from benchflow.cli.main import eval_create
+
+        task = tmp_path / "task"
+        task.mkdir()
+        (task / "task.toml").write_text('schema_version = "1.1"\n')
+        (task / "instruction.md").write_text("solve\n")
+        captured = {}
+
+        async def fake_run(self, **kwargs):
+            from benchflow.models import RunResult
+
+            captured.update(kwargs)
+            return RunResult(
+                task_name="task",
+                agent_name=kwargs["agent"],
+                rewards={"reward": 1.0},
+                n_tool_calls=0,
+            )
+
+        try:
+            with patch("benchflow.sdk.SDK.run", new=fake_run):
+                eval_create(
+                    config_file=None,
+                    tasks_dir=task,
+                    source_repo=None,
+                    source_path=None,
+                    source_ref=None,
+                    agent="oracle",
+                    model=None,
+                    environment="docker",
+                    concurrency=1,
+                    jobs_dir=str(tmp_path / "jobs"),
+                    sandbox_user="none",
+                    sandbox_setup_timeout=120,
+                    skills_dir=None,
+                    skill_mode="default",
+                    skill_creator_dir=None,
+                    self_gen_no_internet=False,
+                    agent_env=None,
+                )
+        finally:
+            asyncio.set_event_loop(asyncio.new_event_loop())
+
+        assert captured["sandbox_user"] is None
+
     def test_eval_create_config_rejects_unsupported_agent_protocol(
         self, tmp_path: Path
     ):

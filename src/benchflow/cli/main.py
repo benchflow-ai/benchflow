@@ -11,6 +11,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from benchflow._utils.config import normalize_sandbox_user
 from benchflow.agents.registry import parse_agent_spec
 from benchflow.cli.trace_import import register_tasks_generate
 from benchflow.evaluation import DEFAULT_AGENT, effective_model
@@ -150,6 +151,8 @@ def run(
         raise typer.Exit(1)
 
     parsed_env = _parse_agent_env(agent_env)
+    agent = _normalize_eval_agent_or_exit(agent)
+    sandbox_user = normalize_sandbox_user(sandbox_user)
 
     sdk = SDK()
     # CLI only ever passes plain strings; cast to widen for the SDK's
@@ -882,12 +885,14 @@ def eval_create(
 
     parsed_env = _parse_agent_env(agent_env)
     agent = _normalize_eval_agent_or_exit(agent)
+    sandbox_user = normalize_sandbox_user(sandbox_user)
 
     if config_file:
         j = Evaluation.from_yaml(config_file)
         j._config.agent = _normalize_eval_agent_or_exit(j._config.agent)
         j._config.model = effective_model(j._config.agent, j._config.model)
         j._config.agent_env = {**j._config.agent_env, **parsed_env}
+        j._config.sandbox_user = normalize_sandbox_user(j._config.sandbox_user)
         result = asyncio.run(j.run())
         console.print(
             f"\n[bold]Score: {result.passed}/{result.total} "

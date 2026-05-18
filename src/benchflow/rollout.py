@@ -49,6 +49,7 @@ from pathlib import Path
 from typing import Any
 
 from benchflow._types import Role, Scene, Turn
+from benchflow._utils.config import normalize_agent_name, normalize_sandbox_user
 from benchflow.acp.client import ACPClient, ACPError
 from benchflow.acp.runtime import connect_acp, execute_prompts
 from benchflow.agents.credentials import (
@@ -657,6 +658,13 @@ class RolloutConfig:
     skip_verify: bool = False
     export_generated_skills_to: str | Path | None = None
 
+    def __post_init__(self) -> None:
+        self.agent = normalize_agent_name(self.agent)
+        self.sandbox_user = normalize_sandbox_user(self.sandbox_user)
+        for scene in self.scenes:
+            for role in scene.roles:
+                role.agent = normalize_agent_name(role.agent)
+
     @classmethod
     def from_legacy(
         cls,
@@ -974,6 +982,13 @@ class Rollout:
 
         agent_name = cfg.primary_agent
         self._agent_cfg = await install_agent(self._env, agent_name, rollout_dir)
+        if cfg.sandbox_user:
+            self._agent_cwd = await setup_sandbox_user(
+                self._env,
+                cfg.sandbox_user,
+                workspace=self._agent_cwd,
+                timeout_sec=cfg.sandbox_setup_timeout,
+            )
         cred_home = f"/home/{cfg.sandbox_user}" if cfg.sandbox_user else "/root"
         await write_credential_files(
             self._env,
@@ -985,14 +1000,6 @@ class Rollout:
         )
         if self._agent_env.get("_BENCHFLOW_SUBSCRIPTION_AUTH"):
             await upload_subscription_auth(self._env, agent_name, cred_home)
-
-        if cfg.sandbox_user:
-            self._agent_cwd = await setup_sandbox_user(
-                self._env,
-                cfg.sandbox_user,
-                workspace=self._agent_cwd,
-                timeout_sec=cfg.sandbox_setup_timeout,
-            )
         await apply_web_tool_policy(
             self._env,
             agent_name,
@@ -1681,8 +1688,15 @@ class Rollout:
             environment=cfg.environment,
         )
 
-        if role.agent != cfg.primary_agent:
+        role_agent_differs = role.agent != cfg.primary_agent
+        needs_role_credentials = (
+            role_agent_differs or role.model != cfg.primary_model or bool(role.env)
+        )
+        if role_agent_differs:
             agent_cfg = await install_agent(self._env, role.agent, rollout_dir)
+        else:
+            agent_cfg = getattr(self, "_agent_cfg", None)
+        if needs_role_credentials:
             cred_home = f"/home/{cfg.sandbox_user}" if cfg.sandbox_user else "/root"
             await write_credential_files(
                 self._env,

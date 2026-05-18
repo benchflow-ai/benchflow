@@ -105,10 +105,15 @@ async def test_install_agent_applies_web_policy_after_sandbox_setup(
     async def apply_web_tool_policy_mock(*args, **kwargs):
         order.append("web-policy")
 
+    async def write_credential_files_mock(*args, **kwargs):
+        order.append("credentials")
+
     install_agent_mock = AsyncMock(return_value=MagicMock())
 
     monkeypatch.setattr("benchflow.rollout.install_agent", install_agent_mock)
-    monkeypatch.setattr("benchflow.rollout.write_credential_files", AsyncMock())
+    monkeypatch.setattr(
+        "benchflow.rollout.write_credential_files", write_credential_files_mock
+    )
     monkeypatch.setattr("benchflow.rollout.upload_subscription_auth", AsyncMock())
     monkeypatch.setattr("benchflow.rollout._snapshot_build_config", AsyncMock())
     monkeypatch.setattr("benchflow.rollout._seed_verifier_workspace", AsyncMock())
@@ -121,4 +126,4 @@ async def test_install_agent_applies_web_policy_after_sandbox_setup(
 
     await trial.install_agent()
 
-    assert order == ["sandbox", "web-policy"]
+    assert order == ["sandbox", "credentials", "web-policy"]
