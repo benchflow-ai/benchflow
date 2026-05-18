@@ -108,7 +108,7 @@ bench agent list
 single tasks, batch runs, and remote repos. Use `--source-repo <org/repo>
 --source-path <subpath>` to fetch from a remote repo, `--tasks-dir <dir>` for a
 local directory, or `--config <config.yaml>` for a YAML config. Results land under
-`evaluations/<eval-name>/<rollout-name>/` — `result.json` for the verifier output,
+`jobs/<eval-name>/<rollout-name>/` — `result.json` for the verifier output,
 `trajectory/acp_trajectory.jsonl` for the full agent trace.
 
 When you mount skills, use `BENCHFLOW_SKILL_NUDGE=name` as the default docs
