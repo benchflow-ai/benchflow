@@ -14,6 +14,7 @@ from benchflow.sandbox.setup import (
     _inject_skills_into_dockerfile,
     _modal_add_python_version,
     _modal_rewrite_dockerfile_heredocs,
+    _raise_missing_optional_sandbox_dependency,
     stage_dockerfile_deps,
 )
 
@@ -240,6 +241,27 @@ class TestCreateEnvironment:
             task_env_config=env_config,
         )
         assert result is modal_env.return_value
+
+    @pytest.mark.parametrize(
+        ("sandbox_type", "extra"),
+        [
+            pytest.param("daytona", "sandbox-daytona", id="daytona"),
+            pytest.param("modal", "sandbox-modal", id="modal"),
+        ],
+    )
+    def test_missing_optional_sandbox_dependency_has_install_hint(
+        self, sandbox_type, extra
+    ):
+        """Guards ENG-77: optional backends raise actionable install guidance."""
+        with pytest.raises(RuntimeError) as exc_info:
+            _raise_missing_optional_sandbox_dependency(
+                sandbox_type,
+                ModuleNotFoundError("No module named optional_backend"),
+            )
+
+        message = str(exc_info.value)
+        assert f"uv sync --extra {extra}" in message
+        assert f"benchflow[{extra}]" in message
 
     @pytest.mark.asyncio
     @pytest.mark.skipif(

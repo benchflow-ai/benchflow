@@ -375,6 +375,20 @@ class TestResolveAgentEnvNoModel:
         assert "_BENCHFLOW_SUBSCRIPTION_AUTH" not in result
 
 
+def test_task_env_resolves_from_dotenv(monkeypatch, tmp_path):
+    """Guards ENG-80 dogfood regression: verifier env can resolve from .env."""
+    env_file = tmp_path / ".env"
+    env_file.write_text("GEMINI_API_KEY=from-dotenv\n")
+    monkeypatch.setenv("BENCHFLOW_DOTENV_PATH", str(env_file))
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+
+    from benchflow.task.env import resolve_env_vars
+
+    assert resolve_env_vars({"GOOGLE_API_KEY": "${GEMINI_API_KEY}"}) == {
+        "GOOGLE_API_KEY": "from-dotenv"
+    }
+
+
 class TestResolveAgentEnvOracle:
     """Oracle runs solve.sh and never calls an LLM — must skip model-related env.
 

@@ -535,10 +535,17 @@ class SkillEvaluator:
         jobs_path = Path(jobs_dir)
         for case in self.dataset.cases:
             case_id = case.id
-            # Find the trial directory for this case
-            rollout_dirs = list(jobs_path.glob(f"{case_id}*"))
+            # Evaluation writes timestamped rollout dirs; support both the old
+            # direct layout and the current nested layout.
+            rollout_dirs = [
+                path
+                for path in jobs_path.glob(f"**/{case_id}*")
+                if path.is_dir() and (path / "result.json").exists()
+            ]
             if rollout_dirs:
-                rollout_dir = rollout_dirs[0]
+                rollout_dir = sorted(
+                    rollout_dirs, key=lambda p: p.stat().st_mtime, reverse=True
+                )[0]
                 result_file = rollout_dir / "result.json"
                 reward = None
                 error = None

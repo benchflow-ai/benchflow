@@ -52,6 +52,142 @@ class TestEvalCreateRouting:
         assert result.exit_code == 0
         assert "tasks-dir" in result.stdout or "task" in result.stdout.lower()
 
+    def test_tasks_generate_help_resolves(self):
+        """Guards ENG-65: `bench tasks generate` is registered on live CLI."""
+        from benchflow.cli.main import app
+
+        result = CliRunner().invoke(app, ["tasks", "generate", "--help"])
+        assert result.exit_code == 0
+        assert "--from-local" in result.stdout
+
+    def test_eval_create_normalizes_agent_alias(self, tmp_path: Path):
+        """Guards ENG-86: eval create normalizes aliases before launch."""
+        import asyncio
+
+        from benchflow.cli.main import eval_create
+
+        task = tmp_path / "task"
+        task.mkdir()
+        (task / "task.toml").write_text('schema_version = "1.1"\n')
+        (task / "instruction.md").write_text("solve\n")
+        captured = {}
+
+        async def fake_run(self, **kwargs):
+            from benchflow.models import RunResult
+
+            captured.update(kwargs)
+            return RunResult(
+                task_name="task",
+                agent_name=kwargs["agent"],
+                rewards={"reward": 1.0},
+                n_tool_calls=0,
+            )
+
+        try:
+            with patch("benchflow.sdk.SDK.run", new=fake_run):
+                eval_create(
+                    config_file=None,
+                    tasks_dir=task,
+                    source_repo=None,
+                    source_path=None,
+                    source_ref=None,
+                    agent="codex",
+                    model="gpt-4o",
+                    environment="docker",
+                    concurrency=1,
+                    jobs_dir=str(tmp_path / "jobs"),
+                    sandbox_user="agent",
+                    sandbox_setup_timeout=120,
+                    skills_dir=None,
+                    skill_mode="default",
+                    skill_creator_dir=None,
+                    self_gen_no_internet=False,
+                    agent_env=None,
+                )
+        finally:
+            asyncio.set_event_loop(asyncio.new_event_loop())
+
+        assert captured["agent"] == "codex-acp"
+
+    def test_eval_create_inherits_host_provider_key_without_agent_env(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """Guards ENG-78: CLI runs inherit provider keys without --agent-env."""
+        import asyncio
+
+        from benchflow.cli.main import eval_create
+
+        task = tmp_path / "task"
+        task.mkdir()
+        (task / "task.toml").write_text('schema_version = "1.1"\n')
+        (task / "instruction.md").write_text("solve\n")
+        monkeypatch.setenv("GEMINI_API_KEY", "from-host")
+        captured = {}
+
+        async def fake_run(self, **kwargs):
+            from benchflow.agents.env import resolve_agent_env
+            from benchflow.models import RunResult
+
+            captured["kwargs"] = kwargs
+            captured["resolved_agent_env"] = resolve_agent_env(
+                kwargs["agent"],
+                kwargs["model"],
+                kwargs["agent_env"],
+            )
+            return RunResult(
+                task_name="task",
+                agent_name=kwargs["agent"],
+                rewards={"reward": 1.0},
+                n_tool_calls=0,
+            )
+
+        try:
+            with patch("benchflow.sdk.SDK.run", new=fake_run):
+                eval_create(
+                    config_file=None,
+                    tasks_dir=task,
+                    source_repo=None,
+                    source_path=None,
+                    source_ref=None,
+                    agent="gemini",
+                    model="gemini-3.1-flash-lite-preview",
+                    environment="docker",
+                    concurrency=1,
+                    jobs_dir=str(tmp_path / "jobs"),
+                    sandbox_user="agent",
+                    sandbox_setup_timeout=120,
+                    skills_dir=None,
+                    skill_mode="default",
+                    skill_creator_dir=None,
+                    self_gen_no_internet=False,
+                    agent_env=None,
+                )
+        finally:
+            asyncio.set_event_loop(asyncio.new_event_loop())
+
+        assert captured["kwargs"]["agent_env"] == {}
+        assert captured["resolved_agent_env"]["GEMINI_API_KEY"] == "from-host"
+        assert captured["resolved_agent_env"]["GOOGLE_API_KEY"] == "from-host"
+
+    def test_eval_list_reads_root_summary(self, tmp_path: Path):
+        """Guards ENG-83: root summary.json is treated as the eval summary."""
+        import json
+
+        from benchflow.cli.main import app
+
+        jobs = tmp_path / "jobs-batch-oracle"
+        jobs.mkdir()
+        (jobs / "summary.json").write_text(
+            json.dumps({"total": 2, "passed": 1, "score": "50.0%"})
+        )
+        child = jobs / "2026-05-18__11-26-49"
+        child.mkdir()
+
+        result = CliRunner().invoke(app, ["eval", "list", str(jobs)])
+        assert result.exit_code == 0
+        assert "1/2" in result.stdout
+        assert "no summary" not in result.stdout
+
 
 class TestEffectiveModel:
     """The helper introduced in Layer 3 — single source of truth for the rule

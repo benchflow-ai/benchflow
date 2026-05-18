@@ -201,9 +201,11 @@ dev = [
 ]
 sandbox-daytona = [
     { name = "daytona" },
+    { name = "tenacity" },
 ]
 sandbox-modal = [
     { name = "modal" },
+    { name = "tenacity" },
 ]
 
 [package.metadata]
@@ -220,6 +222,8 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "rich", specifier = ">=13.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.7.0" },
+    { name = "tenacity", marker = "extra == 'sandbox-daytona'", specifier = ">=8.0" },
+    { name = "tenacity", marker = "extra == 'sandbox-modal'", specifier = ">=8.0" },
     { name = "ty", marker = "extra == 'dev'", specifier = ">=0.0.1a1" },
     { name = "typer", specifier = ">=0.9" },
 ]
@@ -1545,6 +1549,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/f9/5e/50ea27817003665c7cc4f5bdad309f13d6329037f657848ee87fe06c3740/synchronicity-0.12.2.tar.gz", hash = "sha256:6fd605a5035d1ec74ce48fffaca80ea00345c84ca34223914e2436fb4f162ff9", size = 60018, upload-time = "2026-04-06T15:06:15.447Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/41/44/4f6ba4e2c171847e6f9a460213b196bbf26edea43d0e66889c7ccc55d368/synchronicity-0.12.2-py3-none-any.whl", hash = "sha256:9dbaca81fb7f2b57c6dea326e514e1c80e9ccfd9c9618515e84fa6091026273b", size = 41312, upload-time = "2026-04-06T15:06:14.459Z" },
+]
+
+[[package]]
+name = "tenacity"
+version = "9.1.4"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/47/c6/ee486fd809e357697ee8a44d3d69222b344920433d3b6666ccd9b374630c/tenacity-9.1.4.tar.gz", hash = "sha256:adb31d4c263f2bd041081ab33b498309a57c77f9acf2db65aadf0898179cf93a", size = 49413, upload-time = "2025-04-02T15:35:41.594Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d7/c1/eb8f9debc45d3b7918a32ab756658a0904732f75e555402972246b0b8e71/tenacity-9.1.4-py3-none-any.whl", hash = "sha256:6095a360c919085f28c6527de529e76a06ad89b23659fa881ae0649b867a9d55", size = 28926, upload-time = "2025-04-02T15:35:39.943Z" },
 ]
 
 [[package]]

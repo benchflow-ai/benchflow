@@ -11,6 +11,8 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from benchflow.agents.registry import parse_agent_spec
+from benchflow.cli.trace_import import register_tasks_generate
 from benchflow.evaluation import DEFAULT_AGENT, effective_model
 
 # Show progress messages (logger.info) from benchflow internals by default.
@@ -588,6 +590,8 @@ def skills_eval(
 tasks_app = typer.Typer(help="Task authoring commands")
 app.add_typer(tasks_app, name="tasks")
 
+register_tasks_generate(tasks_app)
+
 
 @tasks_app.command("init")
 def tasks_init(
@@ -869,9 +873,15 @@ def eval_create(
     from benchflow.evaluation import Evaluation, EvaluationConfig
 
     parsed_env = _parse_agent_env(agent_env)
+    protocol, canonical_agent = parse_agent_spec(agent)
+    if protocol != "acp":
+        console.print(f"[red]Unsupported eval agent protocol: {protocol}[/red]")
+        raise typer.Exit(1)
+    agent = canonical_agent
 
     if config_file:
         j = Evaluation.from_yaml(config_file)
+        j._config.agent = parse_agent_spec(j._config.agent)[1]
         j._config.agent_env = {**j._config.agent_env, **parsed_env}
         result = asyncio.run(j.run())
         console.print(
@@ -1025,6 +1035,17 @@ def eval_list(
     table.add_column("Evaluation", style="cyan")
     table.add_column("Tasks", justify="right")
     table.add_column("Summary")
+
+    root_summary = jobs_dir / "summary.json"
+    if root_summary.exists():
+        data = json.loads(root_summary.read_text())
+        table.add_row(
+            jobs_dir.name,
+            str(data.get("total", "?")),
+            f"{data.get('passed', '?')}/{data.get('total', '?')} ({data.get('score', '?')})",
+        )
+        console.print(table)
+        return
 
     for d in sorted(jobs_dir.iterdir()):
         if not d.is_dir():
