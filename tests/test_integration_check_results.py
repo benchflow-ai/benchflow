@@ -57,3 +57,54 @@ def test_check_results_reconciles_summary_counts(tmp_path: Path) -> None:
 
     assert findings["ok"] is False
     assert any("summary.json passed=1" in issue for issue in findings["issues"])
+
+
+def test_check_results_dedupes_retried_task_results(tmp_path: Path) -> None:
+    """Guards the 2026-05-19 Gemini integration retry accounting bug."""
+    agent_dir = tmp_path / "gemini"
+    run_dir = agent_dir / "2026-05-19__00-00-00"
+    first = run_dir / "weighted-gdp-calc__first"
+    second = run_dir / "weighted-gdp-calc__second"
+    first.mkdir(parents=True)
+    second.mkdir(parents=True)
+    (first / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "weighted-gdp-calc",
+                "agent": "gemini",
+                "rewards": None,
+                "error": "ACP error 400",
+                "verifier_error": None,
+            }
+        )
+    )
+    (second / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "weighted-gdp-calc",
+                "agent": "gemini",
+                "rewards": {"reward": 0.0},
+                "error": None,
+                "verifier_error": None,
+            }
+        )
+    )
+    (agent_dir / "summary.json").write_text(
+        json.dumps(
+            {
+                "total": 1,
+                "passed": 0,
+                "failed": 1,
+                "errored": 0,
+                "verifier_errored": 0,
+                "score": "0.0%",
+            }
+        )
+    )
+
+    findings = check_agent(agent_dir)
+
+    assert findings["ok"] is True
+    assert findings["total"] == 1
+    assert findings["errored"] == 0
+    assert findings["failed"] == 1
