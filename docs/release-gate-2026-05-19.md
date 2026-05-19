@@ -43,6 +43,8 @@ branch update before GitHub will mark them mergeable again.
 
 ## Commands
 
+Validation commands:
+
 ```bash
 uv run python tests/integration/run_suite.py --profile full-release --dry-run --fail-on-todo
 
@@ -62,6 +64,27 @@ uv run python tests/integration/run_suite.py \
   --open-pr-root HILBench=/tmp/benchflow-release-pr279-final \
   --open-pr-root OpaqueToolsBench=/tmp/benchflow-release-pr280-20260519-021530 \
   --open-pr-root CLBench=/tmp/benchflow-release-pr283-final
+```
+
+Remote update commands prepared locally:
+
+```bash
+# Retarget #292 to the branch that now ships the v0.4 tree.
+gh api \
+  --method PATCH \
+  repos/benchflow-ai/benchflow/pulls/292 \
+  -f base=main
+
+# Refresh dirty release-blocker PR branches after #294's squash merge.
+git -C /tmp/benchflow-pr279-maincheck push origin HEAD:devin/1778983541-hilbench-adapter
+git -C /tmp/benchflow-pr283-maincheck push origin HEAD:devin/1779000478-clbench-adapter
+git -C /tmp/benchflow-pr290-maincheck push origin HEAD:codex/hosted-env-adapter
+
+# #291 is a fork PR with maintainer edits enabled. Push to the contributor fork.
+git -C /tmp/benchflow-pr291-maincheck push https://github.com/Kfkcome/benchflow HEAD:fix/pi-acp-set-model-provider-prefix
+
+# Publish this release-gate branch update.
+git -C /Users/lixiangyi/.codex/worktrees/64b0/benchflow push origin HEAD:codex/trial-ready-release-gate
 ```
 
 ## Artifact Pointers
