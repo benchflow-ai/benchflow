@@ -39,7 +39,7 @@ branch update before GitHub will mark them mergeable again.
 | #283 | CLBench | `1415a9c04a04c1bfe75a5fb0c4104003482db9fe` | dirty/conflicting after #294; prior `test` success | `fe25d54` |
 | #290 | Hosted env source adapter | `41322da7d7b124695fad1b03ff9f06242b06a194` | dirty/conflicting after #294; prior `test` success, Cursor Bugbot neutral | `bf1ba2b` |
 | #291 | Pi ACP provider/model fix | `ba32d0b3d1dbf2839e834fcf64cb8aee96f8f999` | dirty/conflicting after #294; Devin Review success | `18fc9be` |
-| #292 | Release gate evidence | `bde9fa66e9a66c68e8b5eea0ead5fefddc934f3a` | dirty/conflicting after #294 | current branch `HEAD` |
+| #292 | Release gate evidence | `bde9fa66e9a66c68e8b5eea0ead5fefddc934f3a` | dirty/conflicting after #294; remote base still `refactor/v0.4` until retarget succeeds | current branch `HEAD` |
 
 ## Commands
 
@@ -85,9 +85,10 @@ cut.
 
 Release sequence after merge approval:
 
-1. Push the prepared branch updates for #279, #283, #290, #291, and #292.
-2. Wait for GitHub checks to rerun cleanly.
-3. Merge PRs #279, #280, #283, #290, #291, and #292.
-4. Bump `pyproject.toml` on `main` to `1.0.0`.
-5. Tag `v1.0.0` on `main`.
-6. Bump `main` to the next `.dev0`.
+1. Retarget #292 from `refactor/v0.4` to `main`.
+2. Push the prepared branch updates for #279, #283, #290, #291, and #292.
+3. Wait for GitHub checks to rerun cleanly.
+4. Merge PRs #279, #280, #283, #290, #291, and #292.
+5. Bump `pyproject.toml` on `main` to `1.0.0`.
+6. Tag `v1.0.0` on `main`.
+7. Bump `main` to the next `.dev0`.
