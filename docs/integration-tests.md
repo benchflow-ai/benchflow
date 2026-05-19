@@ -100,7 +100,7 @@ uv run python tests/integration/run_suite.py --profile near-term --dry-run
 uv run python tests/integration/run_suite.py --profile v0.4-release --dry-run --fail-on-todo
 uv run python tests/integration/run_suite.py --profile hosted-envs --dry-run
 uv run python tests/integration/run_suite.py --profile full-release --dry-run --fail-on-todo
-# Expected non-zero until Firecracker/K8s are promoted from backlog.
+# The backlog profile is expected non-zero until Firecracker/K8s are promoted.
 uv run python tests/integration/run_suite.py --profile backlog --dry-run --fail-on-todo
 uv run python tests/integration/run_suite.py --lane shared-sandbox-smoke --dry-run
 ```
