@@ -69,13 +69,13 @@ release should not be landed by blindly merging raw #292 after #279, #280,
 `src/benchflow/cli/main.py` conflict between the hosted-env CLI additions and
 the release-gate eval error-handling changes.
 
-Use the sequence-safe `handoff/trial-ready-release-integrated` proof for #292,
-then wait for the repository `test` check on the updated #292 head before
-merging. The guarded local helper documents this two-phase approval flow:
+PR #292 has already been updated to the sequence-safe
+`handoff/trial-ready-release-integrated` proof head at `a475a46`, and the
+repository `test` check is green on that head. The guarded local helper now
+documents the approval-gated merge flow:
 
 ```bash
-RUN_UPDATE_292=1 bash dogfood/2026-05-19-release-gate/remote-handoff/merge-release-prs-after-approval.sh
-# wait for #292 repository `test` success
+RUN_PREFLIGHT=1 bash dogfood/2026-05-19-release-gate/remote-handoff/merge-release-prs-after-approval.sh
 RUN_MERGE=1 bash dogfood/2026-05-19-release-gate/remote-handoff/merge-release-prs-after-approval.sh
 ```
 
@@ -85,9 +85,9 @@ merging it.
 
 The packaging-only branch `handoff/release-1.0.0-rc-current` bumps
 `pyproject.toml` and the local package entry in `uv.lock` to `1.0.0`.
-`uv build` produced `dist/benchflow-1.0.0.tar.gz` and
-`dist/benchflow-1.0.0-py3-none-any.whl`; both wheel `METADATA` and sdist
-`PKG-INFO` report `Version: 1.0.0`.
+`dogfood/2026-05-19-release-gate/remote-handoff/package-rc-preflight.sh`
+builds that RC head, runs `twine check`, and verifies both wheel `METADATA` and
+sdist `PKG-INFO` report `Version: 1.0.0`.
 
 ## Commands
 
@@ -149,6 +149,7 @@ Detailed run artifacts are intentionally under ignored `dogfood/` paths:
 - `dogfood/2026-05-19-trace-to-task-e2e/jobs-oracle-opentraces-fixture/2026-05-19__05-48-10/create-a-file-named-opentraces-txt-with-9f87605e__a7e18623/result.json`
 - `dogfood/2026-05-19-release-gate/hosted-envs/hosted-env-evidence.json`
 - `dogfood/2026-05-19-release-gate/hosted-envs/harbor-registry-inventory.jsonl`
+- `dogfood/2026-05-19-release-gate/package-rc-preflight.json`
 - `/tmp/benchflow-release-1.0.0-rc-current/dist/benchflow-1.0.0.tar.gz`
 - `/tmp/benchflow-release-1.0.0-rc-current/dist/benchflow-1.0.0-py3-none-any.whl`
 - `dogfood/2026-05-19-release-gate/remote-handoff/README.md`
