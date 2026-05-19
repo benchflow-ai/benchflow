@@ -69,10 +69,9 @@ release should not be landed by blindly merging raw #292 after #279, #280,
 `src/benchflow/cli/main.py` conflict between the hosted-env CLI additions and
 the release-gate eval error-handling changes.
 
-PR #292 has already been updated to the sequence-safe
-`handoff/trial-ready-release-integrated` proof head at `a475a46`, and the
-repository `test` check is green on that head. The guarded local helper now
-documents the approval-gated merge flow:
+PR #292 has already been updated to the sequence-safe release-gate refresh head
+at `8c58403`, and the repository `test` check is green on that head. The
+guarded local helper now documents the approval-gated merge flow:
 
 ```bash
 RUN_PREFLIGHT=1 bash dogfood/2026-05-19-release-gate/remote-handoff/merge-release-prs-after-approval.sh
@@ -83,8 +82,8 @@ Use GitHub merge commits for this release packet. If earlier PRs are
 squash-merged instead, refresh #292 again on the post-squash `main` before
 merging it.
 
-The packaging-only branch `handoff/release-1.0.0-rc-current` bumps
-`pyproject.toml` and the local package entry in `uv.lock` to `1.0.0`.
+The packaging-only branch `handoff/release-1.0.0-rc-refresh` at `646ac47`
+bumps `pyproject.toml` and the local package entry in `uv.lock` to `1.0.0`.
 `dogfood/2026-05-19-release-gate/remote-handoff/package-rc-preflight.sh`
 builds that RC head, runs `twine check`, and verifies both wheel `METADATA` and
 sdist `PKG-INFO` report `Version: 1.0.0`.
@@ -150,8 +149,6 @@ Detailed run artifacts are intentionally under ignored `dogfood/` paths:
 - `dogfood/2026-05-19-release-gate/hosted-envs/hosted-env-evidence.json`
 - `dogfood/2026-05-19-release-gate/hosted-envs/harbor-registry-inventory.jsonl`
 - `dogfood/2026-05-19-release-gate/package-rc-preflight.json`
-- `/tmp/benchflow-release-1.0.0-rc-current/dist/benchflow-1.0.0.tar.gz`
-- `/tmp/benchflow-release-1.0.0-rc-current/dist/benchflow-1.0.0-py3-none-any.whl`
 - `dogfood/2026-05-19-release-gate/remote-handoff/README.md`
 - `dogfood/2026-05-19-release-gate/remote-handoff/release-pr-handoff.bundle`
 
