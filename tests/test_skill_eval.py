@@ -300,7 +300,7 @@ class TestGenerateTasks:
         assert "timeout_sec = 120" in toml_text
 
     def test_with_skill_task_declares_neutral_skill_mount(self, skill_dir, tmp_path):
-        from harbor.models.task.task import Task
+        from benchflow.task import Task
 
         ds = load_eval_dataset(skill_dir)
         output = tmp_path / "with"
@@ -315,7 +315,7 @@ class TestGenerateTasks:
     def test_judge_env_templates_available_host_keys_without_secrets(
         self, skill_dir, tmp_path, monkeypatch
     ):
-        from harbor.models.task.task import Task
+        from benchflow.task import Task
 
         monkeypatch.setenv("GEMINI_API_KEY", "secret-gemini-key")
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -334,7 +334,7 @@ class TestGenerateTasks:
         assert task.config.verifier.env["GEMINI_API_KEY"] == "${GEMINI_API_KEY}"
 
     def test_without_skill_task_omits_skill_mount(self, skill_dir, tmp_path):
-        from harbor.models.task.task import Task
+        from benchflow.task import Task
 
         ds = load_eval_dataset(skill_dir)
         output = tmp_path / "without"
