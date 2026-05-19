@@ -65,13 +65,14 @@ def _format_acp_model(model: str, agent: str) -> str:
     Strips benchflow's custom provider prefixes first, then re-adds the
     models.dev provider prefix when the agent requires it.
     """
-    bare = strip_provider_prefix(model)
     agent_cfg = AGENTS.get(agent)
     if not agent_cfg or agent_cfg.acp_model_format != "provider/model":
-        return bare
-    # Already has a slash — assume it's provider/model already
-    if "/" in bare:
-        return bare
+        return strip_provider_prefix(model)
+
+    if "/" in model:
+        return model
+
+    bare = strip_provider_prefix(model)
     # Infer the models.dev provider from the bare model name
     m = bare.lower()
     for substring, provider in _MODELSDEV_PROVIDER_HEURISTICS:

@@ -19,10 +19,18 @@ The classes below pin each layer at the right altitude:
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+import pytest
 from typer.testing import CliRunner
+
+ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+
+
+def _plain_cli_output(output: str) -> str:
+    return ANSI_ESCAPE_RE.sub("", output)
 
 
 class TestEvalCreateRouting:
@@ -52,13 +60,32 @@ class TestEvalCreateRouting:
         assert result.exit_code == 0
         assert "tasks-dir" in result.stdout or "task" in result.stdout.lower()
 
+    @pytest.mark.parametrize(
+        "command",
+        [
+            pytest.param(["eval", "create", "--help"], id="eval-create"),
+            pytest.param(["environment", "create", "--help"], id="environment-create"),
+        ],
+    )
+    def test_sandbox_help_matches_v04_supported_backends(self, command):
+        """Guards ENG-92 CLI help does not advertise future sandbox backends."""
+        from benchflow.cli.main import app
+
+        result = CliRunner().invoke(app, command)
+
+        assert result.exit_code == 0
+        assert "Sandbox: docker, daytona, or modal" in result.stdout
+        assert "firecracker" not in result.stdout.lower()
+        assert "kubernetes" not in result.stdout.lower()
+        assert "k8s" not in result.stdout.lower()
+
     def test_tasks_generate_help_resolves(self):
         """Guards ENG-65: `bench tasks generate` is registered on live CLI."""
         from benchflow.cli.main import app
 
         result = CliRunner().invoke(app, ["tasks", "generate", "--help"])
         assert result.exit_code == 0
-        assert "--from-local" in result.stdout
+        assert "--from-local" in _plain_cli_output(result.stdout)
 
     def test_eval_create_normalizes_agent_alias(self, tmp_path: Path):
         """Guards ENG-86: eval create normalizes aliases before launch."""
@@ -262,6 +289,189 @@ class TestEvalCreateRouting:
         assert captured["kwargs"]["agent_env"] == {}
         assert captured["resolved_agent_env"]["GEMINI_API_KEY"] == "from-host"
         assert captured["resolved_agent_env"]["GOOGLE_API_KEY"] == "from-host"
+
+    def test_eval_create_loads_dotenv_for_sandbox_provider_auth(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """Guards release smokes: .env sandbox credentials reach provider SDKs."""
+        import asyncio
+        import os
+
+        from benchflow.cli.main import eval_create
+        from benchflow.models import RunResult
+
+        task = tmp_path / "task"
+        task.mkdir()
+        (task / "task.toml").write_text('schema_version = "1.1"\n')
+        (task / "instruction.md").write_text("solve\n")
+        env_file = tmp_path / ".env"
+        env_file.write_text(
+            "DAYTONA_API_KEY=from-dotenv\n"
+            "MODAL_TOKEN_ID=modal-id\n"
+            "MODAL_TOKEN_SECRET=modal-secret\n"
+        )
+        monkeypatch.setenv("BENCHFLOW_DOTENV_PATH", str(env_file))
+        captured = {}
+
+        async def fake_run(self, **kwargs):
+            captured["daytona"] = os.environ.get("DAYTONA_API_KEY")
+            captured["modal_id"] = os.environ.get("MODAL_TOKEN_ID")
+            captured["modal_secret"] = os.environ.get("MODAL_TOKEN_SECRET")
+            return RunResult(
+                task_name="task",
+                agent_name=kwargs["agent"],
+                rewards={"reward": 1.0},
+                n_tool_calls=0,
+            )
+
+        try:
+            with patch("benchflow.sdk.SDK.run", new=fake_run):
+                eval_create(
+                    config_file=None,
+                    tasks_dir=task,
+                    source_repo=None,
+                    source_path=None,
+                    source_ref=None,
+                    agent="oracle",
+                    model=None,
+                    environment="daytona",
+                    concurrency=1,
+                    jobs_dir=str(tmp_path / "jobs"),
+                    sandbox_user="agent",
+                    sandbox_setup_timeout=120,
+                    skills_dir=None,
+                    skill_mode="default",
+                    skill_creator_dir=None,
+                    self_gen_no_internet=False,
+                    agent_env=None,
+                )
+        finally:
+            asyncio.set_event_loop(asyncio.new_event_loop())
+
+        assert captured == {
+            "daytona": "from-dotenv",
+            "modal_id": "modal-id",
+            "modal_secret": "modal-secret",
+        }
+
+    def test_eval_create_exits_nonzero_when_single_task_errors(self, tmp_path: Path):
+        """Guards ENG-93 release smoke evidence against false-green CLI exits."""
+        from benchflow.cli.main import app
+        from benchflow.models import RunResult
+
+        task = tmp_path / "task"
+        task.mkdir()
+        (task / "task.toml").write_text('schema_version = "1.1"\n')
+        (task / "instruction.md").write_text("solve\n")
+
+        async def fake_run(self, **kwargs):
+            return RunResult(
+                task_name="task",
+                agent_name=kwargs["agent"],
+                error="Token not found",
+            )
+
+        with patch("benchflow.sdk.SDK.run", new=fake_run):
+            result = CliRunner().invoke(
+                app,
+                [
+                    "eval",
+                    "create",
+                    "--tasks-dir",
+                    str(task),
+                    "--agent",
+                    "oracle",
+                    "--sandbox",
+                    "modal",
+                    "--jobs-dir",
+                    str(tmp_path / "jobs"),
+                ],
+            )
+
+        assert result.exit_code == 1
+        assert "Error:" in result.stdout
+        assert "Token not found" in result.stdout
+
+    def test_eval_create_exits_nonzero_when_single_task_verifier_errors(
+        self, tmp_path: Path
+    ):
+        """Guards ENG-93 release smoke evidence against hidden verifier errors."""
+        from benchflow.cli.main import app
+        from benchflow.models import RunResult
+
+        task = tmp_path / "task"
+        task.mkdir()
+        (task / "task.toml").write_text('schema_version = "1.1"\n')
+        (task / "instruction.md").write_text("solve\n")
+
+        async def fake_run(self, **kwargs):
+            return RunResult(
+                task_name="task",
+                agent_name=kwargs["agent"],
+                verifier_error="verifier crashed",
+            )
+
+        with patch("benchflow.sdk.SDK.run", new=fake_run):
+            result = CliRunner().invoke(
+                app,
+                [
+                    "eval",
+                    "create",
+                    "--tasks-dir",
+                    str(task),
+                    "--agent",
+                    "oracle",
+                    "--sandbox",
+                    "docker",
+                    "--jobs-dir",
+                    str(tmp_path / "jobs"),
+                ],
+            )
+
+        assert result.exit_code == 1
+        assert "Verifier error:" in result.stdout
+        assert "verifier crashed" in result.stdout
+
+    def test_eval_create_exits_nonzero_when_batch_has_harness_errors(
+        self, tmp_path: Path
+    ):
+        """Guards ENG-93 release smoke evidence against false-green batch runs."""
+        from types import SimpleNamespace
+
+        from benchflow.cli.main import app
+        from benchflow.evaluation import Evaluation
+
+        tasks = tmp_path / "tasks"
+        tasks.mkdir()
+
+        async def fake_run(self):
+            return SimpleNamespace(
+                passed=0,
+                total=1,
+                score=0.0,
+                errored=1,
+                verifier_errored=0,
+            )
+
+        with patch.object(Evaluation, "run", new=fake_run):
+            result = CliRunner().invoke(
+                app,
+                [
+                    "eval",
+                    "create",
+                    "--tasks-dir",
+                    str(tasks),
+                    "--agent",
+                    "oracle",
+                    "--sandbox",
+                    "docker",
+                    "--jobs-dir",
+                    str(tmp_path / "jobs"),
+                ],
+            )
+
+        assert result.exit_code == 1
+        assert "Score: 0/1" in result.stdout
 
     def test_eval_list_reads_root_summary(self, tmp_path: Path):
         """Guards ENG-83: root summary.json is treated as the eval summary."""
