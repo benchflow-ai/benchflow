@@ -347,9 +347,7 @@ class TestEvalCreateRouting:
             "modal_secret": "modal-secret",
         }
 
-    def test_eval_create_exits_nonzero_when_single_task_errors(
-        self, tmp_path: Path
-    ):
+    def test_eval_create_exits_nonzero_when_single_task_errors(self, tmp_path: Path):
         """Guards ENG-93 release smoke evidence against false-green CLI exits."""
         from benchflow.cli.main import app
         from benchflow.models import RunResult

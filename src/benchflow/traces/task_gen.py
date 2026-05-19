@@ -437,8 +437,7 @@ def _build_solution_sh(trace: ParsedTrace) -> str:
 
     if not writes:
         return header + (
-            'echo "No replayable file writes were found for this trace." >&2\n'
-            "exit 1\n"
+            'echo "No replayable file writes were found for this trace." >&2\nexit 1\n'
         )
 
     blocks: list[str] = [header]

@@ -77,7 +77,9 @@ def _validate_hub_metadata(hub: dict[str, Any]) -> Finding:
             return Finding(platform, "fail", "selected_envs entries must be mappings")
         env_uid = selected.get("env_uid")
         if not isinstance(env_uid, str) or not env_uid.startswith(f"{platform}:"):
-            return Finding(platform, "fail", "selected env_uid must use platform prefix")
+            return Finding(
+                platform, "fail", "selected env_uid must use platform prefix"
+            )
         env_uids.append(env_uid)
 
     return Finding(platform, "pass", f"{len(env_uids)} selected env_uid(s) recorded")
@@ -123,11 +125,15 @@ def _run_harbor_inventory(
         if record.get("framework") != "harbor":
             return Finding("harbor", "fail", "inventory record missing framework"), out
         if not str(record.get("env_uid") or "").startswith("harbor:"):
-            return Finding("harbor", "fail", "inventory record missing harbor env_uid"), out
+            return Finding(
+                "harbor", "fail", "inventory record missing harbor env_uid"
+            ), out
         if record.get("hub_url") != hub.get("hub_url"):
             return Finding("harbor", "fail", "inventory record hub_url mismatch"), out
 
-    return Finding("harbor", "pass", f"inventory emitted {summary['total']} records"), out
+    return Finding(
+        "harbor", "pass", f"inventory emitted {summary['total']} records"
+    ), out
 
 
 def build_parser() -> argparse.ArgumentParser:

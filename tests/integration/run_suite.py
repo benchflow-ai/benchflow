@@ -98,7 +98,9 @@ def _validate_benchmark_axis(benchmarks: Any) -> None:
             raise SuiteError(f"benchmark group {group_name} must be a non-empty list")
         for entry in entries:
             if not isinstance(entry, Mapping):
-                raise SuiteError(f"benchmark group {group_name} entries must be mappings")
+                raise SuiteError(
+                    f"benchmark group {group_name} entries must be mappings"
+                )
 
             name = entry.get("name")
             uid = entry.get("uid")
@@ -709,9 +711,7 @@ def main(argv: list[str] | None = None) -> int:
                 lane_todos = collect_lane_todos(suite, lanes)
                 lane_blockers = collect_lane_blockers(lanes)
                 if lane_todos or lane_blockers:
-                    details = _format_unresolved_release_gate(
-                        lane_todos, lane_blockers
-                    )
+                    details = _format_unresolved_release_gate(lane_todos, lane_blockers)
                     print(
                         "unresolved TODOs or blocked lanes in selected lane(s): "
                         f"{details}",

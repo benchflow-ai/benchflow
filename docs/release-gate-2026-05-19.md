@@ -71,4 +71,3 @@ Release sequence after merge approval:
 3. Bump `pyproject.toml` on `main` to `1.0.0`.
 4. Tag `v1.0.0` on `main`.
 5. Bump `main` to the next `.dev0`.
-

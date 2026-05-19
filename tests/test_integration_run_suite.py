@@ -48,7 +48,9 @@ def test_release_suite_loads_and_tracks_backlog_lanes() -> None:
     assert "security-dind-smoke" not in full_release_lane_ids
     assert lanes_by_id["security-dind-smoke"]["status"] == "backlog"
     assert lanes_by_id["security-dind-smoke"]["release_blocker"] is False
-    assert all(lanes_by_id[lane_id]["release_blocker"] for lane_id in full_release_lane_ids)
+    assert all(
+        lanes_by_id[lane_id]["release_blocker"] for lane_id in full_release_lane_ids
+    )
 
 
 def test_release_suite_benchmarks_have_source_uids() -> None:
@@ -82,17 +84,15 @@ def test_release_suite_hosted_env_hubs_have_hub_urls() -> None:
     }
     assert all(hub["hub_url"].startswith("https://") for hub in hubs)
     assert all("env_uid_pattern" in hub for hub in hubs)
-    assert [env["env_uid"] for env in hubs_by_platform["openreward"]["selected_envs"]] == [
-        (
-            "openreward:GeneralReasoning/KellyBench@"
-            "be14865a-3c70-422e-a2ba-f45c132cd29a"
-        ),
-        (
-            "openreward:GeneralReasoning/CTF@"
-            "fcfcd0ef-1298-40e9-9492-83628fd98a1c"
-        ),
+    assert [
+        env["env_uid"] for env in hubs_by_platform["openreward"]["selected_envs"]
+    ] == [
+        ("openreward:GeneralReasoning/KellyBench@be14865a-3c70-422e-a2ba-f45c132cd29a"),
+        ("openreward:GeneralReasoning/CTF@fcfcd0ef-1298-40e9-9492-83628fd98a1c"),
     ]
-    assert [env["env_uid"] for env in hubs_by_platform["primeintellect"]["selected_envs"]] == [
+    assert [
+        env["env_uid"] for env in hubs_by_platform["primeintellect"]["selected_envs"]
+    ] == [
         "primeintellect:primeintellect/reverse-text@0.1.4",
         "primeintellect:primeintellect/math-python@0.1.10",
     ]
@@ -169,9 +169,7 @@ def test_security_dind_lane_has_concrete_task_but_remains_blocked() -> None:
         "dc329464161db64b0c670f46fa39b62e4719dddd"
     )
     assert expanded["todos"] == []
-    assert collect_lane_blockers([lane]) == {
-        "security-dind-smoke": lane["blocked_by"]
-    }
+    assert collect_lane_blockers([lane]) == {"security-dind-smoke": lane["blocked_by"]}
 
 
 def test_terminal_bench_smoke_task_is_valid() -> None:
@@ -240,7 +238,10 @@ def test_backlog_profile_tracks_security_dind_blocker(
     captured = capsys.readouterr()
     assert "Profile: backlog" in captured.out
     assert "Status: backlog" in captured.out
-    assert "harbor:termigen-environments/docker_escape_privileged_container_medium@" in captured.out
+    assert (
+        "harbor:termigen-environments/docker_escape_privileged_container_medium@"
+        in captured.out
+    )
     assert "bench eval create --sandbox firecracker" in captured.out
     assert "unresolved TODOs or blocked lanes in selected lane(s):" in captured.err
     assert "security-dind-smoke (blocked: 2)" in captured.err
