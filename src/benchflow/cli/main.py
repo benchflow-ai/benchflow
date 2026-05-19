@@ -44,9 +44,11 @@ def _parse_agent_env(entries: list[str] | None) -> dict[str, str]:
 
 def _normalize_eval_agent_or_exit(agent_spec: str) -> str:
     protocol, canonical_agent = parse_agent_spec(agent_spec)
-    if protocol != "acp":
+    if protocol not in ("acp", "acpx"):
         console.print(f"[red]Unsupported eval agent protocol: {protocol}[/red]")
         raise typer.Exit(1)
+    if protocol == "acpx":
+        return f"acpx/{canonical_agent}"
     return canonical_agent
 
 
