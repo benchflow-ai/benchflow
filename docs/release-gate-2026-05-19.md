@@ -101,6 +101,9 @@ Remote update status:
   #292 are not present in `benchflow-ai/benchflow`'s GitHub object database, and
   the prepared local head for #291 is not present in `Kfkcome/benchflow`, so the
   GitHub ref-update API cannot advance those branches without a real push first.
+- File-by-file GitHub contents updates are not a good substitute for a normal
+  push: the resolved heads differ from the current remote PR heads by 169 files
+  for #279, 168 for #283, 164 for #290, 282 for #291, and 17 for #292.
 - Handoff bundle: `dogfood/2026-05-19-release-gate/remote-handoff/release-pr-handoff.bundle`
   contains the prepared PR heads, the integrated proof branch, and the 1.0.0 RC
   branch.
