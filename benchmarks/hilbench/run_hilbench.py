@@ -1,9 +1,6 @@
 """Run HILBench — downloads dataset from HuggingFace, generates tasks, runs via Job.
 
 Pre-requisites:
-    * ``huggingface_hub`` installed (``pip install huggingface_hub``)
-    * ``HF_TOKEN`` env-var set to a token with access to the gated
-      ``ScaleAI/hil-bench-swe-images`` bucket on HuggingFace.
     * Docker daemon running.
 
 The runner downloads per-task Docker image tarballs from HuggingFace,
@@ -20,9 +17,12 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import quote
+from urllib.request import Request, urlopen
 
 from benchflow.job import Job
 
@@ -33,6 +33,7 @@ _SCRIPT_DIR = Path(__file__).resolve().parent
 _CONVERTER = _SCRIPT_DIR / "benchflow.py"
 _DOCKER_LOADED_RE = re.compile(r"Loaded image:\s*(\S+)")
 _DOCKER_LOADED_ID_RE = re.compile(r"Loaded image ID:\s*(\S+)")
+_HF_BUCKET_RE = re.compile(r"hf://buckets/([^/]+/[^/]+)/(.+)")
 
 
 def _repo_root() -> Path:
@@ -44,30 +45,47 @@ def _repo_root() -> Path:
     return Path.cwd()
 
 
+def _hf_token() -> str | None:
+    return os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN")
+
+
+def _download_hf_bucket_file(download_link: str, cache_dir: Path) -> Path:
+    """Download an ``hf://buckets/...`` object through HuggingFace bucket URLs."""
+    match = _HF_BUCKET_RE.fullmatch(download_link)
+    if not match:
+        raise ValueError(f"Cannot parse bucket download_link: {download_link}")
+
+    bucket_id = match.group(1)  # e.g. ScaleAI/hil-bench-swe-images
+    object_path = match.group(2)  # e.g. images/69bc1094b455a91fa20fb868.tar.zst
+    url = (
+        f"https://huggingface.co/buckets/{bucket_id}/resolve/"
+        f"{quote(object_path, safe='/')}"
+    )
+    local_path = cache_dir / bucket_id.replace("/", "--") / object_path
+    local_path.parent.mkdir(parents=True, exist_ok=True)
+    if local_path.exists() and local_path.stat().st_size > 0:
+        logger.info("Using cached image tarball %s", local_path)
+        return local_path
+
+    headers = {"User-Agent": "benchflow-hilbench-adapter"}
+    token = _hf_token()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    logger.info("Downloading %s to %s", url, local_path)
+    request = Request(url, headers=headers)
+    with urlopen(request, timeout=60) as response, local_path.open("wb") as f:
+        shutil.copyfileobj(response, f)
+    return local_path
+
+
 def _download_and_load_image(download_link: str, cache_dir: Path) -> str:
     """Download a HILBench Docker image tarball and load it.
 
     Returns the Docker image tag (or image ID) produced by ``docker load``.
     """
-    from huggingface_hub import hf_hub_download
-
-    # download_link format: hf://buckets/ScaleAI/hil-bench-swe-images/images/<uid>.tar.zst
-    # Extract repo_id and filename from the link.
-    match = re.match(r"hf://buckets/([^/]+/[^/]+)/(.+)", download_link)
-    if not match:
-        raise ValueError(f"Cannot parse download_link: {download_link}")
-
-    repo_id = match.group(1)  # e.g. ScaleAI/hil-bench-swe-images
-    filename = match.group(2)  # e.g. images/69bc1094b455a91fa20fb868.tar.zst
-
     cache_dir.mkdir(parents=True, exist_ok=True)
-    local_path = hf_hub_download(
-        repo_id=repo_id,
-        filename=filename,
-        repo_type="dataset",
-        cache_dir=str(cache_dir),
-        token=os.environ.get("HF_TOKEN"),
-    )
+    local_path = _download_hf_bucket_file(download_link, cache_dir)
     logger.info("Downloaded image tarball to %s", local_path)
 
     # Load the image into Docker
@@ -180,8 +198,8 @@ async def main():
 
     if not image_map:
         logger.warning(
-            "No Docker images loaded. Set HF_TOKEN and ensure access to "
-            "ScaleAI/hil-bench-swe-images on HuggingFace."
+            "No Docker images loaded. Ensure the HuggingFace bucket URLs in "
+            "task_metadata.json are reachable."
         )
 
     if config:

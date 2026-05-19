@@ -23,9 +23,9 @@
   "eval_parity": {
     "experiment": "hilbench_eval_parity",
     "description": "End-to-end evaluation parity: build Docker image, run test.sh, verify correct rewards.",
-    "date": "2026-05-17",
-    "status": "blocked",
-    "blocker": "Docker image tarballs are stored in gated HuggingFace repo ScaleAI/hil-bench-swe-images. HUGGINGFACE_TOKEN returns 404 — token lacks access to the gated dataset.",
-    "notes": "Dockerfile fixed: FROM hilbench-base:<task_id> replaces dead ARG BASE_IMAGE. Runner (run_hilbench.py) tags loaded images to predictable names. Cannot validate Docker build or verifier without HF access to download base images."
+    "date": "2026-05-19",
+    "status": "needs_refresh",
+    "blocker": null,
+    "notes": "Prior gated-access diagnosis was stale: ScaleAI/hil-bench-swe-images is a HuggingFace bucket, not a dataset repo. Runner now translates hf://buckets/ScaleAI/hil-bench-swe-images/images/<uid>.tar.zst to https://huggingface.co/buckets/ScaleAI/hil-bench-swe-images/resolve/images/<uid>.tar.zst before docker load. Refresh Docker image load and eval parity after this adapter fix."
   }
 }

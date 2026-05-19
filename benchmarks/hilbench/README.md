@@ -99,16 +99,20 @@ This adapter implements **baseline mode only**.
 ## Docker image setup
 
 Each HILBench SWE task ships a pre-built Docker image tarball on
-HuggingFace (`ScaleAI/hil-bench-swe-images`).  These images contain
-the repository at the correct commit plus the SWEAP test harness.
+HuggingFace bucket `ScaleAI/hil-bench-swe-images`.  These images contain
+the repository at the correct commit plus the SWEAP test harness.  The
+task metadata dataset is `ScaleAI/hil-bench`; image links use the bucket
+URI form `hf://buckets/ScaleAI/hil-bench-swe-images/images/<uid>.tar.zst`.
 
-**Access is gated** — you need a HuggingFace token with access to the
-`ScaleAI/hil-bench-swe-images` bucket.  Set `HF_TOKEN` in your
-environment before running.
+The runner resolves bucket URIs to
+`https://huggingface.co/buckets/ScaleAI/hil-bench-swe-images/resolve/images/<uid>.tar.zst`
+and downloads them directly.  If HuggingFace later gates a bucket or object,
+set `HF_TOKEN` or `HUGGINGFACE_TOKEN`; public objects do not require a token.
 
 The runner (`run_hilbench.py`) handles downloading and loading images
-automatically.  Each task's `Dockerfile` uses an `ARG BASE_IMAGE` that
-the runner passes via `docker build --build-arg BASE_IMAGE=<tag>`.
+automatically.  Each task's `Dockerfile` references a predictable
+`hilbench-base:<task_id>` image tag, and the runner retags loaded images
+to that name before the task image is built.
 
 ## Notes
 
