@@ -7,8 +7,8 @@ Date: 2026-05-19
 The focused trial-ready release gate is green for the current blocker set.
 BenchFlow can run the selected real-suite evidence through the current
 Rollout/Sandbox/Reward path, and the remaining work is release mechanics:
-update the release-blocker PR branches after the v0.4 squash merge, merge the
-adapter and hosted-env source PRs, then cut the release as `1.0.0`.
+merge the adapter, hosted-env, Pi ACP, and release-gate PRs, then cut the
+release as `1.0.0`.
 
 Do not tag the release from the open-PR state. Land the adapter, hosted-env, and
 release-gate PRs first.
@@ -29,17 +29,18 @@ release-gate PRs first.
 ## PR State After v0.4 Merge
 
 PR #294 merged `refactor/v0.4` into `main` as a squash merge. The resulting
-`main` tree matches `refactor/v0.4`, but several older PR branches now need a
-branch update before GitHub will mark them mergeable again.
+`main` tree matches `refactor/v0.4`. The release-blocker PR branches have now
+been updated against `main`; GitHub marks them mergeable, with the repository
+`test` check green where GitHub runs checks for the branch.
 
 | PR | Area | Remote head | GitHub state | Local resolved head |
 |---|---|---|---|---|
-| #279 | HILBench | `d626d95bc304dd8256015d2d465aac55cd92bf31` | dirty/conflicting after #294; prior `test` success | `db309d1` |
+| #279 | HILBench | `f6f9c4d` | mergeable, `test` success | `f6f9c4d` |
 | #280 | OpaqueToolsBench | `358fcfacd46505beb10f03f7d6f42de6c37073a4` | mergeable clean, `test` success | no update needed |
-| #283 | CLBench | `1415a9c04a04c1bfe75a5fb0c4104003482db9fe` | dirty/conflicting after #294; prior `test` success | `ee1c6ed` |
-| #290 | Hosted env source adapter | `41322da7d7b124695fad1b03ff9f06242b06a194` | dirty/conflicting after #294; prior `test` success, Cursor Bugbot neutral | `ba8e90e` |
-| #291 | Pi ACP provider/model fix | `ba32d0b3d1dbf2839e834fcf64cb8aee96f8f999` | dirty/conflicting after #294; Devin Review success | `18fc9be` |
-| #292 | Release gate evidence | `bde9fa66e9a66c68e8b5eea0ead5fefddc934f3a` | retargeted to `main`, still dirty/conflicting until branch head is pushed | `handoff/pr292-release-gate-v04-main` |
+| #283 | CLBench | `1bd8bc4` | mergeable, `test` success | `1bd8bc4` |
+| #290 | Hosted env source adapter | `ceef534` | mergeable, `test` success; Cursor Bugbot still running | `ceef534` |
+| #291 | Pi ACP provider/model fix | `c57c95c` | mergeable; fork PR has no check rollup | `c57c95c` |
+| #292 | Release gate evidence | this PR | mergeable; latest pushed code head had `test` success before this docs refresh | this PR |
 
 ## Integrated Release Candidate
 
@@ -94,41 +95,23 @@ uv run python tests/integration/run_suite.py \
 Remote update status:
 
 - Completed: #292 was retargeted from `refactor/v0.4` to `main`.
-- Blocked locally: the Codex policy layer rejected direct `gh api PATCH` and
-  `git push` process launches with `approval required by policy, but
-  AskForApproval is set to Never`.
-- Connector limitation checked: the prepared local heads for #279, #283, #290,
-  #292 are not present in `benchflow-ai/benchflow`'s GitHub object database, and
-  the prepared local head for #291 is not present in `Kfkcome/benchflow`, so the
-  GitHub ref-update API cannot advance those branches without a real push first.
-- File-by-file GitHub contents updates are not a good substitute for a normal
-  push: the resolved heads differ from the current remote PR heads by 169 files
-  for #279, 168 for #283, 164 for #290, 282 for #291, and 17 for #292.
+- Completed: #279, #283, #290, #291, and #292 were fast-forwarded to resolved
+  heads after #294's squash merge.
+- Completed: #279, #283, #290, and #292 reran the GitHub `test` workflow
+  successfully after the branch updates. #291 is a fork PR with no check rollup.
+- Cursor Bugbot may continue to report as pending on #290/#292 after the GitHub
+  `test` workflow has passed; it is tracked separately from the release gate.
 - Handoff bundle: `dogfood/2026-05-19-release-gate/remote-handoff/release-pr-handoff.bundle`
   contains the prepared PR heads, the integrated proof branch, and the 1.0.0 RC
   branch.
 - Guarded push helper: `dogfood/2026-05-19-release-gate/remote-handoff/push-release-pr-heads.sh`
-  verifies exact local heads and defaults to dry-run. Run
-  `bash dogfood/2026-05-19-release-gate/remote-handoff/push-release-pr-heads.sh`
-  first, then run with `RUN_PUSH=1` from a push-capable shell.
+  verifies exact local heads and defaults to dry-run. It was used to perform the
+  release-blocker branch updates.
 
-Remote branch update commands prepared locally:
+Remote branch update commands used locally:
 
 ```bash
-# Guarded helper.
 RUN_PUSH=1 bash dogfood/2026-05-19-release-gate/remote-handoff/push-release-pr-heads.sh
-
-# Equivalent manual commands:
-# Refresh dirty release-blocker PR branches after #294's squash merge.
-git push origin handoff/pr279-hilbench-v04-main:devin/1778983541-hilbench-adapter
-git push origin handoff/pr283-clbench-v04-main:devin/1779000478-clbench-adapter
-git push origin handoff/pr290-hosted-env-v04-main:codex/hosted-env-adapter
-
-# #291 is a fork PR with maintainer edits enabled. Push to the contributor fork.
-git push https://github.com/Kfkcome/benchflow handoff/pr291-pi-acp-v04-main:fix/pi-acp-set-model-provider-prefix
-
-# Publish this release-gate branch update.
-git push origin handoff/pr292-release-gate-v04-main:codex/trial-ready-release-gate
 ```
 
 ## Artifact Pointers
@@ -151,16 +134,13 @@ Detailed run artifacts are intentionally under ignored `dogfood/` paths:
 
 ## Versioning Call
 
-Call this release `1.0.0` once the dirty release-blocker PR branches are updated
-and PRs #279, #280, #283, #290, #291, and #292 land on `main`. The evidence and
-product intent are trial-ready rather than another internal `0.4.0` refactor
-cut.
+Call this release `1.0.0` once PRs #279, #280, #283, #290, #291, and #292 land
+on `main`. The evidence and product intent are trial-ready rather than another
+internal `0.4.0` refactor cut.
 
 Release sequence after merge approval:
 
-1. Push the prepared branch updates for #279, #283, #290, #291, and #292.
-2. Wait for GitHub checks to rerun cleanly.
-3. Merge PRs #279, #280, #283, #290, #291, and #292.
-4. Bump `pyproject.toml` on `main` to `1.0.0`.
-5. Tag `v1.0.0` on `main`.
-6. Bump `main` to the next `.dev0`.
+1. Merge PRs #279, #280, #283, #290, #291, and #292.
+2. Bump `pyproject.toml` on `main` to `1.0.0`.
+3. Tag `v1.0.0` on `main`.
+4. Bump `main` to the next `.dev0`.
