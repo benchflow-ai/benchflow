@@ -39,7 +39,7 @@ branch update before GitHub will mark them mergeable again.
 | #283 | CLBench | `1415a9c04a04c1bfe75a5fb0c4104003482db9fe` | dirty/conflicting after #294; prior `test` success | `ee1c6ed` |
 | #290 | Hosted env source adapter | `41322da7d7b124695fad1b03ff9f06242b06a194` | dirty/conflicting after #294; prior `test` success, Cursor Bugbot neutral | `ba8e90e` |
 | #291 | Pi ACP provider/model fix | `ba32d0b3d1dbf2839e834fcf64cb8aee96f8f999` | dirty/conflicting after #294; Devin Review success | `18fc9be` |
-| #292 | Release gate evidence | `bde9fa66e9a66c68e8b5eea0ead5fefddc934f3a` | dirty/conflicting after #294; remote base still `refactor/v0.4` until retarget succeeds | `handoff/pr292-release-gate-v04-main` |
+| #292 | Release gate evidence | `bde9fa66e9a66c68e8b5eea0ead5fefddc934f3a` | retargeted to `main`, still dirty/conflicting until branch head is pushed | `handoff/pr292-release-gate-v04-main` |
 
 ## Integrated Release Candidate
 
@@ -83,15 +83,16 @@ uv run python tests/integration/run_suite.py \
   --open-pr-root CLBench=/tmp/benchflow-release-pr283-final
 ```
 
-Remote update commands prepared locally:
+Remote update status:
+
+- Completed: #292 was retargeted from `refactor/v0.4` to `main`.
+- Blocked locally: the Codex policy layer rejected direct `gh api PATCH` and
+  `git push` process launches with `approval required by policy, but
+  AskForApproval is set to Never`.
+
+Remote branch update commands prepared locally:
 
 ```bash
-# Retarget #292 to the branch that now ships the v0.4 tree.
-gh api \
-  --method PATCH \
-  repos/benchflow-ai/benchflow/pulls/292 \
-  -f base=main
-
 # Refresh dirty release-blocker PR branches after #294's squash merge.
 git push origin handoff/pr279-hilbench-v04-main:devin/1778983541-hilbench-adapter
 git push origin handoff/pr283-clbench-v04-main:devin/1779000478-clbench-adapter
@@ -125,10 +126,9 @@ cut.
 
 Release sequence after merge approval:
 
-1. Retarget #292 from `refactor/v0.4` to `main`.
-2. Push the prepared branch updates for #279, #283, #290, #291, and #292.
-3. Wait for GitHub checks to rerun cleanly.
-4. Merge PRs #279, #280, #283, #290, #291, and #292.
-5. Bump `pyproject.toml` on `main` to `1.0.0`.
-6. Tag `v1.0.0` on `main`.
-7. Bump `main` to the next `.dev0`.
+1. Push the prepared branch updates for #279, #283, #290, #291, and #292.
+2. Wait for GitHub checks to rerun cleanly.
+3. Merge PRs #279, #280, #283, #290, #291, and #292.
+4. Bump `pyproject.toml` on `main` to `1.0.0`.
+5. Tag `v1.0.0` on `main`.
+6. Bump `main` to the next `.dev0`.
