@@ -1,0 +1,124 @@
+{
+  "experiment": "structural-parity",
+  "benchmark": "opaquetoolsbench",
+  "environment": "bfcl",
+  "date": "2026-05-17",
+  "description": "Structural parity validation of generated BenchFlow task directories from OpaqueToolsBench BFCL base configs",
+  "source": {
+    "repo": "https://github.com/shallinan1/OpaqueToolsBench",
+    "configs": [
+      "executable_simple_base_config.json",
+      "executable_multiple_function_base_config.json"
+    ]
+  },
+  "results": {
+    "total_tasks": 150,
+    "passed": 150,
+    "failed": 0,
+    "pass_rate": 1.0,
+    "categories": {
+      "executable_simple": {
+        "count": 100,
+        "passed": 100
+      },
+      "executable_multiple_function": {
+        "count": 50,
+        "passed": 50
+      }
+    }
+  },
+  "checks": [
+    {
+      "name": "required_files_present",
+      "description": "task.toml, instruction.md, Dockerfile, test.sh, evaluate.py, ground_truth.json all exist and are non-empty",
+      "passed": 150,
+      "failed": 0
+    },
+    {
+      "name": "task_toml_valid",
+      "description": "task.toml contains opaquetoolsbench/ prefix, [agent], [verifier], timeout_sec",
+      "passed": 150,
+      "failed": 0
+    },
+    {
+      "name": "instruction_md_valid",
+      "description": "instruction.md contains ## Query, ## Available Functions, and output path reference",
+      "passed": 150,
+      "failed": 0
+    },
+    {
+      "name": "ground_truth_valid",
+      "description": "ground_truth.json is valid JSON with non-empty ground_truth key",
+      "passed": 150,
+      "failed": 0
+    },
+    {
+      "name": "test_sh_executable",
+      "description": "test.sh has executable permission bit set",
+      "passed": 150,
+      "failed": 0
+    },
+    {
+      "name": "dockerfile_valid",
+      "description": "Dockerfile contains FROM directive and /logs/verifier directory creation",
+      "passed": 150,
+      "failed": 0
+    }
+  ],
+  "eval_parity": {
+    "experiment": "opaquetoolsbench_eval_parity",
+    "description": "End-to-end evaluation parity: build Docker image, run evaluate.py with correct/wrong/missing agent responses, verify binary rewards.",
+    "date": "2026-05-17",
+    "status": "passed",
+    "docker_build": "success (python:3.13-slim pinned by digest)",
+    "test_cases": [
+      {
+        "name": "correct_response",
+        "input": "calc_binomial_probability(n=20, k=5, p=0.6)",
+        "expected_reward": 1.0,
+        "actual_reward": 1.0,
+        "result": "pass"
+      },
+      {
+        "name": "wrong_response",
+        "input": "wrong_function(x=1)",
+        "expected_reward": 0.0,
+        "actual_reward": 0.0,
+        "result": "pass"
+      },
+      {
+        "name": "missing_response",
+        "input": null,
+        "expected_reward": 0.0,
+        "actual_reward": 0.0,
+        "result": "pass"
+      },
+      {
+        "name": "multi_function_correct",
+        "input": "calculate_cosine_similarity(...)",
+        "expected_reward": 1.0,
+        "actual_reward": 1.0,
+        "result": "pass"
+      }
+    ],
+    "notes": "AST-based deterministic matching. All test cases produce correct binary rewards (1.0/0.0). No LLM judge variance."
+  },
+  "security_parity": {
+    "experiment": "opaquetoolsbench_security_eval",
+    "description": "Verify that adversarial agent payloads cannot execute arbitrary code via eval() in the verifier. After removing eval() fallbacks in parse_python_call(), ast.unparse() is used instead.",
+    "date": "2026-05-17",
+    "status": "passed",
+    "test_cases": [
+      {
+        "name": "adversarial_payload",
+        "input": "__import__(\"os\").system(\"echo PWNED\")",
+        "expected_reward": 0.0,
+        "actual_reward": 0.0,
+        "code_executed": false,
+        "result": "pass"
+      }
+    ],
+    "fix_applied": "Replaced eval(compile(ast.Expression(...), '', 'eval')) with ast.unparse() at both keyword-arg and positional-arg locations in parse_python_call()",
+    "notes": "ast.unparse() returns a safe string representation without executing the AST node. Adversarial payloads are treated as non-matching function names and receive reward 0.0."
+  }
+}
