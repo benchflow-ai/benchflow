@@ -45,6 +45,14 @@ bench eval create \
 # From local directory
 bench eval create --tasks-dir ./tasks --agent gemini --model gemini-3.1-flash-lite-preview
 
+# From a hosted PrimeIntellect / Verifiers environment
+bench eval create \
+  --source-env primeintellect/general-agent \
+  --source-env-version 0.1.1 \
+  --source-env-arg task=calendar_scheduling_t0 \
+  --agent gemini \
+  --model google/gemini-2.5-flash-lite
+
 # Single task with mounted skills and the recommended skill nudge
 bench eval create \
   --tasks-dir tasks/pdf-fix \
@@ -62,6 +70,14 @@ bench eval create \
 | `--source-repo` | — | Remote repo as `org/repo` (e.g. `benchflow-ai/skillsbench`) |
 | `--source-path` | — | Subpath within the repo (e.g. `tasks`) |
 | `--source-ref` | — | Branch or tag to clone (e.g. `main`) |
+| `--source-env` | — | Hosted environment source (e.g. `primeintellect/general-agent`) |
+| `--source-env-version` | — | Hosted environment version |
+| `--source-env-arg` | — | Hosted environment argument as `KEY=VALUE`; repeatable |
+| `--source-env-num-examples` | `1` | Number of hosted environment examples |
+| `--source-env-rollouts-per-example` | `1` | Rollouts per hosted environment example |
+| `--source-env-max-tokens` | `1024` | Max tokens for hosted environment model calls |
+| `--source-env-temperature` | `0.0` | Temperature for hosted environment model calls |
+| `--source-env-sampling-arg` | — | Verifiers sampling argument as `KEY=VALUE`; repeatable |
 | `--agent` | `claude-agent-acp` | Agent name |
 | `--model` | Agent default | Model ID |
 | `--sandbox` | `docker` | Sandbox: docker, daytona, or modal |
@@ -77,6 +93,14 @@ When mounting skills, the recommended docs default is
 which skills are available and where to read them. More verbose modes are
 `description` and `full`. Omit the env var to leave BenchFlow's runtime default
 off.
+
+`--source-env` is for external hosted environment hubs. The first supported
+runner is PrimeIntellect / Verifiers: BenchFlow preserves the hosted identity
+(`env_uid`, `hub_url`), installs the versioned package into an isolated local
+virtual environment, and runs `vf-eval`. `--sandbox` remains the BenchFlow task
+sandbox selector for local/repo task sources; Verifiers source environments own
+their own harness and sandbox behavior. `--model` is passed to the Verifiers
+model endpoint; use a model id available to that provider.
 
 ### bench eval list
 
@@ -134,10 +158,27 @@ bench environment create tasks/my-task --sandbox daytona
 
 ### bench environment list
 
-List active Daytona sandboxes.
+List active Daytona sandboxes, or list a hosted hub.
 
 ```bash
 bench environment list
+bench environment list --hub primeintellect --owner primeintellect --search general-agent --limit 5
+```
+
+### bench environment show
+
+Show hosted environment metadata.
+
+```bash
+bench environment show primeintellect/general-agent --version 0.1.1
+```
+
+### bench environment inspect
+
+Inspect a file from a hosted environment package.
+
+```bash
+bench environment inspect primeintellect/general-agent --version 0.1.1 --path README.md
 ```
 
 ## YAML Config Format
