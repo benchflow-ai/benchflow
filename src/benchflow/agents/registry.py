@@ -310,6 +310,7 @@ AGENTS: dict[str, AgentConfig] = {
         ),
         launch_cmd=f"{_BENCHFLOW_BIN_PREFIX}/pi-acp-launcher",
         protocol="acp",
+        acp_model_format="provider/model",
         requires_env=[],  # inferred from --model at runtime
         # Pi is multi-protocol: speaks Anthropic natively and OpenAI via
         # models.json.  Empty lets the provider determine the protocol so
