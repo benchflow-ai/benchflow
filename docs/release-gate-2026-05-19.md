@@ -83,8 +83,8 @@ Use GitHub merge commits for this release packet. If earlier PRs are
 squash-merged instead, refresh #292 again on the post-squash `main` before
 merging it.
 
-The packaging-only branch `handoff/release-1.0.0-rc-refresh` at `b37ef00`
-bumps `pyproject.toml` and the local package entry in `uv.lock` to `1.0.0`.
+The packaging-only branch `handoff/release-1.0.0-rc-refresh` bumps
+`pyproject.toml` and the local package entry in `uv.lock` to `1.0.0`.
 `dogfood/2026-05-19-release-gate/remote-handoff/package-rc-preflight.sh`
 builds that RC head, runs `twine check`, and verifies both wheel `METADATA` and
 sdist `PKG-INFO` report `Version: 1.0.0`.
