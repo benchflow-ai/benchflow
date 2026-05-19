@@ -107,10 +107,18 @@ Remote update status:
 - Handoff bundle: `dogfood/2026-05-19-release-gate/remote-handoff/release-pr-handoff.bundle`
   contains the prepared PR heads, the integrated proof branch, and the 1.0.0 RC
   branch.
+- Guarded push helper: `dogfood/2026-05-19-release-gate/remote-handoff/push-release-pr-heads.sh`
+  verifies exact local heads and defaults to dry-run. Run
+  `bash dogfood/2026-05-19-release-gate/remote-handoff/push-release-pr-heads.sh`
+  first, then run with `RUN_PUSH=1` from a push-capable shell.
 
 Remote branch update commands prepared locally:
 
 ```bash
+# Guarded helper.
+RUN_PUSH=1 bash dogfood/2026-05-19-release-gate/remote-handoff/push-release-pr-heads.sh
+
+# Equivalent manual commands:
 # Refresh dirty release-blocker PR branches after #294's squash merge.
 git push origin handoff/pr279-hilbench-v04-main:devin/1778983541-hilbench-adapter
 git push origin handoff/pr283-clbench-v04-main:devin/1779000478-clbench-adapter
