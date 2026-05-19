@@ -43,9 +43,11 @@ branch update before GitHub will mark them mergeable again.
 
 ## Integrated Release Candidate
 
-The local branch `handoff/trial-ready-release-integrated` at `e9cd661` merges the current
+The local branch `handoff/trial-ready-release-integrated` merges the current
 `origin/main` tree with #279, #280, #283, #290, #291, and #292 plus two
-integration fixups discovered during the local merge proof:
+integration fixups discovered during the local merge proof. Use
+`git rev-parse handoff/trial-ready-release-integrated` for the current local
+head because this handoff branch moves as the release-gate notes are refreshed.
 
 - preserve executable bits on existing shell fixtures touched by #279/#283;
 - reconcile the hosted-env CLI additions with release-gate CLI error/help
@@ -58,8 +60,8 @@ Validation on that integrated branch:
 - `uv run --extra dev ty check src/`: passed.
 - `uv run python tests/integration/run_suite.py --profile full-release --dry-run --fail-on-todo`: passed.
 
-The packaging-only branch `handoff/release-1.0.0-rc-current` at `ec850ff`
-bumps `pyproject.toml` and the local package entry in `uv.lock` to `1.0.0`.
+The packaging-only branch `handoff/release-1.0.0-rc-current` bumps
+`pyproject.toml` and the local package entry in `uv.lock` to `1.0.0`.
 `uv build` produced `dist/benchflow-1.0.0.tar.gz` and
 `dist/benchflow-1.0.0-py3-none-any.whl`; both wheel `METADATA` and sdist
 `PKG-INFO` report `Version: 1.0.0`.
