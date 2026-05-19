@@ -1,0 +1,46 @@
+name: clbench
+description: >
+  Continual Learning Bench — sequential task evaluation measuring agent
+  adaptation and improvement across instances
+url: https://github.com/pgasawa/continual-learning-bench
+paper: null
+repo: https://github.com/pgasawa/continual-learning-bench
+author: "Parth Asawa, Chris Glaze, Gabe Orlanski et al."
+converted_by: BenchFlow
+
+tasks:
+  count: 3
+  categories:
+    - exploitable_poker
+    - database_exploration
+    - cohort_studies
+  tags: [continual-learning, sequential, adaptation, online-learning]
+
+conversion:
+  script: benchflow.py
+  source_format: "Python task classes with ContinualLearningTask interface"
+  has_oracle_solutions: false
+  oracle_notes: >
+    CLBench tasks have oracle solutions for some tasks (e.g., poker optimal
+    strategy) but they are computed dynamically, not stored as static files.
+
+verification:
+  method: script
+  reward: proportional
+  aggregation: per-task
+
+environment:
+  base_image: "python:3.13-slim"
+  platform: linux/amd64
+  allow_internet: true
+  cpus: 2
+  memory_mb: 4096
+  storage_mb: 10240
+
+parity:
+  structural:
+    tasks_tested: 3
+    passed: 3
+  eval_pipeline:
+    tasks_tested: 3
+    passed: 3
