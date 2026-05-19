@@ -24,8 +24,21 @@
     "experiment": "hilbench_eval_parity",
     "description": "End-to-end evaluation parity: build Docker image, run test.sh, verify correct rewards.",
     "date": "2026-05-19",
-    "status": "needs_refresh",
+    "status": "passed",
+    "tasks_tested": 1,
+    "task_ids": [
+      "public_swe_0"
+    ],
     "blocker": null,
-    "notes": "Prior gated-access diagnosis was stale: ScaleAI/hil-bench-swe-images is a HuggingFace bucket, not a dataset repo. Runner now translates hf://buckets/ScaleAI/hil-bench-swe-images/images/<uid>.tar.zst to https://huggingface.co/buckets/ScaleAI/hil-bench-swe-images/resolve/images/<uid>.tar.zst before docker load. Refresh Docker image load and eval parity after this adapter fix."
+    "results_summary": {
+      "image_download": "passed",
+      "docker_load": "passed",
+      "docker_tag": "passed",
+      "docker_build": "passed",
+      "workspace_mapping": "passed",
+      "unsolved_reward": 0.0,
+      "ground_truth_reward": 1.0
+    },
+    "notes": "ScaleAI/hil-bench-swe-images is a HuggingFace bucket, not a dataset repo. Runner translates hf://buckets/ScaleAI/hil-bench-swe-images/images/<uid>.tar.zst to https://huggingface.co/buckets/ScaleAI/hil-bench-swe-images/resolve/images/<uid>.tar.zst before docker load. Local eval parity refreshed on public_swe_0: image downloaded, docker loaded, retagged to hilbench-base:public-swe-0, generated Dockerfile built, /workspace mapped to /app, verifier wrote reward 0.0 for unsolved task and reward 1.0 after applying the ground-truth patch. Local Docker host was linux/aarch64 and HILBench image was linux/amd64, so Docker emitted a platform warning but the build and verifier completed."
   }
 }

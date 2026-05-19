@@ -94,6 +94,8 @@ def _check_task(task_dir: Path) -> list[str]:
             errors.append(
                 f"{task_id}: Dockerfile FROM does not reference hilbench-base:{task_id}"
             )
+        if "ln -s /app /workspace" not in content:
+            errors.append(f"{task_id}: Dockerfile does not map /workspace to /app")
 
     return errors
 

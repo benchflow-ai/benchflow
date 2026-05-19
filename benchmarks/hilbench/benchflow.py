@@ -172,6 +172,14 @@ RUN apt-get update -qq && \\
         jq \\
     && rm -rf /var/lib/apt/lists/*
 
+# HILBench SWE images keep the repository under /app and expose /testbed as
+# a compatibility symlink. BenchFlow tasks and instructions use /workspace.
+RUN if [ -d /app ]; then \\
+        rm -rf /workspace && ln -s /app /workspace; \\
+    elif [ -d /testbed ]; then \\
+        rm -rf /workspace && ln -s /testbed /workspace; \\
+    fi
+
 WORKDIR /workspace
 
 # BenchFlow log directories

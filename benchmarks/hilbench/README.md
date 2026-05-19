@@ -112,7 +112,10 @@ set `HF_TOKEN` or `HUGGINGFACE_TOKEN`; public objects do not require a token.
 The runner (`run_hilbench.py`) handles downloading and loading images
 automatically.  Each task's `Dockerfile` references a predictable
 `hilbench-base:<task_id>` image tag, and the runner retags loaded images
-to that name before the task image is built.
+to that name before the task image is built.  The HILBench base images keep
+the repository under `/app` and expose `/testbed` as a symlink, so generated
+Dockerfiles also map `/workspace` to the repository path expected by BenchFlow
+instructions and verifiers.
 
 ## Notes
 
