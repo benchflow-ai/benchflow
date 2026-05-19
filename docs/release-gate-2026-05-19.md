@@ -76,15 +76,15 @@ gh api \
   -f base=main
 
 # Refresh dirty release-blocker PR branches after #294's squash merge.
-git -C /tmp/benchflow-pr279-maincheck push origin HEAD:devin/1778983541-hilbench-adapter
-git -C /tmp/benchflow-pr283-maincheck push origin HEAD:devin/1779000478-clbench-adapter
-git -C /tmp/benchflow-pr290-maincheck push origin HEAD:codex/hosted-env-adapter
+git push origin handoff/pr279-hilbench-v04-main:devin/1778983541-hilbench-adapter
+git push origin handoff/pr283-clbench-v04-main:devin/1779000478-clbench-adapter
+git push origin handoff/pr290-hosted-env-v04-main:codex/hosted-env-adapter
 
 # #291 is a fork PR with maintainer edits enabled. Push to the contributor fork.
-git -C /tmp/benchflow-pr291-maincheck push https://github.com/Kfkcome/benchflow HEAD:fix/pi-acp-set-model-provider-prefix
+git push https://github.com/Kfkcome/benchflow handoff/pr291-pi-acp-v04-main:fix/pi-acp-set-model-provider-prefix
 
 # Publish this release-gate branch update.
-git -C /Users/lixiangyi/.codex/worktrees/64b0/benchflow push origin HEAD:codex/trial-ready-release-gate
+git push origin HEAD:codex/trial-ready-release-gate
 ```
 
 ## Artifact Pointers
