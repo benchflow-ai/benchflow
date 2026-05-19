@@ -102,6 +102,7 @@ class TestGenerateTask:
         assert (task_dir / "instruction.md").exists()
         assert (task_dir / "environment" / "Dockerfile").exists()
         assert (task_dir / "tests" / "test.sh").exists()
+        assert (task_dir / "solution" / "solve.sh").exists()
 
     def test_task_toml_content(self, simple_trace: ParsedTrace, tmp_path: Path) -> None:
         task_dir = generate_task(simple_trace, tmp_path)
@@ -156,6 +157,23 @@ class TestGenerateTask:
 
         mode = test_sh.stat().st_mode
         assert mode & stat.S_IXUSR
+
+    def test_solution_sh_replays_file_writes(
+        self, simple_trace: ParsedTrace, tmp_path: Path
+    ) -> None:
+        """Guards ENG-93 trace-generated tasks include oracle evidence."""
+        task_dir = generate_task(simple_trace, tmp_path)
+        solve_sh = task_dir / "solution" / "solve.sh"
+
+        assert solve_sh.exists()
+        content = solve_sh.read_text()
+        assert "Auto-generated oracle solution" in content
+        assert "cat > hello.txt" in content
+        assert "Hello" in content
+
+        import stat
+
+        assert solve_sh.stat().st_mode & stat.S_IXUSR
 
     def test_dockerfile_generated(
         self, simple_trace: ParsedTrace, tmp_path: Path

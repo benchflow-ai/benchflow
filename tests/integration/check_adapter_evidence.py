@@ -190,18 +190,48 @@ def check_hilbench(root: Path) -> Finding:
         return Finding(adapter, "fail", "structural parity has no passing tasks", path)
 
     eval_parity = data.get("eval_parity")
-    if isinstance(eval_parity, dict) and eval_parity.get("status") == "blocked":
+    if not isinstance(eval_parity, dict):
+        return Finding(adapter, "fail", "missing eval_parity section", path)
+
+    status = eval_parity.get("status")
+    if status == "blocked":
+        blocker = str(eval_parity.get("blocker") or "")
+        if (
+            "hil-bench-swe-images" in blocker
+            or "HUGGINGFACE_TOKEN" in blocker
+            or "gated" in blocker.lower()
+        ):
+            return Finding(
+                adapter,
+                "fail",
+                "structural parity passed "
+                f"{int(passed)} tasks; eval parity evidence is stale: "
+                "HILBench images are Hugging Face bucket objects. Update the "
+                "adapter to translate hf://buckets/ScaleAI/hil-bench-swe-images/"
+                "images/<uid>.tar.zst into "
+                "https://huggingface.co/buckets/ScaleAI/hil-bench-swe-images/"
+                "resolve/images/<uid>.tar.zst instead of using dataset "
+                "hf_hub_download.",
+                path,
+            )
         return Finding(
             adapter,
             "blocked",
-            f"structural parity passed {int(passed)} tasks; eval parity blocked: {eval_parity.get('blocker')}",
+            f"structural parity passed {int(passed)} tasks; eval parity blocked: {blocker}",
+            path,
+        )
+    if status != "passed":
+        return Finding(
+            adapter,
+            "fail",
+            f"structural parity passed {int(passed)} tasks; eval parity status is {status!r}, expected 'passed'",
             path,
         )
 
     return Finding(
         adapter,
         "pass",
-        f"structural parity passed {int(passed)} tasks",
+        f"structural parity passed {int(passed)} tasks; eval parity passed",
         path,
     )
 
@@ -286,6 +316,12 @@ OPEN_PR_CHECKS = {
     "clbench": check_clbench,
 }
 
+REQUIRED_OPEN_PR_ADAPTERS = {
+    "HILBench": "hilbench",
+    "OpaqueToolsBench": "opaquetoolsbench",
+    "CLBench": "clbench",
+}
+
 
 def parse_root(value: str) -> tuple[str, Path]:
     if "=" not in value:
@@ -317,7 +353,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=parse_root,
         default=[],
         metavar="NAME=PATH",
-        help="Optional open adapter PR worktree root. Names: HILBench, OpaqueToolsBench, CLBench.",
+        help="Open adapter PR worktree root. Required names: HILBench, OpaqueToolsBench, CLBench.",
     )
     parser.add_argument(
         "--allow-blocked",
@@ -337,17 +373,39 @@ def main(argv: list[str] | None = None) -> int:
         check_skillsbench_result(args.skillsbench_result),
     ]
 
-    for name, root in args.open_pr_root:
-        key = name.lower().replace("-", "").replace("_", "")
-        check = OPEN_PR_CHECKS.get(key)
-        if check is None:
-            valid = ", ".join(sorted(OPEN_PR_CHECKS))
+    supplied_roots = {
+        name.lower().replace("-", "").replace("_", ""): (name, root)
+        for name, root in args.open_pr_root
+    }
+
+    unknown_keys = sorted(set(supplied_roots) - set(REQUIRED_OPEN_PR_ADAPTERS.values()))
+    for key in unknown_keys:
+        name, root = supplied_roots[key]
+        valid = ", ".join(REQUIRED_OPEN_PR_ADAPTERS)
+        findings.append(
+            Finding(
+                name,
+                "fail",
+                f"unknown open PR adapter name; valid: {valid}",
+                root,
+            )
+        )
+
+    for display_name, key in REQUIRED_OPEN_PR_ADAPTERS.items():
+        supplied = supplied_roots.get(key)
+        if supplied is None:
             findings.append(
                 Finding(
-                    name, "fail", f"unknown open PR adapter name; valid: {valid}", root
+                    display_name,
+                    "fail",
+                    "open adapter PR evidence root is required via "
+                    f"--open-pr-root {display_name}=/path/to/worktree",
+                    Path("<missing>"),
                 )
             )
             continue
+        name, root = supplied
+        check = OPEN_PR_CHECKS[key]
         findings.append(check(root.resolve()))
 
     width = max(len(f.adapter) for f in findings)
