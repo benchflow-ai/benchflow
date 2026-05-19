@@ -69,6 +69,17 @@ python benchflow.py --output-dir /tmp/out --harvey-root /path/to/harvey-labs \
 # Via BenchFlow Job (downloads + converts + runs)
 python benchmarks/harvey-lab/run_harvey_lab.py
 
+# Harvey LAB harness smoke test: runs Harvey LAB's own agent loop via ACP.
+# Requires GEMINI_API_KEY for the agent and ANTHROPIC_API_KEY for the verifier.
+uv run bench eval create \
+  --source-repo benchflow-ai/benchmarks \
+  --source-path datasets/harvey-lab/tasks/corporate-ma-analyze-cim-deal-teaser-scenario-01 \
+  --agent harvey-lab-harness \
+  --model gemini-3.1-flash-lite-preview \
+  --sandbox docker \
+  --concurrency 1 \
+  --jobs-dir jobs/smoke-test/harvey-harness
+
 # Or with YAML config (uses Gemini as BenchFlow agent)
 python -c "import asyncio; from benchflow.job import Job; asyncio.run(Job.from_yaml('benchmarks/harvey-lab/harvey-lab-gemini-flash-lite.yaml').run())"
 
@@ -88,7 +99,7 @@ GEMINI_API_KEY=... python benchmarks/harvey-lab/parity_test.py --mode side-by-si
 
 ## Comparison with Original Benchmark (Parity)
 
-### End-to-end parity (3 trials × 100 tasks)
+### End-to-end parity (3 runs × 100 tasks)
 
 Both sides ran Harvey LAB's own harness (agent loop + 6 tools + system prompt) via
 DirectSandbox ACP shim with `gemini-3.1-flash-lite-preview`. 100 tasks sampled with
@@ -98,9 +109,9 @@ stratified selection across all 24 practice areas. Ran on Modal (concurrency=20)
 |-------|-------|--------|------|--------------|-----------------------|------------------------|
 | harvey-lab-harness | gemini-3.1-flash-lite-preview | mean_per_criterion_pass_rate | 3 | 100 (8%) | **23.0 ± 0.5** | **22.2 ± 0.5** |
 
-Per-trial breakdown:
+Per-run breakdown:
 
-| Trial | Original | BenchFlow | Delta |
+| Run | Original | BenchFlow | Delta |
 |-------|----------|-----------|-------|
 | 1 | 22.0% | 22.7% | +0.6% |
 | 2 | 23.2% | 22.6% | -0.6% |
@@ -108,8 +119,7 @@ Per-trial breakdown:
 | **Aggregate** | **23.0%** | **22.2%** | **-0.8%** |
 
 14,799 criteria evaluated. No systematic conversion bias — all 12 consistently-disagreeing
-tasks attributed to model non-determinism. Full report in
-[`parity_final_report.md`](parity_final_report.md). Raw trial data on
+tasks attributed to model non-determinism. Raw run data on
 [HuggingFace](https://huggingface.co/datasets/benchflow/benchmarks/tree/main/benchmarks/harvey-lab/benchflow_parity).
 
 ### Prompt-level parity (side-by-side judge agreement)
@@ -192,4 +202,4 @@ Podman with direct filesystem ops (BenchFlow's Docker provides equivalent sandbo
 - **1,251** tasks
 - **4** work types: analyze (490), draft (444), review (293), research (24)
 - **~60** criteria per task (range: 23–194)
-- **Parity cost:** ~$50 (3 trials × 100 tasks on Gemini Flash Lite)
+- **Parity cost:** ~$50 (3 runs × 100 tasks on Gemini Flash Lite)

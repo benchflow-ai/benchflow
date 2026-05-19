@@ -1,6 +1,5 @@
 """Tests for _scene.py — multi-agent scene runtime."""
 
-import asyncio
 import json
 from pathlib import Path
 
@@ -184,14 +183,11 @@ async def test_scene_run_stops_when_no_message(two_roles: dict[str, Role]) -> No
     assert trajectory[0].sender == "coder"
 
 
-def test_save_trajectory(two_roles: dict[str, Role], tmp_path: Path) -> None:
+@pytest.mark.asyncio
+async def test_save_trajectory(two_roles: dict[str, Role], tmp_path: Path) -> None:
     scene = Scene(roles=two_roles)
-    asyncio.get_event_loop().run_until_complete(
-        scene.send_message("coder", "reviewer", "check this")
-    )
-    asyncio.get_event_loop().run_until_complete(
-        scene.send_message("reviewer", "coder", "approved")
-    )
+    await scene.send_message("coder", "reviewer", "check this")
+    await scene.send_message("reviewer", "coder", "approved")
     out = tmp_path / "scene_trajectory.jsonl"
     scene.save_trajectory(out)
     lines = [json.loads(ln) for ln in out.read_text().strip().splitlines()]

@@ -156,17 +156,18 @@ bench tasks init my-task --no-pytest --no-solution
 bench tasks check tasks/my-task/
 
 # Confirm oracle gets reward = 1.0
-bench run tasks/my-task/ --agent oracle --backend docker
+bench eval create --tasks-dir tasks/my-task/ --agent oracle --sandbox docker
 
 # Run a real agent
-bench run tasks/my-task/ --agent gemini --backend daytona
+bench eval create --tasks-dir tasks/my-task/ --agent gemini --sandbox daytona
 
 # Run with task-local skills mounted
-bench run tasks/my-task/ \
+bench eval create \
+  --tasks-dir tasks/my-task/ \
   --agent gemini \
-  --backend daytona \
+  --sandbox daytona \
   --skills-dir tasks/my-task/environment/skills \
-  --ae BENCHFLOW_SKILL_NUDGE=name
+  --agent-env BENCHFLOW_SKILL_NUDGE=name
 ```
 
 `bench tasks check` validates that `task.toml`, `instruction.md` (non-empty), `environment/Dockerfile`, and `tests/` (non-empty) all exist, and that `[agent].timeout_sec` is set. Exits with code 1 on failure (CI-friendly).

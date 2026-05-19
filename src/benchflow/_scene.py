@@ -14,12 +14,27 @@ reads the outbox after each agent exits, routes through the transport,
 and injects into the next agent's prompt.
 
 0.3 scope: exactly 2 roles, sequential execution, mailbox transport only.
+
+.. rubric:: Capability boundary (ENG-50)
+
+BenchFlow's scene scheduler handles **turn sequencing** and **message
+routing** only.  It does *not* manage:
+
+* Agent-internal loops — the agent decides when/how to iterate.
+* Tool protocols — tool-use is a per-agent capability.
+* Agent-as-tool invocation — if agent A wants to call agent B as a
+  tool, agent A is responsible for reaching B's endpoint (all roles
+  share the sandbox, so localhost networking is available).
+
+The scheduler ensures each role runs in order and that outbox messages
+are delivered.  Everything beyond that is the agent's responsibility.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import shlex
 import uuid
 from abc import ABC, abstractmethod
 from collections.abc import Callable
@@ -37,7 +52,13 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class Role:
+class SceneRole:
+    """Runtime role for multi-agent scenes (internal to _scene.py).
+
+    Unlike the canonical ``Role`` in ``_types.py``, this carries the
+    instruction text and tool list needed by the scene scheduler.
+    """
+
     name: str
     agent: str
     model: str
@@ -106,7 +127,7 @@ class Scene:
 
     def __init__(
         self,
-        roles: dict[str, Role],
+        roles: dict[str, SceneRole],
         transport: MessageTransport | None = None,
         max_rounds: int = 10,
     ) -> None:
@@ -158,7 +179,7 @@ class Scene:
     def is_done(self) -> bool:
         return self._done or self._round >= self.max_rounds
 
-    def build_prompt_for_role(self, role: Role, inbox: list[Message]) -> str:
+    def build_prompt_for_role(self, role: SceneRole, inbox: list[Message]) -> str:
         """Build the prompt for a role, injecting any pending messages."""
         parts = [role.instruction]
         if inbox:
@@ -190,7 +211,8 @@ class Scene:
         ]
         messages = []
         for fpath in files:
-            cat_result = await env.exec(f"cat {fpath}")
+            qpath = shlex.quote(fpath)
+            cat_result = await env.exec(f"cat {qpath}")
             try:
                 data = json.loads(cat_result.stdout or "{}")
                 recipient = data.get("to", "")
@@ -212,7 +234,7 @@ class Scene:
                     messages.append(msg)
             except json.JSONDecodeError:
                 logger.warning(f"[Scene] invalid JSON in outbox file: {fpath}")
-            await env.exec(f"rm -f {fpath}")
+            await env.exec(f"rm -f {qpath}")
         return messages
 
     # ------------------------------------------------------------------
@@ -287,3 +309,7 @@ class Scene:
         ]
         path.write_text("\n".join(lines) + "\n" if lines else "")
         logger.info(f"Scene trajectory saved: {len(self.trajectory)} messages → {path}")
+
+
+# Backward-compat alias — existing code imports ``Role`` from this module.
+Role = SceneRole

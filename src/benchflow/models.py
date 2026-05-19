@@ -1,11 +1,16 @@
-"""Data classes and exceptions for benchflow SDK results.
+"""Data classes and exceptions for benchflow results.
 
-Related: sdk.py (produces RunResult), job.py (aggregates RunResults),
-_scoring.py (extracts rewards and classifies errors from RunResults).
+Related: rollout.py (produces RolloutResult), evaluation.py (aggregates results),
+_scoring.py (extracts rewards and classifies errors from results).
 """
 
+from __future__ import annotations
+
 from datetime import datetime
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
+
+if TYPE_CHECKING:
+    from benchflow.rewards.events import RewardEvent
 
 TrajectorySource = Literal["acp", "scraped", "partial_acp"]
 """Provenance label for a captured trajectory. See RunResult.trajectory_source."""
@@ -48,8 +53,8 @@ class AgentTimeoutError(RuntimeError):
         super().__init__(f"Agent {agent} timed out after {timeout_sec}s")
 
 
-class RunResult:
-    """Outcome of a single SDK.run() trial.
+class RolloutResult:
+    """Outcome of a single rollout execution.
 
     Attributes:
         task_name:    Task directory name (e.g. "swe-bench/django__django-11848").
@@ -73,6 +78,8 @@ class RunResult:
                       forgeable), ``"partial_acp"`` (partial ACP capture). Verifier
                       and metrics consumers decide trust per source. None if no
                       trajectory was captured.
+        reward_events: Dense and terminal reward events from Rubric scoring.
+                      None when the new reward pipeline was not used.
         started_at:   Wall-clock start time.
         finished_at:  Wall-clock end time.
     """
@@ -92,6 +99,7 @@ class RunResult:
         verifier_error: str | None = None,
         partial_trajectory: bool = False,
         trajectory_source: TrajectorySource | None = None,
+        reward_events: list[RewardEvent] | None = None,
         started_at: datetime | None = None,
         finished_at: datetime | None = None,
     ):
@@ -108,6 +116,7 @@ class RunResult:
         self.verifier_error = verifier_error
         self.partial_trajectory = partial_trajectory
         self.trajectory_source = trajectory_source
+        self.reward_events = reward_events
         self.started_at = started_at
         self.finished_at = finished_at
 
@@ -123,7 +132,11 @@ class RunResult:
     def __repr__(self) -> str:
         status = "OK" if self.success else f"ERROR: {self.error or self.verifier_error}"
         return (
-            f"RunResult(task={self.task_name}, {status}, "
+            f"RolloutResult(task={self.task_name}, {status}, "
             f"rewards={self.rewards}, "
             f"trajectory={len(self.trajectory)} events)"
         )
+
+
+# Backward-compat alias
+RunResult = RolloutResult
