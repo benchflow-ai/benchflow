@@ -43,8 +43,8 @@ execution_profiles:
       - Use SkillsBench as the near-term benchmark-suite focus.
       - Use Daytona as the cloud sandbox for near-term release-prep runs.
       - Adapter coverage is capped at one representative smoke or parity task per adapter.
-  v0.4-release:
-    purpose: Validate the executable v0.4 release plan against the current release-gated sandbox backends.
+  release-gated-cli:
+    purpose: Validate the release-gated CLI surface against the current sandbox backends.
     tracker: Linear
     benchmark_suites:
       - SkillsBench
@@ -58,7 +58,7 @@ execution_profiles:
       - terminal-bench-smoke
       - decoupling-checks
     notes:
-      - Firecracker and Kubernetes are future hard-isolation targets, not v0.4 CLI-supported sandboxes.
+      - Firecracker and Kubernetes are future hard-isolation targets, not current CLI-supported sandboxes.
       - Modal is not part of the current release gate; keep any Modal smoke as optional follow-up evidence.
       - Use this profile when checking the release-gated CLI surface; use full-release for every current release blocker.
   full-release:
@@ -137,7 +137,7 @@ axes:
       source:
         kind: local_task
         path: tests/examples/hello-world-task
-      scope: v0.4 supported sandbox smoke
+      scope: current release-gated sandbox smoke
     terminal_bench_smoke:
       source:
         kind: local_task
@@ -354,7 +354,7 @@ lanes:
     purpose: Prove nested-container workloads work for security benchmark adaptation.
     backlog_reason: Firecracker/K8s are not included in the current release gate.
     blocked_by:
-      - Firecracker/K8s sandbox backends are not exposed by the current v0.4 CLI.
+      - Firecracker/K8s sandbox backends are not exposed by the current CLI.
       - Run evidence is blocked until those backends have runnable support.
     activation_criteria:
       - bench eval create --sandbox firecracker runs the task without questions.

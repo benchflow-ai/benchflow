@@ -41,7 +41,7 @@ def test_release_suite_loads_and_tracks_backlog_lanes() -> None:
     assert suite["lanes"]
     assert suite["run_tracking"]["future_system"] == "Linear"
     assert "near-term" in suite["execution_profiles"]
-    assert "v0.4-release" in suite["execution_profiles"]
+    assert "release-gated-cli" in suite["execution_profiles"]
     assert "hosted-envs" in suite["execution_profiles"]
     assert "backlog" in suite["execution_profiles"]
     assert suite["execution_profiles"]["backlog"]["lanes"] == ["security-dind-smoke"]
@@ -133,7 +133,7 @@ def test_expand_shared_sandbox_smoke_resolves_release_gated_sandboxes() -> None:
                 "kind": "local_task",
                 "path": "tests/examples/hello-world-task",
             },
-            "scope": "v0.4 supported sandbox smoke",
+            "scope": "current release-gated sandbox smoke",
         }
     ]
     assert expanded["todos"] == []
@@ -190,7 +190,7 @@ def test_dry_run_prints_selected_lane(capsys: pytest.CaptureFixture[str]) -> Non
     assert "Activation criteria:" in out
     assert "firecracker, k8s" in out
     assert "Blocked by:" in out
-    assert "not exposed by the current v0.4 CLI" in out
+    assert "not exposed by the current CLI" in out
 
 
 def test_full_release_dry_run_passes_current_release_gate(
@@ -277,16 +277,16 @@ def test_trace_to_task_e2e_prints_concrete_sources_and_evidence(
     assert captured.err == ""
 
 
-def test_v04_release_dry_run_passes_fail_on_todo(
+def test_release_gated_cli_dry_run_passes_fail_on_todo(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Guards ENG-92 v0.4 release planning is distinct from backlog sandboxes."""
+    """Guards ENG-92 release-gated CLI planning is distinct from backlog sandboxes."""
     rc = main(
         [
             "--suite",
             str(SUITE_PATH),
             "--profile",
-            "v0.4-release",
+            "release-gated-cli",
             "--dry-run",
             "--fail-on-todo",
         ]
@@ -294,7 +294,7 @@ def test_v04_release_dry_run_passes_fail_on_todo(
 
     assert rc == 0
     captured = capsys.readouterr()
-    assert "Profile: v0.4-release" in captured.out
+    assert "Profile: release-gated-cli" in captured.out
     assert "Preferred sandboxes: docker, daytona" in captured.out
     assert "local:tests/examples/hello-world-task" in captured.out
     assert "local:tests/examples/terminal-bench-smoke-task" in captured.out

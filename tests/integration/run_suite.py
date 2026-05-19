@@ -574,7 +574,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--profile",
-        help="Execution profile to plan, such as near-term, v0.4-release, or full-release.",
+        help="Execution profile to plan, such as near-term, release-gated-cli, or full-release.",
     )
     parser.add_argument(
         "--list-lanes",

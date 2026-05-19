@@ -45,7 +45,7 @@ Before cutting a trial-ready release, every current release blocker must pass. I
 | Trace-to-task | Validates `bench tasks generate` can turn real traces into runnable benchmark tasks | Generate from at least one local or JSONL trace and one HuggingFace/opentraces source, then run the generated task through `bench eval create` and validate the verifier outcome |
 | Agent decoupling | Validates agents are pluggable runtime targets rather than core-coupled implementations | Core import and task validation work without optional agent packages; at least two non-oracle agents run the same representative task through the same Rollout path |
 | Sandbox decoupling | Validates sandbox backends are pluggable and optional dependencies remain isolated | Core `import benchflow` works without optional sandbox extras; Docker and Daytona smoke runs use the same task contract; missing optional sandbox deps produce clear install guidance |
-| v0.4 sandbox support | Validates the release-quality sandbox backends in the current release gate | Docker and Daytona can run a representative task via `bench eval create --sandbox docker` and `--sandbox daytona` without special user intervention beyond each backend's documented auth; Modal remains optional follow-up evidence, not a release blocker |
+| Release-gated sandbox support | Validates the release-quality sandbox backends in the current release gate | Docker and Daytona can run a representative task via `bench eval create --sandbox docker` and `--sandbox daytona` without special user intervention beyond each backend's documented auth; Modal remains optional follow-up evidence, not a release blocker |
 
 These blockers test benchmark-suite portability, not backward compatibility with old BenchFlow names. Public docs and new configs should use Rollout/Sandbox terminology.
 
@@ -82,7 +82,7 @@ For the current release-prep sweep, the feature release set includes:
 | Trace-to-task | `bench tasks generate` from local sessions, JSONL traces, and HuggingFace/opentraces datasets |
 | Agent decoupling | Agents are selected and configured outside core benchmark/runtime logic |
 | Sandbox decoupling | Sandbox backends are optional, selectable, and isolated behind the Sandbox contract |
-| v0.4 sandboxes | Docker and Daytona are release-gated through `--sandbox docker` and `--sandbox daytona`; Modal may remain selectable but is not a current release blocker |
+| Release-gated sandboxes | Docker and Daytona are release-gated through `--sandbox docker` and `--sandbox daytona`; Modal may remain selectable but is not a current release blocker |
 | Future hard-isolation backlog | Firecracker and Kubernetes are tracked in the backlog profile, not the current release gate. Promote them only after `--sandbox firecracker`, `--sandbox k8s`, and the `--sandbox kubernetes` alias are implemented with install guidance and smoke evidence |
 
 ## Large Test Suite Structure
@@ -97,7 +97,7 @@ Plan the release suite before running anything:
 uv run python tests/integration/run_suite.py --list-lanes
 uv run python tests/integration/run_suite.py --list-profiles
 uv run python tests/integration/run_suite.py --profile near-term --dry-run
-uv run python tests/integration/run_suite.py --profile v0.4-release --dry-run --fail-on-todo
+uv run python tests/integration/run_suite.py --profile release-gated-cli --dry-run --fail-on-todo
 uv run python tests/integration/run_suite.py --profile hosted-envs --dry-run
 uv run python tests/integration/run_suite.py --profile full-release --dry-run --fail-on-todo
 # The backlog profile is expected non-zero until Firecracker/K8s are promoted.
@@ -131,7 +131,7 @@ inventory under `dogfood/2026-05-19-release-gate/hosted-envs/` by default.
 OpenReward and PrimeIntellect remain hub-metadata checks until account/credited
 hosted eval support is available; Harbor has a public registry inventory path.
 
-Use `--fail-on-todo` whenever a dry-run plan is being used as release evidence. Despite the name, this gate fails on unresolved TODOs and explicit `blocked_by` entries. The `near-term`, `v0.4-release`, `hosted-envs`, and `full-release` profiles are expected to pass the gate today. The `backlog` profile is expected to fail this gate until the future Firecracker/Kubernetes security DinD lane is resolved; that failure tracks planned coverage, not a current release blocker.
+Use `--fail-on-todo` whenever a dry-run plan is being used as release evidence. Despite the name, this gate fails on unresolved TODOs and explicit `blocked_by` entries. The `near-term`, `release-gated-cli`, `hosted-envs`, and `full-release` profiles are expected to pass the gate today. The `backlog` profile is expected to fail this gate until the future Firecracker/Kubernetes security DinD lane is resolved; that failure tracks planned coverage, not a current release blocker.
 
 ### Run Tracking and Profiles
 
@@ -139,7 +139,7 @@ Future release-suite runs should be tracked in Linear. Until that is wired into 
 
 The `near-term` profile keeps release prep moving with a smaller plan: SkillsBench as the benchmark-suite focus, Daytona as the preferred cloud sandbox, and the adapter release set as the additional feature surface. This profile is not the full release gate; `full-release` includes every current release blocker.
 
-The `v0.4-release` profile is the TODO-clean release-planning profile for the current release-gated CLI surface. It adds the shared sandbox smoke, Terminal-Bench-style shell verifier smoke, and decoupling checks over the Docker/Daytona surface without treating optional Modal or future Firecracker/Kubernetes support as release blockers.
+The `release-gated-cli` profile is the TODO-clean release-planning profile for the current release-gated CLI surface. It adds the shared sandbox smoke, Terminal-Bench-style shell verifier smoke, and decoupling checks over the Docker/Daytona surface without treating optional Modal or future Firecracker/Kubernetes support as release blockers.
 
 The `backlog` profile tracks planned validation lanes with concrete tasks and acceptance criteria. It currently holds the Firecracker/Kubernetes Docker-in-Docker smoke because those sandboxes are not part of the current release gate.
 

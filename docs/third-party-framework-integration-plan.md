@@ -2,9 +2,9 @@
 
 Date: 2026-05-18
 
-BenchFlow v0.4 should present third-party framework support as a compatibility
-showcase, not a full migration of every task in every ecosystem. The practical
-claim is:
+The BenchFlow trial-ready release should present third-party framework support
+as a compatibility showcase, not a full migration of every task in every
+ecosystem. The practical claim is:
 
 > BenchFlow can ingest mainstream agent-eval frameworks, run representative
 > tasks through the Rollout/Sandbox/Reward path, and emit unified trajectories,
@@ -370,7 +370,7 @@ Public claim:
 
 Public claim:
 
-> BenchFlow v0.4 interoperates with Harbor, Verifiers, ORS, and Inspect AI.
+> BenchFlow interoperates with Harbor, Verifiers, ORS, and Inspect AI.
 
 ### Milestone 4: High-Fidelity Environment Differentiation
 
@@ -386,7 +386,7 @@ Public claim:
 ## Main Risks
 
 - Calling thin converters "adapters" before they can import real external tasks
-  will overclaim the v0.4 state.
+  will overclaim the trial-ready state.
 - Harbor registry tasks may rely on secrets, GPUs, Windows, sidecars, custom
   agents, or provider-specific behavior; the board must record blockers instead
   of hiding them.
