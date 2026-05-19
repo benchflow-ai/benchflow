@@ -1,4 +1,4 @@
-"""Run HILBench — downloads dataset from HuggingFace, generates tasks, runs via Job.
+"""Run HILBench — downloads dataset from HuggingFace, generates tasks, runs via Evaluation.
 
 Pre-requisites:
     * Docker daemon running.
@@ -24,7 +24,7 @@ from pathlib import Path
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
-from benchflow.job import Job
+from benchflow.evaluation import Evaluation
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -203,7 +203,7 @@ async def main():
         )
 
     if config:
-        job = Job.from_yaml(config)
+        job = Evaluation.from_yaml(config)
     else:
         logger.info("No config specified; tasks generated at %s", tasks_dir)
         logger.info("Use: bench eval create -f <config.yaml> to run evaluations")
