@@ -7,9 +7,11 @@ Date: 2026-05-19
 The focused trial-ready release gate is green for the current blocker set.
 BenchFlow can run the selected real-suite evidence through the current
 Rollout/Sandbox/Reward path, and the remaining work is release mechanics:
-merge the clean adapter PRs, then cut the release as `1.0.0`.
+merge the clean adapter PRs plus the hosted-env source adapter, then cut the
+release as `1.0.0`.
 
-Do not tag the release from the open-PR state. Land the adapter PRs first.
+Do not tag the release from the open-PR state. Land the adapter and hosted-env
+PRs first.
 
 ## Current Gate
 
@@ -31,6 +33,7 @@ Do not tag the release from the open-PR state. Land the adapter PRs first.
 | #279 | HILBench | `d626d95bc304dd8256015d2d465aac55cd92bf31` | mergeable clean, `test` success |
 | #280 | OpaqueToolsBench | `358fcfacd46505beb10f03f7d6f42de6c37073a4` | mergeable clean, `test` success |
 | #283 | CLBench | `1415a9c04a04c1bfe75a5fb0c4104003482db9fe` | mergeable clean, `test` success |
+| #290 | Hosted env source adapter | `41322da7d7b124695fad1b03ff9f06242b06a194` | `test` success; auxiliary review checks still pending |
 
 ## Commands
 
@@ -60,13 +63,13 @@ Detailed run artifacts are intentionally under ignored `dogfood/` paths:
 
 ## Versioning Call
 
-Call this release `1.0.0` once PRs #279, #280, and #283 land on `main`.
-The evidence and product intent are trial-ready rather than another internal
-`0.4.0` refactor cut.
+Call this release `1.0.0` once PRs #279, #280, #283, and #290 land on
+`main`. The evidence and product intent are trial-ready rather than another
+internal `0.4.0` refactor cut.
 
 Release sequence after merge approval:
 
-1. Merge PRs #279, #280, and #283.
+1. Merge PRs #279, #280, #283, and #290.
 2. Merge the release-gate evidence PR.
 3. Bump `pyproject.toml` on `main` to `1.0.0`.
 4. Tag `v1.0.0` on `main`.
