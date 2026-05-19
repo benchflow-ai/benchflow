@@ -19,6 +19,27 @@ from string import Template
 logger = logging.getLogger(__name__)
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
+DEFAULT_SKILL_MOUNT_DIR = "/skills"
+JUDGE_API_ENV_KEYS = (
+    "GOOGLE_API_KEY",
+    "GEMINI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+)
+
+
+def _validate_container_path(value: object, field: str) -> str:
+    """Validate a simple absolute path inside the sandbox container."""
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be a string")
+    if (
+        not value.startswith("/")
+        or value == "/"
+        or value != value.strip()
+        or any(ch in value for ch in ('"', "\n", "\r", "\0"))
+    ):
+        raise ValueError(f"{field} must be an absolute container path like /skills")
+    return value.rstrip("/")
 
 
 # ---------------------------------------------------------------------------
@@ -56,6 +77,13 @@ class EvalDataset:
     @property
     def timeout_sec(self) -> int:
         return self.defaults.get("timeout_sec", 300)
+
+    @property
+    def skill_mount_dir(self) -> str:
+        return _validate_container_path(
+            self.defaults.get("skill_mount_dir", DEFAULT_SKILL_MOUNT_DIR),
+            "defaults.skill_mount_dir",
+        )
 
 
 @dataclass
@@ -209,7 +237,7 @@ def generate_tasks(
     output_dir: Path,
     with_skill: bool = True,
 ) -> list[Path]:
-    """Generate Harbor-format tasks from an EvalDataset.
+    """Generate BenchFlow-format tasks from an EvalDataset.
 
     Args:
         dataset: Parsed eval dataset.
@@ -234,6 +262,20 @@ def generate_tasks(
         (task_dir / "instruction.md").write_text(case.question + "\n")
 
         # task.toml
+        environment_lines = [
+            "[environment]",
+            "cpus = 1",
+            "memory_mb = 2048",
+            "allow_internet = true",
+        ]
+        if with_skill:
+            environment_lines.append(f'skills_dir = "{dataset.skill_mount_dir}"')
+
+        verifier_env_lines = _judge_env_lines()
+        verifier_env_block = (
+            "\n\n" + "\n".join(verifier_env_lines) if verifier_env_lines else ""
+        )
+
         (task_dir / "task.toml").write_text(
             f'version = "1.0"\n\n'
             f"[metadata]\n"
@@ -244,11 +286,8 @@ def generate_tasks(
             f"[agent]\n"
             f"timeout_sec = {dataset.timeout_sec}\n\n"
             f"[verifier]\n"
-            f"timeout_sec = 120\n\n"
-            f"[environment]\n"
-            f"cpus = 1\n"
-            f"memory_mb = 2048\n"
-            f"allow_internet = true\n"
+            f"timeout_sec = 120"
+            f"{verifier_env_block}\n\n" + "\n".join(environment_lines) + "\n"
         )
 
         # environment/
@@ -259,6 +298,10 @@ def generate_tasks(
         custom_dockerfile = dataset.skill_dir / "evals" / "Dockerfile"
         if custom_dockerfile.exists():
             dockerfile_content = custom_dockerfile.read_text()
+            if with_skill:
+                dockerfile_content = _append_skill_mount_copy(
+                    dockerfile_content, dataset
+                )
         else:
             dockerfile_content = _default_dockerfile(dataset, with_skill)
 
@@ -319,8 +362,6 @@ def generate_tasks(
 
 def _default_dockerfile(dataset: EvalDataset, with_skill: bool) -> str:
     """Generate a default Dockerfile for skill eval tasks."""
-    import os
-
     lines = [
         "FROM python:3.12-slim",
         "",
@@ -335,18 +376,6 @@ def _default_dockerfile(dataset: EvalDataset, with_skill: bool) -> str:
         "",
     ]
 
-    # Forward judge API keys as ARG (build-time only, not persisted in image layers)
-    for key in (
-        "GOOGLE_API_KEY",
-        "GEMINI_API_KEY",
-        "ANTHROPIC_API_KEY",
-        "OPENAI_API_KEY",
-    ):
-        val = os.environ.get(key)
-        if val:
-            lines += [f"ARG {key}", f"ENV {key}=${{{key}}}", ""]
-            break  # one judge key is enough
-
     # Install extra deps if requirements.txt exists
     reqs = dataset.skill_dir / "evals" / "requirements.txt"
     if reqs.exists():
@@ -359,9 +388,8 @@ def _default_dockerfile(dataset: EvalDataset, with_skill: bool) -> str:
 
     if with_skill:
         lines += [
-            "# Install skill",
-            "COPY skills/ /home/user/.claude/skills/",
-            "COPY skills/ /home/user/.agents/skills/",
+            "# BenchFlow links this neutral task-local skill tree into the selected agent's skill paths",
+            f"COPY skills/ {_dockerfile_dir(dataset.skill_mount_dir)}",
             "",
         ]
 
@@ -369,6 +397,30 @@ def _default_dockerfile(dataset: EvalDataset, with_skill: bool) -> str:
         "WORKDIR /app",
     ]
     return "\n".join(lines) + "\n"
+
+
+def _judge_env_lines() -> list[str]:
+    """Return task.toml verifier env templates for host judge credentials."""
+    import os
+
+    present_keys = [key for key in JUDGE_API_ENV_KEYS if os.environ.get(key)]
+    if not present_keys:
+        return []
+    return ["[verifier.env]"] + [f'{key} = "${{{key}}}"' for key in present_keys]
+
+
+def _dockerfile_dir(path: str) -> str:
+    return path.rstrip("/") + "/"
+
+
+def _append_skill_mount_copy(content: str, dataset: EvalDataset) -> str:
+    """Ensure custom eval Dockerfiles still expose the skill at skills_dir."""
+    suffix = (
+        "\n"
+        "# BenchFlow skill-eval skill mount\n"
+        f"COPY skills/ {_dockerfile_dir(dataset.skill_mount_dir)}\n"
+    )
+    return content.rstrip() + suffix
 
 
 def cleanup_tasks(task_dirs: list[Path]) -> None:

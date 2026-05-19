@@ -43,6 +43,7 @@ import json
 import logging
 import os
 import shlex
+import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -586,6 +587,22 @@ async def _run_oracle(
         }
     ]
     return trajectory, "oracle"
+
+
+async def _publish_trajectory_for_verifier(env, trajectory: list[dict]) -> None:
+    """Make the captured ACP trajectory available inside /logs for verifiers."""
+    if not trajectory:
+        return
+    await env.exec("mkdir -p /logs/agent", user="root", timeout_sec=10)
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
+        f.write("\n".join(json.dumps(e, default=str) for e in trajectory))
+        f.write("\n")
+        tmp_path = f.name
+    try:
+        await env.upload_file(tmp_path, "/logs/agent/acp_trajectory.jsonl")
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(tmp_path)
 
 
 async def _verify_rollout(
@@ -1183,6 +1200,8 @@ class Rollout:
                 logger.warning(
                     f"Using scraped trajectory ({len(scraped)} events) — UNTRUSTED"
                 )
+
+        await _publish_trajectory_for_verifier(self._env, self._trajectory)
 
         self._rewards, self._verifier_error = await _verify_rollout(
             self._env,
