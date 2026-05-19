@@ -243,6 +243,31 @@ class TestCreateEnvironment:
         assert result is modal_env.return_value
 
     @pytest.mark.parametrize(
+        "sandbox_type",
+        [
+            pytest.param("firecracker", id="firecracker"),
+            pytest.param("k8s", id="k8s"),
+            pytest.param("kubernetes", id="kubernetes"),
+        ],
+    )
+    def test_future_sandboxes_are_not_v04_setup_backends(self, tmp_path, sandbox_type):
+        """Guards ENG-92 future sandbox names do not look supported in v0.4."""
+        env_config = MagicMock()
+        task = SimpleNamespace(
+            paths=SimpleNamespace(environment_dir=tmp_path / "environment"),
+            config=SimpleNamespace(environment=env_config),
+        )
+
+        with pytest.raises(ValueError) as exc_info:
+            _create_environment(sandbox_type, task, tmp_path, "trial", MagicMock())
+
+        message = str(exc_info.value)
+        assert f"Unknown sandbox_type: {sandbox_type!r}" in message
+        assert "docker" in message
+        assert "daytona" in message
+        assert "modal" in message
+
+    @pytest.mark.parametrize(
         ("sandbox_type", "extra"),
         [
             pytest.param("daytona", "sandbox-daytona", id="daytona"),

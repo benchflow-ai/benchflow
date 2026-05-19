@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import os
 from datetime import UTC
 from pathlib import Path
 from typing import Annotated, cast
@@ -11,6 +12,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from benchflow._dotenv import load_dotenv_env
 from benchflow._utils.config import normalize_sandbox_user
 from benchflow.agents.registry import parse_agent_spec
 from benchflow.cli.trace_import import register_tasks_generate
@@ -40,6 +42,30 @@ def _parse_agent_env(entries: list[str] | None) -> dict[str, str]:
         key, value = entry.split("=", 1)
         parsed[key] = value
     return parsed
+
+
+def _apply_dotenv_to_process_env() -> None:
+    """Expose local .env credentials to provider SDKs without overriding env."""
+    for key, value in load_dotenv_env().items():
+        os.environ.setdefault(key, value)
+
+
+def _exit_if_run_result_failed(run_result: object) -> None:
+    error = getattr(run_result, "error", None)
+    verifier_error = getattr(run_result, "verifier_error", None)
+    if error:
+        console.print(f"[red]Error:[/red] {error}")
+    if verifier_error:
+        console.print(f"[red]Verifier error:[/red] {verifier_error}")
+    if error or verifier_error:
+        raise typer.Exit(1)
+
+
+def _exit_if_evaluation_had_errors(result: object) -> None:
+    errored = int(getattr(result, "errored", 0) or 0)
+    verifier_errored = int(getattr(result, "verifier_errored", 0) or 0)
+    if errored or verifier_errored:
+        raise typer.Exit(1)
 
 
 def _normalize_eval_agent_or_exit(agent_spec: str) -> str:
@@ -746,6 +772,77 @@ def tasks_check(
         raise typer.Exit(1)
 
 
+compat_app = typer.Typer(help="Third-party framework compatibility checks.")
+app.add_typer(compat_app, name="compat")
+
+
+@compat_app.command("harbor-registry")
+def compat_harbor_registry(
+    registry: Annotated[
+        str,
+        typer.Option(
+            "--registry",
+            help="Harbor registry JSON URL or local file.",
+        ),
+    ] = "https://raw.githubusercontent.com/harbor-framework/harbor/main/registry.json",
+    tasks_per_dataset: Annotated[
+        int,
+        typer.Option(
+            "--tasks-per-dataset",
+            help="Number of representative tasks to select per registry dataset.",
+            min=1,
+        ),
+    ] = 2,
+    level: Annotated[
+        str,
+        typer.Option(
+            "--level",
+            help="Compatibility level to run: inventory or check.",
+        ),
+    ] = "inventory",
+    out: Annotated[
+        Path | None,
+        typer.Option("--out", help="Optional JSONL output path."),
+    ] = None,
+    cache_dir: Annotated[
+        Path,
+        typer.Option("--cache-dir", help="Cache directory for sparse clones."),
+    ] = Path(".cache/compat/harbor"),
+    limit: Annotated[
+        int | None,
+        typer.Option("--limit", help="Optional cap on selected task refs."),
+    ] = None,
+) -> None:
+    """Inventory or structurally check representative Harbor registry tasks."""
+    from benchflow.compat.harbor_registry import (
+        check_harbor_registry,
+        records_summary,
+    )
+
+    try:
+        records = check_harbor_registry(
+            registry,
+            tasks_per_dataset=tasks_per_dataset,
+            level=level,
+            out=out,
+            cache_dir=cache_dir,
+            limit=limit,
+        )
+    except Exception as exc:
+        console.print(f"[red]Harbor compatibility check failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    summary = records_summary(records)
+    console.print(
+        "[bold]Harbor compatibility:[/bold] "
+        f"{summary['total']} task refs, "
+        f"{summary['pass']} pass, {summary['fail']} fail, "
+        f"{summary['blocked']} blocked"
+    )
+    if out is not None:
+        console.print(f"[green]Wrote JSONL report:[/green] {out}")
+
+
 @app.command(hidden=True, deprecated=True)
 def cleanup(
     dry_run: Annotated[
@@ -922,6 +1019,7 @@ def eval_create(
     """Run an evaluation — single task or batch."""
     from benchflow.evaluation import Evaluation, EvaluationConfig
 
+    _apply_dotenv_to_process_env()
     parsed_env = _parse_agent_env(agent_env)
     agent = _normalize_eval_agent_or_exit(agent)
     sandbox_user = normalize_sandbox_user(sandbox_user)
@@ -937,6 +1035,7 @@ def eval_create(
             f"\n[bold]Score: {result.passed}/{result.total} "
             f"({result.score:.1%})[/bold], errors={result.errored}"
         )
+        _exit_if_evaluation_had_errors(result)
     elif source_repo:
         from benchflow._utils.benchmark_repos import resolve_source
 
@@ -974,8 +1073,7 @@ def eval_create(
             console.print(f"[bold]Agent:[/bold] {agent} ({eff_model or 'no model'})")
             console.print(f"[bold]Reward:[/bold] {reward}")
             console.print(f"[bold]Tool calls:[/bold] {run_result.n_tool_calls}")
-            if run_result.error:
-                console.print(f"[red]Error:[/red] {run_result.error}")
+            _exit_if_run_result_failed(run_result)
         else:
             # Directory of tasks — batch run
             j = Evaluation(
@@ -1002,6 +1100,7 @@ def eval_create(
                 f"\n[bold]Score: {result.passed}/{result.total} "
                 f"({result.score:.1%})[/bold], errors={result.errored}"
             )
+            _exit_if_evaluation_had_errors(result)
     elif tasks_dir:
         resolved_tasks_dir = tasks_dir
         eff_model = effective_model(agent, model)
@@ -1035,8 +1134,7 @@ def eval_create(
             console.print(f"[bold]Agent:[/bold] {agent} ({eff_model or 'no model'})")
             console.print(f"[bold]Reward:[/bold] {reward}")
             console.print(f"[bold]Tool calls:[/bold] {run_result.n_tool_calls}")
-            if run_result.error:
-                console.print(f"[red]Error:[/red] {run_result.error}")
+            _exit_if_run_result_failed(run_result)
         else:
             # Directory of tasks — batch run
             j = Evaluation(
@@ -1063,6 +1161,7 @@ def eval_create(
                 f"\n[bold]Score: {result.passed}/{result.total} "
                 f"({result.score:.1%})[/bold], errors={result.errored}"
             )
+            _exit_if_evaluation_had_errors(result)
     else:
         console.print("[red]Provide --config, --tasks-dir, or --source-repo[/red]")
         raise typer.Exit(1)
