@@ -15,7 +15,7 @@ def evaluate():
         return 0.0
 
     score = 0.0
-    max_score = 5.0
+    max_score = 4.0
 
     # Check risks exist and have required fields
     risks = analysis.get("risks", [])

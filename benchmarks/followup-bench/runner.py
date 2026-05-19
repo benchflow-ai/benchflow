@@ -11,7 +11,7 @@ filesystem. The Scene scheduler manages turn-taking and outbox routing.
 
 Usage:
     python -m benchmarks.followup_bench.runner \
-        --task-dir harbor-framework/terminal-bench-2/tasks/some-task \
+        --task-dir tasks/terminal-bench-2/some-task \
         --coder gemini --coder-model gemini-3.1-flash-lite-preview \
         --reviewer gemini --reviewer-model gemini-3-pro-preview \
         --env daytona

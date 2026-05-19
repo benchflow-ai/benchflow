@@ -8,20 +8,36 @@ Prefer using `bench eval create --config` with a YAML config that has tasks_dir
 pointing to already-converted tasks if you've pre-converted them.
 """
 
+import argparse
 import asyncio
 import logging
 import subprocess
 import sys
 from pathlib import Path
 
-from benchflow._utils.benchmark_repos import resolve_source
-from benchflow.evaluation import Evaluation
+_SCRIPT_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = _SCRIPT_DIR.parents[1]
+_SRC_ROOT = _REPO_ROOT / "src"
+if str(_SCRIPT_DIR) in sys.path:
+    sys.path.remove(str(_SCRIPT_DIR))
+if str(_SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(_SRC_ROOT))
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
-_SCRIPT_DIR = Path(__file__).resolve().parent
 _CONVERTER = _SCRIPT_DIR / "benchflow.py"
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run Harvey LAB via BenchFlow.")
+    parser.add_argument(
+        "config",
+        nargs="?",
+        default=str(_SCRIPT_DIR / "harvey-lab-gemini-flash-lite.yaml"),
+        help="BenchFlow evaluation YAML config.",
+    )
+    return parser.parse_args()
 
 
 def _repo_root() -> Path:
@@ -35,6 +51,8 @@ def _repo_root() -> Path:
 
 def ensure_converted_tasks() -> Path:
     """Download raw Harvey LAB tasks and convert to BenchFlow format."""
+    from benchflow._utils.benchmark_repos import resolve_source
+
     raw_dir = resolve_source("harveyai/harvey-labs", path="tasks", ref="main")
     root = _repo_root()
     converted_dir = root / ".cache" / "harvey-lab-benchflow"
@@ -65,17 +83,15 @@ def ensure_converted_tasks() -> Path:
 
 
 async def main():
-    config = (
-        sys.argv[1]
-        if len(sys.argv) > 1
-        else str(_SCRIPT_DIR / "harvey-lab-gemini-flash-lite.yaml")
-    )
+    from benchflow.evaluation import Evaluation
+
+    args = _parse_args()
     tasks_dir = ensure_converted_tasks()
     logger.info("Using tasks from %s", tasks_dir)
 
     # Load job config from YAML, then override tasks_dir with the converted path.
     # The YAML doesn't specify source/tasks_dir since Harvey LAB requires conversion.
-    job = Evaluation.from_yaml(config)
+    job = Evaluation.from_yaml(args.config)
     job._tasks_dir = tasks_dir  # type: ignore[attr-defined]
 
     result = await job.run()

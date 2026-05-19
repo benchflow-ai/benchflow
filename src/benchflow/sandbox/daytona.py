@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import importlib
 import logging
 import os
 import shlex
@@ -16,19 +17,6 @@ from abc import abstractmethod
 from pathlib import Path
 from uuid import uuid4
 
-from daytona import (
-    AsyncDaytona,
-    AsyncSandbox,
-    CreateSandboxFromImageParams,
-    CreateSandboxFromSnapshotParams,
-    DaytonaNotFoundError,
-    FileDownloadRequest,
-    FileUpload,
-    Image,
-    Resources,
-    SessionExecuteRequest,
-)
-from daytona._async.snapshot import SnapshotState
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from benchflow.sandbox._base import BaseSandbox, ExecResult
@@ -41,6 +29,44 @@ from benchflow.sandbox._compose import (
 from benchflow.task.config import SandboxConfig
 from benchflow.task.env import resolve_env_vars
 from benchflow.task.paths import RolloutPaths, SandboxPaths
+
+
+def _ensure_daytona_anyio_compat() -> None:
+    """Patch the anyio symbol that Daytona 0.176 imports on newer anyio."""
+    try:
+        import anyio
+    except ImportError:
+        return
+
+    if hasattr(anyio, "AsyncContextManagerMixin"):
+        return
+
+    class _AsyncContextManagerMixin:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            aclose = getattr(self, "aclose", None)
+            if aclose is not None:
+                await aclose()
+
+    anyio.AsyncContextManagerMixin = _AsyncContextManagerMixin  # type: ignore[attr-defined]
+
+
+_ensure_daytona_anyio_compat()
+_daytona = importlib.import_module("daytona")
+_snapshot = importlib.import_module("daytona._async.snapshot")
+AsyncDaytona = _daytona.AsyncDaytona
+AsyncSandbox = _daytona.AsyncSandbox
+CreateSandboxFromImageParams = _daytona.CreateSandboxFromImageParams
+CreateSandboxFromSnapshotParams = _daytona.CreateSandboxFromSnapshotParams
+DaytonaNotFoundError = _daytona.DaytonaNotFoundError
+FileDownloadRequest = _daytona.FileDownloadRequest
+FileUpload = _daytona.FileUpload
+Image = _daytona.Image
+Resources = _daytona.Resources
+SessionExecuteRequest = _daytona.SessionExecuteRequest
+SnapshotState = _snapshot.SnapshotState
 
 logger = logging.getLogger("benchflow")
 

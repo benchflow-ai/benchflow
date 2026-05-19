@@ -14,6 +14,7 @@ from benchflow.sandbox.setup import (
     _inject_skills_into_dockerfile,
     _modal_add_python_version,
     _modal_rewrite_dockerfile_heredocs,
+    _raise_missing_optional_sandbox_dependency,
     stage_dockerfile_deps,
 )
 
@@ -240,6 +241,52 @@ class TestCreateEnvironment:
             task_env_config=env_config,
         )
         assert result is modal_env.return_value
+
+    @pytest.mark.parametrize(
+        "sandbox_type",
+        [
+            pytest.param("firecracker", id="firecracker"),
+            pytest.param("k8s", id="k8s"),
+            pytest.param("kubernetes", id="kubernetes"),
+        ],
+    )
+    def test_future_sandboxes_are_not_v04_setup_backends(self, tmp_path, sandbox_type):
+        """Guards ENG-92 future sandbox names do not look supported in v0.4."""
+        env_config = MagicMock()
+        task = SimpleNamespace(
+            paths=SimpleNamespace(environment_dir=tmp_path / "environment"),
+            config=SimpleNamespace(environment=env_config),
+        )
+
+        with pytest.raises(ValueError) as exc_info:
+            _create_environment(sandbox_type, task, tmp_path, "trial", MagicMock())
+
+        message = str(exc_info.value)
+        assert f"Unknown sandbox_type: {sandbox_type!r}" in message
+        assert "docker" in message
+        assert "daytona" in message
+        assert "modal" in message
+
+    @pytest.mark.parametrize(
+        ("sandbox_type", "extra"),
+        [
+            pytest.param("daytona", "sandbox-daytona", id="daytona"),
+            pytest.param("modal", "sandbox-modal", id="modal"),
+        ],
+    )
+    def test_missing_optional_sandbox_dependency_has_install_hint(
+        self, sandbox_type, extra
+    ):
+        """Guards ENG-77: optional backends raise actionable install guidance."""
+        with pytest.raises(RuntimeError) as exc_info:
+            _raise_missing_optional_sandbox_dependency(
+                sandbox_type,
+                ModuleNotFoundError("No module named optional_backend"),
+            )
+
+        message = str(exc_info.value)
+        assert f"uv sync --extra {extra}" in message
+        assert f"benchflow[{extra}]" in message
 
     @pytest.mark.asyncio
     @pytest.mark.skipif(

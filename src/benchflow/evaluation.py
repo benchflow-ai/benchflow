@@ -122,8 +122,11 @@ class EvaluationConfig:
     self_gen_no_internet: bool = False
 
     def __post_init__(self):
+        from benchflow._utils.config import normalize_agent_name, normalize_sandbox_user
         from benchflow.agents.registry import AGENTS
 
+        self.agent = normalize_agent_name(self.agent)
+        self.sandbox_user = normalize_sandbox_user(self.sandbox_user)
         if self.agent not in AGENTS:
             available = ", ".join(sorted(AGENTS.keys()))
             logger.warning(

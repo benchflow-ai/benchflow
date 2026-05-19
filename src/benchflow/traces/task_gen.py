@@ -14,6 +14,7 @@ import re
 import shlex
 import textwrap
 from pathlib import Path
+from typing import cast
 
 from benchflow.traces.models import ParsedTrace
 
@@ -313,8 +314,9 @@ def _build_test_sh(trace: ParsedTrace) -> str:
         return (
             "#!/bin/bash\n"
             f"# Auto-generated verifier from trace {trace.trace_id}\n"
-            "# No file checks available — manual verification needed.\n"
-            'echo "1.0" > /logs/verifier/reward.txt\n'
+            "# No file checks available — manual verification required.\n"
+            'echo "No file checks available for this trace-generated task."\n'
+            'echo "0.0" > /logs/verifier/reward.txt\n'
         )
 
     has_git = bool(trace.git.repo and trace.git.commit_before)
@@ -367,6 +369,93 @@ def _build_test_sh(trace: ParsedTrace) -> str:
     )
 
 
+def _tool_call_file_write(tc_input: dict[str, object]) -> tuple[str, str] | None:
+    """Extract a file path and best-effort final content from a write/edit call."""
+    path = tc_input.get("file_path") or tc_input.get("path")
+    if not isinstance(path, str) or not path:
+        return None
+
+    content = tc_input.get("content")
+    if isinstance(content, str):
+        return _relativize_path(path), content
+
+    new_string = tc_input.get("new_string")
+    if isinstance(new_string, str):
+        return _relativize_path(path), new_string
+
+    text = tc_input.get("text")
+    if isinstance(text, str):
+        return _relativize_path(path), text
+
+    return _relativize_path(path), ""
+
+
+def _solution_writes_from_trace(trace: ParsedTrace) -> list[tuple[str, str]]:
+    """Return deterministic file writes that can replay a trace as an oracle."""
+    writes_by_path: dict[str, str] = {}
+    write_tools = {"Write", "Edit", "write_to_file", "edit_file"}
+
+    for step in trace.steps:
+        for tc in step.tool_calls:
+            if tc.name in write_tools:
+                write = _tool_call_file_write(tc.input)
+                if write is not None:
+                    path, content = write
+                    writes_by_path[path] = content
+            elif tc.name == "MultiEdit":
+                path = tc.input.get("file_path") or tc.input.get("path")
+                edits = tc.input.get("edits")
+                if isinstance(path, str) and isinstance(edits, list):
+                    parts = []
+                    for edit in edits:
+                        if isinstance(edit, dict):
+                            edit_input = cast("dict[str, object]", edit)
+                            new_string = edit_input.get("new_string")
+                            if isinstance(new_string, str):
+                                parts.append(new_string)
+                    writes_by_path[_relativize_path(path)] = "\n".join(parts)
+
+    return list(writes_by_path.items())
+
+
+def _heredoc_marker(content: str) -> str:
+    marker = "BENCHFLOW_TRACE_CONTENT"
+    while marker in content:
+        marker += "_END"
+    return marker
+
+
+def _build_solution_sh(trace: ParsedTrace) -> str:
+    """Generate an oracle solution that replays simple file writes from a trace."""
+    writes = _solution_writes_from_trace(trace)
+    header = (
+        "#!/bin/bash\n"
+        f"# Auto-generated oracle solution from trace {trace.trace_id}\n"
+        "set -euo pipefail\n"
+        "cd /app\n\n"
+    )
+
+    if not writes:
+        return header + (
+            'echo "No replayable file writes were found for this trace." >&2\nexit 1\n'
+        )
+
+    blocks: list[str] = [header]
+    for path, content in writes:
+        quoted_path = shlex.quote(path)
+        parent = str(Path(path).parent)
+        if parent and parent != ".":
+            blocks.append(f"mkdir -p {shlex.quote(parent)}\n")
+        marker = _heredoc_marker(content)
+        blocks.append(f"cat > {quoted_path} <<'{marker}'\n")
+        blocks.append(content)
+        if content and not content.endswith("\n"):
+            blocks.append("\n")
+        blocks.append(f"{marker}\n")
+
+    return "".join(blocks)
+
+
 def _build_dockerfile(trace: ParsedTrace | None = None) -> str:
     """Generate a Dockerfile for trace-generated tasks.
 
@@ -384,8 +473,7 @@ def _build_dockerfile(trace: ParsedTrace | None = None) -> str:
     if trace and trace.git.repo and trace.git.commit_before:
         repo = trace.git.repo
         commit = trace.git.commit_before
-        # Use HTTPS clone URL for public repos
-        clone_url = f"https://github.com/{repo}.git"
+        clone_url = _github_clone_url(repo)
         base += textwrap.dedent(f"""\
             RUN git clone --depth 50 {clone_url} /app && \\
                 cd /app && git checkout {commit} || true
@@ -396,6 +484,18 @@ def _build_dockerfile(trace: ParsedTrace | None = None) -> str:
         base += "\nWORKDIR /app\n"
 
     return base
+
+
+def _github_clone_url(repo: str) -> str:
+    """Return a clone URL for GitHub shorthand or full URLs."""
+    normalized = repo.strip()
+    if normalized.endswith(".git"):
+        normalized = normalized[:-4]
+    if normalized.startswith(("https://", "http://", "git@")):
+        return f"{normalized}.git"
+    if normalized.startswith("github.com/"):
+        return f"https://{normalized}.git"
+    return f"https://github.com/{normalized}.git"
 
 
 def generate_task(
@@ -461,6 +561,13 @@ def generate_task(
     test_path.write_text(test_sh)
     test_path.chmod(0o755)
 
+    # Write solution/solve.sh for deterministic oracle evidence.
+    solution_dir = task_dir / "solution"
+    solution_dir.mkdir(exist_ok=True)
+    solution_path = solution_dir / "solve.sh"
+    solution_path.write_text(_build_solution_sh(trace))
+    solution_path.chmod(0o755)
+
     logger.info(
         "Generated task %s (difficulty=%s, outcome=%s, tools=%d)",
         task_id,
@@ -497,29 +604,13 @@ def generate_tasks_from_traces(
         List of paths to created task directories.
     """
     results: list[Path] = []
-    skipped = 0
+    eligible_traces, skipped = filter_traces_for_generation(
+        traces,
+        min_steps=min_steps,
+        outcome_filter=outcome_filter,
+    )
 
-    for trace in traces:
-        # Filter by minimum complexity
-        if len(trace.steps) < min_steps:
-            skipped += 1
-            continue
-
-        # Filter by outcome
-        if outcome_filter and trace.outcome != outcome_filter:
-            skipped += 1
-            continue
-
-        # Skip traces with no user prompt
-        if not trace.first_user_prompt:
-            skipped += 1
-            continue
-
-        # Skip traces with no tool calls (e.g. pure explanation sessions)
-        if trace.n_tool_calls == 0:
-            skipped += 1
-            continue
-
+    for trace in eligible_traces:
         task_dir = generate_task(
             trace,
             output_dir,
@@ -533,3 +624,34 @@ def generate_tasks_from_traces(
         logger.info("Skipped %d traces (filtered by steps/outcome/prompt)", skipped)
 
     return results
+
+
+def filter_traces_for_generation(
+    traces: list[ParsedTrace],
+    *,
+    min_steps: int = 2,
+    outcome_filter: str | None = None,
+) -> tuple[list[ParsedTrace], int]:
+    """Return traces that would produce objective task directories."""
+    eligible: list[ParsedTrace] = []
+    skipped = 0
+
+    for trace in traces:
+        if len(trace.steps) < min_steps:
+            skipped += 1
+            continue
+        if outcome_filter and trace.outcome != outcome_filter:
+            skipped += 1
+            continue
+        if not trace.first_user_prompt:
+            skipped += 1
+            continue
+        if trace.n_tool_calls == 0:
+            skipped += 1
+            continue
+        if not trace.files_edited:
+            skipped += 1
+            continue
+        eligible.append(trace)
+
+    return eligible, skipped

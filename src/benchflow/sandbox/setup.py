@@ -10,7 +10,7 @@ import shutil
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn, cast
 
 from benchflow.agents.registry import AGENTS
 from benchflow.task import RolloutPaths, Task
@@ -39,6 +39,24 @@ _IGNORE_DIRS = {
 
 
 _HEREDOC_RE = re.compile(r"<<-?\s*['\"]?([A-Za-z0-9_.-]+)['\"]?")
+
+
+_OPTIONAL_SANDBOX_EXTRAS = {
+    "daytona": "sandbox-daytona",
+    "modal": "sandbox-modal",
+}
+
+
+def _raise_missing_optional_sandbox_dependency(
+    sandbox_type: str,
+    exc: ModuleNotFoundError,
+) -> NoReturn:
+    extra = _OPTIONAL_SANDBOX_EXTRAS[sandbox_type]
+    raise RuntimeError(
+        f"Missing optional dependency for {sandbox_type!r} sandbox. "
+        f"Install it with `uv sync --extra {extra}` for local development, "
+        f"or `pip install 'benchflow[{extra}]'` for a packaged install."
+    ) from exc
 
 
 def _modal_dockerfile_uses_python_base(dockerfile_path: Path) -> bool:
@@ -223,11 +241,12 @@ def _create_benchflow_modal_environment_class():
             finally:
                 cleanup_dockerfile()
 
-            await self._sandbox.mkdir.aio(
+            sandbox = cast(Any, self._sandbox)
+            await sandbox.mkdir.aio(
                 str(SandboxPaths.agent_dir),
                 parents=True,
             )
-            await self._sandbox.mkdir.aio(
+            await sandbox.mkdir.aio(
                 str(SandboxPaths.verifier_dir),
                 parents=True,
             )
@@ -473,8 +492,11 @@ def _create_sandbox_environment(
             task_env_config=env_config,
         )
     elif sandbox_type == "daytona":
-        from benchflow.sandbox._sdk_ops import apply as _apply_daytona_patches
-        from benchflow.sandbox.daytona import DaytonaSandbox
+        try:
+            from benchflow.sandbox._sdk_ops import apply as _apply_daytona_patches
+            from benchflow.sandbox.daytona import DaytonaSandbox
+        except ModuleNotFoundError as exc:
+            _raise_missing_optional_sandbox_dependency("daytona", exc)
 
         _apply_daytona_patches()
 
@@ -510,7 +532,10 @@ def _create_sandbox_environment(
             auto_delete_interval_mins=1440,
         )
     elif sandbox_type == "modal":
-        modal_environment_class = _create_benchflow_modal_environment_class()
+        try:
+            modal_environment_class = _create_benchflow_modal_environment_class()
+        except ModuleNotFoundError as exc:
+            _raise_missing_optional_sandbox_dependency("modal", exc)
         modal_environment_class.preflight()
 
         return modal_environment_class(

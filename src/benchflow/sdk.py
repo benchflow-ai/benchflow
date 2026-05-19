@@ -11,6 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from benchflow._types import Scene
 from benchflow.models import RolloutResult, TrajectorySource
 from benchflow.rollout import (
     _build_rollout_result,
@@ -92,6 +93,7 @@ class SDK:
         rewards: dict | None,
         started_at: datetime,
         timing: dict[str, float],
+        scenes: list[Scene] | None = None,
     ) -> RolloutResult:
         return _build_rollout_result(
             rollout_dir,
@@ -110,6 +112,7 @@ class SDK:
             rewards=rewards,
             started_at=started_at,
             timing=timing,
+            scenes=scenes,
         )
 
     async def _start_env_and_upload(

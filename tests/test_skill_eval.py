@@ -8,6 +8,7 @@ from benchflow.skill_eval import (
     AgentLift,
     CaseResult,
     SkillEvalResult,
+    SkillEvaluator,
     cleanup_tasks,
     export_gepa_traces,
     generate_tasks,
@@ -344,6 +345,61 @@ class TestSkillEvalResult:
         assert rows[1]["mode"] == "baseline"
         assert rows[2]["mode"] == "LIFT"
         assert rows[2]["avg_reward"] == "+0.50"
+
+
+# ---------------------------------------------------------------------------
+# SkillEvaluator result collection
+# ---------------------------------------------------------------------------
+
+
+class TestSkillEvaluatorResultCollection:
+    @pytest.mark.asyncio
+    async def test_collects_timestamp_nested_rollout_results(
+        self, skill_dir, tmp_path, monkeypatch
+    ):
+        """Guards the ENG-84 fix from commit b69bdf4 for nested result dirs."""
+        from benchflow.evaluation import EvaluationResult
+
+        async def fake_run(self):
+            rollout_dir = self._jobs_dir / "2026-05-18__12-00-00" / "calc-001__abc123"
+            rollout_dir.mkdir(parents=True)
+            (rollout_dir / "result.json").write_text(
+                json.dumps(
+                    {
+                        "task_name": "calc-001",
+                        "rewards": {"reward": 1.0},
+                        "n_tool_calls": 4,
+                    }
+                )
+            )
+            verifier_dir = rollout_dir / "verifier"
+            verifier_dir.mkdir()
+            (verifier_dir / "judge_result.json").write_text(
+                json.dumps({"items": [{"criterion": "correct", "score": 1.0}]})
+            )
+            return EvaluationResult(job_name="fake", config=self._config, total=1)
+
+        monkeypatch.setattr("benchflow.evaluation.Evaluation.run", fake_run)
+
+        evaluator = SkillEvaluator(skill_dir)
+        results = await evaluator._run_job(
+            tasks_dir=tmp_path / "tasks",
+            agent="gemini",
+            model="gemini-3.1-flash-lite-preview",
+            environment="docker",
+            jobs_dir=str(tmp_path / "jobs"),
+            concurrency=1,
+            with_skill=True,
+        )
+
+        assert len(results) == 2
+        collected = {result.case_id: result for result in results}
+        assert collected["calc-001"].reward == 1.0
+        assert collected["calc-001"].n_tool_calls == 4
+        assert collected["calc-001"].rubric_results == [
+            {"criterion": "correct", "score": 1.0}
+        ]
+        assert collected["calc-002"].reward is None
 
 
 # ---------------------------------------------------------------------------

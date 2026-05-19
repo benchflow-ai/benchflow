@@ -1,6 +1,6 @@
 {
   "task_name": "regex-log",
-  "trial_name": "regex-log__bab1cbf6",
+  "rollout_name": "regex-log__bab1cbf6",
   "rewards": {
     "reward": 0.0
   },

@@ -1,6 +1,4 @@
-source:
-  repo: benchflow-ai/benchmarks
-  path: datasets/programbench/tasks
+tasks_dir: .cache/programbench-benchflow
 jobs_dir: jobs/programbench-gemini-flash-lite
 agent: gemini
 model: gemini-3.1-flash-lite-preview

@@ -9,8 +9,10 @@ import pytest
 
 from benchflow.traces.models import GitContext, ParsedTrace, ToolCall, TraceStep
 from benchflow.traces.task_gen import (
+    _github_clone_url,
     _globify_path,
     _has_dynamic_segments,
+    filter_traces_for_generation,
     generate_task,
     generate_tasks_from_traces,
 )
@@ -100,6 +102,7 @@ class TestGenerateTask:
         assert (task_dir / "instruction.md").exists()
         assert (task_dir / "environment" / "Dockerfile").exists()
         assert (task_dir / "tests" / "test.sh").exists()
+        assert (task_dir / "solution" / "solve.sh").exists()
 
     def test_task_toml_content(self, simple_trace: ParsedTrace, tmp_path: Path) -> None:
         task_dir = generate_task(simple_trace, tmp_path)
@@ -155,6 +158,23 @@ class TestGenerateTask:
         mode = test_sh.stat().st_mode
         assert mode & stat.S_IXUSR
 
+    def test_solution_sh_replays_file_writes(
+        self, simple_trace: ParsedTrace, tmp_path: Path
+    ) -> None:
+        """Guards ENG-93 trace-generated tasks include oracle evidence."""
+        task_dir = generate_task(simple_trace, tmp_path)
+        solve_sh = task_dir / "solution" / "solve.sh"
+
+        assert solve_sh.exists()
+        content = solve_sh.read_text()
+        assert "Auto-generated oracle solution" in content
+        assert "cat > hello.txt" in content
+        assert "Hello" in content
+
+        import stat
+
+        assert solve_sh.stat().st_mode & stat.S_IXUSR
+
     def test_dockerfile_generated(
         self, simple_trace: ParsedTrace, tmp_path: Path
     ) -> None:
@@ -165,6 +185,33 @@ class TestGenerateTask:
         content = dockerfile.read_text()
         assert "FROM ubuntu:24.04" in content
         assert "/logs/verifier" in content
+
+    def test_dockerfile_keeps_full_github_url(self, tmp_path: Path) -> None:
+        """Guards ENG-91 P1 dogfood full GitHub URL clone regression."""
+        trace = ParsedTrace(
+            trace_id="full-url",
+            session_id="s",
+            steps=[
+                TraceStep(role="user", content="Fix the issue"),
+                TraceStep(
+                    role="assistant",
+                    content="Edited.",
+                    tool_calls=[
+                        ToolCall(name="Edit", input={"file_path": "README.md"})
+                    ],
+                ),
+            ],
+            git=GitContext(
+                repo="https://github.com/octocat/Hello-World",
+                commit_before="deadbeef",
+            ),
+        )
+
+        task_dir = generate_task(trace, tmp_path)
+        dockerfile = (task_dir / "environment" / "Dockerfile").read_text()
+
+        assert "https://github.com/octocat/Hello-World.git" in dockerfile
+        assert "https://github.com/https://github.com" not in dockerfile
 
     def test_passes_bench_tasks_check(
         self, simple_trace: ParsedTrace, tmp_path: Path
@@ -177,7 +224,7 @@ class TestGenerateTask:
         assert issues == [], f"bench tasks check found issues: {issues}"
 
     def test_test_sh_fallback_when_no_files(self, tmp_path: Path) -> None:
-        """Tasks with no files_edited still get a pass-through test.sh."""
+        """Guards ENG-91 P0: unverifiable traces do not auto-pass."""
         trace = ParsedTrace(
             trace_id="no-files",
             session_id="s",
@@ -191,6 +238,8 @@ class TestGenerateTask:
         assert test_sh.exists()
         content = test_sh.read_text()
         assert "/logs/verifier/reward.txt" in content
+        assert 'echo "0.0"' in content
+        assert 'echo "1.0"' not in content
 
     def test_hard_difficulty(self, complex_trace: ParsedTrace, tmp_path: Path) -> None:
         task_dir = generate_task(complex_trace, tmp_path)
@@ -275,6 +324,17 @@ class TestGenerateTasksFromTraces:
         assert len(results) == 1
         assert results[0].exists()
 
+    def test_filter_traces_matches_generation_eligibility(
+        self, simple_trace: ParsedTrace, no_prompt_trace: ParsedTrace
+    ) -> None:
+        eligible, skipped = filter_traces_for_generation(
+            [simple_trace, no_prompt_trace],
+            min_steps=1,
+        )
+
+        assert eligible == [simple_trace]
+        assert skipped == 1
+
     def test_filters_by_min_steps(self, tmp_path: Path) -> None:
         short_trace = ParsedTrace(
             trace_id="short",
@@ -313,6 +373,26 @@ class TestGenerateTasksFromTraces:
             outcome="success",
         )
         results = generate_tasks_from_traces([explanation_trace], tmp_path)
+
+        assert len(results) == 0
+
+    def test_filters_bash_only_traces_without_file_edits(self, tmp_path: Path) -> None:
+        """Guards ENG-91 P0: Bash-only traces do not become false positives."""
+        bash_trace = ParsedTrace(
+            trace_id="bash-only",
+            session_id="s-bash",
+            steps=[
+                TraceStep(role="user", content="Investigate flaky tests"),
+                TraceStep(
+                    role="assistant",
+                    content="I will inspect the repo.",
+                    tool_calls=[ToolCall(name="Bash", input={"command": "pytest -q"})],
+                ),
+            ],
+            outcome="success",
+        )
+
+        results = generate_tasks_from_traces([bash_trace], tmp_path)
 
         assert len(results) == 0
 
@@ -358,6 +438,20 @@ class TestHasDynamicSegments:
 
     def test_date_path(self) -> None:
         assert _has_dynamic_segments("backups/2025-01-15/dump.sql")
+
+
+class TestGithubCloneUrl:
+    def test_github_shorthand(self) -> None:
+        assert (
+            _github_clone_url("octocat/Hello-World")
+            == "https://github.com/octocat/Hello-World.git"
+        )
+
+    def test_full_https_url(self) -> None:
+        assert (
+            _github_clone_url("https://github.com/octocat/Hello-World.git")
+            == "https://github.com/octocat/Hello-World.git"
+        )
 
 
 class TestVerifierGlobPatterns:

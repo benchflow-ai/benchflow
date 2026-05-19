@@ -43,9 +43,8 @@ def test_skillsbench_alias_clones_main_branch(tmp_path, monkeypatch):
     ]
 
 
-def test_programbench_alias_resolves_to_benchmarks_repo(tmp_path, monkeypatch):
-    """Guards TB2-removal + source-pattern migration: programbench alias resolves
-    to benchflow-ai/benchmarks dataset repo."""
+def test_programbench_alias_resolves_to_official_repo(tmp_path, monkeypatch):
+    """Guards ENG-81: programbench alias resolves to current upstream metadata."""
     monkeypatch.chdir(tmp_path)
     calls = []
 
@@ -55,7 +54,7 @@ def test_programbench_alias_resolves_to_benchmarks_repo(tmp_path, monkeypatch):
         clone_dir = Path(cmd[-1])
         clone_dir.mkdir(parents=True)
         (clone_dir / ".git").mkdir()
-        (clone_dir / "datasets" / "programbench" / "tasks" / "sample").mkdir(
+        (clone_dir / "src" / "programbench" / "data" / "tasks" / "sample").mkdir(
             parents=True
         )
 
@@ -68,15 +67,17 @@ def test_programbench_alias_resolves_to_benchmarks_repo(tmp_path, monkeypatch):
         == tmp_path
         / ".cache"
         / "datasets"
-        / "benchflow-ai"
-        / "benchmarks"
-        / "datasets"
+        / "facebookresearch"
         / "programbench"
+        / "src"
+        / "programbench"
+        / "data"
         / "tasks"
     )
     assert target.exists()
     assert "--branch" in calls[0]
     assert "main" in calls[0]
+    assert "https://github.com/facebookresearch/programbench.git" in calls[0]
 
 
 def test_resolve_source_with_path(tmp_path, monkeypatch):

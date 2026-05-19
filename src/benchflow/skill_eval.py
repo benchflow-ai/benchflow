@@ -86,6 +86,7 @@ class AgentLift:
     baseline_passed: int
     avg_rubric_with: float = 0.0
     avg_rubric_without: float = 0.0
+    baseline_ran: bool = True
 
 
 @dataclass
@@ -110,6 +111,8 @@ class SkillEvalResult:
                     "avg_reward": f"{lift.with_skill_score:.2f}",
                 }
             )
+            if not lift.baseline_ran:
+                continue
             rows.append(
                 {
                     "agent": lift.agent,
@@ -535,10 +538,17 @@ class SkillEvaluator:
         jobs_path = Path(jobs_dir)
         for case in self.dataset.cases:
             case_id = case.id
-            # Find the trial directory for this case
-            rollout_dirs = list(jobs_path.glob(f"{case_id}*"))
+            # Evaluation writes timestamped rollout dirs; support both the old
+            # direct layout and the current nested layout.
+            rollout_dirs = [
+                path
+                for path in jobs_path.glob(f"**/{case_id}*")
+                if path.is_dir() and (path / "result.json").exists()
+            ]
             if rollout_dirs:
-                rollout_dir = rollout_dirs[0]
+                rollout_dir = sorted(
+                    rollout_dirs, key=lambda p: p.stat().st_mtime, reverse=True
+                )[0]
                 result_file = rollout_dir / "result.json"
                 reward = None
                 error = None
@@ -632,6 +642,7 @@ class SkillEvaluator:
                     n_cases=len(self.dataset.cases),
                     with_skill_passed=with_passed,
                     baseline_passed=baseline_passed if not no_baseline else 0,
+                    baseline_ran=not no_baseline,
                 )
             )
 
@@ -706,6 +717,7 @@ def export_gepa_traces(
                 "lift": lift.lift,
                 "with_skill_passed": lift.with_skill_passed,
                 "baseline_passed": lift.baseline_passed,
+                "baseline_ran": lift.baseline_ran,
             }
             for lift in result.agent_lifts
         ],
