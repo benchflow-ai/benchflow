@@ -33,7 +33,7 @@ PRs first.
 | #279 | HILBench | `d626d95bc304dd8256015d2d465aac55cd92bf31` | mergeable clean, `test` success |
 | #280 | OpaqueToolsBench | `358fcfacd46505beb10f03f7d6f42de6c37073a4` | mergeable clean, `test` success |
 | #283 | CLBench | `1415a9c04a04c1bfe75a5fb0c4104003482db9fe` | mergeable clean, `test` success |
-| #290 | Hosted env source adapter | `41322da7d7b124695fad1b03ff9f06242b06a194` | `test` success; auxiliary review checks still pending |
+| #290 | Hosted env source adapter | `41322da7d7b124695fad1b03ff9f06242b06a194` | mergeable clean, `test` success, Cursor Bugbot neutral |
 
 ## Commands
 
