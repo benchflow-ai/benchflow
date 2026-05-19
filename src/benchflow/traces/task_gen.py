@@ -313,8 +313,9 @@ def _build_test_sh(trace: ParsedTrace) -> str:
         return (
             "#!/bin/bash\n"
             f"# Auto-generated verifier from trace {trace.trace_id}\n"
-            "# No file checks available — manual verification needed.\n"
-            'echo "1.0" > /logs/verifier/reward.txt\n'
+            "# No file checks available — manual verification required.\n"
+            'echo "No file checks available for this trace-generated task."\n'
+            'echo "0.0" > /logs/verifier/reward.txt\n'
         )
 
     has_git = bool(trace.git.repo and trace.git.commit_before)
@@ -384,8 +385,7 @@ def _build_dockerfile(trace: ParsedTrace | None = None) -> str:
     if trace and trace.git.repo and trace.git.commit_before:
         repo = trace.git.repo
         commit = trace.git.commit_before
-        # Use HTTPS clone URL for public repos
-        clone_url = f"https://github.com/{repo}.git"
+        clone_url = _github_clone_url(repo)
         base += textwrap.dedent(f"""\
             RUN git clone --depth 50 {clone_url} /app && \\
                 cd /app && git checkout {commit} || true
@@ -396,6 +396,18 @@ def _build_dockerfile(trace: ParsedTrace | None = None) -> str:
         base += "\nWORKDIR /app\n"
 
     return base
+
+
+def _github_clone_url(repo: str) -> str:
+    """Return a clone URL for GitHub shorthand or full URLs."""
+    normalized = repo.strip()
+    if normalized.endswith(".git"):
+        normalized = normalized[:-4]
+    if normalized.startswith(("https://", "http://", "git@")):
+        return f"{normalized}.git"
+    if normalized.startswith("github.com/"):
+        return f"https://{normalized}.git"
+    return f"https://github.com/{normalized}.git"
 
 
 def generate_task(
@@ -497,29 +509,13 @@ def generate_tasks_from_traces(
         List of paths to created task directories.
     """
     results: list[Path] = []
-    skipped = 0
+    eligible_traces, skipped = filter_traces_for_generation(
+        traces,
+        min_steps=min_steps,
+        outcome_filter=outcome_filter,
+    )
 
-    for trace in traces:
-        # Filter by minimum complexity
-        if len(trace.steps) < min_steps:
-            skipped += 1
-            continue
-
-        # Filter by outcome
-        if outcome_filter and trace.outcome != outcome_filter:
-            skipped += 1
-            continue
-
-        # Skip traces with no user prompt
-        if not trace.first_user_prompt:
-            skipped += 1
-            continue
-
-        # Skip traces with no tool calls (e.g. pure explanation sessions)
-        if trace.n_tool_calls == 0:
-            skipped += 1
-            continue
-
+    for trace in eligible_traces:
         task_dir = generate_task(
             trace,
             output_dir,
@@ -533,3 +529,34 @@ def generate_tasks_from_traces(
         logger.info("Skipped %d traces (filtered by steps/outcome/prompt)", skipped)
 
     return results
+
+
+def filter_traces_for_generation(
+    traces: list[ParsedTrace],
+    *,
+    min_steps: int = 2,
+    outcome_filter: str | None = None,
+) -> tuple[list[ParsedTrace], int]:
+    """Return traces that would produce objective task directories."""
+    eligible: list[ParsedTrace] = []
+    skipped = 0
+
+    for trace in traces:
+        if len(trace.steps) < min_steps:
+            skipped += 1
+            continue
+        if outcome_filter and trace.outcome != outcome_filter:
+            skipped += 1
+            continue
+        if not trace.first_user_prompt:
+            skipped += 1
+            continue
+        if trace.n_tool_calls == 0:
+            skipped += 1
+            continue
+        if not trace.files_edited:
+            skipped += 1
+            continue
+        eligible.append(trace)
+
+    return eligible, skipped

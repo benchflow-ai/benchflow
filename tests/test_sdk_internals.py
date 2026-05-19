@@ -386,6 +386,7 @@ class TestWriteConfig:
             "timeout_sec",
             "started_at",
             "agent_env",
+            "scenes",
         }
         assert expected_keys.issubset(data.keys()), (
             f"missing keys: {expected_keys - data.keys()}"
@@ -395,6 +396,69 @@ class TestWriteConfig:
         assert data["environment"] == "docker"
         assert data["sandbox_setup_timeout"] == 33
         assert data["timeout_sec"] == 300
+        assert data["scenes"] == []
+
+    def test_config_json_includes_scene_role_metadata(self, tmp_path):
+        """Multi-role scene metadata is recorded without leaking env values."""
+        from benchflow import Role, Scene, Turn
+
+        scene = Scene(
+            name="code-review",
+            roles=[
+                Role(
+                    "coder",
+                    "gemini",
+                    "flash",
+                    env={"ROLE_TOKEN": "role-secret-value"},
+                    timeout_sec=12,
+                    idle_timeout_sec=3,
+                    skills_dir="/role-skills",
+                    capabilities=["tool-use"],
+                )
+            ],
+            turns=[Turn("coder", "solve it")],
+            skills_dir="/scene-skills",
+            parallel_group="pair",
+        )
+        self._write(
+            tmp_path,
+            task_path=Path("/tasks/foo"),
+            agent="gemini",
+            model="flash",
+            environment="docker",
+            skills_dir=None,
+            sandbox_user="agent",
+            context_root=None,
+            timeout=300,
+            started_at=datetime(2026, 4, 8, 12, 0),
+            agent_env={},
+            scenes=[scene],
+        )
+
+        text = (tmp_path / "config.json").read_text()
+        data = json.loads(text)
+
+        assert data["scenes"] == [
+            {
+                "name": "code-review",
+                "skills_dir": "/scene-skills",
+                "parallel_group": "pair",
+                "roles": [
+                    {
+                        "name": "coder",
+                        "agent": "gemini",
+                        "model": "flash",
+                        "timeout_sec": 12,
+                        "idle_timeout_sec": 3,
+                        "skills_dir": "/role-skills",
+                        "capabilities": ["tool-use"],
+                        "env_keys": ["ROLE_TOKEN"],
+                    }
+                ],
+                "turns": [{"role": "coder", "has_prompt": True}],
+            }
+        ]
+        assert "role-secret-value" not in text
 
     def test_secrets_filtered(self, tmp_path):
         """Keys containing KEY/TOKEN/SECRET not in config.json agent_env."""
@@ -505,6 +569,38 @@ class TestBuildResult:
         assert "started_at" in data
         assert "finished_at" in data
         assert data["partial_trajectory"] is False
+        assert data["scenes"] == []
+
+    def test_result_json_includes_scene_role_metadata(self, tmp_path):
+        """Result artifacts retain scene/role metadata for trajectory review."""
+        from benchflow import Role, Scene, Turn
+
+        scene = Scene(
+            name="review",
+            roles=[
+                Role(
+                    "reviewer",
+                    "claude-agent-acp",
+                    "haiku",
+                    env={"ANTHROPIC_API_KEY": "role-secret-value"},
+                    timeout_sec=45,
+                    idle_timeout_sec=6,
+                )
+            ],
+            turns=[Turn("reviewer")],
+        )
+
+        self._build(tmp_path, scenes=[scene])
+        text = (tmp_path / "result.json").read_text()
+        data = json.loads(text)
+
+        assert data["scenes"][0]["name"] == "review"
+        assert data["scenes"][0]["roles"][0]["name"] == "reviewer"
+        assert data["scenes"][0]["roles"][0]["timeout_sec"] == 45
+        assert data["scenes"][0]["roles"][0]["idle_timeout_sec"] == 6
+        assert data["scenes"][0]["roles"][0]["env_keys"] == ["ANTHROPIC_API_KEY"]
+        assert data["scenes"][0]["turns"] == [{"role": "reviewer", "has_prompt": False}]
+        assert "role-secret-value" not in text
 
     def test_timing_json_written(self, tmp_path):
         self._build(tmp_path)

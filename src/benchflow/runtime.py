@@ -23,7 +23,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from benchflow.agents.registry import AGENT_LAUNCH, AGENTS, AgentConfig
+from benchflow.agents.registry import AgentConfig, resolve_agent
 
 if TYPE_CHECKING:
     from benchflow.models import RolloutResult as RunResult
@@ -139,11 +139,17 @@ class Agent:
 
     @property
     def config(self) -> AgentConfig | None:
-        return AGENTS.get(self.name)
+        try:
+            return resolve_agent(self.name)
+        except KeyError:
+            return None
 
     @property
     def launch_cmd(self) -> str:
-        return AGENT_LAUNCH.get(self.name, self.name)
+        config = self.config
+        if config is None:
+            return self.name
+        return config.launch_cmd
 
     def __repr__(self) -> str:
         return f"Agent({self.name!r}, model={self.model!r})"

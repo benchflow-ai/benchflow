@@ -7,7 +7,7 @@ discarding all config-level env vars.
 """
 
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -46,6 +46,7 @@ class TestConnectAsEnvMerge:
         trial._rollout_dir = tmp_path
         trial._timing = {}
         trial._agent_cwd = None
+        trial._agent_cfg = MagicMock(credential_files=[])
         trial._phase = "idle"
         return trial
 
@@ -140,3 +141,45 @@ class TestConnectAsEnvMerge:
             await _mock_trial.connect_as(role)
 
         assert captured["env"] == {}
+
+    @pytest.mark.asyncio
+    async def test_same_agent_different_model_refreshes_credentials(self, _mock_trial):
+        """Guards ENG-91 P0 same-agent role credential refresh regression."""
+        from benchflow.rollout import Role
+
+        primary = Role(name="primary", agent="claude-agent-acp", model="test-model")
+        role = Role(name="reviewer", agent="claude-agent-acp", model="other-model")
+        _mock_trial._config.scenes[0].roles = [primary, role]
+        _mock_trial._config.agent_env = {"ANTHROPIC_API_KEY": "from-config"}
+
+        with (
+            patch(
+                "benchflow.rollout.resolve_agent_env",
+                return_value={"ANTHROPIC_API_KEY": "from-config"},
+            ),
+            patch(
+                "benchflow.rollout.ensure_bedrock_proxy_runtime",
+                new_callable=AsyncMock,
+            ) as mock_bedrock,
+            patch(
+                "benchflow.rollout.install_agent",
+                new_callable=AsyncMock,
+            ) as mock_install,
+            patch(
+                "benchflow.rollout.write_credential_files",
+                new_callable=AsyncMock,
+            ) as mock_write,
+            patch("benchflow.rollout.upload_subscription_auth", new_callable=AsyncMock),
+            patch("benchflow.rollout.apply_web_tool_policy", new_callable=AsyncMock),
+            patch("benchflow.rollout.connect_acp", new_callable=AsyncMock) as mock_conn,
+        ):
+            mock_bedrock.return_value = ({"ANTHROPIC_API_KEY": "from-config"}, None)
+            mock_conn.return_value = (AsyncMock(), AsyncMock(), "agent")
+
+            await _mock_trial.connect_as(role)
+
+        mock_install.assert_not_awaited()
+        mock_write.assert_awaited_once()
+        args, _kwargs = mock_write.await_args
+        assert args[1] == "claude-agent-acp"
+        assert args[4] == "other-model"

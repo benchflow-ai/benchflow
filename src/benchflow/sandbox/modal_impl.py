@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shlex
+from collections.abc import Mapping, Sequence
 from pathlib import Path, PurePosixPath
 
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -98,8 +99,8 @@ class ModalSandbox(BaseSandbox):
     async def _create_sandbox(
         self,
         gpu_config: str | None,
-        secrets_config: list[object],
-        volumes_config: dict[str, object],
+        secrets_config: Sequence[object],
+        volumes_config: Mapping[str, object],
     ) -> object:
         from modal import Sandbox
 

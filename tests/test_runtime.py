@@ -30,6 +30,14 @@ def test_agent_basic() -> None:
     assert "Agent(" in repr(a)
 
 
+def test_agent_alias_resolves_config_and_launch() -> None:
+    """Guards ENG-91 P0 dogfood alias regression in runtime.Agent."""
+    a = Agent(name="codex", model="gpt-5.4")
+    assert a.config is not None
+    assert a.config.name == "codex-acp"
+    assert a.launch_cmd != "codex"
+
+
 def test_agent_unknown() -> None:
     a = Agent(name="nonexistent-agent", model="some-model")
     assert a.config is None

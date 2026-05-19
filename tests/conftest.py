@@ -15,6 +15,12 @@ if str(SRC_ROOT) not in sys.path:
 REF_TASKS = REPO_ROOT / ".cache" / "datasets" / "benchflow" / "examples" / "tasks"
 
 
+@pytest.fixture(autouse=True)
+def isolate_local_dotenv(monkeypatch, tmp_path) -> None:
+    """Keep developer-machine `.env` secrets out of unit tests."""
+    monkeypatch.setenv("BENCHFLOW_DOTENV_PATH", str(tmp_path / ".env"))
+
+
 @pytest.fixture
 def hello_world_task_dir() -> Path:
     path = REF_TASKS / "hello-world"

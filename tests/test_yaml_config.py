@@ -77,6 +77,42 @@ def test_from_native_yaml(native_yaml):
     assert job._jobs_dir == Path("output")
 
 
+def test_native_yaml_normalizes_agent_alias_and_root_sandbox_user(tmp_path):
+    """Guards ENG-91 P0 dogfood config-boundary regression."""
+    tasks = tmp_path / "tasks" / "task-a"
+    tasks.mkdir(parents=True)
+    (tasks / "task.toml").write_text('version = "1.0"')
+    (tasks / "instruction.md").write_text("Do something")
+
+    config = tmp_path / "config.yaml"
+    config.write_text("""
+tasks_dir: tasks
+agent: codex
+sandbox_user: none
+""")
+
+    job = Evaluation.from_yaml(config)
+
+    assert job._config.agent == "codex-acp"
+    assert job._config.sandbox_user is None
+
+
+def test_rollout_yaml_loader_normalizes_alias_and_root_sandbox_user():
+    """Guards ENG-91 P0 dogfood rollout YAML-loader regression."""
+    from benchflow._utils.yaml_loader import rollout_config_from_dict
+
+    cfg = rollout_config_from_dict(
+        {
+            "task_dir": "tests/examples/hello-world-task",
+            "agent": "codex",
+            "sandbox_user": "null",
+        }
+    )
+
+    assert cfg.primary_agent == "codex-acp"
+    assert cfg.sandbox_user is None
+
+
 def test_from_legacy_yaml(legacy_yaml):
     """Test loading legacy-format YAML."""
     job = Evaluation.from_yaml(legacy_yaml)

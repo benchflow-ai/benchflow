@@ -290,6 +290,43 @@ async def test_empty_outbox_no_injection() -> None:
     assert all("Messages from other agents" not in p for p in prompts_received)
 
 
+async def test_execute_uses_active_role_timeouts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Role-level timeouts must override rollout defaults during scene execution."""
+    role = Role(
+        "solver",
+        "gemini",
+        "flash",
+        timeout_sec=12,
+        idle_timeout_sec=3,
+    )
+    trial = _make_trial(Scene(roles=[role], turns=[Turn("solver")]))
+    trial._acp_client = object()
+    trial._session = object()
+    trial._timeout = 99
+    trial._active_role = role
+    captured: dict[str, int | None] = {}
+
+    async def fake_execute_prompts(
+        _client,
+        _session,
+        _prompts,
+        timeout,
+        *,
+        idle_timeout=None,
+    ):
+        captured["timeout"] = timeout
+        captured["idle_timeout"] = idle_timeout
+        return [], 0
+
+    monkeypatch.setattr("benchflow.rollout.execute_prompts", fake_execute_prompts)
+
+    await trial.execute()
+
+    assert captured == {"timeout": 12, "idle_timeout": 3}
+
+
 async def test_scene_messages_persisted(
     coder_reviewer_scene: Scene, tmp_path: Path
 ) -> None:

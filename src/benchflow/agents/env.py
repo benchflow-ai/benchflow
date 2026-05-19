@@ -22,6 +22,7 @@ import logging
 import os
 from pathlib import Path
 
+from benchflow._dotenv import load_dotenv_env
 from benchflow.agents.registry import AGENTS
 
 logger = logging.getLogger(__name__)
@@ -32,42 +33,6 @@ _AUTH_CONTEXT_GROUPS = (
 )
 _EXPLICIT_AGENT_NATIVE_BRIDGE_KEYS = frozenset({"LLM_API_KEY"})
 _BEDROCK_PROXY_PLACEHOLDER_API_KEY = "bedrock-proxy"
-_DEFAULT_DOTENV_PATH = Path(".env")
-
-
-def load_dotenv_env(path: str | Path | None = None) -> dict[str, str]:
-    """Read a local .env file into a plain dict.
-
-    BenchFlow only uses this as a fallback source for agent env resolution.
-    Missing files are treated as empty input.
-    """
-    dotenv_path = Path(path) if path is not None else _DEFAULT_DOTENV_PATH
-    if not dotenv_path.exists() or not dotenv_path.is_file():
-        return {}
-
-    parsed: dict[str, str] = {}
-    for raw_line in dotenv_path.read_text().splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("export "):
-            line = line[len("export ") :].lstrip()
-        if "=" not in line:
-            continue
-
-        key, value = line.split("=", 1)
-        key = key.strip()
-        value = value.strip()
-        if not key:
-            continue
-
-        if value[:1] in {"'", '"'} and value[-1:] == value[:1]:
-            value = value[1:-1]
-        elif " #" in value:
-            value = value.split(" #", 1)[0].rstrip()
-
-        parsed[key] = value
-    return parsed
 
 
 def _normalize_openhands_model(model: str) -> str:
@@ -328,10 +293,9 @@ def resolve_agent_env(
             # keys can satisfy provider auth. Values synthesized by env_mapping
             # or inherited from another provider context must not bypass the
             # model's required credential.
-            agent_env.setdefault(
-                "BENCHFLOW_PROVIDER_API_KEY",
-                pre_provider_env[mapped_provider_key],
-            )
+            agent_env["BENCHFLOW_PROVIDER_API_KEY"] = pre_provider_env[
+                mapped_provider_key
+            ]
         has_oauth = any(
             key in agent_env and _shares_auth_context(required_key, key)
             for key in ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN")

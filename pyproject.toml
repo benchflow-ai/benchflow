@@ -43,9 +43,11 @@ dev = [
 ]
 sandbox-daytona = [
     "daytona>=0.153.0",
+    "tenacity>=8.0",
 ]
 sandbox-modal = [
     "modal>=0.73",
+    "tenacity>=8.0",
 ]
 bedrock = [
     "boto3>=1.40",

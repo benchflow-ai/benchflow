@@ -140,6 +140,15 @@ List active Daytona sandboxes.
 bench environment list
 ```
 
+### bench environment cleanup
+
+Clean up orphaned Daytona sandboxes. By default this deletes sandboxes older
+than 24 hours; use `--dry-run` to preview what would be deleted.
+
+```bash
+bench environment cleanup --dry-run --max-age 1440
+```
+
 ## YAML Config Format
 
 ### Batch config with skills and skill nudge

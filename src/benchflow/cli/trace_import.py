@@ -152,7 +152,23 @@ def register_tasks_generate(tasks_app: typer.Typer) -> None:
         console.print(f"Loaded {len(traces)} trace(s)")
 
         if dry_run:
-            _print_traces_table(traces)
+            from benchflow.traces.task_gen import filter_traces_for_generation
+
+            eligible_traces, skipped = filter_traces_for_generation(
+                traces,
+                min_steps=min_steps,
+                outcome_filter=outcome,
+            )
+            if skipped:
+                console.print(
+                    f"[yellow]Skipped {skipped} trace(s) that would not generate a task[/yellow]"
+                )
+            if not eligible_traces:
+                console.print(
+                    "[yellow]No traces match generation filters; generation would create 0 tasks.[/yellow]"
+                )
+                return
+            _print_traces_table(eligible_traces)
             return
 
         from benchflow.traces.task_gen import generate_tasks_from_traces
