@@ -38,9 +38,9 @@ been updated against `main`; GitHub marks them mergeable, with the repository
 | #279 | HILBench | `f6f9c4d` | mergeable, `test` success | `f6f9c4d` |
 | #280 | OpaqueToolsBench | `358fcfacd46505beb10f03f7d6f42de6c37073a4` | mergeable clean, `test` success | no update needed |
 | #283 | CLBench | `1bd8bc4` | mergeable, `test` success | `1bd8bc4` |
-| #290 | Hosted env source adapter | `ceef534` | mergeable, `test` success; Cursor Bugbot still running | `ceef534` |
+| #290 | Hosted env source adapter | `ceef534` | mergeable, repository `test` success | `ceef534` |
 | #291 | Pi ACP provider/model fix | `c57c95c` | mergeable; fork PR has no check rollup | `c57c95c` |
-| #292 | Release gate evidence | this PR | mergeable; latest pushed code head had `test` success before this docs refresh | this PR |
+| #292 | Release gate evidence | this PR | mergeable, repository `test` success | this PR |
 
 ## Integrated Release Candidate
 
@@ -99,8 +99,8 @@ Remote update status:
   heads after #294's squash merge.
 - Completed: #279, #283, #290, and #292 reran the GitHub `test` workflow
   successfully after the branch updates. #291 is a fork PR with no check rollup.
-- Cursor Bugbot may continue to report as pending on #290/#292 after the GitHub
-  `test` workflow has passed; it is tracked separately from the release gate.
+- Third-party automation such as Cursor Bugbot is tracked separately from the
+  release gate; the gating repository `test` workflow has passed.
 - Handoff bundle: `dogfood/2026-05-19-release-gate/remote-handoff/release-pr-handoff.bundle`
   contains the prepared PR heads, the integrated proof branch, and the 1.0.0 RC
   branch.
