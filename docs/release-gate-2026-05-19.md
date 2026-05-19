@@ -7,11 +7,11 @@ Date: 2026-05-19
 The focused trial-ready release gate is green for the current blocker set.
 BenchFlow can run the selected real-suite evidence through the current
 Rollout/Sandbox/Reward path, and the remaining work is release mechanics:
-merge the clean adapter PRs plus the hosted-env source adapter, then cut the
-release as `1.0.0`.
+update the release-blocker PR branches after the v0.4 squash merge, merge the
+adapter and hosted-env source PRs, then cut the release as `1.0.0`.
 
-Do not tag the release from the open-PR state. Land the adapter and hosted-env
-PRs first.
+Do not tag the release from the open-PR state. Land the adapter, hosted-env, and
+release-gate PRs first.
 
 ## Current Gate
 
@@ -26,19 +26,34 @@ PRs first.
 | Modal | Optional follow-up evidence only; not a current release blocker. |
 | Firecracker/K8s | Backlog only; not a current release blocker. |
 
-## Adapter PR State
+## PR State After v0.4 Merge
 
-| PR | Benchmark | Head | GitHub state |
-|---|---|---|---|
-| #279 | HILBench | `d626d95bc304dd8256015d2d465aac55cd92bf31` | mergeable clean, `test` success |
-| #280 | OpaqueToolsBench | `358fcfacd46505beb10f03f7d6f42de6c37073a4` | mergeable clean, `test` success |
-| #283 | CLBench | `1415a9c04a04c1bfe75a5fb0c4104003482db9fe` | mergeable clean, `test` success |
-| #290 | Hosted env source adapter | `41322da7d7b124695fad1b03ff9f06242b06a194` | mergeable clean, `test` success, Cursor Bugbot neutral |
+PR #294 merged `refactor/v0.4` into `main` as a squash merge. The resulting
+`main` tree matches `refactor/v0.4`, but several older PR branches now need a
+branch update before GitHub will mark them mergeable again.
+
+| PR | Area | Remote head | GitHub state | Local resolved head |
+|---|---|---|---|---|
+| #279 | HILBench | `d626d95bc304dd8256015d2d465aac55cd92bf31` | dirty/conflicting after #294; prior `test` success | `4c9e1c0` |
+| #280 | OpaqueToolsBench | `358fcfacd46505beb10f03f7d6f42de6c37073a4` | mergeable clean, `test` success | no update needed |
+| #283 | CLBench | `1415a9c04a04c1bfe75a5fb0c4104003482db9fe` | dirty/conflicting after #294; prior `test` success | `fe25d54` |
+| #290 | Hosted env source adapter | `41322da7d7b124695fad1b03ff9f06242b06a194` | dirty/conflicting after #294; prior `test` success, Cursor Bugbot neutral | `bf1ba2b` |
+| #291 | Pi ACP provider/model fix | `ba32d0b3d1dbf2839e834fcf64cb8aee96f8f999` | dirty/conflicting after #294; Devin Review success | `18fc9be` |
+| #292 | Release gate evidence | `bde9fa66e9a66c68e8b5eea0ead5fefddc934f3a` | dirty/conflicting after #294 | `be51de6` |
 
 ## Commands
 
 ```bash
 uv run python tests/integration/run_suite.py --profile full-release --dry-run --fail-on-todo
+
+uv run python tests/integration/run_suite.py \
+  --lane trace-to-task-e2e \
+  --execute-trace-evidence \
+  --run-trace-eval
+
+uv run python tests/integration/run_suite.py \
+  --lane hosted-env-compatibility-board \
+  --execute-hosted-env-evidence
 
 uv run python tests/integration/run_suite.py \
   --lane adapter-release-set \
@@ -63,14 +78,16 @@ Detailed run artifacts are intentionally under ignored `dogfood/` paths:
 
 ## Versioning Call
 
-Call this release `1.0.0` once PRs #279, #280, #283, and #290 land on
-`main`. The evidence and product intent are trial-ready rather than another
-internal `0.4.0` refactor cut.
+Call this release `1.0.0` once the dirty release-blocker PR branches are updated
+and PRs #279, #280, #283, #290, #291, and #292 land on `main`. The evidence and
+product intent are trial-ready rather than another internal `0.4.0` refactor
+cut.
 
 Release sequence after merge approval:
 
-1. Merge PRs #279, #280, #283, and #290.
-2. Merge the release-gate evidence PR.
-3. Bump `pyproject.toml` on `main` to `1.0.0`.
-4. Tag `v1.0.0` on `main`.
-5. Bump `main` to the next `.dev0`.
+1. Push the prepared branch updates for #279, #283, #290, #291, and #292.
+2. Wait for GitHub checks to rerun cleanly.
+3. Merge PRs #279, #280, #283, #290, #291, and #292.
+4. Bump `pyproject.toml` on `main` to `1.0.0`.
+5. Tag `v1.0.0` on `main`.
+6. Bump `main` to the next `.dev0`.
