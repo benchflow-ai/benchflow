@@ -123,8 +123,8 @@ Detailed run artifacts are intentionally under ignored `dogfood/` paths:
 - `dogfood/2026-05-19-release-gate/hilbench-hf-bucket-access.json`
 - `dogfood/2026-05-19-release-gate/hilbench-pr279-eval/eval-parity-summary.json`
 - `dogfood/2026-05-19-trace-to-task-e2e/trace-evidence.json`
-- `dogfood/2026-05-19-trace-to-task-e2e/jobs-oracle-jsonl-fixture/2026-05-19__05-04-35/create-hello-txt-with-exactly-hello-from-b2c25762__72186afb/result.json`
-- `dogfood/2026-05-19-trace-to-task-e2e/jobs-oracle-opentraces-fixture/2026-05-19__05-04-48/create-a-file-named-opentraces-txt-with-9f87605e__18a9f6cf/result.json`
+- `dogfood/2026-05-19-trace-to-task-e2e/jobs-oracle-jsonl-fixture/2026-05-19__05-47-57/create-hello-txt-with-exactly-hello-from-b2c25762__a7f9dc42/result.json`
+- `dogfood/2026-05-19-trace-to-task-e2e/jobs-oracle-opentraces-fixture/2026-05-19__05-48-10/create-a-file-named-opentraces-txt-with-9f87605e__a7e18623/result.json`
 - `dogfood/2026-05-19-release-gate/hosted-envs/hosted-env-evidence.json`
 - `dogfood/2026-05-19-release-gate/hosted-envs/harbor-registry-inventory.jsonl`
 - `/tmp/benchflow-release-1.0.0-rc-current/dist/benchflow-1.0.0.tar.gz`
