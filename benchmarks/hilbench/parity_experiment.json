@@ -1,0 +1,44 @@
+{
+  "structural_parity": {
+    "experiment": "hilbench_structural_parity",
+    "description": "Structural parity validation: verify generated tasks have required files (task.toml, instruction.md, Dockerfile, test.sh, verify.py, test_patch.diff, task_metadata.json) and valid metadata.",
+    "date": "2026-05-17",
+    "tasks_tested": 3,
+    "tasks_total": 100,
+    "results_summary": {
+      "passed": 3,
+      "failed": 0,
+      "checks_per_task": [
+        "required files present",
+        "task.toml has required fields",
+        "instruction.md non-empty",
+        "test_patch.diff non-empty",
+        "task_metadata.json valid JSON with required keys",
+        "test.sh is executable",
+        "Dockerfile has FROM hilbench-base:<task_id> directive"
+      ]
+    },
+    "notes": "3/3 tasks passed structural validation after bug fixes. Dockerfile now uses FROM hilbench-base:<task_id> (predictable tag, no build arg). Runner tags loaded images to match. Removed || true from apt-get install."
+  },
+  "eval_parity": {
+    "experiment": "hilbench_eval_parity",
+    "description": "End-to-end evaluation parity: build Docker image, run test.sh, verify correct rewards.",
+    "date": "2026-05-19",
+    "status": "passed",
+    "tasks_tested": 1,
+    "task_ids": [
+      "public_swe_0"
+    ],
+    "blocker": null,
+    "results_summary": {
+      "image_download": "passed",
+      "docker_load": "passed",
+      "docker_tag": "passed",
+      "docker_build": "passed",
+      "workspace_mapping": "passed",
+      "unsolved_reward": 0.0,
+      "ground_truth_reward": 1.0
+    },
+    "notes": "ScaleAI/hil-bench-swe-images is a HuggingFace bucket, not a dataset repo. Runner translates hf://buckets/ScaleAI/hil-bench-swe-images/images/<uid>.tar.zst to https://huggingface.co/buckets/ScaleAI/hil-bench-swe-images/resolve/images/<uid>.tar.zst before docker load. Local eval parity refreshed on public_swe_0: image downloaded, docker loaded, retagged to hilbench-base:public-swe-0, generated Dockerfile built, /workspace mapped to /app, verifier wrote reward 0.0 for unsolved task and reward 1.0 after applying the ground-truth patch. Local Docker host was linux/aarch64 and HILBench image was linux/amd64, so Docker emitted a platform warning but the build and verifier completed."
+  }
+}
