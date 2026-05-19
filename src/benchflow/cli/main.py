@@ -70,9 +70,11 @@ def _exit_if_evaluation_had_errors(result: object) -> None:
 
 def _normalize_eval_agent_or_exit(agent_spec: str) -> str:
     protocol, canonical_agent = parse_agent_spec(agent_spec)
-    if protocol != "acp":
+    if protocol not in ("acp", "acpx"):
         console.print(f"[red]Unsupported eval agent protocol: {protocol}[/red]")
         raise typer.Exit(1)
+    if protocol == "acpx":
+        return f"acpx/{canonical_agent}"
     return canonical_agent
 
 
