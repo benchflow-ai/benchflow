@@ -39,7 +39,7 @@ branch update before GitHub will mark them mergeable again.
 | #283 | CLBench | `1415a9c04a04c1bfe75a5fb0c4104003482db9fe` | dirty/conflicting after #294; prior `test` success | `fe25d54` |
 | #290 | Hosted env source adapter | `41322da7d7b124695fad1b03ff9f06242b06a194` | dirty/conflicting after #294; prior `test` success, Cursor Bugbot neutral | `bf1ba2b` |
 | #291 | Pi ACP provider/model fix | `ba32d0b3d1dbf2839e834fcf64cb8aee96f8f999` | dirty/conflicting after #294; Devin Review success | `18fc9be` |
-| #292 | Release gate evidence | `bde9fa66e9a66c68e8b5eea0ead5fefddc934f3a` | dirty/conflicting after #294 | `be51de6` |
+| #292 | Release gate evidence | `bde9fa66e9a66c68e8b5eea0ead5fefddc934f3a` | dirty/conflicting after #294 | `1797c36` |
 
 ## Commands
 
