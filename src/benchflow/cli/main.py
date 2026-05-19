@@ -1062,7 +1062,10 @@ def eval_create(
         typer.Option("--agent-env", help="Agent env var (KEY=VALUE)"),
     ] = None,
 ) -> None:
-    """Run an evaluation — single task or batch."""
+    """Run an evaluation — single task or batch.
+
+    Sandbox: docker, daytona, or modal.
+    """
     from benchflow.evaluation import Evaluation, EvaluationConfig
 
     _apply_dotenv_to_process_env()
