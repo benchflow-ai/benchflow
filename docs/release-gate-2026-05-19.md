@@ -69,8 +69,9 @@ release should not be landed by blindly merging raw #292 after #279, #280,
 `src/benchflow/cli/main.py` conflict between the hosted-env CLI additions and
 the release-gate eval error-handling changes.
 
-PR #292 has already been updated to the sequence-safe release-gate refresh head
-at `8c58403`, and the repository `test` check is green on that head. The
+PR #292 has already been updated to a sequence-safe release-gate refresh. The
+repository `test` check is green on the pushed code-evidence head `8c58403`;
+later docs-only refreshes do not change the tested release-gate code path. The
 guarded local helper now documents the approval-gated merge flow:
 
 ```bash
