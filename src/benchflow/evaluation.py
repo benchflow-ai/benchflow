@@ -24,7 +24,7 @@ from typing import Any
 
 import yaml
 
-from benchflow._scoring import (
+from benchflow._utils.scoring import (
     ACP_ERROR,
     INSTALL_FAILED,
     PIPE_CLOSED,
@@ -122,8 +122,11 @@ class EvaluationConfig:
     self_gen_no_internet: bool = False
 
     def __post_init__(self):
+        from benchflow._utils.config import normalize_agent_name, normalize_sandbox_user
         from benchflow.agents.registry import AGENTS
 
+        self.agent = normalize_agent_name(self.agent)
+        self.sandbox_user = normalize_sandbox_user(self.sandbox_user)
         if self.agent not in AGENTS:
             available = ", ".join(sorted(AGENTS.keys()))
             logger.warning(
@@ -160,7 +163,7 @@ class Evaluation:
     """Run a benchmark job across multiple tasks.
 
     Usage:
-        from benchflow.task_download import resolve_source
+        from benchflow._utils.benchmark_repos import resolve_source
 
         evaluation = Evaluation(
             tasks_dir=resolve_source("harbor-framework/terminal-bench-2"),
@@ -197,7 +200,7 @@ class Evaluation:
     def from_yaml(cls, path: str | Path, **kwargs) -> Evaluation:
         """Create a Job from a YAML config file.
 
-        Supports both benchflow-native and Harbor-compatible YAML formats.
+        Supports both benchflow-native and legacy YAML formats.
 
         benchflow format:
             tasks_dir: path/to/tasks
@@ -211,7 +214,7 @@ class Evaluation:
               - null
               - "Review your solution and fix any issues."
 
-        Harbor-compatible format:
+        Legacy format (agents + datasets style):
             jobs_dir: jobs
             n_attempts: 1
             orchestrator:
@@ -230,15 +233,19 @@ class Evaluation:
         with open(path) as f:
             raw = yaml.safe_load(f)
 
-        # Detect format: Harbor uses "agents" + "datasets", benchflow uses "agent"
+        # Detect format: legacy uses "agents" + "datasets", benchflow uses "agent"
         if "agents" in raw or "datasets" in raw:
-            return cls._from_harbor_yaml(raw, **kwargs)
+            return cls._from_legacy_yaml(raw, **kwargs)
         return cls._from_native_yaml(raw, **kwargs)
 
     @classmethod
-    def _from_native_yaml(cls, raw: dict, **kwargs) -> Job:
+    def _from_native_yaml(cls, raw: dict, **kwargs) -> Evaluation:
         """Parse benchflow-native YAML."""
-        from benchflow.task_download import TASK_ALIASES, ensure_tasks, resolve_source
+        from benchflow._utils.benchmark_repos import (
+            TASK_ALIASES,
+            ensure_tasks,
+            resolve_source,
+        )
 
         # New two-field format: source.repo + source.path
         if "source" in raw:
@@ -295,8 +302,8 @@ class Evaluation:
         return cls(tasks_dir=tasks_dir, jobs_dir=jobs_dir, config=config, **kwargs)
 
     @classmethod
-    def _from_harbor_yaml(cls, raw: dict, **kwargs) -> Job:
-        """Parse Harbor-compatible YAML."""
+    def _from_legacy_yaml(cls, raw: dict, **kwargs) -> Evaluation:
+        """Parse legacy-format YAML (agents + datasets style)."""
         # Agent
         agents = raw.get("agents", [{}])
         agent_cfg = agents[0] if agents else {}
@@ -329,7 +336,7 @@ class Evaluation:
         jobs_dir = Path(raw.get("jobs_dir", "jobs"))
         max_retries = (
             raw.get("n_attempts", 1) - 1
-        )  # Harbor n_attempts includes first try
+        )  # legacy n_attempts includes first try
 
         # Skills dir (shared with benchflow-native format)
         skills_dir_raw = raw.get("skills_dir")
@@ -671,9 +678,3 @@ class Evaluation:
         )
 
         return job_result
-
-
-# Backward-compat aliases
-Job = Evaluation
-JobConfig = EvaluationConfig
-JobResult = EvaluationResult

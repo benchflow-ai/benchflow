@@ -19,6 +19,7 @@ Does not own:
 import json
 import logging
 import os
+import shlex
 import tempfile
 from pathlib import Path
 
@@ -27,10 +28,24 @@ from benchflow.agents.registry import AGENTS
 logger = logging.getLogger(__name__)
 
 
-async def upload_credential(env, path: str, content: str) -> None:
+def _owner_from_home(cred_home: str) -> str | None:
+    """Return sandbox username for /home/<user> credential homes."""
+    parts = Path(cred_home).parts
+    if len(parts) == 3 and parts[0] == "/" and parts[1] == "home":
+        return parts[2]
+    return None
+
+
+async def upload_credential(
+    env,
+    path: str,
+    content: str,
+    *,
+    owner: str | None = None,
+) -> None:
     """Write a credential file into the container via upload_file."""
     parent = path.rsplit("/", 1)[0]
-    await env.exec(f"mkdir -p {parent}", timeout_sec=10)
+    await env.exec(f"mkdir -p {shlex.quote(parent)}", timeout_sec=10)
     with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
         f.write(content)
         tmp_path = f.name
@@ -38,6 +53,14 @@ async def upload_credential(env, path: str, content: str) -> None:
         await env.upload_file(tmp_path, path)
     finally:
         os.unlink(tmp_path)
+    if owner:
+        q_owner = shlex.quote(owner)
+        q_parent = shlex.quote(parent)
+        q_path = shlex.quote(path)
+        await env.exec(
+            f"chown -R {q_owner}:{q_owner} {q_parent} && chmod 600 {q_path}",
+            timeout_sec=10,
+        )
 
 
 async def write_credential_files(
@@ -59,6 +82,7 @@ async def write_credential_files(
     attribute access straight when editing the loops below.
     """
     # Provider credential files (e.g. GCP ADC for Vertex)
+    owner = _owner_from_home(cred_home)
     if model:
         from benchflow.agents.providers import find_provider
 
@@ -69,7 +93,7 @@ async def write_credential_files(
                 value = agent_env.get(cf["env_source"])
                 if value:
                     path = cf["path"].format(home=cred_home)
-                    await upload_credential(env, path, value)
+                    await upload_credential(env, path, value, owner=owner)
                     for k, v in cf.get("post_env", {}).items():
                         agent_env.setdefault(k, v.format(home=cred_home))
                     logger.info("Provider credential file written: %s", path)
@@ -84,7 +108,7 @@ async def write_credential_files(
             if value:
                 content = cf.template.format(value=value) if cf.template else value
                 path = cf.path.format(home=cred_home)
-                await upload_credential(env, path, content)
+                await upload_credential(env, path, content, owner=owner)
                 logger.info("Agent credential file written: %s", path)
 
 
@@ -114,7 +138,7 @@ async def write_gemini_vertex_settings(
         {"security": {"auth": {"selectedType": "vertex-ai"}}},
     )
     path = f"{cred_home}/.gemini/settings.json"
-    await upload_credential(env, path, settings)
+    await upload_credential(env, path, settings, owner=_owner_from_home(cred_home))
     logger.info("Gemini Vertex settings written: %s", path)
 
 
@@ -131,13 +155,14 @@ async def upload_subscription_auth(
     agent_cfg = AGENTS.get(agent)
     if not agent_cfg or not agent_cfg.subscription_auth:
         return
+    owner = _owner_from_home(cred_home)
     for f in agent_cfg.subscription_auth.files:
         host_path = Path(f.host_path).expanduser()
         if not host_path.is_file():
             continue
         container_path = f.container_path.format(home=cred_home)
         content = host_path.read_text()
-        await upload_credential(env, container_path, content)
+        await upload_credential(env, container_path, content, owner=owner)
         logger.info(
             "Subscription auth uploaded: %s -> %s",
             host_path,

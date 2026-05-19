@@ -1,11 +1,11 @@
-"""Dogfood: test Scene-based Trial lifecycle against real TB2 tasks.
+"""Dogfood: test Scene-based Rollout lifecycle against real TB2 tasks.
 
-Validates that the current Trial class can express:
+Validates that the current Rollout class can express:
 1. Single-agent (baseline) — one connect/execute cycle
 2. Two-stage BYOS — skill-gen scene then solve scene
 3. Three-stage followup — coder/reviewer/revision
 
-Uses the existing Trial.connect/execute/disconnect phases.
+Uses the existing Rollout.connect/execute/disconnect phases.
 This script proves the lifecycle works before we add YAML parsing.
 
 Usage:
@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[0].parent / "src"))
 
-from benchflow.trial import Trial, TrialConfig
+from benchflow.rollout import Rollout, RolloutConfig
 
 AGENT = os.environ.get("ABLATION_AGENT", "gemini")
 MODEL = os.environ.get("ABLATION_MODEL", "gemini-3.1-flash-lite-preview")
@@ -36,7 +36,7 @@ def get_task() -> Path:
     """Lazily resolve the task path (avoids network I/O at import time)."""
     global _task
     if _task is None:
-        from benchflow.task_download import resolve_source
+        from benchflow._utils.benchmark_repos import resolve_source
 
         _task = resolve_source("harbor-framework/terminal-bench-2", path="regex-log")
     return _task
@@ -45,8 +45,8 @@ def get_task() -> Path:
 async def test_single_agent():
     """Scene 1: single agent, one turn — baseline."""
     logger.info("=== TEST 1: Single-agent baseline ===")
-    trial = await Trial.create(
-        TrialConfig(
+    trial = await Rollout.create(
+        RolloutConfig(
             task_path=get_task(),
             agent=AGENT,
             model=MODEL,
@@ -70,8 +70,8 @@ async def test_two_stage_byos():
         "/app/generated-skill.md that captures the key steps and patterns needed."
     )
 
-    trial = await Trial.create(
-        TrialConfig(
+    trial = await Rollout.create(
+        RolloutConfig(
             task_path=get_task(),
             agent=AGENT,
             model=MODEL,
@@ -122,8 +122,8 @@ Review for correctness, completeness, and bugs.
 Write your review to /app/.outbox/coder.json:
   {"to": "coder", "content": "YOUR FEEDBACK"}"""
 
-    trial = await Trial.create(
-        TrialConfig(
+    trial = await Rollout.create(
+        RolloutConfig(
             task_path=get_task(),
             agent=AGENT,
             model=MODEL,

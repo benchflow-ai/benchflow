@@ -84,7 +84,7 @@ def llm(prompt, model="gemini-3.1-flash-lite"):
 
 def show_config(yaml_str):
     """Print a YAML config box."""
-    print("  ┌─ TrialConfig (YAML) ─────────────────────────────────┐")
+    print("  ┌─ RolloutConfig (YAML) ─────────────────────────────────┐")
     for line in yaml_str.strip().split("\n"):
         print(f"  │ {line:<53} │")
     print("  └─────────────────────────────────────────────────────┘")
@@ -307,6 +307,6 @@ if __name__ == "__main__":
   4. Inter- │ generic ≠ actionable        │ 4x    │ user-specific
      active │                             │       │ decisions
 
-Each pattern is a TrialConfig change — same API, same verifier,
+Each pattern is a RolloutConfig change — same API, same verifier,
 same trajectory capture. No new runtime code needed.
 """)

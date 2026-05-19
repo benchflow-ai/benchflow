@@ -7,7 +7,7 @@ Owns the live agent-side of a run:
       ACP-native trajectory, and report tool-call counts
 
 The one allowed horizontal phase import in this refactor lives here:
-``from benchflow._sandbox import build_priv_drop_cmd``. connect_acp wraps
+``from benchflow.sandbox.lockdown import build_priv_drop_cmd``. connect_acp wraps
 the agent launch command in the sandbox user's privilege-drop prefix
 before handing it to the transport. It is a single pure-function call
 with no shared state — not a coupling of concerns.
@@ -22,13 +22,13 @@ import contextlib
 import logging
 from pathlib import Path
 
-from benchflow._sandbox import build_priv_drop_cmd
-from benchflow._trajectory import _capture_session_trajectory
 from benchflow.acp.client import ACPClient
 from benchflow.acp.container_transport import ContainerTransport
 from benchflow.agents.providers import find_provider, strip_provider_prefix
 from benchflow.agents.registry import AGENTS
-from benchflow.process import DaytonaProcess, DaytonaPtyProcess, DockerProcess
+from benchflow.sandbox.lockdown import build_priv_drop_cmd
+from benchflow.sandbox.process import DaytonaProcess, DaytonaPtyProcess, DockerProcess
+from benchflow.trajectories._capture import _capture_session_trajectory
 
 logger = logging.getLogger(__name__)
 
@@ -144,7 +144,7 @@ async def connect_acp(
     agent_env: dict,
     sandbox_user: str | None,
     model: str | None,
-    trial_dir: Path,
+    rollout_dir: Path,
     environment: str,
     agent_cwd: str,
 ) -> tuple[ACPClient, object, str]:
@@ -181,18 +181,18 @@ async def connect_acp(
 
         try:
             if environment == "docker":
-                live_proc = DockerProcess.from_harbor_env(env)
+                live_proc = DockerProcess.from_sandbox_env(env)
             else:
                 is_dind = hasattr(env, "_strategy") and hasattr(
                     env._strategy, "_compose_cmd"
                 )
                 if is_dind:
-                    live_proc = await DaytonaPtyProcess.from_harbor_env(env)
+                    live_proc = await DaytonaPtyProcess.from_sandbox_env(env)
                     logger.info("Using PTY transport for DinD compose task")
                 else:
-                    live_proc = await DaytonaProcess.from_harbor_env(env)
+                    live_proc = await DaytonaProcess.from_sandbox_env(env)
 
-            agent_log = trial_dir / "agent" / f"{agent.replace('-', '_')}.txt"
+            agent_log = rollout_dir / "agent" / f"{agent.replace('-', '_')}.txt"
             transport = ContainerTransport(
                 container_process=live_proc,
                 command=agent_launch,

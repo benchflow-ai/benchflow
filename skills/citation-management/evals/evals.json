@@ -1,0 +1,44 @@
+{
+  "skill_name": "citation-management",
+  "version": "1",
+  "defaults": {
+    "timeout_sec": 900,
+    "judge_model": "gemini-3.1-flash-lite",
+    "skill_mount_dir": "/skills"
+  },
+  "cases": [
+    {
+      "id": "skillsbench-citation-check-fake-citations",
+      "question": "You are helping a research team verify the integrity of a bibliography before submission. The following BibTeX excerpt is adapted from the real SkillsBench citation-check task and mixes real academic citations with fake or hallucinated ones.\n\nIdentify which citations are fake or hallucinated. Return only valid JSON in this exact schema:\n\n{\"fake_citations\": [\"Title of first fake paper\", \"Title of second fake paper\"]}\n\nReturn titles only, cleaned of BibTeX formatting, sorted alphabetically.\n\nBibTeX excerpt:\n\n```bibtex\n@article{Jumper2021,\n  author  = {Jumper, John and Evans, Richard and Pritzel, Alexander and Green, Tim and Figurnov, Michael and Ronneberger, Olaf and Tunyasuvunakool, Kathryn and Bates, Russ and {\\v{Z}}{\\'\\i}dek, Augustin and Potapenko, Anna and others},\n  title   = {Highly Accurate Protein Structure Prediction with {AlphaFold}},\n  journal = {Nature},\n  year    = {2021},\n  volume  = {596},\n  number  = {7873},\n  pages   = {583--589},\n  doi     = {10.1038/s41586-021-03819-2}\n}\n\n@inproceedings{patel2023blockchain,\n  author = {Aisha Patel and Carlos Ramirez},\n  title = {Blockchain Applications in Supply Chain Management},\n  booktitle = {Proceedings of the International Conference on Information Systems},\n  year = {2023},\n  pages = {45-53},\n  publisher = {ACM},\n  address = {London, UK}\n}\n\n@article{Watson1953,\n  author  = {Watson, James D. and Crick, Francis H. C.},\n  title   = {Molecular Structure of Nucleic Acids: A Structure for Deoxyribose Nucleic Acid},\n  journal = {Nature},\n  year    = {1953},\n  volume  = {171},\n  number  = {4356},\n  pages   = {737--738},\n  doi     = {10.1038/171737a0}\n}\n\n@article{wilson2021neural,\n  author = {Emily Wilson and Robert Taylor},\n  title = {Neural Networks in Deep Learning: A Comprehensive Review},\n  journal = {AI Research Journal},\n  year = {2021},\n  volume = {12},\n  number = {4},\n  pages = {200-215},\n  doi = {10.5678/airj.2021.12.4.200}\n}\n\n@article{smith2020ai,\n  author = {John Smith and Alice Johnson},\n  title = {Advances in Artificial Intelligence for Natural Language Processing},\n  journal = {Journal of Computational Linguistics},\n  year = {2020},\n  volume = {45},\n  number = {3},\n  pages = {112-130},\n  doi = {10.1234/jcl.2020.45.3.112}\n}\n```\n",
+      "ground_truth": "{\"fake_citations\": [\"Advances in Artificial Intelligence for Natural Language Processing\", \"Blockchain Applications in Supply Chain Management\", \"Neural Networks in Deep Learning: A Comprehensive Review\"]}",
+      "expected_behavior": [
+        "The agent treated the task as citation-integrity work and verified citation evidence instead of guessing from plausibility alone.",
+        "The agent identified the three fake or hallucinated citations from the SkillsBench citation-check source data.",
+        "The agent did not incorrectly flag the real AlphaFold or Watson-Crick Nature citations.",
+        "The agent returned valid JSON with a fake_citations array containing only cleaned titles sorted alphabetically."
+      ]
+    },
+    {
+      "id": "repair-alphafold-bibtex-from-doi",
+      "question": "Repair this malformed BibTeX entry using the DOI as the authority. The DOI is real and should resolve to the Nature AlphaFold paper from the citation-check source data.\n\nReturn only one corrected BibTeX @article entry. Do not include markdown.\n\n```bibtex\n@article{alphafold2020wrong,\n  author = {Jumper, John},\n  title = {Protein folding with neural networks},\n  journal = {Science},\n  year = {2020},\n  volume = {1},\n  pages = {1--2},\n  doi = {10.1038/s41586-021-03819-2}\n}\n```\n",
+      "ground_truth": "The corrected entry should describe 'Highly Accurate Protein Structure Prediction with AlphaFold' in Nature, year 2021, volume 596, number 7873, pages 583--589, DOI 10.1038/s41586-021-03819-2, with Jumper, Evans, Pritzel, Green, Figurnov, Ronneberger, Tunyasuvunakool, Bates, Zidek, Potapenko, and other AlphaFold authors.",
+      "expected_behavior": [
+        "The agent used the DOI as the authoritative identifier and did not preserve contradicted title, journal, year, volume, or pages.",
+        "The agent produced a BibTeX @article for the Nature AlphaFold paper with the correct title, venue, year, volume, issue, pages, and DOI.",
+        "The agent included a credible author list for the AlphaFold paper instead of leaving only the truncated malformed author field.",
+        "The final answer contained only the corrected BibTeX entry, not extra explanation or markdown."
+      ]
+    },
+    {
+      "id": "detect-crossed-doi-metadata",
+      "question": "A bibliography audit found an entry whose DOI is real but appears attached to the wrong paper. Determine whether the citation is internally consistent. Return only valid JSON in this schema:\n\n{\"consistent\": false, \"problem\": \"...\", \"corrected_title\": \"...\"}\n\nEntry to audit:\n\n```bibtex\n@inproceedings{badtriviaqa,\n  title = {Attention is All You Need},\n  author = {Vaswani, Ashish and Shazeer, Noam and Parmar, Niki},\n  booktitle = {Proceedings of the 55th Annual Meeting of the Association for Computational Linguistics},\n  year = {2017},\n  doi = {10.18653/v1/P17-1147}\n}\n```\n\nThe DOI and venue line are from the real SkillsBench citation-check bibliography. Audit the DOI/title consistency, not whether the title itself is a real paper.\n",
+      "ground_truth": "{\"consistent\": false, \"problem\": \"DOI 10.18653/v1/P17-1147 resolves to the ACL 2017 TriviaQA paper, not Attention is All You Need.\", \"corrected_title\": \"TriviaQA: A Large Scale Distantly Supervised Challenge Dataset for Reading Comprehension\"}",
+      "expected_behavior": [
+        "The agent recognized that a real DOI can still be attached to the wrong title and must be checked for DOI-title consistency.",
+        "The agent identified DOI 10.18653/v1/P17-1147 as the ACL Anthology DOI for TriviaQA.",
+        "The agent concluded the entry is inconsistent rather than accepting it because the DOI is syntactically valid.",
+        "The agent returned valid JSON with consistent set to false, a clear problem description, and the corrected TriviaQA title."
+      ]
+    }
+  ]
+}
