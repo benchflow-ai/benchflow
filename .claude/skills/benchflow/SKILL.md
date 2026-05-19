@@ -33,7 +33,7 @@ Arguments passed: `$ARGUMENTS`
 
 ```bash
 source .env
-benchflow run -t <task-path> -a claude-agent-acp -e daytona -m claude-haiku-4-5-20251001
+benchflow run --tasks-dir <task-path> --agent claude-agent-acp --sandbox daytona --model claude-haiku-4-5-20251001
 ```
 
 Or via SDK:
@@ -59,12 +59,12 @@ API keys are auto-inherited from `os.environ`. No need to pass `agent_env`.
 ### `job <tasks-dir>` — run a benchmark suite
 
 ```bash
-benchflow job -t <tasks-dir> -a claude-agent-acp -e daytona -c 64
+benchflow job --tasks-dir <tasks-dir> --agent claude-agent-acp --sandbox daytona --concurrency 64
 ```
 
 Or via YAML config:
 ```bash
-benchflow job -f examples/configs/tb2-haiku.yaml
+benchflow job --config examples/configs/tb2-haiku.yaml
 ```
 
 YAML format (benchflow-native):
@@ -225,7 +225,7 @@ COPY skills /root/.claude/skills
 
 ### Runtime deployment via `--skills-dir` (new)
 ```bash
-benchflow run -t task-dir -a claude-agent-acp --skills-dir skills/ -e daytona
+benchflow run --tasks-dir task-dir --agent claude-agent-acp --skills-dir skills/ --sandbox daytona
 ```
 
 SDK:

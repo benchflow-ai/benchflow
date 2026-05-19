@@ -7,7 +7,7 @@ On-demand end-to-end tests that run 9 SkillsBench tasks across all 8 registered 
 | Variable | Required for |
 |---|---|
 | `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) | gemini, pi-acp, openclaw, opencode, openhands |
-| `DAYTONA_API_KEY` | all agents (sandbox backend) |
+| `DAYTONA_API_KEY` | all agents (sandbox) |
 | `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` | claude-agent-acp |
 | `OPENAI_API_KEY` | codex-acp |
 
@@ -96,10 +96,10 @@ Agents missing credentials are automatically skipped.
 
 ## Standalone YAML Configs
 
-Each agent has a YAML config in `configs/` with an `include` list restricting to the 9 selected tasks. These can be used directly with `bench eval create -f`:
+Each agent has a YAML config in `configs/` with an `include` list restricting to the 9 selected tasks. These can be used directly with `bench eval create --config`:
 
 ```bash
-uv run bench eval create -f tests/integration/configs/gemini.yaml
+uv run bench eval create --config tests/integration/configs/gemini.yaml
 ```
 
 `run.sh` uses CLI arguments instead of these configs for parallel execution, but both approaches run the same 9 tasks.

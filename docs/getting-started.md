@@ -79,26 +79,26 @@ If multiple credentials are set, benchflow / the agent CLI uses (high to low): c
 GEMINI_API_KEY=... bench eval create \
   --source-repo benchflow-ai/skillsbench \
   --source-path tasks/edit-pdf \
-  -a gemini \
-  -m gemini-3.1-pro-preview \
-  -e docker
+  --agent gemini \
+  --model gemini-3.1-pro-preview \
+  --sandbox docker
 
 # Single task from local path
 GEMINI_API_KEY=... bench eval create \
-  -t tasks/edit-pdf \
-  -a gemini \
-  -m gemini-3.1-pro-preview \
-  -e daytona \
+  --tasks-dir tasks/edit-pdf \
+  --agent gemini \
+  --model gemini-3.1-pro-preview \
+  --sandbox daytona \
   --skills-dir tasks/edit-pdf/environment/skills \
-  --ae BENCHFLOW_SKILL_NUDGE=name
+  --agent-env BENCHFLOW_SKILL_NUDGE=name
 
 # A whole batch from YAML config
-bench eval create -f benchmarks/skillsbench-claude-glm51.yaml
+bench eval create --config benchmarks/skillsbench-claude-glm51.yaml
 
 # Batch from remote repo with concurrency
 GEMINI_API_KEY=... bench eval create \
     --source-repo benchflow-ai/skillsbench --source-path tasks \
-    -a gemini -m gemini-3.1-pro-preview -e daytona -c 32
+    --agent gemini --model gemini-3.1-pro-preview --sandbox daytona --concurrency 32
 
 # List the registered agents
 bench agent list
@@ -106,8 +106,8 @@ bench agent list
 
 `bench eval create` is the primary command for running evaluations — it works for
 single tasks, batch runs, and remote repos. Use `--source-repo <org/repo>
---source-path <subpath>` to fetch from a remote repo, `-t <tasks-dir>` for a
-local directory, or `-f <config.yaml>` for a YAML config. Results land under
+--source-path <subpath>` to fetch from a remote repo, `--tasks-dir <dir>` for a
+local directory, or `--config <config.yaml>` for a YAML config. Results land under
 `jobs/<job-name>/<trial-name>/` — `result.json` for the verifier output,
 `trajectory/acp_trajectory.jsonl` for the full agent trace.
 
@@ -122,10 +122,10 @@ The CLI is a thin shim over the Python API. For programmatic use:
 
 ```python
 import benchflow as bf
-from benchflow.trial import TrialConfig, Scene
+from benchflow import RolloutConfig, Scene
 from benchflow.task_download import resolve_source
 
-config = TrialConfig(
+config = RolloutConfig(
     task_path=resolve_source("benchflow-ai/skillsbench", path="tasks/edit-pdf"),
     scenes=[Scene.single(agent="gemini", model="gemini-3.1-pro-preview")],
     environment="docker",
@@ -135,13 +135,13 @@ print(result.rewards)         # {'reward': 1.0}
 print(result.n_tool_calls)
 ```
 
-`Trial` is decomposable — invoke each lifecycle phase individually for custom flows. See [Concepts: trial lifecycle](./concepts.md#trial-lifecycle).
+`Rollout` (aliased as `Trial`) is decomposable — invoke each lifecycle phase individually for custom flows. See [Concepts: rollout lifecycle](./concepts.md#rollout-lifecycle).
 
 ## What to read next
 
 | If you want to… | Read |
 |------------------|------|
-| Understand the model — Trial, Scene, Role, Verifier | [Concepts](./concepts.md) |
+| Understand the model — Rollout, Scene, Role, Verifier | [Concepts](./concepts.md) |
 | Author a task | [Task authoring](./task-authoring.md) |
 | Run multi-agent patterns (coder/reviewer, simulated user, BYOS) | [Use cases](./use-cases.md) |
 | Run multi-round single-agent (progressive disclosure) | [Progressive disclosure](./progressive-disclosure.md) |

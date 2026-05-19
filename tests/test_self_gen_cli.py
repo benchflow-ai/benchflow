@@ -15,7 +15,7 @@ def _make_task(tmp_path: Path) -> Path:
 
 
 def test_eval_create_single_task_self_gen_passes_trial_config(tmp_path: Path):
-    """`bench eval create --mode self-gen` reaches strict self-gen orchestration."""
+    """`bench eval create --skill-mode self-gen` reaches strict self-gen orchestration."""
     import asyncio
 
     from benchflow.cli.main import eval_create

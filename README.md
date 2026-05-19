@@ -15,7 +15,7 @@ BenchFlow runs AI agents against benchmark tasks in sandboxed environments. Sing
 
 - **Any ACP agent** — Gemini CLI, Claude Code, Codex, OpenCode, OpenHands, OpenClaw, Pi, or your own
 - **Single + multi + progressive** — single-agent / multi-agent (coder + reviewer, simulated user) / multi-round with a Python `BaseUser` callback
-- **Sandbox backends** — Docker locally, Daytona for parallel cloud runs, Modal for serverless/GPU-backed task environments
+- **Sandboxes** — Docker locally, Daytona for parallel cloud runs, Modal for serverless/GPU-backed task environments
 - **Hardened verifier** — defaults block BenchJack/Meerkat-style reward-hacking; tasks opt out per-feature
 
 ## Install
@@ -33,7 +33,7 @@ Start with [Getting started](./docs/getting-started.md), then [Concepts](./docs/
 | If you want to… | Read |
 |------------------|------|
 | Run an eval on an existing task | [Getting started](./docs/getting-started.md) |
-| Understand Trial / Scene / Role / Verifier | [Concepts](./docs/concepts.md) |
+| Understand Rollout / Scene / Role / Verifier | [Concepts](./docs/concepts.md) |
 | Author a new task | [Task authoring](./docs/task-authoring.md) |
 | Multi-agent: coder + reviewer, simulated user, BYOS, stateful envs | [Use cases](./docs/use-cases.md) |
 | Multi-round single-agent (progressive disclosure, oracle access) | [Progressive disclosure](./docs/progressive-disclosure.md) |
@@ -62,12 +62,12 @@ Run any benchmark via the CLI:
 
 ```bash
 # From a YAML config
-bench eval create -f benchmarks/skillsbench-claude-glm51.yaml
+bench eval create --config benchmarks/skillsbench-claude-glm51.yaml
 
 # Inline — mirrors the YAML source fields
 bench eval create \
     --source-repo benchflow-ai/skillsbench --source-path tasks \
-    -a gemini -m gemini-3.1-flash-lite-preview -e daytona -c 64
+    --agent gemini --model gemini-3.1-flash-lite-preview --sandbox daytona --concurrency 64
 ```
 
 Repos are cloned and cached locally under `.cache/datasets/` on first use.
@@ -79,7 +79,7 @@ SkillsBench when you need its lockfile to point at the newest BenchFlow commit.
 
 ## Featured
 
-- **Progressive disclosure on SWE-bench Pro** — the `BaseUser` abstraction drives a multi-round trial: terse round-0 prompt → failing-test hints → full spec. 5/5 oracle on Daytona, runnable demo at [`docs/examples/swebench_pro_progressive_disclosure.ipynb`](./docs/examples/swebench_pro_progressive_disclosure.ipynb). Also benchflow's [Harbor #1316](https://github.com/harbor-ai/harbor/issues/1316) parity answer for the no-second-LLM case. See [Progressive disclosure](./docs/progressive-disclosure.md).
+- **Progressive disclosure on SWE-bench Pro** — the `BaseUser` abstraction drives a multi-round rollout: terse round-0 prompt → failing-test hints → full spec. 5/5 oracle on Daytona, runnable demo at [`docs/examples/swebench_pro_progressive_disclosure.ipynb`](./docs/examples/swebench_pro_progressive_disclosure.ipynb). Also benchflow's [Harbor #1316](https://github.com/harbor-ai/harbor/issues/1316) parity answer for the no-second-LLM case. See [Progressive disclosure](./docs/progressive-disclosure.md).
 
 ## Research artifacts
 

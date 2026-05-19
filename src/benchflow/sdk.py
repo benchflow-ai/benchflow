@@ -1,198 +1,44 @@
-"""benchflow SDK — unified run() that uses ACP inside Harbor environments.
+"""Backward-compat shim — the SDK class delegates to Rollout.
 
-``SDK.run()`` is a thin orchestrator that calls into five phase modules.
-Each phase module owns one slice of the run loop and is independently
-greppable. This docstring is the map: read it before navigating the file.
-
-Run loop (SDK.run, top to bottom)
----------------------------------
-
-::
-
-    ┌─ SETUP (host) ──────────────────────────────────────────────┐
-    │  _init_trial            task, trial_dir, paths, names        │
-    │  resolve_agent_env      env vars: inherit, mirror, vertex,   │  ← _agent_env
-    │                         subscription auth detection          │
-    │  _resolve_prompts       prompt list (instruction.md fallback)│
-    │  stage_dockerfile_deps  COPY rewrites for context_root       │  ← _env_setup
-    │  _inject_skills_…       Dockerfile skill mount               │  ← _env_setup
-    │  _create_environment    Docker, Daytona, or Modal sandbox    │  ← _env_setup
-    │  _write_config          config.json → trial_dir              │
-    └──────────────────────────────────────────────────────────────┘
-    ┌─ START (sandbox) ───────────────────────────────────────────┐
-    │  _start_env_and_upload  spin up container, copy task files   │
-    │  pre_agent_hooks        user callbacks (services, etc.)      │
-    └──────────────────────────────────────────────────────────────┘
-    ┌─ AGENT (oracle: _run_oracle and skip everything below) ─────┐
-    │  install_agent             registry-driven install_cmd      │  ← _agent_setup
-    │  write_credential_files    AgentConfig.credential_files     │  ← _credentials
-    │  upload_subscription_auth  if host login files detected     │  ← _credentials
-    │  setup_sandbox_user        non-root user + path lockdown    │  ← _sandbox
-    │  deploy_skills             symlink skills into agent paths  │  ← _agent_setup
-    │  lockdown_paths            chmod -r on solution / tests     │  ← _sandbox
-    │  connect_acp               stdio pipe + ACP initialize/new  │  ← _acp_run
-    │  execute_prompts           multi-turn session/prompt loop   │  ← _acp_run
-    └──────────────────────────────────────────────────────────────┘
-    ┌─ VERIFY ────────────────────────────────────────────────────┐
-    │  (fallback) _scrape_agent_trajectory  if ACP captured none   │
-    │             — labeled trajectory_source="scraped" UNTRUSTED  │
-    │  harden_before_verify  permissions reset for verifier root   │  ← _sandbox
-    │  _verify                Harbor verifier → rewards            │
-    │  _build_result          RunResult + result.json + timing     │
-    └──────────────────────────────────────────────────────────────┘
-    finally: env.stop()
-
-Phase modules (extracted from sdk.py — see refactor branch for the arc)
------------------------------------------------------------------------
-- ``_agent_env``    env var resolution: auto-inherit, vertex ADC, provider
-                    BENCHFLOW_PROVIDER_*, env_mapping, subscription auth
-- ``_credentials``  credential file writing: upload_credential, agent +
-                    provider credential_files, gemini vertex settings,
-                    upload_subscription_auth
-- ``_sandbox``      sandbox user creation, privilege drop (setpriv/su),
-                    path lockdown, verifier hardening + VERIFIER_ENV /
-                    CLEANUP_CMD constants
-- ``_acp_run``      ACP transport bring-up + the multi-turn prompt loop.
-                    Imports ``build_priv_drop_cmd`` from ``_sandbox`` —
-                    the only allowed horizontal phase-to-phase import.
-- ``_agent_setup``  install_agent (registry-driven) + deploy_skills
-                    (runtime upload + per-agent distribution)
-
-Support modules
----------------
-- ``_env_setup``    Dockerfile staging, skills injection, DinD patching,
-                    ``_create_environment``
-- ``_trajectory``   ACP-native + agent-scraped trajectory capture
-- ``models``        ``RunResult``, ``AgentInstallError``, ``AgentTimeoutError``,
-                    ``TrajectorySource`` (public — re-exported from ``benchflow``)
-- ``_scoring``      pure functions: ``extract_reward``,
-                    ``classify_verifier_error``, pass-rate math
-- ``agents/registry``  ``AGENTS``, ``AgentConfig`` — see registry.py docstring
-                       for the "add a new agent" recipe
-- ``agents/providers`` ``PROVIDERS``, ``ProviderConfig`` — see providers.py
-                       docstring for the "add a new provider" recipe
-
-Critical invariants
--------------------
-- The phases above run in strict order. Functions in ``_agent_env`` are pure
-  and can be called in tests independently; everything from
-  ``_start_env_and_upload`` onward assumes a live container and ordered setup.
-- Trajectory source is *labeled*, not deleted. ``trajectory_source`` is one of
-  ``"acp"`` (trusted) | ``"scraped"`` (UNTRUSTED, agent-writable, forgeable) |
-  ``"partial_acp"``. Verifier and metrics consumers decide trust per source.
-- ``n_tool_calls`` is set from ACP only and **never** overwritten by scraped
-  trajectories — see the security test in ``tests/test_verify.py``.
-- Adding a new agent or provider must be a registry-only change. No edits to
-  this file should be needed; ``tests/test_registry_invariants.py`` enforces
-  the contract.
+New code should use ``bf.run()`` or ``Rollout`` directly.
+``from benchflow.sdk import SDK`` keeps working for existing callers.
 """
 
-import asyncio
-import json
+from __future__ import annotations
+
 import logging
-import shlex
 from datetime import datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
-from harbor.models.task.task import Task
-from harbor.models.trial.paths import TrialPaths
-from harbor.utils.env import resolve_env_vars
-from harbor.verifier.verifier import Verifier
-
-from benchflow._env_setup import (
-    _patch_harbor_dind,
+from benchflow.models import RolloutResult, TrajectorySource
+from benchflow.rollout import (
+    _build_rollout_result,
+    _init_rollout,
+    _resolve_prompts,
+    _run_oracle,
+    _start_env_and_upload,
+    _verify_rollout,
+    _write_config,
+    _write_rewards_jsonl,
 )
-from benchflow._sandbox import (
-    harden_before_verify,
-)
-from benchflow.models import RunResult, TrajectorySource
 
 logger = logging.getLogger(__name__)
 
-_DIAG_TRUNCATE = 2000  # max chars for diagnostic stdout/stderr in logs
+# Re-export so ``from benchflow.sdk import _write_rewards_jsonl`` keeps working.
+__all__ = ["SDK", "_write_rewards_jsonl"]
 
-
-def _write_rewards_jsonl(
-    trial_dir: Path,
-    rewards: dict | None,
-    finished_at: datetime,
-) -> None:
-    """Write rewards.jsonl — one JSON line per reward event.
-
-    Emits rubric items (if present) as type="process" lines, then the
-    terminal reward as the final type="terminal" line.  Schema is
-    ORS-reward-signal compatible: one streamed event per line.
-
-    Rubric format in rewards dict::
-
-        {"reward": 0.75, "rubric": [
-            {"name": "file_exists", "score": 1.0, "weight": 1.0},
-            {"name": "content_correct", "score": 0.5, "weight": 1.0}
-        ]}
-    """
-    if not rewards:
-        return
-    events: list[dict[str, Any]] = []
-    rubric = rewards.get("rubric")
-    if isinstance(rubric, list):
-        for i, item in enumerate(rubric):
-            if not isinstance(item, dict):
-                continue
-            rubric_item = cast(dict[str, Any], item)
-            events.append(
-                {
-                    "ts": finished_at.isoformat(),
-                    "type": "process",
-                    "source": "verifier_rubric",
-                    "value": rubric_item.get("score", 0.0),
-                    "tag": rubric_item.get("name", f"rubric_{i}"),
-                    "step_index": i,
-                    "meta": {
-                        k: v
-                        for k, v in rubric_item.items()
-                        if k not in ("score", "name")
-                    },
-                }
-            )
-    scalar = rewards.get("reward")
-    if scalar is not None:
-        non_event_keys = {"reward", "rubric"}
-        events.append(
-            {
-                "ts": finished_at.isoformat(),
-                "type": "terminal",
-                "source": "verifier",
-                "value": scalar,
-                "tag": "reward",
-                "step_index": None,
-                "meta": {k: v for k, v in rewards.items() if k not in non_event_keys},
-            }
-        )
-    if events:
-        path = trial_dir / "rewards.jsonl"
-        path.write_text("\n".join(json.dumps(e, default=str) for e in events) + "\n")
-
-
-# Apply at import time so any Harbor DockerEnvironment in this process
-# (SDK.run or otherwise) gets the env-var rewrite, and so we patch exactly
-# once without an idempotency guard. Do not move into SDK.run().
-_patch_harbor_dind()
+# Backward-compat alias
+RunResult = RolloutResult
 
 
 class SDK:
-    """benchflow SDK.
+    """Backward-compat shim — delegates to :mod:`benchflow.rollout`.
 
-    Usage:
+    Usage::
+
         sdk = SDK()
-        result = await sdk.run(
-            task_path="path/to/task",
-            agent="claude-agent-acp",
-            prompts=["solve the task", "now test your solution"],
-            agent_env={"ANTHROPIC_API_KEY": "..."},
-        )
-        print(result.rewards)
-        print(result.trajectory)
+        result = await sdk.run(task_path=..., agent=...)
     """
 
     @staticmethod
@@ -201,61 +47,31 @@ class SDK:
         job_name: str | None,
         trial_name: str | None,
         jobs_dir: str | Path,
-    ) -> tuple["Task", Path, "TrialPaths", datetime, str, str]:
-        """Set up trial directory tree and return core trial objects."""
-        from uuid import uuid4
-
-        task = Task(task_path)
-        job_name = job_name or datetime.now().strftime("%Y-%m-%d__%H-%M-%S")
-        trial_name = trial_name or f"{task_path.name}__{uuid4().hex[:8]}"
-        trial_dir = Path(jobs_dir) / job_name / trial_name
-        trial_paths = TrialPaths(trial_dir)
-        started_at = datetime.now()
-        # Pre-create trial directory tree so Docker doesn't create them as root.
-        trial_dir.mkdir(parents=True, exist_ok=True)
-        for subdir in ("agent", "verifier", "artifacts", "trajectory"):
-            (trial_dir / subdir).mkdir(exist_ok=True)
-        return task, trial_dir, trial_paths, started_at, job_name, trial_name
+    ) -> tuple[Any, Path, Any, datetime, str, str]:
+        return _init_rollout(task_path, job_name, trial_name, jobs_dir)
 
     @staticmethod
     def _write_config(
         trial_dir: Path,
-        *,
-        task_path: Path,
-        agent: str,
-        model: str | None,
-        environment: str,
-        skills_dir: str | Path | None,
-        sandbox_user: str | None,
-        context_root: str | Path | None,
-        sandbox_locked_paths: list[str] | None = None,
-        sandbox_setup_timeout: int = 120,
-        timeout: int,
-        started_at: datetime,
-        agent_env: dict[str, str],
+        **kwargs: Any,
     ) -> None:
-        """Write config.json to trial_dir with secrets filtered out."""
-        _secret_substrings = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIALS")
-        recorded_env = {
-            k: v
-            for k, v in agent_env.items()
-            if not any(s in k.upper() for s in _secret_substrings)
-        }
-        config_data = {
-            "task_path": str(task_path),
-            "agent": agent,
-            "model": model,
-            "environment": environment,
-            "skills_dir": str(skills_dir) if skills_dir else None,
-            "sandbox_user": sandbox_user,
-            "sandbox_locked_paths": sandbox_locked_paths,
-            "sandbox_setup_timeout": sandbox_setup_timeout,
-            "context_root": str(context_root) if context_root else None,
-            "timeout_sec": timeout,
-            "started_at": str(started_at),
-            "agent_env": recorded_env,
-        }
-        (trial_dir / "config.json").write_text(json.dumps(config_data, indent=2))
+        _write_config(trial_dir, **kwargs)
+
+    @staticmethod
+    def _resolve_prompts(
+        task_path: Path,
+        prompts: list[str | None] | None,
+        skills_dir: str | Path | None = None,
+        skill_nudge: str = "",
+        agent: str | None = None,
+    ) -> list[str]:
+        return _resolve_prompts(
+            task_path,
+            prompts,
+            skills_dir=skills_dir,
+            skill_nudge=skill_nudge,
+            agent=agent,
+        )
 
     @staticmethod
     def _build_result(
@@ -276,229 +92,57 @@ class SDK:
         rewards: dict | None,
         started_at: datetime,
         timing: dict[str, float],
-    ) -> RunResult:
-        """Build RunResult and write result.json, timing.json, prompts.json, trajectory."""
-        finished_at = datetime.now()
-        result = RunResult(
+    ) -> RolloutResult:
+        return _build_rollout_result(
+            trial_dir,
             task_name=task_name,
             trial_name=trial_name,
-            rewards=rewards,
-            trajectory=trajectory,
             agent=agent,
             agent_name=agent_name,
             model=model,
             n_tool_calls=n_tool_calls,
-            n_prompts=len(prompts),
+            prompts=prompts,
             error=error,
             verifier_error=verifier_error,
+            trajectory=trajectory,
             partial_trajectory=partial_trajectory,
             trajectory_source=trajectory_source,
+            rewards=rewards,
             started_at=started_at,
-            finished_at=finished_at,
+            timing=timing,
         )
-        # Finalize timing — use the locals (RunResult fields are typed
-        # datetime | None and would need narrowing)
-        timing["total"] = (finished_at - started_at).total_seconds()
-        timing = {k: round(v, 1) for k, v in timing.items()}
-        # Save trajectory
-        traj_dir = trial_dir / "trajectory"
-        traj_dir.mkdir(parents=True, exist_ok=True)
-        (traj_dir / "acp_trajectory.jsonl").write_text(
-            "\n".join(json.dumps(e, default=str) for e in trajectory)
-        )
-        # Save result.json, prompts.json, timing.json
-        trial_dir.mkdir(parents=True, exist_ok=True)
-        (trial_dir / "result.json").write_text(
-            json.dumps(
-                {
-                    "task_name": result.task_name,
-                    "trial_name": result.trial_name,
-                    "rewards": result.rewards,
-                    "agent": result.agent,
-                    "agent_name": result.agent_name,
-                    "model": result.model,
-                    "n_tool_calls": result.n_tool_calls,
-                    "n_prompts": result.n_prompts,
-                    "error": result.error,
-                    "verifier_error": result.verifier_error,
-                    "partial_trajectory": result.partial_trajectory,
-                    "trajectory_source": result.trajectory_source,
-                    "started_at": str(result.started_at),
-                    "finished_at": str(result.finished_at),
-                    "timing": timing,
-                },
-                indent=2,
-            )
-        )
-        (trial_dir / "timing.json").write_text(json.dumps(timing, indent=2))
-        (trial_dir / "prompts.json").write_text(json.dumps(prompts, indent=2))
-        _write_rewards_jsonl(trial_dir, rewards, finished_at)
-        return result
 
-    @staticmethod
-    def _resolve_prompts(
-        task_path: Path,
-        prompts: list[str | None] | None,
-        skills_dir: str | Path | None = None,
-        skill_nudge: str = "",
-        agent: str | None = None,
-    ) -> list[str]:
-        """Read instruction.md and resolve prompt list.
-
-        skill_nudge: "", "name", "description", or "full".
-        """
-        instruction_path = task_path / "instruction.md"
-        if not instruction_path.exists():
-            raise FileNotFoundError(f"Task missing instruction.md: {task_path}")
-        instruction = instruction_path.read_text().strip()
-
-        if skill_nudge:
-            from benchflow.agents.registry import AGENTS
-
-            skill_display_path = "~/.claude/skills"
-            if agent:
-                agent_cfg = AGENTS.get(agent)
-                if agent_cfg and agent_cfg.skill_paths:
-                    skill_display_path = agent_cfg.skill_paths[0].replace("$HOME", "~")
-
-            skills = []
-            for src in [skills_dir, task_path / "environment" / "skills"]:
-                if src and Path(src).is_dir():
-                    for d in sorted(Path(src).iterdir()):
-                        if d.is_dir() and (d / "SKILL.md").exists():
-                            content = d.joinpath("SKILL.md").read_text()
-                            name = d.name
-                            desc = ""
-                            if content.startswith("---"):
-                                parts = content.split("---", 2)
-                                if len(parts) >= 3:
-                                    import yaml
-
-                                    try:
-                                        fm = yaml.safe_load(parts[1])
-                                        desc = fm.get("description", "") if fm else ""
-                                    except Exception:
-                                        pass
-                            skills.append(
-                                {"name": name, "desc": desc, "content": content}
-                            )
-                    if skills:
-                        break
-
-            if skills:
-                if skill_nudge == "name":
-                    names = ", ".join(s["name"] for s in skills)
-                    nudge = f"Skills available at {skill_display_path}: {names}. Read them before starting."
-                    instruction = nudge + "\n\n" + instruction
-                elif skill_nudge == "description":
-                    lines = [f"Skills available at {skill_display_path}:\n"]
-                    for s in skills:
-                        lines.append(f"- **{s['name']}**: {s['desc']}")
-                    lines.append("\nRead the relevant skills before starting.")
-                    instruction = "\n".join(lines) + "\n\n" + instruction
-                elif skill_nudge == "full":
-                    blocks = []
-                    for s in skills:
-                        blocks.append(
-                            f'<skill name="{s["name"]}">\n{s["content"]}\n</skill>'
-                        )
-                    instruction = "\n\n".join(blocks) + "\n\n" + instruction
-
-        if prompts is None:
-            return [instruction]
-        return [p if p is not None else instruction for p in prompts]
-
-    async def _start_env_and_upload(self, env, task_path: Path, timing: dict) -> None:
-        """Start environment and upload task files."""
-        logger.info(f"Starting environment: {task_path.name}")
-        t0 = datetime.now()
-        await env.start(force_build=False)
-        timing["environment_setup"] = (datetime.now() - t0).total_seconds()
-        if (task_path / "instruction.md").exists():
-            await env.upload_file(task_path / "instruction.md", "/instruction.md")
-        if (task_path / "solution").is_dir():
-            await env.upload_dir(task_path / "solution", "/solution")
+    async def _start_env_and_upload(
+        self, env: Any, task_path: Path, timing: dict
+    ) -> None:
+        await _start_env_and_upload(env, task_path, timing)
 
     async def _run_oracle(
-        self, env, task_path: Path, timeout: int, sandbox_user: str | None = None
+        self,
+        env: Any,
+        task_path: Path,
+        timeout: int,
+        sandbox_user: str | None = None,
     ) -> tuple[list[dict], str]:
-        """Run oracle mode (solution/solve.sh), return (trajectory, agent_name)."""
-        logger.info("Oracle mode: running solution/solve.sh")
-        if not (task_path / "solution" / "solve.sh").exists():
-            raise FileNotFoundError(f"Oracle requires solution/solve.sh: {task_path}")
-        if sandbox_user:
-            oracle_cmd = "DEBIAN_FRONTEND=noninteractive bash /solution/solve.sh"
-            cmd = (
-                f"su -s /bin/bash {shlex.quote(sandbox_user)} "
-                f"-c {shlex.quote(oracle_cmd)}"
-            )
-        else:
-            cmd = "bash /solution/solve.sh"
-        oracle_env: dict[str, str] = {"DEBIAN_FRONTEND": "noninteractive"}
-        task = Task(task_path)
-        if task.config.solution.env:
-            oracle_env.update(resolve_env_vars(task.config.solution.env))
-        result = await env.exec(
-            f"{cmd} > /logs/agent/oracle.txt 2>&1",
-            env=oracle_env,
-            timeout_sec=timeout,
-        )
-        if result.return_code != 0:
-            logger.warning(f"Oracle solve.sh exited with rc={result.return_code}")
-        preview = await env.exec(
-            f"tail -c {shlex.quote(str(_DIAG_TRUNCATE))} /logs/agent/oracle.txt 2>/dev/null || true",
-            user="root",
-            timeout_sec=10,
-        )
-        trajectory = [
-            {
-                "type": "oracle",
-                "command": "solution/solve.sh",
-                "return_code": result.return_code,
-                "stdout": (preview.stdout or "")[:_DIAG_TRUNCATE],
-            }
-        ]
-        return trajectory, "oracle"
+        return await _run_oracle(env, task_path, timeout, sandbox_user=sandbox_user)
 
     async def _verify(
         self,
-        env,
-        task: "Task",
-        trial_paths: "TrialPaths",
+        env: Any,
+        task: Any,
+        trial_paths: Any,
         timing: dict,
         sandbox_user: str | None = None,
         workspace: str | None = None,
     ) -> tuple[dict | None, str | None]:
-        """Run verifier with pre-verification hardening."""
-        trial_paths.verifier_dir.mkdir(parents=True, exist_ok=True)
-        await harden_before_verify(env, task, sandbox_user, workspace=workspace)
-        logger.info("Running verifier...")
-        t0 = datetime.now()
-        verifier_error = None
-        try:
-            verifier = Verifier(task=task, trial_paths=trial_paths, environment=env)
-            verifier_result = await asyncio.wait_for(
-                verifier.verify(),
-                timeout=task.config.verifier.timeout_sec,
-            )
-            timing["verifier"] = (datetime.now() - t0).total_seconds()
-            rewards = verifier_result.rewards
-            logger.info(f"Rewards: {rewards}")
-        except TimeoutError:
-            timing["verifier"] = (datetime.now() - t0).total_seconds()
-            # NOTE: these prefixes must stay in sync with classify_verifier_error() in _scoring.py
-            verifier_error = (
-                f"verifier timed out after {task.config.verifier.timeout_sec}s"
-            )
-            rewards = None
-            logger.error(verifier_error)
-        except Exception as e:
-            timing["verifier"] = (datetime.now() - t0).total_seconds()
-            # NOTE: these prefixes must stay in sync with classify_verifier_error() in _scoring.py
-            verifier_error = f"verifier crashed: {e}"
-            rewards = None
-            logger.error(verifier_error)
-        return rewards, verifier_error
+        return await _verify_rollout(
+            env,
+            task,
+            trial_paths,
+            timing,
+            sandbox_user=sandbox_user,
+            workspace=workspace,
+        )
 
     async def run(
         self,
@@ -521,40 +165,12 @@ class SDK:
         skill_mode: str = "default",
         skill_creator_dir: str | Path | None = None,
         self_gen_no_internet: bool = False,
-    ) -> RunResult:
-        """Run a task with an ACP agent inside a sandbox.
+    ) -> RolloutResult:
+        """Run a task — delegates to :func:`benchflow.run`."""
+        from benchflow._run import run
+        from benchflow.rollout import RolloutConfig
 
-        Delegates to :class:`~benchflow.trial.Trial` for the actual lifecycle.
-        This method exists for backwards compatibility — new code should use
-        Trial directly for composable multi-phase execution.
-
-        Args:
-            task_path: Path to Harbor-format task directory
-            agent: ACP agent name or command (e.g. "claude-agent-acp", "openclaw")
-            prompts: List of prompts to send. Default: [instruction.md content]
-            model: Model to use (e.g. "claude-haiku-4-5-20251001"). Set via ACP session/set_model.
-            agent_env: Environment variables for the agent (API keys etc.)
-            job_name: Job name. Auto-generated if not provided.
-            trial_name: Custom trial name. Auto-generated if not provided.
-            jobs_dir: Directory for job output (Harbor convention).
-            environment: Environment type — "docker", "daytona", or "modal".
-            skills_dir: Path to skills directory. Copied into sandbox and symlinked
-                to agent-specific discovery paths (e.g. ~/.claude/skills/).
-            sandbox_user: Run agent as this non-root user (e.g. "agent"). Uses
-                setpriv (Debian/Ubuntu) or su (Alpine/others) — no external
-                dependencies. Setup (install) and verification run as root.
-            pre_agent_hooks: List of async callables(env) to run after setup but
-                before agent launch. Use for starting background services, etc.
-            context_root: Repo root for resolving Dockerfile COPY paths. When set,
-                scans environment/Dockerfile for COPY sources relative to this root,
-                copies them into environment/_deps/, and rewrites the Dockerfile.
-
-        Returns:
-            RunResult with rewards, trajectory, and metadata.
-        """
-        from benchflow.trial import Trial, TrialConfig
-
-        config = TrialConfig(
+        config = RolloutConfig(
             task_path=Path(task_path),
             agent=agent,
             prompts=prompts,
@@ -574,9 +190,4 @@ class SDK:
             skill_creator_dir=skill_creator_dir,
             self_gen_no_internet=self_gen_no_internet,
         )
-        if skill_mode == "self-gen":
-            from benchflow.self_gen import run_self_gen
-
-            return await run_self_gen(config)
-        trial = await Trial.create(config)
-        return await trial.run()
+        return await run(config)

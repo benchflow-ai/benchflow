@@ -27,10 +27,10 @@ Use one model as a "specialist" skill that another model can invoke. Test whethe
 
 ```bash
 # With specialist skill (model-as-skill installed)
-bench skills eval ./benchmarks/models-as-skills/ -a gemini --no-baseline
+bench skills eval ./benchmarks/models-as-skills/ --agent gemini --no-baseline
 
 # Compare: with vs without specialist
-bench skills eval ./benchmarks/models-as-skills/ -a gemini
+bench skills eval ./benchmarks/models-as-skills/ --agent gemini
 ```
 
 ## Cases

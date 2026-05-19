@@ -67,12 +67,12 @@ MODELS=(
   [zai-glm5]="zai/glm-5.1"
 )
 
-# Extra --ae flags per model
+# Extra --agent-env flags per model
 declare -A EXTRA_ARGS
 EXTRA_ARGS=(
   [subscription]=""
-  [sonnet]="--ae CLAUDE_CODE_USE_VERTEX=1 --ae GOOGLE_CLOUD_PROJECT=$PROJECT --ae GOOGLE_CLOUD_LOCATION=global"
-  [zai-glm5]="--ae ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic --ae ANTHROPIC_AUTH_TOKEN=$ZAI_API_KEY"
+  [sonnet]="--agent-env CLAUDE_CODE_USE_VERTEX=1 --agent-env GOOGLE_CLOUD_PROJECT=$PROJECT --agent-env GOOGLE_CLOUD_LOCATION=global"
+  [zai-glm5]="--agent-env ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic --agent-env ANTHROPIC_AUTH_TOKEN=$ZAI_API_KEY"
 )
 
 # ── Pre-flight checks ──
@@ -161,11 +161,11 @@ for label in "${SELECTED[@]}"; do
   extra="${EXTRA_ARGS[$label]:-}"
 
   # shellcheck disable=SC2086
-  if uv run benchflow run \
-    -t "$TASK" \
-    -a "$AGENT" \
-    -m "$model" \
-    -e "$ENV" \
+  if uv run bench eval create \
+    --tasks-dir "$TASK" \
+    --agent "$AGENT" \
+    --model "$model" \
+    --sandbox "$ENV" \
     --jobs-dir "$JOBS_DIR" \
     $extra; then
     echo "PASS: $label"
