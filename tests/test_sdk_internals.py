@@ -18,7 +18,7 @@ class TestResolveAgentEnv:
     """Tests for SDK._resolve_agent_env — env var resolution logic."""
 
     def _resolve(self, agent="claude-agent-acp", model=None, agent_env=None):
-        from benchflow._agent_env import resolve_agent_env
+        from benchflow.agents.env import resolve_agent_env
 
         return resolve_agent_env(agent, model, agent_env)
 
@@ -292,14 +292,14 @@ class TestResolvePrompts:
 class TestInitTrial:
     """Tests for SDK._init_trial — trial directory setup."""
 
-    def _init(self, task_path, job_name=None, trial_name=None, jobs_dir="jobs"):
+    def _init(self, task_path, job_name=None, rollout_name=None, jobs_dir="jobs"):
         from benchflow.sdk import SDK
 
-        return SDK._init_trial(task_path, job_name, trial_name, jobs_dir)
+        return SDK._init_trial(task_path, job_name, rollout_name, jobs_dir)
 
     @pytest.fixture()
     def task_dir(self, tmp_path):
-        """Minimal Harbor task directory."""
+        """Minimal task directory."""
         td = tmp_path / "my-task"
         td.mkdir()
         (td / "task.toml").write_text(
@@ -309,11 +309,11 @@ class TestInitTrial:
         (td / "instruction.md").write_text("Do the thing.")
         return td
 
-    def test_trial_dir_created(self, task_dir, tmp_path):
-        _, trial_dir, _, _, _, _ = self._init(task_dir, jobs_dir=tmp_path / "jobs")
-        assert trial_dir.exists()
+    def test_rollout_dir_created(self, task_dir, tmp_path):
+        _, rollout_dir, _, _, _, _ = self._init(task_dir, jobs_dir=tmp_path / "jobs")
+        assert rollout_dir.exists()
         for subdir in ("agent", "verifier", "artifacts", "trajectory"):
-            assert (trial_dir / subdir).is_dir()
+            assert (rollout_dir / subdir).is_dir()
 
     def test_default_job_name_format(self, task_dir, tmp_path):
         _, _, _, _, job_name, _ = self._init(task_dir, jobs_dir=tmp_path / "jobs")
@@ -329,17 +329,17 @@ class TestInitTrial:
         )
         assert job_name == "my-job"
 
-    def test_trial_name_includes_task(self, task_dir, tmp_path):
-        _, _, _, _, _, trial_name = self._init(task_dir, jobs_dir=tmp_path / "jobs")
-        assert "my-task" in trial_name
+    def test_rollout_name_includes_task(self, task_dir, tmp_path):
+        _, _, _, _, _, rollout_name = self._init(task_dir, jobs_dir=tmp_path / "jobs")
+        assert "my-task" in rollout_name
 
-    def test_custom_trial_name(self, task_dir, tmp_path):
-        _, _, _, _, _, trial_name = self._init(
+    def test_custom_rollout_name(self, task_dir, tmp_path):
+        _, _, _, _, _, rollout_name = self._init(
             task_dir,
-            trial_name="custom-trial",
+            rollout_name="custom-trial",
             jobs_dir=tmp_path / "jobs",
         )
-        assert trial_name == "custom-trial"
+        assert rollout_name == "custom-trial"
 
     def test_started_at_is_datetime(self, task_dir, tmp_path):
         _, _, _, started_at, _, _ = self._init(task_dir, jobs_dir=tmp_path / "jobs")
@@ -350,12 +350,12 @@ class TestInitTrial:
 
 
 class TestWriteConfig:
-    """Tests for SDK._write_config — writes config.json to trial_dir."""
+    """Tests for SDK._write_config — writes config.json to rollout_dir."""
 
-    def _write(self, trial_dir, **kwargs):
+    def _write(self, rollout_dir, **kwargs):
         from benchflow.sdk import SDK
 
-        return SDK._write_config(trial_dir, **kwargs)
+        return SDK._write_config(rollout_dir, **kwargs)
 
     def test_config_json_written(self, tmp_path):
         self._write(
@@ -386,6 +386,7 @@ class TestWriteConfig:
             "timeout_sec",
             "started_at",
             "agent_env",
+            "scenes",
         }
         assert expected_keys.issubset(data.keys()), (
             f"missing keys: {expected_keys - data.keys()}"
@@ -395,6 +396,69 @@ class TestWriteConfig:
         assert data["environment"] == "docker"
         assert data["sandbox_setup_timeout"] == 33
         assert data["timeout_sec"] == 300
+        assert data["scenes"] == []
+
+    def test_config_json_includes_scene_role_metadata(self, tmp_path):
+        """Multi-role scene metadata is recorded without leaking env values."""
+        from benchflow import Role, Scene, Turn
+
+        scene = Scene(
+            name="code-review",
+            roles=[
+                Role(
+                    "coder",
+                    "gemini",
+                    "flash",
+                    env={"ROLE_TOKEN": "role-secret-value"},
+                    timeout_sec=12,
+                    idle_timeout_sec=3,
+                    skills_dir="/role-skills",
+                    capabilities=["tool-use"],
+                )
+            ],
+            turns=[Turn("coder", "solve it")],
+            skills_dir="/scene-skills",
+            parallel_group="pair",
+        )
+        self._write(
+            tmp_path,
+            task_path=Path("/tasks/foo"),
+            agent="gemini",
+            model="flash",
+            environment="docker",
+            skills_dir=None,
+            sandbox_user="agent",
+            context_root=None,
+            timeout=300,
+            started_at=datetime(2026, 4, 8, 12, 0),
+            agent_env={},
+            scenes=[scene],
+        )
+
+        text = (tmp_path / "config.json").read_text()
+        data = json.loads(text)
+
+        assert data["scenes"] == [
+            {
+                "name": "code-review",
+                "skills_dir": "/scene-skills",
+                "parallel_group": "pair",
+                "roles": [
+                    {
+                        "name": "coder",
+                        "agent": "gemini",
+                        "model": "flash",
+                        "timeout_sec": 12,
+                        "idle_timeout_sec": 3,
+                        "skills_dir": "/role-skills",
+                        "capabilities": ["tool-use"],
+                        "env_keys": ["ROLE_TOKEN"],
+                    }
+                ],
+                "turns": [{"role": "coder", "has_prompt": True}],
+            }
+        ]
+        assert "role-secret-value" not in text
 
     def test_secrets_filtered(self, tmp_path):
         """Keys containing KEY/TOKEN/SECRET not in config.json agent_env."""
@@ -451,7 +515,7 @@ class TestRunWiring:
             )
             return trial
 
-        monkeypatch.setattr("benchflow.rollout.Trial.create", fake_create)
+        monkeypatch.setattr("benchflow.rollout.Rollout.create", fake_create)
 
         result = await SDK().run(
             task_path=tmp_path,
@@ -469,12 +533,12 @@ class TestRunWiring:
 class TestBuildResult:
     """Tests for SDK._build_result — builds RunResult and writes output files."""
 
-    def _build(self, trial_dir, **kwargs):
+    def _build(self, rollout_dir, **kwargs):
         from benchflow.sdk import SDK
 
         defaults = dict(
             task_name="my-task",
-            trial_name="my-trial",
+            rollout_name="my-trial",
             agent="claude-agent-acp",
             agent_name="Claude",
             model="claude-haiku-4-5-20251001",
@@ -489,7 +553,7 @@ class TestBuildResult:
             timing={"agent_setup": 1.5, "agent_execution": 10.2},
         )
         defaults.update(kwargs)
-        return SDK._build_result(trial_dir, **defaults)
+        return SDK._build_result(rollout_dir, **defaults)
 
     def test_result_json_written(self, tmp_path):
         self._build(tmp_path)
@@ -505,6 +569,38 @@ class TestBuildResult:
         assert "started_at" in data
         assert "finished_at" in data
         assert data["partial_trajectory"] is False
+        assert data["scenes"] == []
+
+    def test_result_json_includes_scene_role_metadata(self, tmp_path):
+        """Result artifacts retain scene/role metadata for trajectory review."""
+        from benchflow import Role, Scene, Turn
+
+        scene = Scene(
+            name="review",
+            roles=[
+                Role(
+                    "reviewer",
+                    "claude-agent-acp",
+                    "haiku",
+                    env={"ANTHROPIC_API_KEY": "role-secret-value"},
+                    timeout_sec=45,
+                    idle_timeout_sec=6,
+                )
+            ],
+            turns=[Turn("reviewer")],
+        )
+
+        self._build(tmp_path, scenes=[scene])
+        text = (tmp_path / "result.json").read_text()
+        data = json.loads(text)
+
+        assert data["scenes"][0]["name"] == "review"
+        assert data["scenes"][0]["roles"][0]["name"] == "reviewer"
+        assert data["scenes"][0]["roles"][0]["timeout_sec"] == 45
+        assert data["scenes"][0]["roles"][0]["idle_timeout_sec"] == 6
+        assert data["scenes"][0]["roles"][0]["env_keys"] == ["ANTHROPIC_API_KEY"]
+        assert data["scenes"][0]["turns"] == [{"role": "reviewer", "has_prompt": False}]
+        assert "role-secret-value" not in text
 
     def test_timing_json_written(self, tmp_path):
         self._build(tmp_path)

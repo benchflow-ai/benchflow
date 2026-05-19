@@ -5,19 +5,19 @@ from pathlib import Path
 
 import pytest
 
-from benchflow._scene import MailboxTransport, Message, Role, Scene
+from benchflow.scenes import MailboxTransport, Message, Scene, SceneRole
 
 
 @pytest.fixture
-def two_roles() -> dict[str, Role]:
+def two_roles() -> dict[str, SceneRole]:
     return {
-        "coder": Role(
+        "coder": SceneRole(
             name="coder",
             agent="claude-agent-acp",
             model="claude-haiku-4-5-20251001",
             instruction="You are a coder. Write code and notify the reviewer.",
         ),
-        "reviewer": Role(
+        "reviewer": SceneRole(
             name="reviewer",
             agent="claude-agent-acp",
             model="claude-haiku-4-5-20251001",
@@ -27,12 +27,12 @@ def two_roles() -> dict[str, Role]:
 
 
 def test_scene_requires_two_roles() -> None:
-    r = Role(name="solo", agent="x", model="y", instruction="z")
+    r = SceneRole(name="solo", agent="x", model="y", instruction="z")
     with pytest.raises(ValueError, match="exactly 2 roles"):
         Scene(roles={"solo": r})
 
 
-def test_scene_init(two_roles: dict[str, Role]) -> None:
+def test_scene_init(two_roles: dict[str, SceneRole]) -> None:
     scene = Scene(roles=two_roles, max_rounds=5)
     assert scene.role_names == ["coder", "reviewer"]
     assert scene.max_rounds == 5
@@ -40,13 +40,13 @@ def test_scene_init(two_roles: dict[str, Role]) -> None:
     assert scene.trajectory == []
 
 
-def test_next_active_role(two_roles: dict[str, Role]) -> None:
+def test_next_active_role(two_roles: dict[str, SceneRole]) -> None:
     scene = Scene(roles=two_roles)
     assert scene.next_active_role("coder") == "reviewer"
     assert scene.next_active_role("reviewer") == "coder"
 
 
-async def test_send_message(two_roles: dict[str, Role]) -> None:
+async def test_send_message(two_roles: dict[str, SceneRole]) -> None:
     scene = Scene(roles=two_roles, max_rounds=10)
     result = await scene.send_message("coder", "reviewer", "please review")
     assert "delivered" in result
@@ -58,14 +58,14 @@ async def test_send_message(two_roles: dict[str, Role]) -> None:
     assert scene.trajectory[0].kind == "direct"
 
 
-async def test_send_to_unknown_recipient(two_roles: dict[str, Role]) -> None:
+async def test_send_to_unknown_recipient(two_roles: dict[str, SceneRole]) -> None:
     scene = Scene(roles=two_roles)
     result = await scene.send_message("coder", "nobody", "hi")
     assert "Error" in result
     assert len(scene.trajectory) == 0
 
 
-async def test_round_counting(two_roles: dict[str, Role]) -> None:
+async def test_round_counting(two_roles: dict[str, SceneRole]) -> None:
     scene = Scene(roles=two_roles, max_rounds=3)
     await scene.send_message("coder", "reviewer", "msg1")
     await scene.send_message("reviewer", "coder", "msg2")
@@ -74,7 +74,7 @@ async def test_round_counting(two_roles: dict[str, Role]) -> None:
     assert scene.is_done
 
 
-async def test_end_scene(two_roles: dict[str, Role]) -> None:
+async def test_end_scene(two_roles: dict[str, SceneRole]) -> None:
     scene = Scene(roles=two_roles)
     assert not scene.is_done
     await scene.end_scene("reviewer", reward=1.0)
@@ -97,7 +97,7 @@ async def test_mailbox_transport() -> None:
     assert empty is None
 
 
-async def test_build_prompt_for_role(two_roles: dict[str, Role]) -> None:
+async def test_build_prompt_for_role(two_roles: dict[str, SceneRole]) -> None:
     scene = Scene(roles=two_roles)
     inbox = [
         Message(
@@ -148,7 +148,7 @@ class FakeExecResult:
         self.return_code = return_code
 
 
-async def test_scene_run_two_rounds(two_roles: dict[str, Role]) -> None:
+async def test_scene_run_two_rounds(two_roles: dict[str, SceneRole]) -> None:
     env = FakeEnv()
     scene = Scene(roles=two_roles, max_rounds=4)
     call_count = 0
@@ -170,7 +170,7 @@ async def test_scene_run_two_rounds(two_roles: dict[str, Role]) -> None:
     assert trajectory[1].recipient == "coder"
 
 
-async def test_scene_run_stops_when_no_message(two_roles: dict[str, Role]) -> None:
+async def test_scene_run_stops_when_no_message(two_roles: dict[str, SceneRole]) -> None:
     env = FakeEnv()
     scene = Scene(roles=two_roles, max_rounds=10)
 
@@ -184,7 +184,7 @@ async def test_scene_run_stops_when_no_message(two_roles: dict[str, Role]) -> No
 
 
 @pytest.mark.asyncio
-async def test_save_trajectory(two_roles: dict[str, Role], tmp_path: Path) -> None:
+async def test_save_trajectory(two_roles: dict[str, SceneRole], tmp_path: Path) -> None:
     scene = Scene(roles=two_roles)
     await scene.send_message("coder", "reviewer", "check this")
     await scene.send_message("reviewer", "coder", "approved")

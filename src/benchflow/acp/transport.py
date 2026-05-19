@@ -6,7 +6,7 @@ import logging
 from abc import ABC, abstractmethod
 from typing import Any
 
-from benchflow.process import drain_oversized_line
+from benchflow.sandbox.process import drain_oversized_line
 
 logger = logging.getLogger(__name__)
 

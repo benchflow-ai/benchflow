@@ -11,6 +11,7 @@ custom field mappings.
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -18,10 +19,14 @@ if TYPE_CHECKING:
     from benchflow.rewards.protocol import VerifyResult
 
 
+def _json_safe_float(value: float) -> float:
+    return value if math.isfinite(value) else 0.0
+
+
 def _event_to_dict(event: RewardEvent) -> dict[str, Any]:
     return {
         "type": event.type,
-        "reward": event.reward,
+        "reward": _json_safe_float(event.reward),
         "source": event.source,
         "step": event.step,
         "timestamp": event.ts,
@@ -47,14 +52,29 @@ class ORSAdapter:
                 },
             }
         """
+        reward_is_valid = math.isfinite(result.reward) and 0.0 <= result.reward <= 1.0
+        metadata_error = result.error
+        items = {name: _json_safe_float(score) for name, score in result.items.items()}
+        metadata: dict[str, Any] = {
+            "items": items,
+            "events": [_event_to_dict(e) for e in result.events],
+            "error": metadata_error,
+        }
+        if not reward_is_valid:
+            metadata["raw_reward"] = repr(result.reward)
+            metadata["error"] = metadata_error or f"invalid reward: {result.reward!r}"
+        raw_invalid_items = {
+            name: repr(score)
+            for name, score in result.items.items()
+            if not math.isfinite(score)
+        }
+        if raw_invalid_items:
+            metadata["raw_items"] = raw_invalid_items
+
         return {
-            "reward": result.reward,
-            "is_valid": result.error is None,
-            "metadata": {
-                "items": result.items,
-                "events": [_event_to_dict(e) for e in result.events],
-                "error": result.error,
-            },
+            "reward": result.reward if reward_is_valid else 0.0,
+            "is_valid": result.error is None and reward_is_valid,
+            "metadata": metadata,
         }
 
     @staticmethod

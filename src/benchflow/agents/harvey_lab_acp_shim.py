@@ -30,6 +30,82 @@ from pathlib import Path
 _DIAG_TRUNCATE = 2000
 _TOOL_RESULT_TRUNCATE = 1000
 _HARVEY_LABS_ROOT = Path(os.environ.get("HARVEY_LABS_ROOT", "/opt/harvey-labs"))
+_PARSE_DOC_SCRIPT = r"""#!/usr/bin/env python3
+from __future__ import annotations
+
+import subprocess
+import sys
+
+import pandas as pd
+import pdfplumber
+from markitdown import MarkItDown
+
+
+def parse_docx(path: str) -> str:
+    result = subprocess.run(
+        ["pandoc", path, "-t", "markdown", "--wrap=none"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=30,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"pandoc failed: {result.stderr.strip()}")
+    return result.stdout
+
+
+def parse_pdf(path: str) -> str:
+    parts: list[str] = []
+    with pdfplumber.open(path) as pdf:
+        for page in pdf.pages:
+            text = page.extract_text()
+            if text:
+                parts.append(text)
+            for table in page.extract_tables():
+                for row in table:
+                    parts.append("\t".join(cell if cell else "" for cell in row))
+                parts.append("")
+    return "\n".join(parts)
+
+
+def parse_pptx(path: str) -> str:
+    return MarkItDown().convert(path).text_content
+
+
+def parse_xlsx(path: str) -> str:
+    sheets = pd.read_excel(path, sheet_name=None)
+    parts: list[str] = []
+    for name, df in sheets.items():
+        parts.append(f"=== Sheet: {name} ===")
+        parts.append(df.to_string(index=False))
+    return "\n".join(parts)
+
+
+PARSERS = {
+    "docx": parse_docx,
+    "pdf": parse_pdf,
+    "pptx": parse_pptx,
+    "xlsx": parse_xlsx,
+}
+
+
+def main() -> int:
+    if len(sys.argv) != 3 or sys.argv[1] not in PARSERS:
+        print(f"usage: {sys.argv[0]} {{{'|'.join(PARSERS)}}} <path>", file=sys.stderr)
+        return 2
+    fmt, path = sys.argv[1], sys.argv[2]
+    try:
+        sys.stdout.write(PARSERS[fmt](path))
+        return 0
+    except Exception as e:
+        print(f"{type(e).__name__}: {e}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+"""
 
 
 # ── ACP stdio I/O ─────────────────────────────────────────────────────────────
@@ -118,9 +194,21 @@ class DirectSandbox:
             return self.workspace_dir / rel if rel else self.workspace_dir
         raise ValueError(f"Path outside sandbox: {sandbox_path}")
 
+    def _rewrite_command_paths(self, command: str) -> str:
+        """Map Harvey sandbox absolute paths inside shell commands."""
+        replacements = [
+            (self.DOCUMENTS_PATH, str(self.documents_dir)),
+            (self.OUTPUT_PATH, str(self.output_dir)),
+            (self.WORKSPACE_PATH, str(self.workspace_dir)),
+        ]
+        for sandbox_prefix, host_prefix in replacements:
+            command = command.replace(sandbox_prefix, host_prefix)
+        return command
+
     def exec(self, command: str, timeout: int | None = None) -> "ExecResult":
         """Run a shell command in the workspace directory."""
         timeout = timeout if timeout is not None else self.default_timeout
+        command = self._rewrite_command_paths(command)
         env = {
             **os.environ,
             "WORKSPACE_DIR": str(self.workspace_dir),
@@ -254,6 +342,22 @@ def _patch_sandbox_module() -> None:
     sys.modules["sandbox.sandbox"] = inner
 
 
+def _install_parse_doc_helper() -> None:
+    """Install Harvey's in-sandbox document parser for the read tool."""
+    helper_dir = Path(
+        os.environ.get("BENCHFLOW_HARVEY_TOOLS_DIR", "/tmp/benchflow-harvey-tools")
+    )
+    helper_dir.mkdir(parents=True, exist_ok=True)
+    helper = helper_dir / "parse-doc"
+    if not helper.exists() or helper.read_text(encoding="utf-8") != _PARSE_DOC_SCRIPT:
+        helper.write_text(_PARSE_DOC_SCRIPT, encoding="utf-8")
+        helper.chmod(0o755)
+    path = os.environ.get("PATH", "")
+    helper_str = str(helper_dir)
+    if helper_str not in path.split(":"):
+        os.environ["PATH"] = f"{helper_str}:{path}" if path else helper_str
+
+
 def _create_adapter(
     model: str, temperature: float = 0.0, reasoning_effort: str | None = None
 ):
@@ -305,6 +409,7 @@ def _run_harvey_lab_agent(
     # Monkey-patch sandbox module so Harvey LAB's tools.py imports our
     # DirectSandbox instead of the real Podman-backed one.
     _patch_sandbox_module()
+    _install_parse_doc_helper()
 
     tools_mod = importlib.import_module("harness.tools")
     ToolExecutor = tools_mod.ToolExecutor
@@ -404,6 +509,7 @@ def _run_harvey_lab_agent(
         messages.extend(result_messages)
 
     elapsed = time.time() - start_time
+    mirrored_outputs = _mirror_workspace_outputs(workspace_dir, output_dir)
 
     return {
         "turn_count": turn_count,
@@ -412,7 +518,38 @@ def _run_harvey_lab_agent(
         "wall_clock_seconds": round(elapsed, 2),
         "tool_metrics": tool_executor.get_metrics(),
         "tool_call_count": tool_call_counter,
+        "mirrored_output_count": mirrored_outputs,
     }
+
+
+def _mirror_workspace_outputs(workspace_dir: Path, output_dir: Path) -> int:
+    """Copy agent-created workspace files into Harvey's output directory.
+
+    Harvey LAB tools expose both `/workspace` and `/workspace/output` as
+    writable. BenchFlow's converted verifier checks `/app/output`, so root-level
+    workspace deliverables need to be collected there before verification.
+    """
+    ignored_roots = {"documents", "output", "skills"}
+    ignored_files = {"rubric.json"}
+    mirrored = 0
+    output_dir.mkdir(parents=True, exist_ok=True)
+    for source in sorted(workspace_dir.rglob("*")):
+        if not source.is_file() or source.is_symlink():
+            continue
+        rel = source.relative_to(workspace_dir)
+        if not rel.parts or rel.parts[0] in ignored_roots:
+            continue
+        if len(rel.parts) == 1 and rel.name in ignored_files:
+            continue
+        if any(part.startswith(".") for part in rel.parts):
+            continue
+        dest = output_dir / rel
+        if dest.exists():
+            continue
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, dest)
+        mirrored += 1
+    return mirrored
 
 
 # ── ACP notification helpers ──────────────────────────────────────────────────
@@ -562,7 +699,11 @@ def main():
 
             output_dir = app_dir / "output"
             output_dir.mkdir(parents=True, exist_ok=True)
-            workspace_dir = app_dir / "workspace"
+            # BenchFlow-converted Harvey tasks verify deliverables in /app,
+            # while the upstream Harvey tools address that same area as
+            # /workspace. Point the shim workspace at the task root so
+            # relative tool commands and verifier expectations agree.
+            workspace_dir = app_dir
             workspace_dir.mkdir(parents=True, exist_ok=True)
 
             stop_reason = "end_turn"
@@ -579,7 +720,8 @@ def main():
                     session_id,
                     f"[Harvey LAB agent completed: {result['turn_count']} turns, "
                     f"{result['tool_call_count']} tool calls, "
-                    f"{result['wall_clock_seconds']}s]",
+                    f"{result['wall_clock_seconds']}s, "
+                    f"{result['mirrored_output_count']} mirrored output(s)]",
                 )
             except Exception as e:
                 _emit_text(session_id, f"[Harvey LAB agent error: {e}]")

@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from benchflow._agent_setup import apply_web_tool_policy, deploy_skills, install_agent
+from benchflow.agents.install import apply_web_tool_policy, deploy_skills, install_agent
 from benchflow.agents.registry import AgentConfig
 from benchflow.models import AgentInstallError
 

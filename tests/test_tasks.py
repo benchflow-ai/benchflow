@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from benchflow.tasks import check_task, init_task
+from benchflow._utils.task_authoring import check_task, init_task
 
 
 class TestCheckTask:
