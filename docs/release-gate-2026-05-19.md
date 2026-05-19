@@ -34,12 +34,29 @@ branch update before GitHub will mark them mergeable again.
 
 | PR | Area | Remote head | GitHub state | Local resolved head |
 |---|---|---|---|---|
-| #279 | HILBench | `d626d95bc304dd8256015d2d465aac55cd92bf31` | dirty/conflicting after #294; prior `test` success | `4c9e1c0` |
+| #279 | HILBench | `d626d95bc304dd8256015d2d465aac55cd92bf31` | dirty/conflicting after #294; prior `test` success | `db309d1` |
 | #280 | OpaqueToolsBench | `358fcfacd46505beb10f03f7d6f42de6c37073a4` | mergeable clean, `test` success | no update needed |
-| #283 | CLBench | `1415a9c04a04c1bfe75a5fb0c4104003482db9fe` | dirty/conflicting after #294; prior `test` success | `fe25d54` |
+| #283 | CLBench | `1415a9c04a04c1bfe75a5fb0c4104003482db9fe` | dirty/conflicting after #294; prior `test` success | `ee1c6ed` |
 | #290 | Hosted env source adapter | `41322da7d7b124695fad1b03ff9f06242b06a194` | dirty/conflicting after #294; prior `test` success, Cursor Bugbot neutral | `bf1ba2b` |
 | #291 | Pi ACP provider/model fix | `ba32d0b3d1dbf2839e834fcf64cb8aee96f8f999` | dirty/conflicting after #294; Devin Review success | `18fc9be` |
 | #292 | Release gate evidence | `bde9fa66e9a66c68e8b5eea0ead5fefddc934f3a` | dirty/conflicting after #294; remote base still `refactor/v0.4` until retarget succeeds | `handoff/pr292-release-gate-v04-main` |
+
+## Integrated Release Candidate
+
+The local branch `handoff/trial-ready-release-integrated` merges the current
+`origin/main` tree with #279, #280, #283, #290, #291, and #292 plus two
+integration fixups discovered during the local merge proof:
+
+- preserve executable bits on existing shell fixtures touched by #279/#283;
+- reconcile the hosted-env CLI additions with release-gate CLI error/help
+  behavior.
+
+Validation on that integrated branch:
+
+- `uv run --extra dev python -m pytest tests/`: 1164 passed, 14 skipped, 1 deselected.
+- `uv run --extra dev ruff check .`: passed.
+- `uv run --extra dev ty check src/`: passed.
+- `uv run python tests/integration/run_suite.py --profile full-release --dry-run --fail-on-todo`: passed.
 
 ## Commands
 
