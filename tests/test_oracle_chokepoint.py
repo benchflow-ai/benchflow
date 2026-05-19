@@ -19,11 +19,18 @@ The classes below pin each layer at the right altitude:
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from typer.testing import CliRunner
+
+ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+
+
+def _plain_cli_output(output: str) -> str:
+    return ANSI_ESCAPE_RE.sub("", output)
 
 
 class TestEvalCreateRouting:
@@ -78,7 +85,7 @@ class TestEvalCreateRouting:
 
         result = CliRunner().invoke(app, ["tasks", "generate", "--help"])
         assert result.exit_code == 0
-        assert "--from-local" in result.stdout
+        assert "--from-local" in _plain_cli_output(result.stdout)
 
     def test_eval_create_normalizes_agent_alias(self, tmp_path: Path):
         """Guards ENG-86: eval create normalizes aliases before launch."""
