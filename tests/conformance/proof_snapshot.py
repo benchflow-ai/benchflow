@@ -15,10 +15,9 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-from harbor.models.task.task import Task
-
-from benchflow._env_setup import _create_environment
-from benchflow._snapshot import list_snapshots, restore, snapshot
+from benchflow.sandbox.setup import _create_environment
+from benchflow.sandbox.snapshot import list_snapshots, restore, snapshot
+from benchflow.task import Task
 
 TASK_PATH = Path(__file__).parent / "acp_smoke"
 
@@ -26,11 +25,11 @@ TASK_PATH = Path(__file__).parent / "acp_smoke"
 async def main() -> None:
     task = Task(TASK_PATH)
     env = _create_environment(
-        environment_type="daytona",
+        sandbox_type="daytona",
         task=task,
         task_path=TASK_PATH,
-        trial_name="snapshot-proof",
-        trial_paths=None,
+        rollout_name="snapshot-proof",
+        rollout_paths=None,
     )
     try:
         await env.start(force_build=False)

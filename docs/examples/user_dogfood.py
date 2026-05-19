@@ -12,9 +12,10 @@ Usage:
 import asyncio
 import logging
 
-import benchflow as bf
-from benchflow.trial import Scene, TrialConfig
 from benchflow.user import FunctionUser, RoundResult
+
+import benchflow as bf
+from benchflow.rollout import RolloutConfig, Scene
 
 logging.basicConfig(level=logging.INFO, format="%(name)s %(message)s")
 
@@ -53,11 +54,11 @@ def progressive_user(
 
 
 async def main():
-    from benchflow.task_download import resolve_source
+    from benchflow._utils.benchmark_repos import resolve_source
 
     task_path = resolve_source("benchflow-ai/skillsbench", path="tasks/edit-pdf")
 
-    config = TrialConfig(
+    config = RolloutConfig(
         task_path=task_path,
         scenes=[Scene.single(agent="gemini", model="gemini-2.5-flash")],
         environment="daytona",
@@ -65,7 +66,7 @@ async def main():
         max_user_rounds=4,
     )
 
-    print("Running progressive-disclosure trial on edit-pdf...")
+    print("Running progressive-disclosure rollout on edit-pdf...")
     print("  Agent: gemini/flash")
     print(f"  Max rounds: {config.max_user_rounds}")
     print(f"  Environment: {config.environment}")

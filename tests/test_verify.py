@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from benchflow._scoring import (
+from benchflow._utils.scoring import (
     VERIFIER_FAILED,
     VERIFIER_TIMEOUT,
     classify_verifier_error,
@@ -107,7 +107,13 @@ class TestSdkVerify:
         mock_v = MagicMock()
         mock_v.verify = lambda: asyncio.sleep(10)
         timing = {}
-        with patch("harbor.verifier.verifier.Verifier", return_value=mock_v):
+        with (
+            patch("benchflow.task.Verifier", return_value=mock_v),
+            patch(
+                "benchflow.sandbox.lockdown.harden_before_verify",
+                new_callable=AsyncMock,
+            ),
+        ):
             rewards, verifier_error = await sdk._verify(env, task, tp, timing)
         assert rewards is None
         assert "timed out" in verifier_error
@@ -119,7 +125,13 @@ class TestSdkVerify:
         mock_v = MagicMock()
         mock_v.verify = AsyncMock(side_effect=RuntimeError("kaboom"))
         timing = {}
-        with patch("harbor.verifier.verifier.Verifier", return_value=mock_v):
+        with (
+            patch("benchflow.task.Verifier", return_value=mock_v),
+            patch(
+                "benchflow.sandbox.lockdown.harden_before_verify",
+                new_callable=AsyncMock,
+            ),
+        ):
             rewards, verifier_error = await sdk._verify(env, task, tp, timing)
         assert rewards is None
         assert "crashed" in verifier_error and "kaboom" in verifier_error
@@ -132,14 +144,20 @@ class TestSdkVerify:
         mock_v = MagicMock()
         mock_v.verify = AsyncMock(return_value=mock_result)
         timing = {}
-        with patch("harbor.verifier.verifier.Verifier", return_value=mock_v):
+        with (
+            patch("benchflow.task.Verifier", return_value=mock_v),
+            patch(
+                "benchflow.sandbox.lockdown.harden_before_verify",
+                new_callable=AsyncMock,
+            ),
+        ):
             rewards, verifier_error = await sdk._verify(env, task, tp, timing)
         assert rewards == {"reward": 1.0}
         assert verifier_error is None
 
 
 # ---------------------------------------------------------------------------
-# Job: retry, resume, bounded log, threshold warning
+# Evaluation: retry, resume, bounded log, threshold warning
 # ---------------------------------------------------------------------------
 
 
@@ -188,9 +206,11 @@ class TestResume:
                 }
             )
         )
-        from benchflow.job import Job, JobConfig
+        from benchflow.evaluation import Evaluation, EvaluationConfig
 
-        job = Job(tasks_dir=tmp_path, jobs_dir=tmp_path, config=JobConfig())
+        job = Evaluation(
+            tasks_dir=tmp_path, jobs_dir=tmp_path, config=EvaluationConfig()
+        )
         with caplog.at_level(logging.INFO):
             completed = job._get_completed_tasks()
         assert "task1" in completed
@@ -209,14 +229,16 @@ class TestResume:
                 }
             )
         )
-        from benchflow.job import Job, JobConfig
+        from benchflow.evaluation import Evaluation, EvaluationConfig
 
-        job = Job(tasks_dir=tmp_path, jobs_dir=tmp_path, config=JobConfig())
+        job = Evaluation(
+            tasks_dir=tmp_path, jobs_dir=tmp_path, config=EvaluationConfig()
+        )
         assert "task2" not in job._get_completed_tasks()
 
 
 class TestJobRunLogs:
-    """Tests that exercise actual Job.run() and check log output."""
+    """Tests that exercise actual Evaluation.run() and check log output."""
 
     @pytest.mark.asyncio
     async def test_bounded_log_shows_verifier_error(self, job_factory, caplog):
@@ -293,16 +315,16 @@ class TestJobRunLogs:
 
 
 # ---------------------------------------------------------------------------
-# JobResult invariant
+# EvaluationResult invariant
 # ---------------------------------------------------------------------------
 
 
 def test_total_invariant():
-    from benchflow.job import JobConfig, JobResult
+    from benchflow.evaluation import EvaluationConfig, EvaluationResult
 
-    jr = JobResult(
+    jr = EvaluationResult(
         job_name="t",
-        config=JobConfig(),
+        config=EvaluationConfig(),
         total=4,
         passed=1,
         failed=1,

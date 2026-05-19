@@ -135,6 +135,7 @@ class TestSkillEvalIntegration:
             assert skill_dst.exists()
             assert (skill_dst / "SKILL.md").exists()
             assert (skill_dst / "scripts" / "check_claim.py").exists()
+            assert 'skills_dir = "/skills"' in (task_dir / "task.toml").read_text()
 
         cleanup_tasks([with_dir])
         assert not with_dir.exists()
@@ -191,6 +192,8 @@ class TestSkillEvalIntegration:
         dockerfile = (tasks[0] / "environment" / "Dockerfile").read_text()
         assert "pip install" in dockerfile
         assert "anthropic" in dockerfile
+        assert "COPY skills/ /skills/" in dockerfile
+        assert "/home/user" not in dockerfile
 
         cleanup_tasks([out])
 

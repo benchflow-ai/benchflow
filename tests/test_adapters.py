@@ -11,6 +11,8 @@ Covers:
 
 from __future__ import annotations
 
+import json
+import math
 from pathlib import Path
 
 from benchflow._types import Role, Scene, Turn
@@ -127,6 +129,23 @@ class TestORSAdapter:
 
         assert ors["is_valid"] is False
         assert ors["metadata"]["error"] == "boom"
+
+    def test_invalid_reward_values_are_not_valid(self) -> None:
+        """Guards ENG-91 P1 dogfood ORS reward-validity regression."""
+        for reward in (math.nan, 1.7, -0.2):
+            ors = to_ors_reward(
+                VerifyResult(
+                    reward=reward,
+                    items={"score": reward},
+                    events=[],
+                    error=None,
+                )
+            )
+
+            assert ors["is_valid"] is False
+            assert ors["reward"] == 0.0
+            assert "invalid reward" in ors["metadata"]["error"]
+            json.dumps(ors, allow_nan=False)
 
     def test_reward_event_to_ors(self) -> None:
         event = RewardEvent(

@@ -81,10 +81,10 @@ uv run bench eval create \
   --jobs-dir jobs/smoke-test/harvey-harness
 
 # Or with YAML config (uses Gemini as BenchFlow agent)
-python -c "import asyncio; from benchflow.job import Job; asyncio.run(Job.from_yaml('benchmarks/harvey-lab/harvey-lab-gemini-flash-lite.yaml').run())"
+python -c "import asyncio; from benchflow.evaluation import Evaluation; asyncio.run(Evaluation.from_yaml('benchmarks/harvey-lab/harvey-lab-gemini-flash-lite.yaml').run())"
 
 # Parity mode: uses the original Harvey LAB harness as the agent
-python -c "import asyncio; from benchflow.job import Job; asyncio.run(Job.from_yaml('benchmarks/harvey-lab/harvey-lab-harness-parity.yaml').run())"
+python -c "import asyncio; from benchflow.evaluation import Evaluation; asyncio.run(Evaluation.from_yaml('benchmarks/harvey-lab/harvey-lab-harness-parity.yaml').run())"
 ```
 
 ### Run parity tests

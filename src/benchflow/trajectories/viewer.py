@@ -134,7 +134,7 @@ def render_turn(events: list[dict], turn_number: int, prompt: str = "") -> str:
     return "\n".join(blocks)
 
 
-def render_trial(trial_dir: Path, prompts: list[str] | None = None) -> str:
+def render_rollout(rollout_dir: Path, prompts: list[str] | None = None) -> str:
     """Render a full trial (multiple turns) as HTML.
 
     Auto-detects format:
@@ -143,15 +143,15 @@ def render_trial(trial_dir: Path, prompts: list[str] | None = None) -> str:
     - prompts.json → used for prompt labels if available
     """
     # Try loading prompts from prompts.json if not provided
-    if prompts is None and (trial_dir / "prompts.json").exists():
-        prompts = json.loads((trial_dir / "prompts.json").read_text())
+    if prompts is None and (rollout_dir / "prompts.json").exists():
+        prompts = json.loads((rollout_dir / "prompts.json").read_text())
 
     # Auto-detect format
-    turn_files = sorted(trial_dir.glob("turn*.txt"))
-    acp_traj = trial_dir / "trajectory" / "acp_trajectory.jsonl"
+    turn_files = sorted(rollout_dir.glob("turn*.txt"))
+    acp_traj = rollout_dir / "trajectory" / "acp_trajectory.jsonl"
 
     if not turn_files and acp_traj.exists():
-        return _render_acp_trajectory(trial_dir, acp_traj, prompts)
+        return _render_acp_trajectory(rollout_dir, acp_traj, prompts)
 
     if not turn_files:
         return "<p>No trajectory files found</p>"
@@ -201,7 +201,7 @@ def render_trial(trial_dir: Path, prompts: list[str] | None = None) -> str:
 <html>
 <head>
 <meta charset="utf-8">
-<title>benchflow — {trial_dir.name}</title>
+<title>benchflow — {rollout_dir.name}</title>
 <style>
 * {{ margin: 0; padding: 0; box-sizing: border-box; }}
 body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0d1117; color: #c9d1d9; padding: 20px; max-width: 960px; margin: 0 auto; }}
@@ -230,7 +230,7 @@ body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; 
 </head>
 <body>
 <div class="header">
-<h1>{html.escape(trial_dir.name)}</h1>
+<h1>{html.escape(rollout_dir.name)}</h1>
 <div class="meta">
 <span>model: {html.escape(model)}</span>
 <span>session: {html.escape(session_id[:16])}...</span>
@@ -245,7 +245,7 @@ body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; 
 
 
 def _render_acp_trajectory(
-    trial_dir: Path, acp_path: Path, prompts: list[str] | None
+    rollout_dir: Path, acp_path: Path, prompts: list[str] | None
 ) -> str:
     """Render an ACP trajectory JSONL file as HTML."""
     events = [
@@ -254,7 +254,7 @@ def _render_acp_trajectory(
 
     # Load result.json for metadata
     result_data = {}
-    result_path = trial_dir / "result.json"
+    result_path = rollout_dir / "result.json"
     if result_path.exists():
         result_data = json.loads(result_path.read_text())
 
@@ -320,7 +320,7 @@ def _render_acp_trajectory(
         )
 
     return f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>benchflow — {html.escape(trial_dir.name)}</title>
+<html><head><meta charset="utf-8"><title>benchflow — {html.escape(rollout_dir.name)}</title>
 <style>
 * {{ margin: 0; padding: 0; box-sizing: border-box; }}
 body {{ font-family: -apple-system, sans-serif; background: #0d1117; color: #c9d1d9; padding: 20px; max-width: 960px; margin: 0 auto; }}
@@ -340,7 +340,7 @@ body {{ font-family: -apple-system, sans-serif; background: #0d1117; color: #c9d
 .tool-name {{ background: #2d333b; color: #f0883e; padding: 2px 8px; border-radius: 4px; font-family: monospace; font-size: 13px; font-weight: 600; }}
 .metrics {{ font-size: 11px; color: #484f58; margin-top: 4px; }}
 </style></head><body>
-<div class="header"><h1>{html.escape(trial_dir.name)}</h1></div>
+<div class="header"><h1>{html.escape(rollout_dir.name)}</h1></div>
 {"".join(blocks)}
 </body></html>"""
 
@@ -349,16 +349,18 @@ def _join_with_divider(blocks: list[str]) -> str:
     return '<div class="turn-divider"></div>'.join(blocks)
 
 
-def serve(trial_path: str, port: int = 8888, prompts: list[str] | None = None) -> None:
+def serve(
+    rollout_path: str, port: int = 8888, prompts: list[str] | None = None
+) -> None:
     """Serve a trial directory as a web page."""
     from http.server import HTTPServer, SimpleHTTPRequestHandler
 
-    path = Path(trial_path)
+    path = Path(rollout_path)
     if not path.is_dir():
         print(f"Not a directory: {path}")
         sys.exit(1)
 
-    html_content = render_trial(path, prompts)
+    html_content = render_rollout(path, prompts)
     (path / "trajectory.html").write_text(html_content)
 
     print(f"Trajectory viewer: http://localhost:{port}")
@@ -384,7 +386,7 @@ def serve(trial_path: str, port: int = 8888, prompts: list[str] | None = None) -
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python -m benchflow.viewer <trial_dir> [port]")
+        print("Usage: python -m benchflow.viewer <rollout_dir> [port]")
         sys.exit(1)
     port = int(sys.argv[2]) if len(sys.argv) > 2 else 8888
     serve(sys.argv[1], port)

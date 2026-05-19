@@ -1,0 +1,89 @@
+import sys
+import types
+from types import SimpleNamespace
+from typing import ClassVar
+
+from typer.testing import CliRunner
+
+from benchflow.cli.main import app
+
+
+def _install_fake_daytona(monkeypatch, sandboxes):
+    class FakeDaytona:
+        instances: ClassVar[list] = []
+
+        def __init__(self):
+            self.deleted = []
+            self.__class__.instances.append(self)
+
+        def list(self, page=None, limit=None, labels=None):
+            _ = (limit, labels)
+            return SimpleNamespace(items=sandboxes if page == 1 else [])
+
+        def delete(self, sandbox, timeout=60):
+            _ = timeout
+            self.deleted.append(sandbox.id)
+
+    fake_daytona = types.ModuleType("daytona")
+    fake_daytona.Daytona = FakeDaytona
+    monkeypatch.setitem(sys.modules, "daytona", fake_daytona)
+    return FakeDaytona
+
+
+def test_environment_cleanup_dry_run_lists_old_daytona_sandboxes(monkeypatch):
+    sandboxes = [
+        SimpleNamespace(
+            id="old-sandbox",
+            state="started",
+            created_at="2025-01-01T00:00:00Z",
+        )
+    ]
+    fake_daytona = _install_fake_daytona(monkeypatch, sandboxes)
+
+    result = CliRunner().invoke(
+        app, ["environment", "cleanup", "--dry-run", "--max-age", "60"]
+    )
+
+    assert result.exit_code == 0
+    assert "old-sandbox" in result.output
+    assert "(delete)" in result.output
+    assert fake_daytona.instances[0].deleted == []
+
+
+def test_legacy_cleanup_delegates_to_daytona_cleanup(monkeypatch):
+    sandboxes = [
+        SimpleNamespace(
+            id="old-sandbox",
+            state="started",
+            created_at="2025-01-01T00:00:00Z",
+        )
+    ]
+    fake_daytona = _install_fake_daytona(monkeypatch, sandboxes)
+
+    result = CliRunner().invoke(app, ["cleanup", "--max-age", "60"])
+
+    assert result.exit_code == 0
+    assert "1 sandboxes deleted" in result.output
+    assert fake_daytona.instances[0].deleted == ["old-sandbox"]
+
+
+def test_environment_list_uses_daytona_import_compat(monkeypatch):
+    import anyio
+
+    monkeypatch.delattr(anyio, "AsyncContextManagerMixin", raising=False)
+    sandboxes = [
+        SimpleNamespace(
+            id="active-sandbox",
+            state="started",
+            created_at="2025-01-01T00:00:00Z",
+            target="benchflow",
+        )
+    ]
+    _install_fake_daytona(monkeypatch, sandboxes)
+
+    result = CliRunner().invoke(app, ["environment", "list"])
+
+    assert result.exit_code == 0
+    assert hasattr(anyio, "AsyncContextManagerMixin")
+    assert "active-sandb" in result.output
+    assert "1 sandbox(es)" in result.output

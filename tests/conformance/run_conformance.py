@@ -20,7 +20,7 @@ from pathlib import Path
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
 from benchflow.agents.registry import AGENTS
-from benchflow.job import Job, JobConfig
+from benchflow.evaluation import Evaluation, EvaluationConfig
 
 TASK_DIR = Path(__file__).parent
 RESULTS_FILE = Path(__file__).parent / "conformance-results.json"
@@ -84,12 +84,12 @@ def openai_model_preflight(model: str) -> str | None:
 
 async def run_one(agent_name: str) -> dict:
     model = AGENT_MODELS.get(agent_name, "claude-haiku-4-5-20251001")
-    config = JobConfig(
+    config = EvaluationConfig(
         agent=agent_name,
         model=model,
         environment="daytona",
     )
-    job = Job(
+    job = Evaluation(
         tasks_dir=TASK_DIR,
         jobs_dir=Path(f"/tmp/conformance-jobs/{agent_name}"),
         config=config,
