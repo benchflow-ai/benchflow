@@ -61,6 +61,28 @@ Validation on that integrated branch:
 - `uv run --extra dev ty check src/`: passed.
 - `uv run python tests/integration/run_suite.py --profile full-release --dry-run --fail-on-todo`: passed.
 
+## Merge Sequence
+
+The release PRs are individually mergeable against the current `main`, but the
+release should not be landed by blindly merging raw #292 after #279, #280,
+#283, #290, and #291. A local sequence simulation showed that order can expose a
+`src/benchflow/cli/main.py` conflict between the hosted-env CLI additions and
+the release-gate eval error-handling changes.
+
+Use the sequence-safe `handoff/trial-ready-release-integrated` proof for #292,
+then wait for the repository `test` check on the updated #292 head before
+merging. The guarded local helper documents this two-phase approval flow:
+
+```bash
+RUN_UPDATE_292=1 bash dogfood/2026-05-19-release-gate/remote-handoff/merge-release-prs-after-approval.sh
+# wait for #292 repository `test` success
+RUN_MERGE=1 bash dogfood/2026-05-19-release-gate/remote-handoff/merge-release-prs-after-approval.sh
+```
+
+Use GitHub merge commits for this release packet. If earlier PRs are
+squash-merged instead, refresh #292 again on the post-squash `main` before
+merging it.
+
 The packaging-only branch `handoff/release-1.0.0-rc-current` bumps
 `pyproject.toml` and the local package entry in `uv.lock` to `1.0.0`.
 `uv build` produced `dist/benchflow-1.0.0.tar.gz` and
