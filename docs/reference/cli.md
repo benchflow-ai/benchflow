@@ -30,7 +30,7 @@ accepts a single task directory.
 
 ```bash
 # From YAML config
-bench eval create --config benchmarks/skillsbench-claude-glm51.yaml
+bench eval create --config benchmarks/harvey-lab/harvey-lab-gemini-flash-lite.yaml
 
 # From remote repo
 bench eval create \
@@ -140,6 +140,15 @@ List active Daytona sandboxes.
 bench environment list
 ```
 
+### bench environment cleanup
+
+Clean up orphaned Daytona sandboxes. By default this deletes sandboxes older
+than 24 hours; use `--dry-run` to preview what would be deleted.
+
+```bash
+bench environment cleanup --dry-run --max-age 1440
+```
+
 ## YAML Config Format
 
 ### Batch config with skills and skill nudge
@@ -162,7 +171,7 @@ max_retries: 2
 ### Multi-scene (BYOS skill generation)
 
 Use the Python API for multi-scene experiments. `bench eval create --config` is for
-batch job configs; scene configs are loaded with `benchflow.trial_yaml` or built
+batch job configs; scene configs are loaded with `benchflow._utils.yaml_loader` or built
 directly in Python.
 
 ```yaml

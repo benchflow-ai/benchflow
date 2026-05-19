@@ -38,7 +38,7 @@ agent, and model:
 ```bash
 GEMINI_API_KEY=... bench eval create --config benchmarks/harvey-lab/harvey-lab-gemini-flash-lite.yaml
 GEMINI_API_KEY=... bench eval create --config benchmarks/programbench/programbench-gemini-flash-lite.yaml
-bench eval create --config benchmarks/skillsbench-claude-glm51.yaml
+bench eval create --config benchmarks/harvey-lab/harvey-lab-gemini-flash-lite.yaml
 ```
 
 The config handles everything — downloads/generates tasks, resolves the task path,
@@ -100,10 +100,10 @@ For programmatic use, custom pipelines, or integration with other tools:
 
 ```python
 import asyncio
-from benchflow.job import Job
+from benchflow.evaluation import Evaluation
 
 async def main():
-    job = Job.from_yaml("benchmarks/harvey-lab/harvey-lab-gemini-flash-lite.yaml")
+    job = Evaluation.from_yaml("benchmarks/harvey-lab/harvey-lab-gemini-flash-lite.yaml")
     result = await job.run()
     print(f"Score: {result.passed}/{result.total} ({result.score:.1%})")
 
@@ -115,7 +115,7 @@ For single-task runs:
 ```python
 import benchflow as bf
 from benchflow import RolloutConfig, Scene
-from benchflow.task_download import resolve_source
+from benchflow._utils.benchmark_repos import resolve_source
 
 task_path = resolve_source("benchflow-ai/skillsbench", path="tasks/edit-pdf")
 
@@ -237,6 +237,15 @@ Common choices:
 | OpenHands | `openhands` (alias: `oh`) | `LLM_API_KEY` |
 | Harvey LAB harness | `harvey-lab-harness` (alias: `harvey-lab`) | Provider key matching model |
 
+Any agent can also be run via [ACPX](https://acpx.sh/) by prefixing with `acpx/`:
+
+```bash
+bench eval create --tasks-dir tasks/edit-pdf --agent acpx/gemini --model gemini-3.1-flash-lite-preview --sandbox daytona
+```
+
+ACPX is a headless ACP client that adds persistent sessions and crash recovery.
+The underlying agent's install, env vars, credentials, and skill paths are all preserved.
+
 The **Harvey LAB harness** agent is special — it runs Harvey LAB's own agent loop
 (6 tools, system prompt) inside BenchFlow's sandbox. Use it for parity testing
 (same agent on both original and converted tasks).
@@ -322,7 +331,7 @@ Recorded parity results are in `parity_experiment.json` and `benchmark.yaml`.
 Job configs use the two-field `source` pattern to reference remote benchmark repos:
 
 ```yaml
-# benchmarks/skillsbench-claude-glm51.yaml — direct from remote repo
+# Example: SkillsBench config — direct from remote repo
 source:
   repo: benchflow-ai/skillsbench   # GitHub repo (org/repo)
   path: tasks                      # subpath within the repo

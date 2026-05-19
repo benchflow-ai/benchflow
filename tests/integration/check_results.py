@@ -29,14 +29,20 @@ INFRA_ERRORS = {"agent_install", "timeout", "pipe_closed", "sandbox_setup"}
 
 
 def load_results(agent_dir: Path) -> list[dict]:
-    """Load all result.json files from an agent's jobs directory."""
-    results = []
+    """Load the latest result.json per task from an agent's jobs directory."""
+    latest_by_task: dict[str, tuple[float, dict]] = {}
     for rfile in sorted(agent_dir.rglob("result.json")):
         try:
-            results.append(json.loads(rfile.read_text()))
+            result = json.loads(rfile.read_text())
         except (json.JSONDecodeError, OSError) as e:
             print(f"  WARN: bad result file {rfile}: {e}")
-    return results
+            continue
+        task_name = result.get("task_name") or rfile.parent.name.rsplit("__", 1)[0]
+        mtime = rfile.stat().st_mtime
+        previous = latest_by_task.get(task_name)
+        if previous is None or mtime > previous[0]:
+            latest_by_task[task_name] = (mtime, result)
+    return [result for _, result in latest_by_task.values()]
 
 
 def check_agent(agent_dir: Path) -> dict:
@@ -103,14 +109,28 @@ def check_agent(agent_dir: Path) -> dict:
     findings["passed"] = sum(
         1
         for r in results
-        if (r.get("rewards") or {}).get("reward", 0) > 0 and not r.get("error")
+        if (r.get("rewards") or {}).get("reward") == 1.0
+        and not r.get("error")
+        and not r.get("verifier_error")
     )
     findings["failed"] = sum(
         1
         for r in results
-        if (r.get("rewards") or {}).get("reward", 0) == 0 and not r.get("error")
+        if (r.get("rewards") or {}).get("reward") is not None
+        and (r.get("rewards") or {}).get("reward") != 1.0
+        and not r.get("error")
+        and not r.get("verifier_error")
     )
     findings["errored"] = sum(1 for r in results if r.get("error"))
+    findings["verifier_errored"] = sum(1 for r in results if r.get("verifier_error"))
+
+    if summary := findings.get("summary"):
+        for key in ("total", "passed", "failed", "errored", "verifier_errored"):
+            if key in summary and summary[key] != findings[key]:
+                findings["issues"].append(
+                    f"summary.json {key}={summary[key]} but results imply {findings[key]}"
+                )
+                findings["ok"] = False
 
     return findings
 

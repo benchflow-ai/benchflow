@@ -6,8 +6,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from benchflow import _provider_runtime as provider_runtime_mod
-from benchflow._provider_runtime import (
+from benchflow.providers import runtime as provider_runtime_mod
+from benchflow.providers.runtime import (
     ProviderRuntime,
     _bedrock_frontend_model,
     ensure_bedrock_proxy_runtime,

@@ -33,7 +33,7 @@ def mcp_reviewer_hook(
     async def _start_reviewer(env: Any) -> None:
         logger.info(f"Starting MCP reviewer server on port {port} (model={model})")
         await env.exec(
-            f"python -m benchflow.mcp.reviewer_server "
+            f"python -m benchflow.experimental.mcp.reviewer_server "
             f"--port {port} --model {model} --host {host} &",
             timeout_sec=10,
         )

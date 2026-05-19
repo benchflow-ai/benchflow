@@ -19,7 +19,7 @@ def _cmds(env):
 @pytest.mark.asyncio
 async def test_seed_verifier_workspace_locks_logs_parent():
     """/logs/ is chowned to root:root and chmod 755; the lock call runs as root."""
-    from benchflow._sandbox import _seed_verifier_workspace
+    from benchflow.sandbox.lockdown import _seed_verifier_workspace
 
     env = _make_env()
     await _seed_verifier_workspace(env)
@@ -49,7 +49,7 @@ async def test_seed_verifier_workspace_locks_logs_parent():
 @pytest.mark.asyncio
 async def test_seed_verifier_workspace_creates_testbed_verify():
     """/testbed_verify is wiped, seeded from workspace, chowned root, made world-readable; runs as root."""
-    from benchflow._sandbox import _seed_verifier_workspace
+    from benchflow.sandbox.lockdown import _seed_verifier_workspace
 
     env = _make_env()
     await _seed_verifier_workspace(env, workspace="/testbed")
@@ -88,7 +88,7 @@ async def test_seed_verifier_workspace_creates_testbed_verify():
 @pytest.mark.asyncio
 async def test_seed_verifier_workspace_seeds_from_workspace_param():
     """workspace param controls which directory is copied to /testbed_verify."""
-    from benchflow._sandbox import _seed_verifier_workspace
+    from benchflow.sandbox.lockdown import _seed_verifier_workspace
 
     env = _make_env()
     await _seed_verifier_workspace(env, workspace="/app")
@@ -107,14 +107,14 @@ async def test_seed_verifier_workspace_seeds_from_workspace_param():
 @pytest.mark.asyncio
 async def test_harden_restore_fallback_uses_shutil():
     """Fallback must use shutil not rm -rf — rm -rf crashes with EOVERFLOW on old LFS images."""
-    from benchflow._sandbox import harden_before_verify
+    from benchflow.sandbox.lockdown import harden_before_verify
 
     env = _make_env()
     task = MagicMock()
     task.config.verifier.env = {}
     with (
-        patch("benchflow._sandbox._restore_build_config", AsyncMock()),
-        patch("benchflow._sandbox._refresh_verifier_workspace", AsyncMock()),
+        patch("benchflow.sandbox.lockdown._restore_build_config", AsyncMock()),
+        patch("benchflow.sandbox.lockdown._refresh_verifier_workspace", AsyncMock()),
     ):
         await harden_before_verify(
             env, task, sandbox_user=None, workspace="/testbed", restore_workspace=True
@@ -149,11 +149,11 @@ def test_oracle_branch_setup_calls():
     """
     import inspect
 
-    from benchflow import trial as trial_mod
+    from benchflow import rollout as rollout_mod
 
-    source = inspect.getsource(trial_mod.Trial.install_agent)
+    source = inspect.getsource(rollout_mod.Rollout.install_agent)
     oracle_pos = source.find('agent == "oracle"')
-    assert oracle_pos != -1, "oracle branch not found in Trial.install_agent"
+    assert oracle_pos != -1, "oracle branch not found in Rollout.install_agent"
     oracle_block = source[oracle_pos:]
 
     assert "_seed_verifier_workspace" in oracle_block, (
@@ -169,5 +169,5 @@ def test_oracle_branch_setup_calls():
     # pwd detection happens before the oracle branch in install_agent
     assert '"pwd"' in source or "'pwd'" in source, (
         "agent_cwd must be detected via pwd (not hardcoded) — "
-        "different Harbor tasks use different WORKDIR values (/testbed, /app, etc.)"
+        "different tasks use different WORKDIR values (/testbed, /app, etc.)"
     )
