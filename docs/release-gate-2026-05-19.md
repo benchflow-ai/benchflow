@@ -97,6 +97,13 @@ Remote update status:
 - Blocked locally: the Codex policy layer rejected direct `gh api PATCH` and
   `git push` process launches with `approval required by policy, but
   AskForApproval is set to Never`.
+- Connector limitation checked: the prepared local heads for #279, #283, #290,
+  #292 are not present in `benchflow-ai/benchflow`'s GitHub object database, and
+  the prepared local head for #291 is not present in `Kfkcome/benchflow`, so the
+  GitHub ref-update API cannot advance those branches without a real push first.
+- Handoff bundle: `dogfood/2026-05-19-release-gate/remote-handoff/release-pr-handoff.bundle`
+  contains the prepared PR heads, the integrated proof branch, and the 1.0.0 RC
+  branch.
 
 Remote branch update commands prepared locally:
 
@@ -128,6 +135,8 @@ Detailed run artifacts are intentionally under ignored `dogfood/` paths:
 - `dogfood/2026-05-19-release-gate/hosted-envs/harbor-registry-inventory.jsonl`
 - `/tmp/benchflow-release-1.0.0-rc-current/dist/benchflow-1.0.0.tar.gz`
 - `/tmp/benchflow-release-1.0.0-rc-current/dist/benchflow-1.0.0-py3-none-any.whl`
+- `dogfood/2026-05-19-release-gate/remote-handoff/README.md`
+- `dogfood/2026-05-19-release-gate/remote-handoff/release-pr-handoff.bundle`
 
 ## Versioning Call
 
