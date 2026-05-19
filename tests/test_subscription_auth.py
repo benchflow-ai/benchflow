@@ -1,6 +1,7 @@
 """Tests for subscription auth — host CLI credentials as API key fallback."""
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -82,7 +83,7 @@ def _patch_expanduser(monkeypatch, tmp_path):
 
 class TestResolveAgentEnvSubscription:
     def _resolve(self, agent="claude-agent-acp", model=None, agent_env=None):
-        from benchflow._agent_env import resolve_agent_env
+        from benchflow.agents.env import resolve_agent_env
 
         return resolve_agent_env(agent, model, agent_env)
 
@@ -129,7 +130,7 @@ class TestResolveAgentEnvSubscription:
             monkeypatch.delenv(k, raising=False)
         _patch_expanduser(monkeypatch, tmp_path)
 
-        with pytest.raises(ValueError, match="log in with the agent CLI"):
+        with pytest.raises(ValueError, match=r"required for model .* but not set"):
             self._resolve(
                 model="claude-haiku-4-5-20251001",
                 agent_env={},
@@ -180,3 +181,49 @@ class TestResolveAgentEnvSubscription:
             agent_env={},
         )
         assert result["_BENCHFLOW_SUBSCRIPTION_AUTH"] == "1"
+
+
+class _FakeEnv:
+    def __init__(self):
+        self.exec_calls = []
+        self.uploads = []
+
+    async def exec(self, cmd: str, timeout_sec: int | None = None):
+        self.exec_calls.append((cmd, timeout_sec))
+        return SimpleNamespace(return_code=0, stdout="", stderr="")
+
+    async def upload_file(self, source: str, dest: str):
+        self.uploads.append((source, dest, Path(source).read_text()))
+
+
+class TestUploadSubscriptionAuth:
+    @pytest.mark.asyncio
+    async def test_subscription_auth_chowns_uploaded_home_file(
+        self, monkeypatch, tmp_path
+    ):
+        """Guards the Codex ACP dogfood failure from 2026-05-19.
+
+        Host auth files are staged as root-owned temp files. After upload, the
+        sandbox user must own the credential directory and file, otherwise the
+        ACP process exits with "Permission denied" while loading config.
+        """
+        from benchflow.agents.credentials import upload_subscription_auth
+
+        codex_dir = tmp_path / ".codex"
+        codex_dir.mkdir()
+        (codex_dir / "auth.json").write_text('{"token": "test"}')
+        _patch_expanduser(monkeypatch, tmp_path)
+
+        env = _FakeEnv()
+        await upload_subscription_auth(env, "codex-acp", "/home/agent")
+
+        assert len(env.uploads) == 1
+        assert env.uploads[0][1:] == (
+            "/home/agent/.codex/auth.json",
+            '{"token": "test"}',
+        )
+        assert (
+            "chown -R agent:agent /home/agent/.codex "
+            "&& chmod 600 /home/agent/.codex/auth.json",
+            10,
+        ) in env.exec_calls

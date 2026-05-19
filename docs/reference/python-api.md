@@ -1,6 +1,5 @@
-# Runtime API Guide
-
-The Trial/Scene API is the primary way to run agent benchmarks programmatically.
+# Python API
+The Rollout/Scene API is the primary way to run agent benchmarks programmatically.
 
 ## Install
 
@@ -22,17 +21,16 @@ print(f"Tool calls: {result.n_tool_calls}")
 
 ## Core Types
 
-### TrialConfig
+### RolloutConfig
 
-Declarative configuration for a trial — a sequence of Scenes in a shared sandbox.
+Declarative configuration for a rollout — a sequence of Scenes in a shared sandbox.
 
 ```python
 from pathlib import Path
-
-from benchflow.trial import TrialConfig, Scene, Role, Turn
+from benchflow import RolloutConfig, Scene, Role, Turn
 
 # Single-agent (simplest)
-config = TrialConfig(
+config = RolloutConfig(
     task_path=Path("tasks/my-task"),
     scenes=[Scene.single(agent="gemini", model="gemini-3.1-flash-lite-preview")],
     environment="daytona",
@@ -40,7 +38,7 @@ config = TrialConfig(
 )
 
 # Multi-scene BYOS (skill-gen → solve)
-config = TrialConfig(
+config = RolloutConfig(
     task_path=Path("tasks/my-task"),
     scenes=[
         Scene(name="prep", roles=[Role("gen", "gemini", "gemini-3.1-flash-lite-preview")],
@@ -82,27 +80,27 @@ scene = Scene(
 )
 ```
 
-### Trial
+### Rollout
 
 The execution engine — decomposed into independently-callable phases.
 
 ```python
-from benchflow.trial import Trial
+from benchflow import Rollout
 
-trial = await Trial.create(config)
+rollout = await Rollout.create(config)
 
 # Full lifecycle (most common)
-result = await trial.run()
+result = await rollout.run()
 
 # Manual composition (for custom flows)
-await trial.setup()
-await trial.start()
-await trial.install_agent()
-await trial.connect()
-await trial.execute(prompts=["custom prompt"])
-await trial.disconnect()
-await trial.verify()
-await trial.cleanup()
+await rollout.setup()
+await rollout.start()
+await rollout.install_agent()
+await rollout.connect()
+await rollout.execute(prompts=["custom prompt"])
+await rollout.disconnect()
+await rollout.verify()
+await rollout.cleanup()
 ```
 
 ### RuntimeConfig
@@ -114,7 +112,7 @@ from benchflow.runtime import Agent, Environment, Runtime, RuntimeConfig
 
 config = RuntimeConfig(sandbox_setup_timeout=300)
 agent = Agent("gemini", model="gemini-3.1-flash-lite-preview")
-env = Environment.from_task("tasks/X", backend="daytona")
+env = Environment.from_task("tasks/X", sandbox="daytona")
 runtime = Runtime(env, agent, config=config)
 result = await runtime.execute()
 ```
@@ -126,12 +124,12 @@ Convenience function — multiple calling conventions:
 ```python
 import benchflow as bf
 
-# 1. TrialConfig (full control)
+# 1. RolloutConfig (full control)
 result = await bf.run(config)
 
 # 2. Agent + Environment (0.3 style)
 agent = bf.Agent("gemini", model="gemini-3.1-flash-lite-preview")
-env = bf.Environment.from_task("tasks/X", backend="daytona")
+env = bf.Environment.from_task("tasks/X", sandbox="daytona")
 runtime_config = bf.RuntimeConfig(sandbox_setup_timeout=300)
 result = await bf.run(agent, env, runtime_config)
 
@@ -144,10 +142,10 @@ result = await bf.run(
 )
 ```
 
-## Trial Lifecycle
+## Rollout Lifecycle
 
 ```
-Trial.run()
+Rollout.run()
   │
   ├─ setup()          — resolve config, create env object
   ├─ start()          — spin up sandbox, upload task files, start services
@@ -182,14 +180,14 @@ Key: `disconnect()` kills the agent process between scenes to prevent context bl
 
 **Multi-round** = different agents exchange turns. Use when tasks need multiple perspectives (code review, client-advisor). The scheduler reads outbox files and injects messages.
 
-Both use the same API — `TrialConfig` with different `Scene` configurations.
+Both use the same API — `RolloutConfig` with different `Scene` configurations.
 
 ## Multi-Agent Patterns
 
 ### Coder + Reviewer (followup-bench)
 
 ```python
-config = TrialConfig(
+config = RolloutConfig(
     task_path=task_path,
     scenes=[Scene(
         roles=[Role("coder", "gemini", "flash"), Role("reviewer", "gemini", "flash")],
@@ -206,7 +204,7 @@ config = TrialConfig(
 ### Skill Generation + Solve (BYOS)
 
 ```python
-config = TrialConfig(
+config = RolloutConfig(
     task_path=task_path,
     scenes=[
         Scene(name="skill-gen",
@@ -231,8 +229,7 @@ solution during `setup()` when `oracle_access=True`.
 ```python
 from pathlib import Path
 
-from benchflow import FunctionUser, RoundResult
-from benchflow.trial import Scene, TrialConfig
+from benchflow import FunctionUser, RolloutConfig, RoundResult, Scene
 
 
 def user(round: int, instruction: str, rr: RoundResult | None) -> str | None:
@@ -243,7 +240,7 @@ def user(round: int, instruction: str, rr: RoundResult | None) -> str | None:
     return f"Tests failed:\n{rr.verifier_output}\n\nUse the full spec:\n{instruction}"
 
 
-config = TrialConfig(
+config = RolloutConfig(
     task_path=Path("tasks/my-task"),
     scenes=[Scene.single(agent="gemini", model="gemini-3.1-flash-lite-preview")],
     user=FunctionUser(user),
@@ -258,12 +255,12 @@ user. Use `BaseUser` when the loop is deterministic or verifier-driven. See
 [`progressive-disclosure.md`](../progressive-disclosure.md) and
 [`docs/examples/scene-patterns.ipynb`](../examples/scene-patterns.ipynb).
 
-## YAML Trial Configs
+## YAML Rollout Configs
 
 ```python
-from benchflow.trial_yaml import trial_config_from_yaml
+from benchflow._utils.yaml_loader import rollout_config_from_yaml
 
-config = trial_config_from_yaml("trial.yaml")
+config = rollout_config_from_yaml("rollout.yaml")
 result = await bf.run(config)
 ```
 
@@ -271,26 +268,28 @@ result = await bf.run(config)
 
 | Agent | Protocol | Auth | Aliases |
 |-------|----------|------|---------|
-| `gemini` | ACP | GOOGLE_API_KEY | — |
+| `gemini` | ACP | GEMINI_API_KEY | — |
 | `claude-agent-acp` | ACP | ANTHROPIC_API_KEY | `claude` |
 | `codex-acp` | ACP | OPENAI_API_KEY | `codex` |
 | `opencode` | ACP | inferred from model/provider | — |
-| `openhands` | ACP | LLM_API_KEY | — |
+| `openhands` | ACP | LLM_API_KEY | `oh` |
 | `pi-acp` | ACP | ANTHROPIC_API_KEY | `pi` |
 | `openclaw` | ACP | inferred from model | — |
 
+Any agent can be prefixed with `acpx/` to run via [ACPX](https://acpx.sh/) (e.g. `acpx/gemini`, `acpx/claude`). ACPX is a headless ACP client with persistent sessions and crash recovery. The underlying agent's install, env, credentials, and skill paths are preserved.
+
 ## Retry and Error Handling
 
-Trial.run() catches common errors:
+Rollout.run() catches common errors:
 - `TimeoutError` — agent exceeded timeout
 - `ConnectionError` — SSH/ACP pipe closed (retried 3x with exponential backoff)
 - `ACPError` — agent protocol error
 
-Job-level retry with `RetryConfig`:
+Evaluation-level retry with `RetryConfig`:
 ```python
-from benchflow.job import Job, JobConfig, RetryConfig
+from benchflow.evaluation import Evaluation, EvaluationConfig, RetryConfig
 
-config = JobConfig(
+config = EvaluationConfig(
     retry=RetryConfig(
         max_retries=2,
         wait_multiplier=2.0,
@@ -298,4 +297,81 @@ config = JobConfig(
         max_wait_sec=30.0,
     ),
 )
+```
+
+---
+
+## v0.4 Types
+
+### Sandbox Protocol
+
+The `Sandbox` protocol defines the interface any sandbox backend must implement.
+Docker and Daytona are built-in; you can bring your own (Modal, Firecracker, E2B, etc.).
+
+```python
+from benchflow import Sandbox, ImageBuilder, ImageConfig, ImageRef
+
+# Sandbox is a runtime-checkable Protocol
+class MySandbox:
+    async def exec(self, cmd: list[str], ...) -> SandboxExecResult: ...
+    async def read_file(self, path: str) -> str: ...
+    async def write_file(self, path: str, content: str) -> None: ...
+    async def stop(self) -> None: ...
+    # ... see sandbox/ package for full protocol
+
+assert isinstance(my_sandbox, Sandbox)  # works at runtime
+```
+
+### Rubric + RewardFunc (Composable Rewards)
+
+Declarative scoring via composable reward functions.
+
+```python
+from benchflow import Rubric, RewardFunc, RewardEvent, VerifyResult
+from benchflow import TestRewardFunc, StringMatchRewardFunc, LLMJudgeRewardFunc
+
+# Built-in reward functions
+test_reward = TestRewardFunc()          # runs pytest, binary pass/fail
+match_reward = StringMatchRewardFunc(expected="hello world")
+
+# Compose into a weighted Rubric
+rubric = Rubric(
+    reward_funcs=[test_reward, match_reward],
+    weights=[0.7, 0.3],
+)
+
+# Score a workspace
+result: VerifyResult = await rubric.score(rollout_dir=my_rollout_dir)
+print(result.reward)      # weighted float [0.0, 1.0]
+print(result.events)      # list[RewardEvent] — per-function breakdown
+```
+
+### Adapters (Inspect AI + ORS)
+
+Convert between BenchFlow types and external frameworks.
+
+```python
+from benchflow import InspectAdapter, ORSAdapter, to_inspect_task, to_ors_reward
+
+# BenchFlow Scene → Inspect AI task format
+inspect_task = to_inspect_task(scene, rubric=rubric)
+
+# BenchFlow VerifyResult → ORS reward format
+ors_payload = to_ors_reward(verify_result)
+```
+
+### Evaluation
+
+Batch orchestration with concurrency and retries.
+
+```python
+from benchflow import Evaluation, EvaluationConfig, EvaluationResult
+
+# EvaluationConfig wraps multiple RolloutConfigs
+config = EvaluationConfig(
+    rollouts=[rollout_config_1, rollout_config_2, ...],
+    concurrency=8,
+    retry=RetryConfig(max_retries=2),
+)
+eval_result: EvaluationResult = await Evaluation.run(config)
 ```

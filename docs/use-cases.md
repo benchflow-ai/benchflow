@@ -1,25 +1,22 @@
-# Multi-Agent and Multi-Scene Use Cases
+# Use cases
+BenchFlow's Scene-based lifecycle enables evaluation patterns that go far beyond single-turn "prompt and score." This document covers the key use cases for multi-turn, multi-agent, and stateful environment evaluation.
 
-BenchFlow's Scene-based lifecycle enables evaluation patterns that go far beyond single-turn "prompt and score." This document covers the key use cases for researchers migrating from Harbor who need multi-turn, multi-agent, or stateful environment capabilities.
-
-**Context:** Harbor issue [#1316](https://github.com/harbor-ai/harbor/issues/1316) proposed a simulated-user API (a "user" agent that iteratively provides instructions), and PR [#1462](https://github.com/harbor-ai/harbor/pull/1462) added multi-turn support via Docker Compose sidecars. BenchFlow solves both with a simpler primitive: **Scenes with Roles and Turns**, all running in a single shared sandbox via ACP.
-
-The YAML snippets below are trial YAML for `benchflow.trial_yaml.trial_config_from_yaml()`.
-`bench eval create -f` is for batch job configs and does not execute scene
-YAML directly.
+The patterns below are all variants of one primitive: **Scenes with Roles and Turns**, all running in a single shared sandbox via ACP. No sidecar containers, no Docker Compose networking — every role lives in the same workspace and talks through ACP.
 
 ---
 
-## 1. Interactive User Simulation (Harbor #1316 equivalent)
+## 1. Interactive User Simulation
 
-A "user" role can provide instructions iteratively while the assistant responds through the shared sandbox and outbox files. Use this when the user itself should be an LLM. If the loop needs deterministic oracle access to `/solution`, use the `BaseUser` callback path with `oracle_access=True` instead; normal multi-role scenes do not provide role-specific solution access.
+A "user" role provides instructions iteratively; the agent responds. The user has oracle access to the solution and reveals information gradually, simulating realistic human-agent interaction.
 
-In Harbor, this required a FastMCP sidecar container running a simulated-user persona server, wired via Docker Compose networking. In BenchFlow, it is a two-role Scene where the "user" role is just another agent with a different prompt and (optionally) a different model.
+In BenchFlow, this is a two-role Scene where the "user" role is just another agent with a different prompt and (optionally) a different model. Both roles share one sandbox and one ACP session — no sidecar container, no Docker Compose networking.
 
 ### YAML
 
 ```yaml
-task_dir: .ref/terminal-bench-2
+source:
+  repo: benchflow-ai/skillsbench
+  path: tasks
 environment: daytona
 concurrency: 64
 
@@ -60,10 +57,9 @@ scenes:
 
 ```python
 from pathlib import Path
+from benchflow.rollout import RolloutConfig, Scene, Role, Turn
 
-from benchflow.trial import TrialConfig, Scene, Role, Turn
-
-config = TrialConfig(
+config = RolloutConfig(
     task_path=Path("tasks/my-task"),
     scenes=[
         Scene(name="interactive-assist",
@@ -83,16 +79,16 @@ config = TrialConfig(
 result = await bf.run(config)
 ```
 
-### Why this is better than Harbor #1316
+### Why this design
 
-- No Docker Compose, no sidecar container, no FastMCP server to maintain.
+- One sandbox, one ACP session — no sidecar container, no Docker Compose networking, no extra server to maintain.
 - Both agents share the sandbox filesystem and communicate through `/app/.outbox/{recipient}.json`.
-- The user agent is a real LLM with full tool access -- it can read files, check outputs, and give nuanced feedback, not just templated responses.
+- The user agent is a real LLM with full tool access — it can read files, check outputs, and give nuanced feedback, not just templated responses.
 - Same task folder works for single-turn (baseline) and interactive (with user) via different YAML configs.
 
 ### Lighter-weight alternative: `BaseUser` callback
 
-When you don't need a second LLM and your "user" logic is rule-based or oracle-guided (e.g. compress instruction → show test failures as hints → stop on pass), use a `BaseUser` Python callback instead of a multi-role Scene. See [progressive-disclosure.md](./progressive-disclosure.md). This is benchflow's no-second-LLM parity answer to Harbor #1316 and was built for the SWE-bench Pro progressive-disclosure use case.
+When you don't need a second LLM and your "user" logic is rule-based or oracle-guided (e.g. compress instruction → show test failures as hints → stop on pass), use a `BaseUser` Python callback instead of a multi-role Scene. See [progressive-disclosure.md](./progressive-disclosure.md). Built for the SWE-bench Pro progressive-disclosure use case.
 
 ---
 
@@ -103,7 +99,9 @@ A coder agent solves the task, then an independent reviewer agent critiques the 
 ### YAML
 
 ```yaml
-task_dir: .ref/terminal-bench-2
+source:
+  repo: benchflow-ai/skillsbench
+  path: tasks
 environment: daytona
 concurrency: 64
 
@@ -136,9 +134,9 @@ For stronger isolation, use the MCP reviewer server pattern. The reviewer runs a
 from pathlib import Path
 
 from benchflow.mcp.hooks import mcp_reviewer_hook
-from benchflow.trial import TrialConfig, Scene, Role, Turn
+from benchflow.rollout import RolloutConfig, Scene, Role, Turn
 
-config = TrialConfig(
+config = RolloutConfig(
     task_path=Path("tasks/my-task"),
     scenes=[
         Scene(name="solve-and-review",
@@ -168,23 +166,25 @@ Use `experiments/reviewer_ablation.py` to compare reviewer variants on your task
 
 Treat reviewer lift as an empirical question for the target benchmark. It is most relevant for tasks that require debugging or multi-file coordination, but it should be measured rather than assumed.
 
-### Why this beats Harbor
+### Why this design
 
-- Harbor PR #1462 required a separate container per agent and Docker Compose networking. BenchFlow runs both agents in the same sandbox -- cheaper, faster startup.
+- No Docker Compose, no sidecar container, no FastMCP server to maintain.
 - The MCP hook pattern gives the reviewer tool-level isolation: it cannot write to the workspace, preventing reward hacking via reviewer collusion.
-- Same task, same verifier -- define roles and turns in `TrialConfig` or trial
+- Same task, same verifier -- define roles and turns in `RolloutConfig` or rollout
   YAML.
 
 ---
 
 ## 3. Skill Generation (BYOS -- Bring Your Own Skill)
 
-An agent generates a task-specific skill before solving. This is a two-scene trial: `prep` (unscored) and `solve` (scored). Both scenes share the sandbox, so the generated skill persists.
+An agent generates a task-specific skill before solving. This is a two-scene rollout: `prep` (unscored) and `solve` (scored). Both scenes share the sandbox, so the generated skill persists.
 
 ### YAML
 
 ```yaml
-task_dir: .ref/skillsbench/tasks
+source:
+  repo: benchflow-ai/skillsbench
+  path: tasks
 environment: daytona
 concurrency: 64
 
@@ -214,10 +214,9 @@ scenes:
 
 ```python
 from pathlib import Path
+from benchflow.rollout import RolloutConfig, Scene, Role, Turn
 
-from benchflow.trial import TrialConfig, Scene, Role, Turn
-
-config = TrialConfig(
+config = RolloutConfig(
     task_path=Path("tasks/my-task"),
     scenes=[
         Scene(name="skill-gen",
@@ -252,7 +251,9 @@ The same agent receives multiple prompts in sequence, maintaining full conversat
 ### YAML
 
 ```yaml
-task_dir: .ref/terminal-bench-2
+source:
+  repo: benchflow-ai/skillsbench
+  path: tasks
 environment: daytona
 concurrency: 64
 
@@ -274,10 +275,9 @@ scenes:
 
 ```python
 from pathlib import Path
+from benchflow.rollout import RolloutConfig, Scene, Role, Turn
 
-from benchflow.trial import TrialConfig, Scene, Role, Turn
-
-config = TrialConfig(
+config = RolloutConfig(
     task_path=Path("tasks/my-task"),
     scenes=[
         Scene(name="iterative-solve",
@@ -297,7 +297,7 @@ result = await bf.run(config)
 
 ACP sessions are persistent -- the agent process stays alive across all turns within a scene. The agent retains full conversation history (tool calls, outputs, reasoning) between prompts. Each `Turn` sends a new `prompt()` call on the existing session.
 
-This is equivalent to what Harbor #1316 proposed as "multi-turn evaluation" -- but without needing a simulated user. The "user" in this case is the benchmark framework itself, issuing predetermined follow-up prompts.
+No simulated user is required — the "user" in this pattern is the benchmark framework itself, issuing predetermined follow-up prompts.
 
 ### Why this is useful
 
@@ -314,7 +314,9 @@ Different models fill different roles in the same scene. A cheap model codes, an
 ### YAML
 
 ```yaml
-task_dir: .ref/terminal-bench-2
+source:
+  repo: benchflow-ai/skillsbench
+  path: tasks
 environment: daytona
 concurrency: 32
 
@@ -343,10 +345,9 @@ scenes:
 
 ```python
 from pathlib import Path
+from benchflow.rollout import RolloutConfig, Scene, Role, Turn
 
-from benchflow.trial import TrialConfig, Scene, Role, Turn
-
-config = TrialConfig(
+config = RolloutConfig(
     task_path=Path("tasks/my-task"),
     scenes=[
         Scene(name="cross-model-review",
@@ -388,14 +389,13 @@ Tasks that require agents to interact with live services -- Gmail, Calendar, Doc
 
 ```python
 from pathlib import Path
-
-from benchflow.trial import TrialConfig, Scene, Role, Turn
+from benchflow.rollout import RolloutConfig, Scene, Role, Turn
 from benchflow import SERVICES, build_service_hooks
 
 # Declare which services the task needs
 services = [SERVICES["gmail"], SERVICES["gcal"], SERVICES["slack"]]
 
-config = TrialConfig(
+config = RolloutConfig(
     task_path=Path("tasks/schedule-meeting-from-email"),
     scenes=[Scene.single(agent="gemini", model="gemini-3.1-flash-lite-preview")],
     environment="daytona",
@@ -404,7 +404,7 @@ config = TrialConfig(
 result = await bf.run(config)
 ```
 
-Service hooks are explicit today. `TrialConfig.services` is reserved metadata;
+Service hooks are explicit today. `RolloutConfig.services` is reserved metadata;
 it does not start services unless you translate it into `pre_agent_hooks`.
 
 ### Service registry
@@ -425,19 +425,6 @@ Each service:
 - Uses SQLite for state -- pre-seeded from the task's `environment/` directory.
 - Is indistinguishable from the real API from the agent's perspective.
 
-### How it works vs Harbor
-
-In Harbor, stateful services required Docker Compose with separate containers for each service. This meant:
-- Separate Dockerfiles per service container.
-- Docker Compose networking for inter-container communication.
-- Complex task setup with volume mounts for shared databases.
-
-In BenchFlow, services are lightweight processes in the same sandbox:
-- One Dockerfile with the services pre-installed.
-- `pre_agent_hooks` starts them before the agent connects.
-- The agent hits `localhost:9001` for Gmail -- no network complexity.
-- `detect_services_from_dockerfile()` can discover service binaries for custom orchestration, but the CLI does not auto-start them yet.
-
 ### Example task structure
 
 ```
@@ -454,22 +441,5 @@ tasks/schedule-meeting-from-email/
     └── test.sh             # Verify: check gcal.db has the new event
 ```
 
----
 
-## Migration from Harbor
 
-| Harbor pattern | BenchFlow equivalent | Key difference |
-|----------------|---------------------|----------------|
-| Docker Compose + FastMCP sidecar (#1316) | Scene with user + agent roles | No Compose needed; agents share sandbox |
-| Multi-container multi-agent (#1462) | Scene with N roles + turns | Single container, process-level isolation via ACP |
-| `agent_timeout` + single prompt | Turn with `None` prompt | Same behavior, just wrapped in Scene |
-| Docker Compose services | `pre_agent_hooks` + `SERVICES` registry | Lightweight same-container sidecars; service hook wiring is explicit |
-| Separate verifier container | Same -- BenchFlow uses Harbor's `Verifier` | No change needed for task authors |
-
-### Porting a Harbor task
-
-1. **Task files**: No changes needed. BenchFlow reads the same `task.toml`, `instruction.md`, `Dockerfile`, and `tests/` structure.
-2. **Single-turn**: Works out of the box with `bench eval create -t your-task -a gemini`.
-3. **Multi-turn**: Add a `scenes` key to trial YAML loaded with `trial_config_from_yaml()` or pass `TrialConfig` in Python.
-4. **Multi-agent**: Define multiple roles in the scene. No Docker Compose required.
-5. **Services**: Start them explicitly with `pre_agent_hooks`; `detect_services_from_dockerfile()` is available for custom orchestration, but the CLI does not auto-start services today.

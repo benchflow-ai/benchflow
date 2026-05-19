@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from benchflow._scoring import (
+from benchflow._utils.scoring import (
     classify_error,
     classify_verifier_error,
     pass_rate,
@@ -166,6 +166,16 @@ class BenchmarkMetrics:
         }
 
 
+def _safe_reward(rewards: dict) -> float:
+    """Extract reward value from a rewards dict, defaulting to 0 if None/missing.
+
+    Prevents TypeError when comparing reward values where one is None
+    (e.g. rewards={"reward": None, "rubric": [...]}).
+    """
+    val = rewards.get("reward")
+    return val if isinstance(val, (int, float)) else 0.0
+
+
 def collect_metrics(
     results_dir: str | Path,
     benchmark: str = "",
@@ -190,8 +200,7 @@ def collect_metrics(
                 or (
                     r.get("rewards")
                     and best[task].get("rewards")
-                    and r["rewards"].get("reward", 0)
-                    > best[task]["rewards"].get("reward", 0)
+                    and _safe_reward(r["rewards"]) > _safe_reward(best[task]["rewards"])
                 )
             ):
                 best[task] = r

@@ -143,7 +143,7 @@ fi
 
 ```bash
 # Run with benchflow
-benchflow run -t my-task/ -a claude-agent-acp -e daytona
+benchflow run --tasks-dir my-task/ --agent claude-agent-acp --sandbox daytona
 
 # Or with SDK
 python -c "

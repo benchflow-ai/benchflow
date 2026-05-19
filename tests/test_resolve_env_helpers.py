@@ -9,12 +9,13 @@ from pathlib import Path
 
 import pytest
 
-from benchflow._agent_env import (
+from benchflow.agents.env import (
     auto_inherit_env,
     check_subscription_auth,
     inject_vertex_credentials,
     resolve_agent_env,
     resolve_provider_env,
+    validate_aws_bedrock_env,
 )
 
 # ── auto_inherit_env ──
@@ -28,6 +29,8 @@ class TestAutoInheritEnv:
         [
             pytest.param("ANTHROPIC_API_KEY", "sk-host", id="anthropic"),
             pytest.param("OPENAI_API_KEY", "sk-oai", id="openai"),
+            pytest.param("AWS_BEARER_TOKEN_BEDROCK", "bedrock-token", id="bedrock"),
+            pytest.param("AWS_REGION", "us-east-1", id="bedrock-region"),
             pytest.param("ZAI_API_KEY", "zk-host", id="provider"),
         ],
     )
@@ -58,6 +61,28 @@ class TestAutoInheritEnv:
         env = {}
         auto_inherit_env(env)
         assert "ANTHROPIC_API_KEY" not in env
+
+    def test_aws_default_region_mirrored_to_aws_region(self):
+        env = {"AWS_DEFAULT_REGION": "us-east-1"}
+        auto_inherit_env(env)
+        assert env["AWS_REGION"] == "us-east-1"
+
+    def test_aws_region_mirrored_to_aws_default_region(self):
+        env = {"AWS_REGION": "us-east-1"}
+        auto_inherit_env(env)
+        assert env["AWS_DEFAULT_REGION"] == "us-east-1"
+
+    def test_inherits_openai_base_url(self, monkeypatch):
+        """Guards fix from PR #255: OPENAI_BASE_URL must be inherited.
+
+        codex-acp and opencode map BENCHFLOW_PROVIDER_BASE_URL → OPENAI_BASE_URL,
+        but OPENAI_BASE_URL was missing from auto_inherit_env's key set, so
+        users setting OPENAI_BASE_URL on the host had it silently dropped.
+        """
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://custom.openai.example/v1")
+        env: dict[str, str] = {}
+        auto_inherit_env(env)
+        assert env["OPENAI_BASE_URL"] == "https://custom.openai.example/v1"
 
 
 # ── inject_vertex_credentials ──
@@ -150,6 +175,31 @@ class TestResolveProviderEnv:
         assert env["BENCHFLOW_PROVIDER_PROTOCOL"] == "openai-responses"
         assert env["OPENAI_BASE_URL"] == "https://api.z.ai/api/paas/v4"
 
+    def test_aws_bedrock_sets_placeholder_provider_key_for_codex(self):
+        env = {
+            "AWS_BEARER_TOKEN_BEDROCK": "bedrock-token",
+            "AWS_REGION": "us-east-1",
+        }
+        resolve_provider_env(env, "aws-bedrock/openai.gpt-oss-20b-1:0", "codex-acp")
+        assert env["BENCHFLOW_PROVIDER_NAME"] == "aws-bedrock"
+        assert env["BENCHFLOW_PROVIDER_MODEL"] == "openai.gpt-oss-20b-1:0"
+        assert env["BENCHFLOW_PROVIDER_PROTOCOL"] == "openai-responses"
+        assert env["BENCHFLOW_PROVIDER_API_KEY"] == "bedrock-proxy"
+        assert env["OPENAI_API_KEY"] == "bedrock-proxy"
+
+    def test_aws_bedrock_sets_placeholder_provider_key_for_claude(self):
+        env = {
+            "AWS_BEARER_TOKEN_BEDROCK": "bedrock-token",
+            "AWS_REGION": "us-east-1",
+        }
+        resolve_provider_env(
+            env,
+            "aws-bedrock/anthropic.claude-haiku-4-5-20251001-v1:0",
+            "claude-agent-acp",
+        )
+        assert env["BENCHFLOW_PROVIDER_PROTOCOL"] == "anthropic-messages"
+        assert env["ANTHROPIC_AUTH_TOKEN"] == "bedrock-proxy"
+
     def test_explicit_base_url_not_overwritten(self):
         """User-supplied ANTHROPIC_BASE_URL must win over derived value."""
         env = {
@@ -219,6 +269,33 @@ class TestCheckSubscriptionAuth:
         (codex_dir / "auth.json").write_text("{}")
         self._patch_expanduser(monkeypatch, tmp_path)
         assert check_subscription_auth("codex-acp", "OPENAI_API_KEY") is True
+
+
+# ── validate_aws_bedrock_env ──
+
+
+class TestValidateAwsBedrockEnv:
+    def test_requires_bearer_token(self):
+        with pytest.raises(ValueError, match="AWS_BEARER_TOKEN_BEDROCK required"):
+            validate_aws_bedrock_env({"AWS_REGION": "us-east-1"}, "aws-bedrock/model")
+
+    def test_requires_region(self):
+        with pytest.raises(
+            ValueError, match="AWS_REGION or AWS_DEFAULT_REGION required"
+        ):
+            validate_aws_bedrock_env(
+                {"AWS_BEARER_TOKEN_BEDROCK": "bedrock-token"},
+                "aws-bedrock/model",
+            )
+
+    def test_normalizes_region_aliases(self):
+        env = {
+            "AWS_BEARER_TOKEN_BEDROCK": "bedrock-token",
+            "AWS_DEFAULT_REGION": "us-east-1",
+        }
+        validate_aws_bedrock_env(env, "aws-bedrock/model")
+        assert env["AWS_REGION"] == "us-east-1"
+        assert env["AWS_DEFAULT_REGION"] == "us-east-1"
 
 
 # ── resolve_agent_env: no-model subscription auth ──
@@ -296,6 +373,20 @@ class TestResolveAgentEnvNoModel:
         self._patch_expanduser(monkeypatch, tmp_path)
         result = self._resolve(agent="openclaw", agent_env={})
         assert "_BENCHFLOW_SUBSCRIPTION_AUTH" not in result
+
+
+def test_task_env_resolves_from_dotenv(monkeypatch, tmp_path):
+    """Guards ENG-80 dogfood regression: verifier env can resolve from .env."""
+    env_file = tmp_path / ".env"
+    env_file.write_text("GEMINI_API_KEY=from-dotenv\n")
+    monkeypatch.setenv("BENCHFLOW_DOTENV_PATH", str(env_file))
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+
+    from benchflow.task.env import resolve_env_vars
+
+    assert resolve_env_vars({"GOOGLE_API_KEY": "${GEMINI_API_KEY}"}) == {
+        "GOOGLE_API_KEY": "from-dotenv"
+    }
 
 
 class TestResolveAgentEnvOracle:

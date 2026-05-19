@@ -105,9 +105,9 @@ def setup_provider() -> None:
     else:
         # Anthropic mode — set native env vars that Pi reads directly.
         # DO NOT change setdefault to assignment. Users route through proxies
-        # with --ae ANTHROPIC_BASE_URL=<proxy>; overwriting breaks that path.
+        # with --agent-env ANTHROPIC_BASE_URL=<proxy>; overwriting breaks that path.
         # Why: BENCHFLOW_PROVIDER_BASE_URL is the registry default; the user's
-        # --ae override must win. Pinned by tests/test_pi_acp_launcher.py::
+        # --agent-env override must win. Pinned by tests/test_pi_acp_launcher.py::
         # test_setdefault_does_not_overwrite.
         if base_url:
             os.environ.setdefault("ANTHROPIC_BASE_URL", base_url)

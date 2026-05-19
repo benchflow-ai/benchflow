@@ -1,0 +1,8 @@
+source:
+  repo: benchflow-ai/benchmarks
+  path: datasets/harvey-lab/tasks
+
+agent: harvey-lab-harness
+model: gemini/gemini-3.1-flash-lite-preview
+environment: docker
+concurrency: 2

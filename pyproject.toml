@@ -1,12 +1,11 @@
 [project]
 name = "benchflow"
-version = "0.3.3.dev0"
+version = "0.4.0"
 description = "Multi-turn agent benchmarking with ACP — run any agent, any model, any provider."
 readme = "README.md"
 requires-python = ">=3.12"
-keywords = ["benchmark", "llm-agents", "acp", "agent-evaluation", "multi-turn", "terminal-bench", "skillsbench"]
+keywords = ["benchmark", "llm-agents", "acp", "agent-evaluation", "multi-turn", "skillsbench"]
 dependencies = [
-    "harbor==0.3.0",
     "httpx>=0.27.0",
     "anyio>=4.0",
     "pydantic>=2.0",
@@ -42,6 +41,17 @@ dev = [
     "ruff>=0.7.0",
     "ty>=0.0.1a1",
 ]
+sandbox-daytona = [
+    "daytona>=0.153.0",
+    "tenacity>=8.0",
+]
+sandbox-modal = [
+    "modal>=0.73",
+    "tenacity>=8.0",
+]
+bedrock = [
+    "boto3>=1.40",
+]
 
 [project.scripts]
 benchflow = "benchflow.cli.main:app"
@@ -71,14 +81,16 @@ only-include = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-addopts = "-m 'not live'"
+addopts = "-m 'not live and not integration'"
 testpaths = ["tests"]
 markers = [
     "live: requires real Anthropic API and Docker daemon (run with -m live)",
+    "integration: full integration tests — requires GEMINI_API_KEY + DAYTONA_API_KEY (run with -m integration)",
 ]
 
 [tool.ruff]
 target-version = "py312"
+extend-exclude = [".claude/skills/skill-creator"]
 
 [tool.ruff.lint]
 select = [
@@ -109,5 +121,24 @@ ignore = [
 [tool.ty.environment]
 python-version = "3.12"
 
+[tool.ty.rules]
+# Many modules lazily import optional deps (daytona, modal, openai, toml, …).
+# These are guarded by try/except at runtime but ty can't resolve them in CI.
+unresolved-import = "ignore"
+
 [tool.ty.src]
 include = ["src"]
+# Modules that heavily use optional-dep types (daytona, modal, openai, boto3, …)
+# produce cascading type errors when those packages aren't installed.
+exclude = [
+    "src/benchflow/sandbox/daytona.py",
+    "src/benchflow/sandbox/modal_impl.py",
+    "src/benchflow/sandbox/docker.py",
+    "src/benchflow/sandbox/_base.py",
+    "src/benchflow/_env_setup.py",
+    "src/benchflow/rewards/llm.py",
+    "src/benchflow/rewards/file_readers.py",
+    "src/benchflow/rewards/rubric_config.py",
+    "src/benchflow/providers/bedrock_runtime.py",
+    "src/benchflow/experimental/mcp/reviewer_server.py",
+]

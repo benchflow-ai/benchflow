@@ -1,10 +1,12 @@
 """benchflow — ACP-native agent benchmarking framework.
 
-Re-exports environment APIs and adds:
+Public API surface:
+- Sandbox protocol for isolated execution environments
 - ACP client for multi-turn agent communication
 - Trajectory capture (HTTP proxy, OTel collector, ACP native)
-- SDK for programmatic usage
-- Job orchestration with retries and concurrency
+- Rollout lifecycle for single-task execution
+- Evaluation orchestration with retries and concurrency
+- Rewards protocol (composable Rubric + RewardFunc)
 - Metrics collection and aggregation
 """
 
@@ -12,23 +14,17 @@ from importlib.metadata import version as _version
 
 __version__ = _version("benchflow")
 
-# Re-export Harbor's core types for downstream task authors
-from harbor import (
-    BaseAgent,
-    BaseEnvironment,
-    ExecResult,
-    Task,
-    TaskConfig,
-    Verifier,
-    VerifierResult,
-)
-
-# benchflow's additions
-from benchflow._env_setup import stage_dockerfile_deps
-from benchflow._scene import MailboxTransport, Message, MessageTransport, Role, Scene
-from benchflow._snapshot import list_snapshots, restore, snapshot
+# Core types
+from benchflow._types import Role, Scene, Turn
+from benchflow._utils.yaml_loader import rollout_config_from_yaml
 from benchflow.acp.client import ACPClient
 from benchflow.acp.session import ACPSession
+from benchflow.adapters import (
+    InspectAdapter,
+    ORSAdapter,
+    to_inspect_task,
+    to_ors_reward,
+)
 from benchflow.agents.registry import (
     AGENTS,
     get_agent,
@@ -37,43 +33,95 @@ from benchflow.agents.registry import (
     list_agents,
     register_agent,
 )
-from benchflow.environments import (
-    SERVICES,
-    build_service_hooks,
-    detect_services_from_dockerfile,
-    register_service,
+from benchflow.evaluation import (
+    Evaluation,
+    EvaluationConfig,
+    EvaluationResult,
+    RetryConfig,
 )
-from benchflow.job import Job, JobConfig, JobResult, RetryConfig
 from benchflow.metrics import BenchmarkMetrics, collect_metrics
-from benchflow.models import AgentInstallError, AgentTimeoutError, RunResult
+from benchflow.models import AgentInstallError, AgentTimeoutError, RolloutResult
+
+# Rewards protocol (v0.4 — composable Rubric + RewardFunc)
+from benchflow.rewards import (
+    CodeExecRewardFunc,
+    Criterion,
+    JudgeConfig,
+    LLMJudgeRewardFunc,
+    RewardEvent,
+    RewardFunc,
+    Rubric,
+    RubricConfig,
+    ScoringConfig,
+    StringMatchRewardFunc,
+    TestRewardFunc,
+    VerifyResult,
+    load_rubric_toml,
+)
+from benchflow.rollout import Rollout, RolloutConfig
 from benchflow.runtime import (
     Agent,
     Environment,
     Runtime,
     RuntimeConfig,
     RuntimeResult,
-    run,  # bf.run(agent, env) — the primary 0.3 API
+    run,
+)  # bf.run() — supports Agent, RolloutConfig, and str calling conventions
+from benchflow.sandbox import (
+    SERVICES,
+    ImageBuilder,
+    ImageConfig,
+    ImageRef,
+    Sandbox,
+    build_service_hooks,
+    detect_services_from_dockerfile,
+    register_service,
 )
+
+# Sandbox protocol (v0.4)
+from benchflow.sandbox import ExecResult as SandboxExecResult
+from benchflow.sandbox.protocol import ExecResult
+from benchflow.sandbox.setup import stage_dockerfile_deps
+from benchflow.sandbox.snapshot import list_snapshots, restore, snapshot
+from benchflow.sandbox.user import BaseUser, FunctionUser, PassthroughUser, RoundResult
+from benchflow.scenes import MailboxTransport, Message, MessageTransport, SceneRole
+from benchflow.scenes import Scene as SceneRuntime
 from benchflow.sdk import SDK
 from benchflow.skills import SkillInfo, discover_skills, install_skill, parse_skill
+from benchflow.task import (
+    Task,
+    TaskConfig,
+    Verifier,
+    VerifierResult,
+)
 from benchflow.trajectories.otel import OTelCollector
 from benchflow.trajectories.proxy import TrajectoryProxy
 from benchflow.trajectories.types import Trajectory
-from benchflow.trial import Role as TrialRole
-from benchflow.trial import Scene as TrialScene
-from benchflow.trial import Trial, TrialConfig, Turn
-from benchflow.trial_yaml import trial_config_from_yaml
-from benchflow.user import BaseUser, FunctionUser, PassthroughUser, RoundResult
 
 # Public API surface. Anything not in this list is implementation detail and
-# may change without notice. Names are grouped by source module to match the
-# imports above and to make it obvious to a future agent which module owns
-# what.
+# may change without notice.
 __all__ = [
     "__version__",
-    # Harbor re-exports
-    "BaseAgent",
-    "BaseEnvironment",
+    # Rewards protocol (v0.4)
+    "Rubric",
+    "RewardFunc",
+    "RewardEvent",
+    "VerifyResult",
+    "TestRewardFunc",
+    "LLMJudgeRewardFunc",
+    "StringMatchRewardFunc",
+    "CodeExecRewardFunc",
+    "Criterion",
+    "JudgeConfig",
+    "RubricConfig",
+    "ScoringConfig",
+    "load_rubric_toml",
+    # Sandbox protocol
+    "Sandbox",
+    "SandboxExecResult",
+    "ImageBuilder",
+    "ImageConfig",
+    "ImageRef",
     "ExecResult",
     "Task",
     "TaskConfig",
@@ -89,10 +137,10 @@ __all__ = [
     "is_vertex_model",
     "list_agents",
     "register_agent",
-    # Job orchestration
-    "Job",
-    "JobConfig",
-    "JobResult",
+    # Evaluation orchestration
+    "Evaluation",
+    "EvaluationConfig",
+    "EvaluationResult",
     "RetryConfig",
     # Metrics
     "BenchmarkMetrics",
@@ -100,17 +148,22 @@ __all__ = [
     # Models / errors
     "AgentInstallError",
     "AgentTimeoutError",
-    "RunResult",
-    # Runtime (0.3 primary API)
+    "RolloutResult",
+    # Runtime
     "Agent",
     "Environment",
     "Runtime",
     "RuntimeConfig",
     "RuntimeResult",
+    # Single entry point
     "run",
-    # Multi-agent scene
-    "Scene",
+    # Declarative types
     "Role",
+    "Scene",
+    "Turn",
+    # Multi-agent scene runtime
+    "SceneRole",
+    "SceneRuntime",
     "Message",
     "MessageTransport",
     "MailboxTransport",
@@ -118,21 +171,18 @@ __all__ = [
     "snapshot",
     "restore",
     "list_snapshots",
-    # Trial (decomposed lifecycle)
-    "Trial",
-    "TrialConfig",
-    "TrialRole",
-    "TrialScene",
-    "Turn",
-    "trial_config_from_yaml",
+    # Rollout
+    "Rollout",
+    "RolloutConfig",
+    "rollout_config_from_yaml",
     # User abstraction (progressive disclosure)
     "BaseUser",
     "FunctionUser",
     "PassthroughUser",
     "RoundResult",
-    # SDK (backwards compat)
+    # SDK
     "SDK",
-    # Environments / dep staging
+    # Sandbox services
     "SERVICES",
     "build_service_hooks",
     "detect_services_from_dockerfile",
@@ -147,20 +197,21 @@ __all__ = [
     "OTelCollector",
     "TrajectoryProxy",
     "Trajectory",
+    # External adapters
+    "InspectAdapter",
+    "ORSAdapter",
+    "to_inspect_task",
+    "to_ors_reward",
 ]
 
 
 def __getattr__(name: str):
-    """Fall through to harbor for names not explicitly re-exported."""
-    import harbor
+    """Lazy submodule resolution."""
+    import importlib
 
-    if hasattr(harbor, name):
-        import warnings
-
-        warnings.warn(
-            f"'{name}' is not directly re-exported by benchflow. Use 'from harbor import {name}' instead.",
-            ImportWarning,
-            stacklevel=2,
-        )
-        return getattr(harbor, name)
+    try:
+        return importlib.import_module(f"benchflow.{name}")
+    except ModuleNotFoundError as e:
+        if e.name != f"benchflow.{name}":
+            raise
     raise AttributeError(f"module 'benchflow' has no attribute {name!r}")

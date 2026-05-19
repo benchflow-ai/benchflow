@@ -1,12 +1,11 @@
 # Getting started
-
 A 5-minute path from install to first eval.
 
 ## Prerequisites
 
 - Python 3.12+
-- [`uv`](https://docs.astral.sh/uv/) (recommended) or `pip`
-- Docker for local sandboxes, `DAYTONA_API_KEY` for Daytona cloud runs, or Modal auth for Modal-backed runs
+- [`uv`](https://docs.astral.sh/uv/)
+- Docker for local sandboxes, `pip install benchflow[sandbox-daytona]` + `DAYTONA_API_KEY` for Daytona cloud runs, or `pip install benchflow[sandbox-modal]` for Modal-backed runs
 - An API key or subscription/OAuth auth for at least one agent (see below)
 
 ## Install
@@ -20,7 +19,7 @@ This gives you the `benchflow` (alias `bench`) CLI plus the Python SDK. To insta
 ```bash
 git clone https://github.com/benchflow-ai/benchflow
 cd benchflow
-uv venv -p 3.12 .venv && uv pip install -e ".[dev]"
+uv sync --extra dev --locked
 ```
 
 ## Auth: OAuth, long-lived token, or API key
@@ -76,32 +75,40 @@ If multiple credentials are set, benchflow / the agent CLI uses (high to low): c
 ## Run your first eval
 
 ```bash
-# Single task with Gemini
-GEMINI_API_KEY=... bench run .ref/terminal-bench-2/regex-log \
+# Single task from a remote repo
+GEMINI_API_KEY=... bench eval create \
+  --source-repo benchflow-ai/skillsbench \
+  --source-path tasks/edit-pdf \
   --agent gemini \
   --model gemini-3.1-pro-preview \
-  --backend docker
+  --sandbox docker
 
-# Single task with skills mounted
-GEMINI_API_KEY=... bench run tasks/pdf-fix \
+# Single task from local path
+GEMINI_API_KEY=... bench eval create \
+  --tasks-dir tasks/edit-pdf \
   --agent gemini \
   --model gemini-3.1-pro-preview \
-  --backend daytona \
-  --skills-dir tasks/pdf-fix/environment/skills \
-  --ae BENCHFLOW_SKILL_NUDGE=name
+  --sandbox daytona \
+  --skills-dir tasks/edit-pdf/environment/skills \
+  --agent-env BENCHFLOW_SKILL_NUDGE=name
 
-# A whole batch with concurrency
-GEMINI_API_KEY=... bench eval create -t .ref/terminal-bench-2 -a gemini \
-    -m gemini-3.1-pro-preview -e daytona -c 32
+# A whole batch from YAML config
+bench eval create --config benchmarks/harvey-lab/harvey-lab-gemini-flash-lite.yaml
+
+# Batch from remote repo with concurrency
+GEMINI_API_KEY=... bench eval create \
+    --source-repo benchflow-ai/skillsbench --source-path tasks \
+    --agent gemini --model gemini-3.1-pro-preview --sandbox daytona --concurrency 32
 
 # List the registered agents
 bench agent list
 ```
 
-`bench run <task>` is the direct path for one task. `bench eval create -t
-<tasks-dir>` runs once on a single task or batches a parent directory containing
-multiple `task.toml`-bearing subdirectories. Results land under
-`jobs/<job-name>/<trial-name>/` — `result.json` for the verifier output,
+`bench eval create` is the primary command for running evaluations — it works for
+single tasks, batch runs, and remote repos. Use `--source-repo <org/repo>
+--source-path <subpath>` to fetch from a remote repo, `--tasks-dir <dir>` for a
+local directory, or `--config <config.yaml>` for a YAML config. Results land under
+`jobs/<eval-name>/<rollout-name>/` — `result.json` for the verifier output,
 `trajectory/acp_trajectory.jsonl` for the full agent trace.
 
 When you mount skills, use `BENCHFLOW_SKILL_NUDGE=name` as the default docs
@@ -115,11 +122,11 @@ The CLI is a thin shim over the Python API. For programmatic use:
 
 ```python
 import benchflow as bf
-from benchflow.trial import TrialConfig, Scene
-from pathlib import Path
+from benchflow import RolloutConfig, Scene
+from benchflow._utils.benchmark_repos import resolve_source
 
-config = TrialConfig(
-    task_path=Path(".ref/terminal-bench-2/regex-log"),
+config = RolloutConfig(
+    task_path=resolve_source("benchflow-ai/skillsbench", path="tasks/edit-pdf"),
     scenes=[Scene.single(agent="gemini", model="gemini-3.1-pro-preview")],
     environment="docker",
 )
@@ -128,17 +135,17 @@ print(result.rewards)         # {'reward': 1.0}
 print(result.n_tool_calls)
 ```
 
-`Trial` is decomposable — invoke each lifecycle phase individually for custom flows. See [Concepts: trial lifecycle](./concepts.md#trial-lifecycle).
+`Rollout` is decomposable — invoke each lifecycle phase individually for custom flows. See [Concepts: rollout lifecycle](./concepts.md#rollout-lifecycle).
 
 ## What to read next
 
 | If you want to… | Read |
 |------------------|------|
-| Understand the model — Trial, Scene, Role, Verifier | [`concepts.md`](./concepts.md) |
-| Author a task | [`task-authoring.md`](./task-authoring.md) |
-| Run multi-agent patterns (coder/reviewer, simulated user, BYOS) | [`use-cases.md`](./use-cases.md) |
-| Run multi-round single-agent (progressive disclosure) | [`progressive-disclosure.md`](./progressive-disclosure.md) |
-| Evaluate skills, not tasks | [`skill-eval.md`](./skill-eval.md) |
-| Understand the security model | [`sandbox-hardening.md`](./sandbox-hardening.md) |
-| CLI flags + commands | [`reference/cli.md`](./reference/cli.md) |
-| Python API surface | [`reference/python-api.md`](./reference/python-api.md) |
+| Understand the model — Rollout, Scene, Role, Verifier | [Concepts](./concepts.md) |
+| Author a task | [Task authoring](./task-authoring.md) |
+| Run multi-agent patterns (coder/reviewer, simulated user, BYOS) | [Use cases](./use-cases.md) |
+| Run multi-round single-agent (progressive disclosure) | [Progressive disclosure](./progressive-disclosure.md) |
+| Evaluate skills, not tasks | [Skill eval](./skill-eval.md) |
+| Understand the security model | [Sandbox hardening](./sandbox-hardening.md) |
+| CLI flags + commands | [CLI reference](./reference/cli.md) |
+| Python API surface | [Python API reference](./reference/python-api.md) |

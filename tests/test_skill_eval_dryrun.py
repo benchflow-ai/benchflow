@@ -1,10 +1,10 @@
 """Dry-run test for skill-eval pipeline — proves end-to-end without LLM calls.
 
-Mocks the Job.run() to avoid Docker/API dependencies while verifying:
+Mocks the Evaluation.run() to avoid Docker/API dependencies while verifying:
 1. Dataset loads correctly
 2. Ephemeral tasks generated with correct structure
 3. With-skill vs baseline task dirs differ (skill copied vs not)
-4. Job is configured correctly (agent, model, concurrency)
+4. Evaluation is configured correctly (agent, model, concurrency)
 5. Results collected and lift computed
 6. GEPA export produces expected structure
 7. CLI wiring works end-to-end
@@ -31,11 +31,11 @@ from benchflow.skill_eval import (
 
 
 @pytest.fixture
-def code_review_skill():
-    """Use the real code-review-bench as test fixture."""
-    skill_dir = Path(__file__).parent.parent / "benchmarks" / "code-review-bench"
+def models_as_skills_dir():
+    """Use the real models-as-skills benchmark fixture."""
+    skill_dir = Path(__file__).parent.parent / "benchmarks" / "models-as-skills"
     if not (skill_dir / "evals" / "evals.json").exists():
-        pytest.skip("code-review-bench not found")
+        pytest.fail("models-as-skills eval fixture is missing")
     return skill_dir
 
 
@@ -89,12 +89,46 @@ def mock_skill(tmp_path):
 class TestDryRunPipeline:
     """Full pipeline dry-run without Docker/LLM."""
 
-    def test_load_code_review_bench(self, code_review_skill):
-        dataset = load_eval_dataset(code_review_skill)
-        assert dataset.skill_name == "code-review"
-        assert len(dataset.cases) == 5
-        assert dataset.cases[0].id == "sql-injection"
-        assert dataset.cases[4].id == "insecure-default"
+    def test_load_models_as_skills_benchmark(self, models_as_skills_dir):
+        dataset = load_eval_dataset(models_as_skills_dir)
+        assert dataset.skill_name == "code-specialist"
+        assert len(dataset.cases) == 3
+        assert dataset.cases[0].id == "topo-sort-with-cycle-detection"
+        assert dataset.cases[1].id == "regex-email-parser"
+        assert dataset.cases[2].id == "optimize-quadratic-to-nlogn"
+
+    def test_models_as_skills_generates_skill_and_baseline_tasks(
+        self, models_as_skills_dir, tmp_path
+    ):
+        dataset = load_eval_dataset(models_as_skills_dir)
+
+        with_tasks = generate_tasks(dataset, tmp_path / "with", with_skill=True)
+        baseline_tasks = generate_tasks(
+            dataset, tmp_path / "baseline", with_skill=False
+        )
+
+        assert [task.name for task in with_tasks] == [
+            "topo-sort-with-cycle-detection",
+            "regex-email-parser",
+            "optimize-quadratic-to-nlogn",
+        ]
+        assert [task.name for task in baseline_tasks] == [
+            "topo-sort-with-cycle-detection",
+            "regex-email-parser",
+            "optimize-quadratic-to-nlogn",
+        ]
+
+        for task_dir in with_tasks:
+            skill_dst = task_dir / "environment" / "skills" / "code-specialist"
+            assert (skill_dst / "SKILL.md").exists()
+            assert not (skill_dst / "evals").exists()
+
+            case_data = json.loads((task_dir / "tests" / "case.json").read_text())
+            assert case_data["expected_skill"] == "code-specialist"
+            assert case_data["expected_behavior"]
+
+        for task_dir in baseline_tasks:
+            assert not (task_dir / "environment" / "skills").exists()
 
     def test_generate_tasks_creates_runnable_structure(self, mock_skill):
         dataset = load_eval_dataset(mock_skill)
@@ -102,7 +136,7 @@ class TestDryRunPipeline:
         tasks = generate_tasks(dataset, out, with_skill=True)
 
         for task_dir in tasks:
-            # Every generated task must be a valid Harbor task
+            # Every generated task must be a valid BenchFlow task
             assert (task_dir / "task.toml").exists()
             assert (task_dir / "instruction.md").exists()
             assert (task_dir / "environment" / "Dockerfile").exists()
@@ -141,9 +175,9 @@ class TestDryRunPipeline:
         assert "COPY skills/" in with_df
         assert "COPY skills/" not in without_df
 
-    @patch("benchflow.job.Job")
+    @patch("benchflow.evaluation.Evaluation")
     def test_evaluator_configures_job_correctly(self, MockJob, mock_skill):
-        """Verify SkillEvaluator passes correct config to Job."""
+        """Verify SkillEvaluator passes correct config to Evaluation."""
         mock_job_instance = MockJob.return_value
         mock_job_instance.run = AsyncMock(
             return_value=type(
@@ -171,7 +205,7 @@ class TestDryRunPipeline:
             )
         )
 
-        # Job was called at least once (with-skill run)
+        # Evaluation was called at least once (with-skill run)
         assert MockJob.call_count >= 1
         call_kwargs = MockJob.call_args
         config = call_kwargs.kwargs.get("config") or call_kwargs[1].get("config")
@@ -280,7 +314,7 @@ class TestDryRunPipeline:
                     "skills",
                     "eval",
                     str(mock_skill),
-                    "-a",
+                    "--agent",
                     "claude-agent-acp",
                     "--no-baseline",
                 ],
@@ -327,3 +361,34 @@ class TestDryRunPipeline:
         assert len(lift_rows) == 2
         assert lift_rows[0]["score"] == "+2"
         assert lift_rows[1]["score"] == "+2"
+
+    def test_summary_table_no_baseline_omits_fake_baseline_rows(self):
+        result = SkillEvalResult(
+            skill_name="code-review",
+            n_cases=5,
+            agents=["claude-agent-acp"],
+            agent_lifts=[
+                AgentLift(
+                    agent="claude-agent-acp",
+                    model="haiku",
+                    with_skill_score=0.85,
+                    baseline_score=0.0,
+                    lift=0.85,
+                    n_cases=5,
+                    with_skill_passed=4,
+                    baseline_passed=0,
+                    baseline_ran=False,
+                ),
+            ],
+        )
+
+        rows = result.summary_table()
+
+        assert rows == [
+            {
+                "agent": "claude-agent-acp",
+                "mode": "with-skill",
+                "score": "4/5",
+                "avg_reward": "0.85",
+            }
+        ]

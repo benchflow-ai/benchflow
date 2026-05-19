@@ -1,4 +1,4 @@
-"""BenchFlow Runtime — the 0.3 execution center.
+"""BenchFlow Runtime — the execution center.
 
 ``Runtime.execute()`` is the single execution path for both single-agent
 and multi-agent runs. Everything else layers on top:
@@ -9,7 +9,7 @@ and multi-agent runs. Everything else layers on top:
 
 Architecture:
     Agent  → thin wrapper around registry entry + model + creds
-    Environment → wraps harbor Docker/Daytona env, owns lifecycle
+    Environment → wraps Docker/Daytona sandbox, owns lifecycle
     Scene → 1+ roles + transport + scheduler (from _scene.py)
     Runtime → env + scene + execute loop + verify
     RuntimeResult → trajectories + messages + rewards + snapshots
@@ -23,67 +23,68 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from benchflow.agents.registry import AGENT_LAUNCH, AGENTS, AgentConfig
+from benchflow.agents.registry import AgentConfig, resolve_agent
 
 if TYPE_CHECKING:
-    from benchflow.models import RunResult
-    from benchflow.trial import TrialConfig
+    from benchflow.models import RolloutResult as RunResult
+    from benchflow.rollout import RolloutConfig as TrialConfig
 
 logger = logging.getLogger(__name__)
 
 
 class Environment:
-    """Wraps a Harbor Docker/Daytona environment, owns lifecycle.
+    """Wraps a Docker/Daytona sandbox environment, owns lifecycle.
 
     Usage::
 
-        env = Environment.from_task("tasks/my-task", backend="daytona")
+        env = Environment.from_task("tasks/my-task", sandbox="daytona")
         await env.start()
         # ... run agents ...
         await env.stop()
 
     Or as a context manager::
 
-        async with Environment.from_task("tasks/X", backend="daytona") as env:
+        async with Environment.from_task("tasks/X", sandbox="daytona") as env:
             result = await runtime.execute()
     """
 
-    def __init__(self, inner: Any, task_path: Path, backend: str) -> None:
+    def __init__(self, inner: Any, task_path: Path, sandbox: str) -> None:
         self._inner = inner
         self.task_path = task_path
-        self.backend = backend
+        self.sandbox = sandbox
         self._started = False
 
     @classmethod
     def from_task(
         cls,
         task_path: str | Path,
-        backend: str = "daytona",
-        trial_name: str | None = None,
+        sandbox: str = "daytona",
+        rollout_name: str | None = None,
     ) -> Environment:
         """Create an environment from a task directory."""
         from uuid import uuid4
 
-        from harbor.models.task.task import Task
-        from harbor.models.trial.paths import TrialPaths
-
-        from benchflow._env_setup import _create_environment
+        from benchflow.sandbox.setup import _create_environment
+        from benchflow.task import RolloutPaths, Task
 
         task_path = Path(task_path)
         task = Task(task_path)
-        trial_name = trial_name or task_path.name
-        trial_paths = TrialPaths(
-            Path.cwd() / "jobs" / "environment" / f"{trial_name}__{uuid4().hex[:8]}"
+        rollout_name = rollout_name or task_path.name
+        rollout_paths = RolloutPaths(
+            rollout_dir=Path.cwd()
+            / "jobs"
+            / "environment"
+            / f"{rollout_name}__{uuid4().hex[:8]}"
         )
-        trial_paths.mkdir()
+        rollout_paths.mkdir()
         inner = _create_environment(
-            environment_type=backend,
+            sandbox_type=sandbox,
             task=task,
             task_path=task_path,
-            trial_name=trial_name,
-            trial_paths=trial_paths,
+            rollout_name=rollout_name,
+            rollout_paths=rollout_paths,
         )
-        return cls(inner=inner, task_path=task_path, backend=backend)
+        return cls(inner=inner, task_path=task_path, sandbox=sandbox)
 
     @property
     def inner(self) -> Any:
@@ -92,7 +93,7 @@ class Environment:
 
     @property
     def task(self) -> Any:
-        from harbor.models.task.task import Task
+        from benchflow.task import Task
 
         return Task(self.task_path)
 
@@ -125,7 +126,7 @@ class Environment:
         await self.stop()
 
     def __repr__(self) -> str:
-        return f"Environment({self.task_path.name!r}, backend={self.backend!r})"
+        return f"Environment({self.task_path.name!r}, sandbox={self.sandbox!r})"
 
 
 @dataclass
@@ -138,11 +139,17 @@ class Agent:
 
     @property
     def config(self) -> AgentConfig | None:
-        return AGENTS.get(self.name)
+        try:
+            return resolve_agent(self.name)
+        except KeyError:
+            return None
 
     @property
     def launch_cmd(self) -> str:
-        return AGENT_LAUNCH.get(self.name, self.name)
+        config = self.config
+        if config is None:
+            return self.name
+        return config.launch_cmd
 
     def __repr__(self) -> str:
         return f"Agent({self.name!r}, model={self.model!r})"
@@ -159,7 +166,7 @@ class RuntimeConfig:
     reward_stream: bool = True
     timeout: int = 900
     jobs_dir: str | Path = "jobs"
-    trial_name: str | None = None
+    rollout_name: str | None = None
     skills_dir: str | Path | None = None
     context_root: str | Path | None = None
     pre_agent_hooks: list | None = None
@@ -174,20 +181,20 @@ class RuntimeResult:
     not only in-memory objects.
 
     Guaranteed artifacts (when run completes):
-        trial_dir/result.json       — reward, timing, error, metadata
-        trial_dir/rewards.jsonl     — terminal + rubric reward events
-        trial_dir/trajectory/       — ACP trajectory JSONL
-        trial_dir/timing.json       — phase-level timing
-        trial_dir/config.json       — run configuration snapshot
-        trial_dir/prompts.json      — prompts sent to agent
+        rollout_dir/result.json       — reward, timing, error, metadata
+        rollout_dir/rewards.jsonl     — terminal + rubric reward events
+        rollout_dir/trajectory/       — ACP trajectory JSONL
+        rollout_dir/timing.json       — phase-level timing
+        rollout_dir/config.json       — run configuration snapshot
+        rollout_dir/prompts.json      — prompts sent to agent
 
     Optional artifacts:
-        trial_dir/scene_trajectory.jsonl — inter-agent messages (multi-agent)
-        trial_dir/snapshots/             — checkpoint refs (if snapshot_policy != "none")
+        rollout_dir/scene_trajectory.jsonl — inter-agent messages (multi-agent)
+        rollout_dir/snapshots/             — checkpoint refs (if snapshot_policy != "none")
     """
 
     task_name: str
-    trial_name: str
+    rollout_name: str
     reward: float | None
     rewards: dict | None
     n_tool_calls: int
@@ -196,7 +203,7 @@ class RuntimeResult:
     trajectory: list[dict]
     messages: list[dict] = field(default_factory=list)
     snapshots: list[str] = field(default_factory=list)
-    trial_dir: Path | None = None
+    rollout_dir: Path | None = None
     started_at: datetime | None = None
     finished_at: datetime | None = None
 
@@ -214,7 +221,7 @@ class RuntimeResult:
 
         return RunResult(
             task_name=self.task_name,
-            trial_name=self.trial_name,
+            rollout_name=self.rollout_name,
             rewards=self.rewards,
             trajectory=self.trajectory,
             agent="",
@@ -241,7 +248,7 @@ class Runtime:
     Usage::
 
         agent = Agent("gemini", model="gemini-3.1-flash-lite-preview")
-        env = Environment.from_task("tasks/X", backend="daytona")
+        env = Environment.from_task("tasks/X", sandbox="daytona")
         runtime = Runtime(env, agent)
         result = await runtime.execute()
     """
@@ -262,10 +269,11 @@ class Runtime:
         Runtime is the stable user-facing surface. Trial owns the
         decomposed lifecycle phases underneath.
         """
-        from benchflow.trial import Scene, Trial, TrialConfig
+        from benchflow._types import Scene
+        from benchflow.rollout import Rollout, RolloutConfig
 
         config = self.config
-        trial_config = TrialConfig(
+        trial_config = RolloutConfig(
             task_path=self.env.task_path,
             scenes=[
                 Scene.single(
@@ -274,7 +282,7 @@ class Runtime:
                     skills_dir=config.skills_dir,
                 )
             ],
-            environment=self.env.backend,
+            environment=self.env.sandbox,
             sandbox_user=config.sandbox_user,
             sandbox_locked_paths=config.sandbox_locked_paths,
             sandbox_setup_timeout=config.sandbox_setup_timeout,
@@ -287,13 +295,13 @@ class Runtime:
             skills_dir=config.skills_dir,
         )
 
-        trial = await Trial.create(trial_config)
-        run_result = await trial.run()
+        rollout = await Rollout.create(trial_config)
+        run_result = await rollout.run()
 
         reward = (run_result.rewards or {}).get("reward")
         return RuntimeResult(
             task_name=run_result.task_name,
-            trial_name=run_result.trial_name,
+            rollout_name=run_result.rollout_name,
             reward=reward,
             rewards=run_result.rewards,
             n_tool_calls=run_result.n_tool_calls,
@@ -328,11 +336,16 @@ async def run(
         # 3. Agent name string (simplest)
         result = await bf.run("gemini", task_path="tasks/X")
     """
-    from benchflow.trial import Scene, Trial, TrialConfig
+    from benchflow._types import Scene
+    from benchflow.rollout import Rollout, RolloutConfig
 
-    if isinstance(subject, TrialConfig):
-        trial = await Trial.create(subject)
-        return await trial.run()
+    if isinstance(subject, RolloutConfig):
+        if subject.skill_mode == "self-gen":
+            from benchflow.self_gen import run_self_gen
+
+            return await run_self_gen(subject)
+        rollout = await Rollout.create(subject)
+        return await rollout.run()
 
     if isinstance(subject, Agent):
         if not isinstance(env, Environment):
@@ -347,7 +360,7 @@ async def run(
         if task_path is None:
             raise ValueError("task_path required when passing agent name as string")
         rc = config or RuntimeConfig()
-        trial_config = TrialConfig(
+        rollout_config = RolloutConfig(
             task_path=Path(task_path),
             scenes=[Scene.single(agent=subject, model=model)],
             environment=env if isinstance(env, str) else "docker",
@@ -361,7 +374,7 @@ async def run(
             agent=subject,
             model=model,
         )
-        trial = await Trial.create(trial_config)
-        return await trial.run()
+        rollout = await Rollout.create(rollout_config)
+        return await rollout.run()
 
     raise TypeError(f"Unsupported subject type: {type(subject).__name__}")

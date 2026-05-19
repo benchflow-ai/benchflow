@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from benchflow._agent_setup import apply_web_tool_policy, deploy_skills, install_agent
+from benchflow.agents.install import apply_web_tool_policy, deploy_skills, install_agent
 from benchflow.agents.registry import AgentConfig
 from benchflow.models import AgentInstallError
 
@@ -56,6 +56,34 @@ async def test_deploy_skills_symlinks_agent_skill_paths_instead_of_copying(tmp_p
 
 
 @pytest.mark.asyncio
+async def test_deploy_skills_can_skip_task_declared_skills(tmp_path):
+    """Self-gen starts from the no-skill task path, even if task.toml declares skills."""
+    env = MagicMock()
+    env.exec = AsyncMock(return_value=MagicMock(return_code=0, stdout=""))
+    env.upload_dir = AsyncMock()
+    agent_cfg = AgentConfig(
+        name="test-agent",
+        install_cmd="true",
+        launch_cmd="true",
+        skill_paths=["$HOME/.agents/skills"],
+    )
+
+    await deploy_skills(
+        env=env,
+        task_path=tmp_path,
+        skills_dir=None,
+        agent_cfg=agent_cfg,
+        sandbox_user="agent",
+        agent_cwd="/app",
+        task=_make_task("/opt/benchflow/skills"),
+        include_task_skills=False,
+    )
+
+    env.upload_dir.assert_not_called()
+    env.exec.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_deploy_skills_uploads_runtime_skills_and_links_shared_tree(tmp_path):
     env = MagicMock()
     env.exec = AsyncMock(return_value=MagicMock(return_code=0, stdout=""))
@@ -89,6 +117,54 @@ async def test_deploy_skills_uploads_runtime_skills_and_links_shared_tree(tmp_pa
     assert "ln -sfn /skills /workspace/skills" in distributed_link_cmd
     assert "/root/.agents/skills" not in distributed_link_cmd
     assert "/app/skills" not in distributed_link_cmd
+
+
+@pytest.mark.asyncio
+async def test_deploy_skills_skips_runtime_upload_when_dockerfile_already_injected(
+    tmp_path,
+):
+    """Guards the fix from PR #230 for issue #11 against the regression where
+    skills got deployed twice — once baked into the image via
+    `_inject_skills_into_dockerfile`, and again at runtime via
+    `env.upload_dir(..., "/skills")`. The runtime cp failed with
+    `cannot overwrite directory "/skills/<entry>" with non-directory "/skills"`
+    when the source contained a symlink colliding with a baked entry.
+
+    The detection works only when `deploy_skills` receives the *effective*
+    task path — the temp copy whose Dockerfile actually carries the
+    injected `COPY _deps/skills /skills/` line.
+    """
+    env = MagicMock()
+    env.exec = AsyncMock(return_value=MagicMock(return_code=0, stdout=""))
+    env.upload_dir = AsyncMock()
+    agent_cfg = AgentConfig(
+        name="test-agent",
+        install_cmd="true",
+        launch_cmd="true",
+        skill_paths=["$HOME/.agents/skills"],
+    )
+    effective_task_path = tmp_path / "task"
+    (effective_task_path / "environment").mkdir(parents=True)
+    (effective_task_path / "environment" / "Dockerfile").write_text(
+        "FROM python:3.12\nCOPY _deps/skills /skills/\n"
+    )
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+
+    await deploy_skills(
+        env=env,
+        task_path=effective_task_path,
+        skills_dir=skills_dir,
+        agent_cfg=agent_cfg,
+        sandbox_user="agent",
+        agent_cwd="/workspace",
+        task=_make_task(None),
+    )
+
+    env.upload_dir.assert_not_called()
+    env.exec.assert_awaited_once()
+    link_cmd = env.exec.await_args.args[0]
+    assert "ln -sfn /skills /home/agent/.agents/skills" in link_cmd
 
 
 @pytest.mark.asyncio
@@ -304,7 +380,11 @@ async def test_install_agent_writes_command_stdout_and_stderr_on_failure(
     assert log_path.exists()
     log_text = log_path.read_text()
     assert log_text.startswith("$ ")
-    assert "uv tool install openhands --python 3.12" in log_text
+    assert (
+        "uv tool install --force --refresh "
+        "--from 'git+https://github.com/OpenHands/OpenHands-CLI.git@main' "
+        "openhands --python 3.12" in log_text
+    )
     assert "=== stderr ===" in log_text
     assert "uv: command not found" in log_text
     assert err.stdout == log_text

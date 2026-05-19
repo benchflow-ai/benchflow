@@ -11,7 +11,7 @@ filesystem. The Scene scheduler manages turn-taking and outbox routing.
 
 Usage:
     python -m benchmarks.followup_bench.runner \
-        --task-dir .ref/terminal-bench-2/tasks/some-task \
+        --task-dir tasks/terminal-bench-2/some-task \
         --coder gemini --coder-model gemini-3.1-flash-lite-preview \
         --reviewer gemini --reviewer-model gemini-3-pro-preview \
         --env daytona
@@ -25,11 +25,12 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from benchflow._acp_run import connect_acp, execute_prompts
 from benchflow._agent_setup import install_agent
-from benchflow._scene import Role, Scene
+
+from benchflow.acp.runtime import connect_acp, execute_prompts
 from benchflow.agents.registry import AGENT_LAUNCH, AGENTS
 from benchflow.runtime import Environment
+from benchflow.scenes import Scene, SceneRole
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +63,7 @@ Send your review by creating /app/.outbox/coder.json with:
 If correct, write: {"to": "coder", "content": "LGTM — no changes needed."}"""
 
 
-async def _role_runner(env, role: Role, prompt: str) -> None:
+async def _role_runner(env, role: SceneRole, prompt: str) -> None:
     """Run one agent turn inside the shared sandbox.
 
     Installs the agent (if not already), connects via ACP, sends prompt,
@@ -114,13 +115,13 @@ async def run_followup_task(
     """Run one task with the coder→reviewer→coder Scene flow in a shared sandbox."""
     scene = Scene(
         roles={
-            "coder": Role(
+            "coder": SceneRole(
                 name="coder",
                 agent=coder_agent,
                 model=coder_model,
                 instruction=CODER_INSTRUCTION,
             ),
-            "reviewer": Role(
+            "reviewer": SceneRole(
                 name="reviewer",
                 agent=reviewer_agent,
                 model=reviewer_model,
@@ -136,7 +137,12 @@ async def run_followup_task(
         trajectory = await scene.run(env.inner, _role_runner)
 
     messages = [
-        {"sender": m.sender, "recipient": m.recipient, "content": m.content, "turn": m.turn}
+        {
+            "sender": m.sender,
+            "recipient": m.recipient,
+            "content": m.content,
+            "turn": m.turn,
+        }
         for m in trajectory
     ]
 
@@ -162,14 +168,16 @@ if __name__ == "__main__":
     parser.add_argument("--env", default="daytona")
     args = parser.parse_args()
 
-    result = asyncio.run(run_followup_task(
-        task_path=args.task_dir,
-        coder_agent=args.coder,
-        coder_model=args.coder_model,
-        reviewer_agent=args.reviewer,
-        reviewer_model=args.reviewer_model,
-        environment=args.env,
-    ))
+    result = asyncio.run(
+        run_followup_task(
+            task_path=args.task_dir,
+            coder_agent=args.coder,
+            coder_model=args.coder_model,
+            reviewer_agent=args.reviewer,
+            reviewer_model=args.reviewer_model,
+            environment=args.env,
+        )
+    )
 
     print(f"Task: {result.task_name}")
     print(f"Rounds: {result.n_rounds}")

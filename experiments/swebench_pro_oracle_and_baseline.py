@@ -42,9 +42,20 @@ logger = logging.getLogger(__name__)
 sys.path.insert(0, str(Path(__file__).resolve().parents[0].parent / "src"))
 
 import benchflow as bf
-from benchflow.trial import Scene, TrialConfig
+from benchflow.rollout import RolloutConfig, Scene
 
-SWEBENCH_PRO_ROOT = Path(__file__).resolve().parents[1] / ".ref" / "swebenchpro"
+_swebench_pro_root: Path | None = None
+
+
+def get_swebench_pro_root() -> Path:
+    """Lazily resolve swebenchpro tasks (avoids network I/O at import time)."""
+    global _swebench_pro_root
+    if _swebench_pro_root is None:
+        from benchflow._utils.benchmark_repos import resolve_source
+
+        _swebench_pro_root = resolve_source("benchflow-ai/swebenchpro")
+    return _swebench_pro_root
+
 
 TASKS = [
     "instance_ansible__ansible-0ea40e09d1b35bcb69ff4d9cecf3d0defa4b36e8-v30a923fb5c164d6cd18280c02422f75e611e8fb2",
@@ -77,7 +88,7 @@ async def run_oracle(task_path: Path, backend: str) -> dict:
     logger.info(f"[oracle] {label}: starting")
     t0 = time.time()
 
-    config = TrialConfig(
+    config = RolloutConfig(
         task_path=task_path,
         agent="oracle",
         environment=backend,
@@ -92,8 +103,7 @@ async def run_oracle(task_path: Path, backend: str) -> dict:
         if result.rewards:
             reward = result.rewards.get("reward", result.rewards.get("exact_match"))
         logger.info(
-            f"[oracle] {label}: reward={reward} "
-            f"error={result.error!r} ({elapsed:.0f}s)"
+            f"[oracle] {label}: reward={reward} error={result.error!r} ({elapsed:.0f}s)"
         )
         return {
             "experiment": "oracle",
@@ -118,15 +128,13 @@ async def run_oracle(task_path: Path, backend: str) -> dict:
         }
 
 
-async def run_baseline(
-    task_path: Path, agent: str, model: str, backend: str
-) -> dict:
+async def run_baseline(task_path: Path, agent: str, model: str, backend: str) -> dict:
     """Run single-round baseline (no progressive disclosure) on a single task."""
     label = task_label(task_path.name)
     logger.info(f"[baseline] {label}: starting ({agent}/{model})")
     t0 = time.time()
 
-    config = TrialConfig(
+    config = RolloutConfig(
         task_path=task_path,
         scenes=[Scene.single(agent=agent, model=model)],
         environment=backend,
@@ -175,12 +183,14 @@ async def main():
     parser = argparse.ArgumentParser(description="SWE-bench Pro oracle + baseline")
     parser.add_argument("--oracle-only", action="store_true", help="Skip baseline")
     parser.add_argument("--agent", default=os.environ.get("AGENT", "gemini"))
-    parser.add_argument("--model", default=os.environ.get("MODEL", "gemini-3.1-pro-preview"))
+    parser.add_argument(
+        "--model", default=os.environ.get("MODEL", "gemini-3.1-pro-preview")
+    )
     parser.add_argument("--backend", default=os.environ.get("BACKEND", "docker"))
     parser.add_argument("--concurrency", type=int, default=2)
     args = parser.parse_args()
 
-    task_paths = [SWEBENCH_PRO_ROOT / t for t in TASKS]
+    task_paths = [get_swebench_pro_root() / t for t in TASKS]
     missing = [p for p in task_paths if not p.exists()]
     if missing:
         logger.error(f"Missing tasks: {[p.name for p in missing]}")
@@ -200,9 +210,7 @@ async def main():
         async with sem:
             return await run_oracle(tp, args.backend)
 
-    oracle_results = await asyncio.gather(
-        *[bounded_oracle(tp) for tp in task_paths]
-    )
+    oracle_results = await asyncio.gather(*[bounded_oracle(tp) for tp in task_paths])
     results.extend(oracle_results)
 
     oracle_pass = sum(1 for r in oracle_results if r["reward"] == 1.0)
@@ -249,14 +257,18 @@ async def main():
     print("\n" + "=" * 60)
     print("SUMMARY")
     print("=" * 60)
-    print(f"{'Experiment':<12} {'Task':<15} {'Reward':<10} {'Tools':<8} {'Time':<8} {'Error'}")
+    print(
+        f"{'Experiment':<12} {'Task':<15} {'Reward':<10} {'Tools':<8} {'Time':<8} {'Error'}"
+    )
     print("-" * 80)
     for r in results:
         reward_str = str(r.get("reward", "—"))
         tools_str = str(r.get("n_tool_calls", "—"))
         time_str = f"{r.get('elapsed_s', 0):.0f}s"
         error_str = (r.get("error", "") or "")[:40]
-        print(f"{r['experiment']:<12} {r['task']:<15} {reward_str:<10} {tools_str:<8} {time_str:<8} {error_str}")
+        print(
+            f"{r['experiment']:<12} {r['task']:<15} {reward_str:<10} {tools_str:<8} {time_str:<8} {error_str}"
+        )
 
 
 if __name__ == "__main__":

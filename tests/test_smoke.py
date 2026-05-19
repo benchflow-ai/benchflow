@@ -7,7 +7,7 @@ Bare ``pytest tests/test_smoke.py`` will silently report "1 deselected" because
 the ``addopts = "-m 'not live'"`` filter in pyproject.toml applies to direct
 file invocation too.
 
-Importing ``benchflow.sdk`` triggers ``_patch_harbor_dind()`` at sdk.py:135.
+Importing ``benchflow.sdk`` triggers ``_patch_dind()`` at sdk.py:135.
 That patch is gated on ``/.dockerenv`` and runs ``docker info`` with a 5s
 timeout, swallowing all exceptions — safe but worth flagging.
 
@@ -31,7 +31,7 @@ from pathlib import Path
 import pytest
 
 from benchflow import SDK
-from benchflow._env_setup import _detect_dind_mount
+from benchflow.sandbox.setup import _detect_dind_mount
 
 HELLO_TASK = Path(__file__).parent / "examples" / "hello-world-task"
 SMOKE_JOBS_BASE = Path(__file__).parent / ".smoke-jobs"
@@ -95,9 +95,9 @@ def smoke_jobs_dir(tmp_path: Path) -> Iterator[Path]:
 
     Inside DinD (devcontainer that shares the host docker socket): pytest's
     ``tmp_path`` is on the container's overlay/tmpfs and has no host-side
-    equivalent, so Harbor's ``HOST_VERIFIER_LOGS_PATH`` bind mount silently
+    equivalent, so the ``HOST_VERIFIER_LOGS_PATH`` bind mount silently
     maps to nothing — verifier writes to the bind, the host loses them, and
-    ``reward.txt`` never appears. ``_patch_harbor_dind`` only translates paths
+    ``reward.txt`` never appears. ``_patch_dind`` only translates paths
     under the workspace mount, so we use a workspace-rooted directory in that
     case.
 
@@ -125,7 +125,8 @@ def smoke_jobs_dir(tmp_path: Path) -> Iterator[Path]:
 
 @pytest.mark.live
 @pytest.mark.asyncio
-async def test_hello_world_smoke(smoke_prereqs: bool, smoke_jobs_dir: Path) -> None:
+@pytest.mark.usefixtures("smoke_prereqs")
+async def test_hello_world_smoke(smoke_jobs_dir: Path) -> None:
     """End-to-end: claude-agent-acp + Haiku 4.5 solves hello-world-task.
 
     Asserts the minimal set that proves the orchestration pipeline ran:
@@ -151,7 +152,7 @@ async def test_hello_world_smoke(smoke_prereqs: bool, smoke_jobs_dir: Path) -> N
     # trial_dir = jobs_dir / job_name / trial_name (sdk.py:166).
     # job_name is an auto-generated timestamp, so glob for it.
     matches = list(
-        smoke_jobs_dir.glob(f"*/{result.trial_name}/trajectory/acp_trajectory.jsonl")
+        smoke_jobs_dir.glob(f"*/{result.rollout_name}/trajectory/acp_trajectory.jsonl")
     )
     assert len(matches) == 1, f"expected exactly one trajectory, found {matches}"
     assert matches[0].stat().st_size > 0

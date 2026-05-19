@@ -35,7 +35,7 @@ def _blank_manifest() -> dict[str, bool]:
 
 def _manifest_env(manifest: dict[str, bool]):
     """Return an async side_effect that serves a manifest for cat calls."""
-    from benchflow._sandbox import _SNAPSHOT_MANIFEST
+    from benchflow.sandbox.lockdown import _SNAPSHOT_MANIFEST
 
     def side_effect(cmd, **kwargs):
         if f"cat {_SNAPSHOT_MANIFEST}" in cmd:
@@ -126,7 +126,7 @@ class TestHardenSequence:
         env = _make_env(side_effect=_manifest_env(_blank_manifest()))
         mock_v = MagicMock()
         mock_v.verify = AsyncMock(return_value=MagicMock(rewards={"reward": 1.0}))
-        with patch("benchflow.sdk.Verifier", return_value=mock_v):
+        with patch("benchflow.task.verifier.Verifier", return_value=mock_v):
             await sdk._verify(
                 env, task, tp, {}, sandbox_user="agent", workspace="/testbed"
             )
@@ -165,7 +165,7 @@ class TestHardenSequence:
         sdk, env, task, tp = harness
         mock_v = MagicMock()
         mock_v.verify = AsyncMock(return_value=MagicMock(rewards={"reward": 1.0}))
-        with patch("benchflow.sdk.Verifier", return_value=mock_v):
+        with patch("benchflow.task.verifier.Verifier", return_value=mock_v):
             await sdk._verify(env, task, tp, {}, sandbox_user=None)
 
         cmds = [c.args[0] for c in env.exec.call_args_list]
@@ -178,13 +178,13 @@ class TestHardenSequence:
     @pytest.mark.asyncio
     async def test_task_env_overrides_win(self, harness):
         """Task-level verifier env vars override defaults except pinned invariants."""
-        from benchflow._sandbox import VERIFIER_ENV
+        from benchflow.sandbox.lockdown import VERIFIER_ENV
 
         sdk, env, task, tp = harness
         task.config.verifier.env = {"PATH": "/custom/bin", "MY_VAR": "hello"}
         mock_v = MagicMock()
         mock_v.verify = AsyncMock(return_value=MagicMock(rewards={"reward": 1.0}))
-        with patch("benchflow.sdk.Verifier", return_value=mock_v):
+        with patch("benchflow.task.verifier.Verifier", return_value=mock_v):
             await sdk._verify(env, task, tp, {})
         injected = task.config.verifier.env
         assert injected["PATH"] == VERIFIER_ENV["PATH"]
@@ -201,7 +201,7 @@ class TestVerifierDirWipe:
     @pytest.mark.asyncio
     async def test_wipe_recreates_verifier_dir(self):
         """rm -rf, mkdir -p, and chmod 777 are all in one atomic call; it runs as root."""
-        from benchflow._sandbox import harden_before_verify
+        from benchflow.sandbox.lockdown import harden_before_verify
 
         env = _make_env()
         await harden_before_verify(env, _make_task(), sandbox_user=None)
@@ -223,7 +223,7 @@ class TestVerifierDirWipe:
 
     def test_cleanup_cmd_no_maxdepth(self):
         """CLEANUP_CMD must not limit find depth so deeply nested conftest.py is caught."""
-        from benchflow._sandbox import CLEANUP_CMD
+        from benchflow.sandbox.lockdown import CLEANUP_CMD
 
         assert "-maxdepth" not in CLEANUP_CMD, (
             "CLEANUP_CMD has a -maxdepth limit — conftest.py nested beyond that "
@@ -232,14 +232,14 @@ class TestVerifierDirWipe:
 
     def test_cleanup_cmd_purges_py_from_tmp(self):
         """CLEANUP_CMD must delete *.py from /tmp and /var/tmp (module-shadow via non-workspace cwd)."""
-        from benchflow._sandbox import CLEANUP_CMD
+        from benchflow.sandbox.lockdown import CLEANUP_CMD
 
         assert "find /tmp /var/tmp -name '*.py' -delete" in CLEANUP_CMD
 
     @pytest.mark.asyncio
     async def test_cleanup_cmd_runs_as_root(self):
         """CLEANUP_CMD must run as root so find can traverse all dirs."""
-        from benchflow._sandbox import harden_before_verify
+        from benchflow.sandbox.lockdown import harden_before_verify
 
         env = _make_env()
         await harden_before_verify(env, _make_task(), sandbox_user=None)
@@ -261,7 +261,7 @@ class TestBuildConfigSnapshot:
     @pytest.mark.asyncio
     async def test_absent_file_recorded_as_false(self):
         """Absent file → false in manifest (no __ABSENT__ string in content)."""
-        from benchflow._sandbox import _snapshot_build_config
+        from benchflow.sandbox.lockdown import _snapshot_build_config
 
         env = _make_env(side_effect=_snapshot_side_effect())
 
@@ -277,7 +277,7 @@ class TestBuildConfigSnapshot:
     @pytest.mark.asyncio
     async def test_present_file_recorded_as_true(self):
         """Present file → true in manifest; cp command was issued."""
-        from benchflow._sandbox import _snapshot_build_config
+        from benchflow.sandbox.lockdown import _snapshot_build_config
 
         env = _make_env(
             side_effect=_snapshot_side_effect(present=frozenset({"setup.py"}))
@@ -293,7 +293,7 @@ class TestBuildConfigSnapshot:
     @pytest.mark.asyncio
     async def test_restore_removes_absent_file(self):
         """Absent entry in manifest → rm -f for destination; runs as root."""
-        from benchflow._sandbox import _restore_build_config
+        from benchflow.sandbox.lockdown import _restore_build_config
 
         manifest = _blank_manifest()
         env = _make_env(side_effect=_restore_side_effect(manifest))
@@ -314,7 +314,7 @@ class TestBuildConfigSnapshot:
     @pytest.mark.asyncio
     async def test_restore_overwrites_agent_modified_file(self):
         """Present entry in manifest → cp + chown root:root + chmod 644; runs as root."""
-        from benchflow._sandbox import _restore_build_config
+        from benchflow.sandbox.lockdown import _restore_build_config
 
         manifest = {**_blank_manifest(), "setup.py": True}
         env = _make_env(side_effect=_restore_side_effect(manifest))
@@ -339,7 +339,7 @@ class TestBuildConfigSnapshot:
     async def test_restore_severs_symlink_before_cp(self, fname):
         """rm -f dst must precede cp for every build-config file so a symlink the agent
         planted is severed, not followed. Parametrized over all 8 tracked files."""
-        from benchflow._sandbox import _restore_build_config
+        from benchflow.sandbox.lockdown import _restore_build_config
 
         manifest = {**_blank_manifest(), fname: True}
         env = _make_env(side_effect=_restore_side_effect(manifest))
@@ -362,7 +362,7 @@ class TestBuildConfigSnapshot:
     @pytest.mark.asyncio
     async def test_harden_calls_restore_before_cleanup(self):
         """All restore ops (manifest read + per-file deletes) complete before CLEANUP_CMD."""
-        from benchflow._sandbox import _SNAPSHOT_MANIFEST, harden_before_verify
+        from benchflow.sandbox.lockdown import _SNAPSHOT_MANIFEST, harden_before_verify
 
         env = _make_env(side_effect=_manifest_env(_blank_manifest()))
         task = _make_task()
@@ -397,7 +397,7 @@ class TestBuildConfigSnapshot:
         to write build artifacts (pip install -e ., setup.py install).  Content
         integrity is guaranteed by the rsync restore, not by read-only permissions.
         """
-        from benchflow._sandbox import _SNAPSHOT_MANIFEST, harden_before_verify
+        from benchflow.sandbox.lockdown import _SNAPSHOT_MANIFEST, harden_before_verify
 
         env = _make_env(side_effect=_manifest_env(_blank_manifest()))
         task = _make_task()
@@ -438,7 +438,7 @@ class TestBuildConfigSnapshot:
     @pytest.mark.asyncio
     async def test_workspace_ops_skipped_when_workspace_none(self):
         """No workspace chown or chmod when workspace=None (nothing to operate on)."""
-        from benchflow._sandbox import harden_before_verify
+        from benchflow.sandbox.lockdown import harden_before_verify
 
         env = _make_env()
         await harden_before_verify(env, _make_task(), sandbox_user=None, workspace=None)
@@ -456,7 +456,7 @@ class TestBuildConfigSnapshot:
         are reset to pre-agent canonical state from the snapshot copy, not just the
         11-file build-config subset.  rsync is tried first; cp -a is the fallback.
         """
-        from benchflow._sandbox import harden_before_verify
+        from benchflow.sandbox.lockdown import harden_before_verify
 
         env = _make_env(side_effect=_manifest_env(_blank_manifest()))
         await harden_before_verify(
@@ -495,7 +495,7 @@ class TestBuildConfigSnapshot:
 
         If they diverge, the parametrized symlink-sever test silently skips new files.
         """
-        from benchflow._sandbox import _BUILD_CONFIG_FILES
+        from benchflow.sandbox.lockdown import _BUILD_CONFIG_FILES
 
         assert set(_ALL_BUILD_FILES) == set(_BUILD_CONFIG_FILES), (
             "Update _ALL_BUILD_FILES at the top of this test file to match "
@@ -508,7 +508,7 @@ class TestBuildConfigSnapshot:
     @pytest.mark.asyncio
     async def test_harden_skips_restore_by_default(self):
         """No destructive workspace restore unless restore_workspace=True."""
-        from benchflow._sandbox import _SNAPSHOT_MANIFEST, harden_before_verify
+        from benchflow.sandbox.lockdown import _SNAPSHOT_MANIFEST, harden_before_verify
 
         env = _make_env()
         await harden_before_verify(
@@ -522,7 +522,7 @@ class TestBuildConfigSnapshot:
     @pytest.mark.asyncio
     async def test_snapshot_dir_chmod_700(self):
         """Snapshot dir is created with chmod 700 so sandbox_user cannot tamper."""
-        from benchflow._sandbox import _snapshot_build_config
+        from benchflow.sandbox.lockdown import _snapshot_build_config
 
         env = _make_env(side_effect=_snapshot_side_effect())
 
@@ -540,7 +540,7 @@ class TestVerifierUserHarden:
 
     def test_verifier_env_contains_pip_isolation_vars(self):
         """VERIFIER_ENV includes pip isolation vars and HOME=/root."""
-        from benchflow._sandbox import VERIFIER_ENV
+        from benchflow.sandbox.lockdown import VERIFIER_ENV
 
         assert VERIFIER_ENV["PYTHONNOUSERSITE"] == "1"
         assert VERIFIER_ENV["PIP_USER"] == "0"
@@ -550,7 +550,7 @@ class TestVerifierUserHarden:
     @pytest.mark.asyncio
     async def test_refresh_workspace_called_after_restore_before_cleanup(self):
         """_refresh_verifier_workspace runs after restore and before CLEANUP_CMD."""
-        from benchflow._sandbox import _SNAPSHOT_MANIFEST, harden_before_verify
+        from benchflow.sandbox.lockdown import _SNAPSHOT_MANIFEST, harden_before_verify
 
         env = _make_env(side_effect=_manifest_env(_blank_manifest()))
         task = _make_task(user=None)
@@ -578,7 +578,7 @@ class TestVerifierUserHarden:
     @pytest.mark.asyncio
     async def test_workspace_restore_is_opt_in(self):
         """Default verification keeps legitimate workspace-answer changes."""
-        from benchflow._sandbox import harden_before_verify
+        from benchflow.sandbox.lockdown import harden_before_verify
 
         env = _make_env(side_effect=_manifest_env(_blank_manifest()))
         task = _make_task(user=None)
@@ -603,7 +603,7 @@ class TestVerifierEnv:
 
     def test_env_contract(self):
         """Closed-set check — any new key must be added here deliberately."""
-        from benchflow._sandbox import VERIFIER_ENV
+        from benchflow.sandbox.lockdown import VERIFIER_ENV
 
         addopts = VERIFIER_ENV["PYTEST_ADDOPTS"]
 
@@ -649,17 +649,17 @@ class TestVerifierEnv:
 
     def test_plugin_autoload_disabled(self):
         """PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 must be set in VERIFIER_ENV source."""
-        from benchflow._sandbox import VERIFIER_ENV
+        from benchflow.sandbox.lockdown import VERIFIER_ENV
 
         assert VERIFIER_ENV.get("PYTEST_DISABLE_PLUGIN_AUTOLOAD") == "1"
 
     @pytest.mark.asyncio
     async def test_distro_pip_env_fedora(self):
         """Fedora-like ID triggers PIP_PREFIX=/usr/local."""
-        from benchflow._sandbox import _distro_pip_env
+        from benchflow.sandbox.lockdown import _distro_pip_env
 
         env = _make_env(
-            side_effect=lambda *a, **kw: MagicMock(
+            side_effect=lambda *_args, **_kwargs: MagicMock(
                 stdout='ID=fedora\nID_LIKE="rhel centos"\n', stderr="", exit_code=0
             )
         )
@@ -668,7 +668,7 @@ class TestVerifierEnv:
     @pytest.mark.asyncio
     async def test_container_plugin_discovery_merged_into_addopts(self):
         """Plugins discovered from root-owned container packages appear as -p flags."""
-        from benchflow._sandbox import harden_before_verify
+        from benchflow.sandbox.lockdown import harden_before_verify
 
         def side_effect(cmd, **kwargs):
             if "_DISCOVER_PYTEST" in str(cmd) or "importlib.metadata" in str(cmd):
@@ -688,7 +688,10 @@ class TestVerifierEnv:
     @pytest.mark.asyncio
     async def test_plugin_discovery_failure_graceful(self):
         """If container-side discovery fails, hardening proceeds without extra plugins."""
-        from benchflow._sandbox import _build_pytest_addopts, harden_before_verify
+        from benchflow.sandbox.lockdown import (
+            _build_pytest_addopts,
+            harden_before_verify,
+        )
 
         def side_effect(cmd, **kwargs):
             if "importlib.metadata" in str(cmd):
@@ -706,10 +709,10 @@ class TestVerifierEnv:
     @pytest.mark.asyncio
     async def test_distro_pip_env_ubuntu(self):
         """Ubuntu must NOT get PIP_PREFIX (their downstream pip already prefixes)."""
-        from benchflow._sandbox import _distro_pip_env
+        from benchflow.sandbox.lockdown import _distro_pip_env
 
         env = _make_env(
-            side_effect=lambda *a, **kw: MagicMock(
+            side_effect=lambda *_args, **_kwargs: MagicMock(
                 stdout="ID=ubuntu\nID_LIKE=debian\n", stderr="", exit_code=0
             )
         )
@@ -717,7 +720,7 @@ class TestVerifierEnv:
 
     def test_trusted_path_merge_keeps_validated_extras(self):
         """Validated image PATH entries are prepended once to the safe base."""
-        from benchflow._sandbox import _merge_trusted_verifier_path
+        from benchflow.sandbox.lockdown import _merge_trusted_verifier_path
 
         merged = _merge_trusted_verifier_path(
             [
@@ -735,7 +738,7 @@ class TestVerifierEnv:
 
     def test_blocked_path_prefixes_include_runtime_and_sandbox_paths(self):
         """Runtime, workspace, and sandbox-user dirs are excluded from PATH extras."""
-        from benchflow._sandbox import _blocked_verifier_path_prefixes
+        from benchflow.sandbox.lockdown import _blocked_verifier_path_prefixes
 
         blocked = _blocked_verifier_path_prefixes("agent", "/workspace")
 
@@ -750,7 +753,7 @@ class TestVerifierEnv:
         """Container-side PATH validation receives JSON-encoded policy inputs."""
         import shlex
 
-        from benchflow._sandbox import _trusted_path_extras_cmd
+        from benchflow.sandbox.lockdown import _trusted_path_extras_cmd
 
         cmd = _trusted_path_extras_cmd("/root/.local/bin:/tmp/bin", ("/tmp",))
         parts = shlex.split(cmd)
@@ -763,7 +766,7 @@ class TestVerifierEnv:
     @pytest.mark.asyncio
     async def test_harden_preserves_trusted_container_path_extras(self):
         """Verifier PATH includes trusted image-level additions from the container."""
-        from benchflow._sandbox import harden_before_verify
+        from benchflow.sandbox.lockdown import harden_before_verify
 
         def side_effect(cmd, **kwargs):
             if cmd == "printenv PATH":
@@ -793,7 +796,7 @@ class TestVerifierEnv:
     @pytest.mark.asyncio
     async def test_task_env_path_cannot_override_hardened_path(self):
         """Task env keeps ordinary vars but cannot replace verifier PATH."""
-        from benchflow._sandbox import harden_before_verify
+        from benchflow.sandbox.lockdown import harden_before_verify
 
         def side_effect(cmd, **kwargs):
             if cmd == "printenv PATH":
@@ -829,7 +832,7 @@ class TestVerifierEnv:
         Task env is applied via dict.update(), which would normally overwrite the key.
         The production code must re-pin it to '1' after the merge.
         """
-        from benchflow._sandbox import harden_before_verify
+        from benchflow.sandbox.lockdown import harden_before_verify
 
         env = _make_env(side_effect=_manifest_env(_blank_manifest()))
         task = _make_task()
@@ -844,7 +847,7 @@ class TestVerifierEnv:
     @pytest.mark.asyncio
     async def test_per_task_plugins_appended_to_addopts(self):
         """pytest_plugins from task.toml are translated to -p flags."""
-        from benchflow._sandbox import harden_before_verify
+        from benchflow.sandbox.lockdown import harden_before_verify
 
         env = _make_env(side_effect=_manifest_env(_blank_manifest()))
         task = _make_task()
@@ -861,7 +864,10 @@ class TestVerifierEnv:
     @pytest.mark.parametrize("plugins", [None, []])
     async def test_no_extra_addopts_when_no_plugins(self, plugins):
         """PYTEST_ADDOPTS is not modified when pytest_plugins is None or empty list."""
-        from benchflow._sandbox import _build_pytest_addopts, harden_before_verify
+        from benchflow.sandbox.lockdown import (
+            _build_pytest_addopts,
+            harden_before_verify,
+        )
 
         env = _make_env(side_effect=_manifest_env(_blank_manifest()))
         task = _make_task()
@@ -880,7 +886,10 @@ class TestVerifierEnv:
         The rebuild must happen unconditionally — not only when task env is populated.
         Without this, a None task env would leave PYTEST_ADDOPTS unset or lost.
         """
-        from benchflow._sandbox import _build_pytest_addopts, harden_before_verify
+        from benchflow.sandbox.lockdown import (
+            _build_pytest_addopts,
+            harden_before_verify,
+        )
 
         env = _make_env()
         task = _make_task()
@@ -900,7 +909,10 @@ class TestVerifierEnv:
         Without the re-pin the task could strip -c /dev/null and --confcutdir,
         re-enabling pyproject.toml discovery and conftest walk-up.
         """
-        from benchflow._sandbox import _build_pytest_addopts, harden_before_verify
+        from benchflow.sandbox.lockdown import (
+            _build_pytest_addopts,
+            harden_before_verify,
+        )
 
         env = _make_env()
         task = _make_task()
@@ -914,7 +926,7 @@ class TestVerifierEnv:
     @pytest.mark.asyncio
     async def test_pytest_addopts_task_override_with_plugins(self):
         """Even when the task overrides PYTEST_ADDOPTS, plugins are appended to the hardened base."""
-        from benchflow._sandbox import VERIFIER_ENV, harden_before_verify
+        from benchflow.sandbox.lockdown import VERIFIER_ENV, harden_before_verify
 
         env = _make_env()
         task = _make_task()
@@ -930,7 +942,7 @@ class TestVerifierEnv:
     @pytest.mark.asyncio
     async def test_ctrf_plugin_inferred_from_test_script(self, tmp_path):
         """test.sh using --ctrf gets ctrf loaded even with plugin autoload disabled."""
-        from benchflow._sandbox import harden_before_verify
+        from benchflow.sandbox.lockdown import harden_before_verify
 
         tests_dir = tmp_path / "tests"
         tests_dir.mkdir()
@@ -951,7 +963,7 @@ class TestVerifierEnv:
     @pytest.mark.asyncio
     async def test_ctrf_plugin_inference_ignores_comments(self, tmp_path):
         """Commented --ctrf text does not opt a task into the plugin."""
-        from benchflow._sandbox import harden_before_verify
+        from benchflow.sandbox.lockdown import harden_before_verify
 
         tests_dir = tmp_path / "tests"
         tests_dir.mkdir()
@@ -968,7 +980,7 @@ class TestVerifierEnv:
     @pytest.mark.asyncio
     async def test_rootdir_follows_workspace(self):
         """--rootdir is set to the workspace path, not hardcoded /app."""
-        from benchflow._sandbox import harden_before_verify
+        from benchflow.sandbox.lockdown import harden_before_verify
 
         env = _make_env()
         task = _make_task()
@@ -980,7 +992,7 @@ class TestVerifierEnv:
     @pytest.mark.asyncio
     async def test_rootdir_defaults_to_app_when_no_workspace(self):
         """Without a workspace, --rootdir falls back to /app (Harbor convention)."""
-        from benchflow._sandbox import harden_before_verify
+        from benchflow.sandbox.lockdown import harden_before_verify
 
         env = _make_env()
         task = _make_task()
@@ -992,7 +1004,7 @@ class TestVerifierEnv:
     @pytest.mark.parametrize("workspace", ["/app", "/testbed", "/root", "/workspace"])
     async def test_rootdir_matches_various_workspaces(self, workspace):
         """--rootdir tracks the workspace for any conventional directory."""
-        from benchflow._sandbox import harden_before_verify
+        from benchflow.sandbox.lockdown import harden_before_verify
 
         env = _make_env()
         task = _make_task()
@@ -1002,7 +1014,7 @@ class TestVerifierEnv:
 
     def test_build_pytest_addopts_security_invariants(self):
         """_build_pytest_addopts always includes the security-critical flags."""
-        from benchflow._sandbox import _build_pytest_addopts
+        from benchflow.sandbox.lockdown import _build_pytest_addopts
 
         for ws in [None, "/app", "/root", "/testbed"]:
             addopts = _build_pytest_addopts(workspace=ws)
@@ -1013,7 +1025,7 @@ class TestVerifierEnv:
 
     def test_build_pytest_addopts_with_plugins(self):
         """_build_pytest_addopts appends plugin flags after rootdir."""
-        from benchflow._sandbox import _build_pytest_addopts
+        from benchflow.sandbox.lockdown import _build_pytest_addopts
 
         addopts = _build_pytest_addopts(
             workspace="/root", plugin_flags="-p ctrf -p xdist"
@@ -1024,14 +1036,14 @@ class TestVerifierEnv:
 
     def test_build_pytest_addopts_empty_workspace_falls_back(self):
         """Empty string workspace is falsy — falls back to /app like None."""
-        from benchflow._sandbox import _build_pytest_addopts
+        from benchflow.sandbox.lockdown import _build_pytest_addopts
 
         assert "--rootdir=/app" in _build_pytest_addopts(workspace="")
         assert "--rootdir=/app" in _build_pytest_addopts(workspace=None)
 
     def test_build_pytest_addopts_no_trailing_space_without_plugins(self):
         """No trailing whitespace when plugin_flags is empty."""
-        from benchflow._sandbox import _build_pytest_addopts
+        from benchflow.sandbox.lockdown import _build_pytest_addopts
 
         addopts = _build_pytest_addopts(workspace="/root", plugin_flags="")
         assert not addopts.endswith(" ")
@@ -1039,14 +1051,14 @@ class TestVerifierEnv:
 
     def test_build_pytest_addopts_quotes_special_chars(self):
         """Workspace paths with spaces are shell-quoted."""
-        from benchflow._sandbox import _build_pytest_addopts
+        from benchflow.sandbox.lockdown import _build_pytest_addopts
 
         addopts = _build_pytest_addopts(workspace="/my workspace")
         assert "--rootdir='/my workspace'" in addopts
 
     def test_build_pytest_addopts_single_rootdir(self):
         """Exactly one --rootdir flag in the output, no duplicates."""
-        from benchflow._sandbox import _build_pytest_addopts
+        from benchflow.sandbox.lockdown import _build_pytest_addopts
 
         addopts = _build_pytest_addopts(workspace="/root", plugin_flags="-p ctrf")
         assert addopts.count("--rootdir") == 1
@@ -1058,7 +1070,7 @@ class TestVerifierEnv:
         The re-pin in harden_before_verify rebuilds PYTEST_ADDOPTS entirely,
         so any task-injected rootdir is discarded.
         """
-        from benchflow._sandbox import harden_before_verify
+        from benchflow.sandbox.lockdown import harden_before_verify
 
         env = _make_env()
         task = _make_task()
@@ -1072,7 +1084,7 @@ class TestVerifierEnv:
     @pytest.mark.asyncio
     async def test_successive_harden_calls_use_latest_workspace(self):
         """Multiple harden_before_verify calls update rootdir to match the workspace."""
-        from benchflow._sandbox import harden_before_verify
+        from benchflow.sandbox.lockdown import harden_before_verify
 
         env = _make_env()
         task = _make_task()
@@ -1092,7 +1104,7 @@ class TestVerifierEnv:
         workspace/__pycache__/*.pyc and have it execute despite PYTHONDONTWRITEBYTECODE=1
         (which only blocks new writes, not reading existing bytecode).
         """
-        from benchflow._sandbox import VERIFIER_ENV
+        from benchflow.sandbox.lockdown import VERIFIER_ENV
 
         assert VERIFIER_ENV.get("PYTHONPYCACHEPREFIX") == "/nonexistent"
 
@@ -1104,7 +1116,7 @@ class TestVerifierEnv:
         survives; the target is outside the workspace and remains writable,
         so agent code still executes on import during the verify phase.
         """
-        from benchflow._sandbox import harden_before_verify
+        from benchflow.sandbox.lockdown import harden_before_verify
 
         env = _make_env(side_effect=_manifest_env(_blank_manifest()))
         await harden_before_verify(
@@ -1147,7 +1159,7 @@ class TestVerifierEnv:
         Defense-in-depth against PYTHONPYCACHEPREFIX bypass: even if the prefix
         redirect is circumvented, pre-staged .pyc files are physically gone.
         """
-        from benchflow._sandbox import harden_before_verify
+        from benchflow.sandbox.lockdown import harden_before_verify
 
         env = _make_env(side_effect=_manifest_env(_blank_manifest()))
         await harden_before_verify(
@@ -1185,7 +1197,7 @@ class TestVerifierEnv:
         DJANGO_SETTINGS_MODULE: Django imports the named module at startup.
         CELERY_CONFIG_MODULE: Celery imports and executes the named module.
         """
-        from benchflow._sandbox import VERIFIER_ENV
+        from benchflow.sandbox.lockdown import VERIFIER_ENV
 
         assert VERIFIER_ENV["PYTHONBREAKPOINT"] == "0"
         assert VERIFIER_ENV["COVERAGE_PROCESS_START"] == ""
@@ -1195,7 +1207,7 @@ class TestVerifierEnv:
     @pytest.mark.asyncio
     async def test_code_execution_env_vars_repinned_after_task_merge(self):
         """Task env must not be able to override code-execution env vars."""
-        from benchflow._sandbox import harden_before_verify
+        from benchflow.sandbox.lockdown import harden_before_verify
 
         env = _make_env()
         task = _make_task()
@@ -1280,18 +1292,24 @@ class TestHardeningOptOuts:
     """Per-task [verifier.hardening] opt-outs from task.toml."""
 
     def test_defaults_when_no_task_dir(self):
-        from benchflow._sandbox import HARDENING_DEFAULTS, _read_hardening_config
+        from benchflow.sandbox.lockdown import (
+            HARDENING_DEFAULTS,
+            _read_hardening_config,
+        )
 
         assert _read_hardening_config(None) == HARDENING_DEFAULTS
 
     def test_defaults_when_no_hardening_section(self, tmp_path):
-        from benchflow._sandbox import HARDENING_DEFAULTS, _read_hardening_config
+        from benchflow.sandbox.lockdown import (
+            HARDENING_DEFAULTS,
+            _read_hardening_config,
+        )
 
         (tmp_path / "task.toml").write_text("[verifier]\ntimeout_sec = 60\n")
         assert _read_hardening_config(tmp_path) == HARDENING_DEFAULTS
 
     def test_opt_out_cleanup_conftests(self, tmp_path):
-        from benchflow._sandbox import _read_hardening_config
+        from benchflow.sandbox.lockdown import _read_hardening_config
 
         (tmp_path / "task.toml").write_text(
             "[verifier.hardening]\ncleanup_conftests = false\n"
@@ -1300,7 +1318,10 @@ class TestHardeningOptOuts:
         assert cfg["cleanup_conftests"] is False
 
     def test_unknown_key_logged_not_applied(self, tmp_path, caplog):
-        from benchflow._sandbox import HARDENING_DEFAULTS, _read_hardening_config
+        from benchflow.sandbox.lockdown import (
+            HARDENING_DEFAULTS,
+            _read_hardening_config,
+        )
 
         (tmp_path / "task.toml").write_text("[verifier.hardening]\nbogus_flag = true\n")
         cfg = _read_hardening_config(tmp_path)
@@ -1308,7 +1329,7 @@ class TestHardeningOptOuts:
         assert any("bogus_flag" in r.message for r in caplog.records)
 
     def test_invalid_value_type_rejected(self, tmp_path, caplog):
-        from benchflow._sandbox import _read_hardening_config
+        from benchflow.sandbox.lockdown import _read_hardening_config
 
         (tmp_path / "task.toml").write_text(
             '[verifier.hardening]\ncleanup_conftests = "false"\n'
@@ -1318,7 +1339,7 @@ class TestHardeningOptOuts:
         assert cfg["cleanup_conftests"] is True
 
     def test_build_cleanup_includes_conftest_by_default(self):
-        from benchflow._sandbox import _build_cleanup_cmd
+        from benchflow.sandbox.lockdown import _build_cleanup_cmd
 
         cmd = _build_cleanup_cmd()
         assert "find / -name conftest.py" in cmd
@@ -1326,7 +1347,7 @@ class TestHardeningOptOuts:
         assert "sitecustomize.py" in cmd
 
     def test_build_cleanup_skips_conftest_when_disabled(self):
-        from benchflow._sandbox import _build_cleanup_cmd
+        from benchflow.sandbox.lockdown import _build_cleanup_cmd
 
         cmd = _build_cleanup_cmd({"cleanup_conftests": False})
         assert "find / -name conftest.py" not in cmd
@@ -1341,10 +1362,10 @@ class TestSandboxFailureModes:
     @pytest.mark.asyncio
     async def test_plugin_discovery_bad_json_graceful(self):
         """Malformed JSON from container plugin discovery falls back gracefully."""
-        from benchflow._sandbox import _discover_pytest_plugin_flags
+        from benchflow.sandbox.lockdown import _discover_pytest_plugin_flags
 
         env = _make_env(
-            side_effect=lambda cmd, **kw: MagicMock(
+            side_effect=lambda _cmd, **_kwargs: MagicMock(
                 stdout="not valid json", stderr="", exit_code=0
             )
         )
@@ -1355,7 +1376,10 @@ class TestSandboxFailureModes:
     @pytest.mark.asyncio
     async def test_trusted_path_extras_malformed_json_falls_back(self):
         """Malformed JSON from the container-side PATH probe falls back to SAFE_VERIFIER_PATH."""
-        from benchflow._sandbox import _SAFE_VERIFIER_PATH, _trusted_verifier_path
+        from benchflow.sandbox.lockdown import (
+            _SAFE_VERIFIER_PATH,
+            _trusted_verifier_path,
+        )
 
         async def fake_exec(cmd, user=None, timeout_sec=None):
             result = MagicMock()

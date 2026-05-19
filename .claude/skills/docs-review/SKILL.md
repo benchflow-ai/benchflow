@@ -28,7 +28,7 @@ The user may say `/docs-review` with an optional argument:
 - `docs/getting-started.md`
 - `docs/labs.md`
 - `README.md`
-- `CLAUDE.md`
+- `AGENTS.md`
 
 ### Light-touch (checks 1, 2, 6 only — drift, stale refs, link integrity)
 
@@ -56,7 +56,7 @@ entries. Cross-check:
 
 - `ls src/benchflow/`, `ls src/benchflow/agents/`, `ls src/benchflow/acp/`,
   `ls src/benchflow/cli/` against trees in `architecture.md` and `Key
-  modules` blocks in README/CLAUDE.
+  modules` blocks in README/AGENTS.
 - Module descriptions — does `sdk.py` still own what the doc claims?
   Does `job.py` still drive the run loop? Spot-check first ~40 lines of
   each named module.
@@ -120,7 +120,7 @@ for benchflow:
 
 Target state: `architecture.md` is the sole deep reference for internals,
 `cli-reference.md` for commands, `task-authoring.md` for task YAML /
-verifier shape. README and CLAUDE.md link to them instead of duplicating.
+verifier shape. README and AGENTS.md link to them instead of duplicating.
 
 ### 5. Cross-doc alignment
 
@@ -153,8 +153,8 @@ All markdown links resolve:
 - **README.md**: outward-facing only. Install / quickstart / one-screen
   architecture pointer. No full internals tree (use `Key modules` + link
   to `docs/architecture.md`). No deep rationale.
-- **CLAUDE.md**: AI entry-point. Stays compact (~50 lines max — it's
-  always loaded into Claude's context). Links to design docs rather than
+- **AGENTS.md**: AI entry-point. Stays compact (~25 lines max — it's
+  often loaded into agents' context). Links to design docs rather than
   inlining them. Encodes conventions, not reference material.
 - **docs/architecture.md**: sole deep reference for internals. All module
   descriptions, full project tree, SDK phases, registry pattern, error
@@ -233,7 +233,7 @@ Stale:
 
 Polish:
 - README.md:98-134 — full src/ tree duplicates docs/architecture.md:12-38
-- CLAUDE.md:14-22 — Setup block duplicates docs/getting-started.md; consider linking
+- AGENTS.md:14-22 — Setup block duplicates docs/getting-started.md; consider linking
 
 Reply with which to fix, or "all".
 ```

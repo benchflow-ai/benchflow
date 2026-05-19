@@ -50,7 +50,7 @@ Route changed files by path:
 
 ## Pass 0 — correctness gates (unless `--fast`)
 
-Run in parallel Bash calls. CI gates all four per `CLAUDE.md`, so this skill mirrors CI:
+Run in parallel Bash calls. CI gates all four per `AGENTS.md`, so this skill mirrors CI:
 
 - `.venv/bin/ruff format --check src/ tests/` — formatting.
 - `.venv/bin/ruff check src/ tests/` — lint.

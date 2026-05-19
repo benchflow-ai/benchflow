@@ -1,5 +1,4 @@
-# Task Authoring Guide
-
+# Authoring tasks
 A BenchFlow task packages an instruction, a sandboxed environment, and a verifier into a directory that BenchFlow runs and scores automatically.
 
 ---
@@ -44,11 +43,11 @@ timeout_sec = 120            # optional (default 600)
 cpus            = 1          # default 1
 memory_mb       = 2048       # default 2048
 storage_mb      = 10240      # default 10240
-allow_internet  = false      # default true; disables agent web use
+allow_internet  = false      # default true
 env             = { OPENAI_API_KEY = "${OPENAI_API_KEY}" }  # host vars to inject
 ```
 
-**Service-backed tasks** — BenchFlow ships a small service registry for task-local APIs such as Gmail, Slack, Calendar, Docs, and Drive. The current runner does not auto-start services just because a Dockerfile references a binary. For Python-driven runs, start services explicitly with `pre_agent_hooks=build_service_hooks([...])`; for CLI-only task authoring, keep services inside the task's own Dockerfile/startup scripts until a dedicated service declaration is wired through the CLI.
+**Service-backed tasks** — BenchFlow ships a small service registry for task-local APIs such as Gmail, Slack, Calendar, Docs, and Drive. The runner does not auto-start services just because a Dockerfile references a binary. For Python-driven runs, start services explicitly with `pre_agent_hooks=build_service_hooks([...])`; for CLI-only task authoring, keep services inside the task's own Dockerfile/startup scripts until a dedicated service declaration is wired through the CLI.
 
 **Install tooling to shared prefixes, not `/root`** — when a task image ships Node.js, Python tools, or agent binaries that the sandbox user must execute, install them to `/usr/local/bin`, `/usr/local/lib`, or `/opt`, not `/root/.nvm` or `/root/.local/bin`. `setup_sandbox_user()` creates the non-root user, prepares small config/auth dirs, and chowns the workspace — it does not clone `/root` into the sandbox home. Legacy images that already install tools under `/root` still work via a narrow symlink fallback, but shared prefixes are the supported path. Pre-creating the sandbox user in the Dockerfile is an optional speedup, not a requirement.
 
@@ -66,9 +65,9 @@ The first prompt sent to the agent. Write it as you would for a skilled develope
 **Multi-turn prompts** — use a Scene with multiple Turns. A `None` prompt means "use `instruction.md`":
 
 ```python
-from benchflow.trial import TrialConfig, Scene, Role, Turn
+from benchflow.rollout import RolloutConfig, Scene, Role, Turn
 
-config = TrialConfig(
+config = RolloutConfig(
     task_path="tasks/my-task",
     scenes=[Scene(
         roles=[Role("agent", "gemini", "gemini-3.1-flash-lite-preview")],
@@ -86,7 +85,7 @@ result = await bf.run(config)
 
 ## Verifier contract (tests/test.sh)
 
-After the agent finishes, Harbor copies `tests/` to `/tests/` and runs `/tests/test.sh`. The working directory is the Dockerfile's `WORKDIR` (typically `/app/` in the example Dockerfile below).
+After the agent finishes, the BenchFlow runtime copies `tests/` to `/tests/` and runs `/tests/test.sh`. The working directory is the Dockerfile's `WORKDIR` (typically `/app/` in the example Dockerfile below).
 
 **Your script must write a single float (0.0–1.0) to `/logs/verifier/reward.txt`.**
 
@@ -149,26 +148,35 @@ echo "Hello, world!" > /app/hello.txt
 ## CLI
 
 ```bash
-# Scaffold a new task
+# Scaffold a new task from scratch
 bench tasks init my-task
 bench tasks init my-task --no-pytest --no-solution
+
+# Generate tasks from agent traces (personal benchmark curation)
+bench tasks generate --from-local                          # from local Claude Code sessions
+bench tasks generate --from-file session.jsonl --dry-run    # from a JSONL trace file
+bench tasks generate --from-hf opentraces-test -n 50        # from a HuggingFace dataset
+bench tasks list-sources                                    # list known HF trace datasets
 
 # Validate structure
 bench tasks check tasks/my-task/
 
 # Confirm oracle gets reward = 1.0
-bench run tasks/my-task/ --agent oracle --backend docker
+bench eval create --tasks-dir tasks/my-task/ --agent oracle --sandbox docker
 
 # Run a real agent
-bench run tasks/my-task/ --agent gemini --backend daytona
+bench eval create --tasks-dir tasks/my-task/ --agent gemini --sandbox daytona
 
 # Run with task-local skills mounted
-bench run tasks/my-task/ \
+bench eval create \
+  --tasks-dir tasks/my-task/ \
   --agent gemini \
-  --backend daytona \
+  --sandbox daytona \
   --skills-dir tasks/my-task/environment/skills \
-  --ae BENCHFLOW_SKILL_NUDGE=name
+  --agent-env BENCHFLOW_SKILL_NUDGE=name
 ```
+
+`bench tasks generate` converts agent traces (Claude Code sessions, opentraces records, or HuggingFace datasets) into task directories with `task.toml`, `instruction.md`, and a file-existence `test.sh`. Use `--dry-run` to preview traces before generating. See [CLI reference](./reference/cli.md#bench-tasks-generate) for all flags.
 
 `bench tasks check` validates that `task.toml`, `instruction.md` (non-empty), `environment/Dockerfile`, and `tests/` (non-empty) all exist, and that `[agent].timeout_sec` is set. Exits with code 1 on failure (CI-friendly).
 

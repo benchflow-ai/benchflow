@@ -173,7 +173,8 @@ cython_debug/
 
 .DS_Store
 # benchflow
-.ref/
+.cache/
+
 trials/
 jobs/
 .jobs/
@@ -183,3 +184,4 @@ tmp/
 tests/.smoke-jobs/
 context/
 tutorials/
+.playwright-mcp/

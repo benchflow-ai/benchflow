@@ -58,12 +58,12 @@ def _install_python_script(container_path: str, source: str) -> str:
     like `SHIMEOF` or `LAUNCHEREOF` inside the Python source can't collide with
     a heredoc terminator.
 
-    Used by pi-acp and openclaw — both ship a Python launcher/shim baked into
-    install_cmd. Rule of three: if you're adding a THIRD agent that needs this
-    pattern, read both pi_acp_launcher.py and openclaw_acp_shim.py first and
-    reconcile their semantics (env bridging, provider-name derivation, model
-    metadata) before writing a new one. Only consider extracting a shared base
-    after the third data point — divergence is cheap, premature abstraction isn't.
+    Used by pi-acp, openclaw, and harvey-lab-harness — all three ship a Python
+    launcher/shim baked into install_cmd. Semantics differ intentionally:
+    pi and openclaw bridge BENCHFLOW_PROVIDER_* env vars to agent-native
+    config; harvey-lab delegates to Harvey LAB's own model adapters which
+    read provider env vars directly. A shared base is not yet justified —
+    divergence is cheap, premature abstraction isn't.
     """
     encoded = base64.b64encode(source.encode()).decode()
     parent = shlex.quote(str(Path(container_path).parent))
@@ -164,6 +164,9 @@ _OPENCLAW_SHIM = (Path(__file__).parent / "openclaw_acp_shim.py").read_text()
 # Path to the Pi launch wrapper (bridges BENCHFLOW_PROVIDER_* → Pi config)
 _PI_LAUNCHER = (Path(__file__).parent / "pi_acp_launcher.py").read_text()
 
+# Path to the Harvey LAB ACP shim (runs Harvey LAB harness as an ACP agent)
+_HARVEY_LAB_SHIM = (Path(__file__).parent / "harvey_lab_acp_shim.py").read_text()
+
 
 def _json_settings_merge(path: str, mutator: str) -> str:
     """Idempotent JSON-settings merge as a one-line bash snippet."""
@@ -231,7 +234,8 @@ class AgentConfig:
     # "anthropic-messages" | "openai-completions" | "openai-responses" |
     # "" (runtime/native).
     # Used to pick the correct provider endpoint when a provider exposes
-    # multiple (e.g. zai has both anthropic-messages and openai-completions).
+    # multiple (e.g. zai has anthropic-messages, openai-responses, and
+    # openai-completions).
     env_mapping: dict[str, str] = field(default_factory=dict)
     # Maps BENCHFLOW_PROVIDER_* → agent-native env var names.
     # Applied by SDK after provider resolution.
@@ -430,6 +434,35 @@ AGENTS: dict[str, AgentConfig] = {
             'd.setdefault("tools",{})["webfetch"]=False',
         ),
     ),
+    "harvey-lab-harness": AgentConfig(
+        name="harvey-lab-harness",
+        description="Harvey LAB harness — runs the original Harvey LAB agent loop "
+        "(6 tools: bash, read, write, edit, glob, grep) via ACP shim",
+        install_cmd=(
+            "export DEBIAN_FRONTEND=noninteractive && "
+            # Ensure git is available
+            "( command -v git >/dev/null 2>&1 || "
+            "  (apt-get update -qq && apt-get install -y -qq git >/dev/null 2>&1) ) && "
+            # Clone Harvey LAB repo
+            "( [ -d /opt/harvey-labs/.git ] || "
+            "  git clone --depth 1 https://github.com/harveyai/harvey-labs.git /opt/harvey-labs ) && "
+            # Install Harvey LAB's Python dependencies
+            "( command -v pip3 >/dev/null 2>&1 || "
+            "  (apt-get update -qq && apt-get install -y -qq python3-pip >/dev/null 2>&1) ) && "
+            "pip3 install -q anthropic openai google-genai "
+            "python-docx pdfplumber openpyxl python-pptx markitdown pandas && "
+            # Deploy ACP shim
+            + _install_python_script(
+                f"{_BENCHFLOW_BIN_PREFIX}/harvey-lab-acp-shim", _HARVEY_LAB_SHIM
+            )
+        ),
+        launch_cmd=f"HARVEY_LABS_ROOT=/opt/harvey-labs python3 {_BENCHFLOW_BIN_PREFIX}/harvey-lab-acp-shim",
+        protocol="acp",
+        requires_env=[],  # inferred from model at runtime (ANTHROPIC_API_KEY, etc.)
+        # env_mapping intentionally empty — Harvey LAB adapters read
+        # provider-specific env vars (ANTHROPIC_API_KEY, OPENAI_API_KEY,
+        # GOOGLE_API_KEY) directly; auto_inherit_env propagates these.
+    ),
     "openhands": AgentConfig(
         name="openhands",
         description="OpenHands agent via ACP (multi-model, Python-based)",
@@ -438,11 +471,19 @@ AGENTS: dict[str, AgentConfig] = {
         install_cmd=(
             "export DEBIAN_FRONTEND=noninteractive && "
             'export PATH="$HOME/.local/bin:$PATH" && '
-            "( command -v curl >/dev/null 2>&1 || "
-            "  ( apt-get update -qq && "
-            "    apt-get install -y -qq curl ca-certificates >/dev/null 2>&1 ) ) && "
-            "( command -v openhands >/dev/null 2>&1 || ( "
-            "  UV_OK=0; "
+            "( command -v curl >/dev/null 2>&1 && command -v git >/dev/null 2>&1 || "
+            "  if command -v apt-get >/dev/null 2>&1; then "
+            "    apt-get update -qq && "
+            "    apt-get install -y -qq curl ca-certificates git >/dev/null 2>&1; "
+            "  elif command -v dnf >/dev/null 2>&1; then "
+            "    dnf -y install curl ca-certificates git >/dev/null 2>&1; "
+            "  elif command -v apk >/dev/null 2>&1; then "
+            "    apk add --no-cache curl ca-certificates git >/dev/null 2>&1; "
+            "  else "
+            "    echo 'OpenHands GitHub install requires curl and git' >&2; "
+            "    exit 127; "
+            "  fi ) && "
+            "( UV_OK=0; "
             "  if command -v uv >/dev/null 2>&1; then "
             "    UV_VER=$(uv --version 2>/dev/null | awk '{print $2}'); "
             '    if [ -n "$UV_VER" ] && '
@@ -454,10 +495,10 @@ AGENTS: dict[str, AgentConfig] = {
             "    curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null 2>&1 && "
             '    export PATH="$HOME/.local/bin:$PATH"; '
             "  fi && "
-            "  ( uv tool list 2>/dev/null | grep -q '^openhands\\b' || "
-            "    uv tool install openhands --python 3.12 >/dev/null 2>&1 || "
-            "    curl -fsSL https://install.openhands.dev/install.sh | sh >/dev/null 2>&1 ) "
-            ") ) && "
+            "uv tool install --force --refresh "
+            "--from 'git+https://github.com/OpenHands/OpenHands-CLI.git@main' "
+            "openhands --python 3.12 && "
+            "  uv tool list | grep -q '^openhands\\b' ) && "
             # Let sandbox user traverse to uv-managed Python interpreter path.
             "chmod o+x /root /root/.local /root/.local/share "
             "/root/.local/share/uv /root/.local/share/uv/tools 2>/dev/null; "
@@ -538,12 +579,15 @@ def is_vertex_model(model: str) -> bool:
 
 def infer_env_key_for_model(model: str) -> str | None:
     """Infer the required API key environment variable from a model ID."""
-    # Check custom providers first
-    from benchflow.agents.providers import resolve_auth_env
+    # Registered providers are authoritative about auth mode.
+    from benchflow.agents.providers import find_provider, resolve_auth_env
 
-    custom = resolve_auth_env(model)
-    if custom is not None:
-        return custom
+    result = find_provider(model)
+    if result is not None:
+        _, cfg = result
+        if cfg.auth_type != "api_key":
+            return None
+        return resolve_auth_env(model)
     # ADC-based providers and built-in Vertex prefixes
     if is_vertex_model(model):
         return None
@@ -566,16 +610,18 @@ AGENT_ALIASES: dict[str, str] = {
     "openclaw": "openclaw",
     "openhands": "openhands",
     "oh": "openhands",
+    "harvey-lab": "harvey-lab-harness",
 }
 
-VALID_PROTOCOLS = {"acp", "harbor"}
+VALID_PROTOCOLS = {"acp", "acpx"}
 
 
 def parse_agent_spec(spec: str) -> tuple[str, str]:
-    """Parse an agent spec like 'acp/claude-agent-acp' or 'claude'.
+    """Parse an agent spec like 'acp/claude-agent-acp', 'acpx/claude', or 'claude'.
 
     Returns (protocol, agent_name) with alias resolution.
     Bare names default to 'acp' protocol.
+    The 'acpx' protocol routes through the acpx CLI (https://acpx.sh/).
     """
     if "/" in spec:
         protocol, name = spec.split("/", 1)
@@ -586,10 +632,53 @@ def parse_agent_spec(spec: str) -> tuple[str, str]:
     return protocol, name
 
 
+_ACPX_INSTALL = (
+    f"{_NODE_INSTALL} && "
+    f'export PATH="{_JS_AGENT_PATH}" && '
+    f"( command -v acpx >/dev/null 2>&1 || "
+    f"{_BENCHFLOW_NODE_PREFIX}/bin/npm install -g acpx@latest ) "
+)
+
+
+def _acpx_wrap(config: AgentConfig) -> AgentConfig:
+    """Wrap an agent config to launch via acpx instead of direct ACP.
+
+    acpx (https://acpx.sh/) is a headless CLI client for ACP that adds
+    persistent sessions, crash recovery, and structured NDJSON output.
+    The underlying agent's install, env, and credentials are preserved.
+    """
+    acpx_agent_name = config.name
+    for alias, canonical in AGENT_ALIASES.items():
+        if canonical == config.name:
+            acpx_agent_name = alias
+            break
+
+    return AgentConfig(
+        name=f"acpx:{config.name}",
+        install_cmd=f"{config.install_cmd} && {_ACPX_INSTALL}",
+        launch_cmd=(
+            f'export PATH="{_JS_AGENT_PATH}" && acpx {acpx_agent_name} --approve-all'
+        ),
+        protocol="acp",
+        requires_env=config.requires_env,
+        description=f"{config.description} (via acpx)",
+        skill_paths=config.skill_paths,
+        install_timeout=config.install_timeout,
+        env_mapping=config.env_mapping,
+        credential_files=config.credential_files,
+        home_dirs=config.home_dirs,
+        acp_model_format=config.acp_model_format,
+        subscription_auth=config.subscription_auth,
+        supports_acp_set_model=config.supports_acp_set_model,
+        disallow_web_tools_setup_cmd=config.disallow_web_tools_setup_cmd,
+        disallow_web_tools_launch_suffix=config.disallow_web_tools_launch_suffix,
+    )
+
+
 def resolve_agent(spec: str) -> AgentConfig:
     """Resolve an agent spec to an AgentConfig.
 
-    Supports: bare name, alias, protocol/name.
+    Supports: bare name, alias, protocol/name, acpx/name.
     Raises KeyError with suggestions for unknown agents.
     """
     protocol, name = parse_agent_spec(spec)
@@ -599,28 +688,20 @@ def resolve_agent(spec: str) -> AgentConfig:
             f"Unknown protocol: {protocol!r}. Valid: {', '.join(sorted(VALID_PROTOCOLS))}"
         )
 
-    if protocol == "harbor":
-        return AgentConfig(
-            name=name,
-            install_cmd="",
-            launch_cmd="",
-            protocol="harbor",
-            requires_env=[],
-            description=f"Harbor agent: {name}",
+    if name not in AGENTS:
+        from difflib import get_close_matches
+
+        close = get_close_matches(name, list(AGENTS.keys()), n=1, cutoff=0.6)
+        if close:
+            raise KeyError(f"Unknown agent: {name!r}. Did you mean: {close[0]!r}?")
+        raise KeyError(
+            f"Unknown agent: {name!r}. Available: {', '.join(sorted(AGENTS.keys()))}"
         )
 
-    if name in AGENTS:
-        return AGENTS[name]
-
-    # Fuzzy suggestion
-    from difflib import get_close_matches
-
-    close = get_close_matches(name, list(AGENTS.keys()), n=1, cutoff=0.6)
-    if close:
-        raise KeyError(f"Unknown agent: {name!r}. Did you mean: {close[0]!r}?")
-    raise KeyError(
-        f"Unknown agent: {name!r}. Available: {', '.join(sorted(AGENTS.keys()))}"
-    )
+    config = AGENTS[name]
+    if protocol == "acpx":
+        return _acpx_wrap(config)
+    return config
 
 
 def get_agent(name: str) -> tuple[AgentConfig, str]:

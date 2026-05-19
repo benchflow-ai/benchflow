@@ -5,9 +5,9 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from benchflow.process import LiveProcess
+from benchflow.sandbox.process import LiveProcess
 
-from .transport import Transport
+from .transport import Transport, decode_json_rpc_message
 
 logger = logging.getLogger(__name__)
 
@@ -60,15 +60,14 @@ class ContainerTransport(Transport):
             text = line.decode(errors="replace").strip()
             if not text:
                 continue
-            try:
-                return json.loads(text)
-            except json.JSONDecodeError:
-                # Capture non-JSON output (agent debug logs, errors, warnings)
-                if self._agent_log_file:
-                    self._agent_log_file.write(text + "\n")
-                    self._agent_log_file.flush()
-                logger.debug(f"Non-JSON from container agent: {text[:200]}")
-                continue
+            message = decode_json_rpc_message(text)
+            if message is not None:
+                return message
+            # Capture non-protocol output (agent debug logs, errors, warnings).
+            if self._agent_log_file:
+                self._agent_log_file.write(text + "\n")
+                self._agent_log_file.flush()
+            logger.debug(f"Non-JSON-RPC from container agent: {text[:200]}")
 
     async def close(self) -> None:
         """Terminate the agent process."""

@@ -5,7 +5,7 @@ Negative invariants ("agent X should NOT have feature Y configured") live in
 test_registry_invariants.py — search there for the consolidated tripwire.
 """
 
-from benchflow._agent_env import resolve_provider_env
+from benchflow.agents.env import resolve_provider_env
 from benchflow.agents.providers import PROVIDERS
 from benchflow.agents.registry import AGENTS
 
@@ -26,6 +26,7 @@ class TestEnvMappingField:
 
     def test_codex_acp_has_mapping(self):
         cfg = AGENTS["codex-acp"]
+        assert cfg.api_protocol == "openai-responses"
         assert cfg.env_mapping["BENCHFLOW_PROVIDER_BASE_URL"] == "OPENAI_BASE_URL"
         assert cfg.env_mapping["BENCHFLOW_PROVIDER_API_KEY"] == "OPENAI_API_KEY"
         assert "openai_base_url=$OPENAI_BASE_URL" in cfg.launch_cmd
@@ -59,11 +60,16 @@ class TestOpenHandsConfig:
         assert "$HOME/.agents/skills" in cfg.skill_paths
         assert "$WORKSPACE/.agents/skills" in cfg.skill_paths
 
-    def test_openhands_install_cmd_has_uv_and_binary_fallbacks(self):
+    def test_openhands_install_cmd_forces_github_main(self):
         cfg = AGENTS["openhands"]
-        assert "apt-get install -y -qq curl ca-certificates" in cfg.install_cmd
-        assert "uv tool install openhands --python 3.12" in cfg.install_cmd
-        assert "install.openhands.dev/install.sh" in cfg.install_cmd
+        assert "apt-get install -y -qq curl ca-certificates git" in cfg.install_cmd
+        assert (
+            "uv tool install --force --refresh "
+            "--from 'git+https://github.com/OpenHands/OpenHands-CLI.git@main' "
+            "openhands --python 3.12" in cfg.install_cmd
+        )
+        assert "command -v git" in cfg.install_cmd
+        assert "install.openhands.dev/install.sh" not in cfg.install_cmd
 
     def test_openhands_skips_acp_set_model(self):
         cfg = AGENTS["openhands"]

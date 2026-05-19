@@ -18,11 +18,6 @@ Files
 - ``types.py``        ``LLMRequest`` / ``LLMResponse`` / ``LLMExchange`` /
                       ``Trajectory`` pydantic models — the shared schema
                       both proxy and otel write into.
-- ``atif.py``         **Backlog — not wired.** Agent-agnostic trajectory
-                      interchange format. See CLAUDE.md "Later" section.
-- ``claude_code.py``  **Backlog — not wired.** Converts Claude Code
-                      stream-json output → ATIF. Depends on ``atif.py``.
-
 ACP-native capture itself lives in ``benchflow/_trajectory.py`` (sibling
 module, not in this package), since it consumes ACP session updates
 rather than HTTP / OTLP traffic.

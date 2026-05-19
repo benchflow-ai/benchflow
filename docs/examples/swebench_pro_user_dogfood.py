@@ -20,11 +20,11 @@ Tasks available (oracle-validated 5/5 on 2026-04-24):
 import argparse
 import asyncio
 import logging
-from pathlib import Path
+
+from benchflow.user import FunctionUser, RoundResult
 
 import benchflow as bf
-from benchflow.trial import Scene, TrialConfig
-from benchflow.user import FunctionUser, RoundResult
+from benchflow.rollout import RolloutConfig, Scene
 
 logging.basicConfig(level=logging.INFO, format="%(name)s %(message)s")
 
@@ -41,9 +41,7 @@ SWEBENCH_PRO_TASKS = {
 def make_progressive_user() -> FunctionUser:
     """User that compresses the instruction on round 0 and discloses hints on failure."""
 
-    def progressive(
-        round: int, instruction: str, rr: RoundResult | None
-    ) -> str | None:
+    def progressive(round: int, instruction: str, rr: RoundResult | None) -> str | None:
         # Round 0: terse — first line of the spec.
         if round == 0:
             first_line = instruction.split("\n", 1)[0].strip()
@@ -94,20 +92,19 @@ async def main():
     )
     parser.add_argument("--agent", default="gemini")
     parser.add_argument("--model", default="gemini-3.1-pro-preview")
-    parser.add_argument("--backend", default="daytona")
+    parser.add_argument("--sandbox", default="daytona")
     parser.add_argument("--max-rounds", type=int, default=3)
     args = parser.parse_args()
 
-    task_dir = SWEBENCH_PRO_TASKS[args.task]
-    task_path = Path(".ref/swebenchpro") / task_dir
-    if not task_path.exists():
-        print(f"Task not found: {task_path}")
-        return
+    from benchflow._utils.benchmark_repos import resolve_source
 
-    config = TrialConfig(
+    task_dir = SWEBENCH_PRO_TASKS[args.task]
+    task_path = resolve_source("benchflow-ai/swebenchpro", path=task_dir)
+
+    config = RolloutConfig(
         task_path=task_path,
         scenes=[Scene.single(agent=args.agent, model=args.model)],
-        environment=args.backend,
+        environment=args.sandbox,
         sandbox_user="agent",
         user=make_progressive_user(),
         max_user_rounds=args.max_rounds,
@@ -116,7 +113,7 @@ async def main():
 
     print(f"Progressive disclosure on {args.task}")
     print(f"  Agent:  {args.agent} / {args.model}")
-    print(f"  Backend: {args.backend}")
+    print(f"  Sandbox: {args.sandbox}")
     print(f"  Rounds:  up to {args.max_rounds}")
     print()
 

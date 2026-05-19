@@ -12,8 +12,7 @@ allowed-tools:
 # BenchFlow — Agent Benchmarking
 
 BenchFlow runs AI coding agents against tasks in sandboxed environments and
-scores their output. It combines Harbor (environments, verifier) with ACP
-(multi-turn agent communication).
+scores their output via ACP (Agent Communication Protocol).
 
 Arguments passed: `$ARGUMENTS`
 
@@ -24,130 +23,100 @@ Arguments passed: `$ARGUMENTS`
 ### No args or `status` — show current state
 
 1. Check if benchflow is installed: `uv tool list | grep benchflow`
-2. Check if `.env` exists with API keys
-3. Check available agents: `benchflow agents`
-4. Show recent job results if any exist in `jobs/`
+2. Check if API keys are set (GEMINI_API_KEY, ANTHROPIC_API_KEY, etc.)
+3. Check available agents: `bench agent list`
+4. Show recent eval results if any exist in `evaluations/` or `jobs/`
 5. Point to next action based on state
 
 ### `run <task-path>` — run a single task
 
 ```bash
-source .env
-benchflow run -t <task-path> -a claude-agent-acp -e daytona -m claude-haiku-4-5-20251001
+bench eval create \
+  --tasks-dir <task-path> \
+  --agent gemini \
+  --model gemini-3.1-flash-lite-preview \
+  --sandbox daytona
 ```
 
-Or via SDK:
+Or via Python SDK:
 ```python
 import asyncio
-from benchflow import SDK
+import benchflow as bf
+from benchflow import RolloutConfig, Scene
+from benchflow._utils.benchmark_repos import resolve_source
 
 async def main():
-    sdk = SDK()
-    result = await sdk.run(
-        task_path="<task-path>",
-        agent="claude-agent-acp",
-        model="claude-haiku-4-5-20251001",
+    config = RolloutConfig(
+        task_path=resolve_source("benchflow-ai/skillsbench", path="tasks/edit-pdf"),
+        scenes=[Scene.single(agent="gemini", model="gemini-3.1-flash-lite-preview")],
         environment="daytona",
     )
+    result = await bf.run(config)
     print(f"Reward: {result.rewards}, Tools: {result.n_tool_calls}")
 
 asyncio.run(main())
 ```
 
-API keys are auto-inherited from `os.environ`. No need to pass `agent_env`.
+Note: `resolve_source()` is required for remote repos in the SDK. The CLI
+handles this transparently via `--source-repo` / `--source-path`.
 
-### `job <tasks-dir>` — run a benchmark suite
+API keys are auto-inherited from `os.environ` into the sandbox.
+
+### `eval <tasks-dir>` — run a benchmark suite
 
 ```bash
-benchflow job -t <tasks-dir> -a claude-agent-acp -e daytona -c 64
+bench eval create \
+  --source-repo benchflow-ai/skillsbench \
+  --source-path tasks \
+  --agent gemini \
+  --model gemini-3.1-flash-lite-preview \
+  --sandbox daytona \
+  --concurrency 64
 ```
 
 Or via YAML config:
 ```bash
-benchflow job -f examples/configs/tb2-haiku.yaml
+bench eval create --config benchmarks/harvey-lab/harvey-lab-gemini-flash-lite.yaml
 ```
 
-YAML format (benchflow-native):
+YAML format:
 ```yaml
-tasks_dir: .ref/terminal-bench-2
-jobs_dir: jobs/tb2-haiku
-agent: claude-agent-acp
-model: claude-haiku-4-5-20251001
+source:
+  repo: benchflow-ai/skillsbench
+  path: tasks
+agent: gemini
+model: gemini-3.1-flash-lite-preview
 environment: daytona
 concurrency: 64
 max_retries: 1
 ```
 
-Harbor-compatible YAML also works:
-```yaml
-jobs_dir: jobs
-n_attempts: 2
-orchestrator:
-  n_concurrent_trials: 8
-environment:
-  type: daytona
-agents:
-  - name: claude-agent-acp
-    model_name: anthropic/claude-haiku-4-5-20251001
-datasets:
-  - path: .ref/terminal-bench-2
-```
-
-Multi-turn (adds a recheck prompt):
-```yaml
-tasks_dir: .ref/terminal-bench-2
-jobs_dir: jobs/tb2-multiturn
-agent: claude-agent-acp
-model: claude-haiku-4-5-20251001
-environment: daytona
-concurrency: 64
-prompts:
-  - null  # uses instruction.md
-  - "Review your solution. Check for errors, test it, and fix any issues."
-```
-
 ### `metrics <jobs-dir>` — analyze results
 
 ```bash
-benchflow metrics jobs/tb2-haiku/
-benchflow metrics jobs/tb2-haiku/ --json
+bench eval list jobs/
 ```
 
-SDK:
-```python
-from benchflow import collect_metrics
-metrics = collect_metrics("jobs/tb2-haiku", benchmark="TB2", agent="claude-agent-acp")
-print(metrics.summary())
+### `view <rollout-dir>` — view a trajectory
+
+Results are in `evaluations/<eval-name>/<rollout-name>/` or `jobs/<job-name>/<rollout-name>/`:
 ```
-
-### `view <trial-dir>` — view a trajectory
-
-```bash
-benchflow view jobs/tb2-haiku/<trial-name>/
+rollout-dir/
+├── result.json              # rewards, agent, timing
+├── prompts.json             # prompts sent
+├── trajectory/
+│   └── acp_trajectory.jsonl # tool calls + agent thoughts
+└── verifier/
+    ├── reward.txt           # reward value
+    └── ctrf.json            # test results
 ```
-
-Opens HTML viewer at `http://localhost:8888`.
 
 ### `create-task` — create a new benchmark task
 
-See `skills/benchflow/references/create-task.md` for the full guide.
-
-### `smoke-test` — verify system works
-
-See `skills/benchflow/references/smoke-test.md` for quick and full smoke tests.
-
-### `dogfood` — end-to-end testing prompt
-
-See `skills/benchflow/references/dogfood.md` for the full dogfood script.
-
-### `review` — code review and fix workflow
-
-See `skills/benchflow/references/review-and-test.md` for the council review workflow:
-1. Launch 4 subagent reviewers in parallel (SDK, ACP, Process, Tests)
-2. Synthesize findings, prioritize by severity
-3. Fix bugs, run tests
-4. Smoke test on SkillsBench tasks
-5. Post progress to Discord
+```bash
+bench tasks init my-task
+bench tasks init my-task --no-pytest --no-solution
+```
 
 Quick structure:
 ```
@@ -157,39 +126,44 @@ my-task/
 ├── environment/
 │   └── Dockerfile     # sandbox setup
 ├── tests/
-│   └── test.sh        # verifier → writes to /logs/verifier/reward.txt
+│   └── test.sh        # verifier -> writes to /logs/verifier/reward.txt
 └── solution/          # optional reference solution
 ```
 
 ### `agents` — list available agents
 
 ```bash
-benchflow agents
+bench agent list
 ```
 
-| Agent | Status | Skills |
-|-------|--------|--------|
-| `claude-agent-acp` | Working | `~/.claude/skills/` |
-| `pi-acp` | Working | `~/.claude/skills/` |
-| `openclaw` | Working (via shim) | copies to `<workspace>/skills/` |
-| `codex-acp` | Registered | needs OPENAI_API_KEY |
-| `gemini` | Registered | needs GOOGLE_API_KEY |
+| Agent | Protocol | Auth |
+|-------|----------|------|
+| `gemini` | ACP | GEMINI_API_KEY or host login |
+| `claude-agent-acp` (alias: `claude`) | ACP | ANTHROPIC_API_KEY or host login |
+| `codex-acp` (alias: `codex`) | ACP | OPENAI_API_KEY or host login |
+| `opencode` | ACP | inferred from model |
+| `openhands` (alias: `oh`) | ACP | LLM_API_KEY |
+| `harvey-lab-harness` (alias: `harvey-lab`) | ACP | Provider key matching model |
+
+Any agent can be prefixed with `acpx/` to run via ACPX (https://acpx.sh/):
+```bash
+bench eval create --tasks-dir tasks/edit-pdf --agent acpx/gemini --model gemini-3.1-flash-lite-preview --sandbox daytona
+```
+
+ACPX is a headless ACP client with persistent sessions and crash recovery.
+The underlying agent's install, env vars, credentials, and skill paths are preserved.
 
 ### `compare` — multi-agent comparison
 
 ```python
 import asyncio
-from benchflow import Job, JobConfig
+from benchflow.evaluation import Evaluation
 
 async def main():
-    for agent in ["claude-agent-acp", "pi-acp", "openclaw"]:
-        job = Job(
-            tasks_dir="path/to/tasks",
-            jobs_dir=f"jobs/compare-{agent}",
-            config=JobConfig(agent=agent, environment="daytona", concurrency=64),
-        )
-        result = await job.run()
-        print(f"{agent}: {result.passed}/{result.total} ({result.score:.1%})")
+    for agent_name in ["claude-agent-acp", "gemini", "opencode"]:
+        eval_obj = Evaluation.from_yaml("benchmarks/harvey-lab/harvey-lab-gemini-flash-lite.yaml")
+        result = await eval_obj.run()
+        print(f"{agent_name}: {result.passed}/{result.total} ({result.score:.1%})")
 
 asyncio.run(main())
 ```
@@ -199,16 +173,18 @@ asyncio.run(main())
 ## Setup
 
 ```bash
-uv tool install benchflow    # or: uv tool install -e . (from source)
-source .env              # ANTHROPIC_API_KEY, DAYTONA_API_KEY
+uv tool install benchflow    # or: uv sync --extra dev --locked (from source)
+export GEMINI_API_KEY=...     # or ANTHROPIC_API_KEY, OPENAI_API_KEY, etc.
+export DAYTONA_API_KEY=...    # for cloud sandboxes
 ```
 
-## Environments
+## Sandboxes
 
-| Environment | Concurrency | Setup |
-|-------------|-------------|-------|
-| `daytona` | 64+ | Set `DAYTONA_API_KEY` in `.env` |
-| `docker` | ~4 | Docker must be running locally |
+| Sandbox | Flag | Best for |
+|---------|------|----------|
+| `docker` | `--sandbox docker` | Local dev, small runs (<=10 tasks) |
+| `daytona` | `--sandbox daytona` | Cloud runs with concurrency (needs DAYTONA_API_KEY) |
+| `modal` | `--sandbox modal` | Serverless, high concurrency (needs Modal auth) |
 
 Use `daytona` for benchmarks. Docker is limited by network exhaustion.
 
@@ -221,49 +197,22 @@ Two approaches for deploying skills:
 COPY skills /root/.claude/skills
 ```
 
-### Runtime deployment via `--skills-dir` (new)
+### Runtime deployment via `--skills-dir`
 ```bash
-benchflow run -t task-dir -a claude-agent-acp --skills-dir skills/ -e daytona
+bench eval create \
+  --tasks-dir task-dir \
+  --agent claude-agent-acp \
+  --sandbox daytona \
+  --skills-dir skills/ \
+  --agent-env BENCHFLOW_SKILL_NUDGE=name
 ```
 
-SDK:
-```python
-result = await sdk.run(
-    task_path="task-dir",
-    agent="claude-agent-acp",
-    skills_dir="skills/",  # uploaded to /skills, symlinked to agent paths
-    environment="daytona",
-)
-```
-
-YAML config:
-```yaml
-tasks_dir: path/to/tasks
-skills_dir: skills/
-agent: claude-agent-acp
-```
-
-Skills are uploaded to `/skills/` in the sandbox and symlinked to:
-- `~/.claude/skills/` (claude-agent-acp, pi-acp)
-- `~/.gemini/skills/` (gemini)
-- `openclaw`: shim copies from `.claude/skills/` → `<workspace>/skills/`
-
-## Output structure
-
-```
-jobs/{job_name}/{trial_name}/
-├── result.json              # rewards, agent, timing
-├── prompts.json             # prompts sent
-├── trajectory/
-│   └── acp_trajectory.jsonl # tool calls + agent thoughts
-└── verifier/
-    ├── reward.txt           # reward value
-    └── ctrf.json            # test results
-```
+Skills are uploaded to `/skills/` in the sandbox and symlinked to agent-specific paths.
 
 ## Tips
 
-- Use `claude-haiku-4-5-20251001` for testing. Use Sonnet for real benchmarks.
-- Jobs resume — re-running the same `jobs_dir` skips completed tasks.
+- Use `gemini-3.1-flash-lite-preview` for testing. Use Pro/Sonnet for real benchmarks.
+- Evaluations resume — re-running the same `jobs_dir` skips completed tasks.
 - `None` in prompts list gets replaced with `instruction.md` content.
 - Partial rewards work (verifier can write `0.5` to reward.txt).
+- GEMINI_API_KEY requires explicit `--agent-env GEMINI_API_KEY=...` in CLI; SDK auto-inherits from os.environ.

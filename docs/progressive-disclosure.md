@@ -1,18 +1,17 @@
-# Progressive Disclosure with `BaseUser`
-
+# Progressive disclosure
 ## TL;DR
 
-`BaseUser` is a Python callback that drives a benchflow trial across multiple rounds. Each round: the callback sees the previous verifier result and decides what to tell the agent next, or stops the loop. No second LLM, no outbox protocol — just a function that knows how to grade and hint.
+`BaseUser` is a Python callback that drives a benchflow rollout across multiple rounds. Each round: the callback sees the previous verifier result and decides what to tell the agent next, or stops the loop. No second LLM, no outbox protocol — just a function that knows how to grade and hint.
 
 It was built for the SWE-bench Pro progressive-disclosure use case: the dataset's instructions are long structured specs that overwhelm agents in a single turn. A `BaseUser` lets you compress the spec for round 0, watch which tests fail, then disclose hints from the spec on subsequent rounds — all driven by deterministic Python, not by another LLM acting as a "user."
 
-It is also benchflow's parity answer to the [Harbor simulated-user proposal (#1316)](https://github.com/harbor-ai/harbor/issues/1316) for the no-second-LLM case. The Harbor proposal required a FastMCP sidecar container; benchflow's `BaseUser` is in-process Python.
+Other agent-eval frameworks model this with a "simulated user" — a second LLM running in a sidecar container that talks to the agent over a side channel. benchflow's `BaseUser` is just in-process Python: no second LLM, no sidecar, no outbox protocol.
 
 ```python
 import benchflow as bf
 from benchflow import FunctionUser, RoundResult
-from benchflow.trial import TrialConfig, Scene
-from pathlib import Path
+from benchflow.rollout import RolloutConfig, Scene
+from benchflow._utils.benchmark_repos import resolve_source
 
 
 def progressive(round: int, instruction: str, rr: RoundResult | None) -> str | None:
@@ -28,8 +27,8 @@ def progressive(round: int, instruction: str, rr: RoundResult | None) -> str | N
     )
 
 
-config = TrialConfig(
-    task_path=Path(".ref/swebenchpro/instance_flipt-io__flipt-..."),
+config = RolloutConfig(
+    task_path=resolve_source("benchflow-ai/swebenchpro", path="instance_flipt-io__flipt-..."),
     scenes=[Scene.single(agent="opencode", model="anthropic/claude-sonnet-4-6")],
     user=FunctionUser(progressive),
     max_user_rounds=3,
@@ -74,13 +73,13 @@ What this run shows and doesn't show:
 - **Per-round soft-verify scored 0.0 even on tasks where the final hardened verify scored 1.0.** Soft-verify runs between rounds without the full hardening sequence (no workspace restore, no process kill so the sandbox stays alive), so its scoring can diverge from the final verifier. The user's hint schedule reacts to soft-verify, not the canonical reward — something to keep in mind when designing the loop.
 - **First-run flake.** ansible's first run hit a transport EOF after 17min and qutebrowser timed out at 50min. Both succeeded on retry. v0.3.3 adds `agent_idle_timeout` (default 600s) and clearer EOF diagnostics so the next time a hang happens the failure is fast and actionable rather than silent.
 
-This is one model on one day, not a published comparison. The notebook at [`docs/examples/swebench_pro_progressive_disclosure.ipynb`](./examples/swebench_pro_progressive_disclosure.ipynb) has the executable cells; raw aggregated results are at [`experiments/swebench-pro-progressive-results.json`](../experiments/swebench-pro-progressive-results.json).
+This is one model on one day, not a published comparison. The notebook at [`examples/swebench_pro_progressive_disclosure.ipynb`](./examples/swebench_pro_progressive_disclosure.ipynb) has the executable cells; raw aggregated results are at [`experiments/swebench-pro-progressive-results.json`](../experiments/swebench-pro-progressive-results.json).
 
 ---
 
-## Where it lives in the trial lifecycle
+## Where it lives in the rollout lifecycle
 
-`BaseUser` plugs into the existing `Trial` lifecycle ([concepts](./concepts.md#trial-lifecycle)) without changing any of the existing phases. When `TrialConfig.user` is set, `Trial._run_user_loop()` replaces the single-pass `connect → execute → disconnect` block with a per-round version:
+`BaseUser` plugs into the existing `Rollout` lifecycle ([concepts](./concepts.md#rollout-lifecycle)) without changing any of the existing phases. When `RolloutConfig.user` is set, `Rollout._run_user_loop()` replaces the single-pass `connect → execute → disconnect` block with a per-round version:
 
 ```
 setup() → start() → install_agent()
@@ -114,9 +113,9 @@ Multi-scene / multi-role configs are not compatible with `User` — the loop ass
 
 ## Soft-verify and full-verify: two different verifiers
 
-Between rounds, benchflow needs to score the agent's progress so the user can react. But the final, end-of-trial verifier does destructive things (kills the agent, restores the workspace, chowns to root) that would prevent the next round from running. So benchflow runs **two** verifier passes:
+Between rounds, benchflow needs to score the agent's progress so the user can react. But the final, end-of-rollout verifier does destructive things (kills the agent, restores the workspace, chowns to root) that would prevent the next round from running. So benchflow runs **two** verifier passes:
 
-| | Soft-verify (between rounds) | Full-verify (end of trial) |
+| | Soft-verify (between rounds) | Full-verify (end of rollout) |
 |---|---|---|
 | Kills agent processes | ❌ no | ✅ yes |
 | Restores workspace from snapshot | ❌ no | ✅ optional, task-driven |
@@ -124,7 +123,7 @@ Between rounds, benchflow needs to score the agent's progress so the user can re
 | Locks down PATH/PYTHONPATH | ✅ yes | ✅ yes |
 | `chmod 777 /logs/verifier` | ✅ yes (so non-root verifier can write) | n/a (root) |
 | Runs verifier | ✅ yes | ✅ yes |
-| Result | feeds `RoundResult.rewards` | the trial's final score |
+| Result | feeds `RoundResult.rewards` | the rollout's final score |
 
 Soft-verify is intentionally weaker than full-verify — losing some score-gaming protection in exchange for keeping the sandbox alive. The cleanup step still purges agent-injected hook files (`CLEANUP_CMD`), so an agent can't plant a `conftest.py` that flips the round score.
 
@@ -194,7 +193,7 @@ async def afn(round, instruction, rr): ...
 user = FunctionUser(afn)
 ```
 
-### `TrialConfig` fields
+### `RolloutConfig` fields
 
 ```python
 user: BaseUser | None = None     # the callback
@@ -208,14 +207,14 @@ oracle_access: bool = False      # expose gold solution to user.setup()
 
 When `oracle_access=True`:
 
-1. Before round 0, the trial reads `/solution/solve.sh` and passes its contents to `user.setup(instruction, solution=...)`.
-2. The trial moves `/solution` → `/solution_oracle_backup` so the agent can't read it during its rounds.
+1. Before round 0, the rollout reads `/solution/solve.sh` and passes its contents to `user.setup(instruction, solution=...)`.
+2. The rollout moves `/solution` → `/solution_oracle_backup` so the agent can't read it during its rounds.
 3. Between rounds, soft-verify temporarily restores `/solution` (some verifiers consult it) then re-hides it.
-4. Before the final `verify()`, the trial permanently restores `/solution`.
+4. Before the final `verify()`, the rollout permanently restores `/solution`.
 
 Step 4 is wrapped in `try/finally` against the user loop: if a round throws, the restore still runs.
 
-> ⚠️ Setting `oracle_access=True` *without* a `User` is a misconfiguration — the solution stays exposed to the agent for the entire trial. benchflow logs a `WARNING` at setup time when this happens.
+> ⚠️ Setting `oracle_access=True` *without* a `User` is a misconfiguration — the solution stays exposed to the agent for the entire rollout. benchflow logs a `WARNING` at setup time when this happens.
 
 Use cases for oracle access:
 - **Dataset generation** — the user has the answer, generates an optimal prompt for the agent
@@ -247,27 +246,27 @@ Unknown keys in `[verifier.hardening]` are warned and ignored. String values for
 
 ## Failure modes
 
-The user loop catches exceptions from `user.run()` and stops, with the exception message stored in `Trial._error`:
+The user loop catches exceptions from `user.run()` and stops, with the exception message stored in `Rollout._error`:
 
 ```
 [User] round 2: prompt='Try again, focusing on...'
 ERROR  user.run() failed at round 2: KeyError: 'spec_section'
 ```
 
-`soft_verify()` between rounds catches its own timeouts and crashes — they surface as `RoundResult.verifier_error`, not as a trial-level failure. The next round still runs and the user can decide what to do.
+`soft_verify()` between rounds catches its own timeouts and crashes — they surface as `RoundResult.verifier_error`, not as a rollout-level failure. The next round still runs and the user can decide what to do.
 
-Trajectory and tool counts are sliced per round from `Trial._trajectory`. The session counters reset on `disconnect()`, so each round's `RoundResult.trajectory` and `n_tool_calls` reflect only that round's events, not cumulative.
+Trajectory and tool counts are sliced per round from `Rollout._trajectory`. The session counters reset on `disconnect()`, so each round's `RoundResult.trajectory` and `n_tool_calls` reflect only that round's events, not cumulative.
 
 ---
 
-## Comparison with multi-agent simulated user (Harbor #1316 parity)
+## Comparison with multi-agent simulated user
 
-benchflow has two patterns for multi-round agent runs. Both are functionally at parity with [Harbor #1316](https://github.com/harbor-ai/harbor/issues/1316) — neither requires a FastMCP sidecar.
+benchflow has two patterns for multi-round agent runs. Neither requires a sidecar container.
 
 | Pattern | What "user" is | When to use |
 |---------|---------------|-------------|
 | **`BaseUser` callback (this doc)** | Python function in the scheduler process | Programmatic, deterministic, rule-based. No second LLM. Cheap. Best for progressive disclosure, curriculum, scripted hints. |
-| **Multi-role Scene with simulated-user role** ([use-cases §1](./use-cases.md#1-interactive-user-simulation-harbor-1316-equivalent)) | Another LLM with full tool access | Open-ended, conversational. The "user" can read files, check outputs, give nuanced feedback. Best when the user's behavior must itself be adaptive or LLM-quality. |
+| **Multi-role Scene with simulated-user role** ([use-cases §1](./use-cases.md#1-interactive-user-simulation)) | Another LLM with full tool access | Open-ended, conversational. The "user" can read files, check outputs, give nuanced feedback. Best when the user's behavior must itself be adaptive or LLM-quality. |
 
 The two coexist. Choose based on whether your "user" needs to think (Scene-based) or just decide (`BaseUser`). For the SWE-bench Pro use case, the disclosure schedule is fixed, the grading is the verifier, and there's nothing for a second LLM to add — `BaseUser` wins on cost and determinism.
 
@@ -275,7 +274,7 @@ The two coexist. Choose based on whether your "user" needs to think (Scene-based
 
 ## Worked examples
 
-- [`docs/examples/swebench_pro_progressive_disclosure.ipynb`](./examples/swebench_pro_progressive_disclosure.ipynb) — the SWE-bench Pro case study, executable end-to-end with the latest oracle/baseline data.
-- [`docs/examples/swebench_pro_user_dogfood.py`](./examples/swebench_pro_user_dogfood.py) — runnable script for any of the 5 SWE-bench Pro tasks. `--task flipt --max-rounds 3`.
-- [`docs/examples/user_dogfood.py`](./examples/user_dogfood.py) — minimal regex-log task with `FunctionUser`, useful as a starting template.
+- [`examples/swebench_pro_progressive_disclosure.ipynb`](./examples/swebench_pro_progressive_disclosure.ipynb) — the SWE-bench Pro case study, executable end-to-end with the latest oracle/baseline data.
+- [`examples/swebench_pro_user_dogfood.py`](./examples/swebench_pro_user_dogfood.py) — runnable script for any of the 5 SWE-bench Pro tasks. `--task flipt --max-rounds 3`.
+- [`examples/user_dogfood.py`](./examples/user_dogfood.py) — minimal edit-pdf task with `FunctionUser`, useful as a starting template.
 - [`experiments/swebench_pro_oracle_and_baseline.py`](../experiments/swebench_pro_oracle_and_baseline.py) — the oracle-validation + baseline experiment script that produced the table above.
