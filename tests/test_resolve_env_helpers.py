@@ -380,7 +380,7 @@ class TestResolveAgentEnvNoModel:
     def test_no_model_codex_access_token_wins_over_host_auth(
         self, monkeypatch, tmp_path
     ):
-        """Guards PR #295: CODEX_ACCESS_TOKEN is already usable auth."""
+        """Guards PR #296: CODEX_ACCESS_TOKEN is already usable auth."""
         for k in ("CODEX_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
             monkeypatch.delenv(k, raising=False)
         codex_dir = tmp_path / ".codex"
@@ -397,7 +397,7 @@ class TestResolveAgentEnvNoModel:
         assert "_BENCHFLOW_SUBSCRIPTION_AUTH" not in result
 
     def test_no_model_codex_api_key_alias_normalizes(self, monkeypatch, tmp_path):
-        """Guards PR #295: CODEX_API_KEY is Codex-native API-key auth."""
+        """Guards PR #296: CODEX_API_KEY is Codex-native API-key auth."""
         for k in ("CODEX_ACCESS_TOKEN", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
             monkeypatch.delenv(k, raising=False)
         self._patch_expanduser(monkeypatch, tmp_path)

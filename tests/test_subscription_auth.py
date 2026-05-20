@@ -176,7 +176,7 @@ class TestResolveAgentEnvSubscription:
         assert result["_BENCHFLOW_SUBSCRIPTION_AUTH"] == "1"
 
     def test_codex_access_token_auth(self, monkeypatch, tmp_path):
-        """Guards PR #295: Blocks-style Codex auth via CODEX_ACCESS_TOKEN."""
+        """Guards PR #296: Blocks-style Codex auth via CODEX_ACCESS_TOKEN."""
         for k in ("CODEX_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
             monkeypatch.delenv(k, raising=False)
         _patch_expanduser(monkeypatch, tmp_path)
@@ -192,7 +192,7 @@ class TestResolveAgentEnvSubscription:
         assert "_BENCHFLOW_SUBSCRIPTION_AUTH" not in result
 
     def test_codex_api_key_auth_alias(self, monkeypatch, tmp_path):
-        """Guards PR #295: CODEX_API_KEY works for native Codex auth."""
+        """Guards PR #296: CODEX_API_KEY works for native Codex auth."""
         for k in ("CODEX_ACCESS_TOKEN", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
             monkeypatch.delenv(k, raising=False)
         _patch_expanduser(monkeypatch, tmp_path)
@@ -211,8 +211,13 @@ class TestResolveAgentEnvSubscription:
     def test_codex_access_token_does_not_auth_custom_provider(
         self, monkeypatch, tmp_path
     ):
-        """Guards PR #295: access tokens are not proxy API keys."""
-        for k in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
+        """Guards PR #296: access tokens are not proxy API keys."""
+        for k in (
+            "CODEX_ACCESS_TOKEN",
+            "CODEX_API_KEY",
+            "OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+        ):
             monkeypatch.delenv(k, raising=False)
         _patch_expanduser(monkeypatch, tmp_path)
 
@@ -221,6 +226,59 @@ class TestResolveAgentEnvSubscription:
                 agent="codex-acp",
                 model="vllm/mock-model",
                 agent_env={"CODEX_ACCESS_TOKEN": "access-token"},
+            )
+
+    @pytest.mark.parametrize(
+        "base_url_key",
+        ["BENCHFLOW_PROVIDER_BASE_URL", "OPENAI_BASE_URL"],
+    )
+    def test_codex_subscription_auth_does_not_auth_custom_base_url(
+        self, monkeypatch, tmp_path, base_url_key
+    ):
+        """Guards PR #296: subscription auth is not custom endpoint API-key auth."""
+        for k in (
+            "CODEX_API_KEY",
+            "OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+        ):
+            monkeypatch.delenv(k, raising=False)
+        _patch_expanduser(monkeypatch, tmp_path)
+
+        with pytest.raises(ValueError, match="OPENAI_API_KEY required"):
+            self._resolve(
+                agent="codex-acp",
+                model="gpt-4o",
+                agent_env={
+                    "CODEX_ACCESS_TOKEN": "access-token",
+                    base_url_key: "http://localhost:8765/v1",
+                },
+            )
+
+    @pytest.mark.parametrize(
+        "base_url_key",
+        ["BENCHFLOW_PROVIDER_BASE_URL", "OPENAI_BASE_URL"],
+    )
+    def test_codex_host_login_does_not_auth_custom_base_url(
+        self, monkeypatch, tmp_path, base_url_key
+    ):
+        """Guards PR #296: host login is not custom endpoint API-key auth."""
+        for k in (
+            "CODEX_ACCESS_TOKEN",
+            "CODEX_API_KEY",
+            "OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+        ):
+            monkeypatch.delenv(k, raising=False)
+        codex_dir = tmp_path / ".codex"
+        codex_dir.mkdir()
+        (codex_dir / "auth.json").write_text('{"tokens": {"access_token": "at"}}')
+        _patch_expanduser(monkeypatch, tmp_path)
+
+        with pytest.raises(ValueError, match="OPENAI_API_KEY required"):
+            self._resolve(
+                agent="codex-acp",
+                model="gpt-4o",
+                agent_env={base_url_key: "http://localhost:8765/v1"},
             )
 
     def test_gemini_subscription_auth(self, monkeypatch, tmp_path):

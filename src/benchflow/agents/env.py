@@ -36,6 +36,9 @@ _EXPLICIT_AGENT_NATIVE_BRIDGE_KEYS = frozenset({"LLM_API_KEY"})
 _BEDROCK_PROXY_PLACEHOLDER_API_KEY = "bedrock-proxy"
 _CODEX_API_KEY_ENV = "CODEX_API_KEY"
 _CODEX_ACCESS_TOKEN_ENV = "CODEX_ACCESS_TOKEN"
+_CUSTOM_OPENAI_ENDPOINT_KEYS = frozenset(
+    {"BENCHFLOW_PROVIDER_BASE_URL", "OPENAI_BASE_URL"}
+)
 
 
 def _normalize_openhands_model(model: str) -> str:
@@ -132,6 +135,42 @@ def _is_codex_native_openai_context(
     return find_provider(model) is None
 
 
+def _has_custom_openai_endpoint(agent_env: dict[str, str]) -> bool:
+    """True when Codex is being pointed at an OpenAI-compatible non-OpenAI URL."""
+    return any(agent_env.get(key) for key in _CUSTOM_OPENAI_ENDPOINT_KEYS)
+
+
+def _can_use_codex_subscription_auth(
+    agent: str,
+    model: str | None,
+    required_key: str | None,
+    agent_env: dict[str, str],
+) -> bool:
+    """Codex subscription auth is only valid for the native OpenAI endpoint."""
+    return _is_codex_native_openai_context(
+        agent,
+        model,
+        required_key,
+    ) and not _has_custom_openai_endpoint(agent_env)
+
+
+def _can_use_subscription_auth(
+    agent: str,
+    model: str | None,
+    required_key: str | None,
+    agent_env: dict[str, str],
+) -> bool:
+    """Return True when host subscription files can satisfy provider auth."""
+    if agent == "codex-acp" and required_key == "OPENAI_API_KEY":
+        return _can_use_codex_subscription_auth(
+            agent,
+            model,
+            required_key,
+            agent_env,
+        )
+    return True
+
+
 def _normalize_codex_auth_env(
     agent: str,
     model: str | None,
@@ -157,9 +196,12 @@ def _has_codex_access_token_auth(
     agent_env: dict[str, str],
 ) -> bool:
     """Return True when Codex's subscription access token satisfies OpenAI auth."""
-    return _is_codex_native_openai_context(agent, model, required_key) and bool(
-        agent_env.get(_CODEX_ACCESS_TOKEN_ENV)
-    )
+    return _can_use_codex_subscription_auth(
+        agent,
+        model,
+        required_key,
+        agent_env,
+    ) and bool(agent_env.get(_CODEX_ACCESS_TOKEN_ENV))
 
 
 def inject_vertex_credentials(agent_env: dict[str, str], model: str) -> None:
@@ -365,7 +407,12 @@ def resolve_agent_env(
             and not has_agent_native_bridge_key
             and not has_codex_access_token
         ):
-            if check_subscription_auth(agent, required_key):
+            if _can_use_subscription_auth(
+                agent,
+                model,
+                required_key,
+                agent_env,
+            ) and check_subscription_auth(agent, required_key):
                 agent_env["_BENCHFLOW_SUBSCRIPTION_AUTH"] = "1"
                 logger.info(
                     "Using host subscription auth (no %s set)",
@@ -389,6 +436,7 @@ def resolve_agent_env(
                         req_key,
                         agent_env,
                     )
+                    and _can_use_subscription_auth(agent, model, req_key, agent_env)
                     and check_subscription_auth(agent, req_key)
                 ):
                     agent_env["_BENCHFLOW_SUBSCRIPTION_AUTH"] = "1"
