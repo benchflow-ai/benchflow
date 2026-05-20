@@ -340,10 +340,16 @@ def parse_opentraces_record(
     # Task info
     task_info = record.get("task", {})
     tags: list[str] = []
+    task_prompt = ""
     if isinstance(task_info, dict):
         task_tags = task_info.get("tags")
         if isinstance(task_tags, list):
             tags = [str(t) for t in task_tags]
+        for key in ("input", "prompt", "description"):
+            value = task_info.get(key)
+            if isinstance(value, str) and value.strip():
+                task_prompt = value.strip()
+                break
 
     # Timestamps
     started_at = _parse_iso(record.get("timestamp_start"))
@@ -352,6 +358,8 @@ def parse_opentraces_record(
     # Steps (TAO loop)
     raw_steps = record.get("steps", [])
     steps: list[TraceStep] = []
+    if task_prompt:
+        steps.append(TraceStep(role="user", content=task_prompt))
     if isinstance(raw_steps, list):
         for raw_step in raw_steps:
             if not isinstance(raw_step, dict):
