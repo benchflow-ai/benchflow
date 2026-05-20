@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -87,3 +89,16 @@ def test_hilbench_bucket_download_uses_optional_hf_token(
     )
 
     assert captured["authorization"] == "Bearer test-token"
+
+
+def test_hilbench_runner_help_executes_from_script_path() -> None:
+    """Guards PR #279 runner path execution from shadowing the BenchFlow package."""
+    result = subprocess.run(
+        [sys.executable, "benchmarks/hilbench/run_hilbench.py", "--help"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 0
+    assert "--prepare-only" in result.stdout

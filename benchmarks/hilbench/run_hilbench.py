@@ -12,6 +12,7 @@ Usage:
     python benchmarks/hilbench/run_hilbench.py path/to/config.yaml
 """
 
+import argparse
 import asyncio
 import json
 import logging
@@ -24,25 +25,57 @@ from pathlib import Path
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
-from benchflow.evaluation import Evaluation
+_SCRIPT_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = _SCRIPT_DIR.parents[1]
+_SRC_ROOT = _REPO_ROOT / "src"
+if str(_SCRIPT_DIR) in sys.path:
+    sys.path.remove(str(_SCRIPT_DIR))
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+if str(_SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(_SRC_ROOT))
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
-_SCRIPT_DIR = Path(__file__).resolve().parent
 _CONVERTER = _SCRIPT_DIR / "benchflow.py"
 _DOCKER_LOADED_RE = re.compile(r"Loaded image:\s*(\S+)")
 _DOCKER_LOADED_ID_RE = re.compile(r"Loaded image ID:\s*(\S+)")
 _HF_BUCKET_RE = re.compile(r"hf://buckets/([^/]+/[^/]+)/(.+)")
 
 
-def _repo_root() -> Path:
-    d = Path.cwd()
-    while d != d.parent:
-        if (d / ".git").exists():
-            return d
-        d = d.parent
-    return Path.cwd()
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run HILBench via BenchFlow.")
+    parser.add_argument(
+        "config",
+        nargs="?",
+        default=None,
+        help="BenchFlow evaluation YAML config. Omit to only prepare tasks/images.",
+    )
+    parser.add_argument(
+        "--prepare-only",
+        action="store_true",
+        help="Generate tasks and load/tag Docker images, then exit.",
+    )
+    parser.add_argument(
+        "--tasks-dir",
+        type=Path,
+        default=None,
+        help="Use an existing/generated HILBench task directory.",
+    )
+    parser.add_argument(
+        "--cache-dir",
+        type=Path,
+        default=None,
+        help="Directory for downloaded HILBench Docker image tarballs.",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Limit generated tasks when --tasks-dir is not provided.",
+    )
+    return parser.parse_args()
 
 
 def _hf_token() -> str | None:
@@ -157,26 +190,19 @@ def load_and_tag_images(tasks_dir: Path, cache_dir: Path) -> dict[str, str]:
     return image_map
 
 
-def ensure_converted_tasks() -> Path:
+def ensure_converted_tasks(*, limit: int | None = None) -> Path:
     """Download HILBench dataset from HuggingFace and convert to BenchFlow format."""
-    root = _repo_root()
-    converted_dir = root / ".cache" / "hilbench-benchflow"
+    converted_dir = _REPO_ROOT / ".cache" / "hilbench-benchflow"
 
-    if converted_dir.exists() and any(converted_dir.iterdir()):
+    if converted_dir.exists() and any(converted_dir.glob("*/task.toml")):
         logger.info("Converted tasks already exist at %s", converted_dir)
         return converted_dir
 
     logger.info("Converting HILBench SWE tasks to BenchFlow format...")
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(_CONVERTER),
-            "--output-dir",
-            str(converted_dir),
-        ],
-        capture_output=True,
-        text=True,
-    )
+    cmd = [sys.executable, str(_CONVERTER), "--output-dir", str(converted_dir)]
+    if limit is not None:
+        cmd.extend(["--limit", str(limit)])
+    result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         logger.error("Conversion failed: %s", result.stderr)
         raise RuntimeError(f"HILBench conversion failed: {result.stderr}")
@@ -186,13 +212,12 @@ def ensure_converted_tasks() -> Path:
 
 
 async def main():
-    config = sys.argv[1] if len(sys.argv) > 1 else None
-    tasks_dir = ensure_converted_tasks()
+    args = _parse_args()
+    tasks_dir = args.tasks_dir or ensure_converted_tasks(limit=args.limit)
     logger.info("Using tasks from %s", tasks_dir)
 
     # Download and load Docker images for all tasks
-    root = _repo_root()
-    cache_dir = root / ".cache" / "hilbench-images"
+    cache_dir = args.cache_dir or (_REPO_ROOT / ".cache" / "hilbench-images")
     image_map = load_and_tag_images(tasks_dir, cache_dir)
     logger.info("Loaded %d Docker images", len(image_map))
 
@@ -202,13 +227,18 @@ async def main():
             "task_metadata.json are reachable."
         )
 
-    if config:
-        job = Evaluation.from_yaml(config)
-    else:
+    if args.prepare_only:
+        print(f"Prepared {len(image_map)} HILBench images for {tasks_dir}")
+        return
+
+    if not args.config:
         logger.info("No config specified; tasks generated at %s", tasks_dir)
         logger.info("Use: bench eval create -f <config.yaml> to run evaluations")
         return
 
+    from benchflow.evaluation import Evaluation
+
+    job = Evaluation.from_yaml(args.config)
     job._tasks_dir = tasks_dir  # type: ignore[attr-defined]
     result = await job.run()
     print(f"\nScore: {result.passed}/{result.total} ({result.score:.1%})")
