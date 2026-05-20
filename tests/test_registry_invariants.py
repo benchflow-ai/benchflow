@@ -67,8 +67,7 @@ def test_agent_field_shapes(name, cfg):
         f"api_protocol={cfg.api_protocol!r} not in {VALID_API_PROTOCOLS}"
     )
     assert cfg.acp_model_format in VALID_ACP_MODEL_FORMATS, (
-        f"acp_model_format={cfg.acp_model_format!r} not in "
-        f"{VALID_ACP_MODEL_FORMATS}"
+        f"acp_model_format={cfg.acp_model_format!r} not in {VALID_ACP_MODEL_FORMATS}"
     )
     assert isinstance(cfg.install_timeout, int) and cfg.install_timeout > 0
     assert isinstance(cfg.supports_acp_set_model, bool)
