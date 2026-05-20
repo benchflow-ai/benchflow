@@ -30,9 +30,12 @@ logger = logging.getLogger(__name__)
 _AUTH_CONTEXT_GROUPS = (
     frozenset({"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"}),
     frozenset({"GEMINI_API_KEY", "GOOGLE_API_KEY"}),
+    frozenset({"OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN"}),
 )
 _EXPLICIT_AGENT_NATIVE_BRIDGE_KEYS = frozenset({"LLM_API_KEY"})
 _BEDROCK_PROXY_PLACEHOLDER_API_KEY = "bedrock-proxy"
+_CODEX_API_KEY_ENV = "CODEX_API_KEY"
+_CODEX_ACCESS_TOKEN_ENV = "CODEX_ACCESS_TOKEN"
 
 
 def _normalize_openhands_model(model: str) -> str:
@@ -72,6 +75,8 @@ def auto_inherit_env(
         "AWS_DEFAULT_REGION",
         "AWS_REGION",
         "CLAUDE_CODE_OAUTH_TOKEN",
+        "CODEX_ACCESS_TOKEN",
+        "CODEX_API_KEY",
         "OPENAI_API_KEY",
         "OPENAI_BASE_URL",
         "GOOGLE_API_KEY",
@@ -109,6 +114,52 @@ def auto_inherit_env(
         agent_env["AWS_DEFAULT_REGION"] = agent_env["AWS_REGION"]
     # CLAUDE_CODE_OAUTH_TOKEN is a separate auth path — Claude CLI reads it
     # directly. Don't map to ANTHROPIC_API_KEY (different auth mechanism).
+
+
+def _is_codex_native_openai_context(
+    agent: str,
+    model: str | None,
+    required_key: str | None,
+) -> bool:
+    """True when Codex can use its own OpenAI auth mechanisms directly."""
+    if agent != "codex-acp" or required_key != "OPENAI_API_KEY":
+        return False
+    if model is None:
+        return True
+
+    from benchflow.agents.providers import find_provider
+
+    return find_provider(model) is None
+
+
+def _normalize_codex_auth_env(
+    agent: str,
+    model: str | None,
+    agent_env: dict[str, str],
+) -> None:
+    """Bridge Codex's API-key alias to the auth file writer.
+
+    codex-acp advertises both CODEX_API_KEY and OPENAI_API_KEY, while
+    BenchFlow writes ~/.codex/auth.json from OPENAI_API_KEY before launching
+    ACP. Keep CODEX_ACCESS_TOKEN separate: it is a subscription/access-token
+    path that Codex reads directly from the process environment.
+    """
+    if not _is_codex_native_openai_context(agent, model, "OPENAI_API_KEY"):
+        return
+    if "OPENAI_API_KEY" not in agent_env and _CODEX_API_KEY_ENV in agent_env:
+        agent_env["OPENAI_API_KEY"] = agent_env[_CODEX_API_KEY_ENV]
+
+
+def _has_codex_access_token_auth(
+    agent: str,
+    model: str | None,
+    required_key: str | None,
+    agent_env: dict[str, str],
+) -> bool:
+    """Return True when Codex's subscription access token satisfies OpenAI auth."""
+    return _is_codex_native_openai_context(agent, model, required_key) and bool(
+        agent_env.get(_CODEX_ACCESS_TOKEN_ENV)
+    )
 
 
 def inject_vertex_credentials(agent_env: dict[str, str], model: str) -> None:
@@ -247,6 +298,7 @@ def resolve_agent_env(
     # Both sources use setdefault so explicit agent_env keys take priority.
     auto_inherit_env(agent_env, source_env=load_dotenv_env())
     auto_inherit_env(agent_env)
+    _normalize_codex_auth_env(agent, model, agent_env)
     pre_provider_env = dict(agent_env)
     agent_cfg = AGENTS.get(agent)
     # Oracle runs solve.sh and never calls an LLM — model env vars and
@@ -300,11 +352,18 @@ def resolve_agent_env(
             key in agent_env and _shares_auth_context(required_key, key)
             for key in ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN")
         )
+        has_codex_access_token = _has_codex_access_token_auth(
+            agent,
+            model,
+            required_key,
+            agent_env,
+        )
         if (
             required_key
             and required_key not in agent_env
             and not has_oauth
             and not has_agent_native_bridge_key
+            and not has_codex_access_token
         ):
             if check_subscription_auth(agent, required_key):
                 agent_env["_BENCHFLOW_SUBSCRIPTION_AUTH"] = "1"
@@ -322,7 +381,16 @@ def resolve_agent_env(
         # No model specified — still check subscription auth for required env vars
         if agent_cfg:
             for req_key in agent_cfg.requires_env:
-                if req_key not in agent_env and check_subscription_auth(agent, req_key):
+                if (
+                    req_key not in agent_env
+                    and not _has_codex_access_token_auth(
+                        agent,
+                        model,
+                        req_key,
+                        agent_env,
+                    )
+                    and check_subscription_auth(agent, req_key)
+                ):
                     agent_env["_BENCHFLOW_SUBSCRIPTION_AUTH"] = "1"
                     logger.info(
                         "Using host subscription auth (no %s set)",

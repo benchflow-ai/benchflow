@@ -11,7 +11,7 @@ The core matrix runs 9 SkillsBench tasks across all 8 registered agents on Dayto
 | `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) | gemini, pi-acp, openclaw, opencode, openhands |
 | `DAYTONA_API_KEY` | all agents (sandbox) |
 | `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` | claude-agent-acp |
-| `OPENAI_API_KEY` | codex-acp |
+| `OPENAI_API_KEY`, `CODEX_API_KEY`, `CODEX_ACCESS_TOKEN`, or `~/.codex/auth.json` | codex-acp |
 
 ## Quick Start
 
@@ -173,7 +173,7 @@ All 8 registered agents run by default:
 | Agent | Default Model | Notes |
 |---|---|---|
 | claude-agent-acp | claude-haiku-4-5-20251001 | Needs `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` |
-| codex-acp | gpt-5.4-nano | Needs `OPENAI_API_KEY` |
+| codex-acp | gpt-5.4-nano | Needs `OPENAI_API_KEY`, `CODEX_API_KEY`, `CODEX_ACCESS_TOKEN`, or host Codex login |
 | pi-acp | gemini-3.1-flash-lite-preview | |
 | openclaw | gemini-3.1-flash-lite-preview | |
 | gemini | gemini-3.1-flash-lite-preview | |
