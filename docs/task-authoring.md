@@ -155,7 +155,7 @@ bench tasks init my-task --no-pytest --no-solution
 # Generate tasks from agent traces (personal benchmark curation)
 bench tasks generate --from-local                          # from local Claude Code sessions
 bench tasks generate --from-file session.jsonl --dry-run    # from a JSONL trace file
-bench tasks generate --from-hf opentraces-test -n 50        # from a HuggingFace dataset
+bench tasks generate --from-hf opentraces-test --limit 50   # from a HuggingFace dataset
 bench tasks list-sources                                    # list known HF trace datasets
 
 # Validate structure

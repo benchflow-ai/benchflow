@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -156,6 +157,42 @@ class TestGenerateTask:
 
         mode = test_sh.stat().st_mode
         assert mode & stat.S_IXUSR
+
+    def test_generates_replayable_solution_for_write_trace(
+        self, simple_trace: ParsedTrace, tmp_path: Path
+    ) -> None:
+        """Guards ENG-96: trace-generated tasks can run with oracle evidence."""
+        task_dir = generate_task(simple_trace, tmp_path)
+
+        solve_sh = task_dir / "solution" / "solve.sh"
+        assert solve_sh.exists()
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        subprocess.run(["bash", str(solve_sh)], cwd=workspace, check=True)
+        assert (workspace / "hello.txt").read_text() == "Hello"
+
+    def test_omits_solution_when_trace_has_no_replayable_writes(
+        self, tmp_path: Path
+    ) -> None:
+        trace = ParsedTrace(
+            trace_id="edit-only",
+            session_id="s",
+            steps=[
+                TraceStep(role="user", content="Edit README"),
+                TraceStep(
+                    role="assistant",
+                    content="Edited.",
+                    tool_calls=[
+                        ToolCall(name="Edit", input={"file_path": "README.md"})
+                    ],
+                ),
+            ],
+        )
+
+        task_dir = generate_task(trace, tmp_path)
+
+        assert not (task_dir / "solution" / "solve.sh").exists()
 
     def test_dockerfile_generated(
         self, simple_trace: ParsedTrace, tmp_path: Path

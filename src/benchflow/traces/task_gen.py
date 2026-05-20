@@ -368,6 +368,41 @@ def _build_test_sh(trace: ParsedTrace) -> str:
     )
 
 
+def _build_solution_sh(trace: ParsedTrace) -> str | None:
+    """Generate an oracle solution for traces with replayable writes."""
+    writes: list[tuple[str, str]] = []
+    for step in trace.steps:
+        for tool_call in step.tool_calls:
+            if tool_call.name not in {"Write", "write_to_file"}:
+                continue
+            path = tool_call.input.get("file_path") or tool_call.input.get("path")
+            content = tool_call.input.get("content") or tool_call.input.get("text")
+            if isinstance(path, str) and isinstance(content, str):
+                writes.append((_relativize_path(path), content))
+
+    if not writes:
+        return None
+
+    entries = "\n".join(f"    ({path!a}, {content!a})," for path, content in writes)
+    return (
+        "#!/bin/bash\n"
+        f"# Auto-generated oracle solution from trace {trace.trace_id}\n"
+        "set -euo pipefail\n"
+        "python3 - <<'PY'\n"
+        "from pathlib import Path\n"
+        "\n"
+        "files = [\n"
+        f"{entries}\n"
+        "]\n"
+        "\n"
+        "for path, content in files:\n"
+        "    target = Path(path)\n"
+        "    target.parent.mkdir(parents=True, exist_ok=True)\n"
+        "    target.write_text(content)\n"
+        "PY\n"
+    )
+
+
 def _build_dockerfile(trace: ParsedTrace | None = None) -> str:
     """Generate a Dockerfile for trace-generated tasks.
 
@@ -472,6 +507,15 @@ def generate_task(
     test_path = tests_dir / "test.sh"
     test_path.write_text(test_sh)
     test_path.chmod(0o755)
+
+    # Write solution/solve.sh when the trace can be replayed deterministically.
+    solution_sh = _build_solution_sh(trace)
+    if solution_sh is not None:
+        solution_dir = task_dir / "solution"
+        solution_dir.mkdir(exist_ok=True)
+        solution_path = solution_dir / "solve.sh"
+        solution_path.write_text(solution_sh)
+        solution_path.chmod(0o755)
 
     logger.info(
         "Generated task %s (difficulty=%s, outcome=%s, tools=%d)",
