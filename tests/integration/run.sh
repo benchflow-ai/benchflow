@@ -14,7 +14,7 @@
 #   GEMINI_API_KEY (or GOOGLE_API_KEY)
 #   DAYTONA_API_KEY
 #   CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY  (for claude-agent-acp)
-#   OPENAI_API_KEY, CODEX_API_KEY, or CODEX_ACCESS_TOKEN (for codex-acp)
+#   OPENAI_API_KEY                                (for codex-acp)
 
 set -euo pipefail
 cd "$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
@@ -84,10 +84,7 @@ has_creds_for() {
       [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]
       ;;
     codex-acp)
-      [ -n "${OPENAI_API_KEY:-}" ] || \
-      [ -n "${CODEX_API_KEY:-}" ] || \
-      [ -n "${CODEX_ACCESS_TOKEN:-}" ] || \
-      [ -f "$HOME/.codex/auth.json" ]
+      [ -n "${OPENAI_API_KEY:-}" ]
       ;;
     *)
       has_gemini_key

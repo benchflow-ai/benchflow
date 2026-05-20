@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -103,6 +102,7 @@ class TestGenerateTask:
         assert (task_dir / "instruction.md").exists()
         assert (task_dir / "environment" / "Dockerfile").exists()
         assert (task_dir / "tests" / "test.sh").exists()
+        assert (task_dir / "solution" / "solve.sh").exists()
 
     def test_task_toml_content(self, simple_trace: ParsedTrace, tmp_path: Path) -> None:
         task_dir = generate_task(simple_trace, tmp_path)
@@ -158,41 +158,22 @@ class TestGenerateTask:
         mode = test_sh.stat().st_mode
         assert mode & stat.S_IXUSR
 
-    def test_generates_replayable_solution_for_write_trace(
+    def test_solution_sh_replays_file_writes(
         self, simple_trace: ParsedTrace, tmp_path: Path
     ) -> None:
-        """Guards ENG-96: trace-generated tasks can run with oracle evidence."""
+        """Guards ENG-93 trace-generated tasks include oracle evidence."""
         task_dir = generate_task(simple_trace, tmp_path)
-
         solve_sh = task_dir / "solution" / "solve.sh"
+
         assert solve_sh.exists()
+        content = solve_sh.read_text()
+        assert "Auto-generated oracle solution" in content
+        assert "cat > hello.txt" in content
+        assert "Hello" in content
 
-        workspace = tmp_path / "workspace"
-        workspace.mkdir()
-        subprocess.run(["bash", str(solve_sh)], cwd=workspace, check=True)
-        assert (workspace / "hello.txt").read_text() == "Hello"
+        import stat
 
-    def test_omits_solution_when_trace_has_no_replayable_writes(
-        self, tmp_path: Path
-    ) -> None:
-        trace = ParsedTrace(
-            trace_id="edit-only",
-            session_id="s",
-            steps=[
-                TraceStep(role="user", content="Edit README"),
-                TraceStep(
-                    role="assistant",
-                    content="Edited.",
-                    tool_calls=[
-                        ToolCall(name="Edit", input={"file_path": "README.md"})
-                    ],
-                ),
-            ],
-        )
-
-        task_dir = generate_task(trace, tmp_path)
-
-        assert not (task_dir / "solution" / "solve.sh").exists()
+        assert solve_sh.stat().st_mode & stat.S_IXUSR
 
     def test_dockerfile_generated(
         self, simple_trace: ParsedTrace, tmp_path: Path
