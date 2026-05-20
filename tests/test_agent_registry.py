@@ -23,6 +23,7 @@ class TestEnvMappingField:
         """pi-acp is multi-protocol — launch wrapper handles env translation."""
         cfg = AGENTS["pi-acp"]
         assert cfg.env_mapping == {}
+        assert cfg.acp_model_format == "registered-provider/model"
 
     def test_codex_acp_has_mapping(self):
         cfg = AGENTS["codex-acp"]

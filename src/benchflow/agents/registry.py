@@ -251,6 +251,9 @@ class AgentConfig:
     # "provider/model" — models.dev convention (e.g. "google/gemini-3.1-pro-preview").
     #                    Required by opencode, which uses Provider.parseModel()
     #                    to split on "/" and treats the first segment as provider ID.
+    # "registered-provider/model" — BenchFlow provider prefix plus model ID
+    #                    (e.g. "vllm/Qwen/Qwen3.5-35B"). Required by pi-acp,
+    #                    whose launcher registers that provider key in models.json.
     subscription_auth: SubscriptionAuth | None = None
     # Host CLI login that can substitute for an API key (e.g. OAuth tokens
     # from `claude login`). Detected automatically; API keys take precedence.
@@ -314,6 +317,7 @@ AGENTS: dict[str, AgentConfig] = {
         ),
         launch_cmd=f"{_BENCHFLOW_BIN_PREFIX}/pi-acp-launcher",
         protocol="acp",
+        acp_model_format="registered-provider/model",
         requires_env=[],  # inferred from --model at runtime
         # Pi is multi-protocol: speaks Anthropic natively and OpenAI via
         # models.json.  Empty lets the provider determine the protocol so

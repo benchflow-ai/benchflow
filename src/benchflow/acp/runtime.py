@@ -61,12 +61,17 @@ def _format_acp_model(model: str, agent: str) -> str:
     Most agents expect a bare model name (e.g. "claude-sonnet-4-6").
     Agents with acp_model_format="provider/model" (e.g. opencode) need the
     models.dev provider prefix (e.g. "google/gemini-3.1-pro-preview").
+    Agents with acp_model_format="registered-provider/model" (e.g. pi-acp)
+    need BenchFlow's registered provider prefix preserved for custom providers
+    because the launcher registers that provider key in the agent config.
 
     Strips benchflow's custom provider prefixes first, then re-adds the
     models.dev provider prefix when the agent requires it.
     """
     bare = strip_provider_prefix(model)
     agent_cfg = AGENTS.get(agent)
+    if agent_cfg and agent_cfg.acp_model_format == "registered-provider/model":
+        return model if find_provider(model) else bare
     if not agent_cfg or agent_cfg.acp_model_format != "provider/model":
         return bare
     # Already has a slash — assume it's provider/model already
