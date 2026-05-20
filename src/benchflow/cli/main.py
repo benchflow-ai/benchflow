@@ -860,6 +860,50 @@ def eval_create(
         str | None,
         typer.Option("--source-ref", help="Branch or tag to clone (e.g. main)"),
     ] = None,
+    source_env: Annotated[
+        str | None,
+        typer.Option(
+            "--source-env",
+            help="Hosted environment source (e.g. primeintellect/general-agent)",
+        ),
+    ] = None,
+    source_env_version: Annotated[
+        str | None,
+        typer.Option("--source-env-version", help="Hosted environment version"),
+    ] = None,
+    source_env_arg: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--source-env-arg",
+            help="Hosted environment arg as KEY=VALUE; repeatable",
+        ),
+    ] = None,
+    source_env_num_examples: Annotated[
+        int,
+        typer.Option("--source-env-num-examples", help="Number of env examples"),
+    ] = 1,
+    source_env_rollouts_per_example: Annotated[
+        int,
+        typer.Option(
+            "--source-env-rollouts-per-example",
+            help="Rollouts per hosted env example",
+        ),
+    ] = 1,
+    source_env_max_tokens: Annotated[
+        int,
+        typer.Option("--source-env-max-tokens", help="Max tokens for hosted env run"),
+    ] = 1024,
+    source_env_temperature: Annotated[
+        float,
+        typer.Option("--source-env-temperature", help="Temperature for hosted env run"),
+    ] = 0.0,
+    source_env_sampling_arg: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--source-env-sampling-arg",
+            help="Hosted env sampling arg as KEY=VALUE; repeatable (e.g. reasoning_effort=minimal)",
+        ),
+    ] = None,
     agent: Annotated[
         str,
         typer.Option("--agent", help="Agent name"),
@@ -921,10 +965,19 @@ def eval_create(
         typer.Option("--agent-env", help="Agent env var (KEY=VALUE)"),
     ] = None,
 ) -> None:
-    """Run an evaluation — single task or batch."""
+    """Run an evaluation — single task or batch.
+
+    Sandbox: docker, daytona, or modal.
+    """
     from benchflow.evaluation import Evaluation, EvaluationConfig
 
     parsed_env = _parse_agent_env(agent_env)
+    sources = [bool(config_file), bool(tasks_dir), bool(source_repo), bool(source_env)]
+    if sum(sources) > 1:
+        console.print(
+            "[red]Choose only one source: --config, --tasks-dir, --source-repo, or --source-env[/red]"
+        )
+        raise typer.Exit(1)
     agent = _normalize_eval_agent_or_exit(agent)
     sandbox_user = normalize_sandbox_user(sandbox_user)
 
@@ -939,6 +992,68 @@ def eval_create(
             f"\n[bold]Score: {result.passed}/{result.total} "
             f"({result.score:.1%})[/bold], errors={result.errored}"
         )
+    elif source_env:
+        from benchflow.hosted_env import (
+            HostedEnvError,
+            HostedEnvRef,
+            HostedEnvRunConfig,
+            parse_sampling_args,
+            parse_source_env_args,
+            run_hosted_env,
+        )
+
+        if parsed_env:
+            console.print(
+                "[yellow]--agent-env is for BenchFlow ACP agents; source-env runs inherit the process environment.[/yellow]"
+            )
+        if environment != "docker":
+            console.print(
+                f"[yellow]--sandbox {environment!r} is not used by source-env runs; "
+                "the hosted Verifiers environment owns its harness/sandbox.[/yellow]"
+            )
+        if agent != DEFAULT_AGENT:
+            console.print(
+                f"[dim]source-env records --agent {agent!r}, but executes the model endpoint through Verifiers.[/dim]"
+            )
+
+        try:
+            ref = HostedEnvRef.parse(source_env, version=source_env_version)
+            run_result = run_hosted_env(
+                HostedEnvRunConfig(
+                    source_env=ref,
+                    model=model or "",
+                    env_args=parse_source_env_args(source_env_arg),
+                    agent=agent,
+                    jobs_dir=Path(jobs_dir),
+                    concurrency=concurrency,
+                    num_examples=source_env_num_examples,
+                    rollouts_per_example=source_env_rollouts_per_example,
+                    max_tokens=source_env_max_tokens,
+                    temperature=source_env_temperature,
+                    sampling_args=parse_sampling_args(source_env_sampling_arg),
+                )
+            )
+        except HostedEnvError as e:
+            console.print(f"[red]{e}[/red]")
+            raise typer.Exit(1) from None
+
+        console.print(f"\n[bold]Environment:[/bold] {run_result.source_env.env_uid}")
+        console.print(f"[bold]Hub:[/bold] {run_result.source_env.hub_url}")
+        console.print(
+            f"[bold]Model:[/bold] {run_result.normalized_model}"
+            + (
+                f" [dim](from {run_result.model})[/dim]"
+                if run_result.normalized_model != run_result.model
+                else ""
+            )
+        )
+        console.print(f"[bold]Run dir:[/bold] {run_result.run_dir}")
+        console.print(f"[bold]Reward:[/bold] {run_result.reward}")
+        if run_result.total_tool_calls is not None:
+            console.print(f"[bold]Tool calls:[/bold] {run_result.total_tool_calls}")
+        if run_result.error:
+            console.print(f"[red]Error:[/red] {run_result.error}")
+            raise typer.Exit(1)
     elif source_repo:
         from benchflow._utils.benchmark_repos import resolve_source
 
@@ -1066,7 +1181,9 @@ def eval_create(
                 f"({result.score:.1%})[/bold], errors={result.errored}"
             )
     else:
-        console.print("[red]Provide --config, --tasks-dir, or --source-repo[/red]")
+        console.print(
+            "[red]Provide --config, --tasks-dir, --source-repo, or --source-env[/red]"
+        )
         raise typer.Exit(1)
 
 
@@ -1144,9 +1261,70 @@ def environment_create(
 
 
 @env_app.command("list")
-def environment_list() -> None:
-    """List active Daytona sandboxes."""
+def environment_list(
+    hub: Annotated[
+        str | None,
+        typer.Option("--hub", help="Hosted environment hub to list"),
+    ] = None,
+    owner: Annotated[
+        str | None,
+        typer.Option("--owner", help="Hosted hub owner/namespace filter"),
+    ] = None,
+    search: Annotated[
+        str | None,
+        typer.Option("--search", help="Hosted hub search query"),
+    ] = None,
+    limit: Annotated[
+        int | None,
+        typer.Option("--limit", help="Maximum hosted hub results"),
+    ] = None,
+    output_json: Annotated[
+        bool,
+        typer.Option("--json", help="Emit raw JSON for hosted hub results"),
+    ] = False,
+) -> None:
+    """List active Daytona sandboxes or hosted hub environments."""
     from datetime import datetime
+
+    if hub:
+        if hub != "primeintellect":
+            console.print("[red]Only --hub primeintellect is supported today[/red]")
+            raise typer.Exit(1)
+        from benchflow.hosted_env import HostedEnvError, prime_env_list
+
+        try:
+            raw = prime_env_list(owner=owner, search=search, limit=limit)
+        except HostedEnvError as e:
+            console.print(f"[red]{e}[/red]")
+            raise typer.Exit(1) from None
+        if output_json:
+            console.print(raw)
+            return
+        data = json.loads(raw)
+        rows = (
+            data
+            if isinstance(data, list)
+            else data.get("environments", data.get("items", []))
+        )
+        table = Table(title="PrimeIntellect Environments")
+        table.add_column("Environment", style="cyan")
+        table.add_column("Version", style="green")
+        table.add_column("Visibility")
+        table.add_column("Updated", style="dim")
+        for item in rows:
+            name = (
+                item.get("environment")
+                or item.get("fullName")
+                or item.get("name")
+                or item.get("id")
+                or ""
+            )
+            version = str(item.get("version") or item.get("latestVersion") or "")
+            visibility = str(item.get("visibility") or item.get("private") or "")
+            updated = str(item.get("updated_at") or item.get("updatedAt") or "")
+            table.add_row(name, version, visibility, updated)
+        console.print(table)
+        return
 
     d = _daytona_client_or_exit()
     table = Table(title="Active Sandboxes")
@@ -1177,6 +1355,54 @@ def environment_list() -> None:
 
     console.print(table)
     console.print(f"\n[bold]{total} sandbox(es)[/bold]")
+
+
+@env_app.command("show")
+def environment_show(
+    source_env: Annotated[
+        str,
+        typer.Argument(help="Hosted environment (e.g. primeintellect/general-agent)"),
+    ],
+    version: Annotated[
+        str | None,
+        typer.Option("--version", help="Hosted environment version"),
+    ] = None,
+) -> None:
+    """Show hosted environment metadata."""
+    from benchflow.hosted_env import HostedEnvError, HostedEnvRef, prime_env_info
+
+    try:
+        ref = HostedEnvRef.parse(source_env, version=version)
+        console.print(prime_env_info(ref))
+    except HostedEnvError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+
+
+@env_app.command("inspect")
+def environment_inspect(
+    source_env: Annotated[
+        str,
+        typer.Argument(help="Hosted environment (e.g. primeintellect/general-agent)"),
+    ],
+    version: Annotated[
+        str | None,
+        typer.Option("--version", help="Hosted environment version"),
+    ] = None,
+    path: Annotated[
+        str,
+        typer.Option("--path", help="File inside the hosted environment package"),
+    ] = "README.md",
+) -> None:
+    """Inspect a file from a hosted environment package."""
+    from benchflow.hosted_env import HostedEnvError, HostedEnvRef, prime_env_inspect
+
+    try:
+        ref = HostedEnvRef.parse(source_env, version=version)
+        console.print(prime_env_inspect(ref, path=path))
+    except HostedEnvError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
 
 
 @env_app.command("cleanup")
