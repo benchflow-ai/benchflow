@@ -1,3 +1,4 @@
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -31,3 +32,82 @@ def test_programbench_run_script_help_works():
 
     assert result.returncode == 0
     assert "Run ProgramBench via BenchFlow" in result.stdout
+
+
+def test_opaquetoolsbench_run_script_help_works():
+    """Guards ENG-89: OpaqueToolsBench run script is invokable by path."""
+    repo = Path(__file__).resolve().parents[1]
+    result = subprocess.run(
+        [
+            sys.executable,
+            "benchmarks/opaquetoolsbench/run_opaquetoolsbench.py",
+            "--help",
+        ],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert "Run OpaqueToolsBench via BenchFlow" in result.stdout
+
+
+def test_opaquetoolsbench_converter_emits_oracle_solution(tmp_path):
+    """Guards ENG-101: converted tasks can run with oracle evidence."""
+    repo = Path(__file__).resolve().parents[1]
+    otb_dir = tmp_path / "OpaqueToolsBench"
+    configs_dir = otb_dir / "src" / "datasets" / "bfcl" / "tool_configs"
+    configs_dir.mkdir(parents=True)
+    (configs_dir / "executable_simple_base_config.json").write_text(
+        json.dumps(
+            {
+                "tests": [
+                    {
+                        "test_id": 0,
+                        "question": "Call the function.",
+                        "tools": [
+                            {
+                                "name": "lookup_city",
+                                "description": "Look up a city.",
+                                "parameters": {
+                                    "type": "object",
+                                    "properties": {
+                                        "city": {
+                                            "type": "string",
+                                            "description": "City name",
+                                        }
+                                    },
+                                    "required": ["city"],
+                                },
+                            }
+                        ],
+                        "ground_truth": ['lookup_city(city="Paris")'],
+                        "name_mapping": {},
+                        "execution_result_type": ["exact_match"],
+                    }
+                ]
+            }
+        )
+    )
+
+    output_dir = tmp_path / "tasks"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "benchmarks/opaquetoolsbench/benchflow.py",
+            "--opaquetoolsbench-dir",
+            str(otb_dir),
+            "--output-dir",
+            str(output_dir),
+        ],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    solve_sh = output_dir / "executable-simple-0" / "solution" / "solve.sh"
+    assert solve_sh.exists()
+    assert "/app/output/response.json" in solve_sh.read_text()
