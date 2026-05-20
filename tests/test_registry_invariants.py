@@ -36,6 +36,11 @@ VALID_API_PROTOCOLS = {
 }
 VALID_PROVIDER_API_PROTOCOLS = VALID_API_PROTOCOLS - {""}
 VALID_AUTH_TYPES = {"api_key", "adc", "aws", "none"}
+VALID_ACP_MODEL_FORMATS = {
+    "bare",
+    "provider/model",
+    "registered-provider/model",
+}
 JS_ACP_AGENTS = {
     "claude-agent-acp",
     "pi-acp",
@@ -60,6 +65,10 @@ def test_agent_field_shapes(name, cfg):
     )
     assert cfg.api_protocol in VALID_API_PROTOCOLS, (
         f"api_protocol={cfg.api_protocol!r} not in {VALID_API_PROTOCOLS}"
+    )
+    assert cfg.acp_model_format in VALID_ACP_MODEL_FORMATS, (
+        f"acp_model_format={cfg.acp_model_format!r} not in "
+        f"{VALID_ACP_MODEL_FORMATS}"
     )
     assert isinstance(cfg.install_timeout, int) and cfg.install_timeout > 0
     assert isinstance(cfg.supports_acp_set_model, bool)

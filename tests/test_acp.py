@@ -450,6 +450,64 @@ class TestConnectAcpModelSelection:
         mock_acp.set_model.assert_awaited_once_with(expected_model)
 
     @pytest.mark.asyncio
+    async def test_pi_acp_preserves_registered_provider_prefix(self, tmp_path):
+        """Guards PR #291: Pi set_model needs the registered provider key."""
+        from benchflow.acp.runtime import connect_acp
+
+        mock_acp = self._make_mocks()
+        mock_env = AsyncMock()
+        with (
+            patch(
+                "benchflow.acp.runtime.DockerProcess.from_sandbox_env",
+                return_value=MagicMock(),
+            ),
+            patch("benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()),
+            patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
+        ):
+            await connect_acp(
+                env=mock_env,
+                agent="pi-acp",
+                agent_launch="pi-acp",
+                agent_env={},
+                sandbox_user=None,
+                model="vllm/Qwen/Qwen3.5-35B-A3B",
+                rollout_dir=tmp_path,
+                environment="docker",
+                agent_cwd="/app",
+            )
+
+        mock_acp.set_model.assert_awaited_once_with("vllm/Qwen/Qwen3.5-35B-A3B")
+
+    @pytest.mark.asyncio
+    async def test_opencode_keeps_modelsdev_formatting(self, tmp_path):
+        """Registered BenchFlow providers must not become models.dev provider IDs."""
+        from benchflow.acp.runtime import connect_acp
+
+        mock_acp = self._make_mocks()
+        mock_env = AsyncMock()
+        with (
+            patch(
+                "benchflow.acp.runtime.DockerProcess.from_sandbox_env",
+                return_value=MagicMock(),
+            ),
+            patch("benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()),
+            patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
+        ):
+            await connect_acp(
+                env=mock_env,
+                agent="opencode",
+                agent_launch="opencode acp",
+                agent_env={},
+                sandbox_user=None,
+                model="vllm/Qwen/Qwen3.5-35B-A3B",
+                rollout_dir=tmp_path,
+                environment="docker",
+                agent_cwd="/app",
+            )
+
+        mock_acp.set_model.assert_awaited_once_with("Qwen/Qwen3.5-35B-A3B")
+
+    @pytest.mark.asyncio
     async def test_openhands_skips_set_model(self, tmp_path):
         from benchflow.acp.runtime import connect_acp
 
