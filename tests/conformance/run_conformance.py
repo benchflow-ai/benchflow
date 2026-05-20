@@ -37,7 +37,7 @@ ENV_KEYS = {
     "claude-agent-acp": ["ANTHROPIC_API_KEY"],
     "pi-acp": ["ANTHROPIC_API_KEY"],
     "openclaw": [],
-    "codex-acp": ["OPENAI_API_KEY"],
+    "codex-acp": ["OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN"],
     "gemini": ["GOOGLE_API_KEY", "GEMINI_API_KEY"],
 }
 
@@ -59,8 +59,8 @@ def has_creds(agent_name: str) -> bool:
 
 
 def openai_model_preflight(model: str) -> str | None:
-    """Return an error string if OPENAI_API_KEY cannot access *model*."""
-    key = os.environ.get("OPENAI_API_KEY")
+    """Return an error string if API-key auth cannot access *model*."""
+    key = os.environ.get("OPENAI_API_KEY") or os.environ.get("CODEX_API_KEY")
     if not key:
         return None
     req = urllib.request.Request(

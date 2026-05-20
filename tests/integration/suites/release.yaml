@@ -256,3 +256,7 @@ credential_rules:
   OPENAI_API_KEY:
     required_for:
       - codex-acp
+  CODEX_API_KEY:
+    alternative_for: OPENAI_API_KEY
+  CODEX_ACCESS_TOKEN:
+    alternative_for: OPENAI_API_KEY
