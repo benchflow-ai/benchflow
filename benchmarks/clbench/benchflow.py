@@ -216,9 +216,9 @@ ${description}
 
 ## How It Works
 
-1. You will receive a prompt for each instance in sequence.
-2. After each response, you will receive feedback about your performance.
-3. Use this feedback to improve on subsequent instances.
+1. Prepare a sequence of responses for the CLBench driver.
+2. The driver replays those responses through the original CLBench harness.
+3. You can inspect the resulting score/summary, revise your responses, and rerun.
 4. Your goal is to maximize cumulative reward across all instances.
 
 ## Important
@@ -230,8 +230,17 @@ ${description}
 
 ## Interaction
 
-The task runs inside the CLBench harness. Respond to each prompt according to
-the expected response schema. The harness will provide feedback after each step.
+The task is mediated by the CLBench driver at `/opt/run_task.py`.
+
+1. Write one JSON object per planned response to `/opt/agent_responses.jsonl`,
+   matching the response schema above.
+2. Run `python /opt/run_task.py ${task_id}` from inside the sandbox.
+3. Inspect the printed score/summary. You may edit `/opt/agent_responses.jsonl`
+   and rerun the driver to improve the result.
+
+The driver replays your responses through the CLBench harness and writes
+`/opt/results.json` for the verifier. Do not create or edit `/opt/results.json`
+manually.
 """)
 
 
@@ -243,6 +252,7 @@ def _render_instruction(task: CLBenchTaskInfo) -> str:
         response_schema=task.response_schema,
         reward_description=task.reward_description,
         r_max=str(task.r_max),
+        task_id=task.task_id,
     )
 
 
@@ -281,6 +291,11 @@ COPY schedule.json /opt/schedule.json
 
 # Create verifier output directory
 RUN mkdir -p /logs/verifier
+
+# Agent-writable driver input/output files. The agent should edit
+# agent_responses.jsonl and let run_task.py produce results.json.
+RUN touch /opt/agent_responses.jsonl /opt/results.json && \\
+    chmod 666 /opt/agent_responses.jsonl /opt/results.json
 
 WORKDIR /opt/clbench
 """

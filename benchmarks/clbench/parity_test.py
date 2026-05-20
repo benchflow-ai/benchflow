@@ -50,6 +50,13 @@ _R_MAX = {
 }
 
 
+def _task_names_to_check(output_dir: Path) -> list[str]:
+    """Return known CLBench task dirs present in this generated output."""
+    return [
+        task_name for task_name in EXPECTED_TASKS if (output_dir / task_name).is_dir()
+    ]
+
+
 def _check_structural(task_dir: Path) -> list[str]:
     """Check structural parity for a single task directory. Returns list of errors."""
     errors: list[str] = []
@@ -124,14 +131,15 @@ def _check_structural(task_dir: Path) -> list[str]:
 def run_structural_parity(output_dir: Path) -> dict:
     """Run structural parity checks on all generated task directories."""
     results = {"tasks_tested": 0, "passed": 0, "errors": []}
+    task_names = _task_names_to_check(output_dir)
+    if not task_names:
+        results["errors"].append(
+            f"No generated CLBench task directories in {output_dir}"
+        )
+        return results
 
-    for task_name in EXPECTED_TASKS:
+    for task_name in task_names:
         task_dir = output_dir / task_name
-        if not task_dir.exists():
-            results["errors"].append(f"{task_name}: directory not found")
-            results["tasks_tested"] += 1
-            continue
-
         errors = _check_structural(task_dir)
         results["tasks_tested"] += 1
         if not errors:
@@ -177,7 +185,7 @@ def run_eval_parity(output_dir: Path) -> dict:
     """Run eval parity: test evaluate.py with synthetic results."""
     results = {"tasks_tested": 0, "passed": 0, "tests": []}
 
-    for task_name in EXPECTED_TASKS:
+    for task_name in _task_names_to_check(output_dir):
         task_dir = output_dir / task_name
         if not task_dir.exists():
             continue
@@ -284,7 +292,7 @@ def run_eval_parity(output_dir: Path) -> dict:
 # original TaskResult.score, then feed that score through BenchFlow's
 # generated evaluate.py and verify the normalized reward matches.
 
-_LIVE_POKER_SCRIPT = '''
+_LIVE_POKER_SCRIPT = """
 import json, sys
 sys.path.insert(0, "{clbench_dir}")
 from src.tasks.exploitable_poker.task import Poker
@@ -322,9 +330,9 @@ output = {{
     ],
 }}
 print(json.dumps(output))
-'''
+"""
 
-_LIVE_DATABASE_SCRIPT = '''
+_LIVE_DATABASE_SCRIPT = """
 import json, sys
 sys.path.insert(0, "{clbench_dir}")
 from src.tasks.database_exploration.task import DatabaseExploration, DatabaseAction
@@ -355,7 +363,7 @@ output = {{
     ],
 }}
 print(json.dumps(output))
-'''
+"""
 
 _LIVE_SCRIPTS = {
     "exploitable_poker": _LIVE_POKER_SCRIPT,
@@ -437,54 +445,65 @@ def run_live_parity(
             clbench_dir, python_bin, cl_name, num_instances=5
         )
         if live_result is None:
-            results["tests"].append({
-                "name": f"{bf_name}/live_run",
-                "result": "fail",
-                "reason": "CLBench task failed to run",
-            })
+            results["tests"].append(
+                {
+                    "name": f"{bf_name}/live_run",
+                    "result": "fail",
+                    "reason": "CLBench task failed to run",
+                }
+            )
             continue
 
         original_score = live_result["score"]
         clbench_r_max = live_result["r_max"]
         log.info(
             "CLBench %s: score=%.6f, r_max=%.4f, outcomes=%d",
-            cl_name, original_score, clbench_r_max, live_result["num_outcomes"],
+            cl_name,
+            original_score,
+            clbench_r_max,
+            live_result["num_outcomes"],
         )
 
         # Verify r_max matches what we have in the adapter
         if abs(clbench_r_max - r_max) > 0.0001:
-            results["tests"].append({
-                "name": f"{bf_name}/r_max_match",
-                "result": "fail",
-                "expected": str(r_max),
-                "actual": str(clbench_r_max),
-                "reason": "r_max mismatch between adapter and CLBench",
-            })
+            results["tests"].append(
+                {
+                    "name": f"{bf_name}/r_max_match",
+                    "result": "fail",
+                    "expected": str(r_max),
+                    "actual": str(clbench_r_max),
+                    "reason": "r_max mismatch between adapter and CLBench",
+                }
+            )
             continue
 
-        results["tests"].append({
-            "name": f"{bf_name}/r_max_match",
-            "result": "pass",
-            "adapter_r_max": str(r_max),
-            "clbench_r_max": str(clbench_r_max),
-        })
+        results["tests"].append(
+            {
+                "name": f"{bf_name}/r_max_match",
+                "result": "pass",
+                "adapter_r_max": str(r_max),
+                "clbench_r_max": str(clbench_r_max),
+            }
+        )
 
         # Step 2: Write results.json with original score
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
             results_file = tmp / "results.json"
             reward_file = tmp / "reward.txt"
-            results_file.write_text(json.dumps({
-                "score": original_score,
-                "summary": "live parity test",
-                "metrics": {},
-                "instance_outcomes": live_result["outcomes"],
-            }))
+            results_file.write_text(
+                json.dumps(
+                    {
+                        "score": original_score,
+                        "summary": "live parity test",
+                        "metrics": {},
+                        "instance_outcomes": live_result["outcomes"],
+                    }
+                )
+            )
 
             # Step 3: Run BenchFlow evaluate.py
-            benchflow_reward = _run_evaluate_py(
-                evaluate_py, results_file, reward_file
-            )
+            benchflow_reward = _run_evaluate_py(evaluate_py, results_file, reward_file)
 
             # Step 4: Verify normalization
             expected_reward = max(0.0, min(1.0, original_score / r_max))
@@ -506,14 +525,20 @@ def run_live_parity(
                 log.info(
                     "PASS: %s live parity — CLBench score=%.6f -> "
                     "BenchFlow reward=%.6f (expected=%.6f)",
-                    bf_name, original_score, benchflow_reward, expected_reward,
+                    bf_name,
+                    original_score,
+                    benchflow_reward,
+                    expected_reward,
                 )
             else:
                 log.error(
                     "FAIL: %s live parity — CLBench score=%.6f -> "
                     "BenchFlow reward=%.6f (expected=%.6f, delta=%.6f)",
-                    bf_name, original_score, benchflow_reward,
-                    expected_reward, delta,
+                    bf_name,
+                    original_score,
+                    benchflow_reward,
+                    expected_reward,
+                    delta,
                 )
 
     return results
@@ -529,7 +554,7 @@ def run_live_parity(
 #   poker      — check-or-call (produces non-trivial positive scores)
 #   database   — always ANSWER 'unknown' (score=0, still validates pipeline)
 
-_E2E_POKER_AGENT = '''
+_E2E_POKER_AGENT = """
 import json, sys
 sys.path.insert(0, "{clbench_dir}")
 from src.tasks.exploitable_poker.task import Poker
@@ -581,9 +606,9 @@ output = {{
     "responses": responses_log,
 }}
 print(json.dumps(output))
-'''
+"""
 
-_E2E_DATABASE_AGENT = '''
+_E2E_DATABASE_AGENT = """
 import json, sys
 sys.path.insert(0, "{clbench_dir}")
 from src.tasks.database_exploration.task import DatabaseExploration, DatabaseAction
@@ -620,7 +645,7 @@ output = {{
     "responses": responses_log,
 }}
 print(json.dumps(output))
-'''
+"""
 
 _E2E_AGENTS = {
     "exploitable_poker": _E2E_POKER_AGENT,
@@ -629,7 +654,7 @@ _E2E_AGENTS = {
 
 # Replay script: feeds pre-recorded responses through CLBench task API
 # (equivalent to what run_task.py does inside Docker, but run locally).
-_E2E_PIPELINE_SCRIPT = '''
+_E2E_PIPELINE_SCRIPT = """
 import json, sys
 from pathlib import Path
 sys.path.insert(0, "{clbench_dir}")
@@ -673,7 +698,7 @@ output = {{
 }}
 results_file.write_text(json.dumps(output, indent=2, default=str))
 print(json.dumps({{"score": result.score, "num_outcomes": len(outcomes)}}))
-'''
+"""
 
 
 def _run_e2e_agent(
@@ -776,32 +801,41 @@ def run_e2e_parity(
         task_passed = True
 
         # Step 1: Run agent on original CLBench
-        log.info("E2E %s: running agent on original CLBench (%d instances)...",
-                 cl_name, n_instances)
-        agent_result = _run_e2e_agent(
-            clbench_dir, python_bin, cl_name, n_instances
+        log.info(
+            "E2E %s: running agent on original CLBench (%d instances)...",
+            cl_name,
+            n_instances,
         )
+        agent_result = _run_e2e_agent(clbench_dir, python_bin, cl_name, n_instances)
         if agent_result is None:
-            results["tests"].append({
-                "name": f"{bf_name}/e2e_agent_run",
-                "result": "fail",
-                "reason": "Agent failed to run on original CLBench",
-            })
+            results["tests"].append(
+                {
+                    "name": f"{bf_name}/e2e_agent_run",
+                    "result": "fail",
+                    "reason": "Agent failed to run on original CLBench",
+                }
+            )
             continue
 
         original_score = agent_result["score"]
         responses_log = agent_result["responses"]
-        log.info("E2E %s: original score=%.6f, %d responses captured",
-                 cl_name, original_score, len(responses_log))
+        log.info(
+            "E2E %s: original score=%.6f, %d responses captured",
+            cl_name,
+            original_score,
+            len(responses_log),
+        )
 
         # r_max check
         if abs(agent_result["r_max"] - r_max) > 0.0001:
-            results["tests"].append({
-                "name": f"{bf_name}/e2e_r_max",
-                "result": "fail",
-                "expected": str(r_max),
-                "actual": str(agent_result["r_max"]),
-            })
+            results["tests"].append(
+                {
+                    "name": f"{bf_name}/e2e_r_max",
+                    "result": "fail",
+                    "expected": str(r_max),
+                    "actual": str(agent_result["r_max"]),
+                }
+            )
             continue
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -816,18 +850,27 @@ def run_e2e_parity(
             results_file = tmp / "results.json"
 
             # Step 2: Replay through BenchFlow pipeline
-            log.info("E2E %s: replaying %d responses through BenchFlow pipeline...",
-                     cl_name, len(responses_log))
+            log.info(
+                "E2E %s: replaying %d responses through BenchFlow pipeline...",
+                cl_name,
+                len(responses_log),
+            )
             pipeline_result = _run_e2e_pipeline(
-                clbench_dir, python_bin, cl_name, n_instances,
-                responses_file, results_file,
+                clbench_dir,
+                python_bin,
+                cl_name,
+                n_instances,
+                responses_file,
+                results_file,
             )
             if pipeline_result is None:
-                results["tests"].append({
-                    "name": f"{bf_name}/e2e_pipeline_run",
-                    "result": "fail",
-                    "reason": "Pipeline failed to replay responses",
-                })
+                results["tests"].append(
+                    {
+                        "name": f"{bf_name}/e2e_pipeline_run",
+                        "result": "fail",
+                        "reason": "Pipeline failed to replay responses",
+                    }
+                )
                 continue
 
             pipeline_score = pipeline_result["score"]
@@ -846,21 +889,24 @@ def run_e2e_parity(
             if fidelity_pass:
                 log.info(
                     "PASS: %s score fidelity — original=%.6f, pipeline=%.6f",
-                    bf_name, original_score, pipeline_score,
+                    bf_name,
+                    original_score,
+                    pipeline_score,
                 )
             else:
                 task_passed = False
                 log.error(
                     "FAIL: %s score fidelity — original=%.6f, pipeline=%.6f "
                     "(delta=%.6f)",
-                    bf_name, original_score, pipeline_score, score_delta,
+                    bf_name,
+                    original_score,
+                    pipeline_score,
+                    score_delta,
                 )
 
             # Step 4: Run evaluate.py on pipeline results
             reward_file = tmp / "reward.txt"
-            benchflow_reward = _run_evaluate_py(
-                evaluate_py, results_file, reward_file
-            )
+            benchflow_reward = _run_evaluate_py(evaluate_py, results_file, reward_file)
             expected_reward = max(0.0, min(1.0, pipeline_score / r_max))
             reward_delta = abs(benchflow_reward - expected_reward)
             norm_pass = reward_delta < 0.001
@@ -879,14 +925,19 @@ def run_e2e_parity(
                 log.info(
                     "PASS: %s normalization — score=%.6f / r_max=%.4f -> "
                     "reward=%.6f (expected=%.6f)",
-                    bf_name, pipeline_score, r_max,
-                    benchflow_reward, expected_reward,
+                    bf_name,
+                    pipeline_score,
+                    r_max,
+                    benchflow_reward,
+                    expected_reward,
                 )
             else:
                 task_passed = False
                 log.error(
                     "FAIL: %s normalization — expected=%.6f, got=%.6f",
-                    bf_name, expected_reward, benchflow_reward,
+                    bf_name,
+                    expected_reward,
+                    benchflow_reward,
                 )
 
         if task_passed:
