@@ -1,0 +1,69 @@
+# benchmark.yaml — standard benchmark descriptor for BenchFlow.
+#
+# Every benchmark in benchmarks/<name>/ ships this file. It declares what
+# the benchmark is, where it comes from, how tasks are verified, and
+# parity validation results.
+
+name: opaquetoolsbench
+description: "OpaqueToolsBench BFCL — 150 function-calling tasks (executable_simple + executable_multiple_function) testing tool use under opacity"
+url: https://github.com/shallinan1/OpaqueToolsBench
+paper: https://arxiv.org/abs/2602.15197
+repo: https://github.com/shallinan1/OpaqueToolsBench
+author: "Hallinan et al."
+converted_by: BenchFlow
+
+# ── Tasks ────────────────────────────────────────────────────────────
+tasks:
+  count: 150
+  categories:
+    - executable_simple          # 100 tasks — single function call
+    - executable_multiple_function  # 50 tasks — multiple function calls
+  tags: [function-calling, tool-use, opacity, bfcl]
+  splits:
+    main: 150                    # all base-config tasks
+    executable_simple: 100
+    executable_multiple_function: 50
+
+# ── Conversion ───────────────────────────────────────────────────────
+# How raw benchmark data is converted to BenchFlow task format.
+conversion:
+  script: benchflow.py           # CLI: --output-dir, --limit, --overwrite, --task-ids
+  source_format: "JSON config files in tool_configs/"
+  has_oracle_solutions: false
+  oracle_notes: >
+    Ground truth is provided as Python function-call strings
+    (e.g. "calc_binomial_probability(n=20, k=5, p=0.6)"). The
+    agent must produce equivalent function call(s) as JSON.
+  docker_image_pinned: true      # python:3.13-slim pinned by digest
+
+# ── Verification ─────────────────────────────────────────────────────
+verification:
+  method: deterministic_script
+  reward: binary                 # 1.0 (all calls match) or 0.0
+  aggregation: per-task          # each task scored independently
+  test_source: "OpaqueToolsBench repo (tool_configs/*.json)"
+  anti_cheat: false
+
+# ── Environment ──────────────────────────────────────────────────────
+environment:
+  base_image: "python:3.13-slim"
+  platform: linux/amd64
+  allow_internet: false
+  cpus: 1
+  memory_mb: 1024
+  storage_mb: 2048
+
+# ── Parity ───────────────────────────────────────────────────────────
+# Results from validating that the conversion preserves benchmark semantics.
+parity:
+  structural:
+    description: "Structural parity — all generated task directories have correct file structure"
+    tasks_tested: 150
+    all_passed: true
+    checks:
+      - required files present (task.toml, instruction.md, Dockerfile, test.sh, evaluate.py, ground_truth.json)
+      - task.toml has valid structure and opaquetoolsbench/ prefix
+      - instruction.md contains Query, Available Functions, and output path
+      - ground_truth.json is valid JSON with ground_truth key
+      - test.sh has executable bit set
+      - Dockerfile contains FROM directive and /logs/verifier directory

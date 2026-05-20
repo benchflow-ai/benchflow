@@ -147,6 +147,33 @@ Validate a task directory (Dockerfile, instruction.md, tests/).
 bench tasks check tasks/my-task
 ```
 
+### bench tasks generate
+
+Generate benchmark task directories from real agent traces.
+
+```bash
+bench tasks generate --from-local --project my-repo --limit 5
+bench tasks generate --from-file session.jsonl --dry-run
+bench tasks generate --from-hf opentraces-test --limit 50
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--from-local` | — | Generate from local Claude Code sessions |
+| `--from-file` | — | Generate from a JSONL trace file |
+| `--from-hf` | — | Generate from a HuggingFace dataset ID or alias |
+| `--output` | `tasks` | Output directory for generated tasks |
+| `--projects-dir` | `~/.claude/projects/` | Claude Code projects directory |
+| `--project` | — | Filter local sessions by project path substring |
+| `--format` | `auto` | Trace format override |
+| `--split` | `train` | HuggingFace dataset split |
+| `--max-rows` | `100` | Max rows to download from HuggingFace |
+| `--limit` | `20` | Max traces to process |
+| `--min-steps` | `2` | Minimum steps per trace |
+| `--outcome` | — | Filter by outcome: success, failure, unknown |
+| `--author` | `benchflow-traces` | Author name for generated task metadata |
+| `--dry-run` | `false` | Preview traces without generating tasks |
+
 ## bench environment
 
 ### bench environment create
