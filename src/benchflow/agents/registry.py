@@ -452,14 +452,18 @@ AGENTS: dict[str, AgentConfig] = {
             # Install Harvey LAB's Python dependencies
             "( command -v pip3 >/dev/null 2>&1 || "
             "  (apt-get update -qq && apt-get install -y -qq python3-pip >/dev/null 2>&1) ) && "
-            "pip3 install -q anthropic openai google-genai "
+            "( python3 -m venv /opt/benchflow/harvey-lab-venv 2>/dev/null || "
+            "  (apt-get update -qq && apt-get install -y -qq python3-venv >/dev/null 2>&1 && "
+            "   python3 -m venv /opt/benchflow/harvey-lab-venv) ) && "
+            "/opt/benchflow/harvey-lab-venv/bin/python -m pip install -q "
+            "anthropic openai google-genai "
             "python-docx pdfplumber openpyxl python-pptx markitdown pandas && "
             # Deploy ACP shim
             + _install_python_script(
                 f"{_BENCHFLOW_BIN_PREFIX}/harvey-lab-acp-shim", _HARVEY_LAB_SHIM
             )
         ),
-        launch_cmd=f"HARVEY_LABS_ROOT=/opt/harvey-labs python3 {_BENCHFLOW_BIN_PREFIX}/harvey-lab-acp-shim",
+        launch_cmd=f"HARVEY_LABS_ROOT=/opt/harvey-labs /opt/benchflow/harvey-lab-venv/bin/python {_BENCHFLOW_BIN_PREFIX}/harvey-lab-acp-shim",
         protocol="acp",
         requires_env=[],  # inferred from model at runtime (ANTHROPIC_API_KEY, etc.)
         # env_mapping intentionally empty — Harvey LAB adapters read

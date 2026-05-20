@@ -356,12 +356,16 @@ class DockerSandbox(BaseSandbox):
                 self.logger.warning(f"Docker compose down failed: {e}")
 
     async def upload_file(self, source_path: Path | str, target_path: str) -> None:
+        target_parent = str(Path(target_path).parent)
+        if target_parent not in {"", "."}:
+            await self.exec(f"mkdir -p {shlex.quote(target_parent)}", user="root")
         await self._run_docker_compose_command(
             ["cp", str(source_path), f"main:{target_path}"],
             check=True,
         )
 
     async def upload_dir(self, source_dir: Path | str, target_dir: str) -> None:
+        await self.exec(f"mkdir -p {shlex.quote(target_dir)}", user="root")
         await self._run_docker_compose_command(
             ["cp", f"{source_dir}/.", f"main:{target_dir}"],
             check=True,

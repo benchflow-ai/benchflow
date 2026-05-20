@@ -76,6 +76,20 @@ class TestOpenHandsConfig:
         cfg = AGENTS["openhands"]
         assert cfg.supports_acp_set_model is False
 
+    def test_harvey_lab_installs_python_deps_in_venv(self):
+        """Guards the v0.5 stress failure where pip hit PEP 668 in Ubuntu."""
+        cfg = AGENTS["harvey-lab-harness"]
+        assert "python3 -m venv /opt/benchflow/harvey-lab-venv" in cfg.install_cmd
+        assert (
+            "/opt/benchflow/harvey-lab-venv/bin/python -m pip install"
+            in cfg.install_cmd
+        )
+        assert "pip3 install -q anthropic" not in cfg.install_cmd
+        assert cfg.launch_cmd.startswith(
+            "HARVEY_LABS_ROOT=/opt/harvey-labs "
+            "/opt/benchflow/harvey-lab-venv/bin/python "
+        )
+
 
 class TestAgentCredentialFiles:
     def test_codex_has_auth_json(self):
