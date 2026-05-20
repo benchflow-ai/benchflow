@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 PRIME_SIMPLE_INDEX = "https://hub.primeintellect.ai/primeintellect/simple/"
 PRIME_HUB_ENV_URL = "https://app.primeintellect.ai/dashboard/environments"
@@ -49,6 +50,7 @@ class HostedEnvRef:
         Supported forms:
         - ``primeintellect/general-agent``
         - ``primeintellect/general-agent@0.1.1``
+        - ``primeintellect:general-agent@0.1.1``
         - ``primeintellect:primeintellect/general-agent@0.1.1``
         """
         provider = default_provider
@@ -58,13 +60,20 @@ class HostedEnvRef:
 
         if ":" in value:
             prefix, rest = value.split(":", 1)
-            if "/" in rest:
-                provider = prefix
-                value = rest
+            if not prefix or not rest:
+                raise HostedEnvError(f"Invalid hosted environment reference: {raw}")
+            provider = prefix
+            value = rest
 
         if "@" in value:
             value, embedded_version = value.rsplit("@", 1)
             version = version or embedded_version
+
+        if ":" in value:
+            raise HostedEnvError(
+                f"Invalid hosted environment reference: {raw}. "
+                "Use provider:owner/name or owner/name."
+            )
 
         if "/" in value:
             owner, name = value.split("/", 1)
@@ -166,34 +175,12 @@ class HostedEnvRunResult:
 
 def parse_source_env_args(entries: list[str] | None) -> dict[str, Any]:
     """Parse repeatable ``KEY=VALUE`` source environment args."""
-    parsed: dict[str, Any] = {}
-    for entry in entries or []:
-        if "=" not in entry:
-            raise HostedEnvError(
-                f"Invalid --source-env-arg {entry!r}; expected KEY=VALUE"
-            )
-        key, value = entry.split("=", 1)
-        if not key:
-            raise HostedEnvError(f"Invalid --source-env-arg {entry!r}; empty key")
-        parsed[key] = _parse_scalar(value)
-    return parsed
+    return _parse_key_value_entries(entries, "--source-env-arg")
 
 
 def parse_sampling_args(entries: list[str] | None) -> dict[str, Any]:
     """Parse repeatable ``KEY=VALUE`` Verifiers sampling args."""
-    parsed: dict[str, Any] = {}
-    for entry in entries or []:
-        if "=" not in entry:
-            raise HostedEnvError(
-                f"Invalid --source-env-sampling-arg {entry!r}; expected KEY=VALUE"
-            )
-        key, value = entry.split("=", 1)
-        if not key:
-            raise HostedEnvError(
-                f"Invalid --source-env-sampling-arg {entry!r}; empty key"
-            )
-        parsed[key] = _parse_scalar(value)
-    return parsed
+    return _parse_key_value_entries(entries, "--source-env-sampling-arg")
 
 
 def normalize_verifiers_model(model: str) -> str:
@@ -225,13 +212,14 @@ def run_hosted_env(config: HostedEnvRunConfig) -> HostedEnvRunResult:
     if not uv:
         raise HostedEnvError("uv is required to run hosted Verifiers environments")
 
-    timestamp = datetime.now(UTC).strftime("%Y-%m-%d__%H-%M-%S")
+    timestamp = datetime.now(UTC).strftime("%Y-%m-%d__%H-%M-%S-%f")
     safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", config.source_env.env_id)
     jobs_dir = config.jobs_dir.expanduser().resolve()
-    run_dir = jobs_dir / "hosted-env" / f"{safe_name}__{timestamp}"
+    run_id = f"{timestamp}__pid-{os.getpid()}__{uuid4().hex[:8]}"
+    run_dir = jobs_dir / "hosted-env" / f"{safe_name}__{run_id}"
     venv_dir = run_dir / ".venv"
     output_dir = run_dir / "vf-results"
-    run_dir.mkdir(parents=True, exist_ok=True)
+    run_dir.mkdir(parents=True, exist_ok=False)
 
     install_cmd = [
         uv,
@@ -248,7 +236,7 @@ def run_hosted_env(config: HostedEnvRunConfig) -> HostedEnvRunResult:
     _run_checked(install_cmd, cwd=run_dir)
 
     normalized_model = normalize_verifiers_model(config.model)
-    sampling_args = {"reasoning_effort": "minimal", **config.sampling_args}
+    sampling_args = dict(config.sampling_args)
     command = [
         str(venv_dir / "bin" / "vf-eval"),
         config.source_env.verifiers_env_id,
@@ -335,6 +323,21 @@ def _parse_scalar(value: str) -> Any:
         return json.loads(value)
     except json.JSONDecodeError:
         return value
+
+
+def _parse_key_value_entries(
+    entries: list[str] | None,
+    flag_name: str,
+) -> dict[str, Any]:
+    parsed: dict[str, Any] = {}
+    for entry in entries or []:
+        if "=" not in entry:
+            raise HostedEnvError(f"Invalid {flag_name} {entry!r}; expected KEY=VALUE")
+        key, value = entry.split("=", 1)
+        if not key:
+            raise HostedEnvError(f"Invalid {flag_name} {entry!r}; empty key")
+        parsed[key] = _parse_scalar(value)
+    return parsed
 
 
 def _run_prime(cmd: list[str]) -> str:

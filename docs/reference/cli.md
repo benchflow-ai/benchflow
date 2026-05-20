@@ -77,7 +77,7 @@ bench eval create \
 | `--source-env-rollouts-per-example` | `1` | Rollouts per hosted environment example |
 | `--source-env-max-tokens` | `1024` | Max tokens for hosted environment model calls |
 | `--source-env-temperature` | `0.0` | Temperature for hosted environment model calls |
-| `--source-env-sampling-arg` | — | Verifiers sampling argument as `KEY=VALUE`; repeatable |
+| `--source-env-sampling-arg` | — | Verifiers sampling argument as `KEY=VALUE`; repeatable (for example `reasoning_effort=minimal`) |
 | `--agent` | `claude-agent-acp` | Agent name |
 | `--model` | Agent default | Model ID |
 | `--sandbox` | `docker` | Sandbox: docker, daytona, or modal |
@@ -100,7 +100,9 @@ runner is PrimeIntellect / Verifiers: BenchFlow preserves the hosted identity
 virtual environment, and runs `vf-eval`. `--sandbox` remains the BenchFlow task
 sandbox selector for local/repo task sources; Verifiers source environments own
 their own harness and sandbox behavior. `--model` is passed to the Verifiers
-model endpoint; use a model id available to that provider.
+model endpoint; use a model id available to that provider. Provider-specific
+sampling options are not inferred; pass them explicitly with
+`--source-env-sampling-arg`.
 
 ### bench eval list
 

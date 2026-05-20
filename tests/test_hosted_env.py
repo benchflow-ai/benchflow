@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime as real_datetime
 from types import SimpleNamespace
 
 from typer.testing import CliRunner
 
 from benchflow.cli.main import app
 from benchflow.hosted_env import (
+    HostedEnvError,
     HostedEnvRef,
     HostedEnvRunConfig,
     HostedEnvRunResult,
@@ -30,6 +32,26 @@ def test_hosted_env_ref_keeps_prime_identity():
     )
     assert ref.python_package == "general_agent"
     assert ref.verifiers_env_id == "general-agent"
+
+
+def test_hosted_env_ref_accepts_provider_prefix_without_owner():
+    ref = HostedEnvRef.parse("primeintellect:general-agent", version="0.1.1")
+
+    assert ref.provider == "primeintellect"
+    assert ref.owner is None
+    assert ref.env_id == "general-agent"
+    assert ref.env_uid == "primeintellect:general-agent@0.1.1"
+    assert ref.python_package == "general_agent"
+    assert ref.verifiers_env_id == "general-agent"
+
+
+def test_hosted_env_ref_rejects_extra_colons():
+    try:
+        HostedEnvRef.parse("primeintellect:general-agent:bad")
+    except HostedEnvError as exc:
+        assert "Use provider:owner/name or owner/name" in str(exc)
+    else:
+        raise AssertionError("expected HostedEnvError")
 
 
 def test_source_env_args_parse_json_scalars():
@@ -90,10 +112,64 @@ def test_run_hosted_env_uses_controlled_verifiers_venv(tmp_path, monkeypatch):
     assert calls[2][0].endswith("/bin/vf-eval")
     assert "general-agent" in calls[2]
     assert "google/gemini-3.1-flash-lite-preview" in calls[2]
+    sampling_args = json.loads(calls[2][calls[2].index("--sampling-args") + 1])
+    assert sampling_args == {}
 
     payload = json.loads((result.run_dir / "result.json").read_text())
     assert payload["env_uid"] == "primeintellect:primeintellect/general-agent@0.1.1"
     assert payload["rewards"] == {"reward": 1.0}
+
+
+def test_run_hosted_env_uses_unique_collision_safe_run_dirs(tmp_path, monkeypatch):
+    calls: list[list[str]] = []
+    uuids = iter(
+        [
+            SimpleNamespace(hex="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+            SimpleNamespace(hex="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+        ]
+    )
+
+    class FixedDateTime:
+        @classmethod
+        def now(cls, tz):
+            return real_datetime(2026, 5, 20, 12, 0, 0, tzinfo=tz)
+
+    def fake_which(binary: str) -> str:
+        return f"/bin/{binary}"
+
+    def fake_run(cmd, **kwargs):
+        calls.append([str(c) for c in cmd])
+        if str(cmd[0]).endswith("vf-eval"):
+            return SimpleNamespace(
+                returncode=0,
+                stdout="reward: avg - 1.000\ntotal_tool_calls: avg - 2.000\n",
+                stderr="",
+            )
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("benchflow.hosted_env.datetime", FixedDateTime)
+    monkeypatch.setattr("benchflow.hosted_env.uuid4", lambda: next(uuids))
+    monkeypatch.setattr("benchflow.hosted_env.shutil.which", fake_which)
+    monkeypatch.setattr("benchflow.hosted_env.subprocess.run", fake_run)
+
+    config = HostedEnvRunConfig(
+        source_env=HostedEnvRef.parse("primeintellect/general-agent", version="0.1.1"),
+        model="gemini-3.1-flash-lite-preview",
+        jobs_dir=tmp_path,
+    )
+    first = run_hosted_env(config)
+    second = run_hosted_env(config)
+
+    assert first.run_dir != second.run_dir
+    assert first.run_dir.name.startswith(
+        "primeintellect_general-agent__2026-05-20__12-00-00-000000__pid-"
+    )
+    assert "aaaaaaaa" in first.run_dir.name
+    assert "bbbbbbbb" in second.run_dir.name
+    assert first.run_dir.exists()
+    assert second.run_dir.exists()
+    assert not (first.run_dir / "jobs").exists()
+    assert len([call for call in calls if str(call[0]).endswith("vf-eval")]) == 2
 
 
 def test_run_hosted_env_classifies_verifiers_model_errors(tmp_path, monkeypatch):

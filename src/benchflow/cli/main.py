@@ -901,7 +901,7 @@ def eval_create(
         list[str] | None,
         typer.Option(
             "--source-env-sampling-arg",
-            help="Hosted env sampling arg as KEY=VALUE; repeatable",
+            help="Hosted env sampling arg as KEY=VALUE; repeatable (e.g. reasoning_effort=minimal)",
         ),
     ] = None,
     agent: Annotated[
