@@ -85,7 +85,10 @@ def opentraces_record() -> dict:
             "cwd": "/home/user/project",
             "vcs": {"branch": "feature-x", "remote": "https://github.com/user/project"},
         },
-        "task": {"tags": ["refactor", "python"]},
+        "task": {
+            "input": "Create src/utils.py with a helper function.",
+            "tags": ["refactor", "python"],
+        },
         "steps": [
             {
                 "thought": "I need to refactor the utils module.",
@@ -408,6 +411,7 @@ class TestOpentracesParser:
         assert trace.agent_name == "claude-code"
         assert trace.outcome == "success"
         assert trace.cwd == "/home/user/project"
+        assert trace.first_user_prompt == "Create src/utils.py with a helper function."
 
     def test_git_context(self, opentraces_record: dict) -> None:
         trace = parse_opentraces_record(opentraces_record)
