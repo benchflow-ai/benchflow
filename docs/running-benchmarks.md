@@ -233,7 +233,7 @@ Common choices:
 |-------|-----|------|
 | Gemini | `gemini` | `GEMINI_API_KEY` or host login |
 | Claude Code | `claude-agent-acp` (alias: `claude`) | `ANTHROPIC_API_KEY` or host login |
-| Codex | `codex-acp` (alias: `codex`) | `OPENAI_API_KEY` or host login |
+| Codex | `codex-acp` (alias: `codex`) | `OPENAI_API_KEY`, `CODEX_API_KEY`, `CODEX_ACCESS_TOKEN`, or host login |
 | OpenHands | `openhands` (alias: `oh`) | `LLM_API_KEY` |
 | Harvey LAB harness | `harvey-lab-harness` (alias: `harvey-lab`) | Provider key matching model |
 

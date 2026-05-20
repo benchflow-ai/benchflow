@@ -61,11 +61,19 @@ class TestEvalCreateRouting:
 
     def test_tasks_generate_help_resolves(self):
         """Guards ENG-65: `bench tasks generate` is registered on live CLI."""
-        from benchflow.cli.main import app
+        import inspect
+
+        from benchflow.cli.main import app, tasks_app
 
         result = CliRunner().invoke(app, ["tasks", "generate", "--help"])
         assert result.exit_code == 0
         assert "--from-local" in _plain_cli_output(result.stdout)
+
+        generate_cmds = [
+            c for c in tasks_app.registered_commands if c.name == "generate"
+        ]
+        assert len(generate_cmds) == 1
+        assert "from_local" in inspect.signature(generate_cmds[0].callback).parameters
 
     def test_eval_create_normalizes_agent_alias(self, tmp_path: Path):
         """Guards ENG-86: eval create normalizes aliases before launch."""
