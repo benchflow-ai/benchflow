@@ -8,7 +8,7 @@ import pytest
 
 from benchflow._utils.task_authoring import check_task
 from tests.integration.check_adapter_evidence import (
-    check_clbench,
+    check_continuallearningbench,
     check_hilbench,
     check_programbench,
     check_skillsbench_result,
@@ -441,7 +441,7 @@ def test_adapter_evidence_execution_invokes_checker(
             "--skillsbench-result",
             str(result),
             "--open-pr-root",
-            f"CLBench={tmp_path}",
+            f"ContinualLearningBench={tmp_path}",
             "--allow-blocked",
         ]
     )
@@ -453,7 +453,7 @@ def test_adapter_evidence_execution_invokes_checker(
         "--skillsbench-result",
         str(result),
         "--open-pr-root",
-        f"CLBench={tmp_path}",
+        f"ContinualLearningBench={tmp_path}",
         "--allow-blocked",
     ]
 
@@ -747,9 +747,11 @@ def test_adapter_evidence_checker_requires_hilbench_eval_parity_pass(
     assert "expected 'passed'" in finding.message
 
 
-def test_adapter_evidence_checker_requires_clbench_dogfood(tmp_path: Path) -> None:
-    """Guards ENG-89 adapter-release-set evidence for CLBench dogfood."""
-    evidence = tmp_path / "benchmarks" / "clbench"
+def test_adapter_evidence_checker_requires_continuallearningbench_dogfood(
+    tmp_path: Path,
+) -> None:
+    """Guards ENG-89 adapter-release-set evidence for ContinualLearningBench dogfood."""
+    evidence = tmp_path / "benchmarks" / "continuallearningbench"
     evidence.mkdir(parents=True)
     (evidence / "parity_experiment.json").write_text(
         """{
@@ -760,7 +762,7 @@ def test_adapter_evidence_checker_requires_clbench_dogfood(tmp_path: Path) -> No
 """
     )
 
-    finding = check_clbench(tmp_path)
+    finding = check_continuallearningbench(tmp_path)
 
     assert finding.status == "fail"
     assert "dogfooding" in finding.message
@@ -812,5 +814,5 @@ def test_adapter_evidence_main_requires_open_pr_roots(
     assert "reward=1" in out
     assert "HILBench" in out
     assert "OpaqueToolsBench" in out
-    assert "CLBench" in out
+    assert "ContinualLearningBench" in out
     assert "--open-pr-root HILBench=/path/to/worktree" in out

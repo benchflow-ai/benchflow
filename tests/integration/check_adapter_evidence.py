@@ -18,7 +18,7 @@ Usage::
       --skillsbench-result dogfood/.../result.json \
       --open-pr-root HILBench=/tmp/benchflow-pr279-triage \
       --open-pr-root OpaqueToolsBench=/tmp/benchflow-pr280-triage \
-      --open-pr-root CLBench=/tmp/benchflow-pr283-triage
+      --open-pr-root ContinualLearningBench=/tmp/benchflow-pr283-triage
 
 Guards: ENG-89 adapter release-set grooming.
 """
@@ -267,9 +267,9 @@ def check_opaquetoolsbench(root: Path) -> Finding:
     )
 
 
-def check_clbench(root: Path) -> Finding:
-    adapter = "CLBench"
-    path = root / "benchmarks" / "clbench" / "parity_experiment.json"
+def check_continuallearningbench(root: Path) -> Finding:
+    adapter = "ContinualLearningBench"
+    path = root / "benchmarks" / "continuallearningbench" / "parity_experiment.json"
     if not path.exists():
         return _missing(adapter, path)
 
@@ -313,13 +313,13 @@ def check_clbench(root: Path) -> Finding:
 OPEN_PR_CHECKS = {
     "hilbench": check_hilbench,
     "opaquetoolsbench": check_opaquetoolsbench,
-    "clbench": check_clbench,
+    "continuallearningbench": check_continuallearningbench,
 }
 
 REQUIRED_OPEN_PR_ADAPTERS = {
     "HILBench": "hilbench",
     "OpaqueToolsBench": "opaquetoolsbench",
-    "CLBench": "clbench",
+    "ContinualLearningBench": "continuallearningbench",
 }
 
 
@@ -353,7 +353,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=parse_root,
         default=[],
         metavar="NAME=PATH",
-        help="Open adapter PR worktree root. Required names: HILBench, OpaqueToolsBench, CLBench.",
+        help="Open adapter PR worktree root. Names: HILBench, OpaqueToolsBench, ContinualLearningBench.",
     )
     parser.add_argument(
         "--allow-blocked",

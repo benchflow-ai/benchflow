@@ -1,4 +1,4 @@
-"""Parity tests for CLBench -> BenchFlow pipeline.
+"""Parity tests for ContinualLearningBench -> BenchFlow pipeline.
 
 Validates that generated task directories have correct structure and that
 the evaluation pipeline produces valid rewards.
@@ -6,19 +6,19 @@ the evaluation pipeline produces valid rewards.
 Modes:
   structural  — all required files present, metadata correct
   eval        — evaluate.py produces correct rewards for synthetic inputs
-  live        — run real CLBench task with deterministic responses, compare
+  live        — run real ContinualLearningBench task with deterministic responses, compare
                 original TaskResult.score vs BenchFlow evaluate.py reward
   e2e         — end-to-end: run same agent responses through BOTH original
-                CLBench API AND BenchFlow run_task.py pipeline, compare scores
+                ContinualLearningBench API AND BenchFlow run_task.py pipeline, compare scores
                 (Harvey LAB-standard parity)
   all         — structural + eval + live + e2e
 
 Usage::
 
-    python benchmarks/clbench/parity_test.py --output-dir /tmp/clbench-tasks --mode structural
-    python benchmarks/clbench/parity_test.py --output-dir /tmp/clbench-tasks --mode eval
-    python benchmarks/clbench/parity_test.py --output-dir /tmp/clbench-tasks --mode live --clbench-dir /path/to/continual-learning-bench
-    python benchmarks/clbench/parity_test.py --output-dir /tmp/clbench-tasks --mode e2e --clbench-dir /path/to/continual-learning-bench
+    python benchmarks/continuallearningbench/parity_test.py --output-dir /tmp/continuallearningbench-tasks --mode structural
+    python benchmarks/continuallearningbench/parity_test.py --output-dir /tmp/continuallearningbench-tasks --mode eval
+    python benchmarks/continuallearningbench/parity_test.py --output-dir /tmp/continuallearningbench-tasks --mode live --continuallearningbench-dir /path/to/continual-learning-bench
+    python benchmarks/continuallearningbench/parity_test.py --output-dir /tmp/continuallearningbench-tasks --mode e2e --continuallearningbench-dir /path/to/continual-learning-bench
 """
 
 from __future__ import annotations
@@ -37,21 +37,21 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger(__name__)
 
 EXPECTED_TASKS = [
-    "clbench-exploitable-poker",
-    "clbench-database-exploration",
-    "clbench-cohort-studies",
+    "continuallearningbench-exploitable-poker",
+    "continuallearningbench-database-exploration",
+    "continuallearningbench-cohort-studies",
 ]
 
-# r_max values per task — must match benchflow.py _CLBENCH_TASKS
+# r_max values per task must match benchflow.py _CONTINUALLEARNINGBENCH_TASKS.
 _R_MAX = {
-    "clbench-exploitable-poker": 9.4875,
-    "clbench-database-exploration": 1.0,
-    "clbench-cohort-studies": 0.162202,
+    "continuallearningbench-exploitable-poker": 9.4875,
+    "continuallearningbench-database-exploration": 1.0,
+    "continuallearningbench-cohort-studies": 0.162202,
 }
 
 
 def _task_names_to_check(output_dir: Path) -> list[str]:
-    """Return known CLBench task dirs present in this generated output."""
+    """Return known ContinualLearningBench task dirs present in this generated output."""
     return [
         task_name for task_name in EXPECTED_TASKS if (output_dir / task_name).is_dir()
     ]
@@ -68,8 +68,10 @@ def _check_structural(task_dir: Path) -> list[str]:
         errors.append(f"{name}: missing task.toml")
     else:
         content = task_toml.read_text()
-        if 'name = "clbench/' not in content:
-            errors.append(f"{name}: task.toml missing clbench/ prefix in name")
+        if 'name = "continuallearningbench/' not in content:
+            errors.append(
+                f"{name}: task.toml missing continuallearningbench/ prefix in name"
+            )
         if "[task]" not in content:
             errors.append(f"{name}: task.toml missing [task] section")
         if "[metadata]" not in content:
@@ -134,7 +136,7 @@ def run_structural_parity(output_dir: Path) -> dict:
     task_names = _task_names_to_check(output_dir)
     if not task_names:
         results["errors"].append(
-            f"No generated CLBench task directories in {output_dir}"
+            f"No generated ContinualLearningBench task directories in {output_dir}"
         )
         return results
 
@@ -288,13 +290,13 @@ def run_eval_parity(output_dir: Path) -> dict:
 
 
 # ── Live parity ──────────────────────────────────────────────────────
-# Run the real CLBench task with deterministic responses, capture the
+# Run the real ContinualLearningBench task with deterministic responses, capture the
 # original TaskResult.score, then feed that score through BenchFlow's
 # generated evaluate.py and verify the normalized reward matches.
 
 _LIVE_POKER_SCRIPT = """
 import json, sys
-sys.path.insert(0, "{clbench_dir}")
+sys.path.insert(0, "{continuallearningbench_dir}")
 from src.tasks.exploitable_poker.task import Poker
 from src.interface import Response
 from pydantic import BaseModel, Field
@@ -334,7 +336,7 @@ print(json.dumps(output))
 
 _LIVE_DATABASE_SCRIPT = """
 import json, sys
-sys.path.insert(0, "{clbench_dir}")
+sys.path.insert(0, "{continuallearningbench_dir}")
 from src.tasks.database_exploration.task import DatabaseExploration, DatabaseAction
 from src.interface import Response
 
@@ -371,20 +373,20 @@ _LIVE_SCRIPTS = {
 }
 
 
-def _run_clbench_live(
-    clbench_dir: Path,
+def _run_continuallearningbench_live(
+    continuallearningbench_dir: Path,
     python_bin: str,
     task_name: str,
     num_instances: int,
 ) -> dict | None:
-    """Run a CLBench task with deterministic responses, return score info."""
+    """Run a ContinualLearningBench task with deterministic responses, return score info."""
     template = _LIVE_SCRIPTS.get(task_name)
     if template is None:
         log.info("Skipping live parity for %s (no live script)", task_name)
         return None
 
     script = template.format(
-        clbench_dir=clbench_dir,
+        continuallearningbench_dir=continuallearningbench_dir,
         n=num_instances,
     )
     result = subprocess.run(
@@ -392,41 +394,47 @@ def _run_clbench_live(
         capture_output=True,
         text=True,
         timeout=120,
-        cwd=str(clbench_dir),
+        cwd=str(continuallearningbench_dir),
     )
     if result.returncode != 0:
-        log.error("CLBench live run failed for %s: %s", task_name, result.stderr[-500:])
+        log.error(
+            "ContinualLearningBench live run failed for %s: %s",
+            task_name,
+            result.stderr[-500:],
+        )
         return None
     try:
         return json.loads(result.stdout.strip())
     except json.JSONDecodeError:
-        log.error("Failed to parse CLBench output: %s", result.stdout[:200])
+        log.error(
+            "Failed to parse ContinualLearningBench output: %s", result.stdout[:200]
+        )
         return None
 
 
 def run_live_parity(
     output_dir: Path,
-    clbench_dir: Path,
+    continuallearningbench_dir: Path,
     python_bin: str | None = None,
 ) -> dict:
-    """Run live parity: real CLBench task vs BenchFlow evaluate.py.
+    """Run live parity: real ContinualLearningBench task vs BenchFlow evaluate.py.
 
     For each supported task:
-    1. Run CLBench task with deterministic responses -> original score
+    1. Run ContinualLearningBench task with deterministic responses -> original score
     2. Write results.json with that score
     3. Run BenchFlow evaluate.py -> BenchFlow reward
     4. Verify: reward == max(0, min(1, original_score / r_max))
     """
     if python_bin is None:
-        venv_python = clbench_dir / ".venv" / "bin" / "python"
+        venv_python = continuallearningbench_dir / ".venv" / "bin" / "python"
         python_bin = str(venv_python) if venv_python.exists() else sys.executable
 
     results: dict = {"tasks_tested": 0, "passed": 0, "tests": []}
 
-    # Map BenchFlow task names to CLBench task names
+    # Map BenchFlow task names to ContinualLearningBench task names
     bf_to_cl = {
-        "clbench-exploitable-poker": "exploitable_poker",
-        "clbench-database-exploration": "database_exploration",
+        "continuallearningbench-exploitable-poker": "exploitable_poker",
+        "continuallearningbench-database-exploration": "database_exploration",
     }
 
     for bf_name, cl_name in bf_to_cl.items():
@@ -439,40 +447,42 @@ def run_live_parity(
         r_max = _R_MAX[bf_name]
         results["tasks_tested"] += 1
 
-        # Step 1: Run CLBench task with deterministic responses
-        log.info("Running CLBench %s with deterministic responses...", cl_name)
-        live_result = _run_clbench_live(
-            clbench_dir, python_bin, cl_name, num_instances=5
+        # Step 1: Run ContinualLearningBench task with deterministic responses
+        log.info(
+            "Running ContinualLearningBench %s with deterministic responses...", cl_name
+        )
+        live_result = _run_continuallearningbench_live(
+            continuallearningbench_dir, python_bin, cl_name, num_instances=5
         )
         if live_result is None:
             results["tests"].append(
                 {
                     "name": f"{bf_name}/live_run",
                     "result": "fail",
-                    "reason": "CLBench task failed to run",
+                    "reason": "ContinualLearningBench task failed to run",
                 }
             )
             continue
 
         original_score = live_result["score"]
-        clbench_r_max = live_result["r_max"]
+        continuallearningbench_r_max = live_result["r_max"]
         log.info(
-            "CLBench %s: score=%.6f, r_max=%.4f, outcomes=%d",
+            "ContinualLearningBench %s: score=%.6f, r_max=%.4f, outcomes=%d",
             cl_name,
             original_score,
-            clbench_r_max,
+            continuallearningbench_r_max,
             live_result["num_outcomes"],
         )
 
         # Verify r_max matches what we have in the adapter
-        if abs(clbench_r_max - r_max) > 0.0001:
+        if abs(continuallearningbench_r_max - r_max) > 0.0001:
             results["tests"].append(
                 {
                     "name": f"{bf_name}/r_max_match",
                     "result": "fail",
                     "expected": str(r_max),
-                    "actual": str(clbench_r_max),
-                    "reason": "r_max mismatch between adapter and CLBench",
+                    "actual": str(continuallearningbench_r_max),
+                    "reason": "r_max mismatch between adapter and ContinualLearningBench",
                 }
             )
             continue
@@ -482,7 +492,7 @@ def run_live_parity(
                 "name": f"{bf_name}/r_max_match",
                 "result": "pass",
                 "adapter_r_max": str(r_max),
-                "clbench_r_max": str(clbench_r_max),
+                "continuallearningbench_r_max": str(continuallearningbench_r_max),
             }
         )
 
@@ -523,7 +533,7 @@ def run_live_parity(
             if test_result["result"] == "pass":
                 results["passed"] += 1
                 log.info(
-                    "PASS: %s live parity — CLBench score=%.6f -> "
+                    "PASS: %s live parity — ContinualLearningBench score=%.6f -> "
                     "BenchFlow reward=%.6f (expected=%.6f)",
                     bf_name,
                     original_score,
@@ -532,7 +542,7 @@ def run_live_parity(
                 )
             else:
                 log.error(
-                    "FAIL: %s live parity — CLBench score=%.6f -> "
+                    "FAIL: %s live parity — ContinualLearningBench score=%.6f -> "
                     "BenchFlow reward=%.6f (expected=%.6f, delta=%.6f)",
                     bf_name,
                     original_score,
@@ -546,7 +556,7 @@ def run_live_parity(
 
 # ── End-to-end parity ────────────────────────────────────────────────
 # Harvey LAB-standard: run the SAME agent responses through BOTH the
-# original CLBench Python API AND BenchFlow's generated run_task.py,
+# original ContinualLearningBench Python API AND BenchFlow's generated run_task.py,
 # then compare resulting scores.  Finally run evaluate.py and verify
 # the normalized reward matches.
 #
@@ -556,7 +566,7 @@ def run_live_parity(
 
 _E2E_POKER_AGENT = """
 import json, sys
-sys.path.insert(0, "{clbench_dir}")
+sys.path.insert(0, "{continuallearningbench_dir}")
 from src.tasks.exploitable_poker.task import Poker
 from src.interface import Response
 from pydantic import BaseModel, Field
@@ -610,7 +620,7 @@ print(json.dumps(output))
 
 _E2E_DATABASE_AGENT = """
 import json, sys
-sys.path.insert(0, "{clbench_dir}")
+sys.path.insert(0, "{continuallearningbench_dir}")
 from src.tasks.database_exploration.task import DatabaseExploration, DatabaseAction
 from src.interface import Response
 
@@ -652,12 +662,12 @@ _E2E_AGENTS = {
     "database_exploration": _E2E_DATABASE_AGENT,
 }
 
-# Replay script: feeds pre-recorded responses through CLBench task API
+# Replay script: feeds pre-recorded responses through ContinualLearningBench task API
 # (equivalent to what run_task.py does inside Docker, but run locally).
 _E2E_PIPELINE_SCRIPT = """
 import json, sys
 from pathlib import Path
-sys.path.insert(0, "{clbench_dir}")
+sys.path.insert(0, "{continuallearningbench_dir}")
 from src.registry import get_task_class
 from src.interface import Response
 
@@ -702,24 +712,26 @@ print(json.dumps({{"score": result.score, "num_outcomes": len(outcomes)}}))
 
 
 def _run_e2e_agent(
-    clbench_dir: Path,
+    continuallearningbench_dir: Path,
     python_bin: str,
     task_name: str,
     num_instances: int,
 ) -> dict | None:
-    """Run deterministic agent on original CLBench, return score + responses."""
+    """Run deterministic agent on original ContinualLearningBench, return score + responses."""
     template = _E2E_AGENTS.get(task_name)
     if template is None:
         log.info("Skipping e2e for %s (no agent script)", task_name)
         return None
 
-    script = template.format(clbench_dir=clbench_dir, n=num_instances)
+    script = template.format(
+        continuallearningbench_dir=continuallearningbench_dir, n=num_instances
+    )
     result = subprocess.run(
         [python_bin, "-c", script],
         capture_output=True,
         text=True,
         timeout=180,
-        cwd=str(clbench_dir),
+        cwd=str(continuallearningbench_dir),
     )
     if result.returncode != 0:
         log.error("E2E agent failed for %s: %s", task_name, result.stderr[-500:])
@@ -732,7 +744,7 @@ def _run_e2e_agent(
 
 
 def _run_e2e_pipeline(
-    clbench_dir: Path,
+    continuallearningbench_dir: Path,
     python_bin: str,
     task_name: str,
     num_instances: int,
@@ -741,7 +753,7 @@ def _run_e2e_pipeline(
 ) -> dict | None:
     """Replay responses through BenchFlow pipeline (run_task.py equivalent)."""
     script = _E2E_PIPELINE_SCRIPT.format(
-        clbench_dir=clbench_dir,
+        continuallearningbench_dir=continuallearningbench_dir,
         task_name=task_name,
         n=num_instances,
         responses_file=responses_file,
@@ -752,7 +764,7 @@ def _run_e2e_pipeline(
         capture_output=True,
         text=True,
         timeout=180,
-        cwd=str(clbench_dir),
+        cwd=str(continuallearningbench_dir),
     )
     if result.returncode != 0:
         log.error("E2E pipeline failed for %s: %s", task_name, result.stderr[-500:])
@@ -766,27 +778,27 @@ def _run_e2e_pipeline(
 
 def run_e2e_parity(
     output_dir: Path,
-    clbench_dir: Path,
+    continuallearningbench_dir: Path,
     python_bin: str | None = None,
 ) -> dict:
     """End-to-end parity: same agent responses through original vs BenchFlow.
 
     Harvey LAB-standard validation:
-    1. Run deterministic agent on original CLBench API -> (score, responses)
+    1. Run deterministic agent on original ContinualLearningBench API -> (score, responses)
     2. Replay SAME responses through BenchFlow run_task.py -> pipeline_score
     3. Verify: original_score == pipeline_score (pipeline fidelity)
     4. Run evaluate.py -> reward
     5. Verify: reward == max(0, min(1, score / r_max)) (normalization)
     """
     if python_bin is None:
-        venv_python = clbench_dir / ".venv" / "bin" / "python"
+        venv_python = continuallearningbench_dir / ".venv" / "bin" / "python"
         python_bin = str(venv_python) if venv_python.exists() else sys.executable
 
     results: dict = {"tasks_tested": 0, "passed": 0, "tests": []}
 
     bf_to_cl = {
-        "clbench-exploitable-poker": ("exploitable_poker", 20),
-        "clbench-database-exploration": ("database_exploration", 5),
+        "continuallearningbench-exploitable-poker": ("exploitable_poker", 20),
+        "continuallearningbench-database-exploration": ("database_exploration", 5),
     }
 
     for bf_name, (cl_name, n_instances) in bf_to_cl.items():
@@ -800,19 +812,21 @@ def run_e2e_parity(
         results["tasks_tested"] += 1
         task_passed = True
 
-        # Step 1: Run agent on original CLBench
+        # Step 1: Run agent on original ContinualLearningBench
         log.info(
-            "E2E %s: running agent on original CLBench (%d instances)...",
+            "E2E %s: running agent on original ContinualLearningBench (%d instances)...",
             cl_name,
             n_instances,
         )
-        agent_result = _run_e2e_agent(clbench_dir, python_bin, cl_name, n_instances)
+        agent_result = _run_e2e_agent(
+            continuallearningbench_dir, python_bin, cl_name, n_instances
+        )
         if agent_result is None:
             results["tests"].append(
                 {
                     "name": f"{bf_name}/e2e_agent_run",
                     "result": "fail",
-                    "reason": "Agent failed to run on original CLBench",
+                    "reason": "Agent failed to run on original ContinualLearningBench",
                 }
             )
             continue
@@ -856,7 +870,7 @@ def run_e2e_parity(
                 len(responses_log),
             )
             pipeline_result = _run_e2e_pipeline(
-                clbench_dir,
+                continuallearningbench_dir,
                 python_bin,
                 cl_name,
                 n_instances,
@@ -947,7 +961,7 @@ def run_e2e_parity(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="CLBench parity tests")
+    parser = argparse.ArgumentParser(description="ContinualLearningBench parity tests")
     parser.add_argument(
         "--output-dir",
         type=Path,
@@ -961,16 +975,16 @@ def main() -> None:
         help="Which parity checks to run",
     )
     parser.add_argument(
-        "--clbench-dir",
+        "--continuallearningbench-dir",
         type=Path,
         default=None,
-        help="Path to CLBench repo (required for --mode live, e2e, or all)",
+        help="Path to ContinualLearningBench repo (required for --mode live, e2e, or all)",
     )
     parser.add_argument(
         "--python-bin",
         type=str,
         default=None,
-        help="Python binary for CLBench (default: <clbench-dir>/.venv/bin/python)",
+        help="Python binary for ContinualLearningBench (default: <continuallearningbench-dir>/.venv/bin/python)",
     )
     args = parser.parse_args()
 
@@ -1000,13 +1014,13 @@ def main() -> None:
             all_passed = False
 
     if args.mode in ("live", "all"):
-        if args.clbench_dir is None:
+        if args.continuallearningbench_dir is None:
             print("\n=== Live Parity ===")
-            print("  SKIPPED: --clbench-dir not provided")
+            print("  SKIPPED: --continuallearningbench-dir not provided")
         else:
             print("\n=== Live Parity ===")
             live_results = run_live_parity(
-                args.output_dir, args.clbench_dir, args.python_bin
+                args.output_dir, args.continuallearningbench_dir, args.python_bin
             )
             print(
                 f"  Tested: {live_results['tasks_tested']}, "
@@ -1017,7 +1031,7 @@ def main() -> None:
                 if "original_score" in test:
                     print(
                         f"  {status}: {test['name']} "
-                        f"(CLBench score={test['original_score']}, "
+                        f"(ContinualLearningBench score={test['original_score']}, "
                         f"BenchFlow reward={test['actual_reward']}, "
                         f"expected={test['expected_reward']})"
                     )
@@ -1027,13 +1041,13 @@ def main() -> None:
                 all_passed = False
 
     if args.mode in ("e2e", "all"):
-        if args.clbench_dir is None:
+        if args.continuallearningbench_dir is None:
             print("\n=== End-to-End Parity ===")
-            print("  SKIPPED: --clbench-dir not provided")
+            print("  SKIPPED: --continuallearningbench-dir not provided")
         else:
             print("\n=== End-to-End Parity (Harvey LAB-standard) ===")
             e2e_results = run_e2e_parity(
-                args.output_dir, args.clbench_dir, args.python_bin
+                args.output_dir, args.continuallearningbench_dir, args.python_bin
             )
             print(
                 f"  Tested: {e2e_results['tasks_tested']}, "

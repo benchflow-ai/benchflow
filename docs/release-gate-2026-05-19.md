@@ -19,7 +19,7 @@ release-gate PRs first.
 |---|---|
 | Trace-to-task e2e | `trace-to-task-e2e` generated tasks from JSONL and OpenTraces fixtures, checked them, and ran oracle evals with `reward=1.0`. |
 | Release manifest | `uv run python tests/integration/run_suite.py --profile full-release --dry-run --fail-on-todo` passes. |
-| Adapter release set | Harvey LAB, ProgramBench, SkillsBench, HILBench, OpaqueToolsBench, and CLBench all pass `adapter-release-set` evidence. |
+| Adapter release set | Harvey LAB, ProgramBench, SkillsBench, HILBench, OpaqueToolsBench, and ContinualLearningBench all pass `adapter-release-set` evidence. |
 | HILBench eval parity | PR #279 downloaded the HF bucket image, loaded/tagged it in Docker, built the generated task image, produced unsolved reward `0.000000`, and produced ground-truth reward `1.000000`. |
 | Hosted env board | OpenReward, Harbor, and PrimeIntellect selected `env_uid` metadata is recorded; Harbor inventory emits `env_uid` and `hub_url`. |
 | Docker/Daytona | Docker and Daytona smoke evidence exists for shared sandbox and Terminal-Bench-style tasks. |
@@ -39,7 +39,7 @@ The release-blocker adapter and CLI PRs landed on `main` via the merge queue:
 | #300 | Pi ACP provider prefix fix | merged (supersedes #291) |
 | #301 | OpaqueToolsBench adapter | merged (supersedes #280) |
 | #302 | HILBench adapter | merged (supersedes #279) |
-| #303 | CLBench adapter (ENG-103) | merged (supersedes #283) |
+| #303 | ContinualLearningBench adapter (ENG-103) | merged (supersedes #283) |
 | #295 | Release gate evidence refresh | in queue |
 
 Stale PRs closed: #297 (superseded by #298), #291 (superseded by #300).
@@ -55,7 +55,7 @@ been updated against `main`; GitHub marks them mergeable, with the repository
 |---|---|---|---|---|
 | #279 | HILBench | `f6f9c4d` | mergeable, `test` success | `f6f9c4d` |
 | #280 | OpaqueToolsBench | `358fcfacd46505beb10f03f7d6f42de6c37073a4` | mergeable clean, `test` success | no update needed |
-| #283 | CLBench | `1bd8bc4` | mergeable, `test` success | `1bd8bc4` |
+| #283 | ContinualLearningBench | `1bd8bc4` | mergeable, `test` success | `1bd8bc4` |
 | #290 | Hosted env source adapter | `ceef534` | mergeable, repository `test` success | `ceef534` |
 | #291 | Pi ACP provider/model fix | `c57c95c` | mergeable; fork PR has no check rollup | `c57c95c` |
 | #292 | Release gate evidence | this PR | mergeable, repository `test` success | this PR |
@@ -129,7 +129,7 @@ uv run python tests/integration/run_suite.py \
   --skillsbench-result dogfood/2026-05-19-release-gate/jobs-skillsbench-docker/2026-05-19__02-16-37/jax-computing-basics__f921d900/result.json \
   --open-pr-root HILBench=/tmp/benchflow-release-pr279-final \
   --open-pr-root OpaqueToolsBench=/tmp/benchflow-release-pr280-20260519-021530 \
-  --open-pr-root CLBench=/tmp/benchflow-release-pr283-final
+  --open-pr-root ContinualLearningBench=/tmp/benchflow-release-pr283-final
 ```
 
 Remote update status:

@@ -58,7 +58,7 @@ For the current release-prep sweep, the adapter release set is keyed by benchmar
 | `benchflow-ai/skillsbench:tasks@main` | SkillsBench | Merged adapter |
 | `benchflow-ai/benchmarks:datasets/hilbench/tasks@main` | HILBench | Open adapter PR [#279](https://github.com/benchflow-ai/benchflow/pull/279) |
 | `benchflow-ai/benchmarks:datasets/opaquetoolsbench/tasks@main` | OpaqueToolsBench | Open adapter PR [#280](https://github.com/benchflow-ai/benchflow/pull/280) |
-| `benchflow-ai/benchmarks:datasets/clbench/tasks@main` | CLBench | Open adapter PR [#283](https://github.com/benchflow-ai/benchflow/pull/283) |
+| `benchflow-ai/benchmarks:datasets/continuallearningbench/tasks@main` | ContinualLearningBench | Open adapter PR [#283](https://github.com/benchflow-ai/benchflow/pull/283) |
 
 HILBench uses the Hugging Face dataset `ScaleAI/hil-bench` for task metadata,
 but its SWE image tarballs live in the Hugging Face bucket
@@ -118,7 +118,7 @@ uv run python tests/integration/run_suite.py --lane adapter-release-set --execut
   --skillsbench-result dogfood/.../result.json \
   --open-pr-root HILBench=/path/to/pr-279-worktree \
   --open-pr-root OpaqueToolsBench=/path/to/pr-280-worktree \
-  --open-pr-root CLBench=/path/to/pr-283-worktree
+  --open-pr-root ContinualLearningBench=/path/to/pr-283-worktree
 
 # Validate hosted env hub metadata and regenerate Harbor inventory evidence.
 uv run python tests/integration/run_suite.py --lane hosted-env-compatibility-board --execute-hosted-env-evidence

@@ -226,14 +226,14 @@ axes:
           repo: shallinan1/OpaqueToolsBench
         pr: 280
         url: https://github.com/benchflow-ai/benchflow/pull/280
-      - name: CLBench
-        uid: benchflow-ai/benchmarks:datasets/clbench/tasks@main
+      - name: ContinualLearningBench
+        uid: benchflow-ai/benchmarks:datasets/continuallearningbench/tasks@main
         source:
           repo: benchflow-ai/benchmarks
-          path: datasets/clbench/tasks
+          path: datasets/continuallearningbench/tasks
           ref: main
         status: pending_pr
-        adapter_path: benchmarks/clbench
+        adapter_path: benchmarks/continuallearningbench
         upstream:
           repo: pgasawa/continual-learning-bench
         pr: 283

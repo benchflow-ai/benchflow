@@ -1,6 +1,6 @@
-name: clbench
+name: continuallearningbench
 description: >
-  Continual Learning Bench — sequential task evaluation measuring agent
+  ContinualLearningBench — sequential task evaluation measuring agent
   adaptation and improvement across instances
 url: https://github.com/pgasawa/continual-learning-bench
 paper: null
@@ -21,7 +21,7 @@ conversion:
   source_format: "Python task classes with ContinualLearningTask interface"
   has_oracle_solutions: false
   oracle_notes: >
-    CLBench tasks have oracle solutions for some tasks (e.g., poker optimal
+    ContinualLearningBench tasks have oracle solutions for some tasks (e.g., poker optimal
     strategy) but they are computed dynamically, not stored as static files.
 
 verification:
