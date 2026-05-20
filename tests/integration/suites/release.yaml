@@ -114,7 +114,7 @@ axes:
       - name: OpaqueToolsBench
         pr: 280
         url: https://github.com/benchflow-ai/benchflow/pull/280
-      - name: CLBench
+      - name: ContinualLearningBench
         pr: 283
         url: https://github.com/benchflow-ai/benchflow/pull/283
 

@@ -54,7 +54,7 @@ For the current release-prep sweep, the adapter release set includes:
 | Adapter source | Benchmarks |
 |---|---|
 | Merged adapters | Harvey LAB, ProgramBench, SkillsBench |
-| Open adapter PRs | HILBench ([#279](https://github.com/benchflow-ai/benchflow/pull/279)), OpaqueToolsBench ([#280](https://github.com/benchflow-ai/benchflow/pull/280)), CLBench ([#283](https://github.com/benchflow-ai/benchflow/pull/283)) |
+| Open adapter PRs | HILBench ([#279](https://github.com/benchflow-ai/benchflow/pull/279)), OpaqueToolsBench ([#280](https://github.com/benchflow-ai/benchflow/pull/280)), ContinualLearningBench ([#283](https://github.com/benchflow-ai/benchflow/pull/283)) |
 
 For the current release-prep sweep, the feature release set includes:
 

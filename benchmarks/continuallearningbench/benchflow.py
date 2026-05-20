@@ -1,11 +1,11 @@
-"""Generate BenchFlow task directories from Continual Learning Bench tasks.
+"""Generate BenchFlow task directories from ContinualLearningBench tasks.
 
-CLBench evaluates how well AI agents learn from past environment interactions
-across sequential task instances.  Each CLBench task becomes ONE BenchFlow
+ContinualLearningBench evaluates how well AI agents learn from past environment interactions
+across sequential task instances.  Each ContinualLearningBench task becomes ONE BenchFlow
 task — the agent runs the full sequential evaluation inside a Docker container
-using the CLBench harness.
+using the ContinualLearningBench harness.
 
-Requires a local checkout of the CLBench repo for schedule/variant metadata.
+Requires a local checkout of the ContinualLearningBench repo for schedule/variant metadata.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Task definitions ─────────────────────────────────────────────────
 
-_CLBENCH_TASKS: dict[str, dict] = {
+_CONTINUALLEARNINGBENCH_TASKS: dict[str, dict] = {
     "exploitable_poker": {
         "display_name": "Exploitable Poker",
         "difficulty": "medium",
@@ -64,7 +64,7 @@ _CLBENCH_TASKS: dict[str, dict] = {
         "reward_description": "1 - (regret / max_queries_per_question)",
         "pip_extras": "database_exploration",
         "extra_pip": "",
-        "setup_cmd": "cd /opt/clbench && python -m src.cli setup database_exploration",
+        "setup_cmd": "cd /opt/continuallearningbench && python -m src.cli setup database_exploration",
         "description": (
             "Answer questions about an unknown SQLite database. "
             "Reduce exploratory queries over time as you learn the schema."
@@ -103,7 +103,7 @@ def _sanitize_name(name: str) -> str:
 
 
 @dataclass
-class CLBenchTaskInfo:
+class ContinualLearningBenchTaskInfo:
     task_id: str
     display_name: str
     difficulty: str
@@ -121,19 +121,24 @@ class CLBenchTaskInfo:
 
 
 def load_tasks(
-    clbench_dir: Path,
+    continuallearningbench_dir: Path,
     task_ids: list[str] | None = None,
-) -> list[CLBenchTaskInfo]:
-    """Load CLBench task definitions."""
-    tasks: list[CLBenchTaskInfo] = []
+) -> list[ContinualLearningBenchTaskInfo]:
+    """Load ContinualLearningBench task definitions."""
+    tasks: list[ContinualLearningBenchTaskInfo] = []
 
-    for task_id, meta in _CLBENCH_TASKS.items():
+    for task_id, meta in _CONTINUALLEARNINGBENCH_TASKS.items():
         if task_ids and task_id not in task_ids:
             continue
 
         schedule_json: dict = {}
         schedule_path = (
-            clbench_dir / "src" / "tasks" / task_id / "schedules" / "default.json"
+            continuallearningbench_dir
+            / "src"
+            / "tasks"
+            / task_id
+            / "schedules"
+            / "default.json"
         )
         if schedule_path.exists():
             with open(schedule_path) as f:
@@ -141,7 +146,7 @@ def load_tasks(
                 schedule_json.pop("_canary", None)
 
         tasks.append(
-            CLBenchTaskInfo(
+            ContinualLearningBenchTaskInfo(
                 task_id=task_id,
                 display_name=meta["display_name"],
                 difficulty=meta["difficulty"],
@@ -165,9 +170,9 @@ def load_tasks(
 # ── Renderers ────────────────────────────────────────────────────────
 
 
-def _render_task_toml(task: CLBenchTaskInfo) -> str:
+def _render_task_toml(task: ContinualLearningBenchTaskInfo) -> str:
     sanitized = _sanitize_name(task.task_id)
-    name = f"clbench/{sanitized}"
+    name = f"continuallearningbench/{sanitized}"
     tags_str = ", ".join(f'"{t}"' for t in task.tags)
     return f"""\
 version = "1.0"
@@ -177,7 +182,7 @@ name = "{name}"
 
 [metadata]
 author_name = "Parth Asawa et al."
-author_email = "clbench@continual-learning-bench.com"
+author_email = "continuallearningbench@continual-learning-bench.com"
 difficulty = "{task.difficulty}"
 category = "{task.category}"
 tags = [{tags_str}]
@@ -201,7 +206,7 @@ _INSTRUCTION_TEMPLATE = Template("""\
 
 ## Overview
 
-This is a **continual learning** challenge from the Continual Learning Bench.
+This is a **continual learning** challenge from ContinualLearningBench.
 You must complete a sequence of related task instances and **learn from feedback**
 to improve your performance over time.
 
@@ -216,9 +221,9 @@ ${description}
 
 ## How It Works
 
-1. You will receive a prompt for each instance in sequence.
-2. After each response, you will receive feedback about your performance.
-3. Use this feedback to improve on subsequent instances.
+1. Prepare a sequence of responses for the ContinualLearningBench driver.
+2. The driver replays those responses through the original ContinualLearningBench harness.
+3. You can inspect the resulting score/summary, revise your responses, and rerun.
 4. Your goal is to maximize cumulative reward across all instances.
 
 ## Important
@@ -230,12 +235,21 @@ ${description}
 
 ## Interaction
 
-The task runs inside the CLBench harness. Respond to each prompt according to
-the expected response schema. The harness will provide feedback after each step.
+The task is mediated by the ContinualLearningBench driver at `/opt/run_task.py`.
+
+1. Write one JSON object per planned response to `/opt/agent_responses.jsonl`,
+   matching the response schema above.
+2. Run `python /opt/run_task.py ${task_id}` from inside the sandbox.
+3. Inspect the printed score/summary. You may edit `/opt/agent_responses.jsonl`
+   and rerun the driver to improve the result.
+
+The driver replays your responses through the ContinualLearningBench harness and writes
+`/opt/results.json` for the verifier. Do not create or edit `/opt/results.json`
+manually.
 """)
 
 
-def _render_instruction(task: CLBenchTaskInfo) -> str:
+def _render_instruction(task: ContinualLearningBenchTaskInfo) -> str:
     return _INSTRUCTION_TEMPLATE.safe_substitute(
         display_name=task.display_name,
         description=task.description,
@@ -243,10 +257,11 @@ def _render_instruction(task: CLBenchTaskInfo) -> str:
         response_schema=task.response_schema,
         reward_description=task.reward_description,
         r_max=str(task.r_max),
+        task_id=task.task_id,
     )
 
 
-def _render_dockerfile(task: CLBenchTaskInfo) -> str:
+def _render_dockerfile(task: ContinualLearningBenchTaskInfo) -> str:
     setup_lines = ""
     if task.setup_cmd:
         setup_lines = f"\n# Task-specific setup\nRUN {task.setup_cmd}\n"
@@ -270,9 +285,9 @@ RUN apt-get update -qq && \\
     apt-get install -y -qq git curl jq && \\
     rm -rf /var/lib/apt/lists/*
 
-# Clone CLBench and install with task-specific extras
-RUN git clone https://github.com/pgasawa/continual-learning-bench /opt/clbench && \\
-    cd /opt/clbench && \\
+# Clone ContinualLearningBench and install with task-specific extras
+RUN git clone https://github.com/pgasawa/continual-learning-bench /opt/continuallearningbench && \\
+    cd /opt/continuallearningbench && \\
     pip install --no-cache-dir "{pip_spec}"
 {extra_pip_lines}{setup_lines}
 # Copy task-specific files
@@ -282,13 +297,18 @@ COPY schedule.json /opt/schedule.json
 # Create verifier output directory
 RUN mkdir -p /logs/verifier
 
-WORKDIR /opt/clbench
+# Agent-writable driver input/output files. The agent should edit
+# agent_responses.jsonl and let run_task.py produce results.json.
+RUN touch /opt/agent_responses.jsonl /opt/results.json && \\
+    chmod 666 /opt/agent_responses.jsonl /opt/results.json
+
+WORKDIR /opt/continuallearningbench
 """
 
 
 _RUN_TASK_PY = """\
 #!/usr/bin/env python3
-\"\"\"Drive a CLBench task via its Python API.
+\"\"\"Drive a ContinualLearningBench task via its Python API.
 
 Reads agent responses from /opt/agent_responses.jsonl (one JSON per line).
 Writes results to /opt/results.json when the task completes.
@@ -308,7 +328,7 @@ def main() -> None:
         print("Usage: run_task.py <task_name>")
         sys.exit(1)
 
-    # Import after clbench is installed
+    # Import after continuallearningbench is installed
     from src.registry import get_task_class
 
     task_cls = get_task_class(task_name)
@@ -368,7 +388,7 @@ if __name__ == "__main__":
 
 _EVALUATE_PY_TEMPLATE = Template("""\
 #!/usr/bin/env python3
-\"\"\"Evaluate CLBench task results and write reward.\"\"\"
+\"\"\"Evaluate ContinualLearningBench task results and write reward.\"\"\"
 import json
 import sys
 
@@ -405,14 +425,14 @@ python3 /tests/evaluate.py
 
 
 def generate_task(
-    task: CLBenchTaskInfo,
+    task: ContinualLearningBenchTaskInfo,
     output_dir: Path,
     *,
     overwrite: bool = False,
 ) -> Path:
-    """Generate a single BenchFlow task directory for one CLBench task."""
+    """Generate a single BenchFlow task directory for one ContinualLearningBench task."""
     sanitized = _sanitize_name(task.task_id)
-    task_dir = output_dir / f"clbench-{sanitized}"
+    task_dir = output_dir / f"continuallearningbench-{sanitized}"
 
     if task_dir.exists():
         if not overwrite:
@@ -451,15 +471,15 @@ def generate_task(
 
 
 def generate_all(
-    clbench_dir: Path,
+    continuallearningbench_dir: Path,
     output_dir: Path,
     *,
     overwrite: bool = False,
     limit: int | None = None,
     task_ids: list[str] | None = None,
 ) -> list[Path]:
-    """Generate BenchFlow task directories for all CLBench tasks."""
-    tasks = load_tasks(clbench_dir, task_ids=task_ids)
+    """Generate BenchFlow task directories for all ContinualLearningBench tasks."""
+    tasks = load_tasks(continuallearningbench_dir, task_ids=task_ids)
 
     if limit is not None:
         tasks = tasks[:limit]
@@ -477,13 +497,13 @@ def generate_all(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Generate BenchFlow tasks from Continual Learning Bench"
+        description="Generate BenchFlow tasks from ContinualLearningBench"
     )
     parser.add_argument(
-        "--clbench-dir",
+        "--continuallearningbench-dir",
         type=Path,
         required=True,
-        help="Path to cloned CLBench repo",
+        help="Path to cloned ContinualLearningBench repo",
     )
     parser.add_argument(
         "--output-dir",
@@ -515,7 +535,7 @@ def main() -> None:
     task_ids = args.task_ids.split(",") if args.task_ids else None
 
     generated = generate_all(
-        clbench_dir=args.clbench_dir,
+        continuallearningbench_dir=args.continuallearningbench_dir,
         output_dir=args.output_dir,
         overwrite=args.overwrite,
         limit=args.limit,

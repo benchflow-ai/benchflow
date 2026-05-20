@@ -1,5 +1,5 @@
 {
-  "benchmark": "continual-learning-bench",
+  "benchmark": "continuallearningbench",
   "source_url": "https://github.com/pgasawa/continual-learning-bench",
   "conversion_date": "2026-05-17",
   "tasks_converted": ["exploitable_poker", "database_exploration", "cohort_studies"],
@@ -7,7 +7,7 @@
     "tasks_tested": 3,
     "passed": 3,
     "checks": [
-      "task.toml valid with clbench/ prefix",
+      "task.toml valid with continuallearningbench/ prefix",
       "instruction.md non-empty",
       "Dockerfile has correct base image and task-specific pip extras",
       "run_task.py present",
@@ -21,7 +21,7 @@
     "note": "evaluate.py normalizes score/R_MAX then clamps to [0,1]. Parity test runs actual generated evaluate.py (not inline wrapper).",
     "tests_per_task": [
       {
-        "task": "clbench-exploitable-poker",
+        "task": "continuallearningbench-exploitable-poker",
         "r_max": 9.4875,
         "results": [
           {"name": "valid_results", "score": 0.75, "expected_reward": 0.079051, "result": "pass"},
@@ -31,7 +31,7 @@
         ]
       },
       {
-        "task": "clbench-database-exploration",
+        "task": "continuallearningbench-database-exploration",
         "r_max": 1.0,
         "results": [
           {"name": "valid_results", "score": 0.75, "expected_reward": 0.75, "result": "pass"},
@@ -41,7 +41,7 @@
         ]
       },
       {
-        "task": "clbench-cohort-studies",
+        "task": "continuallearningbench-cohort-studies",
         "r_max": 0.162202,
         "results": [
           {"name": "valid_results", "score": 0.75, "expected_reward": 1.0, "result": "pass"},
@@ -53,15 +53,15 @@
     ]
   },
   "live_parity": {
-    "description": "Run real CLBench tasks with deterministic agent responses, compare original TaskResult.score vs BenchFlow evaluate.py reward",
-    "clbench_commit": "HEAD",
+    "description": "Run real ContinualLearningBench tasks with deterministic agent responses, compare original TaskResult.score vs BenchFlow evaluate.py reward",
+    "continuallearningbench_commit": "HEAD",
     "python_version": "3.13.3",
     "tasks_tested": 2,
     "passed": 2,
     "note": "cohort_studies skipped (requires frozen dataset build). Deterministic strategies produce degenerate scores (<=0), so live tests verify r_max match and pipeline fidelity. Normalization math verified separately in eval_parity with synthetic positive scores.",
     "tests": [
       {
-        "task": "clbench-exploitable-poker",
+        "task": "continuallearningbench-exploitable-poker",
         "strategy": "always FOLD",
         "original_score": -0.8,
         "r_max": 9.4875,
@@ -74,7 +74,7 @@
         "num_outcomes": 5
       },
       {
-        "task": "clbench-database-exploration",
+        "task": "continuallearningbench-database-exploration",
         "strategy": "always ANSWER 'unknown'",
         "original_score": 0.0,
         "r_max": 1.0,
@@ -89,8 +89,8 @@
     ]
   },
   "e2e_parity": {
-    "description": "Harvey LAB-standard end-to-end parity: run SAME agent responses through BOTH original CLBench Python API AND BenchFlow run_task.py pipeline, compare resulting scores, then verify evaluate.py normalization.",
-    "clbench_commit": "HEAD",
+    "description": "Harvey LAB-standard end-to-end parity: run SAME agent responses through BOTH original ContinualLearningBench Python API AND BenchFlow run_task.py pipeline, compare resulting scores, then verify evaluate.py normalization.",
+    "continuallearningbench_commit": "HEAD",
     "python_version": "3.13.3",
     "tasks_tested": 10,
     "passed": 10,
@@ -250,13 +250,13 @@
   },
   "dogfooding": {
     "docker_build": {
-      "task": "clbench-exploitable-poker",
-      "image": "clbench-poker-test",
+      "task": "continuallearningbench-exploitable-poker",
+      "image": "continuallearningbench-poker-test",
       "result": "success",
       "notes": "Fixed uv --all-extras -> pip install '.[poker]'. Build completes in ~41s."
     },
     "docker_eval": {
-      "task": "clbench-exploitable-poker",
+      "task": "continuallearningbench-exploitable-poker",
       "result": "success",
       "notes": "Ran evaluator inside container with synthetic results.json (score=0.85). Wrote 0.85 to /logs/verifier/reward.txt."
     }
