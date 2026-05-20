@@ -192,6 +192,8 @@ class TestResolveAgentEnv:
             "ANTHROPIC_API_KEY",
             "ANTHROPIC_AUTH_TOKEN",
             "CLAUDE_CODE_OAUTH_TOKEN",
+            "CODEX_ACCESS_TOKEN",
+            "CODEX_API_KEY",
             "ZAI_API_KEY",
             "OPENAI_API_KEY",
         ):

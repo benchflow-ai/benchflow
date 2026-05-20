@@ -101,6 +101,8 @@ class TestResolveAgentEnvSubscription:
             "ANTHROPIC_API_KEY",
             "ANTHROPIC_AUTH_TOKEN",
             "CLAUDE_CODE_OAUTH_TOKEN",
+            "CODEX_ACCESS_TOKEN",
+            "CODEX_API_KEY",
             "OPENAI_API_KEY",
             "GOOGLE_API_KEY",
             "GEMINI_API_KEY",
@@ -123,6 +125,8 @@ class TestResolveAgentEnvSubscription:
             "ANTHROPIC_API_KEY",
             "ANTHROPIC_AUTH_TOKEN",
             "CLAUDE_CODE_OAUTH_TOKEN",
+            "CODEX_ACCESS_TOKEN",
+            "CODEX_API_KEY",
             "OPENAI_API_KEY",
             "GOOGLE_API_KEY",
             "GEMINI_API_KEY",
@@ -152,7 +156,12 @@ class TestResolveAgentEnvSubscription:
 
     def test_codex_subscription_auth(self, monkeypatch, tmp_path):
         """Codex subscription auth works with host ~/.codex/auth.json."""
-        for k in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
+        for k in (
+            "CODEX_ACCESS_TOKEN",
+            "CODEX_API_KEY",
+            "OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+        ):
             monkeypatch.delenv(k, raising=False)
         codex_dir = tmp_path / ".codex"
         codex_dir.mkdir()
@@ -165,6 +174,54 @@ class TestResolveAgentEnvSubscription:
             agent_env={},
         )
         assert result["_BENCHFLOW_SUBSCRIPTION_AUTH"] == "1"
+
+    def test_codex_access_token_auth(self, monkeypatch, tmp_path):
+        """Guards PR #295: Blocks-style Codex auth via CODEX_ACCESS_TOKEN."""
+        for k in ("CODEX_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
+            monkeypatch.delenv(k, raising=False)
+        _patch_expanduser(monkeypatch, tmp_path)
+
+        result = self._resolve(
+            agent="codex-acp",
+            model="gpt-4o",
+            agent_env={"CODEX_ACCESS_TOKEN": "access-token"},
+        )
+
+        assert result["CODEX_ACCESS_TOKEN"] == "access-token"
+        assert "OPENAI_API_KEY" not in result
+        assert "_BENCHFLOW_SUBSCRIPTION_AUTH" not in result
+
+    def test_codex_api_key_auth_alias(self, monkeypatch, tmp_path):
+        """Guards PR #295: CODEX_API_KEY works for native Codex auth."""
+        for k in ("CODEX_ACCESS_TOKEN", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
+            monkeypatch.delenv(k, raising=False)
+        _patch_expanduser(monkeypatch, tmp_path)
+
+        result = self._resolve(
+            agent="codex-acp",
+            model="gpt-4o",
+            agent_env={"CODEX_API_KEY": "codex-key"},
+        )
+
+        assert result["CODEX_API_KEY"] == "codex-key"
+        assert result["OPENAI_API_KEY"] == "codex-key"
+        assert result["BENCHFLOW_PROVIDER_API_KEY"] == "codex-key"
+        assert "_BENCHFLOW_SUBSCRIPTION_AUTH" not in result
+
+    def test_codex_access_token_does_not_auth_custom_provider(
+        self, monkeypatch, tmp_path
+    ):
+        """Guards PR #295: access tokens are not proxy API keys."""
+        for k in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
+            monkeypatch.delenv(k, raising=False)
+        _patch_expanduser(monkeypatch, tmp_path)
+
+        with pytest.raises(ValueError, match="OPENAI_API_KEY required"):
+            self._resolve(
+                agent="codex-acp",
+                model="vllm/mock-model",
+                agent_env={"CODEX_ACCESS_TOKEN": "access-token"},
+            )
 
     def test_gemini_subscription_auth(self, monkeypatch, tmp_path):
         """Gemini subscription auth works with host ~/.gemini/oauth_creds.json."""

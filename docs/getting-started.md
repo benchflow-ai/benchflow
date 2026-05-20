@@ -53,7 +53,7 @@ export CLAUDE_CODE_OAUTH_TOKEN=<paste-token>
 
 benchflow auto-inherits `CLAUDE_CODE_OAUTH_TOKEN` from your shell into the sandbox; the Claude CLI inside reads it directly. Same auth precedence as plain `claude` ([Anthropic docs](https://code.claude.com/docs/en/authentication#authentication-precedence)): API keys override OAuth tokens, so unset `ANTHROPIC_API_KEY` if you want the token to win.
 
-`claude setup-token` only authenticates Claude. Codex and Gemini do not have an equivalent today — use Option 1 (host login) or Option 3 (API key).
+`claude setup-token` only authenticates Claude. Codex can also use a provided subscription access token, such as `CODEX_ACCESS_TOKEN` from a host/orchestrator integration; benchflow passes it through to Codex without copying `~/.codex/auth.json`. Gemini does not have an equivalent today — use Option 1 (host login) or Option 3 (API key).
 
 ### Option 3 — API key
 
@@ -62,6 +62,7 @@ Set the API-key env var directly. Works with every agent:
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
 export OPENAI_API_KEY=sk-...
+export CODEX_API_KEY=sk-...       # Codex alias for OPENAI_API_KEY
 export GEMINI_API_KEY=...
 export LLM_API_KEY=...           # OpenHands / LiteLLM-compatible providers
 ```
