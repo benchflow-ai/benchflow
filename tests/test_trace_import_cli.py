@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import click
 import pytest
 from typer.testing import CliRunner
 
@@ -12,17 +13,16 @@ def test_tasks_generate_help_uses_long_options_only() -> None:
     result = CliRunner().invoke(app, ["tasks", "generate", "--help"])
 
     assert result.exit_code == 0
-    help_tokens = {
-        token for line in result.output.splitlines() for token in line.split()
-    }
+    output = click.unstyle(result.output)
+    help_tokens = {token for line in output.splitlines() for token in line.split()}
     assert "-o" not in help_tokens
     assert "-p" not in help_tokens
     assert "-f" not in help_tokens
     assert "-n" not in help_tokens
-    assert "--output" in result.output
-    assert "--project" in result.output
-    assert "--format" in result.output
-    assert "--limit" in result.output
+    assert "--output" in output
+    assert "--project" in output
+    assert "--format" in output
+    assert "--limit" in output
 
 
 @pytest.mark.parametrize(
@@ -52,7 +52,7 @@ def test_tasks_generate_rejects_removed_short_options(
     )
 
     assert result.exit_code != 0
-    assert f"No such option: {alias}" in result.output
+    assert f"No such option: {alias}" in click.unstyle(result.output)
 
 
 def test_tasks_generate_dry_run_uses_generation_filters(
