@@ -1,9 +1,58 @@
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from benchflow.cli.main import app
 from benchflow.traces.models import ParsedTrace, ToolCall, TraceStep
+
+
+def test_tasks_generate_help_uses_long_options_only() -> None:
+    """Guards ENG-96: task-generation help stays on long options."""
+    result = CliRunner().invoke(app, ["tasks", "generate", "--help"])
+
+    assert result.exit_code == 0
+    help_tokens = {
+        token for line in result.output.splitlines() for token in line.split()
+    }
+    assert "-o" not in help_tokens
+    assert "-p" not in help_tokens
+    assert "-f" not in help_tokens
+    assert "-n" not in help_tokens
+    assert "--output" in result.output
+    assert "--project" in result.output
+    assert "--format" in result.output
+    assert "--limit" in result.output
+
+
+@pytest.mark.parametrize(
+    ("alias", "value"),
+    [
+        ("-o", "generated-tasks"),
+        ("-p", "benchflow"),
+        ("-f", "auto"),
+        ("-n", "1"),
+    ],
+)
+def test_tasks_generate_rejects_removed_short_options(
+    alias: str, value: str, tmp_path: Path
+) -> None:
+    """Guards ENG-96: removed task-generation short options stay rejected."""
+    result = CliRunner().invoke(
+        app,
+        [
+            "tasks",
+            "generate",
+            "--from-file",
+            str(tmp_path / "traces.jsonl"),
+            alias,
+            value,
+            "--dry-run",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert f"No such option: {alias}" in result.output
 
 
 def test_tasks_generate_dry_run_uses_generation_filters(

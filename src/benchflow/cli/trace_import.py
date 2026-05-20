@@ -53,7 +53,7 @@ def register_tasks_generate(tasks_app: typer.Typer) -> None:
         ] = None,
         output_dir: Annotated[
             Path,
-            typer.Option("--output", "-o", help="Output directory for generated tasks"),
+            typer.Option("--output", help="Output directory for generated tasks"),
         ] = Path("tasks"),
         # ── source-specific options ──────────────────────────────────
         projects_dir: Annotated[
@@ -67,7 +67,6 @@ def register_tasks_generate(tasks_app: typer.Typer) -> None:
             str | None,
             typer.Option(
                 "--project",
-                "-p",
                 help="Filter local sessions by project path substring",
             ),
         ] = None,
@@ -75,7 +74,6 @@ def register_tasks_generate(tasks_app: typer.Typer) -> None:
             str,
             typer.Option(
                 "--format",
-                "-f",
                 help="Trace format override: auto, claude-code, opentraces, claude-messages",
             ),
         ] = "auto",
@@ -90,7 +88,7 @@ def register_tasks_generate(tasks_app: typer.Typer) -> None:
         # ── shared filtering / output options ────────────────────────
         limit: Annotated[
             int,
-            typer.Option("--limit", "-n", help="Max traces to process"),
+            typer.Option("--limit", help="Max traces to process"),
         ] = 20,
         min_steps: Annotated[
             int,
@@ -121,7 +119,7 @@ def register_tasks_generate(tasks_app: typer.Typer) -> None:
             bench tasks generate --from-local
             bench tasks generate --from-local --project my-repo --limit 5
             bench tasks generate --from-file session.jsonl --dry-run
-            bench tasks generate --from-hf opentraces-test -n 50 --outcome success
+            bench tasks generate --from-hf opentraces-test --limit 50 --outcome success
         """
         sources = sum([from_local, from_file is not None, from_hf is not None])
         if sources == 0:
