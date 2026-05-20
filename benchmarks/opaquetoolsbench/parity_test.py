@@ -31,6 +31,7 @@ REQUIRED_FILES = [
     "tests/test.sh",
     "tests/evaluate.py",
     "tests/ground_truth.json",
+    "solution/solve.sh",
 ]
 
 
@@ -69,13 +70,9 @@ def _validate_task(task_dir: Path) -> list[str]:
         if "## Query" not in content:
             errors.append(f"[{task_id}] instruction.md missing ## Query section")
         if "## Available Functions" not in content:
-            errors.append(
-                f"[{task_id}] instruction.md missing ## Available Functions"
-            )
+            errors.append(f"[{task_id}] instruction.md missing ## Available Functions")
         if "/app/output/response.json" not in content:
-            errors.append(
-                f"[{task_id}] instruction.md missing output path reference"
-            )
+            errors.append(f"[{task_id}] instruction.md missing output path reference")
 
     # Validate ground_truth.json
     gt_path = task_dir / "tests" / "ground_truth.json"
@@ -94,13 +91,15 @@ def _validate_task(task_dir: Path) -> list[str]:
             errors.append(f"[{task_id}] ground_truth.json invalid JSON: {e}")
 
     # Validate test.sh is executable
-    test_sh = task_dir / "tests" / "test.sh"
-    if test_sh.exists():
+    for rel in ("tests/test.sh", "solution/solve.sh"):
+        script = task_dir / rel
+        if not script.exists():
+            continue
         import stat
 
-        mode = test_sh.stat().st_mode
+        mode = script.stat().st_mode
         if not (mode & stat.S_IXUSR):
-            errors.append(f"[{task_id}] test.sh is not executable")
+            errors.append(f"[{task_id}] {rel} is not executable")
 
     # Validate Dockerfile
     dockerfile = task_dir / "environment" / "Dockerfile"
@@ -109,9 +108,7 @@ def _validate_task(task_dir: Path) -> list[str]:
         if "FROM" not in content:
             errors.append(f"[{task_id}] Dockerfile missing FROM directive")
         if "/logs/verifier" not in content:
-            errors.append(
-                f"[{task_id}] Dockerfile missing /logs/verifier directory"
-            )
+            errors.append(f"[{task_id}] Dockerfile missing /logs/verifier directory")
 
     return errors
 
@@ -142,9 +139,7 @@ def main() -> None:
     if args.task_ids:
         task_dirs = [args.tasks_dir / tid for tid in args.task_ids]
     else:
-        task_dirs = sorted(
-            d for d in args.tasks_dir.iterdir() if d.is_dir()
-        )
+        task_dirs = sorted(d for d in args.tasks_dir.iterdir() if d.is_dir())
 
     if not task_dirs:
         log.error("No task directories found in %s", args.tasks_dir)

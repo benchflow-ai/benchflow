@@ -209,13 +209,13 @@ def _render_instruction(task: BFCLTask) -> str:
             "",
             "Each function call object must have this format:",
             "```json",
-            '{',
+            "{",
             '  "function": "<function_name>",',
             '  "args": {',
             '    "<param1>": <value1>,',
             '    "<param2>": <value2>',
-            '  }',
-            '}',
+            "  }",
+            "}",
             "```",
             "",
             "Example (array with one call):",
@@ -262,6 +262,51 @@ python3 /tests/evaluate.py \\
     --ground-truth /tests/ground_truth.json \\
     --reward-file /logs/verifier/reward.txt
 """).safe_substitute(instance_id=task.instance_id)
+
+
+def _render_solution_sh(task: BFCLTask) -> str:
+    ground_truth = json.dumps(task.ground_truth)
+    return Template("""\
+#!/bin/bash
+# Oracle solution for OpaqueToolsBench BFCL task: $instance_id
+set -euo pipefail
+
+mkdir -p /app/output
+python3 - <<'PY'
+from __future__ import annotations
+
+import ast
+import json
+from pathlib import Path
+
+ground_truth = $ground_truth
+
+
+def parse_python_call(call_str: str) -> dict:
+    tree = ast.parse(call_str)
+    if not isinstance(tree.body[0], ast.Expr):
+        raise ValueError(f"Expected expression: {call_str}")
+    node = tree.body[0].value
+    if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name):
+        raise ValueError(f"Expected function call: {call_str}")
+
+    args: dict = {}
+    for kw in node.keywords:
+        if kw.arg:
+            args[kw.arg] = ast.literal_eval(kw.value)
+    for i, arg in enumerate(node.args):
+        args[f"_positional_{i}"] = ast.literal_eval(arg)
+
+    return {"function": node.func.id, "args": args}
+
+
+calls = [parse_python_call(call) for call in ground_truth]
+Path("/app/output/response.json").write_text(json.dumps(calls, indent=2))
+PY
+""").safe_substitute(
+        instance_id=task.instance_id,
+        ground_truth=ground_truth,
+    )
 
 
 # ── evaluate.py (copied into every task's tests/) ───────────────────
@@ -452,9 +497,7 @@ if __name__ == "__main__":
 # ── Task generation ─────────────────────────────────────────────────
 
 
-def generate_task(
-    task: BFCLTask, output_dir: Path, *, overwrite: bool = False
-) -> Path:
+def generate_task(task: BFCLTask, output_dir: Path, *, overwrite: bool = False) -> Path:
     """Generate a single BenchFlow task directory for one BFCL test item."""
     task_dir = output_dir / task.instance_id
     if task_dir.exists():
@@ -494,6 +537,13 @@ def generate_task(
     if task.execution_result is not None:
         gt_data["execution_result"] = task.execution_result
     (tests_dir / "ground_truth.json").write_text(json.dumps(gt_data, indent=2))
+
+    # solution/
+    solution_dir = task_dir / "solution"
+    solution_dir.mkdir()
+    solve_sh = solution_dir / "solve.sh"
+    solve_sh.write_text(_render_solution_sh(task))
+    solve_sh.chmod(0o755)
 
     return task_dir
 
