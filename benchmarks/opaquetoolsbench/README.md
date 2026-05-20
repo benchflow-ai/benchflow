@@ -66,6 +66,10 @@ python benchmarks/opaquetoolsbench/parity_test.py \
 
 ```bash
 python benchmarks/opaquetoolsbench/run_opaquetoolsbench.py
+
+# Or pass an explicit config
+python benchmarks/opaquetoolsbench/run_opaquetoolsbench.py \
+    benchmarks/opaquetoolsbench/opaquetoolsbench-gemini-flash-lite.yaml
 ```
 
 ## Generated Task Structure

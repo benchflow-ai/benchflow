@@ -31,3 +31,22 @@ def test_programbench_run_script_help_works():
 
     assert result.returncode == 0
     assert "Run ProgramBench via BenchFlow" in result.stdout
+
+
+def test_opaquetoolsbench_run_script_help_works():
+    """Guards ENG-89: OpaqueToolsBench run script is invokable by path."""
+    repo = Path(__file__).resolve().parents[1]
+    result = subprocess.run(
+        [
+            sys.executable,
+            "benchmarks/opaquetoolsbench/run_opaquetoolsbench.py",
+            "--help",
+        ],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert "Run OpaqueToolsBench via BenchFlow" in result.stdout
