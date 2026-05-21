@@ -75,7 +75,6 @@ def collect_tests() -> dict:
             s["failed"] += 1
             failures.append({
                 "name": f"{c.get('classname','')}::{c.get('name','')}",
-                "file": fname,
                 "message": (node.get("message") or "").strip()[:280],
             })
         elif skp is not None:

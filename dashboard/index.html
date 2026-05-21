@@ -769,10 +769,16 @@ function taskNode(tk, firstPath) {
   if (!children.length)
     children.push({ type: "file", label: "(no files)",
       file: { name: "(no files)", content: null } });
-  const trajStr = tk.trajectory_events ? ` · ${tk.trajectory_events} traj events` : "";
+  // task-level meta — every field generate.py emits is surfaced here.
+  const bits = [rewardStr, tk.agent];
+  if (tk.model && tk.model !== "—") bits.push(tk.model);
+  if (tk.environment && tk.environment !== "—") bits.push(tk.environment);
+  if (tk.total_time) bits.push(`${tk.total_time}s`);
+  if (tk.trajectory_events) bits.push(`${tk.trajectory_events} traj events`);
+  if (tk.rollout) bits.push(`#${String(tk.rollout).split("__").pop()}`);
   return {
     type: "folder", label: tk.name,
-    meta: `${rewardStr} · ${tk.agent}${tk.model && tk.model !== "—" ? " · " + tk.model : ""}${trajStr}`,
+    meta: bits.join(" · "),
     badge: status, open: !!firstPath, children,
   };
 }
@@ -792,9 +798,10 @@ function runNode(run, firstPath) {
 function groupNode(g, gi) {
   const adv = (g.advisories || []);
   let headerExtra = null;
-  if (adv.length) {
+  if (g.blurb || adv.length) {
     const box = el("span");
-    box.style.cssText = "display:inline-flex;gap:4px;flex-wrap:wrap";
+    box.style.cssText = "display:flex;gap:8px;flex-wrap:wrap;align-items:baseline";
+    if (g.blurb) box.appendChild(el("span", "gblurb", esc(g.blurb)));
     adv.forEach(id => {
       const c = el("span", "chip lnk", "▸ " + esc(id));
       c.dataset.adv = id;
@@ -921,11 +928,15 @@ function renderTimeline() {
     item.appendChild(meta);
 
     const files = Array.isArray(x.files) ? x.files : [];
+    const totalFiles = x.n_files_total != null ? x.n_files_total : files.length;
+    const fileLabel = x.files_truncated
+      ? `showing ${files.length} of ${totalFiles} files`
+      : `${files.length} file${files.length === 1 ? "" : "s"}`;
     const exp = el("div", "exp");
     const head = el("div");
     head.innerHTML =
       `<span class="ename">${esc(x.name)}</span>` +
-      `<span class="muted" style="font-size:12px"> — ${files.length} file${files.length === 1 ? "" : "s"}</span>`;
+      `<span class="muted" style="font-size:12px"> — ${esc(fileLabel)}</span>`;
     exp.appendChild(head);
     if (x.blurb) exp.appendChild(el("div", "eblurb", esc(x.blurb)));
 
