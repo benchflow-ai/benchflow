@@ -368,17 +368,26 @@ class DockerSandbox(BaseSandbox):
             check=True,
         )
 
-    async def upload_dir(self, source_dir: Path | str, target_dir: str) -> None:
-        await self.exec(f"mkdir -p {shlex.quote(target_dir)}", user="root")
+    async def upload_dir(
+        self, source_dir: Path | str, target_dir: str, service: str = "main"
+    ) -> None:
+        """Upload a directory into a compose service container.
+
+        ``service`` defaults to ``"main"``; pass a target service to land the
+        directory in an additional vulhub-style container (#248).
+        """
+        await self.exec(
+            f"mkdir -p {shlex.quote(target_dir)}", user="root", service=service
+        )
         await self._run_docker_compose_command(
-            ["cp", f"{source_dir}/.", f"main:{target_dir}"],
+            ["cp", f"{source_dir}/.", f"{service}:{target_dir}"],
             check=True,
         )
         if sys.platform == "win32":
             await self._run_docker_compose_command(
                 [
                     "exec",
-                    "main",
+                    service,
                     "bash",
                     "-c",
                     f"find {target_dir} -type f \\( -name '*.sh' -o -name '*.py' \\) "
@@ -387,12 +396,16 @@ class DockerSandbox(BaseSandbox):
                 check=False,
             )
 
-    async def _chown_to_host_user(self, path: str, recursive: bool = False) -> None:
+    async def _chown_to_host_user(
+        self, path: str, recursive: bool = False, service: str = "main"
+    ) -> None:
         if not hasattr(os, "getuid"):
             return
         flag = "-R " if recursive else ""
         await self.exec(
-            f"chown {flag}{os.getuid()}:{os.getgid()} {shlex.quote(path)}", user="root"
+            f"chown {flag}{os.getuid()}:{os.getgid()} {shlex.quote(path)}",
+            user="root",
+            service=service,
         )
 
     async def download_file(self, source_path: str, target_path: Path | str) -> None:
@@ -402,10 +415,17 @@ class DockerSandbox(BaseSandbox):
             check=True,
         )
 
-    async def download_dir(self, source_dir: str, target_dir: Path | str) -> None:
-        await self._chown_to_host_user(source_dir, recursive=True)
+    async def download_dir(
+        self, source_dir: str, target_dir: Path | str, service: str = "main"
+    ) -> None:
+        """Download a directory from a compose service container.
+
+        ``service`` defaults to ``"main"``; pass a target service to fetch
+        target-side verifier output from a vulhub-style container (#248).
+        """
+        await self._chown_to_host_user(source_dir, recursive=True, service=service)
         await self._run_docker_compose_command(
-            ["cp", f"main:{source_dir}/.", str(target_dir)],
+            ["cp", f"{service}:{source_dir}/.", str(target_dir)],
             check=True,
         )
 

@@ -87,6 +87,40 @@ clear error for any non-`main` service. This lets a verifier check
 write-based oracles (`/tmp/exploit.txt` in the target), database modifications,
 or RCE markers without trusting the agent container.
 
+### Target-side `test.sh` verification
+
+For tasks whose success oracle lives in a target container — an RCE marker
+file, a modified database row — point the `test.sh` verifier at that service
+with `[verifier].service`:
+
+```toml
+[verifier]
+service = "target"     # run tests/test.sh inside the `target` container
+```
+
+With this set, BenchFlow uploads the task's `tests/` directory into the
+**target** container, runs `test.sh` there, and copies the resulting
+`reward.txt` / `reward.json` back to the host. `service` defaults to `"main"`
+(the agent container), so existing single-container tasks are unaffected.
+
+`[verifier].service` is the declarative, task-schema way to do cross-container
+verification; the `env.exec_in_service(...)` Python API above is the
+imperative equivalent for hook-driven runs.
+
+> Use the same `service` name you declared in `docker-compose.yaml`. A
+> `test.sh` running in the target reaches `main` (and vice versa) by service
+> name over the Docker network, just like the agent does.
+
+### Hardening policy for multi-container tasks
+
+BenchFlow's pre-verification hardening — killing the sandbox user's
+processes, scrubbing `PATH`/`PYTHONPATH`, restoring build-config files —
+applies **only to the `main` (agent) container**. Target containers are
+deliberately left unhardened: a vulhub-style target is *meant* to be
+vulnerable, the agent never has a shell inside it, and hardening it would
+risk breaking the very vulnerability the task exercises. `[verifier].service`
+selects where `test.sh` *runs*; it does not move hardening off `main`.
+
 ---
 
 ## instruction.md
