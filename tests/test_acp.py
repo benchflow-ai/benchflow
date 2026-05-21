@@ -129,6 +129,44 @@ class TestACPClient:
             await client.close()
 
     @pytest.mark.asyncio
+    async def test_initialize_advertises_auth_methods(self) -> None:
+        """initialize() surfaces the agent's advertised ACP auth methods."""
+        client = ACPClient(StdioTransport(sys.executable, [MOCK_AGENT]))
+        try:
+            await client.connect()
+            result = await client.initialize()
+            assert result.auth_methods is not None
+            assert [m.id for m in result.auth_methods] == ["api-key"]
+        finally:
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_authenticate_with_advertised_method(self) -> None:
+        """authenticate() succeeds for a method ID the agent advertises."""
+        client = ACPClient(StdioTransport(sys.executable, [MOCK_AGENT]))
+        try:
+            await client.connect()
+            result = await client.initialize()
+            method_id = result.auth_methods[0].id
+            # authenticate runs after initialize, before session/new.
+            response = await client.authenticate(method_id)
+            assert response == {}
+        finally:
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_authenticate_unknown_method_raises(self) -> None:
+        """authenticate() raises ACPError for a method the agent rejects."""
+        client = ACPClient(StdioTransport(sys.executable, [MOCK_AGENT]))
+        try:
+            await client.connect()
+            await client.initialize()
+            with pytest.raises(ACPError):
+                await client.authenticate("not-a-real-method")
+        finally:
+            await client.close()
+
+    @pytest.mark.asyncio
     async def test_prompt_without_session_raises(self) -> None:
         client = ACPClient(StdioTransport(sys.executable, [MOCK_AGENT]))
         try:

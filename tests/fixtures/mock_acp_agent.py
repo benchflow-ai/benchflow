@@ -33,9 +33,28 @@ def main():
                         "protocolVersion": min(requested, 1),
                         "agentInfo": {"name": "mock-agent", "version": "1.0.0"},
                         "agentCapabilities": {},
+                        "authMethods": [
+                            {"id": "api-key", "name": "API key"},
+                        ],
                     },
                 }
             )
+
+        elif method == "authenticate":
+            method_id = msg.get("params", {}).get("methodId", "")
+            if method_id == "api-key":
+                send({"jsonrpc": "2.0", "id": req_id, "result": {}})
+            else:
+                send(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "error": {
+                            "code": -32602,
+                            "message": f"Unknown auth method: {method_id}",
+                        },
+                    }
+                )
 
         elif method == "session/new":
             send(

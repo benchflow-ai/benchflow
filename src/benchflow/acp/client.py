@@ -245,6 +245,21 @@ class ACPClient:
             )
         return self._session
 
+    async def authenticate(self, method_id: str) -> dict:
+        """Authenticate with the agent using one of its advertised auth methods.
+
+        ``method_id`` must be one of the ``auth_methods`` IDs returned by
+        ``initialize()`` (``InitializeResult.auth_methods``). Per the ACP spec
+        this runs after ``initialize`` and before ``session/new``.
+
+        Note: BenchFlow today authenticates agents out-of-band via credential
+        files / env vars (see ``benchflow.agents`` registry config), so the
+        default ``connect_acp`` flow does not call this. It exists for ACP
+        agents that require the in-protocol ``authenticate`` handshake.
+        """
+        params = {"methodId": method_id}
+        return await self._send_request("authenticate", params)
+
     async def set_model(self, model_id: str) -> dict:
         """Set the model for the current session."""
         if not self._session:
