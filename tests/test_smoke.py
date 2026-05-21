@@ -12,7 +12,7 @@ That patch is gated on ``/.dockerenv`` and runs ``docker info`` with a 5s
 timeout, swallowing all exceptions — safe but worth flagging.
 
 Cost / runtime budget (for the green path against claude-agent-acp + Haiku 4.5):
-- Cold: 90-180s (apt + node 22 + npm install @zed-industries/claude-agent-acp,
+- Cold: 90-180s (apt + node 22 + npm install @agentclientprotocol/claude-agent-acp,
   plus ubuntu:24.04 pull, plus model latency)
 - Warm: 30-60s
 - ~$0.005 per run on Haiku 4.5

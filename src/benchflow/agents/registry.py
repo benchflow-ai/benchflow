@@ -276,7 +276,7 @@ AGENTS: dict[str, AgentConfig] = {
         description="Claude Code via ACP (Anthropic's Agent Client Protocol)",
         skill_paths=["$HOME/.claude/skills"],
         install_cmd=_js_agent_install(
-            "claude-agent-acp", "@zed-industries/claude-agent-acp"
+            "claude-agent-acp", "@agentclientprotocol/claude-agent-acp"
         ),
         launch_cmd=_js_agent_launch("claude-agent-acp"),
         protocol="acp",
@@ -351,7 +351,7 @@ AGENTS: dict[str, AgentConfig] = {
         name="codex-acp",
         description="OpenAI Codex agent via ACP",
         skill_paths=["$HOME/.agents/skills"],
-        install_cmd=_js_agent_install("codex-acp", "@zed-industries/codex-acp"),
+        install_cmd=_js_agent_install("codex-acp", "@agentclientprotocol/codex-acp"),
         launch_cmd=_js_agent_launch(
             "codex-acp", "${OPENAI_BASE_URL:+-c openai_base_url=$OPENAI_BASE_URL}"
         ),
