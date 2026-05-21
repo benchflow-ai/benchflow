@@ -109,22 +109,7 @@
   summary { cursor: pointer; }
   summary::-webkit-details-marker { color: var(--muted); }
 
-  /* file-content viewer (shared by Jobs + Timeline) */
-  .fv { margin: 3px 0 6px; }
-  .fv > summary {
-    list-style: none; display: flex; gap: 8px; align-items: baseline;
-    font-size: 12px; padding: 2px 0; color: var(--muted);
-  }
-  .fv > summary::-webkit-details-marker { display: none; }
-  .fv > summary::before {
-    content: "▸"; color: #b4b4ae; font-size: 10px; flex: none;
-    transition: transform .12s;
-  }
-  .fv[open] > summary::before { transform: rotate(90deg); }
-  .fv > summary:hover { color: var(--ink); }
-  .fv .fname { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; color: var(--ink); }
-  .fv .fmeta { color: var(--muted); }
-  .fv-body { margin: 4px 0 2px 16px; }
+  /* file-content rendering (shared by the Jobs + Timeline content pane) */
   .fv-note {
     font-size: 11px; color: var(--warn); background: #fdf8ee;
     border: 1px solid #f0dab0; border-radius: 4px; padding: 3px 8px; margin-bottom: 4px;
@@ -159,32 +144,100 @@
     user-select: none; font-variant-numeric: tabular-nums;
   }
 
-  /* jobs tree */
-  .grp { margin-bottom: 16px; }
-  .grp .grphd { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
-  .grp .glabel { font-weight: 700; }
-  .grp .gblurb { color: var(--muted); font-size: 12px; margin: 3px 0 8px; }
-  .run > summary {
-    padding: 6px 8px; border-radius: 6px; background: #faf9f7; border: 1px solid var(--line);
-    font-size: 12.5px;
+  /* ---- native-style file tree + two-pane file browser --------------------
+     One reusable widget (.fb = file browser) shared by Jobs and Timeline:
+     a left .fb-tree of collapsible folder rows + selectable file leaves,
+     and a right .fb-viewer that shows the selected file's content.        */
+  .fb {
+    display: grid; grid-template-columns: minmax(220px, 320px) 1fr;
+    gap: 0; border: 1px solid var(--line); border-radius: 8px;
+    background: var(--panel); overflow: hidden; min-height: 380px;
   }
-  .run { margin: 5px 0; }
-  .run .runbody { padding: 6px 0 2px 16px; }
-  .task { border-left: 2px solid var(--line); margin: 5px 0; padding-left: 12px; }
-  .task > summary { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-  .task .tname { font-weight: 600; }
-  .task .arts { margin: 6px 0 8px 14px; }
-  .art {
-    display: flex; gap: 8px; align-items: baseline; font-size: 12px;
-    padding: 2px 0; color: var(--muted);
+  .fb-tree {
+    border-right: 1px solid var(--line); background: var(--side);
+    overflow: auto; max-height: 70vh; padding: 6px 0;
   }
-  .art .ak {
-    font-size: 9px; letter-spacing: .4px; text-transform: uppercase;
-    padding: 1px 5px; border-radius: 3px; background: var(--chip); flex: none;
+  .fb-tree-hd {
+    font-size: 10px; text-transform: uppercase; letter-spacing: .6px;
+    color: #9b9b95; padding: 6px 12px 4px;
   }
-  .art .ak.trajectory { background: #e6effb; color: var(--accent); }
-  .art .ak.reward { background: #eaf6ee; color: var(--good); }
-  .art .ak.result { background: #f3eefb; color: #6b46c1; }
+  .fb-viewer {
+    overflow: auto; max-height: 70vh; padding: 14px 16px; min-width: 0;
+  }
+  /* one tree node — a .trow header plus, for folders, a .tchildren block */
+  .tnode { }
+  .trow {
+    display: flex; align-items: center; gap: 6px; cursor: pointer;
+    padding: 3px 8px 3px 0; font-size: 12.5px; color: var(--ink);
+    user-select: none; white-space: nowrap; position: relative;
+    border-radius: 0;
+  }
+  .trow:hover { background: #ecece9; }
+  .tnode.file.selected > .trow {
+    background: #dce8f5; color: var(--accent); font-weight: 600;
+  }
+  .tnode.file.selected > .trow:hover { background: #d2e1f2; }
+  /* indentation guides: a vertical hairline per nesting level */
+  .tindent { flex: none; align-self: stretch; display: flex; }
+  .tindent i {
+    display: block; width: 14px; align-self: stretch;
+    border-left: 1px solid var(--line); margin-left: 6px;
+  }
+  /* rotating chevron — folders only; files get an empty spacer */
+  .tchev {
+    flex: none; width: 12px; text-align: center; color: #b4b4ae;
+    font-size: 9px; transition: transform .12s; line-height: 1;
+  }
+  .tnode.folder.open > .trow .tchev { transform: rotate(90deg); }
+  .tchev.spacer { visibility: hidden; }
+  .ticon {
+    flex: none; width: 16px; height: 16px;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  .ticon svg { display: block; }
+  .tnode.folder > .trow .ticon { color: var(--accent); }
+  .tnode.file   > .trow .ticon { color: #9b9b95; }
+  .tnode.file.selected > .trow .ticon { color: var(--accent); }
+  .tlabel {
+    overflow: hidden; text-overflow: ellipsis;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  .tnode.folder > .trow .tlabel { font-family: inherit; }
+  .tmetatag {
+    flex: none; margin-left: 6px; font-size: 10px; color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .tbadge {
+    flex: none; margin-left: 6px; font-size: 9px; letter-spacing: .4px;
+    text-transform: uppercase; padding: 0 5px; border-radius: 3px;
+    background: var(--chip); color: var(--muted);
+  }
+  .tbadge.trajectory { background: #e6effb; color: var(--accent); }
+  .tbadge.reward { background: #eaf6ee; color: var(--good); }
+  .tbadge.result { background: #f3eefb; color: #6b46c1; }
+  .tbadge.ok { background: #eaf6ee; color: var(--good); }
+  .tbadge.error { background: #fdf1f1; color: var(--bad); }
+  .tbadge.verifier { background: #fdf8ee; color: var(--warn); }
+  .tchildren { }
+  /* the file browser's section header above the tree (group blurb + advisories) */
+  .fb-grphd { margin-bottom: 10px; }
+  .fb-grphd .glabel { font-weight: 700; }
+  .fb-grphd .gblurb { color: var(--muted); font-size: 12px; margin: 3px 0 0; }
+  /* the viewer's content header (file path + meta) */
+  .fb-viewer-hd {
+    display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+    padding-bottom: 8px; margin-bottom: 10px; border-bottom: 1px solid var(--line);
+  }
+  .fb-viewer-hd .vpath {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 12.5px; font-weight: 600;
+  }
+  .fb-viewer-hd .vmeta { color: var(--muted); font-size: 11.5px; }
+  .fb-empty {
+    color: var(--muted); font-size: 13px; font-style: italic;
+    display: flex; align-items: center; justify-content: center;
+    height: 100%; min-height: 240px; text-align: center; padding: 20px;
+  }
 
   /* timeline / experiments */
   .timeline { border-left: 2px solid var(--line); margin-left: 8px; padding-left: 0; }
@@ -206,19 +259,11 @@
   .tpill { font-size: 10px; padding: 0 6px; border-radius: 9px; background: var(--chip);
            text-transform: uppercase; letter-spacing: .4px; }
   .exp { margin-top: 2px; }
-  .exp > summary {
-    list-style: none; display: flex; gap: 6px; align-items: baseline; flex-wrap: wrap;
-  }
-  .exp > summary::-webkit-details-marker { display: none; }
-  .exp > summary::before {
-    content: "▸"; color: #b4b4ae; font-size: 10px; flex: none;
-    transition: transform .12s;
-  }
-  .exp[open] > summary::before { transform: rotate(90deg); }
   .exp .ename { font-weight: 600; }
   .exp .eblurb { color: var(--muted); font-size: 12.5px; margin: 3px 0 6px; }
-  .exp .efiles { margin: 4px 0 2px; padding-left: 2px; }
-  .exp .efiles-hd { font-size: 11px; color: var(--muted); margin-bottom: 2px; }
+  /* each experiment embeds the shared file browser inline under its entry */
+  .tl .fb { margin: 6px 0 2px; min-height: 220px; }
+  .tl .fb-tree, .tl .fb-viewer { max-height: 320px; }
 
   /* advisories */
   .adv { padding: 9px 0; border-bottom: 1px solid var(--line); }
@@ -232,6 +277,17 @@
   .adv .adet { color: var(--muted); font-size: 12.5px; margin-top: 4px; }
   .adv .acorr { font-size: 11.5px; margin-top: 5px; }
   .empty { color: var(--muted); padding: 34px; text-align: center; }
+
+  /* ---- responsive — two-pane browser stacks on narrow viewports --------- */
+  @media (max-width: 760px) {
+    .fb { grid-template-columns: 1fr; }
+    .fb-tree {
+      border-right: none; border-bottom: 1px solid var(--line);
+      max-height: 280px;
+    }
+    .fb-viewer { max-height: none; }
+    .tl .fb-tree { max-height: 240px; }
+  }
 </style>
 </head>
 <body>
@@ -354,39 +410,170 @@ function fileContentBody(file) {
   return pre;
 }
 
-// The full <details> viewer node for one file. `extra` is an optional
-// trailing meta string (e.g. an artifact's `info`).
-function fileViewer(file, extra) {
-  const d = el("details", "fv");
+// ---- reusable native-style file tree + content pane ------------------------
+// ONE widget — `fileBrowser` — shared by Jobs and Timeline. A tree is a plain
+// nested structure of nodes:
+//   folder: { type:"folder", label, badge?, open?, meta?, children:[...] }
+//   file:   { type:"file",   label, badge?, meta?, file:<artifact obj> }
+// The browser renders a left tree pane + right content pane; clicking a file
+// leaf renders that file into the pane via the existing fileContentBody().
+
+// Crisp 14px line-icons — drawn with currentColor so the folder picks up the
+// accent and the file the muted grey, no emoji rendering inconsistency.
+const FOLDER_SVG =
+  '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" ' +
+  'stroke="currentColor" stroke-width="1.3" stroke-linejoin="round">' +
+  '<path d="M1.8 4.2v8a1 1 0 0 0 1 1h10.4a1 1 0 0 0 1-1V6a1 1 0 0 0-1-1H7.4L6 3.2H2.8a1 1 0 0 0-1 1Z"/></svg>';
+const FILE_SVG =
+  '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" ' +
+  'stroke="currentColor" stroke-width="1.3" stroke-linejoin="round">' +
+  '<path d="M3.5 1.8h6L13 5.3v8.9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2.8a1 1 0 0 1 .5-1Z"/>' +
+  '<path d="M9.3 2v3.4H13"/></svg>';
+
+// Render the selected file into the right-hand viewer pane.
+function renderFileInto(viewer, node) {
+  viewer.innerHTML = "";
+  if (!node) {
+    viewer.appendChild(el("div", "fb-empty",
+      "Select a file in the tree to view its contents."));
+    return;
+  }
+  const file = node.file;
   const meta = [];
   if (file.lang) meta.push(file.lang);
   if (file.content_lines != null) meta.push(file.content_lines + " lines");
   if (file.rows != null) meta.push(file.rows + " rows");
   if (file.size != null) meta.push(bytesLabel(file.size));
-  if (extra) meta.push(extra);
+  if (node.viewerExtra) meta.push(node.viewerExtra);
 
-  const sum = el("summary");
-  sum.innerHTML =
-    `<span class="fname">${esc(file.name)}</span>` +
-    (meta.length ? `<span class="fmeta">— ${esc(meta.join(" · "))}</span>` : "");
-  d.appendChild(sum);
+  const hd = el("div", "fb-viewer-hd");
+  hd.appendChild(el("span", "vpath", esc(node.path || file.name)));
+  if (meta.length) hd.appendChild(el("span", "vmeta", "— " + esc(meta.join(" · "))));
+  viewer.appendChild(hd);
 
-  // Body builds lazily on first expand — keeps large datasets cheap.
-  let built = false;
-  d.addEventListener("toggle", () => {
-    if (!d.open || built) return;
-    built = true;
-    const body = el("div", "fv-body");
-    if (file.truncated) {
-      const shown = (file.content || "").split("\n").length;
-      const total = file.content_lines != null ? file.content_lines : shown;
-      body.appendChild(el("div", "fv-note",
-        `truncated — showing first ${shown} of ${total} lines`));
+  if (file.truncated) {
+    const shown = (file.content || "").split("\n").length;
+    const total = file.content_lines != null ? file.content_lines : shown;
+    viewer.appendChild(el("div", "fv-note",
+      `truncated — showing first ${shown} of ${total} lines`));
+  }
+  viewer.appendChild(fileContentBody(file));
+}
+
+// Build one tree node (folder or file) as a DOM subtree. `depth` drives the
+// indentation guides; `ctx` carries the shared selection state + viewer.
+function treeNode(node, depth, ctx) {
+  const wrap = el("div", "tnode " + node.type);
+  if (node.type === "file" && node.file) {
+    if (node.file.lang) wrap.dataset.lang = node.file.lang;
+    if (node.file.kind) wrap.dataset.kind = node.file.kind;
+  }
+  const row = el("div", "trow");
+
+  // indentation guides — one hairline per ancestor level
+  if (depth > 0) {
+    const ind = el("div", "tindent");
+    for (let i = 0; i < depth; i++) ind.appendChild(el("i"));
+    row.appendChild(ind);
+  }
+  // rotating chevron (folders) or an invisible spacer (files) — keeps
+  // file labels aligned with folder labels at the same depth.
+  row.appendChild(el("span", "tchev" + (node.type === "file" ? " spacer" : ""), "▸"));
+  // crisp inline-SVG folder / file glyphs — consistent across platforms,
+  // no emoji rendering surprises, tuned to the minimal light theme.
+  row.appendChild(el("span", "ticon", node.type === "folder" ? FOLDER_SVG : FILE_SVG));
+
+  const label = el("span", "tlabel", esc(node.label));
+  row.appendChild(label);
+  if (node.meta) row.appendChild(el("span", "tmetatag", esc(node.meta)));
+  if (node.badge)
+    row.appendChild(el("span", "tbadge " + esc(node.badge.cls || ""),
+                       esc(node.badge.text)));
+  if (node.headerExtra) {  // e.g. advisory chips on a group folder
+    const ex = el("span");
+    ex.style.cssText = "margin-left:8px;display:inline-flex;gap:4px;flex-wrap:wrap";
+    ex.appendChild(node.headerExtra);
+    row.appendChild(ex);
+  }
+  wrap.appendChild(row);
+
+  if (node.type === "folder") {
+    const kids = el("div", "tchildren");
+    (node.children || []).forEach(c =>
+      kids.appendChild(treeNode(c, depth + 1, ctx)));
+    wrap.appendChild(kids);
+    const setOpen = (open) => {
+      wrap.classList.toggle("open", open);
+      kids.style.display = open ? "" : "none";
+    };
+    setOpen(node.open !== false);   // default expanded
+    row.addEventListener("click", () =>
+      setOpen(!wrap.classList.contains("open")));
+  } else {
+    // file leaf — clicking selects it and loads it into the viewer
+    row.addEventListener("click", () => {
+      if (ctx.selected) ctx.selected.classList.remove("selected");
+      wrap.classList.add("selected");
+      ctx.selected = wrap;
+      node.path = node.path || node.label;
+      renderFileInto(ctx.viewer, node);
+    });
+  }
+  return wrap;
+}
+
+// The full two-pane file browser. `roots` is an array of top-level tree
+// nodes; `opts.treeHeader` is optional DOM placed above the tree (group
+// blurb + advisory links). Returns the .fb element.
+function fileBrowser(roots, opts) {
+  opts = opts || {};
+  const fb = el("div", "fb");
+  const treePane = el("div", "fb-tree");
+  const viewer = el("div", "fb-viewer");
+  const ctx = { selected: null, viewer };
+
+  if (opts.treeHeader) {
+    const hd = el("div", "fb-grphd");
+    hd.style.padding = "8px 12px 4px";
+    hd.appendChild(opts.treeHeader);
+    treePane.appendChild(hd);
+  }
+  treePane.appendChild(el("div", "fb-tree-hd", opts.treeLabel || "Files"));
+  const rootBox = el("div", "tree-root");
+  roots.forEach(r => rootBox.appendChild(treeNode(r, 0, ctx)));
+  treePane.appendChild(rootBox);
+
+  fb.appendChild(treePane);
+  fb.appendChild(viewer);
+
+  // auto-select the first file leaf so the viewer is never blank on open
+  const firstFile = treePane.querySelector(".tnode.file .trow");
+  if (firstFile) firstFile.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  else renderFileInto(viewer, null);
+  return fb;
+}
+
+// Turn a flat list of artifact files into a nested folder tree by splitting
+// each file's name on "/" — so `trajectory/acp_trajectory.jsonl` nests under
+// a `trajectory/` folder. `badgeOf` maps a file to an optional badge.
+function filesToTree(files, badgeOf) {
+  const root = { type: "folder", label: "", children: [] };
+  files.forEach(f => {
+    const parts = String(f.name).split("/");
+    let cur = root;
+    for (let i = 0; i < parts.length - 1; i++) {
+      let dir = cur.children.find(c => c.type === "folder" && c.label === parts[i]);
+      if (!dir) { dir = { type: "folder", label: parts[i], children: [] }; cur.children.push(dir); }
+      cur = dir;
     }
-    body.appendChild(fileContentBody(file));
-    d.appendChild(body);
+    const leaf = parts[parts.length - 1];
+    cur.children.push({
+      type: "file", label: leaf, file: f,
+      meta: f.lang || null,
+      badge: badgeOf ? badgeOf(f) : null,
+    });
   });
-  return d;
+  return root.children;
 }
 
 // ---- Overview -------------------------------------------------------------
@@ -553,96 +740,113 @@ function renderTests() {
   return wrap;
 }
 
-// ---- Jobs (the jobs/ folder tree) -----------------------------------------
-function rewardHTML(r) {
-  if (r == null) return '<span class="muted">no reward</span>';
-  const c = r >= 1 ? "good" : r > 0 ? "warn" : "bad";
-  return `<b class="${c}">reward ${r}</b>`;
+// ---- Jobs (the jobs/ folder tree, as a native file browser) ---------------
+
+// An artifact's badge in the tree — colour-codes trajectory / reward / result.
+function artifactBadge(a) {
+  if (["trajectory", "reward", "result"].includes(a.kind))
+    return { text: a.kind, cls: a.kind };
+  return null;
 }
+
+// One task → a folder node holding its artifact files (nested by path), plus
+// any error / verifier-error pseudo-files so failures stay browsable.
+// `firstPath` marks the first-group/first-run/first-task chain that opens
+// by default — every other folder starts collapsed, like a real explorer.
+function taskNode(tk, firstPath) {
+  const status = tk.error ? { text: "error", cls: "error" }
+    : tk.verifier_error ? { text: "verifier", cls: "verifier" }
+    : { text: "ok", cls: "ok" };
+  const rewardStr = tk.reward == null ? "no reward" : "reward " + tk.reward;
+  const children = filesToTree(tk.artifacts || [], artifactBadge);
+  // surface task-level errors as readable text leaves inside the task folder
+  if (tk.error)
+    children.push({ type: "file", label: "ERROR", badge: { text: "error", cls: "error" },
+      file: { name: "ERROR", lang: "text", content: tk.error, content_lines: null } });
+  if (tk.verifier_error)
+    children.push({ type: "file", label: "VERIFIER", badge: { text: "verifier", cls: "verifier" },
+      file: { name: "VERIFIER", lang: "text", content: tk.verifier_error, content_lines: null } });
+  if (!children.length)
+    children.push({ type: "file", label: "(no files)",
+      file: { name: "(no files)", content: null } });
+  return {
+    type: "folder", label: tk.name,
+    meta: `${rewardStr} · ${tk.agent}${tk.model && tk.model !== "—" ? " · " + tk.model : ""}`,
+    badge: status, open: !!firstPath, children,
+  };
+}
+
+// One run → a folder of task folders.
+function runNode(run, firstPath) {
+  return {
+    type: "folder", label: run.id + "/",
+    meta: `${run.tasks.length} task${run.tasks.length === 1 ? "" : "s"}`,
+    open: !!firstPath,
+    children: (run.tasks || []).map((tk, ti) => taskNode(tk, firstPath && ti === 0)),
+  };
+}
+
+// One group → a top-level folder. Carries the advisory-correspondence chips
+// inline on its row so each group still links to its advisories.
+function groupNode(g, gi) {
+  const adv = (g.advisories || []);
+  let headerExtra = null;
+  if (adv.length) {
+    const box = el("span");
+    box.style.cssText = "display:inline-flex;gap:4px;flex-wrap:wrap";
+    adv.forEach(id => {
+      const c = el("span", "chip lnk", "▸ " + esc(id));
+      c.dataset.adv = id;
+      // stop the click from also toggling the folder
+      c.addEventListener("click", (e) => { e.stopPropagation(); show("Advisories", id); });
+      box.appendChild(c);
+    });
+    headerExtra = box;
+  }
+  return {
+    type: "folder", label: `${g.label}  (jobs/${g.name}/)`,
+    meta: `${g.n_tasks} task${g.n_tasks === 1 ? "" : "s"}` +
+          (g.capability ? ` · capability ${g.capability}` : ""),
+    headerExtra,
+    open: gi === 0,                       // first group expanded by default
+    children: (g.runs || []).map((run, ri) => runNode(run, gi === 0 && ri === 0)),
+  };
+}
+
 function renderJobs() {
   const j = DATA.jobs, wrap = el("div");
   wrap.appendChild(el("h1", "page", "Jobs &amp; artifacts"));
   wrap.appendChild(el("div", "sub-ttl",
     `Every rollout under <code>jobs/</code> — ${j.total_tasks} tasks in ${j.groups.length} groups. ` +
-    `Each group links to the agent advisories that correspond to it.`));
+    `Browse the tree; click a file to view it. Each group links to its advisories.`));
   if (!j.groups.length) {
     wrap.appendChild(el("div", "card empty", "No rollout artifacts found under jobs/."));
     return wrap;
   }
-  j.groups.forEach((g, gi) => {
-    const grp = el("div", "grp card");
-    grp.id = "grp-" + g.name;
-    const advChips = (g.advisories || []).map(id =>
-      `<span class="chip lnk" data-adv="${esc(id)}">▸ ${esc(id)}</span>`).join("");
-    grp.appendChild(el("div", "grphd",
-      `<span class="glabel">${esc(g.label)}</span>
-       <span class="chip mono">jobs/${esc(g.name)}/</span>
-       ${g.capability ? `<span class="chip p">capability ${g.capability}</span>` : ""}
-       <span class="muted" style="margin-left:auto">${g.n_tasks} task(s)</span>`));
-    grp.appendChild(el("div", "gblurb",
-      esc(g.blurb) + (advChips ? ` &nbsp; corresponds to: ${advChips}` : "")));
-    g.runs.forEach((run, ri) => {
-      const det = el("details", "run");
-      if (gi === 0 && ri === 0) det.open = true;
-      det.appendChild(el("summary", null,
-        `<span class="mono">${esc(run.id)}/</span>
-         <span class="muted">&nbsp; ${run.tasks.length} task(s)</span>`));
-      const body = el("div", "runbody");
-      if (!run.tasks.length) body.appendChild(el("div", "muted", "(no task artifacts)"));
-      run.tasks.forEach(tk => {
-        const td = el("details", "task");
-        let st = '<span class="good">ok</span>';
-        if (tk.error) st = '<span class="bad">error</span>';
-        else if (tk.verifier_error) st = '<span class="warn">verifier</span>';
-        td.appendChild(el("summary", null,
-          `<span class="tname">${esc(tk.name)}</span>
-           ${rewardHTML(tk.reward)}
-           <span class="muted">${esc(tk.agent)}${tk.model && tk.model !== "—" ? " · " + esc(tk.model) : ""}</span>
-           <span class="chip">${esc(tk.environment)}</span>
-           <span class="muted num-mono">${tk.trajectory_events} traj ev · ${tk.total_time}s</span>
-           ${st}`));
-        const arts = el("div", "arts");
-        arts.appendChild(el("div", "muted", `<span class="mono" style="font-size:11px">${esc(tk.rollout)}/</span>`));
-        if (!tk.artifacts.length) arts.appendChild(el("div", "art", "(no files)"));
-        tk.artifacts.forEach(a => {
-          // Directories and content-less artifacts stay as a flat row;
-          // every other artifact gets the expandable file viewer.
-          if (a.kind === "dir" || a.content == null) {
-            arts.appendChild(el("div", "art",
-              `<span class="ak ${esc(a.kind)}">${esc(a.kind)}</span>
-               <span class="mono">${esc(a.name)}</span>
-               ${a.info ? `<span class="muted">— ${esc(a.info)}</span>` : ""}`));
-          } else {
-            const row = el("div", "art");
-            row.style.display = "block";
-            const head = el("div");
-            head.style.cssText = "display:flex;gap:8px;align-items:baseline";
-            head.appendChild(el("span", "ak " + esc(a.kind), esc(a.kind)));
-            const v = fileViewer(a, a.info || null);
-            v.style.flex = "1";
-            head.appendChild(v);
-            row.appendChild(head);
-            arts.appendChild(row);
-          }
-        });
-        if (tk.error)
-          arts.appendChild(el("div", "art", `<span class="ak" style="background:#fdf1f1;color:#c53030">error</span>
-            <span>${esc(tk.error)}</span>`));
-        if (tk.verifier_error)
-          arts.appendChild(el("div", "art", `<span class="ak" style="background:#fdf8ee;color:#b7791f">verifier</span>
-            <span>${esc(tk.verifier_error)}</span>`));
-        td.appendChild(arts);
-        body.appendChild(td);
-      });
-      det.appendChild(body);
-      grp.appendChild(det);
-    });
-    wrap.appendChild(grp);
-  });
-  // advisory chips jump to the Advisories tab
-  wrap.querySelectorAll(".chip[data-adv]").forEach(c =>
-    c.onclick = () => show("Advisories", c.dataset.adv));
+  const roots = j.groups.map((g, gi) => groupNode(g, gi));
+  const browser = fileBrowser(roots, { treeLabel: "jobs/" });
+  browser.id = "jobs-fb";
+  wrap.appendChild(browser);
   return wrap;
+}
+
+// Scroll a job group's folder row into view and flash it. Used by the
+// sidebar sub-links and the advisory back-links.
+function focusJobGroup(groupName) {
+  const j = DATA.jobs || { groups: [] };
+  const idx = (j.groups || []).findIndex(g => g.name === groupName);
+  if (idx < 0) return;
+  const fb = document.getElementById("jobs-fb");
+  if (!fb) return;
+  const rootNodes = fb.querySelectorAll(".fb-tree > .fb-grphd ~ .tree-root > .tnode.folder, .fb-tree .tree-root > .tnode.folder");
+  const node = rootNodes[idx];
+  if (!node) return;
+  const row = node.querySelector(".trow");
+  if (!node.classList.contains("open")) row.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  if (row.scrollIntoView) row.scrollIntoView({ block: "center" });
+  row.style.transition = "box-shadow .3s";
+  row.style.boxShadow = "inset 0 0 0 2px var(--accent)";
+  setTimeout(() => row.style.boxShadow = "", 1400);
 }
 
 // ---- Advisories -----------------------------------------------------------
@@ -679,7 +883,7 @@ function renderAdvisories(focusId) {
   block("Open follow-ups", adv.items.filter(i => i.status === "open"));
   block("Resolved", adv.items.filter(i => i.status !== "open"));
   wrap.querySelectorAll(".chip[data-grp]").forEach(c =>
-    c.onclick = () => show("Jobs", null, "grp-" + c.dataset.grp));
+    c.onclick = () => show("Jobs", null, { jobGroup: c.dataset.grp }));
   if (focusId) setTimeout(() => {
     const t = document.getElementById("adv-" + focusId);
     if (t) { t.scrollIntoView({ block: "center" }); t.style.background = "#fffbe6"; }
@@ -716,24 +920,23 @@ function renderTimeline() {
     item.appendChild(meta);
 
     const files = Array.isArray(x.files) ? x.files : [];
-    const det = el("details", "exp");
-    const sum = el("summary");
-    sum.innerHTML =
+    const exp = el("div", "exp");
+    const head = el("div");
+    head.innerHTML =
       `<span class="ename">${esc(x.name)}</span>` +
-      `<span class="muted" style="font-size:12px">— ${files.length} file${files.length === 1 ? "" : "s"}</span>`;
-    det.appendChild(sum);
+      `<span class="muted" style="font-size:12px"> — ${files.length} file${files.length === 1 ? "" : "s"}</span>`;
+    exp.appendChild(head);
+    if (x.blurb) exp.appendChild(el("div", "eblurb", esc(x.blurb)));
 
-    if (x.blurb) det.appendChild(el("div", "eblurb", esc(x.blurb)));
-
-    const fwrap = el("div", "efiles");
     if (!files.length) {
-      fwrap.appendChild(el("div", "fv-empty", "no files recorded for this experiment"));
+      exp.appendChild(el("div", "fv-empty", "no files recorded for this experiment"));
     } else {
-      fwrap.appendChild(el("div", "efiles-hd", "Files"));
-      files.forEach(f => fwrap.appendChild(fileViewer(f)));
+      // SAME file-tree widget + content pane as Jobs — paths like
+      // labs/<name>/<file> nest into folders automatically.
+      const roots = filesToTree(files, null);
+      exp.appendChild(fileBrowser(roots, { treeLabel: "Files" }));
     }
-    det.appendChild(fwrap);
-    item.appendChild(det);
+    item.appendChild(exp);
     line.appendChild(item);
   });
   card.appendChild(line);
@@ -746,7 +949,9 @@ const RENDER = {
   "Tests": renderTests, "Jobs": renderJobs, "Advisories": renderAdvisories, "Timeline": renderTimeline,
 };
 
-function show(tab, arg, scrollId) {
+// `opts` may carry { jobGroup } to focus a group folder in the Jobs tree.
+function show(tab, arg, opts) {
+  opts = opts || {};
   CURRENT = tab;
   document.querySelectorAll("nav a").forEach(a =>
     a.classList.toggle("active", a.dataset.tab === tab && !a.classList.contains("sub")));
@@ -754,15 +959,8 @@ function show(tab, arg, scrollId) {
   main.innerHTML = "";
   main.appendChild(tab === "Advisories" ? renderAdvisories(arg) : RENDER[tab]());
   window.scrollTo(0, 0);
-  if (scrollId) setTimeout(() => {
-    const t = document.getElementById(scrollId);
-    if (t) {
-      t.scrollIntoView({ block: "start" });
-      t.style.transition = "box-shadow .3s";
-      t.style.boxShadow = "0 0 0 2px var(--accent)";
-      setTimeout(() => t.style.boxShadow = "", 1400);
-    }
-  }, 40);
+  if (tab === "Jobs" && opts.jobGroup)
+    setTimeout(() => focusJobGroup(opts.jobGroup), 40);
   location.hash = encodeURIComponent(tab);
 }
 
@@ -778,7 +976,7 @@ function buildNav() {
       (DATA.jobs.groups || []).forEach(g => {
         const s = el("a", "sub",
           `jobs/${esc(g.name)}/ <span class="count">${g.n_tasks}</span>`);
-        s.onclick = (e) => { e.stopPropagation(); show("Jobs", null, "grp-" + g.name); };
+        s.onclick = (e) => { e.stopPropagation(); show("Jobs", null, { jobGroup: g.name }); };
         nav.appendChild(s);
       });
     }
