@@ -107,7 +107,22 @@ class Environment:
             self._started = False
 
     async def exec(self, cmd: str, **kwargs) -> Any:
+        """Run a command in the sandbox.
+
+        Pass ``service="<name>"`` to target an additional compose service
+        (a vulhub-style target container) instead of the default agent
+        container ``"main"`` — see #248.
+        """
         return await self._inner.exec(cmd, **kwargs)
+
+    async def exec_in_service(self, service: str, cmd: str, **kwargs) -> Any:
+        """Run a command in a named compose service container (#248).
+
+        Ergonomic wrapper for ``exec(cmd, service=service)``. Useful for
+        injecting flags into, or verifying state of, a multi-container
+        task's target container.
+        """
+        return await self._inner.exec(cmd, service=service, **kwargs)
 
     async def upload_file(self, src: str | Path, dst: str) -> None:
         await self._inner.upload_file(src, dst)

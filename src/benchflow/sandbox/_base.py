@@ -171,17 +171,61 @@ class BaseSandbox(ABC):
         env: dict[str, str] | None = None,
         timeout_sec: int | None = None,
         user: str | int | None = None,
-    ) -> ExecResult: ...
+        service: str = "main",
+    ) -> ExecResult:
+        """Run a command inside the sandbox.
 
-    async def is_dir(self, path: str, user: str | int | None = None) -> bool:
+        ``service`` selects which compose service (container) the command
+        runs in. The default ``"main"`` is the agent container. Multi-
+        container (vulhub-style) tasks define additional services in the
+        task's ``docker-compose.yaml`` and target them via this argument
+        — for flag injection into a vulnerable target before the agent
+        runs, or target-side verification afterwards (#248). Sandbox
+        backends without compose support reject non-``main`` values.
+        """
+        ...
+
+    async def exec_in_service(
+        self,
+        service: str,
+        command: str,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        timeout_sec: int | None = None,
+        user: str | int | None = None,
+    ) -> ExecResult:
+        """Run a command in a named compose service — ergonomic wrapper around ``exec``.
+
+        Sugar for ``exec(command, ..., service=service)``. Useful for
+        multi-container tasks where verifier code needs to inspect a
+        target container's state, e.g.::
+
+            await sandbox.exec_in_service("target", "test -f /tmp/pwned")
+
+        See #248.
+        """
+        return await self.exec(
+            command,
+            cwd=cwd,
+            env=env,
+            timeout_sec=timeout_sec,
+            user=user,
+            service=service,
+        )
+
+    async def is_dir(
+        self, path: str, user: str | int | None = None, service: str = "main"
+    ) -> bool:
         result = await self.exec(
-            f"test -d {shlex.quote(path)}", timeout_sec=10, user=user
+            f"test -d {shlex.quote(path)}", timeout_sec=10, user=user, service=service
         )
         return result.return_code == 0
 
-    async def is_file(self, path: str, user: str | int | None = None) -> bool:
+    async def is_file(
+        self, path: str, user: str | int | None = None, service: str = "main"
+    ) -> bool:
         result = await self.exec(
-            f"test -f {shlex.quote(path)}", timeout_sec=10, user=user
+            f"test -f {shlex.quote(path)}", timeout_sec=10, user=user, service=service
         )
         return result.return_code == 0
 

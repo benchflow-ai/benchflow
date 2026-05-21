@@ -318,7 +318,15 @@ class ModalSandbox(BaseSandbox):
         env: dict[str, str] | None = None,
         timeout_sec: int | None = None,
         user: str | int | None = None,
+        service: str = "main",
     ) -> ExecResult:
+        if service != "main":
+            raise ValueError(
+                f"Modal sandbox is single-container and cannot target "
+                f"service {service!r}. Multi-container (vulhub-style) tasks "
+                "require the Docker sandbox (#248)."
+            )
+
         from modal import Secret
 
         user = self._resolve_user(user)

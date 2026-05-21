@@ -142,8 +142,14 @@ class DockerProcess(LiveProcess):
         self._service = service
 
     @classmethod
-    def from_sandbox_env(cls, env: Any) -> "DockerProcess":
-        """Create from a sandbox environment (DockerSandbox)."""
+    def from_sandbox_env(cls, env: Any, service: str = "main") -> "DockerProcess":
+        """Create from a sandbox environment (DockerSandbox).
+
+        ``service`` selects which compose service the agent process runs
+        in. Defaults to ``"main"``. Multi-container (vulhub-style) tasks
+        may run the agent in a dedicated attacker container — e.g. a Kali
+        service — while keeping target containers separate (#248).
+        """
         project_name = env.session_id.lower().replace(".", "-")
         project_dir = str(env.environment_dir.resolve().absolute())
         compose_files = [str(p.resolve().absolute()) for p in env._docker_compose_paths]
@@ -151,6 +157,7 @@ class DockerProcess(LiveProcess):
             project_name=project_name,
             project_dir=project_dir,
             compose_files=compose_files,
+            service=service,
         )
 
     def _compose_cmd(self) -> list[str]:
