@@ -584,6 +584,7 @@ async def test_rollout_cleanup_extracts_usage_and_writes_llm_trajectory(tmp_path
     rollout._acp_client = None
     rollout._agent_launch = ""
     rollout._env = SimpleNamespace(stop=AsyncMock())
+    rollout._environment = None
     rollout._usage_runtime = ProviderRuntime(
         kind="usage-proxy",
         host="host.docker.internal",
