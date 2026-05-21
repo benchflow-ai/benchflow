@@ -700,6 +700,12 @@ def _acpx_wrap(config: AgentConfig) -> AgentConfig:
             acpx_agent_name = alias
             break
 
+    # The acpx wrapper only overrides name/install_cmd/launch_cmd. Every other
+    # AgentConfig field must pass through from the underlying agent so that
+    # routing-relevant attributes (api_protocol, default_model, env_mapping,
+    # requires_env, credentials, …) survive when the wrapped config is cached
+    # into AGENTS and later read by resolve_provider_env. ``protocol`` stays
+    # "acp" because acpx itself speaks ACP regardless of the inner agent.
     return AgentConfig(
         # ``acpx:`` runtime key — see acpx_runtime_key / module-level contract.
         name=acpx_runtime_key(config.name),
@@ -712,6 +718,8 @@ def _acpx_wrap(config: AgentConfig) -> AgentConfig:
         description=f"{config.description} (via acpx)",
         skill_paths=config.skill_paths,
         install_timeout=config.install_timeout,
+        default_model=config.default_model,
+        api_protocol=config.api_protocol,
         env_mapping=config.env_mapping,
         credential_files=config.credential_files,
         home_dirs=config.home_dirs,
