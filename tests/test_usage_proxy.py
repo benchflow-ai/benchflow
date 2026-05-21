@@ -544,12 +544,14 @@ async def test_daytona_runtime_retired_when_environment_unreachable(monkeypatch)
 def test_host_proxy_reachable_only_for_local_environments():
     from benchflow.providers.runtime import host_proxy_reachable_from_agent
 
+    # docker shares the host's network namespace via the docker bridge.
     assert host_proxy_reachable_from_agent("docker") is True
-    assert host_proxy_reachable_from_agent("local") is True
-    assert host_proxy_reachable_from_agent("host") is True
-    assert host_proxy_reachable_from_agent("") is True
+    # Remote cloud sandboxes run the agent on a separate machine.
     assert host_proxy_reachable_from_agent("daytona") is False
     assert host_proxy_reachable_from_agent("modal") is False
+    # Unrecognized environments are treated conservatively as reachable.
+    assert host_proxy_reachable_from_agent("") is True
+    assert host_proxy_reachable_from_agent("some-future-local-env") is True
 
 
 def test_total_tokens_is_sum_of_parts():
