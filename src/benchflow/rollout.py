@@ -44,7 +44,6 @@ import logging
 import os
 import shlex
 import tempfile
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -66,9 +65,6 @@ from benchflow.agents.install import (
     install_agent,
 )
 from benchflow.agents.registry import AGENT_LAUNCH, AGENTS
-from benchflow.branch import aggregate as _aggregate_branch
-from benchflow.branch import branch as _branch_tree
-from benchflow.branch import restore as _restore_branch
 from benchflow.environment.manifest import EnvironmentManifest
 from benchflow.environment.manifest_env import ManifestEnvironment
 from benchflow.models import RolloutResult, TrajectorySource
@@ -78,6 +74,8 @@ from benchflow.providers.runtime import (
     extract_usage,
     stop_provider_runtime,
 )
+from benchflow.rollout_branch import ChildRunner
+from benchflow.rollout_branch import branch as _branch_engine
 from benchflow.sandbox.lockdown import (
     _resolve_locked_paths,
     _seed_verifier_workspace,
@@ -881,7 +879,6 @@ class Rollout:
         # — it never alters linear behaviour or output.
         self._tree: RolloutTree = RolloutTree()
         self._cursor: RolloutNode = self._tree.root
-        self._branch_continuations: list[list[str]] | None = None
 
         # Populated by verify()
         self._rewards: dict | None = None
@@ -1225,12 +1222,20 @@ class Rollout:
 
     # ── Phase 3c: EXECUTE ──
 
-    async def execute(self, prompts: list[str] | None = None) -> tuple[list[dict], int]:
+    async def execute(
+        self, prompts: list[str] | None = None, *, node: RolloutNode | None = None
+    ) -> tuple[list[dict], int]:
         """Run prompts through the ACP session. Returns (new trajectory, new tool calls).
 
         execute_prompts returns cumulative session trajectory. We track
         what we've already captured to avoid duplication when the same
         session is reused across multiple turns.
+
+        ``node`` — when given, a *pending* tree node (no incoming Step yet,
+        from :meth:`RolloutTree.attach`) whose Step this call fills in place,
+        instead of advancing the tree with a fresh child. The Branch engine
+        passes a pre-attached branch-child node here so the child's real
+        continuation Step lands on the child node itself.
         """
         effective_prompts = prompts or self._resolved_prompts
         if self._acp_client is None:
@@ -1275,7 +1280,12 @@ class Rollout:
             id=f"step-{len(self._trajectory)}",
             data={"events": new_events, "n_tool_calls": new_tools},
         )
-        self._cursor = self._tree.advance(self._cursor, step)
+        if node is not None:
+            # Fill a pre-attached pending node (a branch child) in place — the
+            # child's real continuation Step lands on the child node itself.
+            self._cursor = self._tree.populate(node, step)
+        else:
+            self._cursor = self._tree.advance(self._cursor, step)
 
         if "agent_execution" not in self._timing:
             self._timing["agent_execution"] = (datetime.now() - t0).total_seconds()
@@ -1288,85 +1298,23 @@ class Rollout:
     async def branch(
         self,
         n: int,
-        *,
-        continuations: list[list[str]] | None = None,
-        run_child: Callable[[RolloutNode, int], Awaitable[float]] | None = None,
-        node: RolloutNode | None = None,
+        run_child: ChildRunner | None = None,
     ) -> float:
-        """Branch the rollout at ``node`` into ``n`` child continuations.
+        """Branch the rollout at the cursor into ``n`` child continuations.
 
-        The Branch lifecycle (architecture.md, "Lifecycles"):
+        Thin entry point — the Branch engine lives in
+        :mod:`benchflow.rollout_branch`. It checkpoints the Environment at the
+        cursor, runs each forked child as an isolated sub-rollout (its own
+        scoped state, a fresh agent session), and aggregates the children's
+        returns into V(parent). After this returns, the rollout's linear state
+        is exactly what it was before.
 
-        1. ``quiesce`` — pause the agent at a stable point (disconnect ACP).
-        2. ``checkpoint`` — snapshot the Environment at ``node``; the roll-back
-           point every child restores to.
-        3. ``fork`` — split ``node`` into ``n`` children.
-        4. ``run children`` — for each child, ``restore`` the env to the
-           checkpoint, then run the continuation. A child re-runs from the
-           *environment* checkpoint with a *fresh agent session*: agent-session
-           snapshot is the unsolved hard part (architecture.md, "The hard
-           part"), so the agent restarts per child.
-        5. ``score / aggregate`` — each child's return is recorded on
-           ``child.state["reward"]``; their mean is V(node), recorded on
-           ``node.state["value"]`` and returned.
-
-        ``node`` defaults to the current cursor. ``run_child`` is the per-child
-        runner — injected for unit tests; the default
-        (:meth:`_run_branch_child`) restores the env, connects a fresh agent,
-        runs the continuation prompt, and scores it. ``continuations`` supplies
-        one prompt list per child for the default runner.
+        ``run_child`` is the per-child runner — injected for unit tests; the
+        default restores the env, connects a fresh agent, runs the continuation,
+        and scores it. A caller that needs per-child prompts binds them into the
+        ``run_child`` closure.
         """
-        if self._environment is None:
-            raise RuntimeError(
-                "branch() needs the Environment plane — there is no world to "
-                "snapshot. Pass RolloutConfig(environment_manifest=...)."
-            )
-        if n < 2:
-            raise ValueError(f"a branch forks into >= 2 children, got n={n}")
-
-        target = node if node is not None else self._cursor
-        runner = run_child or self._run_branch_child
-        self._branch_continuations = continuations
-
-        # quiesce — pause the agent before snapshotting (the Branch lifecycle
-        # quiesces first so the checkpoint is consistent).
-        await self.disconnect()
-
-        # checkpoint + fork — the full Branch operation on the tree.
-        children = await _branch_tree(self._tree, target, self._environment, n)
-
-        # run children — each from the env checkpoint, with a fresh agent.
-        for idx, child in enumerate(children):
-            await _restore_branch(target, self._environment)
-            ret = await runner(child, idx)
-            child.state["reward"] = float(ret)
-
-        # aggregate — per-child return -> V(node).
-        value = _aggregate_branch(target)
-        target.state["value"] = value
-        self._phase = "executed"
-        return value
-
-    async def _run_branch_child(self, child: RolloutNode, idx: int) -> float:
-        """Default per-child runner: fresh agent, run continuation, score.
-
-        The env has already been restored to the parent's checkpoint by
-        :meth:`branch`. This connects a fresh agent session, runs the child's
-        continuation prompts, verifies, and returns the scalar reward.
-        """
-        continuations = self._branch_continuations
-        prompts = (
-            continuations[idx]
-            if continuations is not None and idx < len(continuations)
-            else None
-        )
-        self._cursor = child
-        await self.connect()
-        await self.execute(prompts)
-        rewards = await self.verify()
-        if not rewards:
-            return 0.0
-        return float(rewards.get("reward", 0.0))
+        return await _branch_engine(self, n, run_child)
 
     # ── Phase 4: VERIFY ──
 
