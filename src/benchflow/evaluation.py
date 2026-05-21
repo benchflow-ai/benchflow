@@ -85,6 +85,13 @@ class RetryConfig:
 DEFAULT_AGENT = "claude-agent-acp"
 DEFAULT_MODEL = "claude-haiku-4-5-20251001"
 
+# Job scheduling modes (architecture.md § "Lifecycles" — the Job lifecycle).
+# - parallel-independent: the default — rollouts run concurrently, isolated.
+# - sequential-shared: continual learning — rollouts run in order over one
+#   persistent, versioned LearnerStore (capability 5).
+JOB_MODES = ("parallel-independent", "sequential-shared")
+DEFAULT_JOB_MODE = "parallel-independent"
+
 
 def effective_model(agent: str, model: str | None) -> str | None:
     """Resolve the model an agent should run with.
@@ -120,6 +127,7 @@ class EvaluationConfig:
     skill_mode: str = "default"
     skill_creator_dir: str | None = None
     self_gen_no_internet: bool = False
+    job_mode: str = DEFAULT_JOB_MODE
 
     def __post_init__(self):
         from benchflow._utils.config import normalize_agent_name, normalize_sandbox_user
@@ -127,6 +135,11 @@ class EvaluationConfig:
 
         self.agent = normalize_agent_name(self.agent)
         self.sandbox_user = normalize_sandbox_user(self.sandbox_user)
+        if self.job_mode not in JOB_MODES:
+            raise ValueError(
+                f"unknown job_mode {self.job_mode!r} — "
+                f"expected one of {', '.join(JOB_MODES)}"
+            )
         if self.agent not in AGENTS:
             available = ", ".join(sorted(AGENTS.keys()))
             logger.warning(
@@ -247,6 +260,16 @@ class Evaluation:
         from benchflow.sdk import SDK
 
         self._sdk = SDK()
+        # The persistent learner store for sequential-shared (continual
+        # learning) jobs. Created on demand by run(); parallel-independent
+        # jobs leave it None.
+        from benchflow.learner_store import LearnerStore
+
+        self.learner_store: LearnerStore | None = (
+            LearnerStore()
+            if self._config.job_mode == "sequential-shared"
+            else None
+        )
 
     @classmethod
     def from_yaml(cls, path: str | Path, **kwargs) -> Evaluation:
@@ -350,6 +373,7 @@ class Evaluation:
                 else None
             ),
             self_gen_no_internet=bool(raw.get("self_gen_no_internet", False)),
+            job_mode=raw.get("job_mode", DEFAULT_JOB_MODE),
         )
         return cls(tasks_dir=tasks_dir, jobs_dir=jobs_dir, config=config, **kwargs)
 
@@ -560,6 +584,108 @@ class Evaluation:
         assert last_result is not None
         return last_result
 
+    def _log_and_report(self, td: Path, result: RunResult) -> None:
+        """Log one rollout's outcome and fire the on_result callback."""
+        reward = result.rewards.get("reward") if result.rewards else None
+        status = "PASS" if reward == 1 else ("FAIL" if reward is not None else "ERR")
+        err_msg = result.error or result.verifier_error
+        err = f" ({err_msg[:50]})" if err_msg else ""
+        logger.info(f"[{status}] {td.name} (tools={result.n_tool_calls}){err}")
+        if self._on_result:
+            self._on_result(td.name, result)
+
+    async def _run_parallel_independent(
+        self, remaining: list[Path]
+    ) -> list[tuple[str, RunResult]]:
+        """The default schedule — rollouts run concurrently and isolated."""
+        cfg = self._config
+        sem = asyncio.Semaphore(cfg.concurrency)
+
+        async def bounded(td: Path) -> tuple[str, RunResult]:
+            async with sem:
+                # Jitter start to avoid SSH connection storms at high concurrency
+                import random
+
+                if cfg.concurrency > 16:
+                    await asyncio.sleep(
+                        random.uniform(0, min(cfg.concurrency / 10, 10))
+                    )
+                result = await self._run_task(td)
+                self._prune_docker()
+                self._log_and_report(td, result)
+                return td.name, result
+
+        results_or_errors = await asyncio.gather(
+            *[bounded(td) for td in remaining],
+            return_exceptions=True,
+        )
+
+        # Separate successful results from unexpected exceptions
+        pairs: list[tuple[str, RunResult]] = []
+        for i, r in enumerate(results_or_errors):
+            if isinstance(r, BaseException):
+                task_name = remaining[i].name
+                logger.error(f"[ERR] {task_name}: unexpected exception: {r}")
+                pairs.append(
+                    (
+                        task_name,
+                        RunResult(task_name=task_name, error=f"Unexpected: {r}"),
+                    )
+                )
+            else:
+                pairs.append(r)
+        return pairs
+
+    async def _run_sequential_shared(
+        self, remaining: list[Path]
+    ) -> list[tuple[str, RunResult]]:
+        """The continual-learning schedule — capability 5.
+
+        Rollouts run strictly in order over one persistent, generation-versioned
+        ``LearnerStore`` (memory + skills). After each rollout, its reward is
+        offered to the store as a learning-curve metric: an improvement stamps a
+        new generation, a regression is reverted. The learner store is the one
+        snapshot layer that does NOT roll back with a ``Branch`` — its rollback
+        is this separate, generation-scoped, curve-driven operation.
+
+        Concurrency is deliberately ignored here: a shared mutable store cannot
+        be written by overlapping rollouts.
+        """
+        from benchflow.learner_store import LearnerStore
+
+        store = self.learner_store
+        if store is None:  # defensive — run() sets it for this mode
+            store = self.learner_store = LearnerStore()
+
+        pairs: list[tuple[str, RunResult]] = []
+        for td in remaining:
+            try:
+                result = await self._run_task(td)
+            except BaseException as e:  # mirror the parallel path's catch
+                logger.error(f"[ERR] {td.name}: unexpected exception: {e}")
+                pairs.append(
+                    (td.name, RunResult(task_name=td.name, error=f"Unexpected: {e}"))
+                )
+                continue
+
+            self._prune_docker()
+            self._log_and_report(td, result)
+            pairs.append((td.name, result))
+
+            # Offer the rollout's reward to the learner store. A scored rollout
+            # advances or reverts a generation; an errored one (no reward)
+            # leaves the store untouched.
+            reward = result.rewards.get("reward") if result.rewards else None
+            if reward is not None:
+                kept = store.commit_or_revert(store.current(), metric=float(reward))
+                if not kept:
+                    logger.info(
+                        f"Learner store: {td.name} regressed "
+                        f"(reward={reward}) — reverted, staying at "
+                        f"generation {store.generation}"
+                    )
+        return pairs
+
     async def run(self) -> EvaluationResult:
         """Execute the job."""
         task_dirs = self._get_task_dirs()
@@ -599,54 +725,12 @@ class Evaluation:
         )
 
         start = time.time()
-        sem = asyncio.Semaphore(cfg.concurrency)
 
-        async def bounded(td: Path) -> tuple[str, RunResult]:
-            async with sem:
-                # Jitter start to avoid SSH connection storms at high concurrency
-                import random
-
-                if cfg.concurrency > 16:
-                    await asyncio.sleep(
-                        random.uniform(0, min(cfg.concurrency / 10, 10))
-                    )
-                result = await self._run_task(td)
-                self._prune_docker()
-                # Log result
-                reward = result.rewards.get("reward") if result.rewards else None
-                status = (
-                    "PASS" if reward == 1 else ("FAIL" if reward is not None else "ERR")
-                )
-                err_msg = result.error or result.verifier_error
-                err = f" ({err_msg[:50]})" if err_msg else ""
-                logger.info(f"[{status}] {td.name} (tools={result.n_tool_calls}){err}")
-                if self._on_result:
-                    self._on_result(td.name, result)
-                return td.name, result
-
-        results_or_errors = await asyncio.gather(
-            *[bounded(td) for td in remaining],
-            return_exceptions=True,
-        )
+        if cfg.job_mode == "sequential-shared":
+            pairs = await self._run_sequential_shared(remaining)
+        else:
+            pairs = await self._run_parallel_independent(remaining)
         elapsed = time.time() - start
-
-        # Separate successful results from unexpected exceptions
-        pairs: list[tuple[str, RunResult]] = []
-        for i, r in enumerate(results_or_errors):
-            if isinstance(r, BaseException):
-                task_name = remaining[i].name
-                logger.error(f"[ERR] {task_name}: unexpected exception: {r}")
-                pairs.append(
-                    (
-                        task_name,
-                        RunResult(
-                            task_name=task_name,
-                            error=f"Unexpected: {r}",
-                        ),
-                    )
-                )
-            else:
-                pairs.append(r)
 
         # Merge with previously completed — normalize everything to dicts
         all_results: dict[str, dict] = {}
