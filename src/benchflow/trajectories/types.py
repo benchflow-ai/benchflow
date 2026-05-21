@@ -74,8 +74,10 @@ class Trajectory(BaseModel):
         total = 0
         for ex in self.exchanges:
             usage = ex.response.body.get("usage", {})
-            prompt_details = usage.get("prompt_tokens_details", {})
-            input_details = usage.get("input_tokens_details", {})
+            # OpenAI may return these keys with an explicit null value, so
+            # `or {}` is required — `.get(key, {})` would still yield None.
+            prompt_details = usage.get("prompt_tokens_details") or {}
+            input_details = usage.get("input_tokens_details") or {}
             total += (
                 usage.get("cache_read_input_tokens", 0)
                 or prompt_details.get("cached_tokens", 0)
@@ -117,10 +119,7 @@ class Trajectory(BaseModel):
             cache_read_tokens = usage.get("cache_read_input_tokens", 0) or 0
             cache_creation_tokens = usage.get("cache_creation_input_tokens", 0) or 0
             total += (
-                input_tokens
-                + output_tokens
-                + cache_read_tokens
-                + cache_creation_tokens
+                input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens
             )
         return total
 

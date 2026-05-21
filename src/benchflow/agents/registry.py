@@ -525,7 +525,7 @@ AGENTS: dict[str, AgentConfig] = {
             '"$LLM_MODEL" "$LLM_API_KEY"; '
             'if [ -n "$LLM_BASE_URL" ]; then '
             'printf \',"base_url":"%s"\' "$LLM_BASE_URL"; fi; '
-            'printf \'}}\'; } > ~/.openhands/agent_settings.json && '
+            "printf '}}'; } > ~/.openhands/agent_settings.json && "
             "openhands acp --always-approve --override-with-envs"
         ),
         protocol="acp",

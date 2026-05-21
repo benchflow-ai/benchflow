@@ -61,7 +61,9 @@ class TaskMetrics:
     @property
     def completed(self) -> bool:
         """True when task reached a terminal non-error reward state."""
-        return not self.errored and not self.verifier_errored and self.reward is not None
+        return (
+            not self.errored and not self.verifier_errored and self.reward is not None
+        )
 
 
 @dataclass

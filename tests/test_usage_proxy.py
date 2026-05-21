@@ -604,3 +604,130 @@ async def test_rollout_cleanup_extracts_usage_and_writes_llm_trajectory(tmp_path
     assert json.loads(llm_traj.read_text().splitlines()[0])["response"]["body"][
         "usage"
     ] == {"input_tokens": 10, "output_tokens": 2}
+
+
+def test_cache_read_tokens_handles_null_token_details():
+    """Guards PR #307: OpenAI may return `prompt_tokens_details: null`."""
+    traj = _trajectory(
+        {
+            "model": "gpt-4.1-mini",
+            "usage": {
+                "prompt_tokens": 50,
+                "completion_tokens": 5,
+                "total_tokens": 55,
+                "prompt_tokens_details": None,
+                "input_tokens_details": None,
+            },
+        },
+        model="gpt-4.1-mini",
+    )
+
+    assert traj.total_cache_read_tokens == 0
+
+
+def test_extract_usage_prefers_captured_model_over_backend_model():
+    """Guards PR #307: cost uses the model reported in captured exchanges."""
+    from benchflow.providers.runtime import ProviderRuntime, extract_usage
+
+    # backend_model is stale (haiku) but the exchange reports gpt-4.1-mini.
+    runtime = ProviderRuntime(
+        kind="usage-proxy",
+        host="host.docker.internal",
+        port=12345,
+        backend_model="claude-haiku-4-5-20251001",
+        server=_ProxyLike(
+            _trajectory(
+                {
+                    "model": "gpt-4.1-mini",
+                    "usage": {
+                        "prompt_tokens": 1000,
+                        "completion_tokens": 100,
+                        "total_tokens": 1100,
+                    },
+                },
+                model="gpt-4.1-mini",
+            )
+        ),
+    )
+
+    usage = extract_usage(runtime)
+
+    assert str(usage["price_source"]).startswith("https://openai.com/api/pricing/@")
+    # gpt-4.1-mini pricing (0.4 in / 1.6 out per Mtok), not haiku's 1.0 / 5.0.
+    assert usage["cost_usd"] == round((1000 * 0.4 + 100 * 1.6) / 1_000_000, 10)
+
+
+@pytest.mark.asyncio
+async def test_usage_proxy_recreated_when_target_changes(monkeypatch):
+    """Guards PR #307: a multi-role provider switch must repoint the proxy."""
+    from benchflow.providers import runtime as provider_runtime_mod
+    from benchflow.providers.runtime import ensure_usage_proxy_runtime
+
+    monkeypatch.setattr(
+        provider_runtime_mod, "_docker_host_address", lambda: "host.docker.internal"
+    )
+    started: list[str] = []
+    stopped: list[str] = []
+
+    class FakeTrajectoryProxy:
+        def __init__(
+            self,
+            target,
+            session_id="",
+            agent_name="",
+            host="127.0.0.1",
+            port=0,
+            prompt_cache_retention=None,
+        ):
+            self._target = target.rstrip("/")
+            self.host = host
+            self.port = 40000 + len(started)
+            self.trajectory = Trajectory(session_id=session_id, agent_name=agent_name)
+
+        @property
+        def target(self) -> str:
+            return self._target
+
+        async def start(self):
+            started.append(self._target)
+
+        async def stop(self):
+            stopped.append(self._target)
+
+    monkeypatch.setattr(provider_runtime_mod, "TrajectoryProxy", FakeTrajectoryProxy)
+
+    _env1, runtime1 = await ensure_usage_proxy_runtime(
+        agent="codex-acp",
+        agent_env={"OPENAI_API_KEY": "sk-test"},
+        model="gpt-4.1-mini",
+        runtime=None,
+        environment="docker",
+        session_id="r1",
+    )
+    assert runtime1 is not None
+    assert runtime1.server.target == "https://api.openai.com/v1"
+
+    # Same rollout, role switches to an Anthropic model — different target.
+    _env2, runtime2 = await ensure_usage_proxy_runtime(
+        agent="claude-agent-acp",
+        agent_env={"ANTHROPIC_API_KEY": "sk-test"},
+        model="claude-haiku-4-5-20251001",
+        runtime=runtime1,
+        environment="docker",
+        session_id="r1",
+    )
+    assert runtime2 is not None and runtime2 is not runtime1
+    assert runtime2.server.target == "https://api.anthropic.com"
+    assert stopped == ["https://api.openai.com/v1"]
+
+    # Same target again — the proxy is reused, not recreated.
+    _env3, runtime3 = await ensure_usage_proxy_runtime(
+        agent="claude-agent-acp",
+        agent_env={"ANTHROPIC_API_KEY": "sk-test"},
+        model="claude-haiku-4-5-20251001",
+        runtime=runtime2,
+        environment="docker",
+        session_id="r1",
+    )
+    assert runtime3 is runtime2
+    assert started == ["https://api.openai.com/v1", "https://api.anthropic.com"]

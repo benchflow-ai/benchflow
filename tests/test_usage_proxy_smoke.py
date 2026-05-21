@@ -13,7 +13,7 @@ import pytest
 
 
 def _smoke_dotenv() -> dict[str, str]:
-    from benchflow._agent_env import load_dotenv_env
+    from benchflow._dotenv import load_dotenv_env
 
     return load_dotenv_env()
 

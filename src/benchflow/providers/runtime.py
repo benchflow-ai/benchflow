@@ -224,19 +224,20 @@ def _estimate_cost_usd(
 
 
 def _model_from_trajectory(runtime: ProviderRuntime) -> str | None:
-    if runtime.backend_model:
-        return runtime.backend_model
+    # Prefer the model the provider actually reported in captured exchanges;
+    # backend_model is only the model requested at proxy-creation time and can
+    # be stale if a role switched models. Falls back to it when no exchange
+    # carries a model (e.g. Gemini, which puts the model in the URL path).
     trajectory = getattr(runtime.server, "trajectory", None)
-    if not trajectory:
-        return None
-    for exchange in trajectory.exchanges:
-        response_model = exchange.response.body.get("model")
-        if response_model:
-            return response_model
-        request_model = exchange.request.body.get("model")
-        if request_model:
-            return request_model
-    return None
+    if trajectory:
+        for exchange in trajectory.exchanges:
+            response_model = exchange.response.body.get("model")
+            if response_model:
+                return response_model
+            request_model = exchange.request.body.get("model")
+            if request_model:
+                return request_model
+    return runtime.backend_model
 
 
 def _cache_tokens_are_input_breakdown(trajectory: Any) -> bool:
@@ -264,6 +265,15 @@ async def ensure_usage_proxy_runtime(
     target = _resolve_usage_proxy_target(agent, agent_env, model)
     if not target:
         return agent_env, runtime
+    target = target.rstrip("/")
+
+    # A multi-role scene can switch providers between connect_as() calls. The
+    # running proxy forwards to a fixed upstream, so reusing it would route the
+    # new role's traffic to the wrong endpoint — retire it and start a fresh
+    # one for the new target.
+    if runtime is not None and getattr(runtime.server, "target", None) != target:
+        await stop_provider_runtime(runtime)
+        runtime = None
 
     if runtime is None:
         prompt_cache_retention = agent_env.get(PROMPT_CACHE_RETENTION_ENV)
@@ -336,7 +346,9 @@ def extract_usage(runtime: ProviderRuntime | None) -> dict[str, Any]:
         "total_tokens": total_tokens,
         "cost_usd": cost_usd,
         "usage_source": "provider_response",
-        "price_source": pricing.price_source if cost_usd is not None and pricing else None,
+        "price_source": pricing.price_source
+        if cost_usd is not None and pricing
+        else None,
     }
 
 

@@ -180,7 +180,9 @@ def _usage_summary(results: dict[str, dict]) -> dict[str, Any]:
     completed = [
         r
         for r in results.values()
-        if r.get("rewards") is not None and not r.get("error") and not r.get("verifier_error")
+        if r.get("rewards") is not None
+        and not r.get("error")
+        and not r.get("verifier_error")
     ]
     covered = [
         r

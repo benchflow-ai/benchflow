@@ -70,6 +70,11 @@ class TrajectoryProxy:
         return f"http://{self._host}:{self._port}"
 
     @property
+    def target(self) -> str:
+        """Upstream URL this proxy forwards to (normalized, no trailing slash)."""
+        return self._target
+
+    @property
     def trajectory(self) -> Trajectory:
         return self._trajectory
 
@@ -365,9 +370,7 @@ def _parse_sse_events_buffer(buffer: str) -> tuple[list[dict[str, Any]], str]:
     return events, normalized
 
 
-def _parse_request_body(
-    body_bytes: bytes, headers: dict[str, str]
-) -> dict[str, Any]:
+def _parse_request_body(body_bytes: bytes, headers: dict[str, str]) -> dict[str, Any]:
     """Parse a possibly-compressed JSON request body for telemetry capture."""
     if not body_bytes:
         return {}
