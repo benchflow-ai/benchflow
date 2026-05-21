@@ -96,33 +96,19 @@ class TestJobCounting:
         """A result with BOTH error and verifier_error (rewards=None) must be
         classified into exactly one bucket so the count invariant holds.
 
-        Mirrors the disjoint bucketing in Evaluation.run(): a result is
-        ``errored`` when it has an agent error, and ``verifier_errored`` only
-        when it has a verifier error AND no agent error.
+        Exercises the real shared classifier: a result with an agent error is
+        ``errored``, and ``verifier_errored`` only applies when there is a
+        verifier error AND no agent error — ``errored`` takes precedence.
         """
-        results = {
-            "a": {
-                "rewards": None,
-                "error": "agent crashed",
-                "verifier_error": "verifier also failed",
-            },
+        from benchflow._utils.scoring import classify_result_dict
+
+        result = {
+            "rewards": None,
+            "error": "agent crashed",
+            "verifier_error": "verifier also failed",
         }
-        errored = sum(
-            1 for r in results.values() if r.get("error") and r.get("rewards") is None
-        )
-        verifier_errored = sum(
-            1
-            for r in results.values()
-            if r.get("verifier_error")
-            and not (r.get("error") and r.get("rewards") is None)
-        )
-        # Exactly one bucket — never double-counted.
-        assert errored == 1
-        assert verifier_errored == 0
-        counts = self._count(results)
-        assert counts["passed"] + counts["failed"] + errored + verifier_errored == len(
-            results
-        )
+        # The real classifier puts a both-errors result in exactly `errored`.
+        assert classify_result_dict(result) == "errored"
 
 
 class TestRunTaskLoop:

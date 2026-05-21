@@ -29,7 +29,7 @@ from benchflow._utils.scoring import (
     INSTALL_FAILED,
     PIPE_CLOSED,
     classify_error,
-    extract_reward,
+    classify_result_dict,
     pass_rate,
     pass_rate_excl_errors,
 )
@@ -662,31 +662,18 @@ class Evaluation:
                 "agent_result": _agent_result_from_rollout(result),
             }
 
-        # Count — all values are dicts now, no type branching needed
+        # Count — every result lands in exactly one bucket via the shared
+        # classifier, so passed+failed+errored+verifier_errored == total
+        # holds structurally (see classify_result in _utils.scoring).
+        buckets = [classify_result_dict(r) for r in all_results.values()]
         job_result = EvaluationResult(
             job_name=self._job_name,
             config=cfg,
             total=len(task_dirs),
-            passed=sum(1 for r in all_results.values() if extract_reward(r) == 1.0),
-            failed=sum(
-                1
-                for r in all_results.values()
-                if (rw := extract_reward(r)) is not None and rw != 1.0
-            ),
-            errored=sum(
-                1
-                for r in all_results.values()
-                if r.get("error") and r.get("rewards") is None
-            ),
-            # Disjoint from `errored`: a result with both `error` and
-            # `verifier_error` is counted only as `errored`, so the
-            # passed+failed+errored+verifier_errored == total invariant holds.
-            verifier_errored=sum(
-                1
-                for r in all_results.values()
-                if r.get("verifier_error")
-                and not (r.get("error") and r.get("rewards") is None)
-            ),
+            passed=buckets.count("passed"),
+            failed=buckets.count("failed"),
+            errored=buckets.count("errored"),
+            verifier_errored=buckets.count("verifier_errored"),
             elapsed_sec=elapsed,
         )
 
