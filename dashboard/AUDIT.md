@@ -68,6 +68,31 @@ it is the iterated memory of what "good artifacts" means here.
 
 Newest first. Status ∈ `open` · `fixed` · `wontfix`.
 
+Cycle 4 — 2026-05-21: re-ran `generate.py` (531 KB `data.json`, 51 tasks /
+4 groups, 7 experiments, 1507p/1f/5s). **F9 confirmed CLOSED** — the full
+R11 sweep now passes: every leaf field of `data.json` (90 field-tokens
+across `summary`/`concept_map`/`tests`/`roadmap`/`jobs`/`experiments`/
+`advisories`) is consumed by `index.html`. All 7 ex-orphans verified wired:
+`task.rollout` (index.html:778 `#<id>`), `task.environment` (775),
+`task.total_time` (776 `Ns`), `jobs.groups[].blurb` (801/804 `.gblurb`),
+`experiments[].n_files_total`+`files_truncated` (931-932 "showing N of M
+files"), `trajectory_events` (777); `tests.failures[].file` no longer
+exists in `data.json` (failure objects carry only `name`+`message`).
+**R1–R11 all pass** against the real files: R1 0/214 empty job artifacts +
+0/47 empty exp files, R2 0 null contents, R3 0 `info` fields + failures
+keyed `name`/`message` only, R4 531 KB < 2 MB + 0 cap violations, R5/R8
+0 un-truncated-JSON parse failures + all 5 truncated artifacts
+self-describing, R5/R9 all 7 experiment CSV `rows` match on-disk logical
+counts + 41/41 trajectory event counts match + truncated `ablation-results.csv`
+`rows=267` is the full-file logical count (not fragment-239), R6 0 dead
+refs (9 advisory groups, 9 advisory + 7 capability `capability` refs, 7
+capability `ENG-` issues all in the roadmap), R7 every section populated
+(0 empty groups/runs/experiments), R10 all 7 experiments carry consistent
+`files_truncated`+`n_files_total`. No new problem class found. **The audit
+has converged — the dashboard's artifacts are fully clean.** (The single
+test failure `test_config_mismatch_warning` is a real pre-existing pytest
+failure honestly reported as `1f`, not an artifact defect.)
+
 Cycle 3 — 2026-05-21: re-ran `generate.py` (544 KB `data.json`, 51 tasks /
 4 groups, 7 experiments, 1507p/1f/5s). **F7 and F8 confirmed closed** — no
 artifact carries an `info` field (0 of 261), `trajectory_events` is now
