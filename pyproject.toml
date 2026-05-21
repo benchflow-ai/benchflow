@@ -52,6 +52,13 @@ sandbox-modal = [
 bedrock = [
     "boto3>=1.40",
 ]
+# Provider SDKs for the llm-judge verifier (type = "llm-judge").
+# llm.py routes judge calls across all three; install at least one.
+judge = [
+    "anthropic>=0.40",
+    "openai>=1.40",
+    "google-genai>=1.0",
+]
 
 [project.scripts]
 benchflow = "benchflow.cli.main:app"

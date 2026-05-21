@@ -15,6 +15,7 @@ import pytest
 
 from benchflow.rewards.builtins import LLMJudgeRewardFunc
 from benchflow.rewards.llm import (
+    JudgeEnvironmentError,
     _call_anthropic,
     _call_google,
     call_judge,
@@ -97,6 +98,25 @@ class TestCallJudgeProviderFallback:
         assert result == "ok from openai"
         # ImportError is not retried.
         assert anthropic_mock.await_count == 1
+
+    def test_all_sdks_missing_raises_judge_environment_error(self) -> None:
+        """When *every* provider SDK is missing, call_judge raises a
+        JudgeEnvironmentError — a distinct, identifiable environment failure,
+        not a generic RuntimeError that callers might mistake for a verdict."""
+        missing = AsyncMock(side_effect=ImportError("no SDK"))
+
+        with (
+            patch("benchflow.rewards.llm._call_anthropic", missing),
+            patch("benchflow.rewards.llm._call_openai", missing),
+            patch("benchflow.rewards.llm._call_google", missing),
+            pytest.raises(JudgeEnvironmentError, match="judge extra"),
+        ):
+            asyncio.run(call_judge("claude-haiku-4-5", "prompt", retries=2))
+
+    def test_judge_environment_error_is_a_runtime_error(self) -> None:
+        """JudgeEnvironmentError stays a RuntimeError subclass so existing
+        ``except RuntimeError`` handlers keep working."""
+        assert issubclass(JudgeEnvironmentError, RuntimeError)
 
 
 # ---------------------------------------------------------------------------
@@ -486,6 +506,8 @@ class TestLLMJudgeErrors:
     def test_judge_error_returns_zero(
         self, mock_judge: AsyncMock, tmp_path: Path
     ) -> None:
+        """A real API failure (bad key, model not found) is a genuine judge
+        outcome — it degrades the criterion to 0.0, not an environment error."""
         mock_judge.side_effect = RuntimeError("API error")
         (tmp_path / "output.txt").write_text("answer")
 
@@ -496,6 +518,24 @@ class TestLLMJudgeErrors:
         assert score == 0.0
         assert len(func.events) == 1
         assert func.events[0].reward == 0.0
+
+    @patch("benchflow.rewards.llm.call_judge", new_callable=AsyncMock)
+    def test_missing_sdk_propagates_not_scored_zero(
+        self, mock_judge: AsyncMock, tmp_path: Path
+    ) -> None:
+        """A missing provider SDK (JudgeEnvironmentError) must propagate out of
+        score() — the judge never ran, so it is an environment failure, not a
+        verdict of 0.0. Scoring it 0.0 would be indistinguishable from a real
+        fail and would silently corrupt benchmark results."""
+        mock_judge.side_effect = JudgeEnvironmentError(
+            "No LLM provider SDK is installed"
+        )
+        (tmp_path / "output.txt").write_text("answer")
+
+        func = LLMJudgeRewardFunc(criteria=[{"description": "test"}])
+
+        with pytest.raises(JudgeEnvironmentError):
+            asyncio.run(func.score(tmp_path))
 
 
 # ---------------------------------------------------------------------------

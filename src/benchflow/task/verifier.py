@@ -264,7 +264,13 @@ class Verifier:
         return dest
 
     async def _verify_llm_judge(self) -> VerifierResult:
-        """Score agent deliverables against a rubric with an LLM judge."""
+        """Score agent deliverables against a rubric with an LLM judge.
+
+        A missing provider SDK raises ``JudgeEnvironmentError``, which is left
+        to propagate: the judge could not run, so the rollout is marked as a
+        verifier error rather than silently scored ``0.0`` (which would be
+        indistinguishable from a genuine judge verdict of fail).
+        """
         from benchflow.rewards.builtins import LLMJudgeRewardFunc
 
         judge = self._task.config.verifier.judge

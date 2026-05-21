@@ -11,6 +11,18 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+class JudgeEnvironmentError(RuntimeError):
+    """No LLM provider SDK is installed for the judge.
+
+    Raised when *every* provider import fails with ``ImportError``. This is an
+    *environment* failure — the judge could not run at all — and must be kept
+    distinct from a genuine judge verdict (including a real score of 0). Callers
+    surface it as a verifier error rather than recording it as reward ``0.0``.
+
+    Install the judge SDKs with the ``judge`` extra: ``uv sync --extra judge``.
+    """
+
+
 # ------------------------------------------------------------------
 # Verdict parsing
 # ------------------------------------------------------------------
@@ -139,10 +151,12 @@ async def call_judge(
 
     # Every provider's SDK was missing (each ImportError ``break``s to the
     # next).  A real API failure raises directly above, so this is the only
-    # state that reaches here.
-    raise RuntimeError(
-        f"No LLM provider SDK is installed for model {model} "
-        "(install one of: anthropic, openai, google-genai)"
+    # state that reaches here.  This is an environment failure, not a verdict —
+    # ``JudgeEnvironmentError`` lets callers tell it apart from a real score.
+    raise JudgeEnvironmentError(
+        f"No LLM provider SDK is installed for model {model}. "
+        "Install the judge extra: `uv sync --extra judge` "
+        "(provides anthropic, openai, google-genai)."
     )
 
 
