@@ -164,7 +164,9 @@ class _DaytonaStrategy:
     async def upload_file(self, source_path: Path | str, target_path: str) -> None: ...
 
     @abstractmethod
-    async def upload_dir(self, source_dir: Path | str, target_dir: str) -> None: ...
+    async def upload_dir(
+        self, source_dir: Path | str, target_dir: str, service: str = "main"
+    ) -> None: ...
 
     @abstractmethod
     async def download_file(
@@ -172,7 +174,9 @@ class _DaytonaStrategy:
     ) -> None: ...
 
     @abstractmethod
-    async def download_dir(self, source_dir: str, target_dir: Path | str) -> None: ...
+    async def download_dir(
+        self, source_dir: str, target_dir: Path | str, service: str = "main"
+    ) -> None: ...
 
     @abstractmethod
     async def is_dir(self, path: str, user: str | int | None = None) -> bool: ...
@@ -306,13 +310,29 @@ class _DaytonaDirect(_DaytonaStrategy):
     async def upload_file(self, source_path: Path | str, target_path: str) -> None:
         await self._env._sdk_upload_file(source_path, target_path)
 
-    async def upload_dir(self, source_dir: Path | str, target_dir: str) -> None:
+    async def upload_dir(
+        self, source_dir: Path | str, target_dir: str, service: str = "main"
+    ) -> None:
+        if service != "main":
+            raise ValueError(
+                f"Direct (non-compose) Daytona sandbox is single-container "
+                f"and cannot target service {service!r}. Multi-container "
+                "(vulhub-style) tasks require a docker-compose.yaml (#248)."
+            )
         await self._env._sdk_upload_dir(source_dir, target_dir)
 
     async def download_file(self, source_path: str, target_path: Path | str) -> None:
         await self._env._sdk_download_file(source_path, target_path)
 
-    async def download_dir(self, source_dir: str, target_dir: Path | str) -> None:
+    async def download_dir(
+        self, source_dir: str, target_dir: Path | str, service: str = "main"
+    ) -> None:
+        if service != "main":
+            raise ValueError(
+                f"Direct (non-compose) Daytona sandbox is single-container "
+                f"and cannot target service {service!r}. Multi-container "
+                "(vulhub-style) tasks require a docker-compose.yaml (#248)."
+            )
         await self._env._sdk_download_dir(source_dir, target_dir)
 
     async def is_dir(self, path: str, user: str | int | None = None) -> bool:
@@ -647,12 +667,19 @@ class _DaytonaDinD(_DaytonaStrategy):
         finally:
             await self._vm_exec(f"rm -f {shlex.quote(temp)}", timeout_sec=10)
 
-    async def upload_dir(self, source_dir: Path | str, target_dir: str) -> None:
+    async def upload_dir(
+        self, source_dir: Path | str, target_dir: str, service: str = "main"
+    ) -> None:
+        """Upload a directory into a compose service inside the DinD VM.
+
+        ``service`` defaults to ``"main"``; pass a target service to land the
+        directory in an additional vulhub-style container (#248).
+        """
         temp = f"/tmp/benchflow_{uuid4().hex}"
         try:
             await self._env._sdk_upload_dir(source_dir, temp)
             result = await self._compose_exec(
-                ["cp", f"{temp}/.", f"main:{target_dir}"], timeout_sec=120
+                ["cp", f"{temp}/.", f"{service}:{target_dir}"], timeout_sec=120
             )
             if result.return_code != 0:
                 raise RuntimeError(
@@ -693,17 +720,28 @@ class _DaytonaDinD(_DaytonaStrategy):
         finally:
             await self._vm_exec(f"rm -f {shlex.quote(temp)}", timeout_sec=10)
 
-    async def download_dir(self, source_dir: str, target_dir: Path | str) -> None:
-        sandbox_path = self._sandbox_log_path(source_dir)
-        if sandbox_path:
-            await self._env._sdk_download_dir(sandbox_path, target_dir)
-            return
+    async def download_dir(
+        self, source_dir: str, target_dir: Path | str, service: str = "main"
+    ) -> None:
+        """Download a directory from a compose service inside the DinD VM.
+
+        ``service`` defaults to ``"main"``; pass a target service to fetch
+        target-side verifier output from a vulhub-style container (#248).
+        The host-mounted-log fast path only applies to ``main`` — target
+        services have no host bind mount, so their contents are always
+        copied out via ``docker compose cp``.
+        """
+        if service == "main":
+            sandbox_path = self._sandbox_log_path(source_dir)
+            if sandbox_path:
+                await self._env._sdk_download_dir(sandbox_path, target_dir)
+                return
 
         temp = f"/tmp/benchflow_{uuid4().hex}"
         try:
             await self._vm_exec(f"mkdir -p {shlex.quote(temp)}", timeout_sec=10)
             result = await self._compose_exec(
-                ["cp", f"main:{source_dir}/.", temp], timeout_sec=120
+                ["cp", f"{service}:{source_dir}/.", temp], timeout_sec=120
             )
             if result.return_code != 0:
                 self._env.logger.error(
@@ -1113,14 +1151,20 @@ class DaytonaSandbox(BaseSandbox):
     async def upload_file(self, source_path: Path | str, target_path: str) -> None:
         return await self._strategy.upload_file(source_path, target_path)
 
-    async def upload_dir(self, source_dir: Path | str, target_dir: str) -> None:
-        return await self._strategy.upload_dir(source_dir, target_dir)
+    async def upload_dir(
+        self, source_dir: Path | str, target_dir: str, service: str = "main"
+    ) -> None:
+        return await self._strategy.upload_dir(source_dir, target_dir, service=service)
 
     async def download_file(self, source_path: str, target_path: Path | str) -> None:
         return await self._strategy.download_file(source_path, target_path)
 
-    async def download_dir(self, source_dir: str, target_dir: Path | str) -> None:
-        return await self._strategy.download_dir(source_dir, target_dir)
+    async def download_dir(
+        self, source_dir: str, target_dir: Path | str, service: str = "main"
+    ) -> None:
+        return await self._strategy.download_dir(
+            source_dir, target_dir, service=service
+        )
 
     async def is_dir(
         self, path: str, user: str | int | None = None, service: str = "main"

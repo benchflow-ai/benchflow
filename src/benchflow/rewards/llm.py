@@ -91,8 +91,11 @@ async def call_judge(
     """Call an LLM judge, routing by model name prefix.
 
     Tries Anthropic, OpenAI, and Google SDKs in order based on the
-    model string.  Falls back through providers if the primary is
-    unavailable.
+    model string.  Cross-provider fallback only applies when an SDK is
+    *not installed* (``ImportError``): a model name only makes sense for
+    the provider it belongs to, so a real API failure (bad key, model
+    not found, retries exhausted) is raised as-is rather than being
+    masked by a different provider rejecting the same model name.
     """
     bare_model = _strip_provider_prefix(model)
     providers: list[str] = []
@@ -119,19 +122,22 @@ async def call_judge(
                     return await _call_google(bare_model, prompt)
             except ImportError:
                 logger.debug("SDK for %s not installed, skipping", provider)
-                break  # No point retrying if SDK is missing
+                break  # SDK missing — fall through to the next provider
             except Exception as e:
                 last_error = e
                 if attempt < retries - 1:
                     await asyncio.sleep(2**attempt)
                     continue
+                # A real API failure for this provider's own model.
+                # Other providers cannot serve this model name, so do
+                # not advance — raise the original error directly.
                 logger.warning(
                     "%s call failed after %d attempts: %s",
                     provider,
                     retries,
                     e,
                 )
-                break  # Move to next provider
+                raise
 
     msg = f"All LLM providers failed for model {model}"
     if last_error:
@@ -153,7 +159,14 @@ async def _call_anthropic(model: str, prompt: str, max_tokens: int) -> str:
         max_tokens=max_tokens,
         messages=[{"role": "user", "content": prompt}],
     )
-    return response.content[0].text
+    # The response may have no content blocks, or lead with a non-text
+    # block (e.g. a tool-use block).  Return the first text block's text,
+    # or "" if none is present.
+    for block in response.content:
+        text = getattr(block, "text", None)
+        if isinstance(text, str):
+            return text
+    return ""
 
 
 async def _call_openai(model: str, prompt: str, max_tokens: int) -> str:

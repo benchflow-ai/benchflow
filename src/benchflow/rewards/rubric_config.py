@@ -41,7 +41,9 @@ class Criterion:
             return 1.0 if raw >= 0.5 else 0.0
         if self.type == "likert":
             denom = self.points - 1
-            return float((raw - 1) / denom) if denom > 0 else 0.0
+            if denom <= 0:
+                return 0.0
+            return max(0.0, min(1.0, (raw - 1) / denom))
         # numeric
         span = self.max - self.min
         if span <= 0:
