@@ -628,6 +628,40 @@ AGENT_ALIASES: dict[str, str] = {
 
 VALID_PROTOCOLS = {"acp", "acpx"}
 
+# ---------------------------------------------------------------------------
+# The ``acpx:`` runtime-key namespace
+# ---------------------------------------------------------------------------
+#
+# An ``acpx/<agent>`` spec resolves to an acpx-wrapped AgentConfig whose
+# install/launch commands route through the acpx CLI. That wrapped config is
+# registered into ``AGENTS`` (and the installer/launch maps) under a stable
+# runtime key prefixed with ``ACPX_KEY_PREFIX`` so later *name-keyed* lookups
+# in the Rollout/Evaluation path pick up the wrapped commands.
+#
+# This namespace is owned end to end by ``resolve_agent_key``: it is the only
+# function that *mints* an ``acpx:`` key (by registering the wrapped config).
+# Two other sites must agree with that convention and are documented here so
+# the contract is explicit rather than implied:
+#
+#   - ``_acpx_wrap`` produces the wrapped config whose ``name`` carries the
+#     ``acpx:`` prefix (via ``acpx_runtime_key``).
+#   - ``resolve_agent`` round-trips an already-registered ``acpx:`` key:
+#     ``parse_agent_spec`` leaves it whole under the default ``acp`` protocol,
+#     and the ``protocol == "acp" and name in AGENTS`` branch returns it as-is.
+#
+# Changing the prefix or this round-trip behavior requires updating all three.
+ACPX_KEY_PREFIX = "acpx:"
+
+
+def acpx_runtime_key(canonical_name: str) -> str:
+    """Return the stable ``acpx:`` runtime key for a canonical agent name.
+
+    Single source of truth for the ``acpx:`` namespace — see the module-level
+    comment above. ``resolve_agent_key`` registers the wrapped config under
+    this key; ``resolve_agent`` round-trips it back to that config.
+    """
+    return f"{ACPX_KEY_PREFIX}{canonical_name}"
+
 
 def parse_agent_spec(spec: str) -> tuple[str, str]:
     """Parse an agent spec like 'acp/claude-agent-acp', 'acpx/claude', or 'claude'.
@@ -667,7 +701,8 @@ def _acpx_wrap(config: AgentConfig) -> AgentConfig:
             break
 
     return AgentConfig(
-        name=f"acpx:{config.name}",
+        # ``acpx:`` runtime key — see acpx_runtime_key / module-level contract.
+        name=acpx_runtime_key(config.name),
         install_cmd=f"{config.install_cmd} && {_ACPX_INSTALL}",
         launch_cmd=(
             f'export PATH="{_JS_AGENT_PATH}" && acpx {acpx_agent_name} --approve-all'
@@ -702,7 +737,8 @@ def resolve_agent(spec: str) -> AgentConfig:
         )
 
     # An already-resolved acpx runtime key (e.g. "acpx:claude-agent-acp")
-    # round-trips: parse_agent_spec leaves it whole and it lives in AGENTS.
+    # round-trips: parse_agent_spec leaves it whole under the default "acp"
+    # protocol and it lives in AGENTS. See the ACPX_KEY_PREFIX contract.
     if protocol == "acp" and name in AGENTS:
         return AGENTS[name]
 
@@ -725,12 +761,15 @@ def resolve_agent(spec: str) -> AgentConfig:
 def resolve_agent_key(spec: str) -> str:
     """Resolve an agent spec to a stable registry key.
 
-    For plain ACP agents this is the canonical agent name. For ``acpx/<agent>``
-    specs the acpx-wrapped config (acpx install/launch commands) is registered
-    into ``AGENTS``/``AGENT_INSTALLERS``/``AGENT_LAUNCH`` under a stable runtime
-    key (``acpx:<canonical>``) so that name-keyed lookups in the
+    This function owns the ``acpx:`` runtime-key namespace (see the
+    ``ACPX_KEY_PREFIX`` module-level contract). For plain ACP agents the key
+    is the canonical agent name. For ``acpx/<agent>`` specs the acpx-wrapped
+    config (acpx install/launch commands) is registered into
+    ``AGENTS``/``AGENT_INSTALLERS``/``AGENT_LAUNCH`` under the stable runtime
+    key ``acpx_runtime_key(<canonical>)`` so that name-keyed lookups in the
     Rollout/Evaluation path use the wrapped commands instead of the literal
-    spec string.
+    spec string. ``resolve_agent`` then round-trips that key back to the
+    wrapped config.
 
     Unknown agents are returned unchanged so callers can still surface their
     own diagnostics (raw-command fallback).
