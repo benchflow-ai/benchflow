@@ -20,13 +20,13 @@ A left **sidebar** with seven sections; under **Jobs** the sidebar nests the
 
 | Section | What it shows |
 |---|---|
-| **Overview** | Headline stats — tests, capabilities, roadmap, artifacts, commits. |
+| **Overview** | Headline stats — tests, capabilities, roadmap, artifacts, experiments. |
 | **Concept map** | The architecture — kernel, four planes, the tree-native execution model, the eight capabilities. |
 | **Roadmap** | The v0.5 milestones M1–M4 and their Linear issues. |
 | **Tests** | The live pytest suite, suite by suite. |
-| **Jobs** | Every rollout under `jobs/` as a tree: **group → run → task → artifacts** (trajectories, rewards, verifier output). Each group links to the agent advisories that correspond to it. |
+| **Jobs** | Every rollout under `jobs/` as a tree: **group → run → task → artifacts**. Each artifact expands to show its **actual file contents** (JSON pretty-printed, JSONL line-by-line, CSV as a table). Each group links to the agent advisories that correspond to it. |
 | **Advisories** | The agents' review advisories — each cross-linked to a capability and a job group (the jobs ↔ agent-advisor correspondence). |
-| **Timeline** | Every commit of the v0.5 work on `v0.5-integration`, newest first. |
+| **Timeline** | The v0.5 experiments — scanned from `experiments/` and `labs/`, newest first; each experiment expands to its files, every file viewable inline. |
 
 ## Refresh the data
 
@@ -39,11 +39,20 @@ Reload the page — `data.json` is re-fetched each load.
 
 ## Data sources
 
-- **Live** — `junit.xml` (the pytest suite), the `jobs/` folder tree, and
-  `git log main..v0.5-integration` (the timeline).
+- **Live** — `junit.xml` (the pytest suite), the `jobs/` folder tree (each
+  artifact's file content embedded, capped), and the `experiments/` + `labs/`
+  folders (the experiments timeline).
 - **Authored** — the concept map, the roadmap, and the advisories live as
   Python data at the top of `generate.py`. The advisories carry `capability`
   and `group` fields — that is what wires each advisory to its job group.
+
+## Deployment
+
+A static deploy config (`vercel.json`) is included. Redeploy to Vercel with:
+
+```bash
+python dashboard/generate.py && (cd dashboard && vercel deploy --prod --yes)
+```
 
 ## Files
 
