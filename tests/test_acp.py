@@ -20,13 +20,22 @@ MOCK_AGENT_INTERLEAVED = str(
 
 
 class TestACPClient:
+    def test_initialize_params_send_current_protocol_version(self) -> None:
+        """The client must advertise ACP protocol version 1, not 0."""
+        from benchflow.acp.types import ACP_PROTOCOL_VERSION, InitializeParams
+
+        assert ACP_PROTOCOL_VERSION == 1
+        wire = InitializeParams().model_dump(by_alias=True)
+        assert wire["protocolVersion"] == 1
+
     @pytest.mark.asyncio
     async def test_initialize(self) -> None:
         client = ACPClient(StdioTransport(sys.executable, [MOCK_AGENT]))
         try:
             await client.connect()
             result = await client.initialize()
-            assert result.protocol_version == 0
+            # Negotiated to v1 — the mock echoes min(requested, 1).
+            assert result.protocol_version == 1
             assert result.agent_info is not None
             assert result.agent_info.name == "mock-agent"
         finally:

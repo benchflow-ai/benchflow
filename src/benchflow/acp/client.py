@@ -6,6 +6,7 @@ from typing import Any
 from .session import ACPSession
 from .transport import StdioTransport, Transport
 from .types import (
+    ACP_PROTOCOL_VERSION,
     InitializeParams,
     InitializeResult,
     NewSessionParams,
@@ -190,6 +191,13 @@ class ACPClient:
             "initialize", params.model_dump(by_alias=True)
         )
         self._initialize_result = InitializeResult.model_validate(result)
+        negotiated = self._initialize_result.protocol_version
+        if negotiated != ACP_PROTOCOL_VERSION:
+            logger.warning(
+                "ACP protocol version negotiated to %s (client implements %s)",
+                negotiated,
+                ACP_PROTOCOL_VERSION,
+            )
         return self._initialize_result
 
     async def session_new(self, cwd: str = "/app") -> ACPSession:
