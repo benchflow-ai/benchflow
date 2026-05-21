@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+
+{% block title %}DB Viewer - Claw Gmail{% endblock %}
+
+{% block content %}
+<div class="max-w-full mx-auto py-4 px-6">
+    <div class="flex items-center justify-between mb-4">
+        <div>
+            <h1 class="text-xl font-normal text-gray-900 mb-1">Database Viewer</h1>
+            <p class="text-xs text-gray-500">SQLite &middot; claw_gmail.db &middot; {{ total }} rows in <strong>{{ table }}</strong></p>
+        </div>
+    </div>
+
+    <!-- Table tabs -->
+    <div class="flex gap-1 mb-4 border-b border-gray-200">
+        {% for t in tables %}
+        <a href="/dev/db-viewer?table={{ t }}"
+           class="px-4 py-2 text-sm -mb-px {{ 'border-b-2 border-blue-500 text-blue-600 font-medium' if t == table else 'text-gray-500 hover:text-gray-700' }}">
+            {{ t }}
+        </a>
+        {% endfor %}
+    </div>
+
+    <!-- Table -->
+    <div class="overflow-x-auto border border-gray-200 rounded-lg">
+        <table class="w-full text-xs">
+            <thead>
+                <tr class="bg-gray-50 border-b border-gray-200">
+                    <th class="px-3 py-2 text-left font-semibold text-gray-600">#</th>
+                    {% for col in columns %}
+                    <th class="px-3 py-2 text-left font-semibold text-gray-600 whitespace-nowrap">{{ col }}</th>
+                    {% endfor %}
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in rows %}
+                <tr class="border-b border-gray-100 hover:bg-blue-50">
+                    <td class="px-3 py-2 text-gray-400">{{ (page - 1) * 25 + loop.index }}</td>
+                    {% for col in columns %}
+                    <td class="px-3 py-2 max-w-xs truncate {{ 'font-mono text-gray-500' if col in ['id', 'thread_id', 'message_id', 'label_id'] else '' }}">
+                        {% if row[col] is sameas true %}
+                        <span class="inline-block w-4 h-4 bg-green-100 text-green-700 rounded text-center leading-4 font-bold">&#10003;</span>
+                        {% elif row[col] is sameas false %}
+                        <span class="text-gray-300">&mdash;</span>
+                        {% elif col == 'id' and table == 'messages' %}
+                        <a href="/thread/{{ row['thread_id'] }}" class="text-blue-600 hover:underline" title="{{ row[col] }}">{{ row[col][:12] }}...</a>
+                        {% elif col == 'id' and table == 'threads' %}
+                        <a href="/thread/{{ row[col] }}" class="text-blue-600 hover:underline" title="{{ row[col] }}">{{ row[col][:12] }}...</a>
+                        {% elif col in ['id', 'thread_id', 'message_id'] %}
+                        <span title="{{ row[col] }}">{{ row[col][:12] }}{{ '...' if row[col]|length > 12 else '' }}</span>
+                        {% else %}
+                        {{ row[col] }}
+                        {% endif %}
+                    </td>
+                    {% endfor %}
+                </tr>
+                {% endfor %}
+                {% if not rows %}
+                <tr>
+                    <td colspan="{{ columns|length + 1 }}" class="px-3 py-8 text-center text-gray-400">No rows found</td>
+                </tr>
+                {% endif %}
+            </tbody>
+        </table>
+    </div>
+
+    <!-- Pagination -->
+    {% if total_pages > 1 %}
+    <div class="flex items-center justify-between mt-4">
+        <div class="text-xs text-gray-500">
+            Page {{ page }} of {{ total_pages }} ({{ total }} rows)
+        </div>
+        <div class="flex gap-1">
+            {% if page > 1 %}
+            <a href="/dev/db-viewer?table={{ table }}&page={{ page - 1 }}"
+               class="px-3 py-1.5 text-xs border border-gray-200 rounded hover:bg-gray-50">&laquo; Prev</a>
+            {% endif %}
+            {% for p in range(1, total_pages + 1) %}
+                {% if p == page %}
+                <span class="px-3 py-1.5 text-xs border border-blue-500 bg-blue-50 text-blue-600 rounded font-medium">{{ p }}</span>
+                {% elif (p - page)|abs <= 2 or p == 1 or p == total_pages %}
+                <a href="/dev/db-viewer?table={{ table }}&page={{ p }}"
+                   class="px-3 py-1.5 text-xs border border-gray-200 rounded hover:bg-gray-50">{{ p }}</a>
+                {% elif (p - page)|abs == 3 %}
+                <span class="px-1 py-1.5 text-xs text-gray-400">...</span>
+                {% endif %}
+            {% endfor %}
+            {% if page < total_pages %}
+            <a href="/dev/db-viewer?table={{ table }}&page={{ page + 1 }}"
+               class="px-3 py-1.5 text-xs border border-gray-200 rounded hover:bg-gray-50">Next &raquo;</a>
+            {% endif %}
+        </div>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+
+{% block title %}{{ current_label or 'Inbox' }} - Claw Gmail{% endblock %}
+
+{% block content %}
+<div class="min-h-full">
+    <!-- Category tabs (inbox only) -->
+    {% if current_label == 'INBOX' %}
+    <div class="flex border-b border-gray-200">
+        <button class="flex items-center gap-2 px-6 py-3 text-sm font-medium text-blue-600 border-b-[3px] border-blue-600 font-google-sans">
+            <span class="material-symbols-outlined text-[20px]">inbox</span>
+            Primary
+        </button>
+        <button class="flex items-center gap-2 px-6 py-3 text-sm text-gray-600 hover:bg-gray-50 border-b-[3px] border-transparent font-google-sans">
+            <span class="material-symbols-outlined text-[20px]">group</span>
+            Social
+        </button>
+        <button class="flex items-center gap-2 px-6 py-3 text-sm text-gray-600 hover:bg-gray-50 border-b-[3px] border-transparent font-google-sans">
+            <span class="material-symbols-outlined text-[20px]">sell</span>
+            Promotions
+        </button>
+        <button class="flex items-center gap-2 px-6 py-3 text-sm text-gray-600 hover:bg-gray-50 border-b-[3px] border-transparent font-google-sans">
+            <span class="material-symbols-outlined text-[20px]">info</span>
+            Updates
+        </button>
+    </div>
+    {% endif %}
+
+    <!-- Toolbar -->
+    <div class="flex items-center h-12 px-4 border-b border-gray-200">
+        <div class="flex items-center gap-1">
+            <div class="flex items-center border border-gray-300 rounded hover:shadow-sm">
+                <input type="checkbox" class="ml-2 rounded" id="select-all">
+                <button class="px-0.5 py-1 hover:bg-gray-100" title="Select">
+                    <span class="material-symbols-outlined text-[18px] text-gray-600">arrow_drop_down</span>
+                </button>
+            </div>
+            <button class="p-2 rounded-full hover:bg-gray-100 ml-1" title="Refresh">
+                <span class="material-symbols-outlined text-[20px] text-gray-600">refresh</span>
+            </button>
+            <button class="p-2 rounded-full hover:bg-gray-100" title="More">
+                <span class="material-symbols-outlined text-[20px] text-gray-600">more_vert</span>
+            </button>
+        </div>
+        <div class="flex-1 text-right text-xs text-gray-500">
+            {% if messages %}1–{{ messages|length }} of {{ total_count }}{% endif %}
+        </div>
+    </div>
+
+    <!-- Message list -->
+    {% if not messages %}
+    <div class="flex flex-col items-center justify-center py-20 text-gray-400">
+        <svg class="w-16 h-16 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4"/>
+        </svg>
+        <p class="text-lg">No messages</p>
+    </div>
+    {% else %}
+    <div class="divide-y divide-gray-100">
+        {% for msg in messages %}
+        <div class="email-row group flex items-center h-10 px-4 cursor-pointer {{ 'unread' if not msg.is_read else '' }}"
+             onclick="window.location='/thread/{{ msg.thread_id }}'">
+            <div class="flex items-center gap-3 w-8">
+                <input type="checkbox" class="rounded" onclick="event.stopPropagation()">
+            </div>
+            <div class="w-6">
+                <form action="/star/{{ msg.id }}" method="post" onclick="event.stopPropagation()">
+                    <button type="submit" class="hover:text-yellow-500">
+                        {% if msg.is_starred %}
+                        <svg class="w-5 h-5 text-yellow-400" fill="currentColor" viewBox="0 0 24 24">
+                            <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>
+                        </svg>
+                        {% else %}
+                        <svg class="w-5 h-5 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z"/>
+                        </svg>
+                        {% endif %}
+                    </button>
+                </form>
+            </div>
+            <div class="w-48 truncate px-2 {{ 'text-gray-900' if not msg.is_read else 'text-gray-600' }}">
+                {{ msg.sender.split('<')[0].strip() or msg.sender }}
+            </div>
+            <div class="flex-1 truncate px-2">
+                <span class="{{ 'text-gray-900' if not msg.is_read else 'text-gray-600' }}">{{ msg.subject or '(no subject)' }}</span>
+                <span class="text-gray-400"> - {{ msg.snippet }}</span>
+            </div>
+            <div class="w-24 text-right text-xs text-gray-500 flex-shrink-0">
+                {{ msg.internal_date.strftime('%b %d') if msg.internal_date else '' }}
+            </div>
+            <div class="w-8 flex justify-end" onclick="event.stopPropagation()">
+                <form action="/trash/{{ msg.id }}" method="post">
+                    <button type="submit" class="p-1 rounded-full hover:bg-gray-200 hidden group-hover:block" title="Delete">
+                        <svg class="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                        </svg>
+                    </button>
+                </form>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+</div>
+{% endblock %}
