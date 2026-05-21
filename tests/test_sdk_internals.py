@@ -147,6 +147,21 @@ class TestResolveAgentEnv:
         assert result["LLM_MODEL"] == "gemini/gemini-3.1-flash-lite-preview"
         assert result["LLM_API_KEY"] == "test-gemini-key"
 
+    def test_openhands_google_gemini_model_strips_models_dev_provider(
+        self, monkeypatch
+    ):
+        """Guards the v0.5 stress failure where OpenHands received
+        gemini/google/gemini-* and LiteLLM queried models/google/gemini-*.
+        """
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        result = self._resolve(
+            agent="openhands",
+            model="google/gemini-3.1-flash-lite-preview",
+            agent_env={"GEMINI_API_KEY": "test-gemini-key"},
+        )
+        assert result["LLM_MODEL"] == "gemini/gemini-3.1-flash-lite-preview"
+        assert result["LLM_API_KEY"] == "test-gemini-key"
+
     def test_openhands_explicit_llm_model_is_preserved(self, monkeypatch):
         """User-provided LLM_MODEL must win over derived normalization."""
         monkeypatch.delenv("GEMINI_API_KEY", raising=False)

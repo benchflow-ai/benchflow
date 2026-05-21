@@ -52,6 +52,8 @@ def _normalize_openhands_model(model: str) -> str:
 
     if model.startswith(("gemini/", "vertex_ai/", "openhands/")):
         return model
+    if model.startswith("google/gemini"):
+        return f"gemini/{model.split('/', 1)[1]}"
     stripped = strip_provider_prefix(model)
     lower = model.lower()
     if is_vertex_model(model) and "gemini" in lower:
