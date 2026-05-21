@@ -285,8 +285,9 @@ async def execute_prompts(
                 acp_client, session, prompt, timeout, idle_timeout
             )
         session.mark_prompt_end()
+        # SDK ``PromptResponse.stop_reason`` is a plain string (e.g. "end_turn").
         logger.info(
-            f"  → {prompt_result.stop_reason.value}, "
+            f"  → {prompt_result.stop_reason}, "
             f"{len(session.tool_calls)} total tool calls"
         )
     trajectory = _capture_session_trajectory(session)

@@ -7,10 +7,17 @@ from .session import ACPSession
 from .transport import StdioTransport, Transport
 from .types import (
     ACP_PROTOCOL_VERSION,
+    AuthCapabilities,
+    ClientCapabilities,
+    ClientInfo,
+    FsCapabilities,
     InitializeParams,
     InitializeResult,
     NewSessionParams,
+    PromptParams,
     PromptResult,
+    StopReason,
+    TextContent,
 )
 
 logger = logging.getLogger(__name__)
@@ -186,9 +193,17 @@ class ACPClient:
 
     async def initialize(self) -> InitializeResult:
         """Send initialize handshake."""
-        params = InitializeParams()
+        params = InitializeParams(
+            protocol_version=ACP_PROTOCOL_VERSION,
+            client_capabilities=ClientCapabilities(
+                fs=FsCapabilities(read_text_file=True, write_text_file=True),
+                terminal=True,
+                auth=AuthCapabilities(),
+            ),
+            client_info=ClientInfo(name="benchflow", version="2.0.0"),
+        )
         result = await self._send_request(
-            "initialize", params.model_dump(by_alias=True)
+            "initialize", params.model_dump(by_alias=True, exclude_none=True)
         )
         self._initialize_result = InitializeResult.model_validate(result)
         negotiated = self._initialize_result.protocol_version
@@ -202,9 +217,9 @@ class ACPClient:
 
     async def session_new(self, cwd: str = "/app") -> ACPSession:
         """Create a new agent session."""
-        params = NewSessionParams(cwd=cwd)
+        params = NewSessionParams(cwd=cwd, mcp_servers=[])
         result = await self._send_request(
-            "session/new", params.model_dump(by_alias=True)
+            "session/new", params.model_dump(by_alias=True, exclude_none=True)
         )
         session_id = result.get("sessionId", "default")
         self._session = ACPSession(session_id)
@@ -244,13 +259,18 @@ class ACPClient:
         """Send a prompt to the agent and wait for completion."""
         if not self._session:
             raise RuntimeError("No active session — call session_new() first")
-        params = {
-            "sessionId": self._session.session_id,
-            "prompt": [{"type": "text", "text": text}],
-        }
-        result = await self._send_request("session/prompt", params)
+        params = PromptParams(
+            session_id=self._session.session_id,
+            prompt=[TextContent(type="text", text=text)],
+        )
+        result = await self._send_request(
+            "session/prompt", params.model_dump(by_alias=True, exclude_none=True)
+        )
         prompt_result = PromptResult.model_validate(result)
-        self._session.stop_reason = prompt_result.stop_reason
+        # The SDK exposes ``stop_reason`` as a plain string; coerce it to the
+        # vendored ``StopReason`` enum so consumers keep ``.value`` / member
+        # comparisons working.
+        self._session.stop_reason = StopReason(prompt_result.stop_reason)
         return prompt_result
 
     async def cancel(self) -> None:

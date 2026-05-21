@@ -21,11 +21,32 @@ MOCK_AGENT_INTERLEAVED = str(
 
 class TestACPClient:
     def test_initialize_params_send_current_protocol_version(self) -> None:
-        """The client must advertise ACP protocol version 1, not 0."""
-        from benchflow.acp.types import ACP_PROTOCOL_VERSION, InitializeParams
+        """The client must advertise ACP protocol version 1, not 0.
+
+        ``ACP_PROTOCOL_VERSION`` is sourced from the official SDK's
+        ``acp.meta.PROTOCOL_VERSION``; the SDK-backed ``InitializeParams``
+        (``acp.schema.InitializeRequest``) carries it on the wire.
+        """
+        from benchflow.acp.types import (
+            ACP_PROTOCOL_VERSION,
+            AuthCapabilities,
+            ClientCapabilities,
+            ClientInfo,
+            FsCapabilities,
+            InitializeParams,
+        )
 
         assert ACP_PROTOCOL_VERSION == 1
-        wire = InitializeParams().model_dump(by_alias=True)
+        params = InitializeParams(
+            protocol_version=ACP_PROTOCOL_VERSION,
+            client_capabilities=ClientCapabilities(
+                fs=FsCapabilities(read_text_file=True, write_text_file=True),
+                terminal=True,
+                auth=AuthCapabilities(),
+            ),
+            client_info=ClientInfo(name="benchflow", version="2.0.0"),
+        )
+        wire = params.model_dump(by_alias=True, exclude_none=True)
         assert wire["protocolVersion"] == 1
 
     @pytest.mark.asyncio
