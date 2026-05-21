@@ -115,6 +115,29 @@ def _docker_host_address() -> str:
     return "host.docker.internal"
 
 
+# Sandbox environments where the agent runs on the same host as the proxy
+# (the host's loopback / docker bridge is reachable from the agent process).
+_LOCAL_REACHABLE_ENVIRONMENTS = {"docker", "local", "host", ""}
+
+
+def host_proxy_reachable_from_agent(environment: str) -> bool:
+    """True when a host-side proxy bound to the host can be reached by the agent.
+
+    The host telemetry/Bedrock proxy binds to the *host* machine. An agent
+    only reaches it when it shares the host's network namespace:
+
+    - ``docker``: the container reaches the host via the docker bridge /
+      ``host.docker.internal``.
+    - ``local``/``host``: the agent runs directly on the host.
+
+    Remote cloud sandboxes (e.g. ``daytona``) run the agent on a different
+    machine. ``127.0.0.1`` there is the *sandbox's* own loopback, and the
+    Daytona SSH gateway rejects ``ssh -R`` reverse tunnels, so there is no
+    address that routes back to the host proxy.
+    """
+    return environment in _LOCAL_REACHABLE_ENVIRONMENTS
+
+
 def _bedrock_proxy_command(
     *,
     environment: str,
@@ -259,9 +282,27 @@ async def ensure_usage_proxy_runtime(
     environment: str,
     session_id: str = "",
 ) -> tuple[dict[str, str], ProviderRuntime | None]:
-    """Start the host-side usage proxy and wire env vars to it."""
+    """Start the host-side usage proxy and wire env vars to it.
+
+    For remote cloud sandboxes (e.g. Daytona) the host proxy is unreachable
+    from the agent — it runs on a different machine and there is no reverse
+    tunnel back to the host. In that case the proxy is skipped: the agent
+    talks to the provider directly with its real key and host-side usage
+    telemetry reports ``usage_source: "unavailable"``.
+    """
     if agent == "oracle":
         return agent_env, runtime
+    if not host_proxy_reachable_from_agent(environment):
+        if runtime is not None:
+            await stop_provider_runtime(runtime)
+        logger.info(
+            "Skipping host-side usage telemetry proxy: the '%s' sandbox runs "
+            "the agent on a remote host unreachable from the host proxy; the "
+            "agent will call the provider directly and usage telemetry will "
+            "be unavailable for this run.",
+            environment or "unknown",
+        )
+        return agent_env, None
     target = _resolve_usage_proxy_target(agent, agent_env, model)
     if not target:
         return agent_env, runtime
