@@ -58,6 +58,13 @@ _MODELSDEV_PROVIDER_HEURISTICS: list[tuple[str, str]] = [
 def _format_acp_model(model: str, agent: str) -> str:
     """Format a model ID for ACP session/set_model based on agent requirements.
 
+    NOTE on "provider/model": this is NOT a non-standard ACP method. BenchFlow
+    only ever sends the standard ``session/set_model`` request (see
+    ``ACPClient.set_model``). ``provider/model`` is one of three *modelId string
+    formats* (``acp_model_format`` in the agent registry) describing how the
+    ``modelId`` argument of that standard call must be shaped for a given agent.
+    It deliberately does not appear in ``acp.meta.AGENT_METHODS``.
+
     Most agents expect a bare model name (e.g. "claude-sonnet-4-6").
     Agents with acp_model_format="provider/model" (e.g. opencode) need the
     models.dev provider prefix (e.g. "google/gemini-3.1-pro-preview").
@@ -285,8 +292,9 @@ async def execute_prompts(
                 acp_client, session, prompt, timeout, idle_timeout
             )
         session.mark_prompt_end()
+        # SDK ``PromptResponse.stop_reason`` is a plain string (e.g. "end_turn").
         logger.info(
-            f"  → {prompt_result.stop_reason.value}, "
+            f"  → {prompt_result.stop_reason}, "
             f"{len(session.tool_calls)} total tool calls"
         )
     trajectory = _capture_session_trajectory(session)
