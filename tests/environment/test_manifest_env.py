@@ -3,7 +3,7 @@
 ManifestEnvironment runs the in-sandbox topology: it starts the manifest's
 services and health-checks them via sandbox.exec. One manifest serves a
 whole benchmark — per-task images carrying only a subset of the services
-are handled by `command -v` detection.
+are handled by entry-point (`<binary> --help`) detection.
 """
 
 import pytest
@@ -73,8 +73,9 @@ paths = ["/data/gmail.db", "/data/gcal.db"]
 class FakeSandbox:
     """Minimal Sandbox stand-in recording exec calls.
 
-    ``absent_binaries`` — `command -v` returns non-zero for these (the
-    binary is not in this per-task image).
+    ``absent_binaries`` — the `<binary> --help` detection probe returns
+    non-zero for these: the service's package is not installed in this
+    per-task image (a bare PATH stub, or genuinely missing).
     ``fail_health_for`` — the curl health-check returns non-zero for any
     command mentioning this substring.
     """
@@ -95,8 +96,8 @@ class FakeSandbox:
         self, cmd: str, *, user: str = "root", timeout_sec: int = 30
     ) -> ExecResult:
         self.exec_calls.append(cmd)
-        if cmd.startswith("command -v "):
-            binary = cmd.split()[2]
+        if "--help" in cmd:  # the service-detection probe: `<binary> --help`
+            binary = cmd.split()[0]
             rc = 1 if binary in self._absent else 0
             return ExecResult(return_code=rc, stdout="", stderr="")
         if "curl" in cmd and self._fail_health_for and self._fail_health_for in cmd:
@@ -125,6 +126,25 @@ async def test_provision_skips_absent_service_binary():
     starts = [c for c in sandbox.exec_calls if "serve" in c]
     assert len(starts) == 1
     assert "claw-gmail" in starts[0]
+
+
+async def test_provision_detects_services_by_running_the_entry_point():
+    """Detection probes `<binary> --help`, never bare `command -v`.
+
+    Regression: smolclaws-style base images ship a console-script *stub* for
+    every claw-* service, so `command -v` over-detects a service whose package
+    a per-task image never installed — it then starts a crashing process and
+    the readiness gate hangs. The probe must run the entry point.
+    """
+    sandbox = FakeSandbox(absent_binaries={"claw-gcal"})  # gcal: PATH stub, no pkg
+    env = ManifestEnvironment(CLAWS, sandbox=sandbox)
+    await env.provision(ctx=None)
+    assert any("claw-gmail --help" in c for c in sandbox.exec_calls)
+    assert not any(c.startswith("command -v ") for c in sandbox.exec_calls)
+    # the gcal stub is skipped — only the real gmail service starts
+    assert [c for c in sandbox.exec_calls if "serve" in c] == [
+        c for c in sandbox.exec_calls if "serve" in c and "claw-gmail" in c
+    ]
 
 
 async def test_provision_returns_handle_with_all_declared_endpoints():
