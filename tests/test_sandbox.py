@@ -156,3 +156,62 @@ class TestDockerExecEnvSecrecy:
         assert "-e" not in cmd
         for arg in cmd:
             assert "sk-leak" not in arg
+
+    def test_umask_scoped_to_env_file_write(self):
+        """Guards bug I from PR #323: `umask 077` must not leak into the command.
+
+        The restrictive umask that protects the temp env file is wrapped in a
+        subshell `(umask 077 && ...)`, so the user's command runs under the
+        default umask. Before the fix, `umask 077` ran at the top of the chain
+        and persisted, making files the command created mode-0600.
+        """
+        from benchflow.sandbox.docker import DockerSandbox
+
+        wrapped = DockerSandbox._wrap_command_with_env_file(
+            {"FOO": "bar"}, "the-user-command"
+        )
+        # The umask is scoped to a `( ... )` subshell containing the env-file
+        # write — it is not a bare top-level statement that bleeds through.
+        assert "(umask 077 &&" in wrapped
+        # `umask 077` only ever appears immediately inside the `(` subshell.
+        assert wrapped.count("umask 077") == 1
+        assert "(umask 077" in wrapped
+        # The subshell closes before `set -a`/source/user command run, so the
+        # umask does not affect anything after it.
+        post_subshell = wrapped.split(")", 1)[1]
+        assert "umask" not in post_subshell
+        assert post_subshell.lstrip().startswith("&& set -a")
+        assert wrapped.endswith("the-user-command")
+
+    def test_non_identifier_env_keys_do_not_break_exec(self):
+        """Guards bug H from PR #323: non-identifier env keys must not abort.
+
+        Env keys that are valid process env names but not valid shell
+        identifiers (e.g. containing `.` or `-`) cannot be assigned via
+        `export NAME=...`. Emitting them would make `. {env_path}` fail and the
+        user command would never run, so they are skipped — valid keys still
+        flow through and the wrapped command stays intact.
+        """
+        import base64
+
+        from benchflow.sandbox.docker import DockerSandbox
+
+        env = {
+            "VALID_KEY": "keep-me",
+            "dotted.key": "drop-me",
+            "dashed-key": "drop-me-too",
+        }
+        wrapped = DockerSandbox._wrap_command_with_env_file(env, "run-it")
+
+        # Decode the base64 env body that gets sourced inside the container.
+        token = wrapped.split("printf %s ", 1)[1].split(" |", 1)[0]
+        encoded = token.strip("'")
+        body = base64.b64decode(encoded).decode()
+
+        # The valid identifier is exported; non-identifier keys are skipped so
+        # sourcing the file cannot fail.
+        assert "export VALID_KEY=" in body
+        assert "dotted.key" not in body
+        assert "dashed-key" not in body
+        # The user command is still wrapped and reachable.
+        assert wrapped.endswith("run-it")

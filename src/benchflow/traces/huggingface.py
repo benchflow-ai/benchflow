@@ -160,10 +160,14 @@ def _download_hf_dataset(
                     filename=filename,
                     repo_type="dataset",
                 )
+                # Convert parquet to JSONL. The conversion is kept inside the
+                # try/fallback scope: if a parquet file downloads but pyarrow
+                # is missing (or decoding fails), the failure must fall through
+                # to the JSONL candidates / `_download_via_api` rather than
+                # propagating immediately (regression guarded — PR #323).
+                _parquet_to_jsonl(Path(downloaded), out_path, max_rows=max_rows)
             except Exception:
                 continue
-            # Convert parquet to JSONL
-            _parquet_to_jsonl(Path(downloaded), out_path, max_rows=max_rows)
             return out_path
 
         # Try a JSONL data file for the split
