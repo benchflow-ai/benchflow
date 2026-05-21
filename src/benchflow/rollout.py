@@ -421,7 +421,7 @@ def _build_rollout_result(
     cost_usd: float | None = None,
     usage_source: str = "unavailable",
     price_source: str | None = None,
-    evolved_skills: dict[str, Any] | None = None,
+    evolved_skills: dict[str, str] | None = None,
 ) -> RolloutResult:
     """Build RolloutResult and write result.json, timing.json, prompts.json, trajectory."""
     finished_at = datetime.now()
@@ -889,7 +889,7 @@ class Rollout:
 
         # Populated by _export_generated_skills() — the skills the agent
         # generated/evolved, captured for a continual-learning LearnerStore.
-        self._evolved_skills: dict[str, Any] | None = None
+        self._evolved_skills: dict[str, str] | None = None
 
     @classmethod
     async def create(cls, config: RolloutConfig) -> Rollout:

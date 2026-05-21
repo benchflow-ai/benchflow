@@ -263,8 +263,8 @@ async def test_sequential_shared_injects_evolved_skills_into_next_rollout(tmp_pa
 
 @pytest.mark.asyncio
 async def test_sequential_shared_records_memory_delta_on_a_node(tmp_path):
-    """Each rollout records before/after/expected skills on a tree node, so
-    the Memory-space scorer has its writer."""
+    """Each rollout records before/after skills on a tree node, so the
+    Memory-space scorer has its writer."""
     from benchflow.rewards.memory_scorer import MEMORY_STATE_KEY, MemoryScorer
 
     job = _make_job(tmp_path, n_tasks=2, job_mode="sequential-shared")
@@ -285,9 +285,12 @@ async def test_sequential_shared_records_memory_delta_on_a_node(tmp_path):
     first = job.learner_nodes[0].state[MEMORY_STATE_KEY]
     assert first["before"] == {}
     assert first["after"] == {"skill-1": "body-1"}
-    assert first["expected"] == ["skill-1"]
+    # No `expected` answer-key is recorded — it must not be derived from the
+    # agent's own diff (that would make the scorer a tautology).
+    assert "expected" not in first
 
-    # The recorded delta is scorable by the MemoryScorer end-to-end.
+    # The recorded delta is scorable by the MemoryScorer end-to-end. With no
+    # fixture the scorer grades activity: a non-empty skill change scores 1.0.
     event = await MemoryScorer().score(job.learner_nodes[0])
     assert event.space == "memory"
     assert event.reward == 1.0
@@ -374,3 +377,6 @@ async def test_run_task_raising_is_caught_in_sequential_shared(tmp_path):
     assert result.passed == 2
     # The two scored rollouts each stamped a generation; the crash did not.
     assert job.learner_store.generation == 2
+    # The crashed rollout is skipped before _commit_learner_generation, so it
+    # records no node — only the two completed rollouts do.
+    assert len(job.learner_nodes) == 2
