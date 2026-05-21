@@ -13,6 +13,7 @@ from typing import Any
 
 from benchflow._utils.scoring import (
     classify_error,
+    classify_result,
     classify_verifier_error,
     pass_rate,
     pass_rate_excl_errors,
@@ -42,16 +43,29 @@ class TaskMetrics:
     usage_source: str = "unavailable"
 
     @property
+    def _bucket(self) -> str:
+        """Terminal bucket via the shared classifier (see _utils.scoring).
+
+        Guarantees passed/failed/errored/verifier_errored are disjoint and
+        exhaustive — the same classification used by ``Evaluation.run()``.
+        """
+        return classify_result(
+            reward=self.reward,
+            error=self.error,
+            verifier_error=self.verifier_error,
+        )
+
+    @property
     def passed(self) -> bool:
-        return self.reward == 1.0
+        return self._bucket == "passed"
 
     @property
     def failed(self) -> bool:
-        return self.reward is not None and self.reward != 1.0
+        return self._bucket == "failed"
 
     @property
     def errored(self) -> bool:
-        return self.reward is None and self.error is not None
+        return self._bucket == "errored"
 
     @property
     def verifier_errored(self) -> bool:
@@ -60,18 +74,12 @@ class TaskMetrics:
         Disjoint from `errored`: a task with both `error` and `verifier_error`
         is classified as `errored` only, so the count buckets never overlap.
         """
-        return (
-            self.reward is None
-            and self.verifier_error is not None
-            and self.error is None
-        )
+        return self._bucket == "verifier_errored"
 
     @property
     def completed(self) -> bool:
         """True when task reached a terminal non-error reward state."""
-        return (
-            not self.errored and not self.verifier_errored and self.reward is not None
-        )
+        return self._bucket in ("passed", "failed")
 
 
 @dataclass

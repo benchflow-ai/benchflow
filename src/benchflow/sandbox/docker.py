@@ -498,8 +498,10 @@ class DockerSandbox(BaseSandbox):
 
         The env vars are base64-encoded into the command string (not visible
         as individual ``KEY=VALUE`` args in ``ps aux``), decoded to a
-        mode-0600 file inside the container, sourced, then deleted before the
-        real command runs.
+        mode-0600 file inside the container, and sourced before the real
+        command runs. A ``trap ... EXIT`` deletes the temp file
+        unconditionally — even if the decode/source step fails — so a failed
+        ``&&`` chain can never leave the env file behind.
         """
         env_body = "".join(f"export {k}={shlex.quote(v)}\n" for k, v in env.items())
         encoded = base64.b64encode(env_body.encode()).decode()
@@ -507,9 +509,10 @@ class DockerSandbox(BaseSandbox):
         # clobber each other's env file.
         env_path = f"/tmp/.benchflow_exec_env_{uuid.uuid4().hex[:16]}"
         return (
+            f"trap 'rm -f {env_path}' EXIT && "
             f"umask 077 && printf %s {shlex.quote(encoded)} | base64 -d > "
             f"{env_path} && set -a && . {env_path} && set +a && "
-            f"rm -f {env_path} && {command}"
+            f"{command}"
         )
 
     async def attach(self) -> None:

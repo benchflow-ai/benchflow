@@ -104,6 +104,18 @@ class BaseSandbox(ABC):
     def _uses_compose(self) -> bool:
         return False
 
+    @property
+    def is_mounted(self) -> bool:
+        """Whether the rollout dir is host-bind-mounted into the sandbox.
+
+        When ``True`` the agent container's verifier output is already visible
+        on the host, so the verifier can skip a ``download_dir`` round-trip.
+        Backends that run remotely (Daytona, Modal) have no bind mount and
+        override this to ``False``. The default is ``False`` so non-mounted
+        backends are the safe assumption.
+        """
+        return False
+
     def _maybe_resolve_task_env(self) -> None:
         if self.task_env_config.env and not self._uses_compose:
             resolved = resolve_env_vars(self.task_env_config.env)

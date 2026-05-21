@@ -66,16 +66,24 @@ def _cache_dir() -> Path:
 def _pick_split_file(repo_files: list[str], split: str, suffix: str) -> str | None:
     """Pick the repo file matching *split* and *suffix*, if any.
 
-    Matches files under ``data/`` whose basename starts with the split name
-    (e.g. ``data/test-00000-of-00001.parquet`` or ``data/test.jsonl`` for
-    ``split="test"``). Returns ``None`` when no file matches so the caller
-    can fall back to constructed filename candidates.
+    Matches either the exact ``{split}{suffix}`` basename (e.g.
+    ``data/test.jsonl`` for ``split="test"``) or the HF sharded-parquet
+    convention ``{split}-NNNNN-of-NNNNN`` (e.g.
+    ``data/test-00000-of-00001.parquet``). The sharded match is anchored on
+    ``\\d+-of-\\d+`` so a sibling *subset* such as
+    ``test-small-00000-of-00001.parquet`` is not mistaken for ``split="test"``.
+    Returns ``None`` when no file matches so the caller can fall back to
+    constructed filename candidates.
     """
+    sharded_re = re.compile(rf"^{re.escape(split)}-\d+-of-\d+")
     candidates = [
         f
         for f in repo_files
         if f.endswith(suffix)
-        and (Path(f).name == f"{split}{suffix}" or Path(f).name.startswith(f"{split}-"))
+        and (
+            Path(f).name == f"{split}{suffix}"
+            or sharded_re.match(Path(f).name) is not None
+        )
     ]
     if not candidates:
         return None

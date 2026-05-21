@@ -147,7 +147,7 @@ class Verifier:
         service so the verifier can inspect *target-side* state — RCE markers,
         DB modifications — instead of only the agent workspace (#248).
         """
-        service = getattr(self._task.config.verifier, "service", "main")
+        service = self._task.config.verifier.service
         try:
             await self._sandbox.upload_dir(
                 source_dir=self._task.paths.tests_dir,
@@ -202,7 +202,7 @@ class Verifier:
         # Download verifier output if it is not host-mounted. Only the agent's
         # ``main`` container has the rollout dir bind-mounted; a target service
         # never does, so target-side rewards (#248) are always downloaded.
-        is_mounted = service == "main" and getattr(self._sandbox, "is_mounted", False)
+        is_mounted = service == "main" and self._sandbox.is_mounted
         if not is_mounted:
             try:
                 await self._sandbox.download_dir(
