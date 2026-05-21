@@ -15,6 +15,8 @@ import json
 import logging
 import os
 import shlex
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -54,6 +56,27 @@ class DownloadVerifierDirError(Exception):
 
 class RubricNotFoundError(Exception):
     """Raised when an llm-judge verifier cannot locate its rubric file."""
+
+
+@contextmanager
+def _scoped_env(env: Mapping[str, str]) -> Iterator[None]:
+    """Temporarily apply *env* to ``os.environ``, restoring prior state on exit.
+
+    Keys not already set are removed afterwards; keys that existed are restored
+    to their original value. This keeps the judge's API keys from leaking into
+    the host process for subsequent rollouts.
+    """
+    previous: dict[str, str | None] = {key: os.environ.get(key) for key in env}
+    try:
+        for key, value in env.items():
+            os.environ[key] = value
+        yield
+    finally:
+        for key, prior in previous.items():
+            if prior is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = prior
 
 
 class Verifier:
@@ -107,8 +130,7 @@ class Verifier:
 
     async def verify(self) -> VerifierResult:
         """Run the configured verifier and return the reward result."""
-        verifier_type = getattr(self._task.config.verifier, "type", "test-script")
-        if verifier_type == "llm-judge":
+        if self._task.config.verifier.type == "llm-judge":
             return await self._verify_llm_judge()
         return await self._verify_test_script()
 
@@ -200,7 +222,7 @@ class Verifier:
         judge = self._task.config.verifier.judge
         rubric_path = Path(judge.rubric_path)
         if not rubric_path.is_absolute():
-            rubric_path = Path(self._task.task_dir) / rubric_path
+            rubric_path = Path(self._task.paths.task_dir) / rubric_path
         if not rubric_path.exists():
             raise RubricNotFoundError(
                 f"llm-judge rubric not found at {rubric_path}. Set "
@@ -233,24 +255,25 @@ class Verifier:
 
         judge = self._task.config.verifier.judge
 
-        # API keys for the judge come from [verifier.env]; export them so the
-        # provider SDKs (anthropic / openai / google) pick them up.
+        # API keys for the judge come from [verifier.env]; scope them to the
+        # judge call so the provider SDKs (anthropic / openai / google) pick
+        # them up without permanently polluting the host process env.
+        judge_env: dict[str, str] = {}
         if self._task.config.verifier.env:
-            resolved = resolve_env_vars(self._task.config.verifier.env)
-            for key, value in resolved.items():
-                os.environ.setdefault(key, value)
+            judge_env = resolve_env_vars(self._task.config.verifier.env)
 
         rubric_path = self._resolve_rubric_path()
         deliverables_dir = await self._download_deliverables()
 
-        context = judge.context or getattr(self._task, "instruction", "") or ""
+        context = judge.context or self._task.instruction or ""
 
         reward_func = LLMJudgeRewardFunc(
             prompt=context,
             rubric_path=rubric_path,
             judge_model=judge.model,
         )
-        score = await reward_func.score(deliverables_dir)
+        with _scoped_env(judge_env):
+            score = await reward_func.score(deliverables_dir)
 
         self._logger.info(
             "llm-judge verifier: %d criteria → reward %.4f",

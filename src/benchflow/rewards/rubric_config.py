@@ -148,12 +148,18 @@ def load_rubric_json(path: Path) -> RubricConfig:
     judge = _parse_judge(data.get("judge", {}))
     scoring = _parse_scoring(data.get("scoring", {}))
     criteria: list[Criterion] = []
-    for raw in data.get("criteria", []):
+    for idx, raw in enumerate(data.get("criteria", [])):
+        description = (
+            raw.get("match_criteria") or raw.get("description") or raw.get("title")
+        )
+        if not description:
+            raise ValueError(
+                f"Rubric criterion #{idx} in {path} has no description: set one "
+                f"of 'match_criteria', 'description', or 'title'."
+            )
         criteria.append(
             Criterion(
-                description=raw.get("match_criteria")
-                or raw.get("description")
-                or raw.get("title", ""),
+                description=description,
                 type=raw.get("type", "binary"),
                 name=raw.get("id") or raw.get("name") or raw.get("title"),
                 points=raw.get("points", 5),

@@ -220,13 +220,24 @@ class TestLLMJudgeVerifier:
 
     @patch("benchflow.rewards.llm.call_judge", new_callable=AsyncMock)
     @pytest.mark.asyncio
-    async def test_judge_env_exported(
+    async def test_judge_env_scoped_to_judge_call(
         self, mock_judge: AsyncMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """#270: [verifier.env] keys are exported for the judge SDK."""
-        mock_judge.return_value = _MOCK_PASS
+        """#270: [verifier.env] keys are applied during the judge call but
+        not leaked into the host process afterwards."""
+        import os
+
         monkeypatch.setenv("MY_JUDGE_KEY", "secret-123")
         monkeypatch.delenv("RESOLVED_KEY", raising=False)
+
+        seen_during_call: dict[str, str | None] = {}
+
+        async def capture_env(*_args: object, **_kwargs: object) -> str:
+            seen_during_call["RESOLVED_KEY"] = os.environ.get("RESOLVED_KEY")
+            return _MOCK_PASS
+
+        mock_judge.side_effect = capture_env
+
         toml = _judge_toml() + '\n[verifier.env]\nRESOLVED_KEY = "${MY_JUDGE_KEY}"\n'
         task = _make_task(tmp_path, toml)
         (task.task_dir / "tests").mkdir()
@@ -237,10 +248,70 @@ class TestLLMJudgeVerifier:
         rollout_paths = RolloutPaths(tmp_path / "rollout")
         rollout_paths.mkdir()
 
+        await Verifier(task, rollout_paths, sandbox).verify()
+
+        # applied for the duration of the judge call ...
+        assert seen_during_call["RESOLVED_KEY"] == "secret-123"
+        # ... but not leaked into the host env afterwards.
+        assert os.environ.get("RESOLVED_KEY") is None
+
+    @patch("benchflow.rewards.llm.call_judge", new_callable=AsyncMock)
+    @pytest.mark.asyncio
+    async def test_judge_env_restores_prior_value(
+        self, mock_judge: AsyncMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """#270: a [verifier.env] key that already exists is restored to its
+        original value after the judge call."""
         import os
 
+        mock_judge.return_value = _MOCK_PASS
+        monkeypatch.setenv("MY_JUDGE_KEY", "secret-123")
+        monkeypatch.setenv("RESOLVED_KEY", "preexisting")
+
+        toml = _judge_toml() + '\n[verifier.env]\nRESOLVED_KEY = "${MY_JUDGE_KEY}"\n'
+        task = _make_task(tmp_path, toml)
+        (task.task_dir / "tests").mkdir()
+        (task.task_dir / "tests" / "rubric.json").write_text(
+            json.dumps({"criteria": [{"id": "c1", "match_criteria": "ok"}]})
+        )
+        sandbox = _make_sandbox({"out.txt": "output"})
+        rollout_paths = RolloutPaths(tmp_path / "rollout")
+        rollout_paths.mkdir()
+
         await Verifier(task, rollout_paths, sandbox).verify()
-        assert os.environ.get("RESOLVED_KEY") == "secret-123"
+        assert os.environ.get("RESOLVED_KEY") == "preexisting"
+
+    @patch("benchflow.rewards.llm.call_judge", new_callable=AsyncMock)
+    @pytest.mark.asyncio
+    async def test_judge_model_override_reaches_call_judge(
+        self, mock_judge: AsyncMock, tmp_path: Path
+    ) -> None:
+        """#270: the [verifier.judge].model declared in task.toml is the model
+        actually passed to call_judge."""
+        mock_judge.return_value = _MOCK_PASS
+        task = _make_task(
+            tmp_path,
+            _judge_toml().replace("claude-haiku-4-5", "claude-haiku-4-5-20251001"),
+        )
+        (task.task_dir / "tests").mkdir()
+        # Rubric declares a *different* model — the task.toml override must win.
+        (task.task_dir / "tests" / "rubric.json").write_text(
+            json.dumps(
+                {
+                    "judge": {"model": "claude-sonnet-4-6"},
+                    "criteria": [{"id": "c1", "match_criteria": "ok"}],
+                }
+            )
+        )
+        sandbox = _make_sandbox({"out.txt": "output"})
+        rollout_paths = RolloutPaths(tmp_path / "rollout")
+        rollout_paths.mkdir()
+
+        await Verifier(task, rollout_paths, sandbox).verify()
+
+        mock_judge.assert_awaited()
+        assert mock_judge.await_args is not None
+        assert mock_judge.await_args.args[0] == "claude-haiku-4-5-20251001"
 
     @patch("benchflow.rewards.llm.call_judge", new_callable=AsyncMock)
     @pytest.mark.asyncio

@@ -165,14 +165,24 @@ class LLMJudgeRewardFunc:
         judge_model: str | None = None,
     ) -> None:
         self.prompt = prompt
+        # ``judge_model`` (an explicit ``[verifier.judge].model`` from
+        # ``task.toml``) takes precedence over ``model`` and over any model
+        # declared inside a rubric file. ``self.model`` is the single resolved
+        # default; rubric files supply their own default via ``_resolve_model``.
         self.model = judge_model or model
+        self._explicit_model = judge_model
         self.mode = mode
         self._rubric_path = rubric_path
         self._inline_criteria = criteria
         self._events: list[RewardEvent] = []
-        # An explicit judge model overrides the model declared inside a rubric
-        # file — so a task can configure the judge per ``task.toml`` (#270).
-        self._model_override = judge_model
+
+    def _resolve_model(self, rubric_default: str) -> str:
+        """Resolve the judge model for a rubric.
+
+        An explicit ``judge_model`` (from ``[verifier.judge].model``) wins;
+        otherwise the rubric file's own model is used.
+        """
+        return self._explicit_model or rubric_default
 
     @property
     def events(self) -> list[RewardEvent]:
@@ -254,9 +264,7 @@ class LLMJudgeRewardFunc:
         from benchflow.rewards.file_readers import find_deliverables
         from benchflow.rewards.llm import call_judge, parse_verdict
 
-        # An explicit judge model (e.g. from [verifier.judge].model) overrides
-        # the model declared inside the rubric file.
-        model = self._model_override or rubric.judge.model
+        model = self._resolve_model(rubric.judge.model)
         deliverables = find_deliverables(rollout_dir)
 
         # Also check common subdirectories
