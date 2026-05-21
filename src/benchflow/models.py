@@ -128,7 +128,7 @@ class RolloutResult:
         partial_trajectory: bool = False,
         trajectory_source: TrajectorySource | None = None,
         reward_events: list[RewardEvent] | None = None,
-        evolved_skills: dict[str, Any] | None = None,
+        evolved_skills: dict[str, str] | None = None,
         started_at: datetime | None = None,
         finished_at: datetime | None = None,
     ):

@@ -551,7 +551,13 @@ class Evaluation:
     async def _run_single_task_legacy(
         self, task_dir: Path, cfg: EvaluationConfig
     ) -> RunResult:
-        """SDK.run() path — used when _sdk is mocked in tests."""
+        """SDK.run() path — used when _sdk is mocked in tests.
+
+        Note: this legacy path does NOT thread the continual-learning skill
+        dirs (``_learner_skills_dir`` / ``_learner_export_dir``), so it
+        cannot materialize or capture evolved skills. It is test-only today;
+        a real continual-learning run must go through ``_run_single_task``.
+        """
         return await self._sdk.run(
             task_path=task_dir,
             agent=cfg.agent,
@@ -697,6 +703,10 @@ class Evaluation:
         store = self.learner_store
         assert store is not None, "sequential-shared job must have a learner_store"
 
+        # Per-run scoring scratch — reset so re-running the same Evaluation
+        # does not score stale nodes carried over from a prior invocation.
+        self.learner_nodes = []
+
         pairs: list[tuple[str, RunResult]] = []
         with tempfile.TemporaryDirectory(prefix="bf-learner-") as work:
             work_root = Path(work)
@@ -761,16 +771,13 @@ class Evaluation:
 
         before_skills = {k: str(v) for k, v in before_state.skills.items()}
         after_skills = {k: str(v) for k, v in evolved_skills.items()}
-        # Skills the agent evolved relative to what it started from — the
-        # hidden "expected" fixture for the Memory scorer.
-        expected = sorted(
-            name
-            for name in set(before_skills) | set(after_skills)
-            if before_skills.get(name) != after_skills.get(name)
-        )
-        delta = skill_memory_delta(
-            before=before_skills, after=after_skills, expected=expected
-        )
+        # No `expected` fixture is supplied. The Memory scorer must NOT be
+        # handed an answer key derived from the agent's own diff — that makes
+        # its precision/recall a tautology (always 1.0). Without a fixture the
+        # scorer honestly grades *activity*: 1.0 for any skill change, 0.0 for
+        # none. A real correctness fixture must come from the task definition;
+        # threading task-supplied `expected_skills` through is future work.
+        delta = skill_memory_delta(before=before_skills, after=after_skills)
 
         # Record the delta on this rollout's tree node so the Memory-space
         # scorer (rewards/memory_scorer.py) has its writer — the two halves
@@ -782,9 +789,12 @@ class Evaluation:
         reward = result.rewards.get("reward") if result.rewards else None
         if reward is None:
             return
+        # Commit the normalized `after_skills` (str-valued) — not the raw
+        # `evolved_skills` — so the committed store state is byte-identical
+        # to the `memory_delta` recorded above.
         next_state = LearnerState(
             memory=before_state.memory,
-            skills=evolved_skills,
+            skills=after_skills,
         )
         kept = store.commit_or_revert(next_state, metric=float(reward))
         if not kept:
@@ -800,7 +810,9 @@ class Evaluation:
         ``memory_delta``; the Job keeps them on ``learner_nodes`` so the
         Memory-space scorer can score every rollout after the run.
         """
-        node = RolloutNode(id=td.name)
+        # Index-prefixed so two rollouts of the same task name still get
+        # distinct node ids.
+        node = RolloutNode(id=f"{len(self.learner_nodes)}-{td.name}")
         self.learner_nodes.append(node)
         return node
 
@@ -809,6 +821,18 @@ class Evaluation:
         task_dirs = self._get_task_dirs()
         completed = self._get_completed_tasks()
         remaining = [d for d in task_dirs if d.name not in completed]
+
+        # A resumed sequential-shared job cannot continue the learning curve:
+        # the LearnerStore is process-local, so completed rollouts' evolved
+        # skills are gone and the curve restarts at generation 0.
+        if completed and self._config.job_mode == "sequential-shared":
+            logger.warning(
+                f"Resuming a continual-learning (sequential-shared) job with "
+                f"{len(completed)} task(s) already done: the LearnerStore is "
+                f"not persisted across processes, so the learning curve "
+                f"restarts at generation 0 and earlier rollouts' evolved "
+                f"skills are lost. Use a fresh jobs_dir for a clean run."
+            )
 
         # Warn if resuming with different config than completed tasks
         if completed:

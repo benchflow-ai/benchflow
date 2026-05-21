@@ -79,7 +79,7 @@ class LearnerStore:
 
     Generation 0 is the empty store. Each :meth:`commit` deep-copies the passed
     state, stamps a **monotonic** generation number, and appends it to
-    :attr:`history`. :meth:`revert` rolls back to an earlier generation,
+    :attr:`history`. :meth:`_revert` rolls back to an earlier generation,
     dropping every later one — but it does *not* free the numbers it dropped:
     a later commit stamps the next never-used number, so every generation
     number is a durable, unique, per-rollout stamp (a reverted run never
@@ -114,7 +114,7 @@ class LearnerStore:
         """Stamp ``state`` as the next generation and return its number.
 
         The number is monotonic — it is the next never-used number, even
-        after a :meth:`revert` dropped higher ones. ``state`` is deep-copied
+        after a :meth:`_revert` dropped higher ones. ``state`` is deep-copied
         on the way in, so mutating the caller's object afterwards never leaks
         into the committed generation.
         """
@@ -129,8 +129,10 @@ class LearnerStore:
     def _revert(self, generation: int) -> None:
         """Roll the store back to ``generation``, dropping every later one.
 
-        Internal — the public continual-learning step is
-        :meth:`commit_or_revert`, which calls this when a rollout regresses.
+        Internal rollback primitive. The public continual-learning step,
+        :meth:`commit_or_revert`, *rejects* a regression before it is
+        committed, so it never needs to roll back — :meth:`_revert` exists
+        for an explicit, out-of-band rollback to a known-good generation.
 
         Only goes backward: ``generation`` must be a known generation no later
         than the current one. The dropped numbers are *not* freed — a later
