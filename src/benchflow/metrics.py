@@ -55,8 +55,16 @@ class TaskMetrics:
 
     @property
     def verifier_errored(self) -> bool:
-        """True when task failed due to verifier error (not agent error)."""
-        return self.reward is None and self.verifier_error is not None
+        """True when task failed due to verifier error (not agent error).
+
+        Disjoint from `errored`: a task with both `error` and `verifier_error`
+        is classified as `errored` only, so the count buckets never overlap.
+        """
+        return (
+            self.reward is None
+            and self.verifier_error is not None
+            and self.error is None
+        )
 
     @property
     def completed(self) -> bool:
