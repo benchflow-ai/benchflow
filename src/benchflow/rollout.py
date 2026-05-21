@@ -65,6 +65,8 @@ from benchflow.agents.install import (
     install_agent,
 )
 from benchflow.agents.registry import AGENT_LAUNCH, AGENTS
+from benchflow.environment.manifest import EnvironmentManifest
+from benchflow.environment.manifest_env import ManifestEnvironment
 from benchflow.models import RolloutResult, TrajectorySource
 from benchflow.providers.runtime import (
     ensure_bedrock_proxy_runtime,
@@ -683,6 +685,10 @@ class RolloutConfig:
     jobs_dir: str | Path = "jobs"
     context_root: str | Path | None = None
     pre_agent_hooks: list | None = None
+    # Environment plane — when set, Rollout provisions a manifest-declared
+    # stateful environment, gates on readiness before the agent runs, and
+    # tears it down in cleanup. None => no separate environment plane (default).
+    environment_manifest: EnvironmentManifest | None = None
     # Abort the prompt if no tool call arrives for this many seconds.
     # Catches agents that hung silently while the local process is alive
     # (e.g. gemini-cli not responding). None disables idle detection and
@@ -810,6 +816,7 @@ class Rollout:
         self._resolved_prompts: list[str] = []
         self._agent_launch: str = ""
         self._env: Any = None
+        self._environment: ManifestEnvironment | None = None
         self._timeout: int = 0
         self._timing: dict[str, float] = {}
         self._effective_locked: list[str] = []
@@ -983,6 +990,27 @@ class Rollout:
 
         for hook in self._config.pre_agent_hooks or []:
             await hook(self._env)
+
+        # Environment plane: provision the manifest-declared stateful
+        # environment and gate on its readiness before the agent runs.
+        if self._config.environment_manifest is not None:
+            self._environment = ManifestEnvironment(
+                self._config.environment_manifest, sandbox=self._env
+            )
+            await self._environment.provision(
+                ctx={"task_id": self._config.task_path.name}
+            )
+            probe = await self._environment.readiness()
+            if not probe.ready:
+                raise RuntimeError(
+                    f"environment plane not ready: {probe.error} "
+                    f"(checked: {probe.checked})"
+                )
+            logger.info(
+                "environment '%s' ready (%d probe(s))",
+                self._config.environment_manifest.name,
+                len(probe.checked),
+            )
 
         self._phase = "started"
 
@@ -1304,6 +1332,11 @@ class Rollout:
                 await self._export_generated_skills()
             except Exception as e:
                 logger.warning(f"Generated skill export failed: {e}")
+
+        if self._environment is not None:
+            with contextlib.suppress(Exception):
+                await self._environment.teardown()
+            self._environment = None
 
         if self._env:
             try:
