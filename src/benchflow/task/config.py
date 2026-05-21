@@ -92,6 +92,15 @@ class VerifierConfig(BaseModel):
         default=None,
         description="Username or UID to run the verifier as.",
     )
+    pytest_plugins: list[str] = Field(
+        default_factory=list,
+        description=(
+            "pytest11 plugin names to allow under PYTEST_DISABLE_PLUGIN_AUTOLOAD=1. "
+            "Container-side auto-discovery handles most cases; this is the "
+            "explicit fallback for plugins that discovery cannot see "
+            "(e.g. ctrf, playwright)."
+        ),
+    )
 
 
 class AgentConfig(BaseModel):
