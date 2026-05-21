@@ -291,8 +291,15 @@ class TrajectoryProxy:
 
         duration_ms = (time.monotonic() - start_time) * 1000
 
-        # Reconstruct the final response from collected SSE events
-        resp_body = _reconstruct_response(collected_events)
+        # Reconstruct the final response from collected SSE events. The stream
+        # has already been fully forwarded to the agent at this point, so a
+        # reconstruction failure must not propagate — it would write a bogus
+        # 502 onto a completed response and drop the exchange. Degrade instead.
+        try:
+            resp_body = _reconstruct_response(collected_events)
+        except Exception as e:
+            logger.warning(f"SSE response reconstruction failed: {e}")
+            resp_body = {}
         self._record_exchange(
             req, resp.status_code, dict(resp.headers), resp_body, duration_ms
         )
@@ -497,7 +504,11 @@ def _reconstruct_response(events: list[dict[str, Any]]) -> dict[str, Any]:
                 if delta.get("type") == "text_delta":
                     block["text"] = block.get("text", "") + delta.get("text", "")
                 elif delta.get("type") == "input_json_delta":
-                    block.setdefault("input", "")
+                    # content_block_start seeds tool_use input as {}; the
+                    # streamed partial_json fragments are accumulated as a
+                    # string and parsed back to JSON once the block closes.
+                    if not isinstance(block.get("input"), str):
+                        block["input"] = ""
                     block["input"] += delta.get("partial_json", "")
 
         elif event_type == "message_delta":

@@ -124,7 +124,7 @@ def _bedrock_proxy_command(
     return BEDROCK_PROXY_LOCAL_HOST
 
 
-def _usage_unavailable() -> dict[str, int | float | None | str]:
+def _usage_unavailable() -> dict[str, Any]:
     return {
         "n_input_tokens": None,
         "n_output_tokens": None,
@@ -305,7 +305,7 @@ async def ensure_usage_proxy_runtime(
     return updated, runtime
 
 
-def extract_usage(runtime: ProviderRuntime | None) -> dict[str, int | float | None | str]:
+def extract_usage(runtime: ProviderRuntime | None) -> dict[str, Any]:
     """Extract aggregate token/cost metrics from a usage proxy runtime."""
     if runtime is None or runtime.kind != "usage-proxy" or runtime.server is None:
         return _usage_unavailable()

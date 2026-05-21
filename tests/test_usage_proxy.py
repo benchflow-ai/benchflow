@@ -16,12 +16,12 @@ from benchflow.trajectories.types import (
 )
 
 
-def _build_result(trial_dir: Path, **overrides):
-    from benchflow.sdk import SDK
+def _build_result(rollout_dir: Path, **overrides):
+    from benchflow.rollout import _build_rollout_result
 
     defaults = dict(
         task_name="usage-task",
-        trial_name="usage-trial",
+        rollout_name="usage-rollout",
         agent="claude-agent-acp",
         agent_name="Claude",
         model="claude-haiku-4-5-20251001",
@@ -36,11 +36,11 @@ def _build_result(trial_dir: Path, **overrides):
         timing={},
     )
     defaults.update(overrides)
-    return SDK._build_result(trial_dir, **defaults)
+    return _build_rollout_result(rollout_dir, **defaults)
 
 
-def _result_json(trial_dir: Path) -> dict:
-    return json.loads((trial_dir / "result.json").read_text())
+def _result_json(rollout_dir: Path) -> dict:
+    return json.loads((rollout_dir / "result.json").read_text())
 
 
 def test_result_json_contains_unavailable_usage_defaults(tmp_path):
@@ -156,7 +156,7 @@ def _trajectory(*bodies: dict, model: str = "claude-haiku-4-5-20251001") -> Traj
 
 
 def test_extract_usage_none_proxy():
-    from benchflow._provider_runtime import extract_usage
+    from benchflow.providers.runtime import extract_usage
 
     assert extract_usage(None) == {
         "n_input_tokens": None,
@@ -171,7 +171,7 @@ def test_extract_usage_none_proxy():
 
 
 def test_extract_usage_with_anthropic_exchanges():
-    from benchflow._provider_runtime import ProviderRuntime, extract_usage
+    from benchflow.providers.runtime import ProviderRuntime, extract_usage
 
     runtime = ProviderRuntime(
         kind="usage-proxy",
@@ -215,7 +215,7 @@ def test_extract_usage_with_anthropic_exchanges():
 
 
 def test_extract_usage_with_openai_exchanges():
-    from benchflow._provider_runtime import ProviderRuntime, extract_usage
+    from benchflow.providers.runtime import ProviderRuntime, extract_usage
 
     runtime = ProviderRuntime(
         kind="usage-proxy",
@@ -260,7 +260,7 @@ def test_extract_usage_with_openai_exchanges():
 
 
 def test_extract_usage_with_gemini_exchanges():
-    from benchflow._provider_runtime import ProviderRuntime, extract_usage
+    from benchflow.providers.runtime import ProviderRuntime, extract_usage
 
     runtime = ProviderRuntime(
         kind="usage-proxy",
@@ -293,8 +293,8 @@ def test_extract_usage_with_gemini_exchanges():
 
 @pytest.mark.asyncio
 async def test_start_proxy_rewrites_env(monkeypatch):
-    from benchflow import _provider_runtime as provider_runtime_mod
-    from benchflow._provider_runtime import ensure_usage_proxy_runtime
+    from benchflow.providers import runtime as provider_runtime_mod
+    from benchflow.providers.runtime import ensure_usage_proxy_runtime
 
     monkeypatch.setattr(
         provider_runtime_mod, "_docker_host_address", lambda: "host.docker.internal"
@@ -336,7 +336,7 @@ async def test_start_proxy_rewrites_env(monkeypatch):
         model="claude-haiku-4-5-20251001",
         runtime=None,
         environment="docker",
-        session_id="trial-1",
+        session_id="rollout-1",
     )
 
     assert runtime is not None
@@ -349,8 +349,8 @@ async def test_start_proxy_rewrites_env(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_start_proxy_uses_openai_v1_default_for_codex(monkeypatch):
-    from benchflow import _provider_runtime as provider_runtime_mod
-    from benchflow._provider_runtime import ensure_usage_proxy_runtime
+    from benchflow.providers import runtime as provider_runtime_mod
+    from benchflow.providers.runtime import ensure_usage_proxy_runtime
 
     monkeypatch.setattr(
         provider_runtime_mod, "_docker_host_address", lambda: "host.docker.internal"
@@ -388,7 +388,7 @@ async def test_start_proxy_uses_openai_v1_default_for_codex(monkeypatch):
         model="gpt-4.1-mini",
         runtime=None,
         environment="docker",
-        session_id="trial-1",
+        session_id="rollout-1",
     )
 
     assert runtime is not None
@@ -398,8 +398,8 @@ async def test_start_proxy_uses_openai_v1_default_for_codex(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_start_proxy_passes_prompt_cache_retention(monkeypatch):
-    from benchflow import _provider_runtime as provider_runtime_mod
-    from benchflow._provider_runtime import ensure_usage_proxy_runtime
+    from benchflow.providers import runtime as provider_runtime_mod
+    from benchflow.providers.runtime import ensure_usage_proxy_runtime
 
     monkeypatch.setattr(
         provider_runtime_mod, "_docker_host_address", lambda: "host.docker.internal"
@@ -440,7 +440,7 @@ async def test_start_proxy_passes_prompt_cache_retention(monkeypatch):
         model="gpt-5.5",
         runtime=None,
         environment="docker",
-        session_id="trial-1",
+        session_id="rollout-1",
     )
 
     assert runtime is not None
@@ -449,7 +449,7 @@ async def test_start_proxy_passes_prompt_cache_retention(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_no_proxy_for_oracle():
-    from benchflow._provider_runtime import ensure_usage_proxy_runtime
+    from benchflow.providers.runtime import ensure_usage_proxy_runtime
 
     env = {"ANTHROPIC_BASE_URL": "https://api.anthropic.com"}
     updated, runtime = await ensure_usage_proxy_runtime(
@@ -458,7 +458,7 @@ async def test_no_proxy_for_oracle():
         model=None,
         runtime=None,
         environment="docker",
-        session_id="trial-1",
+        session_id="rollout-1",
     )
 
     assert updated == env
@@ -466,7 +466,7 @@ async def test_no_proxy_for_oracle():
 
 
 def test_total_tokens_is_sum_of_parts():
-    from benchflow._provider_runtime import ProviderRuntime, extract_usage
+    from benchflow.providers.runtime import ProviderRuntime, extract_usage
 
     runtime = ProviderRuntime(
         kind="usage-proxy",
@@ -499,24 +499,24 @@ async def test_rollout_connect_wires_usage_proxy_before_acp(tmp_path, monkeypatc
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
 
-    from benchflow.trial import Trial, TrialConfig
+    from benchflow.rollout import Rollout, RolloutConfig
 
     calls: list[str] = []
-    cfg = TrialConfig(
+    cfg = RolloutConfig(
         task_path=tmp_path / "task",
         agent="codex-acp",
         model="gpt-4.1-mini",
         agent_env={"OPENAI_API_KEY": "sk-test"},
     )
-    trial = Trial.__new__(Trial)
-    trial._config = cfg
-    trial._env = SimpleNamespace()
-    trial._trial_dir = tmp_path
-    trial._trial_name = "trial-1"
-    trial._timing = {}
-    trial._agent_launch = "codex-acp"
-    trial._agent_cwd = "/app"
-    trial._agent_env = dict(cfg.agent_env)
+    rollout = Rollout.__new__(Rollout)
+    rollout._config = cfg
+    rollout._env = SimpleNamespace()
+    rollout._rollout_dir = tmp_path
+    rollout._rollout_name = "rollout-1"
+    rollout._timing = {}
+    rollout._agent_launch = "codex-acp"
+    rollout._agent_cwd = "/app"
+    rollout._agent_env = dict(cfg.agent_env)
 
     async def fake_bedrock(**kwargs):
         calls.append("bedrock")
@@ -551,7 +551,7 @@ async def test_rollout_connect_wires_usage_proxy_before_acp(tmp_path, monkeypatc
     monkeypatch.setattr("benchflow.rollout.ensure_usage_proxy_runtime", fake_usage)
     monkeypatch.setattr("benchflow.rollout.connect_acp", fake_connect_acp)
 
-    await trial.connect()
+    await rollout.connect()
 
     assert calls == ["bedrock", "usage", "acp"]
 
@@ -561,8 +561,8 @@ async def test_rollout_cleanup_extracts_usage_and_writes_llm_trajectory(tmp_path
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
 
-    from benchflow._provider_runtime import ProviderRuntime
-    from benchflow.trial import Trial, TrialConfig
+    from benchflow.providers.runtime import ProviderRuntime
+    from benchflow.rollout import Rollout, RolloutConfig
 
     class FakeServer:
         def __init__(self):
@@ -578,27 +578,27 @@ async def test_rollout_cleanup_extracts_usage_and_writes_llm_trajectory(tmp_path
             self.stopped = True
 
     server = FakeServer()
-    trial = Trial.__new__(Trial)
-    trial._config = TrialConfig(task_path=tmp_path / "task")
-    trial._trajectory = []
-    trial._acp_client = None
-    trial._agent_launch = ""
-    trial._env = SimpleNamespace(stop=AsyncMock())
-    trial._usage_runtime = ProviderRuntime(
+    rollout = Rollout.__new__(Rollout)
+    rollout._config = RolloutConfig(task_path=tmp_path / "task")
+    rollout._trajectory = []
+    rollout._acp_client = None
+    rollout._agent_launch = ""
+    rollout._env = SimpleNamespace(stop=AsyncMock())
+    rollout._usage_runtime = ProviderRuntime(
         kind="usage-proxy",
         host="host.docker.internal",
         port=32124,
         backend_model="claude-haiku-4-5-20251001",
         server=server,
     )
-    trial._trial_dir = tmp_path
+    rollout._rollout_dir = tmp_path
 
-    await trial.cleanup()
+    await rollout.cleanup()
 
     assert server.stopped is True
-    assert trial._usage_metrics["usage_source"] == "provider_response"
-    assert trial._usage_metrics["n_input_tokens"] == 10
-    assert trial._usage_metrics["n_output_tokens"] == 2
+    assert rollout._usage_metrics["usage_source"] == "provider_response"
+    assert rollout._usage_metrics["n_input_tokens"] == 10
+    assert rollout._usage_metrics["n_output_tokens"] == 2
     llm_traj = tmp_path / "trajectory" / "llm_trajectory.jsonl"
     assert llm_traj.exists()
     assert json.loads(llm_traj.read_text().splitlines()[0])["response"]["body"][

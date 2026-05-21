@@ -408,6 +408,14 @@ def _build_rollout_result(
     started_at: datetime,
     timing: dict[str, float],
     scenes: list[Scene] | None = None,
+    n_input_tokens: int | None = None,
+    n_output_tokens: int | None = None,
+    n_cache_read_tokens: int | None = None,
+    n_cache_creation_tokens: int | None = None,
+    total_tokens: int | None = None,
+    cost_usd: float | None = None,
+    usage_source: str = "unavailable",
+    price_source: str | None = None,
 ) -> RolloutResult:
     """Build RolloutResult and write result.json, timing.json, prompts.json, trajectory."""
     finished_at = datetime.now()
@@ -837,7 +845,7 @@ class Rollout:
         self._effective_locked: list[str] = []
         self._disallow_web_tools: bool = False
         self._usage_runtime: Any = None
-        self._usage_metrics: dict[str, int | float | None | str] = extract_usage(None)
+        self._usage_metrics: dict[str, Any] = extract_usage(None)
 
         # Populated by install_agent()
         self._agent_cfg: Any = None
@@ -1127,7 +1135,7 @@ class Rollout:
             model=cfg.primary_model,
             runtime=getattr(self, "_usage_runtime", None),
             environment=cfg.environment,
-            session_id=getattr(self, "_trial_name", "") or "",
+            session_id=getattr(self, "_rollout_name", "") or "",
         )
         self._acp_client, self._session, self._agent_name = await connect_acp(
             env=self._env,
@@ -1342,10 +1350,13 @@ class Rollout:
             try:
                 await stop_provider_runtime(usage_runtime)
                 self._usage_metrics = extract_usage(usage_runtime)
-                self._write_llm_trajectory(usage_runtime)
             except Exception as e:
                 logger.warning(f"Usage telemetry runtime stop failed: {e}")
                 self._usage_metrics = extract_usage(None)
+            try:
+                self._write_llm_trajectory(usage_runtime)
+            except Exception as e:
+                logger.warning(f"LLM trajectory write failed: {e}")
             finally:
                 self._usage_runtime = None
 
@@ -1803,7 +1814,7 @@ class Rollout:
             model=role.model,
             runtime=getattr(self, "_usage_runtime", None),
             environment=cfg.environment,
-            session_id=getattr(self, "_trial_name", "") or "",
+            session_id=getattr(self, "_rollout_name", "") or "",
         )
 
         role_agent_differs = role.agent != cfg.primary_agent
@@ -1876,12 +1887,12 @@ class Rollout:
 
     def _write_llm_trajectory(self, usage_runtime: Any) -> None:
         """Persist captured provider HTTP exchanges as JSONL."""
-        if self._trial_dir is None:
+        if self._rollout_dir is None:
             return
         trajectory = getattr(getattr(usage_runtime, "server", None), "trajectory", None)
         if trajectory is None or not trajectory.exchanges:
             return
-        traj_dir = self._trial_dir / "trajectory"
+        traj_dir = self._rollout_dir / "trajectory"
         traj_dir.mkdir(parents=True, exist_ok=True)
         (traj_dir / "llm_trajectory.jsonl").write_text(
             trajectory.to_jsonl(redact_keys=True)
@@ -1907,4 +1918,5 @@ class Rollout:
             started_at=self._require_started_at(),
             timing=self._timing,
             scenes=self._config.effective_scenes,
+            **self._usage_metrics,
         )
