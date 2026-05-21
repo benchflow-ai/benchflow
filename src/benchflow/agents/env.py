@@ -102,10 +102,11 @@ def auto_inherit_env(
             keys.add(env_var)
     for key in keys:
         value = source.get(key)
-        # An exported-but-empty var ("export X=") is effectively unset;
-        # copying "" can shadow a real value resolved downstream (e.g. an
-        # empty BENCHFLOW_PROVIDER_BASE_URL blocks provider URL resolution).
-        if value:
+        # An exported-but-blank var ("export X=" or "export X=' '") is
+        # effectively unset; copying it can shadow a real value resolved
+        # downstream (e.g. a blank BENCHFLOW_PROVIDER_BASE_URL blocks
+        # provider URL resolution).
+        if value and value.strip():
             agent_env.setdefault(key, value)
     # Mirror GEMINI_API_KEY as GOOGLE_API_KEY (some agents expect one or the other)
     if "GEMINI_API_KEY" in agent_env and "GOOGLE_API_KEY" not in agent_env:

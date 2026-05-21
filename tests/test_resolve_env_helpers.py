@@ -116,6 +116,28 @@ class TestAutoInheritEnv:
         auto_inherit_env(env)
         assert "BENCHFLOW_PROVIDER_BASE_URL" not in env
 
+    def test_whitespace_only_host_value_not_inherited(self, monkeypatch):
+        """A whitespace-only host var ('export X=" "') is also effectively unset.
+
+        '   ' is truthy, so a bare `if value:` guard would still copy it and
+        shadow downstream resolution exactly like an empty string does.
+        """
+        monkeypatch.setenv("BENCHFLOW_PROVIDER_BASE_URL", "   ")
+        env: dict[str, str] = {}
+        auto_inherit_env(env)
+        assert "BENCHFLOW_PROVIDER_BASE_URL" not in env
+
+    def test_empty_openai_base_url_not_inherited(self, monkeypatch):
+        """Empty-skip applies to every allowlisted key, not just the #817 keys.
+
+        OPENAI_BASE_URL has always been on the allowlist, so this pins the
+        empty-skip guard itself — independent of the #817 allowlist additions.
+        """
+        monkeypatch.setenv("OPENAI_BASE_URL", "")
+        env: dict[str, str] = {}
+        auto_inherit_env(env)
+        assert "OPENAI_BASE_URL" not in env
+
 
 # ── inject_vertex_credentials ──
 
@@ -616,3 +638,33 @@ class TestResolveAgentEnvHostProviderEndpoint:
 
         assert result["LLM_BASE_URL"] == "http://my-vllm-host:8000/v1"
         assert result["LLM_API_KEY"] == "sk-provider-host"
+
+    def test_whitespace_host_base_url_does_not_shadow_resolved_url(self, monkeypatch):
+        """'export BENCHFLOW_PROVIDER_BASE_URL=" "' must not blank a real URL.
+
+        A whitespace-only value is the same operator mistake as an empty one
+        and must not shadow the provider's resolved endpoint.
+        """
+        monkeypatch.setenv("ZAI_API_KEY", "zk-test")
+        monkeypatch.setenv("BENCHFLOW_PROVIDER_BASE_URL", "   ")
+
+        result = resolve_agent_env("codex-acp", "zai/glm-5", {})
+
+        assert result["BENCHFLOW_PROVIDER_BASE_URL"] == "https://api.z.ai/api/paas/v4"
+
+    def test_empty_host_provider_api_key_does_not_shadow_resolved_key(
+        self, monkeypatch
+    ):
+        """'export BENCHFLOW_PROVIDER_API_KEY=' must not shadow the resolved key.
+
+        The empty-string class of bug applies to the API key too: an empty host
+        value must not block resolve_provider_env from filling it from the
+        provider's own credential (ZAI_API_KEY here).
+        """
+        monkeypatch.setenv("ZAI_API_KEY", "zk-test")
+        monkeypatch.setenv("BENCHFLOW_PROVIDER_API_KEY", "")
+
+        result = resolve_agent_env("codex-acp", "zai/glm-5", {})
+
+        assert result["BENCHFLOW_PROVIDER_API_KEY"] == "zk-test"
+        assert result["OPENAI_API_KEY"] == "zk-test"
