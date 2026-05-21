@@ -63,6 +63,49 @@ def _cache_dir() -> Path:
     return cache
 
 
+def _pick_split_file(repo_files: list[str], split: str, suffix: str) -> str | None:
+    """Pick the repo file matching *split* and *suffix*, if any.
+
+    Matches files under ``data/`` whose basename starts with the split name
+    (e.g. ``data/test-00000-of-00001.parquet`` or ``data/test.jsonl`` for
+    ``split="test"``). Returns ``None`` when no file matches so the caller
+    can fall back to constructed filename candidates.
+    """
+    candidates = [
+        f
+        for f in repo_files
+        if f.endswith(suffix)
+        and (Path(f).name == f"{split}{suffix}" or Path(f).name.startswith(f"{split}-"))
+    ]
+    if not candidates:
+        return None
+    # Prefer files under data/, then the shortest path for determinism.
+    candidates.sort(key=lambda f: (not f.startswith("data/"), len(f), f))
+    return candidates[0]
+
+
+def _split_filename_candidates(
+    matched: str | None, split: str, suffix: str
+) -> list[str]:
+    """Build an ordered list of filenames to try for *split* and *suffix*.
+
+    If a file was matched from the repo listing it is tried first; otherwise
+    fall back to the conventional ``data/{split}-00000-of-00001`` and
+    ``data/{split}`` layouts. All candidates are split-specific so a
+    ``split="test"`` request never resolves to ``train`` data.
+    """
+    candidates: list[str] = []
+    if matched:
+        candidates.append(matched)
+    for guess in (
+        f"data/{split}-00000-of-00001{suffix}",
+        f"data/{split}{suffix}",
+    ):
+        if guess not in candidates:
+            candidates.append(guess)
+    return candidates
+
+
 def _download_hf_dataset(
     repo_id: str,
     *,
@@ -87,32 +130,46 @@ def _download_hf_dataset(
 
     # Try huggingface_hub first
     try:
-        from huggingface_hub import hf_hub_download
+        from huggingface_hub import hf_hub_download, list_repo_files
 
-        # Try to download a data file directly
+        # List repo files so we can pick a file matching the requested split,
+        # rather than hardcoding `train`. Picking the wrong file would silently
+        # mislabel data (e.g. caching `train` rows under a `__test` filename).
+        repo_files: list[str] = []
         try:
-            downloaded = hf_hub_download(
-                repo_id=repo_id,
-                filename="data/train-00000-of-00001.parquet",
-                repo_type="dataset",
-            )
+            repo_files = list(list_repo_files(repo_id, repo_type="dataset"))
+        except Exception:
+            logger.debug("Could not list files for %s", repo_id, exc_info=True)
+
+        parquet_file = _pick_split_file(repo_files, split, ".parquet")
+        jsonl_file = _pick_split_file(repo_files, split, ".jsonl")
+
+        # Try to download a parquet data file for the split
+        for filename in _split_filename_candidates(parquet_file, split, ".parquet"):
+            try:
+                downloaded = hf_hub_download(
+                    repo_id=repo_id,
+                    filename=filename,
+                    repo_type="dataset",
+                )
+            except Exception:
+                continue
             # Convert parquet to JSONL
             _parquet_to_jsonl(Path(downloaded), out_path, max_rows=max_rows)
             return out_path
-        except Exception:
-            pass
 
-        # Try JSONL file
-        try:
-            downloaded = hf_hub_download(
-                repo_id=repo_id,
-                filename="data/train.jsonl",
-                repo_type="dataset",
-            )
+        # Try a JSONL data file for the split
+        for filename in _split_filename_candidates(jsonl_file, split, ".jsonl"):
+            try:
+                downloaded = hf_hub_download(
+                    repo_id=repo_id,
+                    filename=filename,
+                    repo_type="dataset",
+                )
+            except Exception:
+                continue
             _copy_jsonl(Path(downloaded), out_path, max_rows=max_rows)
             return out_path
-        except Exception:
-            pass
 
     except ImportError:
         logger.debug("huggingface_hub not installed, using API fallback")
