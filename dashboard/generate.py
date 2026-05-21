@@ -111,6 +111,19 @@ def _count_lines(p: Path) -> int:
         return 0
 
 
+def _is_empty(p: Path) -> bool:
+    """A 0-byte file — nothing to view, so it is never surfaced as an artifact.
+
+    Audit rule R1 (see dashboard/AUDIT.md). The *fact* that, e.g., a
+    trajectory produced no events is carried on the task's ``trajectory_events``
+    count — not as a free-standing "0 lines · empty file" row.
+    """
+    try:
+        return p.stat().st_size == 0
+    except Exception:
+        return True
+
+
 # File-content payloads — the dashboard shows the actual contents of every
 # artifact, so each readable file is embedded (capped) into data.json.
 _MAX_LINES = 240
@@ -211,7 +224,7 @@ def _task_artifacts(d: Path) -> list[dict]:
     """
     arts: list[dict] = []
     for child in sorted(d.iterdir()):
-        if child.is_file():
+        if child.is_file() and not _is_empty(child):  # R1: skip 0-byte files
             arts.append(_artifact(child.name,
                                   _ART_KIND.get(child.name, "file"), child))
     for sub in ("trajectory", "verifier", "agent", "artifacts"):
@@ -219,6 +232,8 @@ def _task_artifacts(d: Path) -> list[dict]:
         if not subdir.is_dir():
             continue
         for f in sorted(p for p in subdir.rglob("*") if p.is_file()):
+            if _is_empty(f):  # R1: skip 0-byte files
+                continue
             rel = f.relative_to(d).as_posix()
             if f.name.endswith(".jsonl"):
                 kind = "trajectory"
@@ -393,7 +408,7 @@ def collect_experiments() -> list[dict]:
     if exp.is_dir():
         buckets: dict[str, dict] = {}
         for f in sorted(exp.iterdir()):
-            if not f.is_file() or f.name.startswith("."):
+            if not f.is_file() or f.name.startswith(".") or _is_empty(f):
                 continue
             low = f.name.lower()
             match = next((r for r in EXP_RULES if r[0] in low), None)
@@ -420,7 +435,8 @@ def collect_experiments() -> list[dict]:
             if not sub.is_dir() or sub.name.startswith("."):
                 continue
             files = [p for p in sorted(sub.rglob("*"))
-                     if p.is_file() and not p.name.startswith(".")]
+                     if p.is_file() and not p.name.startswith(".")
+                     and not _is_empty(p)]
             mtimes = []
             for p in files:
                 with contextlib.suppress(Exception):
