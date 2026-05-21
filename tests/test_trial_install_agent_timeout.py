@@ -90,6 +90,56 @@ async def test_install_agent_forwards_sandbox_setup_timeout(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("agent", ["claude-agent-acp", "oracle"])
+async def test_install_agent_passes_effective_task_path_to_deploy_skills(
+    tmp_path, monkeypatch, agent
+):
+    """Guards issue #229: deploy_skills double-deploys when skills_dir is set.
+
+    `_setup` copies the task to a temp dir and injects
+    `COPY _deps/skills /skills/` into that temp Dockerfile, recording the
+    copy as `_effective_task_path`. `deploy_skills` decides whether to skip
+    the runtime `/skills` upload by reading the Dockerfile at the path it is
+    given — so it must receive `_effective_task_path`, not the original
+    `cfg.task_path` (whose Dockerfile is never injected). Passing the
+    original path makes `already_injected` always False and triggers a
+    second `/skills` upload on top of the baked image, failing with
+    `cannot overwrite directory "/skills/..." with non-directory "/skills"`.
+    """
+    trial = _make_trial(tmp_path, agent=agent, sandbox_setup_timeout=41)
+    trial._config = trial._config.__class__.from_legacy(
+        task_path=tmp_path / "original-task",
+        agent=agent,
+        prompts=[None],
+        sandbox_user="agent",
+        sandbox_setup_timeout=41,
+        skills_dir=tmp_path / "skills",
+    )
+    effective_task_path = tmp_path / "benchflow-task-tmp" / "task"
+    trial._effective_task_path = effective_task_path
+
+    deploy_skills_mock = AsyncMock()
+    monkeypatch.setattr("benchflow.rollout.install_agent", AsyncMock())
+    monkeypatch.setattr("benchflow.rollout.write_credential_files", AsyncMock())
+    monkeypatch.setattr("benchflow.rollout.upload_subscription_auth", AsyncMock())
+    monkeypatch.setattr("benchflow.rollout._snapshot_build_config", AsyncMock())
+    monkeypatch.setattr("benchflow.rollout._seed_verifier_workspace", AsyncMock())
+    monkeypatch.setattr("benchflow.rollout.deploy_skills", deploy_skills_mock)
+    monkeypatch.setattr("benchflow.rollout.lockdown_paths", AsyncMock())
+    monkeypatch.setattr(
+        "benchflow.rollout.setup_sandbox_user", AsyncMock(return_value="/home/agent")
+    )
+    monkeypatch.setattr("benchflow.rollout.apply_web_tool_policy", AsyncMock())
+
+    await trial.install_agent()
+
+    deploy_skills_mock.assert_awaited_once()
+    passed_task_path = deploy_skills_mock.await_args.args[1]
+    assert passed_task_path == effective_task_path
+    assert passed_task_path != trial._config.task_path
+
+
+@pytest.mark.asyncio
 async def test_install_agent_applies_web_policy_after_sandbox_setup(
     tmp_path, monkeypatch
 ):
