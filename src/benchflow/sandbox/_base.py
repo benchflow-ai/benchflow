@@ -9,6 +9,7 @@ Internalized from Harbor's BaseEnvironment with RL-first terminology:
 from __future__ import annotations
 
 import logging
+import re
 import shlex
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -21,6 +22,25 @@ from benchflow.task.env import resolve_env_vars
 from benchflow.task.paths import RolloutPaths
 
 logger = logging.getLogger("benchflow")
+
+# Docker Compose service names are restricted to this grammar. Used to filter
+# `docker compose config --services` output, whose stdout may be polluted with
+# warning lines because the compose command merges stderr into stdout.
+_COMPOSE_SERVICE_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]*$")
+
+
+def _filter_compose_service_names(output: str) -> list[str]:
+    """Extract valid compose service names from `config --services` output.
+
+    Drops blank lines and anything that does not match the Docker Compose
+    service-name grammar, so a warning line merged into stdout cannot be
+    mistaken for a service (#248).
+    """
+    return [
+        line
+        for raw in output.splitlines()
+        if (line := raw.strip()) and _COMPOSE_SERVICE_NAME_RE.match(line)
+    ]
 
 
 class ExecResult(BaseModel):
@@ -211,6 +231,25 @@ class BaseSandbox(ABC):
             timeout_sec=timeout_sec,
             user=user,
             service=service,
+        )
+
+    async def services(self) -> list[str]:
+        """List the compose service (container) names available in this sandbox.
+
+        Multi-container (vulhub-style) tasks declare extra services in their
+        ``docker-compose.yaml`` alongside the agent's ``main`` container; this
+        enumerates them so verifier code can target each via
+        ``exec(..., service=...)`` (#248).
+
+        Single-container backends (Modal, direct Daytona) have no compose
+        topology and raise a clear error — overriding backends must implement
+        this themselves.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} is a single-container backend; "
+            "services() requires a multi-container docker-compose task. "
+            "Use the Docker sandbox or the Daytona DinD (compose) sandbox "
+            "for vulhub-style tasks (#248)."
         )
 
     async def is_dir(

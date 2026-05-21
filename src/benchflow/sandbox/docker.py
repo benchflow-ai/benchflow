@@ -21,7 +21,11 @@ from typing import ClassVar
 
 from pydantic import BaseModel
 
-from benchflow.sandbox._base import BaseSandbox, ExecResult
+from benchflow.sandbox._base import (
+    BaseSandbox,
+    ExecResult,
+    _filter_compose_service_names,
+)
 from benchflow.sandbox._compose import (
     COMPOSE_BASE_PATH,
     COMPOSE_BUILD_PATH,
@@ -411,11 +415,16 @@ class DockerSandbox(BaseSandbox):
         Includes BenchFlow's own ``main`` service plus any additional
         services the task declares in its ``docker-compose.yaml``
         (vulhub-style target/database containers — see #248).
+
+        ``_run_docker_compose_command`` merges stderr into stdout, so the
+        output is filtered to lines that match the Docker Compose service
+        naming grammar — a stray warning line cannot become a spurious
+        "service".
         """
         result = await self._run_docker_compose_command(
             ["config", "--services"], check=True
         )
-        return [s for s in (result.stdout or "").splitlines() if s.strip()]
+        return _filter_compose_service_names(result.stdout or "")
 
     async def exec(
         self,
