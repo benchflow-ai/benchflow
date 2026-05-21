@@ -10,6 +10,11 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+# The ACP protocol version this client implements. ACP uses integer
+# protocol versions; v1 is current (agentclientprotocol/agent-client-protocol).
+ACP_PROTOCOL_VERSION = 1
+
+
 # --- Enums ---
 
 
@@ -138,7 +143,9 @@ class AgentInfo(BaseModel):
 class InitializeParams(BaseModel):
     """Client → agent: start the ACP handshake."""
 
-    protocol_version: int = Field(default=0, alias="protocolVersion")
+    protocol_version: int = Field(
+        default=ACP_PROTOCOL_VERSION, alias="protocolVersion"
+    )
     client_capabilities: ClientCapabilities = Field(
         default_factory=ClientCapabilities, alias="clientCapabilities"
     )
