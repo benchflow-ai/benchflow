@@ -492,8 +492,14 @@ class DockerSandbox(BaseSandbox):
             exec_command, check=False, timeout_sec=timeout_sec
         )
 
-    @staticmethod
-    def _wrap_command_with_env_file(env: dict[str, str], command: str) -> str:
+    # A POSIX shell identifier: a name the shell can `export`. Keys outside
+    # this grammar (e.g. containing `.` or `-`) are valid process env keys but
+    # cannot be assigned via `export NAME=...`; sourcing such a line aborts the
+    # whole `. {env_path}` step, so the user command would never run (PR #323).
+    _SHELL_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+    @classmethod
+    def _wrap_command_with_env_file(cls, env: dict[str, str], command: str) -> str:
         """Return *command* prefixed to materialize *env* from a file.
 
         The env vars are base64-encoded into the command string (not visible
@@ -502,16 +508,43 @@ class DockerSandbox(BaseSandbox):
         command runs. A ``trap ... EXIT`` deletes the temp file
         unconditionally — even if the decode/source step fails — so a failed
         ``&&`` chain can never leave the env file behind.
+
+        Only keys that are valid POSIX shell identifiers are emitted as
+        ``export`` lines. Keys that are not (e.g. containing ``.`` or ``-``)
+        cannot be assigned by the shell — emitting them would make
+        ``. {env_path}`` fail and the user command would never run — so they
+        are skipped with a warning rather than silently breaking exec
+        (regression guarded — PR #323).
+
+        The ``umask 077`` that protects the env file is scoped to a subshell
+        so it does not leak into the user's command — otherwise files the
+        command creates would get mode-0600 unexpectedly (PR #323).
         """
-        env_body = "".join(f"export {k}={shlex.quote(v)}\n" for k, v in env.items())
+        exportable: dict[str, str] = {}
+        skipped: list[str] = []
+        for k, v in env.items():
+            if cls._SHELL_IDENTIFIER_RE.match(k):
+                exportable[k] = v
+            else:
+                skipped.append(k)
+        if skipped:
+            logger.warning(
+                "Skipping env var(s) with non-identifier names (cannot be "
+                "exported by the shell): %s",
+                ", ".join(sorted(skipped)),
+            )
+
+        env_body = "".join(
+            f"export {k}={shlex.quote(v)}\n" for k, v in exportable.items()
+        )
         encoded = base64.b64encode(env_body.encode()).decode()
         # Unique suffix so concurrent exec() calls in one container can't
         # clobber each other's env file.
         env_path = f"/tmp/.benchflow_exec_env_{uuid.uuid4().hex[:16]}"
         return (
             f"trap 'rm -f {env_path}' EXIT && "
-            f"umask 077 && printf %s {shlex.quote(encoded)} | base64 -d > "
-            f"{env_path} && set -a && . {env_path} && set +a && "
+            f"(umask 077 && printf %s {shlex.quote(encoded)} | base64 -d > "
+            f"{env_path}) && set -a && . {env_path} && set +a && "
             f"{command}"
         )
 
