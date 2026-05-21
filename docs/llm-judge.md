@@ -8,24 +8,48 @@ Use an LLM to evaluate agent outputs against a rubric instead of deterministic t
 Use LLM-as-judge when the task output is subjective, open-ended, or hard to verify with unit tests — legal analysis, code review quality, document drafting, research summaries. For tasks with a clear right answer (e.g. "write fizzbuzz"), stick with deterministic `test.sh` verifiers.
 
 BenchFlow's LLM judge supports:
+- **First-class `[verifier]` type** — `type = "llm-judge"` in `task.toml`, no `test.sh` needed
 - **Multi-criterion rubrics** with binary, likert, and numeric scoring
 - **Per-criterion weights** for non-uniform importance
 - **Dense reward events** emitted per criterion during evaluation
 - **Multi-provider routing** across Anthropic, OpenAI, and Google models
 - **Configurable aggregation** (weighted mean, all-pass, any-pass, threshold)
 
+The judge is a **first-class verification method** alongside the deterministic
+`test.sh` verifier. A task selects it with one line of config — the framework
+handles deliverable collection, prompting, provider routing, retries, and
+reward aggregation.
+
 ---
 
 ## Quick start
 
-### 1. Write a `rubric.toml`
-
-Place this alongside your task's `tests/` directory:
+### 1. Select the judge verifier in `task.toml`
 
 ```toml
-[judge]
-model = "claude-sonnet-4-6"
+[verifier]
+type = "llm-judge"
+timeout_sec = 600
 
+[verifier.judge]
+model = "claude-sonnet-4-6"          # judge model (provider routed from prefix)
+rubric_path = "tests/rubric.toml"    # rubric file, relative to the task dir
+input_dir = "/app"                   # sandbox dir holding agent deliverables
+
+# API keys for the judge — resolved from the host environment / .env
+[verifier.env]
+ANTHROPIC_API_KEY = "${ANTHROPIC_API_KEY}"
+```
+
+That's the entire verifier. There is **no `tests/test.sh`** to write — the
+`Verifier` downloads the agent's deliverables from `input_dir`, scores them
+against the rubric, and writes `reward.json` itself.
+
+### 2. Write a `rubric.toml`
+
+Place it where `rubric_path` points (by convention `tests/rubric.toml`):
+
+```toml
 [[criterion]]
 name = "accuracy"
 description = "The response accurately addresses the question with correct facts"
@@ -43,7 +67,46 @@ weight = 1.0
 aggregation = "weighted_mean"
 ```
 
-### 2. Use `LLMJudgeRewardFunc` in your verifier
+A Harvey LAB style `rubric.json` works too — set `rubric_path = "tests/rubric.json"`:
+
+```json
+{
+  "title": "Task Title",
+  "criteria": [
+    {"id": "criterion-1", "title": "...", "match_criteria": "What constitutes a pass"}
+  ]
+}
+```
+
+That's it. Run the task as usual — the reward is the proportion of criteria
+passed (or the configured aggregation), a partial float in `[0, 1]`.
+
+---
+
+## `[verifier]` reference
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `type` | string | `"test-script"` | `"test-script"` (run `tests/test.sh`) or `"llm-judge"` |
+| `timeout_sec` | float | `600` | Overall verifier timeout |
+| `env` | table | `{}` | Env vars for the verifier — judge API keys go here |
+
+### `[verifier.judge]` (used when `type = "llm-judge"`)
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `model` | string | `"claude-sonnet-4-6"` | Judge model; provider routed from prefix |
+| `rubric_path` | string | `"tests/rubric.toml"` | Rubric file relative to the task dir (`.toml` or `.json`) |
+| `input_dir` | string | `"/app"` | Sandbox dir whose contents are graded |
+| `input_type` | string | `"deliverables"` | `"deliverables"`, `"trajectory"`, or `"both"` |
+| `context` | string | `""` | Extra judge context (defaults to the task instruction) |
+
+---
+
+## Library use — `LLMJudgeRewardFunc`
+
+The judge is also a composable `RewardFunc`, usable directly or from a custom
+`test.sh` verifier:
 
 ```python
 import asyncio
@@ -55,27 +118,12 @@ score = asyncio.run(func.score(Path("/app")))
 print(f"Score: {score:.2f}")
 ```
 
-Or use auto-discovery — if `rubric.toml` is in the rollout directory or its parent, it's found automatically:
+Auto-discovery — if `rubric.toml`/`rubric.json` is in the rollout directory or
+its parent, it's found automatically:
 
 ```python
 func = LLMJudgeRewardFunc()
-score = asyncio.run(func.score(Path("/app")))  # finds rubric.toml in /app/ or /
-```
-
-### 3. Write the reward
-
-```bash
-#!/bin/bash
-# tests/test.sh
-python3 -c "
-import asyncio
-from pathlib import Path
-from benchflow.rewards import LLMJudgeRewardFunc
-
-func = LLMJudgeRewardFunc(rubric_path=Path('/tests/rubric.toml'))
-score = asyncio.run(func.score(Path('/app')))
-print(score)
-" > /logs/verifier/reward.txt
+score = asyncio.run(func.score(Path("/app")))
 ```
 
 ---
@@ -316,11 +364,13 @@ from benchflow import (
     LLMJudgeRewardFunc,
     RubricConfig,
     ScoringConfig,
+    load_rubric,        # dispatches on extension (.toml / .json)
+    load_rubric_json,
     load_rubric_toml,
 )
 
-# Load and inspect a rubric
-rubric = load_rubric_toml(Path("rubric.toml"))
+# Load and inspect a rubric (TOML or Harvey LAB style JSON)
+rubric = load_rubric(Path("rubric.json"))
 print(f"Model: {rubric.judge.model}")
 print(f"Criteria: {len(rubric.criteria)}")
 for c in rubric.criteria:
@@ -331,12 +381,26 @@ for c in rubric.criteria:
 
 ## Worked example — Harvey LAB legal task
 
-A legal document analysis task with per-criterion judge scoring:
+A legal document analysis task scored entirely by config — no `test.sh`:
 
 ```toml
-# rubric.toml
-[judge]
+# task.toml
+[verifier]
+type = "llm-judge"
+timeout_sec = 600
+
+[verifier.judge]
 model = "claude-sonnet-4-6"
+rubric_path = "tests/rubric.toml"
+input_dir = "/app"
+
+[verifier.env]
+ANTHROPIC_API_KEY = "${ANTHROPIC_API_KEY}"
+```
+
+```toml
+# tests/rubric.toml
+[judge]
 files = ["analysis.md"]
 
 [[criterion]]
@@ -364,25 +428,8 @@ weight = 1.0
 aggregation = "weighted_mean"
 ```
 
-```bash
-# tests/test.sh
-#!/bin/bash
-pip install benchflow 2>/dev/null
-
-python3 << 'EOF'
-import asyncio
-from pathlib import Path
-from benchflow.rewards import LLMJudgeRewardFunc
-
-async def main():
-    func = LLMJudgeRewardFunc(rubric_path=Path("/tests/rubric.toml"))
-    score = await func.score(Path("/app"))
-    with open("/logs/verifier/reward.txt", "w") as f:
-        f.write(str(score))
-
-asyncio.run(main())
-EOF
-```
+The framework downloads the agent's deliverables from `/app`, grades each
+criterion, aggregates, and writes `reward.json` — no scripting required.
 
 ---
 

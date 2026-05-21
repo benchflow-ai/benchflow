@@ -56,6 +56,8 @@ from benchflow.rewards import (
     StringMatchRewardFunc,
     TestRewardFunc,
     VerifyResult,
+    load_rubric,
+    load_rubric_json,
     load_rubric_toml,
 )
 from benchflow.rollout import Rollout, RolloutConfig
@@ -115,6 +117,8 @@ __all__ = [
     "JudgeConfig",
     "RubricConfig",
     "ScoringConfig",
+    "load_rubric",
+    "load_rubric_json",
     "load_rubric_toml",
     # Sandbox protocol
     "Sandbox",
