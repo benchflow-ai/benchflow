@@ -24,12 +24,13 @@ def main():
         req_id = msg.get("id")
 
         if method == "initialize":
+            requested = msg.get("params", {}).get("protocolVersion", 1)
             send(
                 {
                     "jsonrpc": "2.0",
                     "id": req_id,
                     "result": {
-                        "protocolVersion": 0,
+                        "protocolVersion": min(requested, 1),
                         "agentInfo": {"name": "interleaved-agent", "version": "1.0.0"},
                         "agentCapabilities": {},
                     },
