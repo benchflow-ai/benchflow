@@ -173,7 +173,18 @@ class BaseSandbox(ABC):
     async def upload_file(self, source_path: Path | str, target_path: str) -> None: ...
 
     @abstractmethod
-    async def upload_dir(self, source_dir: Path | str, target_dir: str) -> None: ...
+    async def upload_dir(
+        self, source_dir: Path | str, target_dir: str, service: str = "main"
+    ) -> None:
+        """Upload a directory into a compose service container.
+
+        ``service`` selects which container receives the files. The default
+        ``"main"`` is the agent container. Multi-container (vulhub-style)
+        tasks pass a target service so the test-script verifier's ``/tests``
+        dir lands in the container being inspected (#248). Single-container
+        backends reject non-``main`` values.
+        """
+        ...
 
     @abstractmethod
     async def download_file(
@@ -181,7 +192,18 @@ class BaseSandbox(ABC):
     ) -> None: ...
 
     @abstractmethod
-    async def download_dir(self, source_dir: str, target_dir: Path | str) -> None: ...
+    async def download_dir(
+        self, source_dir: str, target_dir: Path | str, service: str = "main"
+    ) -> None:
+        """Download a directory from a compose service container.
+
+        ``service`` selects which container the files come from. The default
+        ``"main"`` is the agent container. Multi-container (vulhub-style)
+        tasks pass a target service so target-side verifier output — e.g. a
+        ``reward.txt`` written by a ``test.sh`` running in the target — can be
+        retrieved (#248). Single-container backends reject non-``main`` values.
+        """
+        ...
 
     @abstractmethod
     async def exec(

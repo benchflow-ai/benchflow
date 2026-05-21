@@ -750,6 +750,14 @@ async def harden_before_verify(
     5. chown workspace to root (belt-and-suspenders against zombie sandbox writes).
     6. Remove injected conftest.py, sitecustomize.py, .pth files.
     7. Merge trusted env vars into task.config.verifier.env.
+
+    Cross-container hardening policy (#248): every step here runs against the
+    ``main`` (agent) container only — ``env.exec`` is never passed a
+    ``service``. This is deliberate. In multi-container (vulhub-style) tasks
+    the agent has a shell only in ``main``; the target/database containers are
+    intentionally vulnerable and the agent cannot tamper with them, so they
+    need no anti-tamper hardening. ``[verifier].service`` chooses where
+    ``test.sh`` *runs*; it does not relocate hardening off ``main``.
     """
 
     if sandbox_user:
