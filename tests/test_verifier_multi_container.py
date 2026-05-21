@@ -91,8 +91,13 @@ def _make_task(tmp_path: Path, toml: str) -> MagicMock:
 class _RecordingSandbox:
     """Sandbox stub that records the ``service`` used for each operation."""
 
-    def __init__(self, rollout_paths: RolloutPaths, reward: str = "1.0") -> None:
-        self.is_mounted = False
+    def __init__(
+        self,
+        rollout_paths: RolloutPaths,
+        reward: str = "1.0",
+        is_mounted: bool = False,
+    ) -> None:
+        self.is_mounted = is_mounted
         self._rollout_paths = rollout_paths
         self._reward = reward
         self.upload_calls: list[dict] = []
@@ -169,6 +174,33 @@ class TestTargetSideTestScriptVerification:
 
         assert sandbox.download_calls, "reward must be downloaded from the target"
         assert {c["service"] for c in sandbox.download_calls} == {"target"}
+
+    @pytest.mark.asyncio
+    async def test_mounted_sandbox_still_downloads_from_target_service(
+        self, tmp_path: Path
+    ) -> None:
+        """#248: a host-mounted sandbox must still download target rewards.
+
+        The ``is_mounted`` fast path that skips ``download_dir`` is gated on
+        ``service == "main"`` — only the agent container has the rollout dir
+        bind-mounted. A non-``main`` target service is never mounted, so its
+        ``reward.txt`` must still be downloaded even when the sandbox is
+        otherwise mounted. This fails (RewardFileNotFoundError) if the
+        ``service == "main" and`` guard on the fast path is dropped.
+        """
+        toml = 'version = "1.0"\n[verifier]\nservice = "target"\n'
+        task = _make_task(tmp_path, toml)
+        rollout_paths = RolloutPaths(rollout_dir=tmp_path / "rollout")
+        rollout_paths.mkdir()
+        sandbox = _RecordingSandbox(rollout_paths, reward="1.0", is_mounted=True)
+
+        result = await Verifier(task, rollout_paths, sandbox).verify()
+
+        assert sandbox.download_calls, (
+            "target reward must be downloaded even when the sandbox is mounted"
+        )
+        assert {c["service"] for c in sandbox.download_calls} == {"target"}
+        assert result.rewards == {"reward": 1.0}
 
 
 # ---------------------------------------------------------------------------
