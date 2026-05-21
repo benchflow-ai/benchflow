@@ -25,13 +25,21 @@ rather than HTTP / OTLP traffic.
 
 from .otel import OTelCollector
 from .proxy import TrajectoryProxy
+from .tree import RolloutNode, RolloutTree, Step, branch_points, trajectory
 from .types import LLMExchange, LLMRequest, LLMResponse, Trajectory
 
 __all__ = [
+    # raw LLM-traffic capture schema
     "LLMExchange",
     "LLMRequest",
     "LLMResponse",
     "OTelCollector",
     "Trajectory",
     "TrajectoryProxy",
+    # tree-native Rollout data model
+    "RolloutNode",
+    "RolloutTree",
+    "Step",
+    "branch_points",
+    "trajectory",
 ]
