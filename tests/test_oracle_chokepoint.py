@@ -89,8 +89,6 @@ class TestEvalCreateRouting:
 
     def test_eval_create_normalizes_agent_alias(self, tmp_path: Path):
         """Guards ENG-86: eval create normalizes aliases before launch."""
-        import asyncio
-
         from benchflow.cli.main import eval_create
 
         task = tmp_path / "task"
@@ -110,36 +108,31 @@ class TestEvalCreateRouting:
                 n_tool_calls=0,
             )
 
-        try:
-            with patch("benchflow.sdk.SDK.run", new=fake_run):
-                eval_create(
-                    config_file=None,
-                    tasks_dir=task,
-                    source_repo=None,
-                    source_path=None,
-                    source_ref=None,
-                    agent="codex",
-                    model="gpt-4o",
-                    environment="docker",
-                    concurrency=1,
-                    jobs_dir=str(tmp_path / "jobs"),
-                    sandbox_user="agent",
-                    sandbox_setup_timeout=120,
-                    skills_dir=None,
-                    skill_mode="default",
-                    skill_creator_dir=None,
-                    self_gen_no_internet=False,
-                    agent_env=None,
-                )
-        finally:
-            asyncio.set_event_loop(asyncio.new_event_loop())
+        with patch("benchflow.sdk.SDK.run", new=fake_run):
+            eval_create(
+                config_file=None,
+                tasks_dir=task,
+                source_repo=None,
+                source_path=None,
+                source_ref=None,
+                agent="codex",
+                model="gpt-4o",
+                environment="docker",
+                concurrency=1,
+                jobs_dir=str(tmp_path / "jobs"),
+                sandbox_user="agent",
+                sandbox_setup_timeout=120,
+                skills_dir=None,
+                skill_mode="default",
+                skill_creator_dir=None,
+                self_gen_no_internet=False,
+                agent_env=None,
+            )
 
         assert captured["agent"] == "codex-acp"
 
     def test_eval_create_normalizes_sandbox_user_none(self, tmp_path: Path):
         """Guards ENG-91 P0 dogfood sandbox-user CLI regression."""
-        import asyncio
-
         from benchflow.cli.main import eval_create
 
         task = tmp_path / "task"
@@ -159,29 +152,26 @@ class TestEvalCreateRouting:
                 n_tool_calls=0,
             )
 
-        try:
-            with patch("benchflow.sdk.SDK.run", new=fake_run):
-                eval_create(
-                    config_file=None,
-                    tasks_dir=task,
-                    source_repo=None,
-                    source_path=None,
-                    source_ref=None,
-                    agent="oracle",
-                    model=None,
-                    environment="docker",
-                    concurrency=1,
-                    jobs_dir=str(tmp_path / "jobs"),
-                    sandbox_user="none",
-                    sandbox_setup_timeout=120,
-                    skills_dir=None,
-                    skill_mode="default",
-                    skill_creator_dir=None,
-                    self_gen_no_internet=False,
-                    agent_env=None,
-                )
-        finally:
-            asyncio.set_event_loop(asyncio.new_event_loop())
+        with patch("benchflow.sdk.SDK.run", new=fake_run):
+            eval_create(
+                config_file=None,
+                tasks_dir=task,
+                source_repo=None,
+                source_path=None,
+                source_ref=None,
+                agent="oracle",
+                model=None,
+                environment="docker",
+                concurrency=1,
+                jobs_dir=str(tmp_path / "jobs"),
+                sandbox_user="none",
+                sandbox_setup_timeout=120,
+                skills_dir=None,
+                skill_mode="default",
+                skill_creator_dir=None,
+                self_gen_no_internet=False,
+                agent_env=None,
+            )
 
         assert captured["sandbox_user"] is None
 
@@ -205,7 +195,6 @@ class TestEvalCreateRouting:
         self, tmp_path: Path
     ):
         """Guards the ENG-86 fix from commit b69bdf4 for config-file agents."""
-        import asyncio
         from types import SimpleNamespace
 
         from benchflow.cli.main import eval_create
@@ -222,11 +211,8 @@ class TestEvalCreateRouting:
             captured["model"] = self._config.model
             return SimpleNamespace(passed=0, total=0, score=0.0, errored=0)
 
-        try:
-            with patch.object(Evaluation, "run", new=fake_run):
-                eval_create(config_file=config)
-        finally:
-            asyncio.set_event_loop(asyncio.new_event_loop())
+        with patch.object(Evaluation, "run", new=fake_run):
+            eval_create(config_file=config)
 
         assert captured == {"agent": "oracle", "model": None}
 
@@ -234,8 +220,6 @@ class TestEvalCreateRouting:
         self, tmp_path: Path, monkeypatch
     ):
         """Guards ENG-78: CLI runs inherit provider keys without --agent-env."""
-        import asyncio
-
         from benchflow.cli.main import eval_create
 
         task = tmp_path / "task"
@@ -262,29 +246,26 @@ class TestEvalCreateRouting:
                 n_tool_calls=0,
             )
 
-        try:
-            with patch("benchflow.sdk.SDK.run", new=fake_run):
-                eval_create(
-                    config_file=None,
-                    tasks_dir=task,
-                    source_repo=None,
-                    source_path=None,
-                    source_ref=None,
-                    agent="gemini",
-                    model="gemini-3.1-flash-lite-preview",
-                    environment="docker",
-                    concurrency=1,
-                    jobs_dir=str(tmp_path / "jobs"),
-                    sandbox_user="agent",
-                    sandbox_setup_timeout=120,
-                    skills_dir=None,
-                    skill_mode="default",
-                    skill_creator_dir=None,
-                    self_gen_no_internet=False,
-                    agent_env=None,
-                )
-        finally:
-            asyncio.set_event_loop(asyncio.new_event_loop())
+        with patch("benchflow.sdk.SDK.run", new=fake_run):
+            eval_create(
+                config_file=None,
+                tasks_dir=task,
+                source_repo=None,
+                source_path=None,
+                source_ref=None,
+                agent="gemini",
+                model="gemini-3.1-flash-lite-preview",
+                environment="docker",
+                concurrency=1,
+                jobs_dir=str(tmp_path / "jobs"),
+                sandbox_user="agent",
+                sandbox_setup_timeout=120,
+                skills_dir=None,
+                skill_mode="default",
+                skill_creator_dir=None,
+                self_gen_no_internet=False,
+                agent_env=None,
+            )
 
         assert captured["kwargs"]["agent_env"] == {}
         assert captured["resolved_agent_env"]["GEMINI_API_KEY"] == "from-host"
@@ -294,7 +275,6 @@ class TestEvalCreateRouting:
         self, tmp_path: Path, monkeypatch
     ):
         """Guards release smokes: .env sandbox credentials reach provider SDKs."""
-        import asyncio
         import os
 
         from benchflow.cli.main import eval_create
@@ -324,29 +304,26 @@ class TestEvalCreateRouting:
                 n_tool_calls=0,
             )
 
-        try:
-            with patch("benchflow.sdk.SDK.run", new=fake_run):
-                eval_create(
-                    config_file=None,
-                    tasks_dir=task,
-                    source_repo=None,
-                    source_path=None,
-                    source_ref=None,
-                    agent="oracle",
-                    model=None,
-                    environment="daytona",
-                    concurrency=1,
-                    jobs_dir=str(tmp_path / "jobs"),
-                    sandbox_user="agent",
-                    sandbox_setup_timeout=120,
-                    skills_dir=None,
-                    skill_mode="default",
-                    skill_creator_dir=None,
-                    self_gen_no_internet=False,
-                    agent_env=None,
-                )
-        finally:
-            asyncio.set_event_loop(asyncio.new_event_loop())
+        with patch("benchflow.sdk.SDK.run", new=fake_run):
+            eval_create(
+                config_file=None,
+                tasks_dir=task,
+                source_repo=None,
+                source_path=None,
+                source_ref=None,
+                agent="oracle",
+                model=None,
+                environment="daytona",
+                concurrency=1,
+                jobs_dir=str(tmp_path / "jobs"),
+                sandbox_user="agent",
+                sandbox_setup_timeout=120,
+                skills_dir=None,
+                skill_mode="default",
+                skill_creator_dir=None,
+                self_gen_no_internet=False,
+                agent_env=None,
+            )
 
         assert captured == {
             "daytona": "from-dotenv",
@@ -575,10 +552,8 @@ class TestEvalCreateOracleCLI:
 
     This is the user-visible bug the chokepoint test guards against at the
     unit level. Here we call the live handler (cli/main.py:eval_create)
-    directly — invoking via Typer's CliRunner triggers asyncio.run()
-    internally, which leaves no current event loop and breaks pre-existing
-    tests in the suite that use the deprecated asyncio.get_event_loop()
-    pattern. Calling the function directly still exercises the full
+    directly rather than through Typer's CliRunner; the handler still runs
+    asyncio.run() internally, exercising the full
     CLI → effective_model → RolloutConfig → resolve_agent_env path the bug
     originally lived in.
     """
@@ -604,16 +579,10 @@ class TestEvalCreateOracleCLI:
 
     def test_oracle_single_task_no_api_key_no_error(self, tmp_path: Path, monkeypatch):
         """The bug: oracle + missing API key → ANTHROPIC_API_KEY ValueError."""
-        import asyncio
         from types import SimpleNamespace
 
         from benchflow.cli.main import eval_create
         from benchflow.models import RunResult
-
-        # The CLI handler internally calls asyncio.run(), which leaves no
-        # current event loop. Pre-existing tests in the suite use the
-        # deprecated asyncio.get_event_loop() and break in that state, so
-        # restore a fresh loop after the test (teardown via finally below).
 
         self._strip_api_keys(monkeypatch)
         task = self._make_task(tmp_path)
@@ -640,21 +609,18 @@ class TestEvalCreateOracleCLI:
             )
             return trial
 
-        try:
-            with patch("benchflow.rollout.Rollout.create", new=fake_create):
-                eval_create(
-                    config_file=None,
-                    tasks_dir=task,
-                    agent="oracle",
-                    model=None,
-                    environment="docker",
-                    concurrency=1,
-                    jobs_dir=str(tmp_path / "jobs"),
-                    sandbox_user="agent",
-                    skills_dir=None,
-                )
-        finally:
-            asyncio.set_event_loop(asyncio.new_event_loop())
+        with patch("benchflow.rollout.Rollout.create", new=fake_create):
+            eval_create(
+                config_file=None,
+                tasks_dir=task,
+                agent="oracle",
+                model=None,
+                environment="docker",
+                concurrency=1,
+                jobs_dir=str(tmp_path / "jobs"),
+                sandbox_user="agent",
+                skills_dir=None,
+            )
 
         cfg = captured["config"]
         # Layer 3: oracle never receives a model, even when CLI defaults exist.

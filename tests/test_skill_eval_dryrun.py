@@ -11,7 +11,6 @@ Mocks the Evaluation.run() to avoid Docker/API dependencies while verifying:
 8. Cleanup removes ephemeral tasks
 """
 
-import asyncio
 import json
 import tempfile
 from pathlib import Path
@@ -176,7 +175,7 @@ class TestDryRunPipeline:
         assert "COPY skills/" not in without_df
 
     @patch("benchflow.evaluation.Evaluation")
-    def test_evaluator_configures_job_correctly(self, MockJob, mock_skill):
+    async def test_evaluator_configures_job_correctly(self, MockJob, mock_skill):
         """Verify SkillEvaluator passes correct config to Evaluation."""
         mock_job_instance = MockJob.return_value
         mock_job_instance.run = AsyncMock(
@@ -195,14 +194,12 @@ class TestDryRunPipeline:
         )
 
         evaluator = SkillEvaluator(mock_skill)
-        asyncio.run(
-            evaluator.run(
-                agents=["claude-agent-acp"],
-                models=["claude-haiku-4-5-20251001"],
-                environment="docker",
-                concurrency=2,
-                no_baseline=True,
-            )
+        await evaluator.run(
+            agents=["claude-agent-acp"],
+            models=["claude-haiku-4-5-20251001"],
+            environment="docker",
+            concurrency=2,
+            no_baseline=True,
         )
 
         # Evaluation was called at least once (with-skill run)

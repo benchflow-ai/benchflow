@@ -1,6 +1,5 @@
 """Tests for path lockdown — _validate_locked_path, _resolve_locked_paths, lockdown_paths."""
 
-import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -117,30 +116,30 @@ class TestLockdownPaths:
         """Extract the lockdown command (single exec call)."""
         return mock_env.exec.call_args_list[0][0][0]
 
-    def test_noop_empty_paths(self, mock_env):
-        asyncio.run(lockdown_paths(mock_env, []))
+    async def test_noop_empty_paths(self, mock_env):
+        await lockdown_paths(mock_env, [])
         mock_env.exec.assert_not_called()
 
-    def test_chown_before_chmod_and_symlink_skip(self, mock_env):
-        asyncio.run(lockdown_paths(mock_env, ["/solution"]))
+    async def test_chown_before_chmod_and_symlink_skip(self, mock_env):
+        await lockdown_paths(mock_env, ["/solution"])
         assert mock_env.exec.call_count == 1
         cmd = self._get_lockdown_cmd(mock_env)
         assert cmd.index("chown root:root") < cmd.index("chmod 700")
         assert '[ -L "$d" ]' in cmd
 
-    def test_multiple_paths(self, mock_env):
-        asyncio.run(lockdown_paths(mock_env, ["/solution", "/tests", "/data"]))
+    async def test_multiple_paths(self, mock_env):
+        await lockdown_paths(mock_env, ["/solution", "/tests", "/data"])
         cmd = self._get_lockdown_cmd(mock_env)
         for p in ["/solution", "/tests", "/data"]:
             assert f"for d in {p}" in cmd
 
-    def test_glob_expansion(self, mock_env):
-        asyncio.run(lockdown_paths(mock_env, ["/app-*"]))
+    async def test_glob_expansion(self, mock_env):
+        await lockdown_paths(mock_env, ["/app-*"])
         assert "for d in /app-*" in self._get_lockdown_cmd(mock_env)
 
-    def test_validation_rejects_bad_path(self, mock_env):
+    async def test_validation_rejects_bad_path(self, mock_env):
         with pytest.raises(ValueError):
-            asyncio.run(lockdown_paths(mock_env, ["/solution/../etc"]))
+            await lockdown_paths(mock_env, ["/solution/../etc"])
         mock_env.exec.assert_not_called()
 
 
