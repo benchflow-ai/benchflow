@@ -142,6 +142,15 @@ class VerifierConfig(BaseModel):
         default_factory=JudgeVerifierConfig,
         description="LLM-judge configuration (used when type == 'llm-judge').",
     )
+    pytest_plugins: list[str] = Field(
+        default_factory=list,
+        description=(
+            "pytest11 plugin names to allow under PYTEST_DISABLE_PLUGIN_AUTOLOAD=1. "
+            "Container-side auto-discovery handles most cases; this is the "
+            "explicit fallback for plugins that discovery cannot see "
+            "(e.g. ctrf, playwright)."
+        ),
+    )
 
 
 class AgentConfig(BaseModel):

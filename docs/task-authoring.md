@@ -53,6 +53,42 @@ env             = { OPENAI_API_KEY = "${OPENAI_API_KEY}" }  # host vars to injec
 
 ---
 
+## Multi-container tasks
+
+A task may ship an `environment/docker-compose.yaml` alongside (or instead of)
+the `Dockerfile`. The agent always runs in the `main` service; any additional
+services you declare become sibling containers on the same Docker network.
+This supports vulhub-style CVE tasks where the agent attacks a separate target
+container over the network.
+
+```yaml
+# environment/docker-compose.yaml
+services:
+  main: {}            # agent container — BenchFlow injects build/image/limits
+  target:             # vulnerable service the agent must exploit
+    image: vulhub/struts2-s2-001:latest
+    expose: ["8080"]
+```
+
+`main` reaches `target` by service name (`http://target:8080`). The verifier
+can inspect *target-side* state — not just the agent's workspace — by passing
+a `service` argument when running commands:
+
+```python
+# In a Python-driven run or pre/post hook
+await env.exec_in_service("target", "test -f /tmp/exploit_proof.txt")
+await env.exec("cat /flag", service="target")          # equivalent form
+services = await env.inner.services()                  # ["main", "target"]
+```
+
+`exec(..., service=...)` works on the Docker sandbox and the Daytona DinD
+(compose) sandbox. Single-container backends (Modal, direct Daytona) raise a
+clear error for any non-`main` service. This lets a verifier check
+write-based oracles (`/tmp/exploit.txt` in the target), database modifications,
+or RCE markers without trusting the agent container.
+
+---
+
 ## instruction.md
 
 The first prompt sent to the agent. Write it as you would for a skilled developer:
