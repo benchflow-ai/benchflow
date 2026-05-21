@@ -296,3 +296,53 @@ class TestJobRunOrchestration:
 
         assert result.errored == 1
         assert any("unexpected exception: boom" in m for m in caplog.messages)
+
+    @pytest.mark.asyncio
+    async def test_summary_json_includes_usage_aggregation(self, tmp_path):
+        job = self._make_job(tmp_path, n_tasks=3, concurrency=1)
+        job._sdk = AsyncMock()
+        job._sdk.run = AsyncMock(
+            side_effect=[
+                RunResult(
+                    task_name="task-0",
+                    rewards={"reward": 1.0},
+                    n_input_tokens=100,
+                    n_output_tokens=10,
+                    n_cache_read_tokens=5,
+                    n_cache_creation_tokens=1,
+                    total_tokens=116,
+                    cost_usd=0.001,
+                    usage_source="provider_response",
+                    price_source="pricing_table_2026-05",
+                ),
+                RunResult(
+                    task_name="task-1",
+                    rewards={"reward": 1.0},
+                    n_input_tokens=200,
+                    n_output_tokens=20,
+                    n_cache_read_tokens=0,
+                    n_cache_creation_tokens=4,
+                    total_tokens=224,
+                    cost_usd=0.002,
+                    usage_source="provider_response",
+                    price_source="pricing_table_2026-05",
+                ),
+                RunResult(
+                    task_name="task-2",
+                    rewards={"reward": 1.0},
+                    usage_source="unavailable",
+                ),
+            ]
+        )
+
+        await job.run()
+
+        summary = json.loads((job._jobs_dir / "summary.json").read_text())
+        assert summary["total_input_tokens"] == 300
+        assert summary["total_output_tokens"] == 30
+        assert summary["total_cache_read_tokens"] == 5
+        assert summary["total_cache_creation_tokens"] == 5
+        assert summary["total_tokens"] == 340
+        assert summary["total_cost_usd"] == 0.003
+        assert summary["avg_cost_per_trial_usd"] == 0.0015
+        assert summary["telemetry_coverage"] == 2 / 3

@@ -14,6 +14,8 @@ from benchflow.rewards.rubric_config import (
     JudgeConfig,
     RubricConfig,
     ScoringConfig,
+    load_rubric,
+    load_rubric_json,
     load_rubric_toml,
 )
 
@@ -30,5 +32,7 @@ __all__ = [
     "StringMatchRewardFunc",
     "TestRewardFunc",
     "VerifyResult",
+    "load_rubric",
+    "load_rubric_json",
     "load_rubric_toml",
 ]

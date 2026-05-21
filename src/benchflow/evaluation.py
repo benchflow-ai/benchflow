@@ -159,6 +159,58 @@ class EvaluationResult:
         return pass_rate_excl_errors(passed=self.passed, failed=self.failed)
 
 
+def _agent_result_from_rollout(result: RunResult) -> dict[str, Any]:
+    """Return the serialized agent_result block for an in-memory rollout result."""
+    return {
+        "n_tool_calls": result.n_tool_calls,
+        "n_prompts": result.n_prompts,
+        "n_input_tokens": result.n_input_tokens,
+        "n_output_tokens": result.n_output_tokens,
+        "n_cache_read_tokens": result.n_cache_read_tokens,
+        "n_cache_creation_tokens": result.n_cache_creation_tokens,
+        "total_tokens": result.total_tokens,
+        "cost_usd": result.cost_usd,
+        "usage_source": result.usage_source,
+        "price_source": result.price_source,
+    }
+
+
+def _usage_summary(results: dict[str, dict]) -> dict[str, Any]:
+    """Aggregate provider telemetry fields for summary.json."""
+    completed = [
+        r
+        for r in results.values()
+        if r.get("rewards") is not None
+        and not r.get("error")
+        and not r.get("verifier_error")
+    ]
+    covered = [
+        r
+        for r in completed
+        if (r.get("agent_result") or {}).get("usage_source") == "provider_response"
+    ]
+
+    def total(field: str) -> int:
+        return sum((r.get("agent_result") or {}).get(field) or 0 for r in covered)
+
+    total_cost = round(
+        sum((r.get("agent_result") or {}).get("cost_usd") or 0.0 for r in covered),
+        10,
+    )
+    return {
+        "total_input_tokens": total("n_input_tokens"),
+        "total_output_tokens": total("n_output_tokens"),
+        "total_cache_read_tokens": total("n_cache_read_tokens"),
+        "total_cache_creation_tokens": total("n_cache_creation_tokens"),
+        "total_tokens": total("total_tokens"),
+        "total_cost_usd": total_cost,
+        "avg_cost_per_trial_usd": (
+            round(total_cost / len(covered), 10) if covered else None
+        ),
+        "telemetry_coverage": (len(covered) / len(completed) if completed else 0.0),
+    }
+
+
 class Evaluation:
     """Run a benchmark job across multiple tasks.
 
@@ -607,6 +659,7 @@ class Evaluation:
                 "error": result.error,
                 "verifier_error": result.verifier_error,
                 "n_tool_calls": result.n_tool_calls,
+                "agent_result": _agent_result_from_rollout(result),
             }
 
         # Count — all values are dicts now, no type branching needed
@@ -656,6 +709,7 @@ class Evaluation:
             "score": f"{job_result.score:.1%}",
             "score_excl_errors": f"{job_result.score_excl_errors:.1%}",
             "elapsed_sec": elapsed,
+            **_usage_summary(all_results),
         }
         (self._jobs_dir / "summary.json").write_text(json.dumps(summary, indent=2))
 

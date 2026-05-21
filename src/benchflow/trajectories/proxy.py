@@ -4,9 +4,13 @@ Supports both non-streaming and streaming (SSE) responses.
 """
 
 import asyncio
+import gzip
+import importlib
+import io
 import json
 import logging
 import time
+import zlib
 from datetime import datetime
 from typing import Any
 
@@ -17,6 +21,8 @@ from .types import LLMExchange, LLMRequest, LLMResponse, Trajectory
 logger = logging.getLogger(__name__)
 
 _RAW_RESP_TRUNCATE = 10000  # max chars for non-JSON response body capture
+_RAW_REQ_TRUNCATE = 10000  # max chars for non-JSON request body capture
+_PROMPT_CACHE_RETENTION_VALUES = {"in_memory", "24h"}
 
 
 class TrajectoryProxy:
@@ -34,10 +40,20 @@ class TrajectoryProxy:
         agent_name: str = "",
         host: str = "127.0.0.1",
         port: int = 0,
+        prompt_cache_retention: str | None = None,
     ):
+        if (
+            prompt_cache_retention is not None
+            and prompt_cache_retention not in _PROMPT_CACHE_RETENTION_VALUES
+        ):
+            raise ValueError(
+                "prompt_cache_retention must be one of: "
+                f"{', '.join(sorted(_PROMPT_CACHE_RETENTION_VALUES))}"
+            )
         self._target = target.rstrip("/")
         self._host = host
         self._port = port
+        self._prompt_cache_retention = prompt_cache_retention
         self._trajectory = Trajectory(
             session_id=session_id,
             agent_name=agent_name,
@@ -54,10 +70,16 @@ class TrajectoryProxy:
         return f"http://{self._host}:{self._port}"
 
     @property
+    def target(self) -> str:
+        """Upstream URL this proxy forwards to (normalized, no trailing slash)."""
+        return self._target
+
+    @property
     def trajectory(self) -> Trajectory:
         return self._trajectory
 
     async def start(self) -> None:
+        logging.getLogger("httpx").setLevel(logging.WARNING)
         self._client = httpx.AsyncClient(timeout=httpx.Timeout(600.0))
         self._server = await asyncio.start_server(
             self._handle_connection, self._host, self._port
@@ -107,12 +129,14 @@ class TrajectoryProxy:
                 if content_length > 0:
                     body_bytes = await reader.readexactly(content_length)
 
-                body: dict[str, Any] = {}
-                if body_bytes:
-                    try:
-                        body = json.loads(body_bytes)
-                    except json.JSONDecodeError:
-                        body = {"raw": body_bytes.decode(errors="replace")}
+                body = _parse_request_body(body_bytes, headers)
+                body, body_bytes, headers = _apply_prompt_cache_retention(
+                    body=body,
+                    body_bytes=body_bytes,
+                    headers=headers,
+                    path=path,
+                    prompt_cache_retention=self._prompt_cache_retention,
+                )
 
                 req = LLMRequest(
                     method=method,
@@ -250,6 +274,7 @@ class TrajectoryProxy:
 
             # Collect SSE events while forwarding
             collected_events: list[dict[str, Any]] = []
+            sse_buffer = ""
 
             async for chunk in resp.aiter_bytes():
                 # Forward chunk to agent
@@ -258,8 +283,12 @@ class TrajectoryProxy:
                 await writer.drain()
 
                 # Parse SSE events from chunk
-                for event in _parse_sse_events(chunk):
-                    collected_events.append(event)
+                events, sse_buffer = _parse_sse_events_buffer(
+                    sse_buffer + chunk.decode(errors="replace")
+                )
+                collected_events.extend(events)
+            if sse_buffer.strip():
+                collected_events.extend(_parse_sse_events(sse_buffer.encode()))
 
             # End chunked encoding
             writer.write(b"0\r\n\r\n")
@@ -267,8 +296,15 @@ class TrajectoryProxy:
 
         duration_ms = (time.monotonic() - start_time) * 1000
 
-        # Reconstruct the final response from collected SSE events
-        resp_body = _reconstruct_response(collected_events)
+        # Reconstruct the final response from collected SSE events. The stream
+        # has already been fully forwarded to the agent at this point, so a
+        # reconstruction failure must not propagate — it would write a bogus
+        # 502 onto a completed response and drop the exchange. Degrade instead.
+        try:
+            resp_body = _reconstruct_response(collected_events)
+        except Exception as e:
+            logger.warning(f"SSE response reconstruction failed: {e}")
+            resp_body = {}
         self._record_exchange(
             req, resp.status_code, dict(resp.headers), resp_body, duration_ms
         )
@@ -311,6 +347,131 @@ def _parse_sse_events(chunk: bytes) -> list[dict[str, Any]]:
     return events
 
 
+def _parse_sse_events_buffer(buffer: str) -> tuple[list[dict[str, Any]], str]:
+    """Parse complete SSE events and return unconsumed trailing text."""
+    normalized = buffer.replace("\r\n", "\n")
+    events: list[dict[str, Any]] = []
+    while "\n\n" in normalized:
+        raw_event, normalized = normalized.split("\n\n", 1)
+        data_lines = []
+        for line in raw_event.split("\n"):
+            line = line.strip()
+            if line.startswith("data:"):
+                data_lines.append(line[5:].lstrip())
+        if not data_lines:
+            continue
+        data = "\n".join(data_lines)
+        if data == "[DONE]":
+            continue
+        try:
+            events.append(json.loads(data))
+        except json.JSONDecodeError:
+            logger.debug("Skipping malformed SSE event")
+    return events, normalized
+
+
+def _parse_request_body(body_bytes: bytes, headers: dict[str, str]) -> dict[str, Any]:
+    """Parse a possibly-compressed JSON request body for telemetry capture."""
+    if not body_bytes:
+        return {}
+
+    decoded = _decode_request_body(
+        body_bytes, headers.get("content-encoding", "identity")
+    )
+    try:
+        parsed = json.loads(decoded)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return {"raw": decoded.decode(errors="replace")[:_RAW_REQ_TRUNCATE]}
+
+    if isinstance(parsed, dict):
+        return parsed
+    return {"raw": parsed}
+
+
+def _apply_prompt_cache_retention(
+    *,
+    body: dict[str, Any],
+    body_bytes: bytes,
+    headers: dict[str, str],
+    path: str,
+    prompt_cache_retention: str | None,
+) -> tuple[dict[str, Any], bytes, dict[str, str]]:
+    """Inject OpenAI prompt_cache_retention when configured."""
+    if not prompt_cache_retention or not _is_openai_generation_path(path):
+        return body, body_bytes, headers
+    if "raw" in body or "prompt_cache_retention" in body:
+        return body, body_bytes, headers
+
+    updated_body = {**body, "prompt_cache_retention": prompt_cache_retention}
+    updated_body_bytes = json.dumps(updated_body, separators=(",", ":")).encode()
+    updated_headers = {
+        k: v
+        for k, v in headers.items()
+        if k not in {"content-length", "content-encoding"}
+    }
+    updated_headers.setdefault("content-type", "application/json")
+    return updated_body, updated_body_bytes, updated_headers
+
+
+def _is_openai_generation_path(path: str) -> bool:
+    request_path = path.split("?", 1)[0].rstrip("/")
+    return request_path.endswith("/responses") or request_path.endswith(
+        "/chat/completions"
+    )
+
+
+def _decode_request_body(body_bytes: bytes, content_encoding: str) -> bytes:
+    """Decode HTTP content encodings so JSON fields such as stream are visible."""
+    decoded = body_bytes
+    encodings = [
+        part.strip().lower()
+        for part in content_encoding.split(",")
+        if part.strip() and part.strip().lower() != "identity"
+    ]
+    for encoding in reversed(encodings):
+        try:
+            if encoding == "gzip":
+                decoded = gzip.decompress(decoded)
+            elif encoding == "deflate":
+                decoded = zlib.decompress(decoded)
+            elif encoding == "zstd":
+                decoded = _decompress_zstd(decoded)
+            elif encoding == "br":
+                decoded = _decompress_brotli(decoded)
+            else:
+                logger.debug("Unsupported request content-encoding: %s", encoding)
+                return body_bytes
+        except Exception as e:
+            logger.debug("Could not decode %s request body: %s", encoding, e)
+            return body_bytes
+    return decoded
+
+
+def _decompress_zstd(data: bytes) -> bytes:
+    try:
+        zstd = importlib.import_module("zstandard")
+    except ImportError:
+        logger.debug("zstandard is unavailable; leaving request body compressed")
+        return data
+
+    dctx = zstd.ZstdDecompressor()
+    try:
+        return dctx.decompress(data)
+    except zstd.ZstdError:
+        with dctx.stream_reader(io.BytesIO(data)) as reader:
+            return reader.read()
+
+
+def _decompress_brotli(data: bytes) -> bytes:
+    try:
+        brotli = importlib.import_module("brotli")
+    except ImportError:
+        logger.debug("brotli is unavailable; leaving request body compressed")
+        return data
+
+    return brotli.decompress(data)
+
+
 def _reconstruct_response(events: list[dict[str, Any]]) -> dict[str, Any]:
     """Reconstruct a complete API response from SSE events.
 
@@ -346,7 +507,11 @@ def _reconstruct_response(events: list[dict[str, Any]]) -> dict[str, Any]:
                 if delta.get("type") == "text_delta":
                     block["text"] = block.get("text", "") + delta.get("text", "")
                 elif delta.get("type") == "input_json_delta":
-                    block.setdefault("input", "")
+                    # content_block_start seeds tool_use input as {}; the
+                    # streamed partial_json fragments are accumulated as a
+                    # string and parsed back to JSON once the block closes.
+                    if not isinstance(block.get("input"), str):
+                        block["input"] = ""
                     block["input"] += delta.get("partial_json", "")
 
         elif event_type == "message_delta":
@@ -377,6 +542,12 @@ def _reconstruct_response(events: list[dict[str, Any]]) -> dict[str, Any]:
         }
 
     # Try OpenAI format: collect delta chunks
+    for event in events:
+        if event.get("type") == "response.completed" and isinstance(
+            event.get("response"), dict
+        ):
+            return event["response"]
+
     openai_content = ""
     openai_tool_calls: list[dict] = []
     openai_model = ""

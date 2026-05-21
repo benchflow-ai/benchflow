@@ -860,6 +860,37 @@ class TestVerifierEnv:
         assert "-p myplug" in addopts
         assert final_env.get("PYTEST_DISABLE_PLUGIN_AUTOLOAD") == "1"
 
+    def test_verifier_config_keeps_pytest_plugins_from_toml(self):
+        """Guards issue #192 bug 2: a [verifier] pytest_plugins declaration in
+        task.toml must survive parsing into VerifierConfig.
+
+        lockdown._discover_pytest_plugin_flags reads
+        task.config.verifier.pytest_plugins as the fallback when container-side
+        plugin auto-discovery cannot see a plugin (e.g. pytest-json-ctrf's
+        'ctrf' entry point, pytest-playwright's 'page' fixture). Before this
+        fix, VerifierConfig had no pytest_plugins field, so pydantic silently
+        dropped the key and the documented fallback was dead code — the
+        video-tutorial-indexer verifier ran zero tests with `No module named
+        'ctrf'`. The previous mock-based tests passed because they set the
+        attribute directly on a MagicMock, hiding the missing field.
+        """
+        from benchflow.task.config import TaskConfig, VerifierConfig
+
+        # Default is an empty list, not None — safe to iterate unconditionally.
+        assert VerifierConfig().pytest_plugins == []
+
+        toml = (
+            "[verifier]\n"
+            "timeout_sec = 120\n"
+            "pytest_plugins = ['ctrf', 'playwright']\n"
+            "[verifier.hardening]\n"
+            "cleanup_conftests = false\n"
+        )
+        cfg = TaskConfig.model_validate_toml(toml)
+        assert cfg.verifier.pytest_plugins == ["ctrf", "playwright"], (
+            "pytest_plugins declared in task.toml [verifier] was dropped"
+        )
+
     @pytest.mark.asyncio
     @pytest.mark.parametrize("plugins", [None, []])
     async def test_no_extra_addopts_when_no_plugins(self, plugins):

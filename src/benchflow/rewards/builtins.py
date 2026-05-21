@@ -15,7 +15,7 @@ from benchflow.rewards.rubric_config import (
     JudgeConfig,
     RubricConfig,
     ScoringConfig,
-    load_rubric_toml,
+    load_rubric,
 )
 
 logger = logging.getLogger(__name__)
@@ -170,6 +170,9 @@ class LLMJudgeRewardFunc:
         self._rubric_path = rubric_path
         self._inline_criteria = criteria
         self._events: list[RewardEvent] = []
+        # An explicit judge model overrides the model declared inside a rubric
+        # file — so a task can configure the judge per ``task.toml`` (#270).
+        self._model_override = judge_model
 
     @property
     def events(self) -> list[RewardEvent]:
@@ -180,7 +183,7 @@ class LLMJudgeRewardFunc:
         """Resolve rubric config from explicit path, inline criteria, or
         auto-discovery in the rollout directory."""
         if self._rubric_path is not None:
-            return load_rubric_toml(self._rubric_path)
+            return load_rubric(self._rubric_path)
 
         if self._inline_criteria is not None:
             parsed = []
@@ -205,13 +208,15 @@ class LLMJudgeRewardFunc:
                 scoring=ScoringConfig(),
             )
 
-        # Auto-discover rubric.toml in rollout directory
+        # Auto-discover rubric.toml / rubric.json in rollout directory
         for candidate in [
             rollout_dir / "rubric.toml",
+            rollout_dir / "rubric.json",
             rollout_dir / ".." / "rubric.toml",
+            rollout_dir / ".." / "rubric.json",
         ]:
             if candidate.exists():
-                return load_rubric_toml(candidate)
+                return load_rubric(candidate)
 
         return None
 
@@ -249,7 +254,9 @@ class LLMJudgeRewardFunc:
         from benchflow.rewards.file_readers import find_deliverables
         from benchflow.rewards.llm import call_judge, parse_verdict
 
-        model = rubric.judge.model
+        # An explicit judge model (e.g. from [verifier.judge].model) overrides
+        # the model declared inside the rubric file.
+        model = self._model_override or rubric.judge.model
         deliverables = find_deliverables(rollout_dir)
 
         # Also check common subdirectories

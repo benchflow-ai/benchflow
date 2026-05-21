@@ -45,6 +45,10 @@ async def test_trial_connect_starts_bedrock_runtime_before_connect_acp(tmp_path)
                 )
             ),
         ) as ensure_runtime,
+        patch(
+            "benchflow.rollout.ensure_usage_proxy_runtime",
+            new=AsyncMock(side_effect=lambda **kwargs: (kwargs["agent_env"], None)),
+        ),
         patch("benchflow.rollout.connect_acp", new_callable=AsyncMock) as connect_acp,
     ):
         connect_acp.return_value = (AsyncMock(), AsyncMock(), "codex-acp")
@@ -110,6 +114,10 @@ async def test_trial_connect_as_starts_bedrock_runtime_for_role(tmp_path):
                 )
             ),
         ) as ensure_runtime,
+        patch(
+            "benchflow.rollout.ensure_usage_proxy_runtime",
+            new=AsyncMock(side_effect=lambda **kwargs: (kwargs["agent_env"], None)),
+        ),
         patch(
             "benchflow.rollout.install_agent",
             new=AsyncMock(return_value=SimpleNamespace()),

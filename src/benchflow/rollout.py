@@ -44,6 +44,7 @@ import logging
 import os
 import shlex
 import tempfile
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -65,11 +66,16 @@ from benchflow.agents.install import (
     install_agent,
 )
 from benchflow.agents.registry import AGENT_LAUNCH, AGENTS
+from benchflow.branch import aggregate as _aggregate_branch
+from benchflow.branch import branch as _branch_tree
+from benchflow.branch import restore as _restore_branch
 from benchflow.environment.manifest import EnvironmentManifest
 from benchflow.environment.manifest_env import ManifestEnvironment
 from benchflow.models import RolloutResult, TrajectorySource
 from benchflow.providers.runtime import (
     ensure_bedrock_proxy_runtime,
+    ensure_usage_proxy_runtime,
+    extract_usage,
     stop_provider_runtime,
 )
 from benchflow.sandbox.lockdown import (
@@ -89,6 +95,7 @@ from benchflow.trajectories._capture import (
     _capture_session_trajectory,
     _scrape_agent_trajectory,
 )
+from benchflow.trajectories.tree import RolloutNode, RolloutTree, Step
 
 logger = logging.getLogger(__name__)
 
@@ -408,6 +415,14 @@ def _build_rollout_result(
     started_at: datetime,
     timing: dict[str, float],
     scenes: list[Scene] | None = None,
+    n_input_tokens: int | None = None,
+    n_output_tokens: int | None = None,
+    n_cache_read_tokens: int | None = None,
+    n_cache_creation_tokens: int | None = None,
+    total_tokens: int | None = None,
+    cost_usd: float | None = None,
+    usage_source: str = "unavailable",
+    price_source: str | None = None,
 ) -> RolloutResult:
     """Build RolloutResult and write result.json, timing.json, prompts.json, trajectory."""
     finished_at = datetime.now()
@@ -421,6 +436,14 @@ def _build_rollout_result(
         model=model,
         n_tool_calls=n_tool_calls,
         n_prompts=len(prompts),
+        n_input_tokens=n_input_tokens,
+        n_output_tokens=n_output_tokens,
+        n_cache_read_tokens=n_cache_read_tokens,
+        n_cache_creation_tokens=n_cache_creation_tokens,
+        total_tokens=total_tokens,
+        cost_usd=cost_usd,
+        usage_source=usage_source,
+        price_source=price_source,
         error=error,
         verifier_error=verifier_error,
         partial_trajectory=partial_trajectory,
@@ -447,6 +470,18 @@ def _build_rollout_result(
                 "model": result.model,
                 "n_tool_calls": result.n_tool_calls,
                 "n_prompts": result.n_prompts,
+                "agent_result": {
+                    "n_tool_calls": result.n_tool_calls,
+                    "n_prompts": result.n_prompts,
+                    "n_input_tokens": result.n_input_tokens,
+                    "n_output_tokens": result.n_output_tokens,
+                    "n_cache_read_tokens": result.n_cache_read_tokens,
+                    "n_cache_creation_tokens": result.n_cache_creation_tokens,
+                    "total_tokens": result.total_tokens,
+                    "cost_usd": result.cost_usd,
+                    "usage_source": result.usage_source,
+                    "price_source": result.price_source,
+                },
                 "error": result.error,
                 "verifier_error": result.verifier_error,
                 "partial_trajectory": result.partial_trajectory,
@@ -821,6 +856,8 @@ class Rollout:
         self._timing: dict[str, float] = {}
         self._effective_locked: list[str] = []
         self._disallow_web_tools: bool = False
+        self._usage_runtime: Any = None
+        self._usage_metrics: dict[str, Any] = extract_usage(None)
 
         # Populated by install_agent()
         self._agent_cfg: Any = None
@@ -837,6 +874,14 @@ class Rollout:
         self._n_tool_calls: int = 0
         self._trajectory_source: TrajectorySource | None = None
         self._partial_trajectory: bool = False
+
+        # The tree-native execution model (architecture.md, "tree-native").
+        # A linear rollout is a degree-1 tree; execute() grows it one Step at a
+        # time, and branch() forks a node into N children. The tree is additive
+        # — it never alters linear behaviour or output.
+        self._tree: RolloutTree = RolloutTree()
+        self._cursor: RolloutNode = self._tree.root
+        self._branch_continuations: list[list[str]] | None = None
 
         # Populated by verify()
         self._rewards: dict | None = None
@@ -864,6 +909,15 @@ class Rollout:
     @property
     def trajectory(self) -> list[dict]:
         return self._trajectory
+
+    @property
+    def tree(self) -> RolloutTree:
+        """The RolloutTree this rollout grows as it executes.
+
+        A linear rollout is a degree-1 tree; :meth:`branch` forks a node into
+        N children. ``tree.root`` is the start state s₀.
+        """
+        return self._tree
 
     @property
     def timing(self) -> dict[str, float]:
@@ -1125,6 +1179,14 @@ class Rollout:
             runtime=getattr(self, "_provider_runtime", None),
             environment=cfg.environment,
         )
+        self._agent_env, self._usage_runtime = await ensure_usage_proxy_runtime(
+            agent=cfg.primary_agent,
+            agent_env=self._agent_env,
+            model=cfg.primary_model,
+            runtime=getattr(self, "_usage_runtime", None),
+            environment=cfg.environment,
+            session_id=getattr(self, "_rollout_name", "") or "",
+        )
         self._acp_client, self._session, self._agent_name = await connect_acp(
             env=self._env,
             agent=cfg.primary_agent,
@@ -1206,11 +1268,105 @@ class Rollout:
         self._n_tool_calls += new_tools
         self._trajectory_source = "acp"
 
+        # Grow the tree by one Step. A linear rollout is a degree-1 tree — the
+        # cursor walks down a chain, one node per execute() call. This is
+        # additive: it never alters the trajectory or any linear output.
+        step = Step(
+            id=f"step-{len(self._trajectory)}",
+            data={"events": new_events, "n_tool_calls": new_tools},
+        )
+        self._cursor = self._tree.advance(self._cursor, step)
+
         if "agent_execution" not in self._timing:
             self._timing["agent_execution"] = (datetime.now() - t0).total_seconds()
 
         self._phase = "executed"
         return trajectory, n_tool_calls
+
+    # ── Phase 3d: BRANCH ──
+
+    async def branch(
+        self,
+        n: int,
+        *,
+        continuations: list[list[str]] | None = None,
+        run_child: Callable[[RolloutNode, int], Awaitable[float]] | None = None,
+        node: RolloutNode | None = None,
+    ) -> float:
+        """Branch the rollout at ``node`` into ``n`` child continuations.
+
+        The Branch lifecycle (architecture.md, "Lifecycles"):
+
+        1. ``quiesce`` — pause the agent at a stable point (disconnect ACP).
+        2. ``checkpoint`` — snapshot the Environment at ``node``; the roll-back
+           point every child restores to.
+        3. ``fork`` — split ``node`` into ``n`` children.
+        4. ``run children`` — for each child, ``restore`` the env to the
+           checkpoint, then run the continuation. A child re-runs from the
+           *environment* checkpoint with a *fresh agent session*: agent-session
+           snapshot is the unsolved hard part (architecture.md, "The hard
+           part"), so the agent restarts per child.
+        5. ``score / aggregate`` — each child's return is recorded on
+           ``child.state["reward"]``; their mean is V(node), recorded on
+           ``node.state["value"]`` and returned.
+
+        ``node`` defaults to the current cursor. ``run_child`` is the per-child
+        runner — injected for unit tests; the default
+        (:meth:`_run_branch_child`) restores the env, connects a fresh agent,
+        runs the continuation prompt, and scores it. ``continuations`` supplies
+        one prompt list per child for the default runner.
+        """
+        if self._environment is None:
+            raise RuntimeError(
+                "branch() needs the Environment plane — there is no world to "
+                "snapshot. Pass RolloutConfig(environment_manifest=...)."
+            )
+        if n < 2:
+            raise ValueError(f"a branch forks into >= 2 children, got n={n}")
+
+        target = node if node is not None else self._cursor
+        runner = run_child or self._run_branch_child
+        self._branch_continuations = continuations
+
+        # quiesce — pause the agent before snapshotting (the Branch lifecycle
+        # quiesces first so the checkpoint is consistent).
+        await self.disconnect()
+
+        # checkpoint + fork — the full Branch operation on the tree.
+        children = await _branch_tree(self._tree, target, self._environment, n)
+
+        # run children — each from the env checkpoint, with a fresh agent.
+        for idx, child in enumerate(children):
+            await _restore_branch(target, self._environment)
+            ret = await runner(child, idx)
+            child.state["reward"] = float(ret)
+
+        # aggregate — per-child return -> V(node).
+        value = _aggregate_branch(target)
+        target.state["value"] = value
+        self._phase = "executed"
+        return value
+
+    async def _run_branch_child(self, child: RolloutNode, idx: int) -> float:
+        """Default per-child runner: fresh agent, run continuation, score.
+
+        The env has already been restored to the parent's checkpoint by
+        :meth:`branch`. This connects a fresh agent session, runs the child's
+        continuation prompts, verifies, and returns the scalar reward.
+        """
+        continuations = self._branch_continuations
+        prompts = (
+            continuations[idx]
+            if continuations is not None and idx < len(continuations)
+            else None
+        )
+        self._cursor = child
+        await self.connect()
+        await self.execute(prompts)
+        rewards = await self.verify()
+        if not rewards:
+            return 0.0
+        return float(rewards.get("reward", 0.0))
 
     # ── Phase 4: VERIFY ──
 
@@ -1332,6 +1488,21 @@ class Rollout:
                 await self._export_generated_skills()
             except Exception as e:
                 logger.warning(f"Generated skill export failed: {e}")
+
+        usage_runtime = getattr(self, "_usage_runtime", None)
+        if usage_runtime is not None:
+            try:
+                await stop_provider_runtime(usage_runtime)
+                self._usage_metrics = extract_usage(usage_runtime)
+            except Exception as e:
+                logger.warning(f"Usage telemetry runtime stop failed: {e}")
+                self._usage_metrics = extract_usage(None)
+            try:
+                self._write_llm_trajectory(usage_runtime)
+            except Exception as e:
+                logger.warning(f"LLM trajectory write failed: {e}")
+            finally:
+                self._usage_runtime = None
 
         if self._environment is not None:
             with contextlib.suppress(Exception):
@@ -1786,6 +1957,14 @@ class Rollout:
             runtime=getattr(self, "_provider_runtime", None),
             environment=cfg.environment,
         )
+        agent_env, self._usage_runtime = await ensure_usage_proxy_runtime(
+            agent=role.agent,
+            agent_env=agent_env,
+            model=role.model,
+            runtime=getattr(self, "_usage_runtime", None),
+            environment=cfg.environment,
+            session_id=getattr(self, "_rollout_name", "") or "",
+        )
 
         role_agent_differs = role.agent != cfg.primary_agent
         needs_role_credentials = (
@@ -1855,6 +2034,19 @@ class Rollout:
                 )
         return str(e)
 
+    def _write_llm_trajectory(self, usage_runtime: Any) -> None:
+        """Persist captured provider HTTP exchanges as JSONL."""
+        if self._rollout_dir is None:
+            return
+        trajectory = getattr(getattr(usage_runtime, "server", None), "trajectory", None)
+        if trajectory is None or not trajectory.exchanges:
+            return
+        traj_dir = self._rollout_dir / "trajectory"
+        traj_dir.mkdir(parents=True, exist_ok=True)
+        (traj_dir / "llm_trajectory.jsonl").write_text(
+            trajectory.to_jsonl(redact_keys=True)
+        )
+
     def _build_result(self) -> RolloutResult:
         rollout_dir = self._require_rollout_dir()
         return _build_rollout_result(
@@ -1875,4 +2067,5 @@ class Rollout:
             started_at=self._require_started_at(),
             timing=self._timing,
             scenes=self._config.effective_scenes,
+            **self._usage_metrics,
         )
