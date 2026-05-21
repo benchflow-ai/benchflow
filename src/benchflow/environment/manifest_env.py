@@ -25,7 +25,9 @@ from __future__ import annotations
 
 import contextlib
 import shlex
+from pathlib import PurePosixPath
 from typing import Any
+from uuid import uuid4
 
 from benchflow.environment.manifest import EnvironmentManifest, ServiceSpec
 from benchflow.environment.protocol import (
@@ -135,19 +137,52 @@ class ManifestEnvironment:
                     f"pkill -f {shlex.quote(binary)}", timeout_sec=10
                 )
 
-    # --- platform layer (branching) ---
-
-    async def reset(self) -> None:
-        raise NotImplementedError(
-            "environment reset is the platform layer (branching)"
-        )
+    # --- roll-back (the substrate branching runs on) ---
 
     async def snapshot(self) -> StateSnapshot:
-        raise NotImplementedError(
-            "environment-state snapshot is the platform layer (branching)"
-        )
+        """Capture the environment's declared state — Han's roll-back.
+
+        For ``kind = "sqlite"`` each declared DB file is copied with
+        ``sqlite3 .backup`` (a consistent online backup) into a per-snapshot
+        directory inside the sandbox.
+        """
+        spec = self._manifest.state
+        if spec is None:
+            raise RuntimeError(
+                f"environment '{self._manifest.name}' declares no "
+                "[environment.state]; snapshot/restore are unsupported for a "
+                "stateless environment"
+            )
+        snap_id = uuid4().hex[:12]
+        snap_dir = f"/tmp/benchflow-snapshots/{snap_id}"
+        cmds = [f"mkdir -p {shlex.quote(snap_dir)}"]
+        for src in spec.paths:
+            dest = f"{snap_dir}/{PurePosixPath(src).name}"
+            cmds.append(
+                f'sqlite3 {shlex.quote(src)} ".backup {shlex.quote(dest)}"'
+            )
+        await self._sandbox.exec(" && ".join(cmds), timeout_sec=120)
+        return StateSnapshot(id=snap_id, path=snap_dir)
 
     async def restore(self, snap: StateSnapshot) -> None:
-        raise NotImplementedError(
-            "environment-state restore is the platform layer (branching)"
-        )
+        """Roll the environment's state back to a snapshot.
+
+        Copies each captured DB file from the snapshot directory back over
+        its live path. The caller quiesces the agent and services first
+        (the Branch lifecycle) so the copy is consistent.
+        """
+        spec = self._manifest.state
+        if spec is None:
+            raise RuntimeError(
+                f"environment '{self._manifest.name}' declares no "
+                "[environment.state]; snapshot/restore are unsupported for a "
+                "stateless environment"
+            )
+        cmds = []
+        for dst in spec.paths:
+            src = f"{snap.path}/{PurePosixPath(dst).name}"
+            cmds.append(f"cp {shlex.quote(src)} {shlex.quote(dst)}")
+        await self._sandbox.exec(" && ".join(cmds), timeout_sec=120)
+
+    async def reset(self) -> None:
+        raise NotImplementedError("environment reset is not yet implemented")

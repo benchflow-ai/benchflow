@@ -10,6 +10,7 @@ from benchflow.environment.manifest import (
     ForwardEnv,
     Readiness,
     ServiceSpec,
+    StateSpec,
     TaskSelection,
     load_manifest,
 )
@@ -34,6 +35,7 @@ __all__ = [
     "ReadinessProbe",
     "ServiceSpec",
     "StateSnapshot",
+    "StateSpec",
     "TaskSelection",
     "load_manifest",
     "wait_for_readiness",

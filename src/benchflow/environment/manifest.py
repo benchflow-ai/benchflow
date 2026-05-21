@@ -82,6 +82,22 @@ class ForwardEnv(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class StateSpec(BaseModel):
+    """How the framework snapshots and restores the environment's state.
+
+    The Environment plane's ``snapshot`` / ``restore`` — roll-back, which is
+    definitional per the architecture — act on what this declares. For
+    ``kind = "sqlite"``, ``paths`` are the database files (globs allowed)
+    captured and restored per snapshot. Absent ``[environment.state]``, the
+    environment is treated as stateless and snapshot/restore are unsupported.
+    """
+
+    kind: Literal["sqlite"] = "sqlite"
+    paths: list[str] = Field(default_factory=list)
+
+    model_config = {"extra": "forbid"}
+
+
 class EnvironmentManifest(BaseModel):
     """A benchmark's self-describing Environment-plane declaration."""
 
@@ -101,6 +117,9 @@ class EnvironmentManifest(BaseModel):
     task_selection: TaskSelection = Field(default_factory=TaskSelection)
     readiness: Readiness = Field(default_factory=Readiness)
     forward_env: ForwardEnv = Field(default_factory=ForwardEnv)
+    # [environment.state] — present iff the environment is stateful and
+    # supports snapshot/restore (roll-back). None => stateless.
+    state: StateSpec | None = None
 
     model_config = {"extra": "forbid"}
 

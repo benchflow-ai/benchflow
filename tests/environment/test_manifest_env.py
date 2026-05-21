@@ -49,6 +49,26 @@ timeout_sec = 5
 """
 )
 
+# A stateful ClawsBench manifest — declares [environment.state] so the
+# environment supports snapshot/restore (Feature A).
+CLAWS_STATEFUL = EnvironmentManifest.model_validate_toml(
+    """
+[environment]
+name           = "clawsbench"
+base_image     = "kywch/smolclaws-base:latest"
+owns_lifecycle = false
+
+[[environment.services]]
+name    = "gmail"
+command = "claw-gmail --db /data/gmail.db serve --host 0.0.0.0 --port 9001 --no-mcp"
+port    = 9001
+
+[environment.state]
+kind  = "sqlite"
+paths = ["/data/gmail.db", "/data/gcal.db"]
+"""
+)
+
 
 class FakeSandbox:
     """Minimal Sandbox stand-in recording exec calls.
@@ -174,11 +194,44 @@ async def test_query_returns_empty_state():
     assert state.data == {}
 
 
-async def test_platform_layer_methods_not_implemented():
+async def test_snapshot_backs_up_sqlite_state_and_returns_id():
+    sandbox = FakeSandbox()
+    env = ManifestEnvironment(CLAWS_STATEFUL, sandbox=sandbox)
+    await env.provision(ctx=None)
+    snap = await env.snapshot()
+    assert isinstance(snap, StateSnapshot)
+    assert snap.id  # non-empty
+    backup = [c for c in sandbox.exec_calls if ".backup" in c]
+    assert backup, "snapshot must back up the sqlite db files"
+    assert "/data/gmail.db" in backup[0]
+    assert "/data/gcal.db" in backup[0]
+
+
+async def test_restore_copies_snapshot_files_back():
+    sandbox = FakeSandbox()
+    env = ManifestEnvironment(CLAWS_STATEFUL, sandbox=sandbox)
+    await env.provision(ctx=None)
+    snap = await env.snapshot()
+    sandbox.exec_calls.clear()
+    await env.restore(snap)
+    restore_cmds = [c for c in sandbox.exec_calls if "cp " in c]
+    assert restore_cmds, "restore must copy the snapshot files back"
+    assert snap.path in restore_cmds[0]
+    assert "/data/gmail.db" in restore_cmds[0]
+    assert "/data/gcal.db" in restore_cmds[0]
+
+
+async def test_snapshot_restore_on_stateless_env_raise_clear_error():
+    """An env with no [environment.state] is stateless — snapshot/restore
+    must fail with a clear message, not crash or be silently empty."""
+    env = ManifestEnvironment(CLAWS, sandbox=FakeSandbox())  # no [environment.state]
+    with pytest.raises(RuntimeError, match="stateless"):
+        await env.snapshot()
+    with pytest.raises(RuntimeError, match="stateless"):
+        await env.restore(StateSnapshot(id="x"))
+
+
+async def test_reset_not_implemented():
     env = ManifestEnvironment(CLAWS, sandbox=FakeSandbox())
     with pytest.raises(NotImplementedError):
         await env.reset()
-    with pytest.raises(NotImplementedError):
-        await env.snapshot()
-    with pytest.raises(NotImplementedError):
-        await env.restore(StateSnapshot(id="x"))

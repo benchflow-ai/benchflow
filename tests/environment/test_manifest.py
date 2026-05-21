@@ -80,6 +80,23 @@ def test_parses_chibench_manifest():
     assert m.readiness.http == ["http://localhost:8023/health"]
 
 
+def test_parses_state_spec():
+    """[environment.state] declares how to snapshot the world (Feature A)."""
+    m = EnvironmentManifest.model_validate_toml(
+        CLAWS_TOML
+        + '\n[environment.state]\nkind = "sqlite"\n'
+        + 'paths = ["/data/gmail.db", "/data/gcal.db"]\n'
+    )
+    assert m.state is not None
+    assert m.state.kind == "sqlite"
+    assert m.state.paths == ["/data/gmail.db", "/data/gcal.db"]
+
+
+def test_state_spec_is_none_when_absent():
+    m = EnvironmentManifest.model_validate_toml(CLAWS_TOML)
+    assert m.state is None
+
+
 def test_all_ports_unions_declared_and_service_ports():
     m = EnvironmentManifest.model_validate_toml(CLAWS_TOML)
     assert m.all_ports == [9001, 9003]

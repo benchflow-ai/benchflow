@@ -48,13 +48,14 @@ class EnvState:
 
 @dataclass
 class StateSnapshot:
-    """An opaque handle to saved environment state.
+    """A handle to a saved environment-state snapshot — the unit of roll-back.
 
-    Snapshot/restore are the platform layer (branching); the vertical slice
-    does not exercise them — ``ManifestEnvironment`` raises ``NotImplementedError``.
+    ``path`` is the in-sandbox directory the state files were captured to;
+    ``restore`` copies them back from there.
     """
 
     id: str
+    path: str = ""
 
 
 @runtime_checkable
@@ -67,7 +68,7 @@ class Environment(Protocol):
     async def query(self) -> EnvState: ...
     async def teardown(self) -> None: ...
 
-    # --- platform layer (branching) ---
-    async def reset(self) -> None: ...
+    # --- roll-back (the substrate branching runs on) ---
     async def snapshot(self) -> StateSnapshot: ...
     async def restore(self, snap: StateSnapshot) -> None: ...
+    async def reset(self) -> None: ...
