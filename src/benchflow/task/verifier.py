@@ -13,10 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import shlex
-from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -56,27 +53,6 @@ class DownloadVerifierDirError(Exception):
 
 class RubricNotFoundError(Exception):
     """Raised when an llm-judge verifier cannot locate its rubric file."""
-
-
-@contextmanager
-def _scoped_env(env: Mapping[str, str]) -> Iterator[None]:
-    """Temporarily apply *env* to ``os.environ``, restoring prior state on exit.
-
-    Keys not already set are removed afterwards; keys that existed are restored
-    to their original value. This keeps the judge's API keys from leaking into
-    the host process for subsequent rollouts.
-    """
-    previous: dict[str, str | None] = {key: os.environ.get(key) for key in env}
-    try:
-        for key, value in env.items():
-            os.environ[key] = value
-        yield
-    finally:
-        for key, prior in previous.items():
-            if prior is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = prior
 
 
 class Verifier:
@@ -192,6 +168,20 @@ class Verifier:
             user="root",
             service=service,
         )
+
+        # The ``main`` (agent) container has ``/logs/verifier`` bind-mounted
+        # and re-created by ``harden_before_verify``. A non-``main`` target
+        # service (#248) has neither, so the ``test.sh`` stdout redirect below
+        # — and any ``test.sh`` that writes ``reward.txt`` there — would fail
+        # before verification even starts. Create it explicitly first.
+        if service != "main":
+            verifier_dir = shlex.quote(str(sandbox_paths.verifier_dir))
+            await self._sandbox.exec(
+                f"mkdir -p {verifier_dir} && chmod 777 {verifier_dir}",
+                user="root",
+                service=service,
+            )
+
         await self._sandbox.exec(
             command=f"{test_script_path} > {test_stdout_path} 2>&1",
             env=env,
@@ -275,9 +265,13 @@ class Verifier:
 
         judge = self._task.config.verifier.judge
 
-        # API keys for the judge come from [verifier.env]; scope them to the
-        # judge call so the provider SDKs (anthropic / openai / google) pick
-        # them up without permanently polluting the host process env.
+        # API keys for the judge come from [verifier.env]. They are threaded
+        # explicitly into the judge call (and on into the provider clients)
+        # rather than written to the process-global ``os.environ``. Mutating
+        # the shared environment is not concurrency-safe: ``evaluation.py``
+        # runs verifications via ``asyncio.gather`` with concurrency > 1, so
+        # two judge runs in the same process would race on the env and see
+        # each other's (or missing) credentials.
         judge_env: dict[str, str] = {}
         if self._task.config.verifier.env:
             judge_env = resolve_env_vars(self._task.config.verifier.env)
@@ -291,9 +285,9 @@ class Verifier:
             prompt=context,
             rubric_path=rubric_path,
             judge_model=judge.model,
+            judge_env=judge_env,
         )
-        with _scoped_env(judge_env):
-            score = await reward_func.score(deliverables_dir)
+        score = await reward_func.score(deliverables_dir)
 
         self._logger.info(
             "llm-judge verifier: %d criteria → reward %.4f",

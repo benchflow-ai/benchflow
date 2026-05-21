@@ -469,9 +469,9 @@ async def test_no_proxy_for_oracle():
 async def test_no_proxy_for_daytona_remote_sandbox(monkeypatch):
     """Daytona runs the agent on a remote host the host proxy cannot reach.
 
-    The usage proxy must be skipped so the agent talks to the provider
-    directly instead of being pointed at an unreachable 127.0.0.1 address
-    (the regression that produced ACP ECONNREFUSED errors).
+    Guards the fix from PR #327: the usage proxy must be skipped so the agent
+    talks to the provider directly instead of being pointed at an unreachable
+    127.0.0.1 address (the regression that produced ACP ECONNREFUSED errors).
     """
     from benchflow.providers import runtime as provider_runtime_mod
     from benchflow.providers.runtime import ensure_usage_proxy_runtime
@@ -502,7 +502,8 @@ async def test_no_proxy_for_daytona_remote_sandbox(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_daytona_runtime_retired_when_environment_unreachable(monkeypatch):
-    """A stale runtime from an earlier env must be stopped, not reused."""
+    """Guards the fix from PR #327: a stale runtime from an earlier env must be
+    stopped, not reused."""
     from benchflow.providers import runtime as provider_runtime_mod
     from benchflow.providers.runtime import (
         ProviderRuntime,

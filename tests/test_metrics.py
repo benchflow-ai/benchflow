@@ -272,7 +272,7 @@ def test_collect_metrics_error_and_verifier_error_counted_once(tmp_path):
     exactly one bucket — errored — so the count buckets stay disjoint and
     passed+failed+errored+verifier_errored == total.
 
-    Regression for audit Finding 6 (metrics.py side).
+    Guards the fix from PR #320 for audit Finding 6 (metrics.py side).
     """
     trial = tmp_path / "job" / "task-x__abc123"
     trial.mkdir(parents=True)

@@ -94,7 +94,8 @@ async def test_install_agent_forwards_sandbox_setup_timeout(
 async def test_install_agent_passes_effective_task_path_to_deploy_skills(
     tmp_path, monkeypatch, agent
 ):
-    """Guards issue #229: deploy_skills double-deploys when skills_dir is set.
+    """Guards the fix from PR #308 for issue #229: deploy_skills double-deploys
+    when skills_dir is set.
 
     `_setup` copies the task to a temp dir and injects
     `COPY _deps/skills /skills/` into that temp Dockerfile, recording the

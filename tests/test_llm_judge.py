@@ -55,6 +55,9 @@ class TestParseVerdict:
 
 
 class TestCallJudgeProviderFallback:
+    """Guards the fix from PR #319 (rewards-code audit) for cross-provider
+    judge fallback."""
+
     async def test_api_failure_surfaces_original_error(self) -> None:
         """A real API failure on the matching provider is raised as-is.
 
@@ -117,6 +120,161 @@ class TestCallJudgeProviderFallback:
         ``except RuntimeError`` handlers keep working."""
         assert issubclass(JudgeEnvironmentError, RuntimeError)
 
+    async def test_unknown_prefix_model_falls_through_after_api_failure(self) -> None:
+        """PR #319 follow-up: an unknown-prefix model whose first provider
+        fails at the API still reaches the remaining providers.
+
+        ``call_judge`` enters the "try all" branch for an unknown prefix
+        (``mistral-large``, ``deepseek-chat``, custom names). The pre-fix
+        code did an unconditional ``raise`` after the first provider
+        exhausted retries, so OpenAI/Google were never reached and the
+        fallback was dead. The fix only raises immediately for a model
+        confidently matched to a single provider.
+        """
+        anthropic_mock = AsyncMock(side_effect=RuntimeError("anthropic 404"))
+        openai_mock = AsyncMock(return_value="ok from openai")
+        google_mock = AsyncMock(return_value="should not be reached")
+
+        with (
+            patch("benchflow.rewards.llm._call_anthropic", anthropic_mock),
+            patch("benchflow.rewards.llm._call_openai", openai_mock),
+            patch("benchflow.rewards.llm._call_google", google_mock),
+        ):
+            result = await call_judge("mistral-large", "prompt", retries=2)
+
+        # Anthropic failed and was retried, then OpenAI served the call.
+        assert result == "ok from openai"
+        assert anthropic_mock.await_count == 2
+        assert openai_mock.await_count == 1
+        google_mock.assert_not_awaited()
+
+    async def test_unknown_prefix_all_providers_fail_raises_last_error(self) -> None:
+        """PR #319 follow-up: when every provider fails at the API for an
+        unknown-prefix model, the genuine API error surfaces — not a
+        misleading missing-SDK ``JudgeEnvironmentError``."""
+        anthropic_err = RuntimeError("anthropic refused")
+        google_err = RuntimeError("google refused")
+
+        with (
+            patch(
+                "benchflow.rewards.llm._call_anthropic",
+                AsyncMock(side_effect=anthropic_err),
+            ),
+            patch(
+                "benchflow.rewards.llm._call_openai",
+                AsyncMock(side_effect=RuntimeError("openai refused")),
+            ),
+            patch(
+                "benchflow.rewards.llm._call_google",
+                AsyncMock(side_effect=google_err),
+            ),
+            pytest.raises(RuntimeError, match="google refused") as exc_info,
+        ):
+            await call_judge("deepseek-chat", "prompt", retries=1)
+
+        # The last provider's real error is surfaced, not JudgeEnvironmentError.
+        assert exc_info.value is google_err
+        assert not isinstance(exc_info.value, JudgeEnvironmentError)
+
+    async def test_known_prefix_still_raises_immediately(self) -> None:
+        """PR #319 follow-up: the unknown-prefix fallback fix must not weaken
+        known-prefix routing — a ``claude-`` model that fails at the API still
+        raises at once without trying OpenAI/Google."""
+        original = RuntimeError("anthropic: invalid x-api-key")
+        openai_mock = AsyncMock(return_value="should not be reached")
+
+        with (
+            patch(
+                "benchflow.rewards.llm._call_anthropic",
+                AsyncMock(side_effect=original),
+            ),
+            patch("benchflow.rewards.llm._call_openai", openai_mock),
+            pytest.raises(RuntimeError, match="invalid x-api-key"),
+        ):
+            await call_judge("claude-haiku-4-5", "prompt", retries=1)
+
+        openai_mock.assert_not_awaited()
+
+
+class TestCallJudgeEnvThreading:
+    """PR #314 follow-up: judge credentials are threaded explicitly through
+    ``call_judge`` instead of mutating the process-global ``os.environ`` (the
+    pre-fix ``_scoped_env``), which is not concurrency-safe under
+    ``asyncio.gather``."""
+
+    async def test_env_passed_to_anthropic_client(self) -> None:
+        """The ``env`` kwarg's ANTHROPIC_API_KEY reaches the Anthropic client
+        as an explicit constructor argument."""
+        seen: dict[str, object] = {}
+
+        def fake_anthropic_ctor(*, api_key: str | None = None) -> AsyncMock:
+            seen["api_key"] = api_key
+            client = AsyncMock()
+            client.messages.create = AsyncMock(
+                return_value=_FakeResponse([_FakeTextBlock("ok")])
+            )
+            return client
+
+        fake_anthropic = type(
+            "FakeAnthropic",
+            (),
+            {"AsyncAnthropic": staticmethod(fake_anthropic_ctor)},
+        )
+        with patch.dict("sys.modules", {"anthropic": fake_anthropic}):
+            result = await call_judge(
+                "claude-haiku-4-5",
+                "prompt",
+                retries=1,
+                env={"ANTHROPIC_API_KEY": "key-from-verifier-env"},
+            )
+
+        assert result == "ok"
+        assert seen["api_key"] == "key-from-verifier-env"
+
+    async def test_concurrent_judge_calls_use_isolated_credentials(self) -> None:
+        """PR #314 follow-up: two judge calls running concurrently via
+        ``asyncio.gather`` each see *their own* credentials.
+
+        With the pre-fix ``_scoped_env`` global mutation, one coroutine could
+        restore/pop an env key while another was still mid-call, so the second
+        judge saw missing/wrong credentials. Threading the key explicitly
+        keeps the two calls fully isolated.
+        """
+        import asyncio
+
+        observed: list[str | None] = []
+
+        def fake_anthropic_ctor(*, api_key: str | None = None) -> AsyncMock:
+            client = AsyncMock()
+
+            async def create(**_kwargs: object) -> _FakeResponse:
+                # Record the key, then yield so the other coroutine runs
+                # interleaved — exactly the race _scoped_env could not survive.
+                observed.append(api_key)
+                await asyncio.sleep(0)
+                return _FakeResponse([_FakeTextBlock("ok")])
+
+            client.messages.create = create
+            return client
+
+        fake_anthropic = type(
+            "FakeAnthropic",
+            (),
+            {"AsyncAnthropic": staticmethod(fake_anthropic_ctor)},
+        )
+        with patch.dict("sys.modules", {"anthropic": fake_anthropic}):
+            await asyncio.gather(
+                call_judge(
+                    "claude-haiku-4-5", "p", retries=1, env={"ANTHROPIC_API_KEY": "A"}
+                ),
+                call_judge(
+                    "claude-haiku-4-5", "p", retries=1, env={"ANTHROPIC_API_KEY": "B"}
+                ),
+            )
+
+        # Both distinct keys were seen — neither call clobbered the other's.
+        assert set(observed) == {"A", "B"}
+
 
 # ---------------------------------------------------------------------------
 # _call_anthropic: content block handling
@@ -138,6 +296,9 @@ class _FakeResponse:
 
 
 class TestCallAnthropicContent:
+    """Guards the fix from PR #319 (rewards-code audit) for `_call_anthropic`
+    content-block extraction."""
+
     def _patch_sdk(self, response: _FakeResponse) -> AbstractContextManager[None]:
         client = AsyncMock()
         client.messages.create = AsyncMock(return_value=response)
@@ -396,6 +557,7 @@ description = "B"
     async def test_likert_criterion(
         self, mock_judge: AsyncMock, tmp_path: Path
     ) -> None:
+        """Guards the fix from PR #319 (rewards-code audit) for likert scoring."""
         mock_judge.return_value = '{"score": 4, "reasoning": "pretty good"}'
         (tmp_path / "output.txt").write_text("output")
 
