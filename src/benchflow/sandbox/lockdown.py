@@ -518,12 +518,11 @@ async def _discover_pytest_plugin_flags(env, task: "Task") -> str:
     except Exception as e:
         logger.warning(f"Pytest plugin discovery failed, using task.toml fallback: {e}")
 
-    # Merge task.toml declarations as fallback
-    declared = getattr(task.config.verifier, "pytest_plugins", None)
-    if declared:
-        for name in declared:
-            if isinstance(name, str):
-                add_plugin(name)
+    # Merge task.toml [verifier] pytest_plugins declarations as fallback.
+    declared = getattr(task.config.verifier, "pytest_plugins", None) or []
+    for name in declared:
+        if isinstance(name, str):
+            add_plugin(name)
 
     # The standard task template runs pytest-ctrf through `uvx --with`,
     # so the plugin is not visible during pre-verifier entry-point discovery.
