@@ -206,6 +206,14 @@ def run(
         str,
         typer.Option("--sandbox", help="Sandbox: docker, daytona, or modal"),
     ] = "docker",
+    environment_manifest: Annotated[
+        Path | None,
+        typer.Option(
+            "--environment-manifest",
+            help="Path to an Environment-plane manifest (environment.toml). "
+            "Runs the rollout against the declared stateful environment.",
+        ),
+    ] = None,
     prompt: Annotated[
         list[str] | None,
         typer.Option("--prompt", help="Prompt(s) to send (default: instruction.md)"),
@@ -275,6 +283,12 @@ def run(
     agent = _normalize_eval_agent_or_exit(agent)
     sandbox_user = normalize_sandbox_user(sandbox_user)
 
+    env_manifest = None
+    if environment_manifest is not None:
+        from benchflow.environment.manifest import load_manifest
+
+        env_manifest = load_manifest(environment_manifest)
+
     sdk = SDK()
     # CLI only ever passes plain strings; cast to widen for the SDK's
     # `list[str | None] | None` API (None entries mean "use default").
@@ -287,6 +301,7 @@ def run(
             agent_env=parsed_env,
             jobs_dir=jobs_dir,
             environment=environment,
+            environment_manifest=env_manifest,
             skills_dir=str(skills_dir) if skills_dir else None,
             sandbox_user=sandbox_user,
             skill_mode=skill_mode,
