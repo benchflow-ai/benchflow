@@ -1,7 +1,7 @@
 """Branch -> Rollout engine integration.
 
 A ``Rollout`` builds a ``RolloutTree`` as it executes (a linear rollout is a
-degree-1 tree) and can ``branch`` at a chosen node: checkpoint the Environment,
+degree-1 tree) and can ``branch`` at the cursor: checkpoint the Environment,
 fork N children, run each child continuation from the env checkpoint with a
 fresh agent session, then aggregate the children's returns into V(parent).
 
@@ -20,7 +20,7 @@ from benchflow.environment.manifest_env import ManifestEnvironment
 from benchflow.environment.protocol import StateSnapshot
 from benchflow.rollout import Rollout, RolloutConfig, Scene
 from benchflow.sandbox.protocol import ExecResult
-from benchflow.trajectories.tree import RolloutTree, branch_points
+from benchflow.trajectories.tree import RolloutTree, branch_points, trajectory
 
 
 class FakeEnvironment:
@@ -122,10 +122,12 @@ async def test_branch_checkpoints_forks_and_aggregates(tmp_path: Path):
 
     parent = rollout._cursor
     run_order: list[str] = []
+    seen = []
 
-    async def run_child(child, idx):
+    async def run_child(child):
         run_order.append(child.id)
-        return float(idx)  # child 0 -> 0.0, child 1 -> 1.0
+        seen.append(child)
+        return float(len(run_order) - 1)  # child 0 -> 0.0, child 1 -> 1.0
 
     value = await rollout.branch(2, run_child=run_child)
 
@@ -148,7 +150,7 @@ async def test_branch_rejects_fewer_than_two_children(tmp_path: Path):
     rollout = _rollout(tmp_path)
     rollout._environment = FakeEnvironment()
 
-    async def run_child(child, idx):
+    async def run_child(child):
         return 0.0
 
     with pytest.raises(ValueError, match=">= 2"):
@@ -160,50 +162,238 @@ async def test_branch_without_environment_raises(tmp_path: Path):
     rollout = _rollout(tmp_path)
     assert rollout._environment is None
 
-    async def run_child(child, idx):
+    async def run_child(child):
         return 0.0
 
     with pytest.raises(RuntimeError, match="Environment"):
         await rollout.branch(2, run_child=run_child)
 
 
-async def test_default_runner_uses_fresh_agent_per_child(tmp_path: Path):
-    """The default per-child runner restarts the agent — connect, execute, verify.
+async def test_branch_does_not_corrupt_the_parent_rollout(tmp_path: Path, monkeypatch):
+    """MUST-FIX 1: a branch child runs as an isolated sub-rollout.
 
-    Sidesteps agent-session snapshot: each child re-runs from the env
-    checkpoint with a fresh agent session, not a restored one.
+    After branch() returns, the parent's linear state — cursor, trajectory,
+    rewards, phase, n_tool_calls — must be exactly what it was before. The
+    children run *real* (non-stubbed) execute/verify, so this proves the
+    children's mutations are scoped, not re-entrant on the shared instance.
+    """
+    rollout = _rollout(tmp_path)
+    rollout._environment = FakeEnvironment()
+
+    # Drive two real linear execute() calls so the parent has non-trivial state.
+    async def fake_execute_prompts(*_a, **_kw):
+        return [{"role": "agent", "text": "parent-step"}], 2
+
+    monkeypatch.setattr("benchflow.rollout.execute_prompts", fake_execute_prompts)
+    rollout._acp_client = object()
+    await rollout.execute(["p1"])
+    await rollout.execute(["p2"])
+
+    # Snapshot the parent's linear state before branching. (_phase is
+    # excluded: branch() legitimately sets it to "branched" — see the
+    # dedicated phase test.)
+    cursor_before = rollout._cursor
+    trajectory_before = list(rollout._trajectory)
+    n_tool_calls_before = rollout._n_tool_calls
+    rewards_before = rollout._rewards
+
+    # Children run REAL execute()/verify() — non-stubbed — through the engine's
+    # default per-child runner. connect/verify are faked at the boundary only.
+    async def fake_connect_inner(self):
+        self._acp_client = object()
+
+    async def fake_disconnect_inner(self):
+        self._acp_client = None
+
+    async def fake_verify_inner(self):
+        self._rewards = {"reward": 1.0}
+        self._phase = "verified"
+        return self._rewards
+
+    monkeypatch.setattr(Rollout, "connect", fake_connect_inner)
+    monkeypatch.setattr(Rollout, "disconnect", fake_disconnect_inner)
+    monkeypatch.setattr(Rollout, "verify", fake_verify_inner)
+
+    value = await rollout.branch(2)
+
+    # The children ran and aggregated.
+    assert value == 1.0
+    # The parent's linear state is byte-for-byte intact.
+    assert rollout._cursor is cursor_before
+    assert rollout._trajectory == trajectory_before
+    assert rollout._n_tool_calls == n_tool_calls_before
+    assert rollout._rewards == rewards_before
+
+
+async def test_post_branch_execute_grows_off_the_parent_cursor(
+    tmp_path: Path, monkeypatch
+):
+    """After branch(), a linear execute() continues off the parent — not a child.
+
+    The 'tree is additive / no-regression' invariant: branch() must leave the
+    cursor where it found it, so a post-branch execute() grows the right node.
+    """
+    rollout = _rollout(tmp_path)
+    rollout._environment = FakeEnvironment()
+
+    async def fake_execute_prompts(*_a, **_kw):
+        return [{"role": "agent", "text": "x"}], 1
+
+    monkeypatch.setattr("benchflow.rollout.execute_prompts", fake_execute_prompts)
+    rollout._acp_client = object()
+    await rollout.execute(["p1"])
+    parent = rollout._cursor
+
+    async def run_child(child):
+        return 1.0
+
+    await rollout.branch(2, run_child=run_child)
+
+    # branch left the cursor at the parent
+    assert rollout._cursor is parent
+    # a post-branch execute grows a NEW child off the parent
+    rollout._acp_client = object()
+    await rollout.execute(["after"])
+    after = rollout._cursor
+    assert after.parent is parent
+    # parent now has 3 children: 2 branch children + 1 linear continuation
+    assert len(parent.children) == 3
+
+
+async def test_branch_child_continuation_attaches_to_the_child_node(
+    tmp_path: Path, monkeypatch
+):
+    """MUST-FIX 4: a child's continuation Steps attach to the child node itself.
+
+    No content-free placeholder Step: trajectory(leaf) through a branch child
+    must not contain an empty Step, and the reward must land on the real leaf.
+    """
+    rollout = _rollout(tmp_path)
+    rollout._environment = FakeEnvironment()
+
+    async def fake_execute_prompts(*_a, **_kw):
+        return [{"role": "agent", "text": "child-work"}], 1
+
+    monkeypatch.setattr("benchflow.rollout.execute_prompts", fake_execute_prompts)
+
+    async def fake_connect_inner(self):
+        self._acp_client = object()
+
+    async def fake_disconnect_inner(self):
+        self._acp_client = None
+
+    async def fake_verify_inner(self):
+        self._rewards = {"reward": 0.7}
+        return self._rewards
+
+    monkeypatch.setattr(Rollout, "connect", fake_connect_inner)
+    monkeypatch.setattr(Rollout, "disconnect", fake_disconnect_inner)
+    monkeypatch.setattr(Rollout, "verify", fake_verify_inner)
+
+    parent = rollout._cursor
+    await rollout.branch(2)
+
+    for child in parent.children:
+        # the child node carries the reward — not a descendant placeholder
+        assert child.state["reward"] == 0.7
+        # every Step on the root->child path has real content (no empty Step)
+        steps = trajectory(child)
+        assert steps, "child has at least one continuation Step"
+        assert all(s.data for s in steps), "no content-free placeholder Step"
+        # the child IS a leaf — its work did not hang off a descendant
+        assert child.children == []
+
+
+async def test_branch_uses_a_real_branched_phase(tmp_path: Path):
+    """SHOULD-FIX 6: branch() sets a 'branched' phase, not a thrashed one."""
+    rollout = _rollout(tmp_path)
+    rollout._environment = FakeEnvironment()
+
+    async def run_child(child):
+        return 1.0
+
+    await rollout.branch(2, run_child=run_child)
+    assert rollout._phase == "branched"
+
+
+async def test_default_runner_uses_fresh_agent_per_child(tmp_path: Path, monkeypatch):
+    """SHOULD-FIX 10: the default per-child runner restarts the agent.
+
+    Each child re-runs from the env checkpoint with a fresh agent session,
+    and the previous child's agent is disconnected before the next connects.
     """
     rollout = _rollout(tmp_path)
     env = FakeEnvironment()
     rollout._environment = env
     calls: list[str] = []
 
-    async def fake_connect():
+    async def fake_connect(self):
         calls.append("connect")
+        self._acp_client = object()
 
-    async def fake_execute(prompts=None):
-        calls.append(f"execute:{prompts}")
+    async def fake_disconnect(self):
+        calls.append("disconnect")
+        self._acp_client = None
+
+    async def fake_execute(self, prompts=None, *, node=None):
+        calls.append("execute")
         return [], 0
 
-    async def fake_verify():
+    async def fake_verify(self):
         calls.append("verify")
         return {"reward": 1.0}
 
-    rollout.connect = fake_connect  # type: ignore[method-assign]
-    rollout.execute = fake_execute  # type: ignore[method-assign]
-    rollout.verify = fake_verify  # type: ignore[method-assign]
+    monkeypatch.setattr(Rollout, "connect", fake_connect)
+    monkeypatch.setattr(Rollout, "disconnect", fake_disconnect)
+    monkeypatch.setattr(Rollout, "execute", fake_execute)
+    monkeypatch.setattr(Rollout, "verify", fake_verify)
 
-    value = await rollout.branch(
-        2, continuations=[["child-a prompt"], ["child-b prompt"]]
-    )
+    value = await rollout.branch(2)
 
     # a fresh agent per child: connect happens once per child
     assert calls.count("connect") == 2
-    # each child ran its own continuation prompt
-    assert "execute:['child-a prompt']" in calls
-    assert "execute:['child-b prompt']" in calls
     assert calls.count("verify") == 2
+    # each connect is preceded by a disconnect — no agent overlap between children
+    for i, c in enumerate(calls):
+        if c == "connect" and i > 0:
+            assert "disconnect" in calls[:i]
     assert value == 1.0
+
+
+async def test_default_runner_empty_reward_falls_back_to_zero(
+    tmp_path: Path, monkeypatch
+):
+    """SHOULD-FIX 9: the default runner returns 0.0 when verify() yields nothing.
+
+    verify() can return None or an empty dict; the per-child runner must
+    treat both as a 0.0 return rather than crashing.
+    """
+    rollout = _rollout(tmp_path)
+    rollout._environment = FakeEnvironment()
+
+    async def fake_connect(self):
+        self._acp_client = object()
+
+    async def fake_disconnect(self):
+        self._acp_client = None
+
+    async def fake_execute(self, prompts=None, *, node=None):
+        return [], 0
+
+    verify_returns = [None, {}]
+
+    async def fake_verify(self):
+        return verify_returns.pop(0)
+
+    monkeypatch.setattr(Rollout, "connect", fake_connect)
+    monkeypatch.setattr(Rollout, "disconnect", fake_disconnect)
+    monkeypatch.setattr(Rollout, "execute", fake_execute)
+    monkeypatch.setattr(Rollout, "verify", fake_verify)
+
+    value = await rollout.branch(2)
+
+    # both children scored 0.0 (None and {} both fall back), V(parent) = 0.0
+    assert value == 0.0
 
 
 async def test_linear_rollout_run_never_branches(tmp_path: Path, monkeypatch):
@@ -246,7 +436,7 @@ async def test_branch_drives_manifest_environment_snapshot_restore(tmp_path: Pat
     sandbox = FakeSandbox()
     rollout._environment = ManifestEnvironment(_STATEFUL_MANIFEST, sandbox=sandbox)
 
-    async def run_child(child, idx):
+    async def run_child(child):
         return 1.0
 
     value = await rollout.branch(2, run_child=run_child)

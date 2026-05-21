@@ -78,3 +78,70 @@ async def test_score_node_with_no_scorers_is_zero():
     result = await score_node(RolloutNode(id="leaf"), [])
     assert result.reward == 0.0
     assert result.events == []
+
+
+async def test_score_node_tags_result_with_space_and_granularity():
+    """The VerifyResult carries the (space, granularity) tag the spec mandates."""
+    node = RolloutNode(id="leaf", state={"reward": 1.0})
+    result = await score_node(node, [OutcomeScorer()])
+    assert result.space == "output"
+    assert result.granularity == "terminal"
+
+
+async def test_score_node_signals_when_no_outcome_scorer_ran():
+    """reward=0.0 with NO output-space scorer is 'nobody scored', not 'scored 0'.
+
+    SHOULD-FIX 7: a node scored only by a process-space scorer has no outcome
+    signal — score_node must distinguish that from an honest zero by
+    populating VerifyResult.error.
+    """
+    node = RolloutNode(id="leaf")
+    result = await score_node(node, [PathLengthScorer()])  # process-space only
+    assert result.reward == 0.0
+    assert result.error is not None  # nobody scored the outcome
+    assert "nobody scored" in result.error
+
+
+async def test_score_node_honest_zero_has_no_error():
+    """An output-space scorer reporting 0.0 is an honest zero — error stays None."""
+    node = RolloutNode(id="leaf", state={"reward": 0.0})
+    result = await score_node(node, [OutcomeScorer()])
+    assert result.reward == 0.0
+    assert result.error is None  # a real scorer ran and said 0.0
+
+
+async def test_score_node_no_scorers_at_all_signals_nobody_scored():
+    """Empty scorer list: no outcome event either, so error is populated."""
+    result = await score_node(RolloutNode(id="leaf"), [])
+    assert result.error is not None
+
+
+async def test_score_node_same_source_items_collision_last_wins():
+    """SHOULD-FIX 9: two scorers sharing a source name — last wins in items.
+
+    items is keyed by source, so a name collision means the last scorer's
+    reward lands in items[source]. Both events are still kept in events, so
+    no signal is lost — this test pins that semantics.
+    """
+    node = RolloutNode(id="leaf", state={"reward": 0.3})
+
+    class FixedScorer:
+        def __init__(self, source: str, reward: float) -> None:
+            self.source = source
+            self._reward = reward
+
+        async def score(self, n: RolloutNode) -> RewardEvent:
+            return RewardEvent(
+                type="terminal",
+                reward=self._reward,
+                source=self.source,
+                space="output",
+            )
+
+    result = await score_node(
+        node, [FixedScorer("dup", 0.2), FixedScorer("dup", 0.9)]
+    )
+    # items collapses to one entry — the last scorer wins
+    assert result.items == {"dup": 0.9}
+    # both events survive — no signal lost
+    assert [e.reward for e in result.events] == [0.2, 0.9]

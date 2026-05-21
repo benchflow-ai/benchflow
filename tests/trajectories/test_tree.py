@@ -1,5 +1,7 @@
 """Tests for the tree data model of the tree-native Rollout."""
 
+import pytest
+
 from benchflow.trajectories.tree import RolloutTree, Step, branch_points, trajectory
 
 
@@ -104,6 +106,47 @@ def test_branched_trajectories_share_a_prefix_and_diverge_after_the_branch() -> 
     assert traj_left[0] is traj_right[0] is s1
     assert traj_left[-1].id == "left"
     assert traj_right[-1].id == "right"
+
+
+def test_attach_adds_a_pending_child_with_no_incoming_step() -> None:
+    """attach() grows a pending node — a child whose Step does not exist yet."""
+    tree = RolloutTree()
+    pending = tree.attach(tree.root)
+
+    assert pending in tree.root.children
+    assert pending.parent is tree.root
+    assert pending.step_in is None  # pending: no Step yet
+
+
+def test_populate_fills_a_pending_nodes_step_in_place() -> None:
+    """populate() fills a pending node's incoming Step — the node identity holds."""
+    tree = RolloutTree()
+    pending = tree.attach(tree.root)
+    step = Step(id="real-work", data={"events": ["x"]})
+
+    filled = tree.populate(pending, step)
+
+    assert filled is pending  # same node — filled in place
+    assert pending.step_in is step
+    # the real work is now on the path to the node — no content-free placeholder
+    assert trajectory(pending) == [step]
+    assert trajectory(pending)[0].data == {"events": ["x"]}
+
+
+def test_populate_rejects_a_node_that_already_has_a_step() -> None:
+    """populate() refuses a non-pending node — its Step is already set."""
+    tree = RolloutTree()
+    child = tree.advance(tree.root, Step(id="s1"))
+    with pytest.raises(ValueError, match="not pending"):
+        tree.populate(child, Step(id="s2"))
+
+
+def test_two_attached_children_make_the_parent_a_branch_point() -> None:
+    """attach() twice on one node forks it — like advance(), a branch point."""
+    tree = RolloutTree()
+    tree.attach(tree.root)
+    tree.attach(tree.root)
+    assert branch_points(tree) == [tree.root]
 
 
 def test_nodes_yields_every_node_including_root() -> None:

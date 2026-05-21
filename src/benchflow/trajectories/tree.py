@@ -76,6 +76,34 @@ class RolloutTree:
         node.children.append(child)
         return child
 
+    def attach(self, parent: RolloutNode) -> RolloutNode:
+        """Add a *pending* child of ``parent`` — a node with no incoming Step yet.
+
+        A pending node is a placeholder for a continuation whose Step does not
+        exist yet (a branch child before its first ``execute()``). It is filled
+        later with :meth:`populate`. Like :meth:`advance`, a second child of
+        the same node makes ``parent`` a branch point.
+        """
+        child = RolloutNode(id=f"n{self._node_count}", parent=parent, step_in=None)
+        self._node_count += 1
+        parent.children.append(child)
+        return child
+
+    def populate(self, node: RolloutNode, step: Step) -> RolloutNode:
+        """Fill a pending ``node``'s incoming Step in place — return the node.
+
+        The counterpart to :meth:`attach`: a branch child is first ``attach``-ed
+        as a pending node, then ``populate``-d with its real continuation Step
+        once that Step exists. This keeps the child's real work on the child
+        node itself — no content-free placeholder Step on the path to it.
+        """
+        if node.step_in is not None:
+            raise ValueError(
+                f"node {node.id!r} already has an incoming Step — not pending"
+            )
+        node.step_in = step
+        return node
+
     def find(self, node_id: str) -> RolloutNode | None:
         """Return the node carrying ``node_id``, or ``None`` if there is none."""
         for node in self.nodes():
