@@ -30,7 +30,7 @@ from typing import Any
 
 import yaml
 
-from benchflow.adapters.inbound import InboundTask
+from benchflow.adapters.inbound import InboundTask, carry_native_subtrees
 from benchflow.task.config import TaskConfig
 
 # Terminal-Bench top-level keys that become BenchFlow [metadata]. Everything
@@ -163,21 +163,38 @@ class TerminalBenchAdapter:
 
     @staticmethod
     def _build_file_map(root: Path) -> dict[str, Path]:
-        """Remap the Terminal-Bench layout onto BenchFlow-native paths."""
+        """Remap the Terminal-Bench layout onto BenchFlow-native paths.
+
+        Raises:
+            ValueError: if two source files claim the same native
+                destination — e.g. a root ``run-tests.sh`` (remapped to
+                ``tests/test.sh``) and a native-shaped ``tests/test.sh``.
+                Silently dropping one would be order-dependent data loss.
+        """
         files: dict[str, Path] = {}
+
+        def _place(native: str, src: Path) -> None:
+            existing = files.get(native)
+            if existing is not None and existing != src:
+                raise ValueError(
+                    f"Terminal-Bench task file-map collision on "
+                    f"{native!r}: both {existing} and {src} map to the "
+                    f"same BenchFlow-native destination. Keep only one "
+                    f"(e.g. drop the root run-tests.sh or the native "
+                    f"tests/test.sh)."
+                )
+            files[native] = src
 
         # Root-level files that move into a native subtree.
         for foreign, native in _FILE_REMAP.items():
             src = root / foreign
             if src.is_file():
-                files[native] = src
+                _place(native, src)
 
-        # The tests/ subtree is already native — carry it verbatim.
-        tests = root / "tests"
-        if tests.is_dir():
-            for src in sorted(p for p in tests.rglob("*") if p.is_file()):
-                rel = src.relative_to(root).as_posix()
-                files.setdefault(rel, src)
+        # The tests/ subtree is already native — carry it verbatim, with the
+        # same collision check so a native tests/test.sh can't silently
+        # collide with a remapped root run-tests.sh.
+        carry_native_subtrees(root, _place, subtrees=("tests",))
 
         return files
 

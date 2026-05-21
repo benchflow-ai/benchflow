@@ -7,12 +7,7 @@ from benchflow.rewards.builtins import (
     TestRewardFunc,
 )
 from benchflow.rewards.events import RewardEvent
-from benchflow.rewards.memory_scorer import (
-    MEMORY_STATE_KEY,
-    MemoryScorer,
-    SkillDelta,
-    skill_delta,
-)
+from benchflow.rewards.memory_scorer import MEMORY_STATE_KEY, MemoryScorer
 from benchflow.rewards.protocol import RewardFunc, VerifyResult
 from benchflow.rewards.rubric import Rubric
 from benchflow.rewards.rubric_config import (
@@ -37,12 +32,10 @@ __all__ = [
     "Rubric",
     "RubricConfig",
     "ScoringConfig",
-    "SkillDelta",
     "StringMatchRewardFunc",
     "TestRewardFunc",
     "VerifyResult",
     "load_rubric",
     "load_rubric_json",
     "load_rubric_toml",
-    "skill_delta",
 ]

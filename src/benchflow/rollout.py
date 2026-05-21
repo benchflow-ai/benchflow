@@ -421,6 +421,7 @@ def _build_rollout_result(
     cost_usd: float | None = None,
     usage_source: str = "unavailable",
     price_source: str | None = None,
+    evolved_skills: dict[str, str] | None = None,
 ) -> RolloutResult:
     """Build RolloutResult and write result.json, timing.json, prompts.json, trajectory."""
     finished_at = datetime.now()
@@ -446,6 +447,7 @@ def _build_rollout_result(
         verifier_error=verifier_error,
         partial_trajectory=partial_trajectory,
         trajectory_source=trajectory_source,
+        evolved_skills=evolved_skills,
         started_at=started_at,
         finished_at=finished_at,
     )
@@ -884,6 +886,10 @@ class Rollout:
         self._rewards: dict | None = None
         self._verifier_error: str | None = None
         self._error: str | None = None
+
+        # Populated by _export_generated_skills() — the skills the agent
+        # generated/evolved, captured for a continual-learning LearnerStore.
+        self._evolved_skills: dict[str, str] | None = None
 
     @classmethod
     async def create(cls, config: RolloutConfig) -> Rollout:
@@ -1569,13 +1575,22 @@ class Rollout:
     _OUTBOX_DIR = "/app/.outbox"
 
     async def _export_generated_skills(self) -> None:
-        """Download creator-produced skills before sandbox cleanup."""
+        """Download creator-produced skills before sandbox cleanup.
+
+        Also captures the exported skill packs into ``self._evolved_skills``
+        — the ``name -> body`` dict a continual-learning Job commits to its
+        persistent LearnerStore (capability 5).
+        """
         export_target = self._config.export_generated_skills_to
         if export_target is None:
             return
         target = Path(export_target)
         target.mkdir(parents=True, exist_ok=True)
         await self._env.download_dir(self._config.generated_skills_root, target)
+
+        from benchflow.learner_skills import capture_skills
+
+        self._evolved_skills = capture_skills(target)
 
     async def _activate_scene_skills(self, scene: Scene) -> None:
         """Activate scene-local skills by linking them into role discovery paths."""
@@ -2015,5 +2030,6 @@ class Rollout:
             started_at=self._require_started_at(),
             timing=self._timing,
             scenes=self._config.effective_scenes,
+            evolved_skills=self._evolved_skills,
             **self._usage_metrics,
         )
