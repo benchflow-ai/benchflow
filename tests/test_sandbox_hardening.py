@@ -58,7 +58,8 @@ def _make_task(user=None):
     task = MagicMock()
     task.config.verifier.env = None
     task.config.verifier.user = user
-    task.config.verifier.pytest_plugins = None
+    # pytest_plugins is a guaranteed list[str] field on VerifierConfig.
+    task.config.verifier.pytest_plugins = []
     task.task_dir = None
     return task
 
@@ -892,9 +893,8 @@ class TestVerifierEnv:
         )
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("plugins", [None, []])
-    async def test_no_extra_addopts_when_no_plugins(self, plugins):
-        """PYTEST_ADDOPTS is not modified when pytest_plugins is None or empty list."""
+    async def test_no_extra_addopts_when_no_plugins(self):
+        """PYTEST_ADDOPTS is not modified when pytest_plugins is the empty list."""
         from benchflow.sandbox.lockdown import (
             _build_pytest_addopts,
             harden_before_verify,
@@ -902,7 +902,7 @@ class TestVerifierEnv:
 
         env = _make_env(side_effect=_manifest_env(_blank_manifest()))
         task = _make_task()
-        task.config.verifier.pytest_plugins = plugins
+        task.config.verifier.pytest_plugins = []
         await harden_before_verify(env, task, sandbox_user=None, workspace=None)
 
         assert task.config.verifier.env["PYTEST_ADDOPTS"] == _build_pytest_addopts(

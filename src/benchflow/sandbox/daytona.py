@@ -19,7 +19,11 @@ from uuid import uuid4
 
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-from benchflow.sandbox._base import BaseSandbox, ExecResult
+from benchflow.sandbox._base import (
+    BaseSandbox,
+    ExecResult,
+    _filter_compose_service_names,
+)
 from benchflow.sandbox._compose import (
     COMPOSE_BASE_PATH,
     COMPOSE_BUILD_PATH,
@@ -177,6 +181,9 @@ class _DaytonaStrategy:
     async def is_file(self, path: str, user: str | int | None = None) -> bool: ...
 
     @abstractmethod
+    async def services(self) -> list[str]: ...
+
+    @abstractmethod
     async def attach(self) -> None: ...
 
 
@@ -319,6 +326,13 @@ class _DaytonaDirect(_DaytonaStrategy):
             raise RuntimeError("Sandbox not found. Please build the environment first.")
         file_info = await self._env._sandbox.fs.get_file_info(path)
         return not file_info.is_dir
+
+    async def services(self) -> list[str]:
+        raise NotImplementedError(
+            "Direct (non-compose) Daytona sandbox is single-container and has "
+            "no compose topology. services() requires a multi-container "
+            "docker-compose task (#248)."
+        )
 
     async def attach(self) -> None:
         env = self._env
@@ -714,6 +728,23 @@ class _DaytonaDinD(_DaytonaStrategy):
         )
         return result.return_code == 0
 
+    async def services(self) -> list[str]:
+        """List compose service names defined inside the DinD VM.
+
+        Runs ``docker compose config --services`` against the task's compose
+        stack — includes BenchFlow's ``main`` service plus any vulhub-style
+        target/database containers the task declares (#248). The output is
+        filtered to the compose service-name grammar so stray warning lines
+        cannot be mistaken for services.
+        """
+        result = await self._compose_exec(["config", "--services"], timeout_sec=30)
+        if result.return_code != 0:
+            raise RuntimeError(
+                f"docker compose config --services failed: "
+                f"{result.stdout} {result.stderr}"
+            )
+        return _filter_compose_service_names(result.stdout or "")
+
     async def attach(self) -> None:
         env = self._env
         if not env._sandbox:
@@ -1076,6 +1107,9 @@ class DaytonaSandbox(BaseSandbox):
             service=service,
         )
 
+    async def services(self) -> list[str]:
+        return await self._strategy.services()
+
     async def upload_file(self, source_path: Path | str, target_path: str) -> None:
         return await self._strategy.upload_file(source_path, target_path)
 
@@ -1091,6 +1125,9 @@ class DaytonaSandbox(BaseSandbox):
     async def is_dir(
         self, path: str, user: str | int | None = None, service: str = "main"
     ) -> bool:
+        # The strategy fast-path only knows the agent's `main` container; a
+        # non-main service must route through the generic `test -d` exec path
+        # so the compose `service` selector is honored.
         if service != "main":
             return await super().is_dir(path, user=user, service=service)
         return await self._strategy.is_dir(path, user=self._resolve_user(user))
@@ -1098,6 +1135,9 @@ class DaytonaSandbox(BaseSandbox):
     async def is_file(
         self, path: str, user: str | int | None = None, service: str = "main"
     ) -> bool:
+        # The strategy fast-path only knows the agent's `main` container; a
+        # non-main service must route through the generic `test -f` exec path
+        # so the compose `service` selector is honored.
         if service != "main":
             return await super().is_file(path, user=user, service=service)
         return await self._strategy.is_file(path, user=self._resolve_user(user))
