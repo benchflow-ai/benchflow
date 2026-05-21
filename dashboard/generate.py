@@ -22,6 +22,7 @@ Usage::
 from __future__ import annotations
 
 import contextlib
+import csv
 import json
 import re
 import subprocess
@@ -104,13 +105,6 @@ def _read_json(p: Path) -> dict:
         return {}
 
 
-def _count_lines(p: Path) -> int:
-    try:
-        return sum(1 for _ in p.open())
-    except Exception:
-        return 0
-
-
 def _is_empty(p: Path) -> bool:
     """A 0-byte file — nothing to view, so it is never surfaced as an artifact.
 
@@ -124,14 +118,42 @@ def _is_empty(p: Path) -> bool:
         return True
 
 
+def _count_jsonl_events(p: Path) -> int:
+    """Logical record count for a .jsonl — non-blank lines, not raw newlines.
+
+    Audit rule R9: a user-facing "N events" count must reflect logical
+    records (one JSON object per non-blank line), not the physical newline
+    count, so a trailing blank line never inflates it.
+    """
+    try:
+        with p.open() as fh:
+            return sum(1 for line in fh if line.strip())
+    except Exception:
+        return 0
+
+
+def _csv_rows(p: Path) -> int:
+    """Logical CSV data-record count — quoted multi-line fields handled.
+
+    Audit rule R9: ``content_lines - 1`` over-counts when a field contains an
+    embedded newline inside quotes. ``csv.reader`` parses real records.
+    """
+    try:
+        with p.open(newline="") as fh:
+            n = sum(1 for _ in csv.reader(fh))
+        return max(n - 1, 0)  # minus the header row
+    except Exception:
+        return 0
+
+
 # File-content payloads — the dashboard shows the actual contents of every
 # artifact, so each readable file is embedded (capped) into data.json.
 _MAX_LINES = 240
 _MAX_BYTES = 64000
 _LANG = {
-    ".json": "json", ".jsonl": "jsonl", ".csv": "csv", ".sh": "shell",
-    ".py": "python", ".txt": "text", ".md": "text", ".toml": "text",
-    ".log": "text", ".yaml": "text", ".yml": "text",
+    ".json": "json", ".jsonl": "jsonl", ".ipynb": "json", ".csv": "csv",
+    ".sh": "shell", ".py": "python", ".txt": "text", ".md": "text",
+    ".toml": "text", ".log": "text", ".yaml": "text", ".yml": "text",
 }
 
 
@@ -169,7 +191,7 @@ def _artifact(name: str, kind: str, path: Path) -> dict:
     """One artifact record — including the file's (capped) actual content."""
     content, lines, truncated, lang = _file_payload(path)
     if kind == "trajectory":
-        info = f"{lines} events"
+        info = f"{_count_jsonl_events(path)} events"
     elif kind == "reward":
         info = (content or "").strip().splitlines()[0][:16] if content else ""
     else:
@@ -252,7 +274,7 @@ def _task_row(d: Path) -> dict:
     for cand in (d / "trajectory" / "acp_trajectory.jsonl",
                  d / "agent" / "acp_trajectory.jsonl"):
         if cand.is_file():
-            traj = _count_lines(cand)
+            traj = _count_jsonl_events(cand)
             break
     reward = None
     if isinstance(result.get("rewards"), dict):
@@ -376,9 +398,9 @@ def _exp_file(p: Path, display: str | None = None) -> dict:
     """One experiment file — its kind, size, row count, and capped content."""
     content, lines, truncated, lang = _file_payload(p)
     suf = p.suffix.lower()
-    kind = ("script" if suf in (".py", ".sh")
+    kind = ("script" if suf in (".py", ".sh", ".ipynb")
             else "results" if suf in (".csv", ".json") else "data")
-    rows = max(lines - 1, 0) if suf == ".csv" else None
+    rows = _csv_rows(p) if suf == ".csv" else None
     try:
         size = p.stat().st_size
     except Exception:
@@ -423,10 +445,12 @@ def collect_experiments() -> list[dict]:
             with contextlib.suppress(Exception):
                 b["mtimes"].append(f.stat().st_mtime)
         for label, b in buckets.items():
+            files = sorted(b["files"], key=lambda x: x["name"])
             out.append({
                 "name": label, "source": "experiments/", "type": b["type"],
                 "blurb": b["blurb"], "date": _ymd(b["mtimes"]),
-                "files": sorted(b["files"], key=lambda x: x["name"]),
+                "files": files,
+                "files_truncated": False, "n_files_total": len(files),
             })
 
     labs = ROOT / "labs"
@@ -434,9 +458,11 @@ def collect_experiments() -> list[dict]:
         for sub in sorted(labs.iterdir()):
             if not sub.is_dir() or sub.name.startswith("."):
                 continue
-            files = [p for p in sorted(sub.rglob("*"))
-                     if p.is_file() and not p.name.startswith(".")
-                     and not _is_empty(p)]
+            all_files = [p for p in sorted(sub.rglob("*"))
+                         if p.is_file() and not p.name.startswith(".")
+                         and not _is_empty(p)]
+            cap = 60
+            files = all_files[:cap]
             mtimes = []
             for p in files:
                 with contextlib.suppress(Exception):
@@ -447,7 +473,9 @@ def collect_experiments() -> list[dict]:
                 "blurb": f"Lab experiment — {sub.name}.",
                 "date": _ymd(mtimes),
                 "files": [_exp_file(p, p.relative_to(sub).as_posix())
-                          for p in files[:24]],
+                          for p in files],
+                "files_truncated": len(all_files) > cap,
+                "n_files_total": len(all_files),
             })
 
     out.sort(key=lambda e: (e["date"], e["name"]), reverse=True)
