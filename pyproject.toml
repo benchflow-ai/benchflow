@@ -91,7 +91,13 @@ markers = [
 
 [tool.ruff]
 target-version = "py312"
-extend-exclude = [".claude/skills/skill-creator"]
+# Vendored third-party service packages baked into task images (e.g. the
+# smolclaws claw-* sources copied under a ClawsBench task's environment/) are
+# not BenchFlow code — do not lint them.
+extend-exclude = [
+    ".claude/skills/skill-creator",
+    "benchmarks/**/tasks/**/environment/claw-*",
+]
 
 [tool.ruff.lint]
 select = [
