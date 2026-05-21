@@ -94,6 +94,12 @@ class RolloutResult:
                       trajectory was captured.
         reward_events: Dense and terminal reward events from Rubric scoring.
                       None when the new reward pipeline was not used.
+        evolved_skills: The skills the rollout's agent generated or evolved,
+                      as a ``name -> body`` dict. Populated only by a
+                      continual-learning (``sequential-shared``) rollout that
+                      captured an exported skill set; None otherwise. This is
+                      the data path that feeds the persistent LearnerStore
+                      (capability 5).
         started_at:   Wall-clock start time.
         finished_at:  Wall-clock end time.
     """
@@ -122,6 +128,7 @@ class RolloutResult:
         partial_trajectory: bool = False,
         trajectory_source: TrajectorySource | None = None,
         reward_events: list[RewardEvent] | None = None,
+        evolved_skills: dict[str, Any] | None = None,
         started_at: datetime | None = None,
         finished_at: datetime | None = None,
     ):
@@ -147,6 +154,7 @@ class RolloutResult:
         self.partial_trajectory = partial_trajectory
         self.trajectory_source = trajectory_source
         self.reward_events = reward_events
+        self.evolved_skills = evolved_skills
         self.started_at = started_at
         self.finished_at = finished_at
 

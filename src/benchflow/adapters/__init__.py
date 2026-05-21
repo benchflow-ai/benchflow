@@ -24,7 +24,7 @@ re-export its public symbols here.
 """
 
 from benchflow.adapters.harbor import HarborAdapter, from_harbor_task
-from benchflow.adapters.inbound import InboundAdapter, InboundTask, detect_adapter
+from benchflow.adapters.inbound import InboundTask, detect_adapter
 from benchflow.adapters.inspect_ai import InspectAdapter, to_inspect_task
 from benchflow.adapters.ors import ORSAdapter, to_ors_reward
 from benchflow.adapters.terminal_bench import (
@@ -34,7 +34,6 @@ from benchflow.adapters.terminal_bench import (
 
 __all__ = [
     "HarborAdapter",
-    "InboundAdapter",
     "InboundTask",
     "InspectAdapter",
     "ORSAdapter",

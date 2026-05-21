@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from benchflow.adapters.inbound import InboundTask
+from benchflow.adapters.inbound import InboundTask, carry_native_subtrees
 from benchflow.task.config import TaskConfig
 
 # Foreign files carried straight through, keyed by their native location.
@@ -86,14 +86,14 @@ class HarborAdapter:
             src = root / rel
             if src.is_file():
                 files[rel] = src
+
         # Carry any extra files in the native subtrees (fixtures, helpers).
-        for subtree in ("environment", "tests", "solution"):
-            sub = root / subtree
-            if not sub.is_dir():
-                continue
-            for src in sorted(p for p in sub.rglob("*") if p.is_file()):
-                rel = src.relative_to(root).as_posix()
-                files.setdefault(rel, src)
+        # Harbor's layout is the native one, so a setdefault carry is safe —
+        # a passthrough file already placed above wins over its subtree copy.
+        def _carry(native: str, src: Path) -> None:
+            files.setdefault(native, src)
+
+        carry_native_subtrees(root, _carry)
 
         return InboundTask(
             name=name,
