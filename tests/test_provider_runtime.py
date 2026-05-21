@@ -225,9 +225,10 @@ class TestBedrockProxyRuntime:
 
 
 class TestBedrockProxyRemoteSandbox:
-    """The Bedrock proxy is load-bearing; on a remote sandbox where the host
-    proxy is unreachable the run must fail fast rather than inject an
-    unreachable 127.0.0.1 base URL (the Daytona telemetry-proxy twin bug)."""
+    """Guards the fix from PR #329: the Bedrock proxy is load-bearing; on a
+    remote sandbox where the host proxy is unreachable the run must fail fast
+    rather than inject an unreachable 127.0.0.1 base URL (the Daytona
+    telemetry-proxy twin bug)."""
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("environment", ["daytona", "modal"])

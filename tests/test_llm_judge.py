@@ -55,6 +55,9 @@ class TestParseVerdict:
 
 
 class TestCallJudgeProviderFallback:
+    """Guards the fix from PR #319 (rewards-code audit) for cross-provider
+    judge fallback."""
+
     async def test_api_failure_surfaces_original_error(self) -> None:
         """A real API failure on the matching provider is raised as-is.
 
@@ -293,6 +296,9 @@ class _FakeResponse:
 
 
 class TestCallAnthropicContent:
+    """Guards the fix from PR #319 (rewards-code audit) for `_call_anthropic`
+    content-block extraction."""
+
     def _patch_sdk(self, response: _FakeResponse) -> AbstractContextManager[None]:
         client = AsyncMock()
         client.messages.create = AsyncMock(return_value=response)
@@ -551,6 +557,7 @@ description = "B"
     async def test_likert_criterion(
         self, mock_judge: AsyncMock, tmp_path: Path
     ) -> None:
+        """Guards the fix from PR #319 (rewards-code audit) for likert scoring."""
         mock_judge.return_value = '{"score": 4, "reasoning": "pretty good"}'
         (tmp_path / "output.txt").write_text("output")
 

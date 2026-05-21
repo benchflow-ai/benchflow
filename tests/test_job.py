@@ -320,7 +320,7 @@ class TestJobRunOrchestration:
         be double-counted — otherwise the passed+failed+errored+verifier_errored
         == total assertion in Evaluation.run() crashes the whole evaluation.
 
-        Regression for audit Finding 6.
+        Guards the fix from PR #320 for audit Finding 6.
         """
         job = self._make_job(tmp_path, n_tasks=1, concurrency=1)
         job._sdk = AsyncMock()
