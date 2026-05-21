@@ -176,6 +176,75 @@ class TestTargetSideTestScriptVerification:
         assert {c["service"] for c in sandbox.download_calls} == {"target"}
 
     @pytest.mark.asyncio
+    async def test_target_service_logs_verifier_dir_created_before_test_sh(
+        self, tmp_path: Path
+    ) -> None:
+        """Guards PR #321: create /logs/verifier in a non-main target service.
+
+        ``/logs/verifier`` is bind-mounted (and re-created by
+        ``harden_before_verify``) only in the ``main`` container. When the
+        verifier runs ``test.sh`` in a target service its stdout is redirected
+        to ``/logs/verifier/test-stdout.txt`` — a path that does not exist on a
+        typical target image. Without an explicit ``mkdir -p`` the redirect
+        fails before ``test.sh`` starts and target-side verification silently
+        produces no reward file. The verifier must create the directory in the
+        target container *before* the ``test.sh`` exec.
+        """
+        toml = 'version = "1.0"\n[verifier]\nservice = "target"\n'
+        task = _make_task(tmp_path, toml)
+        rollout_paths = RolloutPaths(rollout_dir=tmp_path / "rollout")
+        rollout_paths.mkdir()
+        sandbox = _RecordingSandbox(rollout_paths)
+
+        await Verifier(task, rollout_paths, sandbox).verify()
+
+        commands = [c["command"] for c in sandbox.exec_calls]
+        mkdir_indices = [
+            i
+            for i, cmd in enumerate(commands)
+            if "mkdir" in cmd and "/logs/verifier" in cmd
+        ]
+        assert mkdir_indices, "verifier must mkdir /logs/verifier in the target service"
+        # The directory is created in the target service, as root.
+        mkdir_call = sandbox.exec_calls[mkdir_indices[0]]
+        assert mkdir_call["service"] == "target"
+        assert mkdir_call.get("user") == "root"
+        # It must run before test.sh redirects its stdout into that directory.
+        test_sh_indices = [
+            i for i, cmd in enumerate(commands) if "test-stdout.txt" in cmd
+        ]
+        assert test_sh_indices, "test.sh redirect exec not found"
+        assert mkdir_indices[0] < test_sh_indices[0], (
+            "/logs/verifier must be created before the test.sh stdout redirect"
+        )
+
+    @pytest.mark.asyncio
+    async def test_main_service_skips_redundant_logs_verifier_mkdir(
+        self, tmp_path: Path
+    ) -> None:
+        """Guards PR #321: main-service runs are unaffected by the target fix.
+
+        The ``main`` container already has ``/logs/verifier`` bind-mounted and
+        re-created by ``harden_before_verify``, so the verifier must not issue
+        an extra ``mkdir`` for it — the fix is scoped to non-``main`` services.
+        """
+        task = _make_task(tmp_path, 'version = "1.0"\n[verifier]\n')
+        rollout_paths = RolloutPaths(rollout_dir=tmp_path / "rollout")
+        rollout_paths.mkdir()
+        sandbox = _RecordingSandbox(rollout_paths)
+
+        await Verifier(task, rollout_paths, sandbox).verify()
+
+        mkdir_calls = [
+            c
+            for c in sandbox.exec_calls
+            if "mkdir" in c["command"] and "/logs/verifier" in c["command"]
+        ]
+        assert not mkdir_calls, (
+            "main-service verifier must not mkdir /logs/verifier (already mounted)"
+        )
+
+    @pytest.mark.asyncio
     async def test_mounted_sandbox_still_downloads_from_target_service(
         self, tmp_path: Path
     ) -> None:
