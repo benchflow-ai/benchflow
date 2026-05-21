@@ -5,7 +5,6 @@ All tests that touch LLM providers are mocked — no real API calls.
 
 from __future__ import annotations
 
-import asyncio
 import json
 from contextlib import AbstractContextManager
 from pathlib import Path
@@ -56,13 +55,13 @@ class TestParseVerdict:
 
 
 class TestCallJudgeProviderFallback:
-    def test_api_failure_surfaces_original_error(self) -> None:
+    async def test_api_failure_surfaces_original_error(self) -> None:
         """A real API failure on the matching provider is raised as-is.
 
         The cross-provider fallback must NOT advance to a provider whose
-        API cannot serve this model name — otherwise ``last_error`` ends
-        up holding a misleading model-not-found error from the wrong
-        provider instead of the genuine failure.
+        API cannot serve this model name — otherwise the surfaced error is
+        a misleading model-not-found error from the wrong provider instead
+        of the genuine failure.
         """
         original = RuntimeError("anthropic: invalid x-api-key")
         anthropic_mock = AsyncMock(side_effect=original)
@@ -75,7 +74,7 @@ class TestCallJudgeProviderFallback:
             patch("benchflow.rewards.llm._call_google", google_mock),
             pytest.raises(RuntimeError, match="invalid x-api-key") as exc_info,
         ):
-            asyncio.run(call_judge("claude-haiku-4-5", "prompt", retries=2))
+            await call_judge("claude-haiku-4-5", "prompt", retries=2)
 
         # The exact original exception object propagates.
         assert exc_info.value is original
@@ -84,7 +83,7 @@ class TestCallJudgeProviderFallback:
         openai_mock.assert_not_awaited()
         google_mock.assert_not_awaited()
 
-    def test_import_error_falls_through_to_next_provider(self) -> None:
+    async def test_import_error_falls_through_to_next_provider(self) -> None:
         """A missing SDK (ImportError) still falls through to the next provider."""
         anthropic_mock = AsyncMock(side_effect=ImportError("no anthropic SDK"))
         openai_mock = AsyncMock(return_value="ok from openai")
@@ -93,13 +92,13 @@ class TestCallJudgeProviderFallback:
             patch("benchflow.rewards.llm._call_anthropic", anthropic_mock),
             patch("benchflow.rewards.llm._call_openai", openai_mock),
         ):
-            result = asyncio.run(call_judge("claude-haiku-4-5", "prompt", retries=2))
+            result = await call_judge("claude-haiku-4-5", "prompt", retries=2)
 
         assert result == "ok from openai"
         # ImportError is not retried.
         assert anthropic_mock.await_count == 1
 
-    def test_all_sdks_missing_raises_judge_environment_error(self) -> None:
+    async def test_all_sdks_missing_raises_judge_environment_error(self) -> None:
         """When *every* provider SDK is missing, call_judge raises a
         JudgeEnvironmentError — a distinct, identifiable environment failure,
         not a generic RuntimeError that callers might mistake for a verdict."""
@@ -111,7 +110,7 @@ class TestCallJudgeProviderFallback:
             patch("benchflow.rewards.llm._call_google", missing),
             pytest.raises(JudgeEnvironmentError, match="judge extra"),
         ):
-            asyncio.run(call_judge("claude-haiku-4-5", "prompt", retries=2))
+            await call_judge("claude-haiku-4-5", "prompt", retries=2)
 
     def test_judge_environment_error_is_a_runtime_error(self) -> None:
         """JudgeEnvironmentError stays a RuntimeError subclass so existing
@@ -149,25 +148,25 @@ class TestCallAnthropicContent:
         )
         return patch.dict("sys.modules", {"anthropic": fake_anthropic})
 
-    def test_empty_content_returns_empty_string(self) -> None:
+    async def test_empty_content_returns_empty_string(self) -> None:
         with self._patch_sdk(_FakeResponse([])):
-            result = asyncio.run(_call_anthropic("claude-haiku-4-5", "prompt", 100))
+            result = await _call_anthropic("claude-haiku-4-5", "prompt", 100)
         assert result == ""
 
-    def test_non_text_first_block_returns_empty_string(self) -> None:
+    async def test_non_text_first_block_returns_empty_string(self) -> None:
         with self._patch_sdk(_FakeResponse([_FakeNonTextBlock()])):
-            result = asyncio.run(_call_anthropic("claude-haiku-4-5", "prompt", 100))
+            result = await _call_anthropic("claude-haiku-4-5", "prompt", 100)
         assert result == ""
 
-    def test_non_text_block_before_text_block(self) -> None:
+    async def test_non_text_block_before_text_block(self) -> None:
         response = _FakeResponse([_FakeNonTextBlock(), _FakeTextBlock("the verdict")])
         with self._patch_sdk(response):
-            result = asyncio.run(_call_anthropic("claude-haiku-4-5", "prompt", 100))
+            result = await _call_anthropic("claude-haiku-4-5", "prompt", 100)
         assert result == "the verdict"
 
-    def test_text_block_returns_text(self) -> None:
+    async def test_text_block_returns_text(self) -> None:
         with self._patch_sdk(_FakeResponse([_FakeTextBlock("hello")])):
-            result = asyncio.run(_call_anthropic("claude-haiku-4-5", "prompt", 100))
+            result = await _call_anthropic("claude-haiku-4-5", "prompt", 100)
         assert result == "hello"
 
 
@@ -196,21 +195,21 @@ class TestCallGoogleContent:
             {"google": fake_google, "google.genai": fake_genai},
         )
 
-    def test_none_text_returns_empty_string(self) -> None:
+    async def test_none_text_returns_empty_string(self) -> None:
         """``response.text`` is None (e.g. safety-filtered) -> "" not None."""
         with (
             patch.dict("os.environ", {"GOOGLE_API_KEY": "test-key"}),
             self._patch_sdk(_FakeGoogleResponse(None)),
         ):
-            result = asyncio.run(_call_google("gemini-2.0-flash", "prompt"))
+            result = await _call_google("gemini-2.0-flash", "prompt")
         assert result == ""
 
-    def test_text_returns_text(self) -> None:
+    async def test_text_returns_text(self) -> None:
         with (
             patch.dict("os.environ", {"GOOGLE_API_KEY": "test-key"}),
             self._patch_sdk(_FakeGoogleResponse("the verdict")),
         ):
-            result = asyncio.run(_call_google("gemini-2.0-flash", "prompt"))
+            result = await _call_google("gemini-2.0-flash", "prompt")
         assert result == "the verdict"
 
 
@@ -220,21 +219,21 @@ class TestCallGoogleContent:
 
 
 class TestLLMJudgeLegacy:
-    def test_reads_score_file(self, tmp_path: Path) -> None:
+    async def test_reads_score_file(self, tmp_path: Path) -> None:
         (tmp_path / "llm_judge_score.txt").write_text("0.85\n")
         func = LLMJudgeRewardFunc(prompt="rate it")
-        score = asyncio.run(func.score(tmp_path))
+        score = await func.score(tmp_path)
         assert score == pytest.approx(0.85)
 
-    def test_missing_score_file(self, tmp_path: Path) -> None:
+    async def test_missing_score_file(self, tmp_path: Path) -> None:
         func = LLMJudgeRewardFunc(prompt="rate it")
-        score = asyncio.run(func.score(tmp_path))
+        score = await func.score(tmp_path)
         assert score == 0.0
 
-    def test_invalid_score_file(self, tmp_path: Path) -> None:
+    async def test_invalid_score_file(self, tmp_path: Path) -> None:
         (tmp_path / "llm_judge_score.txt").write_text("not-a-number\n")
         func = LLMJudgeRewardFunc(prompt="rate it")
-        score = asyncio.run(func.score(tmp_path))
+        score = await func.score(tmp_path)
         assert score == 0.0
 
 
@@ -268,7 +267,7 @@ def _make_rubric_toml(tmp_path: Path, content: str) -> Path:
 
 class TestLLMJudgeRubricMode:
     @patch("benchflow.rewards.llm.call_judge", new_callable=AsyncMock)
-    def test_single_binary_criterion_pass(
+    async def test_single_binary_criterion_pass(
         self, mock_judge: AsyncMock, tmp_path: Path
     ) -> None:
         mock_judge.return_value = _MOCK_PASS_RESPONSE
@@ -287,7 +286,7 @@ type = "binary"
         )
 
         func = LLMJudgeRewardFunc(rubric_path=rubric_path)
-        score = asyncio.run(func.score(tmp_path))
+        score = await func.score(tmp_path)
 
         assert score == pytest.approx(1.0)
         assert len(func.events) == 1
@@ -296,7 +295,7 @@ type = "binary"
         mock_judge.assert_called_once()
 
     @patch("benchflow.rewards.llm.call_judge", new_callable=AsyncMock)
-    def test_single_binary_criterion_fail(
+    async def test_single_binary_criterion_fail(
         self, mock_judge: AsyncMock, tmp_path: Path
     ) -> None:
         mock_judge.return_value = _MOCK_FAIL_RESPONSE
@@ -311,13 +310,13 @@ description = "Is the answer correct?"
         )
 
         func = LLMJudgeRewardFunc(rubric_path=rubric_path)
-        score = asyncio.run(func.score(tmp_path))
+        score = await func.score(tmp_path)
 
         assert score == pytest.approx(0.0)
         assert func.events[0].reward == 0.0
 
     @patch("benchflow.rewards.llm.call_judge", new_callable=AsyncMock)
-    def test_multiple_criteria_weighted_mean(
+    async def test_multiple_criteria_weighted_mean(
         self, mock_judge: AsyncMock, tmp_path: Path
     ) -> None:
         mock_judge.side_effect = [_MOCK_PASS_RESPONSE, _MOCK_FAIL_RESPONSE]
@@ -337,14 +336,16 @@ weight = 0.3
         )
 
         func = LLMJudgeRewardFunc(rubric_path=rubric_path)
-        score = asyncio.run(func.score(tmp_path))
+        score = await func.score(tmp_path)
 
         # weighted_mean: (1.0 * 0.7 + 0.0 * 0.3) / (0.7 + 0.3)
         assert score == pytest.approx(0.7)
         assert len(func.events) == 2
 
     @patch("benchflow.rewards.llm.call_judge", new_callable=AsyncMock)
-    def test_all_pass_aggregation(self, mock_judge: AsyncMock, tmp_path: Path) -> None:
+    async def test_all_pass_aggregation(
+        self, mock_judge: AsyncMock, tmp_path: Path
+    ) -> None:
         mock_judge.side_effect = [_MOCK_PASS_RESPONSE, _MOCK_FAIL_RESPONSE]
         (tmp_path / "output.txt").write_text("output")
 
@@ -363,11 +364,13 @@ description = "B"
         )
 
         func = LLMJudgeRewardFunc(rubric_path=rubric_path)
-        score = asyncio.run(func.score(tmp_path))
+        score = await func.score(tmp_path)
         assert score == 0.0  # Not all passed
 
     @patch("benchflow.rewards.llm.call_judge", new_callable=AsyncMock)
-    def test_any_pass_aggregation(self, mock_judge: AsyncMock, tmp_path: Path) -> None:
+    async def test_any_pass_aggregation(
+        self, mock_judge: AsyncMock, tmp_path: Path
+    ) -> None:
         mock_judge.side_effect = [_MOCK_PASS_RESPONSE, _MOCK_FAIL_RESPONSE]
         (tmp_path / "output.txt").write_text("output")
 
@@ -386,11 +389,13 @@ description = "B"
         )
 
         func = LLMJudgeRewardFunc(rubric_path=rubric_path)
-        score = asyncio.run(func.score(tmp_path))
+        score = await func.score(tmp_path)
         assert score == 1.0  # At least one passed
 
     @patch("benchflow.rewards.llm.call_judge", new_callable=AsyncMock)
-    def test_likert_criterion(self, mock_judge: AsyncMock, tmp_path: Path) -> None:
+    async def test_likert_criterion(
+        self, mock_judge: AsyncMock, tmp_path: Path
+    ) -> None:
         mock_judge.return_value = '{"score": 4, "reasoning": "pretty good"}'
         (tmp_path / "output.txt").write_text("output")
 
@@ -405,12 +410,14 @@ points = 5
         )
 
         func = LLMJudgeRewardFunc(rubric_path=rubric_path)
-        score = asyncio.run(func.score(tmp_path))
+        score = await func.score(tmp_path)
         # likert: (4 - 1) / (5 - 1) = 0.75
         assert score == pytest.approx(0.75)
 
     @patch("benchflow.rewards.llm.call_judge", new_callable=AsyncMock)
-    def test_numeric_criterion(self, mock_judge: AsyncMock, tmp_path: Path) -> None:
+    async def test_numeric_criterion(
+        self, mock_judge: AsyncMock, tmp_path: Path
+    ) -> None:
         mock_judge.return_value = '{"score": 70, "reasoning": "decent"}'
         (tmp_path / "output.txt").write_text("output")
 
@@ -426,7 +433,7 @@ max = 100
         )
 
         func = LLMJudgeRewardFunc(rubric_path=rubric_path)
-        score = asyncio.run(func.score(tmp_path))
+        score = await func.score(tmp_path)
         assert score == pytest.approx(0.7)
 
 
@@ -437,7 +444,9 @@ max = 100
 
 class TestLLMJudgeInlineCriteria:
     @patch("benchflow.rewards.llm.call_judge", new_callable=AsyncMock)
-    def test_inline_criteria_list(self, mock_judge: AsyncMock, tmp_path: Path) -> None:
+    async def test_inline_criteria_list(
+        self, mock_judge: AsyncMock, tmp_path: Path
+    ) -> None:
         mock_judge.return_value = _MOCK_PASS_RESPONSE
         (tmp_path / "output.txt").write_text("answer")
 
@@ -446,11 +455,11 @@ class TestLLMJudgeInlineCriteria:
                 {"description": "Is it correct?", "type": "binary"},
             ],
         )
-        score = asyncio.run(func.score(tmp_path))
+        score = await func.score(tmp_path)
         assert score == pytest.approx(1.0)
 
     @patch("benchflow.rewards.llm.call_judge", new_callable=AsyncMock)
-    def test_inline_with_harvey_lab_keys(
+    async def test_inline_with_harvey_lab_keys(
         self, mock_judge: AsyncMock, tmp_path: Path
     ) -> None:
         """Inline criteria can use Harvey LAB style keys (id, match_criteria)."""
@@ -466,7 +475,7 @@ class TestLLMJudgeInlineCriteria:
                 },
             ],
         )
-        score = asyncio.run(func.score(tmp_path))
+        score = await func.score(tmp_path)
         assert score == pytest.approx(1.0)
         assert func.events[0].source == "criterion:criterion-1"
 
@@ -478,7 +487,7 @@ class TestLLMJudgeInlineCriteria:
 
 class TestLLMJudgeAutoDiscovery:
     @patch("benchflow.rewards.llm.call_judge", new_callable=AsyncMock)
-    def test_auto_discovers_rubric_toml(
+    async def test_auto_discovers_rubric_toml(
         self, mock_judge: AsyncMock, tmp_path: Path
     ) -> None:
         mock_judge.return_value = _MOCK_PASS_RESPONSE
@@ -492,7 +501,7 @@ description = "Works?"
         )
 
         func = LLMJudgeRewardFunc()
-        score = asyncio.run(func.score(tmp_path))
+        score = await func.score(tmp_path)
         assert score == pytest.approx(1.0)
 
 
@@ -503,7 +512,7 @@ description = "Works?"
 
 class TestLLMJudgeErrors:
     @patch("benchflow.rewards.llm.call_judge", new_callable=AsyncMock)
-    def test_judge_error_returns_zero(
+    async def test_judge_error_returns_zero(
         self, mock_judge: AsyncMock, tmp_path: Path
     ) -> None:
         """A real API failure (bad key, model not found) is a genuine judge
@@ -514,13 +523,13 @@ class TestLLMJudgeErrors:
         func = LLMJudgeRewardFunc(
             criteria=[{"description": "test"}],
         )
-        score = asyncio.run(func.score(tmp_path))
+        score = await func.score(tmp_path)
         assert score == 0.0
         assert len(func.events) == 1
         assert func.events[0].reward == 0.0
 
     @patch("benchflow.rewards.llm.call_judge", new_callable=AsyncMock)
-    def test_missing_sdk_propagates_not_scored_zero(
+    async def test_missing_sdk_propagates_not_scored_zero(
         self, mock_judge: AsyncMock, tmp_path: Path
     ) -> None:
         """A missing provider SDK (JudgeEnvironmentError) must propagate out of
@@ -535,7 +544,7 @@ class TestLLMJudgeErrors:
         func = LLMJudgeRewardFunc(criteria=[{"description": "test"}])
 
         with pytest.raises(JudgeEnvironmentError):
-            asyncio.run(func.score(tmp_path))
+            await func.score(tmp_path)
 
 
 # ---------------------------------------------------------------------------
@@ -545,7 +554,7 @@ class TestLLMJudgeErrors:
 
 class TestEvaluationDetails:
     @patch("benchflow.rewards.llm.call_judge", new_callable=AsyncMock)
-    def test_writes_evaluation_details(
+    async def test_writes_evaluation_details(
         self, mock_judge: AsyncMock, tmp_path: Path
     ) -> None:
         mock_judge.side_effect = [_MOCK_PASS_RESPONSE, _MOCK_FAIL_RESPONSE]
@@ -557,7 +566,7 @@ class TestEvaluationDetails:
                 {"description": "B", "id": "b"},
             ],
         )
-        asyncio.run(func.score(tmp_path))
+        await func.score(tmp_path)
 
         details_path = tmp_path / "evaluation_details.json"
         assert details_path.exists()
@@ -574,7 +583,9 @@ class TestEvaluationDetails:
 
 class TestDenseRewardEvents:
     @patch("benchflow.rewards.llm.call_judge", new_callable=AsyncMock)
-    def test_per_criterion_events(self, mock_judge: AsyncMock, tmp_path: Path) -> None:
+    async def test_per_criterion_events(
+        self, mock_judge: AsyncMock, tmp_path: Path
+    ) -> None:
         mock_judge.side_effect = [
             _MOCK_PASS_RESPONSE,
             _MOCK_FAIL_RESPONSE,
@@ -589,7 +600,7 @@ class TestDenseRewardEvents:
                 {"description": "C", "id": "c"},
             ],
         )
-        asyncio.run(func.score(tmp_path))
+        await func.score(tmp_path)
 
         events = func.events
         assert len(events) == 3
@@ -603,7 +614,7 @@ class TestDenseRewardEvents:
         assert events[0].source == "criterion:a"
 
     @patch("benchflow.rewards.llm.call_judge", new_callable=AsyncMock)
-    def test_events_cleared_between_calls(
+    async def test_events_cleared_between_calls(
         self, mock_judge: AsyncMock, tmp_path: Path
     ) -> None:
         mock_judge.return_value = _MOCK_PASS_RESPONSE
@@ -613,10 +624,10 @@ class TestDenseRewardEvents:
             criteria=[{"description": "A"}],
         )
 
-        asyncio.run(func.score(tmp_path))
+        await func.score(tmp_path)
         assert len(func.events) == 1
 
-        asyncio.run(func.score(tmp_path))
+        await func.score(tmp_path)
         assert len(func.events) == 1  # Not accumulated
 
 
