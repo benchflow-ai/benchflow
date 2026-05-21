@@ -16,9 +16,11 @@ task is a per-task image carrying only a subset of the services: ``provision``
 probes ``command -v`` and starts only the services actually installed (the
 same idea as ``detect_services_from_dockerfile``).
 
-The sidecar / shared-fleet topology (host-exposed ports, ``wait_for_readiness``
-over httpx) and environment-state ``snapshot``/``restore`` are the platform
-layer; this adapter raises ``NotImplementedError`` for the latter.
+Environment-state ``snapshot``/``restore`` are real here — roll-back over the
+SQLite files an ``[environment.state]`` table declares. The sidecar /
+shared-fleet topology (host-exposed ports, ``wait_for_readiness`` over httpx)
+and ``reset`` remain the platform layer; this adapter raises
+``NotImplementedError`` for ``reset``.
 """
 
 from __future__ import annotations

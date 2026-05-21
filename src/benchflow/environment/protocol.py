@@ -8,9 +8,10 @@ The contract surface is **stable**, but split by altitude:
 * **Core** — ``provision`` / ``readiness`` / ``query`` / ``teardown``. Enough
   to provision a stateful world, gate the agent on its readiness, inspect it
   for the verifier, and tear it down.
-* **Platform layer** — ``reset`` / ``snapshot`` / ``restore``. Declared so
-  branching wires in later without a contract change; the first concrete
-  implementation raises ``NotImplementedError`` for them.
+* **Roll-back** — ``snapshot`` / ``restore``. The substrate ``Rollout.branch()``
+  runs on; ``ManifestEnvironment`` implements them for SQLite-backed state.
+* **Platform layer** — ``reset``. Declared so it wires in later without a
+  contract change; ``ManifestEnvironment`` raises ``NotImplementedError``.
 """
 
 from __future__ import annotations
