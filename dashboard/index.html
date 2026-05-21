@@ -109,6 +109,56 @@
   summary { cursor: pointer; }
   summary::-webkit-details-marker { color: var(--muted); }
 
+  /* file-content viewer (shared by Jobs + Timeline) */
+  .fv { margin: 3px 0 6px; }
+  .fv > summary {
+    list-style: none; display: flex; gap: 8px; align-items: baseline;
+    font-size: 12px; padding: 2px 0; color: var(--muted);
+  }
+  .fv > summary::-webkit-details-marker { display: none; }
+  .fv > summary::before {
+    content: "▸"; color: #b4b4ae; font-size: 10px; flex: none;
+    transition: transform .12s;
+  }
+  .fv[open] > summary::before { transform: rotate(90deg); }
+  .fv > summary:hover { color: var(--ink); }
+  .fv .fname { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; color: var(--ink); }
+  .fv .fmeta { color: var(--muted); }
+  .fv-body { margin: 4px 0 2px 16px; }
+  .fv-note {
+    font-size: 11px; color: var(--warn); background: #fdf8ee;
+    border: 1px solid #f0dab0; border-radius: 4px; padding: 3px 8px; margin-bottom: 4px;
+  }
+  .fv-empty { font-size: 12px; color: var(--muted); font-style: italic; }
+  pre.code {
+    margin: 0; background: #fafaf8; border: 1px solid var(--line); border-radius: 6px;
+    padding: 10px 12px; max-height: 360px; overflow: auto;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 12px; line-height: 1.5; color: #2d2d2a; white-space: pre;
+    tab-size: 2;
+  }
+  pre.code.wrap { white-space: pre-wrap; word-break: break-word; }
+  .fv-table-wrap {
+    border: 1px solid var(--line); border-radius: 6px; overflow: auto; max-height: 360px;
+  }
+  table.fv-table { font-size: 12px; }
+  table.fv-table th, table.fv-table td {
+    padding: 4px 9px; white-space: nowrap;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  table.fv-table thead th {
+    position: sticky; top: 0; background: var(--side); z-index: 1;
+  }
+  table.fv-table tbody td { color: #2d2d2a; }
+  .fv-jsonl-ln {
+    display: flex; gap: 8px; padding: 1px 0; border-bottom: 1px solid #f0f0ee;
+  }
+  .fv-jsonl-ln:last-child { border-bottom: none; }
+  .fv-jsonl-num {
+    color: #b4b4ae; flex: none; text-align: right; min-width: 26px;
+    user-select: none; font-variant-numeric: tabular-nums;
+  }
+
   /* jobs tree */
   .grp { margin-bottom: 16px; }
   .grp .grphd { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
@@ -136,23 +186,39 @@
   .art .ak.reward { background: #eaf6ee; color: var(--good); }
   .art .ak.result { background: #f3eefb; color: #6b46c1; }
 
-  /* timeline */
+  /* timeline / experiments */
   .timeline { border-left: 2px solid var(--line); margin-left: 8px; padding-left: 0; }
   .tl { position: relative; padding: 4px 0 14px 22px; }
   .tl .tdot {
     position: absolute; left: -7px; top: 7px; width: 12px; height: 12px;
     border-radius: 50%; background: #c9c9c4; border: 2px solid var(--bg);
   }
-  .tl.feat .tdot { background: var(--good); }
-  .tl.fix .tdot { background: var(--warn); }
-  .tl.docs .tdot { background: var(--accent); }
-  .tl.merge .tdot { background: #c9c9c4; }
-  .tl.refactor .tdot, .tl.build .tdot { background: #6b46c1; }
-  .tl .tmeta { font-size: 11px; color: var(--muted); display: flex; gap: 8px; align-items: center; }
+  /* experiment-type accent colours */
+  .tl.ablation   .tdot { background: var(--accent); }
+  .tl.reviewer   .tdot { background: #6b46c1; }
+  .tl.skillsbench .tdot { background: var(--good); }
+  .tl.swebench   .tdot { background: var(--warn); }
+  .tl.scene      .tdot { background: #0d9488; }
+  .tl.lab        .tdot { background: #be185d; }
+  .tl.other      .tdot { background: #c9c9c4; }
+  .tl .tmeta { font-size: 11px; color: var(--muted); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   .tl .tsub { margin-top: 2px; }
-  .tl.merge .tsub { color: var(--muted); }
   .tpill { font-size: 10px; padding: 0 6px; border-radius: 9px; background: var(--chip);
            text-transform: uppercase; letter-spacing: .4px; }
+  .exp { margin-top: 2px; }
+  .exp > summary {
+    list-style: none; display: flex; gap: 6px; align-items: baseline; flex-wrap: wrap;
+  }
+  .exp > summary::-webkit-details-marker { display: none; }
+  .exp > summary::before {
+    content: "▸"; color: #b4b4ae; font-size: 10px; flex: none;
+    transition: transform .12s;
+  }
+  .exp[open] > summary::before { transform: rotate(90deg); }
+  .exp .ename { font-weight: 600; }
+  .exp .eblurb { color: var(--muted); font-size: 12.5px; margin: 3px 0 6px; }
+  .exp .efiles { margin: 4px 0 2px; padding-left: 2px; }
+  .exp .efiles-hd { font-size: 11px; color: var(--muted); margin-bottom: 2px; }
 
   /* advisories */
   .adv { padding: 9px 0; border-bottom: 1px solid var(--line); }
@@ -190,6 +256,139 @@ function statusClass(s) {
   return "backlog";
 }
 
+// ---- file-content viewer (one component, used by Jobs + Timeline) ----------
+// A file/artifact object carries: { name, kind, lang, content,
+// content_lines, truncated, info?, size?, rows? }. Renders an expandable
+// <details> that reveals the file's content, formatted by `lang`.
+
+function bytesLabel(n) {
+  if (n == null || isNaN(n)) return "";
+  if (n < 1024) return n + " B";
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+  return (n / (1024 * 1024)).toFixed(1) + " MB";
+}
+
+// Parse CSV with minimal quote handling — enough for the artifact files we show.
+function parseCSV(text) {
+  const rows = [];
+  let row = [], field = "", quoted = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (quoted) {
+      if (ch === '"' && text[i + 1] === '"') { field += '"'; i++; }
+      else if (ch === '"') quoted = false;
+      else field += ch;
+    } else if (ch === '"') {
+      quoted = true;
+    } else if (ch === ",") {
+      row.push(field); field = "";
+    } else if (ch === "\n" || ch === "\r") {
+      if (ch === "\r" && text[i + 1] === "\n") i++;
+      row.push(field); field = "";
+      if (row.length > 1 || row[0] !== "") rows.push(row);
+      row = [];
+    } else {
+      field += ch;
+    }
+  }
+  if (field !== "" || row.length) { row.push(field); rows.push(row); }
+  return rows;
+}
+
+function prettyJSON(text) {
+  try { return JSON.stringify(JSON.parse(text), null, 2); }
+  catch (e) { return text; }  // leave malformed JSON untouched
+}
+
+// Build the formatted body for a file's content. Returns a DOM node.
+function fileContentBody(file) {
+  const lang = file.lang || "text";
+  const content = file.content;
+
+  if (content == null) {
+    const why = file.kind === "dir" ? "directory — no content"
+      : "no preview available (binary or unreadable file)";
+    return el("div", "fv-empty", esc(why));
+  }
+  if (content === "") return el("div", "fv-empty", "empty file");
+
+  // CSV → a real table when it parses to a consistent grid.
+  if (lang === "csv") {
+    const rows = parseCSV(content);
+    if (rows.length) {
+      const wrap = el("div", "fv-table-wrap"), tbl = el("table", "fv-table");
+      const [head, ...body] = rows;
+      const thead = el("thead"), htr = el("tr");
+      head.forEach(h => htr.appendChild(el("th", null, esc(h))));
+      thead.appendChild(htr); tbl.appendChild(thead);
+      const tb = el("tbody");
+      body.forEach(r => {
+        const tr = el("tr");
+        for (let i = 0; i < head.length; i++)
+          tr.appendChild(el("td", null, esc(r[i] != null ? r[i] : "")));
+        tb.appendChild(tr);
+      });
+      tbl.appendChild(tb); wrap.appendChild(tbl);
+      return wrap;
+    }
+  }
+
+  // JSONL → one parsed/pretty line per record.
+  if (lang === "jsonl") {
+    const wrap = el("pre", "code");
+    content.split("\n").forEach((raw, i) => {
+      if (raw.trim() === "") return;
+      let shown = raw;
+      try { shown = JSON.stringify(JSON.parse(raw)); } catch (e) { /* keep raw */ }
+      const ln = el("div", "fv-jsonl-ln");
+      ln.appendChild(el("span", "fv-jsonl-num", String(i + 1)));
+      ln.appendChild(el("span", null, esc(shown)));
+      wrap.appendChild(ln);
+    });
+    return wrap;
+  }
+
+  // JSON → pretty-printed; everything else → raw monospace.
+  const pre = el("pre", "code");
+  pre.textContent = lang === "json" ? prettyJSON(content) : content;
+  return pre;
+}
+
+// The full <details> viewer node for one file. `extra` is an optional
+// trailing meta string (e.g. an artifact's `info`).
+function fileViewer(file, extra) {
+  const d = el("details", "fv");
+  const meta = [];
+  if (file.lang) meta.push(file.lang);
+  if (file.content_lines != null) meta.push(file.content_lines + " lines");
+  if (file.rows != null) meta.push(file.rows + " rows");
+  if (file.size != null) meta.push(bytesLabel(file.size));
+  if (extra) meta.push(extra);
+
+  const sum = el("summary");
+  sum.innerHTML =
+    `<span class="fname">${esc(file.name)}</span>` +
+    (meta.length ? `<span class="fmeta">— ${esc(meta.join(" · "))}</span>` : "");
+  d.appendChild(sum);
+
+  // Body builds lazily on first expand — keeps large datasets cheap.
+  let built = false;
+  d.addEventListener("toggle", () => {
+    if (!d.open || built) return;
+    built = true;
+    const body = el("div", "fv-body");
+    if (file.truncated) {
+      const shown = (file.content || "").split("\n").length;
+      const total = file.content_lines != null ? file.content_lines : shown;
+      body.appendChild(el("div", "fv-note",
+        `truncated — showing first ${shown} of ${total} lines`));
+    }
+    body.appendChild(fileContentBody(file));
+    d.appendChild(body);
+  });
+  return d;
+}
+
 // ---- Overview -------------------------------------------------------------
 function renderOverview() {
   const s = DATA.summary, t = s.tests, wrap = el("div");
@@ -203,7 +402,7 @@ function renderOverview() {
     ["Capabilities", `${s.capabilities_shipped}/${s.capabilities_total}`, "shipped", "good"],
     ["Roadmap", `${s.issues_active}`, `active of ${s.issues_total}`, "accent"],
     ["Job artifacts", `${s.jobs_total}`, `in ${s.job_groups} groups`, ""],
-    ["Commits", `${s.commits}`, "on v0.5-integration", ""],
+    ["Experiments", `${s.experiments != null ? s.experiments : 0}`, "in Timeline", ""],
     ["Advisories open", `${s.advisories_open}`, "follow-ups", s.advisories_open ? "warn" : "good"],
   ].forEach(([l, b, sub, c]) => {
     const card = el("div", "card stat");
@@ -221,7 +420,7 @@ function renderOverview() {
     <b>Tests</b> — the live pytest suite, suite by suite.<br>
     <b>Jobs</b> — every rollout under <code>jobs/</code>, as a tree: group → run → task → artifacts. Each group links to the agent advisories that correspond to it.<br>
     <b>Advisories</b> — the agents' review advisories, each tied back to a capability and a job group.<br>
-    <b>Timeline</b> — every commit of this v0.5 work, newest first.`;
+    <b>Timeline</b> — the v0.5 experiments under <code>experiments/</code> and <code>labs/</code>, newest first; each one expands to its files.`;
   wrap.appendChild(g);
   return wrap;
 }
@@ -406,10 +605,25 @@ function renderJobs() {
         arts.appendChild(el("div", "muted", `<span class="mono" style="font-size:11px">${esc(tk.rollout)}/</span>`));
         if (!tk.artifacts.length) arts.appendChild(el("div", "art", "(no files)"));
         tk.artifacts.forEach(a => {
-          arts.appendChild(el("div", "art",
-            `<span class="ak ${esc(a.kind)}">${esc(a.kind)}</span>
-             <span class="mono">${esc(a.name)}</span>
-             ${a.info ? `<span class="muted">— ${esc(a.info)}</span>` : ""}`));
+          // Directories and content-less artifacts stay as a flat row;
+          // every other artifact gets the expandable file viewer.
+          if (a.kind === "dir" || a.content == null) {
+            arts.appendChild(el("div", "art",
+              `<span class="ak ${esc(a.kind)}">${esc(a.kind)}</span>
+               <span class="mono">${esc(a.name)}</span>
+               ${a.info ? `<span class="muted">— ${esc(a.info)}</span>` : ""}`));
+          } else {
+            const row = el("div", "art");
+            row.style.display = "block";
+            const head = el("div");
+            head.style.cssText = "display:flex;gap:8px;align-items:baseline";
+            head.appendChild(el("span", "ak " + esc(a.kind), esc(a.kind)));
+            const v = fileViewer(a, a.info || null);
+            v.style.flex = "1";
+            head.appendChild(v);
+            row.appendChild(head);
+            arts.appendChild(row);
+          }
         });
         if (tk.error)
           arts.appendChild(el("div", "art", `<span class="ak" style="background:#fdf1f1;color:#c53030">error</span>
@@ -473,28 +687,53 @@ function renderAdvisories(focusId) {
   return wrap;
 }
 
-// ---- Timeline -------------------------------------------------------------
+// ---- Timeline (experiments) -----------------------------------------------
 function renderTimeline() {
-  const tl = DATA.timeline, wrap = el("div");
+  // `experiments` replaced the old git-commit `timeline` key.
+  const exps = (DATA.experiments || []).slice();
+  const wrap = el("div");
   wrap.appendChild(el("h1", "page", "Timeline"));
   wrap.appendChild(el("div", "sub-ttl",
-    `The v0.5 work — ${tl.length} commits on <code>v0.5-integration</code>, newest first.`));
-  if (!tl.length) {
-    wrap.appendChild(el("div", "card empty", "No commits found (need git history for main..v0.5-integration)."));
+    `The v0.5 experiments — ${exps.length} run${exps.length === 1 ? "" : "s"}, newest first.`));
+  if (!exps.length) {
+    wrap.appendChild(el("div", "card empty", "No experiments found under experiments/ or labs/."));
     return wrap;
   }
+  // Newest first; entries without a date sort to the end.
+  exps.sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
+
   const card = el("div", "card");
   const line = el("div", "timeline");
-  tl.forEach(c => {
-    const item = el("div", "tl " + esc(c.type));
-    item.innerHTML = `
-      <div class="tdot"></div>
-      <div class="tmeta">
-        <code>${esc(c.hash)}</code>
-        <span class="tpill">${esc(c.type)}</span>
-        <span>${esc(c.date)}</span>
-      </div>
-      <div class="tsub">${esc(c.subject)}</div>`;
+  exps.forEach(x => {
+    const type = x.type || "other";
+    const item = el("div", "tl " + esc(type));
+    item.appendChild(el("div", "tdot"));
+
+    const meta = el("div", "tmeta");
+    meta.appendChild(el("span", "tpill", esc(type)));
+    if (x.date) meta.appendChild(el("span", null, esc(x.date)));
+    if (x.source) meta.appendChild(el("code", null, esc(x.source)));
+    item.appendChild(meta);
+
+    const files = Array.isArray(x.files) ? x.files : [];
+    const det = el("details", "exp");
+    const sum = el("summary");
+    sum.innerHTML =
+      `<span class="ename">${esc(x.name)}</span>` +
+      `<span class="muted" style="font-size:12px">— ${files.length} file${files.length === 1 ? "" : "s"}</span>`;
+    det.appendChild(sum);
+
+    if (x.blurb) det.appendChild(el("div", "eblurb", esc(x.blurb)));
+
+    const fwrap = el("div", "efiles");
+    if (!files.length) {
+      fwrap.appendChild(el("div", "fv-empty", "no files recorded for this experiment"));
+    } else {
+      fwrap.appendChild(el("div", "efiles-hd", "Files"));
+      files.forEach(f => fwrap.appendChild(fileViewer(f)));
+    }
+    det.appendChild(fwrap);
+    item.appendChild(det);
     line.appendChild(item);
   });
   card.appendChild(line);
