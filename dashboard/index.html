@@ -1,0 +1,568 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>BenchFlow v0.5 — Dashboard</title>
+<style>
+  :root {
+    --bg: #fbfbfa; --panel: #ffffff; --ink: #1c1c1a; --muted: #6b6b66;
+    --line: #e3e3df; --accent: #2b6cb0; --good: #2f855a; --bad: #c53030;
+    --warn: #b7791f; --chip: #f0f0ee; --side: #f5f5f3;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink); display: flex;
+    font: 14px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  code, .mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+
+  /* ---- sidebar ---- */
+  aside {
+    width: 236px; flex: none; background: var(--side);
+    border-right: 1px solid var(--line); height: 100vh; position: sticky; top: 0;
+    overflow-y: auto; padding: 18px 12px;
+  }
+  .brand { font-size: 16px; font-weight: 700; padding: 0 8px; letter-spacing: -.2px; }
+  .brand span { color: var(--muted); font-weight: 500; }
+  .gen { color: var(--muted); font-size: 11px; padding: 4px 8px 14px; line-height: 1.5; }
+  nav a {
+    display: block; padding: 7px 10px; border-radius: 6px; cursor: pointer;
+    color: var(--muted); font-size: 13px; text-decoration: none; user-select: none;
+  }
+  nav a:hover { background: #ecece9; color: var(--ink); }
+  nav a.active { background: var(--accent); color: #fff; font-weight: 600; }
+  nav a.sub {
+    padding: 5px 10px 5px 22px; font-size: 12px;
+  }
+  nav a.sub:hover { background: #ecece9; }
+  nav a.sub.active { background: #dce8f5; color: var(--accent); }
+  nav .grouphd {
+    font-size: 10px; text-transform: uppercase; letter-spacing: .6px;
+    color: #9b9b95; padding: 14px 10px 4px;
+  }
+  nav .count { float: right; opacity: .7; font-variant-numeric: tabular-nums; }
+
+  /* ---- main ---- */
+  main { flex: 1; min-width: 0; overflow-x: hidden; padding: 26px 30px 70px; }
+  h1.page { margin: 0 0 2px; font-size: 19px; letter-spacing: -.2px; }
+  .sub-ttl { color: var(--muted); margin-bottom: 18px; font-size: 13px; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .5px;
+       color: var(--muted); margin: 26px 0 10px; }
+  h2:first-of-type { margin-top: 6px; }
+
+  .row { display: flex; gap: 14px; flex-wrap: wrap; }
+  .card { background: var(--panel); border: 1px solid var(--line);
+          border-radius: 8px; padding: 14px 16px; overflow-x: auto; }
+  .stat { flex: 1; min-width: 150px; }
+  .stat .big { font-size: 25px; font-weight: 700; letter-spacing: -.5px; }
+  .stat .lbl { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .4px; }
+  .muted { color: var(--muted); }
+  .good { color: var(--good); } .bad { color: var(--bad); }
+  .warn { color: var(--warn); } .accent { color: var(--accent); }
+  .chip { display: inline-block; background: var(--chip); border-radius: 4px;
+          padding: 1px 7px; font-size: 11px; margin: 1px 3px 1px 0; color: var(--muted); }
+  .chip.p { background: #e6effb; color: var(--accent); }
+  .chip.lnk { cursor: pointer; }
+  .chip.lnk:hover { background: #d8e6f6; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; }
+  .dot.shipped, .dot.resolved { background: var(--good); }
+  .dot.partial, .dot.open { background: var(--warn); }
+  .dot.backlog { background: #c9c9c4; }
+  .dot.active { background: var(--accent); }
+  .num-mono { font-variant-numeric: tabular-nums; }
+
+  /* concept map */
+  .flow { text-align: center; }
+  .flow .box { display: inline-block; background: var(--panel); border: 1px solid var(--line);
+               border-radius: 8px; padding: 10px 16px; }
+  .flow .arrow { color: var(--muted); font-size: 18px; margin: 4px 0; }
+  .kernel { border-color: var(--accent) !important; background: #f3f8fd !important; }
+  .planes { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; }
+  .plane { text-align: left; }
+  .plane .nm { font-weight: 700; }
+  .plane .rl { color: var(--accent); font-size: 12px; }
+  .plane .dt { color: var(--muted); font-size: 12px; margin-top: 4px; }
+  .plane .han { color: var(--muted); font-size: 11px; margin-top: 6px; font-style: italic; }
+  .exec { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+  .exec .kd { font-size: 10px; letter-spacing: .5px; padding: 1px 6px; border-radius: 3px;
+              background: var(--chip); color: var(--muted); margin-left: 6px; }
+  .exec .kd.PRIMITIVE { background: #e6effb; color: var(--accent); }
+  .exec .kd.DERIVED { background: #eaf6ee; color: var(--good); }
+  .caps { display: grid; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); gap: 12px; }
+  .cap .hd { display: flex; align-items: baseline; gap: 8px; }
+  .cap .num { background: var(--ink); color: #fff; border-radius: 50%; width: 22px; height: 22px;
+              display: inline-flex; align-items: center; justify-content: center;
+              font-size: 12px; font-weight: 700; flex: none; }
+  .cap .fit { color: var(--muted); font-size: 12.5px; margin-top: 6px; }
+  .legend { color: var(--muted); font-size: 12px; margin-top: 8px; }
+
+  /* tables */
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .4px; }
+  tr:hover td { background: #faf9f7; }
+  .barwrap { background: var(--line); border-radius: 4px; height: 8px; overflow: hidden; width: 100%; }
+  .bar { height: 100%; background: var(--good); }
+  details { margin: 2px 0; }
+  summary { cursor: pointer; }
+  summary::-webkit-details-marker { color: var(--muted); }
+
+  /* jobs tree */
+  .grp { margin-bottom: 16px; }
+  .grp .grphd { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+  .grp .glabel { font-weight: 700; }
+  .grp .gblurb { color: var(--muted); font-size: 12px; margin: 3px 0 8px; }
+  .run > summary {
+    padding: 6px 8px; border-radius: 6px; background: #faf9f7; border: 1px solid var(--line);
+    font-size: 12.5px;
+  }
+  .run { margin: 5px 0; }
+  .run .runbody { padding: 6px 0 2px 16px; }
+  .task { border-left: 2px solid var(--line); margin: 5px 0; padding-left: 12px; }
+  .task > summary { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .task .tname { font-weight: 600; }
+  .task .arts { margin: 6px 0 8px 14px; }
+  .art {
+    display: flex; gap: 8px; align-items: baseline; font-size: 12px;
+    padding: 2px 0; color: var(--muted);
+  }
+  .art .ak {
+    font-size: 9px; letter-spacing: .4px; text-transform: uppercase;
+    padding: 1px 5px; border-radius: 3px; background: var(--chip); flex: none;
+  }
+  .art .ak.trajectory { background: #e6effb; color: var(--accent); }
+  .art .ak.reward { background: #eaf6ee; color: var(--good); }
+  .art .ak.result { background: #f3eefb; color: #6b46c1; }
+
+  /* timeline */
+  .timeline { border-left: 2px solid var(--line); margin-left: 8px; padding-left: 0; }
+  .tl { position: relative; padding: 4px 0 14px 22px; }
+  .tl .tdot {
+    position: absolute; left: -7px; top: 7px; width: 12px; height: 12px;
+    border-radius: 50%; background: #c9c9c4; border: 2px solid var(--bg);
+  }
+  .tl.feat .tdot { background: var(--good); }
+  .tl.fix .tdot { background: var(--warn); }
+  .tl.docs .tdot { background: var(--accent); }
+  .tl.merge .tdot { background: #c9c9c4; }
+  .tl.refactor .tdot, .tl.build .tdot { background: #6b46c1; }
+  .tl .tmeta { font-size: 11px; color: var(--muted); display: flex; gap: 8px; align-items: center; }
+  .tl .tsub { margin-top: 2px; }
+  .tl.merge .tsub { color: var(--muted); }
+  .tpill { font-size: 10px; padding: 0 6px; border-radius: 9px; background: var(--chip);
+           text-transform: uppercase; letter-spacing: .4px; }
+
+  /* advisories */
+  .adv { padding: 9px 0; border-bottom: 1px solid var(--line); }
+  .adv:last-child { border-bottom: none; }
+  .adv .ahd { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+  .pill { font-size: 11px; padding: 1px 7px; border-radius: 10px; border: 1px solid var(--line);
+          color: var(--muted); white-space: nowrap; }
+  .pill.must-fix { border-color: #f0c2c2; color: var(--bad); background: #fdf1f1; }
+  .pill.should-fix { border-color: #f0dab0; color: var(--warn); background: #fdf8ee; }
+  .pill.future-work, .pill.note { background: var(--chip); }
+  .adv .adet { color: var(--muted); font-size: 12.5px; margin-top: 4px; }
+  .adv .acorr { font-size: 11.5px; margin-top: 5px; }
+  .empty { color: var(--muted); padding: 34px; text-align: center; }
+</style>
+</head>
+<body>
+<aside>
+  <div class="brand">BenchFlow <span>v0.5</span></div>
+  <div class="gen" id="gen">loading…</div>
+  <nav id="nav"></nav>
+</aside>
+<main id="main"></main>
+
+<script>
+const TABS = ["Overview", "Concept map", "Roadmap", "Tests", "Jobs", "Advisories", "Timeline"];
+let DATA = null, CURRENT = null;
+
+function el(t, c, h) { const e = document.createElement(t); if (c) e.className = c; if (h !== undefined) e.innerHTML = h; return e; }
+function esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;" }[c])); }
+function statusClass(s) {
+  s = (s || "").toLowerCase();
+  if (s.includes("review") || s.includes("progress")) return "active";
+  if (s === "shipped" || s === "resolved") return "shipped";
+  if (s === "partial" || s === "open" || s === "todo") return "partial";
+  return "backlog";
+}
+
+// ---- Overview -------------------------------------------------------------
+function renderOverview() {
+  const s = DATA.summary, t = s.tests, wrap = el("div");
+  wrap.appendChild(el("h1", "page", "Overview"));
+  wrap.appendChild(el("div", "sub-ttl", "BenchFlow v0.5 — architecture migration · branch <code>v0.5-integration</code>"));
+  const stats = el("div", "row");
+  const pct = t.total ? Math.round((t.passed / t.total) * 100) : 0;
+  [
+    ["Tests passing", `${t.passed}`, `of ${t.total} · ${pct}%`, t.failed ? "warn" : "good"],
+    ["Failing", `${t.failed}`, t.failed ? "see Tests" : "clean", t.failed ? "bad" : "good"],
+    ["Capabilities", `${s.capabilities_shipped}/${s.capabilities_total}`, "shipped", "good"],
+    ["Roadmap", `${s.issues_active}`, `active of ${s.issues_total}`, "accent"],
+    ["Job artifacts", `${s.jobs_total}`, `in ${s.job_groups} groups`, ""],
+    ["Commits", `${s.commits}`, "on v0.5-integration", ""],
+    ["Advisories open", `${s.advisories_open}`, "follow-ups", s.advisories_open ? "warn" : "good"],
+  ].forEach(([l, b, sub, c]) => {
+    const card = el("div", "card stat");
+    card.appendChild(el("div", "lbl", l));
+    card.appendChild(el("div", "big " + (c || ""), b));
+    card.appendChild(el("div", "muted", sub));
+    stats.appendChild(card);
+  });
+  wrap.appendChild(stats);
+  wrap.appendChild(el("h2", null, "How this dashboard is organized"));
+  const g = el("div", "card");
+  g.innerHTML = `
+    <b>Concept map</b> — the architecture: kernel, four planes, the tree-native execution model, the eight capabilities.<br>
+    <b>Roadmap</b> — the v0.5 milestones M1–M4 and their Linear issues.<br>
+    <b>Tests</b> — the live pytest suite, suite by suite.<br>
+    <b>Jobs</b> — every rollout under <code>jobs/</code>, as a tree: group → run → task → artifacts. Each group links to the agent advisories that correspond to it.<br>
+    <b>Advisories</b> — the agents' review advisories, each tied back to a capability and a job group.<br>
+    <b>Timeline</b> — every commit of this v0.5 work, newest first.`;
+  wrap.appendChild(g);
+  return wrap;
+}
+
+// ---- Concept map ----------------------------------------------------------
+function renderConcept() {
+  const cm = DATA.concept_map, wrap = el("div");
+  wrap.appendChild(el("h1", "page", "Concept map"));
+  wrap.appendChild(el("div", "sub-ttl", "The architecture — one kernel, four planes, a tree-native execution model."));
+
+  wrap.appendChild(el("h2", null, "The planes — kernel + four contracts"));
+  const flow = el("div", "card flow");
+  flow.appendChild(el("div", "box", esc(cm.entry)));
+  flow.appendChild(el("div", "arrow", "▼"));
+  flow.appendChild(el("div", "box kernel",
+    `<b>${esc(cm.kernel.name)}</b><br><span class="muted" style="font-size:12px">${esc(cm.kernel.blurb)}</span>`));
+  flow.appendChild(el("div", "arrow", "▼"));
+  const planes = el("div", "planes");
+  cm.planes.forEach(p => {
+    planes.appendChild(el("div", "card plane",
+      `<div class="nm">${esc(p.name)}</div><div class="rl">${esc(p.role)}</div>
+       <div class="dt">${esc(p.detail)}</div><div class="han">Han's ${esc(p.han)}</div>`));
+  });
+  flow.appendChild(planes);
+  wrap.appendChild(flow);
+
+  wrap.appendChild(el("h2", null, "The execution model — tree-native"));
+  const exec = el("div", "exec");
+  cm.execution_model.forEach(x => {
+    const kd = x.kind.split(" ")[0];
+    exec.appendChild(el("div", "card",
+      `<div><b>${esc(x.name)}</b><span class="kd ${kd}">${esc(x.kind)}</span></div>
+       <div class="muted" style="font-size:12.5px;margin-top:6px">${esc(x.detail)}</div>`));
+  });
+  wrap.appendChild(exec);
+  wrap.appendChild(el("div", "legend",
+    "Five evaluation spaces: " + cm.spaces.map(s => `<span class="chip">${esc(s)}</span>`).join("")));
+
+  wrap.appendChild(el("h2", null, "The eight capabilities — how each fits"));
+  const caps = el("div", "caps");
+  cm.capabilities.forEach(c => {
+    const card = el("div", "card cap");
+    card.innerHTML = `
+      <div class="hd"><span class="num">${c.n}</span><span class="nm" style="font-weight:700">${esc(c.name)}</span>
+        <span style="margin-left:auto" class="muted"><span class="dot ${statusClass(c.status)}"></span>${esc(c.status)}</span></div>
+      <div class="fit">${esc(c.fit)}</div>
+      <div style="margin-top:8px">${c.planes.map(p => `<span class="chip p">${esc(p)}</span>`).join("")}
+        ${c.issue ? `<span class="chip">${esc(c.issue)}</span>` : ""}</div>`;
+    caps.appendChild(card);
+  });
+  wrap.appendChild(caps);
+  return wrap;
+}
+
+// ---- Roadmap --------------------------------------------------------------
+function renderRoadmap() {
+  const rm = DATA.roadmap, wrap = el("div");
+  wrap.appendChild(el("h1", "page", "Roadmap"));
+  wrap.appendChild(el("div", "sub-ttl",
+    `Project <b>${esc(rm.project)}</b> · branch <code>${esc(rm.branch)}</code>`));
+  rm.milestones.forEach(m => {
+    const done = m.issues.filter(i => /done/i.test(i.status)).length;
+    const active = m.issues.filter(i => /progress|review/i.test(i.status)).length;
+    const pct = Math.round(((done + active * 0.5) / m.issues.length) * 100);
+    const ms = el("div", "card");
+    ms.style.marginBottom = "14px";
+    ms.innerHTML = `<div style="display:flex;align-items:baseline;gap:10px">
+        <span class="chip p">${esc(m.id)}</span><b>${esc(m.name)}</b>
+        <span class="muted" style="margin-left:auto">${active} active · ${m.issues.length} issues</span></div>
+      <div class="barwrap" style="margin:8px 0 4px"><div class="bar" style="width:${pct}%"></div></div>`;
+    const tbl = el("table"), tb = el("tbody");
+    m.issues.forEach(i => {
+      const tr = el("tr");
+      tr.innerHTML = `<td class="mono" style="white-space:nowrap">${esc(i.id)}</td><td>${esc(i.title)}</td>
+        <td style="white-space:nowrap"><span class="dot ${statusClass(i.status)}"></span>${esc(i.status)}</td>`;
+      tb.appendChild(tr);
+    });
+    tbl.appendChild(tb); ms.appendChild(tbl);
+    wrap.appendChild(ms);
+  });
+  return wrap;
+}
+
+// ---- Tests ----------------------------------------------------------------
+function renderTests() {
+  const t = DATA.tests, wrap = el("div");
+  wrap.appendChild(el("h1", "page", "Tests"));
+  if (!t.available) {
+    wrap.appendChild(el("div", "sub-ttl", "The pytest suite."));
+    wrap.appendChild(el("div", "card empty", esc(t.note)));
+    return wrap;
+  }
+  const s = t.summary;
+  wrap.appendChild(el("div", "sub-ttl", `The pytest suite — ${t.suites.length} suites.`));
+  const stats = el("div", "row");
+  [["Passed", s.passed, "good"], ["Failed", s.failed, s.failed ? "bad" : "good"],
+   ["Skipped", s.skipped, "muted"], ["Total", s.total, ""]].forEach(([l, v, c]) => {
+    const card = el("div", "card stat");
+    card.appendChild(el("div", "lbl", l));
+    card.appendChild(el("div", "big " + c, v));
+    stats.appendChild(card);
+  });
+  wrap.appendChild(stats);
+
+  if (t.failures.length) {
+    wrap.appendChild(el("h2", null, `Failing — ${t.failures.length}`));
+    const card = el("div", "card");
+    t.failures.forEach(f => {
+      const d = el("details");
+      d.appendChild(el("summary", null, `<span class="dot bad"></span><span class="mono">${esc(f.name)}</span>`));
+      d.appendChild(el("div", "muted",
+        `<div style="margin:6px 0 0 18px"><code>${esc(f.message) || "(no message)"}</code></div>`));
+      card.appendChild(d);
+    });
+    wrap.appendChild(card);
+  }
+  wrap.appendChild(el("h2", null, `Suites — ${t.suites.length}`));
+  const card = el("div", "card"), tbl = el("table");
+  tbl.innerHTML = "<thead><tr><th>Suite</th><th>Pass</th><th>Fail</th><th>Skip</th><th>Time</th></tr></thead>";
+  const tb = el("tbody");
+  t.suites.forEach(su => {
+    const tr = el("tr");
+    tr.innerHTML = `<td class="mono"><span class="dot ${su.failed ? "bad" : "shipped"}"></span>${esc(su.name)}</td>
+      <td class="num-mono good">${su.passed}</td>
+      <td class="num-mono ${su.failed ? "bad" : "muted"}">${su.failed}</td>
+      <td class="num-mono muted">${su.skipped}</td><td class="num-mono muted">${su.time}s</td>`;
+    tb.appendChild(tr);
+  });
+  tbl.appendChild(tb); card.appendChild(tbl); wrap.appendChild(card);
+  return wrap;
+}
+
+// ---- Jobs (the jobs/ folder tree) -----------------------------------------
+function rewardHTML(r) {
+  if (r == null) return '<span class="muted">no reward</span>';
+  const c = r >= 1 ? "good" : r > 0 ? "warn" : "bad";
+  return `<b class="${c}">reward ${r}</b>`;
+}
+function renderJobs() {
+  const j = DATA.jobs, wrap = el("div");
+  wrap.appendChild(el("h1", "page", "Jobs &amp; artifacts"));
+  wrap.appendChild(el("div", "sub-ttl",
+    `Every rollout under <code>jobs/</code> — ${j.total_tasks} tasks in ${j.groups.length} groups. ` +
+    `Each group links to the agent advisories that correspond to it.`));
+  if (!j.groups.length) {
+    wrap.appendChild(el("div", "card empty", "No rollout artifacts found under jobs/."));
+    return wrap;
+  }
+  j.groups.forEach((g, gi) => {
+    const grp = el("div", "grp card");
+    grp.id = "grp-" + g.name;
+    const advChips = (g.advisories || []).map(id =>
+      `<span class="chip lnk" data-adv="${esc(id)}">▸ ${esc(id)}</span>`).join("");
+    grp.appendChild(el("div", "grphd",
+      `<span class="glabel">${esc(g.label)}</span>
+       <span class="chip mono">jobs/${esc(g.name)}/</span>
+       ${g.capability ? `<span class="chip p">capability ${g.capability}</span>` : ""}
+       <span class="muted" style="margin-left:auto">${g.n_tasks} task(s)</span>`));
+    grp.appendChild(el("div", "gblurb",
+      esc(g.blurb) + (advChips ? ` &nbsp; corresponds to: ${advChips}` : "")));
+    g.runs.forEach((run, ri) => {
+      const det = el("details", "run");
+      if (gi === 0 && ri === 0) det.open = true;
+      det.appendChild(el("summary", null,
+        `<span class="mono">${esc(run.id)}/</span>
+         <span class="muted">&nbsp; ${run.tasks.length} task(s)</span>`));
+      const body = el("div", "runbody");
+      if (!run.tasks.length) body.appendChild(el("div", "muted", "(no task artifacts)"));
+      run.tasks.forEach(tk => {
+        const td = el("details", "task");
+        let st = '<span class="good">ok</span>';
+        if (tk.error) st = '<span class="bad">error</span>';
+        else if (tk.verifier_error) st = '<span class="warn">verifier</span>';
+        td.appendChild(el("summary", null,
+          `<span class="tname">${esc(tk.name)}</span>
+           ${rewardHTML(tk.reward)}
+           <span class="muted">${esc(tk.agent)}${tk.model && tk.model !== "—" ? " · " + esc(tk.model) : ""}</span>
+           <span class="chip">${esc(tk.environment)}</span>
+           <span class="muted num-mono">${tk.trajectory_events} traj ev · ${tk.total_time}s</span>
+           ${st}`));
+        const arts = el("div", "arts");
+        arts.appendChild(el("div", "muted", `<span class="mono" style="font-size:11px">${esc(tk.rollout)}/</span>`));
+        if (!tk.artifacts.length) arts.appendChild(el("div", "art", "(no files)"));
+        tk.artifacts.forEach(a => {
+          arts.appendChild(el("div", "art",
+            `<span class="ak ${esc(a.kind)}">${esc(a.kind)}</span>
+             <span class="mono">${esc(a.name)}</span>
+             ${a.info ? `<span class="muted">— ${esc(a.info)}</span>` : ""}`));
+        });
+        if (tk.error)
+          arts.appendChild(el("div", "art", `<span class="ak" style="background:#fdf1f1;color:#c53030">error</span>
+            <span>${esc(tk.error)}</span>`));
+        if (tk.verifier_error)
+          arts.appendChild(el("div", "art", `<span class="ak" style="background:#fdf8ee;color:#b7791f">verifier</span>
+            <span>${esc(tk.verifier_error)}</span>`));
+        td.appendChild(arts);
+        body.appendChild(td);
+      });
+      det.appendChild(body);
+      grp.appendChild(det);
+    });
+    wrap.appendChild(grp);
+  });
+  // advisory chips jump to the Advisories tab
+  wrap.querySelectorAll(".chip[data-adv]").forEach(c =>
+    c.onclick = () => show("Advisories", c.dataset.adv));
+  return wrap;
+}
+
+// ---- Advisories -----------------------------------------------------------
+function renderAdvisories(focusId) {
+  const adv = DATA.advisories, wrap = el("div");
+  wrap.appendChild(el("h1", "page", "Agent advisories"));
+  wrap.appendChild(el("div", "sub-ttl", "Source: " + esc(adv.source)));
+  const groupName = id => {
+    const g = (DATA.jobs.groups || []).find(x => x.name === id);
+    return g ? g.label : id;
+  };
+  function block(title, items) {
+    if (!items.length) return;
+    wrap.appendChild(el("h2", null, title + " — " + items.length));
+    const card = el("div", "card");
+    items.forEach(i => {
+      const row = el("div", "adv");
+      row.id = "adv-" + i.id;
+      const corr = [];
+      if (i.capability) corr.push(`<span class="chip p">capability ${i.capability}</span>`);
+      if (i.group) corr.push(`<span class="chip lnk" data-grp="${esc(i.group)}">▸ jobs/${esc(i.group)}/ — ${esc(groupName(i.group))}</span>`);
+      row.innerHTML = `
+        <div class="ahd">
+          <span class="pill ${esc(i.severity)}">${esc(i.severity)}</span>
+          <b>${esc(i.title)}</b>
+          <span style="margin-left:auto" class="muted"><span class="dot ${statusClass(i.status)}"></span>${esc(i.status)}</span>
+        </div>
+        <div class="adet"><span class="mono">${esc(i.id)}</span> · raised by <b>${esc(i.agent)}</b> — ${esc(i.detail)}</div>
+        ${corr.length ? `<div class="acorr muted">corresponds to: ${corr.join(" ")}</div>` : ""}`;
+      card.appendChild(row);
+    });
+    wrap.appendChild(card);
+  }
+  block("Open follow-ups", adv.items.filter(i => i.status === "open"));
+  block("Resolved", adv.items.filter(i => i.status !== "open"));
+  wrap.querySelectorAll(".chip[data-grp]").forEach(c =>
+    c.onclick = () => show("Jobs", null, "grp-" + c.dataset.grp));
+  if (focusId) setTimeout(() => {
+    const t = document.getElementById("adv-" + focusId);
+    if (t) { t.scrollIntoView({ block: "center" }); t.style.background = "#fffbe6"; }
+  }, 30);
+  return wrap;
+}
+
+// ---- Timeline -------------------------------------------------------------
+function renderTimeline() {
+  const tl = DATA.timeline, wrap = el("div");
+  wrap.appendChild(el("h1", "page", "Timeline"));
+  wrap.appendChild(el("div", "sub-ttl",
+    `The v0.5 work — ${tl.length} commits on <code>v0.5-integration</code>, newest first.`));
+  if (!tl.length) {
+    wrap.appendChild(el("div", "card empty", "No commits found (need git history for main..v0.5-integration)."));
+    return wrap;
+  }
+  const card = el("div", "card");
+  const line = el("div", "timeline");
+  tl.forEach(c => {
+    const item = el("div", "tl " + esc(c.type));
+    item.innerHTML = `
+      <div class="tdot"></div>
+      <div class="tmeta">
+        <code>${esc(c.hash)}</code>
+        <span class="tpill">${esc(c.type)}</span>
+        <span>${esc(c.date)}</span>
+      </div>
+      <div class="tsub">${esc(c.subject)}</div>`;
+    line.appendChild(item);
+  });
+  card.appendChild(line);
+  wrap.appendChild(card);
+  return wrap;
+}
+
+const RENDER = {
+  "Overview": renderOverview, "Concept map": renderConcept, "Roadmap": renderRoadmap,
+  "Tests": renderTests, "Jobs": renderJobs, "Advisories": renderAdvisories, "Timeline": renderTimeline,
+};
+
+function show(tab, arg, scrollId) {
+  CURRENT = tab;
+  document.querySelectorAll("nav a").forEach(a =>
+    a.classList.toggle("active", a.dataset.tab === tab && !a.classList.contains("sub")));
+  const main = document.getElementById("main");
+  main.innerHTML = "";
+  main.appendChild(tab === "Advisories" ? renderAdvisories(arg) : RENDER[tab]());
+  window.scrollTo(0, 0);
+  if (scrollId) setTimeout(() => {
+    const t = document.getElementById(scrollId);
+    if (t) {
+      t.scrollIntoView({ block: "start" });
+      t.style.transition = "box-shadow .3s";
+      t.style.boxShadow = "0 0 0 2px var(--accent)";
+      setTimeout(() => t.style.boxShadow = "", 1400);
+    }
+  }, 40);
+  location.hash = encodeURIComponent(tab);
+}
+
+function buildNav() {
+  const nav = document.getElementById("nav");
+  TABS.forEach(t => {
+    const a = el("a", null, t);
+    a.dataset.tab = t;
+    a.onclick = () => show(t);
+    nav.appendChild(a);
+    if (t === "Jobs") {
+      // nested sub-links mirroring the jobs/ folder groups
+      (DATA.jobs.groups || []).forEach(g => {
+        const s = el("a", "sub",
+          `jobs/${esc(g.name)}/ <span class="count">${g.n_tasks}</span>`);
+        s.onclick = (e) => { e.stopPropagation(); show("Jobs", null, "grp-" + g.name); };
+        nav.appendChild(s);
+      });
+    }
+  });
+}
+
+fetch("data.json?_=" + Date.now())
+  .then(r => r.json())
+  .then(d => {
+    DATA = d;
+    document.getElementById("gen").innerHTML =
+      `generated<br>${esc(d.generated_at)}<br>` +
+      `${d.summary.tests.passed}/${d.summary.tests.total} tests · ${d.summary.jobs_total} artifacts`;
+    buildNav();
+    const want = decodeURIComponent(location.hash.slice(1));
+    show(TABS.includes(want) ? want : "Overview");
+  })
+  .catch(e => {
+    document.getElementById("main").innerHTML =
+      `<div class="card empty">Could not load data.json — run ` +
+      `<code>python dashboard/generate.py</code> then reload.<br><br>` +
+      `<span class="bad">${esc(e)}</span></div>`;
+  });
+</script>
+</body>
+</html>
