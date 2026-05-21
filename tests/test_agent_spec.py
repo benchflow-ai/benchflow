@@ -66,6 +66,49 @@ class TestResolveAgent:
         assert config.name == "acpx:claude-agent-acp"
         assert "acpx" in config.launch_cmd
 
+    def test_acpx_wrap_carries_routing_fields(self):
+        """Regression for PR #322: _acpx_wrap must inherit api_protocol and
+        default_model (and all other non-overridden fields) from the underlying
+        agent. The wrapped config is cached into AGENTS and later read by
+        resolve_provider_env; if api_protocol is dropped, multi-endpoint
+        providers route to the wrong base URL/protocol.
+        """
+        underlying = AGENTS["claude-agent-acp"]
+        wrapped = resolve_agent("acpx/claude")
+
+        # The two fields the PR #322 review flagged as dropped.
+        assert wrapped.api_protocol == underlying.api_protocol
+        assert wrapped.api_protocol == "anthropic-messages"
+        assert wrapped.default_model == underlying.default_model
+
+        # The acpx wrapper only legitimately overrides name/install/launch.
+        # Everything else routing-relevant must pass through unchanged.
+        assert wrapped.requires_env == underlying.requires_env
+        assert wrapped.env_mapping == underlying.env_mapping
+        assert wrapped.skill_paths == underlying.skill_paths
+        assert wrapped.credential_files == underlying.credential_files
+        assert wrapped.home_dirs == underlying.home_dirs
+        assert wrapped.acp_model_format == underlying.acp_model_format
+        assert wrapped.subscription_auth == underlying.subscription_auth
+        assert wrapped.supports_acp_set_model == underlying.supports_acp_set_model
+        assert wrapped.install_timeout == underlying.install_timeout
+        assert (
+            wrapped.disallow_web_tools_setup_cmd
+            == underlying.disallow_web_tools_setup_cmd
+        )
+        assert (
+            wrapped.disallow_web_tools_launch_suffix
+            == underlying.disallow_web_tools_launch_suffix
+        )
+
+    def test_acpx_cached_config_keeps_api_protocol(self):
+        """Regression for PR #322: the cached acpx runtime key in AGENTS must
+        expose the underlying agent's api_protocol so resolve_provider_env
+        picks the agent-required endpoint for multi-endpoint providers.
+        """
+        key = resolve_agent_key("acpx/claude")
+        assert AGENTS[key].api_protocol == "anthropic-messages"
+
     def test_resolve_unknown_raises(self):
         with pytest.raises(KeyError, match="Unknown agent"):
             resolve_agent("nonexistent-agent")
