@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import benchflow.traces.huggingface as hf
 from benchflow.traces.huggingface import (
+    _download_hf_dataset,
     _pick_split_file,
     _split_filename_candidates,
 )
@@ -74,3 +78,53 @@ def test_split_filename_candidates_prefers_matched_file() -> None:
     matched = "data/test-00000-of-00002.parquet"
     candidates = _split_filename_candidates(matched, "test", ".parquet")
     assert candidates[0] == matched
+
+
+def test_parquet_conversion_failure_falls_through_to_jsonl(monkeypatch, tmp_path):
+    """Guards bug G from PR #323: a parquet conversion failure must not abort.
+
+    When a parquet file downloads but the conversion fails (e.g. ``pyarrow``
+    missing or decode error), ``_download_hf_dataset`` must fall through to the
+    JSONL candidates instead of letting the exception propagate immediately —
+    a regression from the prior behavior that alternated formats. Before the
+    fix, ``_parquet_to_jsonl`` ran outside the per-candidate try/except.
+    """
+    import sys
+    import types
+
+    cache = tmp_path / "cache"
+    cache.mkdir()
+
+    # A JSONL source the fallback path should successfully copy.
+    jsonl_src = tmp_path / "src.jsonl"
+    jsonl_src.write_text('{"ok": true}\n')
+
+    def fake_list_repo_files(repo_id, repo_type=None):
+        return ["data/train-00000-of-00001.parquet", "data/train.jsonl"]
+
+    def fake_hf_hub_download(repo_id, filename, repo_type=None):
+        # Parquet "downloads" fine; JSONL "downloads" fine too.
+        if filename.endswith(".parquet"):
+            p = tmp_path / "downloaded.parquet"
+            p.write_bytes(b"not-real-parquet")
+            return str(p)
+        return str(jsonl_src)
+
+    # Inject a stub `huggingface_hub` so `_download_hf_dataset` takes the
+    # hub branch even when the real package is not installed.
+    fake_hub = types.ModuleType("huggingface_hub")
+    fake_hub.list_repo_files = fake_list_repo_files
+    fake_hub.hf_hub_download = fake_hf_hub_download
+    monkeypatch.setitem(sys.modules, "huggingface_hub", fake_hub)
+
+    # Parquet conversion fails — exactly the pyarrow-missing / decode-error case.
+    def boom(parquet_path, out_path, *, max_rows=None):
+        raise ImportError("pyarrow is required for parquet datasets.")
+
+    monkeypatch.setattr(hf, "_parquet_to_jsonl", boom)
+
+    out = _download_hf_dataset("some/repo", split="train", cache=cache)
+
+    # The JSONL fallback ran; the exception did not propagate.
+    assert Path(out).exists()
+    assert Path(out).read_text() == '{"ok": true}\n'
