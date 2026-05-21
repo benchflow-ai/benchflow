@@ -5,9 +5,16 @@ Negative invariants ("agent X should NOT have feature Y configured") live in
 test_registry_invariants.py — search there for the consolidated tripwire.
 """
 
+import pytest
+
 from benchflow.agents.env import resolve_provider_env
 from benchflow.agents.providers import PROVIDERS
-from benchflow.agents.registry import AGENTS
+from benchflow.agents.registry import (
+    AGENT_INSTALLERS,
+    AGENT_LAUNCH,
+    AGENTS,
+    register_agent,
+)
 
 
 class TestEnvMappingField:
@@ -117,3 +124,52 @@ class TestProviderCredentialFiles:
     def test_zai_no_credential_files(self):
         cfg = PROVIDERS["zai"]
         assert cfg.credential_files == []
+
+
+class TestRegisterAgent:
+    """register_agent() must pass through every AgentConfig field a runtime
+    agent may need — including no-web-policy and provider-protocol routing.
+    """
+
+    @pytest.fixture
+    def cleanup_agent(self):
+        registered: list[str] = []
+        yield registered
+        for name in registered:
+            AGENTS.pop(name, None)
+            AGENT_INSTALLERS.pop(name, None)
+            AGENT_LAUNCH.pop(name, None)
+
+    def test_defaults(self, cleanup_agent):
+        cleanup_agent.append("rt-defaults-agent")
+        cfg = register_agent(
+            name="rt-defaults-agent",
+            install_cmd="install rt",
+            launch_cmd="launch rt",
+        )
+        assert cfg.default_model == ""
+        assert cfg.api_protocol == ""
+        assert cfg.disallow_web_tools_setup_cmd == ""
+        assert cfg.disallow_web_tools_launch_suffix == ""
+
+    def test_passes_through_new_fields(self, cleanup_agent):
+        cleanup_agent.append("rt-full-agent")
+        cfg = register_agent(
+            name="rt-full-agent",
+            install_cmd="install rt",
+            launch_cmd="launch rt",
+            default_model="rt-model-1",
+            api_protocol="openai-completions",
+            disallow_web_tools_setup_cmd="printf 'no web' > /tmp/policy",
+            disallow_web_tools_launch_suffix=" --no-web",
+        )
+        assert cfg.default_model == "rt-model-1"
+        assert cfg.api_protocol == "openai-completions"
+        assert cfg.disallow_web_tools_setup_cmd == "printf 'no web' > /tmp/policy"
+        assert cfg.disallow_web_tools_launch_suffix == " --no-web"
+
+        # And the registered entry reflects them.
+        registered = AGENTS["rt-full-agent"]
+        assert registered.default_model == "rt-model-1"
+        assert registered.api_protocol == "openai-completions"
+        assert registered.disallow_web_tools_launch_suffix == " --no-web"
