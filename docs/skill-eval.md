@@ -14,6 +14,9 @@ file, generates benchmark tasks from it, runs them with and without the
 skill installed, and reports the "lift" — how much the skill improves
 agent performance.
 
+Current v0.4 dogfood notes are tracked in
+[`docs/reports/2026-05-19-skill-eval-v04.md`](./reports/2026-05-19-skill-eval-v04.md).
+
 ## Quick start
 
 ### 1. Add evals to your skill
@@ -35,7 +38,7 @@ my-skill/
   "skill_name": "my-skill",
   "defaults": {
     "timeout_sec": 300,
-    "judge_model": "claude-haiku-4-5-20251001"
+    "judge_model": "gemini-3.1-flash-lite"
   },
   "cases": [
     {
@@ -85,7 +88,8 @@ Skill eval: my-skill (1 cases)
 | `version` | string | No | Schema version (default: "1") |
 | `skill_name` | string | No | Skill name (auto-detected from SKILL.md) |
 | `defaults.timeout_sec` | int | No | Per-task timeout in seconds (default: 300) |
-| `defaults.judge_model` | string | No | Model for LLM judge (default: claude-haiku-4-5-20251001) |
+| `defaults.judge_model` | string | No | Model for LLM judge (default: gemini-3.1-flash-lite) |
+| `defaults.skill_mount_dir` | string | No | Neutral sandbox path where the generated task exposes the skill before BenchFlow links it into agent-specific discovery paths (default: /skills) |
 
 ### Case fields
 
@@ -106,6 +110,47 @@ Skill eval: my-skill (1 cases)
 - If only `ground_truth` is provided → **exact match** checks if the
   answer appears in agent output (0.0 or 1.0)
 - If neither → reward is 0.0
+
+### Agent and judge credentials
+
+`bench skills eval` runs real agents. The selected agent must have whatever
+provider credentials or subscription auth it normally needs, and LLM-judge
+cases also need a supported judge key available in the environment. Exact-match
+cases can avoid the judge model, but they still need a working agent.
+For Codex agents, that auth can be `OPENAI_API_KEY`, `CODEX_API_KEY`,
+`CODEX_ACCESS_TOKEN`, or a host `~/.codex/auth.json` login.
+
+When a supported judge key is present on the host (`GOOGLE_API_KEY`,
+`GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, or `OPENAI_API_KEY`), generated tasks
+reference it through `[verifier.env]` template syntax such as
+`${GEMINI_API_KEY}`. Secret values are resolved at verifier runtime and are not
+written into generated task files.
+
+The `oracle` agent is useful for generic task and sandbox smoke tests, but it is
+not a replacement for skill evaluation. Skill-eval tasks are generated from
+questions and rubrics and do not include `solution/solve.sh`, so oracle runs
+will error instead of measuring skill lift.
+
+### Existing task-embedded skills
+
+Skills embedded under a benchmark task, such as
+`tasks/<task>/environment/skills/<skill>/SKILL.md`, are task assets. To evaluate
+one directly with `bench skills eval`, add a sibling `evals/evals.json` inside
+that skill directory or copy the skill into a standalone skill directory with
+the same `evals/` contract.
+
+The repo includes a real standalone example at
+[`skills/citation-management/`](../skills/citation-management/), adapted
+from the SkillsBench `citation-check` task:
+
+```bash
+bench skills eval skills/citation-management \
+  --agent gemini \
+  --model gemini-3.1-flash-lite-preview \
+  --sandbox docker \
+  --jobs-dir jobs/skill-eval-citation-management \
+  --concurrency 1
+```
 
 ## Multi-agent comparison
 
@@ -149,18 +194,22 @@ my-skill/evals/
 ```
 
 The Dockerfile is used instead of the default `python:3.12-slim` base.
+For with-skill runs, BenchFlow appends a `COPY skills/ <skill_mount_dir>/`
+step so the generated task exposes the skill at the neutral path declared in
+`task.toml`. During rollout setup, BenchFlow links that neutral path into the
+selected agent's configured discovery paths.
 
 ## GEPA integration
 
 Export traces for GEPA skill evolution:
 
 ```bash
-bench skills eval my-skill/ --agent claude-agent-acp --export-gepa traces/
+bench skills eval my-skill/ --agent claude-agent-acp --export-gepa
 ```
 
-This creates:
+This creates a GEPA-compatible export under `jobs/skill-eval/<skill>/gepa/`:
 ```
-traces/
+jobs/skill-eval/<skill>/gepa/
 ├── skill.md              # current SKILL.md content
 ├── traces/               # per-case execution traces with scores
 │   ├── test-001-claude-agent-acp-with.json
@@ -313,8 +362,11 @@ evolve the skill text based on failure patterns.
 │  └─────────────┘    └──────────────────┘    │  retries, ACP) │  │
 │                                              └────────────────┘  │
 │                                                                  │
+│  With-skill tasks bake the skill at /skills by default;          │
+│  BenchFlow links that neutral path into each agent's skill paths.│
+│                                                                  │
 │  ┌─────────────────────────────────────────────────────────┐    │
-│  │ LLM Judge (claude-haiku-4-5)                            │    │
+│  │ LLM Judge                                               │    │
 │  │ Reads: trajectory + case.json (ground_truth, rubric)    │    │
 │  │ Writes: /logs/verifier/reward.txt (0.0-1.0)            │    │
 │  └─────────────────────────────────────────────────────────┘    │
@@ -383,7 +435,6 @@ BenchFlow generates everything ephemeral — only results persist.
 # In your skill's CI pipeline
 uv tool install benchflow
 bench skills eval . --agent claude-agent-acp --no-baseline
-# Exit code 1 if any case scores < 0.5
 ```
 
 **What the adapter does (zero LLM):**

@@ -57,9 +57,9 @@ scenes:
 
 ```python
 from pathlib import Path
-from benchflow.trial import TrialConfig, Scene, Role, Turn
+from benchflow.rollout import RolloutConfig, Scene, Role, Turn
 
-config = TrialConfig(
+config = RolloutConfig(
     task_path=Path("tasks/my-task"),
     scenes=[
         Scene(name="interactive-assist",
@@ -134,9 +134,9 @@ For stronger isolation, use the MCP reviewer server pattern. The reviewer runs a
 from pathlib import Path
 
 from benchflow.mcp.hooks import mcp_reviewer_hook
-from benchflow.trial import TrialConfig, Scene, Role, Turn
+from benchflow.rollout import RolloutConfig, Scene, Role, Turn
 
-config = TrialConfig(
+config = RolloutConfig(
     task_path=Path("tasks/my-task"),
     scenes=[
         Scene(name="solve-and-review",
@@ -170,14 +170,14 @@ Treat reviewer lift as an empirical question for the target benchmark. It is mos
 
 - No Docker Compose, no sidecar container, no FastMCP server to maintain.
 - The MCP hook pattern gives the reviewer tool-level isolation: it cannot write to the workspace, preventing reward hacking via reviewer collusion.
-- Same task, same verifier -- define roles and turns in `TrialConfig` or trial
+- Same task, same verifier -- define roles and turns in `RolloutConfig` or rollout
   YAML.
 
 ---
 
 ## 3. Skill Generation (BYOS -- Bring Your Own Skill)
 
-An agent generates a task-specific skill before solving. This is a two-scene trial: `prep` (unscored) and `solve` (scored). Both scenes share the sandbox, so the generated skill persists.
+An agent generates a task-specific skill before solving. This is a two-scene rollout: `prep` (unscored) and `solve` (scored). Both scenes share the sandbox, so the generated skill persists.
 
 ### YAML
 
@@ -214,9 +214,9 @@ scenes:
 
 ```python
 from pathlib import Path
-from benchflow.trial import TrialConfig, Scene, Role, Turn
+from benchflow.rollout import RolloutConfig, Scene, Role, Turn
 
-config = TrialConfig(
+config = RolloutConfig(
     task_path=Path("tasks/my-task"),
     scenes=[
         Scene(name="skill-gen",
@@ -275,9 +275,9 @@ scenes:
 
 ```python
 from pathlib import Path
-from benchflow.trial import TrialConfig, Scene, Role, Turn
+from benchflow.rollout import RolloutConfig, Scene, Role, Turn
 
-config = TrialConfig(
+config = RolloutConfig(
     task_path=Path("tasks/my-task"),
     scenes=[
         Scene(name="iterative-solve",
@@ -345,9 +345,9 @@ scenes:
 
 ```python
 from pathlib import Path
-from benchflow.trial import TrialConfig, Scene, Role, Turn
+from benchflow.rollout import RolloutConfig, Scene, Role, Turn
 
-config = TrialConfig(
+config = RolloutConfig(
     task_path=Path("tasks/my-task"),
     scenes=[
         Scene(name="cross-model-review",
@@ -389,13 +389,13 @@ Tasks that require agents to interact with live services -- Gmail, Calendar, Doc
 
 ```python
 from pathlib import Path
-from benchflow.trial import TrialConfig, Scene, Role, Turn
+from benchflow.rollout import RolloutConfig, Scene, Role, Turn
 from benchflow import SERVICES, build_service_hooks
 
 # Declare which services the task needs
 services = [SERVICES["gmail"], SERVICES["gcal"], SERVICES["slack"]]
 
-config = TrialConfig(
+config = RolloutConfig(
     task_path=Path("tasks/schedule-meeting-from-email"),
     scenes=[Scene.single(agent="gemini", model="gemini-3.1-flash-lite-preview")],
     environment="daytona",
@@ -404,7 +404,7 @@ config = TrialConfig(
 result = await bf.run(config)
 ```
 
-Service hooks are explicit today. `TrialConfig.services` is reserved metadata;
+Service hooks are explicit today. `RolloutConfig.services` is reserved metadata;
 it does not start services unless you translate it into `pre_agent_hooks`.
 
 ### Service registry

@@ -2,7 +2,7 @@
 # Test codex-acp agent: subscription, API key.
 #
 # Prerequisites:
-#   - OPENAI_API_KEY set in .env, or logged in via `codex --login` (for subscription)
+#   - OPENAI_API_KEY / CODEX_API_KEY set in .env, CODEX_ACCESS_TOKEN, or `codex --login`
 #   - Docker running, or DAYTONA_API_KEY + DAYTONA_API_URL set for --daytona
 #
 # Usage:
@@ -60,11 +60,12 @@ show_failure() {
 
 check_openai_model_available() {
   local model="$1"
-  if [ -z "${OPENAI_API_KEY:-}" ]; then
+  local api_key="${OPENAI_API_KEY:-${CODEX_API_KEY:-}}"
+  if [ -z "$api_key" ]; then
     return 0
   fi
 
-  MODEL="$model" python3 - <<'PY'
+  MODEL="$model" OPENAI_PREFLIGHT_API_KEY="$api_key" python3 - <<'PY'
 import json
 import os
 import sys
@@ -72,7 +73,7 @@ import urllib.error
 import urllib.request
 
 model = os.environ["MODEL"]
-key = os.environ.get("OPENAI_API_KEY", "")
+key = os.environ.get("OPENAI_PREFLIGHT_API_KEY", "")
 req = urllib.request.Request(
     "https://api.openai.com/v1/models",
     headers={"Authorization": f"Bearer {key}"},
@@ -132,22 +133,30 @@ check_env() {
     subscription)
       if [ -n "${OPENAI_API_KEY:-}" ]; then
         echo "NOTE: $label — OPENAI_API_KEY is set, will use API key (not subscription)"
+      elif [ -n "${CODEX_API_KEY:-}" ]; then
+        echo "NOTE: $label — CODEX_API_KEY is set, will use API key (not subscription)"
+      elif [ -n "${CODEX_ACCESS_TOKEN:-}" ]; then
+        echo "NOTE: $label — using CODEX_ACCESS_TOKEN (subscription auth)"
       elif [ ! -f "$HOME/.codex/auth.json" ]; then
-        echo "SKIP: $label — no OPENAI_API_KEY and no ~/.codex/auth.json (run: codex --login)"
+        echo "SKIP: $label — no Codex auth env and no ~/.codex/auth.json (run: codex --login)"
         return 1
       fi ;;
     apikey)
       if [ -n "${OPENAI_API_KEY:-}" ]; then
         echo "NOTE: $label — using OPENAI_API_KEY (API key auth)"
+      elif [ -n "${CODEX_API_KEY:-}" ]; then
+        echo "NOTE: $label — using CODEX_API_KEY (API key auth)"
       else
-        echo "SKIP: $label — OPENAI_API_KEY not set"
+        echo "SKIP: $label — OPENAI_API_KEY or CODEX_API_KEY not set"
         return 1
       fi ;;
     apikey-mini)
       if [ -n "${OPENAI_API_KEY:-}" ]; then
         echo "NOTE: $label — using OPENAI_API_KEY (API key auth)"
+      elif [ -n "${CODEX_API_KEY:-}" ]; then
+        echo "NOTE: $label — using CODEX_API_KEY (API key auth)"
       else
-        echo "SKIP: $label — OPENAI_API_KEY not set"
+        echo "SKIP: $label — OPENAI_API_KEY or CODEX_API_KEY not set"
         return 1
       fi ;;
   esac

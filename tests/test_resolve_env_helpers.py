@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from benchflow._agent_env import (
+from benchflow.agents.env import (
     auto_inherit_env,
     check_subscription_auth,
     inject_vertex_credentials,
@@ -28,6 +28,8 @@ class TestAutoInheritEnv:
         ("env_name", "env_value"),
         [
             pytest.param("ANTHROPIC_API_KEY", "sk-host", id="anthropic"),
+            pytest.param("CODEX_ACCESS_TOKEN", "codex-access", id="codex-token"),
+            pytest.param("CODEX_API_KEY", "codex-key", id="codex-api-key"),
             pytest.param("OPENAI_API_KEY", "sk-oai", id="openai"),
             pytest.param("AWS_BEARER_TOKEN_BEDROCK", "bedrock-token", id="bedrock"),
             pytest.param("AWS_REGION", "us-east-1", id="bedrock-region"),
@@ -327,6 +329,8 @@ class TestResolveAgentEnvNoModel:
         """No model + no API key + host credentials → subscription auth."""
         for k in (
             "ANTHROPIC_API_KEY",
+            "CODEX_ACCESS_TOKEN",
+            "CODEX_API_KEY",
             "OPENAI_API_KEY",
             "GOOGLE_API_KEY",
             "GEMINI_API_KEY",
@@ -344,6 +348,8 @@ class TestResolveAgentEnvNoModel:
         """No model + no API key + no host credentials → no error (no model to validate)."""
         for k in (
             "ANTHROPIC_API_KEY",
+            "CODEX_ACCESS_TOKEN",
+            "CODEX_API_KEY",
             "OPENAI_API_KEY",
             "GOOGLE_API_KEY",
             "GEMINI_API_KEY",
@@ -356,7 +362,12 @@ class TestResolveAgentEnvNoModel:
 
     def test_no_model_codex_subscription_auth(self, monkeypatch, tmp_path):
         """No model + codex agent + host auth file → subscription auth."""
-        for k in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
+        for k in (
+            "CODEX_ACCESS_TOKEN",
+            "CODEX_API_KEY",
+            "OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+        ):
             monkeypatch.delenv(k, raising=False)
         codex_dir = tmp_path / ".codex"
         codex_dir.mkdir()
@@ -366,13 +377,66 @@ class TestResolveAgentEnvNoModel:
         result = self._resolve(agent="codex-acp", agent_env={})
         assert result["_BENCHFLOW_SUBSCRIPTION_AUTH"] == "1"
 
+    def test_no_model_codex_access_token_wins_over_host_auth(
+        self, monkeypatch, tmp_path
+    ):
+        """Guards PR #296: CODEX_ACCESS_TOKEN is already usable auth."""
+        for k in ("CODEX_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
+            monkeypatch.delenv(k, raising=False)
+        codex_dir = tmp_path / ".codex"
+        codex_dir.mkdir()
+        (codex_dir / "auth.json").write_text("{}")
+        self._patch_expanduser(monkeypatch, tmp_path)
+
+        result = self._resolve(
+            agent="codex-acp",
+            agent_env={"CODEX_ACCESS_TOKEN": "access-token"},
+        )
+
+        assert result["CODEX_ACCESS_TOKEN"] == "access-token"
+        assert "_BENCHFLOW_SUBSCRIPTION_AUTH" not in result
+
+    def test_no_model_codex_api_key_alias_normalizes(self, monkeypatch, tmp_path):
+        """Guards PR #296: CODEX_API_KEY is Codex-native API-key auth."""
+        for k in ("CODEX_ACCESS_TOKEN", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
+            monkeypatch.delenv(k, raising=False)
+        self._patch_expanduser(monkeypatch, tmp_path)
+
+        result = self._resolve(
+            agent="codex-acp",
+            agent_env={"CODEX_API_KEY": "codex-key"},
+        )
+
+        assert result["CODEX_API_KEY"] == "codex-key"
+        assert result["OPENAI_API_KEY"] == "codex-key"
+        assert "_BENCHFLOW_SUBSCRIPTION_AUTH" not in result
+
     def test_no_model_empty_requires_env(self, monkeypatch, tmp_path):
         """Agent with empty requires_env (e.g. openclaw) needs no auth."""
-        for k in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
+        for k in (
+            "ANTHROPIC_API_KEY",
+            "CODEX_ACCESS_TOKEN",
+            "CODEX_API_KEY",
+            "OPENAI_API_KEY",
+        ):
             monkeypatch.delenv(k, raising=False)
         self._patch_expanduser(monkeypatch, tmp_path)
         result = self._resolve(agent="openclaw", agent_env={})
         assert "_BENCHFLOW_SUBSCRIPTION_AUTH" not in result
+
+
+def test_task_env_resolves_from_dotenv(monkeypatch, tmp_path):
+    """Guards ENG-80 dogfood regression: verifier env can resolve from .env."""
+    env_file = tmp_path / ".env"
+    env_file.write_text("GEMINI_API_KEY=from-dotenv\n")
+    monkeypatch.setenv("BENCHFLOW_DOTENV_PATH", str(env_file))
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+
+    from benchflow.task.env import resolve_env_vars
+
+    assert resolve_env_vars({"GOOGLE_API_KEY": "${GEMINI_API_KEY}"}) == {
+        "GOOGLE_API_KEY": "from-dotenv"
+    }
 
 
 class TestResolveAgentEnvOracle:

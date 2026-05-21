@@ -14,7 +14,7 @@
 #   GEMINI_API_KEY (or GOOGLE_API_KEY)
 #   DAYTONA_API_KEY
 #   CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY  (for claude-agent-acp)
-#   OPENAI_API_KEY                                (for codex-acp)
+#   OPENAI_API_KEY, CODEX_API_KEY, or CODEX_ACCESS_TOKEN (for codex-acp)
 
 set -euo pipefail
 cd "$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
@@ -37,10 +37,14 @@ SELECTED_TASKS=(
 
 # Agent → model mapping. Agents not listed use the default Gemini model.
 DEFAULT_MODEL="gemini-3.1-flash-lite-preview"
-declare -A AGENT_MODELS=(
-  [claude-agent-acp]="claude-haiku-4-5-20251001"
-  [codex-acp]="gpt-5.4-nano"
-)
+
+model_for_agent() {
+  case "$1" in
+    claude-agent-acp) echo "claude-haiku-4-5-20251001" ;;
+    codex-acp)        echo "gpt-5.4-nano" ;;
+    *)                echo "$DEFAULT_MODEL" ;;
+  esac
+}
 
 ALL_AGENTS=(
   claude-agent-acp
@@ -80,7 +84,10 @@ has_creds_for() {
       [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]
       ;;
     codex-acp)
-      [ -n "${OPENAI_API_KEY:-}" ]
+      [ -n "${OPENAI_API_KEY:-}" ] || \
+      [ -n "${CODEX_API_KEY:-}" ] || \
+      [ -n "${CODEX_ACCESS_TOKEN:-}" ] || \
+      [ -f "$HOME/.codex/auth.json" ]
       ;;
     *)
       has_gemini_key
@@ -92,7 +99,7 @@ has_creds_for() {
 prepare_tasks_dir() {
   local full_dir
   full_dir=$(uv run python -c "
-from benchflow.task_download import resolve_source
+from benchflow._utils.benchmark_repos import resolve_source
 print(resolve_source('benchflow-ai/skillsbench', path='tasks', ref='main'))
 ")
   local subset_dir="$JOBS_ROOT/.tasks-subset"
@@ -129,7 +136,7 @@ if [ "$CHECK_ONLY" = false ]; then
       continue
     fi
 
-    model="${AGENT_MODELS[$agent]:-$DEFAULT_MODEL}"
+    model="$(model_for_agent "$agent")"
     echo "Launching $agent (model=$model)..."
     uv run bench eval create \
       --tasks-dir "$TASKS_DIR" \

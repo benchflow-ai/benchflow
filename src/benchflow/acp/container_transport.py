@@ -5,7 +5,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from benchflow.process import LiveProcess
+from benchflow.sandbox.process import LiveProcess
 
 from .transport import Transport, decode_json_rpc_message
 

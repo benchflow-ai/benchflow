@@ -6,8 +6,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from benchflow._sandbox import setup_sandbox_user
 from benchflow.agents.registry import get_sandbox_home_dirs
+from benchflow.sandbox.lockdown import setup_sandbox_user
 
 
 async def _run_setup_sandbox_user(

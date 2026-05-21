@@ -11,7 +11,10 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from benchflow.job import DEFAULT_AGENT, effective_model
+from benchflow._utils.config import normalize_sandbox_user
+from benchflow.agents.registry import parse_agent_spec
+from benchflow.cli.trace_import import register_tasks_generate
+from benchflow.evaluation import DEFAULT_AGENT, effective_model
 
 # Show progress messages (logger.info) from benchflow internals by default.
 logging.basicConfig(
@@ -37,6 +40,109 @@ def _parse_agent_env(entries: list[str] | None) -> dict[str, str]:
         key, value = entry.split("=", 1)
         parsed[key] = value
     return parsed
+
+
+def _normalize_eval_agent_or_exit(agent_spec: str) -> str:
+    protocol, canonical_agent = parse_agent_spec(agent_spec)
+    if protocol not in ("acp", "acpx"):
+        console.print(f"[red]Unsupported eval agent protocol: {protocol}[/red]")
+        raise typer.Exit(1)
+    if protocol == "acpx":
+        return f"acpx/{canonical_agent}"
+    return canonical_agent
+
+
+def _ensure_daytona_anyio_compat() -> None:
+    """Patch the anyio symbol that Daytona 0.176 imports on newer anyio."""
+    try:
+        import anyio
+    except ImportError:
+        return
+
+    if hasattr(anyio, "AsyncContextManagerMixin"):
+        return
+
+    class _AsyncContextManagerMixin:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            aclose = getattr(self, "aclose", None)
+            if aclose is not None:
+                await aclose()
+
+    vars(anyio)["AsyncContextManagerMixin"] = _AsyncContextManagerMixin
+
+
+def _daytona_client_or_exit():
+    _ensure_daytona_anyio_compat()
+    try:
+        from daytona import Daytona
+    except ModuleNotFoundError as exc:
+        if exc.name == "daytona":
+            console.print(
+                "[red]daytona SDK not installed[/red]\n"
+                "Install it with [cyan]uv sync --extra sandbox-daytona[/cyan]."
+            )
+        else:
+            console.print(f"[red]daytona SDK import failed: {exc}[/red]")
+        raise typer.Exit(1) from None
+    except Exception as exc:
+        console.print(f"[red]daytona SDK import failed: {exc}[/red]")
+        raise typer.Exit(1) from None
+    return Daytona()
+
+
+def _cleanup_daytona_sandboxes(dry_run: bool, max_age_minutes: int) -> None:
+    """Clean up orphaned Daytona sandboxes."""
+    from datetime import datetime
+
+    d = _daytona_client_or_exit()
+    now = datetime.now(UTC)
+    page = 1
+    total_deleted = 0
+    total_found = 0
+    total_skipped = 0
+
+    while True:
+        result = d.list(page=page, limit=100)
+        if not result.items:
+            break
+        total_found += len(result.items)
+        for sb in result.items:
+            if not sb.created_at:
+                continue
+            created_at = datetime.fromisoformat(sb.created_at.replace("Z", "+00:00"))
+            age_minutes = (now - created_at).total_seconds() / 60
+            if age_minutes < max_age_minutes:
+                total_skipped += 1
+                if dry_run:
+                    console.print(
+                        f"  [dim]{sb.id}[/dim] state={sb.state} age={age_minutes:.0f}m [green](skip)[/green]"
+                    )
+                continue
+            if dry_run:
+                console.print(
+                    f"  [dim]{sb.id}[/dim] state={sb.state} age={age_minutes:.0f}m [red](delete)[/red]"
+                )
+            else:
+                try:
+                    d.delete(sb)
+                    total_deleted += 1
+                except Exception as e:
+                    console.print(f"  [yellow]Failed to delete {sb.id}: {e}[/yellow]")
+        if len(result.items) < 100:
+            break
+        page += 1
+
+    if dry_run:
+        console.print(
+            f"\n[bold]{total_found} sandboxes found, {total_found - total_skipped} older than {max_age_minutes}m[/bold] (use without --dry-run to delete)"
+        )
+    else:
+        console.print(
+            f"\n[bold green]{total_deleted} sandboxes deleted[/bold green] ({total_skipped} skipped, younger than {max_age_minutes}m)"
+        )
 
 
 @app.command(hidden=True, deprecated=True)
@@ -76,9 +182,7 @@ def run(
     ] = "docker",
     prompt: Annotated[
         list[str] | None,
-        typer.Option(
-            "--prompt", help="Prompt(s) to send (default: instruction.md)"
-        ),
+        typer.Option("--prompt", help="Prompt(s) to send (default: instruction.md)"),
     ] = None,
     jobs_dir: Annotated[
         str,
@@ -90,9 +194,7 @@ def run(
     ] = None,
     skills_dir: Annotated[
         Path | None,
-        typer.Option(
-            "--skills-dir", help="Skills directory to deploy into sandbox"
-        ),
+        typer.Option("--skills-dir", help="Skills directory to deploy into sandbox"),
     ] = None,
     skill_mode: Annotated[
         str,
@@ -132,7 +234,7 @@ def run(
     from benchflow.sdk import SDK
 
     if source_repo:
-        from benchflow.task_download import resolve_source
+        from benchflow._utils.benchmark_repos import resolve_source
 
         resolved_task_dir = resolve_source(
             source_repo, path=source_path, ref=source_ref
@@ -144,6 +246,8 @@ def run(
         raise typer.Exit(1)
 
     parsed_env = _parse_agent_env(agent_env)
+    agent = _normalize_eval_agent_or_exit(agent)
+    sandbox_user = normalize_sandbox_user(sandbox_user)
 
     sdk = SDK()
     # CLI only ever passes plain strings; cast to widen for the SDK's
@@ -183,9 +287,7 @@ def job(
     ] = None,
     config_file: Annotated[
         Path | None,
-        typer.Option(
-            "--config", help="YAML config file (Harbor or benchflow format)"
-        ),
+        typer.Option("--config", help="YAML config file (benchflow or legacy format)"),
     ] = None,
     agent: Annotated[
         str,
@@ -213,24 +315,22 @@ def job(
     ] = "jobs",
     skills_dir: Annotated[
         Path | None,
-        typer.Option(
-            "--skills-dir", help="Skills directory to deploy into sandbox"
-        ),
+        typer.Option("--skills-dir", help="Skills directory to deploy into sandbox"),
     ] = None,
 ) -> None:
     """Run all tasks in a directory with concurrency and retries.
 
     Use --config for YAML config, or --tasks-dir for direct invocation.
     """
-    from benchflow.job import Job, JobConfig, RetryConfig
+    from benchflow.evaluation import Evaluation, EvaluationConfig, RetryConfig
 
     if config_file:
-        j = Job.from_yaml(config_file)
+        j = Evaluation.from_yaml(config_file)
     elif tasks_dir:
-        j = Job(
+        j = Evaluation(
             tasks_dir=str(tasks_dir),
             jobs_dir=jobs_dir,
-            config=JobConfig(
+            config=EvaluationConfig(
                 agent=agent,
                 model=effective_model(agent, model),
                 environment=environment,
@@ -338,16 +438,16 @@ def metrics(
 
 @app.command(hidden=True, deprecated=True)
 def view(
-    trial_dir: Annotated[
+    rollout_dir: Annotated[
         Path,
-        typer.Argument(help="Trial or job directory with trajectories"),
+        typer.Argument(help="Rollout or job directory with trajectories"),
     ],
     port: Annotated[int, typer.Option(help="Server port")] = 8888,
 ) -> None:
     """View a trial trajectory in the browser."""
-    from benchflow.viewer import serve
+    from benchflow.trajectories.viewer import serve
 
-    serve(str(trial_dir), port)
+    serve(str(rollout_dir), port)
 
 
 @app.command(hidden=True, deprecated=True)
@@ -396,17 +496,17 @@ def eval(
         benchflow eval --tasks-dir tasks/ --skill skills/gws/SKILL.md --agent claude-agent-acp --sandbox daytona
         benchflow eval --tasks-dir tasks/ --skills-dir skills/ --agent gemini --sandbox daytona --concurrency 64
     """
-    from benchflow.job import Job, JobConfig
+    from benchflow.evaluation import Evaluation, EvaluationConfig
 
     # Use --skill as skills_dir if --skills-dir not provided
     effective_skills = (
         str(skills_dir) if skills_dir else (str(skill.parent) if skill else None)
     )
 
-    j = Job(
+    j = Evaluation(
         tasks_dir=str(tasks_dir),
         jobs_dir=jobs_dir,
-        config=JobConfig(
+        config=EvaluationConfig(
             agent=agent,
             model=effective_model(agent, model),
             environment=environment,
@@ -596,6 +696,8 @@ def skills_eval(
 tasks_app = typer.Typer(help="Task authoring commands")
 app.add_typer(tasks_app, name="tasks")
 
+register_tasks_generate(tasks_app)
+
 
 @tasks_app.command("init")
 def tasks_init(
@@ -612,7 +714,7 @@ def tasks_init(
     ] = False,
 ) -> None:
     """Scaffold a new benchmark task."""
-    from benchflow.tasks import init_task
+    from benchflow._utils.task_authoring import init_task
 
     try:
         task_dir = init_task(
@@ -634,7 +736,7 @@ def tasks_check(
     task_dir: Annotated[Path, typer.Argument(help="Path to task directory")],
 ) -> None:
     """Validate a task directory structure."""
-    from benchflow.tasks import check_task
+    from benchflow._utils.task_authoring import check_task
 
     issues = check_task(task_dir)
     if not issues:
@@ -662,61 +764,7 @@ def cleanup(
     Lists and deletes sandboxes that were left running after eval runs.
     Only affects sandboxes older than --max-age minutes (default 1440 = 24h).
     """
-    from datetime import datetime
-
-    try:
-        from daytona import Daytona
-    except ImportError:
-        console.print("[red]daytona SDK not installed[/red]")
-        raise typer.Exit(1) from None
-
-    d = Daytona()
-    now = datetime.now(UTC)
-    page = 1
-    total_deleted = 0
-    total_found = 0
-    total_skipped = 0
-
-    while True:
-        result = d.list(page=page, limit=100)
-        if not result.items:
-            break
-        total_found += len(result.items)
-        for sb in result.items:
-            # Daytona's created_at is an ISO-8601 string (with optional Z suffix)
-            if not sb.created_at:
-                continue
-            created_at = datetime.fromisoformat(sb.created_at.replace("Z", "+00:00"))
-            age_minutes = (now - created_at).total_seconds() / 60
-            if age_minutes < max_age_minutes:
-                total_skipped += 1
-                if dry_run:
-                    console.print(
-                        f"  [dim]{sb.id}[/dim] state={sb.state} age={age_minutes:.0f}m [green](skip)[/green]"
-                    )
-                continue
-            if dry_run:
-                console.print(
-                    f"  [dim]{sb.id}[/dim] state={sb.state} age={age_minutes:.0f}m [red](delete)[/red]"
-                )
-            else:
-                try:
-                    d.delete(sb)
-                    total_deleted += 1
-                except Exception as e:
-                    console.print(f"  [yellow]Failed to delete {sb.id}: {e}[/yellow]")
-        if len(result.items) < 100:
-            break
-        page += 1
-
-    if dry_run:
-        console.print(
-            f"\n[bold]{total_found} sandboxes found, {total_found - total_skipped} older than {max_age_minutes}m[/bold] (use without --dry-run to delete)"
-        )
-    else:
-        console.print(
-            f"\n[bold green]{total_deleted} sandboxes deleted[/bold green] ({total_skipped} skipped, younger than {max_age_minutes}m)"
-        )
+    _cleanup_daytona_sandboxes(dry_run=dry_run, max_age_minutes=max_age_minutes)
 
 
 # ── Resource-verb subgroups (0.3 CLI) ────────────────────────────────────────
@@ -812,6 +860,50 @@ def eval_create(
         str | None,
         typer.Option("--source-ref", help="Branch or tag to clone (e.g. main)"),
     ] = None,
+    source_env: Annotated[
+        str | None,
+        typer.Option(
+            "--source-env",
+            help="Hosted environment source (e.g. primeintellect/general-agent)",
+        ),
+    ] = None,
+    source_env_version: Annotated[
+        str | None,
+        typer.Option("--source-env-version", help="Hosted environment version"),
+    ] = None,
+    source_env_arg: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--source-env-arg",
+            help="Hosted environment arg as KEY=VALUE; repeatable",
+        ),
+    ] = None,
+    source_env_num_examples: Annotated[
+        int,
+        typer.Option("--source-env-num-examples", help="Number of env examples"),
+    ] = 1,
+    source_env_rollouts_per_example: Annotated[
+        int,
+        typer.Option(
+            "--source-env-rollouts-per-example",
+            help="Rollouts per hosted env example",
+        ),
+    ] = 1,
+    source_env_max_tokens: Annotated[
+        int,
+        typer.Option("--source-env-max-tokens", help="Max tokens for hosted env run"),
+    ] = 1024,
+    source_env_temperature: Annotated[
+        float,
+        typer.Option("--source-env-temperature", help="Temperature for hosted env run"),
+    ] = 0.0,
+    source_env_sampling_arg: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--source-env-sampling-arg",
+            help="Hosted env sampling arg as KEY=VALUE; repeatable (e.g. reasoning_effort=minimal)",
+        ),
+    ] = None,
     agent: Annotated[
         str,
         typer.Option("--agent", help="Agent name"),
@@ -873,21 +965,97 @@ def eval_create(
         typer.Option("--agent-env", help="Agent env var (KEY=VALUE)"),
     ] = None,
 ) -> None:
-    """Run an evaluation — single task or batch."""
-    from benchflow.job import Job, JobConfig
+    """Run an evaluation — single task or batch.
+
+    Sandbox: docker, daytona, or modal.
+    """
+    from benchflow.evaluation import Evaluation, EvaluationConfig
 
     parsed_env = _parse_agent_env(agent_env)
+    sources = [bool(config_file), bool(tasks_dir), bool(source_repo), bool(source_env)]
+    if sum(sources) > 1:
+        console.print(
+            "[red]Choose only one source: --config, --tasks-dir, --source-repo, or --source-env[/red]"
+        )
+        raise typer.Exit(1)
+    agent = _normalize_eval_agent_or_exit(agent)
+    sandbox_user = normalize_sandbox_user(sandbox_user)
 
     if config_file:
-        j = Job.from_yaml(config_file)
+        j = Evaluation.from_yaml(config_file)
+        j._config.agent = _normalize_eval_agent_or_exit(j._config.agent)
+        j._config.model = effective_model(j._config.agent, j._config.model)
         j._config.agent_env = {**j._config.agent_env, **parsed_env}
+        j._config.sandbox_user = normalize_sandbox_user(j._config.sandbox_user)
         result = asyncio.run(j.run())
         console.print(
             f"\n[bold]Score: {result.passed}/{result.total} "
             f"({result.score:.1%})[/bold], errors={result.errored}"
         )
+    elif source_env:
+        from benchflow.hosted_env import (
+            HostedEnvError,
+            HostedEnvRef,
+            HostedEnvRunConfig,
+            parse_sampling_args,
+            parse_source_env_args,
+            run_hosted_env,
+        )
+
+        if parsed_env:
+            console.print(
+                "[yellow]--agent-env is for BenchFlow ACP agents; source-env runs inherit the process environment.[/yellow]"
+            )
+        if environment != "docker":
+            console.print(
+                f"[yellow]--sandbox {environment!r} is not used by source-env runs; "
+                "the hosted Verifiers environment owns its harness/sandbox.[/yellow]"
+            )
+        if agent != DEFAULT_AGENT:
+            console.print(
+                f"[dim]source-env records --agent {agent!r}, but executes the model endpoint through Verifiers.[/dim]"
+            )
+
+        try:
+            ref = HostedEnvRef.parse(source_env, version=source_env_version)
+            run_result = run_hosted_env(
+                HostedEnvRunConfig(
+                    source_env=ref,
+                    model=model or "",
+                    env_args=parse_source_env_args(source_env_arg),
+                    agent=agent,
+                    jobs_dir=Path(jobs_dir),
+                    concurrency=concurrency,
+                    num_examples=source_env_num_examples,
+                    rollouts_per_example=source_env_rollouts_per_example,
+                    max_tokens=source_env_max_tokens,
+                    temperature=source_env_temperature,
+                    sampling_args=parse_sampling_args(source_env_sampling_arg),
+                )
+            )
+        except HostedEnvError as e:
+            console.print(f"[red]{e}[/red]")
+            raise typer.Exit(1) from None
+
+        console.print(f"\n[bold]Environment:[/bold] {run_result.source_env.env_uid}")
+        console.print(f"[bold]Hub:[/bold] {run_result.source_env.hub_url}")
+        console.print(
+            f"[bold]Model:[/bold] {run_result.normalized_model}"
+            + (
+                f" [dim](from {run_result.model})[/dim]"
+                if run_result.normalized_model != run_result.model
+                else ""
+            )
+        )
+        console.print(f"[bold]Run dir:[/bold] {run_result.run_dir}")
+        console.print(f"[bold]Reward:[/bold] {run_result.reward}")
+        if run_result.total_tool_calls is not None:
+            console.print(f"[bold]Tool calls:[/bold] {run_result.total_tool_calls}")
+        if run_result.error:
+            console.print(f"[red]Error:[/red] {run_result.error}")
+            raise typer.Exit(1)
     elif source_repo:
-        from benchflow.task_download import resolve_source
+        from benchflow._utils.benchmark_repos import resolve_source
 
         resolved_tasks_dir = resolve_source(
             source_repo, path=source_path, ref=source_ref
@@ -903,7 +1071,7 @@ def eval_create(
                     agent=agent,
                     model=eff_model,
                     job_name=None,
-                    trial_name=None,
+                    rollout_name=None,
                     jobs_dir=jobs_dir,
                     environment=environment,
                     agent_env=parsed_env,
@@ -927,10 +1095,10 @@ def eval_create(
                 console.print(f"[red]Error:[/red] {run_result.error}")
         else:
             # Directory of tasks — batch run
-            j = Job(
+            j = Evaluation(
                 tasks_dir=str(resolved_tasks_dir),
                 jobs_dir=jobs_dir,
-                config=JobConfig(
+                config=EvaluationConfig(
                     agent=agent,
                     model=eff_model,
                     environment=environment,
@@ -964,7 +1132,7 @@ def eval_create(
                     agent=agent,
                     model=eff_model,
                     job_name=None,
-                    trial_name=None,
+                    rollout_name=None,
                     jobs_dir=jobs_dir,
                     environment=environment,
                     agent_env=parsed_env,
@@ -988,10 +1156,10 @@ def eval_create(
                 console.print(f"[red]Error:[/red] {run_result.error}")
         else:
             # Directory of tasks — batch run
-            j = Job(
+            j = Evaluation(
                 tasks_dir=str(resolved_tasks_dir),
                 jobs_dir=jobs_dir,
-                config=JobConfig(
+                config=EvaluationConfig(
                     agent=agent,
                     model=eff_model,
                     environment=environment,
@@ -1013,7 +1181,9 @@ def eval_create(
                 f"({result.score:.1%})[/bold], errors={result.errored}"
             )
     else:
-        console.print("[red]Provide --config, --tasks-dir, or --source-repo[/red]")
+        console.print(
+            "[red]Provide --config, --tasks-dir, --source-repo, or --source-env[/red]"
+        )
         raise typer.Exit(1)
 
 
@@ -1030,9 +1200,20 @@ def eval_list(
         return
 
     table = Table(title="Evaluations")
-    table.add_column("Job", style="cyan")
+    table.add_column("Evaluation", style="cyan")
     table.add_column("Tasks", justify="right")
     table.add_column("Summary")
+
+    root_summary = jobs_dir / "summary.json"
+    if root_summary.exists():
+        data = json.loads(root_summary.read_text())
+        table.add_row(
+            jobs_dir.name,
+            str(data.get("total", "?")),
+            f"{data.get('passed', '?')}/{data.get('total', '?')} ({data.get('score', '?')})",
+        )
+        console.print(table)
+        return
 
     for d in sorted(jobs_dir.iterdir()):
         if not d.is_dir():
@@ -1080,17 +1261,72 @@ def environment_create(
 
 
 @env_app.command("list")
-def environment_list() -> None:
-    """List active Daytona sandboxes."""
+def environment_list(
+    hub: Annotated[
+        str | None,
+        typer.Option("--hub", help="Hosted environment hub to list"),
+    ] = None,
+    owner: Annotated[
+        str | None,
+        typer.Option("--owner", help="Hosted hub owner/namespace filter"),
+    ] = None,
+    search: Annotated[
+        str | None,
+        typer.Option("--search", help="Hosted hub search query"),
+    ] = None,
+    limit: Annotated[
+        int | None,
+        typer.Option("--limit", help="Maximum hosted hub results"),
+    ] = None,
+    output_json: Annotated[
+        bool,
+        typer.Option("--json", help="Emit raw JSON for hosted hub results"),
+    ] = False,
+) -> None:
+    """List active Daytona sandboxes or hosted hub environments."""
     from datetime import datetime
 
-    try:
-        from daytona import Daytona
-    except ImportError:
-        console.print("[red]daytona SDK not installed[/red]")
-        raise typer.Exit(1) from None
+    if hub:
+        if hub != "primeintellect":
+            console.print("[red]Only --hub primeintellect is supported today[/red]")
+            raise typer.Exit(1)
+        from benchflow.hosted_env import HostedEnvError, prime_env_list
 
-    d = Daytona()
+        try:
+            raw = prime_env_list(owner=owner, search=search, limit=limit)
+        except HostedEnvError as e:
+            console.print(f"[red]{e}[/red]")
+            raise typer.Exit(1) from None
+        if output_json:
+            console.print(raw)
+            return
+        data = json.loads(raw)
+        rows = (
+            data
+            if isinstance(data, list)
+            else data.get("environments", data.get("items", []))
+        )
+        table = Table(title="PrimeIntellect Environments")
+        table.add_column("Environment", style="cyan")
+        table.add_column("Version", style="green")
+        table.add_column("Visibility")
+        table.add_column("Updated", style="dim")
+        for item in rows:
+            name = (
+                item.get("environment")
+                or item.get("fullName")
+                or item.get("name")
+                or item.get("id")
+                or ""
+            )
+            version = str(item.get("version") or item.get("latestVersion") or "")
+            visibility = str(item.get("visibility") or item.get("private") or "")
+            updated = str(item.get("updated_at") or item.get("updatedAt") or "")
+            table.add_row(name, version, visibility, updated)
+        console.print(table)
+        return
+
+    d = _daytona_client_or_exit()
     table = Table(title="Active Sandboxes")
     table.add_column("ID", style="cyan")
     table.add_column("State", style="green")
@@ -1119,6 +1355,69 @@ def environment_list() -> None:
 
     console.print(table)
     console.print(f"\n[bold]{total} sandbox(es)[/bold]")
+
+
+@env_app.command("show")
+def environment_show(
+    source_env: Annotated[
+        str,
+        typer.Argument(help="Hosted environment (e.g. primeintellect/general-agent)"),
+    ],
+    version: Annotated[
+        str | None,
+        typer.Option("--version", help="Hosted environment version"),
+    ] = None,
+) -> None:
+    """Show hosted environment metadata."""
+    from benchflow.hosted_env import HostedEnvError, HostedEnvRef, prime_env_info
+
+    try:
+        ref = HostedEnvRef.parse(source_env, version=version)
+        console.print(prime_env_info(ref))
+    except HostedEnvError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+
+
+@env_app.command("inspect")
+def environment_inspect(
+    source_env: Annotated[
+        str,
+        typer.Argument(help="Hosted environment (e.g. primeintellect/general-agent)"),
+    ],
+    version: Annotated[
+        str | None,
+        typer.Option("--version", help="Hosted environment version"),
+    ] = None,
+    path: Annotated[
+        str,
+        typer.Option("--path", help="File inside the hosted environment package"),
+    ] = "README.md",
+) -> None:
+    """Inspect a file from a hosted environment package."""
+    from benchflow.hosted_env import HostedEnvError, HostedEnvRef, prime_env_inspect
+
+    try:
+        ref = HostedEnvRef.parse(source_env, version=version)
+        console.print(prime_env_inspect(ref, path=path))
+    except HostedEnvError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+
+
+@env_app.command("cleanup")
+def environment_cleanup(
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="List sandboxes without deleting"),
+    ] = False,
+    max_age_minutes: Annotated[
+        int,
+        typer.Option("--max-age", help="Delete sandboxes older than N minutes"),
+    ] = 1440,
+) -> None:
+    """Clean up orphaned Daytona sandboxes."""
+    _cleanup_daytona_sandboxes(dry_run=dry_run, max_age_minutes=max_age_minutes)
 
 
 if __name__ == "__main__":

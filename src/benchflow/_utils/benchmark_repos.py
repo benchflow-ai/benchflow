@@ -138,7 +138,11 @@ def resolve_source(repo: str, path: str | None = None, ref: str | None = None) -
 # Format: (org/repo, ref, subpath)
 TASK_ALIASES: dict[str, tuple[str, str | None, str | None]] = {
     "skillsbench": ("benchflow-ai/skillsbench", "main", "tasks"),
-    "programbench": ("benchflow-ai/benchmarks", "main", "datasets/programbench/tasks"),
+    "programbench": (
+        "facebookresearch/programbench",
+        "main",
+        "src/programbench/data/tasks",
+    ),
     "harvey-lab": ("benchflow-ai/benchmarks", "main", "datasets/harvey-lab/tasks"),
 }
 

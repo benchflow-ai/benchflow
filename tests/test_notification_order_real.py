@@ -15,8 +15,8 @@ from pathlib import Path
 
 import pytest
 
-from benchflow._acp_run import execute_prompts
 from benchflow.acp.client import ACPClient
+from benchflow.acp.runtime import execute_prompts
 from benchflow.acp.transport import StdioTransport
 
 MOCK_AGENT_MULTI = str(

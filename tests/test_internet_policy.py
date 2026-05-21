@@ -5,11 +5,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from benchflow.trial import (
+from benchflow.rollout import (
     Role,
+    Rollout,
+    RolloutConfig,
     Scene,
-    Trial,
-    TrialConfig,
     _agent_launch_with_web_policy,
     _apply_web_policy,
     _skill_nudge,
@@ -76,7 +76,7 @@ def test_host_skill_nudge_is_only_prompt_mutation(monkeypatch, tmp_path):
 
 
 def test_create_environment_preserves_agent_network_for_llm_runs(tmp_path):
-    from benchflow._env_setup import _create_environment
+    from benchflow.sandbox.setup import _create_environment
 
     original_env = MagicMock()
     original_env.allow_internet = False
@@ -88,7 +88,7 @@ def test_create_environment_preserves_agent_network_for_llm_runs(tmp_path):
         config=SimpleNamespace(environment=original_env),
     )
 
-    with patch("harbor.environments.docker.docker.DockerEnvironment") as docker_env:
+    with patch("benchflow.sandbox.docker.DockerSandbox") as docker_env:
         _create_environment(
             "docker",
             task,
@@ -104,7 +104,7 @@ def test_create_environment_preserves_agent_network_for_llm_runs(tmp_path):
 
 
 def test_create_environment_keeps_oracle_network_policy(tmp_path):
-    from benchflow._env_setup import _create_environment
+    from benchflow.sandbox.setup import _create_environment
 
     original_env = MagicMock()
     original_env.allow_internet = False
@@ -113,7 +113,7 @@ def test_create_environment_keeps_oracle_network_policy(tmp_path):
         config=SimpleNamespace(environment=original_env),
     )
 
-    with patch("harbor.environments.docker.docker.DockerEnvironment") as docker_env:
+    with patch("benchflow.sandbox.docker.DockerSandbox") as docker_env:
         _create_environment("docker", task, tmp_path, "trial", MagicMock())
 
     original_env.model_copy.assert_not_called()
@@ -122,7 +122,7 @@ def test_create_environment_keeps_oracle_network_policy(tmp_path):
 
 @pytest.mark.asyncio
 async def test_connect_as_applies_web_policy_to_role_env(tmp_path):
-    cfg = TrialConfig(
+    cfg = RolloutConfig(
         task_path=tmp_path / "task",
         scenes=[
             Scene(
@@ -131,10 +131,10 @@ async def test_connect_as_applies_web_policy_to_role_env(tmp_path):
         ],
         agent_env={"BENCHFLOW_PROVIDER_BASE_URL": "http://localhost:8080/v1"},
     )
-    trial = Trial.__new__(Trial)
+    trial = Rollout.__new__(Rollout)
     trial._config = cfg
     trial._env = {}
-    trial._trial_dir = tmp_path
+    trial._rollout_dir = tmp_path
     trial._timing = {}
     trial._agent_cwd = "/app"
     trial._phase = "idle"
@@ -196,7 +196,7 @@ async def test_connect_as_applies_hard_web_policy_to_role_agent(tmp_path):
     from benchflow.agents.registry import AGENTS
 
     role = Role(name="coder", agent="gemini", model="gemini/test")
-    cfg = TrialConfig(
+    cfg = RolloutConfig(
         task_path=tmp_path / "task",
         scenes=[
             Scene(
@@ -207,10 +207,10 @@ async def test_connect_as_applies_hard_web_policy_to_role_agent(tmp_path):
             )
         ],
     )
-    trial = Trial.__new__(Trial)
+    trial = Rollout.__new__(Rollout)
     trial._config = cfg
     trial._env = {}
-    trial._trial_dir = tmp_path
+    trial._rollout_dir = tmp_path
     trial._timing = {}
     trial._agent_cwd = "/app"
     trial._phase = "idle"
@@ -350,7 +350,7 @@ def test_setup_cmd_merges_with_existing_config(tmp_path):
 
 def test_create_environment_does_not_flip_when_internet_allowed(tmp_path):
     """When allow_internet=True, preserve_agent_network should not modify env config."""
-    from benchflow._env_setup import _create_environment
+    from benchflow.sandbox.setup import _create_environment
 
     original_env = MagicMock()
     original_env.allow_internet = True
@@ -359,7 +359,7 @@ def test_create_environment_does_not_flip_when_internet_allowed(tmp_path):
         config=SimpleNamespace(environment=original_env),
     )
 
-    with patch("harbor.environments.docker.docker.DockerEnvironment") as docker_env:
+    with patch("benchflow.sandbox.docker.DockerSandbox") as docker_env:
         _create_environment(
             "docker", task, tmp_path, "trial", MagicMock(), preserve_agent_network=True
         )
@@ -369,8 +369,8 @@ def test_create_environment_does_not_flip_when_internet_allowed(tmp_path):
 
 
 def test_task_toml_allow_internet_false_parsed_correctly(tmp_path):
-    """A real task.toml with allow_internet=false should be correctly parsed by Harbor."""
-    from harbor.models.task.task import Task
+    """A real task.toml with allow_internet=false should be correctly parsed."""
+    from benchflow.task import Task
 
     task_dir = tmp_path / "task"
     task_dir.mkdir()
@@ -390,7 +390,7 @@ def test_task_toml_allow_internet_false_parsed_correctly(tmp_path):
 
 def test_task_toml_allow_internet_true_parsed_correctly(tmp_path):
     """A real task.toml with allow_internet=true (default) should not trigger policy."""
-    from harbor.models.task.task import Task
+    from benchflow.task import Task
 
     task_dir = tmp_path / "task"
     task_dir.mkdir()
@@ -406,7 +406,7 @@ def test_task_toml_allow_internet_true_parsed_correctly(tmp_path):
 
 def test_task_toml_missing_allow_internet_defaults_to_allowed(tmp_path):
     """A task.toml without allow_internet should default to internet allowed."""
-    from harbor.models.task.task import Task
+    from benchflow.task import Task
 
     task_dir = tmp_path / "task"
     task_dir.mkdir()

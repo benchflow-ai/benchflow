@@ -5,7 +5,7 @@ A 5-minute path from install to first eval.
 
 - Python 3.12+
 - [`uv`](https://docs.astral.sh/uv/)
-- Docker for local sandboxes, `DAYTONA_API_KEY` for Daytona cloud runs, or Modal auth for Modal-backed runs
+- Docker for local sandboxes, `pip install benchflow[sandbox-daytona]` + `DAYTONA_API_KEY` for Daytona cloud runs, or `pip install benchflow[sandbox-modal]` for Modal-backed runs
 - An API key or subscription/OAuth auth for at least one agent (see below)
 
 ## Install
@@ -53,7 +53,7 @@ export CLAUDE_CODE_OAUTH_TOKEN=<paste-token>
 
 benchflow auto-inherits `CLAUDE_CODE_OAUTH_TOKEN` from your shell into the sandbox; the Claude CLI inside reads it directly. Same auth precedence as plain `claude` ([Anthropic docs](https://code.claude.com/docs/en/authentication#authentication-precedence)): API keys override OAuth tokens, so unset `ANTHROPIC_API_KEY` if you want the token to win.
 
-`claude setup-token` only authenticates Claude. Codex and Gemini do not have an equivalent today — use Option 1 (host login) or Option 3 (API key).
+`claude setup-token` only authenticates Claude. Codex can also use a provided subscription access token, such as `CODEX_ACCESS_TOKEN` from a host/orchestrator integration; benchflow passes it through to Codex without copying `~/.codex/auth.json`. Gemini does not have an equivalent today — use Option 1 (host login) or Option 3 (API key).
 
 ### Option 3 — API key
 
@@ -62,6 +62,7 @@ Set the API-key env var directly. Works with every agent:
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
 export OPENAI_API_KEY=sk-...
+export CODEX_API_KEY=sk-...       # Codex alias for OPENAI_API_KEY
 export GEMINI_API_KEY=...
 export LLM_API_KEY=...           # OpenHands / LiteLLM-compatible providers
 ```
@@ -93,7 +94,7 @@ GEMINI_API_KEY=... bench eval create \
   --agent-env BENCHFLOW_SKILL_NUDGE=name
 
 # A whole batch from YAML config
-bench eval create --config benchmarks/skillsbench-claude-glm51.yaml
+bench eval create --config benchmarks/harvey-lab/harvey-lab-gemini-flash-lite.yaml
 
 # Batch from remote repo with concurrency
 GEMINI_API_KEY=... bench eval create \
@@ -108,7 +109,7 @@ bench agent list
 single tasks, batch runs, and remote repos. Use `--source-repo <org/repo>
 --source-path <subpath>` to fetch from a remote repo, `--tasks-dir <dir>` for a
 local directory, or `--config <config.yaml>` for a YAML config. Results land under
-`jobs/<job-name>/<trial-name>/` — `result.json` for the verifier output,
+`jobs/<eval-name>/<rollout-name>/` — `result.json` for the verifier output,
 `trajectory/acp_trajectory.jsonl` for the full agent trace.
 
 When you mount skills, use `BENCHFLOW_SKILL_NUDGE=name` as the default docs
@@ -123,7 +124,7 @@ The CLI is a thin shim over the Python API. For programmatic use:
 ```python
 import benchflow as bf
 from benchflow import RolloutConfig, Scene
-from benchflow.task_download import resolve_source
+from benchflow._utils.benchmark_repos import resolve_source
 
 config = RolloutConfig(
     task_path=resolve_source("benchflow-ai/skillsbench", path="tasks/edit-pdf"),
@@ -135,7 +136,7 @@ print(result.rewards)         # {'reward': 1.0}
 print(result.n_tool_calls)
 ```
 
-`Rollout` (aliased as `Trial`) is decomposable — invoke each lifecycle phase individually for custom flows. See [Concepts: rollout lifecycle](./concepts.md#rollout-lifecycle).
+`Rollout` is decomposable — invoke each lifecycle phase individually for custom flows. See [Concepts: rollout lifecycle](./concepts.md#rollout-lifecycle).
 
 ## What to read next
 

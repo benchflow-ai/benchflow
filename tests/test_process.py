@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from benchflow.process import DockerProcess
+from benchflow.sandbox.process import DockerProcess
 
 
 class TestDockerProcessEnv:
@@ -227,7 +227,7 @@ class TestDaytonaProcessEnvFilePath:
         """DinD path must not use $$ — shlex.join would quote it literally."""
         from unittest.mock import MagicMock
 
-        from benchflow.process import DaytonaProcess
+        from benchflow.sandbox.process import DaytonaProcess
 
         sandbox = MagicMock()
         sandbox.create_ssh_access = AsyncMock(return_value=MagicMock(token="abc"))
@@ -269,7 +269,7 @@ class TestDaytonaProcessEnvFilePath:
         """Direct (non-DinD) path is currently safe with $$, but pin the uuid form for robustness."""
         from unittest.mock import MagicMock
 
-        from benchflow.process import DaytonaProcess
+        from benchflow.sandbox.process import DaytonaProcess
 
         sandbox = MagicMock()
         sandbox.create_ssh_access = AsyncMock(return_value=MagicMock(token="abc"))

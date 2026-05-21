@@ -32,7 +32,7 @@ Phases can be composed for multi-agent flows::
     result = await rollout.verify()
     await rollout.cleanup()
 
-Backward-compat aliases: ``Trial = Rollout``, ``TrialConfig = RolloutConfig``.
+See also: ``RolloutConfig`` for configuration dataclass.
 """
 
 from __future__ import annotations
@@ -43,47 +43,52 @@ import json
 import logging
 import os
 import shlex
+import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from benchflow._acp_run import connect_acp, execute_prompts
-from benchflow._agent_env import resolve_agent_env
-from benchflow._agent_setup import (
+from benchflow._types import Role, Scene, Turn
+from benchflow._utils.config import normalize_agent_name, normalize_sandbox_user
+from benchflow.acp.client import ACPClient, ACPError
+from benchflow.acp.runtime import connect_acp, execute_prompts
+from benchflow.agents.credentials import (
+    upload_subscription_auth,
+    write_credential_files,
+)
+from benchflow.agents.env import resolve_agent_env
+from benchflow.agents.install import (
     _link_skill_paths,
     apply_web_tool_policy,
     deploy_skills,
     install_agent,
 )
-from benchflow._credentials import upload_subscription_auth, write_credential_files
-from benchflow._env_setup import (
-    _create_environment,
-    _inject_skills_into_dockerfile,
-    stage_dockerfile_deps,
-)
-from benchflow._provider_runtime import (
+from benchflow.agents.registry import AGENT_LAUNCH, AGENTS
+from benchflow.models import RolloutResult, TrajectorySource
+from benchflow.providers.runtime import (
     ensure_bedrock_proxy_runtime,
     ensure_usage_proxy_runtime,
     extract_usage,
     stop_provider_runtime,
 )
-from benchflow._sandbox import (
+from benchflow.sandbox.lockdown import (
     _resolve_locked_paths,
     _seed_verifier_workspace,
     _snapshot_build_config,
     lockdown_paths,
     setup_sandbox_user,
 )
-from benchflow._trajectory import (
+from benchflow.sandbox.setup import (
+    _create_environment,
+    _inject_skills_into_dockerfile,
+    stage_dockerfile_deps,
+)
+from benchflow.sandbox.user import BaseUser, RoundResult
+from benchflow.trajectories._capture import (
     _capture_session_trajectory,
     _scrape_agent_trajectory,
 )
-from benchflow._types import Role, Scene, Turn
-from benchflow.acp.client import ACPClient, ACPError
-from benchflow.agents.registry import AGENT_LAUNCH, AGENTS
-from benchflow.models import RolloutResult, TrajectorySource
-from benchflow.user import BaseUser, RoundResult
 
 logger = logging.getLogger(__name__)
 
@@ -240,7 +245,7 @@ _DIAG_TRUNCATE = 2000
 
 
 def _write_rewards_jsonl(
-    trial_dir: Path,
+    rollout_dir: Path,
     rewards: dict | None,
     finished_at: datetime,
 ) -> None:
@@ -286,36 +291,35 @@ def _write_rewards_jsonl(
             }
         )
     if events:
-        path = trial_dir / "rewards.jsonl"
+        path = rollout_dir / "rewards.jsonl"
         path.write_text("\n".join(json.dumps(e, default=str) for e in events) + "\n")
 
 
 def _init_rollout(
     task_path: Path,
     job_name: str | None,
-    trial_name: str | None,
+    rollout_name: str | None,
     jobs_dir: str | Path,
 ) -> tuple[Any, Path, Any, datetime, str, str]:
     """Set up trial directory tree and return core trial objects."""
     from uuid import uuid4
 
-    from harbor.models.task.task import Task
-    from harbor.models.trial.paths import TrialPaths
+    from benchflow.task import RolloutPaths, Task
 
     task = Task(task_path)
     job_name = job_name or datetime.now().strftime("%Y-%m-%d__%H-%M-%S")
-    trial_name = trial_name or f"{task_path.name}__{uuid4().hex[:8]}"
-    trial_dir = Path(jobs_dir) / job_name / trial_name
-    trial_paths = TrialPaths(trial_dir)
+    rollout_name = rollout_name or f"{task_path.name}__{uuid4().hex[:8]}"
+    rollout_dir = Path(jobs_dir) / job_name / rollout_name
+    rollout_paths = RolloutPaths(rollout_dir=rollout_dir)
     started_at = datetime.now()
-    trial_dir.mkdir(parents=True, exist_ok=True)
+    rollout_dir.mkdir(parents=True, exist_ok=True)
     for subdir in ("agent", "verifier", "artifacts", "trajectory"):
-        (trial_dir / subdir).mkdir(exist_ok=True)
-    return task, trial_dir, trial_paths, started_at, job_name, trial_name
+        (rollout_dir / subdir).mkdir(exist_ok=True)
+    return task, rollout_dir, rollout_paths, started_at, job_name, rollout_name
 
 
 def _write_config(
-    trial_dir: Path,
+    rollout_dir: Path,
     *,
     task_path: Path,
     agent: str,
@@ -329,8 +333,9 @@ def _write_config(
     timeout: int,
     started_at: datetime,
     agent_env: dict[str, str],
+    scenes: list[Scene] | None = None,
 ) -> None:
-    """Write config.json to trial_dir with secrets filtered out."""
+    """Write config.json to rollout_dir with secrets filtered out."""
     _secret_substrings = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIALS")
     recorded_env = {
         k: v
@@ -350,15 +355,45 @@ def _write_config(
         "timeout_sec": timeout,
         "started_at": str(started_at),
         "agent_env": recorded_env,
+        "scenes": _scene_metadata(scenes or []),
     }
-    (trial_dir / "config.json").write_text(json.dumps(config_data, indent=2))
+    (rollout_dir / "config.json").write_text(json.dumps(config_data, indent=2))
+
+
+def _role_metadata(role: Role) -> dict[str, Any]:
+    return {
+        "name": role.name,
+        "agent": role.agent,
+        "model": role.model,
+        "timeout_sec": role.timeout_sec,
+        "idle_timeout_sec": role.idle_timeout_sec,
+        "skills_dir": str(role.skills_dir) if role.skills_dir else None,
+        "capabilities": role.capabilities,
+        "env_keys": sorted(role.env),
+    }
+
+
+def _scene_metadata(scenes: list[Scene]) -> list[dict[str, Any]]:
+    return [
+        {
+            "name": scene.name,
+            "skills_dir": str(scene.skills_dir) if scene.skills_dir else None,
+            "parallel_group": scene.parallel_group,
+            "roles": [_role_metadata(role) for role in scene.roles],
+            "turns": [
+                {"role": turn.role, "has_prompt": turn.prompt is not None}
+                for turn in scene.turns
+            ],
+        }
+        for scene in scenes
+    ]
 
 
 def _build_rollout_result(
-    trial_dir: Path,
+    rollout_dir: Path,
     *,
     task_name: str,
-    trial_name: str,
+    rollout_name: str,
     agent: str,
     agent_name: str,
     model: str,
@@ -372,20 +407,13 @@ def _build_rollout_result(
     rewards: dict | None,
     started_at: datetime,
     timing: dict[str, float],
-    n_input_tokens: int | None = None,
-    n_output_tokens: int | None = None,
-    n_cache_read_tokens: int | None = None,
-    n_cache_creation_tokens: int | None = None,
-    total_tokens: int | None = None,
-    cost_usd: float | None = None,
-    usage_source: str = "unavailable",
-    price_source: str | None = None,
+    scenes: list[Scene] | None = None,
 ) -> RolloutResult:
     """Build RolloutResult and write result.json, timing.json, prompts.json, trajectory."""
     finished_at = datetime.now()
     result = RolloutResult(
         task_name=task_name,
-        trial_name=trial_name,
+        rollout_name=rollout_name,
         rewards=rewards,
         trajectory=trajectory,
         agent=agent,
@@ -410,17 +438,17 @@ def _build_rollout_result(
     )
     timing["total"] = (finished_at - started_at).total_seconds()
     timing = {k: round(v, 1) for k, v in timing.items()}
-    traj_dir = trial_dir / "trajectory"
+    traj_dir = rollout_dir / "trajectory"
     traj_dir.mkdir(parents=True, exist_ok=True)
     (traj_dir / "acp_trajectory.jsonl").write_text(
         "\n".join(json.dumps(e, default=str) for e in trajectory)
     )
-    trial_dir.mkdir(parents=True, exist_ok=True)
-    (trial_dir / "result.json").write_text(
+    rollout_dir.mkdir(parents=True, exist_ok=True)
+    (rollout_dir / "result.json").write_text(
         json.dumps(
             {
                 "task_name": result.task_name,
-                "trial_name": result.trial_name,
+                "rollout_name": result.rollout_name,
                 "rewards": result.rewards,
                 "agent": result.agent,
                 "agent_name": result.agent_name,
@@ -446,13 +474,14 @@ def _build_rollout_result(
                 "started_at": str(result.started_at),
                 "finished_at": str(result.finished_at),
                 "timing": timing,
+                "scenes": _scene_metadata(scenes or []),
             },
             indent=2,
         )
     )
-    (trial_dir / "timing.json").write_text(json.dumps(timing, indent=2))
-    (trial_dir / "prompts.json").write_text(json.dumps(prompts, indent=2))
-    _write_rewards_jsonl(trial_dir, rewards, finished_at)
+    (rollout_dir / "timing.json").write_text(json.dumps(timing, indent=2))
+    (rollout_dir / "prompts.json").write_text(json.dumps(prompts, indent=2))
+    _write_rewards_jsonl(rollout_dir, rewards, finished_at)
     return result
 
 
@@ -532,6 +561,9 @@ async def _start_env_and_upload(env: Any, task_path: Path, timing: dict) -> None
     timing["environment_setup"] = (datetime.now() - t0).total_seconds()
     if (task_path / "instruction.md").exists():
         await env.upload_file(task_path / "instruction.md", "/instruction.md")
+    task_skills = task_path / "environment" / "skills"
+    if task_skills.is_dir():
+        await env.upload_dir(task_skills, "/app/skills")
     if (task_path / "solution").is_dir():
         await env.upload_dir(task_path / "solution", "/solution")
 
@@ -540,8 +572,7 @@ async def _run_oracle(
     env: Any, task_path: Path, timeout: int, sandbox_user: str | None = None
 ) -> tuple[list[dict], str]:
     """Run oracle mode (solution/solve.sh), return (trajectory, agent_name)."""
-    from harbor.models.task.task import Task
-    from harbor.utils.env import resolve_env_vars
+    from benchflow.task import Task, resolve_env_vars
 
     logger.info("Oracle mode: running solution/solve.sh")
     if not (task_path / "solution" / "solve.sh").exists():
@@ -580,26 +611,41 @@ async def _run_oracle(
     return trajectory, "oracle"
 
 
+async def _publish_trajectory_for_verifier(env, trajectory: list[dict]) -> None:
+    """Make the captured ACP trajectory available inside /logs for verifiers."""
+    if not trajectory:
+        return
+    await env.exec("mkdir -p /logs/agent", user="root", timeout_sec=10)
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
+        f.write("\n".join(json.dumps(e, default=str) for e in trajectory))
+        f.write("\n")
+        tmp_path = f.name
+    try:
+        await env.upload_file(tmp_path, "/logs/agent/acp_trajectory.jsonl")
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(tmp_path)
+
+
 async def _verify_rollout(
     env: Any,
     task: Any,
-    trial_paths: Any,
+    rollout_paths: Any,
     timing: dict,
     sandbox_user: str | None = None,
     workspace: str | None = None,
 ) -> tuple[dict | None, str | None]:
     """Run verifier with pre-verification hardening."""
-    from harbor.verifier.verifier import Verifier
+    from benchflow.sandbox.lockdown import harden_before_verify
+    from benchflow.task import Verifier
 
-    from benchflow._sandbox import harden_before_verify
-
-    trial_paths.verifier_dir.mkdir(parents=True, exist_ok=True)
+    rollout_paths.verifier_dir.mkdir(parents=True, exist_ok=True)
     await harden_before_verify(env, task, sandbox_user, workspace=workspace)
     logger.info("Running verifier...")
     t0 = datetime.now()
     verifier_error = None
     try:
-        verifier = Verifier(task=task, trial_paths=trial_paths, environment=env)
+        verifier = Verifier(task=task, rollout_paths=rollout_paths, sandbox=env)
         verifier_result = await asyncio.wait_for(
             verifier.verify(),
             timeout=task.config.verifier.timeout_sec,
@@ -620,11 +666,11 @@ async def _verify_rollout(
     return rewards, verifier_error
 
 
-# Apply Harbor DinD patch at import time.
+# Apply Docker DinD patch at import time.
 def _apply_dind_patch() -> None:
-    from benchflow._env_setup import _patch_harbor_dind
+    from benchflow.sandbox.setup import _patch_docker_dind
 
-    _patch_harbor_dind()
+    _patch_docker_dind()
 
 
 _apply_dind_patch()
@@ -636,18 +682,15 @@ __all__ = [
     "Turn",
     "Rollout",
     "RolloutConfig",
-    # Backward-compat aliases
-    "Trial",
-    "TrialConfig",
 ]
 
 
 @dataclass
 class RolloutConfig:
-    """Declarative trial configuration.
+    """Declarative rollout configuration.
 
-    A trial is a sequence of scenes executed in a shared sandbox.
-    Single-agent runs are a trial with one scene containing one role.
+    A rollout is a sequence of scenes executed in a shared sandbox.
+    Single-agent runs are a rollout with one scene containing one role.
     """
 
     task_path: Path
@@ -658,7 +701,7 @@ class RolloutConfig:
     sandbox_setup_timeout: int = 120
     services: list[str] | None = None
     job_name: str | None = None
-    trial_name: str | None = None
+    rollout_name: str | None = None
     jobs_dir: str | Path = "jobs"
     context_root: str | Path | None = None
     pre_agent_hooks: list | None = None
@@ -686,6 +729,13 @@ class RolloutConfig:
     include_task_skills: bool = True
     skip_verify: bool = False
     export_generated_skills_to: str | Path | None = None
+
+    def __post_init__(self) -> None:
+        self.agent = normalize_agent_name(self.agent)
+        self.sandbox_user = normalize_sandbox_user(self.sandbox_user)
+        for scene in self.scenes:
+            for role in scene.roles:
+                role.agent = normalize_agent_name(role.agent)
 
     @classmethod
     def from_legacy(
@@ -773,11 +823,11 @@ class Rollout:
 
         # Populated by setup()
         self._task: Any = None
-        self._trial_dir: Path | None = None
-        self._trial_paths: Any = None
+        self._rollout_dir: Path | None = None
+        self._rollout_paths: Any = None
         self._started_at: datetime | None = None
         self._job_name: str | None = None
-        self._trial_name: str | None = None
+        self._rollout_name: str | None = None
         self._agent_env: dict[str, str] = {}
         self._resolved_prompts: list[str] = []
         self._agent_launch: str = ""
@@ -797,6 +847,7 @@ class Rollout:
         self._acp_client: ACPClient | None = None
         self._session: Any = None
         self._agent_name: str = ""
+        self._active_role: Role | None = None
 
         # Populated by execute()
         self._trajectory: list[dict] = []
@@ -841,10 +892,10 @@ class Rollout:
             return None
         return self._build_result()
 
-    def _require_trial_dir(self) -> Path:
-        if self._trial_dir is None:
+    def _require_rollout_dir(self) -> Path:
+        if self._rollout_dir is None:
             raise RuntimeError("Rollout.setup() must run before this phase")
-        return self._trial_dir
+        return self._rollout_dir
 
     def _require_started_at(self) -> datetime:
         if self._started_at is None:
@@ -873,12 +924,12 @@ class Rollout:
 
         (
             self._task,
-            self._trial_dir,
-            self._trial_paths,
+            self._rollout_dir,
+            self._rollout_paths,
             self._started_at,
             self._job_name,
-            self._trial_name,
-        ) = _init_rollout(cfg.task_path, cfg.job_name, cfg.trial_name, cfg.jobs_dir)
+            self._rollout_name,
+        ) = _init_rollout(cfg.task_path, cfg.job_name, cfg.rollout_name, cfg.jobs_dir)
 
         self._disallow_web_tools = (
             _task_disallows_internet(self._task) or cfg.self_gen_no_internet
@@ -923,14 +974,14 @@ class Rollout:
             cfg.environment,
             self._task,
             effective_task_path,
-            self._trial_name,
-            self._trial_paths,
+            self._rollout_name,
+            self._rollout_paths,
             preserve_agent_network=self._disallow_web_tools,
         )
         self._timeout = int(self._task.config.agent.timeout_sec or 0)
 
         _write_config(
-            self._trial_dir,
+            self._rollout_dir,
             task_path=cfg.task_path,
             agent=cfg.primary_agent,
             model=cfg.primary_model,
@@ -943,6 +994,7 @@ class Rollout:
             timeout=self._timeout,
             started_at=self._started_at,
             agent_env=self._agent_env,
+            scenes=cfg.effective_scenes,
         )
 
         self._phase = "setup"
@@ -968,7 +1020,7 @@ class Rollout:
         This method installs the primary agent to set up the sandbox baseline.
         """
         cfg = self._config
-        trial_dir = self._require_trial_dir()
+        rollout_dir = self._require_rollout_dir()
 
         cwd_result = await self._env.exec("pwd", timeout_sec=10)
         agent_cwd = (cwd_result.stdout or "").strip() or "/app"
@@ -1005,7 +1057,14 @@ class Rollout:
             return
 
         agent_name = cfg.primary_agent
-        self._agent_cfg = await install_agent(self._env, agent_name, trial_dir)
+        self._agent_cfg = await install_agent(self._env, agent_name, rollout_dir)
+        if cfg.sandbox_user:
+            self._agent_cwd = await setup_sandbox_user(
+                self._env,
+                cfg.sandbox_user,
+                workspace=self._agent_cwd,
+                timeout_sec=cfg.sandbox_setup_timeout,
+            )
         cred_home = f"/home/{cfg.sandbox_user}" if cfg.sandbox_user else "/root"
         await write_credential_files(
             self._env,
@@ -1017,14 +1076,6 @@ class Rollout:
         )
         if self._agent_env.get("_BENCHFLOW_SUBSCRIPTION_AUTH"):
             await upload_subscription_auth(self._env, agent_name, cred_home)
-
-        if cfg.sandbox_user:
-            self._agent_cwd = await setup_sandbox_user(
-                self._env,
-                cfg.sandbox_user,
-                workspace=self._agent_cwd,
-                timeout_sec=cfg.sandbox_setup_timeout,
-            )
         await apply_web_tool_policy(
             self._env,
             agent_name,
@@ -1060,7 +1111,7 @@ class Rollout:
     async def connect(self) -> None:
         """Open an ACP connection to the agent. Can be called multiple times."""
         cfg = self._config
-        trial_dir = self._require_trial_dir()
+        rollout_dir = self._require_rollout_dir()
         t0 = datetime.now()
 
         self._agent_env, self._provider_runtime = await ensure_bedrock_proxy_runtime(
@@ -1085,7 +1136,7 @@ class Rollout:
             agent_env=self._agent_env,
             sandbox_user=cfg.sandbox_user,
             model=cfg.primary_model,
-            trial_dir=trial_dir,
+            rollout_dir=rollout_dir,
             environment=cfg.environment,
             agent_cwd=self._agent_cwd,
         )
@@ -1109,6 +1160,7 @@ class Rollout:
             agent_cmd = self._agent_launch.split()[0].split("/")[-1]
             with contextlib.suppress(Exception):
                 await self._env.exec(f"pkill -f '{agent_cmd}' || true", timeout_sec=10)
+        self._active_role = None
         self._session_tool_count = 0
         self._session_traj_count = 0
         self._phase = "installed"
@@ -1127,13 +1179,24 @@ class Rollout:
             raise RuntimeError("Rollout.connect() must run before execute()")
         prev_session_tools = getattr(self, "_session_tool_count", 0)
         t0 = datetime.now()
+        active_role = getattr(self, "_active_role", None)
+        timeout = (
+            active_role.timeout_sec
+            if active_role and active_role.timeout_sec is not None
+            else self._timeout
+        )
+        idle_timeout = (
+            active_role.idle_timeout_sec
+            if active_role and active_role.idle_timeout_sec is not None
+            else self._config.agent_idle_timeout
+        )
 
         trajectory, n_tool_calls = await execute_prompts(
             self._acp_client,
             self._session,
             effective_prompts,
-            self._timeout,
-            idle_timeout=self._config.agent_idle_timeout,
+            timeout,
+            idle_timeout=idle_timeout,
         )
 
         # trajectory and n_tool_calls are cumulative for this session.
@@ -1170,10 +1233,12 @@ class Rollout:
                     f"Using scraped trajectory ({len(scraped)} events) — UNTRUSTED"
                 )
 
+        await _publish_trajectory_for_verifier(self._env, self._trajectory)
+
         self._rewards, self._verifier_error = await _verify_rollout(
             self._env,
             self._task,
-            self._trial_paths,
+            self._rollout_paths,
             self._timing,
             sandbox_user=cfg.sandbox_user,
             workspace=self._agent_cwd,
@@ -1193,11 +1258,13 @@ class Rollout:
         Returns (rewards, verifier_output, verifier_error). The final
         verify() still does full hardening.
         """
-        from harbor import Verifier
+        from benchflow.sandbox.lockdown import (
+            _build_cleanup_cmd,
+            _read_hardening_config,
+        )
+        from benchflow.task import Verifier
 
-        from benchflow._sandbox import _build_cleanup_cmd, _read_hardening_config
-
-        self._trial_paths.verifier_dir.mkdir(parents=True, exist_ok=True)
+        self._rollout_paths.verifier_dir.mkdir(parents=True, exist_ok=True)
         # Clean verifier output dir — chmod 777 so non-root verifier processes can write.
         # Keep /app present for task/verifier paths that still use the legacy
         # rootdir fallback; tasks that populate /app are unaffected.
@@ -1219,8 +1286,8 @@ class Rollout:
         try:
             verifier = Verifier(
                 task=self._task,
-                trial_paths=self._trial_paths,
-                environment=self._env,
+                rollout_paths=self._rollout_paths,
+                sandbox=self._env,
             )
             verifier_result = await asyncio.wait_for(
                 verifier.verify(),
@@ -1382,7 +1449,7 @@ class Rollout:
         finally:
             await self.cleanup()
 
-        if self._trial_dir is None:
+        if self._rollout_dir is None:
             return RolloutResult(
                 task_name=self._config.task_path.name,
                 error=self._error or "Setup failed before trial directory was created",
@@ -1446,7 +1513,7 @@ class Rollout:
         ``{"to": "role_name", "content": "..."}`` and the scheduler
         injects received messages into the next turn's prompt.
 
-        Inter-role messages are persisted to ``trial_dir/scene_messages.jsonl``.
+        Inter-role messages are persisted to ``rollout_dir/scene_messages.jsonl``.
         """
         cfg = self._config
         logger.info(
@@ -1519,8 +1586,8 @@ class Rollout:
         if current_role is not None:
             await self.disconnect()
 
-        if scene_messages and self._trial_dir:
-            msg_path = self._trial_dir / "scene_messages.jsonl"
+        if scene_messages and self._rollout_dir:
+            msg_path = self._rollout_dir / "scene_messages.jsonl"
             with msg_path.open("a") as f:
                 for m in scene_messages:
                     f.write(json.dumps(m) + "\n")
@@ -1687,8 +1754,8 @@ class Rollout:
             )
 
         # Persist round log
-        if rounds_log and self._trial_dir:
-            log_path = self._trial_dir / "user_rounds.jsonl"
+        if rounds_log and self._rollout_dir:
+            log_path = self._rollout_dir / "user_rounds.jsonl"
             with log_path.open("w") as f:
                 for entry in rounds_log:
                     f.write(json.dumps(entry) + "\n")
@@ -1702,7 +1769,7 @@ class Rollout:
         Updates _agent_launch so disconnect() kills the correct process.
         """
         cfg = self._config
-        trial_dir = self._require_trial_dir()
+        rollout_dir = self._require_rollout_dir()
         t0 = datetime.now()
 
         # Merge cfg.agent_env (config-level) with role.env (role-specific) so
@@ -1739,8 +1806,15 @@ class Rollout:
             session_id=getattr(self, "_trial_name", "") or "",
         )
 
-        if role.agent != cfg.primary_agent:
-            agent_cfg = await install_agent(self._env, role.agent, trial_dir)
+        role_agent_differs = role.agent != cfg.primary_agent
+        needs_role_credentials = (
+            role_agent_differs or role.model != cfg.primary_model or bool(role.env)
+        )
+        if role_agent_differs:
+            agent_cfg = await install_agent(self._env, role.agent, rollout_dir)
+        else:
+            agent_cfg = getattr(self, "_agent_cfg", None)
+        if needs_role_credentials:
             cred_home = f"/home/{cfg.sandbox_user}" if cfg.sandbox_user else "/root"
             await write_credential_files(
                 self._env,
@@ -1769,10 +1843,11 @@ class Rollout:
             agent_env=agent_env,
             sandbox_user=cfg.sandbox_user,
             model=role.model,
-            trial_dir=trial_dir,
+            rollout_dir=rollout_dir,
             environment=cfg.environment,
             agent_cwd=self._agent_cwd,
         )
+        self._active_role = role
 
         if "agent_setup" not in self._timing:
             self._timing["agent_setup"] = (datetime.now() - t0).total_seconds()
@@ -1783,7 +1858,7 @@ class Rollout:
 
     def _classify_acp_error(self, e: ACPError) -> str:
         if "Invalid API key" in e.message:
-            from benchflow._agent_env import check_subscription_auth
+            from benchflow.agents.env import check_subscription_auth
             from benchflow.agents.registry import infer_env_key_for_model
 
             key = (
@@ -1813,12 +1888,11 @@ class Rollout:
         )
 
     def _build_result(self) -> RolloutResult:
-        trial_dir = self._require_trial_dir()
-        usage_metrics = getattr(self, "_usage_metrics", extract_usage(None))
+        rollout_dir = self._require_rollout_dir()
         return _build_rollout_result(
-            trial_dir,
+            rollout_dir,
             task_name=self._config.task_path.name,
-            trial_name=self._trial_name or "",
+            rollout_name=self._rollout_name or "",
             agent=self._config.primary_agent,
             agent_name=self._agent_name,
             model=self._config.primary_model or "",
@@ -1832,10 +1906,5 @@ class Rollout:
             rewards=self._rewards,
             started_at=self._require_started_at(),
             timing=self._timing,
-            **usage_metrics,
+            scenes=self._config.effective_scenes,
         )
-
-
-# Backward-compat aliases
-Trial = Rollout
-TrialConfig = RolloutConfig

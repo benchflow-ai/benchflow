@@ -422,18 +422,18 @@ class TestConnectAcpModelSelection:
         ids=["vllm-hf", "zai", "bare-hf", "vertex", "no-prefix"],
     )
     async def test_model_id_selection(self, model_in, expected_model, tmp_path):
-        from benchflow._acp_run import connect_acp
+        from benchflow.acp.runtime import connect_acp
 
         mock_acp = self._make_mocks()
 
         mock_env = AsyncMock()
         with (
             patch(
-                "benchflow._acp_run.DockerProcess.from_harbor_env",
+                "benchflow.acp.runtime.DockerProcess.from_sandbox_env",
                 return_value=MagicMock(),
             ),
-            patch("benchflow._acp_run.ContainerTransport", return_value=MagicMock()),
-            patch("benchflow._acp_run.ACPClient", return_value=mock_acp),
+            patch("benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()),
+            patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
         ):
             await connect_acp(
                 env=mock_env,
@@ -442,7 +442,7 @@ class TestConnectAcpModelSelection:
                 agent_env={},
                 sandbox_user=None,
                 model=model_in,
-                trial_dir=tmp_path,
+                rollout_dir=tmp_path,
                 environment="docker",
                 agent_cwd="/app",
             )
@@ -451,17 +451,17 @@ class TestConnectAcpModelSelection:
 
     @pytest.mark.asyncio
     async def test_openhands_skips_set_model(self, tmp_path):
-        from benchflow._acp_run import connect_acp
+        from benchflow.acp.runtime import connect_acp
 
         mock_acp = self._make_mocks()
         mock_env = AsyncMock()
         with (
             patch(
-                "benchflow._acp_run.DockerProcess.from_harbor_env",
+                "benchflow.acp.runtime.DockerProcess.from_sandbox_env",
                 return_value=MagicMock(),
             ),
-            patch("benchflow._acp_run.ContainerTransport", return_value=MagicMock()),
-            patch("benchflow._acp_run.ACPClient", return_value=mock_acp),
+            patch("benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()),
+            patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
         ):
             await connect_acp(
                 env=mock_env,
@@ -470,7 +470,7 @@ class TestConnectAcpModelSelection:
                 agent_env={},
                 sandbox_user=None,
                 model="gemini-3.1-flash-lite-preview",
-                trial_dir=tmp_path,
+                rollout_dir=tmp_path,
                 environment="docker",
                 agent_cwd="/app",
             )
@@ -479,17 +479,17 @@ class TestConnectAcpModelSelection:
 
     @pytest.mark.asyncio
     async def test_claude_bedrock_sets_model_from_provider_mapping(self, tmp_path):
-        from benchflow._acp_run import connect_acp
+        from benchflow.acp.runtime import connect_acp
 
         mock_acp = self._make_mocks()
         mock_env = AsyncMock()
         with (
             patch(
-                "benchflow._acp_run.DockerProcess.from_harbor_env",
+                "benchflow.acp.runtime.DockerProcess.from_sandbox_env",
                 return_value=MagicMock(),
             ),
-            patch("benchflow._acp_run.ContainerTransport", return_value=MagicMock()),
-            patch("benchflow._acp_run.ACPClient", return_value=mock_acp),
+            patch("benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()),
+            patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
         ):
             await connect_acp(
                 env=mock_env,
@@ -501,7 +501,7 @@ class TestConnectAcpModelSelection:
                 },
                 sandbox_user=None,
                 model="aws-bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0",
-                trial_dir=tmp_path,
+                rollout_dir=tmp_path,
                 environment="docker",
                 agent_cwd="/app",
             )
@@ -513,7 +513,7 @@ class TestConnectAcpModelSelection:
     @pytest.mark.asyncio
     async def test_daytona_dind_uses_pty_transport(self, tmp_path):
         """Daytona compose tasks use PTY transport to avoid SSH pipe-closed failures."""
-        from benchflow._acp_run import connect_acp
+        from benchflow.acp.runtime import connect_acp
 
         mock_acp = self._make_mocks()
         mock_env = MagicMock()
@@ -523,17 +523,17 @@ class TestConnectAcpModelSelection:
 
         with (
             patch(
-                "benchflow._acp_run.DaytonaPtyProcess.from_harbor_env",
+                "benchflow.acp.runtime.DaytonaPtyProcess.from_sandbox_env",
                 new_callable=AsyncMock,
                 return_value=MagicMock(),
             ) as mock_pty,
             patch(
-                "benchflow._acp_run.DaytonaProcess.from_harbor_env",
+                "benchflow.acp.runtime.DaytonaProcess.from_sandbox_env",
                 new_callable=AsyncMock,
                 return_value=MagicMock(),
             ) as mock_ssh,
-            patch("benchflow._acp_run.ContainerTransport", return_value=MagicMock()),
-            patch("benchflow._acp_run.ACPClient", return_value=mock_acp),
+            patch("benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()),
+            patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
         ):
             await connect_acp(
                 env=mock_env,
@@ -542,7 +542,7 @@ class TestConnectAcpModelSelection:
                 agent_env={},
                 sandbox_user=None,
                 model=None,
-                trial_dir=tmp_path,
+                rollout_dir=tmp_path,
                 environment="daytona",
                 agent_cwd="/app",
             )

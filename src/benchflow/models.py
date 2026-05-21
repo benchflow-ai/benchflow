@@ -58,7 +58,7 @@ class RolloutResult:
 
     Attributes:
         task_name:    Task directory name (e.g. "swe-bench/django__django-11848").
-        trial_name:   Unique trial identifier within a job run.
+        rollout_name:   Unique trial identifier within a job run.
         rewards:      Verifier-produced reward dict (e.g. {"exact_match": 1.0}).
                       None if verification was skipped or failed.
         trajectory:   Ordered list of ACP session-update dicts (tool calls,
@@ -101,7 +101,7 @@ class RolloutResult:
     def __init__(
         self,
         task_name: str,
-        trial_name: str = "",
+        rollout_name: str = "",
         rewards: dict[str, float | int] | None = None,
         trajectory: list[dict[str, Any]] | None = None,
         agent: str = "",
@@ -126,7 +126,7 @@ class RolloutResult:
         finished_at: datetime | None = None,
     ):
         self.task_name = task_name
-        self.trial_name = trial_name
+        self.rollout_name = rollout_name
         self.rewards = rewards
         self.trajectory = trajectory or []
         self.agent = agent

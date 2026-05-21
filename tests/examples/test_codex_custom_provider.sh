@@ -56,7 +56,7 @@ echo "Jobs dir:  $JOBS_DIR"
 echo ""
 
 set +e
-env -u CODEX_API_KEY -u OPENAI_BASE_URL -u OPENAI_API_KEY \
+env -u CODEX_ACCESS_TOKEN -u CODEX_API_KEY -u OPENAI_BASE_URL -u OPENAI_API_KEY \
   OPENAI_API_KEY="dummy-local-key" \
   uv run bench eval create \
     --tasks-dir "$TASK" \

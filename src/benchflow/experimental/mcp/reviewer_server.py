@@ -15,7 +15,7 @@ Usage in task.toml:
     url = "http://localhost:8100/mcp"
 
 Or start manually:
-    python -m benchflow.mcp.reviewer_server --port 8100
+    python -m benchflow.experimental.mcp.reviewer_server --port 8100
 """
 
 from __future__ import annotations

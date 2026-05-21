@@ -1,9 +1,9 @@
-"""Tests for outbox-based inter-role messaging in Trial._run_scene().
+"""Tests for outbox-based inter-role messaging in Rollout._run_scene().
 
-Verifies that when bf.run(TrialConfig) executes a multi-role Scene,
+Verifies that when bf.run(RolloutConfig) executes a multi-role Scene,
 outbox files written by one role are read and injected into the next
 role's prompt — bridging the _scene.py outbox convention with the
-Trial lifecycle.
+Rollout lifecycle.
 """
 
 from __future__ import annotations
@@ -15,11 +15,11 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from benchflow.trial import (
+from benchflow.rollout import (
     Role,
+    Rollout,
+    RolloutConfig,
     Scene,
-    Trial,
-    TrialConfig,
     Turn,
     _resolve_skill_creator_root,
     _self_gen_prompt,
@@ -71,13 +71,13 @@ class FakeEnv:
         )
 
 
-def _make_trial(scene: Scene) -> Trial:
-    config = TrialConfig(
+def _make_trial(scene: Scene) -> Rollout:
+    config = RolloutConfig(
         task_path=Path("tasks/fake"),
         scenes=[scene],
         environment="docker",
     )
-    trial = Trial(config)
+    trial = Rollout(config)
     trial._env = FakeEnv()
     trial._resolved_prompts = ["Solve the task"]
     return trial
@@ -290,12 +290,49 @@ async def test_empty_outbox_no_injection() -> None:
     assert all("Messages from other agents" not in p for p in prompts_received)
 
 
+async def test_execute_uses_active_role_timeouts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Role-level timeouts must override rollout defaults during scene execution."""
+    role = Role(
+        "solver",
+        "gemini",
+        "flash",
+        timeout_sec=12,
+        idle_timeout_sec=3,
+    )
+    trial = _make_trial(Scene(roles=[role], turns=[Turn("solver")]))
+    trial._acp_client = object()
+    trial._session = object()
+    trial._timeout = 99
+    trial._active_role = role
+    captured: dict[str, int | None] = {}
+
+    async def fake_execute_prompts(
+        _client,
+        _session,
+        _prompts,
+        timeout,
+        *,
+        idle_timeout=None,
+    ):
+        captured["timeout"] = timeout
+        captured["idle_timeout"] = idle_timeout
+        return [], 0
+
+    monkeypatch.setattr("benchflow.rollout.execute_prompts", fake_execute_prompts)
+
+    await trial.execute()
+
+    assert captured == {"timeout": 12, "idle_timeout": 3}
+
+
 async def test_scene_messages_persisted(
     coder_reviewer_scene: Scene, tmp_path: Path
 ) -> None:
-    """Inter-role messages are saved to scene_messages.jsonl in trial_dir."""
+    """Inter-role messages are saved to scene_messages.jsonl in rollout_dir."""
     trial = _make_trial(coder_reviewer_scene)
-    trial._trial_dir = tmp_path
+    trial._rollout_dir = tmp_path
     call_count = 0
 
     async def fake_execute(prompts=None):
@@ -336,13 +373,13 @@ async def test_heterogeneous_agent_install(coder_reviewer_scene: Scene) -> None:
         ],
         turns=[Turn("coder"), Turn("reviewer", "Review.")],
     )
-    config = TrialConfig(
+    config = RolloutConfig(
         task_path=Path("tasks/fake"),
         scenes=[scene],
         environment="docker",
         agent="gemini",
     )
-    trial = Trial(config)
+    trial = Rollout(config)
     trial._env = FakeEnv()
     trial._resolved_prompts = ["Solve the task"]
 
@@ -365,7 +402,7 @@ async def test_heterogeneous_agent_install(coder_reviewer_scene: Scene) -> None:
 
 
 def test_self_gen_mode_still_requires_runtime_orchestration(tmp_path: Path) -> None:
-    """Direct Trial scenes cannot silently skip self-gen setup."""
+    """Direct Rollout scenes cannot silently skip self-gen setup."""
     skills_root = tmp_path / "skills"
     skill_creator = skills_root / "skill-creator"
     skill_creator.mkdir(parents=True)
@@ -373,7 +410,7 @@ def test_self_gen_mode_still_requires_runtime_orchestration(tmp_path: Path) -> N
         "---\nname: skill-creator\ndescription: Create skills\n---\n# Skill Creator\n"
     )
 
-    cfg = TrialConfig.from_legacy(
+    cfg = RolloutConfig.from_legacy(
         task_path=Path("tasks/fake"),
         agent="claude-agent-acp",
         model="claude-haiku-4-5-20251001",

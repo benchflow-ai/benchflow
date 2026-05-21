@@ -1,22 +1,20 @@
-"""Verify Harbor re-exports and benchflow additions work."""
+"""Verify core re-exports and benchflow additions work."""
 
 
-def test_harbor_reexports():
-    """Harbor classes should be importable from benchflow."""
+def test_core_reexports():
+    """Core classes should be importable from benchflow."""
     from benchflow import (
-        BaseEnvironment,
         TaskConfig,
     )
 
-    assert TaskConfig.__module__.startswith("harbor")
-    assert BaseEnvironment.__module__.startswith("harbor")
+    assert TaskConfig.__module__.startswith("benchflow")
 
 
-def test_benchflow_job_shadows_harbor():
-    """benchflow.Job is benchflow's own Job, not Harbor's."""
-    from benchflow import Job
+def test_benchflow_evaluation():
+    """benchflow.Evaluation is benchflow's own Evaluation."""
+    from benchflow import Evaluation
 
-    assert Job.__module__ in ("benchflow.job", "benchflow.evaluation")
+    assert Evaluation.__module__ in ("benchflow.evaluation",)
 
 
 def test_benchflow_additions():
@@ -39,9 +37,9 @@ def test_sdk_importable():
 
 def test_extracted_modules_importable():
     """Symbols moved to models, _trajectory, _env_setup are importable from canonical paths."""
-    from benchflow._env_setup import _dep_local_name, stage_dockerfile_deps
-    from benchflow._trajectory import _capture_session_trajectory
     from benchflow.models import AgentInstallError, AgentTimeoutError, RunResult
+    from benchflow.sandbox.setup import _dep_local_name, stage_dockerfile_deps
+    from benchflow.trajectories._capture import _capture_session_trajectory
 
     assert RunResult.__module__ == "benchflow.models"
     assert AgentInstallError.__module__ == "benchflow.models"
@@ -57,12 +55,12 @@ def test_public_api_reexports():
         SDK,
         AgentInstallError,
         AgentTimeoutError,
-        RunResult,
+        RolloutResult,
         stage_dockerfile_deps,
     )
 
     assert callable(SDK)
-    assert callable(RunResult)
+    assert callable(RolloutResult)
     assert callable(AgentInstallError)
     assert callable(AgentTimeoutError)
     assert callable(stage_dockerfile_deps)

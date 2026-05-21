@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from benchflow._scoring import (
+from benchflow._utils.scoring import (
     classify_error,
     classify_verifier_error,
     pass_rate,
