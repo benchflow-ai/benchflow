@@ -649,7 +649,10 @@ class _DaytonaDinD(_DaytonaStrategy):
                 parts.extend(["-e", f"{k}={v}"])
         if user is not None:
             parts.extend(["-u", str(user)])
-        parts.extend([service, "bash", "-lc", command])
+        # Use POSIX ``sh`` rather than ``bash``: with multi-service support
+        # (#248), ``service`` can target arbitrary task containers, and
+        # Alpine/distroless/minimal images often ship no ``/bin/bash``.
+        parts.extend([service, "sh", "-c", command])
 
         return await self._compose_exec(parts, timeout_sec=timeout_sec)
 

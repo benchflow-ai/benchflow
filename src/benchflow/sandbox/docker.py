@@ -486,7 +486,12 @@ class DockerSandbox(BaseSandbox):
         if env:
             command = self._wrap_command_with_env_file(env, command)
 
-        exec_command.extend(["bash", "-c", command])
+        # Use POSIX ``sh`` rather than ``bash``: with multi-service support
+        # (#248), ``exec(..., service=...)`` can target arbitrary task
+        # containers — Alpine/distroless/minimal DB images frequently ship no
+        # ``/bin/bash``. The wrapped command (env-file sourcing, ``trap``,
+        # ``base64 -d``, ``set -a``/``. file``) uses only POSIX constructs.
+        exec_command.extend(["sh", "-c", command])
 
         return await self._run_docker_compose_command(
             exec_command, check=False, timeout_sec=timeout_sec
