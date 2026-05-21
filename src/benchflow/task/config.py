@@ -105,10 +105,11 @@ class JudgeVerifierConfig(BaseModel):
         description="Directory inside the sandbox holding the agent's "
         "deliverables. Its contents are downloaded and shown to the judge.",
     )
-    input_type: Literal["deliverables", "trajectory", "both"] = Field(
+    input_type: Literal["deliverables"] = Field(
         default="deliverables",
-        description="What the judge evaluates: agent output files "
-        "('deliverables'), the ACP trajectory ('trajectory'), or both.",
+        description="What the judge evaluates. Only 'deliverables' (agent "
+        "output files) is supported — trajectory judging is not available at "
+        "verify time.",
     )
     context: str = Field(
         default="",

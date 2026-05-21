@@ -98,7 +98,7 @@ passed (or the configured aggregation), a partial float in `[0, 1]`.
 | `model` | string | `"claude-sonnet-4-6"` | Judge model; provider routed from prefix |
 | `rubric_path` | string | `"tests/rubric.toml"` | Rubric file relative to the task dir (`.toml` or `.json`) |
 | `input_dir` | string | `"/app"` | Sandbox dir whose contents are graded |
-| `input_type` | string | `"deliverables"` | `"deliverables"`, `"trajectory"`, or `"both"` |
+| `input_type` | string | `"deliverables"` | Only `"deliverables"` is supported — trajectory judging is not available at verify time |
 | `context` | string | `""` | Extra judge context (defaults to the task instruction) |
 
 ---

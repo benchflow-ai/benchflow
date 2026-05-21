@@ -243,6 +243,15 @@ class TestLoadRubricJson:
         cfg = load_rubric_json(rubric_file)
         assert cfg.criteria[0].description == "Be correct"
 
+    def test_rubric_json_criterion_without_description_fails(
+        self, tmp_path: Path
+    ) -> None:
+        """A criterion with no description/match_criteria/title fails loudly."""
+        rubric_file = tmp_path / "rubric.json"
+        rubric_file.write_text(json.dumps({"criteria": [{"id": "c1"}]}))
+        with pytest.raises(ValueError, match="no description"):
+            load_rubric_json(rubric_file)
+
 
 class TestLoadRubricDispatch:
     def test_dispatches_to_json(self, tmp_path: Path) -> None:
