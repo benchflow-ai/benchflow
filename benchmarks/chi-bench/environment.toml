@@ -1,0 +1,46 @@
+# chi-bench — Environment-plane manifest
+#
+# chi-bench is a ~25k-LOC healthcare simulator (prior-auth / care-management
+# worlds) with a thin MCP transport. It is the external proof of the SMSB
+# archetype: onboarded by this ~25-line manifest with its environment
+# UNTOUCHED — the architecture's zero-modification conformance bar
+# (architecture.md, "The Environment plane & the manifest").
+#
+# Topology: in-sandbox. The single self-contained image carries both the
+# server runtime and every task's baked-in fixtures/worlds; the agent and
+# server share one sandbox and reach each other on localhost.
+
+[environment]
+name           = "chi-bench"
+# chi-bench ships ONE ready-to-run image (docker/Dockerfile, `runtime`
+# target). Its tini entrypoint bootstraps the SQLite stores and starts
+# `cb serve` (HTTP :8023 + three FastMCP threads) itself, so the framework
+# does not start services — owns_lifecycle = true.
+image          = "chi-bench:latest"
+owns_lifecycle = true
+isolation      = "per_task"
+
+# Ports the image EXPOSEs: 8023 unified HTTP (FastAPI) + the three FastMCP
+# streamable-http servers — provider 8020, payer 8100, care-management 8200.
+ports = [8020, 8023, 8100, 8200]
+
+# Task selection is by env var: one image serves every task; the task id is
+# read by docker/entrypoint.sh at PID-1 startup to wire the right fixtures.
+# It MUST reach the entrypoint (not just `docker exec`), so inject_into is
+# "entrypoint".
+[environment.task_selection]
+mechanism   = "env_var"
+key         = "CHI_BENCH_TASK_ID"
+inject_into = "entrypoint"
+
+# The entrypoint already gates on :8023/health and on a real MCP `initialize`
+# for ports 8020/8100/8200 before exec-ing the agent; the framework gates on
+# the same HTTP health endpoint so the agent never runs before the world is up.
+[environment.readiness]
+http        = ["http://localhost:8023/health"]
+timeout_sec = 120
+
+# chi-bench's verifier subprocess shells out to the Claude Code CLI
+# (WorkspaceJudge), which needs an Anthropic key forwarded from the host.
+[environment.forward_env]
+keys = ["ANTHROPIC_API_KEY"]
