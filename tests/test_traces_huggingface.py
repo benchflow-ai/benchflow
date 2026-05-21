@@ -37,6 +37,26 @@ def test_pick_split_file_returns_none_when_no_match() -> None:
     assert _pick_split_file(repo_files, "test", ".parquet") is None
 
 
+def test_pick_split_file_ignores_sibling_subset() -> None:
+    """A subset like `test-small-*` must not be picked for split="test".
+
+    The sharded match is anchored on the `{split}-NNNNN-of-NNNNN` convention,
+    so only the genuine `test` shard resolves — never a `test-small` subset.
+    """
+    repo_files = [
+        "data/test-small-00000-of-00001.parquet",
+        "data/test-00000-of-00001.parquet",
+    ]
+    picked = _pick_split_file(repo_files, "test", ".parquet")
+    assert picked == "data/test-00000-of-00001.parquet"
+
+
+def test_pick_split_file_no_match_when_only_subset_present() -> None:
+    """When only a `test-small` subset exists, split="test" finds nothing."""
+    repo_files = ["data/test-small-00000-of-00001.parquet"]
+    assert _pick_split_file(repo_files, "test", ".parquet") is None
+
+
 def test_split_filename_candidates_are_all_split_specific() -> None:
     """Constructed candidates for a non-train split never reference train."""
     candidates = _split_filename_candidates(None, "test", ".parquet")

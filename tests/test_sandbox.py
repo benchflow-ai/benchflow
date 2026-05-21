@@ -123,6 +123,10 @@ class TestDockerExecEnvSecrecy:
         assert wrapped.endswith("run-verifier")
         # Restrictive perms on the env file.
         assert "umask 077" in wrapped
+        # Cleanup is via `trap ... EXIT`, so the env file is removed even if
+        # the decode/source step fails and short-circuits the `&&` chain.
+        assert wrapped.startswith("trap 'rm -f ")
+        assert "EXIT" in wrapped
 
     @pytest.mark.asyncio
     async def test_exec_passes_no_dash_e_flags(self, monkeypatch):
