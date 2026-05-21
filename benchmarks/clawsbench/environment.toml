@@ -1,0 +1,62 @@
+# ClawsBench — Environment-plane manifest
+#
+# ClawsBench is BenchFlow's internal-dogfood stateful multi-service benchmark:
+# mock Gmail / Slack / Calendar / Docs / Drive services backed by SQLite.
+#
+# This manifest IS the entire framework-integration surface (architecture.md,
+# "The Environment plane & the manifest"). It is the declarative replacement
+# for the hard-coded SERVICES dict in benchflow/sandbox/services.py.
+#
+# Topology: in-sandbox. The services run inside the rollout's own sandbox;
+# the agent reaches them on localhost.
+
+[environment]
+name           = "clawsbench"
+# smolclaws ships a shared base image; each task is a per-task image built
+# FROM this base with that task's services + seed data baked in.
+base_image     = "kywch/smolclaws-base:latest"
+# The smolclaws images have NO service-starting entrypoint (the Dockerfiles
+# say so explicitly) — the framework starts the services below.
+owns_lifecycle = false
+isolation      = "per_task"
+
+# Task selection is by image: each task's seed data is baked into its own
+# per-task image at build time, so selecting a task means running that image.
+[environment.task_selection]
+mechanism = "image"
+
+[environment.readiness]
+# No explicit URLs — derived from the services that are actually present in
+# each per-task image (ManifestEnvironment probes `command -v` first).
+timeout_sec = 60
+
+[environment.forward_env]
+keys = ["ANTHROPIC_API_KEY"]
+
+# The benchmark-wide service catalog. A per-task image carries a subset;
+# ManifestEnvironment starts only the services whose binary is installed.
+
+[[environment.services]]
+name    = "gmail"
+command = "claw-gmail --db /data/gmail.db serve --host 0.0.0.0 --port 9001 --no-mcp"
+port    = 9001
+
+[[environment.services]]
+name    = "slack"
+command = "claw-slack --db /data/slack.db serve --host 0.0.0.0 --port 9002 --no-mcp"
+port    = 9002
+
+[[environment.services]]
+name    = "gcal"
+command = "claw-gcal --db /data/gcal.db serve --host 0.0.0.0 --port 9003 --no-mcp"
+port    = 9003
+
+[[environment.services]]
+name    = "gdoc"
+command = "claw-gdoc --db /data/gdoc.db serve --host 0.0.0.0 --port 9004 --no-mcp"
+port    = 9004
+
+[[environment.services]]
+name    = "gdrive"
+command = "claw-gdrive --db /data/gdrive.db serve --host 0.0.0.0 --port 9005 --no-mcp"
+port    = 9005

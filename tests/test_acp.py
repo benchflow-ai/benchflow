@@ -20,13 +20,43 @@ MOCK_AGENT_INTERLEAVED = str(
 
 
 class TestACPClient:
+    def test_initialize_params_send_current_protocol_version(self) -> None:
+        """The client must advertise ACP protocol version 1, not 0.
+
+        ``ACP_PROTOCOL_VERSION`` is sourced from the official SDK's
+        ``acp.meta.PROTOCOL_VERSION``; the SDK-backed ``InitializeParams``
+        (``acp.schema.InitializeRequest``) carries it on the wire.
+        """
+        from benchflow.acp.types import (
+            ACP_PROTOCOL_VERSION,
+            AuthCapabilities,
+            ClientCapabilities,
+            ClientInfo,
+            FsCapabilities,
+            InitializeParams,
+        )
+
+        assert ACP_PROTOCOL_VERSION == 1
+        params = InitializeParams(
+            protocol_version=ACP_PROTOCOL_VERSION,
+            client_capabilities=ClientCapabilities(
+                fs=FsCapabilities(read_text_file=True, write_text_file=True),
+                terminal=True,
+                auth=AuthCapabilities(),
+            ),
+            client_info=ClientInfo(name="benchflow", version="2.0.0"),
+        )
+        wire = params.model_dump(by_alias=True, exclude_none=True)
+        assert wire["protocolVersion"] == 1
+
     @pytest.mark.asyncio
     async def test_initialize(self) -> None:
         client = ACPClient(StdioTransport(sys.executable, [MOCK_AGENT]))
         try:
             await client.connect()
             result = await client.initialize()
-            assert result.protocol_version == 0
+            # Negotiated to v1 — the mock echoes min(requested, 1).
+            assert result.protocol_version == 1
             assert result.agent_info is not None
             assert result.agent_info.name == "mock-agent"
         finally:
@@ -95,6 +125,44 @@ class TestACPClient:
             # should raise ACPError for the unknown method response
             with pytest.raises(ACPError):
                 await client.set_model("some-model")
+        finally:
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_initialize_advertises_auth_methods(self) -> None:
+        """initialize() surfaces the agent's advertised ACP auth methods."""
+        client = ACPClient(StdioTransport(sys.executable, [MOCK_AGENT]))
+        try:
+            await client.connect()
+            result = await client.initialize()
+            assert result.auth_methods is not None
+            assert [m.id for m in result.auth_methods] == ["api-key"]
+        finally:
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_authenticate_with_advertised_method(self) -> None:
+        """authenticate() succeeds for a method ID the agent advertises."""
+        client = ACPClient(StdioTransport(sys.executable, [MOCK_AGENT]))
+        try:
+            await client.connect()
+            result = await client.initialize()
+            method_id = result.auth_methods[0].id
+            # authenticate runs after initialize, before session/new.
+            response = await client.authenticate(method_id)
+            assert response == {}
+        finally:
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_authenticate_unknown_method_raises(self) -> None:
+        """authenticate() raises ACPError for a method the agent rejects."""
+        client = ACPClient(StdioTransport(sys.executable, [MOCK_AGENT]))
+        try:
+            await client.connect()
+            await client.initialize()
+            with pytest.raises(ACPError):
+                await client.authenticate("not-a-real-method")
         finally:
             await client.close()
 

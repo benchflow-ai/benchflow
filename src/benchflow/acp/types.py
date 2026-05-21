@@ -1,20 +1,66 @@
-"""ACP protocol types — JSON-RPC 2.0 messages for Agent Client Protocol.
+"""ACP protocol types — SDK-backed schema for the Agent Client Protocol.
 
-Defines the full request/response/notification schema for ACP. Types mirror
-the wire format (camelCase aliases) and are used by ``acp/client.py`` to
-construct and parse messages. Related: acp/session.py (consumes SessionUpdate).
+The protocol schema (request/response messages, content blocks, capabilities)
+is sourced from the official ``agent-client-protocol`` SDK (importable as the
+top-level ``acp`` package — no collision with ``benchflow.acp``). BenchFlow's
+historic public names are kept as compatibility aliases so consumers in
+``acp/client.py`` and ``acp/session.py`` change minimally.
+
+A few types stay vendored on purpose:
+
+* ``StopReason`` / ``ToolKind`` / ``ToolCallStatus`` — the SDK exposes these as
+  ``typing.Literal`` aliases, but BenchFlow uses them as ``StrEnum`` (member
+  access like ``ToolCallStatus.PENDING``, the ``.value`` attribute, and the
+  callable ``ToolCallStatus(...)`` constructor). The SDK ``ToolCallStatus``
+  Literal also has no ``cancelled`` member, which ``session.py`` requires.
+* The ``session/update`` notification union (``ToolCallUpdate`` etc.) — the SDK
+  models it as ``ToolCallStart`` / ``ToolCallProgress``, structurally different
+  from BenchFlow's ``ToolCallUpdate`` / ``ToolCallStatusUpdate``. ``session.py``
+  parses raw ``session/update`` dicts directly, so these vendored models are a
+  thin documentation layer rather than a parse path.
+* The JSON-RPC envelope and the fs/terminal/permission request params — these
+  are BenchFlow framework transport types, not protocol schema.
 """
 
 from enum import StrEnum
 from typing import Any, Literal
 
+from acp import meta as _acp_meta
+from acp.schema import (
+    AgentCapabilities,
+    AuthCapabilities,
+    ClientCapabilities,
+    FileSystemCapabilities,
+    ImageContentBlock,
+    Implementation,
+    InitializeRequest,
+    InitializeResponse,
+    McpCapabilities,
+    NewSessionRequest,
+    NewSessionResponse,
+    PromptCapabilities,
+    PromptRequest,
+    PromptResponse,
+    ResourceContentBlock,
+    TextContentBlock,
+)
 from pydantic import BaseModel, Field
 
-# --- Enums ---
+# The ACP protocol version this client implements. Sourced from the SDK so it
+# tracks upstream; v1 is current. ``client.py`` imports this name.
+ACP_PROTOCOL_VERSION: int = _acp_meta.PROTOCOL_VERSION
+
+
+# --- Enums (vendored — SDK exposes these as typing.Literal, not enums) ---
 
 
 class StopReason(StrEnum):
-    """Why the agent stopped generating after a prompt."""
+    """Why the agent stopped generating after a prompt.
+
+    Vendored as a StrEnum: BenchFlow code compares against members
+    (``StopReason.END_TURN``). As a StrEnum, members also compare equal to the
+    plain strings the SDK ``PromptResponse.stop_reason`` carries.
+    """
 
     END_TURN = "end_turn"  # Agent finished normally
     MAX_TOKENS = "max_tokens"  # Hit output token limit
@@ -35,7 +81,11 @@ class ToolKind(StrEnum):
 
 
 class ToolCallStatus(StrEnum):
-    """Lifecycle state of a tool call within a session."""
+    """Lifecycle state of a tool call within a session.
+
+    Vendored: the SDK ``ToolCallStatus`` Literal lacks ``cancelled``, and
+    ``session.py`` constructs/compares this as an enum with ``.value`` access.
+    """
 
     PENDING = "pending"
     IN_PROGRESS = "in_progress"
@@ -44,119 +94,49 @@ class ToolCallStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
-# --- Content blocks ---
+# --- Content blocks (SDK-backed) ---
+#
+# BenchFlow's content-block names map to the SDK's discriminated ``*ContentBlock``
+# variants (which carry the ``type`` discriminator field).
+
+TextContent = TextContentBlock
+ImageContent = ImageContentBlock
+ResourceLink = ResourceContentBlock
+
+ContentBlock = TextContentBlock | ImageContentBlock | ResourceContentBlock
 
 
-class TextContent(BaseModel):
-    """Plain text content block in an agent message."""
+# --- Capabilities & identity (SDK-backed) ---
 
-    type: Literal["text"] = "text"
-    text: str
+FsCapabilities = FileSystemCapabilities
+ClientInfo = Implementation
+AgentInfo = Implementation
 
-
-class ImageContent(BaseModel):
-    """Base64-encoded image content block."""
-
-    type: Literal["image"] = "image"
-    data: str
-    mime_type: str = Field(alias="mimeType", default="image/png")
+# ``ClientCapabilities``, ``AgentCapabilities``, ``PromptCapabilities`` and
+# ``McpCapabilities`` are re-exported directly from the SDK under their
+# original names (imported at module top, listed in ``__all__``).
 
 
-class ResourceLink(BaseModel):
-    """Reference to an external resource (file, URL) attached to a message."""
+# --- Requests / Responses (SDK-backed) ---
+#
+# BenchFlow historically named these ``*Params`` / ``*Result``; the SDK names
+# them ``*Request`` / ``*Response``. Keep both working.
 
-    type: Literal["resource_link"] = "resource_link"
-    uri: str
-    title: str | None = None
-    mime_type: str | None = Field(default=None, alias="mimeType")
-
-
-ContentBlock = TextContent | ImageContent | ResourceLink
-
-
-# --- Capabilities ---
-
-
-class FsCapabilities(BaseModel):
-    """File-system operations the client offers to the agent."""
-
-    read_text_file: bool = Field(default=True, alias="readTextFile")
-    write_text_file: bool = Field(default=True, alias="writeTextFile")
-
-
-class ClientCapabilities(BaseModel):
-    """Capabilities the benchflow client advertises during initialize."""
-
-    fs: FsCapabilities = Field(default_factory=FsCapabilities)
-    terminal: bool = True
-
-
-class PromptCapabilities(BaseModel):
-    """Media types the agent accepts in prompt content blocks."""
-
-    image: bool = False
-    audio: bool = False
-    embedded_context: bool = Field(default=False, alias="embeddedContext")
-
-
-class McpCapabilities(BaseModel):
-    """MCP transport modes the agent supports."""
-
-    sse: bool = False
-    http: bool = False
-
-
-class AgentCapabilities(BaseModel):
-    """Capabilities the agent reports back during initialize."""
-
-    prompt_capabilities: PromptCapabilities | None = Field(
-        default=None, alias="promptCapabilities"
-    )
-    mcp_capabilities: McpCapabilities | None = Field(
-        default=None, alias="mcpCapabilities"
-    )
-    load_session: bool = Field(default=False, alias="loadSession")
-
-
-class ClientInfo(BaseModel):
-    """Identity block sent by the client during initialize."""
-
-    name: str = "benchflow"
-    version: str = "2.0.0"
-
-
-class AgentInfo(BaseModel):
-    """Identity block returned by the agent during initialize."""
-
-    name: str
-    version: str
-
-
-# --- Requests / Responses ---
-
-
-class InitializeParams(BaseModel):
-    """Client → agent: start the ACP handshake."""
-
-    protocol_version: int = Field(default=0, alias="protocolVersion")
-    client_capabilities: ClientCapabilities = Field(
-        default_factory=ClientCapabilities, alias="clientCapabilities"
-    )
-    client_info: ClientInfo = Field(default_factory=ClientInfo, alias="clientInfo")
-
-
-class InitializeResult(BaseModel):
-    """Agent → client: handshake response with agent identity and capabilities."""
-
-    protocol_version: int = Field(alias="protocolVersion")
-    agent_capabilities: AgentCapabilities | None = Field(
-        default=None, alias="agentCapabilities"
-    )
-    agent_info: AgentInfo | None = Field(default=None, alias="agentInfo")
+InitializeParams = InitializeRequest
+InitializeResult = InitializeResponse
+NewSessionParams = NewSessionRequest
+NewSessionResult = NewSessionResponse
+PromptParams = PromptRequest
+PromptResult = PromptResponse
 
 
 class McpServerSpec(BaseModel):
-    """MCP server to attach to a session (stdio or SSE/HTTP)."""
+    """MCP server to attach to a session (stdio or SSE/HTTP).
+
+    Vendored: BenchFlow uses a single flat shape across stdio/SSE/HTTP, while
+    the SDK splits these into separate ``McpServerStdio`` / ``SseMcpServer`` /
+    ``HttpMcpServer`` models.
+    """
 
     type: str = "stdio"
     command: str | None = None
@@ -165,39 +145,18 @@ class McpServerSpec(BaseModel):
     url: str | None = None
 
 
-class NewSessionParams(BaseModel):
-    """Parameters for session/new — creates a new agent workspace session."""
-
-    cwd: str = "/app"
-    mcp_servers: list[McpServerSpec] = Field(default_factory=list, alias="mcpServers")
-
-
-class NewSessionResult(BaseModel):
-    """Response from session/new — contains the session identifier."""
-
-    session_id: str = Field(alias="sessionId")
-
-
-class PromptParams(BaseModel):
-    """Parameters for prompt/send — delivers user content to the agent."""
-
-    session_id: str = Field(alias="sessionId")
-    prompt: list[dict[str, Any]]
-
-
-class PromptResult(BaseModel):
-    """Response from prompt/send — indicates why the agent stopped."""
-
-    stop_reason: StopReason = Field(alias="stopReason")
-
-
 class CancelParams(BaseModel):
-    """Parameters for prompt/cancel — aborts the current prompt execution."""
+    """Parameters for session/cancel — aborts the current prompt execution."""
 
     session_id: str = Field(alias="sessionId")
 
 
-# --- Session update notifications ---
+# --- Session update notifications (vendored) ---
+#
+# Kept vendored: the SDK models session updates as ``ToolCallStart`` /
+# ``ToolCallProgress``, structurally different from BenchFlow's pair below.
+# ``session.py`` parses raw ``session/update`` dicts, so these are a
+# documentation layer rather than a live parse path.
 
 
 class ToolCallUpdate(BaseModel):
@@ -238,7 +197,7 @@ SessionUpdate = (
 )
 
 
-# --- JSON-RPC envelope ---
+# --- JSON-RPC envelope (vendored — BenchFlow transport framing) ---
 
 
 class JsonRpcRequest(BaseModel):
@@ -267,7 +226,12 @@ class JsonRpcNotification(BaseModel):
     params: dict[str, Any] = Field(default_factory=dict)
 
 
-# --- File system / Terminal requests from agent ---
+# --- File system / Terminal requests from agent (vendored) ---
+#
+# Kept vendored: these mirror requests the agent makes to BenchFlow's
+# framework transport, which proxies them to the sandbox. The SDK's
+# ``ReadTextFileRequest`` etc. exist but BenchFlow's auto-approve client
+# handles these as raw dicts.
 
 
 class ReadFileParams(BaseModel):
@@ -319,3 +283,45 @@ class PermissionRequestParams(BaseModel):
     title: str
     description: str = ""
     options: list[dict[str, Any]] = Field(default_factory=list)
+
+
+__all__ = [
+    "ACP_PROTOCOL_VERSION",
+    "AgentCapabilities",
+    "AgentInfo",
+    "AgentMessageChunk",
+    "AgentThoughtChunk",
+    "AuthCapabilities",
+    "CancelParams",
+    "ClientCapabilities",
+    "ClientInfo",
+    "ContentBlock",
+    "CreateTerminalParams",
+    "FsCapabilities",
+    "ImageContent",
+    "InitializeParams",
+    "InitializeResult",
+    "JsonRpcNotification",
+    "JsonRpcRequest",
+    "JsonRpcResponse",
+    "McpCapabilities",
+    "McpServerSpec",
+    "NewSessionParams",
+    "NewSessionResult",
+    "PermissionRequestParams",
+    "PromptCapabilities",
+    "PromptParams",
+    "PromptResult",
+    "ReadFileParams",
+    "ResourceLink",
+    "SessionUpdate",
+    "StopReason",
+    "TerminalOutputParams",
+    "TextContent",
+    "ToolCallStatus",
+    "ToolCallStatusUpdate",
+    "ToolCallUpdate",
+    "ToolKind",
+    "WaitForExitParams",
+    "WriteFileParams",
+]
