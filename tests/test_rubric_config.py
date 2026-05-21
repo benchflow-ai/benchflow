@@ -1,7 +1,8 @@
-"""Tests for rubric.toml parsing (ENG-55)."""
+"""Tests for rubric.toml / rubric.json parsing (ENG-55, #270)."""
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,8 @@ from benchflow.rewards.rubric_config import (
     JudgeConfig,
     RubricConfig,
     ScoringConfig,
+    load_rubric,
+    load_rubric_json,
     load_rubric_toml,
 )
 
@@ -173,3 +176,88 @@ class TestDefaults:
         r = RubricConfig()
         assert r.criteria == []
         assert r.judge.model == "claude-sonnet-4-6"
+
+
+# ---------------------------------------------------------------------------
+# Harvey LAB style rubric.json parsing (#270)
+# ---------------------------------------------------------------------------
+
+
+class TestLoadRubricJson:
+    def test_harvey_lab_rubric(self, tmp_path: Path) -> None:
+        """#270: a Harvey LAB rubric.json maps id/title/match_criteria."""
+        rubric_file = tmp_path / "rubric.json"
+        rubric_file.write_text(
+            json.dumps(
+                {
+                    "title": "Corporate M&A Analysis",
+                    "criteria": [
+                        {
+                            "id": "criterion-1",
+                            "title": "Identifies the purchase price",
+                            "match_criteria": "The memo states the $X price.",
+                        },
+                        {
+                            "id": "criterion-2",
+                            "title": "Flags the indemnity cap",
+                            "match_criteria": "The memo discusses the cap.",
+                        },
+                    ],
+                }
+            )
+        )
+
+        cfg = load_rubric_json(rubric_file)
+
+        assert len(cfg.criteria) == 2
+        assert cfg.criteria[0].name == "criterion-1"
+        assert cfg.criteria[0].id == "criterion-1"
+        assert cfg.criteria[0].description == "The memo states the $X price."
+        assert cfg.criteria[0].type == "binary"
+        # judge/scoring defaults apply when absent
+        assert cfg.judge.model == "claude-sonnet-4-6"
+        assert cfg.scoring.aggregation == "weighted_mean"
+
+    def test_rubric_json_with_judge_and_scoring(self, tmp_path: Path) -> None:
+        """#270: a JSON rubric may carry its own judge/scoring config."""
+        rubric_file = tmp_path / "rubric.json"
+        rubric_file.write_text(
+            json.dumps(
+                {
+                    "criteria": [{"id": "c1", "match_criteria": "ok"}],
+                    "judge": {"model": "gpt-4o"},
+                    "scoring": {"aggregation": "all_pass"},
+                }
+            )
+        )
+        cfg = load_rubric_json(rubric_file)
+        assert cfg.judge.model == "gpt-4o"
+        assert cfg.scoring.aggregation == "all_pass"
+
+    def test_rubric_json_title_fallback(self, tmp_path: Path) -> None:
+        """A criterion with no match_criteria falls back to its title."""
+        rubric_file = tmp_path / "rubric.json"
+        rubric_file.write_text(
+            json.dumps({"criteria": [{"id": "c1", "title": "Be correct"}]})
+        )
+        cfg = load_rubric_json(rubric_file)
+        assert cfg.criteria[0].description == "Be correct"
+
+
+class TestLoadRubricDispatch:
+    def test_dispatches_to_json(self, tmp_path: Path) -> None:
+        """#270: load_rubric routes .json files to the JSON parser."""
+        rubric_file = tmp_path / "rubric.json"
+        rubric_file.write_text(
+            json.dumps({"criteria": [{"id": "c1", "match_criteria": "ok"}]})
+        )
+        cfg = load_rubric(rubric_file)
+        assert len(cfg.criteria) == 1
+        assert cfg.criteria[0].id == "c1"
+
+    def test_dispatches_to_toml(self, tmp_path: Path) -> None:
+        """#270: load_rubric routes .toml files to the TOML parser."""
+        rubric_file = tmp_path / "rubric.toml"
+        rubric_file.write_text('[[criterion]]\ndescription = "Does it work?"\n')
+        cfg = load_rubric(rubric_file)
+        assert len(cfg.criteria) == 1

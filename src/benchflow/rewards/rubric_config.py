@@ -1,7 +1,8 @@
-"""Declarative rubric configuration parsed from ``rubric.toml``."""
+"""Declarative rubric configuration parsed from ``rubric.toml`` / ``rubric.json``."""
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -125,3 +126,53 @@ def load_rubric_toml(path: Path) -> RubricConfig:
     scoring = _parse_scoring(data.get("scoring", {}))
 
     return RubricConfig(judge=judge, criteria=criteria, scoring=scoring)
+
+
+def load_rubric_json(path: Path) -> RubricConfig:
+    """Load and parse a ``rubric.json`` file (Harvey LAB style).
+
+    The JSON schema::
+
+        {
+          "title": "Task Title",
+          "criteria": [
+            {"id": "c-1", "title": "...", "match_criteria": "..."}
+          ]
+        }
+
+    Optional ``[judge]`` and ``[scoring]`` objects are also honoured so a
+    JSON rubric can be fully self-describing.
+    """
+    data = json.loads(path.read_text(encoding="utf-8"))
+
+    judge = _parse_judge(data.get("judge", {}))
+    scoring = _parse_scoring(data.get("scoring", {}))
+    criteria: list[Criterion] = []
+    for raw in data.get("criteria", []):
+        criteria.append(
+            Criterion(
+                description=raw.get("match_criteria")
+                or raw.get("description")
+                or raw.get("title", ""),
+                type=raw.get("type", "binary"),
+                name=raw.get("id") or raw.get("name") or raw.get("title"),
+                points=raw.get("points", 5),
+                min=raw.get("min", 0.0),
+                max=raw.get("max", 100.0),
+                weight=raw.get("weight", 1.0),
+                files=raw.get("files", []),
+            )
+        )
+
+    return RubricConfig(judge=judge, criteria=criteria, scoring=scoring)
+
+
+def load_rubric(path: Path) -> RubricConfig:
+    """Load a rubric from either a ``.toml`` or ``.json`` file.
+
+    Dispatches on the file extension; ``.json`` is parsed as a Harvey LAB
+    style rubric, anything else as native TOML.
+    """
+    if path.suffix.lower() == ".json":
+        return load_rubric_json(path)
+    return load_rubric_toml(path)

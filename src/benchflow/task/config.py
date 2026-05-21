@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 import tomllib
 import warnings
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -83,14 +83,64 @@ class MCPServerConfig(BaseModel):
         return self
 
 
-class VerifierConfig(BaseModel):
-    """Verifier ($V$) configuration — maps completion → reward."""
+class JudgeVerifierConfig(BaseModel):
+    """The ``[verifier.judge]`` section — config for the LLM-as-judge verifier.
 
+    Used only when ``[verifier].type == "llm-judge"``.
+    """
+
+    model: str = Field(
+        default="claude-sonnet-4-6",
+        description="Judge model identifier. Provider is routed from the prefix "
+        "(claude-* / gpt-* / gemini-*).",
+    )
+    rubric_path: str = Field(
+        default="tests/rubric.toml",
+        description="Path to the rubric file, relative to the task directory. "
+        "Both rubric.toml (native) and rubric.json (Harvey LAB style) are "
+        "supported.",
+    )
+    input_dir: str = Field(
+        default="/app",
+        description="Directory inside the sandbox holding the agent's "
+        "deliverables. Its contents are downloaded and shown to the judge.",
+    )
+    input_type: Literal["deliverables", "trajectory", "both"] = Field(
+        default="deliverables",
+        description="What the judge evaluates: agent output files "
+        "('deliverables'), the ACP trajectory ('trajectory'), or both.",
+    )
+    context: str = Field(
+        default="",
+        description="Optional extra context passed to the judge prompt "
+        "(defaults to the task instruction when empty).",
+    )
+
+
+class VerifierConfig(BaseModel):
+    """Verifier ($V$) configuration — maps completion → reward.
+
+    ``type`` selects the verification method:
+
+    - ``"test-script"`` (default): run ``tests/test.sh`` in the sandbox and
+      parse ``reward.txt`` / ``reward.json``.
+    - ``"llm-judge"``: score the agent's deliverables against a human-authored
+      rubric using an LLM judge (see :class:`JudgeVerifierConfig`).
+    """
+
+    type: Literal["test-script", "llm-judge"] = Field(
+        default="test-script",
+        description="Verification method.",
+    )
     timeout_sec: float = 600.0
     env: dict[str, str] = Field(default_factory=dict)
     user: str | int | None = Field(
         default=None,
         description="Username or UID to run the verifier as.",
+    )
+    judge: JudgeVerifierConfig = Field(
+        default_factory=JudgeVerifierConfig,
+        description="LLM-judge configuration (used when type == 'llm-judge').",
     )
 
 
