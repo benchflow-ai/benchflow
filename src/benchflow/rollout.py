@@ -68,6 +68,8 @@ from benchflow.agents.registry import AGENT_LAUNCH, AGENTS
 from benchflow.models import RolloutResult, TrajectorySource
 from benchflow.providers.runtime import (
     ensure_bedrock_proxy_runtime,
+    ensure_usage_proxy_runtime,
+    extract_usage,
     stop_provider_runtime,
 )
 from benchflow.sandbox.lockdown import (
@@ -406,6 +408,14 @@ def _build_rollout_result(
     started_at: datetime,
     timing: dict[str, float],
     scenes: list[Scene] | None = None,
+    n_input_tokens: int | None = None,
+    n_output_tokens: int | None = None,
+    n_cache_read_tokens: int | None = None,
+    n_cache_creation_tokens: int | None = None,
+    total_tokens: int | None = None,
+    cost_usd: float | None = None,
+    usage_source: str = "unavailable",
+    price_source: str | None = None,
 ) -> RolloutResult:
     """Build RolloutResult and write result.json, timing.json, prompts.json, trajectory."""
     finished_at = datetime.now()
@@ -419,6 +429,14 @@ def _build_rollout_result(
         model=model,
         n_tool_calls=n_tool_calls,
         n_prompts=len(prompts),
+        n_input_tokens=n_input_tokens,
+        n_output_tokens=n_output_tokens,
+        n_cache_read_tokens=n_cache_read_tokens,
+        n_cache_creation_tokens=n_cache_creation_tokens,
+        total_tokens=total_tokens,
+        cost_usd=cost_usd,
+        usage_source=usage_source,
+        price_source=price_source,
         error=error,
         verifier_error=verifier_error,
         partial_trajectory=partial_trajectory,
@@ -445,6 +463,18 @@ def _build_rollout_result(
                 "model": result.model,
                 "n_tool_calls": result.n_tool_calls,
                 "n_prompts": result.n_prompts,
+                "agent_result": {
+                    "n_tool_calls": result.n_tool_calls,
+                    "n_prompts": result.n_prompts,
+                    "n_input_tokens": result.n_input_tokens,
+                    "n_output_tokens": result.n_output_tokens,
+                    "n_cache_read_tokens": result.n_cache_read_tokens,
+                    "n_cache_creation_tokens": result.n_cache_creation_tokens,
+                    "total_tokens": result.total_tokens,
+                    "cost_usd": result.cost_usd,
+                    "usage_source": result.usage_source,
+                    "price_source": result.price_source,
+                },
                 "error": result.error,
                 "verifier_error": result.verifier_error,
                 "partial_trajectory": result.partial_trajectory,
@@ -814,6 +844,8 @@ class Rollout:
         self._timing: dict[str, float] = {}
         self._effective_locked: list[str] = []
         self._disallow_web_tools: bool = False
+        self._usage_runtime: Any = None
+        self._usage_metrics: dict[str, Any] = extract_usage(None)
 
         # Populated by install_agent()
         self._agent_cfg: Any = None
@@ -1097,6 +1129,14 @@ class Rollout:
             runtime=getattr(self, "_provider_runtime", None),
             environment=cfg.environment,
         )
+        self._agent_env, self._usage_runtime = await ensure_usage_proxy_runtime(
+            agent=cfg.primary_agent,
+            agent_env=self._agent_env,
+            model=cfg.primary_model,
+            runtime=getattr(self, "_usage_runtime", None),
+            environment=cfg.environment,
+            session_id=getattr(self, "_rollout_name", "") or "",
+        )
         self._acp_client, self._session, self._agent_name = await connect_acp(
             env=self._env,
             agent=cfg.primary_agent,
@@ -1304,6 +1344,21 @@ class Rollout:
                 await self._export_generated_skills()
             except Exception as e:
                 logger.warning(f"Generated skill export failed: {e}")
+
+        usage_runtime = getattr(self, "_usage_runtime", None)
+        if usage_runtime is not None:
+            try:
+                await stop_provider_runtime(usage_runtime)
+                self._usage_metrics = extract_usage(usage_runtime)
+            except Exception as e:
+                logger.warning(f"Usage telemetry runtime stop failed: {e}")
+                self._usage_metrics = extract_usage(None)
+            try:
+                self._write_llm_trajectory(usage_runtime)
+            except Exception as e:
+                logger.warning(f"LLM trajectory write failed: {e}")
+            finally:
+                self._usage_runtime = None
 
         if self._env:
             try:
@@ -1753,6 +1808,14 @@ class Rollout:
             runtime=getattr(self, "_provider_runtime", None),
             environment=cfg.environment,
         )
+        agent_env, self._usage_runtime = await ensure_usage_proxy_runtime(
+            agent=role.agent,
+            agent_env=agent_env,
+            model=role.model,
+            runtime=getattr(self, "_usage_runtime", None),
+            environment=cfg.environment,
+            session_id=getattr(self, "_rollout_name", "") or "",
+        )
 
         role_agent_differs = role.agent != cfg.primary_agent
         needs_role_credentials = (
@@ -1822,6 +1885,19 @@ class Rollout:
                 )
         return str(e)
 
+    def _write_llm_trajectory(self, usage_runtime: Any) -> None:
+        """Persist captured provider HTTP exchanges as JSONL."""
+        if self._rollout_dir is None:
+            return
+        trajectory = getattr(getattr(usage_runtime, "server", None), "trajectory", None)
+        if trajectory is None or not trajectory.exchanges:
+            return
+        traj_dir = self._rollout_dir / "trajectory"
+        traj_dir.mkdir(parents=True, exist_ok=True)
+        (traj_dir / "llm_trajectory.jsonl").write_text(
+            trajectory.to_jsonl(redact_keys=True)
+        )
+
     def _build_result(self) -> RolloutResult:
         rollout_dir = self._require_rollout_dir()
         return _build_rollout_result(
@@ -1842,4 +1918,5 @@ class Rollout:
             started_at=self._require_started_at(),
             timing=self._timing,
             scenes=self._config.effective_scenes,
+            **self._usage_metrics,
         )

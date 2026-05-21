@@ -518,8 +518,14 @@ AGENTS: dict[str, AgentConfig] = {
         launch_cmd=(
             'export PATH="$HOME/.local/bin:$PATH" && '
             "mkdir -p ~/.openhands && "
-            'printf \'{"llm":{"model":"%s","api_key":"%s"}}\' '
-            '"$LLM_MODEL" "$LLM_API_KEY" > ~/.openhands/agent_settings.json && '
+            # Write llm settings including base_url so the BenchFlow usage
+            # proxy (LLM_BASE_URL) is honored. OpenHands' --override-with-envs
+            # does not reliably apply base_url; it is omitted when unset.
+            '{ printf \'{"llm":{"model":"%s","api_key":"%s"\' '
+            '"$LLM_MODEL" "$LLM_API_KEY"; '
+            'if [ -n "$LLM_BASE_URL" ]; then '
+            'printf \',"base_url":"%s"\' "$LLM_BASE_URL"; fi; '
+            "printf '}}'; } > ~/.openhands/agent_settings.json && "
             "openhands acp --always-approve --override-with-envs"
         ),
         protocol="acp",
