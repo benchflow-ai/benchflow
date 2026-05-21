@@ -309,7 +309,15 @@ class ModalSandbox(BaseSandbox):
             for p in file_paths:
                 tg.create_task(_download_one(p))
 
-    async def is_dir(self, path: str, user: str | int | None = None) -> bool:
+    async def is_dir(
+        self, path: str, user: str | int | None = None, service: str = "main"
+    ) -> bool:
+        if service != "main":
+            raise ValueError(
+                f"Modal sandbox is single-container and cannot target "
+                f"service {service!r}. Multi-container (vulhub-style) tasks "
+                "require the Docker sandbox (#248)."
+            )
         if not self._sandbox:
             raise RuntimeError("Sandbox not found. Please start the environment first.")
         try:
@@ -318,7 +326,15 @@ class ModalSandbox(BaseSandbox):
         except NotADirectoryError:
             return False
 
-    async def is_file(self, path: str, user: str | int | None = None) -> bool:
+    async def is_file(
+        self, path: str, user: str | int | None = None, service: str = "main"
+    ) -> bool:
+        if service != "main":
+            raise ValueError(
+                f"Modal sandbox is single-container and cannot target "
+                f"service {service!r}. Multi-container (vulhub-style) tasks "
+                "require the Docker sandbox (#248)."
+            )
         if not self._sandbox:
             raise RuntimeError("Sandbox not found. Please start the environment first.")
         try:
