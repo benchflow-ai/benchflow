@@ -44,6 +44,7 @@ import logging
 import os
 import shlex
 import tempfile
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -65,6 +66,11 @@ from benchflow.agents.install import (
     install_agent,
 )
 from benchflow.agents.registry import AGENT_LAUNCH, AGENTS
+from benchflow.branch import aggregate as _aggregate_branch
+from benchflow.branch import branch as _branch_tree
+from benchflow.branch import restore as _restore_branch
+from benchflow.environment.manifest import EnvironmentManifest
+from benchflow.environment.manifest_env import ManifestEnvironment
 from benchflow.models import RolloutResult, TrajectorySource
 from benchflow.providers.runtime import (
     ensure_bedrock_proxy_runtime,
@@ -89,6 +95,7 @@ from benchflow.trajectories._capture import (
     _capture_session_trajectory,
     _scrape_agent_trajectory,
 )
+from benchflow.trajectories.tree import RolloutNode, RolloutTree, Step
 
 logger = logging.getLogger(__name__)
 
@@ -713,6 +720,10 @@ class RolloutConfig:
     jobs_dir: str | Path = "jobs"
     context_root: str | Path | None = None
     pre_agent_hooks: list | None = None
+    # Environment plane — when set, Rollout provisions a manifest-declared
+    # stateful environment, gates on readiness before the agent runs, and
+    # tears it down in cleanup. None => no separate environment plane (default).
+    environment_manifest: EnvironmentManifest | None = None
     # Abort the prompt if no tool call arrives for this many seconds.
     # Catches agents that hung silently while the local process is alive
     # (e.g. gemini-cli not responding). None disables idle detection and
@@ -840,6 +851,7 @@ class Rollout:
         self._resolved_prompts: list[str] = []
         self._agent_launch: str = ""
         self._env: Any = None
+        self._environment: ManifestEnvironment | None = None
         self._timeout: int = 0
         self._timing: dict[str, float] = {}
         self._effective_locked: list[str] = []
@@ -862,6 +874,14 @@ class Rollout:
         self._n_tool_calls: int = 0
         self._trajectory_source: TrajectorySource | None = None
         self._partial_trajectory: bool = False
+
+        # The tree-native execution model (architecture.md, "tree-native").
+        # A linear rollout is a degree-1 tree; execute() grows it one Step at a
+        # time, and branch() forks a node into N children. The tree is additive
+        # — it never alters linear behaviour or output.
+        self._tree: RolloutTree = RolloutTree()
+        self._cursor: RolloutNode = self._tree.root
+        self._branch_continuations: list[list[str]] | None = None
 
         # Populated by verify()
         self._rewards: dict | None = None
@@ -889,6 +909,15 @@ class Rollout:
     @property
     def trajectory(self) -> list[dict]:
         return self._trajectory
+
+    @property
+    def tree(self) -> RolloutTree:
+        """The RolloutTree this rollout grows as it executes.
+
+        A linear rollout is a degree-1 tree; :meth:`branch` forks a node into
+        N children. ``tree.root`` is the start state s₀.
+        """
+        return self._tree
 
     @property
     def timing(self) -> dict[str, float]:
@@ -1015,6 +1044,27 @@ class Rollout:
 
         for hook in self._config.pre_agent_hooks or []:
             await hook(self._env)
+
+        # Environment plane: provision the manifest-declared stateful
+        # environment and gate on its readiness before the agent runs.
+        if self._config.environment_manifest is not None:
+            self._environment = ManifestEnvironment(
+                self._config.environment_manifest, sandbox=self._env
+            )
+            await self._environment.provision(
+                ctx={"task_id": self._config.task_path.name}
+            )
+            probe = await self._environment.readiness()
+            if not probe.ready:
+                raise RuntimeError(
+                    f"environment plane not ready: {probe.error} "
+                    f"(checked: {probe.checked})"
+                )
+            logger.info(
+                "environment '%s' ready (%d probe(s))",
+                self._config.environment_manifest.name,
+                len(probe.checked),
+            )
 
         self._phase = "started"
 
@@ -1218,11 +1268,105 @@ class Rollout:
         self._n_tool_calls += new_tools
         self._trajectory_source = "acp"
 
+        # Grow the tree by one Step. A linear rollout is a degree-1 tree — the
+        # cursor walks down a chain, one node per execute() call. This is
+        # additive: it never alters the trajectory or any linear output.
+        step = Step(
+            id=f"step-{len(self._trajectory)}",
+            data={"events": new_events, "n_tool_calls": new_tools},
+        )
+        self._cursor = self._tree.advance(self._cursor, step)
+
         if "agent_execution" not in self._timing:
             self._timing["agent_execution"] = (datetime.now() - t0).total_seconds()
 
         self._phase = "executed"
         return trajectory, n_tool_calls
+
+    # ── Phase 3d: BRANCH ──
+
+    async def branch(
+        self,
+        n: int,
+        *,
+        continuations: list[list[str]] | None = None,
+        run_child: Callable[[RolloutNode, int], Awaitable[float]] | None = None,
+        node: RolloutNode | None = None,
+    ) -> float:
+        """Branch the rollout at ``node`` into ``n`` child continuations.
+
+        The Branch lifecycle (architecture.md, "Lifecycles"):
+
+        1. ``quiesce`` — pause the agent at a stable point (disconnect ACP).
+        2. ``checkpoint`` — snapshot the Environment at ``node``; the roll-back
+           point every child restores to.
+        3. ``fork`` — split ``node`` into ``n`` children.
+        4. ``run children`` — for each child, ``restore`` the env to the
+           checkpoint, then run the continuation. A child re-runs from the
+           *environment* checkpoint with a *fresh agent session*: agent-session
+           snapshot is the unsolved hard part (architecture.md, "The hard
+           part"), so the agent restarts per child.
+        5. ``score / aggregate`` — each child's return is recorded on
+           ``child.state["reward"]``; their mean is V(node), recorded on
+           ``node.state["value"]`` and returned.
+
+        ``node`` defaults to the current cursor. ``run_child`` is the per-child
+        runner — injected for unit tests; the default
+        (:meth:`_run_branch_child`) restores the env, connects a fresh agent,
+        runs the continuation prompt, and scores it. ``continuations`` supplies
+        one prompt list per child for the default runner.
+        """
+        if self._environment is None:
+            raise RuntimeError(
+                "branch() needs the Environment plane — there is no world to "
+                "snapshot. Pass RolloutConfig(environment_manifest=...)."
+            )
+        if n < 2:
+            raise ValueError(f"a branch forks into >= 2 children, got n={n}")
+
+        target = node if node is not None else self._cursor
+        runner = run_child or self._run_branch_child
+        self._branch_continuations = continuations
+
+        # quiesce — pause the agent before snapshotting (the Branch lifecycle
+        # quiesces first so the checkpoint is consistent).
+        await self.disconnect()
+
+        # checkpoint + fork — the full Branch operation on the tree.
+        children = await _branch_tree(self._tree, target, self._environment, n)
+
+        # run children — each from the env checkpoint, with a fresh agent.
+        for idx, child in enumerate(children):
+            await _restore_branch(target, self._environment)
+            ret = await runner(child, idx)
+            child.state["reward"] = float(ret)
+
+        # aggregate — per-child return -> V(node).
+        value = _aggregate_branch(target)
+        target.state["value"] = value
+        self._phase = "executed"
+        return value
+
+    async def _run_branch_child(self, child: RolloutNode, idx: int) -> float:
+        """Default per-child runner: fresh agent, run continuation, score.
+
+        The env has already been restored to the parent's checkpoint by
+        :meth:`branch`. This connects a fresh agent session, runs the child's
+        continuation prompts, verifies, and returns the scalar reward.
+        """
+        continuations = self._branch_continuations
+        prompts = (
+            continuations[idx]
+            if continuations is not None and idx < len(continuations)
+            else None
+        )
+        self._cursor = child
+        await self.connect()
+        await self.execute(prompts)
+        rewards = await self.verify()
+        if not rewards:
+            return 0.0
+        return float(rewards.get("reward", 0.0))
 
     # ── Phase 4: VERIFY ──
 
@@ -1359,6 +1503,11 @@ class Rollout:
                 logger.warning(f"LLM trajectory write failed: {e}")
             finally:
                 self._usage_runtime = None
+
+        if self._environment is not None:
+            with contextlib.suppress(Exception):
+                await self._environment.teardown()
+            self._environment = None
 
         if self._env:
             try:
