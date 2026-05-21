@@ -63,9 +63,7 @@ def _cache_dir() -> Path:
     return cache
 
 
-def _pick_split_file(
-    repo_files: list[str], split: str, suffix: str
-) -> str | None:
+def _pick_split_file(repo_files: list[str], split: str, suffix: str) -> str | None:
     """Pick the repo file matching *split* and *suffix*, if any.
 
     Matches files under ``data/`` whose basename starts with the split name

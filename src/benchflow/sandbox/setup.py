@@ -363,9 +363,7 @@ def _stage_copy_source(src_path: str, env_dir: Path, context_root: Path) -> str:
     return f"_deps/{dep_name}"
 
 
-def _rewrite_copy_line(
-    line: str, env_dir: Path, context_root: Path
-) -> str | None:
+def _rewrite_copy_line(line: str, env_dir: Path, context_root: Path) -> str | None:
     """Rewrite a single Dockerfile ``COPY`` line, staging its sources.
 
     Handles both the shell form (``COPY src... dst``, including multiple
@@ -427,9 +425,7 @@ def _rewrite_copy_line(
             )
             return None
         *sources, dst = args
-        new_sources = [
-            _stage_copy_source(s, env_dir, context_root) for s in sources
-        ]
+        new_sources = [_stage_copy_source(s, env_dir, context_root) for s in sources]
         if new_sources == sources:
             return None  # nothing staged
         return f"{prefix}{' '.join(new_sources)} {dst}"

@@ -182,9 +182,7 @@ class TestStageDockerfileDeps:
         rewritten = (task_path / "environment" / "Dockerfile").read_text()
         assert "_deps/only /app/" in rewritten
 
-    def test_malformed_json_copy_warns_and_leaves_unchanged(
-        self, tmp_path, caplog
-    ):
+    def test_malformed_json_copy_warns_and_leaves_unchanged(self, tmp_path, caplog):
         """An unparseable JSON-form COPY emits a warning, not silent skip."""
         import logging
 
@@ -198,6 +196,4 @@ class TestStageDockerfileDeps:
 
         assert any("COPY" in r.message for r in caplog.records)
         # Line left untouched so the build error is at least visible.
-        assert (
-            "broken" in (task_path / "environment" / "Dockerfile").read_text()
-        )
+        assert "broken" in (task_path / "environment" / "Dockerfile").read_text()
