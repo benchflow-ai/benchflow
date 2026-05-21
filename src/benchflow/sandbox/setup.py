@@ -17,11 +17,11 @@ from benchflow.task import RolloutPaths, Task
 
 logger = logging.getLogger(__name__)
 
-# Daytona's per-sandbox cap on the default tier is 4 CPU / 8 GB. Tasks declaring
-# more fail at sandbox creation. Clamp here so tasks degrade gracefully (slower
-# build) instead of erroring out. Override via env if running on a paid tier.
+# Daytona's per-sandbox caps are 4 CPU / 16 GB RAM / 10 GB disk. Tasks declaring
+# more fail at sandbox creation, so clamp here to degrade gracefully (slower
+# build) instead of erroring out. Override via env if you have higher limits.
 _DAYTONA_MAX_CPUS = int(os.environ.get("BENCHFLOW_DAYTONA_MAX_CPUS", "4"))
-_DAYTONA_MAX_MEMORY_MB = int(os.environ.get("BENCHFLOW_DAYTONA_MAX_MEMORY_MB", "8192"))
+_DAYTONA_MAX_MEMORY_MB = int(os.environ.get("BENCHFLOW_DAYTONA_MAX_MEMORY_MB", "16384"))
 _DAYTONA_MAX_STORAGE_MB = int(
     os.environ.get("BENCHFLOW_DAYTONA_MAX_STORAGE_MB", "10240")
 )
