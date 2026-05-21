@@ -163,6 +163,7 @@ class LLMJudgeRewardFunc:
         criteria: list[dict] | None = None,
         mode: Literal["batched", "individual"] = "individual",
         judge_model: str | None = None,
+        judge_env: dict[str, str] | None = None,
     ) -> None:
         self.prompt = prompt
         # ``judge_model`` (an explicit ``[verifier.judge].model`` from
@@ -171,6 +172,10 @@ class LLMJudgeRewardFunc:
         # default; rubric files supply their own default via ``_resolve_model``.
         self.model = judge_model or model
         self._explicit_model = judge_model
+        # Resolved ``[verifier.env]`` credentials, threaded explicitly into
+        # ``call_judge`` so concurrent judge runs do not race on a shared
+        # ``os.environ`` (see ``call_judge``).
+        self._judge_env = judge_env or {}
         self.mode = mode
         self._rubric_path = rubric_path
         self._inline_criteria = criteria
@@ -290,7 +295,7 @@ class LLMJudgeRewardFunc:
             prompt_text = self._build_prompt(criterion, agent_text, context)
 
             try:
-                raw_response = await call_judge(model, prompt_text)
+                raw_response = await call_judge(model, prompt_text, env=self._judge_env)
                 verdict = parse_verdict(raw_response)
                 norm_score = self._extract_score(criterion, verdict)
             except JudgeEnvironmentError:

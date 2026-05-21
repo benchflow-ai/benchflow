@@ -220,23 +220,23 @@ class TestLLMJudgeVerifier:
 
     @patch("benchflow.rewards.llm.call_judge", new_callable=AsyncMock)
     @pytest.mark.asyncio
-    async def test_judge_env_scoped_to_judge_call(
+    async def test_judge_env_threaded_into_call_judge(
         self, mock_judge: AsyncMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """#270: [verifier.env] keys are applied during the judge call but
-        not leaked into the host process afterwards."""
+        """PR #314 follow-up: [verifier.env] credentials are passed explicitly
+        into ``call_judge`` as the ``env`` kwarg.
+
+        The pre-fix ``_scoped_env`` context manager mutated the process-global
+        ``os.environ``, which is not concurrency-safe: ``evaluation.py`` runs
+        verifications via ``asyncio.gather`` (concurrency > 1), so two judge
+        runs could race on the shared env. Credentials are now threaded
+        through as a parameter instead of touching ``os.environ`` at all.
+        """
         import os
 
         monkeypatch.setenv("MY_JUDGE_KEY", "secret-123")
         monkeypatch.delenv("RESOLVED_KEY", raising=False)
-
-        seen_during_call: dict[str, str | None] = {}
-
-        async def capture_env(*_args: object, **_kwargs: object) -> str:
-            seen_during_call["RESOLVED_KEY"] = os.environ.get("RESOLVED_KEY")
-            return _MOCK_PASS
-
-        mock_judge.side_effect = capture_env
+        mock_judge.return_value = _MOCK_PASS
 
         toml = _judge_toml() + '\n[verifier.env]\nRESOLVED_KEY = "${MY_JUDGE_KEY}"\n'
         task = _make_task(tmp_path, toml)
@@ -250,18 +250,21 @@ class TestLLMJudgeVerifier:
 
         await Verifier(task, rollout_paths, sandbox).verify()
 
-        # applied for the duration of the judge call ...
-        assert seen_during_call["RESOLVED_KEY"] == "secret-123"
-        # ... but not leaked into the host env afterwards.
+        # The resolved credential reaches call_judge as the ``env`` kwarg ...
+        mock_judge.assert_awaited()
+        assert mock_judge.await_args is not None
+        assert mock_judge.await_args.kwargs["env"] == {"RESOLVED_KEY": "secret-123"}
+        # ... and the process-global env is never mutated.
         assert os.environ.get("RESOLVED_KEY") is None
 
     @patch("benchflow.rewards.llm.call_judge", new_callable=AsyncMock)
     @pytest.mark.asyncio
-    async def test_judge_env_restores_prior_value(
+    async def test_judge_env_does_not_mutate_os_environ(
         self, mock_judge: AsyncMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """#270: a [verifier.env] key that already exists is restored to its
-        original value after the judge call."""
+        """PR #314 follow-up: a [verifier.env] key that already exists in the
+        process env is never overwritten — the verifier no longer touches
+        ``os.environ`` (the pre-fix ``_scoped_env`` capture/restore is gone)."""
         import os
 
         mock_judge.return_value = _MOCK_PASS
@@ -279,6 +282,7 @@ class TestLLMJudgeVerifier:
         rollout_paths.mkdir()
 
         await Verifier(task, rollout_paths, sandbox).verify()
+        # os.environ is left exactly as it was — value never overwritten.
         assert os.environ.get("RESOLVED_KEY") == "preexisting"
 
     @patch("benchflow.rewards.llm.call_judge", new_callable=AsyncMock)
