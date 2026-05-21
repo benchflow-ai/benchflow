@@ -405,6 +405,18 @@ class DockerSandbox(BaseSandbox):
             check=True,
         )
 
+    async def services(self) -> list[str]:
+        """List compose service names defined for this sandbox.
+
+        Includes BenchFlow's own ``main`` service plus any additional
+        services the task declares in its ``docker-compose.yaml``
+        (vulhub-style target/database containers — see #248).
+        """
+        result = await self._run_docker_compose_command(
+            ["config", "--services"], check=True
+        )
+        return [s for s in (result.stdout or "").splitlines() if s.strip()]
+
     async def exec(
         self,
         command: str,
@@ -412,7 +424,16 @@ class DockerSandbox(BaseSandbox):
         env: dict[str, str] | None = None,
         timeout_sec: int | None = None,
         user: str | int | None = None,
+        service: str = "main",
     ) -> ExecResult:
+        """Run a command in a compose service container.
+
+        ``service`` defaults to ``"main"`` (the agent container). Pass a
+        different service name to target an additional container declared
+        in the task's ``docker-compose.yaml`` — e.g. to inject a flag into
+        a vulnerable target before the agent runs, or to verify exploit
+        success by inspecting target-side state afterwards (#248).
+        """
         user = self._resolve_user(user)
         env = self._merge_env(env)
 
@@ -428,7 +449,7 @@ class DockerSandbox(BaseSandbox):
         if user is not None:
             exec_command.extend(["-u", str(user)])
 
-        exec_command.append("main")
+        exec_command.append(service)
         exec_command.extend(["bash", "-c", command])
 
         return await self._run_docker_compose_command(

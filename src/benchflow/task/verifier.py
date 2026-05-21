@@ -1,14 +1,21 @@
 """Verifier ($V$) — maps agent completion to a reward signal.
 
-Internalized from Harbor's Verifier class. Runs test.sh inside the sandbox
-and parses reward files.
+Internalized from Harbor's Verifier class. Supports two verification methods,
+selected by ``[verifier].type`` in ``task.toml``:
+
+- ``"test-script"`` (default): run ``tests/test.sh`` inside the sandbox and
+  parse ``reward.txt`` / ``reward.json``.
+- ``"llm-judge"``: download the agent's deliverables and grade them against a
+  human-authored rubric using an LLM judge (see #270).
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import os
 import shlex
+from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel
@@ -45,13 +52,21 @@ class DownloadVerifierDirError(Exception):
     pass
 
 
-class Verifier:
-    """Runs the task's test.sh verifier inside the sandbox and parses rewards.
+class RubricNotFoundError(Exception):
+    """Raised when an llm-judge verifier cannot locate its rubric file."""
 
-    The verifier:
-    1. Uploads the task's tests/ directory into the sandbox at /tests
-    2. Runs test.sh with configured env vars and user
-    3. Parses reward from reward.txt or reward.json
+
+class Verifier:
+    """Runs the task's verifier and parses rewards.
+
+    Two verification methods are supported (selected by ``verifier.type``):
+
+    1. ``test-script`` — uploads the task's ``tests/`` directory into the
+       sandbox at ``/tests``, runs ``test.sh`` with configured env vars/user,
+       and parses the reward from ``reward.txt`` or ``reward.json``.
+    2. ``llm-judge`` — downloads the agent's deliverables from the sandbox and
+       grades them against a rubric using an LLM judge, writing the aggregate
+       reward to ``reward.json``.
     """
 
     def __init__(
@@ -91,7 +106,18 @@ class Verifier:
             ) from e
 
     async def verify(self) -> VerifierResult:
-        """Run the verifier and return the reward result."""
+        """Run the configured verifier and return the reward result."""
+        verifier_type = getattr(self._task.config.verifier, "type", "test-script")
+        if verifier_type == "llm-judge":
+            return await self._verify_llm_judge()
+        return await self._verify_test_script()
+
+    # ------------------------------------------------------------------
+    # test-script verifier (default — Harbor-compatible)
+    # ------------------------------------------------------------------
+
+    async def _verify_test_script(self) -> VerifierResult:
+        """Run the task's ``test.sh`` verifier and return the reward result."""
         try:
             await self._sandbox.upload_dir(
                 source_dir=self._task.paths.tests_dir,
@@ -164,3 +190,76 @@ class Verifier:
             )
 
         return VerifierResult(rewards=rewards)
+
+    # ------------------------------------------------------------------
+    # llm-judge verifier (#270)
+    # ------------------------------------------------------------------
+
+    def _resolve_rubric_path(self) -> Path:
+        """Locate the rubric file relative to the task directory."""
+        judge = self._task.config.verifier.judge
+        rubric_path = Path(judge.rubric_path)
+        if not rubric_path.is_absolute():
+            rubric_path = Path(self._task.task_dir) / rubric_path
+        if not rubric_path.exists():
+            raise RubricNotFoundError(
+                f"llm-judge rubric not found at {rubric_path}. Set "
+                f"[verifier.judge].rubric_path in task.toml."
+            )
+        return rubric_path
+
+    async def _download_deliverables(self) -> Path:
+        """Download the agent's deliverables from the sandbox.
+
+        Returns the local directory the judge should read from.
+        """
+        judge = self._task.config.verifier.judge
+        dest = self._rollout_paths.verifier_dir / "deliverables"
+        dest.mkdir(parents=True, exist_ok=True)
+        try:
+            await self._sandbox.download_dir(
+                source_dir=judge.input_dir,
+                target_dir=dest,
+            )
+        except Exception as e:
+            self._logger.warning(
+                "Failed to download deliverables from %s: %s", judge.input_dir, e
+            )
+        return dest
+
+    async def _verify_llm_judge(self) -> VerifierResult:
+        """Score agent deliverables against a rubric with an LLM judge."""
+        from benchflow.rewards.builtins import LLMJudgeRewardFunc
+
+        judge = self._task.config.verifier.judge
+
+        # API keys for the judge come from [verifier.env]; export them so the
+        # provider SDKs (anthropic / openai / google) pick them up.
+        if self._task.config.verifier.env:
+            resolved = resolve_env_vars(self._task.config.verifier.env)
+            for key, value in resolved.items():
+                os.environ.setdefault(key, value)
+
+        rubric_path = self._resolve_rubric_path()
+        deliverables_dir = await self._download_deliverables()
+
+        context = judge.context or getattr(self._task, "instruction", "") or ""
+
+        reward_func = LLMJudgeRewardFunc(
+            prompt=context,
+            rubric_path=rubric_path,
+            judge_model=judge.model,
+        )
+        score = await reward_func.score(deliverables_dir)
+
+        self._logger.info(
+            "llm-judge verifier: %d criteria → reward %.4f",
+            len(reward_func.events),
+            score,
+        )
+
+        # Persist the reward in the standard location for downstream tooling.
+        self._rollout_paths.reward_json_path.write_text(
+            json.dumps({"reward": score}, indent=2)
+        )
+        return VerifierResult(rewards={"reward": score})

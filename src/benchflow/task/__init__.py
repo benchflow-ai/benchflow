@@ -11,6 +11,7 @@
 from benchflow.task.config import (
     ORG_NAME_PATTERN,
     Author,
+    JudgeVerifierConfig,
     MCPServerConfig,
     PackageInfo,
     SandboxConfig,
@@ -33,6 +34,7 @@ from benchflow.task.verifier import (
     DownloadVerifierDirError,
     RewardFileEmptyError,
     RewardFileNotFoundError,
+    RubricNotFoundError,
     Verifier,
     VerifierOutputParseError,
     VerifierResult,
@@ -46,6 +48,7 @@ __all__ = [
     # Configuration ($C$)
     "SandboxConfig",
     "VerifierConfig",
+    "JudgeVerifierConfig",
     "TaskAgentConfig",
     "SolutionConfig",
     "MCPServerConfig",
@@ -61,6 +64,7 @@ __all__ = [
     "VerifierResult",
     "RewardFileEmptyError",
     "RewardFileNotFoundError",
+    "RubricNotFoundError",
     "VerifierOutputParseError",
     "AddTestsDirError",
     "DownloadVerifierDirError",

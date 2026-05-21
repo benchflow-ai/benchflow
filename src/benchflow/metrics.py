@@ -33,6 +33,13 @@ class TaskMetrics:
     verifier_error: str | None = None
     duration_sec: float = 0.0
     agent_name: str = ""
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    cache_creation_tokens: int | None = None
+    total_tokens: int | None = None
+    cost_usd: float | None = None
+    usage_source: str = "unavailable"
 
     @property
     def passed(self) -> bool:
@@ -50,6 +57,13 @@ class TaskMetrics:
     def verifier_errored(self) -> bool:
         """True when task failed due to verifier error (not agent error)."""
         return self.reward is None and self.verifier_error is not None
+
+    @property
+    def completed(self) -> bool:
+        """True when task reached a terminal non-error reward state."""
+        return (
+            not self.errored and not self.verifier_errored and self.reward is not None
+        )
 
 
 @dataclass
@@ -129,6 +143,57 @@ class BenchmarkMetrics:
         return breakdown
 
     @property
+    def telemetry_tasks(self) -> list[TaskMetrics]:
+        """Completed tasks with provider telemetry."""
+        return [
+            t
+            for t in self.tasks
+            if t.completed and t.usage_source == "provider_response"
+        ]
+
+    @property
+    def telemetry_completed_tasks(self) -> list[TaskMetrics]:
+        """Completed tasks included in telemetry coverage denominator."""
+        return [t for t in self.tasks if t.completed]
+
+    @property
+    def total_input_tokens(self) -> int:
+        return sum(t.input_tokens or 0 for t in self.telemetry_tasks)
+
+    @property
+    def total_output_tokens(self) -> int:
+        return sum(t.output_tokens or 0 for t in self.telemetry_tasks)
+
+    @property
+    def total_cache_read_tokens(self) -> int:
+        return sum(t.cache_read_tokens or 0 for t in self.telemetry_tasks)
+
+    @property
+    def total_cache_creation_tokens(self) -> int:
+        return sum(t.cache_creation_tokens or 0 for t in self.telemetry_tasks)
+
+    @property
+    def total_tokens(self) -> int:
+        return sum(t.total_tokens or 0 for t in self.telemetry_tasks)
+
+    @property
+    def total_cost_usd(self) -> float:
+        return round(sum(t.cost_usd or 0.0 for t in self.telemetry_tasks), 10)
+
+    @property
+    def avg_cost_per_trial_usd(self) -> float | None:
+        if not self.telemetry_tasks:
+            return None
+        return round(self.total_cost_usd / len(self.telemetry_tasks), 10)
+
+    @property
+    def telemetry_coverage(self) -> float:
+        completed = self.telemetry_completed_tasks
+        if not completed:
+            return 0.0
+        return len(self.telemetry_tasks) / len(completed)
+
+    @property
     def verifier_error_breakdown(self) -> dict[str, int]:
         """Categorize verifier errors."""
         breakdown: dict[str, int] = {}
@@ -155,6 +220,14 @@ class BenchmarkMetrics:
             "score_excl_errors": f"{self.score_excl_errors:.1%}",
             "avg_tool_calls": round(self.avg_tool_calls, 1),
             "avg_duration_sec": round(self.avg_duration, 1),
+            "total_input_tokens": self.total_input_tokens,
+            "total_output_tokens": self.total_output_tokens,
+            "total_cache_read_tokens": self.total_cache_read_tokens,
+            "total_cache_creation_tokens": self.total_cache_creation_tokens,
+            "total_tokens": self.total_tokens,
+            "total_cost_usd": self.total_cost_usd,
+            "avg_cost_per_trial_usd": self.avg_cost_per_trial_usd,
+            "telemetry_coverage": self.telemetry_coverage,
             "error_breakdown": self.error_breakdown,
             "verifier_error_breakdown": self.verifier_error_breakdown,
             "passed_tasks": sorted(t.task_name for t in self.tasks if t.passed),
@@ -229,6 +302,27 @@ def collect_metrics(
                 verifier_error=r.get("verifier_error"),
                 duration_sec=duration,
                 agent_name=r.get("agent_name", ""),
+                input_tokens=(r.get("agent_result") or {}).get(
+                    "n_input_tokens", r.get("n_input_tokens")
+                ),
+                output_tokens=(r.get("agent_result") or {}).get(
+                    "n_output_tokens", r.get("n_output_tokens")
+                ),
+                cache_read_tokens=(r.get("agent_result") or {}).get(
+                    "n_cache_read_tokens", r.get("n_cache_read_tokens")
+                ),
+                cache_creation_tokens=(r.get("agent_result") or {}).get(
+                    "n_cache_creation_tokens", r.get("n_cache_creation_tokens")
+                ),
+                total_tokens=(r.get("agent_result") or {}).get(
+                    "total_tokens", r.get("total_tokens")
+                ),
+                cost_usd=(r.get("agent_result") or {}).get(
+                    "cost_usd", r.get("cost_usd")
+                ),
+                usage_source=(r.get("agent_result") or {}).get(
+                    "usage_source", r.get("usage_source", "unavailable")
+                ),
             )
         )
 

@@ -153,6 +153,7 @@ class _DaytonaStrategy:
         env: dict[str, str] | None = None,
         timeout_sec: int | None = None,
         user: str | int | None = None,
+        service: str = "main",
     ) -> ExecResult: ...
 
     @abstractmethod
@@ -283,7 +284,14 @@ class _DaytonaDirect(_DaytonaStrategy):
         env: dict[str, str] | None = None,
         timeout_sec: int | None = None,
         user: str | int | None = None,
+        service: str = "main",
     ) -> ExecResult:
+        if service != "main":
+            raise ValueError(
+                f"Direct (non-compose) Daytona sandbox is single-container "
+                f"and cannot target service {service!r}. Multi-container "
+                "(vulhub-style) tasks require a docker-compose.yaml (#248)."
+            )
         return await self._env._sandbox_exec(
             command, cwd=cwd, env=env, timeout_sec=timeout_sec, user=user
         )
@@ -591,7 +599,14 @@ class _DaytonaDinD(_DaytonaStrategy):
         env: dict[str, str] | None = None,
         timeout_sec: int | None = None,
         user: str | int | None = None,
+        service: str = "main",
     ) -> ExecResult:
+        """Run a command in a compose service inside the DinD VM.
+
+        ``service`` defaults to ``"main"`` (the agent container); pass
+        another name to target an additional container declared in the
+        task's ``docker-compose.yaml`` (vulhub-style targets — see #248).
+        """
         parts: list[str] = ["exec", "-T"]
         if cwd:
             parts.extend(["-w", cwd])
@@ -600,7 +615,7 @@ class _DaytonaDinD(_DaytonaStrategy):
                 parts.extend(["-e", f"{k}={v}"])
         if user is not None:
             parts.extend(["-u", str(user)])
-        parts.extend(["main", "bash", "-lc", command])
+        parts.extend([service, "bash", "-lc", command])
 
         return await self._compose_exec(parts, timeout_sec=timeout_sec)
 
@@ -1048,11 +1063,17 @@ class DaytonaSandbox(BaseSandbox):
         env: dict[str, str] | None = None,
         timeout_sec: int | None = None,
         user: str | int | None = None,
+        service: str = "main",
     ) -> ExecResult:
         user = self._resolve_user(user)
         env = self._merge_env(env)
         return await self._strategy.exec(
-            command, cwd=cwd, env=env, timeout_sec=timeout_sec, user=user
+            command,
+            cwd=cwd,
+            env=env,
+            timeout_sec=timeout_sec,
+            user=user,
+            service=service,
         )
 
     async def upload_file(self, source_path: Path | str, target_path: str) -> None:
@@ -1067,10 +1088,18 @@ class DaytonaSandbox(BaseSandbox):
     async def download_dir(self, source_dir: str, target_dir: Path | str) -> None:
         return await self._strategy.download_dir(source_dir, target_dir)
 
-    async def is_dir(self, path: str, user: str | int | None = None) -> bool:
+    async def is_dir(
+        self, path: str, user: str | int | None = None, service: str = "main"
+    ) -> bool:
+        if service != "main":
+            return await super().is_dir(path, user=user, service=service)
         return await self._strategy.is_dir(path, user=self._resolve_user(user))
 
-    async def is_file(self, path: str, user: str | int | None = None) -> bool:
+    async def is_file(
+        self, path: str, user: str | int | None = None, service: str = "main"
+    ) -> bool:
+        if service != "main":
+            return await super().is_file(path, user=user, service=service)
         return await self._strategy.is_file(path, user=self._resolve_user(user))
 
     async def attach(self) -> None:

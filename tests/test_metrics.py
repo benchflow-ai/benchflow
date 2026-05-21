@@ -265,3 +265,73 @@ def test_collect_metrics_partial_reward(tmp_path):
     # 0.5 is not 1.0, so not passed
     assert s["passed"] == 0
     assert s["failed"] == 1
+
+
+def test_collect_metrics_usage_aggregation_mixed_telemetry(tmp_path):
+    rows = [
+        (
+            "task-a",
+            {
+                "usage_source": "provider_response",
+                "n_input_tokens": 100,
+                "n_output_tokens": 10,
+                "n_cache_read_tokens": 5,
+                "n_cache_creation_tokens": 1,
+                "total_tokens": 116,
+                "cost_usd": 0.001,
+            },
+        ),
+        (
+            "task-b",
+            {
+                "usage_source": "provider_response",
+                "n_input_tokens": 200,
+                "n_output_tokens": 20,
+                "n_cache_read_tokens": 0,
+                "n_cache_creation_tokens": 4,
+                "total_tokens": 224,
+                "cost_usd": 0.002,
+            },
+        ),
+        (
+            "task-c",
+            {
+                "usage_source": "unavailable",
+                "n_input_tokens": None,
+                "n_output_tokens": None,
+                "n_cache_read_tokens": None,
+                "n_cache_creation_tokens": None,
+                "total_tokens": None,
+                "cost_usd": None,
+            },
+        ),
+    ]
+    for task_name, agent_result in rows:
+        trial = tmp_path / "job" / f"{task_name}__trial"
+        trial.mkdir(parents=True)
+        (trial / "result.json").write_text(
+            json.dumps(
+                {
+                    "task_name": task_name,
+                    "rewards": {"reward": 1.0},
+                    "error": None,
+                    "verifier_error": None,
+                    "n_tool_calls": 1,
+                    "started_at": "2026-03-24 10:00:00.000000",
+                    "finished_at": "2026-03-24 10:01:00.000000",
+                    "agent_result": {"n_tool_calls": 1, "n_prompts": 1, **agent_result},
+                }
+            )
+        )
+
+    metrics = collect_metrics(str(tmp_path))
+    summary = metrics.summary()
+
+    assert summary["total_input_tokens"] == 300
+    assert summary["total_output_tokens"] == 30
+    assert summary["total_cache_read_tokens"] == 5
+    assert summary["total_cache_creation_tokens"] == 5
+    assert summary["total_tokens"] == 340
+    assert summary["total_cost_usd"] == 0.003
+    assert summary["avg_cost_per_trial_usd"] == 0.0015
+    assert summary["telemetry_coverage"] == 2 / 3
