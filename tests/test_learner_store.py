@@ -114,7 +114,7 @@ def test_revert_restores_a_prior_generation():
     store.commit(s2, metric=0.2)
 
     # Generation 2 regressed — revert to generation 1.
-    store.revert(1)
+    store._revert(1)
     assert store.generation == 1
     assert store.current().memory == {"good": "keep me"}
 
@@ -124,7 +124,7 @@ def test_revert_to_generation_zero_clears_the_store():
     s1 = store.current()
     s1.skills["s"] = "body"
     store.commit(s1)
-    store.revert(0)
+    store._revert(0)
     assert store.generation == 0
     assert store.current().skills == {}
 
@@ -134,18 +134,43 @@ def test_revert_drops_later_history():
     store.commit(store.current(), metric=0.1)
     store.commit(store.current(), metric=0.2)
     store.commit(store.current(), metric=0.3)
-    store.revert(1)
-    # Generations 2 and 3 are gone; a new commit re-uses number 2.
+    store._revert(1)
+    # Generations 2 and 3 are gone from history.
     assert set(store.history) == {0, 1}
-    gen = store.commit(store.current())
-    assert gen == 2
+
+
+def test_generation_numbers_are_monotonic_after_revert():
+    """A reverted generation number is never reused — the next commit stamps
+    a fresh number so each generation is a durable per-rollout stamp."""
+    store = LearnerStore()
+    store.commit(store.current(), metric=0.1)  # gen 1
+    store.commit(store.current(), metric=0.2)  # gen 2
+    store.commit(store.current(), metric=0.3)  # gen 3
+    store._revert(1)
+    # The next commit does NOT re-use 2 — it stamps 4.
+    gen = store.commit(store.current(), metric=0.5)
+    assert gen == 4
+    assert store.generation == 4
+    assert set(store.history) == {0, 1, 4}
+
+
+def test_commit_or_revert_keeps_monotonic_numbering():
+    """commit_or_revert that rejects a regression still advances the number
+    space for the next genuine commit."""
+    store = LearnerStore()
+    store.commit(store.current(), metric=0.8)  # gen 1
+    # A regression is rejected — no generation stamped.
+    assert store.commit_or_revert(store.current(), metric=0.3) is False
+    # The next improvement stamps gen 2 (the rejected one consumed nothing).
+    assert store.commit_or_revert(store.current(), metric=0.9) is True
+    assert store.generation == 2
 
 
 def test_revert_to_unknown_generation_raises():
     store = LearnerStore()
     store.commit(store.current())
     with pytest.raises(ValueError, match="generation"):
-        store.revert(5)
+        store._revert(5)
 
 
 def test_revert_forward_raises():
@@ -153,7 +178,7 @@ def test_revert_forward_raises():
     store = LearnerStore()
     store.commit(store.current())
     with pytest.raises(ValueError, match="generation"):
-        store.revert(2)
+        store._revert(2)
 
 
 # --- the learning curve / regression helper ---
@@ -172,27 +197,27 @@ def test_regressed_detects_a_drop_against_the_best_so_far():
     store.commit(store.current(), metric=0.5)
     store.commit(store.current(), metric=0.7)
     # 0.6 < best-so-far 0.7 => regression.
-    assert store.regressed(0.6) is True
+    assert store._regressed(0.6) is True
 
 
 def test_regressed_false_when_metric_improves():
     store = LearnerStore()
     store.commit(store.current(), metric=0.5)
-    assert store.regressed(0.9) is False
+    assert store._regressed(0.9) is False
 
 
 def test_regressed_false_on_an_empty_store():
     """With no prior generation there is nothing to regress against."""
     store = LearnerStore()
-    assert store.regressed(0.0) is False
+    assert store._regressed(0.0) is False
 
 
 def test_regressed_respects_a_tolerance():
     """A tiny dip within tolerance is noise, not a regression."""
     store = LearnerStore()
     store.commit(store.current(), metric=0.80)
-    assert store.regressed(0.79, tolerance=0.05) is False
-    assert store.regressed(0.70, tolerance=0.05) is True
+    assert store._regressed(0.79, tolerance=0.05) is False
+    assert store._regressed(0.70, tolerance=0.05) is True
 
 
 # --- commit_or_revert: the continual-learning step ---

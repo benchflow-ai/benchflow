@@ -33,7 +33,10 @@ from benchflow._utils.scoring import (
     pass_rate,
     pass_rate_excl_errors,
 )
+from benchflow.learner_store import LearnerState, LearnerStore
 from benchflow.models import RolloutResult
+from benchflow.rewards.memory_scorer import MEMORY_STATE_KEY
+from benchflow.trajectories.tree import RolloutNode
 
 # Backward-compat alias
 RunResult = RolloutResult
@@ -261,15 +264,21 @@ class Evaluation:
 
         self._sdk = SDK()
         # The persistent learner store for sequential-shared (continual
-        # learning) jobs. Created on demand by run(); parallel-independent
-        # jobs leave it None.
-        from benchflow.learner_store import LearnerStore
-
+        # learning) jobs — the one owner. parallel-independent jobs leave it
+        # None.
         self.learner_store: LearnerStore | None = (
             LearnerStore()
             if self._config.job_mode == "sequential-shared"
             else None
         )
+        # Per-rollout continual-learning skill dirs, set by
+        # _run_sequential_shared before each _run_task call and consumed by
+        # _run_single_task. None outside sequential-shared mode.
+        self._learner_skills_dir: Path | None = None
+        self._learner_export_dir: Path | None = None
+        # One RolloutNode per sequential-shared rollout, each carrying that
+        # rollout's memory_delta — the Memory-space scorer's input.
+        self.learner_nodes: list[RolloutNode] = []
 
     @classmethod
     def from_yaml(cls, path: str | Path, **kwargs) -> Evaluation:
@@ -494,9 +503,25 @@ class Evaluation:
     async def _run_single_task(
         self, task_dir: Path, cfg: EvaluationConfig
     ) -> RolloutResult:
-        """Execute one rollout via Rollout."""
+        """Execute one rollout via Rollout.
+
+        In sequential-shared mode the per-rollout learner skill dirs override
+        the static config: the rollout starts from the LearnerStore's evolved
+        skill set (``_learner_skills_dir``) and its agent-evolved skills are
+        captured back through ``export_generated_skills_to``.
+        """
         from benchflow.rollout import Rollout, RolloutConfig
 
+        skills_dir = (
+            str(self._learner_skills_dir)
+            if self._learner_skills_dir is not None
+            else self._resolve_skills_dir(task_dir, cfg.skills_dir)
+        )
+        export_to = (
+            str(self._learner_export_dir)
+            if self._learner_export_dir is not None
+            else None
+        )
         rollout_config = RolloutConfig.from_legacy(
             task_path=task_dir,
             agent=cfg.agent,
@@ -506,7 +531,7 @@ class Evaluation:
             job_name=self._job_name,
             jobs_dir=str(self._jobs_dir),
             environment=cfg.environment,
-            skills_dir=self._resolve_skills_dir(task_dir, cfg.skills_dir),
+            skills_dir=skills_dir,
             sandbox_user=cfg.sandbox_user,
             sandbox_locked_paths=cfg.sandbox_locked_paths,
             sandbox_setup_timeout=cfg.sandbox_setup_timeout,
@@ -514,6 +539,7 @@ class Evaluation:
             skill_mode=cfg.skill_mode,
             skill_creator_dir=cfg.skill_creator_dir,
             self_gen_no_internet=cfg.self_gen_no_internet,
+            export_generated_skills_to=export_to,
         )
         if cfg.skill_mode == "self-gen":
             from benchflow.self_gen import run_self_gen
@@ -642,49 +668,141 @@ class Evaluation:
         """The continual-learning schedule — capability 5.
 
         Rollouts run strictly in order over one persistent, generation-versioned
-        ``LearnerStore`` (memory + skills). After each rollout, its reward is
-        offered to the store as a learning-curve metric: an improvement stamps a
-        new generation, a regression is reverted. The learner store is the one
-        snapshot layer that does NOT roll back with a ``Branch`` — its rollback
-        is this separate, generation-scoped, curve-driven operation.
+        ``LearnerStore`` (memory + skills). Each rollout:
+
+        1. **reads** the store's current skills and injects them as its
+           ``skills_dir``, so it starts from the *evolved* skill set;
+        2. **runs**, with ``export_generated_skills_to`` set so the skills the
+           agent generated/evolved are captured;
+        3. **records** the before/after skills as ``memory_delta`` on a tree
+           node, giving the Memory-space scorer its writer; and
+        4. **commits** the captured skills to the store as the next
+           ``LearnerState`` — so rollout N+1 inherits them.
+
+        The rollout's reward is offered as a learning-curve metric: an
+        improvement stamps a new generation, a regression is rejected and the
+        store stays at the better generation. The learner store is the one
+        snapshot layer that does NOT roll back with a ``Branch`` — this
+        curve-driven rollback is a separate, generation-scoped operation.
 
         Concurrency is deliberately ignored here: a shared mutable store cannot
         be written by overlapping rollouts.
         """
-        from benchflow.learner_store import LearnerStore
+        import tempfile
 
+        from benchflow.learner_skills import materialize_skills
+
+        # __init__ is the sole owner: it constructs the store whenever
+        # job_mode is sequential-shared, the only mode that reaches here.
         store = self.learner_store
-        if store is None:  # defensive — run() sets it for this mode
-            store = self.learner_store = LearnerStore()
+        assert store is not None, "sequential-shared job must have a learner_store"
 
         pairs: list[tuple[str, RunResult]] = []
-        for td in remaining:
-            try:
-                result = await self._run_task(td)
-            except BaseException as e:  # mirror the parallel path's catch
-                logger.error(f"[ERR] {td.name}: unexpected exception: {e}")
-                pairs.append(
-                    (td.name, RunResult(task_name=td.name, error=f"Unexpected: {e}"))
-                )
-                continue
+        with tempfile.TemporaryDirectory(prefix="bf-learner-") as work:
+            work_root = Path(work)
+            for i, td in enumerate(remaining):
+                # 1. READ — materialize the store's current skills so the
+                # rollout starts from the evolved set.
+                before_state = store.current()
+                skills_dir = work_root / f"rollout-{i}-skills"
+                export_dir = work_root / f"rollout-{i}-evolved"
+                materialize_skills(before_state, skills_dir)
+                self._learner_skills_dir = skills_dir
+                self._learner_export_dir = export_dir
 
-            self._prune_docker()
-            self._log_and_report(td, result)
-            pairs.append((td.name, result))
-
-            # Offer the rollout's reward to the learner store. A scored rollout
-            # advances or reverts a generation; an errored one (no reward)
-            # leaves the store untouched.
-            reward = result.rewards.get("reward") if result.rewards else None
-            if reward is not None:
-                kept = store.commit_or_revert(store.current(), metric=float(reward))
-                if not kept:
-                    logger.info(
-                        f"Learner store: {td.name} regressed "
-                        f"(reward={reward}) — reverted, staying at "
-                        f"generation {store.generation}"
+                try:
+                    result = await self._run_task(td)
+                except BaseException as e:  # mirror the parallel path's catch
+                    logger.error(f"[ERR] {td.name}: unexpected exception: {e}")
+                    pairs.append(
+                        (
+                            td.name,
+                            RunResult(task_name=td.name, error=f"Unexpected: {e}"),
+                        )
                     )
+                    continue
+                finally:
+                    self._learner_skills_dir = None
+                    self._learner_export_dir = None
+
+                self._prune_docker()
+                self._log_and_report(td, result)
+                pairs.append((td.name, result))
+
+                self._commit_learner_generation(
+                    store, td, result, before_state, export_dir
+                )
         return pairs
+
+    def _commit_learner_generation(
+        self,
+        store: LearnerStore,
+        td: Path,
+        result: RunResult,
+        before_state: LearnerState,
+        export_dir: Path,
+    ) -> None:
+        """Capture a rollout's evolved skills and commit the next generation.
+
+        Builds the ``memory_delta`` record the Memory-space scorer reads, then
+        offers the captured (memory + skills) state to the store: an
+        improvement stamps a new generation, a regression is reverted. An
+        errored rollout (no reward) leaves the store untouched.
+        """
+        from benchflow.learner_skills import capture_skills, skill_memory_delta
+
+        # 2/3. CAPTURE — the skills the agent generated/evolved. Prefer the
+        # result's own field (the real Rollout populates it); fall back to
+        # reading the export dir directly.
+        if result.evolved_skills is not None:
+            evolved_skills = dict(result.evolved_skills)
+        else:
+            evolved_skills = capture_skills(export_dir)
+
+        before_skills = {k: str(v) for k, v in before_state.skills.items()}
+        after_skills = {k: str(v) for k, v in evolved_skills.items()}
+        # Skills the agent evolved relative to what it started from — the
+        # hidden "expected" fixture for the Memory scorer.
+        expected = sorted(
+            name
+            for name in set(before_skills) | set(after_skills)
+            if before_skills.get(name) != after_skills.get(name)
+        )
+        delta = skill_memory_delta(
+            before=before_skills, after=after_skills, expected=expected
+        )
+
+        # Record the delta on this rollout's tree node so the Memory-space
+        # scorer (rewards/memory_scorer.py) has its writer — the two halves
+        # of capability 5 connected end-to-end.
+        node = self._learner_node(td)
+        node.state[MEMORY_STATE_KEY] = delta
+
+        # 4. COMMIT — offer the evolved (memory + skills) state to the store.
+        reward = result.rewards.get("reward") if result.rewards else None
+        if reward is None:
+            return
+        next_state = LearnerState(
+            memory=before_state.memory,
+            skills=evolved_skills,
+        )
+        kept = store.commit_or_revert(next_state, metric=float(reward))
+        if not kept:
+            logger.info(
+                f"Learner store: {td.name} regressed (reward={reward}) — "
+                f"reverted, staying at generation {store.generation}"
+            )
+
+    def _learner_node(self, td: Path) -> RolloutNode:
+        """Return a fresh tree node for one continual-learning rollout.
+
+        Each sequential-shared rollout is one node carrying that rollout's
+        ``memory_delta``; the Job keeps them on ``learner_nodes`` so the
+        Memory-space scorer can score every rollout after the run.
+        """
+        node = RolloutNode(id=td.name)
+        self.learner_nodes.append(node)
+        return node
 
     async def run(self) -> EvaluationResult:
         """Execute the job."""

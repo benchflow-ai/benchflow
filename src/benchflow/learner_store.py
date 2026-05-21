@@ -11,8 +11,9 @@ The store has three defining properties:
   current state and may write an evolved one back.
 * **Versioned** — every write stamps a monotonic *generation* counter, so a
   rollout's contribution is addressable after the fact.
-* **Rollback-capable** — :meth:`LearnerStore.revert` rolls a regression back to
-  an earlier generation when a learning-curve metric drops.
+* **Rollback-capable** — :meth:`LearnerStore.commit_or_revert` rejects a
+  regression when a learning-curve metric drops, keeping the store at the
+  better generation.
 
 The learner store is deliberately the *one* snapshot layer that does **not**
 roll back with a ``Branch`` (architecture.md § "Lifecycles"): a Branch rolls
@@ -32,7 +33,7 @@ import copy
 from dataclasses import dataclass, field
 from typing import Any
 
-__all__ = ["Generation", "LearnerState", "LearnerStore"]
+__all__ = ["LearnerState", "LearnerStore"]
 
 
 @dataclass
@@ -77,11 +78,14 @@ class LearnerStore:
     """A persistent, generation-versioned store of memory + skills.
 
     Generation 0 is the empty store. Each :meth:`commit` deep-copies the passed
-    state, stamps the next generation number, and appends it to :attr:`history`.
-    :meth:`revert` rolls back to an earlier generation, dropping every later
-    one. :meth:`current` always returns a fresh copy, never the live object, so
-    a reader can mutate it freely and only a :meth:`commit` makes the change
-    stick.
+    state, stamps a **monotonic** generation number, and appends it to
+    :attr:`history`. :meth:`revert` rolls back to an earlier generation,
+    dropping every later one — but it does *not* free the numbers it dropped:
+    a later commit stamps the next never-used number, so every generation
+    number is a durable, unique, per-rollout stamp (a reverted run never
+    aliases the run that replaced it). :meth:`current` always returns a fresh
+    copy, never the live object, so a reader can mutate it freely and only a
+    :meth:`commit` makes the change stick.
     """
 
     def __init__(self) -> None:
@@ -89,10 +93,13 @@ class LearnerStore:
             0: Generation(number=0, state=LearnerState())
         }
         self._generation = 0
+        # The next generation number to stamp — monotonic, never decreased
+        # by revert(), so a generation number is never reused.
+        self._next_number = 1
 
     @property
     def generation(self) -> int:
-        """The current (highest committed) generation number."""
+        """The current generation number (the live pointer into history)."""
         return self._generation
 
     def current(self) -> LearnerState:
@@ -106,21 +113,29 @@ class LearnerStore:
     def commit(self, state: LearnerState, *, metric: float | None = None) -> int:
         """Stamp ``state`` as the next generation and return its number.
 
-        ``state`` is deep-copied on the way in, so mutating the caller's object
-        afterwards never leaks into the committed generation.
+        The number is monotonic — it is the next never-used number, even
+        after a :meth:`revert` dropped higher ones. ``state`` is deep-copied
+        on the way in, so mutating the caller's object afterwards never leaks
+        into the committed generation.
         """
-        number = self._generation + 1
+        number = self._next_number
         self.history[number] = Generation(
             number=number, state=state.copy(), metric=metric
         )
         self._generation = number
+        self._next_number = number + 1
         return number
 
-    def revert(self, generation: int) -> None:
+    def _revert(self, generation: int) -> None:
         """Roll the store back to ``generation``, dropping every later one.
 
+        Internal — the public continual-learning step is
+        :meth:`commit_or_revert`, which calls this when a rollout regresses.
+
         Only goes backward: ``generation`` must be a known generation no later
-        than the current one. A later commit re-uses the freed numbers.
+        than the current one. The dropped numbers are *not* freed — a later
+        commit stamps a fresh number, so generation numbers stay monotonic and
+        unique (each is a durable per-rollout stamp).
         """
         if generation not in self.history:
             raise ValueError(
@@ -151,8 +166,11 @@ class LearnerStore:
         metrics = [m for m in self.learning_curve() if m is not None]
         return max(metrics) if metrics else None
 
-    def regressed(self, metric: float, *, tolerance: float = 0.0) -> bool:
+    def _regressed(self, metric: float, *, tolerance: float = 0.0) -> bool:
         """Whether ``metric`` is a regression against the best generation so far.
+
+        Internal — the public continual-learning step is
+        :meth:`commit_or_revert`.
 
         A regression is a drop below ``best_so_far - tolerance``. With no prior
         metric there is nothing to regress against, so the result is ``False``.
@@ -172,7 +190,7 @@ class LearnerStore:
         left untouched (the new ``state`` is discarded) and ``False`` is
         returned. Otherwise ``state`` is committed and ``True`` is returned.
         """
-        if self.regressed(metric, tolerance=tolerance):
+        if self._regressed(metric, tolerance=tolerance):
             return False
         self.commit(state, metric=metric)
         return True
