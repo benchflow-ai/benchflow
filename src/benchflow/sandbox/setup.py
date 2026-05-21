@@ -321,41 +321,120 @@ def stage_dockerfile_deps(
     new_lines = []
 
     for line in lines:
-        copy_match = re.match(r"^(\s*COPY\s+(?:--\S+\s+)*)(\S+)\s+(\S+)\s*$", line)
-        if copy_match:
-            prefix = copy_match.group(1)
-            src_path = copy_match.group(2)
-            dst_path = copy_match.group(3)
-
-            # Skip sources already relative to env dir, absolute, or using build args
-            if src_path.startswith("/") or src_path.startswith("$") or src_path == ".":
-                new_lines.append(line)
-                continue
-
-            abs_src = context_root / src_path
-            if abs_src.exists():
-                dep_name = _dep_local_name(src_path)
-                local_dest = env_dir / "_deps" / dep_name
-
-                if abs_src.is_dir():
-                    if local_dest.exists():
-                        shutil.rmtree(local_dest)
-                    shutil.copytree(
-                        abs_src,
-                        local_dest,
-                        ignore=shutil.ignore_patterns(*_IGNORE_DIRS),
-                    )
-                else:
-                    local_dest.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(abs_src, local_dest)
-
-                new_lines.append(f"{prefix}_deps/{dep_name} {dst_path}")
-            else:
-                new_lines.append(line)
-        else:
-            new_lines.append(line)
+        rewritten = _rewrite_copy_line(line, env_dir, context_root)
+        new_lines.append(rewritten if rewritten is not None else line)
 
     dockerfile_path.write_text("\n".join(new_lines))
+
+
+def _stage_copy_source(src_path: str, env_dir: Path, context_root: Path) -> str:
+    """Stage a single COPY source into ``_deps/`` and return its rewritten path.
+
+    Returns the original ``src_path`` unchanged when it cannot or should not be
+    staged (absolute path, build arg, ``.``, glob, or a source that does not
+    exist under ``context_root``).
+    """
+    # Skip sources already relative to env dir, absolute, or using build args.
+    if src_path.startswith("/") or src_path.startswith("$") or src_path == ".":
+        return src_path
+    # Globs can't be resolved to a single staged path — leave them alone.
+    if any(ch in src_path for ch in "*?["):
+        return src_path
+
+    abs_src = context_root / src_path
+    if not abs_src.exists():
+        return src_path
+
+    dep_name = _dep_local_name(src_path)
+    local_dest = env_dir / "_deps" / dep_name
+
+    if abs_src.is_dir():
+        if local_dest.exists():
+            shutil.rmtree(local_dest)
+        shutil.copytree(
+            abs_src,
+            local_dest,
+            ignore=shutil.ignore_patterns(*_IGNORE_DIRS),
+        )
+    else:
+        local_dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(abs_src, local_dest)
+
+    return f"_deps/{dep_name}"
+
+
+def _rewrite_copy_line(
+    line: str, env_dir: Path, context_root: Path
+) -> str | None:
+    """Rewrite a single Dockerfile ``COPY`` line, staging its sources.
+
+    Handles both the shell form (``COPY src... dst``, including multiple
+    sources) and the JSON/exec form (``COPY ["src", "dst"]``). Every source
+    argument is staged into ``_deps/``. Returns the rewritten line, or
+    ``None`` if the line is not a ``COPY`` that needs staging.
+
+    A ``COPY`` line that looks like it has sources but cannot be parsed
+    emits a warning rather than being silently skipped.
+    """
+    # Shell form: COPY [--flags...] src... dst
+    shell_match = re.match(r"^(\s*COPY\s+(?:--\S+\s+)*)(\S.*\S|\S)\s*$", line)
+    if shell_match:
+        prefix = shell_match.group(1)
+        args_str = shell_match.group(2)
+
+        # JSON/exec form: COPY ["src", ..., "dst"]
+        if args_str.startswith("["):
+            try:
+                args = json.loads(args_str)
+            except json.JSONDecodeError:
+                logger.warning(
+                    "stage_dockerfile_deps: could not parse JSON-form COPY, "
+                    "leaving unchanged: %s",
+                    line.strip(),
+                )
+                return None
+            if not isinstance(args, list) or len(args) < 2:
+                logger.warning(
+                    "stage_dockerfile_deps: malformed JSON-form COPY, "
+                    "leaving unchanged: %s",
+                    line.strip(),
+                )
+                return None
+            *sources, dst = [str(a) for a in args]
+            new_sources = [
+                _stage_copy_source(s, env_dir, context_root) for s in sources
+            ]
+            if new_sources == sources:
+                return None  # nothing staged
+            return f"{prefix}{json.dumps([*new_sources, dst])}"
+
+        # Shell form: split into whitespace-separated args. The last arg is
+        # the destination; everything before it is a source (>= 1 source).
+        try:
+            args = shlex.split(args_str)
+        except ValueError:
+            logger.warning(
+                "stage_dockerfile_deps: could not parse COPY arguments, "
+                "leaving unchanged: %s",
+                line.strip(),
+            )
+            return None
+        if len(args) < 2:
+            logger.warning(
+                "stage_dockerfile_deps: COPY has fewer than 2 arguments, "
+                "leaving unchanged: %s",
+                line.strip(),
+            )
+            return None
+        *sources, dst = args
+        new_sources = [
+            _stage_copy_source(s, env_dir, context_root) for s in sources
+        ]
+        if new_sources == sources:
+            return None  # nothing staged
+        return f"{prefix}{' '.join(new_sources)} {dst}"
+
+    return None
 
 
 def _inject_skills_into_dockerfile(task_path: Path, skills_dir: Path) -> None:
