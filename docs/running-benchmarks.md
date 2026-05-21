@@ -26,6 +26,19 @@ Each adapted benchmark includes:
 - **`parity_test.py`** — parity validation suite
 - **`parity_experiment.json`** — recorded parity results
 
+### Environment-plane benchmarks
+
+Stateful, multi-service benchmarks integrate differently: instead of a
+converter they ship an `environment.toml` **manifest** and run on the
+[Environment plane](./environment-plane.md). Two are onboarded:
+
+| Benchmark | Topology | Manifest |
+|-----------|----------|----------|
+| **ClawsBench** | mock Gmail/Slack/Calendar/Docs/Drive, framework-started | `benchmarks/clawsbench/environment.toml` |
+| **chi-bench** | ~25k-LOC healthcare simulator, image-owned lifecycle | `benchmarks/chi-bench/environment.toml` |
+
+See [Running a benchmark with an Environment manifest](#running-a-benchmark-with-an-environment-manifest) below.
+
 ---
 
 ## Quick start
@@ -275,12 +288,16 @@ bench eval create \
 
 A **stateful** benchmark — one with mock services, databases, or accounts the
 agent acts on — declares its world in an `environment.toml` manifest and runs
-on the [Environment plane](./environment-plane.md). Pass it with
+on the [Environment plane](./environment-plane.md). Pass the manifest with
 `--environment-manifest`:
 
 ```bash
 bench run benchmarks/clawsbench/tasks/<task> \
   --environment-manifest benchmarks/clawsbench/environment.toml \
+  --agent claude-agent-acp --model claude-haiku-4-5
+
+bench run benchmarks/chi-bench/tasks/<task> \
+  --environment-manifest benchmarks/chi-bench/environment.toml \
   --agent claude-agent-acp --model claude-haiku-4-5
 ```
 
@@ -288,7 +305,54 @@ bench run benchmarks/clawsbench/tasks/<task> \
 the rollout runs; the environment manifest is *the world* the agent acts in.
 BenchFlow provisions the environment, gates on its readiness before the agent
 runs, and tears it down afterward. See [the Environment plane](./environment-plane.md)
-for the full manifest schema.
+for the full manifest schema, both onboarded benchmarks, and the
+`snapshot`/`restore` roll-back contract.
+
+---
+
+## Running foreign benchmarks (inbound adapters)
+
+BenchFlow runs benchmarks authored in other formats without converting them
+first. An **inbound adapter** translates a foreign task directory into
+BenchFlow-native shape; the rollout then runs natively. Two adapters ship:
+
+| Source format | Signature file | Adapter |
+|---------------|----------------|---------|
+| Harbor | `task.toml` | `HarborAdapter` |
+| Terminal-Bench | `task.yaml` | `TerminalBenchAdapter` |
+
+`benchflow.adapters.inbound.detect_adapter()` sniffs a task directory and
+picks the adapter whose format it matches (`task.toml` is checked first, so a
+directory carrying both is treated as Harbor — the native superset). Each
+adapter is a pure `Path -> InboundTask` translation: it reads a directory and
+returns an in-memory native task, building no sandboxes and running nothing.
+Terminal-Bench tasks are backward-compatible this way — old terminal-style
+tasks keep running on BenchFlow unchanged.
+
+---
+
+## Continual learning (`sequential-shared` job mode)
+
+By default a job runs its rollouts concurrently and isolated
+(`parallel-independent`). A **continual-learning** job instead runs them
+strictly in order over one persistent, versioned store of memory + skills —
+set `job_mode: sequential-shared` in the YAML config:
+
+```yaml
+source:
+  repo: benchflow-ai/skillsbench
+  path: tasks
+agent: claude-agent-acp
+model: claude-haiku-4-5
+job_mode: sequential-shared
+```
+
+In this mode each rollout reads the current `LearnerStore` state and, after
+it scores, offers its reward as a learning-curve metric: an improvement
+stamps a new generation, a regression is reverted to the best generation so
+far. Concurrency is ignored — a shared mutable store cannot be written by
+overlapping rollouts. See the [architecture doc](./architecture.md#the-eight-capabilities--how-each-fits),
+capability 5, for the full design.
 
 ---
 

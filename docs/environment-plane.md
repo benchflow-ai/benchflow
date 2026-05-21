@@ -65,6 +65,17 @@ hard-coded `SERVICES` dict in `benchflow/sandbox/services.py`.
 |---|---|---|---|
 | `keys` | list[str] | `[]` | Host env vars forwarded into the environment container. |
 
+### `[environment.state]`
+
+Present only for an environment that supports **roll-back** — `snapshot` /
+`restore`. Absent this table, the environment is treated as stateless and
+`snapshot`/`restore` raise `RuntimeError`.
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `kind` | `"sqlite"` | `"sqlite"` | State backend. Only SQLite is supported today. |
+| `paths` | list[str] | `[]` | The database files to capture and restore (one snapshot covers all of them). |
+
 ## Worked example — ClawsBench
 
 `benchmarks/clawsbench/environment.toml` — the internal-dogfood stateful
@@ -96,7 +107,45 @@ port    = 9001
 
 One manifest serves the whole benchmark even though smolclaws builds a
 per-task image carrying only a subset of the services: `ManifestEnvironment`
-probes `command -v` and starts only the binaries actually installed.
+probes each service's entry point with `--help` and starts only the services
+whose package is actually installed in this per-task image.
+
+## Worked example — chi-bench
+
+`benchmarks/chi-bench/environment.toml` — the *other* topology, and the
+external proof that a heavy environment onboards untouched. chi-bench is a
+~25k-LOC healthcare simulator that ships **one** ready-to-run image whose
+entrypoint starts its own services, so the manifest declares no
+`[[services]]`:
+
+```toml
+[environment]
+name           = "chi-bench"
+image          = "chi-bench:latest"
+owns_lifecycle = true
+isolation      = "per_task"
+ports          = [8020, 8023, 8100, 8200]
+
+[environment.task_selection]
+mechanism   = "env_var"
+key         = "CHI_BENCH_TASK_ID"
+inject_into = "entrypoint"
+
+[environment.readiness]
+http        = ["http://localhost:8023/health"]
+timeout_sec = 120
+
+[environment.forward_env]
+keys = ["ANTHROPIC_API_KEY"]
+```
+
+This ~25-line manifest is the *entire* framework-integration surface:
+chi-bench's image, Dockerfile, and entrypoint are unmodified, and the ~920
+LOC of Harbor coupling it previously carried collapses into the manifest.
+ClawsBench (`base_image` + framework-started `[[services]]`) and chi-bench
+(`image` + `owns_lifecycle = true`) are the two topologies behind one
+contract. See [`benchmarks/chi-bench/README.md`](../benchmarks/chi-bench/README.md)
+for the field-by-field mapping.
 
 ## How it runs
 
@@ -147,12 +196,20 @@ Each line is one record: `prompt`, `completion`, `reward`, `metrics`,
 `is_completed`, `is_truncated`, `example_id`, `info` — the shape pinned
 against the Verifiers `RolloutOutput` type.
 
+## Roll-back — `snapshot` / `restore`
+
+`snapshot` / `restore` are **real**. For an environment that declares an
+`[environment.state]` table, `snapshot()` copies each declared SQLite file
+with `sqlite3 .backup` (a consistent online backup) into a per-snapshot
+directory inside the sandbox, and `restore(snap)` copies the captured files
+back over the live paths. This is the substrate `Rollout.branch()` runs on:
+a branch quiesces the agent and services, restores a snapshot, and explores
+an alternative continuation. An environment with no `[environment.state]`
+table is stateless — `snapshot`/`restore` raise `RuntimeError`.
+
 ## Not yet implemented
 
-The following are the [platform layer](./architecture.md#the-deferred--platform-layer)
-— `ManifestEnvironment` raises `NotImplementedError` or does not exercise them:
+`ManifestEnvironment` raises `NotImplementedError` or does not exercise:
 
-- **`snapshot` / `restore`** — environment-state branching.
-- **`reset`** — used by branching.
+- **`reset`** — full environment reset (distinct from snapshot roll-back).
 - **Sidecar / shared-fleet topology** — host-exposed ports, `AccountBroker`.
-- **Continual learning** — the `sequential-shared` Job mode.
