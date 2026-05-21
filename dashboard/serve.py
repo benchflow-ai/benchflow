@@ -16,6 +16,7 @@ reload the page — no server restart needed.
 
 from __future__ import annotations
 
+import contextlib
 import http.server
 import socketserver
 import subprocess
@@ -46,10 +47,8 @@ def main() -> int:
         url = f"http://localhost:{port}/"
         print(f"\n  BenchFlow dashboard → {url}")
         print("  Ctrl-C to stop.\n")
-        try:
+        with contextlib.suppress(Exception):
             webbrowser.open(url)
-        except Exception:
-            pass
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:

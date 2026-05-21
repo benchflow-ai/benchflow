@@ -5,11 +5,12 @@ Sections, two live and the rest authored / derived:
 
   live      — test results (parsed from ``junit.xml``)
             — the jobs tree (scanned from ``jobs/``: groups → runs → tasks →
-              artifacts, mirroring the folder layout)
-            — the work timeline (derived from ``git log main..v0.5-integration``)
+              artifacts, mirroring the folder layout; every artifact carries
+              its actual file content, capped)
+            — the experiments timeline (scanned from ``experiments/`` + ``labs/``)
   authored  — the concept map (the architecture)
             — the roadmap (the v0.5 milestones + Linear issues)
-            — the agent advisories (the 4×-review punch list), each cross-linked
+            — the agent advisories (the 4x-review punch list), each cross-linked
               to the capability and the job group it corresponds to
 
 Usage::
@@ -20,6 +21,7 @@ Usage::
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 import subprocess
@@ -109,6 +111,65 @@ def _count_lines(p: Path) -> int:
         return 0
 
 
+# File-content payloads — the dashboard shows the actual contents of every
+# artifact, so each readable file is embedded (capped) into data.json.
+_MAX_LINES = 240
+_MAX_BYTES = 64000
+_LANG = {
+    ".json": "json", ".jsonl": "jsonl", ".csv": "csv", ".sh": "shell",
+    ".py": "python", ".txt": "text", ".md": "text", ".toml": "text",
+    ".log": "text", ".yaml": "text", ".yml": "text",
+}
+
+
+def _lang_for(p: Path) -> str:
+    return _LANG.get(p.suffix.lower(), "text")
+
+
+def _file_payload(p: Path) -> tuple[str | None, int, bool, str]:
+    """Read a text file, capped. Returns (content, total_lines, truncated, lang).
+
+    Binary and unreadable files return ``(None, 0, False, lang)``. The line
+    count is the file's *real* length even when the embedded content is capped.
+    """
+    lang = _lang_for(p)
+    try:
+        raw = p.read_bytes()
+    except Exception:
+        return None, 0, False, lang
+    if b"\x00" in raw[:4096]:  # binary
+        return None, 0, False, lang
+    text = raw.decode("utf-8", errors="replace")
+    lines = text.splitlines()
+    total = len(lines)
+    truncated = False
+    if total > _MAX_LINES:
+        text = "\n".join(lines[:_MAX_LINES])
+        truncated = True
+    if len(text) > _MAX_BYTES:
+        text = text[:_MAX_BYTES]
+        truncated = True
+    return text, total, truncated, lang
+
+
+def _artifact(name: str, kind: str, path: Path) -> dict:
+    """One artifact record — including the file's (capped) actual content."""
+    content, lines, truncated, lang = _file_payload(path)
+    if kind == "trajectory":
+        info = f"{lines} events"
+    elif kind == "reward":
+        info = (content or "").strip().splitlines()[0][:16] if content else ""
+    else:
+        try:
+            info = f"{path.stat().st_size:,} bytes"
+        except Exception:
+            info = ""
+    return {
+        "name": name, "kind": kind, "info": info, "lang": lang,
+        "content": content, "content_lines": lines, "truncated": truncated,
+    }
+
+
 # Each job group, the capability it exercises, and the advisory IDs it
 # corresponds to — this is the jobs ↔ agent-advisor correspondence.
 GROUP_META = {
@@ -141,32 +202,31 @@ _ART_KIND = {
 
 
 def _task_artifacts(d: Path) -> list[dict]:
-    """List the artifact files a rollout directory holds."""
+    """Every artifact file a rollout directory holds, with its contents.
+
+    Top-level files plus the files inside the rollout's subdirs
+    (``trajectory/`` ``verifier/`` ``agent/`` ``artifacts/``) — each record
+    carries the file's embedded, capped content so the dashboard can show it
+    verbatim.
+    """
     arts: list[dict] = []
     for child in sorted(d.iterdir()):
-        rel = child.name
         if child.is_file():
-            arts.append({"name": rel, "kind": _ART_KIND.get(rel, "file"), "info": ""})
-        elif child.is_dir():
-            files = sorted(p for p in child.rglob("*") if p.is_file())
-            if rel == "trajectory" or rel == "agent":
-                tj = next((p for p in files if p.name.endswith(".jsonl")), None)
-                if tj is not None and rel == "trajectory":
-                    arts.append({
-                        "name": f"{rel}/{tj.name}", "kind": "trajectory",
-                        "info": f"{_count_lines(tj)} events",
-                    })
-            if rel == "verifier":
-                rf = child / "reward.txt"
-                if rf.is_file():
-                    try:
-                        arts.append({"name": "verifier/reward.txt", "kind": "reward",
-                                     "info": rf.read_text().strip()[:12]})
-                    except Exception:
-                        pass
-            if files and rel in ("agent", "artifacts", "verifier"):
-                arts.append({"name": f"{rel}/", "kind": "dir",
-                             "info": f"{len(files)} file(s)"})
+            arts.append(_artifact(child.name,
+                                  _ART_KIND.get(child.name, "file"), child))
+    for sub in ("trajectory", "verifier", "agent", "artifacts"):
+        subdir = d / sub
+        if not subdir.is_dir():
+            continue
+        for f in sorted(p for p in subdir.rglob("*") if p.is_file()):
+            rel = f.relative_to(d).as_posix()
+            if f.name.endswith(".jsonl"):
+                kind = "trajectory"
+            elif f.name == "reward.txt":
+                kind = "reward"
+            else:
+                kind = "file"
+            arts.append(_artifact(rel, kind, f))
     return arts
 
 
@@ -277,39 +337,105 @@ def collect_jobs() -> dict:
 
 
 # --------------------------------------------------------------------------
-# Live source 3 — the work timeline (git log main..v0.5-integration)
+# Live source 3 — the experiments timeline (the experiments/ + labs/ folders)
 # --------------------------------------------------------------------------
-def _commit_type(subject: str) -> str:
-    s = subject.lower()
-    if s.startswith("merge"):
-        return "merge"
-    for t in ("feat", "fix", "docs", "build", "refactor", "chore", "test"):
-        if s.startswith(t + "(") or s.startswith(t + ":"):
-            return t
-    return "other"
+# (keyword, type, label, blurb) — the first rule whose keyword appears in a
+# filename claims it. `reviewer` precedes `ablation` (reviewer_ablation.py).
+EXP_RULES = [
+    ("reviewer", "reviewer", "Reviewer ablation",
+     "LLM-judge reviewer ablation."),
+    ("ablation", "ablation", "Ablation studies",
+     "Progressive-disclosure ablation runs and retries."),
+    ("skillsbench", "skillsbench", "SkillsBench validation",
+     "BYOS and skill-creator validation runs."),
+    ("swebench", "swebench", "SWE-bench Pro",
+     "SWE-bench Pro oracle-vs-baseline and progressive-disclosure results."),
+    ("scene", "scene", "Scene-lifecycle validation",
+     "Multi-scene lifecycle and TB2 scene validation."),
+    ("tb2", "scene", "Scene-lifecycle validation",
+     "Multi-scene lifecycle and TB2 scene validation."),
+]
 
 
-def collect_timeline() -> list[dict]:
-    """The v0.5 work timeline — every commit on main..v0.5-integration."""
+def _exp_file(p: Path, display: str | None = None) -> dict:
+    """One experiment file — its kind, size, row count, and capped content."""
+    content, lines, truncated, lang = _file_payload(p)
+    suf = p.suffix.lower()
+    kind = ("script" if suf in (".py", ".sh")
+            else "results" if suf in (".csv", ".json") else "data")
+    rows = max(lines - 1, 0) if suf == ".csv" else None
     try:
-        raw = subprocess.run(
-            ["git", "log", "--pretty=format:%h\x1f%ad\x1f%s",
-             "--date=format:%Y-%m-%d %H:%M", "main..v0.5-integration"],
-            cwd=ROOT, capture_output=True, text=True, check=True,
-        ).stdout
+        size = p.stat().st_size
     except Exception:
-        return []
-    events: list[dict] = []
-    for line in raw.splitlines():
-        parts = line.split("\x1f")
-        if len(parts) != 3:
-            continue
-        h, date, subject = parts
-        events.append({
-            "hash": h, "date": date, "type": _commit_type(subject),
-            "subject": subject,
-        })
-    return events
+        size = 0
+    return {
+        "name": display or p.name, "kind": kind, "lang": lang, "size": size,
+        "rows": rows, "content": content, "content_lines": lines,
+        "truncated": truncated,
+    }
+
+
+def _ymd(mtimes: list[float]) -> str:
+    return (datetime.fromtimestamp(max(mtimes)).strftime("%Y-%m-%d")
+            if mtimes else "")
+
+
+def collect_experiments() -> list[dict]:
+    """The experiments timeline — scanned from experiments/ and labs/.
+
+    Loose files in experiments/ are grouped into experiments by filename
+    (see EXP_RULES); each subfolder of labs/ is its own experiment. Each
+    experiment's files carry their embedded content, newest experiment first.
+    """
+    out: list[dict] = []
+
+    exp = ROOT / "experiments"
+    if exp.is_dir():
+        buckets: dict[str, dict] = {}
+        for f in sorted(exp.iterdir()):
+            if not f.is_file() or f.name.startswith("."):
+                continue
+            low = f.name.lower()
+            match = next((r for r in EXP_RULES if r[0] in low), None)
+            if match:
+                _, typ, label, blurb = match
+            else:
+                typ, label, blurb = ("other", "Other experiments",
+                                     "Assorted experiment scripts and data.")
+            b = buckets.setdefault(
+                label, {"type": typ, "blurb": blurb, "files": [], "mtimes": []})
+            b["files"].append(_exp_file(f))
+            with contextlib.suppress(Exception):
+                b["mtimes"].append(f.stat().st_mtime)
+        for label, b in buckets.items():
+            out.append({
+                "name": label, "source": "experiments/", "type": b["type"],
+                "blurb": b["blurb"], "date": _ymd(b["mtimes"]),
+                "files": sorted(b["files"], key=lambda x: x["name"]),
+            })
+
+    labs = ROOT / "labs"
+    if labs.is_dir():
+        for sub in sorted(labs.iterdir()):
+            if not sub.is_dir() or sub.name.startswith("."):
+                continue
+            files = [p for p in sorted(sub.rglob("*"))
+                     if p.is_file() and not p.name.startswith(".")]
+            mtimes = []
+            for p in files:
+                with contextlib.suppress(Exception):
+                    mtimes.append(p.stat().st_mtime)
+            out.append({
+                "name": sub.name.replace("-", " ").replace("_", " ").title(),
+                "source": f"labs/{sub.name}/", "type": "lab",
+                "blurb": f"Lab experiment — {sub.name}.",
+                "date": _ymd(mtimes),
+                "files": [_exp_file(p, p.relative_to(sub).as_posix())
+                          for p in files[:24]],
+            })
+
+    out.sort(key=lambda e: (e["date"], e["name"]), reverse=True)
+    return out
 
 
 # --------------------------------------------------------------------------
@@ -416,10 +542,10 @@ ROADMAP = {
 
 
 # --------------------------------------------------------------------------
-# Authored — agent advisories (the 4×-review punch list), cross-linked
+# Authored — agent advisories (the 4x-review punch list), cross-linked
 # --------------------------------------------------------------------------
 ADVISORIES = {
-    "source": "4× subagent review of the v0.5 capability fix pass (commits 35cdd47 → 0406a75)",
+    "source": "4x subagent review of the v0.5 capability fix pass (commits 35cdd47 → 0406a75)",
     "items": [
         {"id": "MUST-1", "severity": "must-fix", "status": "resolved", "agent": "Review consensus",
          "capability": 5, "group": "e2e",
@@ -471,7 +597,7 @@ def main() -> int:
         run_suite()
     tests = collect_tests()
     jobs = collect_jobs()
-    timeline = collect_timeline()
+    experiments = collect_experiments()
 
     done = sum(1 for c in CONCEPT_MAP["capabilities"] if c["status"] == "shipped")
     all_issues = [i for m in ROADMAP["milestones"] for i in m["issues"]]
@@ -486,7 +612,7 @@ def main() -> int:
                                  if i["status"] in ("In Progress", "In Review")),
             "jobs_total": jobs["total_tasks"],
             "job_groups": len(jobs["groups"]),
-            "commits": len(timeline),
+            "experiments": len(experiments),
             "advisories_open": sum(1 for a in ADVISORIES["items"]
                                    if a["status"] == "open"),
         },
@@ -494,7 +620,7 @@ def main() -> int:
         "tests": tests,
         "roadmap": ROADMAP,
         "jobs": jobs,
-        "timeline": timeline,
+        "experiments": experiments,
         "advisories": ADVISORIES,
     }
     OUT.write_text(json.dumps(data, indent=2))
@@ -502,7 +628,7 @@ def main() -> int:
     print(f"wrote {OUT.relative_to(ROOT)}")
     print(f"  tests: {s['passed']}p/{s['failed']}f/{s['skipped']}s   "
           f"jobs: {jobs['total_tasks']} tasks in {len(jobs['groups'])} groups   "
-          f"timeline: {len(timeline)} commits   "
+          f"experiments: {len(experiments)}   "
           f"capabilities: {done}/{len(CONCEPT_MAP['capabilities'])}")
     return 0
 
