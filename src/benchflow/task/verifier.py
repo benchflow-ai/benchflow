@@ -192,6 +192,20 @@ class Verifier:
             user="root",
             service=service,
         )
+
+        # The ``main`` (agent) container has ``/logs/verifier`` bind-mounted
+        # and re-created by ``harden_before_verify``. A non-``main`` target
+        # service (#248) has neither, so the ``test.sh`` stdout redirect below
+        # — and any ``test.sh`` that writes ``reward.txt`` there — would fail
+        # before verification even starts. Create it explicitly first.
+        if service != "main":
+            verifier_dir = shlex.quote(str(sandbox_paths.verifier_dir))
+            await self._sandbox.exec(
+                f"mkdir -p {verifier_dir} && chmod 777 {verifier_dir}",
+                user="root",
+                service=service,
+            )
+
         await self._sandbox.exec(
             command=f"{test_script_path} > {test_stdout_path} 2>&1",
             env=env,
