@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Claw Gmail{% endblock %}</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&family=Roboto:wght@300;400;500;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        'google-sans': ['"Google Sans"', 'Roboto', 'Arial', 'sans-serif'],
+                        'roboto': ['Roboto', 'Arial', 'sans-serif'],
+                    }
+                }
+            }
+        }
+    </script>
+    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+    <style>
+        .email-row:hover { background-color: #f2f6fc; }
+        .email-row.unread { font-weight: 600; }
+        .sidebar-item:hover { background-color: #e8eaed; border-radius: 0 16px 16px 0; }
+        .sidebar-item.active { background-color: #d3e3fd; border-radius: 0 16px 16px 0; font-weight: 600; color: #1a73e8; }
+        .material-symbols-outlined { font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 20; }
+    </style>
+</head>
+<body class="bg-white text-gray-800 text-sm font-roboto">
+    <!-- Header -->
+    <header class="flex items-center h-16 px-4 border-b border-gray-200 bg-[#f6f8fc]">
+        <div class="flex items-center gap-4 flex-1">
+            <button class="p-2 rounded-full hover:bg-gray-200">
+                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/>
+                </svg>
+            </button>
+            <div class="flex items-center gap-2">
+                <img src="https://ssl.gstatic.com/ui/v1/icons/mail/rfr/logo_gmail_lockup_default_2x_r5.png" alt="Gmail" class="h-8">
+                <span class="text-xs bg-gray-200 text-gray-600 px-1.5 py-0.5 rounded ml-1">MOCK</span>
+            </div>
+        </div>
+        <div class="flex-1 max-w-2xl">
+            <form action="/" method="get" class="relative">
+                <span class="material-symbols-outlined absolute left-3 top-3 text-[20px] text-gray-600">search</span>
+                <input type="text" name="q" value="{{ search_query or '' }}"
+                    placeholder="Search mail"
+                    class="w-full h-12 pl-12 pr-12 bg-[#eaf1fb] rounded-3xl text-sm font-roboto focus:outline-none focus:bg-white focus:ring-1 focus:ring-blue-500 focus:shadow-md transition-shadow">
+                <button type="button" class="absolute right-3 top-3">
+                    <span class="material-symbols-outlined text-[20px] text-gray-600">tune</span>
+                </button>
+            </form>
+        </div>
+        <div class="flex-1 flex justify-end items-center gap-1">
+            <button class="p-2 rounded-full hover:bg-gray-200" title="Support">
+                <span class="material-symbols-outlined text-[20px] text-gray-600">help</span>
+            </button>
+            <button class="p-2 rounded-full hover:bg-gray-200" title="Settings">
+                <span class="material-symbols-outlined text-[20px] text-gray-600">settings</span>
+            </button>
+            <button class="p-2 rounded-full hover:bg-gray-200" title="Google apps">
+                <span class="material-symbols-outlined text-[20px] text-gray-600">apps</span>
+            </button>
+            <div class="w-8 h-8 rounded-full bg-blue-500 text-white flex items-center justify-center text-sm font-medium ml-2 cursor-pointer"
+                 title="{{ user.email_address if user else '' }}">
+                {{ (user.display_name[0] if user and user.display_name else '?') | upper }}
+            </div>
+        </div>
+    </header>
+
+    <div class="flex h-[calc(100vh-4rem)]">
+        <!-- Sidebar -->
+        <nav class="w-64 p-2 overflow-y-auto">
+            <a href="/compose-form" class="flex items-center gap-3 h-14 px-6 mb-4 rounded-2xl bg-[#c2e7ff] shadow-sm hover:shadow-md transition-shadow cursor-pointer">
+                <span class="material-symbols-outlined text-[24px]">edit</span>
+                <span class="font-medium font-google-sans">Compose</span>
+            </a>
+
+            {% set primary_nav = [
+                ("INBOX", "Inbox", unread_count or 0, "inbox"),
+                ("STARRED", "Starred", 0, "star"),
+                ("SNOOZED", "Snoozed", 0, "schedule"),
+                ("SENT", "Sent", 0, "send"),
+                ("DRAFT", "Drafts", draft_count or 0, "draft"),
+            ] %}
+
+            {% set more_nav = [
+                ("ALL", "All Mail", 0, "mail"),
+                ("TRASH", "Trash", 0, "delete"),
+                ("SPAM", "Spam", 0, "report"),
+                ("IMPORTANT", "Important", 0, "label_important"),
+                ("SCHEDULED", "Scheduled", 0, "schedule_send"),
+            ] %}
+
+            {% set more_labels = ['ALL', 'TRASH', 'SPAM', 'IMPORTANT', 'SCHEDULED'] %}
+
+            {% for lid, lname, count, icon in primary_nav %}
+            <a href="/?label={{ lid }}"
+               class="sidebar-item flex items-center h-8 px-3 pl-6 text-sm gap-4 {{ 'active' if current_label == lid else '' }}">
+                <span class="material-symbols-outlined text-[20px]" style="font-variation-settings: 'FILL' {{ 1 if current_label == lid else 0 }};">{{ icon }}</span>
+                <span class="flex-1">{{ lname }}</span>
+                {% if count %}<span class="text-xs font-bold">{{ count }}</span>{% endif %}
+            </a>
+            {% endfor %}
+
+            <button onclick="document.getElementById('sidebar-more').classList.toggle('hidden'); this.querySelector('.expand-icon').textContent = document.getElementById('sidebar-more').classList.contains('hidden') ? 'expand_more' : 'expand_less';"
+                    class="sidebar-item flex items-center h-8 px-3 pl-6 text-sm gap-4 w-full text-left">
+                <span class="material-symbols-outlined text-[20px] expand-icon">{{ 'expand_less' if current_label in more_labels else 'expand_more' }}</span>
+                <span class="flex-1">More</span>
+            </button>
+
+            <div id="sidebar-more" class="{{ '' if current_label in more_labels else 'hidden' }}">
+                {% for lid, lname, count, icon in more_nav %}
+                <a href="/?label={{ lid }}"
+                   class="sidebar-item flex items-center h-8 px-3 pl-6 text-sm gap-4 {{ 'active' if current_label == lid else '' }}">
+                    <span class="material-symbols-outlined text-[20px]" style="font-variation-settings: 'FILL' {{ 1 if current_label == lid else 0 }};">{{ icon }}</span>
+                    <span class="flex-1">{{ lname }}</span>
+                    {% if count %}<span class="text-xs font-bold">{{ count }}</span>{% endif %}
+                </a>
+                {% endfor %}
+            </div>
+
+            {% if labels %}
+            <div class="mt-4 px-6 text-xs text-gray-500 font-medium mb-1">Labels</div>
+            {% for label in labels %}
+                {% if label.type != 'system' %}
+                <a href="/?label={{ label.id }}"
+                   class="sidebar-item flex items-center h-8 px-6 text-sm {{ 'active' if current_label == label.id else '' }}">
+                    <span class="w-3 h-3 rounded-full bg-gray-400 mr-3 flex-shrink-0"></span>
+                    {{ label.name }}
+                </a>
+                {% endif %}
+            {% endfor %}
+            {% endif %}
+
+            <div class="mt-4 border-t border-gray-200 pt-3">
+                <a href="/dev/tasks"
+                   class="sidebar-item flex items-center h-8 px-6 text-sm {{ 'active' if request.url.path.startswith('/dev/tasks') else '' }}">
+                    <svg class="w-4 h-4 mr-3 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/>
+                    </svg>
+                    <span class="flex-1">Tasks</span>
+                </a>
+                <a href="/dev/api-explorer"
+                   class="sidebar-item flex items-center h-8 px-6 text-sm {{ 'active' if request.url.path == '/dev/api-explorer' else '' }}">
+                    <svg class="w-4 h-4 mr-3 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"/>
+                    </svg>
+                    <span class="flex-1">API Explorer</span>
+                </a>
+                <a href="/dev/db-viewer"
+                   class="sidebar-item flex items-center h-8 px-6 text-sm {{ 'active' if request.url.path == '/dev/db-viewer' else '' }}">
+                    <svg class="w-4 h-4 mr-3 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2 3 4 8 4s8-2 8-4V7M4 7c0 2 3 4 8 4s8-2 8-4M4 7c0-2 3-4 8-4s8 2 8 4m0 5c0 2-3 4-8 4s-8-2-8-4"/>
+                    </svg>
+                    <span class="flex-1">DB Viewer</span>
+                </a>
+                <a href="/dev/dashboard"
+                   class="sidebar-item flex items-center h-8 px-6 text-sm {{ 'active' if request.url.path == '/dev/dashboard' else '' }}">
+                    <svg class="w-4 h-4 mr-3 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
+                    </svg>
+                    <span class="flex-1">Dashboard</span>
+                </a>
+            </div>
+        </nav>
+
+        <!-- Main content -->
+        <main class="flex-1 border-l border-gray-200 overflow-y-auto">
+            {% block content %}{% endblock %}
+        </main>
+    </div>
+
+    <!-- Compose Modal -->
+    <div id="compose-modal" class="hidden fixed bottom-0 right-6 w-[560px] h-[520px] bg-white rounded-t-lg shadow-2xl border border-gray-200 z-50 flex flex-col">
+        <!-- Header -->
+        <div class="flex items-center h-10 px-3 bg-[#404040] text-white rounded-t-lg flex-shrink-0">
+            <span class="text-[13px] font-medium flex-1 cursor-default">New Message</span>
+            <div class="flex items-center gap-0.5">
+                <button type="button" onclick="event.stopPropagation();" class="p-1.5 hover:bg-[#555] rounded-sm" title="Minimize">
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M5 12h14"/></svg>
+                </button>
+                <button type="button" onclick="event.stopPropagation();" class="p-1.5 hover:bg-[#555] rounded-sm" title="Full screen">
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg>
+                </button>
+                <button type="button" onclick="event.stopPropagation(); document.getElementById('compose-modal').classList.add('hidden')" class="p-1.5 hover:bg-[#555] rounded-sm" title="Close">
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M6 18L18 6M6 6l12 12"/></svg>
+                </button>
+            </div>
+        </div>
+        <!-- Form -->
+        <form action="/compose" method="post" class="flex flex-col flex-1 min-h-0">
+            <div class="border-b border-gray-200 px-4 py-2 flex-shrink-0">
+                <input type="text" name="to" placeholder="Recipients"
+                       class="w-full text-sm text-gray-800 focus:outline-none placeholder-gray-500">
+            </div>
+            <div class="border-b border-gray-200 px-4 py-2 flex-shrink-0">
+                <input type="text" name="subject" placeholder="Subject"
+                       class="w-full text-sm text-gray-800 focus:outline-none placeholder-gray-500">
+            </div>
+            <textarea name="body" class="flex-1 w-full px-4 py-3 text-sm text-gray-800 focus:outline-none resize-none"></textarea>
+            <!-- Bottom toolbar -->
+            <div class="flex items-center px-3 py-2 border-t border-gray-100 flex-shrink-0">
+                <button type="submit"
+                        class="flex items-center gap-1 px-5 py-2 bg-[#1a73e8] text-white rounded-full text-sm font-medium hover:bg-[#1765cc] hover:shadow-md">
+                    Send
+                    <svg class="w-3.5 h-3.5 ml-1 opacity-70" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path d="M19 9l-7 7-7-7"/></svg>
+                </button>
+                <div class="flex items-center ml-2 gap-0.5 text-gray-600">
+                    <button type="button" class="p-2 hover:bg-gray-100 rounded-full" title="Formatting options">
+                        <span class="material-symbols-outlined text-[20px]">format_size</span>
+                    </button>
+                    <button type="button" class="p-2 hover:bg-gray-100 rounded-full" title="Attach files">
+                        <span class="material-symbols-outlined text-[20px]">attach_file</span>
+                    </button>
+                    <button type="button" class="p-2 hover:bg-gray-100 rounded-full" title="Insert link">
+                        <span class="material-symbols-outlined text-[20px]">link</span>
+                    </button>
+                    <button type="button" class="p-2 hover:bg-gray-100 rounded-full" title="Insert emoji">
+                        <span class="material-symbols-outlined text-[20px]">mood</span>
+                    </button>
+                    <button type="button" class="p-2 hover:bg-gray-100 rounded-full" title="Insert photo">
+                        <span class="material-symbols-outlined text-[20px]">photo</span>
+                    </button>
+                    <button type="button" class="p-2 hover:bg-gray-100 rounded-full" title="Confidential mode">
+                        <span class="material-symbols-outlined text-[20px]">lock_clock</span>
+                    </button>
+                    <button type="button" class="p-2 hover:bg-gray-100 rounded-full" title="Insert signature">
+                        <span class="material-symbols-outlined text-[20px]">draw</span>
+                    </button>
+                </div>
+                <div class="flex-1"></div>
+                <button type="button" class="p-2 hover:bg-gray-100 rounded-full text-gray-600" title="Discard draft"
+                        onclick="document.getElementById('compose-modal').classList.add('hidden')">
+                    <span class="material-symbols-outlined text-[20px]">delete</span>
+                </button>
+            </div>
+        </form>
+    </div>
+
+    <script>
+        // Open compose modal
+        document.querySelectorAll('a[href="/compose-form"]').forEach(el => {
+            el.addEventListener('click', (e) => {
+                e.preventDefault();
+                document.getElementById('compose-modal').classList.remove('hidden');
+            });
+        });
+    </script>
+</body>
+</html>
