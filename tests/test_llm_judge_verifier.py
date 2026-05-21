@@ -315,6 +315,39 @@ class TestLLMJudgeVerifier:
 
     @patch("benchflow.rewards.llm.call_judge", new_callable=AsyncMock)
     @pytest.mark.asyncio
+    async def test_missing_provider_sdk_surfaces_as_verifier_error(
+        self, mock_judge: AsyncMock, tmp_path: Path
+    ) -> None:
+        """A missing judge SDK must surface as a verifier *error*, not a reward.
+
+        ``call_judge`` raises ``JudgeEnvironmentError`` when no provider SDK is
+        installed. The verifier must let it propagate so the run is marked
+        errored — recording reward 0.0 would be indistinguishable from a
+        genuine judge verdict of fail.
+        """
+        from benchflow.rewards.llm import JudgeEnvironmentError
+
+        mock_judge.side_effect = JudgeEnvironmentError(
+            "No LLM provider SDK is installed for model claude-haiku-4-5"
+        )
+        task = _make_task(tmp_path, _judge_toml())
+        (task.task_dir / "tests").mkdir()
+        (task.task_dir / "tests" / "rubric.json").write_text(
+            json.dumps({"criteria": [{"id": "c1", "match_criteria": "ok"}]})
+        )
+        sandbox = _make_sandbox({"answer.txt": "the answer"})
+        rollout_paths = RolloutPaths(tmp_path / "rollout")
+        rollout_paths.mkdir()
+
+        verifier = Verifier(task, rollout_paths, sandbox)
+        with pytest.raises(JudgeEnvironmentError):
+            await verifier.verify()
+
+        # No reward was written — a missing SDK is not a score.
+        assert not rollout_paths.reward_json_path.exists()
+
+    @patch("benchflow.rewards.llm.call_judge", new_callable=AsyncMock)
+    @pytest.mark.asyncio
     async def test_download_failure_is_tolerated(
         self, mock_judge: AsyncMock, tmp_path: Path
     ) -> None:

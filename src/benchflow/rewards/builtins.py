@@ -262,7 +262,11 @@ class LLMJudgeRewardFunc:
 
     async def _rubric_score(self, rubric: RubricConfig, rollout_dir: Path) -> float:
         from benchflow.rewards.file_readers import find_deliverables
-        from benchflow.rewards.llm import call_judge, parse_verdict
+        from benchflow.rewards.llm import (
+            JudgeEnvironmentError,
+            call_judge,
+            parse_verdict,
+        )
 
         model = self._resolve_model(rubric.judge.model)
         deliverables = find_deliverables(rollout_dir)
@@ -289,6 +293,12 @@ class LLMJudgeRewardFunc:
                 raw_response = await call_judge(model, prompt_text)
                 verdict = parse_verdict(raw_response)
                 norm_score = self._extract_score(criterion, verdict)
+            except JudgeEnvironmentError:
+                # No provider SDK installed — the judge could not run at all.
+                # This is an environment failure, not a verdict: propagate it
+                # so the verifier marks the run as errored instead of silently
+                # recording reward 0.0 (indistinguishable from a real fail).
+                raise
             except Exception as exc:
                 logger.warning("Judge error on criterion %s: %s", criterion.id, exc)
                 norm_score = 0.0
