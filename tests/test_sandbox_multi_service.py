@@ -108,6 +108,33 @@ class TestDockerSandboxServiceExec:
 
         assert services == ["main", "target", "db"]
 
+    @pytest.mark.asyncio
+    async def test_services_filters_merged_stderr_warnings(self) -> None:
+        """#248: warning lines merged into stdout are not mistaken for services.
+
+        ``_run_docker_compose_command`` redirects stderr into stdout, so a
+        compose warning could otherwise become a spurious service name.
+        """
+        sandbox = self._make_sandbox()
+
+        async def fake_run(command, check=True, timeout_sec=None):
+            assert command == ["config", "--services"]
+            return ExecResult(
+                stdout=(
+                    "WARN[0000] /env/docker-compose.yaml: `version` is obsolete\n"
+                    'time="2024-01-01" level=warning msg="foo"\n'
+                    "main\n"
+                    "target\n"
+                ),
+                stderr="",
+                return_code=0,
+            )
+
+        sandbox._run_docker_compose_command = fake_run  # type: ignore[method-assign]
+        services = await sandbox.services()
+
+        assert services == ["main", "target"]
+
 
 class TestDockerProcessServiceSelection:
     """#248: ACP agent process can be launched into a non-main service."""
@@ -204,7 +231,7 @@ class TestDaytonaServiceExec:
     @pytest.mark.asyncio
     async def test_dind_exec_targets_named_service(self) -> None:
         """#248: DinD compose exec runs the command in the named service."""
-        pytest.importorskip("tenacity")  # sandbox-daytona optional dependency
+        pytest.importorskip("daytona")  # sandbox-daytona optional dependency
         from benchflow.sandbox.daytona import _DaytonaDinD
 
         strategy = _DaytonaDinD.__new__(_DaytonaDinD)
@@ -223,7 +250,7 @@ class TestDaytonaServiceExec:
     @pytest.mark.asyncio
     async def test_dind_exec_defaults_to_main(self) -> None:
         """#248: DinD compose exec still defaults to the agent's main container."""
-        pytest.importorskip("tenacity")  # sandbox-daytona optional dependency
+        pytest.importorskip("daytona")  # sandbox-daytona optional dependency
         from benchflow.sandbox.daytona import _DaytonaDinD
 
         strategy = _DaytonaDinD.__new__(_DaytonaDinD)
@@ -242,13 +269,68 @@ class TestDaytonaServiceExec:
     @pytest.mark.asyncio
     async def test_direct_strategy_rejects_non_main_service(self) -> None:
         """#248: direct (non-compose) Daytona sandbox rejects multi-service."""
-        pytest.importorskip("tenacity")  # sandbox-daytona optional dependency
+        pytest.importorskip("daytona")  # sandbox-daytona optional dependency
         from benchflow.sandbox.daytona import _DaytonaDirect
 
         strategy = _DaytonaDirect.__new__(_DaytonaDirect)
 
         with pytest.raises(ValueError, match="single-container"):
             await strategy.exec("echo hi", service="target")
+
+    @pytest.mark.asyncio
+    async def test_dind_services_lists_compose_services(self) -> None:
+        """#248: DinD services() enumerates every compose service in the task."""
+        pytest.importorskip("daytona")  # sandbox-daytona optional dependency
+        from benchflow.sandbox.daytona import _DaytonaDinD
+
+        strategy = _DaytonaDinD.__new__(_DaytonaDinD)
+        captured: list[list[str]] = []
+
+        async def fake_compose_exec(subcommand, timeout_sec=None):
+            captured.append(subcommand)
+            return ExecResult(stdout="main\ntarget\ndb\n", stderr="", return_code=0)
+
+        strategy._compose_exec = fake_compose_exec  # type: ignore[method-assign]
+        services = await strategy.services()
+
+        assert captured[0] == ["config", "--services"]
+        assert services == ["main", "target", "db"]
+
+    @pytest.mark.asyncio
+    async def test_dind_services_filters_warning_lines(self) -> None:
+        """#248: warning lines merged into stdout are not mistaken for services."""
+        pytest.importorskip("daytona")  # sandbox-daytona optional dependency
+        from benchflow.sandbox.daytona import _DaytonaDinD
+
+        strategy = _DaytonaDinD.__new__(_DaytonaDinD)
+
+        async def fake_compose_exec(subcommand, timeout_sec=None):
+            return ExecResult(
+                stdout=(
+                    "WARN[0000] /benchflow/environment/docker-compose.yaml: "
+                    "`version` is obsolete\n"
+                    "main\n"
+                    "target\n"
+                ),
+                stderr="",
+                return_code=0,
+            )
+
+        strategy._compose_exec = fake_compose_exec  # type: ignore[method-assign]
+        services = await strategy.services()
+
+        assert services == ["main", "target"]
+
+    @pytest.mark.asyncio
+    async def test_direct_strategy_services_rejects_single_container(self) -> None:
+        """#248: direct (non-compose) Daytona sandbox has no compose topology."""
+        pytest.importorskip("daytona")  # sandbox-daytona optional dependency
+        from benchflow.sandbox.daytona import _DaytonaDirect
+
+        strategy = _DaytonaDirect.__new__(_DaytonaDirect)
+
+        with pytest.raises(NotImplementedError, match="single-container"):
+            await strategy.services()
 
 
 class TestModalRejectsMultiService:
@@ -257,7 +339,7 @@ class TestModalRejectsMultiService:
     @pytest.mark.asyncio
     async def test_modal_exec_rejects_non_main_service(self) -> None:
         """#248: Modal is single-container — targeting another service must error."""
-        pytest.importorskip("tenacity")  # modal_impl optional dependency
+        pytest.importorskip("modal")  # sandbox-modal optional dependency
         from benchflow.sandbox.modal_impl import ModalSandbox
 
         sandbox = ModalSandbox.__new__(ModalSandbox)
@@ -266,3 +348,14 @@ class TestModalRejectsMultiService:
 
         with pytest.raises(ValueError, match="single-container"):
             await sandbox.exec("echo hi", service="target")
+
+    @pytest.mark.asyncio
+    async def test_modal_services_rejects_single_container(self) -> None:
+        """#248: Modal has no compose topology — services() must error clearly."""
+        pytest.importorskip("modal")  # sandbox-modal optional dependency
+        from benchflow.sandbox.modal_impl import ModalSandbox
+
+        sandbox = ModalSandbox.__new__(ModalSandbox)
+
+        with pytest.raises(NotImplementedError, match="single-container"):
+            await sandbox.services()
