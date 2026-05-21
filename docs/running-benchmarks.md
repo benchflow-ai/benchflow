@@ -271,6 +271,27 @@ bench eval create \
 
 ---
 
+## Running a benchmark with an Environment manifest
+
+A **stateful** benchmark — one with mock services, databases, or accounts the
+agent acts on — declares its world in an `environment.toml` manifest and runs
+on the [Environment plane](./environment-plane.md). Pass it with
+`--environment-manifest`:
+
+```bash
+bench run benchmarks/clawsbench/tasks/<task> \
+  --environment-manifest benchmarks/clawsbench/environment.toml \
+  --agent claude-agent-acp --model claude-haiku-4-5
+```
+
+`--environment-manifest` is distinct from `--sandbox`: the sandbox is *where*
+the rollout runs; the environment manifest is *the world* the agent acts in.
+BenchFlow provisions the environment, gates on its readiness before the agent
+runs, and tears it down afterward. See [the Environment plane](./environment-plane.md)
+for the full manifest schema.
+
+---
+
 ## Reading results
 
 Results land under `jobs/<job-name>/<rollout-name>/`:

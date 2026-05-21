@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from benchflow._types import Scene
+from benchflow.environment.manifest import EnvironmentManifest
 from benchflow.models import RolloutResult, TrajectorySource
 from benchflow.rollout import (
     _build_rollout_result,
@@ -159,6 +160,7 @@ class SDK:
         rollout_name: str | None = None,
         jobs_dir: str | Path = "jobs",
         environment: str = "docker",
+        environment_manifest: EnvironmentManifest | None = None,
         skills_dir: str | Path | None = None,
         sandbox_user: str | None = "agent",
         sandbox_locked_paths: list[str] | None = None,
@@ -183,6 +185,7 @@ class SDK:
             rollout_name=rollout_name,
             jobs_dir=jobs_dir,
             environment=environment,
+            environment_manifest=environment_manifest,
             skills_dir=skills_dir,
             sandbox_user=sandbox_user,
             sandbox_locked_paths=sandbox_locked_paths,
