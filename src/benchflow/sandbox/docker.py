@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import asyncio.subprocess
+import base64
 import contextlib
 import json
 import logging
@@ -16,6 +17,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 from typing import ClassVar
 
@@ -368,17 +370,26 @@ class DockerSandbox(BaseSandbox):
             check=True,
         )
 
-    async def upload_dir(self, source_dir: Path | str, target_dir: str) -> None:
-        await self.exec(f"mkdir -p {shlex.quote(target_dir)}", user="root")
+    async def upload_dir(
+        self, source_dir: Path | str, target_dir: str, service: str = "main"
+    ) -> None:
+        """Upload a directory into a compose service container.
+
+        ``service`` defaults to ``"main"``; pass a target service to land the
+        directory in an additional vulhub-style container (#248).
+        """
+        await self.exec(
+            f"mkdir -p {shlex.quote(target_dir)}", user="root", service=service
+        )
         await self._run_docker_compose_command(
-            ["cp", f"{source_dir}/.", f"main:{target_dir}"],
+            ["cp", f"{source_dir}/.", f"{service}:{target_dir}"],
             check=True,
         )
         if sys.platform == "win32":
             await self._run_docker_compose_command(
                 [
                     "exec",
-                    "main",
+                    service,
                     "bash",
                     "-c",
                     f"find {target_dir} -type f \\( -name '*.sh' -o -name '*.py' \\) "
@@ -387,12 +398,16 @@ class DockerSandbox(BaseSandbox):
                 check=False,
             )
 
-    async def _chown_to_host_user(self, path: str, recursive: bool = False) -> None:
+    async def _chown_to_host_user(
+        self, path: str, recursive: bool = False, service: str = "main"
+    ) -> None:
         if not hasattr(os, "getuid"):
             return
         flag = "-R " if recursive else ""
         await self.exec(
-            f"chown {flag}{os.getuid()}:{os.getgid()} {shlex.quote(path)}", user="root"
+            f"chown {flag}{os.getuid()}:{os.getgid()} {shlex.quote(path)}",
+            user="root",
+            service=service,
         )
 
     async def download_file(self, source_path: str, target_path: Path | str) -> None:
@@ -402,10 +417,17 @@ class DockerSandbox(BaseSandbox):
             check=True,
         )
 
-    async def download_dir(self, source_dir: str, target_dir: Path | str) -> None:
-        await self._chown_to_host_user(source_dir, recursive=True)
+    async def download_dir(
+        self, source_dir: str, target_dir: Path | str, service: str = "main"
+    ) -> None:
+        """Download a directory from a compose service container.
+
+        ``service`` defaults to ``"main"``; pass a target service to fetch
+        target-side verifier output from a vulhub-style container (#248).
+        """
+        await self._chown_to_host_user(source_dir, recursive=True, service=service)
         await self._run_docker_compose_command(
-            ["cp", f"main:{source_dir}/.", str(target_dir)],
+            ["cp", f"{service}:{source_dir}/.", str(target_dir)],
             check=True,
         )
 
@@ -451,18 +473,43 @@ class DockerSandbox(BaseSandbox):
         if cwd:
             exec_command.extend(["-w", cwd])
 
-        if env:
-            for key, value in env.items():
-                exec_command.extend(["-e", f"{key}={value}"])
-
         if user is not None:
             exec_command.extend(["-u", str(user)])
 
         exec_command.append(service)
+
+        # Env vars are written to a file inside the container and sourced,
+        # rather than passed as `-e KEY=VALUE` flags. The flags are visible in
+        # `ps aux` on the host, which would leak secrets — e.g. the verifier's
+        # [verifier.env] LLM-judge API keys. DockerProcess/DaytonaProcess avoid
+        # `-e` for the same reason; this keeps `exec` consistent with them.
+        if env:
+            command = self._wrap_command_with_env_file(env, command)
+
         exec_command.extend(["bash", "-c", command])
 
         return await self._run_docker_compose_command(
             exec_command, check=False, timeout_sec=timeout_sec
+        )
+
+    @staticmethod
+    def _wrap_command_with_env_file(env: dict[str, str], command: str) -> str:
+        """Return *command* prefixed to materialize *env* from a file.
+
+        The env vars are base64-encoded into the command string (not visible
+        as individual ``KEY=VALUE`` args in ``ps aux``), decoded to a
+        mode-0600 file inside the container, sourced, then deleted before the
+        real command runs.
+        """
+        env_body = "".join(f"export {k}={shlex.quote(v)}\n" for k, v in env.items())
+        encoded = base64.b64encode(env_body.encode()).decode()
+        # Unique suffix so concurrent exec() calls in one container can't
+        # clobber each other's env file.
+        env_path = f"/tmp/.benchflow_exec_env_{uuid.uuid4().hex[:16]}"
+        return (
+            f"umask 077 && printf %s {shlex.quote(encoded)} | base64 -d > "
+            f"{env_path} && set -a && . {env_path} && set +a && "
+            f"rm -f {env_path} && {command}"
         )
 
     async def attach(self) -> None:

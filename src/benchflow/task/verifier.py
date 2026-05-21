@@ -139,11 +139,20 @@ class Verifier:
     # ------------------------------------------------------------------
 
     async def _verify_test_script(self) -> VerifierResult:
-        """Run the task's ``test.sh`` verifier and return the reward result."""
+        """Run the task's ``test.sh`` verifier and return the reward result.
+
+        ``[verifier].service`` selects which compose service ``test.sh`` runs
+        in. The default ``"main"`` is the agent container (Harbor-compatible).
+        Multi-container (vulhub-style) tasks set it to a target/database
+        service so the verifier can inspect *target-side* state — RCE markers,
+        DB modifications — instead of only the agent workspace (#248).
+        """
+        service = getattr(self._task.config.verifier, "service", "main")
         try:
             await self._sandbox.upload_dir(
                 source_dir=self._task.paths.tests_dir,
                 target_dir="/tests",
+                service=service,
             )
         except Exception as e:
             raise AddTestsDirError("Failed to add tests directory to sandbox.") from e
@@ -181,20 +190,25 @@ class Verifier:
         await self._sandbox.exec(
             f"chmod +x {test_script_path}",
             user="root",
+            service=service,
         )
         await self._sandbox.exec(
             command=f"{test_script_path} > {test_stdout_path} 2>&1",
             env=env,
             user=self._task.config.verifier.user,
+            service=service,
         )
 
-        # Download verifier output if sandbox doesn't mount locally
-        is_mounted = getattr(self._sandbox, "is_mounted", False)
+        # Download verifier output if it is not host-mounted. Only the agent's
+        # ``main`` container has the rollout dir bind-mounted; a target service
+        # never does, so target-side rewards (#248) are always downloaded.
+        is_mounted = service == "main" and getattr(self._sandbox, "is_mounted", False)
         if not is_mounted:
             try:
                 await self._sandbox.download_dir(
                     source_dir=str(sandbox_paths.verifier_dir),
                     target_dir=self._rollout_paths.verifier_dir,
+                    service=service,
                 )
             except Exception as e:
                 raise DownloadVerifierDirError(

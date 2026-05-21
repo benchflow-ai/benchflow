@@ -92,7 +92,13 @@ class TestDockerSandboxServiceExec:
         assert cmd[cmd.index("bash") - 1] == "attacker"
         assert "-w" in cmd and "/work" in cmd
         assert "-u" in cmd and "root" in cmd
-        assert "-e" in cmd and "K=v" in cmd
+        # Env vars are sourced from a file inside the container, never passed
+        # as `-e KEY=VALUE` flags (which leak onto host `ps aux`).
+        assert "-e" not in cmd
+        bash_cmd = cmd[cmd.index("bash") + 2]
+        assert "base64 -d" in bash_cmd
+        for arg in cmd:
+            assert "K=v" not in arg
 
     @pytest.mark.asyncio
     async def test_services_lists_compose_services(self) -> None:
@@ -134,6 +140,102 @@ class TestDockerSandboxServiceExec:
         services = await sandbox.services()
 
         assert services == ["main", "target"]
+
+
+class TestDockerSandboxServiceFileTransfer:
+    """#248: upload_dir/download_dir must be able to target any service.
+
+    Target-side ``test.sh`` verification needs the ``/tests`` dir copied into
+    the target container and the resulting ``reward.txt`` copied back out.
+    """
+
+    def _make_sandbox(self) -> DockerSandbox:
+        sandbox = DockerSandbox.__new__(DockerSandbox)
+        sandbox._persistent_env = {}
+        sandbox.default_user = None
+        return sandbox
+
+    @pytest.mark.asyncio
+    async def test_upload_dir_targets_named_service(self) -> None:
+        """#248: upload_dir(service=...) copies into the target container."""
+        sandbox = self._make_sandbox()
+        cp_calls: list[list[str]] = []
+
+        async def fake_run(command, check=False, timeout_sec=None):
+            cp_calls.append(command)
+            return ExecResult(stdout="", stderr="", return_code=0)
+
+        sandbox._run_docker_compose_command = fake_run  # type: ignore[method-assign]
+        await sandbox.upload_dir("/host/tests", "/tests", service="target")
+
+        cp = next(c for c in cp_calls if c and c[0] == "cp")
+        assert cp == ["cp", "/host/tests/.", "target:/tests"]
+
+    @pytest.mark.asyncio
+    async def test_upload_dir_defaults_to_main(self) -> None:
+        """#248: upload_dir without a service still copies into main."""
+        sandbox = self._make_sandbox()
+        cp_calls: list[list[str]] = []
+
+        async def fake_run(command, check=False, timeout_sec=None):
+            cp_calls.append(command)
+            return ExecResult(stdout="", stderr="", return_code=0)
+
+        sandbox._run_docker_compose_command = fake_run  # type: ignore[method-assign]
+        await sandbox.upload_dir("/host/tests", "/tests")
+
+        cp = next(c for c in cp_calls if c and c[0] == "cp")
+        assert cp == ["cp", "/host/tests/.", "main:/tests"]
+
+    @pytest.mark.asyncio
+    async def test_download_dir_targets_named_service(self) -> None:
+        """#248: download_dir(service=...) copies out of the target container."""
+        sandbox = self._make_sandbox()
+        cp_calls: list[list[str]] = []
+
+        async def fake_run(command, check=False, timeout_sec=None):
+            cp_calls.append(command)
+            return ExecResult(stdout="", stderr="", return_code=0)
+
+        sandbox._run_docker_compose_command = fake_run  # type: ignore[method-assign]
+        await sandbox.download_dir("/logs/verifier", "/host/out", service="target")
+
+        cp = next(c for c in cp_calls if c and c[0] == "cp")
+        assert cp == ["cp", "target:/logs/verifier/.", "/host/out"]
+
+
+class TestSingleContainerFileTransferRejection:
+    """#248: single-container backends reject non-main dir transfers."""
+
+    @pytest.mark.asyncio
+    async def test_modal_upload_dir_rejects_non_main(self) -> None:
+        """#248: Modal upload_dir cannot target a non-main service."""
+        pytest.importorskip("modal")  # sandbox-modal optional dependency
+        from benchflow.sandbox.modal_impl import ModalSandbox
+
+        sandbox = ModalSandbox.__new__(ModalSandbox)
+        with pytest.raises(ValueError, match="single-container"):
+            await sandbox.upload_dir("/host/tests", "/tests", service="target")
+
+    @pytest.mark.asyncio
+    async def test_modal_download_dir_rejects_non_main(self) -> None:
+        """#248: Modal download_dir cannot target a non-main service."""
+        pytest.importorskip("modal")  # sandbox-modal optional dependency
+        from benchflow.sandbox.modal_impl import ModalSandbox
+
+        sandbox = ModalSandbox.__new__(ModalSandbox)
+        with pytest.raises(ValueError, match="single-container"):
+            await sandbox.download_dir("/logs/verifier", "/host/out", service="target")
+
+    @pytest.mark.asyncio
+    async def test_daytona_direct_upload_dir_rejects_non_main(self) -> None:
+        """#248: direct (non-compose) Daytona upload_dir rejects multi-service."""
+        pytest.importorskip("daytona")  # sandbox-daytona optional dependency
+        from benchflow.sandbox.daytona import _DaytonaDirect
+
+        strategy = _DaytonaDirect.__new__(_DaytonaDirect)
+        with pytest.raises(ValueError, match="single-container"):
+            await strategy.upload_dir("/host/tests", "/tests", service="target")
 
 
 class TestDockerProcessServiceSelection:

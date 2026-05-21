@@ -139,6 +139,19 @@ class VerifierConfig(BaseModel):
         default=None,
         description="Username or UID to run the verifier as.",
     )
+    service: str = Field(
+        default="main",
+        description=(
+            "Compose service the test-script verifier runs in. Defaults to "
+            "'main' (the agent container). Multi-container (vulhub-style) "
+            "tasks set this to a target/database service so test.sh can "
+            "inspect target-side state — RCE markers, DB modifications — "
+            "rather than only the agent's workspace. The agent's "
+            "anti-tamper hardening only applies to 'main'; deliberately "
+            "vulnerable target containers are intentionally not hardened. "
+            "See #248."
+        ),
+    )
     judge: JudgeVerifierConfig = Field(
         default_factory=JudgeVerifierConfig,
         description="LLM-judge configuration (used when type == 'llm-judge').",

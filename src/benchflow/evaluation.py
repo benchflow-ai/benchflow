@@ -678,8 +678,14 @@ class Evaluation:
                 for r in all_results.values()
                 if r.get("error") and r.get("rewards") is None
             ),
+            # Disjoint from `errored`: a result with both `error` and
+            # `verifier_error` is counted only as `errored`, so the
+            # passed+failed+errored+verifier_errored == total invariant holds.
             verifier_errored=sum(
-                1 for r in all_results.values() if r.get("verifier_error")
+                1
+                for r in all_results.values()
+                if r.get("verifier_error")
+                and not (r.get("error") and r.get("rewards") is None)
             ),
             elapsed_sec=elapsed,
         )

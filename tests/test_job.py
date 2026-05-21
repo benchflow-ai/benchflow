@@ -92,6 +92,38 @@ class TestJobCounting:
         assert counts["errored"] == 0
         assert counts["failed"] == 1
 
+    def test_error_and_verifier_error_counted_once(self):
+        """A result with BOTH error and verifier_error (rewards=None) must be
+        classified into exactly one bucket so the count invariant holds.
+
+        Mirrors the disjoint bucketing in Evaluation.run(): a result is
+        ``errored`` when it has an agent error, and ``verifier_errored`` only
+        when it has a verifier error AND no agent error.
+        """
+        results = {
+            "a": {
+                "rewards": None,
+                "error": "agent crashed",
+                "verifier_error": "verifier also failed",
+            },
+        }
+        errored = sum(
+            1 for r in results.values() if r.get("error") and r.get("rewards") is None
+        )
+        verifier_errored = sum(
+            1
+            for r in results.values()
+            if r.get("verifier_error")
+            and not (r.get("error") and r.get("rewards") is None)
+        )
+        # Exactly one bucket — never double-counted.
+        assert errored == 1
+        assert verifier_errored == 0
+        counts = self._count(results)
+        assert counts["passed"] + counts["failed"] + errored + verifier_errored == len(
+            results
+        )
+
 
 class TestRunTaskLoop:
     """Tests for Evaluation._run_task — retry loop behavior."""
@@ -295,6 +327,37 @@ class TestJobRunOrchestration:
 
         assert result.errored == 1
         assert any("unexpected exception: boom" in m for m in caplog.messages)
+
+    @pytest.mark.asyncio
+    async def test_error_and_verifier_error_does_not_crash_invariant(self, tmp_path):
+        """A result with BOTH error and verifier_error (rewards=None) must not
+        be double-counted — otherwise the passed+failed+errored+verifier_errored
+        == total assertion in Evaluation.run() crashes the whole evaluation.
+
+        Regression for audit Finding 6.
+        """
+        job = self._make_job(tmp_path, n_tasks=1, concurrency=1)
+        job._sdk = AsyncMock()
+        job._sdk.run = AsyncMock(
+            return_value=RunResult(
+                task_name="task-0",
+                rewards=None,
+                error="agent crashed",
+                verifier_error="verifier also failed",
+            )
+        )
+
+        # Must not raise the "Counting bug" AssertionError.
+        result = await job.run()
+
+        assert (
+            result.passed + result.failed + result.errored + result.verifier_errored
+            == result.total
+            == 1
+        )
+        # Agent error takes precedence: counted as errored, not verifier_errored.
+        assert result.errored == 1
+        assert result.verifier_errored == 0
 
     @pytest.mark.asyncio
     async def test_summary_json_includes_usage_aggregation(self, tmp_path):
