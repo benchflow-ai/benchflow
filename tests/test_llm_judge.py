@@ -7,13 +7,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import AbstractContextManager
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from benchflow.rewards.builtins import LLMJudgeRewardFunc
-from benchflow.rewards.llm import parse_verdict
+from benchflow.rewards.llm import _call_anthropic, call_judge, parse_verdict
 from benchflow.rewards.protocol import RewardFunc
 from benchflow.rewards.rubric_config import ScoringConfig
 
@@ -41,6 +42,108 @@ class TestParseVerdict:
     def test_unparseable_raises(self) -> None:
         with pytest.raises(ValueError, match="Could not parse"):
             parse_verdict("no json here at all")
+
+
+# ---------------------------------------------------------------------------
+# call_judge: provider routing and fallback
+# ---------------------------------------------------------------------------
+
+
+class TestCallJudgeProviderFallback:
+    def test_api_failure_surfaces_original_error(self) -> None:
+        """A real API failure on the matching provider is raised as-is.
+
+        The cross-provider fallback must NOT advance to a provider whose
+        API cannot serve this model name — otherwise ``last_error`` ends
+        up holding a misleading model-not-found error from the wrong
+        provider instead of the genuine failure.
+        """
+        original = RuntimeError("anthropic: invalid x-api-key")
+        anthropic_mock = AsyncMock(side_effect=original)
+        openai_mock = AsyncMock(return_value="should not be reached")
+        google_mock = AsyncMock(return_value="should not be reached")
+
+        with (
+            patch("benchflow.rewards.llm._call_anthropic", anthropic_mock),
+            patch("benchflow.rewards.llm._call_openai", openai_mock),
+            patch("benchflow.rewards.llm._call_google", google_mock),
+            pytest.raises(RuntimeError, match="invalid x-api-key") as exc_info,
+        ):
+            asyncio.run(call_judge("claude-haiku-4-5", "prompt", retries=2))
+
+        # The exact original exception object propagates.
+        assert exc_info.value is original
+        # The matching provider was retried, but no other provider tried.
+        assert anthropic_mock.await_count == 2
+        openai_mock.assert_not_awaited()
+        google_mock.assert_not_awaited()
+
+    def test_import_error_falls_through_to_next_provider(self) -> None:
+        """A missing SDK (ImportError) still falls through to the next provider."""
+        anthropic_mock = AsyncMock(side_effect=ImportError("no anthropic SDK"))
+        openai_mock = AsyncMock(return_value="ok from openai")
+
+        with (
+            patch("benchflow.rewards.llm._call_anthropic", anthropic_mock),
+            patch("benchflow.rewards.llm._call_openai", openai_mock),
+        ):
+            result = asyncio.run(call_judge("claude-haiku-4-5", "prompt", retries=2))
+
+        assert result == "ok from openai"
+        # ImportError is not retried.
+        assert anthropic_mock.await_count == 1
+
+
+# ---------------------------------------------------------------------------
+# _call_anthropic: content block handling
+# ---------------------------------------------------------------------------
+
+
+class _FakeTextBlock:
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+
+class _FakeNonTextBlock:
+    """A block with no ``.text`` attribute (e.g. a tool-use block)."""
+
+
+class _FakeResponse:
+    def __init__(self, content: list) -> None:
+        self.content = content
+
+
+class TestCallAnthropicContent:
+    def _patch_sdk(self, response: _FakeResponse) -> AbstractContextManager[None]:
+        client = AsyncMock()
+        client.messages.create = AsyncMock(return_value=response)
+        fake_anthropic = type(
+            "FakeAnthropic",
+            (),
+            {"AsyncAnthropic": staticmethod(lambda: client)},
+        )
+        return patch.dict("sys.modules", {"anthropic": fake_anthropic})
+
+    def test_empty_content_returns_empty_string(self) -> None:
+        with self._patch_sdk(_FakeResponse([])):
+            result = asyncio.run(_call_anthropic("claude-haiku-4-5", "prompt", 100))
+        assert result == ""
+
+    def test_non_text_first_block_returns_empty_string(self) -> None:
+        with self._patch_sdk(_FakeResponse([_FakeNonTextBlock()])):
+            result = asyncio.run(_call_anthropic("claude-haiku-4-5", "prompt", 100))
+        assert result == ""
+
+    def test_non_text_block_before_text_block(self) -> None:
+        response = _FakeResponse([_FakeNonTextBlock(), _FakeTextBlock("the verdict")])
+        with self._patch_sdk(response):
+            result = asyncio.run(_call_anthropic("claude-haiku-4-5", "prompt", 100))
+        assert result == "the verdict"
+
+    def test_text_block_returns_text(self) -> None:
+        with self._patch_sdk(_FakeResponse([_FakeTextBlock("hello")])):
+            result = asyncio.run(_call_anthropic("claude-haiku-4-5", "prompt", 100))
+        assert result == "hello"
 
 
 # ---------------------------------------------------------------------------
