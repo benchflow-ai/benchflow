@@ -48,7 +48,12 @@ class Trajectory(BaseModel):
         total = 0
         for ex in self.exchanges:
             usage = ex.response.body.get("usage", {})
-            total += usage.get("input_tokens", 0) or usage.get("prompt_tokens", 0)
+            usage_metadata = ex.response.body.get("usageMetadata", {})
+            total += (
+                usage.get("input_tokens", 0)
+                or usage.get("prompt_tokens", 0)
+                or usage_metadata.get("promptTokenCount", 0)
+            )
         return total
 
     @property
@@ -56,7 +61,67 @@ class Trajectory(BaseModel):
         total = 0
         for ex in self.exchanges:
             usage = ex.response.body.get("usage", {})
-            total += usage.get("output_tokens", 0) or usage.get("completion_tokens", 0)
+            usage_metadata = ex.response.body.get("usageMetadata", {})
+            total += (
+                usage.get("output_tokens", 0)
+                or usage.get("completion_tokens", 0)
+                or usage_metadata.get("candidatesTokenCount", 0)
+            )
+        return total
+
+    @property
+    def total_cache_read_tokens(self) -> int:
+        total = 0
+        for ex in self.exchanges:
+            usage = ex.response.body.get("usage", {})
+            prompt_details = usage.get("prompt_tokens_details", {})
+            input_details = usage.get("input_tokens_details", {})
+            total += (
+                usage.get("cache_read_input_tokens", 0)
+                or prompt_details.get("cached_tokens", 0)
+                or input_details.get("cached_tokens", 0)
+                or 0
+            )
+        return total
+
+    @property
+    def total_cache_creation_tokens(self) -> int:
+        total = 0
+        for ex in self.exchanges:
+            usage = ex.response.body.get("usage", {})
+            total += usage.get("cache_creation_input_tokens", 0) or 0
+        return total
+
+    @property
+    def total_provider_tokens(self) -> int:
+        total = 0
+        for ex in self.exchanges:
+            usage = ex.response.body.get("usage", {})
+            usage_metadata = ex.response.body.get("usageMetadata", {})
+            provider_total = usage.get("total_tokens") or usage_metadata.get(
+                "totalTokenCount"
+            )
+            if provider_total is not None:
+                total += provider_total
+                continue
+            input_tokens = (
+                usage.get("input_tokens", 0)
+                or usage.get("prompt_tokens", 0)
+                or usage_metadata.get("promptTokenCount", 0)
+            )
+            output_tokens = (
+                usage.get("output_tokens", 0)
+                or usage.get("completion_tokens", 0)
+                or usage_metadata.get("candidatesTokenCount", 0)
+            )
+            cache_read_tokens = usage.get("cache_read_input_tokens", 0) or 0
+            cache_creation_tokens = usage.get("cache_creation_input_tokens", 0) or 0
+            total += (
+                input_tokens
+                + output_tokens
+                + cache_read_tokens
+                + cache_creation_tokens
+            )
         return total
 
     @property
@@ -102,6 +167,12 @@ class Trajectory(BaseModel):
                     r"(sk-[a-zA-Z0-9]{10})[a-zA-Z0-9]+",
                     r"\1***REDACTED***",
                     raw,
+                )
+                raw = re.sub(
+                    r'("authorization"\s*:\s*"Bearer\s+)[^"]+(")',
+                    r"\1***REDACTED***\2",
+                    raw,
+                    flags=re.IGNORECASE,
                 )
             lines.append(raw)
         return "\n".join(lines)
