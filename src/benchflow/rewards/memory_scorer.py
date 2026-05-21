@@ -144,7 +144,7 @@ class MemoryScorer:
             reward = _score_delta(skill_delta(before=before, after=after), expected)
 
         return RewardEvent(
-            type="process",
+            type="terminal",
             reward=reward,
             source=self.source,
             space=_MEMORY_SPACE,

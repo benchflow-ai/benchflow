@@ -167,6 +167,51 @@ async def test_memory_scorer_partial_credit_for_partial_recall():
     assert event.reward == 0.5
 
 
+async def test_memory_scorer_recall_and_precision_both_below_one():
+    """Recall != precision and neither factor is 1.0.
+
+    Three skills expected, three changed, but only one of each set overlaps:
+    one expected skill hit, two expected missed, two spurious changes. So
+    recall = 1/3, precision = 1/3, reward = 1/9.
+    """
+    node = RolloutNode(
+        id="leaf",
+        state={
+            MEMORY_STATE_KEY: {
+                "before": {
+                    "want-a": "v1",
+                    "want-b": "v1",
+                    "want-c": "v1",
+                    "spurious-x": "v1",
+                    "spurious-y": "v1",
+                },
+                "after": {
+                    "want-a": "v2",  # one expected skill correctly changed
+                    "want-b": "v1",  # expected, untouched
+                    "want-c": "v1",  # expected, untouched
+                    "spurious-x": "v2",  # unexpected change
+                    "spurious-y": "v2",  # unexpected change
+                },
+                "expected": ["want-a", "want-b", "want-c"],
+            }
+        },
+    )
+    event = await MemoryScorer().score(node)
+    # recall 1/3, precision 1/3 -> 1/9.
+    assert event.reward == pytest.approx(1 / 9)
+
+
+async def test_memory_scorer_event_type_is_terminal():
+    """The Memory scorer is a terminal scorer — its event type must say so."""
+    node = RolloutNode(
+        id="leaf",
+        state={MEMORY_STATE_KEY: {"before": {}, "after": {"s": "v1"}}},
+    )
+    event = await MemoryScorer().score(node)
+    assert event.type == "terminal"
+    assert event.granularity == "terminal"
+
+
 async def test_memory_scorer_no_expected_means_no_change_is_correct():
     """When the task expects no skill change, leaving the store alone scores 1.0."""
     node = RolloutNode(
