@@ -56,13 +56,28 @@ it is the iterated memory of what "good artifacts" means here.
   (e.g. `labs/` experiment files at 24, `files[:24]`), the artifact must
   record that a cap was applied (a `files_truncated` / `n_total` field) so the
   UI can say "showing 24 of N" instead of silently dropping the rest.
+- **R11 — No dead artifact fields.** Every field `generate.py` emits into
+  `data.json` must be consumed by `index.html` (rendered, or load-bearing for
+  another rendered value). A field no view reads is dead weight: it bloats the
+  payload (against R4's spirit) and — worse — lets a *correctness* fix land on
+  a value nobody sees, so the audit cannot tell a real fix from a no-op. A
+  generated field is either wired into the UI or removed; it must not sit in
+  `data.json` as orphaned payload.
 
 ## Findings
 
 Newest first. Status ∈ `open` · `fixed` · `wontfix`.
 
+Cycle 2 — 2026-05-21: re-ran `generate.py` and the full suite against the
+fresh `data.json` (479 KB, 51 tasks / 4 groups, 7 experiments, 1507p/1f/5s).
+**R1–R10 all pass.** F2/F3/F5/F6 confirmed genuinely fixed (closures verified
+against the real `jobs/`, `experiments/`, `labs/` files); F4 stays `wontfix`.
+Two new findings F7–F8 and one new rule R11 added below.
+
 | #  | Date       | Rule | Issue | Status |
 |----|------------|------|-------|--------|
+| F8 | 2026-05-21 | R11  | Dead artifact fields: `_artifact()` emits an `info` string on **every** job artifact (214 of them — 172 `"N bytes"`, 39 `"N events"`, 3 `"1.0"`) and `_task_row()` emits `trajectory_events` on every task (51), but `index.html` references **neither** — `grep` for `\.info`/`trajectory_events` in `index.html` returns nothing. The viewer header (`renderFileInto`) builds its meta line from `lang · content_lines · rows · size` only; `taskNode` builds its meta from `reward · agent · model` only. Net effect: F2 (cycle 1) corrected the trajectory `info` event count — a value that reaches `data.json` but no rendered surface. ~5.3 KB of orphaned payload; new rule R11 added. | fixed — `info` removed from `_artifact()` (redundant with the viewer's lang/lines/size meta); `trajectory_events` wired into the task-node meta ("N traj events"). R11 satisfied — no dead fields. |
+| F7 | 2026-05-21 | R3/R9 | `rewards.jsonl` is described inconsistently with every other `.jsonl`. `_artifact()` only special-cases `kind == "trajectory"` for the "N events" `info`; a top-level `rewards.jsonl` is keyed `kind: "rewards"` by `_ART_KIND`, so it falls to the `else` branch and gets `info: "142 bytes"` — even though `lang: "jsonl"` and it is genuine JSON-Lines (one terminal-reward object per line). Evidence: `jobs/e2e/2026-05-21__16-19-54/archive-amazon-shipping__f5b2535b/rewards.jsonl` and `.../16-17-52/archive-amazon-shipping__90924744/rewards.jsonl` — both `lang: "jsonl"`, `kind: "rewards"`, `info: "142 bytes"`, 1 logical record each. Same latent R9 risk F2 fixed for trajectories: a multi-record `rewards.jsonl` would still report only a byte count, never its logical record count, while all 39 trajectory `.jsonl` files report events. (Currently low-impact since `info` itself is unrendered — see F8 — but the count is structurally wrong.) | fixed — moot: the `info` field was removed from `_artifact()` entirely (F8), so no artifact carries a mislabeled count string. |
 | F6 | 2026-05-21 | —/R10 | `collect_experiments()` caps each `labs/` experiment at `files[:24]` with no `n_total`/`files_truncated` marker. `labs/benchjack-sandbox-hardening/` currently has exactly 24 non-empty files — at the boundary, nothing dropped *this run* — but a 25th file would vanish from `data.json` with no UI indication. Latent silent-truncation risk; new rule R10 added. | fixed — every experiment now carries `files_truncated` + `n_files_total`; the `labs/` cap was raised to 60. |
 | F5 | 2026-05-21 | —    | `labs/benchjack-sandbox-hardening/comparison.ipynb` is embedded as `kind: "data"`, `lang: "text"` — a Jupyter notebook is JSON, but `.ipynb` is absent from `generate.py`'s `_LANG` map. 10,580-byte payload shown as raw text instead of structured/JSON. Misleading `kind`/`lang`. | fixed — `.ipynb` added to `_LANG` (→ `json`) and to the script-kind set. |
 | F4 | 2026-05-21 | R8/R5 | `labs/reward-hack-matrix/sweep_0.2.0_vs_0.2.2.json` is `lang: "json"`, `truncated: true` (real `content_lines: 7994`, embedded ~9 KB / 240 lines). Its embedded `content` does **not** `json.loads()` — fails `Expecting ',' delimiter: line 240 column 6`. R5 as literally worded ("every embedded JSON `content` actually `json.loads()`") is violated; new rule R8 scopes R5 to un-truncated JSON. UI's `prettyJSON()` already "leaves malformed JSON untouched" so it degrades to raw view rather than crashing — quality issue, not a render break. | wontfix — accepted per R8: truncating a large JSON is inherent; the fragment carries `truncated: true` + real `content_lines`, `kind`/`lang` name the true format, and the UI degrades to a raw view. Not a defect. |

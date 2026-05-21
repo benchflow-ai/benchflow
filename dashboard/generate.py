@@ -188,19 +188,16 @@ def _file_payload(p: Path) -> tuple[str | None, int, bool, str]:
 
 
 def _artifact(name: str, kind: str, path: Path) -> dict:
-    """One artifact record — including the file's (capped) actual content."""
+    """One artifact record — including the file's (capped) actual content.
+
+    No ``info`` summary string is emitted: the file viewer renders the
+    language, line count, and size itself, so an ``info`` field would be
+    unread payload — and an unread field lets a correctness fix land where
+    nobody can see it (audit rule R11, dashboard/AUDIT.md).
+    """
     content, lines, truncated, lang = _file_payload(path)
-    if kind == "trajectory":
-        info = f"{_count_jsonl_events(path)} events"
-    elif kind == "reward":
-        info = (content or "").strip().splitlines()[0][:16] if content else ""
-    else:
-        try:
-            info = f"{path.stat().st_size:,} bytes"
-        except Exception:
-            info = ""
     return {
-        "name": name, "kind": kind, "info": info, "lang": lang,
+        "name": name, "kind": kind, "lang": lang,
         "content": content, "content_lines": lines, "truncated": truncated,
     }
 
