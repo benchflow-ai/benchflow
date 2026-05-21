@@ -507,7 +507,8 @@ class TestSkillEvaluatorResultCollection:
 
         The rollout-dir contract is `{case_id}__{uuid8}`; a trailing-`*` glob
         (`**/{case_id}*`) also matches `case-10__...`, `case-11__...`, etc. and
-        can mis-attribute rewards. Regression for audit Finding 7.
+        can mis-attribute rewards. Guards the fix from PR #320 for audit
+        Finding 7.
         """
         from benchflow.evaluation import EvaluationResult
 
