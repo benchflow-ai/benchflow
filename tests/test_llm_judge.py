@@ -14,7 +14,12 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from benchflow.rewards.builtins import LLMJudgeRewardFunc
-from benchflow.rewards.llm import _call_anthropic, call_judge, parse_verdict
+from benchflow.rewards.llm import (
+    _call_anthropic,
+    _call_google,
+    call_judge,
+    parse_verdict,
+)
 from benchflow.rewards.protocol import RewardFunc
 from benchflow.rewards.rubric_config import ScoringConfig
 
@@ -144,6 +149,49 @@ class TestCallAnthropicContent:
         with self._patch_sdk(_FakeResponse([_FakeTextBlock("hello")])):
             result = asyncio.run(_call_anthropic("claude-haiku-4-5", "prompt", 100))
         assert result == "hello"
+
+
+# ---------------------------------------------------------------------------
+# _call_google: text-part handling
+# ---------------------------------------------------------------------------
+
+
+class _FakeGoogleResponse:
+    def __init__(self, text: str | None) -> None:
+        self.text = text
+
+
+class TestCallGoogleContent:
+    def _patch_sdk(self, response: _FakeGoogleResponse) -> AbstractContextManager[None]:
+        client = AsyncMock()
+        client.aio.models.generate_content = AsyncMock(return_value=response)
+        fake_genai = type(
+            "FakeGenai",
+            (),
+            {"Client": staticmethod(lambda api_key=None: client)},
+        )
+        fake_google = type("FakeGoogle", (), {"genai": fake_genai})
+        return patch.dict(
+            "sys.modules",
+            {"google": fake_google, "google.genai": fake_genai},
+        )
+
+    def test_none_text_returns_empty_string(self) -> None:
+        """``response.text`` is None (e.g. safety-filtered) -> "" not None."""
+        with (
+            patch.dict("os.environ", {"GOOGLE_API_KEY": "test-key"}),
+            self._patch_sdk(_FakeGoogleResponse(None)),
+        ):
+            result = asyncio.run(_call_google("gemini-2.0-flash", "prompt"))
+        assert result == ""
+
+    def test_text_returns_text(self) -> None:
+        with (
+            patch.dict("os.environ", {"GOOGLE_API_KEY": "test-key"}),
+            self._patch_sdk(_FakeGoogleResponse("the verdict")),
+        ):
+            result = asyncio.run(_call_google("gemini-2.0-flash", "prompt"))
+        assert result == "the verdict"
 
 
 # ---------------------------------------------------------------------------

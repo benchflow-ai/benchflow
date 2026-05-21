@@ -110,7 +110,6 @@ async def call_judge(
         # Unknown prefix — try all
         providers = ["anthropic", "openai", "google"]
 
-    last_error: Exception | None = None
     for provider in providers:
         for attempt in range(retries):
             try:
@@ -124,7 +123,6 @@ async def call_judge(
                 logger.debug("SDK for %s not installed, skipping", provider)
                 break  # SDK missing — fall through to the next provider
             except Exception as e:
-                last_error = e
                 if attempt < retries - 1:
                     await asyncio.sleep(2**attempt)
                     continue
@@ -139,10 +137,13 @@ async def call_judge(
                 )
                 raise
 
-    msg = f"All LLM providers failed for model {model}"
-    if last_error:
-        msg += f": {last_error}"
-    raise RuntimeError(msg)
+    # Every provider's SDK was missing (each ImportError ``break``s to the
+    # next).  A real API failure raises directly above, so this is the only
+    # state that reaches here.
+    raise RuntimeError(
+        f"No LLM provider SDK is installed for model {model} "
+        "(install one of: anthropic, openai, google-genai)"
+    )
 
 
 # ------------------------------------------------------------------
@@ -192,4 +193,7 @@ async def _call_google(model: str, prompt: str) -> str:
         raise RuntimeError("GOOGLE_API_KEY / GEMINI_API_KEY not set")
     client = genai.Client(api_key=api_key)
     response = await client.aio.models.generate_content(model=model, contents=prompt)
-    return response.text
+    # ``response.text`` is ``None`` when the response has no text part
+    # (e.g. content blocked by a safety filter, or a non-text part leads
+    # the response).  Return "" so the ``-> str`` contract holds.
+    return response.text or ""
