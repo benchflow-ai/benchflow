@@ -769,9 +769,10 @@ function taskNode(tk, firstPath) {
   if (!children.length)
     children.push({ type: "file", label: "(no files)",
       file: { name: "(no files)", content: null } });
+  const trajStr = tk.trajectory_events ? ` · ${tk.trajectory_events} traj events` : "";
   return {
     type: "folder", label: tk.name,
-    meta: `${rewardStr} · ${tk.agent}${tk.model && tk.model !== "—" ? " · " + tk.model : ""}`,
+    meta: `${rewardStr} · ${tk.agent}${tk.model && tk.model !== "—" ? " · " + tk.model : ""}${trajStr}`,
     badge: status, open: !!firstPath, children,
   };
 }
