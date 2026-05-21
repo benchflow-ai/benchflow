@@ -215,7 +215,8 @@ class TestJobResume:
         assert "task-a" in completed
         assert len(completed) == 1
 
-    def test_config_mismatch_warning(self, tmp_path, caplog):
+    @pytest.mark.asyncio
+    async def test_config_mismatch_warning(self, tmp_path, caplog):
         jobs_dir = self._setup_jobs_dir(tmp_path)
         trial_dir = self._write_result(jobs_dir, "task-a", rewards={"reward": 1.0})
         (trial_dir / "config.json").write_text(json.dumps({"agent": "old-agent"}))
@@ -239,9 +240,7 @@ class TestJobResume:
             return_value=RunResult(task_name="task-b", rewards={"reward": 1.0})
         )
         with caplog.at_level(logging.WARNING):
-            import asyncio
-
-            asyncio.get_event_loop().run_until_complete(job.run())
+            await job.run()
         assert any("old-agent" in msg for msg in caplog.messages)
 
     def test_no_rewards_is_incomplete(self, tmp_path):
