@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import asyncio.subprocess
+import base64
 import contextlib
 import json
 import logging
@@ -16,6 +17,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 from typing import ClassVar
 
@@ -471,18 +473,43 @@ class DockerSandbox(BaseSandbox):
         if cwd:
             exec_command.extend(["-w", cwd])
 
-        if env:
-            for key, value in env.items():
-                exec_command.extend(["-e", f"{key}={value}"])
-
         if user is not None:
             exec_command.extend(["-u", str(user)])
 
         exec_command.append(service)
+
+        # Env vars are written to a file inside the container and sourced,
+        # rather than passed as `-e KEY=VALUE` flags. The flags are visible in
+        # `ps aux` on the host, which would leak secrets — e.g. the verifier's
+        # [verifier.env] LLM-judge API keys. DockerProcess/DaytonaProcess avoid
+        # `-e` for the same reason; this keeps `exec` consistent with them.
+        if env:
+            command = self._wrap_command_with_env_file(env, command)
+
         exec_command.extend(["bash", "-c", command])
 
         return await self._run_docker_compose_command(
             exec_command, check=False, timeout_sec=timeout_sec
+        )
+
+    @staticmethod
+    def _wrap_command_with_env_file(env: dict[str, str], command: str) -> str:
+        """Return *command* prefixed to materialize *env* from a file.
+
+        The env vars are base64-encoded into the command string (not visible
+        as individual ``KEY=VALUE`` args in ``ps aux``), decoded to a
+        mode-0600 file inside the container, sourced, then deleted before the
+        real command runs.
+        """
+        env_body = "".join(f"export {k}={shlex.quote(v)}\n" for k, v in env.items())
+        encoded = base64.b64encode(env_body.encode()).decode()
+        # Unique suffix so concurrent exec() calls in one container can't
+        # clobber each other's env file.
+        env_path = f"/tmp/.benchflow_exec_env_{uuid.uuid4().hex[:16]}"
+        return (
+            f"umask 077 && printf %s {shlex.quote(encoded)} | base64 -d > "
+            f"{env_path} && set -a && . {env_path} && set +a && "
+            f"rm -f {env_path} && {command}"
         )
 
     async def attach(self) -> None:

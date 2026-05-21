@@ -1,5 +1,7 @@
 """Tests for sandbox user config/auth directory derivation from agent registry."""
 
+import pytest
+
 from benchflow.agents.registry import (
     AGENTS,
     AgentConfig,
@@ -95,3 +97,58 @@ class TestSandboxDirs:
         assert isinstance(dirs, set)
         assert all(isinstance(d, str) for d in dirs)
         assert all(d.startswith(".") for d in dirs)
+
+
+class TestDockerExecEnvSecrecy:
+    """DockerSandbox.exec must not leak env vars via `-e KEY=VALUE` flags.
+
+    `-e` flags are visible in `ps aux` on the host. The verifier's
+    [verifier.env] often carries LLM-judge API keys, so exec routes env
+    through a sourced container file instead — matching DockerProcess.
+    """
+
+    def test_wrap_command_does_not_inline_secret_values(self):
+        from benchflow.sandbox.docker import DockerSandbox
+
+        env = {"OPENAI_API_KEY": "sk-secret-value", "FOO": "bar"}
+        wrapped = DockerSandbox._wrap_command_with_env_file(env, "run-verifier")
+
+        # The raw secret value must not appear verbatim in the command
+        # string (it would otherwise show up in `ps aux`).
+        assert "sk-secret-value" not in wrapped
+        assert "bar" not in wrapped or "base64" in wrapped
+        # The command sources a file and cleans it up.
+        assert "base64 -d" in wrapped
+        assert "rm -f" in wrapped
+        assert wrapped.endswith("run-verifier")
+        # Restrictive perms on the env file.
+        assert "umask 077" in wrapped
+
+    @pytest.mark.asyncio
+    async def test_exec_passes_no_dash_e_flags(self, monkeypatch):
+        from unittest.mock import AsyncMock
+
+        from benchflow.sandbox._base import ExecResult
+        from benchflow.sandbox.docker import DockerSandbox
+
+        sandbox = DockerSandbox.__new__(DockerSandbox)
+        monkeypatch.setattr(sandbox, "_resolve_user", lambda u: u, raising=False)
+        monkeypatch.setattr(sandbox, "_merge_env", lambda e: e or {}, raising=False)
+
+        captured: dict = {}
+
+        async def fake_run(command, check=True, timeout_sec=None):
+            captured["command"] = command
+            return ExecResult(stdout="", stderr="", return_code=0)
+
+        monkeypatch.setattr(
+            sandbox, "_run_docker_compose_command", AsyncMock(side_effect=fake_run)
+        )
+
+        await sandbox.exec("verify", env={"API_KEY": "sk-leak"})
+
+        cmd = captured["command"]
+        # No `-e KEY=VALUE` argument anywhere.
+        assert "-e" not in cmd
+        for arg in cmd:
+            assert "sk-leak" not in arg

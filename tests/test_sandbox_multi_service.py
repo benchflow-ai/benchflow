@@ -92,7 +92,13 @@ class TestDockerSandboxServiceExec:
         assert cmd[cmd.index("bash") - 1] == "attacker"
         assert "-w" in cmd and "/work" in cmd
         assert "-u" in cmd and "root" in cmd
-        assert "-e" in cmd and "K=v" in cmd
+        # Env vars are sourced from a file inside the container, never passed
+        # as `-e KEY=VALUE` flags (which leak onto host `ps aux`).
+        assert "-e" not in cmd
+        bash_cmd = cmd[cmd.index("bash") + 2]
+        assert "base64 -d" in bash_cmd
+        for arg in cmd:
+            assert "K=v" not in arg
 
     @pytest.mark.asyncio
     async def test_services_lists_compose_services(self) -> None:
