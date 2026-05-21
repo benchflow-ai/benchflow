@@ -58,20 +58,27 @@ class ManifestEnvironment:
 
         When ``owns_lifecycle`` is true the image's entrypoint already
         started the services, so this only builds the handle. Otherwise
-        each service whose binary is on ``PATH`` is started in the
-        background; services absent from a per-task image are skipped.
+        each service whose entry point actually runs is started in the
+        background; services not installed in this per-task image are skipped.
         """
         m = self._manifest
         self._started = []
         if not m.owns_lifecycle:
             for svc in m.services:
                 binary = svc.command.split()[0]
-                present = await self._sandbox.exec(
-                    f"command -v {shlex.quote(binary)} >/dev/null 2>&1",
-                    timeout_sec=10,
+                # Detection probe: the service's entry point must actually
+                # *run*, not merely exist on PATH. smolclaws-style base images
+                # ship a console-script stub for every claw-* service, so
+                # `command -v` over-detects — it sees the stub of a service
+                # whose package this per-task image never installed. `--help`
+                # runs the entry point and exits non-zero (ModuleNotFoundError)
+                # for such a stub, while a real, installed service exits 0.
+                probe = await self._sandbox.exec(
+                    f"{shlex.quote(binary)} --help >/dev/null 2>&1",
+                    timeout_sec=15,
                 )
-                if present.return_code != 0:
-                    continue  # not in this per-task image — skip
+                if probe.return_code != 0:
+                    continue  # binary missing or its package absent — skip
                 log = f"/tmp/benchflow-env-{svc.name}.log"
                 await self._sandbox.exec(
                     f"{svc.command} > {log} 2>&1 &",
