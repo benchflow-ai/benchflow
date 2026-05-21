@@ -701,6 +701,11 @@ def resolve_agent(spec: str) -> AgentConfig:
             f"Unknown protocol: {protocol!r}. Valid: {', '.join(sorted(VALID_PROTOCOLS))}"
         )
 
+    # An already-resolved acpx runtime key (e.g. "acpx:claude-agent-acp")
+    # round-trips: parse_agent_spec leaves it whole and it lives in AGENTS.
+    if protocol == "acp" and name in AGENTS:
+        return AGENTS[name]
+
     if name not in AGENTS:
         from difflib import get_close_matches
 
@@ -715,6 +720,30 @@ def resolve_agent(spec: str) -> AgentConfig:
     if protocol == "acpx":
         return _acpx_wrap(config)
     return config
+
+
+def resolve_agent_key(spec: str) -> str:
+    """Resolve an agent spec to a stable registry key.
+
+    For plain ACP agents this is the canonical agent name. For ``acpx/<agent>``
+    specs the acpx-wrapped config (acpx install/launch commands) is registered
+    into ``AGENTS``/``AGENT_INSTALLERS``/``AGENT_LAUNCH`` under a stable runtime
+    key (``acpx:<canonical>``) so that name-keyed lookups in the
+    Rollout/Evaluation path use the wrapped commands instead of the literal
+    spec string.
+
+    Unknown agents are returned unchanged so callers can still surface their
+    own diagnostics (raw-command fallback).
+    """
+    try:
+        config = resolve_agent(spec)
+    except KeyError:
+        return spec
+    if config.name not in AGENTS:
+        AGENTS[config.name] = config
+        AGENT_INSTALLERS[config.name] = config.install_cmd
+        AGENT_LAUNCH[config.name] = config.launch_cmd
+    return config.name
 
 
 def get_agent(name: str) -> tuple[AgentConfig, str]:
@@ -745,12 +774,16 @@ def register_agent(
     description: str = "",
     skill_paths: list[str] | None = None,
     install_timeout: int = 900,
+    default_model: str = "",
+    api_protocol: str = "",
     env_mapping: dict[str, str] | None = None,
     credential_files: list[CredentialFile] | None = None,
     home_dirs: list[str] | None = None,
     subscription_auth: SubscriptionAuth | None = None,
     acp_model_format: str = "bare",
     supports_acp_set_model: bool = True,
+    disallow_web_tools_setup_cmd: str = "",
+    disallow_web_tools_launch_suffix: str = "",
 ) -> AgentConfig:
     """Register a custom agent at runtime.
 
@@ -776,12 +809,16 @@ def register_agent(
         description=description,
         skill_paths=skill_paths or [],
         install_timeout=install_timeout,
+        default_model=default_model,
+        api_protocol=api_protocol,
         env_mapping=env_mapping or {},
         credential_files=credential_files or [],
         home_dirs=home_dirs or [],
         subscription_auth=subscription_auth,
         acp_model_format=acp_model_format,
         supports_acp_set_model=supports_acp_set_model,
+        disallow_web_tools_setup_cmd=disallow_web_tools_setup_cmd,
+        disallow_web_tools_launch_suffix=disallow_web_tools_launch_suffix,
     )
     AGENTS[name] = config
     AGENT_INSTALLERS[name] = install_cmd
