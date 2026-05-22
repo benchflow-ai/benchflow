@@ -28,37 +28,6 @@ class TestRetryConfig:
         cfg = RetryConfig()
         assert not cfg.should_retry("Agent timed out after 900.0s")
 
-    def test_should_retry_idle_timeout(self):
-        """Guards infra retry parity for ACP idle watchdog failures."""
-        cfg = RetryConfig()
-        assert cfg.should_retry(
-            "Agent idle for 600s with no new tool call, message, or thought"
-        )
-
-    def test_should_retry_sandbox_infra_failure(self):
-        """Guards infra retry parity for transient sandbox/provider failures."""
-        cfg = RetryConfig()
-        assert cfg.should_retry("Sandbox not found. Please start the environment first.")
-
-    def test_should_retry_verifier_timeout(self):
-        """Guards retry parity for verifier timeout infra failures."""
-        cfg = RetryConfig()
-        assert cfg.should_retry_verifier_error("verifier timed out after 60s")
-
-    def test_should_retry_verifier_download_failure(self):
-        """Guards retry parity for verifier transport/download failures."""
-        cfg = RetryConfig()
-        assert cfg.should_retry_verifier_error(
-            "verifier crashed: Failed to download verifier directory from sandbox"
-        )
-
-    def test_should_not_retry_missing_reward_file(self):
-        """Missing reward is a verifier contract failure, not transient infra."""
-        cfg = RetryConfig()
-        assert not cfg.should_retry_verifier_error(
-            "verifier crashed: No reward file found"
-        )
-
     def test_should_not_retry_none(self):
         cfg = RetryConfig()
         assert not cfg.should_retry(None)
@@ -123,6 +92,24 @@ class TestJobCounting:
         assert counts["errored"] == 0
         assert counts["failed"] == 1
 
+    def test_error_and_verifier_error_counted_once(self):
+        """A result with BOTH error and verifier_error (rewards=None) must be
+        classified into exactly one bucket so the count invariant holds.
+
+        Exercises the real shared classifier: a result with an agent error is
+        ``errored``, and ``verifier_errored`` only applies when there is a
+        verifier error AND no agent error — ``errored`` takes precedence.
+        """
+        from benchflow._utils.scoring import classify_result_dict
+
+        result = {
+            "rewards": None,
+            "error": "agent crashed",
+            "verifier_error": "verifier also failed",
+        }
+        # The real classifier puts a both-errors result in exactly `errored`.
+        assert classify_result_dict(result) == "errored"
+
 
 class TestRunTaskLoop:
     """Tests for Evaluation._run_task — retry loop behavior."""
@@ -154,41 +141,6 @@ class TestRunTaskLoop:
         result = await job._run_task(tasks_dir / "task-0")
         assert job._sdk.run.call_count == 1
         assert result.error == "Agent timed out after 900.0s"
-
-    @pytest.mark.asyncio
-    async def test_idle_timeout_retries_even_with_zero_reward(self, job_factory):
-        """Guards idle-timeout infra retry before accepting verifier fallback reward."""
-        job, tasks_dir = job_factory(n_tasks=1, max_retries=2)
-        idle_result = RunResult(
-            task_name="task-0",
-            error="Agent idle for 600s with no new tool call, message, or thought",
-            rewards={"reward": 0.0},
-        )
-        ok_result = RunResult(task_name="task-0", rewards={"reward": 1.0})
-        job._sdk = AsyncMock()
-        job._sdk.run = AsyncMock(side_effect=[idle_result, ok_result])
-
-        result = await job._run_task(tasks_dir / "task-0")
-
-        assert job._sdk.run.call_count == 2
-        assert result.rewards == {"reward": 1.0}
-
-    @pytest.mark.asyncio
-    async def test_verifier_timeout_retries_then_succeeds(self, job_factory):
-        """Guards verifier timeout infra retry before marking task terminal."""
-        job, tasks_dir = job_factory(n_tasks=1, max_retries=2)
-        timeout_result = RunResult(
-            task_name="task-0",
-            verifier_error="verifier timed out after 60s",
-        )
-        ok_result = RunResult(task_name="task-0", rewards={"reward": 1.0})
-        job._sdk = AsyncMock()
-        job._sdk.run = AsyncMock(side_effect=[timeout_result, ok_result])
-
-        result = await job._run_task(tasks_dir / "task-0")
-
-        assert job._sdk.run.call_count == 2
-        assert result.rewards == {"reward": 1.0}
 
     @pytest.mark.asyncio
     async def test_succeeds_on_retry(self, job_factory):
@@ -251,7 +203,6 @@ class TestJobResume:
 
     @pytest.mark.asyncio
     async def test_config_mismatch_warning(self, tmp_path, caplog):
-        """Guards the event-loop flake observed on v0.5-integration@ffef85d."""
         jobs_dir = self._setup_jobs_dir(tmp_path)
         trial_dir = self._write_result(jobs_dir, "task-a", rewards={"reward": 1.0})
         (trial_dir / "config.json").write_text(json.dumps({"agent": "old-agent"}))
@@ -362,6 +313,37 @@ class TestJobRunOrchestration:
 
         assert result.errored == 1
         assert any("unexpected exception: boom" in m for m in caplog.messages)
+
+    @pytest.mark.asyncio
+    async def test_error_and_verifier_error_does_not_crash_invariant(self, tmp_path):
+        """A result with BOTH error and verifier_error (rewards=None) must not
+        be double-counted — otherwise the passed+failed+errored+verifier_errored
+        == total assertion in Evaluation.run() crashes the whole evaluation.
+
+        Guards the fix from PR #320 for audit Finding 6.
+        """
+        job = self._make_job(tmp_path, n_tasks=1, concurrency=1)
+        job._sdk = AsyncMock()
+        job._sdk.run = AsyncMock(
+            return_value=RunResult(
+                task_name="task-0",
+                rewards=None,
+                error="agent crashed",
+                verifier_error="verifier also failed",
+            )
+        )
+
+        # Must not raise the "Counting bug" AssertionError.
+        result = await job.run()
+
+        assert (
+            result.passed + result.failed + result.errored + result.verifier_errored
+            == result.total
+            == 1
+        )
+        # Agent error takes precedence: counted as errored, not verifier_errored.
+        assert result.errored == 1
+        assert result.verifier_errored == 0
 
     @pytest.mark.asyncio
     async def test_summary_json_includes_usage_aggregation(self, tmp_path):

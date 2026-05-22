@@ -43,6 +43,14 @@ class TestCriterionNormalize:
         c = Criterion(description="test", type="likert", points=1)
         assert c.normalize(1) == 0.0
 
+    def test_likert_clamp_out_of_range(self) -> None:
+        """A judge returning a score above/below the scale is clamped to [0, 1]."""
+        c = Criterion(description="test", type="likert", points=5)
+        # 8 on a 5-point scale would be (8-1)/(5-1) = 1.75 unclamped.
+        assert c.normalize(8) == 1.0
+        # 0 on a 1-indexed scale would be (0-1)/4 = -0.25 unclamped.
+        assert c.normalize(0) == 0.0
+
     def test_numeric_normalization(self) -> None:
         c = Criterion(description="test", type="numeric", min=0.0, max=100.0)
         assert c.normalize(0) == pytest.approx(0.0)

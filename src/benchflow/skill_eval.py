@@ -590,12 +590,15 @@ class SkillEvaluator:
         jobs_path = Path(jobs_dir)
         for case in self.dataset.cases:
             case_id = case.id
-            # Evaluation writes timestamped rollout dirs; support both the old
-            # direct layout and the current nested layout.
+            # Evaluation writes rollout dirs as `{case_id}__{uuid8}`; match the
+            # exact naming contract so e.g. `case-1` never picks up `case-10`.
+            # Also accept a dir named exactly `case_id` (old direct layout).
             rollout_dirs = [
                 path
                 for path in jobs_path.glob(f"**/{case_id}*")
-                if path.is_dir() and (path / "result.json").exists()
+                if path.is_dir()
+                and (path.name == case_id or path.name.startswith(f"{case_id}__"))
+                and (path / "result.json").exists()
             ]
             if rollout_dirs:
                 rollout_dir = sorted(

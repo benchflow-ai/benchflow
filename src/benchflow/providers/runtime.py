@@ -115,10 +115,49 @@ def _docker_host_address() -> str:
     return "host.docker.internal"
 
 
+# Remote cloud sandbox environments where the agent runs on a *different*
+# machine than the host proxy. The canonical environment set produced by the
+# runtime is {docker, daytona, modal}; these are the ones a host-bound proxy
+# cannot be reached from. Any other (unknown) value is treated conservatively
+# as reachable — see ``host_proxy_reachable_from_agent``.
+_REMOTE_UNREACHABLE_ENVIRONMENTS = {"daytona", "modal"}
+
+
+def host_proxy_reachable_from_agent(environment: str) -> bool:
+    """True when a host-side proxy bound to the host can be reached by the agent.
+
+    The host telemetry/Bedrock proxy binds to the *host* machine. An agent
+    only reaches it when it shares the host's network namespace:
+
+    - ``docker``: the container reaches the host via the docker bridge /
+      ``host.docker.internal``.
+
+    Remote cloud sandboxes (``daytona``, ``modal``) run the agent on a
+    different machine. ``127.0.0.1`` there is the *sandbox's* own loopback,
+    and the Daytona SSH gateway rejects ``ssh -R`` reverse tunnels, so there
+    is no address that routes back to the host proxy.
+
+    An unrecognized environment is treated as reachable (conservative: assume
+    same-host so the proxy is still wired up rather than silently skipped).
+    """
+    return environment not in _REMOTE_UNREACHABLE_ENVIRONMENTS
+
+
 def _bedrock_proxy_command(
     *,
     environment: str,
 ) -> str:
+    """Return the address the agent uses to reach a host-bound proxy.
+
+    Precondition: ``host_proxy_reachable_from_agent(environment)`` is True —
+    this is only ever reached for environments that share the host's network
+    namespace. The reachability predicate above is the single gate that
+    decides whether a host proxy is usable at all.
+    """
+    assert host_proxy_reachable_from_agent(environment), (
+        f"_bedrock_proxy_command called for unreachable environment "
+        f"{environment!r}; host_proxy_reachable_from_agent must gate this"
+    )
     if environment == "docker":
         return _docker_host_address()
     return BEDROCK_PROXY_LOCAL_HOST
@@ -259,9 +298,27 @@ async def ensure_usage_proxy_runtime(
     environment: str,
     session_id: str = "",
 ) -> tuple[dict[str, str], ProviderRuntime | None]:
-    """Start the host-side usage proxy and wire env vars to it."""
+    """Start the host-side usage proxy and wire env vars to it.
+
+    For remote cloud sandboxes (e.g. Daytona) the host proxy is unreachable
+    from the agent — it runs on a different machine and there is no reverse
+    tunnel back to the host. In that case the proxy is skipped: the agent
+    talks to the provider directly with its real key and host-side usage
+    telemetry reports ``usage_source: "unavailable"``.
+    """
     if agent == "oracle":
         return agent_env, runtime
+    if not host_proxy_reachable_from_agent(environment):
+        if runtime is not None:
+            await stop_provider_runtime(runtime)
+        logger.info(
+            "Skipping host-side usage telemetry proxy: the '%s' sandbox runs "
+            "the agent on a remote host unreachable from the host proxy; the "
+            "agent will call the provider directly and usage telemetry will "
+            "be unavailable for this run.",
+            environment or "unknown",
+        )
+        return agent_env, None
     target = _resolve_usage_proxy_target(agent, agent_env, model)
     if not target:
         return agent_env, runtime
@@ -360,10 +417,32 @@ async def ensure_bedrock_proxy_runtime(
     runtime: ProviderRuntime | None,
     environment: str,
 ) -> tuple[dict[str, str], ProviderRuntime | None]:
-    """Start the host-side Bedrock proxy if needed and wire env vars to it."""
+    """Start the host-side Bedrock proxy if needed and wire env vars to it.
+
+    Unlike the usage telemetry proxy (pure telemetry — safe to skip when the
+    agent cannot reach the host), the Bedrock proxy is *load-bearing*: it
+    translates Anthropic/OpenAI requests into AWS Bedrock Converse calls and
+    signs them with host AWS credentials. There is no direct path for the
+    agent to reach Bedrock without it. So on a remote sandbox where the host
+    proxy is unreachable, the run cannot succeed — we fail fast here with an
+    actionable error instead of injecting an unreachable ``127.0.0.1`` base
+    URL that would surface as an opaque mid-run ``ECONNREFUSED``.
+    """
     if not needs_provider_runtime(model):
         return agent_env, runtime
     assert model is not None
+
+    if not host_proxy_reachable_from_agent(environment):
+        if runtime is not None:
+            await stop_provider_runtime(runtime)
+        raise RuntimeError(
+            f"Bedrock-routed models are not supported on the "
+            f"'{environment}' sandbox: the host-side Bedrock proxy that "
+            f"translates and signs requests to AWS Bedrock binds to the "
+            f"host machine and is unreachable from the agent, which runs "
+            f"on a separate remote host. Re-run with '--sandbox docker', "
+            f"or select a model that is not routed through AWS Bedrock."
+        )
 
     if runtime is None:
         backend_model = strip_provider_prefix(model)

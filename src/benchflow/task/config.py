@@ -118,18 +118,6 @@ class JudgeVerifierConfig(BaseModel):
     )
 
 
-class MemoryVerifierConfig(BaseModel):
-    """The ``[verifier.memory]`` section — hidden Memory-space fixtures."""
-
-    expected_skills: list[str] | None = Field(
-        default=None,
-        description=(
-            "Skill pack names the task expects the agent to add/update/remove. "
-            "None means no answer key was supplied; [] means no skill should change."
-        ),
-    )
-
-
 class VerifierConfig(BaseModel):
     """Verifier ($V$) configuration — maps completion → reward.
 
@@ -154,18 +142,19 @@ class VerifierConfig(BaseModel):
     service: str = Field(
         default="main",
         description=(
-            "Compose service where test-script verification runs. "
-            "Use 'main' for the agent container or a named target service "
-            "for multi-container tasks."
+            "Compose service the test-script verifier runs in. Defaults to "
+            "'main' (the agent container). Multi-container (vulhub-style) "
+            "tasks set this to a target/database service so test.sh can "
+            "inspect target-side state — RCE markers, DB modifications — "
+            "rather than only the agent's workspace. The agent's "
+            "anti-tamper hardening only applies to 'main'; deliberately "
+            "vulnerable target containers are intentionally not hardened. "
+            "See #248."
         ),
     )
     judge: JudgeVerifierConfig = Field(
         default_factory=JudgeVerifierConfig,
         description="LLM-judge configuration (used when type == 'llm-judge').",
-    )
-    memory: MemoryVerifierConfig = Field(
-        default_factory=MemoryVerifierConfig,
-        description="Memory-space scoring fixtures.",
     )
     pytest_plugins: list[str] = Field(
         default_factory=list,
@@ -308,29 +297,10 @@ class TaskConfig(BaseModel):
         toml_dict = tomllib.loads(toml_data)
         return cls.model_validate(toml_dict)
 
-    @property
-    def expected_skills(self) -> list[str] | None:
-        """Hidden Memory-space fixture from ``[verifier.memory]``.
-
-        ``None`` means the task did not supply an answer key, so the
-        Memory-space scorer can only grade activity. An empty list is a real
-        fixture: the task expects no skill changes.
-        """
-        expected = self.verifier.memory.expected_skills
-        return None if expected is None else list(expected)
-
     def model_dump_toml(self) -> str:
         import toml as _toml  # optional dep — only needed for TOML serialisation
 
-        public = self.model_dump(
-            mode="json",
-            by_alias=True,
-            exclude={"verifier": {"memory": {"expected_skills"}}},
-        )
-        memory = ((public.get("verifier") or {}).get("memory") or {})
-        if isinstance(memory, dict) and not memory:
-            public["verifier"].pop("memory", None)
-        return _toml.dumps(public)
+        return _toml.dumps(self.model_dump(mode="json", by_alias=True))
 
     @property
     def environment(self) -> SandboxConfig:

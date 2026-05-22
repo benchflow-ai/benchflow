@@ -222,3 +222,78 @@ class TestBedrockProxyRuntime:
         )
         await stop_provider_runtime(runtime)
         server.stop.assert_awaited_once()
+
+
+class TestBedrockProxyRemoteSandbox:
+    """Guards the fix from PR #329: the Bedrock proxy is load-bearing; on a
+    remote sandbox where the host proxy is unreachable the run must fail fast
+    rather than inject an unreachable 127.0.0.1 base URL (the Daytona
+    telemetry-proxy twin bug)."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("environment", ["daytona", "modal"])
+    async def test_bedrock_on_remote_sandbox_fails_fast(self, environment):
+        with pytest.raises(RuntimeError, match="not supported on the"):
+            await ensure_bedrock_proxy_runtime(
+                agent="claude-agent-acp",
+                agent_env={
+                    "AWS_BEARER_TOKEN_BEDROCK": "bedrock-token",
+                    "AWS_REGION": "us-east-1",
+                },
+                model="aws-bedrock/anthropic.claude-haiku-4-5-20251001-v1:0",
+                runtime=None,
+                environment=environment,
+            )
+
+    @pytest.mark.asyncio
+    async def test_remote_sandbox_error_is_actionable(self):
+        with pytest.raises(RuntimeError) as exc:
+            await ensure_bedrock_proxy_runtime(
+                agent="codex-acp",
+                agent_env={"AWS_REGION": "us-east-1"},
+                model="aws-bedrock/openai.gpt-oss-20b-1:0",
+                runtime=None,
+                environment="daytona",
+            )
+        message = str(exc.value)
+        assert "daytona" in message
+        assert "--sandbox docker" in message
+
+    @pytest.mark.asyncio
+    async def test_non_bedrock_model_on_remote_sandbox_is_noop(self):
+        # A non-Bedrock model never needs the proxy, so a remote sandbox is fine.
+        agent_env = {"ANTHROPIC_API_KEY": "sk-test"}
+        updated, runtime = await ensure_bedrock_proxy_runtime(
+            agent="claude-agent-acp",
+            agent_env=agent_env,
+            model="claude-haiku-4-5",
+            runtime=None,
+            environment="daytona",
+        )
+        assert updated == agent_env
+        assert runtime is None
+
+    @pytest.mark.asyncio
+    async def test_stale_runtime_stopped_when_environment_unreachable(self):
+        server = AsyncMock()
+        runtime = ProviderRuntime(
+            kind="aws-bedrock",
+            host="host.docker.internal",
+            port=8099,
+            server=server,
+        )
+        with pytest.raises(RuntimeError, match="not supported on the"):
+            await ensure_bedrock_proxy_runtime(
+                agent="claude-agent-acp",
+                agent_env={"AWS_REGION": "us-east-1"},
+                model="aws-bedrock/anthropic.claude-haiku-4-5-20251001-v1:0",
+                runtime=runtime,
+                environment="modal",
+            )
+        server.stop.assert_awaited_once()
+
+    def test_bedrock_proxy_command_rejects_unreachable_environment(self):
+        from benchflow.providers.runtime import _bedrock_proxy_command
+
+        with pytest.raises(AssertionError):
+            _bedrock_proxy_command(environment="daytona")
