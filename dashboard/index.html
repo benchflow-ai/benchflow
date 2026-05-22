@@ -1430,9 +1430,13 @@ function taskNode(tk, firstPath) {
 // One run → a folder of task folders.
 function runNode(run, firstPath) {
   const latest = run.latest_modified_at ? ` · latest ${run.latest_modified_at}` : "";
+  const target = (run.targets || []).slice(0, 3).join(", ");
+  const signal = (run.signals || []).slice(0, 3).join(", ");
+  const tags = [target, signal].filter(Boolean).join(" · ");
   return {
     type: "folder", label: run.id + "/",
-    meta: `${run.tasks.length} task${run.tasks.length === 1 ? "" : "s"}${latest}`,
+    meta: `${run.tasks.length} task${run.tasks.length === 1 ? "" : "s"}${latest}` +
+          (tags ? ` · ${tags}` : ""),
     open: !!firstPath,
     children: (run.tasks || []).map((tk, ti) => taskNode(tk, firstPath && ti === 0)),
   };
@@ -1479,10 +1483,18 @@ function renderJobs() {
   const latestNote = source.latest_modified_at
     ? ` Latest artifact: ${esc(source.latest_modified_at)}.`
     : "";
+  const archivedRuns = Number(j.archived_runs || 0);
+  const archivedTasks = Number(j.archived_tasks || 0);
+  const archiveParts = [];
+  if (archivedRuns) archiveParts.push(`${archivedRuns} low-signal run${archivedRuns === 1 ? "" : "s"}`);
+  if (archivedTasks) archiveParts.push(`${archivedTasks} task${archivedTasks === 1 ? "" : "s"}`);
+  const archiveNote = archiveParts.length
+    ? ` ${archiveParts.join(" and ")} archived.`
+    : "";
   wrap.appendChild(el("h1", "page", "Jobs &amp; artifacts"));
   wrap.appendChild(el("div", "sub-ttl",
     `Every rollout under <code title="${esc(sourcePath)}">${esc(sourceDisplay)}</code> — ${j.total_tasks} tasks in ${j.groups.length} groups.` +
-    latestNote + sourceNote + ` Browse the tree; click a file to view it. Each group links to its advisories.`));
+    latestNote + archiveNote + sourceNote + ` Browse the tree; click a file to view it. Each group links to its advisories.`));
   if (!j.total_tasks) {
     const hint = source.configured
       ? `No rollout artifacts found under ${esc(sourcePath)}.`
