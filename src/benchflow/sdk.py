@@ -83,7 +83,7 @@ class SDK:
         rollout_name: str,
         agent: str,
         agent_name: str,
-        model: str,
+        model: str | None,
         n_tool_calls: int,
         prompts: list[str],
         error: str | None,
@@ -95,6 +95,7 @@ class SDK:
         started_at: datetime,
         timing: dict[str, float],
         scenes: list[Scene] | None = None,
+        source_provenance: dict[str, Any] | None = None,
     ) -> RolloutResult:
         return _build_rollout_result(
             rollout_dir,
@@ -114,6 +115,7 @@ class SDK:
             started_at=started_at,
             timing=timing,
             scenes=scenes,
+            source_provenance=source_provenance,
         )
 
     async def _start_env_and_upload(
@@ -159,6 +161,8 @@ class SDK:
         job_name: str | None = None,
         rollout_name: str | None = None,
         jobs_dir: str | Path = "jobs",
+        concurrency: int = 1,
+        agent_idle_timeout: int | None = 600,
         environment: str = "docker",
         environment_manifest: EnvironmentManifest | None = None,
         skills_dir: str | Path | None = None,
@@ -170,6 +174,7 @@ class SDK:
         skill_mode: str = "default",
         skill_creator_dir: str | Path | None = None,
         self_gen_no_internet: bool = False,
+        source_provenance: dict[str, Any] | None = None,
     ) -> RolloutResult:
         """Run a task — delegates to :func:`benchflow.run`."""
         from benchflow.rollout import RolloutConfig
@@ -184,6 +189,8 @@ class SDK:
             job_name=job_name,
             rollout_name=rollout_name,
             jobs_dir=jobs_dir,
+            concurrency=concurrency,
+            agent_idle_timeout=agent_idle_timeout,
             environment=environment,
             environment_manifest=environment_manifest,
             skills_dir=skills_dir,
@@ -195,5 +202,6 @@ class SDK:
             skill_mode=skill_mode,
             skill_creator_dir=skill_creator_dir,
             self_gen_no_internet=self_gen_no_internet,
+            source_provenance=source_provenance,
         )
         return await run(config)  # type: ignore[return-value]  # ty: ignore[invalid-return-type]

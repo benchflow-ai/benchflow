@@ -224,11 +224,27 @@ class RuntimeResult:
 
     @property
     def passed(self) -> bool:
-        return self.reward is not None and self.reward > 0
+        from benchflow._utils.scoring import classify_result_outcome
+
+        return classify_result_outcome(
+            {
+                "rewards": self.rewards,
+                "error": self.error,
+                "verifier_error": self.verifier_error,
+            }
+        ) == "passed"
 
     @property
     def verified(self) -> bool:
-        return self.verifier_error is None and self.reward is not None
+        from benchflow._utils.scoring import classify_result_outcome
+
+        return classify_result_outcome(
+            {
+                "rewards": self.rewards,
+                "error": self.error,
+                "verifier_error": self.verifier_error,
+            }
+        ) in {"passed", "failed"}
 
     def to_run_result(self) -> Any:
         """Convert to legacy RunResult for SDK.run() compat."""

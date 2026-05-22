@@ -113,6 +113,136 @@ def test_rollout_yaml_loader_normalizes_alias_and_root_sandbox_user():
     assert cfg.sandbox_user is None
 
 
+def test_native_yaml_zero_agent_idle_timeout_disables_watchdog(tmp_path):
+    """Guards v0.5-idle-timeout@219906c against config/CLI semantic drift."""
+    tasks = tmp_path / "tasks" / "task-a"
+    tasks.mkdir(parents=True)
+    (tasks / "task.toml").write_text('version = "1.0"')
+
+    config = tmp_path / "config.yaml"
+    config.write_text("""
+tasks_dir: tasks
+agent: gemini
+agent_idle_timeout: 0
+""")
+
+    job = Evaluation.from_yaml(config)
+
+    assert job._config.agent_idle_timeout is None
+
+
+def test_legacy_yaml_zero_agent_idle_timeout_disables_watchdog(tmp_path):
+    """Guards v0.5-idle-timeout@219906c against legacy config semantic drift."""
+    tasks = tmp_path / "tasks" / "task-a"
+    tasks.mkdir(parents=True)
+    (tasks / "task.toml").write_text('version = "1.0"')
+
+    config = tmp_path / "config.yaml"
+    config.write_text("""
+n_attempts: 1
+agent_idle_timeout_sec: 0
+orchestrator:
+  n_concurrent_trials: 1
+environment:
+  type: docker
+agents:
+  - name: gemini
+    model_name: gemini-3.1-flash-lite-preview
+datasets:
+  - path: tasks
+""")
+
+    job = Evaluation.from_yaml(config)
+
+    assert job._config.agent_idle_timeout is None
+
+
+def test_rollout_yaml_zero_agent_idle_timeout_disables_watchdog():
+    """Guards v0.5-idle-timeout@219906c for direct RolloutConfig YAML loading."""
+    from benchflow._utils.yaml_loader import rollout_config_from_dict
+
+    cfg = rollout_config_from_dict(
+        {
+            "task_dir": "tests/examples/hello-world-task",
+            "agent": "gemini",
+            "agent_idle_timeout": 0,
+        }
+    )
+
+    assert cfg.agent_idle_timeout is None
+
+
+def test_native_yaml_rejects_bool_agent_idle_timeout(tmp_path):
+    """Guards v0.5-idle-timeout@1566fed against bool-to-int coercion."""
+    tasks = tmp_path / "tasks" / "task-a"
+    tasks.mkdir(parents=True)
+    (tasks / "task.toml").write_text('version = "1.0"')
+
+    config = tmp_path / "config.yaml"
+    config.write_text("""
+tasks_dir: tasks
+agent: gemini
+agent_idle_timeout: true
+""")
+
+    with pytest.raises(ValueError, match="integer seconds"):
+        Evaluation.from_yaml(config)
+
+
+def test_legacy_yaml_rejects_fractional_agent_idle_timeout(tmp_path):
+    """Guards v0.5-idle-timeout@1566fed against float truncation."""
+    tasks = tmp_path / "tasks" / "task-a"
+    tasks.mkdir(parents=True)
+    (tasks / "task.toml").write_text('version = "1.0"')
+
+    config = tmp_path / "config.yaml"
+    config.write_text("""
+n_attempts: 1
+agent_idle_timeout_sec: 1.5
+orchestrator:
+  n_concurrent_trials: 1
+environment:
+  type: docker
+agents:
+  - name: gemini
+    model_name: gemini-3.1-flash-lite-preview
+datasets:
+  - path: tasks
+""")
+
+    with pytest.raises(ValueError, match="integer seconds"):
+        Evaluation.from_yaml(config)
+
+
+def test_rollout_yaml_rejects_integral_float_agent_idle_timeout_contract():
+    """Guards v0.5-idle-timeout@1566fed; integer seconds reject floats like 1.0."""
+    from benchflow._utils.yaml_loader import rollout_config_from_dict
+
+    with pytest.raises(ValueError, match="integer seconds"):
+        rollout_config_from_dict(
+            {
+                "task_dir": "tests/examples/hello-world-task",
+                "agent": "gemini",
+                "agent_idle_timeout": 1.0,
+            }
+        )
+
+
+def test_rollout_yaml_accepts_numeric_string_agent_idle_timeout():
+    """Guards v0.5-idle-timeout@1566fed numeric-string compatibility."""
+    from benchflow._utils.yaml_loader import rollout_config_from_dict
+
+    cfg = rollout_config_from_dict(
+        {
+            "task_dir": "tests/examples/hello-world-task",
+            "agent": "gemini",
+            "agent_idle_timeout": "600",
+        }
+    )
+
+    assert cfg.agent_idle_timeout == 600
+
+
 def test_from_legacy_yaml(legacy_yaml):
     """Test loading legacy-format YAML."""
     job = Evaluation.from_yaml(legacy_yaml)

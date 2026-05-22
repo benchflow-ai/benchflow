@@ -11,8 +11,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from benchflow._utils.reward_events import memory_score_from_result
 from benchflow._utils.scoring import (
     classify_error,
+    classify_result_outcome,
     classify_verifier_error,
     pass_rate,
     pass_rate_excl_errors,
@@ -40,23 +42,35 @@ class TaskMetrics:
     total_tokens: int | None = None
     cost_usd: float | None = None
     usage_source: str = "unavailable"
+    memory_score: float | None = None
+
+    def _result_shape(self) -> dict[str, Any]:
+        return {
+            "rewards": {"reward": self.reward} if self.reward is not None else None,
+            "error": self.error,
+            "verifier_error": self.verifier_error,
+        }
+
+    @property
+    def outcome(self) -> str:
+        return classify_result_outcome(self._result_shape())
 
     @property
     def passed(self) -> bool:
-        return self.reward == 1.0
+        return self.outcome == "passed"
 
     @property
     def failed(self) -> bool:
-        return self.reward is not None and self.reward != 1.0
+        return self.outcome == "failed"
 
     @property
     def errored(self) -> bool:
-        return self.reward is None and self.error is not None
+        return self.outcome == "errored"
 
     @property
     def verifier_errored(self) -> bool:
         """True when task failed due to verifier error (not agent error)."""
-        return self.reward is None and self.verifier_error is not None
+        return self.outcome == "verifier_errored"
 
     @property
     def completed(self) -> bool:
@@ -194,6 +208,30 @@ class BenchmarkMetrics:
         return len(self.telemetry_tasks) / len(completed)
 
     @property
+    def memory_scores(self) -> dict[str, float]:
+        return {
+            t.task_name: t.memory_score
+            for t in self.tasks
+            if t.memory_score is not None
+        }
+
+    @property
+    def memory_score(self) -> float | None:
+        scores = list(self.memory_scores.values())
+        if not scores:
+            return None
+        return sum(scores) / len(scores)
+
+    @property
+    def memory_summary(self) -> dict[str, Any]:
+        avg = self.memory_score
+        return {
+            "scored": len(self.memory_scores),
+            "avg_score": avg,
+            "score": f"{avg:.1%}" if avg is not None else None,
+        }
+
+    @property
     def verifier_error_breakdown(self) -> dict[str, int]:
         """Categorize verifier errors."""
         breakdown: dict[str, int] = {}
@@ -228,6 +266,12 @@ class BenchmarkMetrics:
             "total_cost_usd": self.total_cost_usd,
             "avg_cost_per_trial_usd": self.avg_cost_per_trial_usd,
             "telemetry_coverage": self.telemetry_coverage,
+            "memory_score": self.memory_score,
+            "memory_score_coverage": (
+                len(self.memory_scores) / self.total if self.total else 0.0
+            ),
+            "memory": self.memory_summary,
+            "memory_scores": self.memory_scores,
             "error_breakdown": self.error_breakdown,
             "verifier_error_breakdown": self.verifier_error_breakdown,
             "passed_tasks": sorted(t.task_name for t in self.tasks if t.passed),
@@ -323,6 +367,7 @@ def collect_metrics(
                 usage_source=(r.get("agent_result") or {}).get(
                     "usage_source", r.get("usage_source", "unavailable")
                 ),
+                memory_score=memory_score_from_result(r),
             )
         )
 

@@ -4,6 +4,8 @@ import pytest
 
 from benchflow._utils.scoring import (
     classify_error,
+    classify_result_outcome,
+    count_result_outcomes,
     extract_reward,
     pass_rate,
     pass_rate_excl_errors,
@@ -62,12 +64,82 @@ class TestClassifyError:
     def test_timeout(self):
         assert classify_error("Task timed out after 300s") == "timeout"
 
+    def test_wall_clock_budget_timeout(self):
+        assert (
+            classify_error("Agent prompt exceeded wall-clock budget 5s") == "timeout"
+        )
+
+    def test_idle_timeout(self):
+        assert (
+            classify_error(
+                "Agent idle for 600s with no new tool call, message, or thought"
+            )
+            == "idle_timeout"
+        )
+
+    def test_infra_failure(self):
+        assert classify_error("Sandbox not found. Please retry later.") == "infra_failure"
+
     def test_other(self):
         assert classify_error("something unexpected") == "other"
 
     def test_install_broad_match_not_used(self):
         """'install' alone should NOT match — only 'install failed'."""
         assert classify_error("installing dependencies") == "other"
+
+
+class TestClassifyResultOutcome:
+    @pytest.mark.parametrize(
+        ("result", "expected"),
+        [
+            ({"rewards": {"reward": 1.0}}, "passed"),
+            ({"rewards": {"reward": 0.0}}, "failed"),
+            ({"rewards": {"reward": 0.5}}, "failed"),
+            (
+                {
+                    "rewards": None,
+                    "error": "Agent prompt exceeded wall-clock budget 5s",
+                    "verifier_error": "verifier crashed: No reward file found",
+                },
+                "verifier_errored",
+            ),
+            (
+                {
+                    "rewards": {"reward": 0.0},
+                    "error": None,
+                    "verifier_error": "verifier crashed: stale reward rejected",
+                },
+                "verifier_errored",
+            ),
+            (
+                {"rewards": None, "error": "Agent timed out", "verifier_error": None},
+                "errored",
+            ),
+            ({"rewards": None, "error": None, "verifier_error": None}, "unscored"),
+        ],
+    )
+    def test_outcome_buckets(self, result, expected):
+        assert classify_result_outcome(result) == expected
+
+    def test_count_result_outcomes(self):
+        assert count_result_outcomes(
+            [
+                {"rewards": {"reward": 1.0}},
+                {"rewards": {"reward": 0.0}},
+                {"rewards": None, "error": "timed out"},
+                {
+                    "rewards": None,
+                    "error": "timed out",
+                    "verifier_error": "verifier crashed",
+                },
+            ]
+        ) == {
+            "passed": 1,
+            "failed": 1,
+            "errored": 1,
+            "verifier_errored": 1,
+            "unscored": 0,
+        }
 
 
 class TestPassRate:

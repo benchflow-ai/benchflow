@@ -21,6 +21,7 @@ import re
 import subprocess
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from benchflow._utils.task_authoring import check_task
 from benchflow.traces.parsers import parse_claude_code_file, parse_opentraces_file
@@ -38,6 +39,7 @@ except ModuleNotFoundError:
 
 LANE_ID = "trace-to-task-e2e"
 SUMMARY_FILENAME = "trace-evidence.json"
+LOG_TAIL_CHARS = 4000
 
 
 def _source_output_name(source: dict[str, Any]) -> str:
@@ -83,10 +85,20 @@ def _number(value: Any) -> float | None:
 def _latest_result_path(jobs_dir: Path, before: set[Path]) -> Path | None:
     result_paths = set(jobs_dir.rglob("result.json"))
     new_paths = result_paths - before
-    candidates = new_paths or result_paths
-    if not candidates:
+    if not new_paths:
         return None
-    return max(candidates, key=lambda path: path.stat().st_mtime)
+    return max(new_paths, key=lambda path: path.stat().st_mtime)
+
+
+def _log_tail(value: str) -> str:
+    return value[-LOG_TAIL_CHARS:]
+
+
+def _attach_failure_logs(record: dict[str, Any], completed: subprocess.CompletedProcess[str]) -> None:
+    if completed.stdout:
+        record["stdout_tail"] = _log_tail(completed.stdout)
+    if completed.stderr:
+        record["stderr_tail"] = _log_tail(completed.stderr)
 
 
 def _run_oracle_eval(task_dir: Path, jobs_dir: Path, sandbox: str) -> dict[str, Any]:
@@ -119,16 +131,17 @@ def _run_oracle_eval(task_dir: Path, jobs_dir: Path, sandbox: str) -> dict[str, 
         "jobs_dir": str(jobs_dir),
         "command": command,
         "returncode": completed.returncode,
-        "stdout": completed.stdout,
-        "stderr": completed.stderr,
         "result_path": str(result_path) if result_path else None,
+        "fresh_result": result_path is not None,
         "status": "fail",
     }
     if completed.returncode != 0:
         record["message"] = "bench eval create returned non-zero"
+        _attach_failure_logs(record, completed)
         return record
     if result_path is None:
-        record["message"] = "bench eval create did not produce result.json"
+        record["message"] = "bench eval create did not produce a fresh result.json"
+        _attach_failure_logs(record, completed)
         return record
 
     data = json.loads(result_path.read_text())
@@ -201,6 +214,8 @@ def generate_trace_evidence(
         "eval_runs": [],
         "status": "pass",
     }
+    if run_eval:
+        summary["oracle_run_id"] = uuid4().hex
 
     for source in sources:
         if not isinstance(source, dict):
@@ -241,7 +256,9 @@ def generate_trace_evidence(
         summary["sources"].append(source_record)
 
         if run_eval and generated:
-            jobs_dir = evidence_dir / f"jobs-oracle-{output_name}"
+            jobs_dir = (
+                evidence_dir / "oracle-runs" / summary["oracle_run_id"] / output_name
+            )
             eval_record = _run_oracle_eval(generated[0], jobs_dir, sandbox)
             eval_record["source_output"] = output_name
             summary["eval_runs"].append(eval_record)

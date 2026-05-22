@@ -10,6 +10,7 @@ import pytest
 
 from benchflow._utils.scoring import (
     VERIFIER_FAILED,
+    VERIFIER_INFRA,
     VERIFIER_TIMEOUT,
     classify_verifier_error,
 )
@@ -27,6 +28,10 @@ from benchflow.models import RunResult
         (None, None),
         ("", None),
         ("verifier crashed: ImportError", VERIFIER_FAILED),
+        (
+            "verifier crashed: Failed to download verifier directory from sandbox",
+            VERIFIER_INFRA,
+        ),
         ("verifier timed out after 900s", VERIFIER_TIMEOUT),
         ("verifier did something weird", "verifier_other"),
     ],
@@ -135,6 +140,172 @@ class TestSdkVerify:
             rewards, verifier_error = await sdk._verify(env, task, tp, timing)
         assert rewards is None
         assert "crashed" in verifier_error and "kaboom" in verifier_error
+
+    @pytest.mark.asyncio
+    async def test_verifier_returning_no_rewards_is_verifier_error(
+        self, verify_harness
+    ):
+        from benchflow.task.verifier import VerifierResult
+
+        sdk, env, task, tp = verify_harness
+        mock_v = MagicMock()
+        mock_v.verify = AsyncMock(return_value=VerifierResult(rewards=None))
+        timing = {}
+        with (
+            patch("benchflow.task.Verifier", return_value=mock_v),
+            patch(
+                "benchflow.sandbox.lockdown.harden_before_verify",
+                new_callable=AsyncMock,
+            ),
+        ):
+            rewards, verifier_error = await sdk._verify(env, task, tp, timing)
+        assert rewards is None
+        assert "verifier returned no rewards" in verifier_error
+        assert "verifier" in timing
+
+    @pytest.mark.parametrize(
+        "rewards",
+        [
+            {},
+            {"score": 1.0},
+            {"reward": float("nan")},
+            {"reward": float("inf")},
+            {"reward": True},
+            {"reward": 1.2},
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_verifier_returning_noncanonical_rewards_is_verifier_error(
+        self, verify_harness, rewards
+    ):
+        sdk, env, task, tp = verify_harness
+        mock_result = MagicMock()
+        mock_result.rewards = rewards
+        mock_v = MagicMock()
+        mock_v.verify = AsyncMock(return_value=mock_result)
+        timing = {}
+        with (
+            patch("benchflow.task.Verifier", return_value=mock_v),
+            patch(
+                "benchflow.sandbox.lockdown.harden_before_verify",
+                new_callable=AsyncMock,
+            ),
+        ):
+            parsed_rewards, verifier_error = await sdk._verify(env, task, tp, timing)
+        assert parsed_rewards is None
+        assert "without numeric 'reward'" in verifier_error
+        assert "verifier" in timing
+
+    @patch("benchflow.rewards.llm.call_judge", new_callable=AsyncMock)
+    @pytest.mark.asyncio
+    async def test_llm_judge_download_failure_is_verifier_error(
+        self, mock_judge, tmp_path
+    ):
+        """Guards the reward-output regression on v0.5-integration@ffef85d."""
+        from benchflow.sdk import SDK
+        from benchflow.task import RolloutPaths
+        from benchflow.task.config import TaskConfig
+
+        task_dir = tmp_path / "task"
+        (task_dir / "tests").mkdir(parents=True)
+        (task_dir / "tests" / "rubric.json").write_text(
+            json.dumps({"criteria": [{"id": "c1", "match_criteria": "ok"}]})
+        )
+        task = MagicMock()
+        task.paths.task_dir = task_dir
+        task.instruction = "Grade the deliverables."
+        task.config = TaskConfig.model_validate_toml(
+            """\
+version = "1.0"
+
+[verifier]
+type = "llm-judge"
+timeout_sec = 5
+
+[verifier.judge]
+rubric_path = "tests/rubric.json"
+input_dir = "/app/output"
+"""
+        )
+        rollout_paths = RolloutPaths(tmp_path / "rollout")
+        rollout_paths.mkdir()
+        env = MagicMock()
+        env.download_dir = AsyncMock(side_effect=RuntimeError("network down"))
+        timing = {}
+
+        with patch(
+            "benchflow.sandbox.lockdown.harden_before_verify",
+            new_callable=AsyncMock,
+        ):
+            rewards, verifier_error = await SDK()._verify(
+                env, task, rollout_paths, timing
+            )
+
+        assert rewards is None
+        assert "verifier crashed" in verifier_error
+        assert "llm-judge input" in verifier_error
+        assert "/app/output" in verifier_error
+        assert "verifier" in timing
+        mock_judge.assert_not_awaited()
+
+    @patch("benchflow.rewards.llm.call_judge", new_callable=AsyncMock)
+    @pytest.mark.asyncio
+    async def test_llm_judge_provider_failure_is_verifier_error(
+        self, mock_judge, tmp_path
+    ):
+        """Guards the reward-output regression on v0.5-integration@ffef85d."""
+        from benchflow.sdk import SDK
+        from benchflow.task import RolloutPaths
+        from benchflow.task.config import TaskConfig
+
+        mock_judge.side_effect = RuntimeError("provider down")
+        task_dir = tmp_path / "task"
+        (task_dir / "tests").mkdir(parents=True)
+        (task_dir / "tests" / "rubric.json").write_text(
+            json.dumps({"criteria": [{"id": "c1", "match_criteria": "ok"}]})
+        )
+        task = MagicMock()
+        task.paths.task_dir = task_dir
+        task.instruction = "Grade the deliverables."
+        task.config = TaskConfig.model_validate_toml(
+            """\
+version = "1.0"
+
+[verifier]
+type = "llm-judge"
+timeout_sec = 5
+
+[verifier.judge]
+rubric_path = "tests/rubric.json"
+input_dir = "/app/output"
+"""
+        )
+        rollout_paths = RolloutPaths(tmp_path / "rollout")
+        rollout_paths.mkdir()
+        env = MagicMock()
+
+        async def download_output(source_dir, target_dir):
+            del source_dir
+            target_dir.mkdir(parents=True, exist_ok=True)
+            (target_dir / "answer.txt").write_text("candidate answer")
+
+        env.download_dir = AsyncMock(side_effect=download_output)
+        timing = {}
+
+        with patch(
+            "benchflow.sandbox.lockdown.harden_before_verify",
+            new_callable=AsyncMock,
+        ):
+            rewards, verifier_error = await SDK()._verify(
+                env, task, rollout_paths, timing
+            )
+
+        assert rewards is None
+        assert "verifier crashed" in verifier_error
+        assert "Judge error on criterion c1" in verifier_error
+        assert "provider down" not in verifier_error
+        assert not rollout_paths.reward_json_path.exists()
+        assert "verifier" in timing
 
     @pytest.mark.asyncio
     async def test_verifier_success(self, verify_harness):
@@ -313,6 +484,24 @@ class TestJobRunLogs:
         summary = json.loads((job._jobs_dir / "summary.json").read_text())
         assert summary["verifier_errored"] == 1
 
+    @pytest.mark.asyncio
+    async def test_verifier_error_takes_precedence_over_agent_error_in_counts(
+        self, job_factory
+    ):
+        job, _ = job_factory(n_tasks=1)
+        job._sdk = AsyncMock()
+        job._sdk.run = AsyncMock(
+            return_value=RunResult(
+                task_name="task-0",
+                error="Agent prompt exceeded wall-clock budget 5s",
+                verifier_error="verifier crashed: No reward file found",
+            )
+        )
+        await job.run()
+        summary = json.loads((job._jobs_dir / "summary.json").read_text())
+        assert summary["errored"] == 0
+        assert summary["verifier_errored"] == 1
+
 
 # ---------------------------------------------------------------------------
 # EvaluationResult invariant
@@ -431,7 +620,8 @@ class TestMetricsVerifierError:
         (None, None, "verifier crashed: x", True),
         (1.0, None, None, False),
         (None, "timed out", None, False),
-        (0.0, None, "verifier crashed: x", False),  # reward set → not verifier_errored
+        (None, "timed out", "verifier crashed: x", True),
+        (0.0, None, "verifier crashed: x", True),
     ],
 )
 def test_task_metrics_verifier_errored(reward, error, verifier_error, expected):
@@ -522,7 +712,12 @@ class TestScrapedTrajectoryTrust:
     async def test_scraped_trajectory_preserves_n_tool_calls(
         self, sdk_run_mocks, caplog
     ):
-        """Main path: forged scraped trajectory must NOT overwrite ACP n_tool_calls."""
+        """Guards the reward-output regression on v0.5-integration@ffef85d.
+
+        SDK.run delegates to Rollout, so this test must mock the Rollout
+        verifier seam; otherwise the mock sandbox runs a real verifier and
+        produces result.json with a missing-reward verifier_error.
+        """
         sdk, mock_env, task_dir = sdk_run_mocks
 
         forged = [{"type": "tool_call", "name": f"fake_{i}"} for i in range(100)]
@@ -553,7 +748,7 @@ class TestScrapedTrajectoryTrust:
                         return_value=forged,
                     ),
                     patch(
-                        "benchflow.sdk.SDK._verify",
+                        "benchflow.rollout._verify_rollout",
                         new_callable=AsyncMock,
                         return_value=({"reward": 1.0}, None),
                     ),
@@ -562,15 +757,27 @@ class TestScrapedTrajectoryTrust:
             caplog.at_level(logging.WARNING),
         ):
             result = await sdk.run(
-                task_dir, agent="test-agent", agent_env={"TEST": "1"}, sandbox_user=None
+                task_dir,
+                agent="test-agent",
+                agent_env={"TEST": "1"},
+                sandbox_user=None,
+                jobs_dir=task_dir.parent / "jobs",
             )
 
         assert result.n_tool_calls == 5, (
             "ACP n_tool_calls must survive scraping fallback"
         )
+        assert result.rewards == {"reward": 1.0}
+        assert result.verifier_error is None
         assert result.trajectory_source == "scraped"
         assert len(result.trajectory) == 100
         assert any("UNTRUSTED" in m for m in caplog.messages)
+
+        matches = list((task_dir.parent / "jobs").glob(f"*/{result.rollout_name}/result.json"))
+        assert len(matches) == 1
+        result_json = json.loads(matches[0].read_text())
+        assert result_json["rewards"] == {"reward": 1.0}
+        assert result_json["verifier_error"] is None
 
     @pytest.mark.asyncio
     async def test_partial_acp_uses_session_tool_calls(self, sdk_run_mocks):
@@ -610,7 +817,11 @@ class TestScrapedTrajectoryTrust:
             ],
         ):
             result = await sdk.run(
-                task_dir, agent="test-agent", agent_env={"TEST": "1"}, sandbox_user=None
+                task_dir,
+                agent="test-agent",
+                agent_env={"TEST": "1"},
+                sandbox_user=None,
+                jobs_dir=task_dir.parent / "jobs",
             )
 
         assert result.n_tool_calls == 3, (

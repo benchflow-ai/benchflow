@@ -6,14 +6,30 @@ import asyncio
 import json
 import logging
 import re
+from collections.abc import Mapping
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
 
+class JudgeEnvironmentError(RuntimeError):
+    """Raised when no judge provider SDK is available."""
+
+
 # ------------------------------------------------------------------
 # Verdict parsing
 # ------------------------------------------------------------------
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"Invalid JSON constant: {value}")
+
+
+def _loads_verdict_json(text: str) -> dict[str, Any]:
+    parsed = json.loads(text, parse_constant=_reject_json_constant)
+    if not isinstance(parsed, dict):
+        raise ValueError("Judge verdict must be a JSON object")
+    return parsed
 
 
 def parse_verdict(text: str) -> dict[str, Any]:
@@ -25,8 +41,8 @@ def parse_verdict(text: str) -> dict[str, Any]:
     match = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", text, re.DOTALL)
     if match:
         try:
-            return json.loads(match.group(1).strip())
-        except json.JSONDecodeError:
+            return _loads_verdict_json(match.group(1).strip())
+        except ValueError:
             pass
 
     # Balanced braces
@@ -40,8 +56,8 @@ def parse_verdict(text: str) -> dict[str, Any]:
                     depth -= 1
                 if depth == 0:
                     try:
-                        return json.loads(text[i : j + 1])
-                    except json.JSONDecodeError:
+                        return _loads_verdict_json(text[i : j + 1])
+                    except ValueError:
                         break
             break
 
@@ -87,15 +103,18 @@ async def call_judge(
     *,
     max_tokens: int = 2048,
     retries: int = 3,
+    env: Mapping[str, str] | None = None,
 ) -> str:
     """Call an LLM judge, routing by model name prefix.
 
-    Tries Anthropic, OpenAI, and Google SDKs in order based on the
-    model string.  Falls back through providers if the primary is
-    unavailable.
+    ``env`` carries per-call credentials resolved from ``[verifier.env]``.
+    The provider clients receive those credentials explicitly so concurrent
+    judge runs do not race on process-global ``os.environ``.
     """
     bare_model = _strip_provider_prefix(model)
+    creds: Mapping[str, str] = env or {}
     providers: list[str] = []
+    matched_provider = True
 
     if _is_anthropic_model(model):
         providers = ["anthropic", "openai", "google"]
@@ -106,17 +125,18 @@ async def call_judge(
     else:
         # Unknown prefix — try all
         providers = ["anthropic", "openai", "google"]
+        matched_provider = False
 
     last_error: Exception | None = None
     for provider in providers:
         for attempt in range(retries):
             try:
                 if provider == "anthropic":
-                    return await _call_anthropic(bare_model, prompt, max_tokens)
+                    return await _call_anthropic(bare_model, prompt, max_tokens, creds)
                 if provider == "openai":
-                    return await _call_openai(bare_model, prompt, max_tokens)
+                    return await _call_openai(bare_model, prompt, max_tokens, creds)
                 if provider == "google":
-                    return await _call_google(bare_model, prompt)
+                    return await _call_google(bare_model, prompt, creds)
             except ImportError:
                 logger.debug("SDK for %s not installed, skipping", provider)
                 break  # No point retrying if SDK is missing
@@ -131,12 +151,17 @@ async def call_judge(
                     retries,
                     e,
                 )
+                if matched_provider:
+                    raise
                 break  # Move to next provider
 
-    msg = f"All LLM providers failed for model {model}"
-    if last_error:
-        msg += f": {last_error}"
-    raise RuntimeError(msg)
+    if last_error is not None:
+        raise last_error
+    raise JudgeEnvironmentError(
+        f"No LLM provider SDK is installed for model {model}. "
+        "Install the judge extra: `uv sync --extra judge` "
+        "(provides anthropic, openai, google-genai)."
+    )
 
 
 # ------------------------------------------------------------------
@@ -144,22 +169,41 @@ async def call_judge(
 # ------------------------------------------------------------------
 
 
-async def _call_anthropic(model: str, prompt: str, max_tokens: int) -> str:
+async def _call_anthropic(
+    model: str, prompt: str, max_tokens: int, env: Mapping[str, str] | None = None
+) -> str:
     import anthropic  # ty: ignore[unresolved-import]
 
-    client = anthropic.AsyncAnthropic()
+    api_key = (env or {}).get("ANTHROPIC_API_KEY")
+    client = (
+        anthropic.AsyncAnthropic(api_key=api_key)
+        if api_key
+        else anthropic.AsyncAnthropic()
+    )
     response = await client.messages.create(
         model=model,
         max_tokens=max_tokens,
         messages=[{"role": "user", "content": prompt}],
     )
-    return response.content[0].text
+    for block in response.content:
+        text = getattr(block, "text", None)
+        if isinstance(text, str):
+            return text
+    return ""
 
 
-async def _call_openai(model: str, prompt: str, max_tokens: int) -> str:
+async def _call_openai(
+    model: str, prompt: str, max_tokens: int, env: Mapping[str, str] | None = None
+) -> str:
     import openai
 
-    client = openai.AsyncOpenAI()
+    creds = env or {}
+    kwargs: dict[str, str] = {}
+    if api_key := creds.get("OPENAI_API_KEY"):
+        kwargs["api_key"] = api_key
+    if base_url := creds.get("OPENAI_BASE_URL"):
+        kwargs["base_url"] = base_url
+    client = openai.AsyncOpenAI(**kwargs)
     response = await client.chat.completions.create(
         model=model,
         max_tokens=max_tokens,
@@ -169,14 +213,22 @@ async def _call_openai(model: str, prompt: str, max_tokens: int) -> str:
     return content or ""
 
 
-async def _call_google(model: str, prompt: str) -> str:
+async def _call_google(
+    model: str, prompt: str, env: Mapping[str, str] | None = None
+) -> str:
     import os
 
     from google import genai  # ty: ignore[unresolved-import]
 
-    api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
+    creds = env or {}
+    api_key = (
+        creds.get("GOOGLE_API_KEY")
+        or creds.get("GEMINI_API_KEY")
+        or os.environ.get("GOOGLE_API_KEY")
+        or os.environ.get("GEMINI_API_KEY")
+    )
     if not api_key:
         raise RuntimeError("GOOGLE_API_KEY / GEMINI_API_KEY not set")
     client = genai.Client(api_key=api_key)
     response = await client.aio.models.generate_content(model=model, contents=prompt)
-    return response.text
+    return response.text or ""

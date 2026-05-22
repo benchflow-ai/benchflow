@@ -4,6 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>BenchFlow v0.5 — Dashboard</title>
+<link rel="icon" href='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="12" fill="%232b6cb0"/><path d="M18 18h28v8H28v8h16v8H28v12H18z" fill="%23fbfbfa"/></svg>' />
 <style>
   :root {
     --bg: #fbfbfa; --panel: #ffffff; --ink: #1c1c1a; --muted: #6b6b66;
@@ -48,6 +49,7 @@
   main { flex: 1; min-width: 0; overflow-x: hidden; padding: 26px 30px 70px; }
   h1.page { margin: 0 0 2px; font-size: 19px; letter-spacing: -.2px; }
   .sub-ttl { color: var(--muted); margin-bottom: 18px; font-size: 13px; }
+  .sub-ttl code { white-space: normal; overflow-wrap: anywhere; word-break: break-word; }
   h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .5px;
        color: var(--muted); margin: 26px 0 10px; }
   h2:first-of-type { margin-top: 6px; }
@@ -58,6 +60,25 @@
   .stat { flex: 1; min-width: 150px; }
   .stat .big { font-size: 25px; font-weight: 700; letter-spacing: -.5px; }
   .stat .lbl { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .4px; }
+  .repo-line {
+    margin: -6px 0 16px; color: var(--muted); font-size: 12px;
+    display: flex; gap: 6px; flex-wrap: wrap; align-items: center;
+  }
+  .sync-banner {
+    margin: 0 0 14px; padding: 8px 10px; border: 1px solid #f0dab0;
+    border-radius: 6px; background: #fdf8ee; color: var(--warn);
+    display: flex; gap: 8px; flex-wrap: wrap; align-items: baseline;
+    font-size: 12px;
+  }
+  .sync-banner b { color: var(--ink); font-weight: 600; }
+  .text-link {
+    color: var(--accent); text-decoration: none;
+    border-bottom: 1px solid #bfd7f3;
+  }
+  .text-link:hover { border-bottom-color: var(--accent); }
+  .text-link:focus-visible {
+    outline: 2px solid #bfd7f3; outline-offset: 2px; border-radius: 2px;
+  }
   .muted { color: var(--muted); }
   .good { color: var(--good); } .bad { color: var(--bad); }
   .warn { color: var(--warn); } .accent { color: var(--accent); }
@@ -71,6 +92,7 @@
   .dot.partial, .dot.open { background: var(--warn); }
   .dot.backlog { background: #c9c9c4; }
   .dot.active { background: var(--accent); }
+  .dot.muted { background: var(--muted); }
   .num-mono { font-variant-numeric: tabular-nums; }
 
   /* concept map */
@@ -108,6 +130,91 @@
   details { margin: 2px 0; }
   summary { cursor: pointer; }
   summary::-webkit-details-marker { color: var(--muted); }
+  .ticket-board {
+    display: grid; grid-template-columns: minmax(300px, 430px) minmax(0, 1fr);
+    gap: 14px; height: calc(100dvh - 206px);
+  }
+  .ticket-list-pane,
+  .ticket-detail-pane {
+    border: 1px solid var(--line); border-radius: 8px; background: var(--panel);
+    min-height: 0; overflow: hidden;
+  }
+  .ticket-list-pane { display: flex; flex-direction: column; }
+  .ticket-list-scroll { overflow: auto; min-height: 0; padding: 10px; }
+  .ticket-group { margin-bottom: 12px; }
+  .ticket-group-hd {
+    display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap;
+    color: var(--muted); font-size: 11px; padding: 4px 2px 6px;
+    text-transform: uppercase; letter-spacing: .4px;
+  }
+  .ticket-row {
+    width: 100%; border: 1px solid transparent; border-radius: 6px;
+    background: transparent; color: var(--ink); text-align: left; cursor: pointer;
+    padding: 9px 10px; margin: 0 0 5px; display: grid;
+    grid-template-columns: 8px minmax(0, 1fr); gap: 8px; align-items: start;
+    font: inherit;
+  }
+  .ticket-row > span { min-width: 0; }
+  .ticket-row:hover { background: #faf9f7; border-color: var(--line); }
+  .ticket-row.active { background: #edf5ff; border-color: #bfd7f3; }
+  .ticket-row .dot { margin: .45em 0 0; }
+  .ticket-row-head {
+    display: flex; gap: 8px; align-items: baseline; min-width: 0;
+  }
+  .ticket-row .tid { white-space: nowrap; color: var(--accent); font-weight: 700; flex: none; }
+  .ticket-row .ttitle { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .ticket-row .tmeta { color: var(--muted); font-size: 11.5px; margin-top: 2px; }
+  .ticket-detail-pane { overflow: auto; padding: 18px 20px; }
+  .ticket-detail-top { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+  .ticket-detail-title {
+    font-size: 19px; font-weight: 700; line-height: 1.25; margin: 8px 0 12px;
+    overflow-wrap: anywhere;
+  }
+  .progress-meter { display: grid; gap: 5px; min-width: 160px; }
+  .progress-label {
+    display: flex; justify-content: space-between; gap: 12px;
+    color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums;
+  }
+  .progress-label b { color: var(--ink); font-weight: 600; }
+  .progress-track {
+    height: 8px; border-radius: 999px; overflow: hidden;
+    background: color-mix(in srgb, var(--line) 80%, var(--side));
+  }
+  .progress-fill {
+    height: 100%; width: var(--progress, 0%);
+    background: var(--accent); border-radius: inherit;
+  }
+  .ticket-progress { padding: 0 2px 8px; }
+  .ticket-detail-progress { margin: 0 0 14px; }
+  .ticket-kv {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 8px 14px; margin: 14px 0;
+  }
+  .ticket-kv div, .ticket-parent, .ticket-linear, .ticket-section {
+    border-top: 1px solid var(--line); padding-top: 8px;
+    color: var(--muted); font-size: 12px;
+  }
+  .ticket-kv b, .ticket-parent b, .ticket-linear b, .ticket-section b {
+    color: var(--ink); font-weight: 600;
+  }
+  .ticket-kv div, .ticket-parent, .ticket-linear, .ticket-section { overflow-wrap: anywhere; }
+  .ticket-description {
+    white-space: pre-wrap; color: var(--ink); font-size: 13px;
+    margin-top: 6px; overflow-wrap: anywhere;
+  }
+  .ticket-comments { display: grid; gap: 8px; margin-top: 8px; }
+  .ticket-comment {
+    border: 1px solid var(--line); border-radius: 6px;
+    background: #fafaf8; padding: 8px 10px;
+  }
+  .ticket-comment-meta {
+    color: var(--muted); font-size: 11px; margin-bottom: 4px;
+    display: flex; gap: 8px; flex-wrap: wrap;
+  }
+  .ticket-comment-body {
+    white-space: pre-wrap; color: var(--ink); font-size: 12.5px; overflow-wrap: anywhere;
+  }
+  .ticket-labels { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 10px; }
 
   /* file-content rendering (shared by the Jobs + Timeline content pane) */
   .fv-note {
@@ -153,6 +260,20 @@
     gap: 0; border: 1px solid var(--line); border-radius: 8px;
     background: var(--panel); overflow: hidden; min-height: 380px;
   }
+  .fb.resizable {
+    grid-template-columns: var(--tree-width, minmax(220px, 320px)) 6px minmax(0, 1fr);
+  }
+  .fb-resizer {
+    cursor: col-resize; background: var(--line);
+    min-width: 6px; position: relative;
+  }
+  .fb-resizer::after {
+    content: ""; position: absolute; inset: 0 2px;
+    background: color-mix(in srgb, var(--muted) 22%, transparent);
+    opacity: 0; transition: opacity .12s;
+  }
+  .fb-resizer:hover::after,
+  .fb-resizer.dragging::after { opacity: 1; }
   .fb-tree {
     border-right: 1px solid var(--line); background: var(--side);
     overflow: auto; max-height: 70vh; padding: 6px 0;
@@ -170,7 +291,7 @@
     display: flex; align-items: center; gap: 6px; cursor: pointer;
     padding: 3px 8px 3px 0; font-size: 12.5px; color: var(--ink);
     user-select: none; white-space: nowrap; position: relative;
-    border-radius: 0;
+    border-radius: 0; min-width: 0;
   }
   .trow:hover { background: #ecece9; }
   .tnode.file.selected > .trow {
@@ -199,13 +320,14 @@
   .tnode.file   > .trow .ticon { color: #9b9b95; }
   .tnode.file.selected > .trow .ticon { color: var(--accent); }
   .tlabel {
-    overflow: hidden; text-overflow: ellipsis;
+    overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 0 1 auto;
     font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   }
   .tnode.folder > .trow .tlabel { font-family: inherit; }
   .tmetatag {
     flex: none; margin-left: 6px; font-size: 10px; color: var(--muted);
-    font-variant-numeric: tabular-nums;
+    font-variant-numeric: tabular-nums; max-width: 24ch;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .tbadge {
     flex: none; margin-left: 6px; font-size: 9px; letter-spacing: .4px;
@@ -225,22 +347,79 @@
   .fb-grphd .gblurb { color: var(--muted); font-size: 12px; margin: 3px 0 0; }
   /* the viewer's content header (file path + meta) */
   .fb-viewer-hd {
-    display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+    display: grid; grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start; gap: 10px;
     padding-bottom: 8px; margin-bottom: 10px; border-bottom: 1px solid var(--line);
   }
+  .fb-viewer-hd .vleft { min-width: 0; display: grid; gap: 2px; }
   .fb-viewer-hd .vpath {
     font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
     font-size: 12.5px; font-weight: 600;
+    white-space: normal; overflow-wrap: anywhere; word-break: break-word;
   }
   .fb-viewer-hd .vmeta { color: var(--muted); font-size: 11.5px; }
+  .fb-viewer-hd .vdate {
+    color: var(--muted); font-size: 11.5px; font-variant-numeric: tabular-nums;
+    justify-self: end; white-space: nowrap;
+  }
   .fb-empty {
     color: var(--muted); font-size: 13px; font-style: italic;
     display: flex; align-items: center; justify-content: center;
     height: 100%; min-height: 240px; text-align: center; padding: 20px;
   }
+  /* Jobs is the primary artifact workspace, so its browser should occupy
+     the working viewport. Timeline keeps the compact shared defaults below. */
+  .jobs-page {
+    height: calc(100dvh - 96px); min-height: 0;
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  .jobs-page .sub-ttl { margin-bottom: 14px; }
+  .jobs-browser {
+    flex: 1 1 auto; min-height: 0;
+  }
+  .jobs-browser.fb {
+    min-height: 0;
+    --tree-width: clamp(260px, 28%, 380px);
+    grid-template-columns: var(--tree-width) 6px minmax(0, 1fr);
+  }
+  .jobs-browser .fb-tree,
+  .jobs-browser .fb-viewer {
+    height: auto; max-height: none; min-height: 0;
+  }
+  .jobs-browser .tmetatag { max-width: 32ch; }
+  .jobs-browser .trow { overflow: hidden; }
+  .jobs-browser .trow .gblurb { display: none; }
+  .jobs-browser .trow .chip.lnk { flex: none; }
+  .jobs-browser .fb-viewer {
+    display: flex; flex-direction: column; min-height: 0; overflow: hidden;
+  }
+  .jobs-browser .fb-viewer-hd,
+  .jobs-browser .fv-note {
+    flex: none;
+  }
+  .jobs-browser .fb-viewer > pre.code,
+  .jobs-browser .fb-viewer > .fv-table-wrap {
+    flex: 1 1 auto; min-height: 0;
+    max-height: none; overflow: auto;
+  }
+  @media (max-width: 900px) {
+    main { padding: 18px 16px 56px; }
+    .ticket-board,
+    .fb,
+    .jobs-browser.fb {
+      grid-template-columns: 1fr;
+      height: auto;
+    }
+    .fb-resizer { display: none; }
+    .architecture-board { grid-template-columns: 1fr; }
+    .architecture-outline { position: static; max-height: 260px; }
+    .jobs-page { height: auto; overflow: visible; }
+    .jobs-browser .fb-tree,
+    .jobs-browser .fb-viewer { max-height: 70vh; }
+  }
 
   /* timeline / experiments */
-  .timeline { border-left: 2px solid var(--line); margin-left: 8px; padding-left: 0; }
+  .timeline { border-left: 1px solid var(--line); margin-left: 8px; padding-left: 0; }
   .tl { position: relative; padding: 4px 0 14px 22px; }
   .tl .tdot {
     position: absolute; left: -7px; top: 7px; width: 12px; height: 12px;
@@ -252,6 +431,50 @@
   .tl.skillsbench .tdot { background: var(--good); }
   .tl.swebench   .tdot { background: var(--warn); }
   .tl.scene      .tdot { background: #0d9488; }
+
+  /* architecture markdown tab */
+  .architecture-board {
+    display: grid; grid-template-columns: minmax(220px, 300px) minmax(0, 1fr);
+    gap: 18px; align-items: start;
+  }
+  .architecture-outline {
+    position: sticky; top: 18px; max-height: calc(100dvh - 120px);
+    overflow: auto; padding: 10px 0;
+  }
+  .architecture-outline a {
+    display: block; color: var(--muted); text-decoration: none;
+    padding: 4px 12px; border-radius: 5px; font-size: 12px;
+  }
+  .architecture-outline a:hover { background: #ecece9; color: var(--ink); }
+  .architecture-outline .lvl-1 { color: var(--ink); font-weight: 700; }
+  .architecture-outline .lvl-2 { padding-left: 20px; }
+  .architecture-outline .lvl-3,
+  .architecture-outline .lvl-4 { padding-left: 32px; font-size: 11px; }
+  .architecture-doc {
+    max-width: 900px; color: var(--ink);
+  }
+  .architecture-doc h1,
+  .architecture-doc h2,
+  .architecture-doc h3 {
+    text-transform: none; letter-spacing: 0; color: var(--ink);
+  }
+  .architecture-doc h1 { font-size: 24px; margin: 0 0 16px; line-height: 1.2; }
+  .architecture-doc h2 { font-size: 18px; margin: 28px 0 10px; }
+  .architecture-doc h3 { font-size: 15px; margin: 20px 0 8px; }
+  .architecture-doc p { max-width: 72ch; margin: 0 0 12px; }
+  .architecture-doc ul { margin: 0 0 14px 20px; padding: 0; max-width: 76ch; }
+  .architecture-doc li { margin: 4px 0; }
+  .architecture-doc code {
+    background: var(--chip); border-radius: 4px; padding: 1px 4px;
+  }
+  .architecture-doc pre.code {
+    max-height: none; margin: 10px 0 16px; white-space: pre-wrap;
+  }
+  .architecture-doc .md-table-wrap {
+    border: 1px solid var(--line); border-radius: 6px; overflow: auto;
+    margin: 10px 0 16px; max-width: 100%;
+  }
+  .architecture-doc .md-table-wrap table { min-width: 560px; }
   .tl.lab        .tdot { background: #be185d; }
   .tl.other      .tdot { background: #c9c9c4; }
   .tl .tmeta { font-size: 11px; color: var(--muted); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
@@ -280,12 +503,36 @@
 
   /* ---- responsive — two-pane browser stacks on narrow viewports --------- */
   @media (max-width: 760px) {
+    body { display: block; }
+    aside {
+      width: auto; height: auto; position: static; top: auto;
+      border-right: none; border-bottom: 1px solid var(--line);
+      padding: 12px;
+    }
+    .brand, .gen { padding-left: 2px; padding-right: 2px; }
+    nav { display: flex; flex-wrap: wrap; gap: 4px; }
+    nav a { flex: 1 1 112px; padding: 7px 9px; }
+    nav a.sub { flex-basis: 100%; padding-left: 18px; }
+    main { padding: 18px 14px 44px; }
     .fb { grid-template-columns: 1fr; }
     .fb-tree {
       border-right: none; border-bottom: 1px solid var(--line);
       max-height: 280px;
     }
     .fb-viewer { max-height: none; }
+    .jobs-page { height: auto; min-height: 0; overflow: visible; }
+    .jobs-browser { height: auto; min-height: 0; }
+    .jobs-browser .fb-tree { height: auto; max-height: 36dvh; }
+    .jobs-browser .fb-viewer { height: 50dvh; min-height: 320px; }
+    .jobs-browser .tmetatag { max-width: 18ch; }
+    .jobs-browser .gblurb { display: none; }
+    .jobs-browser .fb-viewer > pre.code,
+    .jobs-browser .fb-viewer > .fv-table-wrap {
+      flex: 1 1 auto; max-height: none; min-height: 0;
+    }
+    .ticket-board { grid-template-columns: 1fr; height: auto; min-height: 0; }
+    .ticket-list-pane { max-height: 42dvh; }
+    .ticket-detail-pane { max-height: none; overflow: visible; }
     .tl .fb-tree { max-height: 240px; }
   }
 </style>
@@ -299,22 +546,197 @@
 <main id="main"></main>
 
 <script>
-const TABS = ["Overview", "Concept map", "Roadmap", "Tests", "Jobs", "Advisories", "Timeline"];
-let DATA = null, CURRENT = null;
+const TABS = ["Overview", "Concept map", "Architecture", "Tickets", "Tests", "Jobs", "Advisories", "Timeline"];
+let DATA = null, CURRENT = null, SELECTED_TICKET_ID = null, DATA_SIGNATURE = null, SYNC_ERROR = null;
 
 function el(t, c, h) { const e = document.createElement(t); if (c) e.className = c; if (h !== undefined) e.innerHTML = h; return e; }
 function esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;" }[c])); }
-function statusClass(s) {
+function statusClass(s, t) {
+  t = (t || "").toLowerCase();
+  if (t === "completed") return "shipped";
+  if (t === "started") return "active";
+  if (t === "unstarted") return "partial";
+  if (t === "canceled" || t === "duplicate") return "muted";
   s = (s || "").toLowerCase();
   if (s.includes("review") || s.includes("progress")) return "active";
-  if (s === "shipped" || s === "resolved") return "shipped";
+  if (s === "done" || s === "shipped" || s === "resolved") return "shipped";
   if (s === "partial" || s === "open" || s === "todo") return "partial";
   return "backlog";
 }
 
+function dateOnly(v) { return v ? String(v).slice(0, 10) : ""; }
+function compactPath(path) {
+  const text = String(path || "");
+  if (text.length <= 72) return text;
+  const parts = text.split("/").filter(Boolean);
+  const tail = parts.slice(-4).join("/");
+  return "…/" + (tail || text.slice(-68));
+}
+function shortLinearUrl(url) {
+  if (!url) return "";
+  const text = String(url);
+  const issue = text.match(/\/issue\/([^?#]+)/);
+  return issue ? issue[1] : text.replace(/^https?:\/\//, "");
+}
+function safeLinearUrl(url) {
+  const text = String(url || "");
+  return /^https:\/\/linear\.app\//.test(text) ? text : "";
+}
+function linearLink(url, label) {
+  const href = safeLinearUrl(url);
+  const text = label || shortLinearUrl(url);
+  if (!href) return esc(text || "not available");
+  return `<a class="text-link" href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(text)}</a>`;
+}
+function progressPct(m, issues) {
+  const raw = Number(m && m.progress);
+  if (Number.isFinite(raw)) return Math.max(0, Math.min(100, Math.round(raw <= 1 ? raw * 100 : raw)));
+  const done = issues.filter(i => (i.status_type || "").toLowerCase() === "completed" || /done/i.test(i.status)).length;
+  const active = issues.filter(i => (i.status_type || "").toLowerCase() === "started" || /progress|review/i.test(i.status)).length;
+  return Math.round(((done + active * 0.5) / Math.max(1, issues.length)) * 100);
+}
+function progressMeter(pct, label) {
+  const value = Math.max(0, Math.min(100, Math.round(Number(pct) || 0)));
+  return `<div class="progress-meter" style="--progress:${value}%">
+    <div class="progress-label"><b>${esc(label)}</b><span>${value}%</span></div>
+    <div class="progress-track" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${value}" aria-label="${esc(label)}">
+      <div class="progress-fill"></div>
+    </div>
+  </div>`;
+}
+function roadmapTickets(rm) {
+  return (rm.milestones || []).flatMap(m =>
+    (m.issues || []).map(i => ({ ...i, milestone: {
+      id: m.id, name: m.name, status: m.status, progress: m.progress, target_date: m.target_date,
+    }})));
+}
+function ticketPriority(i) {
+  return i.priority && i.priority.name ? `P${i.priority.value} ${i.priority.name}` : "";
+}
+function ticketActive(i) {
+  return (i.status_type || "").toLowerCase() === "started" || /progress|review/i.test(i.status || "");
+}
+function slugifyHeading(text) {
+  return String(text || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "section";
+}
+function mdInline(raw) {
+  return esc(raw)
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/\*([^*]+)\*/g, "<em>$1</em>");
+}
+function renderMarkdownTable(lines) {
+  const rows = lines.map(line => line.replace(/^\||\|$/g, "").split("|").map(cell => cell.trim()));
+  const hasHeader = rows.length > 1 && rows[1].every(cell => /^:?-{3,}:?$/.test(cell));
+  const head = hasHeader ? rows[0] : null;
+  const body = hasHeader ? rows.slice(2) : rows;
+  const thead = head ? `<thead><tr>${head.map(c => `<th>${mdInline(c)}</th>`).join("")}</tr></thead>` : "";
+  const tbody = `<tbody>${body.map(row => `<tr>${row.map(c => `<td>${mdInline(c)}</td>`).join("")}</tr>`).join("")}</tbody>`;
+  return `<div class="md-table-wrap"><table>${thead}${tbody}</table></div>`;
+}
+function renderMarkdown(md) {
+  const lines = String(md || "").split("\n");
+  const out = [], used = {};
+  let para = [], list = [], code = [], table = [], inCode = false, codeLang = "";
+  const flushPara = () => {
+    if (!para.length) return;
+    out.push(`<p>${mdInline(para.join(" "))}</p>`);
+    para = [];
+  };
+  const flushList = () => {
+    if (!list.length) return;
+    out.push(`<ul>${list.map(item => `<li>${mdInline(item)}</li>`).join("")}</ul>`);
+    list = [];
+  };
+  const flushTable = () => {
+    if (!table.length) return;
+    out.push(renderMarkdownTable(table));
+    table = [];
+  };
+  const flushAll = () => { flushPara(); flushList(); flushTable(); };
+
+  lines.forEach(line => {
+    const fence = line.match(/^```(.*)$/);
+    if (fence) {
+      if (inCode) {
+        out.push(`<pre class="code wrap"><code>${esc(code.join("\n"))}</code></pre>`);
+        code = []; inCode = false; codeLang = "";
+      } else {
+        flushAll(); inCode = true; codeLang = fence[1] || "";
+      }
+      return;
+    }
+    if (inCode) { code.push(line); return; }
+    if (!line.trim()) { flushAll(); return; }
+    if (/^\|.+\|$/.test(line.trim())) { flushPara(); flushList(); table.push(line.trim()); return; }
+
+    const heading = line.match(/^(#{1,4})\s+(.+?)\s*$/);
+    if (heading) {
+      flushAll();
+      const level = heading[1].length;
+      const title = heading[2].trim();
+      const base = slugifyHeading(title);
+      const count = used[base] || 0;
+      used[base] = count + 1;
+      const anchor = count === 0 ? base : `${base}-${count + 1}`;
+      out.push(`<h${level} id="${esc(anchor)}">${mdInline(title)}</h${level}>`);
+      return;
+    }
+    const bullet = line.match(/^\s*[-*]\s+(.+)$/);
+    if (bullet) { flushPara(); flushTable(); list.push(bullet[1]); return; }
+    flushList(); flushTable(); para.push(line.trim());
+  });
+  if (inCode) out.push(`<pre class="code wrap"><code>${esc(code.join("\n"))}</code></pre>`);
+  flushAll();
+  return out.join("\n");
+}
+function dataSignature(d) {
+  const jobGroups = d.jobs && d.jobs.groups
+    ? d.jobs.groups.map(g => `${g.name}:${g.n_tasks}`).join(",")
+    : "";
+  return [
+    d.generated_at,
+    d.roadmap && d.roadmap.source && d.roadmap.source.generated_at,
+    d.repo && d.repo.branch,
+    d.repo && d.repo.head,
+    d.repo && d.repo.changes,
+    d.jobs && d.jobs.source && d.jobs.source.path,
+    d.jobs && d.jobs.source && d.jobs.source.configured,
+    d.jobs && d.jobs.source && d.jobs.source.available,
+    d.jobs && d.jobs.source && d.jobs.source.remembered,
+    d.jobs && d.jobs.source && d.jobs.source.latest_modified_at,
+    d.jobs && d.jobs.total_tasks,
+    jobGroups,
+  ].join("|");
+}
+
+function tabFromLocation() {
+  const want = decodeURIComponent(location.hash.slice(1));
+  return want === "Roadmap" || want === "Tickets" || TABS.includes(want)
+    ? want
+    : "Overview";
+}
+function repoLine() {
+  const r = DATA.repo;
+  const parts = [];
+  if (r && r.available) {
+    const state = r.dirty ? `${r.changes} changed` : "clean";
+    parts.push(`<span class="chip ${r.dirty ? "" : "p"}">${esc(r.branch || "repo")}</span>`);
+    parts.push(`<span class="mono">${esc(r.head || "")}</span>`);
+    parts.push(`<span>${esc(state)}</span>`);
+  }
+  if (SYNC_ERROR) parts.push(`<span class="bad">sync failed: ${esc(SYNC_ERROR)}</span>`);
+  return parts.length ? `<div class="repo-line">${parts.join("")}</div>` : "";
+}
+function syncBanner() {
+  if (!SYNC_ERROR) return null;
+  return el("div", "sync-banner",
+    `<b>Dashboard data is not refreshing.</b><span>${esc(SYNC_ERROR)}</span>`);
+}
+
 // ---- file-content viewer (one component, used by Jobs + Timeline) ----------
 // A file/artifact object carries: { name, kind, lang, content,
-// content_lines, truncated, info?, size?, rows? }. Renders an expandable
+// content_lines, truncated, note?, ignored_by_verifier?, size?, rows? }. Renders an expandable
 // <details> that reveals the file's content, formatted by `lang`.
 
 function bytesLabel(n) {
@@ -444,11 +866,18 @@ function renderFileInto(viewer, node) {
   if (file.content_lines != null) meta.push(file.content_lines + " lines");
   if (file.rows != null) meta.push(file.rows + " rows");
   if (file.size != null) meta.push(bytesLabel(file.size));
+  if (file.ignored_by_verifier) meta.push("ignored by verifier");
   if (node.viewerExtra) meta.push(node.viewerExtra);
 
   const hd = el("div", "fb-viewer-hd");
-  hd.appendChild(el("span", "vpath", esc(node.path || file.name)));
-  if (meta.length) hd.appendChild(el("span", "vmeta", "— " + esc(meta.join(" · "))));
+  const left = el("div", "vleft");
+  const pathText = file.path || node.path || file.name;
+  const pathNode = el("span", "vpath", esc(pathText));
+  pathNode.title = pathText;
+  left.appendChild(pathNode);
+  if (meta.length) left.appendChild(el("span", "vmeta", esc(meta.join(" · "))));
+  hd.appendChild(left);
+  if (file.modified_at) hd.appendChild(el("span", "vdate", esc(file.modified_at)));
   viewer.appendChild(hd);
 
   if (file.truncated) {
@@ -457,6 +886,7 @@ function renderFileInto(viewer, node) {
     viewer.appendChild(el("div", "fv-note",
       `truncated — showing first ${shown} of ${total} lines`));
   }
+  if (file.note) viewer.appendChild(el("div", "fv-note", esc(file.note)));
   viewer.appendChild(fileContentBody(file));
 }
 
@@ -531,6 +961,40 @@ function fileBrowser(roots, opts) {
   const treePane = el("div", "fb-tree");
   const viewer = el("div", "fb-viewer");
   const ctx = { selected: null, viewer };
+  let resizer = null;
+  if (opts.resizable) {
+    fb.classList.add("resizable");
+    resizer = el("div", "fb-resizer");
+    if (resizer.setAttribute) {
+      resizer.setAttribute("role", "separator");
+      resizer.setAttribute("aria-orientation", "vertical");
+      resizer.setAttribute("aria-label", "Resize file tree");
+    }
+    let dragging = false;
+    const resizeTo = (clientX) => {
+      const rect = fb.getBoundingClientRect();
+      const min = 220;
+      const max = Math.max(min, Math.min(560, rect.width - 360));
+      const width = Math.max(min, Math.min(max, clientX - rect.left));
+      fb.style.setProperty("--tree-width", `${Math.round(width)}px`);
+    };
+    resizer.addEventListener("pointerdown", (e) => {
+      dragging = true;
+      resizer.classList.add("dragging");
+      if (resizer.setPointerCapture) resizer.setPointerCapture(e.pointerId);
+      resizeTo(e.clientX);
+      e.preventDefault();
+    });
+    resizer.addEventListener("pointermove", (e) => {
+      if (dragging) resizeTo(e.clientX);
+    });
+    const stopResize = () => {
+      dragging = false;
+      resizer.classList.remove("dragging");
+    };
+    resizer.addEventListener("pointerup", stopResize);
+    resizer.addEventListener("pointercancel", stopResize);
+  }
 
   if (opts.treeHeader) {
     const hd = el("div", "fb-grphd");
@@ -544,6 +1008,7 @@ function fileBrowser(roots, opts) {
   treePane.appendChild(rootBox);
 
   fb.appendChild(treePane);
+  if (resizer) fb.appendChild(resizer);
   fb.appendChild(viewer);
 
   // auto-select the first file leaf so the viewer is never blank on open
@@ -556,10 +1021,28 @@ function fileBrowser(roots, opts) {
 // Turn a flat list of artifact files into a nested folder tree by splitting
 // each file's name on "/" — so `trajectory/acp_trajectory.jsonl` nests under
 // a `trajectory/` folder. `badgeOf` maps a file to an optional badge.
+function artifactDisplayName(file) {
+  if (!file) return "";
+  if (file.name === "rewards.jsonl") return "reward events.jsonl";
+  if (file.name === "verifier/reward.txt") return "raw verifier reward.txt";
+  if (file.name === "verifier/reward.json") return "raw verifier reward.json";
+  if (file.name === "result.json") return "final result.json";
+  return String(file.name || "");
+}
+
+function artifactMeta(file) {
+  if (!file) return null;
+  if (file.name === "rewards.jsonl") return "event log";
+  if (file.name === "verifier/reward.txt" || file.name === "verifier/reward.json")
+    return "sandbox boundary";
+  if (file.name === "result.json") return "canonical";
+  return file.lang || null;
+}
+
 function filesToTree(files, badgeOf) {
   const root = { type: "folder", label: "", children: [] };
   files.forEach(f => {
-    const parts = String(f.name).split("/");
+    const parts = artifactDisplayName(f).split("/");
     let cur = root;
     for (let i = 0; i < parts.length - 1; i++) {
       let dir = cur.children.find(c => c.type === "folder" && c.label === parts[i]);
@@ -569,7 +1052,7 @@ function filesToTree(files, badgeOf) {
     const leaf = parts[parts.length - 1];
     cur.children.push({
       type: "file", label: leaf, file: f,
-      meta: f.lang || null,
+      meta: artifactMeta(f),
       badge: badgeOf ? badgeOf(f) : null,
     });
   });
@@ -579,16 +1062,19 @@ function filesToTree(files, badgeOf) {
 // ---- Overview -------------------------------------------------------------
 function renderOverview() {
   const s = DATA.summary, t = s.tests, wrap = el("div");
+  const latestJob = DATA.jobs && DATA.jobs.source && DATA.jobs.source.latest_modified_at;
   wrap.appendChild(el("h1", "page", "Overview"));
   wrap.appendChild(el("div", "sub-ttl", "BenchFlow v0.5 — architecture migration · branch <code>v0.5-integration</code>"));
+  wrap.appendChild(el("div", null, repoLine()));
   const stats = el("div", "row");
   const pct = t.total ? Math.round((t.passed / t.total) * 100) : 0;
+  const roadmapLive = DATA.roadmap && DATA.roadmap.source && DATA.roadmap.source.kind === "linear-live";
   [
     ["Tests passing", `${t.passed}`, `of ${t.total} · ${pct}%`, t.failed ? "warn" : "good"],
     ["Failing", `${t.failed}`, t.failed ? "see Tests" : "clean", t.failed ? "bad" : "good"],
     ["Capabilities", `${s.capabilities_shipped}/${s.capabilities_total}`, "shipped", "good"],
-    ["Roadmap", `${s.issues_active}`, `active of ${s.issues_total}`, "accent"],
-    ["Job artifacts", `${s.jobs_total}`, `in ${s.job_groups} groups`, ""],
+    ["Tickets", roadmapLive ? `${s.issues_active}` : "not synced", roadmapLive ? `active of ${s.issues_total}` : "Linear unavailable", roadmapLive ? "accent" : "warn"],
+    ["Job artifacts", `${s.jobs_total}`, latestJob ? `latest ${latestJob}` : `in ${s.job_groups} groups`, ""],
     ["Experiments", `${s.experiments != null ? s.experiments : 0}`, "in Timeline", ""],
     ["Advisories open", `${s.advisories_open}`, "follow-ups", s.advisories_open ? "warn" : "good"],
   ].forEach(([l, b, sub, c]) => {
@@ -603,12 +1089,47 @@ function renderOverview() {
   const g = el("div", "card");
   g.innerHTML = `
     <b>Concept map</b> — the architecture: kernel, four planes, the tree-native execution model, the eight capabilities.<br>
-    <b>Roadmap</b> — the v0.5 milestones M1–M4 and their Linear issues.<br>
+    <b>Tickets</b> — the current Linear project milestones and issues mirrored into the dashboard.<br>
     <b>Tests</b> — the live pytest suite, suite by suite.<br>
     <b>Jobs</b> — every rollout under <code>jobs/</code>, as a tree: group → run → task → artifacts. Each group links to the agent advisories that correspond to it.<br>
     <b>Advisories</b> — the agents' review advisories, each tied back to a capability and a job group.<br>
     <b>Timeline</b> — the v0.5 experiments under <code>experiments/</code> and <code>labs/</code>, newest first; each one expands to its files.`;
   wrap.appendChild(g);
+  return wrap;
+}
+
+// ---- Architecture document ------------------------------------------------
+function renderArchitecture() {
+  const doc = DATA.architecture || {};
+  const wrap = el("div");
+  wrap.appendChild(el("h1", "page", esc(doc.title || "Architecture")));
+  wrap.appendChild(el("div", "sub-ttl",
+    doc.available
+      ? `Hosted from <code>${esc(doc.source)}</code> · ${esc(doc.lines || 0)} lines`
+      : esc(doc.error || "Architecture document unavailable.")));
+  if (!doc.available) {
+    wrap.appendChild(el("div", "card empty", esc(doc.error || "Architecture document unavailable.")));
+    return wrap;
+  }
+
+  const board = el("div", "architecture-board");
+  const outline = el("div", "architecture-outline card");
+  (doc.headings || []).forEach(h => {
+    const link = el("a", `lvl-${h.level}`, esc(h.title));
+    link.href = `#${h.anchor}`;
+    link.onclick = (e) => {
+      e.preventDefault();
+      const target = document.getElementById(h.anchor);
+      if (target) target.scrollIntoView({ block: "start" });
+      history.replaceState(null, "", `#Architecture`);
+    };
+    outline.appendChild(link);
+  });
+  const article = el("article", "architecture-doc");
+  article.innerHTML = renderMarkdown(doc.content || "");
+  board.appendChild(outline);
+  board.appendChild(article);
+  wrap.appendChild(board);
   return wrap;
 }
 
@@ -665,29 +1186,137 @@ function renderConcept() {
 // ---- Roadmap --------------------------------------------------------------
 function renderRoadmap() {
   const rm = DATA.roadmap, wrap = el("div");
-  wrap.appendChild(el("h1", "page", "Roadmap"));
+  wrap.appendChild(el("h1", "page", "Tickets"));
+  wrap.appendChild(el("div", null, repoLine()));
+  const source = rm.source || {};
+  const sourceLabel = source.kind === "linear-live" ? "Linear live" : "Linear unavailable";
+  const projectMeta = [
+    rm.project_progress != null ? `${progressPct({ progress: rm.project_progress }, [])}% project progress` : null,
+    rm.project_target_date ? `target ${esc(dateOnly(rm.project_target_date))}` : null,
+    rm.project_url ? `project ${linearLink(rm.project_url, shortLinearUrl(rm.project_url))}` : null,
+  ].filter(Boolean).join(" · ");
   wrap.appendChild(el("div", "sub-ttl",
-    `Project <b>${esc(rm.project)}</b> · branch <code>${esc(rm.branch)}</code>`));
+    `Project <b>${esc(rm.project)}</b><br>` +
+    `<span class="muted">${sourceLabel} · ${esc(source.generated_at || "not synced")}` +
+    `${source.issue_count != null ? ` · ${esc(source.issue_count)} issues` : ""}` +
+    `${projectMeta ? ` · ${projectMeta}` : ""}` +
+    `${source.error ? ` · ${esc(source.error)}` : ""}</span>`));
+  if (rm.project_progress != null) {
+    wrap.appendChild(el("div", "ticket-progress", progressMeter(
+      progressPct({ progress: rm.project_progress }, []), "Project progress")));
+  }
+  if (rm.available === false || source.kind !== "linear-live") {
+    wrap.appendChild(el("div", "card empty", esc(source.error || "Linear roadmap unavailable.")));
+    return wrap;
+  }
+  const tickets = roadmapTickets(rm);
+  if (!tickets.length) {
+    wrap.appendChild(el("div", "card empty", "No Linear tickets found for this project."));
+    return wrap;
+  }
+  let selected = tickets.find(i => i.id === SELECTED_TICKET_ID) || tickets.find(ticketActive) || tickets[0];
+  SELECTED_TICKET_ID = selected.id;
+  const board = el("div", "ticket-board");
+  const listPane = el("div", "ticket-list-pane");
+  listPane.appendChild(el("div", "fb-tree-hd", "Linear tickets"));
+  const listScroll = el("div", "ticket-list-scroll");
   rm.milestones.forEach(m => {
-    const done = m.issues.filter(i => /done/i.test(i.status)).length;
-    const active = m.issues.filter(i => /progress|review/i.test(i.status)).length;
-    const pct = Math.round(((done + active * 0.5) / m.issues.length) * 100);
-    const ms = el("div", "card");
-    ms.style.marginBottom = "14px";
-    ms.innerHTML = `<div style="display:flex;align-items:baseline;gap:10px">
-        <span class="chip p">${esc(m.id)}</span><b>${esc(m.name)}</b>
-        <span class="muted" style="margin-left:auto">${active} active · ${m.issues.length} issues</span></div>
-      <div class="barwrap" style="margin:8px 0 4px"><div class="bar" style="width:${pct}%"></div></div>`;
-    const tbl = el("table"), tb = el("tbody");
+    const active = m.issues.filter(i => (i.status_type || "").toLowerCase() === "started" || /progress|review/i.test(i.status)).length;
+    const pct = progressPct(m, m.issues);
+    const milestoneMeta = [
+      m.status ? `status ${esc(String(m.status).toLowerCase())}` : null,
+      m.target_date ? `target ${esc(dateOnly(m.target_date))}` : null,
+      `${active} active`,
+      `${m.issues.length} issues`,
+      `${pct}% progress`,
+    ].filter(Boolean).join(" · ");
+    const group = el("div", "ticket-group");
+    group.appendChild(el("div", "ticket-group-hd",
+      `<span class="chip p">${esc(m.id)}</span><span>${esc(m.name)}</span><span>${milestoneMeta}</span>`));
+    group.appendChild(el("div", "ticket-progress", progressMeter(pct, `${m.id} progress`)));
     m.issues.forEach(i => {
-      const tr = el("tr");
-      tr.innerHTML = `<td class="mono" style="white-space:nowrap">${esc(i.id)}</td><td>${esc(i.title)}</td>
-        <td style="white-space:nowrap"><span class="dot ${statusClass(i.status)}"></span>${esc(i.status)}</td>`;
-      tb.appendChild(tr);
+      const summaryMeta = [
+        ticketPriority(i) || null,
+        i.parent ? `parent ${esc(i.parent)}` : null,
+        i.assignee ? esc(i.assignee) : null,
+        i.updated_at ? `updated ${esc(dateOnly(i.updated_at))}` : null,
+      ].filter(Boolean).join(" · ");
+      const btn = el("button", "ticket-row" + (i.id === selected.id ? " active" : ""));
+      btn.type = "button";
+      btn.dataset.ticket = i.id;
+      btn.setAttribute("aria-pressed", i.id === selected.id ? "true" : "false");
+      btn.innerHTML = `<span class="dot ${statusClass(i.status, i.status_type)}"></span>
+        <span>
+          <span class="ticket-row-head"><span class="mono tid">${esc(i.id)}</span><span class="ttitle">${esc(i.title)}</span></span>
+          ${summaryMeta ? `<div class="tmeta">${summaryMeta}</div>` : ""}
+        </span>`;
+      btn.onclick = () => {
+        SELECTED_TICKET_ID = i.id;
+        const main = document.getElementById("main");
+        main.innerHTML = "";
+        main.appendChild(renderRoadmap());
+      };
+      group.appendChild(btn);
     });
-    tbl.appendChild(tb); ms.appendChild(tbl);
-    wrap.appendChild(ms);
+    listScroll.appendChild(group);
   });
+  listPane.appendChild(listScroll);
+  board.appendChild(listPane);
+
+  const detail = el("div", "ticket-detail-pane");
+  const parent = selected.parent ? `${selected.parent}${selected.parent_title ? ` · ${selected.parent_title}` : ""}` : "";
+  const kv = [
+    ["Status", selected.status],
+    ["Milestone", `${selected.milestone.id} · ${selected.milestone.name}`],
+    ["Priority", ticketPriority(selected)],
+    ["Assignee", selected.assignee],
+    ["Team", selected.team_name || selected.team],
+    ["Creator", selected.creator],
+    ["Estimate", selected.estimate != null ? String(selected.estimate) : ""],
+    ["Due", dateOnly(selected.due_date)],
+    ["Created", dateOnly(selected.created_at)],
+    ["Started", dateOnly(selected.started_at)],
+    ["Updated", dateOnly(selected.updated_at)],
+    ["Completed", dateOnly(selected.completed_at)],
+    ["Canceled", dateOnly(selected.canceled_at)],
+  ].filter(([, value]) => value);
+  const labels = (selected.labels || [])
+    .map(l => `<span class="chip">${esc(l.name)}</span>`)
+    .join("");
+  const milestoneProgress = progressPct(selected.milestone || {}, [selected]);
+  const description = selected.description
+    ? `<div class="ticket-description">${esc(selected.description)}</div>`
+    : `<div class="ticket-description muted">No synced Linear description for this ticket.</div>`;
+  const comments = (selected.comments || []).map(c => {
+    const meta = [
+      c.user || "Linear",
+      c.created_at ? dateOnly(c.created_at) : "",
+      c.updated_at && c.updated_at !== c.created_at ? `edited ${dateOnly(c.updated_at)}` : "",
+    ].filter(Boolean).join(" · ");
+    return `<div class="ticket-comment">
+      <div class="ticket-comment-meta">${esc(meta)}</div>
+      <div class="ticket-comment-body">${esc(c.body)}</div>
+    </div>`;
+  }).join("");
+  const commentNote = selected.comments_truncated
+    ? `<div class="muted">Showing latest synced comments; more exist in Linear.</div>`
+    : "";
+  detail.innerHTML = `
+    <div class="ticket-detail-top">
+      <span class="mono chip p">${esc(selected.id)}</span>
+      <span><span class="dot ${statusClass(selected.status, selected.status_type)}"></span>${esc(selected.status)}</span>
+    </div>
+    <div class="ticket-detail-title">${esc(selected.title)}</div>
+    <div class="ticket-detail-progress">${progressMeter(milestoneProgress, "Milestone progress")}</div>
+    <div class="ticket-kv">${kv.map(([k, v]) => `<div><b>${esc(k)}</b><br>${esc(v)}</div>`).join("")}</div>
+    <div class="ticket-section"><b>Description</b>${description}</div>
+    <div class="ticket-section"><b>Comments</b><div class="ticket-comments">${comments || `<div class="muted">No synced Linear comments for this ticket.</div>`}</div>${commentNote}</div>
+    ${parent ? `<div class="ticket-parent"><b>Parent</b><br>${esc(parent)}</div>` : ""}
+    ${selected.branch_name ? `<div class="ticket-parent"><b>Branch</b><br><span class="mono">${esc(selected.branch_name)}</span></div>` : ""}
+    ${labels ? `<div class="ticket-labels">${labels}</div>` : ""}
+    <div class="ticket-linear"><b>Linear</b><br>${linearLink(selected.url, shortLinearUrl(selected.url))}</div>`;
+  board.appendChild(detail);
+  wrap.appendChild(board);
   return wrap;
 }
 
@@ -744,9 +1373,21 @@ function renderTests() {
 
 // An artifact's badge in the tree — colour-codes trajectory / reward / result.
 function artifactBadge(a) {
+  if (a.ignored_by_verifier) return { text: "ignored", cls: "verifier" };
+  if (a.name === "rewards.jsonl") return { text: "events", cls: "reward" };
+  if (a.name === "verifier/reward.txt" || a.name === "verifier/reward.json")
+    return { text: "raw", cls: "reward" };
+  if (a.name === "result.json") return { text: "final", cls: "result" };
   if (["trajectory", "reward", "result"].includes(a.kind))
     return { text: a.kind, cls: a.kind };
   return null;
+}
+
+function taskOutcomeBadge(outcome) {
+  if (outcome === "verifier_errored") return { text: "verifier", cls: "verifier" };
+  if (outcome === "errored") return { text: "error", cls: "error" };
+  if (outcome === "passed" || outcome === "failed") return { text: "ok", cls: "ok" };
+  return { text: "pending", cls: "warn" };
 }
 
 // One task → a folder node holding its artifact files (nested by path), plus
@@ -754,10 +1395,11 @@ function artifactBadge(a) {
 // `firstPath` marks the first-group/first-run/first-task chain that opens
 // by default — every other folder starts collapsed, like a real explorer.
 function taskNode(tk, firstPath) {
-  const status = tk.error ? { text: "error", cls: "error" }
-    : tk.verifier_error ? { text: "verifier", cls: "verifier" }
-    : { text: "ok", cls: "ok" };
+  const status = taskOutcomeBadge(tk.outcome);
   const rewardStr = tk.reward == null ? "no reward" : "reward " + tk.reward;
+  const memoryStr = tk.memory_score == null
+    ? null
+    : "Memory " + Math.round(Number(tk.memory_score) * 100) + "%";
   const children = filesToTree(tk.artifacts || [], artifactBadge);
   // surface task-level errors as readable text leaves inside the task folder
   if (tk.error)
@@ -770,7 +1412,9 @@ function taskNode(tk, firstPath) {
     children.push({ type: "file", label: "(no files)",
       file: { name: "(no files)", content: null } });
   // task-level meta — every field generate.py emits is surfaced here.
-  const bits = [rewardStr, tk.agent];
+  const bits = [rewardStr];
+  if (memoryStr) bits.push(memoryStr);
+  bits.push(tk.agent);
   if (tk.model && tk.model !== "—") bits.push(tk.model);
   if (tk.environment && tk.environment !== "—") bits.push(tk.environment);
   if (tk.total_time) bits.push(`${tk.total_time}s`);
@@ -785,9 +1429,10 @@ function taskNode(tk, firstPath) {
 
 // One run → a folder of task folders.
 function runNode(run, firstPath) {
+  const latest = run.latest_modified_at ? ` · latest ${run.latest_modified_at}` : "";
   return {
     type: "folder", label: run.id + "/",
-    meta: `${run.tasks.length} task${run.tasks.length === 1 ? "" : "s"}`,
+    meta: `${run.tasks.length} task${run.tasks.length === 1 ? "" : "s"}${latest}`,
     open: !!firstPath,
     children: (run.tasks || []).map((tk, ti) => taskNode(tk, firstPath && ti === 0)),
   };
@@ -814,7 +1459,8 @@ function groupNode(g, gi) {
   return {
     type: "folder", label: `${g.label}  (jobs/${g.name}/)`,
     meta: `${g.n_tasks} task${g.n_tasks === 1 ? "" : "s"}` +
-          (g.capability ? ` · capability ${g.capability}` : ""),
+          (g.capability ? ` · capability ${g.capability}` : "") +
+          (g.latest_modified_at ? ` · latest ${g.latest_modified_at}` : ""),
     headerExtra,
     open: gi === 0,                       // first group expanded by default
     children: (g.runs || []).map((run, ri) => runNode(run, gi === 0 && ri === 0)),
@@ -822,18 +1468,32 @@ function groupNode(g, gi) {
 }
 
 function renderJobs() {
-  const j = DATA.jobs, wrap = el("div");
+  const j = DATA.jobs, wrap = el("div", "jobs-page");
+  const source = j.source || {};
+  const sourceLabel = source.label || "jobs/";
+  const sourcePath = source.path || sourceLabel;
+  const sourceDisplay = compactPath(sourcePath);
+  const sourceNote = source.configured
+    ? " Mirroring external jobs root."
+    : "";
+  const latestNote = source.latest_modified_at
+    ? ` Latest artifact: ${esc(source.latest_modified_at)}.`
+    : "";
   wrap.appendChild(el("h1", "page", "Jobs &amp; artifacts"));
   wrap.appendChild(el("div", "sub-ttl",
-    `Every rollout under <code>jobs/</code> — ${j.total_tasks} tasks in ${j.groups.length} groups. ` +
-    `Browse the tree; click a file to view it. Each group links to its advisories.`));
-  if (!j.groups.length) {
-    wrap.appendChild(el("div", "card empty", "No rollout artifacts found under jobs/."));
+    `Every rollout under <code title="${esc(sourcePath)}">${esc(sourceDisplay)}</code> — ${j.total_tasks} tasks in ${j.groups.length} groups.` +
+    latestNote + sourceNote + ` Browse the tree; click a file to view it. Each group links to its advisories.`));
+  if (!j.total_tasks) {
+    const hint = source.configured
+      ? `No rollout artifacts found under ${esc(sourcePath)}.`
+      : `No rollout artifacts found under jobs/. If this is an isolated worktree, set BENCHFLOW_DASHBOARD_JOBS_ROOT to the worktree that owns the git-ignored rollout artifacts.`;
+    wrap.appendChild(el("div", "card empty", hint));
     return wrap;
   }
   const roots = j.groups.map((g, gi) => groupNode(g, gi));
-  const browser = fileBrowser(roots, { treeLabel: "jobs/" });
+  const browser = fileBrowser(roots, { treeLabel: "jobs/", resizable: true });
   browser.id = "jobs-fb";
+  browser.classList.add("jobs-browser");
   wrap.appendChild(browser);
   return wrap;
 }
@@ -957,18 +1617,22 @@ function renderTimeline() {
 }
 
 const RENDER = {
-  "Overview": renderOverview, "Concept map": renderConcept, "Roadmap": renderRoadmap,
+  "Overview": renderOverview, "Concept map": renderConcept, "Architecture": renderArchitecture,
+  "Tickets": renderRoadmap,
   "Tests": renderTests, "Jobs": renderJobs, "Advisories": renderAdvisories, "Timeline": renderTimeline,
 };
 
 // `opts` may carry { jobGroup } to focus a group folder in the Jobs tree.
 function show(tab, arg, opts) {
   opts = opts || {};
+  if (tab === "Roadmap") tab = "Tickets";
   CURRENT = tab;
   document.querySelectorAll("nav a").forEach(a =>
     a.classList.toggle("active", a.dataset.tab === tab && !a.classList.contains("sub")));
   const main = document.getElementById("main");
   main.innerHTML = "";
+  const notice = syncBanner();
+  if (notice) main.appendChild(notice);
   main.appendChild(tab === "Advisories" ? renderAdvisories(arg) : RENDER[tab]());
   window.scrollTo(0, 0);
   if (tab === "Jobs" && opts.jobGroup)
@@ -978,6 +1642,7 @@ function show(tab, arg, opts) {
 
 function buildNav() {
   const nav = document.getElementById("nav");
+  nav.innerHTML = "";
   TABS.forEach(t => {
     const a = el("a", null, t);
     a.dataset.tab = t;
@@ -995,23 +1660,74 @@ function buildNav() {
   });
 }
 
-fetch("data.json?_=" + Date.now())
-  .then(r => r.json())
-  .then(d => {
-    DATA = d;
-    document.getElementById("gen").innerHTML =
-      `generated<br>${esc(d.generated_at)}<br>` +
-      `${d.summary.tests.passed}/${d.summary.tests.total} tests · ${d.summary.jobs_total} artifacts`;
+function updateGenerated(d) {
+  const repo = d.repo && d.repo.available
+    ? `<br>${esc(d.repo.branch || "")} @ ${esc(d.repo.head || "")}${d.repo.dirty ? ` · ${esc(d.repo.changes)} changed` : ""}`
+    : "";
+  const sync = SYNC_ERROR ? `<br><span class="bad">sync failed: ${esc(SYNC_ERROR)}</span>` : "";
+  const latestJob = d.jobs && d.jobs.source && d.jobs.source.latest_modified_at
+    ? `<br>jobs latest ${esc(d.jobs.source.latest_modified_at)}`
+    : "";
+  document.getElementById("gen").innerHTML =
+    `generated<br>${esc(d.generated_at)}<br>` +
+    `${d.summary.tests.passed}/${d.summary.tests.total} tests · ${d.summary.jobs_total} artifacts${repo}${latestJob}${sync}`;
+}
+
+function renderCurrent() {
+  if (!CURRENT) return;
+  const main = document.getElementById("main");
+  main.innerHTML = "";
+  const notice = syncBanner();
+  if (notice) main.appendChild(notice);
+  main.appendChild(CURRENT === "Advisories" ? renderAdvisories() : RENDER[CURRENT]());
+}
+
+function applyData(d, initial) {
+  const previous = DATA_SIGNATURE;
+  const hadSyncError = !!SYNC_ERROR;
+  DATA = d;
+  DATA_SIGNATURE = dataSignature(d);
+  SYNC_ERROR = null;
+  updateGenerated(d);
+  if (initial || !CURRENT) {
     buildNav();
-    const want = decodeURIComponent(location.hash.slice(1));
-    show(TABS.includes(want) ? want : "Overview");
-  })
-  .catch(e => {
-    document.getElementById("main").innerHTML =
-      `<div class="card empty">Could not load data.json — run ` +
-      `<code>python dashboard/generate.py</code> then reload.<br><br>` +
-      `<span class="bad">${esc(e)}</span></div>`;
+    show(tabFromLocation());
+  } else if (DATA_SIGNATURE !== previous || hadSyncError) {
+    buildNav();
+    renderCurrent();
+  }
+}
+
+function loadData(initial) {
+  return fetch("data.json?_=" + Date.now())
+    .then(r => {
+      if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+      return r.json();
+    })
+    .then(d => applyData(d, initial))
+    .catch(e => {
+      if (!initial) {
+        SYNC_ERROR = String(e);
+        if (DATA) updateGenerated(DATA);
+        renderCurrent();
+        return;
+      }
+      document.getElementById("main").innerHTML =
+        `<div class="card empty">Could not load data.json — run ` +
+        `<code>python dashboard/generate.py</code> then reload.<br><br>` +
+        `<span class="bad">${esc(e)}</span></div>`;
+    });
+}
+
+loadData(true);
+setInterval(() => loadData(false), 5000);
+if (window.addEventListener) {
+  window.addEventListener("hashchange", () => {
+    if (!DATA) return;
+    const tab = tabFromLocation();
+    if (tab !== CURRENT) show(tab);
   });
+}
 </script>
 </body>
 </html>

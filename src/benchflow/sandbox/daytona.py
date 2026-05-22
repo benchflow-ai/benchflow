@@ -75,6 +75,7 @@ SnapshotState = _snapshot.SnapshotState
 logger = logging.getLogger("benchflow")
 
 _SandboxParams = CreateSandboxFromImageParams | CreateSandboxFromSnapshotParams
+_DAYTONA_COMMAND_POLL_INTERVAL_SEC = 1.0
 
 
 def _daytona_preflight() -> None:
@@ -164,7 +165,9 @@ class _DaytonaStrategy:
     async def upload_file(self, source_path: Path | str, target_path: str) -> None: ...
 
     @abstractmethod
-    async def upload_dir(self, source_dir: Path | str, target_dir: str) -> None: ...
+    async def upload_dir(
+        self, source_dir: Path | str, target_dir: str, service: str = "main"
+    ) -> None: ...
 
     @abstractmethod
     async def download_file(
@@ -172,7 +175,9 @@ class _DaytonaStrategy:
     ) -> None: ...
 
     @abstractmethod
-    async def download_dir(self, source_dir: str, target_dir: Path | str) -> None: ...
+    async def download_dir(
+        self, source_dir: str, target_dir: Path | str, service: str = "main"
+    ) -> None: ...
 
     @abstractmethod
     async def is_dir(self, path: str, user: str | int | None = None) -> bool: ...
@@ -306,13 +311,27 @@ class _DaytonaDirect(_DaytonaStrategy):
     async def upload_file(self, source_path: Path | str, target_path: str) -> None:
         await self._env._sdk_upload_file(source_path, target_path)
 
-    async def upload_dir(self, source_dir: Path | str, target_dir: str) -> None:
+    async def upload_dir(
+        self, source_dir: Path | str, target_dir: str, service: str = "main"
+    ) -> None:
+        if service != "main":
+            raise ValueError(
+                f"Direct Daytona sandbox is single-container and cannot target "
+                f"service {service!r}. Multi-container tasks require a compose sandbox."
+            )
         await self._env._sdk_upload_dir(source_dir, target_dir)
 
     async def download_file(self, source_path: str, target_path: Path | str) -> None:
         await self._env._sdk_download_file(source_path, target_path)
 
-    async def download_dir(self, source_dir: str, target_dir: Path | str) -> None:
+    async def download_dir(
+        self, source_dir: str, target_dir: Path | str, service: str = "main"
+    ) -> None:
+        if service != "main":
+            raise ValueError(
+                f"Direct Daytona sandbox is single-container and cannot target "
+                f"service {service!r}. Multi-container tasks require a compose sandbox."
+            )
         await self._env._sdk_download_dir(source_dir, target_dir)
 
     async def is_dir(self, path: str, user: str | int | None = None) -> bool:
@@ -647,12 +666,14 @@ class _DaytonaDinD(_DaytonaStrategy):
         finally:
             await self._vm_exec(f"rm -f {shlex.quote(temp)}", timeout_sec=10)
 
-    async def upload_dir(self, source_dir: Path | str, target_dir: str) -> None:
+    async def upload_dir(
+        self, source_dir: Path | str, target_dir: str, service: str = "main"
+    ) -> None:
         temp = f"/tmp/benchflow_{uuid4().hex}"
         try:
             await self._env._sdk_upload_dir(source_dir, temp)
             result = await self._compose_exec(
-                ["cp", f"{temp}/.", f"main:{target_dir}"], timeout_sec=120
+                ["cp", f"{temp}/.", f"{service}:{target_dir}"], timeout_sec=120
             )
             if result.return_code != 0:
                 raise RuntimeError(
@@ -693,8 +714,10 @@ class _DaytonaDinD(_DaytonaStrategy):
         finally:
             await self._vm_exec(f"rm -f {shlex.quote(temp)}", timeout_sec=10)
 
-    async def download_dir(self, source_dir: str, target_dir: Path | str) -> None:
-        sandbox_path = self._sandbox_log_path(source_dir)
+    async def download_dir(
+        self, source_dir: str, target_dir: Path | str, service: str = "main"
+    ) -> None:
+        sandbox_path = self._sandbox_log_path(source_dir) if service == "main" else None
         if sandbox_path:
             await self._env._sdk_download_dir(sandbox_path, target_dir)
             return
@@ -703,7 +726,7 @@ class _DaytonaDinD(_DaytonaStrategy):
         try:
             await self._vm_exec(f"mkdir -p {shlex.quote(temp)}", timeout_sec=10)
             result = await self._compose_exec(
-                ["cp", f"main:{source_dir}/.", temp], timeout_sec=120
+                ["cp", f"{service}:{source_dir}/.", temp], timeout_sec=120
             )
             if result.return_code != 0:
                 self._env.logger.error(
@@ -917,14 +940,40 @@ class DaytonaSandbox(BaseSandbox):
             session_id, command_id
         )
 
-    async def _poll_response(self, session_id: str, command_id: str) -> ExecResult:
+    async def _poll_response(
+        self,
+        session_id: str,
+        command_id: str,
+        timeout_sec: int | float | None = None,
+    ) -> ExecResult:
         if not self._sandbox:
             raise RuntimeError("Sandbox not found. Please build the environment first.")
+
+        loop = asyncio.get_running_loop()
+        deadline = (
+            loop.time() + float(timeout_sec)
+            if timeout_sec is not None and timeout_sec > 0
+            else None
+        )
 
         response = await self._get_session_command_with_retry(session_id, command_id)
 
         while response.exit_code is None:  # type: ignore[union-attr]
-            await asyncio.sleep(1)
+            if deadline is None:
+                await asyncio.sleep(_DAYTONA_COMMAND_POLL_INTERVAL_SEC)
+            else:
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    raise RuntimeError(
+                        f"Command timed out after {timeout_sec} seconds"
+                    )
+                await asyncio.sleep(
+                    min(_DAYTONA_COMMAND_POLL_INTERVAL_SEC, remaining)
+                )
+                if loop.time() >= deadline:
+                    raise RuntimeError(
+                        f"Command timed out after {timeout_sec} seconds"
+                    )
             response = await self._get_session_command_with_retry(
                 session_id,
                 response.id,  # type: ignore[union-attr]
@@ -985,7 +1034,11 @@ class DaytonaSandbox(BaseSandbox):
             if response.cmd_id is None:
                 raise RuntimeError("Cannot find command ID.")
 
-            result = await self._poll_response(session_id, response.cmd_id)
+            result = await self._poll_response(
+                session_id,
+                response.cmd_id,
+                timeout_sec=timeout_sec,
+            )
 
         finally:
             pass  # Don't delete session; Daytona kills child processes
@@ -1113,14 +1166,18 @@ class DaytonaSandbox(BaseSandbox):
     async def upload_file(self, source_path: Path | str, target_path: str) -> None:
         return await self._strategy.upload_file(source_path, target_path)
 
-    async def upload_dir(self, source_dir: Path | str, target_dir: str) -> None:
-        return await self._strategy.upload_dir(source_dir, target_dir)
+    async def upload_dir(
+        self, source_dir: Path | str, target_dir: str, service: str = "main"
+    ) -> None:
+        return await self._strategy.upload_dir(source_dir, target_dir, service=service)
 
     async def download_file(self, source_path: str, target_path: Path | str) -> None:
         return await self._strategy.download_file(source_path, target_path)
 
-    async def download_dir(self, source_dir: str, target_dir: Path | str) -> None:
-        return await self._strategy.download_dir(source_dir, target_dir)
+    async def download_dir(
+        self, source_dir: str, target_dir: Path | str, service: str = "main"
+    ) -> None:
+        return await self._strategy.download_dir(source_dir, target_dir, service=service)
 
     async def is_dir(
         self, path: str, user: str | int | None = None, service: str = "main"

@@ -132,17 +132,25 @@ _NODE_INSTALL = (
 )
 
 
+def _npm_package_spec(package: str) -> str:
+    """Return an npm install spec, defaulting unversioned packages to latest."""
+    if "@" in package.lstrip("@"):
+        return package
+    return f"{package}@latest"
+
+
 def _js_agent_install(binary: str, package: str) -> str:
     """Install an npm-distributed agent into BenchFlow's isolated prefix."""
     agent_bin = f"{_BENCHFLOW_JS_AGENT_PREFIX}/bin/{binary}"
     wrapper = f"{_BENCHFLOW_BIN_PREFIX}/{binary}"
+    package_spec = _npm_package_spec(package)
+    install_guard = "" if package_spec == package else f"[ -x {agent_bin} ] || "
     return (
         f"{_NODE_INSTALL} && "
         f"mkdir -p {_BENCHFLOW_JS_AGENT_PREFIX} {_BENCHFLOW_BIN_PREFIX} && "
         f'export PATH="{_JS_AGENT_PATH}" && '
-        f"( [ -x {agent_bin} ] || "
-        f"{_BENCHFLOW_NODE_PREFIX}/bin/npm install -g "
-        f"--prefix {_BENCHFLOW_JS_AGENT_PREFIX} {package}@latest ) && "
+        f"( {install_guard}{_BENCHFLOW_NODE_PREFIX}/bin/npm install -g "
+        f"--prefix {_BENCHFLOW_JS_AGENT_PREFIX} {package_spec} ) && "
         f"printf '%s\\n' '#!/bin/sh' "
         f"'exec {_BENCHFLOW_NODE_PREFIX}/bin/node {agent_bin} \"$@\"' "
         f"> {wrapper} && "
@@ -264,6 +272,9 @@ class AgentConfig:
     # Shell snippet run after credentials/subscription auth are written when
     # BenchFlow's no-web policy is active. Uses BENCHFLOW_AGENT_HOME for the
     # target home so settings land in the same home the agent will run from.
+    disallow_web_tools_owned_paths: list[str] = field(default_factory=list)
+    # Directories under $HOME that disallow_web_tools_setup_cmd may create and
+    # that must remain writable by the sandbox user after the root-run setup.
     disallow_web_tools_launch_suffix: str = ""
     # String appended to launch_cmd when BenchFlow's no-web policy is active.
     # Use for agents whose supported toggle is a launch/config override.
@@ -302,6 +313,7 @@ AGENTS: dict[str, AgentConfig] = {
             '[d["permissions"]["deny"].append(t) for t in ["WebSearch","WebFetch"] '
             'if t not in d["permissions"]["deny"]]',
         ),
+        disallow_web_tools_owned_paths=["$HOME/.claude"],
     ),
     "pi-acp": AgentConfig(
         name="pi-acp",
@@ -382,7 +394,7 @@ AGENTS: dict[str, AgentConfig] = {
         name="gemini",
         description="Google Gemini CLI via ACP",
         skill_paths=["$HOME/.gemini/skills"],
-        install_cmd=_js_agent_install("gemini", "@google/gemini-cli"),
+        install_cmd=_js_agent_install("gemini", "@google/gemini-cli@0.42.0"),
         launch_cmd=_js_agent_launch("gemini", "--acp --yolo"),
         protocol="acp",
         requires_env=["GOOGLE_API_KEY"],
@@ -415,6 +427,7 @@ AGENTS: dict[str, AgentConfig] = {
             '["google_web_search","web_fetch"] '
             'if t not in d["tools"]["exclude"]]',
         ),
+        disallow_web_tools_owned_paths=["$HOME/.gemini"],
     ),
     "opencode": AgentConfig(
         name="opencode",
@@ -436,6 +449,7 @@ AGENTS: dict[str, AgentConfig] = {
             "$BENCHFLOW_AGENT_HOME/.config/opencode/opencode.json",
             'd.setdefault("tools",{})["webfetch"]=False',
         ),
+        disallow_web_tools_owned_paths=["$HOME/.config/opencode"],
     ),
     "harvey-lab-harness": AgentConfig(
         name="harvey-lab-harness",
@@ -541,6 +555,7 @@ AGENTS: dict[str, AgentConfig] = {
             "printf '[agent]\\nenable_browsing = false\\n' "
             '> "$BENCHFLOW_AGENT_HOME/.openhands/config.toml"'
         ),
+        disallow_web_tools_owned_paths=["$HOME/.openhands"],
     ),
 }
 
@@ -684,6 +699,7 @@ def _acpx_wrap(config: AgentConfig) -> AgentConfig:
         subscription_auth=config.subscription_auth,
         supports_acp_set_model=config.supports_acp_set_model,
         disallow_web_tools_setup_cmd=config.disallow_web_tools_setup_cmd,
+        disallow_web_tools_owned_paths=config.disallow_web_tools_owned_paths,
         disallow_web_tools_launch_suffix=config.disallow_web_tools_launch_suffix,
     )
 
@@ -751,6 +767,9 @@ def register_agent(
     subscription_auth: SubscriptionAuth | None = None,
     acp_model_format: str = "bare",
     supports_acp_set_model: bool = True,
+    disallow_web_tools_setup_cmd: str = "",
+    disallow_web_tools_owned_paths: list[str] | None = None,
+    disallow_web_tools_launch_suffix: str = "",
 ) -> AgentConfig:
     """Register a custom agent at runtime.
 
@@ -782,6 +801,9 @@ def register_agent(
         subscription_auth=subscription_auth,
         acp_model_format=acp_model_format,
         supports_acp_set_model=supports_acp_set_model,
+        disallow_web_tools_setup_cmd=disallow_web_tools_setup_cmd,
+        disallow_web_tools_owned_paths=disallow_web_tools_owned_paths or [],
+        disallow_web_tools_launch_suffix=disallow_web_tools_launch_suffix,
     )
     AGENTS[name] = config
     AGENT_INSTALLERS[name] = install_cmd

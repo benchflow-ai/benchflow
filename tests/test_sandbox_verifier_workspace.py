@@ -152,7 +152,7 @@ def test_oracle_branch_setup_calls():
     from benchflow import rollout as rollout_mod
 
     source = inspect.getsource(rollout_mod.Rollout.install_agent)
-    oracle_pos = source.find('agent == "oracle"')
+    oracle_pos = source.find('primary_agent == "oracle"')
     assert oracle_pos != -1, "oracle branch not found in Rollout.install_agent"
     oracle_block = source[oracle_pos:]
 

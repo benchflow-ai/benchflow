@@ -35,6 +35,7 @@ logger = logging.getLogger(__name__)
 
 _ACP_CONNECT_MAX_RETRIES = 3
 _ACP_CONNECT_BASE_DELAY = 2.0
+_PROMPT_CANCEL_DRAIN_TIMEOUT_SEC = 0.25
 
 # models.dev provider inference — used when acp_model_format="provider/model"
 # to reconstruct "provider/model" from a bare model name.
@@ -362,10 +363,25 @@ async def _prompt_with_idle_watchdog(
         return prompt_task.result()
     finally:
         # Always cancel + drain the prompt task on exit, including the
-        # external-cancellation path (CancelledError from sleep). Without this
-        # an outer cancel leaks the prompt task — it keeps running in the
-        # background until Trial.cleanup() eventually kills the agent process.
+        # external-cancellation path (CancelledError from sleep). Bound the
+        # drain so a non-cooperative Daytona/ACP read cannot hide the watchdog
+        # timeout forever; cleanup will tear down the live process.
         if not prompt_task.done():
             prompt_task.cancel()
-            with contextlib.suppress(BaseException):
-                await prompt_task
+            done, _pending = await asyncio.wait(
+                {prompt_task}, timeout=_PROMPT_CANCEL_DRAIN_TIMEOUT_SEC
+            )
+            if done:
+                with contextlib.suppress(BaseException):
+                    prompt_task.result()
+            else:
+                logger.warning(
+                    "ACP prompt task did not finish within %.2fs after cancellation",
+                    _PROMPT_CANCEL_DRAIN_TIMEOUT_SEC,
+                )
+
+                def _consume_prompt_result(task: asyncio.Task) -> None:
+                    with contextlib.suppress(BaseException):
+                        task.result()
+
+                prompt_task.add_done_callback(_consume_prompt_result)

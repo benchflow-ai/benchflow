@@ -13,7 +13,11 @@ from rich.console import Console
 from rich.table import Table
 
 from benchflow._dotenv import load_dotenv_env
-from benchflow._utils.config import normalize_sandbox_user
+from benchflow._utils.config import (
+    DEFAULT_AGENT_IDLE_TIMEOUT_SEC,
+    normalize_agent_idle_timeout,
+    normalize_sandbox_user,
+)
 from benchflow.agents.registry import parse_agent_spec
 from benchflow.cli.trace_import import register_tasks_generate
 from benchflow.evaluation import DEFAULT_AGENT, effective_model
@@ -268,13 +272,21 @@ def run(
     from benchflow.sdk import SDK
 
     if source_repo:
-        from benchflow._utils.benchmark_repos import resolve_source
+        from benchflow._utils.benchmark_repos import (
+            resolve_source_with_metadata,
+            task_source_provenance,
+        )
 
-        resolved_task_dir = resolve_source(
+        resolved = resolve_source_with_metadata(
             source_repo, path=source_path, ref=source_ref
+        )
+        resolved_task_dir = resolved.path
+        source_provenance = task_source_provenance(
+            resolved.provenance, resolved_task_dir
         )
     elif task_dir:
         resolved_task_dir = task_dir
+        source_provenance = None
     else:
         console.print("[red]Provide a task directory or --source-repo[/red]")
         raise typer.Exit(1)
@@ -307,17 +319,15 @@ def run(
             skill_mode=skill_mode,
             skill_creator_dir=str(skill_creator_dir) if skill_creator_dir else None,
             self_gen_no_internet=self_gen_no_internet,
+            source_provenance=source_provenance,
         )
     )
-
-    if result.error:
-        console.print(f"[red]Error: {result.error}[/red]")
-        raise typer.Exit(1)
 
     console.print(f"[green]Task:[/green] {result.task_name}")
     console.print(f"[green]Agent:[/green] {result.agent_name}")
     console.print(f"[green]Rewards:[/green] {result.rewards}")
     console.print(f"[green]Tool calls:[/green] {result.n_tool_calls}")
+    _exit_if_run_result_failed(result)
 
 
 @app.command(hidden=True, deprecated=True)
@@ -464,6 +474,12 @@ def metrics(
     table.add_row("Failed", f"[red]{summary['failed']}[/red]")
     table.add_row("Errored", f"[yellow]{summary['errored']}[/yellow]")
     table.add_row("Score", f"[bold]{summary['score']}[/bold]")
+    if summary.get("memory_score") is not None:
+        scored = (summary.get("memory") or {}).get("scored", 0)
+        table.add_row(
+            "Memory score",
+            f"{summary['memory_score']:.1%} ({scored}/{summary['total']})",
+        )
     table.add_row("Avg tool calls", f"{summary['avg_tool_calls']:.1f}")
     table.add_row("Avg duration", f"{summary['avg_duration_sec']:.0f}s")
 
@@ -1017,25 +1033,36 @@ def eval_create(
         ),
     ] = None,
     agent: Annotated[
-        str,
+        str | None,
         typer.Option("--agent", help="Agent name"),
-    ] = DEFAULT_AGENT,
+    ] = None,
     model: Annotated[
         str | None,
         typer.Option("--model", help="Model"),
     ] = None,
     environment: Annotated[
-        str,
+        str | None,
         typer.Option("--sandbox", help="Sandbox: docker, daytona, or modal"),
-    ] = "docker",
+    ] = None,
     concurrency: Annotated[
-        int,
+        int | None,
         typer.Option("--concurrency", help="Max concurrent tasks"),
-    ] = 4,
+    ] = None,
+    agent_idle_timeout: Annotated[
+        int | None,
+        typer.Option(
+            "--agent-idle-timeout",
+            min=0,
+            help=(
+                "Abort ACP prompts after this many idle seconds; "
+                "0 disables idle detection."
+            ),
+        ),
+    ] = None,
     jobs_dir: Annotated[
-        str,
+        str | None,
         typer.Option("--jobs-dir", help="Output directory"),
-    ] = "jobs",
+    ] = None,
     sandbox_user: Annotated[
         str | None,
         typer.Option("--sandbox-user", help="Sandbox user (null for root)"),
@@ -1091,15 +1118,37 @@ def eval_create(
             "[red]Choose only one source: --config, --tasks-dir, --source-repo, or --source-env[/red]"
         )
         raise typer.Exit(1)
-    agent = _normalize_eval_agent_or_exit(agent)
+    eval_agent = _normalize_eval_agent_or_exit(agent) if agent is not None else DEFAULT_AGENT
+    eval_environment = environment or "docker"
     sandbox_user = normalize_sandbox_user(sandbox_user)
+    eval_concurrency = concurrency if concurrency is not None else 4
+    eval_agent_idle_timeout = normalize_agent_idle_timeout(
+        agent_idle_timeout
+        if agent_idle_timeout is not None
+        else DEFAULT_AGENT_IDLE_TIMEOUT_SEC
+    )
+    output_jobs_dir = jobs_dir or "jobs"
 
     if config_file:
         j = Evaluation.from_yaml(config_file)
-        j._config.agent = _normalize_eval_agent_or_exit(j._config.agent)
-        j._config.model = effective_model(j._config.agent, j._config.model)
+        if agent is not None:
+            j._config.agent = eval_agent
+        else:
+            j._config.agent = _normalize_eval_agent_or_exit(j._config.agent)
+        if model is not None:
+            j._config.model = effective_model(j._config.agent, model)
+        else:
+            j._config.model = effective_model(j._config.agent, j._config.model)
+        if environment is not None:
+            j._config.environment = eval_environment
         j._config.agent_env = {**j._config.agent_env, **parsed_env}
         j._config.sandbox_user = normalize_sandbox_user(j._config.sandbox_user)
+        if jobs_dir is not None:
+            j._jobs_dir = Path(jobs_dir)
+        if concurrency is not None:
+            j._config.concurrency = concurrency
+        if agent_idle_timeout is not None:
+            j._config.agent_idle_timeout = eval_agent_idle_timeout
         result = asyncio.run(j.run())
         console.print(
             f"\n[bold]Score: {result.passed}/{result.total} "
@@ -1120,14 +1169,14 @@ def eval_create(
             console.print(
                 "[yellow]--agent-env is for BenchFlow ACP agents; source-env runs inherit the process environment.[/yellow]"
             )
-        if environment != "docker":
+        if eval_environment != "docker":
             console.print(
-                f"[yellow]--sandbox {environment!r} is not used by source-env runs; "
+                f"[yellow]--sandbox {eval_environment!r} is not used by source-env runs; "
                 "the hosted Verifiers environment owns its harness/sandbox.[/yellow]"
             )
-        if agent != DEFAULT_AGENT:
+        if eval_agent != DEFAULT_AGENT:
             console.print(
-                f"[dim]source-env records --agent {agent!r}, but executes the model endpoint through Verifiers.[/dim]"
+                f"[dim]source-env records --agent {eval_agent!r}, but executes the model endpoint through Verifiers.[/dim]"
             )
 
         try:
@@ -1137,9 +1186,9 @@ def eval_create(
                     source_env=ref,
                     model=model or "",
                     env_args=parse_source_env_args(source_env_arg),
-                    agent=agent,
-                    jobs_dir=Path(jobs_dir),
-                    concurrency=concurrency,
+                    agent=eval_agent,
+                    jobs_dir=Path(output_jobs_dir),
+                    concurrency=eval_concurrency,
                     num_examples=source_env_num_examples,
                     rollouts_per_example=source_env_rollouts_per_example,
                     max_tokens=source_env_max_tokens,
@@ -1169,73 +1218,41 @@ def eval_create(
             console.print(f"[red]Error:[/red] {run_result.error}")
             raise typer.Exit(1)
     elif source_repo:
-        from benchflow._utils.benchmark_repos import resolve_source
+        from benchflow._utils.benchmark_repos import resolve_source_with_metadata
 
-        resolved_tasks_dir = resolve_source(
+        resolved = resolve_source_with_metadata(
             source_repo, path=source_path, ref=source_ref
         )
-        eff_model = effective_model(agent, model)
-        # Smart detection: if tasks_dir has task.toml, it's a single task
-        if (resolved_tasks_dir / "task.toml").exists():
-            from benchflow.sdk import SDK
-
-            async def _run():
-                return await SDK().run(
-                    task_path=resolved_tasks_dir,
-                    agent=agent,
-                    model=eff_model,
-                    job_name=None,
-                    rollout_name=None,
-                    jobs_dir=jobs_dir,
-                    environment=environment,
-                    agent_env=parsed_env,
-                    skills_dir=str(skills_dir) if skills_dir else None,
-                    sandbox_user=sandbox_user,
-                    sandbox_setup_timeout=sandbox_setup_timeout,
-                    skill_mode=skill_mode,
-                    skill_creator_dir=(
-                        str(skill_creator_dir) if skill_creator_dir else None
-                    ),
-                    self_gen_no_internet=self_gen_no_internet,
-                )
-
-            run_result = asyncio.run(_run())
-            reward = (run_result.rewards or {}).get("reward")
-            console.print(f"\n[bold]Task:[/bold] {resolved_tasks_dir.name}")
-            console.print(f"[bold]Agent:[/bold] {agent} ({eff_model or 'no model'})")
-            console.print(f"[bold]Reward:[/bold] {reward}")
-            console.print(f"[bold]Tool calls:[/bold] {run_result.n_tool_calls}")
-            _exit_if_run_result_failed(run_result)
-        else:
-            # Directory of tasks — batch run
-            j = Evaluation(
-                tasks_dir=str(resolved_tasks_dir),
-                jobs_dir=jobs_dir,
-                config=EvaluationConfig(
-                    agent=agent,
-                    model=eff_model,
-                    environment=environment,
-                    concurrency=concurrency,
-                    agent_env=parsed_env,
-                    sandbox_user=sandbox_user,
-                    sandbox_setup_timeout=sandbox_setup_timeout,
-                    skills_dir=str(skills_dir) if skills_dir else None,
-                    skill_mode=skill_mode,
-                    skill_creator_dir=(
-                        str(skill_creator_dir) if skill_creator_dir else None
-                    ),
-                    self_gen_no_internet=self_gen_no_internet,
-                ),
-            )
-            result = asyncio.run(j.run())
-            console.print(
-                f"\n[bold]Score: {result.passed}/{result.total} "
-                f"({result.score:.1%})[/bold], errors={result.errored}"
-            )
-            _exit_if_evaluation_had_errors(result)
+        resolved_tasks_dir = resolved.path
+        eff_model = effective_model(eval_agent, model)
+        j = Evaluation(
+            tasks_dir=str(resolved_tasks_dir),
+            jobs_dir=output_jobs_dir,
+            config=EvaluationConfig(
+                agent=eval_agent,
+                model=eff_model,
+                environment=eval_environment,
+                concurrency=eval_concurrency,
+                agent_idle_timeout=eval_agent_idle_timeout,
+                agent_env=parsed_env,
+                sandbox_user=sandbox_user,
+                sandbox_setup_timeout=sandbox_setup_timeout,
+                skills_dir=str(skills_dir) if skills_dir else None,
+                skill_mode=skill_mode,
+                skill_creator_dir=str(skill_creator_dir) if skill_creator_dir else None,
+                self_gen_no_internet=self_gen_no_internet,
+                source_provenance=resolved.provenance,
+            ),
+        )
+        result = asyncio.run(j.run())
+        console.print(
+            f"\n[bold]Score: {result.passed}/{result.total} "
+            f"({result.score:.1%})[/bold], errors={result.errored}"
+        )
+        _exit_if_evaluation_had_errors(result)
     elif tasks_dir:
         resolved_tasks_dir = tasks_dir
-        eff_model = effective_model(agent, model)
+        eff_model = effective_model(eval_agent, model)
         # Smart detection: if tasks_dir has task.toml, it's a single task
         if (resolved_tasks_dir / "task.toml").exists():
             from benchflow.sdk import SDK
@@ -1243,12 +1260,14 @@ def eval_create(
             async def _run():
                 return await SDK().run(
                     task_path=resolved_tasks_dir,
-                    agent=agent,
+                    agent=eval_agent,
                     model=eff_model,
                     job_name=None,
                     rollout_name=None,
-                    jobs_dir=jobs_dir,
-                    environment=environment,
+                    jobs_dir=output_jobs_dir,
+                    concurrency=eval_concurrency,
+                    agent_idle_timeout=eval_agent_idle_timeout,
+                    environment=eval_environment,
                     agent_env=parsed_env,
                     skills_dir=str(skills_dir) if skills_dir else None,
                     sandbox_user=sandbox_user,
@@ -1263,7 +1282,7 @@ def eval_create(
             run_result = asyncio.run(_run())
             reward = (run_result.rewards or {}).get("reward")
             console.print(f"\n[bold]Task:[/bold] {resolved_tasks_dir.name}")
-            console.print(f"[bold]Agent:[/bold] {agent} ({eff_model or 'no model'})")
+            console.print(f"[bold]Agent:[/bold] {eval_agent} ({eff_model or 'no model'})")
             console.print(f"[bold]Reward:[/bold] {reward}")
             console.print(f"[bold]Tool calls:[/bold] {run_result.n_tool_calls}")
             _exit_if_run_result_failed(run_result)
@@ -1271,12 +1290,13 @@ def eval_create(
             # Directory of tasks — batch run
             j = Evaluation(
                 tasks_dir=str(resolved_tasks_dir),
-                jobs_dir=jobs_dir,
+                jobs_dir=output_jobs_dir,
                 config=EvaluationConfig(
-                    agent=agent,
+                    agent=eval_agent,
                     model=eff_model,
-                    environment=environment,
-                    concurrency=concurrency,
+                    environment=eval_environment,
+                    concurrency=eval_concurrency,
+                    agent_idle_timeout=eval_agent_idle_timeout,
                     agent_env=parsed_env,
                     sandbox_user=sandbox_user,
                     sandbox_setup_timeout=sandbox_setup_timeout,
@@ -1317,6 +1337,11 @@ def eval_list(
     table.add_column("Evaluation", style="cyan")
     table.add_column("Tasks", justify="right")
     table.add_column("Summary")
+    table.add_column("Memory")
+
+    def memory_label(data: dict) -> str:
+        score = data.get("memory_score")
+        return f"{score:.1%}" if isinstance(score, int | float) else "—"
 
     root_summary = jobs_dir / "summary.json"
     if root_summary.exists():
@@ -1325,6 +1350,7 @@ def eval_list(
             jobs_dir.name,
             str(data.get("total", "?")),
             f"{data.get('passed', '?')}/{data.get('total', '?')} ({data.get('score', '?')})",
+            memory_label(data),
         )
         console.print(table)
         return
@@ -1339,10 +1365,11 @@ def eval_list(
                 d.name,
                 str(data.get("total", "?")),
                 f"{data.get('passed', '?')}/{data.get('total', '?')} ({data.get('score', '?')})",
+                memory_label(data),
             )
         else:
             sub_count = sum(1 for s in d.iterdir() if s.is_dir())
-            table.add_row(d.name, str(sub_count), "[dim]no summary[/dim]")
+            table.add_row(d.name, str(sub_count), "[dim]no summary[/dim]", "—")
 
     console.print(table)
 

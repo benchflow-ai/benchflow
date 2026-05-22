@@ -8,7 +8,7 @@ jobs_dir: jobs/integration/claude-agent-acp
 agent: claude-agent-acp
 model: claude-haiku-4-5-20251001
 environment: daytona
-concurrency: 30
+concurrency: 64
 max_retries: 1
 
 include:
