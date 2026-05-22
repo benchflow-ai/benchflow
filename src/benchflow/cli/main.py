@@ -13,7 +13,11 @@ from rich.console import Console
 from rich.table import Table
 
 from benchflow._dotenv import load_dotenv_env
-from benchflow._utils.config import normalize_sandbox_user
+from benchflow._utils.config import (
+    DEFAULT_AGENT_IDLE_TIMEOUT_SEC,
+    normalize_agent_idle_timeout,
+    normalize_sandbox_user,
+)
 from benchflow.agents.registry import parse_agent_spec
 from benchflow.cli.trace_import import register_tasks_generate
 from benchflow.evaluation import DEFAULT_AGENT, effective_model
@@ -1118,12 +1122,10 @@ def eval_create(
     eval_environment = environment or "docker"
     sandbox_user = normalize_sandbox_user(sandbox_user)
     eval_concurrency = concurrency if concurrency is not None else 4
-    eval_agent_idle_timeout = (
-        600
-        if agent_idle_timeout is None
-        else None
-        if agent_idle_timeout == 0
-        else agent_idle_timeout
+    eval_agent_idle_timeout = normalize_agent_idle_timeout(
+        agent_idle_timeout
+        if agent_idle_timeout is not None
+        else DEFAULT_AGENT_IDLE_TIMEOUT_SEC
     )
     output_jobs_dir = jobs_dir or "jobs"
 
