@@ -767,8 +767,13 @@ class RolloutConfig:
     source_provenance: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
+        from benchflow._utils.config import normalize_agent_idle_timeout
+
         self.agent = normalize_agent_name(self.agent)
         self.sandbox_user = normalize_sandbox_user(self.sandbox_user)
+        self.agent_idle_timeout = normalize_agent_idle_timeout(
+            self.agent_idle_timeout
+        )
         for scene in self.scenes:
             for role in scene.roles:
                 role.agent = normalize_agent_name(role.agent)

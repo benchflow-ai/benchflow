@@ -130,19 +130,17 @@ def _write_result_tree(
     )
     if include_config:
         _write_config(run_dir, model=config_model, idle_timeout=config_idle_timeout)
-    (agent_dir / "summary.json").write_text(
-        json.dumps(
-            {
-                "agent": "agentA",
-                "model": summary_model,
-                "environment": "daytona",
-                "concurrency": 64,
-                "agent_idle_timeout_sec": summary_idle_timeout,
-                **summary,
-                "source": _source(),
-            }
-        )
-    )
+    summary_payload = {
+        "agent": "agentA",
+        "model": summary_model,
+        "environment": "daytona",
+        "concurrency": 64,
+        "agent_idle_timeout_sec": summary_idle_timeout,
+        **summary,
+    }
+    if "source" not in summary:
+        summary_payload["source"] = _source()
+    (agent_dir / "summary.json").write_text(json.dumps(summary_payload))
     return agent_dir
 
 
@@ -429,10 +427,10 @@ def test_check_results_rejects_source_git_identity_mismatch(tmp_path: Path) -> N
     assert any("git remote" in issue for issue in findings["issues"])
 
 
-def test_check_results_rejects_spoofed_remote_outside_resolver_snapshot(
+def test_check_results_rejects_unreachable_spoofed_remote(
     tmp_path: Path,
 ) -> None:
-    """Guards v0.5-integration@cb8759e against spoofed local GitHub remotes."""
+    """Guards v0.5-integration@cb8759e against unreachable spoofed GitHub remotes."""
     repo_root = tmp_path / "spoofed"
     shutil.copytree(EXAMPLE_TASK_ROOT, repo_root / "tasks" / "task-a")
     subprocess.run(
@@ -467,6 +465,7 @@ def test_check_results_rejects_spoofed_remote_outside_resolver_snapshot(
         capture_output=True,
         text=True,
     ).stdout.strip()
+    result_checker.REMOTE_REACHABILITY[("acme/benchmarks", sha, "main")] = False
     source = _source_from_repo(repo_root, sha)
     agent_dir = _write_result_tree(
         tmp_path,
@@ -485,15 +484,130 @@ def test_check_results_rejects_spoofed_remote_outside_resolver_snapshot(
     result["source"] = source
     result_path.write_text(json.dumps(result))
     _write_config(result_path.parent, source)
+    summary_path = agent_dir / "summary.json"
+    summary = json.loads(summary_path.read_text())
+    summary.pop("source", None)
+    summary_path.write_text(json.dumps(summary))
 
     findings = check_agent(agent_dir)
 
     assert findings["ok"] is False
-    assert any("resolver snapshot" in issue for issue in findings["issues"])
+    assert any("not reachable" in issue for issue in findings["issues"])
+
+
+def test_check_results_accepts_reachable_sibling_clone_source(tmp_path: Path) -> None:
+    """Guards v0.5 feature rollout evidence from being tied to one checkout."""
+    repo_root = tmp_path / "sibling"
+    shutil.copytree(EXAMPLE_TASK_ROOT, repo_root / "tasks" / "task-a")
+    subprocess.run(
+        ["git", "init", "-b", "main"], cwd=repo_root, check=True, capture_output=True
+    )
+    subprocess.run(
+        ["git", "remote", "add", "origin", "https://github.com/acme/benchmarks.git"],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(["git", "add", "."], cwd=repo_root, check=True, capture_output=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=BenchFlow Test",
+            "-c",
+            "user.email=benchflow-test@example.com",
+            "commit",
+            "-m",
+            "sibling source",
+        ],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+    )
+    sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    result_checker.REMOTE_REACHABILITY[("acme/benchmarks", sha, "main")] = True
+    source = _source_from_repo(repo_root, sha)
+    agent_dir = _write_result_tree(
+        tmp_path,
+        reward=1.0,
+        summary={
+            "total": 1,
+            "passed": 1,
+            "failed": 0,
+            "errored": 0,
+            "verifier_errored": 0,
+            "score": "100.0%",
+            "source": source,
+        },
+    )
+    result_path = next(agent_dir.rglob("result.json"))
+    result = json.loads(result_path.read_text())
+    result["source"] = source
+    result_path.write_text(json.dumps(result))
+    _write_config(result_path.parent, source)
+    summary_path = agent_dir / "summary.json"
+    summary = json.loads(summary_path.read_text())
+    summary["source"] = source
+    summary_path.write_text(json.dumps(summary))
+
+    findings = check_agent(agent_dir)
+
+    assert findings["ok"] is True, findings["issues"]
+
+
+def test_check_results_accepts_symlinked_current_repo_inferred_source(
+    tmp_path: Path,
+) -> None:
+    """Guards v0.5 feature rollout tasksets symlinked to this repo."""
+    taskset = tmp_path / "taskset"
+    taskset.mkdir()
+    linked_task = taskset / "hello-world-task"
+    linked_task.symlink_to(EXAMPLE_TASK_ROOT, target_is_directory=True)
+    source = task_download.infer_task_source_provenance(linked_task)
+    assert source is not None
+    result_checker.REMOTE_REACHABILITY[
+        (
+            source["repo"],
+            source["resolved_sha"],
+            source["requested_ref"],
+        )
+    ] = True
+    agent_dir = _write_result_tree(
+        tmp_path,
+        reward=1.0,
+        summary={
+            "total": 1,
+            "passed": 1,
+            "failed": 0,
+            "errored": 0,
+            "verifier_errored": 0,
+            "score": "100.0%",
+            "source": source,
+        },
+    )
+    result_path = next(agent_dir.rglob("result.json"))
+    result = json.loads(result_path.read_text())
+    result["source"] = source
+    result_path.write_text(json.dumps(result))
+    _write_config(result_path.parent, source)
+    summary_path = agent_dir / "summary.json"
+    summary = json.loads(summary_path.read_text())
+    summary["source"] = source
+    summary_path.write_text(json.dumps(summary))
+
+    findings = check_agent(agent_dir)
+
+    assert findings["ok"] is True, findings["issues"]
 
 
 def test_check_results_rejects_unreachable_remote_sha(tmp_path: Path) -> None:
-    """Guards v0.5-integration@cb8759e against fake resolver snapshot repos."""
+    """Guards v0.5-integration@cb8759e against unreachable source SHAs."""
     repo_root, sha = _build_source_repo()
     result_checker.REMOTE_REACHABILITY[("acme/benchmarks", sha, "main")] = False
     source = _source_from_repo(repo_root, sha)
@@ -1258,6 +1372,64 @@ def test_check_results_cli_rejects_expected_agent_idle_timeout_mismatch(
     assert "45" in completed.stdout
 
 
+def test_check_results_rejects_malformed_agent_idle_timeout_artifact(
+    tmp_path: Path,
+) -> None:
+    """Guards v0.5-idle-timeout audit from accepting bool/float timeout evidence."""
+    agent_dir = _write_result_tree(
+        tmp_path,
+        reward=1.0,
+        config_idle_timeout=False,
+        summary_idle_timeout=600,
+        summary={
+            "total": 1,
+            "passed": 1,
+            "failed": 0,
+            "errored": 0,
+            "verifier_errored": 0,
+            "score": "100.0%",
+        },
+    )
+
+    findings = check_agent(agent_dir)
+
+    assert findings["ok"] is False
+    assert any(
+        "config.json agent_idle_timeout_sec must be null or integer seconds" in issue
+        for issue in findings["issues"]
+    )
+
+
+def test_check_results_rejects_config_summary_agent_idle_timeout_mismatch(
+    tmp_path: Path,
+) -> None:
+    """Guards v0.5-idle-timeout audit from needing an expected value to catch drift."""
+    agent_dir = _write_result_tree(
+        tmp_path,
+        reward=1.0,
+        config_idle_timeout=45,
+        summary_idle_timeout=None,
+        summary={
+            "total": 1,
+            "passed": 1,
+            "failed": 0,
+            "errored": 0,
+            "verifier_errored": 0,
+            "score": "100.0%",
+        },
+    )
+
+    findings = check_agent(agent_dir)
+
+    assert findings["ok"] is False
+    assert any(
+        "config.json agent_idle_timeout_sec 45 does not match expected null"
+        in issue
+        and "from summary.json" in issue
+        for issue in findings["issues"]
+    )
+
+
 def test_check_results_cli_accepts_expected_agent_idle_timeout_alias_zero(
     tmp_path: Path,
 ) -> None:
@@ -1265,8 +1437,8 @@ def test_check_results_cli_accepts_expected_agent_idle_timeout_alias_zero(
     agent_dir = _write_result_tree(
         tmp_path,
         reward=1.0,
-        config_idle_timeout=0,
-        summary_idle_timeout=0,
+        config_idle_timeout=None,
+        summary_idle_timeout=None,
         summary={
             "total": 1,
             "passed": 1,

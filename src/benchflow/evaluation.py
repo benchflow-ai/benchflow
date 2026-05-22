@@ -167,11 +167,18 @@ class EvaluationConfig:
     source_provenance: dict[str, Any] | None = None
 
     def __post_init__(self):
-        from benchflow._utils.config import normalize_agent_name, normalize_sandbox_user
+        from benchflow._utils.config import (
+            normalize_agent_idle_timeout,
+            normalize_agent_name,
+            normalize_sandbox_user,
+        )
         from benchflow.agents.registry import AGENTS
 
         self.agent = normalize_agent_name(self.agent)
         self.sandbox_user = normalize_sandbox_user(self.sandbox_user)
+        self.agent_idle_timeout = normalize_agent_idle_timeout(
+            self.agent_idle_timeout
+        )
         if self.job_mode not in JOB_MODES:
             raise ValueError(
                 f"unknown job_mode {self.job_mode!r} — "
@@ -726,6 +733,8 @@ class Evaluation:
         pairs: list[tuple[str, RunResult]] = []
         for i, r in enumerate(results_or_errors):
             if isinstance(r, BaseException):
+                if isinstance(r, (asyncio.CancelledError, KeyboardInterrupt)):
+                    raise r
                 task_name = remaining[i].name
                 logger.error(f"[ERR] {task_name}: unexpected exception: {r}")
                 pairs.append(
@@ -792,7 +801,9 @@ class Evaluation:
 
                 try:
                     result = await self._run_task(td)
-                except BaseException as e:  # mirror the parallel path's catch
+                except (asyncio.CancelledError, KeyboardInterrupt):
+                    raise
+                except Exception as e:  # mirror the parallel path's catch
                     logger.error(f"[ERR] {td.name}: unexpected exception: {e}")
                     pairs.append(
                         (

@@ -275,6 +275,21 @@ def _git_ls_remote_contains(repo: str, sha: str, requested_ref: str | None) -> b
     return reachable
 
 
+def _verify_remote_reachability(
+    repo: str,
+    sha: str,
+    requested_ref: str | None,
+    label: str,
+) -> tuple[bool | None, list[str]]:
+    """Return (reachable, issues). ``None`` means verification itself failed."""
+    try:
+        return _git_ls_remote_contains(repo, sha, requested_ref), []
+    except (OSError, subprocess.SubprocessError) as e:
+        return None, [
+            f"{label}: source.resolved_sha remote reachability could not be verified: {e}"
+        ]
+
+
 def _source_git_truth_issues(
     source: dict[str, Any], local_path: Path, label: str
 ) -> list[str]:
@@ -287,18 +302,7 @@ def _source_git_truth_issues(
     if local_resolved != git_root and not local_resolved.is_relative_to(git_root):
         issues.append(f"{label}: source.local_path is outside its git worktree")
     repo = source.get("repo")
-    resolved_sha = source.get("resolved_sha")
-    if isinstance(repo, str) and "/" in repo and isinstance(resolved_sha, str):
-        from benchflow._utils.benchmark_repos import _cache_dir
-
-        org, repo_name = repo.split("/", 1)
-        expected_snapshot = (
-            _cache_dir() / org / f"{repo_name}__snapshots" / resolved_sha
-        ).resolve(strict=False)
-        if git_root != expected_snapshot:
-            issues.append(
-                f"{label}: source.local_path is not the resolver snapshot for source.repo/source.resolved_sha"
-            )
+    remote_reachable: bool | None = None
 
     head = _git_stdout(local_path, "rev-parse", "HEAD")
     if head != source.get("resolved_sha"):
@@ -308,17 +312,23 @@ def _source_git_truth_issues(
     elif isinstance(repo, str) and isinstance(head, str):
         requested_ref_raw = source.get("requested_ref")
         requested_ref = requested_ref_raw if isinstance(requested_ref_raw, str) else None
-        try:
-            if not _git_ls_remote_contains(repo, head, requested_ref):
-                issues.append(
-                    f"{label}: source.resolved_sha is not reachable from source.repo/requested_ref"
-                )
-        except (OSError, subprocess.SubprocessError) as e:
+        if remote_reachable is None:
+            remote_reachable, reachability_issues = _verify_remote_reachability(
+                repo, head, requested_ref, label
+            )
+            issues.extend(reachability_issues)
+        if remote_reachable is False:
             issues.append(
-                f"{label}: source.resolved_sha remote reachability could not be verified: {e}"
+                f"{label}: source.resolved_sha is not reachable from source.repo/requested_ref"
             )
 
-    status = _git_stdout(local_path, "status", "--porcelain")
+    status_args = ["status", "--porcelain"]
+    try:
+        rel_for_status = local_resolved.relative_to(git_root).as_posix()
+        status_args.extend(["--", rel_for_status])
+    except ValueError:
+        pass
+    status = _git_stdout(git_root, *status_args)
     if status is None:
         issues.append(f"{label}: source.local_path git status could not be read")
     elif bool(status) != bool(source.get("dirty")):

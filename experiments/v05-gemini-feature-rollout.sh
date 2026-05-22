@@ -65,11 +65,12 @@ SKILLS="$(uv run python -c "
 from benchflow._utils.benchmark_repos import resolve_source_with_metadata
 print(resolve_source_with_metadata('benchflow-ai/skillsbench', path='tasks', ref='main').path)
 " 2>/dev/null)"
-cp -R "$SKILLS/pddl-tpp-planning" "$TASKSET/pddl-tpp-planning"
-cp -R "$SKILLS/azure-bgp-oscillation-route-leak" "$TASKSET/azure-bgp-oscillation-route-leak"
-cp -R "$ROOT/tests/conformance/acp_smoke" "$TASKSET/acp_smoke"
-cp -R "$ROOT/tests/examples/terminal-bench-smoke-task" "$TASKSET/terminal-bench-smoke-task"
+ln -s "$SKILLS/pddl-tpp-planning" "$TASKSET/pddl-tpp-planning"
+ln -s "$SKILLS/azure-bgp-oscillation-route-leak" "$TASKSET/azure-bgp-oscillation-route-leak"
+ln -s "$ROOT/tests/conformance/acp_smoke" "$TASKSET/acp_smoke"
+ln -s "$ROOT/tests/examples/terminal-bench-smoke-task" "$TASKSET/terminal-bench-smoke-task"
 
+eval_status=0
 uv run bench eval create \
   --tasks-dir "$TASKSET" \
   --agent "$AGENT" \
@@ -77,14 +78,20 @@ uv run bench eval create \
   --sandbox "$SANDBOX" \
   --concurrency "$CONCURRENCY" \
   --agent-idle-timeout "$IDLE_TIMEOUT" \
-  --jobs-dir "$JOBS_ROOT"
+  --jobs-dir "$JOBS_ROOT" || eval_status=$?
 
 echo ""
 echo "══════ Audit ══════"
+audit_status=0
 uv run python tests/integration/check_results.py \
   "$JOBS_ROOT" \
   "agent=$AGENT" \
   "model=$MODEL" \
   "environment=$SANDBOX" \
   "concurrency=$CONCURRENCY" \
-  "agent_idle_timeout_sec=$IDLE_TIMEOUT"
+  "agent_idle_timeout_sec=$IDLE_TIMEOUT" || audit_status=$?
+
+if [ "$audit_status" -ne 0 ]; then
+  exit "$audit_status"
+fi
+exit "$eval_status"

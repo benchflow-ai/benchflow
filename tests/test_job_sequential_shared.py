@@ -85,6 +85,20 @@ async def test_sequential_shared_runs_tasks_in_order(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_sequential_shared_propagates_cancellation(tmp_path):
+    """Guards v0.5-idle-timeout@219906c against swallowing cancellation."""
+    job = _make_job(tmp_path, n_tasks=1, job_mode="sequential-shared")
+
+    async def fake_run(*args, **kwargs):
+        raise asyncio.CancelledError
+
+    job._run_task = fake_run  # type: ignore[method-assign]
+
+    with pytest.raises(asyncio.CancelledError):
+        await job.run()
+
+
+@pytest.mark.asyncio
 async def test_parallel_independent_still_overlaps(tmp_path):
     """Regression guard: the default mode must still run concurrently.
 
