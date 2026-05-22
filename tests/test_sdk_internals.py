@@ -469,6 +469,8 @@ class TestWriteConfig:
                         "idle_timeout_sec": 3,
                         "skills_dir": "/role-skills",
                         "capabilities": ["tool-use"],
+                        "transport": "acp",
+                        "endpoint_url": None,
                         "env_keys": ["ROLE_TOKEN"],
                     }
                 ],
