@@ -8,7 +8,7 @@ jobs_dir: jobs/integration/pi-acp
 agent: pi-acp
 model: gemini-3.1-flash-lite-preview
 environment: daytona
-concurrency: 30
+concurrency: 64
 max_retries: 1
 
 include:

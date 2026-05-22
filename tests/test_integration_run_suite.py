@@ -30,6 +30,19 @@ from tests.integration.run_suite import (
 
 SUITE_PATH = Path("tests/integration/suites/release.yaml")
 TERMINAL_BENCH_SMOKE_TASK = Path("tests/examples/terminal-bench-smoke-task")
+INTEGRATION_CONFIG_DIR = Path("tests/integration/configs")
+INTEGRATION_RUN_SH = Path("tests/integration/run.sh")
+SELECTED_SKILLSBENCH_TASKS = [
+    "jax-computing-basics",
+    "python-scala-translation",
+    "jpg-ocr-stat",
+    "grid-dispatch-operator",
+    "threejs-to-obj",
+    "data-to-d3",
+    "lake-warming-attribution",
+    "weighted-gdp-calc",
+    "shock-analysis-supply",
+]
 
 
 def test_release_suite_loads_and_tracks_backlog_lanes() -> None:
@@ -68,6 +81,29 @@ def test_release_suite_benchmarks_have_source_uids() -> None:
 
     assert "benchflow-ai/skillsbench:tasks@main" in seen
     assert "benchflow-ai/benchmarks:datasets/harvey-lab/tasks@main" in seen
+
+
+def test_integration_configs_use_active_dev_concurrency() -> None:
+    """Guards v0.5 active-dev E2E configs from falling back to concurrency 30."""
+    import yaml
+
+    configs = sorted(INTEGRATION_CONFIG_DIR.glob("*.yaml"))
+
+    assert configs
+    for path in configs:
+        data = yaml.safe_load(path.read_text())
+        assert data["environment"] == "daytona", path
+        assert data["concurrency"] == 64, path
+        assert data["include"] == SELECTED_SKILLSBENCH_TASKS, path
+
+
+def test_integration_runner_uses_overridable_active_dev_concurrency() -> None:
+    """Guards v0.5 active-dev shell runs while preserving a large-run override."""
+    script = INTEGRATION_RUN_SH.read_text()
+
+    assert "BENCHFLOW_INTEGRATION_CONCURRENCY:-64" in script
+    assert '--concurrency "$INTEGRATION_CONCURRENCY"' in script
+    assert "--concurrency 30" not in script
 
 
 def test_release_suite_hosted_env_hubs_have_hub_urls() -> None:
