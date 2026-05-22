@@ -156,6 +156,7 @@ class EvaluationConfig:
     sandbox_user: str | None = "agent"
     sandbox_locked_paths: list[str] | None = None
     sandbox_setup_timeout: int = 120
+    agent_idle_timeout: int | None = 600
     context_root: str | None = None
     exclude_tasks: set[str] = field(default_factory=set)
     include_tasks: set[str] = field(default_factory=set)
@@ -411,6 +412,9 @@ class Evaluation:
             sandbox_user=sandbox_user,
             sandbox_locked_paths=sandbox_locked_paths,
             sandbox_setup_timeout=sandbox_setup_timeout,
+            agent_idle_timeout=raw.get(
+                "agent_idle_timeout_sec", raw.get("agent_idle_timeout", 600)
+            ),
             exclude_tasks=exclude,
             include_tasks=include,
             skill_mode=raw.get("skill_mode", "default"),
@@ -480,6 +484,9 @@ class Evaluation:
             sandbox_user=sandbox_user,
             sandbox_locked_paths=sandbox_locked_paths,
             sandbox_setup_timeout=sandbox_setup_timeout,
+            agent_idle_timeout=raw.get(
+                "agent_idle_timeout_sec", raw.get("agent_idle_timeout", 600)
+            ),
             skill_mode=raw.get("skill_mode", "default"),
             skill_creator_dir=(
                 str(Path(raw["skill_creator_dir"]))
@@ -585,6 +592,7 @@ class Evaluation:
             sandbox_user=cfg.sandbox_user,
             sandbox_locked_paths=cfg.sandbox_locked_paths,
             sandbox_setup_timeout=cfg.sandbox_setup_timeout,
+            agent_idle_timeout=cfg.agent_idle_timeout,
             context_root=cfg.context_root,
             skill_mode=cfg.skill_mode,
             skill_creator_dir=cfg.skill_creator_dir,
@@ -627,6 +635,7 @@ class Evaluation:
             sandbox_user=cfg.sandbox_user,
             sandbox_locked_paths=cfg.sandbox_locked_paths,
             sandbox_setup_timeout=cfg.sandbox_setup_timeout,
+            agent_idle_timeout=cfg.agent_idle_timeout,
             context_root=cfg.context_root,
             skill_mode=cfg.skill_mode,
             skill_creator_dir=cfg.skill_creator_dir,
@@ -1002,6 +1011,7 @@ class Evaluation:
             "model": cfg.model,
             "environment": cfg.environment,
             "concurrency": cfg.concurrency,
+            "agent_idle_timeout_sec": cfg.agent_idle_timeout,
             "total": job_result.total,
             "passed": job_result.passed,
             "failed": job_result.failed,

@@ -290,6 +290,42 @@ def test_eval_create_single_task_applies_concurrency_override(monkeypatch, tmp_p
     assert captured["concurrency"] == 64
 
 
+def test_eval_create_single_task_applies_agent_idle_timeout(monkeypatch, tmp_path):
+    """Guards v0.5-integration@219906c against unbounded active-dev ACP hangs."""
+    task_dir = tmp_path / "task-a"
+    task_dir.mkdir()
+    (task_dir / "task.toml").write_text("[task]\n")
+    captured = {}
+
+    async def fake_sdk_run(self, **kwargs):
+        captured["agent_idle_timeout"] = kwargs["agent_idle_timeout"]
+        return SimpleNamespace(
+            rewards={"reward": 0.0},
+            n_tool_calls=0,
+            error="Agent idle for 45s with no new tool call, message, or thought",
+            verifier_error=None,
+        )
+
+    monkeypatch.setattr("benchflow.sdk.SDK.run", fake_sdk_run)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "eval",
+            "create",
+            "--tasks-dir",
+            str(task_dir),
+            "--agent",
+            "gemini",
+            "--agent-idle-timeout",
+            "45",
+        ],
+    )
+
+    assert result.exit_code == 1, result.stdout
+    assert captured["agent_idle_timeout"] == 45
+
+
 def test_eval_create_config_allows_literal_jobs_dir_override(monkeypatch, tmp_path):
     """Guards v0.5 config runs from treating --jobs-dir jobs as absent."""
     tasks_root = tmp_path / "tasks"
@@ -484,6 +520,8 @@ def test_eval_create_source_repo_writes_requested_concurrency_to_rollout_config(
             "daytona",
             "--concurrency",
             "64",
+            "--agent-idle-timeout",
+            "45",
             "--jobs-dir",
             str(tmp_path / "jobs"),
         ],
@@ -495,7 +533,9 @@ def test_eval_create_source_repo_writes_requested_concurrency_to_rollout_config(
     config = json.loads(config_paths[0].read_text())
     summary = json.loads((tmp_path / "jobs" / "summary.json").read_text())
     assert config["concurrency"] == 64
+    assert config["agent_idle_timeout_sec"] == 45
     assert summary["concurrency"] == 64
+    assert summary["agent_idle_timeout_sec"] == 45
 
 
 def test_evaluation_yaml_source_records_source_provenance(monkeypatch, tmp_path):

@@ -109,6 +109,8 @@ def _write_result_tree(
     result_model: object = "test-model",
     config_model: object = "test-model",
     summary_model: object = "test-model",
+    config_idle_timeout: object = 600,
+    summary_idle_timeout: object = 600,
 ) -> Path:
     agent_dir = tmp_path / "agentA"
     run_dir = agent_dir / "2026-05-18__00-00-00" / "task-a"
@@ -127,7 +129,7 @@ def _write_result_tree(
         )
     )
     if include_config:
-        _write_config(run_dir, model=config_model)
+        _write_config(run_dir, model=config_model, idle_timeout=config_idle_timeout)
     (agent_dir / "summary.json").write_text(
         json.dumps(
             {
@@ -135,6 +137,7 @@ def _write_result_tree(
                 "model": summary_model,
                 "environment": "daytona",
                 "concurrency": 64,
+                "agent_idle_timeout_sec": summary_idle_timeout,
                 **summary,
                 "source": _source(),
             }
@@ -149,6 +152,7 @@ def _write_config(
     *,
     agent: str = "agentA",
     model: str = "test-model",
+    idle_timeout: object = 600,
 ) -> None:
     config = {
         "task_path": "/tmp/tasks/task-a",
@@ -156,6 +160,7 @@ def _write_config(
         "model": model,
         "environment": "daytona",
         "concurrency": 64,
+        "agent_idle_timeout_sec": idle_timeout,
         "source": source or _source(),
     }
     (path / "config.json").write_text(json.dumps(config))
@@ -1208,6 +1213,88 @@ def test_check_results_cli_rejects_expected_concurrency_mismatch(
     assert completed.returncode == 1
     assert "concurrency" in completed.stdout
     assert "100" in completed.stdout
+
+
+def test_check_results_cli_rejects_expected_agent_idle_timeout_mismatch(
+    tmp_path: Path,
+) -> None:
+    """Guards v0.5-idle-timeout audit against unaudited idle-timeout evidence."""
+    _write_result_tree(
+        tmp_path,
+        reward=1.0,
+        config_idle_timeout=600,
+        summary_idle_timeout=600,
+        summary={
+            "total": 1,
+            "passed": 1,
+            "failed": 0,
+            "errored": 0,
+            "verifier_errored": 0,
+            "score": "100.0%",
+        },
+    )
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "tests/integration/check_results.py",
+            str(tmp_path),
+            "agentA",
+            "model=test-model",
+            "environment=daytona",
+            "concurrency=64",
+            "agent_idle_timeout_sec=45",
+        ],
+        cwd=Path(__file__).parents[1],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 1
+    assert "agent_idle_timeout_sec" in completed.stdout
+    assert "config.json agent_idle_timeout_sec" in completed.stdout
+    assert "summary.json agent_idle_timeout_sec" in completed.stdout
+    assert "45" in completed.stdout
+
+
+def test_check_results_cli_accepts_expected_agent_idle_timeout_alias_zero(
+    tmp_path: Path,
+) -> None:
+    """Guards v0.5-idle-timeout audit from treating disabled idle timeout as missing."""
+    agent_dir = _write_result_tree(
+        tmp_path,
+        reward=1.0,
+        config_idle_timeout=0,
+        summary_idle_timeout=0,
+        summary={
+            "total": 1,
+            "passed": 1,
+            "failed": 0,
+            "errored": 0,
+            "verifier_errored": 0,
+            "score": "100.0%",
+        },
+    )
+
+    previous = dict(result_checker.EXPECTED)
+    try:
+        result_checker.EXPECTED.clear()
+        result_checker.EXPECTED.update(
+            {
+                "model": "test-model",
+                "environment": "daytona",
+                "concurrency": "64",
+                "agent_idle_timeout": "0",
+            }
+        )
+
+        findings = check_agent(agent_dir)
+    finally:
+        result_checker.EXPECTED.clear()
+        result_checker.EXPECTED.update(previous)
+
+    assert findings["ok"] is True, findings["issues"]
 
 
 def test_check_results_cli_rejects_unknown_expected_key(

@@ -1044,6 +1044,17 @@ def eval_create(
         int | None,
         typer.Option("--concurrency", help="Max concurrent tasks"),
     ] = None,
+    agent_idle_timeout: Annotated[
+        int | None,
+        typer.Option(
+            "--agent-idle-timeout",
+            min=0,
+            help=(
+                "Abort ACP prompts after this many idle seconds; "
+                "0 disables idle detection."
+            ),
+        ),
+    ] = None,
     jobs_dir: Annotated[
         str | None,
         typer.Option("--jobs-dir", help="Output directory"),
@@ -1107,6 +1118,13 @@ def eval_create(
     eval_environment = environment or "docker"
     sandbox_user = normalize_sandbox_user(sandbox_user)
     eval_concurrency = concurrency if concurrency is not None else 4
+    eval_agent_idle_timeout = (
+        600
+        if agent_idle_timeout is None
+        else None
+        if agent_idle_timeout == 0
+        else agent_idle_timeout
+    )
     output_jobs_dir = jobs_dir or "jobs"
 
     if config_file:
@@ -1127,6 +1145,8 @@ def eval_create(
             j._jobs_dir = Path(jobs_dir)
         if concurrency is not None:
             j._config.concurrency = concurrency
+        if agent_idle_timeout is not None:
+            j._config.agent_idle_timeout = eval_agent_idle_timeout
         result = asyncio.run(j.run())
         console.print(
             f"\n[bold]Score: {result.passed}/{result.total} "
@@ -1211,6 +1231,7 @@ def eval_create(
                 model=eff_model,
                 environment=eval_environment,
                 concurrency=eval_concurrency,
+                agent_idle_timeout=eval_agent_idle_timeout,
                 agent_env=parsed_env,
                 sandbox_user=sandbox_user,
                 sandbox_setup_timeout=sandbox_setup_timeout,
@@ -1243,6 +1264,7 @@ def eval_create(
                     rollout_name=None,
                     jobs_dir=output_jobs_dir,
                     concurrency=eval_concurrency,
+                    agent_idle_timeout=eval_agent_idle_timeout,
                     environment=eval_environment,
                     agent_env=parsed_env,
                     skills_dir=str(skills_dir) if skills_dir else None,
@@ -1272,6 +1294,7 @@ def eval_create(
                     model=eff_model,
                     environment=eval_environment,
                     concurrency=eval_concurrency,
+                    agent_idle_timeout=eval_agent_idle_timeout,
                     agent_env=parsed_env,
                     sandbox_user=sandbox_user,
                     sandbox_setup_timeout=sandbox_setup_timeout,
