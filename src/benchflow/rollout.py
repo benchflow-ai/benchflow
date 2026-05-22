@@ -407,7 +407,7 @@ def _build_rollout_result(
     rollout_name: str,
     agent: str,
     agent_name: str,
-    model: str,
+    model: str | None,
     n_tool_calls: int,
     prompts: list[str],
     error: str | None,
@@ -731,6 +731,7 @@ class RolloutConfig:
     job_name: str | None = None
     rollout_name: str | None = None
     jobs_dir: str | Path = "jobs"
+    concurrency: int = 1
     context_root: str | Path | None = None
     pre_agent_hooks: list | None = None
     # Environment plane — when set, Rollout provisions a manifest-declared
@@ -1048,7 +1049,7 @@ class Rollout:
             timeout=self._timeout,
             started_at=self._started_at,
             agent_env=self._agent_env,
-            concurrency=1,
+            concurrency=cfg.concurrency,
             scenes=cfg.effective_scenes,
             source_provenance=cfg.source_provenance,
         )
@@ -2043,7 +2044,7 @@ class Rollout:
             rollout_name=self._rollout_name or "",
             agent=self._config.primary_agent,
             agent_name=self._agent_name,
-            model=self._config.primary_model or "",
+            model=self._config.primary_model,
             n_tool_calls=self._n_tool_calls,
             prompts=self._resolved_prompts,
             error=self._error,

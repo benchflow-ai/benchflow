@@ -106,6 +106,9 @@ def _write_result_tree(
     reward: float,
     summary: dict,
     include_config: bool = True,
+    result_model: object = "test-model",
+    config_model: object = "test-model",
+    summary_model: object = "test-model",
 ) -> Path:
     agent_dir = tmp_path / "agentA"
     run_dir = agent_dir / "2026-05-18__00-00-00" / "task-a"
@@ -115,7 +118,7 @@ def _write_result_tree(
             {
                 "task_name": "task-a",
                 "agent": "agentA",
-                "model": "test-model",
+                "model": result_model,
                 "rewards": {"reward": reward},
                 "error": None,
                 "verifier_error": None,
@@ -124,12 +127,12 @@ def _write_result_tree(
         )
     )
     if include_config:
-        _write_config(run_dir)
+        _write_config(run_dir, model=config_model)
     (agent_dir / "summary.json").write_text(
         json.dumps(
             {
                 "agent": "agentA",
-                "model": "test-model",
+                "model": summary_model,
                 "environment": "daytona",
                 "concurrency": 64,
                 **summary,
@@ -1054,6 +1057,47 @@ def test_check_results_cli_rejects_expected_model_mismatch(
     assert completed.returncode == 1
     assert "model" in completed.stdout
     assert "gemini-3.1-flash-lite-preview" in completed.stdout
+
+
+def test_check_results_cli_accepts_expected_null_model(
+    tmp_path: Path,
+) -> None:
+    """Guards v0.5-integration@c30e130 oracle audits from treating null as missing."""
+    agent_dir = _write_result_tree(
+        tmp_path,
+        reward=1.0,
+        result_model=None,
+        config_model=None,
+        summary_model=None,
+        summary={
+            "total": 1,
+            "passed": 1,
+            "failed": 0,
+            "errored": 0,
+            "verifier_errored": 0,
+            "score": "100.0%",
+        },
+    )
+
+    assert result_checker._parse_expected_value("null") is None
+    previous = dict(result_checker.EXPECTED)
+    try:
+        result_checker.EXPECTED.clear()
+        result_checker.EXPECTED.update(
+            {
+                "model": result_checker._parse_expected_value("null"),
+                "environment": "daytona",
+                "concurrency": "64",
+            }
+        )
+        assert result_checker._has_expected("agentA", "model")
+
+        findings = check_agent(agent_dir)
+    finally:
+        result_checker.EXPECTED.clear()
+        result_checker.EXPECTED.update(previous)
+
+    assert findings["ok"] is True, findings["issues"]
 
 
 def test_check_results_cli_requires_expected_identity_for_agent_dirs(

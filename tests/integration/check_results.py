@@ -29,7 +29,7 @@ from benchflow._utils.reward_events import memory_score_from_result
 from benchflow._utils.scoring import classify_error, count_result_outcomes
 from benchflow._utils.source_provenance import source_issues, source_matches_parent
 
-EXPECTED: dict[str, str] = {}
+EXPECTED: dict[str, Any] = {}
 EXPECTED_FIELDS = {"agent", "model", "environment", "concurrency"}
 REMOTE_REACHABILITY: dict[tuple[str, str, str | None], bool] = {}
 RESULT_REQUIRED = {"task_name", "agent", "rewards", "error", "verifier_error"}
@@ -65,8 +65,28 @@ def load_results(agent_dir: Path) -> tuple[list[tuple[Path, dict]], list[str]]:
     return results, issues
 
 
-def _expected(agent: str, field: str) -> str | None:
-    return EXPECTED.get(f"{agent}.{field}") or EXPECTED.get(field)
+_MISSING = object()
+
+
+def _parse_expected_value(value: str) -> Any:
+    if value == "null":
+        return None
+    return value
+
+
+def _expected(agent: str, field: str) -> Any:
+    agent_value = EXPECTED.get(f"{agent}.{field}", _MISSING)
+    if agent_value is not _MISSING:
+        return agent_value
+    return EXPECTED.get(field, _MISSING)
+
+
+def _has_expected(agent: str, field: str) -> bool:
+    return _expected(agent, field) is not _MISSING
+
+
+def _expected_label(value: Any) -> str:
+    return "null" if value is None else repr(value)
 
 
 def _latest_results_by_task(result_entries: list[tuple[Path, dict]]) -> list[dict]:
@@ -256,7 +276,7 @@ def check_agent(agent_dir: Path) -> dict:
     findings: dict = {"agent": agent, "ok": True, "issues": []}
     is_artifact_root = _is_rollout_artifact_root(agent_dir)
     expected_agent = _expected(agent, "agent")
-    if expected_agent is None and not is_artifact_root:
+    if expected_agent is _MISSING and not is_artifact_root:
         expected_agent = agent
 
     result_root = _find_result_root(agent_dir)
@@ -316,34 +336,34 @@ def check_agent(agent_dir: Path) -> dict:
                     f"{r.get('task_name', '?')}: result.json model does not match config.json"
                 )
                 findings["ok"] = False
-            if expected_agent is not None and expected_agent != config.get("agent"):
+            if expected_agent is not _MISSING and expected_agent != config.get("agent"):
                 findings["issues"].append(
-                    f"{r.get('task_name', '?')}: config.json agent {config.get('agent')!r} does not match expected {expected_agent!r}"
+                    f"{r.get('task_name', '?')}: config.json agent {config.get('agent')!r} does not match expected {_expected_label(expected_agent)}"
                 )
                 findings["ok"] = False
-            if expected_model is not None and r.get("model") != expected_model:
+            if expected_model is not _MISSING and r.get("model") != expected_model:
                 findings["issues"].append(
-                    f"{r.get('task_name', '?')}: result.json model {r.get('model')!r} does not match expected {expected_model!r}"
+                    f"{r.get('task_name', '?')}: result.json model {r.get('model')!r} does not match expected {_expected_label(expected_model)}"
                 )
                 findings["ok"] = False
-            if expected_model is not None and config.get("model") != expected_model:
+            if expected_model is not _MISSING and config.get("model") != expected_model:
                 findings["issues"].append(
-                    f"{r.get('task_name', '?')}: config.json model {config.get('model')!r} does not match expected {expected_model!r}"
+                    f"{r.get('task_name', '?')}: config.json model {config.get('model')!r} does not match expected {_expected_label(expected_model)}"
                 )
                 findings["ok"] = False
             if (
-                expected_environment is not None
+                expected_environment is not _MISSING
                 and config.get("environment") != expected_environment
             ):
                 findings["issues"].append(
-                    f"{r.get('task_name', '?')}: config.json environment {config.get('environment')!r} does not match expected {expected_environment!r}"
+                    f"{r.get('task_name', '?')}: config.json environment {config.get('environment')!r} does not match expected {_expected_label(expected_environment)}"
                 )
                 findings["ok"] = False
-            if expected_concurrency is not None and str(config.get("concurrency")) != str(
+            if expected_concurrency is not _MISSING and str(config.get("concurrency")) != str(
                 expected_concurrency
             ):
                 findings["issues"].append(
-                    f"{r.get('task_name', '?')}: config.json concurrency {config.get('concurrency')!r} does not match expected {expected_concurrency!r}"
+                    f"{r.get('task_name', '?')}: config.json concurrency {config.get('concurrency')!r} does not match expected {_expected_label(expected_concurrency)}"
                 )
                 findings["ok"] = False
             config_source_issues = source_issues(
@@ -404,9 +424,13 @@ def check_agent(agent_dir: Path) -> dict:
             expected_environment = _expected(agent, "environment")
             expected_concurrency = _expected(agent, "concurrency")
             summary_agent = summary.get("agent")
-            if expected_agent is not None and summary_agent is not None and summary_agent != expected_agent:
+            if (
+                expected_agent is not _MISSING
+                and summary_agent is not None
+                and summary_agent != expected_agent
+            ):
                 findings["issues"].append(
-                    f"summary.json agent {summary_agent!r} does not match expected {expected_agent!r}"
+                    f"summary.json agent {summary_agent!r} does not match expected {_expected_label(expected_agent)}"
                 )
                 findings["ok"] = False
             if summary_agent is not None:
@@ -416,24 +440,24 @@ def check_agent(agent_dir: Path) -> dict:
                             f"summary.json agent {summary_agent!r} does not match result.json agent {result.get('agent')!r}"
                         )
                         findings["ok"] = False
-            if expected_model is not None and summary.get("model") != expected_model:
+            if expected_model is not _MISSING and summary.get("model") != expected_model:
                 findings["issues"].append(
-                    f"summary.json model {summary.get('model')!r} does not match expected {expected_model!r}"
+                    f"summary.json model {summary.get('model')!r} does not match expected {_expected_label(expected_model)}"
                 )
                 findings["ok"] = False
             if (
-                expected_environment is not None
+                expected_environment is not _MISSING
                 and summary.get("environment") != expected_environment
             ):
                 findings["issues"].append(
-                    f"summary.json environment {summary.get('environment')!r} does not match expected {expected_environment!r}"
+                    f"summary.json environment {summary.get('environment')!r} does not match expected {_expected_label(expected_environment)}"
                 )
                 findings["ok"] = False
-            if expected_concurrency is not None and str(summary.get("concurrency")) != str(
+            if expected_concurrency is not _MISSING and str(summary.get("concurrency")) != str(
                 expected_concurrency
             ):
                 findings["issues"].append(
-                    f"summary.json concurrency {summary.get('concurrency')!r} does not match expected {expected_concurrency!r}"
+                    f"summary.json concurrency {summary.get('concurrency')!r} does not match expected {_expected_label(expected_concurrency)}"
                 )
                 findings["ok"] = False
             summary_source = summary.get("source")
@@ -535,7 +559,7 @@ def _identity_expectation_issues(
     if _is_rollout_artifact_root(jobs_root):
         required = ("agent", "model", "environment", "concurrency")
         missing = [
-            field for field in required if _expected(jobs_root.name, field) is None
+            field for field in required if not _has_expected(jobs_root.name, field)
         ]
         if missing:
             issues.append(
@@ -546,7 +570,11 @@ def _identity_expectation_issues(
 
     required = ("model", "environment", "concurrency")
     for agent_dir in agent_dirs:
-        missing = [field for field in required if _expected(agent_dir.name, field) is None]
+        missing = [
+            field
+            for field in required
+            if not _has_expected(agent_dir.name, field)
+        ]
         if missing:
             label = (
                 "requested agent"
@@ -571,7 +599,7 @@ def main() -> None:
     for arg in raw_args:
         if "=" in arg:
             key, value = arg.split("=", 1)
-            EXPECTED[key] = value
+            EXPECTED[key] = _parse_expected_value(value)
         else:
             agents.append(arg)
     agents_arg = agents if agents else None
