@@ -12,6 +12,7 @@ dependencies = [
     "pyyaml>=6.0",
     "rich>=13.0",
     "typer>=0.9",
+    "a2a-sdk==0.3.20",
 ]
 authors = [
     { name = "Xiangyi Li", email = "xiangyi@benchflow.ai" },
@@ -148,4 +149,9 @@ exclude = [
     "src/benchflow/rewards/rubric_config.py",
     "src/benchflow/providers/bedrock_runtime.py",
     "src/benchflow/experimental/mcp/reviewer_server.py",
+]
+
+[dependency-groups]
+dev = [
+    "a2a-sdk[http-server]==0.3.20",
 ]
