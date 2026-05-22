@@ -139,6 +139,14 @@ class VerifierConfig(BaseModel):
         default=None,
         description="Username or UID to run the verifier as.",
     )
+    service: str = Field(
+        default="main",
+        description=(
+            "Compose service where test-script verification runs. "
+            "Use 'main' for the agent container or a named target service "
+            "for multi-container tasks."
+        ),
+    )
     judge: JudgeVerifierConfig = Field(
         default_factory=JudgeVerifierConfig,
         description="LLM-judge configuration (used when type == 'llm-judge').",
