@@ -24,17 +24,17 @@ from typing import Any
 
 import yaml
 
+from benchflow._utils.evaluation_results import (
+    rollout_result_payload,
+    usage_summary,
+)
 from benchflow._utils.learner_memory import (
     attach_memory_score,
     evolved_skills_for_result,
     expected_skills_for_task,
     memory_delta_from_skills,
 )
-from benchflow._utils.reward_events import (
-    memory_score_from_events,
-    memory_summary,
-    reward_event_to_dict,
-)
+from benchflow._utils.reward_events import memory_summary
 from benchflow._utils.scoring import (
     ACP_ERROR,
     IDLE_TIMEOUT,
@@ -45,7 +45,8 @@ from benchflow._utils.scoring import (
     VERIFIER_TIMEOUT,
     classify_error,
     classify_verifier_error,
-    count_result_outcomes,
+    count_audit_outcomes,
+    count_score_outcomes,
     pass_rate,
     pass_rate_excl_errors,
 )
@@ -176,9 +177,7 @@ class EvaluationConfig:
 
         self.agent = normalize_agent_name(self.agent)
         self.sandbox_user = normalize_sandbox_user(self.sandbox_user)
-        self.agent_idle_timeout = normalize_agent_idle_timeout(
-            self.agent_idle_timeout
-        )
+        self.agent_idle_timeout = normalize_agent_idle_timeout(self.agent_idle_timeout)
         if self.job_mode not in JOB_MODES:
             raise ValueError(
                 f"unknown job_mode {self.job_mode!r} — "
@@ -216,58 +215,6 @@ class EvaluationResult:
     def score_excl_errors(self) -> float:
         """Pass rate excluding errored tasks."""
         return pass_rate_excl_errors(passed=self.passed, failed=self.failed)
-
-
-def _agent_result_from_rollout(result: RunResult) -> dict[str, Any]:
-    """Return the serialized agent_result block for an in-memory rollout result."""
-    return {
-        "n_tool_calls": result.n_tool_calls,
-        "n_prompts": result.n_prompts,
-        "n_input_tokens": result.n_input_tokens,
-        "n_output_tokens": result.n_output_tokens,
-        "n_cache_read_tokens": result.n_cache_read_tokens,
-        "n_cache_creation_tokens": result.n_cache_creation_tokens,
-        "total_tokens": result.total_tokens,
-        "cost_usd": result.cost_usd,
-        "usage_source": result.usage_source,
-        "price_source": result.price_source,
-    }
-
-
-def _usage_summary(results: dict[str, dict]) -> dict[str, Any]:
-    """Aggregate provider telemetry fields for summary.json."""
-    completed = [
-        r
-        for r in results.values()
-        if r.get("rewards") is not None
-        and not r.get("error")
-        and not r.get("verifier_error")
-    ]
-    covered = [
-        r
-        for r in completed
-        if (r.get("agent_result") or {}).get("usage_source") == "provider_response"
-    ]
-
-    def total(field: str) -> int:
-        return sum((r.get("agent_result") or {}).get(field) or 0 for r in covered)
-
-    total_cost = round(
-        sum((r.get("agent_result") or {}).get("cost_usd") or 0.0 for r in covered),
-        10,
-    )
-    return {
-        "total_input_tokens": total("n_input_tokens"),
-        "total_output_tokens": total("n_output_tokens"),
-        "total_cache_read_tokens": total("n_cache_read_tokens"),
-        "total_cache_creation_tokens": total("n_cache_creation_tokens"),
-        "total_tokens": total("total_tokens"),
-        "total_cost_usd": total_cost,
-        "avg_cost_per_trial_usd": (
-            round(total_cost / len(covered), 10) if covered else None
-        ),
-        "telemetry_coverage": (len(covered) / len(completed) if completed else 0.0),
-    }
 
 
 class Evaluation:
@@ -310,9 +257,7 @@ class Evaluation:
         # learning) jobs — the one owner. parallel-independent jobs leave it
         # None.
         self.learner_store: LearnerStore | None = (
-            LearnerStore()
-            if self._config.job_mode == "sequential-shared"
-            else None
+            LearnerStore() if self._config.job_mode == "sequential-shared" else None
         )
         # Per-rollout continual-learning skill dirs, set by
         # _run_sequential_shared before each _run_task call and consumed by
@@ -605,9 +550,7 @@ class Evaluation:
             skill_creator_dir=cfg.skill_creator_dir,
             self_gen_no_internet=cfg.self_gen_no_internet,
             export_generated_skills_to=export_to,
-            source_provenance=task_source_provenance(
-                cfg.source_provenance, task_dir
-            ),
+            source_provenance=task_source_provenance(cfg.source_provenance, task_dir),
         )
         if cfg.skill_mode == "self-gen":
             from benchflow.self_gen import run_self_gen
@@ -647,9 +590,7 @@ class Evaluation:
             skill_mode=cfg.skill_mode,
             skill_creator_dir=cfg.skill_creator_dir,
             self_gen_no_internet=cfg.self_gen_no_internet,
-            source_provenance=task_source_provenance(
-                cfg.source_provenance, task_dir
-            ),
+            source_provenance=task_source_provenance(cfg.source_provenance, task_dir),
         )
 
     async def _run_task(self, task_dir: Path) -> RunResult:
@@ -960,45 +901,31 @@ class Evaluation:
         self._prune_docker()
         elapsed = time.time() - start
 
-        # Merge with previously completed — normalize everything to dicts
-        from benchflow._utils.benchmark_repos import task_source_provenance
-
         all_results: dict[str, dict] = {}
         for task, data in completed.items():
             all_results[task] = data
         for name, result in pairs:
-            reward_events = result.reward_events or []
-            memory_score = memory_score_from_events(reward_events)
-            source_provenance = result.source_provenance or task_source_provenance(
-                cfg.source_provenance, self._tasks_dir / name
+            all_results[name] = rollout_result_payload(
+                result,
+                source_provenance=cfg.source_provenance,
+                tasks_dir=self._tasks_dir,
+                task_name=name,
             )
-            all_results[name] = {
-                "task_name": result.task_name,
-                "rewards": result.rewards,
-                "error": result.error,
-                "verifier_error": result.verifier_error,
-                "n_tool_calls": result.n_tool_calls,
-                "agent_result": _agent_result_from_rollout(result),
-                **(
-                    {"reward_events": [reward_event_to_dict(event) for event in reward_events]}
-                    if reward_events
-                    else {}
-                ),
-                **({"memory_score": memory_score} if memory_score is not None else {}),
-                **({"source": source_provenance} if source_provenance else {}),
-            }
 
-        # Count — all values are dicts now, no type branching needed
-        outcome_counts = count_result_outcomes(all_results.values())
+        # EvaluationResult is the score/invariant view. summary.json is the
+        # audit view consumed by result checkers, so verifier evidence remains
+        # visible there even when the score view gives agent errors precedence.
+        score_counts = count_score_outcomes(all_results.values())
+        audit_counts = count_audit_outcomes(all_results.values())
         memory, memory_scores = memory_summary(all_results)
         job_result = EvaluationResult(
             job_name=self._job_name,
             config=cfg,
             total=len(task_dirs),
-            passed=outcome_counts["passed"],
-            failed=outcome_counts["failed"],
-            errored=outcome_counts["errored"],
-            verifier_errored=outcome_counts["verifier_errored"],
+            passed=score_counts["passed"],
+            failed=score_counts["failed"],
+            errored=score_counts["errored"],
+            verifier_errored=score_counts["verifier_errored"],
             elapsed_sec=elapsed,
             memory_score=memory["avg_score"],
             memory_scores=memory_scores,
@@ -1024,12 +951,12 @@ class Evaluation:
             "concurrency": cfg.concurrency,
             "agent_idle_timeout_sec": cfg.agent_idle_timeout,
             "total": job_result.total,
-            "passed": job_result.passed,
-            "failed": job_result.failed,
-            "errored": job_result.errored,
-            "verifier_errored": job_result.verifier_errored,
-            "score": f"{job_result.score:.1%}",
-            "score_excl_errors": f"{job_result.score_excl_errors:.1%}",
+            "passed": audit_counts["passed"],
+            "failed": audit_counts["failed"],
+            "errored": audit_counts["errored"],
+            "verifier_errored": audit_counts["verifier_errored"],
+            "score": f"{pass_rate(passed=audit_counts['passed'], total=job_result.total):.1%}",
+            "score_excl_errors": f"{pass_rate_excl_errors(passed=audit_counts['passed'], failed=audit_counts['failed']):.1%}",
             "elapsed_sec": elapsed,
             "memory_score": job_result.memory_score,
             "memory_score_coverage": (
@@ -1037,15 +964,15 @@ class Evaluation:
             ),
             "memory": memory,
             "memory_scores": memory_scores,
-            **_usage_summary(all_results),
+            **usage_summary(all_results),
             **summary_source_fields(cfg.source_provenance, all_results),
         }
         (self._jobs_dir / "summary.json").write_text(json.dumps(summary, indent=2))
 
-        if job_result.verifier_errored > 0:
-            pct = job_result.verifier_errored / job_result.total * 100
+        if audit_counts["verifier_errored"] > 0:
+            pct = audit_counts["verifier_errored"] / job_result.total * 100
             logger.warning(
-                f"{job_result.verifier_errored} tasks ({pct:.0f}%) had verifier errors — "
+                f"{audit_counts['verifier_errored']} tasks ({pct:.0f}%) had verifier errors — "
                 f"check verifier scripts for bugs"
             )
             if pct > 20:

@@ -1118,7 +1118,9 @@ def eval_create(
             "[red]Choose only one source: --config, --tasks-dir, --source-repo, or --source-env[/red]"
         )
         raise typer.Exit(1)
-    eval_agent = _normalize_eval_agent_or_exit(agent) if agent is not None else DEFAULT_AGENT
+    eval_agent = (
+        _normalize_eval_agent_or_exit(agent) if agent is not None else DEFAULT_AGENT
+    )
     eval_environment = environment or "docker"
     sandbox_user = normalize_sandbox_user(sandbox_user)
     eval_concurrency = concurrency if concurrency is not None else 4
@@ -1282,7 +1284,9 @@ def eval_create(
             run_result = asyncio.run(_run())
             reward = (run_result.rewards or {}).get("reward")
             console.print(f"\n[bold]Task:[/bold] {resolved_tasks_dir.name}")
-            console.print(f"[bold]Agent:[/bold] {eval_agent} ({eff_model or 'no model'})")
+            console.print(
+                f"[bold]Agent:[/bold] {eval_agent} ({eff_model or 'no model'})"
+            )
             console.print(f"[bold]Reward:[/bold] {reward}")
             console.print(f"[bold]Tool calls:[/bold] {run_result.n_tool_calls}")
             _exit_if_run_result_failed(run_result)

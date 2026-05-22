@@ -316,8 +316,9 @@ class _DaytonaDirect(_DaytonaStrategy):
     ) -> None:
         if service != "main":
             raise ValueError(
-                f"Direct Daytona sandbox is single-container and cannot target "
-                f"service {service!r}. Multi-container tasks require a compose sandbox."
+                f"Direct (non-compose) Daytona sandbox is single-container "
+                f"and cannot target service {service!r}. Multi-container "
+                "(vulhub-style) tasks require a docker-compose.yaml (#248)."
             )
         await self._env._sdk_upload_dir(source_dir, target_dir)
 
@@ -329,8 +330,9 @@ class _DaytonaDirect(_DaytonaStrategy):
     ) -> None:
         if service != "main":
             raise ValueError(
-                f"Direct Daytona sandbox is single-container and cannot target "
-                f"service {service!r}. Multi-container tasks require a compose sandbox."
+                f"Direct (non-compose) Daytona sandbox is single-container "
+                f"and cannot target service {service!r}. Multi-container "
+                "(vulhub-style) tasks require a docker-compose.yaml (#248)."
             )
         await self._env._sdk_download_dir(source_dir, target_dir)
 
@@ -648,7 +650,10 @@ class _DaytonaDinD(_DaytonaStrategy):
                 parts.extend(["-e", f"{k}={v}"])
         if user is not None:
             parts.extend(["-u", str(user)])
-        parts.extend([service, "bash", "-lc", command])
+        # Use POSIX ``sh`` rather than ``bash``: with multi-service support
+        # (#248), ``service`` can target arbitrary task containers, and
+        # Alpine/distroless/minimal images often ship no ``/bin/bash``.
+        parts.extend([service, "sh", "-c", command])
 
         return await self._compose_exec(parts, timeout_sec=timeout_sec)
 
@@ -669,6 +674,11 @@ class _DaytonaDinD(_DaytonaStrategy):
     async def upload_dir(
         self, source_dir: Path | str, target_dir: str, service: str = "main"
     ) -> None:
+        """Upload a directory into a compose service inside the DinD VM.
+
+        ``service`` defaults to ``"main"``; pass a target service to land the
+        directory in an additional vulhub-style container (#248).
+        """
         temp = f"/tmp/benchflow_{uuid4().hex}"
         try:
             await self._env._sdk_upload_dir(source_dir, temp)
@@ -717,10 +727,19 @@ class _DaytonaDinD(_DaytonaStrategy):
     async def download_dir(
         self, source_dir: str, target_dir: Path | str, service: str = "main"
     ) -> None:
-        sandbox_path = self._sandbox_log_path(source_dir) if service == "main" else None
-        if sandbox_path:
-            await self._env._sdk_download_dir(sandbox_path, target_dir)
-            return
+        """Download a directory from a compose service inside the DinD VM.
+
+        ``service`` defaults to ``"main"``; pass a target service to fetch
+        target-side verifier output from a vulhub-style container (#248).
+        The host-mounted-log fast path only applies to ``main`` — target
+        services have no host bind mount, so their contents are always
+        copied out via ``docker compose cp``.
+        """
+        if service == "main":
+            sandbox_path = self._sandbox_log_path(source_dir)
+            if sandbox_path:
+                await self._env._sdk_download_dir(sandbox_path, target_dir)
+                return
 
         temp = f"/tmp/benchflow_{uuid4().hex}"
         try:
@@ -964,16 +983,10 @@ class DaytonaSandbox(BaseSandbox):
             else:
                 remaining = deadline - loop.time()
                 if remaining <= 0:
-                    raise RuntimeError(
-                        f"Command timed out after {timeout_sec} seconds"
-                    )
-                await asyncio.sleep(
-                    min(_DAYTONA_COMMAND_POLL_INTERVAL_SEC, remaining)
-                )
+                    raise RuntimeError(f"Command timed out after {timeout_sec} seconds")
+                await asyncio.sleep(min(_DAYTONA_COMMAND_POLL_INTERVAL_SEC, remaining))
                 if loop.time() >= deadline:
-                    raise RuntimeError(
-                        f"Command timed out after {timeout_sec} seconds"
-                    )
+                    raise RuntimeError(f"Command timed out after {timeout_sec} seconds")
             response = await self._get_session_command_with_retry(
                 session_id,
                 response.id,  # type: ignore[union-attr]
@@ -1177,7 +1190,9 @@ class DaytonaSandbox(BaseSandbox):
     async def download_dir(
         self, source_dir: str, target_dir: Path | str, service: str = "main"
     ) -> None:
-        return await self._strategy.download_dir(source_dir, target_dir, service=service)
+        return await self._strategy.download_dir(
+            source_dir, target_dir, service=service
+        )
 
     async def is_dir(
         self, path: str, user: str | int | None = None, service: str = "main"

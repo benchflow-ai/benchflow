@@ -628,7 +628,31 @@ def test_task_metrics_verifier_errored(reward, error, verifier_error, expected):
     t = TaskMetrics(
         task_name="t", reward=reward, error=error, verifier_error=verifier_error
     )
+    assert t.has_verifier_error_evidence is expected
     assert t.verifier_errored is expected
+
+
+def test_reward_bearing_verifier_evidence_counts_as_completed_for_averages():
+    m = BenchmarkMetrics(
+        benchmark="test",
+        agent="test",
+        model="test",
+        tasks=[
+            TaskMetrics(
+                task_name="reward-with-verifier-evidence",
+                reward=0.0,
+                verifier_error="verifier crashed: stale reward rejected",
+                n_tool_calls=10,
+                duration_sec=20,
+            )
+        ],
+    )
+
+    assert m.failed == 1
+    assert m.score_verifier_errored == 0
+    assert m.tasks[0].has_verifier_error_evidence is True
+    assert m.avg_tool_calls == 10
+    assert m.avg_duration == 20
 
 
 class TestTrajectorySource:
@@ -773,7 +797,9 @@ class TestScrapedTrajectoryTrust:
         assert len(result.trajectory) == 100
         assert any("UNTRUSTED" in m for m in caplog.messages)
 
-        matches = list((task_dir.parent / "jobs").glob(f"*/{result.rollout_name}/result.json"))
+        matches = list(
+            (task_dir.parent / "jobs").glob(f"*/{result.rollout_name}/result.json")
+        )
         assert len(matches) == 1
         result_json = json.loads(matches[0].read_text())
         assert result_json["rewards"] == {"reward": 1.0}

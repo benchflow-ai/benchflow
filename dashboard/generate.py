@@ -146,7 +146,9 @@ def _load_reward_events_module() -> ModuleType:
     if _REWARD_EVENTS_MODULE is not None:
         return _REWARD_EVENTS_MODULE
     reward_events_path = SRC / "benchflow" / "_utils" / "reward_events.py"
-    module = _load_local_module("_benchflow_dashboard_reward_events", reward_events_path)
+    module = _load_local_module(
+        "_benchflow_dashboard_reward_events", reward_events_path
+    )
     _REWARD_EVENTS_MODULE = module
     return module
 
@@ -205,7 +207,9 @@ def _jobs_source(jobs: Path) -> dict:
     local_jobs = (ROOT / "jobs").resolve()
     return {
         "path": str(jobs),
-        "label": str(jobs.relative_to(ROOT)) if jobs.is_relative_to(ROOT) else str(jobs),
+        "label": str(jobs.relative_to(ROOT))
+        if jobs.is_relative_to(ROOT)
+        else str(jobs),
         "configured": configured,
         "remembered": not configured and jobs.resolve() != local_jobs,
         "available": jobs.is_dir(),
@@ -223,9 +227,22 @@ def _latest_timestamp(items: list[str | None]) -> str | None:
 def run_suite() -> None:
     print("running the test suite (this takes ~70s) ...", flush=True)
     subprocess.run(
-        ["uv", "run", "--extra", "dev", "python", "-m", "pytest", "tests/",
-         "-q", "-p", "no:randomly", f"--junitxml={JUNIT}"],
-        cwd=ROOT, check=False,
+        [
+            "uv",
+            "run",
+            "--extra",
+            "dev",
+            "python",
+            "-m",
+            "pytest",
+            "tests/",
+            "-q",
+            "-p",
+            "no:randomly",
+            f"--junitxml={JUNIT}",
+        ],
+        cwd=ROOT,
+        check=False,
     )
 
 
@@ -235,7 +252,8 @@ def collect_tests() -> dict:
             "available": False,
             "note": "no junit.xml yet — run: python dashboard/generate.py --run-tests",
             "summary": {"passed": 0, "failed": 0, "skipped": 0, "total": 0},
-            "suites": [], "failures": [],
+            "suites": [],
+            "failures": [],
         }
     root = ET.parse(JUNIT).getroot()
     suites: dict[str, dict] = {}
@@ -252,10 +270,12 @@ def collect_tests() -> dict:
             node = bad if bad is not None else err
             failed += 1
             s["failed"] += 1
-            failures.append({
-                "name": f"{c.get('classname','')}::{c.get('name','')}",
-                "message": (node.get("message") or "").strip()[:280],
-            })
+            failures.append(
+                {
+                    "name": f"{c.get('classname', '')}::{c.get('name', '')}",
+                    "message": (node.get("message") or "").strip()[:280],
+                }
+            )
         elif skp is not None:
             skipped += 1
             s["skipped"] += 1
@@ -267,9 +287,14 @@ def collect_tests() -> dict:
         s["time"] = round(s["time"], 2)
     return {
         "available": True,
-        "summary": {"passed": passed, "failed": failed, "skipped": skipped,
-                    "total": passed + failed + skipped},
-        "suites": suite_list, "failures": failures,
+        "summary": {
+            "passed": passed,
+            "failed": failed,
+            "skipped": skipped,
+            "total": passed + failed + skipped,
+        },
+        "suites": suite_list,
+        "failures": failures,
     }
 
 
@@ -329,9 +354,18 @@ def _csv_rows(p: Path) -> int:
 _MAX_LINES = 240
 _MAX_BYTES = 64000
 _LANG = {
-    ".json": "json", ".jsonl": "jsonl", ".ipynb": "json", ".csv": "csv",
-    ".sh": "shell", ".py": "python", ".txt": "text", ".md": "text",
-    ".toml": "text", ".log": "text", ".yaml": "text", ".yml": "text",
+    ".json": "json",
+    ".jsonl": "jsonl",
+    ".ipynb": "json",
+    ".csv": "csv",
+    ".sh": "shell",
+    ".py": "python",
+    ".txt": "text",
+    ".md": "text",
+    ".toml": "text",
+    ".log": "text",
+    ".yaml": "text",
+    ".yml": "text",
 }
 
 
@@ -378,7 +412,9 @@ def _artifact(name: str, kind: str, path: Path) -> dict:
     artifact = {
         "name": name,
         "path": str(path),
-        "modified_at": datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+        "modified_at": datetime.fromtimestamp(stat.st_mtime).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        ),
         "kind": kind,
         "lang": lang,
         "content": content,
@@ -408,28 +444,35 @@ GROUP_META = {
     "main": {
         "label": "Unit-test rollouts",
         "blurb": "Rollouts the pytest suite writes while exercising the kernel.",
-        "capability": None, "advisories": [],
+        "capability": None,
+        "advisories": [],
     },
     "e2e": {
         "label": "Live e2e rollouts",
         "blurb": "Real agent runs on ClawsBench (Daytona + Docker) — capability 6.",
-        "capability": 6, "advisories": ["MUST-3"],
+        "capability": 6,
+        "advisories": ["MUST-3"],
     },
     "e2e-branch": {
         "label": "Branching rollout",
         "blurb": "The live Branch lifecycle — checkpoint → fork → V(root)=1.0 — capability 7.",
-        "capability": 7, "advisories": [],
+        "capability": 7,
+        "advisories": [],
     },
     "environment": {
         "label": "Environment-plane probes",
         "blurb": "Manifest provisioning / readiness checks — capabilities 2 & 3.",
-        "capability": 2, "advisories": ["MUST-2"],
+        "capability": 2,
+        "advisories": ["MUST-2"],
     },
 }
 
 _ART_KIND = {
-    "result.json": "result", "config.json": "config", "prompts.json": "prompts",
-    "timing.json": "timing", "rewards.jsonl": "rewards",
+    "result.json": "result",
+    "config.json": "config",
+    "prompts.json": "prompts",
+    "timing.json": "timing",
+    "rewards.jsonl": "rewards",
 }
 
 
@@ -444,8 +487,7 @@ def _task_artifacts(d: Path) -> list[dict]:
     arts: list[dict] = []
     for child in sorted(d.iterdir()):
         if child.is_file() and not _is_empty(child):  # R1: skip 0-byte files
-            arts.append(_artifact(child.name,
-                                  _ART_KIND.get(child.name, "file"), child))
+            arts.append(_artifact(child.name, _ART_KIND.get(child.name, "file"), child))
     for sub in ("trajectory", "verifier", "agent", "artifacts"):
         subdir = d / sub
         if not subdir.is_dir():
@@ -488,8 +530,10 @@ def _task_row(d: Path) -> dict:
     result = _read_json(d / "result.json")
     config = _read_json(d / "config.json")
     traj = 0
-    for cand in (d / "trajectory" / "acp_trajectory.jsonl",
-                 d / "agent" / "acp_trajectory.jsonl"):
+    for cand in (
+        d / "trajectory" / "acp_trajectory.jsonl",
+        d / "agent" / "acp_trajectory.jsonl",
+    ):
         if cand.is_file():
             traj = _count_jsonl_events(cand)
             break
@@ -531,12 +575,20 @@ def _is_task_dir(d: Path) -> bool:
     subdir markers matter too. A *run* directory (which only holds task
     dirs) has none of these directly, so it is not misread as a task.
     """
-    if any((d / m).is_file() for m in
-           ("result.json", "config.json", "timing.json",
-            "prompts.json", "rewards.jsonl")):
+    if any(
+        (d / m).is_file()
+        for m in (
+            "result.json",
+            "config.json",
+            "timing.json",
+            "prompts.json",
+            "rewards.jsonl",
+        )
+    ):
         return True
-    return any((d / s).is_dir() for s in
-               ("trajectory", "verifier", "agent", "artifacts"))
+    return any(
+        (d / s).is_dir() for s in ("trajectory", "verifier", "agent", "artifacts")
+    )
 
 
 def collect_jobs() -> dict:
@@ -554,8 +606,9 @@ def collect_jobs() -> dict:
         if TS_RE.match(top.name):
             # an ungrouped run directly under jobs/
             runs = groups.setdefault("main", {})
-            runs[top.name] = [c for c in sorted(top.iterdir())
-                              if c.is_dir() and _is_task_dir(c)]
+            runs[top.name] = [
+                c for c in sorted(top.iterdir()) if c.is_dir() and _is_task_dir(c)
+            ]
         else:
             # a named group: e2e / e2e-branch / environment. Its children
             # are either run dirs (holding task dirs) or task dirs directly.
@@ -567,8 +620,11 @@ def collect_jobs() -> dict:
                 if _is_task_dir(child):
                     direct.append(child)
                 else:
-                    runs[child.name] = [c for c in sorted(child.iterdir())
-                                        if c.is_dir() and _is_task_dir(c)]
+                    runs[child.name] = [
+                        c
+                        for c in sorted(child.iterdir())
+                        if c.is_dir() and _is_task_dir(c)
+                    ]
             if direct:
                 runs["(tasks)"] = direct
 
@@ -576,31 +632,36 @@ def collect_jobs() -> dict:
     out_groups: list[dict] = []
     order = ["e2e-branch", "e2e", "environment", "main"]
     for name in sorted(groups, key=lambda n: (order.index(n) if n in order else 9, n)):
-        meta = GROUP_META.get(name, {"label": name, "blurb": "",
-                                     "capability": None, "advisories": []})
+        meta = GROUP_META.get(
+            name, {"label": name, "blurb": "", "capability": None, "advisories": []}
+        )
         run_list: list[dict] = []
         for run_id in sorted(groups[name], reverse=True):
             tasks = [_task_row(d) for d in groups[name][run_id]]
             total += len(tasks)
-            run_list.append({
-                "id": run_id,
+            run_list.append(
+                {
+                    "id": run_id,
+                    "latest_modified_at": _latest_timestamp(
+                        [task.get("latest_modified_at") for task in tasks]
+                    ),
+                    "tasks": tasks,
+                }
+            )
+        out_groups.append(
+            {
+                "name": name,
+                "label": meta["label"],
+                "blurb": meta["blurb"],
+                "capability": meta["capability"],
+                "advisories": meta["advisories"],
+                "runs": run_list,
+                "n_tasks": sum(len(r["tasks"]) for r in run_list),
                 "latest_modified_at": _latest_timestamp(
-                    [task.get("latest_modified_at") for task in tasks]
+                    [run.get("latest_modified_at") for run in run_list]
                 ),
-                "tasks": tasks,
-            })
-        out_groups.append({
-            "name": name,
-            "label": meta["label"],
-            "blurb": meta["blurb"],
-            "capability": meta["capability"],
-            "advisories": meta["advisories"],
-            "runs": run_list,
-            "n_tasks": sum(len(r["tasks"]) for r in run_list),
-            "latest_modified_at": _latest_timestamp(
-                [run.get("latest_modified_at") for run in run_list]
-            ),
-        })
+            }
+        )
     source["latest_modified_at"] = _latest_timestamp(
         [group.get("latest_modified_at") for group in out_groups]
     )
@@ -613,18 +674,37 @@ def collect_jobs() -> dict:
 # (keyword, type, label, blurb) — the first rule whose keyword appears in a
 # filename claims it. `reviewer` precedes `ablation` (reviewer_ablation.py).
 EXP_RULES = [
-    ("reviewer", "reviewer", "Reviewer ablation",
-     "LLM-judge reviewer ablation."),
-    ("ablation", "ablation", "Ablation studies",
-     "Progressive-disclosure ablation runs and retries."),
-    ("skillsbench", "skillsbench", "SkillsBench validation",
-     "BYOS and skill-creator validation runs."),
-    ("swebench", "swebench", "SWE-bench Pro",
-     "SWE-bench Pro oracle-vs-baseline and progressive-disclosure results."),
-    ("scene", "scene", "Scene-lifecycle validation",
-     "Multi-scene lifecycle and TB2 scene validation."),
-    ("tb2", "scene", "Scene-lifecycle validation",
-     "Multi-scene lifecycle and TB2 scene validation."),
+    ("reviewer", "reviewer", "Reviewer ablation", "LLM-judge reviewer ablation."),
+    (
+        "ablation",
+        "ablation",
+        "Ablation studies",
+        "Progressive-disclosure ablation runs and retries.",
+    ),
+    (
+        "skillsbench",
+        "skillsbench",
+        "SkillsBench validation",
+        "BYOS and skill-creator validation runs.",
+    ),
+    (
+        "swebench",
+        "swebench",
+        "SWE-bench Pro",
+        "SWE-bench Pro oracle-vs-baseline and progressive-disclosure results.",
+    ),
+    (
+        "scene",
+        "scene",
+        "Scene-lifecycle validation",
+        "Multi-scene lifecycle and TB2 scene validation.",
+    ),
+    (
+        "tb2",
+        "scene",
+        "Scene-lifecycle validation",
+        "Multi-scene lifecycle and TB2 scene validation.",
+    ),
 ]
 
 
@@ -632,23 +712,32 @@ def _exp_file(p: Path, display: str | None = None) -> dict:
     """One experiment file — its kind, size, row count, and capped content."""
     content, lines, truncated, lang = _file_payload(p)
     suf = p.suffix.lower()
-    kind = ("script" if suf in (".py", ".sh", ".ipynb")
-            else "results" if suf in (".csv", ".json") else "data")
+    kind = (
+        "script"
+        if suf in (".py", ".sh", ".ipynb")
+        else "results"
+        if suf in (".csv", ".json")
+        else "data"
+    )
     rows = _csv_rows(p) if suf == ".csv" else None
     try:
         size = p.stat().st_size
     except Exception:
         size = 0
     return {
-        "name": display or p.name, "kind": kind, "lang": lang, "size": size,
-        "rows": rows, "content": content, "content_lines": lines,
+        "name": display or p.name,
+        "kind": kind,
+        "lang": lang,
+        "size": size,
+        "rows": rows,
+        "content": content,
+        "content_lines": lines,
         "truncated": truncated,
     }
 
 
 def _ymd(mtimes: list[float]) -> str:
-    return (datetime.fromtimestamp(max(mtimes)).strftime("%Y-%m-%d")
-            if mtimes else "")
+    return datetime.fromtimestamp(max(mtimes)).strftime("%Y-%m-%d") if mtimes else ""
 
 
 def collect_experiments() -> list[dict]:
@@ -671,46 +760,62 @@ def collect_experiments() -> list[dict]:
             if match:
                 _, typ, label, blurb = match
             else:
-                typ, label, blurb = ("other", "Other experiments",
-                                     "Assorted experiment scripts and data.")
+                typ, label, blurb = (
+                    "other",
+                    "Other experiments",
+                    "Assorted experiment scripts and data.",
+                )
             b = buckets.setdefault(
-                label, {"type": typ, "blurb": blurb, "files": [], "mtimes": []})
+                label, {"type": typ, "blurb": blurb, "files": [], "mtimes": []}
+            )
             b["files"].append(_exp_file(f))
             with contextlib.suppress(Exception):
                 b["mtimes"].append(f.stat().st_mtime)
         for label, b in buckets.items():
             files = sorted(b["files"], key=lambda x: x["name"])
-            out.append({
-                "name": label, "source": "experiments/", "type": b["type"],
-                "blurb": b["blurb"], "date": _ymd(b["mtimes"]),
-                "files": files,
-                "files_truncated": False, "n_files_total": len(files),
-            })
+            out.append(
+                {
+                    "name": label,
+                    "source": "experiments/",
+                    "type": b["type"],
+                    "blurb": b["blurb"],
+                    "date": _ymd(b["mtimes"]),
+                    "files": files,
+                    "files_truncated": False,
+                    "n_files_total": len(files),
+                }
+            )
 
     labs = ROOT / "labs"
     if labs.is_dir():
         for sub in sorted(labs.iterdir()):
             if not sub.is_dir() or sub.name.startswith("."):
                 continue
-            all_files = [p for p in sorted(sub.rglob("*"))
-                         if p.is_file() and not p.name.startswith(".")
-                         and not _is_empty(p)]
+            all_files = [
+                p
+                for p in sorted(sub.rglob("*"))
+                if p.is_file() and not p.name.startswith(".") and not _is_empty(p)
+            ]
             cap = 60
             files = all_files[:cap]
             mtimes = []
             for p in files:
                 with contextlib.suppress(Exception):
                     mtimes.append(p.stat().st_mtime)
-            out.append({
-                "name": sub.name.replace("-", " ").replace("_", " ").title(),
-                "source": f"labs/{sub.name}/", "type": "lab",
-                "blurb": f"Lab experiment — {sub.name}.",
-                "date": _ymd(mtimes),
-                "files": [_exp_file(p, p.relative_to(sub).as_posix())
-                          for p in files],
-                "files_truncated": len(all_files) > cap,
-                "n_files_total": len(all_files),
-            })
+            out.append(
+                {
+                    "name": sub.name.replace("-", " ").replace("_", " ").title(),
+                    "source": f"labs/{sub.name}/",
+                    "type": "lab",
+                    "blurb": f"Lab experiment — {sub.name}.",
+                    "date": _ymd(mtimes),
+                    "files": [
+                        _exp_file(p, p.relative_to(sub).as_posix()) for p in files
+                    ],
+                    "files_truncated": len(all_files) > cap,
+                    "n_files_total": len(all_files),
+                }
+            )
 
     out.sort(key=lambda e: (e["date"], e["name"]), reverse=True)
     return out
@@ -721,61 +826,133 @@ def collect_experiments() -> list[dict]:
 # --------------------------------------------------------------------------
 CONCEPT_MAP = {
     "entry": "bench CLI · bf.run() · environment manifest",
-    "kernel": {"name": "KERNEL",
-               "blurb": "Rollout lifecycle · reward · trajectory. Imports only contracts/."},
+    "kernel": {
+        "name": "KERNEL",
+        "blurb": "Rollout lifecycle · reward · trajectory. Imports only contracts/.",
+    },
     "planes": [
-        {"name": "Sandbox", "role": "where it runs",
-         "detail": "Compute substrate — Local, Docker, Daytona, Modal. BYO via the Sandbox protocol.",
-         "han": "—"},
-        {"name": "Agent", "role": "who acts",
-         "detail": "The agent under test / policy under training. Protocol: ACP. The Session is its real surface.",
-         "han": "H — Harness"},
-        {"name": "Environment", "role": "the world",
-         "detail": "The stateful world. Declarative environment.toml manifest; owns provision→snapshot→restore→teardown.",
-         "han": "S — State"},
-        {"name": "Reward", "role": "how it's scored",
-         "detail": "RewardFunc / Rubric / verifier. Scores any RolloutNode across five spaces.",
-         "han": "V — Verifier"},
+        {
+            "name": "Sandbox",
+            "role": "where it runs",
+            "detail": "Compute substrate — Local, Docker, Daytona, Modal. BYO via the Sandbox protocol.",
+            "han": "—",
+        },
+        {
+            "name": "Agent",
+            "role": "who acts",
+            "detail": "The agent under test / policy under training. Protocol: ACP. The Session is its real surface.",
+            "han": "H — Harness",
+        },
+        {
+            "name": "Environment",
+            "role": "the world",
+            "detail": "The stateful world. Declarative environment.toml manifest; owns provision→snapshot→restore→teardown.",
+            "han": "S — State",
+        },
+        {
+            "name": "Reward",
+            "role": "how it's scored",
+            "detail": "RewardFunc / Rubric / verifier. Scores any RolloutNode across five spaces.",
+            "han": "V — Verifier",
+        },
     ],
     "execution_model": [
-        {"name": "Job", "kind": "set",
-         "detail": "A set of Rollouts run together — an eval sweep, a GRPO group, a CL sequence."},
-        {"name": "Rollout", "kind": "PRIMITIVE",
-         "detail": "One RL episode = a TREE of states. A linear rollout is a degree-1 tree."},
-        {"name": "Step", "kind": "PRIMITIVE",
-         "detail": "One edge of the tree: (reason → act) → (tool-in → tool-out). Han's atomic unit."},
-        {"name": "Branch", "kind": "PRIMITIVE",
-         "detail": "The snapshot-and-fork operation — a node with >1 child. The value-function engine."},
-        {"name": "Trajectory", "kind": "DERIVED VIEW",
-         "detail": "One root-to-leaf path. Computed from the tree, never declared. The trainer export unit."},
-        {"name": "Scene", "kind": "AUTHORING SUGAR",
-         "detail": "A declared role/skill span. Desugars completely to per-Step config; no runtime object."},
+        {
+            "name": "Job",
+            "kind": "set",
+            "detail": "A set of Rollouts run together — an eval sweep, a GRPO group, a CL sequence.",
+        },
+        {
+            "name": "Rollout",
+            "kind": "PRIMITIVE",
+            "detail": "One RL episode = a TREE of states. A linear rollout is a degree-1 tree.",
+        },
+        {
+            "name": "Step",
+            "kind": "PRIMITIVE",
+            "detail": "One edge of the tree: (reason → act) → (tool-in → tool-out). Han's atomic unit.",
+        },
+        {
+            "name": "Branch",
+            "kind": "PRIMITIVE",
+            "detail": "The snapshot-and-fork operation — a node with >1 child. The value-function engine.",
+        },
+        {
+            "name": "Trajectory",
+            "kind": "DERIVED VIEW",
+            "detail": "One root-to-leaf path. Computed from the tree, never declared. The trainer export unit.",
+        },
+        {
+            "name": "Scene",
+            "kind": "AUTHORING SUGAR",
+            "detail": "A declared role/skill span. Desugars completely to per-Step config; no runtime object.",
+        },
     ],
     "capabilities": [
-        {"n": 1, "name": "SkillsBench", "planes": ["Environment", "Reward"],
-         "status": "shipped", "issue": None,
-         "fit": "Environment-plane benchmark package; the Reward plane's Memory space scores skill use + updates."},
-        {"n": 2, "name": "ClawsBench", "planes": ["Environment"],
-         "status": "shipped", "issue": "ENG-124",
-         "fit": "The stateful-mock-service benchmark — base_image + [[services]], framework-started. The manifest's design partner."},
-        {"n": 3, "name": "chi-bench", "planes": ["Environment"],
-         "status": "shipped", "issue": "ENG-124",
-         "fit": "Same SMSB archetype, owns_lifecycle=true. External proof: onboarded by a ~25-line manifest."},
-        {"n": 4, "name": "NudgeBench", "planes": ["Agent", "Reward"],
-         "status": "partial", "issue": "ENG-126",
-         "fit": "ACP interaction model (nudges + ask_user) + tree-native Rollout; the Action space scores follow-up."},
-        {"n": 5, "name": "Continual learning", "planes": ["Reward"],
-         "status": "shipped", "issue": "ENG-127",
-         "fit": "A Job in sequential-shared mode over a persistent, versioned learner store; the Memory space tracks it."},
-        {"n": 6, "name": "RL-native", "planes": ["Reward"],
-         "status": "shipped", "issue": "ENG-127",
-         "fit": "The whole execution model — Rollout is a tree, Trajectory a path, exported as a trainer-ready record."},
-        {"n": 7, "name": "Branching · rollback", "planes": ["Environment", "Reward"],
-         "status": "shipped", "issue": "ENG-127",
-         "fit": "The RL-native substrate itself — first-class Branch, Environment snapshot/restore. Live e2e: V(root)=1.0."},
-        {"n": 8, "name": "Env adapters", "planes": ["Environment"],
-         "status": "partial", "issue": "ENG-128",
-         "fit": "Inbound adapters translate foreign formats — Harbor + Terminal-Bench shipped; ORS / PrimeIntellect pending."},
+        {
+            "n": 1,
+            "name": "SkillsBench",
+            "planes": ["Environment", "Reward"],
+            "status": "shipped",
+            "issue": None,
+            "fit": "Environment-plane benchmark package; the Reward plane's Memory space scores skill use + updates.",
+        },
+        {
+            "n": 2,
+            "name": "ClawsBench",
+            "planes": ["Environment"],
+            "status": "shipped",
+            "issue": "ENG-124",
+            "fit": "The stateful-mock-service benchmark — base_image + [[services]], framework-started. The manifest's design partner.",
+        },
+        {
+            "n": 3,
+            "name": "chi-bench",
+            "planes": ["Environment"],
+            "status": "shipped",
+            "issue": "ENG-124",
+            "fit": "Same SMSB archetype, owns_lifecycle=true. External proof: onboarded by a ~25-line manifest.",
+        },
+        {
+            "n": 4,
+            "name": "NudgeBench",
+            "planes": ["Agent", "Reward"],
+            "status": "partial",
+            "issue": "ENG-126",
+            "fit": "ACP interaction model (nudges + ask_user) + tree-native Rollout; the Action space scores follow-up.",
+        },
+        {
+            "n": 5,
+            "name": "Continual learning",
+            "planes": ["Reward"],
+            "status": "shipped",
+            "issue": "ENG-127",
+            "fit": "A Job in sequential-shared mode over a persistent, versioned learner store; the Memory space tracks it.",
+        },
+        {
+            "n": 6,
+            "name": "RL-native",
+            "planes": ["Reward"],
+            "status": "shipped",
+            "issue": "ENG-127",
+            "fit": "The whole execution model — Rollout is a tree, Trajectory a path, exported as a trainer-ready record.",
+        },
+        {
+            "n": 7,
+            "name": "Branching · rollback",
+            "planes": ["Environment", "Reward"],
+            "status": "shipped",
+            "issue": "ENG-127",
+            "fit": "The RL-native substrate itself — first-class Branch, Environment snapshot/restore. Live e2e: V(root)=1.0.",
+        },
+        {
+            "n": 8,
+            "name": "Env adapters",
+            "planes": ["Environment"],
+            "status": "partial",
+            "issue": "ENG-128",
+            "fit": "Inbound adapters translate foreign formats — Harbor + Terminal-Bench shipped; ORS / PrimeIntellect pending.",
+        },
     ],
     "spaces": ["output", "action", "reasoning", "memory", "latent"],
 }
@@ -787,50 +964,116 @@ CONCEPT_MAP = {
 ADVISORIES = {
     "source": "4x subagent review of the v0.5 capability fix pass, plus follow-up verification on codex/v05-integration-followup",
     "items": [
-        {"id": "MUST-1", "severity": "must-fix", "status": "resolved", "agent": "Review consensus",
-         "capability": 5, "group": "e2e",
-         "title": "Continual learning — wire a real memory/skills producer",
-         "detail": "The LearnerStore never received evolved skills and the Memory scorer read a memory_delta nothing wrote. New module learner_skills.py wires the rollout↔store data path end-to-end."},
-        {"id": "MUST-2", "severity": "must-fix", "status": "resolved", "agent": "Review consensus",
-         "capability": 8, "group": "environment",
-         "title": "Adapter file-map collision silently drops a file",
-         "detail": "TerminalBenchAdapter._build_file_map now raises ValueError when two sources map to the same native destination."},
-        {"id": "MUST-3", "severity": "must-fix", "status": "resolved", "agent": "Review consensus",
-         "capability": 6, "group": "e2e",
-         "title": "Test deadlock on a concurrency regression",
-         "detail": "test_parallel_independent_still_overlaps now wraps job.run() in asyncio.wait_for so a regression fails fast."},
-        {"id": "MUST-4", "severity": "must-fix", "status": "resolved", "agent": "Reviewer 1 (correctness)",
-         "capability": 5, "group": "e2e",
-         "title": "Memory scorer was a tautology",
-         "detail": "The scorer's `expected` answer-key was derived from the agent's own diff → precision=recall=1.0 always. Dropped; the scorer now honestly grades activity."},
-        {"id": "SHOULD-1", "severity": "should-fix", "status": "resolved", "agent": "Reviewer 4 (quality)",
-         "capability": 5, "group": "e2e",
-         "title": "Store committed un-normalized skills",
-         "detail": "_commit_learner_generation now commits the normalized after_skills so the store is byte-identical to the recorded delta."},
-        {"id": "SHOULD-2", "severity": "should-fix", "status": "resolved", "agent": "Reviewers 1 & 4",
-         "capability": 5, "group": "e2e",
-         "title": "learner_nodes leaked across run() calls",
-         "detail": "Reset per-run; RolloutNode ids index-prefixed so same-named tasks stay distinct."},
-        {"id": "SHOULD-3", "severity": "should-fix", "status": "resolved", "agent": "Reviewer 4 (quality)",
-         "capability": 5, "group": "e2e",
-         "title": "Resumed continual-learning job silently restarts the curve",
-         "detail": "run() now warns: the LearnerStore is process-local, so a resume restarts at generation 0."},
-        {"id": "SHOULD-4", "severity": "should-fix", "status": "resolved", "agent": "Reviewer 3 (tests)",
-         "capability": 5, "group": "e2e",
-         "title": "Stale _revert docstrings + loose evolved_skills type",
-         "detail": "_revert docstrings corrected; evolved_skills tightened to dict[str, str]."},
-        {"id": "OPEN-1", "severity": "should-fix", "status": "resolved", "agent": "Reviewer 1 (correctness)",
-         "capability": 5, "group": "e2e",
-         "title": "Real expected_skills fixture from the task definition",
-         "detail": "ENG-125 follow-up wired: tasks can declare [verifier.memory].expected_skills, TaskConfig preserves it, and sequential-shared rollouts thread it into memory_delta. MemoryScorer can grade that fixture when invoked, without deriving an answer key from the agent diff."},
-        {"id": "OPEN-2", "severity": "note", "status": "open", "agent": "Reviewer 4 (quality)",
-         "capability": None, "group": None,
-         "title": "thermo-nuclear code-quality-review skill not installed",
-         "detail": "Reviewer 4 was assigned the cursor thermo-nuclear skill; it is not installed locally, so an adversarial review was used as the fallback."},
-        {"id": "OPEN-3", "severity": "should-fix", "status": "resolved", "agent": "Follow-up review",
-         "capability": 5, "group": "e2e",
-         "title": "Memory-space scores surfaced in evaluation results",
-         "detail": "MemoryScorer output is now a first-class additive metric: sequential-shared jobs persist sanitized memory_score/reward_events in result.json, aggregate memory_score and memory coverage in summary.json, expose it through metrics/eval CLI summaries, and render per-task Memory score in the dashboard."},
+        {
+            "id": "MUST-1",
+            "severity": "must-fix",
+            "status": "resolved",
+            "agent": "Review consensus",
+            "capability": 5,
+            "group": "e2e",
+            "title": "Continual learning — wire a real memory/skills producer",
+            "detail": "The LearnerStore never received evolved skills and the Memory scorer read a memory_delta nothing wrote. New module learner_skills.py wires the rollout↔store data path end-to-end.",
+        },
+        {
+            "id": "MUST-2",
+            "severity": "must-fix",
+            "status": "resolved",
+            "agent": "Review consensus",
+            "capability": 8,
+            "group": "environment",
+            "title": "Adapter file-map collision silently drops a file",
+            "detail": "TerminalBenchAdapter._build_file_map now raises ValueError when two sources map to the same native destination.",
+        },
+        {
+            "id": "MUST-3",
+            "severity": "must-fix",
+            "status": "resolved",
+            "agent": "Review consensus",
+            "capability": 6,
+            "group": "e2e",
+            "title": "Test deadlock on a concurrency regression",
+            "detail": "test_parallel_independent_still_overlaps now wraps job.run() in asyncio.wait_for so a regression fails fast.",
+        },
+        {
+            "id": "MUST-4",
+            "severity": "must-fix",
+            "status": "resolved",
+            "agent": "Reviewer 1 (correctness)",
+            "capability": 5,
+            "group": "e2e",
+            "title": "Memory scorer was a tautology",
+            "detail": "The scorer's `expected` answer-key was derived from the agent's own diff → precision=recall=1.0 always. Dropped; the scorer now honestly grades activity.",
+        },
+        {
+            "id": "SHOULD-1",
+            "severity": "should-fix",
+            "status": "resolved",
+            "agent": "Reviewer 4 (quality)",
+            "capability": 5,
+            "group": "e2e",
+            "title": "Store committed un-normalized skills",
+            "detail": "_commit_learner_generation now commits the normalized after_skills so the store is byte-identical to the recorded delta.",
+        },
+        {
+            "id": "SHOULD-2",
+            "severity": "should-fix",
+            "status": "resolved",
+            "agent": "Reviewers 1 & 4",
+            "capability": 5,
+            "group": "e2e",
+            "title": "learner_nodes leaked across run() calls",
+            "detail": "Reset per-run; RolloutNode ids index-prefixed so same-named tasks stay distinct.",
+        },
+        {
+            "id": "SHOULD-3",
+            "severity": "should-fix",
+            "status": "resolved",
+            "agent": "Reviewer 4 (quality)",
+            "capability": 5,
+            "group": "e2e",
+            "title": "Resumed continual-learning job silently restarts the curve",
+            "detail": "run() now warns: the LearnerStore is process-local, so a resume restarts at generation 0.",
+        },
+        {
+            "id": "SHOULD-4",
+            "severity": "should-fix",
+            "status": "resolved",
+            "agent": "Reviewer 3 (tests)",
+            "capability": 5,
+            "group": "e2e",
+            "title": "Stale _revert docstrings + loose evolved_skills type",
+            "detail": "_revert docstrings corrected; evolved_skills tightened to dict[str, str].",
+        },
+        {
+            "id": "OPEN-1",
+            "severity": "should-fix",
+            "status": "resolved",
+            "agent": "Reviewer 1 (correctness)",
+            "capability": 5,
+            "group": "e2e",
+            "title": "Real expected_skills fixture from the task definition",
+            "detail": "ENG-125 follow-up wired: tasks can declare [verifier.memory].expected_skills, TaskConfig preserves it, and sequential-shared rollouts thread it into memory_delta. MemoryScorer can grade that fixture when invoked, without deriving an answer key from the agent diff.",
+        },
+        {
+            "id": "OPEN-2",
+            "severity": "note",
+            "status": "open",
+            "agent": "Reviewer 4 (quality)",
+            "capability": None,
+            "group": None,
+            "title": "thermo-nuclear code-quality-review skill not installed",
+            "detail": "Reviewer 4 was assigned the cursor thermo-nuclear skill; it is not installed locally, so an adversarial review was used as the fallback.",
+        },
+        {
+            "id": "OPEN-3",
+            "severity": "should-fix",
+            "status": "resolved",
+            "agent": "Follow-up review",
+            "capability": 5,
+            "group": "e2e",
+            "title": "Memory-space scores surfaced in evaluation results",
+            "detail": "MemoryScorer output is now a first-class additive metric: sequential-shared jobs persist sanitized memory_score/reward_events in result.json, aggregate memory_score and memory coverage in summary.json, expose it through metrics/eval CLI summaries, and render per-task Memory score in the dashboard.",
+        },
     ],
 }
 
@@ -852,14 +1095,20 @@ def _git(args: list[str]) -> str:
 def collect_repo_status() -> dict:
     """Capture the repo state that should cause dashboard data to refresh."""
     try:
-        branch = _git(["branch", "--show-current"]) or _git(["rev-parse", "--abbrev-ref", "HEAD"])
+        branch = _git(["branch", "--show-current"]) or _git(
+            ["rev-parse", "--abbrev-ref", "HEAD"]
+        )
         head = _git(["rev-parse", "--short", "HEAD"])
         status_lines = _git(["status", "--short"]).splitlines()
     except Exception as exc:
         return {"available": False, "error": str(exc), "dirty": None}
 
     staged = sum(1 for line in status_lines if line[:2] != "??" and line[:1].strip())
-    unstaged = sum(1 for line in status_lines if line[:2] != "??" and len(line) > 1 and line[1].strip())
+    unstaged = sum(
+        1
+        for line in status_lines
+        if line[:2] != "??" and len(line) > 1 and line[1].strip()
+    )
     untracked = sum(1 for line in status_lines if line.startswith("??"))
     return {
         "available": True,
@@ -894,8 +1143,9 @@ def build_data() -> dict:
             "jobs_total": jobs["total_tasks"],
             "job_groups": len(jobs["groups"]),
             "experiments": len(experiments),
-            "advisories_open": sum(1 for a in ADVISORIES["items"]
-                                   if a["status"] == "open"),
+            "advisories_open": sum(
+                1 for a in ADVISORIES["items"] if a["status"] == "open"
+            ),
         },
         "concept_map": CONCEPT_MAP,
         "architecture": architecture,
@@ -917,20 +1167,27 @@ def main() -> int:
         data["roadmap"].get("source", {}).get("kind") != "linear-live"
         and "--allow-missing-linear" not in sys.argv
     ):
-        error = data["roadmap"].get("source", {}).get("error", "Linear roadmap unavailable")
+        error = (
+            data["roadmap"].get("source", {}).get("error", "Linear roadmap unavailable")
+        )
         print(f"error: Roadmap must mirror live Linear: {error}", file=sys.stderr)
-        print("hint: set LINEAR_API_KEY or pass --allow-missing-linear for local UI dev", file=sys.stderr)
+        print(
+            "hint: set LINEAR_API_KEY or pass --allow-missing-linear for local UI dev",
+            file=sys.stderr,
+        )
         return 1
     OUT.write_text(json.dumps(data, indent=2))
     s = data["summary"]["tests"]
     jobs = data["jobs"]
     experiments = data["experiments"]
     print(f"wrote {OUT.relative_to(ROOT)}")
-    print(f"  tests: {s['passed']}p/{s['failed']}f/{s['skipped']}s   "
-          f"jobs: {jobs['total_tasks']} tasks in {len(jobs['groups'])} groups   "
-          f"experiments: {len(experiments)}   "
-          f"capabilities: {data['summary']['capabilities_shipped']}/"
-          f"{data['summary']['capabilities_total']}")
+    print(
+        f"  tests: {s['passed']}p/{s['failed']}f/{s['skipped']}s   "
+        f"jobs: {jobs['total_tasks']} tasks in {len(jobs['groups'])} groups   "
+        f"experiments: {len(experiments)}   "
+        f"capabilities: {data['summary']['capabilities_shipped']}/"
+        f"{data['summary']['capabilities_total']}"
+    )
     return 0
 
 

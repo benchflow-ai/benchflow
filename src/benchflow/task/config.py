@@ -154,9 +154,14 @@ class VerifierConfig(BaseModel):
     service: str = Field(
         default="main",
         description=(
-            "Compose service where test-script verification runs. "
-            "Use 'main' for the agent container or a named target service "
-            "for multi-container tasks."
+            "Compose service the test-script verifier runs in. Defaults to "
+            "'main' (the agent container). Multi-container (vulhub-style) "
+            "tasks set this to a target/database service so test.sh can "
+            "inspect target-side state — RCE markers, DB modifications — "
+            "rather than only the agent's workspace. The agent's "
+            "anti-tamper hardening only applies to 'main'; deliberately "
+            "vulnerable target containers are intentionally not hardened. "
+            "See #248."
         ),
     )
     judge: JudgeVerifierConfig = Field(
@@ -327,7 +332,7 @@ class TaskConfig(BaseModel):
             by_alias=True,
             exclude={"verifier": {"memory": {"expected_skills"}}},
         )
-        memory = ((public.get("verifier") or {}).get("memory") or {})
+        memory = (public.get("verifier") or {}).get("memory") or {}
         if isinstance(memory, dict) and not memory:
             public["verifier"].pop("memory", None)
         return _toml.dumps(public)

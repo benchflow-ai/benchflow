@@ -375,9 +375,7 @@ class TestSoftVerify:
     async def test_soft_verify_success(self):
         trial = _make_user_trial(PassthroughUser())
 
-        mock_result = type(
-            "VR", (), {"rewards": {"reward": 1.0, "exact_match": 1.0}}
-        )()
+        mock_result = type("VR", (), {"rewards": {"reward": 1.0, "exact_match": 1.0}})()
 
         with (
             patch("benchflow.task.Verifier") as MockVerifier,
@@ -402,9 +400,7 @@ class TestSoftVerify:
             patch("benchflow.sandbox.lockdown._build_cleanup_cmd", return_value="true"),
         ):
             mock_instance = MockVerifier.return_value
-            mock_instance.verify = AsyncMock(
-                return_value=VerifierResult(rewards=None)
-            )
+            mock_instance.verify = AsyncMock(return_value=VerifierResult(rewards=None))
 
             rewards, _output, error = await trial.soft_verify()
 

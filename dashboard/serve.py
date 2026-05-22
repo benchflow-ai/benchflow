@@ -118,7 +118,9 @@ def repo_fingerprint() -> str:
             digest.update(f"error:{exc}".encode())
 
     with contextlib.suppress(Exception):
-        for raw in _git_bytes(["ls-files", "--others", "--exclude-standard", "-z"]).split(b"\0"):
+        for raw in _git_bytes(
+            ["ls-files", "--others", "--exclude-standard", "-z"]
+        ).split(b"\0"):
             if not raw:
                 continue
             path = ROOT / raw.decode()
@@ -153,16 +155,23 @@ class SyncingDashboardHandler(http.server.SimpleHTTPRequestHandler):
             return False
 
         current = repo_fingerprint()
-        stale_by_time = time.monotonic() - type(self).last_refresh_at >= type(self).refresh_interval
+        stale_by_time = (
+            time.monotonic() - type(self).last_refresh_at >= type(self).refresh_interval
+        )
         if current == type(self).last_repo_fingerprint and not stale_by_time:
             return True
         with type(self).sync_lock:
             if self._in_failure_backoff():
-                self.send_error(503, "data.json refresh failed; retrying after cooldown")
+                self.send_error(
+                    503, "data.json refresh failed; retrying after cooldown"
+                )
                 return False
 
             current = repo_fingerprint()
-            stale_by_time = time.monotonic() - type(self).last_refresh_at >= type(self).refresh_interval
+            stale_by_time = (
+                time.monotonic() - type(self).last_refresh_at
+                >= type(self).refresh_interval
+            )
             if current == type(self).last_repo_fingerprint and not stale_by_time:
                 return True
             reason = "scheduled refresh" if stale_by_time else "repo status changed"
@@ -170,10 +179,15 @@ class SyncingDashboardHandler(http.server.SimpleHTTPRequestHandler):
             result = subprocess.run(type(self).gen_cmd, check=False)
             if result.returncode != 0:
                 type(self).last_failed_refresh_at = time.monotonic()
-                type(self).failed_refresh_error = (
+                type(
+                    self
+                ).failed_refresh_error = (
                     "data.json refresh failed; refusing to serve stale dashboard data"
                 )
-                self.send_error(503, "data.json refresh failed; refusing to serve stale dashboard data")
+                self.send_error(
+                    503,
+                    "data.json refresh failed; refusing to serve stale dashboard data",
+                )
                 return False
             type(self).last_repo_fingerprint = repo_fingerprint()
             type(self).last_refresh_at = time.monotonic()
@@ -207,7 +221,9 @@ def main() -> int:
     SyncingDashboardHandler.gen_cmd = gen
     SyncingDashboardHandler.last_repo_fingerprint = repo_fingerprint()
     SyncingDashboardHandler.last_refresh_at = time.monotonic()
-    SyncingDashboardHandler.refresh_interval = float(os.environ.get("DASHBOARD_REFRESH_SECONDS", "60"))
+    SyncingDashboardHandler.refresh_interval = float(
+        os.environ.get("DASHBOARD_REFRESH_SECONDS", "60")
+    )
     handler = partial(SyncingDashboardHandler, directory=str(DASH))
     # quieter logs — one line per request is enough
     socketserver.ThreadingTCPServer.allow_reuse_address = True

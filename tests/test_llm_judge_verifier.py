@@ -317,7 +317,15 @@ class TestLLMJudgeVerifier:
     async def test_judge_env_threaded_into_call_judge(
         self, mock_judge: AsyncMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Guards concurrency-safe judge env from PR #314 follow-up."""
+        """PR #314 follow-up: [verifier.env] credentials are passed explicitly
+        into ``call_judge`` as the ``env`` kwarg.
+
+        The pre-fix ``_scoped_env`` context manager mutated the process-global
+        ``os.environ``, which is not concurrency-safe: ``evaluation.py`` runs
+        verifications via ``asyncio.gather`` (concurrency > 1), so two judge
+        runs could race on the shared env. Credentials are now threaded
+        through as a parameter instead of touching ``os.environ`` at all.
+        """
         import os
 
         monkeypatch.setenv("MY_JUDGE_KEY", "secret-123")
@@ -336,9 +344,11 @@ class TestLLMJudgeVerifier:
 
         await Verifier(task, rollout_paths, sandbox).verify()
 
+        # The resolved credential reaches call_judge as the ``env`` kwarg ...
         mock_judge.assert_awaited()
         assert mock_judge.await_args is not None
         assert mock_judge.await_args.kwargs["env"] == {"RESOLVED_KEY": "secret-123"}
+        # ... and the process-global env is never mutated.
         assert os.environ.get("RESOLVED_KEY") is None
 
     @patch("benchflow.rewards.llm.call_judge", new_callable=AsyncMock)
@@ -346,7 +356,9 @@ class TestLLMJudgeVerifier:
     async def test_judge_env_does_not_mutate_os_environ(
         self, mock_judge: AsyncMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Guards concurrent judge runs from process-global env mutation."""
+        """PR #314 follow-up: a [verifier.env] key that already exists in the
+        process env is never overwritten — the verifier no longer touches
+        ``os.environ`` (the pre-fix ``_scoped_env`` capture/restore is gone)."""
         import os
 
         mock_judge.return_value = _MOCK_PASS
@@ -364,6 +376,7 @@ class TestLLMJudgeVerifier:
         rollout_paths.mkdir()
 
         await Verifier(task, rollout_paths, sandbox).verify()
+        # os.environ is left exactly as it was — value never overwritten.
         assert os.environ.get("RESOLVED_KEY") == "preexisting"
 
     @patch("benchflow.rewards.llm.call_judge", new_callable=AsyncMock)
@@ -397,6 +410,39 @@ class TestLLMJudgeVerifier:
         mock_judge.assert_awaited()
         assert mock_judge.await_args is not None
         assert mock_judge.await_args.args[0] == "claude-haiku-4-5-20251001"
+
+    @patch("benchflow.rewards.llm.call_judge", new_callable=AsyncMock)
+    @pytest.mark.asyncio
+    async def test_missing_provider_sdk_surfaces_as_verifier_error(
+        self, mock_judge: AsyncMock, tmp_path: Path
+    ) -> None:
+        """A missing judge SDK must surface as a verifier *error*, not a reward.
+
+        ``call_judge`` raises ``JudgeEnvironmentError`` when no provider SDK is
+        installed. The verifier must let it propagate so the run is marked
+        errored — recording reward 0.0 would be indistinguishable from a
+        genuine judge verdict of fail.
+        """
+        from benchflow.rewards.llm import JudgeEnvironmentError
+
+        mock_judge.side_effect = JudgeEnvironmentError(
+            "No LLM provider SDK is installed for model claude-haiku-4-5"
+        )
+        task = _make_task(tmp_path, _judge_toml())
+        (task.task_dir / "tests").mkdir()
+        (task.task_dir / "tests" / "rubric.json").write_text(
+            json.dumps({"criteria": [{"id": "c1", "match_criteria": "ok"}]})
+        )
+        sandbox = _make_sandbox({"answer.txt": "the answer"})
+        rollout_paths = RolloutPaths(tmp_path / "rollout")
+        rollout_paths.mkdir()
+
+        verifier = Verifier(task, rollout_paths, sandbox)
+        with pytest.raises(JudgeEnvironmentError):
+            await verifier.verify()
+
+        # No reward was written — a missing SDK is not a score.
+        assert not rollout_paths.reward_json_path.exists()
 
     @patch("benchflow.rewards.llm.call_judge", new_callable=AsyncMock)
     @pytest.mark.asyncio
@@ -465,9 +511,7 @@ class TestTestScriptStillDefault:
     @pytest.mark.asyncio
     async def test_default_runs_test_script(self, tmp_path: Path) -> None:
         """#270: tasks without type still take the test-script path."""
-        task = _make_task(
-            tmp_path, 'version = "1.0"\n[verifier]\ntimeout_sec = 123\n'
-        )
+        task = _make_task(tmp_path, 'version = "1.0"\n[verifier]\ntimeout_sec = 123\n')
         task.paths.tests_dir = task.task_dir / "tests"
         task.paths.test_path = task.task_dir / "tests" / "test.sh"
 
@@ -628,9 +672,7 @@ class TestTestScriptStillDefault:
         rollout_paths = RolloutPaths(tmp_path / "rollout")
         rollout_paths.mkdir()
 
-        async def exec_malformed_reward(
-            *_args: object, **_kwargs: object
-        ) -> MagicMock:
+        async def exec_malformed_reward(*_args: object, **_kwargs: object) -> MagicMock:
             if sandbox.exec.await_count == 1:
                 return MagicMock(return_code=0, stdout="")
             rollout_paths.reward_json_path.write_text(json.dumps({"score": 1.0}))
@@ -664,9 +706,7 @@ class TestTestScriptStillDefault:
             ],
         }
 
-        async def exec_rubric_reward(
-            *_args: object, **_kwargs: object
-        ) -> MagicMock:
+        async def exec_rubric_reward(*_args: object, **_kwargs: object) -> MagicMock:
             if sandbox.exec.await_count == 1:
                 return MagicMock(return_code=0, stdout="")
             rollout_paths.reward_json_path.write_text(json.dumps(payload))
@@ -704,9 +744,7 @@ class TestTestScriptStillDefault:
         rollout_paths = RolloutPaths(tmp_path / "rollout")
         rollout_paths.mkdir()
 
-        async def exec_invalid_reward(
-            *_args: object, **_kwargs: object
-        ) -> MagicMock:
+        async def exec_invalid_reward(*_args: object, **_kwargs: object) -> MagicMock:
             if sandbox.exec.await_count == 1:
                 return MagicMock(return_code=0, stdout="")
             rollout_paths.reward_json_path.write_text(json.dumps(payload))

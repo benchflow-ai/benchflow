@@ -465,6 +465,96 @@ async def test_no_proxy_for_oracle():
     assert runtime is None
 
 
+@pytest.mark.asyncio
+async def test_no_proxy_for_daytona_remote_sandbox(monkeypatch):
+    """Daytona runs the agent on a remote host the host proxy cannot reach.
+
+    Guards the fix from PR #327: the usage proxy must be skipped so the agent
+    talks to the provider directly instead of being pointed at an unreachable
+    127.0.0.1 address (the regression that produced ACP ECONNREFUSED errors).
+    """
+    from benchflow.providers import runtime as provider_runtime_mod
+    from benchflow.providers.runtime import ensure_usage_proxy_runtime
+
+    def _fail_start(*_args, **_kwargs):
+        raise AssertionError("TrajectoryProxy must not start for daytona")
+
+    monkeypatch.setattr(provider_runtime_mod, "TrajectoryProxy", _fail_start)
+
+    env = {
+        "ANTHROPIC_BASE_URL": "https://api.anthropic.com",
+        "ANTHROPIC_API_KEY": "sk-real-key",
+    }
+    updated, runtime = await ensure_usage_proxy_runtime(
+        agent="claude-agent-acp",
+        agent_env=env,
+        model="claude-haiku-4-5-20251001",
+        runtime=None,
+        environment="daytona",
+        session_id="rollout-1",
+    )
+
+    # Proxy skipped: env left untouched (no loopback rewrite), no runtime.
+    assert runtime is None
+    assert updated == env
+    assert updated["ANTHROPIC_BASE_URL"] == "https://api.anthropic.com"
+
+
+@pytest.mark.asyncio
+async def test_daytona_runtime_retired_when_environment_unreachable(monkeypatch):
+    """Guards the fix from PR #327: a stale runtime from an earlier env must be
+    stopped, not reused."""
+    from benchflow.providers import runtime as provider_runtime_mod
+    from benchflow.providers.runtime import (
+        ProviderRuntime,
+        ensure_usage_proxy_runtime,
+    )
+
+    stopped = []
+
+    class _StaleServer:
+        target = "https://api.anthropic.com"
+
+        async def stop(self):
+            stopped.append(True)
+
+    stale = ProviderRuntime(
+        kind="usage-proxy", host="127.0.0.1", port=999, server=_StaleServer()
+    )
+
+    monkeypatch.setattr(
+        provider_runtime_mod,
+        "TrajectoryProxy",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not start")),
+    )
+
+    updated, runtime = await ensure_usage_proxy_runtime(
+        agent="claude-agent-acp",
+        agent_env={"ANTHROPIC_BASE_URL": "https://api.anthropic.com"},
+        model="claude-haiku-4-5-20251001",
+        runtime=stale,
+        environment="daytona",
+        session_id="rollout-1",
+    )
+
+    assert runtime is None
+    assert stopped == [True]
+    assert updated["ANTHROPIC_BASE_URL"] == "https://api.anthropic.com"
+
+
+def test_host_proxy_reachable_only_for_local_environments():
+    from benchflow.providers.runtime import host_proxy_reachable_from_agent
+
+    # docker shares the host's network namespace via the docker bridge.
+    assert host_proxy_reachable_from_agent("docker") is True
+    # Remote cloud sandboxes run the agent on a separate machine.
+    assert host_proxy_reachable_from_agent("daytona") is False
+    assert host_proxy_reachable_from_agent("modal") is False
+    # Unrecognized environments are treated conservatively as reachable.
+    assert host_proxy_reachable_from_agent("") is True
+    assert host_proxy_reachable_from_agent("some-future-local-env") is True
+
+
 def test_total_tokens_is_sum_of_parts():
     from benchflow.providers.runtime import ProviderRuntime, extract_usage
 

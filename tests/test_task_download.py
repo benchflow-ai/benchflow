@@ -119,7 +119,9 @@ def test_resolve_source_with_path(tmp_path, monkeypatch):
     assert target.exists()
 
 
-def test_resolve_source_with_metadata_records_sha_and_task_hashes(tmp_path, monkeypatch):
+def test_resolve_source_with_metadata_records_sha_and_task_hashes(
+    tmp_path, monkeypatch
+):
     """Guards v0.5-integration@cb8759e against unauditable source artifacts."""
     monkeypatch.chdir(tmp_path)
 
@@ -231,9 +233,7 @@ def test_resolve_source_with_metadata_uses_snapshot_sha_for_provenance(
     assert resolved.provenance["resolved_sha"] == initial_sha
 
 
-def test_resolve_source_with_metadata_snapshots_under_cache_lock(
-    tmp_path, monkeypatch
-):
+def test_resolve_source_with_metadata_snapshots_under_cache_lock(tmp_path, monkeypatch):
     """Guards v0.5-integration@cb8759e against concurrent checkout races."""
     monkeypatch.chdir(tmp_path)
     lock_path = tmp_path / ".cache" / "datasets" / "acme-org" / ".benchmarks.lock"

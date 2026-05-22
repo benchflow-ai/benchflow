@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import asyncio.subprocess
+import base64
 import contextlib
 import json
 import logging
@@ -16,6 +17,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 from typing import ClassVar
 
@@ -371,6 +373,11 @@ class DockerSandbox(BaseSandbox):
     async def upload_dir(
         self, source_dir: Path | str, target_dir: str, service: str = "main"
     ) -> None:
+        """Upload a directory into a compose service container.
+
+        ``service`` defaults to ``"main"``; pass a target service to land the
+        directory in an additional vulhub-style container (#248).
+        """
         await self.exec(
             f"mkdir -p {shlex.quote(target_dir)}", user="root", service=service
         )
@@ -413,6 +420,11 @@ class DockerSandbox(BaseSandbox):
     async def download_dir(
         self, source_dir: str, target_dir: Path | str, service: str = "main"
     ) -> None:
+        """Download a directory from a compose service container.
+
+        ``service`` defaults to ``"main"``; pass a target service to fetch
+        target-side verifier output from a vulhub-style container (#248).
+        """
         await self._chown_to_host_user(source_dir, recursive=True, service=service)
         await self._run_docker_compose_command(
             ["cp", f"{service}:{source_dir}/.", str(target_dir)],
@@ -461,18 +473,84 @@ class DockerSandbox(BaseSandbox):
         if cwd:
             exec_command.extend(["-w", cwd])
 
-        if env:
-            for key, value in env.items():
-                exec_command.extend(["-e", f"{key}={value}"])
-
         if user is not None:
             exec_command.extend(["-u", str(user)])
 
         exec_command.append(service)
-        exec_command.extend(["bash", "-c", command])
+
+        # Env vars are written to a file inside the container and sourced,
+        # rather than passed as `-e KEY=VALUE` flags. The flags are visible in
+        # `ps aux` on the host, which would leak secrets — e.g. the verifier's
+        # [verifier.env] LLM-judge API keys. DockerProcess/DaytonaProcess avoid
+        # `-e` for the same reason; this keeps `exec` consistent with them.
+        if env:
+            command = self._wrap_command_with_env_file(env, command)
+
+        # Use POSIX ``sh`` rather than ``bash``: with multi-service support
+        # (#248), ``exec(..., service=...)`` can target arbitrary task
+        # containers — Alpine/distroless/minimal DB images frequently ship no
+        # ``/bin/bash``. The wrapped command (env-file sourcing, ``trap``,
+        # ``base64 -d``, ``set -a``/``. file``) uses only POSIX constructs.
+        exec_command.extend(["sh", "-c", command])
 
         return await self._run_docker_compose_command(
             exec_command, check=False, timeout_sec=timeout_sec
+        )
+
+    # A POSIX shell identifier: a name the shell can `export`. Keys outside
+    # this grammar (e.g. containing `.` or `-`) are valid process env keys but
+    # cannot be assigned via `export NAME=...`; sourcing such a line aborts the
+    # whole `. {env_path}` step, so the user command would never run (PR #323).
+    _SHELL_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+    @classmethod
+    def _wrap_command_with_env_file(cls, env: dict[str, str], command: str) -> str:
+        """Return *command* prefixed to materialize *env* from a file.
+
+        The env vars are base64-encoded into the command string (not visible
+        as individual ``KEY=VALUE`` args in ``ps aux``), decoded to a
+        mode-0600 file inside the container, and sourced before the real
+        command runs. A ``trap ... EXIT`` deletes the temp file
+        unconditionally — even if the decode/source step fails — so a failed
+        ``&&`` chain can never leave the env file behind.
+
+        Only keys that are valid POSIX shell identifiers are emitted as
+        ``export`` lines. Keys that are not (e.g. containing ``.`` or ``-``)
+        cannot be assigned by the shell — emitting them would make
+        ``. {env_path}`` fail and the user command would never run — so they
+        are skipped with a warning rather than silently breaking exec
+        (regression guarded — PR #323).
+
+        The ``umask 077`` that protects the env file is scoped to a subshell
+        so it does not leak into the user's command — otherwise files the
+        command creates would get mode-0600 unexpectedly (PR #323).
+        """
+        exportable: dict[str, str] = {}
+        skipped: list[str] = []
+        for k, v in env.items():
+            if cls._SHELL_IDENTIFIER_RE.match(k):
+                exportable[k] = v
+            else:
+                skipped.append(k)
+        if skipped:
+            logger.warning(
+                "Skipping env var(s) with non-identifier names (cannot be "
+                "exported by the shell): %s",
+                ", ".join(sorted(skipped)),
+            )
+
+        env_body = "".join(
+            f"export {k}={shlex.quote(v)}\n" for k, v in exportable.items()
+        )
+        encoded = base64.b64encode(env_body.encode()).decode()
+        # Unique suffix so concurrent exec() calls in one container can't
+        # clobber each other's env file.
+        env_path = f"/tmp/.benchflow_exec_env_{uuid.uuid4().hex[:16]}"
+        return (
+            f"trap 'rm -f {env_path}' EXIT && "
+            f"(umask 077 && printf %s {shlex.quote(encoded)} | base64 -d > "
+            f"{env_path}) && set -a && . {env_path} && set +a && "
+            f"{command}"
         )
 
     async def attach(self) -> None:

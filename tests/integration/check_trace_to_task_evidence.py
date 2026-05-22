@@ -94,7 +94,9 @@ def _log_tail(value: str) -> str:
     return value[-LOG_TAIL_CHARS:]
 
 
-def _attach_failure_logs(record: dict[str, Any], completed: subprocess.CompletedProcess[str]) -> None:
+def _attach_failure_logs(
+    record: dict[str, Any], completed: subprocess.CompletedProcess[str]
+) -> None:
     if completed.stdout:
         record["stdout_tail"] = _log_tail(completed.stdout)
     if completed.stderr:

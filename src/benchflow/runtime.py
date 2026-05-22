@@ -127,11 +127,28 @@ class Environment:
     async def upload_file(self, src: str | Path, dst: str) -> None:
         await self._inner.upload_file(src, dst)
 
-    async def upload_dir(self, src: str | Path, dst: str) -> None:
-        await self._inner.upload_dir(src, dst)
+    async def upload_dir(
+        self, src: str | Path, dst: str, service: str = "main"
+    ) -> None:
+        """Upload a directory into the sandbox.
+
+        Pass ``service="<name>"`` to target a non-``main`` compose service
+        (a vulhub-style target container) — see #248.
+        """
+        await self._inner.upload_dir(src, dst, service=service)
 
     async def download_file(self, src: str, dst: str | Path) -> None:
         await self._inner.download_file(src, dst)
+
+    async def download_dir(
+        self, src: str, dst: str | Path, service: str = "main"
+    ) -> None:
+        """Download a directory from the sandbox.
+
+        Pass ``service="<name>"`` to fetch from a non-``main`` compose service
+        (a vulhub-style target container) — see #248.
+        """
+        await self._inner.download_dir(src, dst, service=service)
 
     async def __aenter__(self) -> Environment:
         await self.start()
@@ -226,13 +243,16 @@ class RuntimeResult:
     def passed(self) -> bool:
         from benchflow._utils.scoring import classify_result_outcome
 
-        return classify_result_outcome(
-            {
-                "rewards": self.rewards,
-                "error": self.error,
-                "verifier_error": self.verifier_error,
-            }
-        ) == "passed"
+        return (
+            classify_result_outcome(
+                {
+                    "rewards": self.rewards,
+                    "error": self.error,
+                    "verifier_error": self.verifier_error,
+                }
+            )
+            == "passed"
+        )
 
     @property
     def verified(self) -> bool:

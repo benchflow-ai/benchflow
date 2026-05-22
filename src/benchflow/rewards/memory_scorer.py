@@ -68,9 +68,7 @@ class SkillDelta:
         return self.added | self.updated | self.removed
 
 
-def skill_delta(
-    *, before: dict[str, str], after: dict[str, str]
-) -> SkillDelta:
+def skill_delta(*, before: dict[str, str], after: dict[str, str]) -> SkillDelta:
     """Diff two skill-store snapshots — *the* Memory-space primitive.
 
     A skill is *added* when it appears only in ``after``, *removed* when only
@@ -82,9 +80,7 @@ def skill_delta(
         added=after_keys - before_keys,
         removed=before_keys - after_keys,
         updated={
-            name
-            for name in before_keys & after_keys
-            if before[name] != after[name]
+            name for name in before_keys & after_keys if before[name] != after[name]
         },
     )
 
@@ -138,9 +134,7 @@ class MemoryScorer:
             before = dict(record.get("before") or {})
             after = dict(record.get("after") or {})
             raw_expected = record.get("expected")
-            expected = (
-                None if raw_expected is None else set(raw_expected)
-            )
+            expected = None if raw_expected is None else set(raw_expected)
             reward = _score_delta(skill_delta(before=before, after=after), expected)
 
         return RewardEvent(

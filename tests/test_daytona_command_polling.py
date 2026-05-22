@@ -35,9 +35,7 @@ class TestDaytonaCommandPolling:
         sandbox._sandbox = SimpleNamespace(process=FakeProcess())
         sandbox._strategy = _DaytonaDirect(sandbox)
 
-        with pytest.raises(
-            RuntimeError, match=r"Command timed out after 0.01 seconds"
-        ):
+        with pytest.raises(RuntimeError, match=r"Command timed out after 0.01 seconds"):
             await asyncio.wait_for(
                 sandbox.exec("sleep forever", timeout_sec=0.01),
                 timeout=0.5,

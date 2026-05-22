@@ -24,6 +24,28 @@ reward aggregation.
 
 ## Quick start
 
+### 0. Install the judge provider SDKs
+
+The judge calls the Anthropic, OpenAI, and Google SDKs — these are **not**
+installed by default. Install the `judge` extra (you only need at least one
+provider's SDK for the model you use, but the extra ships all three):
+
+```bash
+# in a checkout
+uv sync --extra judge
+
+# or as an installed tool
+uv tool install 'benchflow[judge]'
+
+# or with pip
+pip install 'benchflow[judge]'
+```
+
+If no provider SDK is installed, the judge cannot run: the verifier raises a
+**verifier error** (the rollout is marked errored) rather than silently
+recording a reward of `0.0` — a missing dependency is an environment failure,
+not a score.
+
 ### 1. Select the judge verifier in `task.toml`
 
 ```toml
@@ -293,6 +315,10 @@ The judge model string determines which provider SDK is used:
 | `gemini*`, `google/*` | Google | `GOOGLE_API_KEY` or `GEMINI_API_KEY` |
 
 If the primary provider fails, the judge falls back through the other providers with retries and exponential backoff.
+
+The provider SDKs ship in the `judge` extra (`uv sync --extra judge`). If
+*none* are installed, the judge raises a verifier error instead of recording
+a reward — see [step 0](#0-install-the-judge-provider-sdks).
 
 ---
 

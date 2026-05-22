@@ -108,3 +108,92 @@ class TestSetupSandboxUser:
             assert heavy_dir not in copy_loop_dirs, (
                 f"sandbox copy loop must not include heavy tool dir {heavy_dir!r}"
             )
+
+
+class TestStageDockerfileDeps:
+    """Tests for stage_dockerfile_deps COPY parsing (multi-source / JSON form)."""
+
+    @staticmethod
+    def _setup(tmp_path, dockerfile_body):
+        """Create a task dir + context root, return (task_path, context_root)."""
+        from pathlib import Path
+
+        context_root = tmp_path / "repo"
+        context_root.mkdir()
+        task_path = context_root / "tasks" / "demo"
+        env_dir = task_path / "environment"
+        env_dir.mkdir(parents=True)
+        (env_dir / "Dockerfile").write_text(dockerfile_body)
+        return Path(task_path), Path(context_root)
+
+    def test_multi_source_copy_stages_every_source(self, tmp_path):
+        """COPY with multiple sources stages all of them into _deps/."""
+        from benchflow.sandbox.setup import stage_dockerfile_deps
+
+        task_path, context_root = self._setup(
+            tmp_path,
+            "FROM python:3.12\nCOPY pkg/a pkg/b pkg/c /app/\n",
+        )
+        for name in ("a", "b", "c"):
+            (context_root / "pkg").mkdir(exist_ok=True)
+            (context_root / "pkg" / name).write_text(f"file {name}\n")
+
+        stage_dockerfile_deps(task_path, context_root)
+
+        deps = task_path / "environment" / "_deps"
+        for name in ("a", "b", "c"):
+            assert (deps / name).exists(), f"source {name} not staged"
+
+        rewritten = (task_path / "environment" / "Dockerfile").read_text()
+        assert "_deps/a _deps/b _deps/c /app/" in rewritten
+
+    def test_json_exec_form_copy_is_staged(self, tmp_path):
+        """COPY in JSON/exec form stages its source and is rewritten."""
+        from benchflow.sandbox.setup import stage_dockerfile_deps
+
+        task_path, context_root = self._setup(
+            tmp_path,
+            'FROM python:3.12\nCOPY ["pkg/runtime", "/app/runtime"]\n',
+        )
+        (context_root / "pkg").mkdir()
+        (context_root / "pkg" / "runtime").write_text("runtime\n")
+
+        stage_dockerfile_deps(task_path, context_root)
+
+        assert (task_path / "environment" / "_deps" / "runtime").exists()
+        rewritten = (task_path / "environment" / "Dockerfile").read_text()
+        assert "_deps/runtime" in rewritten
+        assert rewritten.count("[") == 1  # still JSON form
+
+    def test_single_source_copy_still_works(self, tmp_path):
+        """The original two-arg COPY case is unchanged."""
+        from benchflow.sandbox.setup import stage_dockerfile_deps
+
+        task_path, context_root = self._setup(
+            tmp_path,
+            "FROM python:3.12\nCOPY pkg/only /app/\n",
+        )
+        (context_root / "pkg").mkdir()
+        (context_root / "pkg" / "only").write_text("only\n")
+
+        stage_dockerfile_deps(task_path, context_root)
+
+        assert (task_path / "environment" / "_deps" / "only").exists()
+        rewritten = (task_path / "environment" / "Dockerfile").read_text()
+        assert "_deps/only /app/" in rewritten
+
+    def test_malformed_json_copy_warns_and_leaves_unchanged(self, tmp_path, caplog):
+        """An unparseable JSON-form COPY emits a warning, not silent skip."""
+        import logging
+
+        from benchflow.sandbox.setup import stage_dockerfile_deps
+
+        body = 'FROM python:3.12\nCOPY ["pkg/lib", broken\n'
+        task_path, context_root = self._setup(tmp_path, body)
+
+        with caplog.at_level(logging.WARNING):
+            stage_dockerfile_deps(task_path, context_root)
+
+        assert any("COPY" in r.message for r in caplog.records)
+        # Line left untouched so the build error is at least visible.
+        assert "broken" in (task_path / "environment" / "Dockerfile").read_text()

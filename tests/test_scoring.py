@@ -65,9 +65,7 @@ class TestClassifyError:
         assert classify_error("Task timed out after 300s") == "timeout"
 
     def test_wall_clock_budget_timeout(self):
-        assert (
-            classify_error("Agent prompt exceeded wall-clock budget 5s") == "timeout"
-        )
+        assert classify_error("Agent prompt exceeded wall-clock budget 5s") == "timeout"
 
     def test_idle_timeout(self):
         assert (
@@ -78,7 +76,9 @@ class TestClassifyError:
         )
 
     def test_infra_failure(self):
-        assert classify_error("Sandbox not found. Please retry later.") == "infra_failure"
+        assert (
+            classify_error("Sandbox not found. Please retry later.") == "infra_failure"
+        )
 
     def test_other(self):
         assert classify_error("something unexpected") == "other"

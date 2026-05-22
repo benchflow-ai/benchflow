@@ -40,7 +40,7 @@ class TestDockerSandboxServiceExec:
         sandbox._run_docker_compose_command = fake_run  # type: ignore[method-assign]
         await sandbox.exec("echo hi")
 
-        assert captured[0] == ["exec", "main", "bash", "-c", "echo hi"]
+        assert captured[0] == ["exec", "main", "sh", "-c", "echo hi"]
 
     @pytest.mark.asyncio
     async def test_exec_targets_named_service(self) -> None:
@@ -55,7 +55,7 @@ class TestDockerSandboxServiceExec:
         sandbox._run_docker_compose_command = fake_run  # type: ignore[method-assign]
         await sandbox.exec("test -f /tmp/pwned", service="target")
 
-        assert captured[0] == ["exec", "target", "bash", "-c", "test -f /tmp/pwned"]
+        assert captured[0] == ["exec", "target", "sh", "-c", "test -f /tmp/pwned"]
 
     @pytest.mark.asyncio
     async def test_exec_in_service_wrapper(self) -> None:
@@ -70,7 +70,7 @@ class TestDockerSandboxServiceExec:
         sandbox._run_docker_compose_command = fake_run  # type: ignore[method-assign]
         await sandbox.exec_in_service("db", "mysql -e 'SELECT 1'")
 
-        assert captured[0] == ["exec", "db", "bash", "-c", "mysql -e 'SELECT 1'"]
+        assert captured[0] == ["exec", "db", "sh", "-c", "mysql -e 'SELECT 1'"]
 
     @pytest.mark.asyncio
     async def test_exec_service_with_user_and_cwd(self) -> None:
@@ -88,11 +88,17 @@ class TestDockerSandboxServiceExec:
         )
 
         cmd = captured[0]
-        # service name precedes `bash -c`, after all flags
-        assert cmd[cmd.index("bash") - 1] == "attacker"
+        # service name precedes `sh -c`, after all flags
+        assert cmd[cmd.index("sh") - 1] == "attacker"
         assert "-w" in cmd and "/work" in cmd
         assert "-u" in cmd and "root" in cmd
-        assert "-e" in cmd and "K=v" in cmd
+        # Env vars are sourced from a file inside the container, never passed
+        # as `-e KEY=VALUE` flags (which leak onto host `ps aux`).
+        assert "-e" not in cmd
+        sh_cmd = cmd[cmd.index("sh") + 2]
+        assert "base64 -d" in sh_cmd
+        for arg in cmd:
+            assert "K=v" not in arg
 
     @pytest.mark.asyncio
     async def test_services_lists_compose_services(self) -> None:
@@ -134,6 +140,102 @@ class TestDockerSandboxServiceExec:
         services = await sandbox.services()
 
         assert services == ["main", "target"]
+
+
+class TestDockerSandboxServiceFileTransfer:
+    """#248: upload_dir/download_dir must be able to target any service.
+
+    Target-side ``test.sh`` verification needs the ``/tests`` dir copied into
+    the target container and the resulting ``reward.txt`` copied back out.
+    """
+
+    def _make_sandbox(self) -> DockerSandbox:
+        sandbox = DockerSandbox.__new__(DockerSandbox)
+        sandbox._persistent_env = {}
+        sandbox.default_user = None
+        return sandbox
+
+    @pytest.mark.asyncio
+    async def test_upload_dir_targets_named_service(self) -> None:
+        """#248: upload_dir(service=...) copies into the target container."""
+        sandbox = self._make_sandbox()
+        cp_calls: list[list[str]] = []
+
+        async def fake_run(command, check=False, timeout_sec=None):
+            cp_calls.append(command)
+            return ExecResult(stdout="", stderr="", return_code=0)
+
+        sandbox._run_docker_compose_command = fake_run  # type: ignore[method-assign]
+        await sandbox.upload_dir("/host/tests", "/tests", service="target")
+
+        cp = next(c for c in cp_calls if c and c[0] == "cp")
+        assert cp == ["cp", "/host/tests/.", "target:/tests"]
+
+    @pytest.mark.asyncio
+    async def test_upload_dir_defaults_to_main(self) -> None:
+        """#248: upload_dir without a service still copies into main."""
+        sandbox = self._make_sandbox()
+        cp_calls: list[list[str]] = []
+
+        async def fake_run(command, check=False, timeout_sec=None):
+            cp_calls.append(command)
+            return ExecResult(stdout="", stderr="", return_code=0)
+
+        sandbox._run_docker_compose_command = fake_run  # type: ignore[method-assign]
+        await sandbox.upload_dir("/host/tests", "/tests")
+
+        cp = next(c for c in cp_calls if c and c[0] == "cp")
+        assert cp == ["cp", "/host/tests/.", "main:/tests"]
+
+    @pytest.mark.asyncio
+    async def test_download_dir_targets_named_service(self) -> None:
+        """#248: download_dir(service=...) copies out of the target container."""
+        sandbox = self._make_sandbox()
+        cp_calls: list[list[str]] = []
+
+        async def fake_run(command, check=False, timeout_sec=None):
+            cp_calls.append(command)
+            return ExecResult(stdout="", stderr="", return_code=0)
+
+        sandbox._run_docker_compose_command = fake_run  # type: ignore[method-assign]
+        await sandbox.download_dir("/logs/verifier", "/host/out", service="target")
+
+        cp = next(c for c in cp_calls if c and c[0] == "cp")
+        assert cp == ["cp", "target:/logs/verifier/.", "/host/out"]
+
+
+class TestSingleContainerFileTransferRejection:
+    """#248: single-container backends reject non-main dir transfers."""
+
+    @pytest.mark.asyncio
+    async def test_modal_upload_dir_rejects_non_main(self) -> None:
+        """#248: Modal upload_dir cannot target a non-main service."""
+        pytest.importorskip("modal")  # sandbox-modal optional dependency
+        from benchflow.sandbox.modal_impl import ModalSandbox
+
+        sandbox = ModalSandbox.__new__(ModalSandbox)
+        with pytest.raises(ValueError, match="single-container"):
+            await sandbox.upload_dir("/host/tests", "/tests", service="target")
+
+    @pytest.mark.asyncio
+    async def test_modal_download_dir_rejects_non_main(self) -> None:
+        """#248: Modal download_dir cannot target a non-main service."""
+        pytest.importorskip("modal")  # sandbox-modal optional dependency
+        from benchflow.sandbox.modal_impl import ModalSandbox
+
+        sandbox = ModalSandbox.__new__(ModalSandbox)
+        with pytest.raises(ValueError, match="single-container"):
+            await sandbox.download_dir("/logs/verifier", "/host/out", service="target")
+
+    @pytest.mark.asyncio
+    async def test_daytona_direct_upload_dir_rejects_non_main(self) -> None:
+        """#248: direct (non-compose) Daytona upload_dir rejects multi-service."""
+        pytest.importorskip("daytona")  # sandbox-daytona optional dependency
+        from benchflow.sandbox.daytona import _DaytonaDirect
+
+        strategy = _DaytonaDirect.__new__(_DaytonaDirect)
+        with pytest.raises(ValueError, match="single-container"):
+            await strategy.upload_dir("/host/tests", "/tests", service="target")
 
 
 class TestDockerProcessServiceSelection:
@@ -245,7 +347,7 @@ class TestDaytonaServiceExec:
         await strategy.exec("cat /flag", service="target")
 
         sub = captured[0]
-        assert sub[sub.index("bash") - 1] == "target"
+        assert sub[sub.index("sh") - 1] == "target"
 
     @pytest.mark.asyncio
     async def test_dind_exec_defaults_to_main(self) -> None:
@@ -264,7 +366,7 @@ class TestDaytonaServiceExec:
         await strategy.exec("echo hi")
 
         sub = captured[0]
-        assert sub[sub.index("bash") - 1] == "main"
+        assert sub[sub.index("sh") - 1] == "main"
 
     @pytest.mark.asyncio
     async def test_direct_strategy_rejects_non_main_service(self) -> None:
@@ -359,3 +461,121 @@ class TestModalRejectsMultiService:
 
         with pytest.raises(NotImplementedError, match="single-container"):
             await sandbox.services()
+
+    @pytest.mark.asyncio
+    async def test_modal_is_dir_rejects_non_main_service(self) -> None:
+        """Guards PR #310: ModalSandbox.is_dir gained a ``service`` param.
+
+        PR #310 added ``service`` to ``BaseSandbox.is_dir``/``is_file`` but
+        left ``ModalSandbox``'s overrides on the old ``(path, user)``
+        signature, so ``is_dir(path, service="target")`` raised an opaque
+        ``TypeError`` instead of the actionable ``ValueError`` that
+        ``ModalSandbox.exec`` raises for non-main services.
+        """
+        pytest.importorskip("modal")  # sandbox-modal optional dependency
+        from benchflow.sandbox.modal_impl import ModalSandbox
+
+        sandbox = ModalSandbox.__new__(ModalSandbox)
+
+        with pytest.raises(ValueError, match="single-container"):
+            await sandbox.is_dir("/etc", service="target")
+
+    @pytest.mark.asyncio
+    async def test_modal_is_file_rejects_non_main_service(self) -> None:
+        """Guards PR #310: ModalSandbox.is_file gained a ``service`` param.
+
+        Same regression as ``is_dir`` — without the ``service`` parameter,
+        ``is_file(path, service="target")`` raised ``TypeError`` rather than
+        the clear ``ValueError`` Modal uses for unsupported multi-service
+        access.
+        """
+        pytest.importorskip("modal")  # sandbox-modal optional dependency
+        from benchflow.sandbox.modal_impl import ModalSandbox
+
+        sandbox = ModalSandbox.__new__(ModalSandbox)
+
+        with pytest.raises(ValueError, match="single-container"):
+            await sandbox.is_file("/etc/hosts", service="target")
+
+
+class TestServiceExecUsesPosixShell:
+    """Guards PR #310: service-targeted exec must use POSIX ``sh``, not ``bash``.
+
+    PR #310 made ``exec(..., service=...)`` route commands to arbitrary task
+    containers, but the Docker and Daytona-DinD exec paths hardcoded
+    ``bash -c`` / ``bash -lc``. Alpine/distroless/minimal DB images ship no
+    ``/bin/bash``, so service-targeted verifier/setup commands failed even on
+    healthy containers. The exec wrapper uses only POSIX constructs, so the
+    fix is to invoke ``sh -c``.
+    """
+
+    def _make_docker_sandbox(self) -> DockerSandbox:
+        sandbox = DockerSandbox.__new__(DockerSandbox)
+        sandbox._persistent_env = {}
+        sandbox.default_user = None
+        return sandbox
+
+    @pytest.mark.asyncio
+    async def test_docker_exec_invokes_sh_not_bash(self) -> None:
+        """Guards PR #310: DockerSandbox.exec must invoke ``sh``, never ``bash``."""
+        sandbox = self._make_docker_sandbox()
+        captured: list[list[str]] = []
+
+        async def fake_run(command, check=False, timeout_sec=None):
+            captured.append(command)
+            return ExecResult(stdout="", stderr="", return_code=0)
+
+        sandbox._run_docker_compose_command = fake_run  # type: ignore[method-assign]
+        await sandbox.exec("echo hi", service="target")
+
+        cmd = captured[0]
+        assert "sh" in cmd
+        assert "bash" not in cmd
+        # ``sh -c <command>`` is the tail of the exec invocation.
+        assert cmd[-3:] == ["sh", "-c", "echo hi"]
+
+    @pytest.mark.asyncio
+    async def test_docker_exec_env_wrapper_stays_posix(self) -> None:
+        """Guards PR #310: the env-file wrapper sourced under ``sh`` is POSIX.
+
+        The wrapper relies on ``trap``, ``printf``, ``base64 -d``, ``umask``,
+        ``set -a`` and ``. file`` — all POSIX, so it runs correctly under
+        ``sh`` on shells without ``bash``.
+        """
+        sandbox = self._make_docker_sandbox()
+        captured: list[list[str]] = []
+
+        async def fake_run(command, check=False, timeout_sec=None):
+            captured.append(command)
+            return ExecResult(stdout="", stderr="", return_code=0)
+
+        sandbox._run_docker_compose_command = fake_run  # type: ignore[method-assign]
+        await sandbox.exec("id", env={"K": "v"}, service="target")
+
+        cmd = captured[0]
+        assert cmd[cmd.index("sh") - 1] == "target"
+        wrapped = cmd[cmd.index("sh") + 2]
+        # ``source`` is a bashism; the wrapper must use the POSIX ``.`` builtin.
+        assert "source " not in wrapped
+        assert ". /tmp/.benchflow_exec_env_" in wrapped
+
+    @pytest.mark.asyncio
+    async def test_daytona_dind_exec_invokes_sh_not_bash(self) -> None:
+        """Guards PR #310: Daytona DinD exec must invoke ``sh``, never ``bash``."""
+        pytest.importorskip("daytona")  # sandbox-daytona optional dependency
+        from benchflow.sandbox.daytona import _DaytonaDinD
+
+        strategy = _DaytonaDinD.__new__(_DaytonaDinD)
+        captured: list[list[str]] = []
+
+        async def fake_compose_exec(subcommand, timeout_sec=None):
+            captured.append(subcommand)
+            return ExecResult(stdout="", stderr="", return_code=0)
+
+        strategy._compose_exec = fake_compose_exec  # type: ignore[method-assign]
+        await strategy.exec("cat /flag", service="target")
+
+        sub = captured[0]
+        assert "sh" in sub
+        assert "bash" not in sub
+        assert sub[-3:] == ["sh", "-c", "cat /flag"]

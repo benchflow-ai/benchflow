@@ -314,7 +314,11 @@ def resolve_source_with_metadata(
             resolved_sha=resolved_sha,
         )
 
-    target = snapshot_root / canonical_source_path if canonical_source_path else snapshot_root
+    target = (
+        snapshot_root / canonical_source_path
+        if canonical_source_path
+        else snapshot_root
+    )
 
     return ResolvedSource(
         path=target,
@@ -436,7 +440,9 @@ def infer_task_source_provenance(task_path: Path) -> dict[str, Any] | None:
 
 
 def _is_hex(value: str) -> bool:
-    return len(value) in {40, 64} and all(ch in "0123456789abcdef" for ch in value.lower())
+    return len(value) in {40, 64} and all(
+        ch in "0123456789abcdef" for ch in value.lower()
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -267,7 +267,9 @@ def test_collect_metrics_partial_reward(tmp_path):
     assert s["failed"] == 1
 
 
-def test_collect_metrics_aggregates_memory_scores_without_changing_output_score(tmp_path):
+def test_collect_metrics_aggregates_memory_scores_without_changing_output_score(
+    tmp_path,
+):
     """Guards OPEN-3 memory-space metrics as additive, not pass/fail signal."""
     rows = [
         ("task-a", 1.0, 0.5),
@@ -313,6 +315,41 @@ def test_collect_metrics_aggregates_memory_scores_without_changing_output_score(
     assert summary["memory_score"] == 0.75
     assert summary["memory_score_coverage"] == 2 / 3
     assert summary["memory_scores"] == {"task-a": 0.5, "task-b": 1.0}
+
+
+def test_collect_metrics_error_and_verifier_error_counted_once(tmp_path):
+    """A result with BOTH error and verifier_error (rewards=None) must land in
+    exactly one bucket — errored — so the count buckets stay disjoint and
+    passed+failed+errored+verifier_errored == total.
+
+    Guards the fix from PR #320 for audit Finding 6 (metrics.py side).
+    """
+    trial = tmp_path / "job" / "task-x__abc123"
+    trial.mkdir(parents=True)
+    (trial / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "task-x",
+                "rewards": None,
+                "error": "agent crashed",
+                "verifier_error": "verifier also failed",
+                "n_tool_calls": 0,
+                "started_at": "2026-03-24 10:00:00.000000",
+                "finished_at": "2026-03-24 10:05:00.000000",
+            }
+        )
+    )
+
+    metrics = collect_metrics(str(tmp_path))
+    s = metrics.summary()
+
+    assert s["total"] == 1
+    # Agent error takes precedence — counted once as errored, never as both.
+    assert s["errored"] == 1
+    assert s["verifier_errored"] == 0
+    assert (
+        s["passed"] + s["failed"] + s["errored"] + s["verifier_errored"] == s["total"]
+    )
 
 
 def test_collect_metrics_usage_aggregation_mixed_telemetry(tmp_path):

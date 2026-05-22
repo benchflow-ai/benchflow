@@ -15,6 +15,7 @@ async def test_docker_upload_dir_creates_target_before_compose_cp() -> None:
 
     await sandbox.upload_dir("local/skills", "/app/skills")
 
+    # upload_dir threads the compose `service` selector through to mkdir (#248).
     sandbox.exec.assert_awaited_once_with(
         "mkdir -p /app/skills", user="root", service="main"
     )

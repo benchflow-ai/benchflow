@@ -179,6 +179,9 @@ class LLMJudgeRewardFunc:
         # default; rubric files supply their own default via ``_resolve_model``.
         self.model = judge_model or model
         self._explicit_model = judge_model
+        # Resolved ``[verifier.env]`` credentials, threaded explicitly into
+        # ``call_judge`` so concurrent judge runs do not race on a shared
+        # ``os.environ`` (see ``call_judge``).
         self._judge_env = dict(judge_env or {})
         self.mode = mode
         self._rubric_path = rubric_path
@@ -300,18 +303,19 @@ class LLMJudgeRewardFunc:
             prompt_text = self._build_prompt(criterion, agent_text, context)
 
             try:
-                raw_response = await call_judge(
-                    model, prompt_text, env=self._judge_env
-                )
+                raw_response = await call_judge(model, prompt_text, env=self._judge_env)
                 verdict = parse_verdict(raw_response)
                 norm_score = self._extract_score(criterion, verdict)
             except JudgeEnvironmentError:
+                # No provider SDK installed — the judge could not run at all.
+                # This is an environment failure, not a verdict: propagate it
+                # so the verifier marks the run as errored instead of silently
+                # recording reward 0.0 (indistinguishable from a real fail).
                 raise
             except Exception as exc:
                 if self._judge_errors_are_infra:
                     raise JudgeScoringError(
-                        "Judge error on criterion "
-                        f"{criterion.id}: {type(exc).__name__}"
+                        f"Judge error on criterion {criterion.id}: {type(exc).__name__}"
                     ) from exc
                 logger.warning("Judge error on criterion %s: %s", criterion.id, exc)
                 norm_score = 0.0

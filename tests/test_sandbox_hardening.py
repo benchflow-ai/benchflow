@@ -862,8 +862,9 @@ class TestVerifierEnv:
         assert final_env.get("PYTEST_DISABLE_PLUGIN_AUTOLOAD") == "1"
 
     def test_verifier_config_keeps_pytest_plugins_from_toml(self):
-        """Guards issue #192 bug 2: a [verifier] pytest_plugins declaration in
-        task.toml must survive parsing into VerifierConfig.
+        """Guards the fix from PR #309 for issue #192 bug 2: a [verifier]
+        pytest_plugins declaration in task.toml must survive parsing into
+        VerifierConfig.
 
         lockdown._discover_pytest_plugin_flags reads
         task.config.verifier.pytest_plugins as the fallback when container-side

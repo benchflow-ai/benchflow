@@ -104,6 +104,18 @@ class BaseSandbox(ABC):
     def _uses_compose(self) -> bool:
         return False
 
+    @property
+    def is_mounted(self) -> bool:
+        """Whether the rollout dir is host-bind-mounted into the sandbox.
+
+        When ``True`` the agent container's verifier output is already visible
+        on the host, so the verifier can skip a ``download_dir`` round-trip.
+        Backends that run remotely (Daytona, Modal) have no bind mount and
+        override this to ``False``. The default is ``False`` so non-mounted
+        backends are the safe assumption.
+        """
+        return False
+
     def _maybe_resolve_task_env(self) -> None:
         if self.task_env_config.env and not self._uses_compose:
             resolved = resolve_env_vars(self.task_env_config.env)
@@ -175,7 +187,16 @@ class BaseSandbox(ABC):
     @abstractmethod
     async def upload_dir(
         self, source_dir: Path | str, target_dir: str, service: str = "main"
-    ) -> None: ...
+    ) -> None:
+        """Upload a directory into a compose service container.
+
+        ``service`` selects which container receives the files. The default
+        ``"main"`` is the agent container. Multi-container (vulhub-style)
+        tasks pass a target service so the test-script verifier's ``/tests``
+        dir lands in the container being inspected (#248). Single-container
+        backends reject non-``main`` values.
+        """
+        ...
 
     @abstractmethod
     async def download_file(
@@ -185,7 +206,16 @@ class BaseSandbox(ABC):
     @abstractmethod
     async def download_dir(
         self, source_dir: str, target_dir: Path | str, service: str = "main"
-    ) -> None: ...
+    ) -> None:
+        """Download a directory from a compose service container.
+
+        ``service`` selects which container the files come from. The default
+        ``"main"`` is the agent container. Multi-container (vulhub-style)
+        tasks pass a target service so target-side verifier output — e.g. a
+        ``reward.txt`` written by a ``test.sh`` running in the target — can be
+        retrieved (#248). Single-container backends reject non-``main`` values.
+        """
+        ...
 
     @abstractmethod
     async def exec(
