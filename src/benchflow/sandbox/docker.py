@@ -746,7 +746,7 @@ class DockerSandbox(BaseSandbox):
         user = self._resolve_user(user)
         env = self._merge_env(env)
 
-        exec_command: list[str] = ["exec"]
+        exec_command: list[str] = ["exec", "-T"]
 
         if cwd:
             exec_command.extend(["-w", cwd])
