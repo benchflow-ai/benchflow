@@ -170,24 +170,22 @@ if [ "$CHECK_ONLY" = false ]; then
   echo ""
   CHECK_AGENTS=("${LAUNCHED[@]}")
 
-  # Wait for all and report as each finishes.
-  FAILURES=0
+  # Wait for all and report as each finishes. bench eval create may exit
+  # non-zero when trials fail or verifiers reject agent output; audit anyway.
+  EVAL_WARNINGS=0
   for i in "${!PIDS[@]}"; do
     pid="${PIDS[$i]}"
     agent="${LAUNCHED[$i]}"
     if wait "$pid"; then
       echo "✓ $agent finished — $(tail -1 "$LOG_DIR/$agent.log")"
     else
-      echo "✗ $agent failed (exit $?) — see $LOG_DIR/$agent.log"
-      FAILURES=$((FAILURES + 1))
+      echo "⚠ $agent exited $? — see $LOG_DIR/$agent.log (continuing to audit)"
+      EVAL_WARNINGS=$((EVAL_WARNINGS + 1))
     fi
   done
 
   echo ""
-  echo "${#LAUNCHED[@]} agents done, $FAILURES failed."
-  if [ "$FAILURES" -ne 0 ]; then
-    exit 1
-  fi
+  echo "${#LAUNCHED[@]} agents done, $EVAL_WARNINGS exited non-zero."
 fi
 
 # ── Check results ───────────────────────────────────────────────────
@@ -201,3 +199,4 @@ uv run python tests/integration/check_results.py \
   "$JOBS_ROOT" \
   "${CHECK_AGENTS[@]}" \
   "${EXPECTED_CHECK_ARGS[@]}"
+exit $?

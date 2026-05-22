@@ -136,6 +136,15 @@ def test_integration_runner_uses_source_configs_for_auditable_provenance() -> No
     assert '--tasks-dir "$TASKS_DIR"' not in script
 
 
+def test_integration_runner_audits_after_nonzero_eval_exit() -> None:
+    """Guards Cycle B from skipping audit when bench eval exits on task failures."""
+    script = INTEGRATION_RUN_SH.read_text()
+
+    assert "continuing to audit" in script
+    assert "exit $?" in script
+    assert "if [ \"$FAILURES\" -ne 0 ]; then" not in script
+
+
 def test_release_suite_hosted_env_hubs_have_hub_urls() -> None:
     """Guards ENG-92 hosted env hubs are tracked as env sources, not benchmarks."""
     suite = load_suite(SUITE_PATH)
