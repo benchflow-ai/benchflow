@@ -69,8 +69,12 @@ def _lock_is_stale(lock_path: Path) -> bool:
         return True
     try:
         os.kill(pid, 0)
-    except OSError:
+    except ProcessLookupError:
         return True
+    except PermissionError:
+        return False
+    except OSError:
+        return False
     return False
 
 
