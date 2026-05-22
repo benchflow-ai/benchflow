@@ -34,6 +34,8 @@ from benchflow.task.config import SandboxConfig
 from benchflow.task.env import resolve_env_vars
 from benchflow.task.paths import RolloutPaths, SandboxPaths
 
+_DAYTONA_COMMAND_POLL_INTERVAL_SEC = 1.0
+
 
 def _ensure_daytona_anyio_compat() -> None:
     """Patch the anyio symbol that Daytona 0.176 imports on newer anyio."""
@@ -958,14 +960,40 @@ class DaytonaSandbox(BaseSandbox):
             session_id, command_id
         )
 
-    async def _poll_response(self, session_id: str, command_id: str) -> ExecResult:
+    async def _poll_response(
+        self,
+        session_id: str,
+        command_id: str,
+        timeout_sec: int | float | None = None,
+    ) -> ExecResult:
         if not self._sandbox:
             raise RuntimeError("Sandbox not found. Please build the environment first.")
+
+        loop = asyncio.get_running_loop()
+        deadline = (
+            loop.time() + float(timeout_sec)
+            if timeout_sec is not None and timeout_sec > 0
+            else None
+        )
 
         response = await self._get_session_command_with_retry(session_id, command_id)
 
         while response.exit_code is None:  # type: ignore[union-attr]
-            await asyncio.sleep(1)
+            if deadline is None:
+                await asyncio.sleep(_DAYTONA_COMMAND_POLL_INTERVAL_SEC)
+            else:
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    raise RuntimeError(
+                        f"Command timed out after {timeout_sec} seconds"
+                    )
+                await asyncio.sleep(
+                    min(_DAYTONA_COMMAND_POLL_INTERVAL_SEC, remaining)
+                )
+                if loop.time() >= deadline:
+                    raise RuntimeError(
+                        f"Command timed out after {timeout_sec} seconds"
+                    )
             response = await self._get_session_command_with_retry(
                 session_id,
                 response.id,  # type: ignore[union-attr]
@@ -1026,7 +1054,11 @@ class DaytonaSandbox(BaseSandbox):
             if response.cmd_id is None:
                 raise RuntimeError("Cannot find command ID.")
 
-            result = await self._poll_response(session_id, response.cmd_id)
+            result = await self._poll_response(
+                session_id,
+                response.cmd_id,
+                timeout_sec=timeout_sec,
+            )
 
         finally:
             pass  # Don't delete session; Daytona kills child processes

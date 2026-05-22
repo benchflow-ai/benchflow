@@ -341,9 +341,9 @@ class TestJobRunOrchestration:
             == result.total
             == 1
         )
-        # Agent error takes precedence: counted as errored, not verifier_errored.
-        assert result.errored == 1
-        assert result.verifier_errored == 0
+        # Verifier failures are infrastructure: counted as verifier_errored.
+        assert result.errored == 0
+        assert result.verifier_errored == 1
 
     @pytest.mark.asyncio
     async def test_summary_json_includes_usage_aggregation(self, tmp_path):

@@ -14,11 +14,13 @@ from __future__ import annotations
 import json
 import logging
 import shlex
+import shutil
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel
 
+from benchflow.rewards.validation import is_valid_reward_number, validate_reward_map
 from benchflow.task.env import resolve_env_vars
 from benchflow.task.paths import RolloutPaths, SandboxPaths
 
@@ -28,7 +30,9 @@ logger = logging.getLogger(__name__)
 class VerifierResult(BaseModel):
     """Result from the verifier — reward dict."""
 
-    rewards: dict[str, float | int] | None = None
+    model_config = {"strict": True}
+
+    rewards: dict[str, Any] | None = None
 
 
 class RewardFileEmptyError(Exception):
@@ -86,26 +90,60 @@ class Verifier:
                 f"Reward file is empty at {self._rollout_paths.reward_text_path}"
             )
         try:
-            return {"reward": float(self._rollout_paths.reward_text_path.read_text())}
+            reward = float(self._rollout_paths.reward_text_path.read_text())
         except (ValueError, TypeError) as e:
             raise VerifierOutputParseError(
                 f"Failed to parse rewards from text file {self._rollout_paths.reward_text_path}"
             ) from e
+        if not is_valid_reward_number(reward):
+            raise VerifierOutputParseError(
+                f"Reward text file {self._rollout_paths.reward_text_path} "
+                "must contain a finite numeric reward between 0.0 and 1.0"
+            )
+        return {"reward": reward}
 
-    def _parse_reward_json(self) -> dict[str, float | int]:
+    def _parse_reward_json(self) -> dict[str, Any]:
         if self._rollout_paths.reward_json_path.stat().st_size == 0:
             raise RewardFileEmptyError(
                 f"Reward file is empty at {self._rollout_paths.reward_json_path}"
             )
         try:
-            return json.loads(self._rollout_paths.reward_json_path.read_text())
+            rewards = json.loads(self._rollout_paths.reward_json_path.read_text())
         except (ValueError, TypeError) as e:
             raise VerifierOutputParseError(
                 f"Failed to parse rewards from JSON file {self._rollout_paths.reward_json_path}"
             ) from e
 
+        if not isinstance(rewards, dict):
+            raise VerifierOutputParseError(
+                f"Reward JSON file {self._rollout_paths.reward_json_path} "
+                "must contain an object with numeric rewards"
+            )
+
+        canonical_reward = rewards.get("reward")
+        if not is_valid_reward_number(canonical_reward):
+            raise VerifierOutputParseError(
+                f"Reward JSON file {self._rollout_paths.reward_json_path} "
+                "is missing numeric 'reward' between 0.0 and 1.0"
+            )
+
+        try:
+            return validate_reward_map(rewards, source="reward JSON")
+        except ValueError as e:
+            raise VerifierOutputParseError(
+                f"Reward JSON file {self._rollout_paths.reward_json_path} {e}"
+            ) from e
+
+    def _clear_reward_outputs(self) -> None:
+        for path in (
+            self._rollout_paths.reward_text_path,
+            self._rollout_paths.reward_json_path,
+        ):
+            path.unlink(missing_ok=True)
+
     async def verify(self) -> VerifierResult:
         """Run the configured verifier and return the reward result."""
+        self._clear_reward_outputs()
         if self._task.config.verifier.type == "llm-judge":
             return await self._verify_llm_judge()
         return await self._verify_test_script()
@@ -115,15 +153,26 @@ class Verifier:
     # ------------------------------------------------------------------
 
     async def _verify_test_script(self) -> VerifierResult:
-        """Run the task's ``test.sh`` verifier and return the reward result.
-
-        ``[verifier].service`` selects which compose service ``test.sh`` runs
-        in. The default ``"main"`` is the agent container (Harbor-compatible).
-        Multi-container (vulhub-style) tasks set it to a target/database
-        service so the verifier can inspect *target-side* state — RCE markers,
-        DB modifications — instead of only the agent workspace (#248).
-        """
+        """Run the task's ``test.sh`` verifier and return the reward result."""
         service = self._task.config.verifier.service
+        verifier_outputs_are_mounted = service == "main" and getattr(
+            self._sandbox, "is_mounted", False
+        )
+        if not verifier_outputs_are_mounted:
+            result = await self._sandbox.exec(
+                "rm -rf /logs/verifier && mkdir -p /logs/verifier && "
+                "chmod 777 /logs/verifier",
+                user="root",
+                service=service,
+                timeout_sec=10,
+            )
+            return_code = _exec_return_code(result)
+            if return_code != 0:
+                raise VerifierOutputParseError(
+                    "Verifier setup failed: clearing verifier output directory "
+                    f"exited with rc={return_code}"
+                )
+
         try:
             await self._sandbox.upload_dir(
                 source_dir=self._task.paths.tests_dir,
@@ -163,37 +212,44 @@ class Verifier:
                 ).as_posix()
             )
         )
-        await self._sandbox.exec(
+        chmod_result = await self._sandbox.exec(
             f"chmod +x {test_script_path}",
             user="root",
             service=service,
+            timeout_sec=10,
         )
+        chmod_return_code = _exec_return_code(chmod_result)
+        if chmod_return_code != 0:
+            raise VerifierOutputParseError(
+                f"Verifier setup failed: chmod exited with rc={chmod_return_code}"
+            )
 
-        # The ``main`` (agent) container has ``/logs/verifier`` bind-mounted
-        # and re-created by ``harden_before_verify``. A non-``main`` target
-        # service (#248) has neither, so the ``test.sh`` stdout redirect below
-        # — and any ``test.sh`` that writes ``reward.txt`` there — would fail
-        # before verification even starts. Create it explicitly first.
         if service != "main":
             verifier_dir = shlex.quote(str(sandbox_paths.verifier_dir))
-            await self._sandbox.exec(
+            mkdir_result = await self._sandbox.exec(
                 f"mkdir -p {verifier_dir} && chmod 777 {verifier_dir}",
                 user="root",
                 service=service,
+                timeout_sec=10,
             )
+            mkdir_return_code = _exec_return_code(mkdir_result)
+            if mkdir_return_code != 0:
+                raise VerifierOutputParseError(
+                    "Verifier setup failed: target verifier dir exited with "
+                    f"rc={mkdir_return_code}"
+                )
 
-        await self._sandbox.exec(
+        test_result = await self._sandbox.exec(
             command=f"{test_script_path} > {test_stdout_path} 2>&1",
             env=env,
             user=self._task.config.verifier.user,
             service=service,
+            timeout_sec=self._task.config.verifier.timeout_sec,
         )
+        test_return_code = _exec_return_code(test_result)
 
-        # Download verifier output if it is not host-mounted. Only the agent's
-        # ``main`` container has the rollout dir bind-mounted; a target service
-        # never does, so target-side rewards (#248) are always downloaded.
-        is_mounted = service == "main" and self._sandbox.is_mounted
-        if not is_mounted:
+        # Download verifier output if sandbox doesn't mount locally
+        if not verifier_outputs_are_mounted:
             try:
                 await self._sandbox.download_dir(
                     source_dir=str(sandbox_paths.verifier_dir),
@@ -205,11 +261,26 @@ class Verifier:
                     "Failed to download verifier directory from sandbox"
                 ) from e
 
+        if test_return_code != 0 and (
+            self._rollout_paths.reward_text_path.exists()
+            or self._rollout_paths.reward_json_path.exists()
+        ):
+            raise VerifierOutputParseError(
+                f"Verifier script exited with rc={test_return_code}; "
+                "refusing reward output from failed verifier"
+            )
+
         if self._rollout_paths.reward_text_path.exists():
             rewards = self._parse_reward_text()
         elif self._rollout_paths.reward_json_path.exists():
             rewards = self._parse_reward_json()
         else:
+            if test_return_code != 0:
+                raise RewardFileNotFoundError(
+                    f"verifier exited with rc={test_return_code}; no reward file "
+                    f"found at {self._rollout_paths.reward_text_path} or "
+                    f"{self._rollout_paths.reward_json_path}"
+                )
             raise RewardFileNotFoundError(
                 f"No reward file found at {self._rollout_paths.reward_text_path} or "
                 f"{self._rollout_paths.reward_json_path}"
@@ -241,6 +312,11 @@ class Verifier:
         """
         judge = self._task.config.verifier.judge
         dest = self._rollout_paths.verifier_dir / "deliverables"
+        if dest.exists():
+            if dest.is_dir() and not dest.is_symlink():
+                shutil.rmtree(dest)
+            else:
+                dest.unlink()
         dest.mkdir(parents=True, exist_ok=True)
         try:
             await self._sandbox.download_dir(
@@ -248,30 +324,20 @@ class Verifier:
                 target_dir=dest,
             )
         except Exception as e:
-            self._logger.warning(
-                "Failed to download deliverables from %s: %s", judge.input_dir, e
-            )
+            raise DownloadVerifierDirError(
+                f"Failed to download llm-judge input from {judge.input_dir}"
+            ) from e
         return dest
 
     async def _verify_llm_judge(self) -> VerifierResult:
-        """Score agent deliverables against a rubric with an LLM judge.
-
-        A missing provider SDK raises ``JudgeEnvironmentError``, which is left
-        to propagate: the judge could not run, so the rollout is marked as a
-        verifier error rather than silently scored ``0.0`` (which would be
-        indistinguishable from a genuine judge verdict of fail).
-        """
+        """Score agent deliverables against a rubric with an LLM judge."""
         from benchflow.rewards.builtins import LLMJudgeRewardFunc
 
         judge = self._task.config.verifier.judge
 
-        # API keys for the judge come from [verifier.env]. They are threaded
-        # explicitly into the judge call (and on into the provider clients)
-        # rather than written to the process-global ``os.environ``. Mutating
-        # the shared environment is not concurrency-safe: ``evaluation.py``
-        # runs verifications via ``asyncio.gather`` with concurrency > 1, so
-        # two judge runs in the same process would race on the env and see
-        # each other's (or missing) credentials.
+        # API keys for the judge come from [verifier.env]; scope them to the
+        # judge call so the provider SDKs (anthropic / openai / google) pick
+        # them up without permanently polluting the host process env.
         judge_env: dict[str, str] = {}
         if self._task.config.verifier.env:
             judge_env = resolve_env_vars(self._task.config.verifier.env)
@@ -286,6 +352,7 @@ class Verifier:
             rubric_path=rubric_path,
             judge_model=judge.model,
             judge_env=judge_env,
+            judge_errors_are_infra=True,
         )
         score = await reward_func.score(deliverables_dir)
 
@@ -297,6 +364,16 @@ class Verifier:
 
         # Persist the reward in the standard location for downstream tooling.
         self._rollout_paths.reward_json_path.write_text(
-            json.dumps({"reward": score}, indent=2)
+            json.dumps({"reward": score}, indent=2, allow_nan=False)
         )
         return VerifierResult(rewards={"reward": score})
+
+
+def _exec_return_code(result: Any) -> int:
+    if result is None:
+        return 0
+    for name in ("return_code", "exit_code"):
+        value = getattr(result, name, None)
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+    return 0

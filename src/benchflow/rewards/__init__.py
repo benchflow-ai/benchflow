@@ -2,6 +2,7 @@
 
 from benchflow.rewards.builtins import (
     CodeExecRewardFunc,
+    JudgeScoringError,
     LLMJudgeRewardFunc,
     StringMatchRewardFunc,
     TestRewardFunc,
@@ -25,6 +26,7 @@ __all__ = [
     "CodeExecRewardFunc",
     "Criterion",
     "JudgeConfig",
+    "JudgeScoringError",
     "LLMJudgeRewardFunc",
     "MemoryScorer",
     "RewardEvent",

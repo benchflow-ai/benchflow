@@ -13,20 +13,23 @@ logger = logging.getLogger(__name__)
 
 
 class JudgeEnvironmentError(RuntimeError):
-    """No LLM provider SDK is installed for the judge.
-
-    Raised when *every* provider import fails with ``ImportError``. This is an
-    *environment* failure — the judge could not run at all — and must be kept
-    distinct from a genuine judge verdict (including a real score of 0). Callers
-    surface it as a verifier error rather than recording it as reward ``0.0``.
-
-    Install the judge SDKs with the ``judge`` extra: ``uv sync --extra judge``.
-    """
+    """Raised when no judge provider SDK is available."""
 
 
 # ------------------------------------------------------------------
 # Verdict parsing
 # ------------------------------------------------------------------
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"Invalid JSON constant: {value}")
+
+
+def _loads_verdict_json(text: str) -> dict[str, Any]:
+    parsed = json.loads(text, parse_constant=_reject_json_constant)
+    if not isinstance(parsed, dict):
+        raise ValueError("Judge verdict must be a JSON object")
+    return parsed
 
 
 def parse_verdict(text: str) -> dict[str, Any]:
@@ -38,8 +41,8 @@ def parse_verdict(text: str) -> dict[str, Any]:
     match = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", text, re.DOTALL)
     if match:
         try:
-            return json.loads(match.group(1).strip())
-        except json.JSONDecodeError:
+            return _loads_verdict_json(match.group(1).strip())
+        except ValueError:
             pass
 
     # Balanced braces
@@ -53,8 +56,8 @@ def parse_verdict(text: str) -> dict[str, Any]:
                     depth -= 1
                 if depth == 0:
                     try:
-                        return json.loads(text[i : j + 1])
-                    except json.JSONDecodeError:
+                        return _loads_verdict_json(text[i : j + 1])
+                    except ValueError:
                         break
             break
 
@@ -104,37 +107,13 @@ async def call_judge(
 ) -> str:
     """Call an LLM judge, routing by model name prefix.
 
-    ``env`` carries the resolved ``[verifier.judge]`` credentials (API keys
-    etc.). They are passed explicitly into the provider clients rather than
-    being written into the process-global ``os.environ`` — concurrent judge
-    runs (``asyncio.gather`` with concurrency > 1) would otherwise race on
-    the shared environment and see each other's credentials. ``env`` keys
-    are layered over (and take precedence on a per-call basis without
-    mutating) the ambient process environment.
-
-    Tries Anthropic, OpenAI, and Google SDKs in order based on the
-    model string.
-
-    When the model name carries a *known* provider prefix (``claude-``,
-    ``gpt-``, ``gemini``, ...), only that provider can serve it: a real
-    API failure (bad key, model not found, retries exhausted) is raised
-    as-is rather than being masked by a different provider rejecting the
-    same model name.
-
-    When the prefix is *unknown* (``mistral-large``, ``deepseek-chat``, a
-    custom name), the provider cannot be determined up front, so every
-    provider is tried in turn. A real API failure from one provider then
-    falls through to the next instead of aborting the whole call.
-
-    In both cases a missing SDK (``ImportError``) always falls through to
-    the next provider.
+    ``env`` carries per-call credentials resolved from ``[verifier.env]``.
+    The provider clients receive those credentials explicitly so concurrent
+    judge runs do not race on process-global ``os.environ``.
     """
     bare_model = _strip_provider_prefix(model)
     creds: Mapping[str, str] = env or {}
     providers: list[str] = []
-    # ``matched_provider`` is True only when the model name confidently
-    # identifies a single provider. For an unknown prefix the providers
-    # list is a best-effort "try all", so an API failure must not abort.
     matched_provider = True
 
     if _is_anthropic_model(model):
@@ -144,12 +123,11 @@ async def call_judge(
     elif _is_gemini_model(model):
         providers = ["google", "anthropic", "openai"]
     else:
-        # Unknown prefix — try every provider in turn.
+        # Unknown prefix — try all
         providers = ["anthropic", "openai", "google"]
         matched_provider = False
 
     last_error: Exception | None = None
-
     for provider in providers:
         for attempt in range(retries):
             try:
@@ -161,12 +139,12 @@ async def call_judge(
                     return await _call_google(bare_model, prompt, creds)
             except ImportError:
                 logger.debug("SDK for %s not installed, skipping", provider)
-                break  # SDK missing — fall through to the next provider
+                break  # No point retrying if SDK is missing
             except Exception as e:
+                last_error = e
                 if attempt < retries - 1:
                     await asyncio.sleep(2**attempt)
                     continue
-                last_error = e
                 logger.warning(
                     "%s call failed after %d attempts: %s",
                     provider,
@@ -174,25 +152,11 @@ async def call_judge(
                     e,
                 )
                 if matched_provider:
-                    # A real API failure for this provider's own model.
-                    # Other providers cannot serve this model name, so
-                    # do not advance — raise the original error directly.
                     raise
-                # Unknown-prefix model: this provider could not serve it,
-                # but another one might — fall through to the next.
-                break
+                break  # Move to next provider
 
-    # Either every provider's SDK was missing (each ImportError ``break``s to
-    # the next), or — for an unknown-prefix model — every provider was tried
-    # and each failed at the API. If we have a recorded API failure, surface
-    # it so the caller sees a genuine error rather than a misleading
-    # missing-SDK message.
     if last_error is not None:
         raise last_error
-
-    # No API was ever reached: every provider's SDK was missing. This is an
-    # environment failure, not a verdict — ``JudgeEnvironmentError`` lets
-    # callers tell it apart from a real score.
     raise JudgeEnvironmentError(
         f"No LLM provider SDK is installed for model {model}. "
         "Install the judge extra: `uv sync --extra judge` "
@@ -210,11 +174,7 @@ async def _call_anthropic(
 ) -> str:
     import anthropic  # ty: ignore[unresolved-import]
 
-    creds = env or {}
-    # Pass the resolved key explicitly so concurrent judge runs cannot race
-    # on a shared os.environ. Fall back to the SDK's own env lookup when no
-    # key was threaded through.
-    api_key = creds.get("ANTHROPIC_API_KEY")
+    api_key = (env or {}).get("ANTHROPIC_API_KEY")
     client = (
         anthropic.AsyncAnthropic(api_key=api_key)
         if api_key
@@ -225,9 +185,6 @@ async def _call_anthropic(
         max_tokens=max_tokens,
         messages=[{"role": "user", "content": prompt}],
     )
-    # The response may have no content blocks, or lead with a non-text
-    # block (e.g. a tool-use block).  Return the first text block's text,
-    # or "" if none is present.
     for block in response.content:
         text = getattr(block, "text", None)
         if isinstance(text, str):
@@ -241,14 +198,10 @@ async def _call_openai(
     import openai
 
     creds = env or {}
-    # Pass the resolved key explicitly so concurrent judge runs cannot race
-    # on a shared os.environ.
-    api_key = creds.get("OPENAI_API_KEY")
-    base_url = creds.get("OPENAI_BASE_URL")
     kwargs: dict[str, str] = {}
-    if api_key:
+    if api_key := creds.get("OPENAI_API_KEY"):
         kwargs["api_key"] = api_key
-    if base_url:
+    if base_url := creds.get("OPENAI_BASE_URL"):
         kwargs["base_url"] = base_url
     client = openai.AsyncOpenAI(**kwargs)
     response = await client.chat.completions.create(
@@ -268,8 +221,6 @@ async def _call_google(
     from google import genai  # ty: ignore[unresolved-import]
 
     creds = env or {}
-    # Prefer the explicitly threaded credentials (concurrency-safe); fall
-    # back to the ambient process env only when none were provided.
     api_key = (
         creds.get("GOOGLE_API_KEY")
         or creds.get("GEMINI_API_KEY")
@@ -280,7 +231,4 @@ async def _call_google(
         raise RuntimeError("GOOGLE_API_KEY / GEMINI_API_KEY not set")
     client = genai.Client(api_key=api_key)
     response = await client.aio.models.generate_content(model=model, contents=prompt)
-    # ``response.text`` is ``None`` when the response has no text part
-    # (e.g. content blocked by a safety filter, or a non-text part leads
-    # the response).  Return "" so the ``-> str`` contract holds.
     return response.text or ""

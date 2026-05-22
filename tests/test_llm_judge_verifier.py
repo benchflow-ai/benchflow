@@ -15,7 +15,7 @@ import pytest
 
 from benchflow.task import RolloutPaths, Verifier
 from benchflow.task.config import TaskConfig
-from benchflow.task.verifier import RubricNotFoundError
+from benchflow.task.verifier import DownloadVerifierDirError, RubricNotFoundError
 
 _MOCK_PASS = '```json\n{"verdict": "pass", "reasoning": "good"}\n```'
 _MOCK_FAIL = '```json\n{"verdict": "fail", "reasoning": "bad"}\n```'
@@ -355,8 +355,7 @@ class TestLLMJudgeVerifier:
     async def test_download_failure_is_tolerated(
         self, mock_judge: AsyncMock, tmp_path: Path
     ) -> None:
-        """#270: a sandbox download error degrades to an empty deliverables set,
-        not a verifier crash."""
+        """Guards v0.5-integration@ffef85d: download failures surface as verifier errors."""
         mock_judge.return_value = _MOCK_FAIL
         task = _make_task(tmp_path, _judge_toml())
         (task.task_dir / "tests").mkdir()
@@ -368,9 +367,9 @@ class TestLLMJudgeVerifier:
         rollout_paths = RolloutPaths(tmp_path / "rollout")
         rollout_paths.mkdir()
 
-        result = await Verifier(task, rollout_paths, sandbox).verify()
-        # Judge still runs (against no deliverables) and returns a reward.
-        assert result.rewards == {"reward": 0.0}
+        with pytest.raises(DownloadVerifierDirError, match="llm-judge input"):
+            await Verifier(task, rollout_paths, sandbox).verify()
+        mock_judge.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -386,14 +385,19 @@ class TestTestScriptStillDefault:
         task.paths.tests_dir = task.task_dir / "tests"
         task.paths.test_path = task.task_dir / "tests" / "test.sh"
 
-        sandbox = MagicMock()
-        sandbox.upload_dir = AsyncMock()
-        sandbox.exec = AsyncMock()
-        sandbox.is_mounted = True
-
         rollout_paths = RolloutPaths(tmp_path / "rollout")
         rollout_paths.mkdir()
-        rollout_paths.reward_text_path.write_text("0.75")
+
+        async def _exec_side_effect(command, **kwargs):
+            if "test.sh" in command:
+                rollout_paths.reward_text_path.parent.mkdir(parents=True, exist_ok=True)
+                rollout_paths.reward_text_path.write_text("0.75")
+            return {"stdout": "", "stderr": "", "return_code": 0}
+
+        sandbox = MagicMock()
+        sandbox.upload_dir = AsyncMock()
+        sandbox.exec = AsyncMock(side_effect=_exec_side_effect)
+        sandbox.is_mounted = True
 
         result = await Verifier(task, rollout_paths, sandbox).verify()
         assert result.rewards == {"reward": 0.75}

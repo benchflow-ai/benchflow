@@ -294,9 +294,9 @@ def test_collect_metrics_error_and_verifier_error_counted_once(tmp_path):
     s = metrics.summary()
 
     assert s["total"] == 1
-    # Agent error takes precedence — counted once as errored, never as both.
-    assert s["errored"] == 1
-    assert s["verifier_errored"] == 0
+    # Verifier failures are infrastructure — counted once as verifier_errored.
+    assert s["errored"] == 0
+    assert s["verifier_errored"] == 1
     assert (
         s["passed"] + s["failed"] + s["errored"] + s["verifier_errored"] == s["total"]
     )
