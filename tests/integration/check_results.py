@@ -30,7 +30,14 @@ from benchflow._utils.scoring import classify_error, count_result_outcomes
 from benchflow._utils.source_provenance import source_issues, source_matches_parent
 
 EXPECTED: dict[str, Any] = {}
-EXPECTED_FIELDS = {"agent", "model", "environment", "concurrency"}
+EXPECTED_FIELDS = {
+    "agent",
+    "model",
+    "environment",
+    "concurrency",
+    "agent_idle_timeout",
+    "agent_idle_timeout_sec",
+}
 REMOTE_REACHABILITY: dict[tuple[str, str, str | None], bool] = {}
 RESULT_REQUIRED = {"task_name", "agent", "rewards", "error", "verifier_error"}
 SUMMARY_REQUIRED = {
@@ -81,11 +88,28 @@ def _expected(agent: str, field: str) -> Any:
     return EXPECTED.get(field, _MISSING)
 
 
+def _expected_agent_idle_timeout(agent: str) -> Any:
+    expected = _expected(agent, "agent_idle_timeout_sec")
+    if expected is not _MISSING:
+        return expected
+    return _expected(agent, "agent_idle_timeout")
+
+
+def _artifact_agent_idle_timeout(payload: dict[str, Any]) -> Any:
+    if "agent_idle_timeout_sec" in payload:
+        return payload["agent_idle_timeout_sec"]
+    if "agent_idle_timeout" in payload:
+        return payload["agent_idle_timeout"]
+    return _MISSING
+
+
 def _has_expected(agent: str, field: str) -> bool:
     return _expected(agent, field) is not _MISSING
 
 
 def _expected_label(value: Any) -> str:
+    if value is _MISSING:
+        return "<missing>"
     return "null" if value is None else repr(value)
 
 
@@ -326,6 +350,7 @@ def check_agent(agent_dir: Path) -> dict:
             expected_model = _expected(agent, "model")
             expected_environment = _expected(agent, "environment")
             expected_concurrency = _expected(agent, "concurrency")
+            expected_agent_idle_timeout = _expected_agent_idle_timeout(agent)
             if r.get("agent") != config.get("agent"):
                 findings["issues"].append(
                     f"{r.get('task_name', '?')}: result.json agent does not match config.json"
@@ -364,6 +389,14 @@ def check_agent(agent_dir: Path) -> dict:
             ):
                 findings["issues"].append(
                     f"{r.get('task_name', '?')}: config.json concurrency {config.get('concurrency')!r} does not match expected {_expected_label(expected_concurrency)}"
+                )
+                findings["ok"] = False
+            config_agent_idle_timeout = _artifact_agent_idle_timeout(config)
+            if expected_agent_idle_timeout is not _MISSING and str(
+                config_agent_idle_timeout
+            ) != str(expected_agent_idle_timeout):
+                findings["issues"].append(
+                    f"{r.get('task_name', '?')}: config.json agent_idle_timeout_sec {_expected_label(config_agent_idle_timeout)} does not match expected {_expected_label(expected_agent_idle_timeout)}"
                 )
                 findings["ok"] = False
             config_source_issues = source_issues(
@@ -423,6 +456,7 @@ def check_agent(agent_dir: Path) -> dict:
             expected_model = _expected(agent, "model")
             expected_environment = _expected(agent, "environment")
             expected_concurrency = _expected(agent, "concurrency")
+            expected_agent_idle_timeout = _expected_agent_idle_timeout(agent)
             summary_agent = summary.get("agent")
             if (
                 expected_agent is not _MISSING
@@ -458,6 +492,14 @@ def check_agent(agent_dir: Path) -> dict:
             ):
                 findings["issues"].append(
                     f"summary.json concurrency {summary.get('concurrency')!r} does not match expected {_expected_label(expected_concurrency)}"
+                )
+                findings["ok"] = False
+            summary_agent_idle_timeout = _artifact_agent_idle_timeout(summary)
+            if expected_agent_idle_timeout is not _MISSING and str(
+                summary_agent_idle_timeout
+            ) != str(expected_agent_idle_timeout):
+                findings["issues"].append(
+                    f"summary.json agent_idle_timeout_sec {_expected_label(summary_agent_idle_timeout)} does not match expected {_expected_label(expected_agent_idle_timeout)}"
                 )
                 findings["ok"] = False
             summary_source = summary.get("source")

@@ -340,6 +340,7 @@ def _write_config(
     started_at: datetime,
     agent_env: dict[str, str],
     concurrency: int | None = None,
+    agent_idle_timeout: int | None = None,
     scenes: list[Scene] | None = None,
     source_provenance: dict[str, Any] | None = None,
 ) -> None:
@@ -362,6 +363,7 @@ def _write_config(
         "context_root": str(context_root) if context_root else None,
         "timeout_sec": timeout,
         "concurrency": concurrency,
+        "agent_idle_timeout_sec": agent_idle_timeout,
         "started_at": str(started_at),
         "agent_env": recorded_env,
         "scenes": _scene_metadata(scenes or []),
@@ -1050,6 +1052,7 @@ class Rollout:
             started_at=self._started_at,
             agent_env=self._agent_env,
             concurrency=cfg.concurrency,
+            agent_idle_timeout=cfg.agent_idle_timeout,
             scenes=cfg.effective_scenes,
             source_provenance=cfg.source_provenance,
         )

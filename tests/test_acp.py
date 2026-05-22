@@ -454,6 +454,52 @@ class TestACPInterleaving:
             await client.close()
 
 
+class TestACPIdleWatchdog:
+    @pytest.mark.asyncio
+    async def test_idle_watchdog_returns_even_when_prompt_cancel_drain_stalls(
+        self,
+    ) -> None:
+        """Guards the 2026-05-22 Daytona/Gemini blocker fix against stuck cancel drain."""
+        from benchflow.acp.runtime import execute_prompts
+
+        class StubbornPromptClient:
+            def __init__(self) -> None:
+                self.release = asyncio.Event()
+                self.task: asyncio.Task | None = None
+
+            async def prompt(self, _prompt: str):
+                self.task = asyncio.current_task()
+                try:
+                    await asyncio.Future()
+                except asyncio.CancelledError:
+                    await self.release.wait()
+                    raise
+
+        client = StubbornPromptClient()
+        session = ACPSession("idle-session")
+
+        try:
+            started = asyncio.get_running_loop().time()
+            with pytest.raises(TimeoutError, match="Agent idle for 1s"):
+                await asyncio.wait_for(
+                    execute_prompts(
+                        client,  # type: ignore[arg-type]
+                        session,
+                        ["solve"],
+                        timeout=30,
+                        idle_timeout=1,
+                    ),
+                    timeout=1.8,
+                )
+            elapsed = asyncio.get_running_loop().time() - started
+            assert elapsed < 1.35
+        finally:
+            client.release.set()
+            if client.task is not None:
+                with pytest.raises(asyncio.CancelledError):
+                    await client.task
+
+
 class TestConnectAcpModelSelection:
     """Verify connect_acp passes the right model string to set_model."""
 
