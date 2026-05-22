@@ -61,15 +61,14 @@ echo "Taskset: $TASKSET"
 echo "Jobs: $JOBS_ROOT"
 
 mkdir -p "$TASKSET"
-ln -sf "$ROOT/tests/conformance/acp_smoke" "$TASKSET/acp_smoke"
-ln -sf "$ROOT/tests/examples/terminal-bench-smoke-task" "$TASKSET/terminal-bench-smoke-task"
-
 SKILLS="$(uv run python -c "
 from benchflow._utils.benchmark_repos import resolve_source_with_metadata
 print(resolve_source_with_metadata('benchflow-ai/skillsbench', path='tasks', ref='main').path)
-")"
-ln -sf "$SKILLS/pddl-tpp-planning" "$TASKSET/pddl-tpp-planning"
-ln -sf "$SKILLS/azure-bgp-oscillation-route-leak" "$TASKSET/azure-bgp-oscillation-route-leak"
+" 2>/dev/null)"
+cp -R "$SKILLS/pddl-tpp-planning" "$TASKSET/pddl-tpp-planning"
+cp -R "$SKILLS/azure-bgp-oscillation-route-leak" "$TASKSET/azure-bgp-oscillation-route-leak"
+cp -R "$ROOT/tests/conformance/acp_smoke" "$TASKSET/acp_smoke"
+cp -R "$ROOT/tests/examples/terminal-bench-smoke-task" "$TASKSET/terminal-bench-smoke-task"
 
 uv run bench eval create \
   --tasks-dir "$TASKSET" \
