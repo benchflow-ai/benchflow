@@ -58,6 +58,15 @@ run_audit() {
   uv run python tests/integration/check_results.py "$root" "${AUDIT_ARGS[@]}" "$@" || return 1
 }
 
+audit_idle_for_batch() {
+  local batch="$1"
+  if [ "$batch" = "skillsbench-self-gen" ]; then
+    echo "$SELF_GEN_IDLE_TIMEOUT"
+  else
+    echo "$IDLE_TIMEOUT"
+  fi
+}
+
 run_adapter_audit() {
   local skillsbench_result="$1"
   echo ""
@@ -108,7 +117,7 @@ if [ "$CHECK_ONLY" = true ]; then
   for batch in "$JOBS_ROOT"/*/; do
     [ -d "$batch" ] || continue
     name="$(basename "$batch")"
-    run_audit "$name" "$batch" || audit_fail=1
+    run_audit "$name" "$batch" "agent_idle_timeout_sec=$(audit_idle_for_batch "$name")" || audit_fail=1
   done
   skills_result="$(find "$JOBS_ROOT/skillsbench-deployed" -name result.json 2>/dev/null | head -1)"
   if [ -z "$skills_result" ]; then
@@ -338,7 +347,7 @@ batch_eval() {
     --concurrency "$CONCURRENCY" \
     --agent-idle-timeout "$idle" \
     --jobs-dir "$jobs" || eval_status=$?
-  run_audit "$batch" "$jobs" || return 1
+  run_audit "$batch" "$jobs" "agent_idle_timeout_sec=$idle" || return 1
   write_scope "$JOBS_ROOT"
   return "$eval_status"
 }

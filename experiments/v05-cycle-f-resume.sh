@@ -67,7 +67,7 @@ batch() {
   local name="$1" cfg="$2" idle="$3"
   echo "══════ $name ══════"
   uv run bench eval create --config "$cfg" --concurrency "$CONCURRENCY" --agent-idle-timeout "$idle" --jobs-dir "$JOBS_ROOT/$name" || true
-  uv run python tests/integration/check_results.py "$JOBS_ROOT/$name" agent=$AGENT model=$MODEL environment=daytona concurrency=$CONCURRENCY agent_idle_timeout_sec=$IDLE || true
+  uv run python tests/integration/check_results.py "$JOBS_ROOT/$name" agent=$AGENT model=$MODEL environment=daytona concurrency=$CONCURRENCY agent_idle_timeout_sec=$idle || true
 }
 
 batch skillsbench-deployed "$CONFIG_DIR/skillsbench-deployed.yaml" "$IDLE"
