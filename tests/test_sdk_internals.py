@@ -543,6 +543,33 @@ class TestWriteConfig:
         assert data["source"] == source
 
 
+def test_rollout_result_json_preserves_null_model(tmp_path):
+    """Guards v0.5-integration@c30e130 against oracle result/config model drift."""
+    from benchflow.rollout import Rollout, RolloutConfig
+
+    rollout = Rollout(
+        RolloutConfig(task_path=tmp_path / "task-a", agent="oracle", model=None)
+    )
+    rollout._rollout_dir = tmp_path
+    rollout._rollout_name = "task-a__trial"
+    rollout._agent_name = "oracle"
+    rollout._resolved_prompts = []
+    rollout._n_tool_calls = 0
+    rollout._error = None
+    rollout._verifier_error = None
+    rollout._trajectory = []
+    rollout._partial_trajectory = False
+    rollout._trajectory_source = None
+    rollout._rewards = {"reward": 0.0}
+    rollout._started_at = datetime(2026, 4, 8)
+    rollout._timing = {}
+
+    rollout._build_result()
+
+    data = json.loads((tmp_path / "result.json").read_text())
+    assert data["model"] is None
+
+
 # ── run wiring ──
 
 
@@ -613,6 +640,30 @@ class TestRunWiring:
         )
 
         assert seen["config"].source_provenance == source
+
+    @pytest.mark.asyncio
+    async def test_run_forwards_concurrency_to_rollout_config(
+        self, monkeypatch, tmp_path
+    ):
+        """Guards v0.5-integration@c30e130 against single-task config concurrency drift."""
+        from benchflow.models import RunResult
+        from benchflow.sdk import SDK
+
+        seen = {}
+
+        async def fake_create(config):
+            seen["config"] = config
+            trial = AsyncMock()
+            trial.run = AsyncMock(
+                return_value=RunResult(task_name="task-1", rewards={"reward": 1.0})
+            )
+            return trial
+
+        monkeypatch.setattr("benchflow.rollout.Rollout.create", fake_create)
+
+        await SDK().run(task_path=tmp_path, concurrency=64)
+
+        assert seen["config"].concurrency == 64
 
 
 # ── _build_result ──

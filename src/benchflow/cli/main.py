@@ -1242,6 +1242,7 @@ def eval_create(
                     job_name=None,
                     rollout_name=None,
                     jobs_dir=output_jobs_dir,
+                    concurrency=eval_concurrency,
                     environment=eval_environment,
                     agent_env=parsed_env,
                     skills_dir=str(skills_dir) if skills_dir else None,

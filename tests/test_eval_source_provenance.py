@@ -14,13 +14,37 @@ from benchflow.evaluation import Evaluation, EvaluationConfig
 from benchflow.models import RolloutResult
 
 
+def _write_minimal_task_toml(task_dir: Path) -> None:
+    task_dir.mkdir(parents=True, exist_ok=True)
+    (task_dir / "task.toml").write_text(
+        "\n".join(
+            [
+                'version = "1.0"',
+                "",
+                "[metadata]",
+                'author_name = "benchflow"',
+                "",
+                "[agent]",
+                "timeout_sec = 300",
+                "",
+                "[verifier]",
+                "timeout_sec = 60",
+                "",
+                "[environment]",
+                "cpus = 1",
+                "memory_mb = 2048",
+            ]
+        )
+    )
+
+
 @pytest.mark.asyncio
 async def test_evaluation_derives_per_task_source_provenance(monkeypatch, tmp_path):
     """Guards v0.5-integration@cb8759e against parent-only batch provenance."""
     tasks_root = tmp_path / "tasks"
     task_dir = tasks_root / "task-a"
     (task_dir / "tests").mkdir(parents=True)
-    (task_dir / "task.toml").write_text("[task]\n")
+    _write_minimal_task_toml(task_dir)
     (task_dir / "instruction.md").write_text("Solve it.\n")
     (task_dir / "tests" / "test.sh").write_text("exit 0\n")
     captured = {}
@@ -75,8 +99,7 @@ async def test_evaluation_summary_marks_resumed_source_mismatch(tmp_path):
     """Guards v0.5-integration@cb8759e against false resume provenance."""
     tasks_root = tmp_path / "tasks"
     task_dir = tasks_root / "task-a"
-    task_dir.mkdir(parents=True)
-    (task_dir / "task.toml").write_text("[task]\n")
+    _write_minimal_task_toml(task_dir)
     jobs_dir = tmp_path / "jobs"
     result_dir = jobs_dir / "old-run" / "task-a__old"
     result_dir.mkdir(parents=True)
@@ -231,6 +254,42 @@ def test_eval_create_config_applies_concurrency_override(monkeypatch, tmp_path):
     assert captured["concurrency"] == 100
 
 
+def test_eval_create_single_task_applies_concurrency_override(monkeypatch, tmp_path):
+    """Guards v0.5-integration@c30e130 against single-task CLI config drift."""
+    task_dir = tmp_path / "task-a"
+    task_dir.mkdir()
+    (task_dir / "task.toml").write_text("[task]\n")
+    captured = {}
+
+    async def fake_sdk_run(self, **kwargs):
+        captured["concurrency"] = kwargs["concurrency"]
+        return SimpleNamespace(
+            rewards={"reward": 1.0},
+            n_tool_calls=0,
+            error=None,
+            verifier_error=None,
+        )
+
+    monkeypatch.setattr("benchflow.sdk.SDK.run", fake_sdk_run)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "eval",
+            "create",
+            "--tasks-dir",
+            str(task_dir),
+            "--agent",
+            "oracle",
+            "--concurrency",
+            "64",
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert captured["concurrency"] == 64
+
+
 def test_eval_create_config_allows_literal_jobs_dir_override(monkeypatch, tmp_path):
     """Guards v0.5 config runs from treating --jobs-dir jobs as absent."""
     tasks_root = tmp_path / "tasks"
@@ -365,6 +424,78 @@ def test_eval_create_source_repo_batch_preserves_parent_source_provenance(
 
     assert result.exit_code == 0, result.stdout
     assert captured["source_provenance"] == source
+
+
+def test_eval_create_source_repo_writes_requested_concurrency_to_rollout_config(
+    monkeypatch, tmp_path
+):
+    """Guards v0.5-integration@c30e130 against false per-rollout concurrency evidence."""
+    tasks_root = tmp_path / "tasks"
+    task_dir = tasks_root / "task-a"
+    _write_minimal_task_toml(task_dir)
+    (task_dir / "instruction.md").write_text("Solve it.\n")
+    source = {
+        "type": "github",
+        "repo": "acme/benchmarks",
+        "requested_ref": "main",
+        "resolved_sha": "0123456789abcdef0123456789abcdef01234567",
+        "path": "tasks",
+        "local_path": str(tasks_root),
+        "dirty": False,
+        "file_hashes": {},
+    }
+
+    monkeypatch.setattr(
+        "benchflow._utils.benchmark_repos.resolve_source_with_metadata",
+        lambda repo, path=None, ref=None: SimpleNamespace(
+            path=tasks_root, provenance=source
+        ),
+    )
+    monkeypatch.setattr(
+        "benchflow.rollout._create_environment",
+        lambda *args, **kwargs: object(),
+    )
+
+    async def setup_only_run(self):
+        await self.setup()
+        return RolloutResult(
+            task_name=self._config.task_path.name,
+            rollout_name=self._rollout_name or "",
+            rewards={"reward": 1.0},
+            source_provenance=self._config.source_provenance,
+        )
+
+    monkeypatch.setattr("benchflow.rollout.Rollout.run", setup_only_run)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "eval",
+            "create",
+            "--source-repo",
+            "acme/benchmarks",
+            "--source-path",
+            "tasks",
+            "--source-ref",
+            "main",
+            "--agent",
+            "oracle",
+            "--sandbox",
+            "daytona",
+            "--concurrency",
+            "64",
+            "--jobs-dir",
+            str(tmp_path / "jobs"),
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    config_paths = list((tmp_path / "jobs").rglob("config.json"))
+    assert len(config_paths) == 1
+    config = json.loads(config_paths[0].read_text())
+    summary = json.loads((tmp_path / "jobs" / "summary.json").read_text())
+    assert config["concurrency"] == 64
+    assert summary["concurrency"] == 64
 
 
 def test_evaluation_yaml_source_records_source_provenance(monkeypatch, tmp_path):

@@ -113,7 +113,7 @@ class RolloutResult:
         trajectory: list[dict[str, Any]] | None = None,
         agent: str = "",
         agent_name: str = "",
-        model: str = "",
+        model: str | None = None,
         n_tool_calls: int = 0,
         n_prompts: int = 0,
         n_input_tokens: int | None = None,
