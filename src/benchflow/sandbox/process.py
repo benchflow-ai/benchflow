@@ -26,6 +26,46 @@ _BOOTSTRAP_DONE = "__BENCHFLOW_BOOTSTRAP_DONE__"
 _ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
+async def _cleanup_daytona_remote_env_file(
+    sandbox: Any,
+    remote_env_path: str,
+) -> None:
+    with contextlib.suppress(Exception):
+        await sandbox.process.exec(
+            f"rm -f {shlex.quote(remote_env_path)}",
+            timeout=10,
+        )
+
+
+async def _bootstrap_daytona_env_file(
+    sandbox: Any,
+    *,
+    remote_env_path: str,
+    env: dict[str, str],
+    shell_exports: bool,
+    error_label: str,
+) -> None:
+    env_keys = list(env)
+    invalid = [key for key in env_keys if not _ENV_KEY_RE.match(key)]
+    if invalid:
+        raise ValueError(
+            "Invalid environment variable name(s): " + ", ".join(sorted(invalid))
+        )
+    command = DaytonaProcess._bootstrap_env_command(
+        remote_env_path=remote_env_path,
+        env_keys=env_keys,
+        shell_exports=shell_exports,
+    )
+    response = await sandbox.process.exec(command, env=env, timeout=30)
+    stdout_text = str(getattr(response, "result", "") or "")
+    exit_code = getattr(response, "exit_code", 1)
+    if exit_code != 0 or _BOOTSTRAP_DONE not in stdout_text.splitlines():
+        raise RuntimeError(
+            f"Failed to bootstrap {error_label} "
+            f"(rc={exit_code}): {stdout_text[:_DIAG_TRUNCATE]}"
+        )
+
+
 async def drain_oversized_line(reader: asyncio.StreamReader) -> int:
     """Drain an oversized line from *reader* after a buffer overflow.
 
@@ -412,11 +452,7 @@ class DaytonaProcess(LiveProcess):
         return f"sh -c {shlex.quote(script)}"
 
     async def _cleanup_remote_env_file(self, remote_env_path: str) -> None:
-        with contextlib.suppress(Exception):
-            await self._sandbox.process.exec(
-                f"rm -f {shlex.quote(remote_env_path)}",
-                timeout=10,
-            )
+        await _cleanup_daytona_remote_env_file(self._sandbox, remote_env_path)
 
     async def _bootstrap_env_file(
         self,
@@ -425,26 +461,13 @@ class DaytonaProcess(LiveProcess):
         env: dict[str, str],
         shell_exports: bool,
     ) -> None:
-        env_keys = list(env)
-        invalid = [key for key in env_keys if not _ENV_KEY_RE.match(key)]
-        if invalid:
-            raise ValueError(
-                "Invalid environment variable name(s): "
-                + ", ".join(sorted(invalid))
-            )
-        command = self._bootstrap_env_command(
+        await _bootstrap_daytona_env_file(
+            self._sandbox,
             remote_env_path=remote_env_path,
-            env_keys=env_keys,
+            env=env,
             shell_exports=shell_exports,
+            error_label="Daytona agent env",
         )
-        response = await self._sandbox.process.exec(command, env=env, timeout=30)
-        stdout_text = str(getattr(response, "result", "") or "")
-        exit_code = getattr(response, "exit_code", 1)
-        if exit_code != 0 or _BOOTSTRAP_DONE not in stdout_text.splitlines():
-            raise RuntimeError(
-                "Failed to bootstrap Daytona agent env "
-                f"(rc={exit_code}): {stdout_text[:_DIAG_TRUNCATE]}"
-            )
 
     async def start(
         self,
@@ -464,33 +487,33 @@ class DaytonaProcess(LiveProcess):
                 inner_parts = ["docker", "compose", "exec", "-i", "-T"]
             if cwd:
                 inner_parts.extend(["-w", cwd])
-            # Write env vars to a temp file on the remote VM instead of passing
-            # as -e K=V args (which are visible in ps aux on the remote host).
-            # Use a Python-generated unique suffix instead of a shell `$$`
-            # expansion: shlex.join() (below) single-quotes the --env-file arg,
-            # so `$$` would survive as a literal in the docker compose call
-            # while the SDK bootstrap shell would expand it — the file would
-            # be written to one path and read from another. uuid.uuid4
-            # sidesteps the entire shell-expansion-vs-quoting problem.
+            # Source provider values into the remote shell, then pass only
+            # env names through `docker compose exec --env KEY`. Compose exec
+            # does not accept --env-file, and `--env KEY=value` would leak
+            # provider values into the remote command line.
             if env:
                 remote_env_path = f"/tmp/benchflow_env_{uuid.uuid4().hex[:16]}.env"
                 await self._bootstrap_env_file(
                     remote_env_path=remote_env_path,
                     env=env,
-                    shell_exports=False,
+                    shell_exports=True,
                 )
-                inner_parts.extend(["--env-file", remote_env_path])
+                for key in env:
+                    inner_parts.extend(["--env", key])
             inner_parts.extend(["main", "bash", "-c", command])
             inner_cmd = shlex.join(inner_parts)
 
-            if self._compose_cmd_prefix:
-                remote_cmd = f"{self._compose_cmd_prefix} {inner_cmd}"
-            else:
-                remote_cmd = inner_cmd
-
+            remote_cmd = (
+                f"{self._compose_cmd_prefix} {inner_cmd}"
+                if self._compose_cmd_prefix
+                else inner_cmd
+            )
             if remote_env_path:
+                remote_env_path_q = shlex.quote(remote_env_path)
                 remote_cmd = (
-                    f"trap 'rm -f {shlex.quote(remote_env_path)}' EXIT; {remote_cmd}"
+                    f"trap 'rm -f {remote_env_path_q}' EXIT; "
+                    f". {remote_env_path_q} && rm -f {remote_env_path_q} && "
+                    f"{remote_cmd}"
                 )
         else:
             # Direct sandbox — run command via SSH.
@@ -575,6 +598,7 @@ class DaytonaPtyProcess(LiveProcess):
         self._line_buffer = asyncio.Queue()
         self._partial = b""
         self._closed = False
+        self._remote_env_path: str | None = None
 
     @classmethod
     async def from_sandbox_env(cls, env: Any) -> "DaytonaPtyProcess":
@@ -599,12 +623,33 @@ class DaytonaPtyProcess(LiveProcess):
             line = line.replace(b"\r", b"")
             await self._line_buffer.put(line + b"\n")
 
+    async def _bootstrap_env_file(
+        self,
+        *,
+        remote_env_path: str,
+        env: dict[str, str],
+    ) -> None:
+        await _bootstrap_daytona_env_file(
+            self._sandbox,
+            remote_env_path=remote_env_path,
+            env=env,
+            shell_exports=True,
+            error_label="Daytona PTY agent env",
+        )
+
+    async def _cleanup_started_env_file(self) -> None:
+        remote_env_path = self._remote_env_path
+        self._remote_env_path = None
+        if remote_env_path:
+            await _cleanup_daytona_remote_env_file(self._sandbox, remote_env_path)
+
     async def start(
         self,
         command: str,
         env: dict[str, str] | None = None,
         cwd: str | None = None,
     ) -> None:
+        remote_env_path = None
         session_id = f"acp-{uuid.uuid4().hex[:8]}"
         pty_env = {}
         if self._compose_cmd_prefix:
@@ -613,57 +658,69 @@ class DaytonaPtyProcess(LiveProcess):
                     k, v = part.split("=", 1)
                     pty_env[k] = v
 
-        self._pty = await self._sandbox.process.create_pty_session(
-            id=session_id,
-            on_data=self._on_pty_data,
-            envs=pty_env if pty_env else None,
-        )
-        await self._pty.wait_for_connection()
-        logger.info(f"DaytonaPtyProcess: PTY connected (session={session_id})")
-
-        compose_parts = (
-            shlex.split(self._compose_cmd_base)
-            if self._compose_cmd_base
-            else ["docker", "compose"]
-        )
-        exec_parts = [*compose_parts, "exec", "-i", "-T"]
-        if cwd:
-            exec_parts.extend(["-w", cwd])
-        # Write env vars to a file inside the container (not visible in ps aux),
-        # matching the approach in DaytonaProcess.start().
-        env_file_cmd = ""
-        if env:
-            env_file_path = f"/tmp/.benchflow_env_{uuid.uuid4().hex[:16]}"
-            env_lines = "\n".join(
-                f"export {k}={shlex.quote(v)}" for k, v in env.items()
+        try:
+            self._pty = await self._sandbox.process.create_pty_session(
+                id=session_id,
+                on_data=self._on_pty_data,
+                envs=pty_env if pty_env else None,
             )
-            env_file_cmd = (
-                f"cat > {env_file_path} <<'__EOF__'\n{env_lines}\n__EOF__\n"
-                f". {env_file_path} && rm -f {env_file_path} && "
+            await self._pty.wait_for_connection()
+            logger.info(f"DaytonaPtyProcess: PTY connected (session={session_id})")
+
+            compose_parts = (
+                shlex.split(self._compose_cmd_base)
+                if self._compose_cmd_base
+                else ["docker", "compose"]
             )
-        exec_parts.extend(["main", "bash", "-lc", f"{env_file_cmd}{command}"])
-        exec_cmd = shlex.join(exec_parts)
+            exec_parts = [*compose_parts, "exec", "-i", "-T"]
+            if cwd:
+                exec_parts.extend(["-w", cwd])
+            if env:
+                remote_env_path = f"/tmp/benchflow_env_{uuid.uuid4().hex[:16]}.env"
+                self._remote_env_path = remote_env_path
+                await self._bootstrap_env_file(
+                    remote_env_path=remote_env_path,
+                    env=env,
+                )
+                for key in env:
+                    exec_parts.extend(["--env", key])
+            exec_parts.extend(["main", "bash", "-lc", command])
+            exec_cmd = shlex.join(exec_parts)
+            if remote_env_path:
+                remote_env_path_q = shlex.quote(remote_env_path)
+                setup_exec_cmd = (
+                    f". {remote_env_path_q} && rm -f {remote_env_path_q} && "
+                    f"exec {exec_cmd}"
+                )
+            else:
+                setup_exec_cmd = f"exec {exec_cmd}"
 
-        # Use a marker + stty to cleanly hand over the PTY to the agent.
-        # 1. Disable echo so typed commands don't appear in output
-        # 2. Print marker so we know when to start reading ACP output
-        # 3. exec into compose exec so the agent owns the PTY
-        marker = f"__BENCHFLOW_ACP_{session_id}__"
-        setup = f"stty -echo 2>/dev/null; echo '{marker}'; exec {exec_cmd}\n"
-        await self._pty.send_input(setup)
-        logger.info("DaytonaPtyProcess: sent setup, waiting for marker...")
+            # Use a marker + stty to cleanly hand over the PTY to the agent.
+            # 1. Disable echo so typed commands don't appear in output
+            # 2. Print marker so we know when to start reading ACP output
+            # 3. exec into compose exec so the agent owns the PTY
+            marker = f"__BENCHFLOW_ACP_{session_id}__"
+            setup = f"stty -echo 2>/dev/null; echo '{marker}'; {setup_exec_cmd}\n"
+            await self._pty.send_input(setup)
+            logger.info("DaytonaPtyProcess: sent setup, waiting for marker...")
 
-        while True:
-            try:
-                line = await asyncio.wait_for(self._line_buffer.get(), timeout=120)
-                decoded = line.decode(errors="replace").strip()
-                logger.debug(f"DaytonaPtyProcess drain: {decoded[:120]}")
-                if marker in decoded:
-                    break
-            except TimeoutError as e:
-                raise ConnectionError(
-                    "DaytonaPtyProcess: timeout waiting for agent start marker"
-                ) from e
+            while True:
+                try:
+                    line = await asyncio.wait_for(
+                        self._line_buffer.get(), timeout=120
+                    )
+                    decoded = line.decode(errors="replace").strip()
+                    logger.debug(f"DaytonaPtyProcess drain: {decoded[:120]}")
+                    if marker in decoded:
+                        break
+                except TimeoutError as e:
+                    raise ConnectionError(
+                        "DaytonaPtyProcess: timeout waiting for agent start marker"
+                    ) from e
+        except Exception:
+            await self._cleanup_started_env_file()
+            await self.close()
+            raise
 
         logger.info("DaytonaPtyProcess: marker seen, agent starting")
 
@@ -685,12 +742,15 @@ class DaytonaPtyProcess(LiveProcess):
 
     async def close(self) -> None:
         self._closed = True
-        if self._pty:
-            with contextlib.suppress(Exception):
-                await self._pty.kill()
-            with contextlib.suppress(Exception):
-                await self._pty.disconnect()
-            logger.info("DaytonaPtyProcess terminated")
+        try:
+            if self._pty:
+                with contextlib.suppress(Exception):
+                    await self._pty.kill()
+                with contextlib.suppress(Exception):
+                    await self._pty.disconnect()
+                logger.info("DaytonaPtyProcess terminated")
+        finally:
+            await self._cleanup_started_env_file()
 
     @property
     def is_running(self) -> bool:
