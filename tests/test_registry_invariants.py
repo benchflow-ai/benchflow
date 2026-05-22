@@ -23,6 +23,7 @@ from benchflow.agents.registry import (
     AGENT_INSTALLERS,
     AGENT_LAUNCH,
     AGENTS,
+    _js_agent_install,
 )
 
 VALID_AGENT_PROTOCOLS = {"acp", "cli"}
@@ -82,6 +83,7 @@ def test_agent_collection_invariants(name, cfg):
     - env_mapping values: non-empty strings (agent-native env var names)
     - skill_paths: $HOME/ or $WORKSPACE/ relative
     - home_dirs: dot-prefixed (copied under sandbox $HOME)
+    - disallow_web_tools_owned_paths: $HOME/ relative
     """
     assert all(isinstance(k, str) and k for k in cfg.requires_env)
     for key, val in cfg.env_mapping.items():
@@ -95,6 +97,10 @@ def test_agent_collection_invariants(name, cfg):
         )
     for d in cfg.home_dirs:
         assert d.startswith("."), f"home_dirs entry {d!r} must start with '.'"
+    for path in cfg.disallow_web_tools_owned_paths:
+        assert path.startswith("$HOME/"), (
+            f"disallow_web_tools_owned_paths entry {path!r} must start with $HOME/"
+        )
 
 
 @pytest.mark.parametrize("name,cfg", AGENTS.items(), ids=list(AGENTS.keys()))
@@ -153,6 +159,34 @@ def test_js_acp_agents_use_isolated_node_runtime(name):
         assert fragment not in install_cmd, (
             f"{name!r} JS agent install must not mutate task Node/npm via {fragment!r}"
         )
+
+
+def test_js_agent_install_respects_explicit_npm_package_specs():
+    """Guards v0.5-integration@27752fa against moving npm latest installs."""
+    pinned_cmd = _js_agent_install("gemini", "@google/gemini-cli@0.42.0")
+    dist_tag_cmd = _js_agent_install("test-agent", "some-agent@next")
+    scoped_default_cmd = _js_agent_install("codex-acp", "@agentclientprotocol/codex-acp")
+    scoped_dist_tag_cmd = _js_agent_install(
+        "pi", "@mariozechner/pi-coding-agent@next"
+    )
+    default_cmd = _js_agent_install("test-agent", "some-agent")
+
+    assert "@google/gemini-cli@0.42.0" in pinned_cmd
+    assert "@google/gemini-cli@latest" not in pinned_cmd
+    assert "some-agent@next" in dist_tag_cmd
+    assert "some-agent@next@latest" not in dist_tag_cmd
+    assert "@agentclientprotocol/codex-acp@latest" in scoped_default_cmd
+    assert "@mariozechner/pi-coding-agent@next" in scoped_dist_tag_cmd
+    assert "@mariozechner/pi-coding-agent@next@latest" not in scoped_dist_tag_cmd
+    assert "some-agent@latest" in default_cmd
+
+
+def test_gemini_cli_install_is_pinned():
+    """Guards v0.5-integration@27752fa against Daytona installing moving latest."""
+    install_cmd = AGENTS["gemini"].install_cmd
+    assert "@google/gemini-cli@0.42.0" in install_cmd
+    assert "@google/gemini-cli@latest" not in install_cmd
+    assert "[ -x /opt/benchflow/js-agents/bin/gemini ] ||" not in install_cmd
 
 
 @pytest.mark.parametrize("name", sorted(JS_ACP_AGENTS))

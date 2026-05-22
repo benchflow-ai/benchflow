@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from benchflow.agents.install import apply_web_tool_policy, deploy_skills, install_agent
-from benchflow.agents.registry import AgentConfig
+from benchflow.agents.registry import AGENTS, AgentConfig
 from benchflow.models import AgentInstallError
 
 
@@ -353,6 +353,146 @@ async def test_deploy_skills_raises_when_skill_linking_fails(tmp_path):
             agent_cwd="/app",
             task=_make_task("/opt/benchflow/skills"),
         )
+
+
+@pytest.mark.asyncio
+async def test_apply_web_tool_policy_preserves_sandbox_home_ownership():
+    """Guards v0.5-integration@27752fa against root-owned Gemini config dirs."""
+    env = MagicMock()
+    env.exec = AsyncMock(return_value=MagicMock(return_code=0, stdout="", stderr=""))
+    agent_cfg = AgentConfig(
+        name="gemini",
+        install_cmd="true",
+        launch_cmd="true",
+        disallow_web_tools_setup_cmd=(
+            "python - <<'PY'\nfrom pathlib import Path\n"
+            "Path('/home/agent/.gemini/settings.json').write_text('{}')\nPY"
+        ),
+    )
+
+    await apply_web_tool_policy(
+        env,
+        "gemini",
+        agent_cfg,
+        "/home/agent",
+        disallow=True,
+    )
+
+    commands = [call.args[0] for call in env.exec.call_args_list]
+    assert any("BENCHFLOW_AGENT_HOME=/home/agent" in command for command in commands)
+    assert any(
+        "chown -R agent:agent /home/agent/.gemini" in command for command in commands
+    )
+
+
+@pytest.mark.asyncio
+async def test_apply_web_tool_policy_does_not_mask_setup_failures():
+    """Guards v0.5-integration@27752fa against false-positive no-web setup."""
+    calls = []
+
+    async def exec_cmd(cmd, *, timeout_sec=None, **kwargs):
+        calls.append((cmd, timeout_sec, kwargs))
+        result = subprocess.run(
+            cmd,
+            shell=True,
+            text=True,
+            capture_output=True,
+            timeout=timeout_sec,
+        )
+        return SimpleNamespace(
+            return_code=result.returncode,
+            stdout=result.stdout,
+            stderr=result.stderr,
+        )
+
+    env = SimpleNamespace(exec=exec_cmd)
+    agent_cfg = AgentConfig(
+        name="gemini",
+        install_cmd="true",
+        launch_cmd="true",
+        disallow_web_tools_setup_cmd="false",
+    )
+
+    with pytest.raises(RuntimeError, match="Failed to apply no-web policy"):
+        await apply_web_tool_policy(
+            env,
+            "gemini",
+            agent_cfg,
+            "/home/agent",
+            disallow=True,
+        )
+
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_apply_web_tool_policy_repairs_config_paths_written_by_policy():
+    """Guards v0.5-integration@27752fa against root-owned OpenCode config."""
+    env = MagicMock()
+    env.exec = AsyncMock(return_value=MagicMock(return_code=0, stdout="", stderr=""))
+    agent_cfg = AgentConfig(
+        name="opencode",
+        install_cmd="true",
+        launch_cmd="true",
+        skill_paths=["$HOME/.opencode/skills"],
+        home_dirs=[".opencode"],
+        disallow_web_tools_owned_paths=["$HOME/.config/opencode"],
+        disallow_web_tools_setup_cmd=(
+            "python - <<'PY'\nfrom pathlib import Path\n"
+            "Path('$BENCHFLOW_AGENT_HOME/.config/opencode/opencode.json').write_text('{}')\nPY"
+        ),
+    )
+
+    await apply_web_tool_policy(
+        env,
+        "opencode",
+        agent_cfg,
+        "/home/agent",
+        disallow=True,
+    )
+
+    cmd = env.exec.await_args.args[0]
+    assert "chown -R agent:agent /home/agent/.config/opencode" in cmd
+    syntax = subprocess.run(
+        ["bash", "-n"],
+        input=cmd,
+        text=True,
+        capture_output=True,
+        timeout=15,
+    )
+    assert syntax.returncode == 0, syntax.stderr
+
+
+@pytest.mark.parametrize(
+    ("agent_name", "expected_paths"),
+    [
+        ("claude-agent-acp", ["/home/agent/.claude"]),
+        ("gemini", ["/home/agent/.gemini"]),
+        ("opencode", ["/home/agent/.config/opencode", "/home/agent/.opencode"]),
+        ("openhands", ["/home/agent/.agents", "/home/agent/.openhands"]),
+    ],
+)
+@pytest.mark.asyncio
+async def test_apply_web_tool_policy_repairs_registry_policy_paths(
+    agent_name,
+    expected_paths,
+):
+    """Guards v0.5-integration@27752fa against registry setup ownership drift."""
+    env = MagicMock()
+    env.exec = AsyncMock(return_value=MagicMock(return_code=0, stdout="", stderr=""))
+
+    await apply_web_tool_policy(
+        env,
+        agent_name,
+        AGENTS[agent_name],
+        "/home/agent",
+        disallow=True,
+    )
+
+    cmd = env.exec.await_args.args[0]
+    for path in expected_paths:
+        assert f"chown -R agent:agent {path}" in cmd
+    assert "; if [ -e " not in cmd
 
 
 @pytest.mark.asyncio

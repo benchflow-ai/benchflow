@@ -62,6 +62,11 @@ class TestResolveAgent:
         assert config.name == "acpx:claude-agent-acp"
         assert "acpx" in config.launch_cmd
 
+    def test_resolve_acpx_preserves_web_policy_owned_paths(self):
+        """Guards v0.5-integration@27752fa against ACPX policy drift."""
+        config = resolve_agent("acpx/gemini")
+        assert config.disallow_web_tools_owned_paths == ["$HOME/.gemini"]
+
     def test_resolve_unknown_raises(self):
         with pytest.raises(KeyError, match="Unknown agent"):
             resolve_agent("nonexistent-agent")
