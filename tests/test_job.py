@@ -28,6 +28,37 @@ class TestRetryConfig:
         cfg = RetryConfig()
         assert not cfg.should_retry("Agent timed out after 900.0s")
 
+    def test_should_retry_idle_timeout(self):
+        """Guards infra retry parity for ACP idle watchdog failures."""
+        cfg = RetryConfig()
+        assert cfg.should_retry(
+            "Agent idle for 600s with no new tool call, message, or thought"
+        )
+
+    def test_should_retry_sandbox_infra_failure(self):
+        """Guards infra retry parity for transient sandbox/provider failures."""
+        cfg = RetryConfig()
+        assert cfg.should_retry("Sandbox not found. Please start the environment first.")
+
+    def test_should_retry_verifier_timeout(self):
+        """Guards retry parity for verifier timeout infra failures."""
+        cfg = RetryConfig()
+        assert cfg.should_retry_verifier_error("verifier timed out after 60s")
+
+    def test_should_retry_verifier_download_failure(self):
+        """Guards retry parity for verifier transport/download failures."""
+        cfg = RetryConfig()
+        assert cfg.should_retry_verifier_error(
+            "verifier crashed: Failed to download verifier directory from sandbox"
+        )
+
+    def test_should_not_retry_missing_reward_file(self):
+        """Missing reward is a verifier contract failure, not transient infra."""
+        cfg = RetryConfig()
+        assert not cfg.should_retry_verifier_error(
+            "verifier crashed: No reward file found"
+        )
+
     def test_should_not_retry_none(self):
         cfg = RetryConfig()
         assert not cfg.should_retry(None)
@@ -125,6 +156,41 @@ class TestRunTaskLoop:
         assert result.error == "Agent timed out after 900.0s"
 
     @pytest.mark.asyncio
+    async def test_idle_timeout_retries_even_with_zero_reward(self, job_factory):
+        """Guards idle-timeout infra retry before accepting verifier fallback reward."""
+        job, tasks_dir = job_factory(n_tasks=1, max_retries=2)
+        idle_result = RunResult(
+            task_name="task-0",
+            error="Agent idle for 600s with no new tool call, message, or thought",
+            rewards={"reward": 0.0},
+        )
+        ok_result = RunResult(task_name="task-0", rewards={"reward": 1.0})
+        job._sdk = AsyncMock()
+        job._sdk.run = AsyncMock(side_effect=[idle_result, ok_result])
+
+        result = await job._run_task(tasks_dir / "task-0")
+
+        assert job._sdk.run.call_count == 2
+        assert result.rewards == {"reward": 1.0}
+
+    @pytest.mark.asyncio
+    async def test_verifier_timeout_retries_then_succeeds(self, job_factory):
+        """Guards verifier timeout infra retry before marking task terminal."""
+        job, tasks_dir = job_factory(n_tasks=1, max_retries=2)
+        timeout_result = RunResult(
+            task_name="task-0",
+            verifier_error="verifier timed out after 60s",
+        )
+        ok_result = RunResult(task_name="task-0", rewards={"reward": 1.0})
+        job._sdk = AsyncMock()
+        job._sdk.run = AsyncMock(side_effect=[timeout_result, ok_result])
+
+        result = await job._run_task(tasks_dir / "task-0")
+
+        assert job._sdk.run.call_count == 2
+        assert result.rewards == {"reward": 1.0}
+
+    @pytest.mark.asyncio
     async def test_succeeds_on_retry(self, job_factory):
         """SDK fails once then succeeds — returns success result."""
         job, tasks_dir = job_factory(n_tasks=1, max_retries=2)
@@ -183,7 +249,9 @@ class TestJobResume:
         assert "task-a" in completed
         assert len(completed) == 1
 
-    def test_config_mismatch_warning(self, tmp_path, caplog):
+    @pytest.mark.asyncio
+    async def test_config_mismatch_warning(self, tmp_path, caplog):
+        """Guards the event-loop flake observed on v0.5-integration@ffef85d."""
         jobs_dir = self._setup_jobs_dir(tmp_path)
         trial_dir = self._write_result(jobs_dir, "task-a", rewards={"reward": 1.0})
         (trial_dir / "config.json").write_text(json.dumps({"agent": "old-agent"}))
@@ -207,9 +275,7 @@ class TestJobResume:
             return_value=RunResult(task_name="task-b", rewards={"reward": 1.0})
         )
         with caplog.at_level(logging.WARNING):
-            import asyncio
-
-            asyncio.get_event_loop().run_until_complete(job.run())
+            await job.run()
         assert any("old-agent" in msg for msg in caplog.messages)
 
     def test_no_rewards_is_incomplete(self, tmp_path):

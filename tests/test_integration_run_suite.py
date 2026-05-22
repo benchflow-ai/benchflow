@@ -104,6 +104,36 @@ def test_integration_runner_uses_overridable_active_dev_concurrency() -> None:
     assert "BENCHFLOW_INTEGRATION_CONCURRENCY:-64" in script
     assert '--concurrency "$INTEGRATION_CONCURRENCY"' in script
     assert "--concurrency 30" not in script
+    assert "jobs/integration-$RUN_ID" in script
+    assert '--jobs-dir "$JOBS_ROOT/$agent"' in script
+
+
+def test_integration_runner_rejects_silent_partial_runs() -> None:
+    """Guards v0.5 E2E evidence from passing when requested agents are skipped."""
+    script = INTEGRATION_RUN_SH.read_text()
+
+    assert "BENCHFLOW_INTEGRATION_ALLOW_SKIPS" in script
+    assert "ERROR: requested agents were skipped" in script
+    assert 'if [ "$ALLOW_SKIPS" != true ]; then' in script
+
+
+def test_integration_runner_requires_explicit_check_only_root() -> None:
+    """Guards v0.5 check-only mode from defaulting to stale jobs/integration."""
+    script = INTEGRATION_RUN_SH.read_text()
+
+    assert "--check-only requires BENCHFLOW_INTEGRATION_JOBS_ROOT" in script
+    assert 'JOBS_ROOT="jobs/integration"' not in script
+
+
+def test_integration_runner_uses_source_configs_for_auditable_provenance() -> None:
+    """Guards v0.5 run.sh from producing local no-source artifacts."""
+    script = INTEGRATION_RUN_SH.read_text()
+
+    assert 'config_file="tests/integration/configs/$agent.yaml"' in script
+    assert '--config "$config_file"' in script
+    assert "EXPECTED_CHECK_ARGS" in script
+    assert '"$agent.model=$(model_for_agent "$agent")"' in script
+    assert '--tasks-dir "$TASKS_DIR"' not in script
 
 
 def test_release_suite_hosted_env_hubs_have_hub_urls() -> None:

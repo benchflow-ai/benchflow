@@ -508,6 +508,40 @@ class TestWriteConfig:
         assert "MY_CREDENTIALS" not in recorded
         assert recorded["SAFE_VAR"] == "visible"
 
+    def test_config_json_includes_source_provenance(self, tmp_path):
+        """Guards v0.5-integration@cb8759e against unaudited rollout config."""
+        source = {
+            "type": "github",
+            "repo": "acme/benchmarks",
+            "requested_ref": "main",
+            "resolved_sha": "0123456789abcdef0123456789abcdef01234567",
+            "path": "datasets/programbench/tasks/task-a",
+            "local_path": "/cache/acme/benchmarks/datasets/programbench/tasks/task-a",
+            "dirty": False,
+            "file_hashes": {
+                "instruction.md": "sha256:abc",
+                "task.toml": "sha256:def",
+                "tests/test.sh": "sha256:123",
+            },
+        }
+        self._write(
+            tmp_path,
+            task_path=Path("/tasks/foo"),
+            agent="gemini",
+            model="gemini-3.1-flash-lite-preview",
+            environment="daytona",
+            skills_dir=None,
+            sandbox_user="agent",
+            context_root=None,
+            timeout=300,
+            started_at=datetime(2026, 4, 8),
+            agent_env={},
+            source_provenance=source,
+        )
+
+        data = json.loads((tmp_path / "config.json").read_text())
+        assert data["source"] == source
+
 
 # ── run wiring ──
 
@@ -542,6 +576,43 @@ class TestRunWiring:
         assert result.rewards == {"reward": 1.0}
         assert seen["config"].sandbox_setup_timeout == 77
         assert seen["config"].task_path == tmp_path
+
+    @pytest.mark.asyncio
+    async def test_run_forwards_source_provenance_to_rollout_config(
+        self, monkeypatch, tmp_path
+    ):
+        """Guards v0.5-integration@cb8759e against dropping CLI source evidence."""
+        from benchflow.models import RunResult
+        from benchflow.sdk import SDK
+
+        seen = {}
+        source = {
+            "type": "github",
+            "repo": "acme/benchmarks",
+            "requested_ref": "main",
+            "resolved_sha": "0123456789abcdef0123456789abcdef01234567",
+            "path": "tasks/task-a",
+            "local_path": str(tmp_path),
+            "dirty": False,
+            "file_hashes": {},
+        }
+
+        async def fake_create(config):
+            seen["config"] = config
+            trial = AsyncMock()
+            trial.run = AsyncMock(
+                return_value=RunResult(task_name="task-1", rewards={"reward": 1.0})
+            )
+            return trial
+
+        monkeypatch.setattr("benchflow.rollout.Rollout.create", fake_create)
+
+        await SDK().run(
+            task_path=tmp_path,
+            source_provenance=source,
+        )
+
+        assert seen["config"].source_provenance == source
 
 
 # ── _build_result ──
@@ -618,6 +689,29 @@ class TestBuildResult:
         assert data["scenes"][0]["roles"][0]["env_keys"] == ["ANTHROPIC_API_KEY"]
         assert data["scenes"][0]["turns"] == [{"role": "reviewer", "has_prompt": False}]
         assert "role-secret-value" not in text
+
+    def test_result_json_includes_source_provenance(self, tmp_path):
+        """Guards v0.5-integration@cb8759e against split provenance artifacts."""
+        source = {
+            "type": "github",
+            "repo": "acme/benchmarks",
+            "requested_ref": "main",
+            "resolved_sha": "0123456789abcdef0123456789abcdef01234567",
+            "path": "datasets/programbench/tasks/task-a",
+            "local_path": "/cache/acme/benchmarks/datasets/programbench/tasks/task-a",
+            "dirty": False,
+            "file_hashes": {
+                "instruction.md": "sha256:abc",
+                "task.toml": "sha256:def",
+                "tests/test.sh": "sha256:123",
+            },
+        }
+
+        result = self._build(tmp_path, source_provenance=source)
+
+        data = json.loads((tmp_path / "result.json").read_text())
+        assert data["source"] == source
+        assert result.source_provenance == source
 
     def test_timing_json_written(self, tmp_path):
         self._build(tmp_path)

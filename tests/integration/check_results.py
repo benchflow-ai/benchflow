@@ -20,23 +20,59 @@ Guards: ENG-6 integration test plan (PR #255).
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 from pathlib import Path
+from typing import Any, cast
 
+from benchflow._utils.reward_events import memory_score_from_result
+from benchflow._utils.scoring import classify_error, count_result_outcomes
+from benchflow._utils.source_provenance import source_issues, source_matches_parent
+
+EXPECTED: dict[str, str] = {}
+EXPECTED_FIELDS = {"agent", "model", "environment", "concurrency"}
+REMOTE_REACHABILITY: dict[tuple[str, str, str | None], bool] = {}
 RESULT_REQUIRED = {"task_name", "agent", "rewards", "error", "verifier_error"}
-SUMMARY_REQUIRED = {"total", "passed", "failed", "errored", "score"}
-INFRA_ERRORS = {"agent_install", "timeout", "pipe_closed", "sandbox_setup"}
+SUMMARY_REQUIRED = {
+    "total",
+    "passed",
+    "failed",
+    "errored",
+    "verifier_errored",
+    "score",
+}
+INFRA_ERROR_CATEGORIES = {
+    "install_failure",
+    "timeout",
+    "idle_timeout",
+    "pipe_closed",
+    "sandbox_setup",
+    "infra_failure",
+}
 
 
-def load_results(agent_dir: Path) -> list[dict]:
-    """Load the latest result.json per task from an agent's jobs directory."""
-    latest_by_task: dict[str, tuple[float, dict]] = {}
+def load_results(agent_dir: Path) -> tuple[list[tuple[Path, dict]], list[str]]:
+    """Load every result.json from an agent's jobs directory."""
+    results: list[tuple[Path, dict]] = []
+    issues: list[str] = []
     for rfile in sorted(agent_dir.rglob("result.json")):
         try:
             result = json.loads(rfile.read_text())
         except (json.JSONDecodeError, OSError) as e:
-            print(f"  WARN: bad result file {rfile}: {e}")
+            issues.append(f"bad result file {rfile}: {e}")
             continue
+        results.append((rfile, result))
+    return results, issues
+
+
+def _expected(agent: str, field: str) -> str | None:
+    return EXPECTED.get(f"{agent}.{field}") or EXPECTED.get(field)
+
+
+def _latest_results_by_task(result_entries: list[tuple[Path, dict]]) -> list[dict]:
+    """Return the latest result per task for summary/outcome reconciliation."""
+    latest_by_task: dict[str, tuple[float, dict]] = {}
+    for rfile, result in result_entries:
         task_name = result.get("task_name") or rfile.parent.name.rsplit("__", 1)[0]
         mtime = rfile.stat().st_mtime
         previous = latest_by_task.get(task_name)
@@ -45,23 +81,196 @@ def load_results(agent_dir: Path) -> list[dict]:
     return [result for _, result in latest_by_task.values()]
 
 
-def check_agent(agent_dir: Path) -> dict:
-    """Validate one agent's output. Returns a summary dict."""
-    agent = agent_dir.name
-    findings: dict = {"agent": agent, "ok": True, "issues": []}
-
-    # Find the latest run directory
+def _find_result_root(agent_dir: Path) -> Path:
+    """Return the directory whose tree should be audited for result.json files."""
+    if _is_rollout_artifact_root(agent_dir):
+        return agent_dir
     run_dirs = sorted(
         (d for d in agent_dir.iterdir() if d.is_dir()),
         key=lambda d: d.name,
     )
     if not run_dirs:
+        return agent_dir
+    return run_dirs[-1]
+
+
+def _load_config(result_file: Path) -> tuple[Path, dict | None, str | None]:
+    config_path = result_file.parent / "config.json"
+    if not config_path.exists():
+        return config_path, None, "missing config.json"
+    try:
+        return config_path, json.loads(config_path.read_text()), None
+    except json.JSONDecodeError:
+        return config_path, None, "config.json: invalid JSON"
+
+
+def _source_hash_truth_issues(source: object, label: str) -> list[str]:
+    if not isinstance(source, dict):
+        return []
+    source_dict = cast(dict[str, Any], source)
+    local_path_raw = source_dict.get("local_path")
+    file_hashes = source_dict.get("file_hashes")
+    if not isinstance(local_path_raw, str):
+        return [f"{label}: source.local_path must be a string for hash audit"]
+    if not isinstance(file_hashes, dict):
+        return []
+    local_path = Path(local_path_raw)
+    if not local_path.exists():
+        return [f"{label}: source.local_path does not exist for hash audit"]
+    try:
+        from benchflow._utils.benchmark_repos import task_file_hashes
+
+        actual = task_file_hashes(local_path)
+    except Exception as e:
+        return [f"{label}: source.file_hashes could not be recomputed: {e}"]
+    if actual != file_hashes:
+        return [f"{label}: source.file_hashes do not match local_path"]
+    return _source_git_truth_issues(source_dict, local_path, label)
+
+
+def _git_stdout(cwd: Path, *args: str) -> str | None:
+    completed = subprocess.run(
+        ["git", "-C", str(cwd), *args],
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        return None
+    return completed.stdout.strip()
+
+
+def _repo_slug_from_remote(remote: str) -> str | None:
+    normalized = remote.strip()
+    if normalized.endswith(".git"):
+        normalized = normalized[:-4]
+    if normalized.startswith("git@github.com:"):
+        return normalized.removeprefix("git@github.com:")
+    marker = "github.com/"
+    if marker in normalized:
+        return normalized.split(marker, 1)[1]
+    return None
+
+
+def _git_ls_remote_contains(repo: str, sha: str, requested_ref: str | None) -> bool:
+    key = (repo, sha, requested_ref)
+    if key in REMOTE_REACHABILITY:
+        return REMOTE_REACHABILITY[key]
+    url = f"https://github.com/{repo}.git"
+    ref_args: list[str] = []
+    if requested_ref:
+        ref_args = [requested_ref, f"refs/heads/{requested_ref}", f"refs/tags/{requested_ref}"]
+    completed = subprocess.run(
+        ["git", "ls-remote", url, *ref_args],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if completed.returncode != 0 and ref_args:
+        completed = subprocess.run(
+            ["git", "ls-remote", url],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    reachable = completed.returncode == 0 and any(
+        line.split(maxsplit=1)[0] == sha
+        for line in completed.stdout.splitlines()
+        if line.strip()
+    )
+    REMOTE_REACHABILITY[key] = reachable
+    return reachable
+
+
+def _source_git_truth_issues(
+    source: dict[str, Any], local_path: Path, label: str
+) -> list[str]:
+    issues: list[str] = []
+    git_root_raw = _git_stdout(local_path, "rev-parse", "--show-toplevel")
+    if not git_root_raw:
+        return [f"{label}: source.local_path is not inside a git worktree"]
+    git_root = Path(git_root_raw).resolve(strict=True)
+    local_resolved = local_path.resolve(strict=True)
+    if local_resolved != git_root and not local_resolved.is_relative_to(git_root):
+        issues.append(f"{label}: source.local_path is outside its git worktree")
+    repo = source.get("repo")
+    resolved_sha = source.get("resolved_sha")
+    if isinstance(repo, str) and "/" in repo and isinstance(resolved_sha, str):
+        from benchflow._utils.benchmark_repos import _cache_dir
+
+        org, repo_name = repo.split("/", 1)
+        expected_snapshot = (
+            _cache_dir() / org / f"{repo_name}__snapshots" / resolved_sha
+        ).resolve(strict=False)
+        if git_root != expected_snapshot:
+            issues.append(
+                f"{label}: source.local_path is not the resolver snapshot for source.repo/source.resolved_sha"
+            )
+
+    head = _git_stdout(local_path, "rev-parse", "HEAD")
+    if head != source.get("resolved_sha"):
+        issues.append(
+            f"{label}: source.resolved_sha does not match source.local_path git HEAD"
+        )
+    elif isinstance(repo, str) and isinstance(head, str):
+        requested_ref_raw = source.get("requested_ref")
+        requested_ref = requested_ref_raw if isinstance(requested_ref_raw, str) else None
+        try:
+            if not _git_ls_remote_contains(repo, head, requested_ref):
+                issues.append(
+                    f"{label}: source.resolved_sha is not reachable from source.repo/requested_ref"
+                )
+        except (OSError, subprocess.SubprocessError) as e:
+            issues.append(
+                f"{label}: source.resolved_sha remote reachability could not be verified: {e}"
+            )
+
+    status = _git_stdout(local_path, "status", "--porcelain")
+    if status is None:
+        issues.append(f"{label}: source.local_path git status could not be read")
+    elif bool(status) != bool(source.get("dirty")):
+        issues.append(f"{label}: source.dirty does not match source.local_path git status")
+    elif status and source.get("dirty") is False:
+        issues.append(f"{label}: source.local_path git worktree is dirty")
+
+    remote = _git_stdout(local_path, "config", "--get", "remote.origin.url")
+    if not remote:
+        issues.append(f"{label}: source.local_path git remote.origin.url is missing")
+    elif _repo_slug_from_remote(remote) != source.get("repo"):
+        issues.append(
+            f"{label}: source.repo does not match source.local_path git remote"
+        )
+
+    expected_path = str(source.get("path") or "").strip("/")
+    if expected_path:
+        actual_path = local_resolved.relative_to(git_root).as_posix()
+        if actual_path != expected_path:
+            issues.append(
+                f"{label}: source.path does not match source.local_path repo-relative path"
+            )
+    return issues
+
+
+def check_agent(agent_dir: Path) -> dict:
+    """Validate one agent's output. Returns a summary dict."""
+    agent = agent_dir.name
+    findings: dict = {"agent": agent, "ok": True, "issues": []}
+    is_artifact_root = _is_rollout_artifact_root(agent_dir)
+    expected_agent = _expected(agent, "agent")
+    if expected_agent is None and not is_artifact_root:
+        expected_agent = agent
+
+    result_root = _find_result_root(agent_dir)
+    if result_root == agent_dir and not is_artifact_root:
         findings["ok"] = False
         findings["issues"].append("no run directory found")
         return findings
 
-    latest = run_dirs[-1]
-    results = load_results(latest)
+    result_entries, result_load_issues = load_results(result_root)
+    if result_load_issues:
+        findings["ok"] = False
+        findings["issues"].extend(result_load_issues)
+    results = [result for _, result in result_entries]
+    latest_results = _latest_results_by_task(result_entries)
 
     if not results:
         findings["ok"] = False
@@ -69,17 +278,99 @@ def check_agent(agent_dir: Path) -> dict:
         return findings
 
     # Schema check
-    for r in results:
+    for result_file, r in result_entries:
         missing = RESULT_REQUIRED - set(r.keys())
         if missing:
             findings["issues"].append(f"{r.get('task_name', '?')}: missing {missing}")
             findings["ok"] = False
+        found_source_issues = source_issues(
+            r.get("source"),
+            f"{r.get('task_name', '?')}: result.json",
+            require_file_hashes=True,
+        )
+        if found_source_issues:
+            findings["issues"].extend(found_source_issues)
+            findings["ok"] = False
+        source_truth_issues = _source_hash_truth_issues(
+            r.get("source"), f"{r.get('task_name', '?')}: result.json"
+        )
+        if source_truth_issues:
+            findings["issues"].extend(source_truth_issues)
+            findings["ok"] = False
+        _config_path, config, config_error = _load_config(result_file)
+        if config_error:
+            findings["issues"].append(f"{r.get('task_name', '?')}: {config_error}")
+            findings["ok"] = False
+        else:
+            assert config is not None
+            expected_model = _expected(agent, "model")
+            expected_environment = _expected(agent, "environment")
+            expected_concurrency = _expected(agent, "concurrency")
+            if r.get("agent") != config.get("agent"):
+                findings["issues"].append(
+                    f"{r.get('task_name', '?')}: result.json agent does not match config.json"
+                )
+                findings["ok"] = False
+            if "model" in r and r.get("model") != config.get("model"):
+                findings["issues"].append(
+                    f"{r.get('task_name', '?')}: result.json model does not match config.json"
+                )
+                findings["ok"] = False
+            if expected_agent is not None and expected_agent != config.get("agent"):
+                findings["issues"].append(
+                    f"{r.get('task_name', '?')}: config.json agent {config.get('agent')!r} does not match expected {expected_agent!r}"
+                )
+                findings["ok"] = False
+            if expected_model is not None and r.get("model") != expected_model:
+                findings["issues"].append(
+                    f"{r.get('task_name', '?')}: result.json model {r.get('model')!r} does not match expected {expected_model!r}"
+                )
+                findings["ok"] = False
+            if expected_model is not None and config.get("model") != expected_model:
+                findings["issues"].append(
+                    f"{r.get('task_name', '?')}: config.json model {config.get('model')!r} does not match expected {expected_model!r}"
+                )
+                findings["ok"] = False
+            if (
+                expected_environment is not None
+                and config.get("environment") != expected_environment
+            ):
+                findings["issues"].append(
+                    f"{r.get('task_name', '?')}: config.json environment {config.get('environment')!r} does not match expected {expected_environment!r}"
+                )
+                findings["ok"] = False
+            if expected_concurrency is not None and str(config.get("concurrency")) != str(
+                expected_concurrency
+            ):
+                findings["issues"].append(
+                    f"{r.get('task_name', '?')}: config.json concurrency {config.get('concurrency')!r} does not match expected {expected_concurrency!r}"
+                )
+                findings["ok"] = False
+            config_source_issues = source_issues(
+                config.get("source"),
+                f"{r.get('task_name', '?')}: config.json",
+                require_file_hashes=True,
+            )
+            if config_source_issues:
+                findings["issues"].extend(config_source_issues)
+                findings["ok"] = False
+            config_truth_issues = _source_hash_truth_issues(
+                config.get("source"), f"{r.get('task_name', '?')}: config.json"
+            )
+            if config_truth_issues:
+                findings["issues"].extend(config_truth_issues)
+                findings["ok"] = False
+            if config.get("source") != r.get("source"):
+                findings["issues"].append(
+                    f"{r.get('task_name', '?')}: config.json source does not match result.json"
+                )
+                findings["ok"] = False
 
     # Infrastructure errors
     infra_errors = []
     for r in results:
         err = r.get("error")
-        if err and any(tag in str(err).lower() for tag in INFRA_ERRORS):
+        if err and classify_error(str(err)) in INFRA_ERROR_CATEGORIES:
             infra_errors.append(f"{r.get('task_name', '?')}: {err}")
     if infra_errors:
         findings["issues"].extend(infra_errors)
@@ -88,7 +379,7 @@ def check_agent(agent_dir: Path) -> dict:
     # Summary.json — bench eval create writes it at the agent_dir root
     summary_path = agent_dir / "summary.json"
     if not summary_path.exists():
-        summary_path = latest / "summary.json"
+        summary_path = result_root / "summary.json"
     if summary_path.exists():
         try:
             summary = json.loads(summary_path.read_text())
@@ -96,6 +387,63 @@ def check_agent(agent_dir: Path) -> dict:
             if missing:
                 findings["issues"].append(f"summary.json missing: {missing}")
                 findings["ok"] = False
+            if summary.get("source_mismatch_tasks"):
+                findings["issues"].append(
+                    f"summary.json source mismatch tasks: {summary['source_mismatch_tasks']}"
+                )
+                findings["ok"] = False
+            found_source_issues = source_issues(
+                summary.get("source"),
+                "summary.json",
+                require_file_hashes=False,
+            )
+            if found_source_issues:
+                findings["issues"].extend(found_source_issues)
+                findings["ok"] = False
+            expected_model = _expected(agent, "model")
+            expected_environment = _expected(agent, "environment")
+            expected_concurrency = _expected(agent, "concurrency")
+            summary_agent = summary.get("agent")
+            if expected_agent is not None and summary_agent is not None and summary_agent != expected_agent:
+                findings["issues"].append(
+                    f"summary.json agent {summary_agent!r} does not match expected {expected_agent!r}"
+                )
+                findings["ok"] = False
+            if summary_agent is not None:
+                for result in results:
+                    if result.get("agent") != summary_agent:
+                        findings["issues"].append(
+                            f"summary.json agent {summary_agent!r} does not match result.json agent {result.get('agent')!r}"
+                        )
+                        findings["ok"] = False
+            if expected_model is not None and summary.get("model") != expected_model:
+                findings["issues"].append(
+                    f"summary.json model {summary.get('model')!r} does not match expected {expected_model!r}"
+                )
+                findings["ok"] = False
+            if (
+                expected_environment is not None
+                and summary.get("environment") != expected_environment
+            ):
+                findings["issues"].append(
+                    f"summary.json environment {summary.get('environment')!r} does not match expected {expected_environment!r}"
+                )
+                findings["ok"] = False
+            if expected_concurrency is not None and str(summary.get("concurrency")) != str(
+                expected_concurrency
+            ):
+                findings["issues"].append(
+                    f"summary.json concurrency {summary.get('concurrency')!r} does not match expected {expected_concurrency!r}"
+                )
+                findings["ok"] = False
+            summary_source = summary.get("source")
+            if isinstance(summary_source, dict):
+                for r in results:
+                    if not source_matches_parent(r.get("source"), summary_source):
+                        findings["issues"].append(
+                            f"summary source does not cover {r.get('task_name', '?')}"
+                        )
+                        findings["ok"] = False
             findings["summary"] = summary
         except json.JSONDecodeError:
             findings["issues"].append("summary.json: invalid JSON")
@@ -105,30 +453,31 @@ def check_agent(agent_dir: Path) -> dict:
         findings["ok"] = False
 
     # Stats
-    findings["total"] = len(results)
-    findings["passed"] = sum(
-        1
-        for r in results
-        if (r.get("rewards") or {}).get("reward") == 1.0
-        and not r.get("error")
-        and not r.get("verifier_error")
-    )
-    findings["failed"] = sum(
-        1
-        for r in results
-        if (r.get("rewards") or {}).get("reward") is not None
-        and (r.get("rewards") or {}).get("reward") != 1.0
-        and not r.get("error")
-        and not r.get("verifier_error")
-    )
-    findings["errored"] = sum(1 for r in results if r.get("error"))
-    findings["verifier_errored"] = sum(1 for r in results if r.get("verifier_error"))
+    findings["total"] = len(latest_results)
+    outcome_counts = count_result_outcomes(latest_results)
+    findings["passed"] = outcome_counts["passed"]
+    findings["failed"] = outcome_counts["failed"]
+    findings["errored"] = outcome_counts["errored"]
+    findings["verifier_errored"] = outcome_counts["verifier_errored"]
 
     if summary := findings.get("summary"):
         for key in ("total", "passed", "failed", "errored", "verifier_errored"):
             if key in summary and summary[key] != findings[key]:
                 findings["issues"].append(
                     f"summary.json {key}={summary[key]} but results imply {findings[key]}"
+                )
+                findings["ok"] = False
+        memory_scores = [
+            score
+            for result in latest_results
+            if (score := memory_score_from_result(result)) is not None
+        ]
+        if memory_scores and isinstance(summary.get("memory_score"), int | float):
+            implied = sum(memory_scores) / len(memory_scores)
+            if abs(float(summary["memory_score"]) - implied) > 1e-9:
+                findings["issues"].append(
+                    f"summary.json memory_score={summary['memory_score']} "
+                    f"but results imply {implied}"
                 )
                 findings["ok"] = False
 
@@ -145,12 +494,70 @@ def _is_rollout_artifact_root(path: Path) -> bool:
 def discover_agent_dirs(jobs_root: Path, agents: list[str] | None) -> list[Path]:
     """Discover result roots accepted by the audit CLI."""
     if agents:
-        return [jobs_root / a for a in agents if (jobs_root / a).is_dir()]
+        agent_dirs = [jobs_root / a for a in agents if (jobs_root / a).is_dir()]
+        missing = sorted(a for a in agents if not (jobs_root / a).is_dir())
+        if missing:
+            print(f"ERROR: missing requested agent directories: {', '.join(missing)}")
+            return []
+        return agent_dirs
     if _is_rollout_artifact_root(jobs_root):
         return [jobs_root]
     return sorted(
         d for d in jobs_root.iterdir() if d.is_dir() and not d.name.startswith(".")
     )
+
+
+def _expected_key_issues(agents: list[str] | None) -> list[str]:
+    issues: list[str] = []
+    agent_set = set(agents) if agents is not None else None
+    for key in sorted(EXPECTED):
+        parts = key.split(".", 1)
+        if len(parts) == 1:
+            agent_name = None
+            field = parts[0]
+        else:
+            agent_name, field = parts
+        if field not in EXPECTED_FIELDS:
+            issues.append(
+                f"unknown expected field {field!r}; use one of {sorted(EXPECTED_FIELDS)}"
+            )
+        if agent_name and agent_set is not None and agent_name not in agent_set:
+            issues.append(
+                f"expected key {key!r} names agent {agent_name!r}, which was not requested"
+            )
+    return issues
+
+
+def _identity_expectation_issues(
+    jobs_root: Path, agent_dirs: list[Path], agents: list[str] | None
+) -> list[str]:
+    issues: list[str] = []
+    if _is_rollout_artifact_root(jobs_root):
+        required = ("agent", "model", "environment", "concurrency")
+        missing = [
+            field for field in required if _expected(jobs_root.name, field) is None
+        ]
+        if missing:
+            issues.append(
+                "direct artifact-root audits require expected identity args: "
+                + ", ".join(missing)
+            )
+        return issues
+
+    required = ("model", "environment", "concurrency")
+    for agent_dir in agent_dirs:
+        missing = [field for field in required if _expected(agent_dir.name, field) is None]
+        if missing:
+            label = (
+                "requested agent"
+                if agents is not None and agent_dir.name in agents
+                else "discovered agent"
+            )
+            issues.append(
+                f"{label} {agent_dir.name!r} audit requires expected identity args: "
+                + ", ".join(missing)
+            )
+    return issues
 
 
 def main() -> None:
@@ -159,16 +566,35 @@ def main() -> None:
         sys.exit(1)
 
     jobs_root = Path(sys.argv[1])
-    agents = sys.argv[2:] if len(sys.argv) > 2 else None
+    raw_args = sys.argv[2:] if len(sys.argv) > 2 else []
+    agents = []
+    for arg in raw_args:
+        if "=" in arg:
+            key, value = arg.split("=", 1)
+            EXPECTED[key] = value
+        else:
+            agents.append(arg)
+    agents_arg = agents if agents else None
+    expected_key_issues = _expected_key_issues(agents_arg)
+    if expected_key_issues:
+        for issue in expected_key_issues:
+            print(f"ERROR: {issue}")
+        sys.exit(1)
 
     if not jobs_root.exists():
         print(f"ERROR: {jobs_root} does not exist")
         sys.exit(1)
 
-    agent_dirs = discover_agent_dirs(jobs_root, agents)
+    agent_dirs = discover_agent_dirs(jobs_root, agents_arg)
 
     if not agent_dirs:
         print("ERROR: no agent directories found")
+        sys.exit(1)
+
+    identity_issues = _identity_expectation_issues(jobs_root, agent_dirs, agents_arg)
+    if identity_issues:
+        for issue in identity_issues:
+            print(f"ERROR: {issue}")
         sys.exit(1)
 
     all_findings = []

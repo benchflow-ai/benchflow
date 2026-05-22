@@ -19,9 +19,8 @@
 set -euo pipefail
 cd "$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
 
-JOBS_ROOT="jobs/integration"
-LOG_DIR="$JOBS_ROOT/.logs"
 INTEGRATION_CONCURRENCY="${BENCHFLOW_INTEGRATION_CONCURRENCY:-64}"
+ALLOW_SKIPS="${BENCHFLOW_INTEGRATION_ALLOW_SKIPS:-false}"
 
 # The 9 selected SkillsBench tasks for integration testing.
 SELECTED_TASKS=(
@@ -72,6 +71,22 @@ if [ ${#AGENTS[@]} -eq 0 ]; then
   AGENTS=("${ALL_AGENTS[@]}")
 fi
 
+if [ "$CHECK_ONLY" = true ]; then
+  if [ -n "${BENCHFLOW_INTEGRATION_JOBS_ROOT:-}" ]; then
+    JOBS_ROOT="$BENCHFLOW_INTEGRATION_JOBS_ROOT"
+  elif [ -n "${BENCHFLOW_INTEGRATION_RUN_ID:-}" ]; then
+    JOBS_ROOT="jobs/integration-$BENCHFLOW_INTEGRATION_RUN_ID"
+  else
+    echo "ERROR: --check-only requires BENCHFLOW_INTEGRATION_JOBS_ROOT or BENCHFLOW_INTEGRATION_RUN_ID"
+    exit 1
+  fi
+else
+  RUN_ID="${BENCHFLOW_INTEGRATION_RUN_ID:-$(date +%Y%m%d-%H%M%S)}"
+  JOBS_ROOT="${BENCHFLOW_INTEGRATION_JOBS_ROOT:-jobs/integration-$RUN_ID}"
+fi
+LOG_DIR="$JOBS_ROOT/.logs"
+CHECK_AGENTS=("${AGENTS[@]}")
+
 # ── Credential checks ──────────────────────────────────────────────
 has_gemini_key() {
   [ -n "${GEMINI_API_KEY:-}" ] || [ -n "${GOOGLE_API_KEY:-}" ]
@@ -93,26 +108,6 @@ has_creds_for() {
   esac
 }
 
-# ── Prepare task subset ────────────────────────────────────────────
-prepare_tasks_dir() {
-  local full_dir
-  full_dir=$(uv run python -c "
-from benchflow._utils.benchmark_repos import resolve_source
-print(resolve_source('benchflow-ai/skillsbench', path='tasks', ref='main'))
-")
-  local subset_dir="$JOBS_ROOT/.tasks-subset"
-  rm -rf "$subset_dir"
-  mkdir -p "$subset_dir"
-  for task in "${SELECTED_TASKS[@]}"; do
-    if [ -d "$full_dir/$task" ]; then
-      ln -s "$full_dir/$task" "$subset_dir/$task"
-    else
-      echo "WARN: task $task not found in $full_dir" >&2
-    fi
-  done
-  echo "$subset_dir"
-}
-
 # ── Run evals (all agents in parallel) ──────────────────────────────
 if [ "$CHECK_ONLY" = false ]; then
   if [ -z "${DAYTONA_API_KEY:-}" ]; then
@@ -120,29 +115,51 @@ if [ "$CHECK_ONLY" = false ]; then
     exit 1
   fi
 
-  echo "Resolving tasks..."
-  TASKS_DIR=$(prepare_tasks_dir)
-  echo "Using ${#SELECTED_TASKS[@]} tasks from $TASKS_DIR"
+  echo "Using ${#SELECTED_TASKS[@]} source-configured SkillsBench tasks"
 
   mkdir -p "$LOG_DIR"
   PIDS=()
   LAUNCHED=()
+  RUNNABLE=()
+  SKIPPED=()
 
   for agent in "${AGENTS[@]}"; do
     if ! has_creds_for "$agent"; then
-      echo "SKIP $agent — no credentials"
+      SKIPPED+=("$agent — no credentials")
       continue
     fi
 
+    config_file="tests/integration/configs/$agent.yaml"
+    if [ ! -f "$config_file" ]; then
+      SKIPPED+=("$agent — missing $config_file")
+      continue
+    fi
+    RUNNABLE+=("$agent")
+  done
+
+  if [ ${#SKIPPED[@]} -ne 0 ]; then
+    for skipped in "${SKIPPED[@]}"; do
+      echo "SKIP $skipped"
+    done
+    if [ "$ALLOW_SKIPS" != true ]; then
+      echo "ERROR: requested agents were skipped; set BENCHFLOW_INTEGRATION_ALLOW_SKIPS=true for exploratory partial runs"
+      exit 1
+    fi
+  fi
+
+  if [ ${#RUNNABLE[@]} -eq 0 ]; then
+    echo "ERROR: no agents launched"
+    exit 1
+  fi
+
+  for agent in "${RUNNABLE[@]}"; do
     model="$(model_for_agent "$agent")"
-    echo "Launching $agent (model=$model)..."
+    config_file="tests/integration/configs/$agent.yaml"
+    echo "Launching $agent (model=$model, config=$config_file)..."
     uv run bench eval create \
-      --tasks-dir "$TASKS_DIR" \
-      --agent "$agent" \
-      --model "$model" \
-      --sandbox daytona \
-      --concurrency "$INTEGRATION_CONCURRENCY" \
+      --config "$config_file" \
       --jobs-dir "$JOBS_ROOT/$agent" \
+      --concurrency "$INTEGRATION_CONCURRENCY" \
       > "$LOG_DIR/$agent.log" 2>&1 &
     PIDS+=($!)
     LAUNCHED+=("$agent")
@@ -151,6 +168,7 @@ if [ "$CHECK_ONLY" = false ]; then
   echo ""
   echo "${#LAUNCHED[@]} agents launched in parallel. Waiting..."
   echo ""
+  CHECK_AGENTS=("${LAUNCHED[@]}")
 
   # Wait for all and report as each finishes.
   FAILURES=0
@@ -167,9 +185,19 @@ if [ "$CHECK_ONLY" = false ]; then
 
   echo ""
   echo "${#LAUNCHED[@]} agents done, $FAILURES failed."
+  if [ "$FAILURES" -ne 0 ]; then
+    exit 1
+  fi
 fi
 
 # ── Check results ───────────────────────────────────────────────────
 echo ""
 echo "══════ Results ══════"
-uv run python tests/integration/check_results.py "$JOBS_ROOT" "${AGENTS[@]}"
+EXPECTED_CHECK_ARGS=("environment=daytona" "concurrency=$INTEGRATION_CONCURRENCY")
+for agent in "${CHECK_AGENTS[@]}"; do
+  EXPECTED_CHECK_ARGS+=("$agent.model=$(model_for_agent "$agent")")
+done
+uv run python tests/integration/check_results.py \
+  "$JOBS_ROOT" \
+  "${CHECK_AGENTS[@]}" \
+  "${EXPECTED_CHECK_ARGS[@]}"

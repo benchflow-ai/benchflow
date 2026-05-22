@@ -369,6 +369,9 @@ def _inject_skills_into_dockerfile(task_path: Path, skills_dir: Path) -> None:
     dockerfile_path = env_dir / "Dockerfile"
     if not dockerfile_path.exists() or not skills_dir.is_dir():
         return
+    if not any(skills_dir.iterdir()):
+        logger.info("Skills injection skipped: skills directory is empty")
+        return
 
     dest = env_dir / "_deps" / "skills"
     if dest.exists():

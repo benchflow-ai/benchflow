@@ -95,6 +95,7 @@ class SDK:
         started_at: datetime,
         timing: dict[str, float],
         scenes: list[Scene] | None = None,
+        source_provenance: dict[str, Any] | None = None,
     ) -> RolloutResult:
         return _build_rollout_result(
             rollout_dir,
@@ -114,6 +115,7 @@ class SDK:
             started_at=started_at,
             timing=timing,
             scenes=scenes,
+            source_provenance=source_provenance,
         )
 
     async def _start_env_and_upload(
@@ -170,6 +172,7 @@ class SDK:
         skill_mode: str = "default",
         skill_creator_dir: str | Path | None = None,
         self_gen_no_internet: bool = False,
+        source_provenance: dict[str, Any] | None = None,
     ) -> RolloutResult:
         """Run a task — delegates to :func:`benchflow.run`."""
         from benchflow.rollout import RolloutConfig
@@ -195,5 +198,6 @@ class SDK:
             skill_mode=skill_mode,
             skill_creator_dir=skill_creator_dir,
             self_gen_no_internet=self_gen_no_internet,
+            source_provenance=source_provenance,
         )
         return await run(config)  # type: ignore[return-value]  # ty: ignore[invalid-return-type]

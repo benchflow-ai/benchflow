@@ -201,6 +201,38 @@ async def test_memory_scorer_recall_and_precision_both_below_one():
     assert event.reward == pytest.approx(1 / 9)
 
 
+async def test_memory_scorer_spurious_only_with_expected_scores_zero():
+    """Guards the ENG-125 follow-up on v0.5-integration@ffef85d."""
+    node = RolloutNode(
+        id="leaf",
+        state={
+            MEMORY_STATE_KEY: {
+                "before": {"expected": "v1", "spurious": "v1"},
+                "after": {"expected": "v1", "spurious": "v2"},
+                "expected": ["expected"],
+            }
+        },
+    )
+    event = await MemoryScorer().score(node)
+    assert event.reward == 0.0
+
+
+async def test_memory_scorer_rewards_expected_skill_removal():
+    """Guards the ENG-125 follow-up on v0.5-integration@ffef85d."""
+    node = RolloutNode(
+        id="leaf",
+        state={
+            MEMORY_STATE_KEY: {
+                "before": {"obsolete": "v1"},
+                "after": {},
+                "expected": ["obsolete"],
+            }
+        },
+    )
+    event = await MemoryScorer().score(node)
+    assert event.reward == 1.0
+
+
 async def test_memory_scorer_event_type_is_terminal():
     """The Memory scorer is a terminal scorer — its event type must say so."""
     node = RolloutNode(
@@ -212,7 +244,7 @@ async def test_memory_scorer_event_type_is_terminal():
     assert event.granularity == "terminal"
 
 
-async def test_memory_scorer_no_expected_means_no_change_is_correct():
+async def test_memory_scorer_empty_expected_fixture_no_change_scores_one():
     """When the task expects no skill change, leaving the store alone scores 1.0."""
     node = RolloutNode(
         id="leaf",
@@ -228,7 +260,7 @@ async def test_memory_scorer_no_expected_means_no_change_is_correct():
     assert event.reward == 1.0
 
 
-async def test_memory_scorer_no_expected_penalises_a_spurious_change():
+async def test_memory_scorer_empty_expected_fixture_change_scores_zero():
     """Task expects no change but the agent touched the store -> reward 0.0."""
     node = RolloutNode(
         id="leaf",

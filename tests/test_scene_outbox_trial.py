@@ -262,6 +262,25 @@ async def test_role_switching_connects_and_disconnects(
     assert trial.disconnect.call_count == 3
 
 
+async def test_scene_disconnects_active_agent_when_execute_times_out(
+    self_review_scene: Scene,
+) -> None:
+    """Guards timeout cleanup before the verifier runs."""
+    trial = _make_trial(self_review_scene)
+
+    async def fake_execute(prompts=None):
+        raise TimeoutError("Agent prompt exceeded wall-clock budget 5s")
+
+    trial.connect_as = AsyncMock()
+    trial.disconnect = AsyncMock()
+    trial.execute = fake_execute
+
+    with pytest.raises(TimeoutError, match="wall-clock budget"):
+        await trial._run_scene(self_review_scene)
+
+    trial.disconnect.assert_awaited_once()
+
+
 async def test_empty_outbox_no_injection() -> None:
     """When no outbox files exist, prompt is used as-is."""
     scene = Scene(

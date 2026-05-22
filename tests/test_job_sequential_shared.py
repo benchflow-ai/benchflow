@@ -297,6 +297,154 @@ async def test_sequential_shared_records_memory_delta_on_a_node(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_sequential_shared_threads_task_expected_skills_to_memory_delta(tmp_path):
+    """Guards the ENG-125 follow-up on v0.5-integration@ffef85d.
+
+    The Memory-space scorer must grade against a task-authored fixture, not
+    derive an answer key from the agent's own diff.
+    """
+    from benchflow.rewards.memory_scorer import MEMORY_STATE_KEY, MemoryScorer
+
+    job = _make_job(tmp_path, n_tasks=1, job_mode="sequential-shared")
+    task_toml = job._tasks_dir / "task-0" / "task.toml"
+    task_toml.write_text(
+        'version = "1.0"\n'
+        '[verifier]\ntimeout_sec = 60\n'
+        '[verifier.memory]\nexpected_skills = ["skill-1"]\n'
+        '[agent]\ntimeout_sec = 60\n'
+        '[environment]\n'
+    )
+
+    async def fake_run(*args, **kwargs):
+        return RunResult(
+            task_name=args[0].name,
+            rewards={"reward": 1.0},
+            evolved_skills={"skill-1": "body-1", "spurious": "body-2"},
+        )
+
+    job._run_task = fake_run  # type: ignore[method-assign]
+    await job.run()
+
+    delta = job.learner_nodes[0].state[MEMORY_STATE_KEY]
+    assert delta["expected"] == ["skill-1"]
+
+    event = await MemoryScorer().score(job.learner_nodes[0])
+    assert event.reward == 0.5
+
+
+@pytest.mark.asyncio
+async def test_sequential_shared_surfaces_memory_scores_in_summary_and_artifacts(tmp_path):
+    """Guards OPEN-3 on v0.5-integration@ffef85d.
+
+    Memory-space scoring is additive: it must surface as its own metric without
+    changing output reward pass/fail semantics or leaking hidden expected skills.
+    """
+    import json
+
+    job = _make_job(tmp_path, n_tasks=1, job_mode="sequential-shared")
+    task_toml = job._tasks_dir / "task-0" / "task.toml"
+    task_toml.write_text(
+        'version = "1.0"\n'
+        '[verifier]\ntimeout_sec = 60\n'
+        '[verifier.memory]\nexpected_skills = ["skill-1"]\n'
+        '[agent]\ntimeout_sec = 60\n'
+        '[environment]\n'
+    )
+
+    async def fake_run(*args, **kwargs):
+        rollout_name = f"{args[0].name}__abc123"
+        rollout_dir = job._jobs_dir / job._job_name / rollout_name
+        rollout_dir.mkdir(parents=True)
+        (rollout_dir / "result.json").write_text(
+            json.dumps(
+                {
+                    "task_name": args[0].name,
+                    "rollout_name": rollout_name,
+                    "rewards": {"reward": 1.0},
+                    "timing": {},
+                }
+            )
+        )
+        (rollout_dir / "rewards.jsonl").write_text(
+            json.dumps(
+                {
+                    "ts": "2026-05-22T00:00:00",
+                    "type": "terminal",
+                    "source": "verifier",
+                    "value": 1.0,
+                    "tag": "reward",
+                    "step_index": None,
+                    "meta": {},
+                }
+            )
+            + "\n"
+        )
+        return RunResult(
+            task_name=args[0].name,
+            rollout_name=rollout_name,
+            rewards={"reward": 1.0},
+            evolved_skills={"skill-1": "body-1", "spurious": "body-2"},
+        )
+
+    job._run_task = fake_run  # type: ignore[method-assign]
+
+    result = await job.run()
+
+    assert result.score == 1.0
+    assert result.memory_score == pytest.approx(0.5)
+    assert result.memory_scores == {"task-0": pytest.approx(0.5)}
+
+    summary = json.loads((job._jobs_dir / "summary.json").read_text())
+    assert summary["score"] == "100.0%"
+    assert summary["memory"] == {
+        "scored": 1,
+        "avg_score": 0.5,
+        "score": "50.0%",
+    }
+    assert summary["memory_score"] == 0.5
+    assert summary["memory_score_coverage"] == 1.0
+    assert summary["memory_scores"] == {"task-0": 0.5}
+
+    artifact = json.loads(
+        (job._jobs_dir / job._job_name / "task-0__abc123" / "result.json").read_text()
+    )
+    assert artifact["memory_score"] == 0.5
+    assert artifact["reward_events"] == [
+        {
+            "type": "terminal",
+            "reward": 0.5,
+            "source": "memory",
+            "space": "memory",
+            "granularity": "terminal",
+        }
+    ]
+    serialized = json.dumps(artifact)
+    assert "expected_skills" not in serialized
+    assert '"expected"' not in serialized
+
+    reward_lines = [
+        json.loads(line)
+        for line in (
+            job._jobs_dir / job._job_name / "task-0__abc123" / "rewards.jsonl"
+        )
+        .read_text()
+        .splitlines()
+    ]
+    assert reward_lines[-1] == {
+        "ts": "2026-05-22T00:00:00",
+        "type": "terminal",
+        "source": "memory",
+        "value": 0.5,
+        "tag": "memory",
+        "step_index": None,
+        "meta": {"space": "memory", "granularity": "terminal"},
+    }
+    serialized_rewards = json.dumps(reward_lines)
+    assert "expected_skills" not in serialized_rewards
+    assert '"expected"' not in serialized_rewards
+
+
+@pytest.mark.asyncio
 async def test_sequential_shared_evolved_skills_survive_a_revert(tmp_path):
     """A regressing rollout's evolved skills are discarded — the store stays
     at the better generation's skill set."""

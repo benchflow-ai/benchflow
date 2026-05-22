@@ -267,6 +267,54 @@ def test_collect_metrics_partial_reward(tmp_path):
     assert s["failed"] == 1
 
 
+def test_collect_metrics_aggregates_memory_scores_without_changing_output_score(tmp_path):
+    """Guards OPEN-3 memory-space metrics as additive, not pass/fail signal."""
+    rows = [
+        ("task-a", 1.0, 0.5),
+        ("task-b", 0.0, 1.0),
+        ("task-c", 1.0, None),
+    ]
+    for task_name, output_reward, memory_score in rows:
+        trial = tmp_path / "job" / f"{task_name}__trial"
+        trial.mkdir(parents=True)
+        data = {
+            "task_name": task_name,
+            "rewards": {"reward": output_reward},
+            "error": None,
+            "verifier_error": None,
+            "n_tool_calls": 1,
+            "started_at": "2026-03-24 10:00:00.000000",
+            "finished_at": "2026-03-24 10:01:00.000000",
+        }
+        if memory_score is not None:
+            data["memory_score"] = memory_score
+            data["reward_events"] = [
+                {
+                    "type": "terminal",
+                    "reward": memory_score,
+                    "source": "memory",
+                    "space": "memory",
+                    "granularity": "terminal",
+                }
+            ]
+        (trial / "result.json").write_text(json.dumps(data))
+
+    metrics = collect_metrics(str(tmp_path))
+    summary = metrics.summary()
+
+    assert summary["score"] == "66.7%"
+    assert summary["passed"] == 2
+    assert summary["failed"] == 1
+    assert summary["memory"] == {
+        "scored": 2,
+        "avg_score": 0.75,
+        "score": "75.0%",
+    }
+    assert summary["memory_score"] == 0.75
+    assert summary["memory_score_coverage"] == 2 / 3
+    assert summary["memory_scores"] == {"task-a": 0.5, "task-b": 1.0}
+
+
 def test_collect_metrics_usage_aggregation_mixed_telemetry(tmp_path):
     rows = [
         (
