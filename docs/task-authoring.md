@@ -123,7 +123,7 @@ result = await bf.run(config)
 
 After the agent finishes, the BenchFlow runtime copies `tests/` to `/tests/` and runs `/tests/test.sh`. The working directory is the Dockerfile's `WORKDIR` (typically `/app/` in the example Dockerfile below).
 
-**Your script must write a single float (0.0–1.0) to `/logs/verifier/reward.txt`.**
+**Your script must write a single float (0.0–1.0) to `/logs/verifier/reward.txt`.** After writing the reward, exit `0`; a nonzero `test.sh` exit is treated as verifier infrastructure failure, not a scored task failure.
 
 | Path | Contents |
 |---|---|

@@ -122,8 +122,8 @@ RUN mkdir -p /logs/verifier /logs/agent /logs/artifacts
     tests_dir = task_dir / "tests"
     tests_dir.mkdir()
     (tests_dir / "test.sh").write_text("""#!/bin/bash
-# Verifier script — exit 0 for pass, non-zero for fail.
-# Write reward to /logs/verifier/reward.txt (float 0.0-1.0).
+# Verifier script — write reward to /logs/verifier/reward.txt (float 0.0-1.0).
+# Exit 0 after writing it; nonzero exit means verifier infrastructure failure.
 
 echo "1.0" > /logs/verifier/reward.txt
 """)

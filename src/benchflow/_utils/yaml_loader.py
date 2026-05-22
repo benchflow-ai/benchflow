@@ -115,6 +115,10 @@ def rollout_config_from_dict(
         job_name=raw.get("job_name"),
         rollout_name=raw.get("rollout_name"),
         jobs_dir=raw.get("jobs_dir", "jobs"),
+        concurrency=raw.get("concurrency", 1),
+        agent_idle_timeout=raw.get(
+            "agent_idle_timeout_sec", raw.get("agent_idle_timeout", 600)
+        ),
         context_root=raw.get("context_root"),
         agent=raw.get("agent", "claude-agent-acp"),
         model=raw.get("model"),

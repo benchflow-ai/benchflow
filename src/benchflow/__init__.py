@@ -10,9 +10,13 @@ Public API surface:
 - Metrics collection and aggregation
 """
 
+from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _version
 
-__version__ = _version("benchflow")
+try:
+    __version__ = _version("benchflow")
+except PackageNotFoundError:
+    __version__ = "0+unknown"
 
 # Core types
 from benchflow._types import Role, Scene, Turn

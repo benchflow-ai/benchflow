@@ -223,7 +223,14 @@ class ModalSandbox(BaseSandbox):
                         break
                     await file_handle.write.aio(chunk)
 
-    async def upload_dir(self, source_dir: Path | str, target_dir: str) -> None:
+    async def upload_dir(
+        self, source_dir: Path | str, target_dir: str, service: str = "main"
+    ) -> None:
+        if service != "main":
+            raise ValueError(
+                f"Modal sandbox is single-container and cannot target "
+                f"service {service!r}. Multi-container tasks require Docker/Daytona."
+            )
         if not self._sandbox:
             raise RuntimeError("Sandbox not found. Please start the environment first.")
 
@@ -264,7 +271,14 @@ class ModalSandbox(BaseSandbox):
                         break
                     local_file.write(chunk)
 
-    async def download_dir(self, source_dir: str, target_dir: Path | str) -> None:
+    async def download_dir(
+        self, source_dir: str, target_dir: Path | str, service: str = "main"
+    ) -> None:
+        if service != "main":
+            raise ValueError(
+                f"Modal sandbox is single-container and cannot target "
+                f"service {service!r}. Multi-container tasks require Docker/Daytona."
+            )
         if not self._sandbox:
             raise RuntimeError("Sandbox not found. Please start the environment first.")
 

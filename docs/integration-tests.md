@@ -6,6 +6,12 @@ The core matrix runs 9 SkillsBench tasks across all 8 registered agents on Dayto
 
 ## Prerequisites
 
+Install Daytona sandbox support for local integration runs:
+
+```bash
+uv sync --extra dev --extra sandbox-daytona --locked
+```
+
 | Variable | Required for |
 |---|---|
 | `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) | gemini, pi-acp, openclaw, opencode, openhands |
@@ -25,12 +31,15 @@ tests/integration/run.sh gemini pi-acp claude-agent-acp
 
 # Review results from a previous run (no API calls)
 tests/integration/run.sh --check-only
+
+# Large validation override
+BENCHFLOW_INTEGRATION_CONCURRENCY=100 tests/integration/run.sh gemini
 ```
 
 ## What It Does
 
 1. **Resolves tasks** — downloads the full SkillsBench task set, then creates a symlinked subset of 9 selected tasks.
-2. **Launches agents in parallel** — each agent is started as a background process running `bench eval create` with concurrency=30.
+2. **Launches agents in parallel** — each agent is started as a background process running `bench eval create` with concurrency=64 by default. Set `BENCHFLOW_INTEGRATION_CONCURRENCY=100` for the large post-migration validation run.
 3. **Waits and reports** — as each agent finishes, prints its score line. After all complete, runs `check_results.py` to validate output schema and print the results table.
 
 ## Release Readiness Coverage
@@ -255,7 +264,7 @@ Each agent has a YAML config in `configs/` with an `include` list restricting to
 uv run bench eval create --config tests/integration/configs/gemini.yaml
 ```
 
-`run.sh` uses CLI arguments instead of these configs for parallel execution, but both approaches run the same 9 tasks.
+`run.sh` uses CLI arguments instead of these configs for parallel execution, but both approaches run the same 9 tasks at the active-dev concurrency of 64. The shell runner can be temporarily raised with `BENCHFLOW_INTEGRATION_CONCURRENCY=100` for the larger validation set.
 
 ## Result Validation
 
