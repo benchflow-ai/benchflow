@@ -135,6 +135,24 @@ def check_agent(agent_dir: Path) -> dict:
     return findings
 
 
+def _is_rollout_artifact_root(path: Path) -> bool:
+    """Return True when *path* is one completed bench eval artifact root."""
+    if not (path / "summary.json").is_file():
+        return False
+    return any(path.rglob("result.json"))
+
+
+def discover_agent_dirs(jobs_root: Path, agents: list[str] | None) -> list[Path]:
+    """Discover result roots accepted by the audit CLI."""
+    if agents:
+        return [jobs_root / a for a in agents if (jobs_root / a).is_dir()]
+    if _is_rollout_artifact_root(jobs_root):
+        return [jobs_root]
+    return sorted(
+        d for d in jobs_root.iterdir() if d.is_dir() and not d.name.startswith(".")
+    )
+
+
 def main() -> None:
     if len(sys.argv) < 2:
         print("Usage: check_results.py <jobs_root> [agent ...]")
@@ -147,13 +165,7 @@ def main() -> None:
         print(f"ERROR: {jobs_root} does not exist")
         sys.exit(1)
 
-    # Discover agent dirs
-    if agents:
-        agent_dirs = [jobs_root / a for a in agents if (jobs_root / a).is_dir()]
-    else:
-        agent_dirs = sorted(
-            d for d in jobs_root.iterdir() if d.is_dir() and not d.name.startswith(".")
-        )
+    agent_dirs = discover_agent_dirs(jobs_root, agents)
 
     if not agent_dirs:
         print("ERROR: no agent directories found")
