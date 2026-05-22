@@ -447,3 +447,19 @@ class TestSoftVerify:
         # Verify cleanup command was executed
         exec_log = trial._env._exec_log
         assert any("cleanup_sentinel" in cmd for cmd in exec_log)
+        assert any("find /logs/verifier -mindepth 1" in cmd for cmd in exec_log)
+        assert any(cmd == "mkdir -p /app" for cmd in exec_log)
+
+    @pytest.mark.asyncio
+    async def test_soft_verify_reports_cleanup_failure(self):
+        trial = _make_user_trial(PassthroughUser())
+        trial._env.exec = AsyncMock(
+            return_value=FakeExecResult(stderr="Device or resource busy", return_code=1)
+        )
+
+        rewards, output, error = await trial.soft_verify()
+
+        assert rewards is None
+        assert output is None
+        assert "Soft verifier setup failed" in error
+        assert "Device or resource busy" in error
