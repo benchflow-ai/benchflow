@@ -158,6 +158,8 @@ def test_index_ticket_view_and_sync_contract():
         "d.jobs && d.jobs.source && d.jobs.source.remembered",
         "d.jobs && d.jobs.source && d.jobs.source.latest_modified_at",
         "Latest artifact:",
+        "archived_runs",
+        "low-signal run",
         "jobs latest",
         "artifactDisplayName",
         "reward events.jsonl",
@@ -244,6 +246,299 @@ def test_collect_jobs_reports_latest_artifact_timestamp(tmp_path: Path, monkeypa
     run = group["runs"][0]
     assert run["latest_modified_at"] == "2026-05-21 17:28:03"
     assert run["tasks"][0]["latest_modified_at"] == "2026-05-21 17:28:03"
+
+
+def test_collect_jobs_archives_generic_timestamp_rollouts(tmp_path: Path, monkeypatch):
+    """Guards codex/v05-integration-followup@5f05423 dashboard cleanup."""
+    jobs = tmp_path / "jobs"
+    task_dir = jobs / "2026-05-18__11-55-00" / "task__fa1e623d"
+    task_dir.mkdir(parents=True)
+    (task_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "task",
+                "agent": "oracle",
+                "rewards": {"reward": 1.0},
+                "timing": {},
+            }
+        )
+    )
+    (task_dir / "config.json").write_text(json.dumps({"agent": "oracle"}))
+
+    monkeypatch.setenv(generate.JOBS_ROOT_ENV, str(jobs))
+
+    data = generate.collect_jobs()
+
+    assert data["groups"] == []
+    assert data["total_tasks"] == 0
+    assert data["archived_runs"] == 1
+    assert data["archived_tasks"] == 1
+
+
+def test_collect_jobs_archives_acp_smoke_without_target_evidence(
+    tmp_path: Path, monkeypatch
+):
+    """Guards codex/v05-integration-followup@5f05423 ACP smoke cleanup."""
+    jobs = tmp_path / "jobs"
+    task_dir = jobs / "environment" / "acp_smoke__fa1e623d"
+    trajectory = task_dir / "agent"
+    trajectory.mkdir(parents=True)
+    (task_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "acp_smoke",
+                "agent": "acp",
+                "rewards": {"reward": 1.0},
+                "timing": {},
+            }
+        )
+    )
+    (task_dir / "config.json").write_text(json.dumps({"agent": "acp"}))
+    (trajectory / "acp_trajectory.jsonl").write_text(json.dumps({"event": "noop"}))
+
+    monkeypatch.setenv(generate.JOBS_ROOT_ENV, str(jobs))
+
+    data = generate.collect_jobs()
+
+    assert data["groups"] == []
+    assert data["total_tasks"] == 0
+    assert data["archived_runs"] == 1
+    assert data["archived_tasks"] == 1
+
+
+def test_collect_jobs_archives_empty_task_dirs_and_target_named_placeholders(
+    tmp_path: Path, monkeypatch
+):
+    """Guards codex/v05-integration-followup@5f05423 placeholder cleanup."""
+    jobs = tmp_path / "jobs"
+    (jobs / "2026-05-22__03-45-00" / "task__empty").mkdir(parents=True)
+    (jobs / "smoke-test" / "programbench-daytona").mkdir(parents=True)
+    (jobs / "programbench-daytona" / "programbench-daytona__abc123" / "agent").mkdir(
+        parents=True
+    )
+
+    monkeypatch.setenv(generate.JOBS_ROOT_ENV, str(jobs))
+
+    data = generate.collect_jobs()
+
+    assert data["groups"] == []
+    assert data["total_tasks"] == 0
+    assert data["archived_runs"] == 3
+    assert data["archived_tasks"] == 1
+
+
+def test_collect_jobs_archives_generic_task_in_nonstandard_rollout(
+    tmp_path: Path, monkeypatch
+):
+    """Guards codex/v05-integration-followup@5f05423 generic name cleanup."""
+    jobs = tmp_path / "jobs"
+    task_dir = jobs / "smoke-leftover" / "2026-05-22__03-55-00" / "leftover__abc123"
+    task_dir.mkdir(parents=True)
+    (task_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "task",
+                "agent": "oracle",
+                "rewards": {"reward": 1.0},
+                "timing": {},
+            }
+        )
+    )
+    (task_dir / "config.json").write_text(json.dumps({"agent": "oracle"}))
+
+    monkeypatch.setenv(generate.JOBS_ROOT_ENV, str(jobs))
+
+    data = generate.collect_jobs()
+
+    assert data["groups"] == []
+    assert data["total_tasks"] == 0
+    assert data["archived_runs"] == 1
+    assert data["archived_tasks"] == 1
+
+
+def test_collect_jobs_keeps_target_runs_even_when_failed(tmp_path: Path, monkeypatch):
+    """Guards codex/v05-integration-followup@5f05423 target evidence."""
+    jobs = tmp_path / "jobs"
+    task_dir = (
+        jobs
+        / "codex-daytona-programbench-provenance-20260522-020214"
+        / "2026-05-22__02-02-14"
+        / "abishekvashok-inference-provenance__7cf73b55"
+    )
+    task_dir.mkdir(parents=True)
+    (task_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "abishekvashok-inference-provenance",
+                "agent": "oracle",
+                "rewards": None,
+                "error": "agent stopped early",
+                "timing": {},
+                "source": {
+                    "repo": "benchflow-ai/programbench",
+                    "path": "datasets/programbench/abishekvashok-inference",
+                },
+            }
+        )
+    )
+    (task_dir / "config.json").write_text(
+        json.dumps({"agent": "oracle", "environment": "daytona"})
+    )
+
+    monkeypatch.setenv(generate.JOBS_ROOT_ENV, str(jobs))
+
+    data = generate.collect_jobs()
+
+    assert data["archived_runs"] == 0
+    assert data["total_tasks"] == 1
+    run = data["groups"][0]["runs"][0]
+    assert "ProgramBench" in run["targets"]
+    assert "hosted-env" in run["signals"]
+    assert "provenance" in run["signals"]
+
+
+def test_collect_jobs_archives_label_cleanup_without_lab_false_positive(
+    tmp_path: Path, monkeypatch
+):
+    """Guards codex/v05-integration-followup@5f05423 lab token cleanup."""
+    jobs = tmp_path / "jobs"
+    task_dir = jobs / "label-cleanup" / "2026-05-22__04-00-00" / "task__abc123"
+    task_dir.mkdir(parents=True)
+    (task_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "task",
+                "agent": "oracle",
+                "rewards": {"reward": 1.0},
+                "timing": {},
+            }
+        )
+    )
+    (task_dir / "config.json").write_text(json.dumps({"agent": "oracle"}))
+
+    monkeypatch.setenv(generate.JOBS_ROOT_ENV, str(jobs))
+
+    data = generate.collect_jobs()
+
+    assert data["groups"] == []
+    assert data["total_tasks"] == 0
+    assert data["archived_runs"] == 1
+    assert data["archived_tasks"] == 1
+
+
+def test_collect_jobs_archives_signal_words_without_structured_evidence(
+    tmp_path: Path, monkeypatch
+):
+    """Guards codex/v05-integration-followup@5f05423 structured signals."""
+    jobs = tmp_path / "jobs"
+    for group_name in (
+        "daytona-leftover",
+        "modal-leftover",
+        "provenance-leftover",
+        "concurrency-leftover",
+    ):
+        task_dir = jobs / group_name / "2026-05-22__04-05-00" / "task__abc123"
+        task_dir.mkdir(parents=True)
+        (task_dir / "result.json").write_text(
+            json.dumps(
+                {
+                    "task_name": "task",
+                    "agent": "oracle",
+                    "rewards": {"reward": 1.0},
+                    "timing": {},
+                }
+            )
+        )
+        (task_dir / "config.json").write_text(json.dumps({"agent": "oracle"}))
+
+    monkeypatch.setenv(generate.JOBS_ROOT_ENV, str(jobs))
+
+    data = generate.collect_jobs()
+
+    assert data["groups"] == []
+    assert data["total_tasks"] == 0
+    assert data["archived_runs"] == 4
+    assert data["archived_tasks"] == 4
+
+
+def test_collect_jobs_archives_hello_world_without_rollout_signal(
+    tmp_path: Path, monkeypatch
+):
+    """Guards codex/v05-integration-followup@5f05423 hello-world cleanup."""
+    jobs = tmp_path / "jobs"
+    run_dir = jobs / "2026-05-22__04-15-00"
+    hello_world = run_dir / "hello-world__abc123"
+    hello_world_task = run_dir / "hello-world-task__abc123"
+    hello_world.mkdir(parents=True)
+    hello_world_task.mkdir()
+    (hello_world / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "hello-world",
+                "agent": "oracle",
+                "rewards": {"reward": 1.0},
+                "timing": {},
+            }
+        )
+    )
+    (hello_world / "config.json").write_text(json.dumps({"agent": "oracle"}))
+    (hello_world_task / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "hello-world-task",
+                "agent": "oracle",
+                "rewards": {"reward": 1.0},
+                "timing": {},
+            }
+        )
+    )
+    (hello_world_task / "config.json").write_text(json.dumps({"agent": "oracle"}))
+
+    monkeypatch.setenv(generate.JOBS_ROOT_ENV, str(jobs))
+
+    data = generate.collect_jobs()
+
+    assert data["groups"] == []
+    assert data["total_tasks"] == 0
+    assert data["archived_runs"] == 1
+    assert data["archived_tasks"] == 2
+
+
+def test_collect_jobs_keeps_generic_task_inside_target_signal_rollout(
+    tmp_path: Path, monkeypatch
+):
+    """Guards codex/v05-integration-followup@5f05423 generic target exception."""
+    jobs = tmp_path / "jobs"
+    task_dir = (
+        jobs
+        / "programbench-daytona-provenance"
+        / "2026-05-22__04-30-00"
+        / "hello-world-task__abc123"
+    )
+    task_dir.mkdir(parents=True)
+    (task_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "hello-world-task",
+                "agent": "oracle",
+                "rewards": {"reward": 1.0},
+                "timing": {},
+            }
+        )
+    )
+    (task_dir / "config.json").write_text(
+        json.dumps({"agent": "oracle", "environment": "daytona"})
+    )
+
+    monkeypatch.setenv(generate.JOBS_ROOT_ENV, str(jobs))
+
+    data = generate.collect_jobs()
+
+    assert data["archived_runs"] == 0
+    assert data["total_tasks"] == 1
+    run = data["groups"][0]["runs"][0]
+    assert "ProgramBench" in run["targets"]
+    assert "hosted-env" in run["signals"]
 
 
 def test_collect_architecture_hosts_markdown_file():
@@ -758,7 +1053,9 @@ def test_collect_jobs_reads_configured_external_worktree_jobs(
     rollout = previous_worktree / "jobs" / "2026-05-21__23-57-23" / "task__abc123"
     rollout.mkdir(parents=True)
     (rollout / "result.json").write_text(
-        json.dumps({"task_name": "task", "rewards": {"reward": 1.0}, "timing": {}})
+        json.dumps(
+            {"task_name": "external-evidence", "rewards": {"reward": 1.0}, "timing": {}}
+        )
     )
     (rollout / "config.json").write_text(
         json.dumps({"agent": "codex", "model": "test", "environment": "docker"})
@@ -781,7 +1078,9 @@ def test_collect_jobs_reads_configured_external_jobs_dir(tmp_path: Path, monkeyp
     rollout = previous_jobs / "2026-05-21__23-57-23" / "task__abc123"
     rollout.mkdir(parents=True)
     (rollout / "result.json").write_text(
-        json.dumps({"task_name": "task", "rewards": {"reward": 1.0}, "timing": {}})
+        json.dumps(
+            {"task_name": "external-evidence", "rewards": {"reward": 1.0}, "timing": {}}
+        )
     )
     (rollout / "config.json").write_text(json.dumps({"agent": "codex"}))
 
@@ -813,7 +1112,9 @@ def test_collect_jobs_transitions_from_empty_to_nonempty_external_root(
     rollout = previous_worktree / "jobs" / "2026-05-21__23-57-23" / "task__abc123"
     rollout.mkdir(parents=True)
     (rollout / "result.json").write_text(
-        json.dumps({"task_name": "task", "rewards": {"reward": 1.0}, "timing": {}})
+        json.dumps(
+            {"task_name": "external-evidence", "rewards": {"reward": 1.0}, "timing": {}}
+        )
     )
     (rollout / "config.json").write_text(json.dumps({"agent": "codex"}))
 
@@ -821,7 +1122,7 @@ def test_collect_jobs_transitions_from_empty_to_nonempty_external_root(
     assert after["total_tasks"] == 1
     assert after["groups"][0]["name"] == "main"
     assert after["groups"][0]["runs"][0]["id"] == "2026-05-21__23-57-23"
-    assert after["groups"][0]["runs"][0]["tasks"][0]["name"] == "task"
+    assert after["groups"][0]["runs"][0]["tasks"][0]["name"] == "external-evidence"
 
 
 def test_collect_jobs_reuses_remembered_external_jobs_root(tmp_path: Path, monkeypatch):
@@ -834,7 +1135,9 @@ def test_collect_jobs_reuses_remembered_external_jobs_root(tmp_path: Path, monke
     rollout = previous_jobs / "2026-05-21__23-57-23" / "task__abc123"
     rollout.mkdir(parents=True)
     (rollout / "result.json").write_text(
-        json.dumps({"task_name": "task", "rewards": {"reward": 1.0}, "timing": {}})
+        json.dumps(
+            {"task_name": "external-evidence", "rewards": {"reward": 1.0}, "timing": {}}
+        )
     )
     (rollout / "config.json").write_text(json.dumps({"agent": "codex"}))
     out = dash / "data.json"

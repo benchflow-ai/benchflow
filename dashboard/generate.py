@@ -35,6 +35,19 @@ from datetime import datetime
 from pathlib import Path
 from types import ModuleType
 
+try:
+    from dashboard.jobs_visibility import (
+        RunTaskEvidence,
+        RunVisibilityContext,
+        decide_run_visibility,
+    )
+except ModuleNotFoundError:  # pragma: no cover - used when run as dashboard/generate.py
+    from jobs_visibility import (  # type: ignore[no-redef]
+        RunTaskEvidence,
+        RunVisibilityContext,
+        decide_run_visibility,
+    )
+
 ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / "src"
 DASH = ROOT / "dashboard"
@@ -526,9 +539,7 @@ def _mark_ignored_reward_artifacts(artifacts: list[dict]) -> list[dict]:
     return marked
 
 
-def _task_row(d: Path) -> dict:
-    result = _read_json(d / "result.json")
-    config = _read_json(d / "config.json")
+def _task_row_from_parsed(d: Path, result: dict, config: dict) -> dict:
     traj = 0
     for cand in (
         d / "trajectory" / "acp_trajectory.jsonl",
@@ -567,6 +578,54 @@ def _task_row(d: Path) -> dict:
     }
 
 
+def _task_row(d: Path) -> dict:
+    result = _read_json(d / "result.json")
+    config = _read_json(d / "config.json")
+    return _task_row_from_parsed(d, result, config)
+
+
+def _task_visibility_evidence(
+    d: Path, task: dict, result: dict, config: dict
+) -> RunTaskEvidence:
+    source = result.get("source") or config.get("source") or {}
+    source_repo = None
+    source_path = None
+    if isinstance(source, dict):
+        source_repo = source.get("repo")
+        source_path = source.get("path")
+    return RunTaskEvidence(
+        path=d.as_posix(),
+        name=str(task.get("name") or ""),
+        rollout=str(task.get("rollout") or ""),
+        agent=str(task.get("agent") or ""),
+        model=str(task.get("model") or ""),
+        environment=str(task.get("environment") or ""),
+        outcome=task.get("outcome"),
+        source_repo=str(source_repo) if source_repo else None,
+        source_path=str(source_path) if source_path else None,
+        reward_present=task.get("reward") is not None,
+        memory_score_present=task.get("memory_score") is not None,
+        trajectory_events=int(task.get("trajectory_events") or 0),
+        artifact_count=len(task.get("artifacts") or []),
+    )
+
+
+def _task_record(d: Path) -> tuple[dict, RunTaskEvidence]:
+    result = _read_json(d / "result.json")
+    config = _read_json(d / "config.json")
+    task = _task_row_from_parsed(d, result, config)
+    return task, _task_visibility_evidence(d, task, result, config)
+
+
+def _run_summary(run_dir: Path, group_dir: Path, n_group_runs: int) -> dict:
+    summary = _read_json(run_dir / "summary.json")
+    if summary:
+        return summary
+    if n_group_runs == 1:
+        return _read_json(group_dir / "summary.json")
+    return {}
+
+
 def _is_task_dir(d: Path) -> bool:
     """A rollout directory — has a result/config file or a rollout subdir.
 
@@ -596,10 +655,19 @@ def collect_jobs() -> dict:
     jobs = dashboard_jobs_root()
     source = _jobs_source(jobs)
     if not jobs.is_dir():
-        return {"groups": [], "total_tasks": 0, "source": source}
+        return {
+            "groups": [],
+            "total_tasks": 0,
+            "total_runs": 0,
+            "archived_tasks": 0,
+            "archived_runs": 0,
+            "source": source,
+        }
 
-    # group name -> { run id -> [task dirs] }
+    # group name -> { run id -> [task dirs] }, plus paths for run-level evidence.
     groups: dict[str, dict[str, list[Path]]] = {}
+    run_dirs: dict[tuple[str, str], Path] = {}
+    group_dirs: dict[str, Path] = {}
     for top in sorted(jobs.iterdir()):
         if not top.is_dir():
             continue
@@ -609,10 +677,13 @@ def collect_jobs() -> dict:
             runs[top.name] = [
                 c for c in sorted(top.iterdir()) if c.is_dir() and _is_task_dir(c)
             ]
+            group_dirs.setdefault("main", jobs)
+            run_dirs[("main", top.name)] = top
         else:
             # a named group: e2e / e2e-branch / environment. Its children
             # are either run dirs (holding task dirs) or task dirs directly.
             runs = groups.setdefault(top.name, {})
+            group_dirs[top.name] = top
             direct: list[Path] = []
             for child in sorted(top.iterdir()):
                 if not child.is_dir():
@@ -625,10 +696,15 @@ def collect_jobs() -> dict:
                         for c in sorted(child.iterdir())
                         if c.is_dir() and _is_task_dir(c)
                     ]
+                    run_dirs[(top.name, child.name)] = child
             if direct:
                 runs["(tasks)"] = direct
+                run_dirs[(top.name, "(tasks)")] = top
 
     total = 0
+    archived_tasks = 0
+    archived_runs = 0
+    total_runs = 0
     out_groups: list[dict] = []
     order = ["e2e-branch", "e2e", "environment", "main"]
     for name in sorted(groups, key=lambda n: (order.index(n) if n in order else 9, n)):
@@ -636,8 +712,29 @@ def collect_jobs() -> dict:
             name, {"label": name, "blurb": "", "capability": None, "advisories": []}
         )
         run_list: list[dict] = []
+        n_group_runs = len(groups[name])
+        group_dir = group_dirs.get(name, jobs / name)
         for run_id in sorted(groups[name], reverse=True):
-            tasks = [_task_row(d) for d in groups[name][run_id]]
+            task_dirs = groups[name][run_id]
+            records = [_task_record(d) for d in task_dirs]
+            tasks = [task for task, _evidence in records]
+            task_evidence = [evidence for _task, evidence in records]
+            total_runs += 1
+            run_dir = run_dirs.get((name, run_id), group_dir / run_id)
+            summary = _run_summary(run_dir, group_dir, n_group_runs)
+            visibility = decide_run_visibility(
+                RunVisibilityContext(
+                    group_name=name,
+                    run_id=run_id,
+                    run_path=run_dir.as_posix(),
+                    summary=summary,
+                    tasks=task_evidence,
+                )
+            )
+            if visibility.archived:
+                archived_runs += 1
+                archived_tasks += len(tasks)
+                continue
             total += len(tasks)
             run_list.append(
                 {
@@ -645,9 +742,13 @@ def collect_jobs() -> dict:
                     "latest_modified_at": _latest_timestamp(
                         [task.get("latest_modified_at") for task in tasks]
                     ),
+                    "signals": list(visibility.signals),
+                    "targets": list(visibility.targets),
                     "tasks": tasks,
                 }
             )
+        if not run_list:
+            continue
         out_groups.append(
             {
                 "name": name,
@@ -665,7 +766,14 @@ def collect_jobs() -> dict:
     source["latest_modified_at"] = _latest_timestamp(
         [group.get("latest_modified_at") for group in out_groups]
     )
-    return {"groups": out_groups, "total_tasks": total, "source": source}
+    return {
+        "groups": out_groups,
+        "total_tasks": total,
+        "total_runs": total_runs - archived_runs,
+        "archived_tasks": archived_tasks,
+        "archived_runs": archived_runs,
+        "source": source,
+    }
 
 
 # --------------------------------------------------------------------------
@@ -1141,6 +1249,8 @@ def build_data() -> dict:
             "issues_total": len(all_issues),
             "issues_active": sum(1 for i in all_issues if _is_active_issue(i)),
             "jobs_total": jobs["total_tasks"],
+            "jobs_archived": jobs.get("archived_tasks", 0),
+            "jobs_archived_runs": jobs.get("archived_runs", 0),
             "job_groups": len(jobs["groups"]),
             "experiments": len(experiments),
             "advisories_open": sum(
@@ -1184,6 +1294,8 @@ def main() -> int:
     print(
         f"  tests: {s['passed']}p/{s['failed']}f/{s['skipped']}s   "
         f"jobs: {jobs['total_tasks']} tasks in {len(jobs['groups'])} groups   "
+        f"archived: {jobs.get('archived_runs', 0)} runs/"
+        f"{jobs.get('archived_tasks', 0)} tasks   "
         f"experiments: {len(experiments)}   "
         f"capabilities: {data['summary']['capabilities_shipped']}/"
         f"{data['summary']['capabilities_total']}"
