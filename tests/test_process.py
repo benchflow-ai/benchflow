@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from benchflow.sandbox.process import DaytonaProcess, DockerProcess
+from benchflow.sandbox.process import DaytonaProcess, DaytonaPtyProcess, DockerProcess
 
 
 class _FakeStdin:
@@ -60,6 +60,55 @@ def _make_daytona_sandbox(token="abc", exit_code=0, result=None):
         return_value=MagicMock(exit_code=exit_code, result=result)
     )
     return sandbox
+
+
+class _FakeDaytonaPty:
+    def __init__(self, on_data, send_error=None, reject_exec_env_file=True):
+        self._on_data = on_data
+        self._send_error = send_error
+        self._reject_exec_env_file = reject_exec_env_file
+        self.inputs = []
+        self.killed = False
+        self.disconnected = False
+
+    async def wait_for_connection(self):
+        return None
+
+    async def send_input(self, payload):
+        self.inputs.append(payload)
+        if self._reject_exec_env_file:
+            parts = shlex.split(payload)
+            if "exec" in parts:
+                exec_index = parts.index("exec")
+                assert "--env-file" not in parts[exec_index + 1 :]
+        if self._send_error:
+            raise self._send_error
+        marker = payload.split("echo '", 1)[1].split("'", 1)[0]
+        await self._on_data(f"{marker}\n".encode())
+
+    async def kill(self):
+        self.killed = True
+
+    async def disconnect(self):
+        self.disconnected = True
+
+
+def _make_daytona_pty_sandbox(result=None, send_error=None, exit_code=0):
+    sandbox = MagicMock()
+    if result is None:
+        result = "__BENCHFLOW_BOOTSTRAP_DONE__\n"
+    ptys = []
+
+    async def create_pty_session(*, id, on_data, envs=None):
+        pty = _FakeDaytonaPty(on_data=on_data, send_error=send_error)
+        ptys.append(pty)
+        return pty
+
+    sandbox.process.exec = AsyncMock(
+        return_value=MagicMock(exit_code=exit_code, result=result)
+    )
+    sandbox.process.create_pty_session = AsyncMock(side_effect=create_pty_session)
+    return sandbox, ptys
 
 
 class TestDockerProcessEnv:
@@ -265,10 +314,10 @@ class TestDaytonaProcessEnvFilePath:
     Guards the fix from PR #198 against the regression introduced by PR #193
     (DinD compose ACP via Daytona PTY WebSocket, commit cdccac7).
 
-    The DinD branch builds an inner compose command with `--env-file PATH`
-    through `shlex.join()`, while the env file is written by an SDK process
-    bootstrap. A literal `$$` path risks mismatched expansion across these
-    shell boundaries, so both Daytona branches use a uuid path.
+    The DinD branch writes provider values through a Daytona SDK process
+    bootstrap, then sources that remote env file before running compose with
+    only env names in argv. A literal `$$` path risks mismatched expansion
+    across these shell boundaries, so both Daytona branches use a uuid path.
     """
 
     @pytest.mark.asyncio
@@ -300,7 +349,10 @@ class TestDaytonaProcessEnvFilePath:
         assert "$$" not in bootstrap_cmd
         assert "/tmp/benchflow_env_" in bootstrap_cmd
         assert sandbox.process.exec.await_args.kwargs["env"] == {"FOO": "bar"}
-        assert "--env-file" in live_cmd
+        assert "--env FOO" in live_cmd
+        assert "--env-file" not in live_cmd
+        assert "bar" not in live_cmd
+        assert ". /tmp/benchflow_env_" in live_cmd
         assert "rm -f /tmp/benchflow_env_" in live_cmd
 
     @pytest.mark.asyncio
@@ -549,3 +601,112 @@ class TestDaytonaProcessSecretArgv:
         assert calls[0].args[0].startswith("sh -c ")
         assert calls[1].args[0].startswith("rm -f /tmp/benchflow_env_")
         assert proc._ssh_config_path is None
+
+
+class TestDaytonaPtyProcessSecretTransport:
+    """Regression tests for Daytona PTY env values staying out of PTY input."""
+
+    @pytest.mark.asyncio
+    async def test_provider_env_value_not_sent_through_pty_input(self):
+        """Guards the 2026-05-22 Daytona PTY env transport leak fix."""
+        sandbox, ptys = _make_daytona_pty_sandbox()
+        proc = DaytonaPtyProcess(
+            sandbox=sandbox,
+            compose_cmd_prefix="",
+            compose_cmd_base="docker compose -p test",
+        )
+        secret = "bf_pty_provider_key_should_not_be_in_input"
+
+        await proc.start(command="codex-acp", env={"GEMINI_API_KEY": secret})
+
+        assert ptys
+        sent_payload = "\n".join(ptys[0].inputs)
+        assert secret not in sent_payload
+        bootstrap_call = sandbox.process.exec.await_args_list[0]
+        assert bootstrap_call.kwargs["env"] == {"GEMINI_API_KEY": secret}
+        assert secret not in bootstrap_call.args[0]
+        assert ". /tmp/benchflow_env_" in sent_payload
+        assert "rm -f /tmp/benchflow_env_" in sent_payload
+        assert "--env GEMINI_API_KEY" in sent_payload
+        assert "--env-file" not in sent_payload
+        assert "exec ." not in sent_payload
+        assert "&& exec docker compose -p test exec" in sent_payload
+
+        await proc.close()
+
+        cleanup_call = sandbox.process.exec.await_args_list[-1]
+        assert cleanup_call.args[0].startswith("rm -f /tmp/benchflow_env_")
+        assert secret not in cleanup_call.args[0]
+
+    @pytest.mark.asyncio
+    async def test_bootstrapped_env_file_is_removed_when_pty_handoff_fails(self):
+        """Guards remote env cleanup when Daytona PTY start fails after bootstrap."""
+        sandbox, ptys = _make_daytona_pty_sandbox(
+            send_error=RuntimeError("pty handoff failed")
+        )
+        proc = DaytonaPtyProcess(
+            sandbox=sandbox,
+            compose_cmd_prefix="",
+            compose_cmd_base="docker compose -p test",
+        )
+
+        with pytest.raises(RuntimeError, match="pty handoff failed"):
+            await proc.start(command="codex-acp", env={"GEMINI_API_KEY": "secret"})
+
+        assert ptys
+        assert ptys[0].killed
+        assert ptys[0].disconnected
+        calls = sandbox.process.exec.await_args_list
+        assert len(calls) == 2
+        assert calls[0].args[0].startswith("sh -c ")
+        assert calls[0].kwargs["env"] == {"GEMINI_API_KEY": "secret"}
+        assert calls[1].args[0].startswith("rm -f /tmp/benchflow_env_")
+        assert "secret" not in calls[1].args[0]
+
+    @pytest.mark.asyncio
+    async def test_bootstrapped_env_file_is_removed_when_pty_bootstrap_marker_missing(
+        self,
+    ):
+        """Guards remote env cleanup when Daytona PTY SDK bootstrap is ambiguous."""
+        sandbox, ptys = _make_daytona_pty_sandbox(result="no marker\n")
+        proc = DaytonaPtyProcess(
+            sandbox=sandbox,
+            compose_cmd_prefix="",
+            compose_cmd_base="docker compose -p test",
+        )
+
+        with pytest.raises(RuntimeError, match="Failed to bootstrap Daytona PTY"):
+            await proc.start(command="codex-acp", env={"GEMINI_API_KEY": "secret"})
+
+        assert ptys
+        assert ptys[0].killed
+        assert ptys[0].disconnected
+        calls = sandbox.process.exec.await_args_list
+        assert len(calls) == 2
+        assert calls[0].args[0].startswith("sh -c ")
+        assert calls[0].kwargs["env"] == {"GEMINI_API_KEY": "secret"}
+        assert calls[1].args[0].startswith("rm -f /tmp/benchflow_env_")
+        assert "secret" not in calls[1].args[0]
+
+    @pytest.mark.asyncio
+    async def test_bootstrapped_env_file_is_removed_when_pty_bootstrap_fails(self):
+        """Guards remote env cleanup when Daytona PTY env bootstrap fails."""
+        sandbox, ptys = _make_daytona_pty_sandbox(result="boom", exit_code=1)
+        proc = DaytonaPtyProcess(
+            sandbox=sandbox,
+            compose_cmd_prefix="",
+            compose_cmd_base="docker compose -p test",
+        )
+
+        with pytest.raises(RuntimeError, match="Failed to bootstrap Daytona PTY"):
+            await proc.start(command="codex-acp", env={"GEMINI_API_KEY": "secret"})
+
+        assert ptys
+        assert ptys[0].killed
+        assert ptys[0].disconnected
+        calls = sandbox.process.exec.await_args_list
+        assert len(calls) == 2
+        assert calls[0].args[0].startswith("sh -c ")
+        assert calls[0].kwargs["env"] == {"GEMINI_API_KEY": "secret"}
+        assert calls[1].args[0].startswith("rm -f /tmp/benchflow_env_")
+        assert "secret" not in calls[1].args[0]
