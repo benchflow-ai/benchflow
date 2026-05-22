@@ -45,6 +45,8 @@ harvey_tasks = sorted(d.name for d in harvey_root.iterdir() if d.is_dir() and (d
 pb_tasks = sorted(d.name for d in pb_root.iterdir() if d.is_dir() and (d/"task.toml").exists())
 tb2_tasks = sorted(d.name for d in tb2_root.iterdir() if d.is_dir() and (d/"task.toml").exists())
 def sample(tasks, n):
+    if n >= len(tasks):
+        return tasks
     scored = sorted(tasks, key=lambda t: hashlib.sha256(t.encode()).hexdigest())
     step = max(1, len(scored)//n)
     return [scored[i*step] for i in range(n)][:n]
