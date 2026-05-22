@@ -13,7 +13,11 @@ def reward_event_to_dict(event: Any) -> dict[str, Any]:
     """Serialize one reward event through the public, fixture-safe allowlist."""
     out: dict[str, Any] = {}
     for field in _EVENT_FIELDS:
-        value = event.get(field) if isinstance(event, Mapping) else getattr(event, field, None)
+        value = (
+            event.get(field)
+            if isinstance(event, Mapping)
+            else getattr(event, field, None)
+        )
         if value is None and field == "step":
             continue
         out[field] = value
@@ -40,10 +44,18 @@ def memory_score_from_events(events: list[Any] | None) -> float | None:
     if not events:
         return None
     for event in reversed(events):
-        space = event.get("space") if isinstance(event, Mapping) else getattr(event, "space", None)
+        space = (
+            event.get("space")
+            if isinstance(event, Mapping)
+            else getattr(event, "space", None)
+        )
         if space != "memory":
             continue
-        reward = event.get("reward") if isinstance(event, Mapping) else getattr(event, "reward", None)
+        reward = (
+            event.get("reward")
+            if isinstance(event, Mapping)
+            else getattr(event, "reward", None)
+        )
         if isinstance(reward, int | float):
             return float(reward)
     return None
@@ -59,7 +71,7 @@ def memory_score_from_result(result: Mapping[str, Any]) -> float | None:
 
 
 def memory_summary(
-    results: Mapping[str, Mapping[str, Any]]
+    results: Mapping[str, Mapping[str, Any]],
 ) -> tuple[dict[str, Any], dict[str, float]]:
     """Aggregate optional per-task Memory-space scores."""
     scores = {

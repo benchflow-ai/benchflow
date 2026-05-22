@@ -42,9 +42,7 @@ class NodeScorer(Protocol):
     async def score(self, node: RolloutNode) -> RewardEvent: ...
 
 
-async def score_node(
-    node: RolloutNode, scorers: list[NodeScorer]
-) -> VerifyResult:
+async def score_node(node: RolloutNode, scorers: list[NodeScorer]) -> VerifyResult:
     """Score a tree node — the Reward plane's ``score(node)`` entry point.
 
     Runs each scorer over ``node``, collecting its tagged ``RewardEvent``.

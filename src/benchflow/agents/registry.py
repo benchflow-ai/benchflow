@@ -643,6 +643,40 @@ AGENT_ALIASES: dict[str, str] = {
 
 VALID_PROTOCOLS = {"acp", "acpx"}
 
+# ---------------------------------------------------------------------------
+# The ``acpx:`` runtime-key namespace
+# ---------------------------------------------------------------------------
+#
+# An ``acpx/<agent>`` spec resolves to an acpx-wrapped AgentConfig whose
+# install/launch commands route through the acpx CLI. That wrapped config is
+# registered into ``AGENTS`` (and the installer/launch maps) under a stable
+# runtime key prefixed with ``ACPX_KEY_PREFIX`` so later *name-keyed* lookups
+# in the Rollout/Evaluation path pick up the wrapped commands.
+#
+# This namespace is owned end to end by ``resolve_agent_key``: it is the only
+# function that *mints* an ``acpx:`` key (by registering the wrapped config).
+# Two other sites must agree with that convention and are documented here so
+# the contract is explicit rather than implied:
+#
+#   - ``_acpx_wrap`` produces the wrapped config whose ``name`` carries the
+#     ``acpx:`` prefix (via ``acpx_runtime_key``).
+#   - ``resolve_agent`` round-trips an already-registered ``acpx:`` key:
+#     ``parse_agent_spec`` leaves it whole under the default ``acp`` protocol,
+#     and the ``protocol == "acp" and name in AGENTS`` branch returns it as-is.
+#
+# Changing the prefix or this round-trip behavior requires updating all three.
+ACPX_KEY_PREFIX = "acpx:"
+
+
+def acpx_runtime_key(canonical_name: str) -> str:
+    """Return the stable ``acpx:`` runtime key for a canonical agent name.
+
+    Single source of truth for the ``acpx:`` namespace — see the module-level
+    comment above. ``resolve_agent_key`` registers the wrapped config under
+    this key; ``resolve_agent`` round-trips it back to that config.
+    """
+    return f"{ACPX_KEY_PREFIX}{canonical_name}"
+
 
 def parse_agent_spec(spec: str) -> tuple[str, str]:
     """Parse an agent spec like 'acp/claude-agent-acp', 'acpx/claude', or 'claude'.
@@ -681,8 +715,15 @@ def _acpx_wrap(config: AgentConfig) -> AgentConfig:
             acpx_agent_name = alias
             break
 
+    # The acpx wrapper only overrides name/install_cmd/launch_cmd. Every other
+    # AgentConfig field must pass through from the underlying agent so that
+    # routing-relevant attributes (api_protocol, default_model, env_mapping,
+    # requires_env, credentials, …) survive when the wrapped config is cached
+    # into AGENTS and later read by resolve_provider_env. ``protocol`` stays
+    # "acp" because acpx itself speaks ACP regardless of the inner agent.
     return AgentConfig(
-        name=f"acpx:{config.name}",
+        # ``acpx:`` runtime key — see acpx_runtime_key / module-level contract.
+        name=acpx_runtime_key(config.name),
         install_cmd=f"{config.install_cmd} && {_ACPX_INSTALL}",
         launch_cmd=(
             f'export PATH="{_JS_AGENT_PATH}" && acpx {acpx_agent_name} --approve-all'
@@ -692,6 +733,8 @@ def _acpx_wrap(config: AgentConfig) -> AgentConfig:
         description=f"{config.description} (via acpx)",
         skill_paths=config.skill_paths,
         install_timeout=config.install_timeout,
+        default_model=config.default_model,
+        api_protocol=config.api_protocol,
         env_mapping=config.env_mapping,
         credential_files=config.credential_files,
         home_dirs=config.home_dirs,
@@ -717,6 +760,12 @@ def resolve_agent(spec: str) -> AgentConfig:
             f"Unknown protocol: {protocol!r}. Valid: {', '.join(sorted(VALID_PROTOCOLS))}"
         )
 
+    # An already-resolved acpx runtime key (e.g. "acpx:claude-agent-acp")
+    # round-trips: parse_agent_spec leaves it whole under the default "acp"
+    # protocol and it lives in AGENTS. See the ACPX_KEY_PREFIX contract.
+    if protocol == "acp" and name in AGENTS:
+        return AGENTS[name]
+
     if name not in AGENTS:
         from difflib import get_close_matches
 
@@ -731,6 +780,33 @@ def resolve_agent(spec: str) -> AgentConfig:
     if protocol == "acpx":
         return _acpx_wrap(config)
     return config
+
+
+def resolve_agent_key(spec: str) -> str:
+    """Resolve an agent spec to a stable registry key.
+
+    This function owns the ``acpx:`` runtime-key namespace (see the
+    ``ACPX_KEY_PREFIX`` module-level contract). For plain ACP agents the key
+    is the canonical agent name. For ``acpx/<agent>`` specs the acpx-wrapped
+    config (acpx install/launch commands) is registered into
+    ``AGENTS``/``AGENT_INSTALLERS``/``AGENT_LAUNCH`` under the stable runtime
+    key ``acpx_runtime_key(<canonical>)`` so that name-keyed lookups in the
+    Rollout/Evaluation path use the wrapped commands instead of the literal
+    spec string. ``resolve_agent`` then round-trips that key back to the
+    wrapped config.
+
+    Unknown agents are returned unchanged so callers can still surface their
+    own diagnostics (raw-command fallback).
+    """
+    try:
+        config = resolve_agent(spec)
+    except KeyError:
+        return spec
+    if config.name not in AGENTS:
+        AGENTS[config.name] = config
+        AGENT_INSTALLERS[config.name] = config.install_cmd
+        AGENT_LAUNCH[config.name] = config.launch_cmd
+    return config.name
 
 
 def get_agent(name: str) -> tuple[AgentConfig, str]:
@@ -761,6 +837,8 @@ def register_agent(
     description: str = "",
     skill_paths: list[str] | None = None,
     install_timeout: int = 900,
+    default_model: str = "",
+    api_protocol: str = "",
     env_mapping: dict[str, str] | None = None,
     credential_files: list[CredentialFile] | None = None,
     home_dirs: list[str] | None = None,
@@ -795,6 +873,8 @@ def register_agent(
         description=description,
         skill_paths=skill_paths or [],
         install_timeout=install_timeout,
+        default_model=default_model,
+        api_protocol=api_protocol,
         env_mapping=env_mapping or {},
         credential_files=credential_files or [],
         home_dirs=home_dirs or [],

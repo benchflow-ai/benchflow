@@ -13,8 +13,9 @@ from typing import Any
 
 from benchflow._utils.reward_events import memory_score_from_result
 from benchflow._utils.scoring import (
+    classify_audit_outcome,
     classify_error,
-    classify_result_outcome,
+    classify_score_outcome,
     classify_verifier_error,
     pass_rate,
     pass_rate_excl_errors,
@@ -44,6 +45,25 @@ class TaskMetrics:
     usage_source: str = "unavailable"
     memory_score: float | None = None
 
+    @property
+    def outcome(self) -> str:
+        return self.score_outcome
+
+    @property
+    def score_outcome(self) -> str:
+        """Terminal score bucket via the shared classifier (see _utils.scoring).
+
+        Guarantees passed/failed/errored/verifier_errored are disjoint and
+        exhaustive — the same classification used by ``EvaluationResult``.
+        """
+        return classify_score_outcome(self._result_shape)
+
+    @property
+    def audit_outcome(self) -> str:
+        """Audit bucket that surfaces verifier-error evidence first."""
+        return classify_audit_outcome(self._result_shape)
+
+    @property
     def _result_shape(self) -> dict[str, Any]:
         return {
             "rewards": {"reward": self.reward} if self.reward is not None else None,
@@ -52,32 +72,36 @@ class TaskMetrics:
         }
 
     @property
-    def outcome(self) -> str:
-        return classify_result_outcome(self._result_shape())
-
-    @property
     def passed(self) -> bool:
-        return self.outcome == "passed"
+        return self.score_outcome == "passed"
 
     @property
     def failed(self) -> bool:
-        return self.outcome == "failed"
+        return self.score_outcome == "failed"
 
     @property
     def errored(self) -> bool:
-        return self.outcome == "errored"
+        return self.score_outcome == "errored"
 
     @property
     def verifier_errored(self) -> bool:
-        """True when task failed due to verifier error (not agent error)."""
-        return self.outcome == "verifier_errored"
+        """Backward-compatible alias for verifier-error evidence."""
+        return self.has_verifier_error_evidence
+
+    @property
+    def has_verifier_error_evidence(self) -> bool:
+        """True when the task carries verifier-error evidence."""
+        return self.verifier_error is not None
+
+    @property
+    def score_verifier_errored(self) -> bool:
+        """True when the disjoint score bucket is verifier_errored."""
+        return self.score_outcome == "verifier_errored"
 
     @property
     def completed(self) -> bool:
         """True when task reached a terminal non-error reward state."""
-        return (
-            not self.errored and not self.verifier_errored and self.reward is not None
-        )
+        return self.score_outcome in ("passed", "failed")
 
 
 @dataclass
@@ -107,8 +131,13 @@ class BenchmarkMetrics:
 
     @property
     def verifier_errored(self) -> int:
-        """Count of tasks that failed due to verifier error."""
-        return sum(1 for t in self.tasks if t.verifier_errored)
+        """Backward-compatible alias for score-verifier-error count."""
+        return self.score_verifier_errored
+
+    @property
+    def score_verifier_errored(self) -> int:
+        """Count of tasks whose disjoint score bucket is verifier_errored."""
+        return sum(1 for t in self.tasks if t.score_verifier_errored)
 
     @property
     def score(self) -> float:
@@ -123,7 +152,7 @@ class BenchmarkMetrics:
     @property
     def avg_tool_calls(self) -> float:
         """Average tool calls per completed task."""
-        completed = [t for t in self.tasks if not t.errored and not t.verifier_errored]
+        completed = [t for t in self.tasks if t.completed]
         return (
             sum(t.n_tool_calls for t in completed) / len(completed)
             if completed
@@ -133,11 +162,7 @@ class BenchmarkMetrics:
     @property
     def avg_duration(self) -> float:
         """Average duration per completed task (seconds)."""
-        completed = [
-            t
-            for t in self.tasks
-            if not t.errored and not t.verifier_errored and t.duration_sec > 0
-        ]
+        completed = [t for t in self.tasks if t.completed and t.duration_sec > 0]
         return (
             sum(t.duration_sec for t in completed) / len(completed)
             if completed
@@ -236,7 +261,7 @@ class BenchmarkMetrics:
         """Categorize verifier errors."""
         breakdown: dict[str, int] = {}
         for t in self.tasks:
-            if not t.verifier_errored:
+            if not t.has_verifier_error_evidence:
                 continue
             category = classify_verifier_error(t.verifier_error)
             if category:
@@ -278,7 +303,7 @@ class BenchmarkMetrics:
             "failed_tasks": sorted(t.task_name for t in self.tasks if t.failed),
             "errored_tasks": sorted(t.task_name for t in self.tasks if t.errored),
             "verifier_errored_tasks": sorted(
-                t.task_name for t in self.tasks if t.verifier_errored
+                t.task_name for t in self.tasks if t.score_verifier_errored
             ),
         }
 

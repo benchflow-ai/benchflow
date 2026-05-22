@@ -184,7 +184,10 @@ def _linear_project_from_payload(
 ) -> dict[str, Any] | None:
     if selector.kind == "id":
         return (payload.get("data") or {}).get("project")
-    return next(iter(((payload.get("data") or {}).get("projects") or {}).get("nodes") or []), None)
+    return next(
+        iter(((payload.get("data") or {}).get("projects") or {}).get("nodes") or []),
+        None,
+    )
 
 
 def _linear_project_slug_from_url(url: str) -> str:
@@ -198,11 +201,15 @@ def _linear_project_slug_from_url(url: str) -> str:
         or not parts[0]
         or not parts[2]
     ):
-        raise ValueError("LINEAR_PROJECT_URL must look like https://linear.app/<workspace>/project/<slug>")
+        raise ValueError(
+            "LINEAR_PROJECT_URL must look like https://linear.app/<workspace>/project/<slug>"
+        )
     return parts[2]
 
 
-def _project_kwargs_from_env(environ: dict[str, str] | os._Environ[str]) -> dict[str, str]:
+def _project_kwargs_from_env(
+    environ: dict[str, str] | os._Environ[str],
+) -> dict[str, str]:
     project_id = (environ.get("LINEAR_PROJECT_ID") or "").strip()
     if project_id:
         return {"project_id": project_id}
@@ -212,7 +219,9 @@ def _project_kwargs_from_env(environ: dict[str, str] | os._Environ[str]) -> dict
     project_slug = (environ.get("LINEAR_PROJECT_SLUG") or "").strip()
     if project_slug:
         return {"project_slug": project_slug}
-    project_name = (environ.get("LINEAR_PROJECT_NAME") or environ.get("LINEAR_PROJECT") or "").strip()
+    project_name = (
+        environ.get("LINEAR_PROJECT_NAME") or environ.get("LINEAR_PROJECT") or ""
+    ).strip()
     if project_name and project_name != LINEAR_PROJECT:
         return {"project": project_name}
     return {}
@@ -279,7 +288,9 @@ def _linear_labels(raw: Any) -> tuple[list[dict[str, Any]], bool]:
     if isinstance(raw, dict):
         nodes = raw.get("nodes") or []
         page_info = raw.get("pageInfo") or {}
-        truncated = bool(page_info.get("hasNextPage")) if isinstance(page_info, dict) else False
+        truncated = (
+            bool(page_info.get("hasNextPage")) if isinstance(page_info, dict) else False
+        )
     elif isinstance(raw, list):
         nodes = raw
         truncated = False
@@ -298,7 +309,9 @@ def _linear_comments(raw: Any) -> tuple[list[dict[str, Any]], bool]:
     if isinstance(raw, dict):
         nodes = raw.get("nodes") or []
         page_info = raw.get("pageInfo") or {}
-        truncated = bool(page_info.get("hasNextPage")) if isinstance(page_info, dict) else False
+        truncated = (
+            bool(page_info.get("hasNextPage")) if isinstance(page_info, dict) else False
+        )
     elif isinstance(raw, list):
         nodes = raw
         truncated = False
@@ -497,16 +510,24 @@ def fetch_linear_roadmap(
 ) -> dict[str, Any]:
     """Fetch the roadmap directly from Linear's GraphQL API."""
     request = request_fn or _post_linear_graphql
-    selector = _project_selector(project=project, project_id=project_id, project_slug=project_slug)
-    project_payload = request(_linear_project_query(selector), selector.variables(), api_key)
+    selector = _project_selector(
+        project=project, project_id=project_id, project_slug=project_slug
+    )
+    project_payload = request(
+        _linear_project_query(selector), selector.variables(), api_key
+    )
     if error := _linear_graphql_error(project_payload, "Linear project query failed"):
         raise RuntimeError(error)
     project_metadata = _linear_project_from_payload(selector, project_payload)
     if not project_metadata:
-        raise RuntimeError(f"Linear project not found: {selector.kind} {selector.value}")
+        raise RuntimeError(
+            f"Linear project not found: {selector.kind} {selector.value}"
+        )
     resolved_project_id = project_metadata.get("id")
     if not resolved_project_id:
-        raise RuntimeError(f"Linear project missing id: {selector.kind} {selector.value}")
+        raise RuntimeError(
+            f"Linear project missing id: {selector.kind} {selector.value}"
+        )
 
     issues: list[dict[str, Any]] = []
     cursor: str | None = None

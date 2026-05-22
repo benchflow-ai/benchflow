@@ -119,7 +119,10 @@ def test_linear_issues_group_under_linear_milestones_and_preserve_fields():
     assert roadmap["milestones"][0]["progress"] == 0.5
     issue = roadmap["milestones"][1]["issues"][0]
     assert issue["id"] == "ENG-120"
-    assert issue["description"] == "Mirror the full Linear ticket detail into the dashboard."
+    assert (
+        issue["description"]
+        == "Mirror the full Linear ticket detail into the dashboard."
+    )
     assert issue["url"] == "https://linear.app/benchflow/issue/ENG-120/contracts"
     assert issue["status_type"] == "started"
     assert issue["priority"] == {"value": 2, "name": "High"}
@@ -169,6 +172,7 @@ def test_collect_roadmap_requires_live_linear_key():
 
 def test_collect_roadmap_does_not_mask_live_linear_failure(monkeypatch):
     """Guards the Linear roadmap sync follow-up on v0.5-integration@ffef85d."""
+
     def fail_fetch(_api_key):
         raise RuntimeError("network down")
 
@@ -183,8 +187,11 @@ def test_collect_roadmap_does_not_mask_live_linear_failure(monkeypatch):
 
 def test_collect_roadmap_sanitizes_unknown_linear_failures(monkeypatch):
     """Guards the Linear roadmap sync follow-up on v0.5-integration@ffef85d."""
+
     def fail_fetch(_api_key):
-        raise RuntimeError("token lin_api_secret failed against https://api.linear.app/graphql")
+        raise RuntimeError(
+            "token lin_api_secret failed against https://api.linear.app/graphql"
+        )
 
     monkeypatch.setattr("dashboard.roadmap.fetch_linear_roadmap", fail_fetch)
 
@@ -205,7 +212,10 @@ def test_collect_roadmap_prefers_linear_project_id_env_over_name(monkeypatch):
         return linear_issues_to_roadmap(
             [],
             source_kind="linear-live",
-            project_metadata={"id": kwargs["project_id"], "name": "Renamed BenchFlow v0.5"},
+            project_metadata={
+                "id": kwargs["project_id"],
+                "name": "Renamed BenchFlow v0.5",
+            },
         )
 
     monkeypatch.setattr("dashboard.roadmap.fetch_linear_roadmap", fake_fetch)
@@ -353,7 +363,10 @@ def test_fetch_linear_roadmap_pages_through_linear_graphql():
     assert [call[1].get("after") for call in calls[1:]] == [None, "next"]
     assert {call[2] for call in calls} == {"lin_api_key"}
     assert roadmap["project_url"] == "https://linear.app/project"
-    assert [i["id"] for i in roadmap["milestones"][0]["issues"]] == ["ENG-117", "ENG-118"]
+    assert [i["id"] for i in roadmap["milestones"][0]["issues"]] == [
+        "ENG-117",
+        "ENG-118",
+    ]
 
 
 def test_fetch_linear_roadmap_can_target_stable_project_id():
@@ -391,7 +404,9 @@ def test_fetch_linear_roadmap_can_target_stable_project_id():
             }
         }
 
-    roadmap = fetch_linear_roadmap("lin_api_key", project_id="project-uuid", request_fn=fake_request)
+    roadmap = fetch_linear_roadmap(
+        "lin_api_key", project_id="project-uuid", request_fn=fake_request
+    )
 
     assert "DashboardRoadmapProjectById($projectId: String!" in calls[0][0]
     assert "DashboardRoadmapById($projectId: ID!" in calls[1][0]
@@ -549,11 +564,16 @@ def test_fetch_linear_roadmap_resolves_slug_before_fetching_issues_by_id():
     )
 
     assert calls[0][1] == {"projectSlug": "benchflow-v05"}
-    assert calls[1][1] == {"projectId": "project-from-slug", "first": 250, "after": None}
+    assert calls[1][1] == {
+        "projectId": "project-from-slug",
+        "first": 250,
+        "after": None,
+    }
 
 
 def test_fetch_linear_roadmap_fails_cleanly_on_malformed_issue_payload():
     """Guards the Linear roadmap sync follow-up on v0.5-integration@ffef85d."""
+
     def fake_request(query, variables, api_key):
         if "DashboardRoadmapProjectById" in query:
             return {
@@ -568,15 +588,20 @@ def test_fetch_linear_roadmap_fails_cleanly_on_malformed_issue_payload():
         return {"data": {}}
 
     try:
-        fetch_linear_roadmap("lin_api_test", project_id="project-uuid", request_fn=fake_request)
+        fetch_linear_roadmap(
+            "lin_api_test", project_id="project-uuid", request_fn=fake_request
+        )
     except RuntimeError as exc:
         assert str(exc) == "Linear issue response missing issues data"
     else:
-        raise AssertionError("fetch_linear_roadmap should reject malformed issue payloads")
+        raise AssertionError(
+            "fetch_linear_roadmap should reject malformed issue payloads"
+        )
 
 
 def test_fetch_linear_roadmap_rejects_repeated_pagination_cursor():
     """Guards the Linear roadmap sync follow-up on v0.5-integration@ffef85d."""
+
     def fake_request(query, variables, api_key):
         if "DashboardRoadmapProjectById" in query:
             return {
@@ -598,11 +623,15 @@ def test_fetch_linear_roadmap_rejects_repeated_pagination_cursor():
         }
 
     try:
-        fetch_linear_roadmap("lin_api_test", project_id="project-uuid", request_fn=fake_request)
+        fetch_linear_roadmap(
+            "lin_api_test", project_id="project-uuid", request_fn=fake_request
+        )
     except RuntimeError as exc:
         assert str(exc) == "Linear issue pagination repeated cursor"
     else:
-        raise AssertionError("fetch_linear_roadmap should reject repeated pagination cursors")
+        raise AssertionError(
+            "fetch_linear_roadmap should reject repeated pagination cursors"
+        )
 
 
 def test_fetch_linear_roadmap_rejects_next_page_without_cursor():
@@ -631,11 +660,15 @@ def test_fetch_linear_roadmap_rejects_next_page_without_cursor():
         }
 
     try:
-        fetch_linear_roadmap("lin_api_test", project_id="project-uuid", request_fn=fake_request)
+        fetch_linear_roadmap(
+            "lin_api_test", project_id="project-uuid", request_fn=fake_request
+        )
     except RuntimeError as exc:
         assert str(exc) == "Linear issue pagination missing cursor"
     else:
-        raise AssertionError("fetch_linear_roadmap should reject missing pagination cursors")
+        raise AssertionError(
+            "fetch_linear_roadmap should reject missing pagination cursors"
+        )
 
     assert len(calls) == 2
 
@@ -669,7 +702,9 @@ def test_fetch_linear_roadmap_requires_resolved_project_id_before_issue_query():
     except RuntimeError as exc:
         assert "Linear project missing id: slug benchflow-v05" in str(exc)
     else:
-        raise AssertionError("fetch_linear_roadmap should require a resolved project id")
+        raise AssertionError(
+            "fetch_linear_roadmap should require a resolved project id"
+        )
 
     assert len(calls) == 1
 
@@ -681,7 +716,9 @@ def test_build_data_has_no_hardcoded_roadmap_fallback(monkeypatch):
         "collect_tests",
         lambda: {"summary": {"passed": 0, "failed": 0, "skipped": 0, "total": 0}},
     )
-    monkeypatch.setattr(generate, "collect_jobs", lambda: {"total_tasks": 0, "groups": []})
+    monkeypatch.setattr(
+        generate, "collect_jobs", lambda: {"total_tasks": 0, "groups": []}
+    )
     monkeypatch.setattr(generate, "collect_experiments", lambda: [])
     monkeypatch.setattr(
         generate,
@@ -757,9 +794,13 @@ def test_main_requires_real_linear_key_without_static_fallback(
         "collect_tests",
         lambda: {"summary": {"passed": 0, "failed": 0, "skipped": 0, "total": 0}},
     )
-    monkeypatch.setattr(generate, "collect_jobs", lambda: {"total_tasks": 0, "groups": []})
+    monkeypatch.setattr(
+        generate, "collect_jobs", lambda: {"total_tasks": 0, "groups": []}
+    )
     monkeypatch.setattr(generate, "collect_experiments", lambda: [])
-    monkeypatch.setattr(generate, "collect_repo_status", lambda: {"available": True, "dirty": False})
+    monkeypatch.setattr(
+        generate, "collect_repo_status", lambda: {"available": True, "dirty": False}
+    )
     monkeypatch.setattr(sys, "argv", ["generate.py"])
 
     assert generate.main() == 1

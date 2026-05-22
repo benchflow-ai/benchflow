@@ -499,6 +499,69 @@ class TestSkillEvaluatorResultCollection:
         ]
         assert collected["calc-002"].reward is None
 
+    @pytest.mark.asyncio
+    async def test_case_result_glob_does_not_match_prefix_sibling(
+        self, tmp_path, monkeypatch
+    ):
+        """`case-1` must resolve to its own rollout dir, not `case-10`'s.
+
+        The rollout-dir contract is `{case_id}__{uuid8}`; a trailing-`*` glob
+        (`**/{case_id}*`) also matches `case-10__...`, `case-11__...`, etc. and
+        can mis-attribute rewards. Guards the fix from PR #320 for audit
+        Finding 7.
+        """
+        from benchflow.evaluation import EvaluationResult
+
+        # Skill with two cases whose ids are prefixes of each other.
+        skill = tmp_path / "globskill"
+        (skill / "evals").mkdir(parents=True)
+        (skill / "evals" / "evals.json").write_text(
+            json.dumps(
+                {
+                    "cases": [
+                        {"id": "case-1", "question": "q1", "ground_truth": "a1"},
+                        {"id": "case-10", "question": "q10", "ground_truth": "a10"},
+                    ],
+                }
+            )
+        )
+
+        async def fake_run(self):
+            # Write rollout dirs following the {case_id}__{uuid8} contract.
+            for case_id, reward in (("case-1", 0.0), ("case-10", 1.0)):
+                rollout_dir = (
+                    self._jobs_dir / "2026-05-21__09-00-00" / f"{case_id}__deadbeef"
+                )
+                rollout_dir.mkdir(parents=True)
+                (rollout_dir / "result.json").write_text(
+                    json.dumps(
+                        {
+                            "task_name": case_id,
+                            "rewards": {"reward": reward},
+                            "n_tool_calls": 1,
+                        }
+                    )
+                )
+            return EvaluationResult(job_name="fake", config=self._config, total=2)
+
+        monkeypatch.setattr("benchflow.evaluation.Evaluation.run", fake_run)
+
+        evaluator = SkillEvaluator(skill)
+        results = await evaluator._run_job(
+            tasks_dir=tmp_path / "tasks",
+            agent="gemini",
+            model="",
+            environment="docker",
+            jobs_dir=str(tmp_path / "jobs"),
+            concurrency=1,
+            with_skill=True,
+        )
+
+        collected = {result.case_id: result for result in results}
+        # case-1 must pick its OWN dir (reward 0.0), not case-10's (reward 1.0).
+        assert collected["case-1"].reward == 0.0
+        assert collected["case-10"].reward == 1.0
+
 
 # ---------------------------------------------------------------------------
 # GEPA export

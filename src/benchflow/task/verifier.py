@@ -153,7 +153,14 @@ class Verifier:
     # ------------------------------------------------------------------
 
     async def _verify_test_script(self) -> VerifierResult:
-        """Run the task's ``test.sh`` verifier and return the reward result."""
+        """Run the task's ``test.sh`` verifier and return the reward result.
+
+        ``[verifier].service`` selects which compose service ``test.sh`` runs
+        in. The default ``"main"`` is the agent container (Harbor-compatible).
+        Multi-container (vulhub-style) tasks set it to a target/database
+        service so the verifier can inspect *target-side* state — RCE markers,
+        DB modifications — instead of only the agent workspace (#248).
+        """
         service = self._task.config.verifier.service
         verifier_outputs_are_mounted = service == "main" and getattr(
             self._sandbox, "is_mounted", False
@@ -248,7 +255,9 @@ class Verifier:
         )
         test_return_code = _exec_return_code(test_result)
 
-        # Download verifier output if sandbox doesn't mount locally
+        # Download verifier output if it is not host-mounted. Only the agent's
+        # ``main`` container has the rollout dir bind-mounted; a target service
+        # never does, so target-side rewards (#248) are always downloaded.
         if not verifier_outputs_are_mounted:
             try:
                 await self._sandbox.download_dir(
@@ -330,14 +339,24 @@ class Verifier:
         return dest
 
     async def _verify_llm_judge(self) -> VerifierResult:
-        """Score agent deliverables against a rubric with an LLM judge."""
+        """Score agent deliverables against a rubric with an LLM judge.
+
+        A missing provider SDK raises ``JudgeEnvironmentError``, which is left
+        to propagate: the judge could not run, so the rollout is marked as a
+        verifier error rather than silently scored ``0.0`` (which would be
+        indistinguishable from a genuine judge verdict of fail).
+        """
         from benchflow.rewards.builtins import LLMJudgeRewardFunc
 
         judge = self._task.config.verifier.judge
 
-        # API keys for the judge come from [verifier.env]; scope them to the
-        # judge call so the provider SDKs (anthropic / openai / google) pick
-        # them up without permanently polluting the host process env.
+        # API keys for the judge come from [verifier.env]. They are threaded
+        # explicitly into the judge call (and on into the provider clients)
+        # rather than written to the process-global ``os.environ``. Mutating
+        # the shared environment is not concurrency-safe: ``evaluation.py``
+        # runs verifications via ``asyncio.gather`` with concurrency > 1, so
+        # two judge runs in the same process would race on the env and see
+        # each other's (or missing) credentials.
         judge_env: dict[str, str] = {}
         if self._task.config.verifier.env:
             judge_env = resolve_env_vars(self._task.config.verifier.env)

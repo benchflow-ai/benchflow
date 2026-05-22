@@ -138,9 +138,7 @@ async def test_score_node_same_source_items_collision_last_wins():
                 space="output",
             )
 
-    result = await score_node(
-        node, [FixedScorer("dup", 0.2), FixedScorer("dup", 0.9)]
-    )
+    result = await score_node(node, [FixedScorer("dup", 0.2), FixedScorer("dup", 0.9)])
     # items collapses to one entry — the last scorer wins
     assert result.items == {"dup": 0.9}
     # both events survive — no signal lost

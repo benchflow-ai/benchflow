@@ -323,10 +323,10 @@ async def test_sequential_shared_threads_task_expected_skills_to_memory_delta(tm
     task_toml = job._tasks_dir / "task-0" / "task.toml"
     task_toml.write_text(
         'version = "1.0"\n'
-        '[verifier]\ntimeout_sec = 60\n'
+        "[verifier]\ntimeout_sec = 60\n"
         '[verifier.memory]\nexpected_skills = ["skill-1"]\n'
-        '[agent]\ntimeout_sec = 60\n'
-        '[environment]\n'
+        "[agent]\ntimeout_sec = 60\n"
+        "[environment]\n"
     )
 
     async def fake_run(*args, **kwargs):
@@ -347,7 +347,9 @@ async def test_sequential_shared_threads_task_expected_skills_to_memory_delta(tm
 
 
 @pytest.mark.asyncio
-async def test_sequential_shared_surfaces_memory_scores_in_summary_and_artifacts(tmp_path):
+async def test_sequential_shared_surfaces_memory_scores_in_summary_and_artifacts(
+    tmp_path,
+):
     """Guards OPEN-3 on v0.5-integration@ffef85d.
 
     Memory-space scoring is additive: it must surface as its own metric without
@@ -359,10 +361,10 @@ async def test_sequential_shared_surfaces_memory_scores_in_summary_and_artifacts
     task_toml = job._tasks_dir / "task-0" / "task.toml"
     task_toml.write_text(
         'version = "1.0"\n'
-        '[verifier]\ntimeout_sec = 60\n'
+        "[verifier]\ntimeout_sec = 60\n"
         '[verifier.memory]\nexpected_skills = ["skill-1"]\n'
-        '[agent]\ntimeout_sec = 60\n'
-        '[environment]\n'
+        "[agent]\ntimeout_sec = 60\n"
+        "[environment]\n"
     )
 
     async def fake_run(*args, **kwargs):
@@ -438,9 +440,7 @@ async def test_sequential_shared_surfaces_memory_scores_in_summary_and_artifacts
 
     reward_lines = [
         json.loads(line)
-        for line in (
-            job._jobs_dir / job._job_name / "task-0__abc123" / "rewards.jsonl"
-        )
+        for line in (job._jobs_dir / job._job_name / "task-0__abc123" / "rewards.jsonl")
         .read_text()
         .splitlines()
     ]

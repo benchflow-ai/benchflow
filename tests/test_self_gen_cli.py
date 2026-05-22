@@ -16,8 +16,6 @@ def _make_task(tmp_path: Path) -> Path:
 
 def test_eval_create_single_task_self_gen_passes_trial_config(tmp_path: Path):
     """`bench eval create --skill-mode self-gen` reaches strict self-gen orchestration."""
-    import asyncio
-
     from benchflow.cli.main import eval_create
 
     task = _make_task(tmp_path)
@@ -39,25 +37,22 @@ def test_eval_create_single_task_self_gen_passes_trial_config(tmp_path: Path):
             n_tool_calls=0,
         )
 
-    try:
-        with patch("benchflow.self_gen.run_self_gen", new=fake_run_self_gen):
-            eval_create(
-                config_file=None,
-                tasks_dir=task,
-                agent="claude-agent-acp",
-                model="claude-haiku-4-5-20251001",
-                environment="docker",
-                concurrency=1,
-                jobs_dir=str(tmp_path / "jobs"),
-                sandbox_user="agent",
-                sandbox_setup_timeout=120,
-                skills_dir=provided_skills,
-                skill_mode="self-gen",
-                skill_creator_dir=skill_creator,
-                self_gen_no_internet=True,
-            )
-    finally:
-        asyncio.set_event_loop(asyncio.new_event_loop())
+    with patch("benchflow.self_gen.run_self_gen", new=fake_run_self_gen):
+        eval_create(
+            config_file=None,
+            tasks_dir=task,
+            agent="claude-agent-acp",
+            model="claude-haiku-4-5-20251001",
+            environment="docker",
+            concurrency=1,
+            jobs_dir=str(tmp_path / "jobs"),
+            sandbox_user="agent",
+            sandbox_setup_timeout=120,
+            skills_dir=provided_skills,
+            skill_mode="self-gen",
+            skill_creator_dir=skill_creator,
+            self_gen_no_internet=True,
+        )
 
     cfg = captured["config"]
     assert cfg.skill_mode == "self-gen"

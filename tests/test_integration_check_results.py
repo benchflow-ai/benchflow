@@ -14,7 +14,9 @@ from benchflow._utils.benchmark_repos import task_file_hashes
 from tests.integration import check_results as result_checker
 from tests.integration.check_results import check_agent
 
-EXAMPLE_TASK_ROOT = Path(__file__).parents[1] / "tests" / "examples" / "hello-world-task"
+EXAMPLE_TASK_ROOT = (
+    Path(__file__).parents[1] / "tests" / "examples" / "hello-world-task"
+)
 
 
 def _build_source_repo() -> tuple[Path, str]:
@@ -57,9 +59,7 @@ def _build_source_repo() -> tuple[Path, str]:
     )
     sha = completed.stdout.strip()
     result_checker.REMOTE_REACHABILITY[("acme/benchmarks", sha, "main")] = True
-    snapshot_root = (
-        task_download._cache_dir() / "acme" / "benchmarks__snapshots" / sha
-    )
+    snapshot_root = task_download._cache_dir() / "acme" / "benchmarks__snapshots" / sha
     if snapshot_root.exists():
         shutil.rmtree(snapshot_root)
     snapshot_root.parent.mkdir(parents=True, exist_ok=True)
@@ -219,7 +219,9 @@ def test_check_results_requires_config_source_provenance(tmp_path: Path) -> None
     findings = check_agent(agent_dir)
 
     assert findings["ok"] is False
-    assert any("config.json" in issue and "missing" in issue for issue in findings["issues"])
+    assert any(
+        "config.json" in issue and "missing" in issue for issue in findings["issues"]
+    )
 
 
 def test_check_results_rejects_mismatched_config_source(tmp_path: Path) -> None:
@@ -242,7 +244,10 @@ def test_check_results_rejects_mismatched_config_source(tmp_path: Path) -> None:
     findings = check_agent(agent_dir)
 
     assert findings["ok"] is False
-    assert any("config.json source does not match result.json" in issue for issue in findings["issues"])
+    assert any(
+        "config.json source does not match result.json" in issue
+        for issue in findings["issues"]
+    )
 
 
 def test_check_results_rejects_bad_file_hash_digest(tmp_path: Path) -> None:
@@ -342,7 +347,10 @@ def test_check_results_recomputes_source_hashes_when_local_path_exists(
     findings = check_agent(agent_dir)
 
     assert findings["ok"] is False
-    assert any("source.file_hashes do not match local_path" in issue for issue in findings["issues"])
+    assert any(
+        "source.file_hashes do not match local_path" in issue
+        for issue in findings["issues"]
+    )
 
 
 def test_check_results_rejects_missing_local_source_path(tmp_path: Path) -> None:
@@ -369,7 +377,9 @@ def test_check_results_rejects_missing_local_source_path(tmp_path: Path) -> None
     findings = check_agent(agent_dir)
 
     assert findings["ok"] is False
-    assert any("source.local_path does not exist" in issue for issue in findings["issues"])
+    assert any(
+        "source.local_path does not exist" in issue for issue in findings["issues"]
+    )
 
 
 def test_check_results_rejects_non_string_source_local_path(tmp_path: Path) -> None:
@@ -396,7 +406,9 @@ def test_check_results_rejects_non_string_source_local_path(tmp_path: Path) -> N
     findings = check_agent(agent_dir)
 
     assert findings["ok"] is False
-    assert any("source.local_path must be a string" in issue for issue in findings["issues"])
+    assert any(
+        "source.local_path must be a string" in issue for issue in findings["issues"]
+    )
 
 
 def test_check_results_rejects_source_git_identity_mismatch(tmp_path: Path) -> None:
@@ -865,7 +877,10 @@ def test_check_results_counts_mixed_agent_and_verifier_error_once(
     findings = check_agent(agent_dir)
 
     assert findings["ok"] is False
-    assert any("Agent prompt exceeded wall-clock budget" in issue for issue in findings["issues"])
+    assert any(
+        "Agent prompt exceeded wall-clock budget" in issue
+        for issue in findings["issues"]
+    )
     assert findings["errored"] == 0
     assert findings["verifier_errored"] == 1
 
@@ -1025,13 +1040,13 @@ def test_check_results_cli_accepts_single_rollout_artifact_root(
     run_dir.mkdir(parents=True)
     (run_dir / "result.json").write_text(
         json.dumps(
-                {
-                    "task_name": "task-a",
-                    "agent": "oracle",
-                    "model": "test-model",
-                    "rewards": {"reward": 1.0},
-                    "error": None,
-                    "verifier_error": None,
+            {
+                "task_name": "task-a",
+                "agent": "oracle",
+                "model": "test-model",
+                "rewards": {"reward": 1.0},
+                "error": None,
+                "verifier_error": None,
                 "source": _source(),
             }
         )
@@ -1113,7 +1128,9 @@ def test_check_results_cli_requires_expected_identity_for_artifact_root(
     )
 
     assert completed.returncode == 1
-    assert "direct artifact-root audits require expected identity args" in completed.stdout
+    assert (
+        "direct artifact-root audits require expected identity args" in completed.stdout
+    )
 
 
 def test_check_results_cli_rejects_missing_requested_agent_dir(
@@ -1423,8 +1440,7 @@ def test_check_results_rejects_config_summary_agent_idle_timeout_mismatch(
 
     assert findings["ok"] is False
     assert any(
-        "config.json agent_idle_timeout_sec 45 does not match expected null"
-        in issue
+        "config.json agent_idle_timeout_sec 45 does not match expected null" in issue
         and "from summary.json" in issue
         for issue in findings["issues"]
     )
@@ -1515,13 +1531,13 @@ def test_check_results_cli_artifact_root_counts_all_rollouts(
         source = _source(task_name)
         (task_dir / "result.json").write_text(
             json.dumps(
-                    {
-                        "task_name": task_name,
-                        "agent": "oracle",
-                        "model": "test-model",
-                        "rewards": {"reward": 1.0},
-                        "error": None,
-                        "verifier_error": None,
+                {
+                    "task_name": task_name,
+                    "agent": "oracle",
+                    "model": "test-model",
+                    "rewards": {"reward": 1.0},
+                    "error": None,
+                    "verifier_error": None,
                     "source": source,
                 }
             )

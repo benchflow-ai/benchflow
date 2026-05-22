@@ -142,7 +142,7 @@ def test_integration_runner_audits_after_nonzero_eval_exit() -> None:
 
     assert "continuing to audit" in script
     assert "exit $?" in script
-    assert "if [ \"$FAILURES\" -ne 0 ]; then" not in script
+    assert 'if [ "$FAILURES" -ne 0 ]; then' not in script
 
 
 def test_release_suite_hosted_env_hubs_have_hub_urls() -> None:
