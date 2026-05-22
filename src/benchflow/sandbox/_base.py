@@ -173,7 +173,9 @@ class BaseSandbox(ABC):
     async def upload_file(self, source_path: Path | str, target_path: str) -> None: ...
 
     @abstractmethod
-    async def upload_dir(self, source_dir: Path | str, target_dir: str) -> None: ...
+    async def upload_dir(
+        self, source_dir: Path | str, target_dir: str, service: str = "main"
+    ) -> None: ...
 
     @abstractmethod
     async def download_file(
@@ -181,7 +183,9 @@ class BaseSandbox(ABC):
     ) -> None: ...
 
     @abstractmethod
-    async def download_dir(self, source_dir: str, target_dir: Path | str) -> None: ...
+    async def download_dir(
+        self, source_dir: str, target_dir: Path | str, service: str = "main"
+    ) -> None: ...
 
     @abstractmethod
     async def exec(

@@ -8,34 +8,213 @@ Sections, two live and the rest authored / derived:
               artifacts, mirroring the folder layout; every artifact carries
               its actual file content, capped)
             — the experiments timeline (scanned from ``experiments/`` + ``labs/``)
+            — the roadmap (Linear project, or an explicit unavailable state)
   authored  — the concept map (the architecture)
-            — the roadmap (the v0.5 milestones + Linear issues)
             — the agent advisories (the 4x-review punch list), each cross-linked
               to the capability and the job group it corresponds to
 
 Usage::
 
-    python dashboard/generate.py              # reuse the last junit.xml
-    python dashboard/generate.py --run-tests  # re-run the suite first (~70s)
+    LINEAR_API_KEY=... python dashboard/generate.py  # mirror roadmap from Linear
+    python dashboard/generate.py --run-tests         # re-run tests, then mirror
+    python dashboard/generate.py --allow-missing-linear  # local UI dev only
 """
 
 from __future__ import annotations
 
 import contextlib
 import csv
+import importlib.util
 import json
+import os
 import re
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
+from types import ModuleType
 
 ROOT = Path(__file__).resolve().parent.parent
+SRC = ROOT / "src"
 DASH = ROOT / "dashboard"
 JUNIT = DASH / "junit.xml"
 OUT = DASH / "data.json"
+ARCHITECTURE_MD = DASH / "architecture.md"
 TS_RE = re.compile(r"^\d{4}-\d{2}-\d{2}__\d{2}-\d{2}-\d{2}$")
+JOBS_ROOT_ENV = "BENCHFLOW_DASHBOARD_JOBS_ROOT"
+_ROADMAP_MODULE: ModuleType | None = None
+_SCORING_MODULE: ModuleType | None = None
+_REWARD_EVENTS_MODULE: ModuleType | None = None
+
+
+def _load_local_module(module_name: str, path: Path) -> ModuleType:
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"could not load dashboard helper: {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_roadmap_module() -> ModuleType:
+    """Load the sibling Linear roadmap helper, never a top-level ``roadmap``."""
+    global _ROADMAP_MODULE
+    if _ROADMAP_MODULE is None:
+        _ROADMAP_MODULE = _load_local_module(
+            "_benchflow_dashboard_roadmap", DASH / "roadmap.py"
+        )
+    return _ROADMAP_MODULE
+
+
+def collect_roadmap() -> dict:
+    return _load_roadmap_module().collect_roadmap()
+
+
+def _slugify_heading(text: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+    return slug or "section"
+
+
+def _dashboard_source_path(path: Path) -> str:
+    with contextlib.suppress(ValueError):
+        return str(path.relative_to(ROOT))
+    with contextlib.suppress(ValueError):
+        return str(path.relative_to(DASH.parent))
+    return str(path)
+
+
+def collect_architecture() -> dict:
+    source = _dashboard_source_path(ARCHITECTURE_MD)
+    if not ARCHITECTURE_MD.is_file():
+        return {
+            "available": False,
+            "source": source,
+            "title": "Architecture",
+            "content": "",
+            "headings": [],
+            "error": "dashboard/architecture.md is missing",
+        }
+
+    content = ARCHITECTURE_MD.read_text()
+    headings = []
+    used: dict[str, int] = {}
+    title = "Architecture"
+    for line in content.splitlines():
+        match = re.match(r"^(#{1,4})\s+(.+?)\s*$", line)
+        if not match:
+            continue
+        level = len(match.group(1))
+        text = match.group(2).strip()
+        if level == 1 and title == "Architecture":
+            title = text.lstrip("#").strip()
+        base = _slugify_heading(text)
+        count = used.get(base, 0)
+        used[base] = count + 1
+        anchor = base if count == 0 else f"{base}-{count + 1}"
+        headings.append({"level": level, "title": text, "anchor": anchor})
+
+    return {
+        "available": True,
+        "source": source,
+        "title": title,
+        "content": content,
+        "lines": len(content.splitlines()),
+        "headings": headings,
+    }
+
+
+def _load_scoring_module() -> ModuleType:
+    """Load the pure scoring helper without importing ``benchflow`` package init."""
+    global _SCORING_MODULE
+    if _SCORING_MODULE is not None:
+        return _SCORING_MODULE
+    scoring_path = SRC / "benchflow" / "_utils" / "scoring.py"
+    module = _load_local_module("_benchflow_dashboard_scoring", scoring_path)
+    _SCORING_MODULE = module
+    return module
+
+
+def _classify_result_outcome(result: dict) -> str:
+    return _load_scoring_module().classify_result_outcome(result)
+
+
+def _load_reward_events_module() -> ModuleType:
+    """Load the pure reward-event helper without importing ``benchflow``."""
+    global _REWARD_EVENTS_MODULE
+    if _REWARD_EVENTS_MODULE is not None:
+        return _REWARD_EVENTS_MODULE
+    reward_events_path = SRC / "benchflow" / "_utils" / "reward_events.py"
+    module = _load_local_module("_benchflow_dashboard_reward_events", reward_events_path)
+    _REWARD_EVENTS_MODULE = module
+    return module
+
+
+def _memory_score_from_result(result: dict) -> float | None:
+    return _load_reward_events_module().memory_score_from_result(result)
+
+
+def _jobs_tree_has_rollouts(jobs: Path) -> bool:
+    if not jobs.is_dir():
+        return False
+    with contextlib.suppress(Exception):
+        return any(
+            p.name in {"result.json", "config.json", "timing.json", "prompts.json"}
+            for p in jobs.rglob("*")
+            if p.is_file()
+        )
+    return False
+
+
+def _remembered_jobs_root() -> Path | None:
+    if not OUT.is_file():
+        return None
+    with contextlib.suppress(Exception):
+        data = json.loads(OUT.read_text())
+        raw = ((data.get("jobs") or {}).get("source") or {}).get("path")
+        if not raw:
+            return None
+        remembered = Path(str(raw)).expanduser().resolve()
+        if remembered.is_dir() and _jobs_tree_has_rollouts(remembered):
+            return remembered
+    return None
+
+
+def dashboard_jobs_root() -> Path:
+    """Return the jobs tree the dashboard should mirror.
+
+    Worktree-isolated agents often lack the git-ignored ``jobs/`` artifacts
+    from the run-producing worktree. Operators can point the dashboard at
+    either that worktree root or at its ``jobs/`` directory directly.
+    """
+    raw = os.environ.get(JOBS_ROOT_ENV)
+    if not raw:
+        local_jobs = ROOT / "jobs"
+        if _jobs_tree_has_rollouts(local_jobs):
+            return local_jobs
+        return _remembered_jobs_root() or local_jobs
+    candidate = Path(raw).expanduser()
+    if candidate.name != "jobs" and (candidate / "jobs").is_dir():
+        candidate = candidate / "jobs"
+    return candidate.resolve()
+
+
+def _jobs_source(jobs: Path) -> dict:
+    configured = bool(os.environ.get(JOBS_ROOT_ENV))
+    local_jobs = (ROOT / "jobs").resolve()
+    return {
+        "path": str(jobs),
+        "label": str(jobs.relative_to(ROOT)) if jobs.is_relative_to(ROOT) else str(jobs),
+        "configured": configured,
+        "remembered": not configured and jobs.resolve() != local_jobs,
+        "available": jobs.is_dir(),
+    }
+
+
+def _latest_timestamp(items: list[str | None]) -> str | None:
+    stamped = [item for item in items if item]
+    return max(stamped) if stamped else None
 
 
 # --------------------------------------------------------------------------
@@ -195,10 +374,32 @@ def _artifact(name: str, kind: str, path: Path) -> dict:
     nobody can see it (audit rule R11, dashboard/AUDIT.md).
     """
     content, lines, truncated, lang = _file_payload(path)
-    return {
-        "name": name, "kind": kind, "lang": lang,
-        "content": content, "content_lines": lines, "truncated": truncated,
+    stat = path.stat()
+    artifact = {
+        "name": name,
+        "path": str(path),
+        "modified_at": datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+        "kind": kind,
+        "lang": lang,
+        "content": content,
+        "content_lines": lines,
+        "truncated": truncated,
     }
+    if name == "rewards.jsonl":
+        artifact["note"] = (
+            "Reward event log derived from the canonical rollout reward; "
+            "not a second score."
+        )
+    elif name in {"verifier/reward.txt", "verifier/reward.json"}:
+        artifact["note"] = (
+            "Raw verifier boundary output parsed into result.json.rewards."
+        )
+    elif name == "result.json":
+        artifact["note"] = (
+            "Canonical rollout result; result.json.rewards is the score "
+            "used for summaries."
+        )
+    return artifact
 
 
 # Each job group, the capability it exercises, and the advisory IDs it
@@ -255,12 +456,32 @@ def _task_artifacts(d: Path) -> list[dict]:
             rel = f.relative_to(d).as_posix()
             if f.name.endswith(".jsonl"):
                 kind = "trajectory"
-            elif f.name == "reward.txt":
+            elif f.name in {"reward.txt", "reward.json"}:
                 kind = "reward"
             else:
                 kind = "file"
             arts.append(_artifact(rel, kind, f))
     return arts
+
+
+def _mark_ignored_reward_artifacts(artifacts: list[dict]) -> list[dict]:
+    """Keep stale reward outputs visible, but mark them as ignored evidence."""
+    reward_names = {
+        "reward.txt",
+        "reward.json",
+        "verifier/reward.txt",
+        "verifier/reward.json",
+    }
+    marked: list[dict] = []
+    for artifact in artifacts:
+        if artifact.get("name") in reward_names:
+            artifact = {
+                **artifact,
+                "ignored_by_verifier": True,
+                "note": "ignored by verifier because result.json reports a verifier error",
+            }
+        marked.append(artifact)
+    return marked
 
 
 def _task_row(d: Path) -> dict:
@@ -275,14 +496,15 @@ def _task_row(d: Path) -> dict:
     reward = None
     if isinstance(result.get("rewards"), dict):
         reward = result["rewards"].get("reward")
-    if reward is None:
-        rf = d / "verifier" / "reward.txt"
-        if rf.is_file():
-            try:
-                reward = float(rf.read_text().strip())
-            except Exception:
-                reward = None
+    memory_score = _memory_score_from_result(result)
+    outcome = _classify_result_outcome(result)
+    artifacts = _task_artifacts(d)
+    if outcome == "verifier_errored":
+        artifacts = _mark_ignored_reward_artifacts(artifacts)
     timing = result.get("timing") or {}
+    latest_modified_at = _latest_timestamp(
+        [artifact.get("modified_at") for artifact in artifacts]
+    )
     return {
         "name": result.get("task_name") or d.name.split("__")[0],
         "rollout": d.name,
@@ -290,11 +512,14 @@ def _task_row(d: Path) -> dict:
         "model": result.get("model") or config.get("model") or "—",
         "environment": config.get("environment") or "—",
         "reward": reward,
+        "memory_score": memory_score,
+        "outcome": outcome,
         "error": (result.get("error") or "")[:240] or None,
         "verifier_error": (result.get("verifier_error") or "")[:240] or None,
         "trajectory_events": traj,
         "total_time": round(float(timing.get("total") or 0.0), 2),
-        "artifacts": _task_artifacts(d),
+        "latest_modified_at": latest_modified_at,
+        "artifacts": artifacts,
     }
 
 
@@ -316,9 +541,10 @@ def _is_task_dir(d: Path) -> bool:
 
 def collect_jobs() -> dict:
     """Scan jobs/ into groups → runs → tasks, mirroring the folder layout."""
-    jobs = ROOT / "jobs"
+    jobs = dashboard_jobs_root()
+    source = _jobs_source(jobs)
     if not jobs.is_dir():
-        return {"groups": [], "total_tasks": 0}
+        return {"groups": [], "total_tasks": 0, "source": source}
 
     # group name -> { run id -> [task dirs] }
     groups: dict[str, dict[str, list[Path]]] = {}
@@ -356,7 +582,13 @@ def collect_jobs() -> dict:
         for run_id in sorted(groups[name], reverse=True):
             tasks = [_task_row(d) for d in groups[name][run_id]]
             total += len(tasks)
-            run_list.append({"id": run_id, "tasks": tasks})
+            run_list.append({
+                "id": run_id,
+                "latest_modified_at": _latest_timestamp(
+                    [task.get("latest_modified_at") for task in tasks]
+                ),
+                "tasks": tasks,
+            })
         out_groups.append({
             "name": name,
             "label": meta["label"],
@@ -365,8 +597,14 @@ def collect_jobs() -> dict:
             "advisories": meta["advisories"],
             "runs": run_list,
             "n_tasks": sum(len(r["tasks"]) for r in run_list),
+            "latest_modified_at": _latest_timestamp(
+                [run.get("latest_modified_at") for run in run_list]
+            ),
         })
-    return {"groups": out_groups, "total_tasks": total}
+    source["latest_modified_at"] = _latest_timestamp(
+        [group.get("latest_modified_at") for group in out_groups]
+    )
+    return {"groups": out_groups, "total_tasks": total, "source": source}
 
 
 # --------------------------------------------------------------------------
@@ -544,48 +782,10 @@ CONCEPT_MAP = {
 
 
 # --------------------------------------------------------------------------
-# Authored — roadmap
-# --------------------------------------------------------------------------
-ROADMAP = {
-    "project": "BenchFlow v0.5 — architecture migration",
-    "branch": "v0.5-integration",
-    "milestones": [
-        {"id": "M1", "name": "Cut dead architecture", "issues": [
-            {"id": "ENG-117", "title": "RFC: v0.5 architecture — four planes, contracts, execution model", "status": "In Review"},
-            {"id": "ENG-118", "title": "Cut dead architecture: delete orphaned modules + call-graph guard", "status": "Backlog"},
-            {"id": "ENG-119", "title": "Collapse shim layers: sdk.py + runtime.py into one Rollout path", "status": "Backlog"},
-            {"id": "ENG-104", "title": "chore: start v0.5 development after v0.4.0 release", "status": "In Progress"},
-        ]},
-        {"id": "M2", "name": "Four-plane contracts", "issues": [
-            {"id": "ENG-120", "title": "Extract contracts/ package + uv workspace boundaries", "status": "Backlog"},
-            {"id": "ENG-121", "title": "Sandbox plane: managed + BYO sandboxes", "status": "Backlog"},
-            {"id": "ENG-122", "title": "Agent plane: managed + BYO agents (ACP + ACPX)", "status": "Backlog"},
-            {"id": "ENG-123", "title": "Sandbox hardening + verifier isolation as a capability", "status": "Backlog"},
-            {"id": "ENG-92", "title": "release blocker: reconcile Firecracker/K8s sandbox lanes", "status": "In Progress"},
-        ]},
-        {"id": "M3", "name": "Environment & Reward planes", "issues": [
-            {"id": "ENG-124", "title": "Environment plane: tools/mock-services, TaskDatabase, AccountBroker", "status": "In Progress"},
-            {"id": "ENG-125", "title": "Reward plane: wire Rubric/RewardFunc into Rollout, one schema", "status": "In Progress"},
-        ]},
-        {"id": "M4", "name": "RL-native, benchmarks & scale", "issues": [
-            {"id": "ENG-126", "title": "Execution model: Scene / Round / Step + multi-* tasks", "status": "In Progress"},
-            {"id": "ENG-127", "title": "RL-native results & reproducibility", "status": "In Progress"},
-            {"id": "ENG-128", "title": "Adapter plane: support all benchmark sources", "status": "In Progress"},
-            {"id": "ENG-129", "title": "Conformance suite: integration tests bound all behavior", "status": "Backlog"},
-            {"id": "ENG-130", "title": "Failure semantics & eval integrity", "status": "Backlog"},
-            {"id": "ENG-131", "title": "Scale: orchestration, concurrency, cost & task-schema versioning", "status": "Backlog"},
-            {"id": "ENG-93", "title": "release blocker: complete trace-to-task e2e evidence", "status": "In Progress"},
-            {"id": "ENG-98", "title": "release blocker: select real smoke tasks for the lanes", "status": "In Progress"},
-        ]},
-    ],
-}
-
-
-# --------------------------------------------------------------------------
 # Authored — agent advisories (the 4x-review punch list), cross-linked
 # --------------------------------------------------------------------------
 ADVISORIES = {
-    "source": "4x subagent review of the v0.5 capability fix pass (commits 35cdd47 → 0406a75)",
+    "source": "4x subagent review of the v0.5 capability fix pass, plus follow-up verification on codex/v05-integration-followup",
     "items": [
         {"id": "MUST-1", "severity": "must-fix", "status": "resolved", "agent": "Review consensus",
          "capability": 5, "group": "e2e",
@@ -619,37 +819,78 @@ ADVISORIES = {
          "capability": 5, "group": "e2e",
          "title": "Stale _revert docstrings + loose evolved_skills type",
          "detail": "_revert docstrings corrected; evolved_skills tightened to dict[str, str]."},
-        {"id": "OPEN-1", "severity": "future-work", "status": "open", "agent": "Reviewer 1 (correctness)",
+        {"id": "OPEN-1", "severity": "should-fix", "status": "resolved", "agent": "Reviewer 1 (correctness)",
          "capability": 5, "group": "e2e",
          "title": "Real expected_skills fixture from the task definition",
-         "detail": "The Memory scorer grades activity, not correctness, until tasks can declare an expected-skills fixture. Tracked on ENG-125."},
+         "detail": "ENG-125 follow-up wired: tasks can declare [verifier.memory].expected_skills, TaskConfig preserves it, and sequential-shared rollouts thread it into memory_delta. MemoryScorer can grade that fixture when invoked, without deriving an answer key from the agent diff."},
         {"id": "OPEN-2", "severity": "note", "status": "open", "agent": "Reviewer 4 (quality)",
          "capability": None, "group": None,
          "title": "thermo-nuclear code-quality-review skill not installed",
          "detail": "Reviewer 4 was assigned the cursor thermo-nuclear skill; it is not installed locally, so an adversarial review was used as the fallback."},
+        {"id": "OPEN-3", "severity": "should-fix", "status": "resolved", "agent": "Follow-up review",
+         "capability": 5, "group": "e2e",
+         "title": "Memory-space scores surfaced in evaluation results",
+         "detail": "MemoryScorer output is now a first-class additive metric: sequential-shared jobs persist sanitized memory_score/reward_events in result.json, aggregate memory_score and memory coverage in summary.json, expose it through metrics/eval CLI summaries, and render per-task Memory score in the dashboard."},
     ],
 }
 
 
-# --------------------------------------------------------------------------
-def main() -> int:
-    if "--run-tests" in sys.argv:
-        run_suite()
+def _roadmap_issues(roadmap: dict) -> list[dict]:
+    return [i for m in roadmap.get("milestones", []) for i in m.get("issues", [])]
+
+
+def _is_active_issue(issue: dict) -> bool:
+    status_type = str(issue.get("status_type") or "").lower()
+    status = str(issue.get("status") or "").lower()
+    return status_type == "started" or "progress" in status or "review" in status
+
+
+def _git(args: list[str]) -> str:
+    return subprocess.check_output(["git", *args], cwd=ROOT, text=True).rstrip("\n")
+
+
+def collect_repo_status() -> dict:
+    """Capture the repo state that should cause dashboard data to refresh."""
+    try:
+        branch = _git(["branch", "--show-current"]) or _git(["rev-parse", "--abbrev-ref", "HEAD"])
+        head = _git(["rev-parse", "--short", "HEAD"])
+        status_lines = _git(["status", "--short"]).splitlines()
+    except Exception as exc:
+        return {"available": False, "error": str(exc), "dirty": None}
+
+    staged = sum(1 for line in status_lines if line[:2] != "??" and line[:1].strip())
+    unstaged = sum(1 for line in status_lines if line[:2] != "??" and len(line) > 1 and line[1].strip())
+    untracked = sum(1 for line in status_lines if line.startswith("??"))
+    return {
+        "available": True,
+        "branch": branch,
+        "head": head,
+        "dirty": bool(status_lines),
+        "changes": len(status_lines),
+        "staged": staged,
+        "unstaged": unstaged,
+        "untracked": untracked,
+    }
+
+
+def build_data() -> dict:
     tests = collect_tests()
     jobs = collect_jobs()
     experiments = collect_experiments()
+    roadmap = collect_roadmap()
+    architecture = collect_architecture()
+    repo = collect_repo_status()
 
     done = sum(1 for c in CONCEPT_MAP["capabilities"] if c["status"] == "shipped")
-    all_issues = [i for m in ROADMAP["milestones"] for i in m["issues"]]
-    data = {
+    all_issues = _roadmap_issues(roadmap)
+    return {
         "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "summary": {
             "tests": tests["summary"],
             "capabilities_shipped": done,
             "capabilities_total": len(CONCEPT_MAP["capabilities"]),
             "issues_total": len(all_issues),
-            "issues_active": sum(1 for i in all_issues
-                                 if i["status"] in ("In Progress", "In Review")),
+            "issues_active": sum(1 for i in all_issues if _is_active_issue(i)),
             "jobs_total": jobs["total_tasks"],
             "job_groups": len(jobs["groups"]),
             "experiments": len(experiments),
@@ -657,19 +898,39 @@ def main() -> int:
                                    if a["status"] == "open"),
         },
         "concept_map": CONCEPT_MAP,
+        "architecture": architecture,
         "tests": tests,
-        "roadmap": ROADMAP,
+        "roadmap": roadmap,
+        "repo": repo,
         "jobs": jobs,
         "experiments": experiments,
         "advisories": ADVISORIES,
     }
+
+
+# --------------------------------------------------------------------------
+def main() -> int:
+    if "--run-tests" in sys.argv:
+        run_suite()
+    data = build_data()
+    if (
+        data["roadmap"].get("source", {}).get("kind") != "linear-live"
+        and "--allow-missing-linear" not in sys.argv
+    ):
+        error = data["roadmap"].get("source", {}).get("error", "Linear roadmap unavailable")
+        print(f"error: Roadmap must mirror live Linear: {error}", file=sys.stderr)
+        print("hint: set LINEAR_API_KEY or pass --allow-missing-linear for local UI dev", file=sys.stderr)
+        return 1
     OUT.write_text(json.dumps(data, indent=2))
     s = data["summary"]["tests"]
+    jobs = data["jobs"]
+    experiments = data["experiments"]
     print(f"wrote {OUT.relative_to(ROOT)}")
     print(f"  tests: {s['passed']}p/{s['failed']}f/{s['skipped']}s   "
           f"jobs: {jobs['total_tasks']} tasks in {len(jobs['groups'])} groups   "
           f"experiments: {len(experiments)}   "
-          f"capabilities: {done}/{len(CONCEPT_MAP['capabilities'])}")
+          f"capabilities: {data['summary']['capabilities_shipped']}/"
+          f"{data['summary']['capabilities_total']}")
     return 0
 
 

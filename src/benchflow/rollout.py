@@ -74,6 +74,7 @@ from benchflow.providers.runtime import (
     extract_usage,
     stop_provider_runtime,
 )
+from benchflow.rewards.validation import validate_reward_map
 from benchflow.rollout_branch import ChildRunner
 from benchflow.rollout_branch import branch as _branch_engine
 from benchflow.sandbox.lockdown import (
@@ -338,7 +339,9 @@ def _write_config(
     timeout: int,
     started_at: datetime,
     agent_env: dict[str, str],
+    concurrency: int | None = None,
     scenes: list[Scene] | None = None,
+    source_provenance: dict[str, Any] | None = None,
 ) -> None:
     """Write config.json to rollout_dir with secrets filtered out."""
     _secret_substrings = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIALS")
@@ -358,10 +361,13 @@ def _write_config(
         "sandbox_setup_timeout": sandbox_setup_timeout,
         "context_root": str(context_root) if context_root else None,
         "timeout_sec": timeout,
+        "concurrency": concurrency,
         "started_at": str(started_at),
         "agent_env": recorded_env,
         "scenes": _scene_metadata(scenes or []),
     }
+    if source_provenance is not None:
+        config_data["source"] = source_provenance
     (rollout_dir / "config.json").write_text(json.dumps(config_data, indent=2))
 
 
@@ -422,6 +428,7 @@ def _build_rollout_result(
     usage_source: str = "unavailable",
     price_source: str | None = None,
     evolved_skills: dict[str, str] | None = None,
+    source_provenance: dict[str, Any] | None = None,
 ) -> RolloutResult:
     """Build RolloutResult and write result.json, timing.json, prompts.json, trajectory."""
     finished_at = datetime.now()
@@ -448,6 +455,7 @@ def _build_rollout_result(
         partial_trajectory=partial_trajectory,
         trajectory_source=trajectory_source,
         evolved_skills=evolved_skills,
+        source_provenance=source_provenance,
         started_at=started_at,
         finished_at=finished_at,
     )
@@ -490,6 +498,7 @@ def _build_rollout_result(
                 "finished_at": str(result.finished_at),
                 "timing": timing,
                 "scenes": _scene_metadata(scenes or []),
+                **({"source": source_provenance} if source_provenance is not None else {}),
             },
             indent=2,
         )
@@ -666,7 +675,7 @@ async def _verify_rollout(
             timeout=task.config.verifier.timeout_sec,
         )
         timing["verifier"] = (datetime.now() - t0).total_seconds()
-        rewards = verifier_result.rewards
+        rewards = _ensure_canonical_rewards(verifier_result.rewards)
         logger.info(f"Rewards: {rewards}")
     except TimeoutError:
         timing["verifier"] = (datetime.now() - t0).total_seconds()
@@ -679,6 +688,10 @@ async def _verify_rollout(
         rewards = None
         logger.error(verifier_error)
     return rewards, verifier_error
+
+
+def _ensure_canonical_rewards(rewards: dict | None) -> dict:
+    return validate_reward_map(rewards, source="verifier")
 
 
 # Apply Docker DinD patch at import time.
@@ -748,6 +761,7 @@ class RolloutConfig:
     include_task_skills: bool = True
     skip_verify: bool = False
     export_generated_skills_to: str | Path | None = None
+    source_provenance: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         self.agent = normalize_agent_name(self.agent)
@@ -1034,7 +1048,9 @@ class Rollout:
             timeout=self._timeout,
             started_at=self._started_at,
             agent_env=self._agent_env,
+            concurrency=1,
             scenes=cfg.effective_scenes,
+            source_provenance=cfg.source_provenance,
         )
 
         self._phase = "setup"
@@ -1209,6 +1225,7 @@ class Rollout:
 
     async def disconnect(self) -> None:
         """Close the ACP client and clean up agent process, keeping the environment alive."""
+        self._capture_partial_acp_trajectory()
         if self._acp_client:
             try:
                 await self._acp_client.close()
@@ -1225,6 +1242,19 @@ class Rollout:
         self._session_tool_count = 0
         self._session_traj_count = 0
         self._phase = "installed"
+
+    def _capture_partial_acp_trajectory(self) -> None:
+        if self._trajectory or not self._acp_client or not self._acp_client.session:
+            return
+        try:
+            captured = _capture_session_trajectory(self._acp_client.session)
+            if captured:
+                self._trajectory = captured
+                self._partial_trajectory = True
+                self._trajectory_source = "partial_acp"
+                self._n_tool_calls = len(self._acp_client.session.tool_calls)
+        except Exception as e:
+            logger.warning(f"Partial trajectory capture failed: {e}")
 
     # ── Phase 3c: EXECUTE ──
 
@@ -1399,7 +1429,7 @@ class Rollout:
                 verifier.verify(),
                 timeout=self._task.config.verifier.timeout_sec,
             )
-            rewards = verifier_result.rewards
+            rewards = _ensure_canonical_rewards(verifier_result.rewards)
             # Capture raw verifier output for the user
             cat = await self._env.exec(
                 "cat /logs/verifier/*.log 2>/dev/null || "
@@ -1424,17 +1454,7 @@ class Rollout:
 
     async def cleanup(self) -> None:
         """Close ACP client and stop the environment."""
-        if not self._trajectory and self._acp_client and self._acp_client.session:
-            try:
-                captured = _capture_session_trajectory(self._acp_client.session)
-                if captured:
-                    self._trajectory = captured
-                    self._partial_trajectory = True
-                    self._trajectory_source = "partial_acp"
-                    self._n_tool_calls = len(self._acp_client.session.tool_calls)
-            except Exception as e:
-                logger.warning(f"Partial trajectory capture failed: {e}")
-
+        self._capture_partial_acp_trajectory()
         await self.disconnect()
 
         if self._env and self._config.export_generated_skills_to:
@@ -1540,7 +1560,11 @@ class Rollout:
 
             if not cfg.skip_verify:
                 await self.verify()
-                if agent_timed_out and self._rewards is None:
+                if (
+                    agent_timed_out
+                    and self._rewards is None
+                    and self._verifier_error is None
+                ):
                     self._rewards = {"reward": 0.0}
                     self._verifier_error = None
 
@@ -1659,55 +1683,56 @@ class Rollout:
         inbox: dict[str, list[str]] = {r.name: [] for r in scene.roles}
         turn_counter = 0
 
-        for _i, turn in enumerate(scene.turns):
-            role = role_map.get(turn.role)
-            if not role:
-                raise ValueError(f"Turn references unknown role {turn.role!r}")
+        try:
+            for _i, turn in enumerate(scene.turns):
+                role = role_map.get(turn.role)
+                if not role:
+                    raise ValueError(f"Turn references unknown role {turn.role!r}")
 
-            if current_role != turn.role:
-                if current_role is not None:
-                    await self.disconnect()
-                await self.connect_as(role)
-                current_role = turn.role
+                if current_role != turn.role:
+                    if current_role is not None:
+                        await self.disconnect()
+                    await self.connect_as(role)
+                    current_role = turn.role
 
-            if turn.prompt:
-                base_prompt = turn.prompt
-            elif self._resolved_prompts:
-                base_prompt = self._resolved_prompts[0]
-            else:
-                base_prompt = "Solve the task described in /app/instruction.md"
+                if turn.prompt:
+                    base_prompt = turn.prompt
+                elif self._resolved_prompts:
+                    base_prompt = self._resolved_prompts[0]
+                else:
+                    base_prompt = "Solve the task described in /app/instruction.md"
 
-            pending = inbox.get(turn.role, [])
-            if pending:
-                parts = [base_prompt, "\n---\nMessages from other agents:\n"]
-                parts.extend(pending)
-                prompts = ["\n".join(parts)]
-                inbox[turn.role] = []
-            else:
-                prompts = [base_prompt]
+                pending = inbox.get(turn.role, [])
+                if pending:
+                    parts = [base_prompt, "\n---\nMessages from other agents:\n"]
+                    parts.extend(pending)
+                    prompts = ["\n".join(parts)]
+                    inbox[turn.role] = []
+                else:
+                    prompts = [base_prompt]
 
-            await self.execute(prompts=prompts)
+                await self.execute(prompts=prompts)
 
-            if multi_role:
-                if current_role is None:
-                    raise RuntimeError("No active role after scene turn execution")
-                for recipient, content in await self._read_scene_outbox(current_role):
-                    turn_counter += 1
-                    inbox.setdefault(recipient, []).append(
-                        f"**From {current_role}:** {content}"
-                    )
-                    scene_messages.append(
-                        {
-                            "scene": scene.name,
-                            "turn": turn_counter,
-                            "sender": current_role,
-                            "recipient": recipient,
-                            "content": content,
-                        }
-                    )
-
-        if current_role is not None:
-            await self.disconnect()
+                if multi_role:
+                    if current_role is None:
+                        raise RuntimeError("No active role after scene turn execution")
+                    for recipient, content in await self._read_scene_outbox(current_role):
+                        turn_counter += 1
+                        inbox.setdefault(recipient, []).append(
+                            f"**From {current_role}:** {content}"
+                        )
+                        scene_messages.append(
+                            {
+                                "scene": scene.name,
+                                "turn": turn_counter,
+                                "sender": current_role,
+                                "recipient": recipient,
+                                "content": content,
+                            }
+                        )
+        finally:
+            if current_role is not None:
+                await self.disconnect()
 
         if scene_messages and self._rollout_dir:
             msg_path = self._rollout_dir / "scene_messages.jsonl"
@@ -2031,5 +2056,6 @@ class Rollout:
             timing=self._timing,
             scenes=self._config.effective_scenes,
             evolved_skills=self._evolved_skills,
+            source_provenance=self._config.source_provenance,
             **self._usage_metrics,
         )

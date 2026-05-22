@@ -100,6 +100,7 @@ class RolloutResult:
                       captured an exported skill set; None otherwise. This is
                       the data path that feeds the persistent LearnerStore
                       (capability 5).
+        source_provenance: Source repository/ref/file-hash evidence for the task.
         started_at:   Wall-clock start time.
         finished_at:  Wall-clock end time.
     """
@@ -108,7 +109,7 @@ class RolloutResult:
         self,
         task_name: str,
         rollout_name: str = "",
-        rewards: dict[str, float | int] | None = None,
+        rewards: dict[str, Any] | None = None,
         trajectory: list[dict[str, Any]] | None = None,
         agent: str = "",
         agent_name: str = "",
@@ -129,6 +130,7 @@ class RolloutResult:
         trajectory_source: TrajectorySource | None = None,
         reward_events: list[RewardEvent] | None = None,
         evolved_skills: dict[str, str] | None = None,
+        source_provenance: dict[str, Any] | None = None,
         started_at: datetime | None = None,
         finished_at: datetime | None = None,
     ):
@@ -155,6 +157,7 @@ class RolloutResult:
         self.trajectory_source = trajectory_source
         self.reward_events = reward_events
         self.evolved_skills = evolved_skills
+        self.source_provenance = source_provenance
         self.started_at = started_at
         self.finished_at = finished_at
 

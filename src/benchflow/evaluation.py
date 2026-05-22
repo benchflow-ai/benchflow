@@ -24,18 +24,34 @@ from typing import Any
 
 import yaml
 
+from benchflow._utils.learner_memory import (
+    attach_memory_score,
+    evolved_skills_for_result,
+    expected_skills_for_task,
+    memory_delta_from_skills,
+)
+from benchflow._utils.reward_events import (
+    memory_score_from_events,
+    memory_summary,
+    reward_event_to_dict,
+)
 from benchflow._utils.scoring import (
     ACP_ERROR,
+    IDLE_TIMEOUT,
+    INFRA_ERROR,
     INSTALL_FAILED,
     PIPE_CLOSED,
+    VERIFIER_INFRA,
+    VERIFIER_TIMEOUT,
     classify_error,
-    extract_reward,
+    classify_verifier_error,
+    count_result_outcomes,
     pass_rate,
     pass_rate_excl_errors,
 )
+from benchflow._utils.source_provenance import summary_source_fields
 from benchflow.learner_store import LearnerState, LearnerStore
 from benchflow.models import RolloutResult
-from benchflow.rewards.memory_scorer import MEMORY_STATE_KEY
 from benchflow.trajectories.tree import RolloutNode
 
 # Backward-compat alias
@@ -60,6 +76,9 @@ class RetryConfig:
     retry_on_install: bool = True
     retry_on_pipe: bool = True
     retry_on_acp: bool = True
+    retry_on_idle_timeout: bool = True
+    retry_on_infra: bool = True
+    retry_on_verifier_infra: bool = True
     wait_multiplier: float = 2.0
     min_wait_sec: float = 1.0
     max_wait_sec: float = 30.0
@@ -76,7 +95,20 @@ class RetryConfig:
             return True
         if self.retry_on_pipe and category == PIPE_CLOSED:
             return True
+        if self.retry_on_idle_timeout and category == IDLE_TIMEOUT:
+            return True
+        if self.retry_on_infra and category == INFRA_ERROR:
+            return True
         return bool(self.retry_on_acp and category == ACP_ERROR)
+
+    def should_retry_verifier_error(self, verifier_error: str | None) -> bool:
+        """Check if a verifier error is infrastructure-retryable."""
+        if not self.retry_on_verifier_infra:
+            return False
+        return classify_verifier_error(verifier_error) in {
+            VERIFIER_INFRA,
+            VERIFIER_TIMEOUT,
+        }
 
     def backoff_delay(self, attempt: int) -> float:
         """Exponential backoff delay for retry attempt."""
@@ -131,6 +163,7 @@ class EvaluationConfig:
     skill_creator_dir: str | None = None
     self_gen_no_internet: bool = False
     job_mode: str = DEFAULT_JOB_MODE
+    source_provenance: dict[str, Any] | None = None
 
     def __post_init__(self):
         from benchflow._utils.config import normalize_agent_name, normalize_sandbox_user
@@ -163,6 +196,8 @@ class EvaluationResult:
     errored: int = 0
     verifier_errored: int = 0
     elapsed_sec: float = 0.0
+    memory_score: float | None = None
+    memory_scores: dict[str, float] = field(default_factory=dict)
 
     @property
     def score(self) -> float:
@@ -328,17 +363,20 @@ class Evaluation:
         from benchflow._utils.benchmark_repos import (
             TASK_ALIASES,
             ensure_tasks,
-            resolve_source,
+            resolve_source_with_metadata,
         )
 
         # New two-field format: source.repo + source.path
+        source_provenance = None
         if "source" in raw:
             src = raw["source"]
-            tasks_dir = resolve_source(
+            resolved = resolve_source_with_metadata(
                 repo=src["repo"],
                 path=src.get("path"),
                 ref=src.get("ref"),
             )
+            tasks_dir = resolved.path
+            source_provenance = resolved.provenance
         elif "tasks_dir" in raw:
             # Legacy single-string format (backward compat).
             ref = raw["tasks_dir"]
@@ -383,6 +421,7 @@ class Evaluation:
             ),
             self_gen_no_internet=bool(raw.get("self_gen_no_internet", False)),
             job_mode=raw.get("job_mode", DEFAULT_JOB_MODE),
+            source_provenance=source_provenance,
         )
         return cls(tasks_dir=tasks_dir, jobs_dir=jobs_dir, config=config, **kwargs)
 
@@ -453,6 +492,15 @@ class Evaluation:
 
     def _get_task_dirs(self) -> list[Path]:
         """Get all valid task directories."""
+        if (self._tasks_dir / "task.toml").exists():
+            if self._tasks_dir.name in self._config.exclude_tasks:
+                return []
+            if (
+                self._config.include_tasks
+                and self._tasks_dir.name not in self._config.include_tasks
+            ):
+                return []
+            return [self._tasks_dir]
         return sorted(
             d
             for d in self._tasks_dir.iterdir()
@@ -510,6 +558,7 @@ class Evaluation:
         skill set (``_learner_skills_dir``) and its agent-evolved skills are
         captured back through ``export_generated_skills_to``.
         """
+        from benchflow._utils.benchmark_repos import task_source_provenance
         from benchflow.rollout import Rollout, RolloutConfig
 
         skills_dir = (
@@ -540,6 +589,9 @@ class Evaluation:
             skill_creator_dir=cfg.skill_creator_dir,
             self_gen_no_internet=cfg.self_gen_no_internet,
             export_generated_skills_to=export_to,
+            source_provenance=task_source_provenance(
+                cfg.source_provenance, task_dir
+            ),
         )
         if cfg.skill_mode == "self-gen":
             from benchflow.self_gen import run_self_gen
@@ -558,6 +610,8 @@ class Evaluation:
         cannot materialize or capture evolved skills. It is test-only today;
         a real continual-learning run must go through ``_run_single_task``.
         """
+        from benchflow._utils.benchmark_repos import task_source_provenance
+
         return await self._sdk.run(
             task_path=task_dir,
             agent=cfg.agent,
@@ -575,6 +629,9 @@ class Evaluation:
             skill_mode=cfg.skill_mode,
             skill_creator_dir=cfg.skill_creator_dir,
             self_gen_no_internet=cfg.self_gen_no_internet,
+            source_provenance=task_source_provenance(
+                cfg.source_provenance, task_dir
+            ),
         )
 
     async def _run_task(self, task_dir: Path) -> RunResult:
@@ -597,16 +654,19 @@ class Evaluation:
                 result = await self._run_single_task(task_dir, cfg)
             last_result = result
 
-            # If succeeded, verifier-errored (terminal), or non-retryable, stop
-            if (
-                result.rewards is not None
-                or result.verifier_error
-                or not cfg.retry.should_retry(result.error)
-            ):
+            retryable_agent_error = cfg.retry.should_retry(result.error)
+            retryable_verifier_error = cfg.retry.should_retry_verifier_error(
+                result.verifier_error
+            )
+
+            # If succeeded, verifier-errored (terminal), or non-retryable, stop.
+            # Retryable infra/idle errors win over fallback rewards so a hung
+            # agent lane does not become permanent failed-task data at scale.
+            if not (retryable_agent_error or retryable_verifier_error):
                 break
 
             if attempt <= cfg.retry.max_retries:
-                err_preview = (result.error or "")[:60]
+                err_preview = (result.error or result.verifier_error or "")[:60]
                 logger.info(
                     f"Retrying {task_dir.name} (attempt {attempt + 1}): {err_preview}"
                 )
@@ -643,7 +703,6 @@ class Evaluation:
                         random.uniform(0, min(cfg.concurrency / 10, 10))
                     )
                 result = await self._run_task(td)
-                self._prune_docker()
                 self._log_and_report(td, result)
                 return td.name, result
 
@@ -735,16 +794,15 @@ class Evaluation:
                     self._learner_skills_dir = None
                     self._learner_export_dir = None
 
-                self._prune_docker()
                 self._log_and_report(td, result)
                 pairs.append((td.name, result))
 
-                self._commit_learner_generation(
+                await self._commit_learner_generation(
                     store, td, result, before_state, export_dir
                 )
         return pairs
 
-    def _commit_learner_generation(
+    async def _commit_learner_generation(
         self,
         store: LearnerStore,
         td: Path,
@@ -759,31 +817,36 @@ class Evaluation:
         improvement stamps a new generation, a regression is reverted. An
         errored rollout (no reward) leaves the store untouched.
         """
-        from benchflow.learner_skills import capture_skills, skill_memory_delta
-
         # 2/3. CAPTURE — the skills the agent generated/evolved. Prefer the
         # result's own field (the real Rollout populates it); fall back to
         # reading the export dir directly.
-        if result.evolved_skills is not None:
-            evolved_skills = dict(result.evolved_skills)
-        else:
-            evolved_skills = capture_skills(export_dir)
-
-        before_skills = {k: str(v) for k, v in before_state.skills.items()}
-        after_skills = {k: str(v) for k, v in evolved_skills.items()}
-        # No `expected` fixture is supplied. The Memory scorer must NOT be
-        # handed an answer key derived from the agent's own diff — that makes
-        # its precision/recall a tautology (always 1.0). Without a fixture the
-        # scorer honestly grades *activity*: 1.0 for any skill change, 0.0 for
-        # none. A real correctness fixture must come from the task definition;
-        # threading task-supplied `expected_skills` through is future work.
-        delta = skill_memory_delta(before=before_skills, after=after_skills)
+        evolved_skills = evolved_skills_for_result(result, export_dir)
+        expected_skills = expected_skills_for_task(td)
+        # The Memory scorer must NOT derive an answer key from the agent's own
+        # diff — that would make precision/recall a tautology. Only a
+        # task-authored fixture may switch the scorer from activity to
+        # correctness grading.
+        after_skills, delta = memory_delta_from_skills(
+            before_state=before_state,
+            evolved_skills=evolved_skills,
+            expected_skills=expected_skills,
+        )
 
         # Record the delta on this rollout's tree node so the Memory-space
         # scorer (rewards/memory_scorer.py) has its writer — the two halves
         # of capability 5 connected end-to-end.
         node = self._learner_node(td)
-        node.state[MEMORY_STATE_KEY] = delta
+        result_path = (
+            self._jobs_dir / self._job_name / result.rollout_name / "result.json"
+            if result.rollout_name
+            else None
+        )
+        await attach_memory_score(
+            result=result,
+            node=node,
+            delta=delta,
+            result_path=result_path,
+        )
 
         # 4. COMMIT — offer the evolved (memory + skills) state to the store.
         reward = result.rewards.get("reward") if result.rewards else None
@@ -872,13 +935,21 @@ class Evaluation:
             pairs = await self._run_sequential_shared(remaining)
         else:
             pairs = await self._run_parallel_independent(remaining)
+        self._prune_docker()
         elapsed = time.time() - start
 
         # Merge with previously completed — normalize everything to dicts
+        from benchflow._utils.benchmark_repos import task_source_provenance
+
         all_results: dict[str, dict] = {}
         for task, data in completed.items():
             all_results[task] = data
         for name, result in pairs:
+            reward_events = result.reward_events or []
+            memory_score = memory_score_from_events(reward_events)
+            source_provenance = result.source_provenance or task_source_provenance(
+                cfg.source_provenance, self._tasks_dir / name
+            )
             all_results[name] = {
                 "task_name": result.task_name,
                 "rewards": result.rewards,
@@ -886,28 +957,29 @@ class Evaluation:
                 "verifier_error": result.verifier_error,
                 "n_tool_calls": result.n_tool_calls,
                 "agent_result": _agent_result_from_rollout(result),
+                **(
+                    {"reward_events": [reward_event_to_dict(event) for event in reward_events]}
+                    if reward_events
+                    else {}
+                ),
+                **({"memory_score": memory_score} if memory_score is not None else {}),
+                **({"source": source_provenance} if source_provenance else {}),
             }
 
         # Count — all values are dicts now, no type branching needed
+        outcome_counts = count_result_outcomes(all_results.values())
+        memory, memory_scores = memory_summary(all_results)
         job_result = EvaluationResult(
             job_name=self._job_name,
             config=cfg,
             total=len(task_dirs),
-            passed=sum(1 for r in all_results.values() if extract_reward(r) == 1.0),
-            failed=sum(
-                1
-                for r in all_results.values()
-                if (rw := extract_reward(r)) is not None and rw != 1.0
-            ),
-            errored=sum(
-                1
-                for r in all_results.values()
-                if r.get("error") and r.get("rewards") is None
-            ),
-            verifier_errored=sum(
-                1 for r in all_results.values() if r.get("verifier_error")
-            ),
+            passed=outcome_counts["passed"],
+            failed=outcome_counts["failed"],
+            errored=outcome_counts["errored"],
+            verifier_errored=outcome_counts["verifier_errored"],
             elapsed_sec=elapsed,
+            memory_score=memory["avg_score"],
+            memory_scores=memory_scores,
         )
 
         assert (
@@ -927,6 +999,7 @@ class Evaluation:
             "agent": cfg.agent,
             "model": cfg.model,
             "environment": cfg.environment,
+            "concurrency": cfg.concurrency,
             "total": job_result.total,
             "passed": job_result.passed,
             "failed": job_result.failed,
@@ -935,7 +1008,14 @@ class Evaluation:
             "score": f"{job_result.score:.1%}",
             "score_excl_errors": f"{job_result.score_excl_errors:.1%}",
             "elapsed_sec": elapsed,
+            "memory_score": job_result.memory_score,
+            "memory_score_coverage": (
+                len(memory_scores) / job_result.total if job_result.total else 0.0
+            ),
+            "memory": memory,
+            "memory_scores": memory_scores,
             **_usage_summary(all_results),
+            **summary_source_fields(cfg.source_provenance, all_results),
         }
         (self._jobs_dir / "summary.json").write_text(json.dumps(summary, indent=2))
 

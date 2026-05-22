@@ -98,6 +98,24 @@ class TestInjectSkillsIntoDockerfile:
         # Dockerfile unchanged
         assert (task_path / "environment" / "Dockerfile").read_text() == original
 
+    def test_noop_when_skills_dir_is_empty(self, tmp_path):
+        """Guards sequential-shared first rollout on remote builders like Daytona.
+
+        An empty LearnerStore materializes an empty skills directory. Injecting
+        a ``COPY _deps/skills`` line for that empty directory can make remote
+        builders fail with a missing build-context path instead of running the
+        rollout.
+        """
+        task_path = _make_task(tmp_path)
+        original = (task_path / "environment" / "Dockerfile").read_text()
+        skills_dir = tmp_path / "empty-skills"
+        skills_dir.mkdir()
+
+        _inject_skills_into_dockerfile(task_path, skills_dir)
+
+        assert (task_path / "environment" / "Dockerfile").read_text() == original
+        assert not (task_path / "environment" / "_deps" / "skills").exists()
+
     def test_ignores_venv_and_pycache(self, tmp_path):
         task_path = _make_task(tmp_path)
         skills_dir = _make_skills_dir(tmp_path)
