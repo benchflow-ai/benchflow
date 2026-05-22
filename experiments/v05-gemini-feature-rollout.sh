@@ -39,7 +39,8 @@ if [ "$CHECK_ONLY" = true ]; then
     "agent=$AGENT" \
     "model=$MODEL" \
     "environment=$SANDBOX" \
-    "concurrency=$CONCURRENCY"
+    "concurrency=$CONCURRENCY" \
+    "agent_idle_timeout_sec=$IDLE_TIMEOUT"
   exit $?
 fi
 
@@ -53,14 +54,13 @@ if [ -z "${DAYTONA_API_KEY:-}" ]; then
 fi
 
 RUN_ID="${BENCHFLOW_FEATURE_RUN_ID:-v0.5-gemini-feature-$(date +%Y%m%d-%H%M%S)}"
-TASKSET="/tmp/benchflow-feature-taskset-$RUN_ID"
+TASKSET="$(mktemp -d "${TMPDIR:-/tmp}/benchflow-feature-taskset-$RUN_ID.XXXXXX")"
 JOBS_ROOT="${BENCHFLOW_FEATURE_JOBS_ROOT:-jobs/codex-feature-rollouts-$RUN_ID}"
 
 echo "Run ID: $RUN_ID"
 echo "Taskset: $TASKSET"
 echo "Jobs: $JOBS_ROOT"
 
-mkdir -p "$TASKSET"
 SKILLS="$(uv run python -c "
 from benchflow._utils.benchmark_repos import resolve_source_with_metadata
 print(resolve_source_with_metadata('benchflow-ai/skillsbench', path='tasks', ref='main').path)
@@ -86,4 +86,5 @@ uv run python tests/integration/check_results.py \
   "agent=$AGENT" \
   "model=$MODEL" \
   "environment=$SANDBOX" \
-  "concurrency=$CONCURRENCY"
+  "concurrency=$CONCURRENCY" \
+  "agent_idle_timeout_sec=$IDLE_TIMEOUT"
