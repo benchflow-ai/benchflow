@@ -35,6 +35,13 @@ from datetime import datetime
 from pathlib import Path
 from types import ModuleType
 
+from dashboard.jobs_root import (
+    JOBS_ROOT_ENV,
+)
+from dashboard.jobs_root import (
+    dashboard_jobs_root as resolve_dashboard_jobs_root,
+)
+
 ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / "src"
 DASH = ROOT / "dashboard"
@@ -42,7 +49,6 @@ JUNIT = DASH / "junit.xml"
 OUT = DASH / "data.json"
 ARCHITECTURE_MD = DASH / "architecture.md"
 TS_RE = re.compile(r"^\d{4}-\d{2}-\d{2}__\d{2}-\d{2}-\d{2}$")
-JOBS_ROOT_ENV = "BENCHFLOW_DASHBOARD_JOBS_ROOT"
 _ROADMAP_MODULE: ModuleType | None = None
 _SCORING_MODULE: ModuleType | None = None
 _REWARD_EVENTS_MODULE: ModuleType | None = None
@@ -157,32 +163,6 @@ def _memory_score_from_result(result: dict) -> float | None:
     return _load_reward_events_module().memory_score_from_result(result)
 
 
-def _jobs_tree_has_rollouts(jobs: Path) -> bool:
-    if not jobs.is_dir():
-        return False
-    with contextlib.suppress(Exception):
-        return any(
-            p.name in {"result.json", "config.json", "timing.json", "prompts.json"}
-            for p in jobs.rglob("*")
-            if p.is_file()
-        )
-    return False
-
-
-def _remembered_jobs_root() -> Path | None:
-    if not OUT.is_file():
-        return None
-    with contextlib.suppress(Exception):
-        data = json.loads(OUT.read_text())
-        raw = ((data.get("jobs") or {}).get("source") or {}).get("path")
-        if not raw:
-            return None
-        remembered = Path(str(raw)).expanduser().resolve()
-        if remembered.is_dir() and _jobs_tree_has_rollouts(remembered):
-            return remembered
-    return None
-
-
 def dashboard_jobs_root() -> Path:
     """Return the jobs tree the dashboard should mirror.
 
@@ -190,16 +170,7 @@ def dashboard_jobs_root() -> Path:
     from the run-producing worktree. Operators can point the dashboard at
     either that worktree root or at its ``jobs/`` directory directly.
     """
-    raw = os.environ.get(JOBS_ROOT_ENV)
-    if not raw:
-        local_jobs = ROOT / "jobs"
-        if _jobs_tree_has_rollouts(local_jobs):
-            return local_jobs
-        return _remembered_jobs_root() or local_jobs
-    candidate = Path(raw).expanduser()
-    if candidate.name != "jobs" and (candidate / "jobs").is_dir():
-        candidate = candidate / "jobs"
-    return candidate.resolve()
+    return resolve_dashboard_jobs_root(root=ROOT, data_path=OUT)
 
 
 def _jobs_source(jobs: Path) -> dict:
