@@ -25,6 +25,7 @@ import sys
 from pathlib import Path
 from typing import Any, cast
 
+from benchflow._utils.config import normalize_agent_idle_timeout
 from benchflow._utils.reward_events import memory_score_from_result
 from benchflow._utils.scoring import classify_error, count_result_outcomes
 from benchflow._utils.source_provenance import source_issues, source_matches_parent
@@ -103,6 +104,62 @@ def _artifact_agent_idle_timeout(payload: dict[str, Any]) -> Any:
     return _MISSING
 
 
+def _parse_agent_idle_timeout_value(value: Any, label: str) -> tuple[int | None, str | None]:
+    if value is _MISSING:
+        return None, f"{label} missing agent_idle_timeout_sec"
+    if value is None:
+        return None, None
+    if isinstance(value, bool):
+        return None, f"{label} agent_idle_timeout_sec must be null or integer seconds"
+    if isinstance(value, int):
+        try:
+            return normalize_agent_idle_timeout(value), None
+        except ValueError as e:
+            return None, f"{label} agent_idle_timeout_sec invalid: {e}"
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"", "none", "null"}:
+            return None, None
+        if not text.isdecimal():
+            return None, f"{label} agent_idle_timeout_sec must be null or integer seconds"
+        try:
+            return normalize_agent_idle_timeout(text), None
+        except ValueError as e:
+            return None, f"{label} agent_idle_timeout_sec invalid: {e}"
+    return None, f"{label} agent_idle_timeout_sec must be null or integer seconds"
+
+
+def _compare_agent_idle_timeout(actual: Any, expected: Any, label: str) -> str | None:
+    actual_value, actual_error = _parse_agent_idle_timeout_value(actual, label)
+    if actual_error:
+        return actual_error
+    expected_value, expected_error = _parse_agent_idle_timeout_value(
+        expected, "expected"
+    )
+    if expected_error:
+        return expected_error
+    if actual_value != expected_value:
+        return (
+            f"{label} agent_idle_timeout_sec {_expected_label(actual)} "
+            f"does not match expected {_expected_label(expected)}"
+        )
+    return None
+
+
+def _latest_result_entries_by_task(
+    result_entries: list[tuple[Path, dict]],
+) -> list[tuple[Path, dict]]:
+    """Return the latest result entry per task for summary/artifact reconciliation."""
+    latest_by_task: dict[str, tuple[float, Path, dict]] = {}
+    for rfile, result in result_entries:
+        task_name = result.get("task_name") or rfile.parent.name.rsplit("__", 1)[0]
+        mtime = rfile.stat().st_mtime
+        previous = latest_by_task.get(task_name)
+        if previous is None or mtime > previous[0]:
+            latest_by_task[task_name] = (mtime, rfile, result)
+    return [(rfile, result) for _, rfile, result in latest_by_task.values()]
+
+
 def _has_expected(agent: str, field: str) -> bool:
     return _expected(agent, field) is not _MISSING
 
@@ -115,14 +172,7 @@ def _expected_label(value: Any) -> str:
 
 def _latest_results_by_task(result_entries: list[tuple[Path, dict]]) -> list[dict]:
     """Return the latest result per task for summary/outcome reconciliation."""
-    latest_by_task: dict[str, tuple[float, dict]] = {}
-    for rfile, result in result_entries:
-        task_name = result.get("task_name") or rfile.parent.name.rsplit("__", 1)[0]
-        mtime = rfile.stat().st_mtime
-        previous = latest_by_task.get(task_name)
-        if previous is None or mtime > previous[0]:
-            latest_by_task[task_name] = (mtime, result)
-    return [result for _, result in latest_by_task.values()]
+    return [result for _, result in _latest_result_entries_by_task(result_entries)]
 
 
 def _find_result_root(agent_dir: Path) -> Path:
@@ -315,6 +365,7 @@ def check_agent(agent_dir: Path) -> dict:
         findings["issues"].extend(result_load_issues)
     results = [result for _, result in result_entries]
     latest_results = _latest_results_by_task(result_entries)
+    latest_result_entries = _latest_result_entries_by_task(result_entries)
 
     if not results:
         findings["ok"] = False
@@ -392,11 +443,22 @@ def check_agent(agent_dir: Path) -> dict:
                 )
                 findings["ok"] = False
             config_agent_idle_timeout = _artifact_agent_idle_timeout(config)
-            if expected_agent_idle_timeout is not _MISSING and str(
-                config_agent_idle_timeout
-            ) != str(expected_agent_idle_timeout):
+            if expected_agent_idle_timeout is not _MISSING:
+                idle_timeout_issue = _compare_agent_idle_timeout(
+                    config_agent_idle_timeout,
+                    expected_agent_idle_timeout,
+                    f"{r.get('task_name', '?')}: config.json",
+                )
+            elif config_agent_idle_timeout is not _MISSING:
+                idle_timeout_issue = _parse_agent_idle_timeout_value(
+                    config_agent_idle_timeout,
+                    f"{r.get('task_name', '?')}: config.json",
+                )[1]
+            else:
+                idle_timeout_issue = None
+            if idle_timeout_issue:
                 findings["issues"].append(
-                    f"{r.get('task_name', '?')}: config.json agent_idle_timeout_sec {_expected_label(config_agent_idle_timeout)} does not match expected {_expected_label(expected_agent_idle_timeout)}"
+                    idle_timeout_issue
                 )
                 findings["ok"] = False
             config_source_issues = source_issues(
@@ -445,13 +507,19 @@ def check_agent(agent_dir: Path) -> dict:
                     f"summary.json source mismatch tasks: {summary['source_mismatch_tasks']}"
                 )
                 findings["ok"] = False
-            found_source_issues = source_issues(
-                summary.get("source"),
-                "summary.json",
-                require_file_hashes=False,
-            )
-            if found_source_issues:
-                findings["issues"].extend(found_source_issues)
+            if summary.get("source") is not None:
+                found_source_issues = source_issues(
+                    summary.get("source"),
+                    "summary.json",
+                    require_file_hashes=False,
+                )
+                if found_source_issues:
+                    findings["issues"].extend(found_source_issues)
+                    findings["ok"] = False
+            elif any(not isinstance(r.get("source"), dict) for r in results):
+                findings["issues"].append(
+                    "summary.json missing source provenance and not all results have source"
+                )
                 findings["ok"] = False
             expected_model = _expected(agent, "model")
             expected_environment = _expected(agent, "environment")
@@ -495,14 +563,43 @@ def check_agent(agent_dir: Path) -> dict:
                 )
                 findings["ok"] = False
             summary_agent_idle_timeout = _artifact_agent_idle_timeout(summary)
-            if expected_agent_idle_timeout is not _MISSING and str(
-                summary_agent_idle_timeout
-            ) != str(expected_agent_idle_timeout):
+            if expected_agent_idle_timeout is not _MISSING:
+                idle_timeout_issue = _compare_agent_idle_timeout(
+                    summary_agent_idle_timeout,
+                    expected_agent_idle_timeout,
+                    "summary.json",
+                )
+            elif summary_agent_idle_timeout is not _MISSING:
+                idle_timeout_issue = _parse_agent_idle_timeout_value(
+                    summary_agent_idle_timeout,
+                    "summary.json",
+                )[1]
+            else:
+                idle_timeout_issue = None
+            if idle_timeout_issue:
                 findings["issues"].append(
-                    f"summary.json agent_idle_timeout_sec {_expected_label(summary_agent_idle_timeout)} does not match expected {_expected_label(expected_agent_idle_timeout)}"
+                    idle_timeout_issue
                 )
                 findings["ok"] = False
             summary_source = summary.get("source")
+            for result_file, r in latest_result_entries:
+                _path, config, config_error = _load_config(result_file)
+                if not config_error and config is not None:
+                    config_agent_idle_timeout = _artifact_agent_idle_timeout(config)
+                    if (
+                        config_agent_idle_timeout is not _MISSING
+                        and summary_agent_idle_timeout is not _MISSING
+                    ):
+                        consistency_issue = _compare_agent_idle_timeout(
+                            config_agent_idle_timeout,
+                            summary_agent_idle_timeout,
+                            f"{r.get('task_name', '?')}: config.json",
+                        )
+                        if consistency_issue:
+                            findings["issues"].append(
+                                f"{consistency_issue} from summary.json"
+                            )
+                            findings["ok"] = False
             if isinstance(summary_source, dict):
                 for r in results:
                     if not source_matches_parent(r.get("source"), summary_source):

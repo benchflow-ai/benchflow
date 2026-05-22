@@ -333,7 +333,7 @@ def task_source_provenance(
 ) -> dict[str, Any] | None:
     """Return per-task provenance derived from a source directory provenance block."""
     if not source_provenance:
-        return None
+        return infer_task_source_provenance(task_path)
     provenance = dict(source_provenance)
     base_local_raw = provenance.get("local_path")
     source_path = str(provenance.get("path") or "").strip("/")
@@ -355,6 +355,88 @@ def task_source_provenance(
     provenance["local_path"] = str(task_path)
     provenance["file_hashes"] = task_file_hashes(task_path)
     return provenance
+
+
+def _repo_slug_from_git_root(repo_root: Path) -> str | None:
+    remote = _git_stdout(repo_root, "remote", "get-url", "origin")
+    if not remote:
+        return None
+    normalized = remote.strip()
+    if normalized.endswith(".git"):
+        normalized = normalized[:-4]
+    if normalized.startswith("git@github.com:"):
+        return normalized.removeprefix("git@github.com:")
+    marker = "github.com/"
+    if marker in normalized:
+        return normalized.split(marker, 1)[1]
+    return None
+
+
+def infer_task_source_provenance(task_path: Path) -> dict[str, Any] | None:
+    """Infer github source provenance for tasks under repo or dataset cache paths."""
+    try:
+        task_resolved = task_path.resolve(strict=True)
+    except OSError:
+        return None
+
+    cache_root = _cache_dir()
+    try:
+        cache_rel = task_resolved.relative_to(cache_root.resolve(strict=False))
+    except ValueError:
+        cache_rel = None
+
+    if cache_rel is not None and len(cache_rel.parts) >= 3:
+        org, snapshot_dir, resolved_sha, *rest = cache_rel.parts
+        if snapshot_dir.endswith("__snapshots") and _is_hex(resolved_sha):
+            repo_name = snapshot_dir.removesuffix("__snapshots")
+            snapshot_root = cache_root / org / snapshot_dir / resolved_sha
+            source_path = "/".join(rest)
+            return {
+                "type": "github",
+                "repo": f"{org}/{repo_name}",
+                "requested_ref": None,
+                "resolved_sha": resolved_sha,
+                "path": source_path,
+                "local_path": str(task_resolved),
+                "dirty": bool(
+                    _git_stdout(
+                        snapshot_root,
+                        "status",
+                        "--porcelain",
+                        "--",
+                        *rest,
+                    )
+                ),
+                "file_hashes": task_file_hashes(task_resolved),
+            }
+
+    repo_root = _repo_root()
+    try:
+        rel = task_resolved.relative_to(repo_root.resolve(strict=False))
+    except ValueError:
+        return None
+
+    repo_slug = _repo_slug_from_git_root(repo_root)
+    resolved_sha = _git_stdout(repo_root, "rev-parse", "HEAD")
+    if not repo_slug or not resolved_sha:
+        return None
+
+    return {
+        "type": "github",
+        "repo": repo_slug,
+        "requested_ref": _git_stdout(repo_root, "rev-parse", "--abbrev-ref", "HEAD"),
+        "resolved_sha": resolved_sha,
+        "path": rel.as_posix(),
+        "local_path": str(task_resolved),
+        "dirty": bool(
+            _git_stdout(repo_root, "status", "--porcelain", "--", rel.as_posix())
+        ),
+        "file_hashes": task_file_hashes(task_resolved),
+    }
+
+
+def _is_hex(value: str) -> bool:
+    return len(value) in {40, 64} and all(ch in "0123456789abcdef" for ch in value.lower())
 
 
 # ---------------------------------------------------------------------------
