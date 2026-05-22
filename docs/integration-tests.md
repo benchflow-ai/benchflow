@@ -6,6 +6,12 @@ The core matrix runs 9 SkillsBench tasks across all 8 registered agents on Dayto
 
 ## Prerequisites
 
+Install Daytona sandbox support for local integration runs:
+
+```bash
+uv sync --extra dev --extra sandbox-daytona --locked
+```
+
 | Variable | Required for |
 |---|---|
 | `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) | gemini, pi-acp, openclaw, opencode, openhands |
