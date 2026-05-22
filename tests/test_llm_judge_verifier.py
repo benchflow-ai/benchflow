@@ -607,7 +607,7 @@ class TestTestScriptStillDefault:
         sandbox.is_mounted = False
 
         async def fake_exec(command: str, **_kwargs: object) -> MagicMock:
-            if "rm -rf /logs/verifier" in command:
+            if "find /logs/verifier" in command:
                 remote_rewards.clear()
             return MagicMock(return_code=0, stdout="")
 

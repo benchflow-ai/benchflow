@@ -29,6 +29,9 @@ from benchflow.sandbox._compose import (
     COMPOSE_BUILD_PATH,
     COMPOSE_NO_NETWORK_PATH,
     COMPOSE_PREBUILT_PATH,
+    compose_cp_destination,
+    compose_mkdir_p_command,
+    compose_parent_mkdir_p_command,
 )
 from benchflow.task.config import SandboxConfig
 from benchflow.task.env import resolve_env_vars
@@ -76,6 +79,15 @@ logger = logging.getLogger("benchflow")
 
 _SandboxParams = CreateSandboxFromImageParams | CreateSandboxFromSnapshotParams
 _DAYTONA_COMMAND_POLL_INTERVAL_SEC = 1.0
+
+
+def _exec_failure_output(result: ExecResult) -> str:
+    output = " ".join(
+        text.strip()
+        for text in (result.stdout or "", result.stderr or "")
+        if text and text.strip()
+    )
+    return output[:4000]
 
 
 def _daytona_preflight() -> None:
@@ -661,8 +673,22 @@ class _DaytonaDinD(_DaytonaStrategy):
         temp = f"/tmp/benchflow_{uuid4().hex}"
         try:
             await self._env._sdk_upload_file(source_path, temp)
+            target_parent_cmd = compose_parent_mkdir_p_command(target_path)
+            if target_parent_cmd is not None:
+                prep_result = await self.exec(
+                    target_parent_cmd,
+                    timeout_sec=30,
+                    user="root",
+                    service="main",
+                )
+                if prep_result.return_code != 0:
+                    raise RuntimeError(
+                        "docker compose upload_file destination prep failed: "
+                        f"{_exec_failure_output(prep_result)}"
+                    )
             result = await self._compose_exec(
-                ["cp", temp, f"main:{target_path}"], timeout_sec=60
+                ["cp", temp, compose_cp_destination("main", target_path)],
+                timeout_sec=60,
             )
             if result.return_code != 0:
                 raise RuntimeError(
@@ -682,8 +708,20 @@ class _DaytonaDinD(_DaytonaStrategy):
         temp = f"/tmp/benchflow_{uuid4().hex}"
         try:
             await self._env._sdk_upload_dir(source_dir, temp)
+            prep_result = await self.exec(
+                compose_mkdir_p_command(target_dir),
+                timeout_sec=30,
+                user="root",
+                service=service,
+            )
+            if prep_result.return_code != 0:
+                raise RuntimeError(
+                    "docker compose upload_dir destination prep failed: "
+                    f"{_exec_failure_output(prep_result)}"
+                )
             result = await self._compose_exec(
-                ["cp", f"{temp}/.", f"{service}:{target_dir}"], timeout_sec=120
+                ["cp", f"{temp}/.", compose_cp_destination(service, target_dir)],
+                timeout_sec=120,
             )
             if result.return_code != 0:
                 raise RuntimeError(
