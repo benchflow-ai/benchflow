@@ -103,6 +103,7 @@ class _RecordingSandbox:
         self.upload_calls: list[dict] = []
         self.download_calls: list[dict] = []
         self.exec_calls: list[dict] = []
+
     async def upload_dir(self, source_dir, target_dir, service: str = "main") -> None:
         self.upload_calls.append(
             {"source": source_dir, "target": target_dir, "service": service}
@@ -119,10 +120,8 @@ class _RecordingSandbox:
 
     async def exec(self, command, service: str = "main", **kwargs) -> ExecResult:
         self.exec_calls.append({"command": command, "service": service, **kwargs})
-        if self.is_mounted and "test.sh" in command:
-            self._rollout_paths.reward_text_path.parent.mkdir(
-                parents=True, exist_ok=True
-            )
+        if self.is_mounted and service == "main" and "test-stdout.txt" in command:
+            self._rollout_paths.verifier_dir.mkdir(parents=True, exist_ok=True)
             self._rollout_paths.reward_text_path.write_text(self._reward)
         return ExecResult(stdout="", stderr="", return_code=0)
 

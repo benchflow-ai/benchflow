@@ -47,9 +47,7 @@ def test_skill_delta_detects_removed_skill():
 
 
 def test_skill_delta_unchanged_skill_is_not_a_change():
-    delta = skill_delta(
-        before={"git-bisect": "v1"}, after={"git-bisect": "v1"}
-    )
+    delta = skill_delta(before={"git-bisect": "v1"}, after={"git-bisect": "v1"})
     assert delta.added == set()
     assert delta.updated == set()
     assert delta.removed == set()

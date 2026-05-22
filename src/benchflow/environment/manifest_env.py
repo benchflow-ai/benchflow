@@ -103,10 +103,7 @@ class ManifestEnvironment:
         if m.owns_lifecycle:
             urls = m.effective_http
         else:
-            urls = [
-                f"http://localhost:{s.port}{s.health_path}"
-                for s in self._started
-            ]
+            urls = [f"http://localhost:{s.port}{s.health_path}" for s in self._started]
 
         checked: list[str] = []
         for url in urls:
@@ -167,9 +164,7 @@ class ManifestEnvironment:
         cmds = [f"mkdir -p {shlex.quote(snap_dir)}"]
         for src in spec.paths:
             dest = f"{snap_dir}/{PurePosixPath(src).name}"
-            cmds.append(
-                f'sqlite3 {shlex.quote(src)} ".backup {shlex.quote(dest)}"'
-            )
+            cmds.append(f'sqlite3 {shlex.quote(src)} ".backup {shlex.quote(dest)}"')
         await self._sandbox.exec(" && ".join(cmds), timeout_sec=120)
         return StateSnapshot(id=snap_id, path=snap_dir)
 

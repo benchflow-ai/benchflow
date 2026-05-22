@@ -154,9 +154,7 @@ class EnvironmentManifest(BaseModel):
         """
         if self.readiness.http:
             return self.readiness.http
-        return [
-            f"http://localhost:{s.port}{s.health_path}" for s in self.services
-        ]
+        return [f"http://localhost:{s.port}{s.health_path}" for s in self.services]
 
     @classmethod
     def model_validate_toml(cls, toml_data: str) -> EnvironmentManifest:

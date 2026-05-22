@@ -104,7 +104,9 @@ def _artifact_agent_idle_timeout(payload: dict[str, Any]) -> Any:
     return _MISSING
 
 
-def _parse_agent_idle_timeout_value(value: Any, label: str) -> tuple[int | None, str | None]:
+def _parse_agent_idle_timeout_value(
+    value: Any, label: str
+) -> tuple[int | None, str | None]:
     if value is _MISSING:
         return None, f"{label} missing agent_idle_timeout_sec"
     if value is None:
@@ -121,7 +123,10 @@ def _parse_agent_idle_timeout_value(value: Any, label: str) -> tuple[int | None,
         if text in {"", "none", "null"}:
             return None, None
         if not text.isdecimal():
-            return None, f"{label} agent_idle_timeout_sec must be null or integer seconds"
+            return (
+                None,
+                f"{label} agent_idle_timeout_sec must be null or integer seconds",
+            )
         try:
             return normalize_agent_idle_timeout(text), None
         except ValueError as e:
@@ -155,7 +160,9 @@ def _latest_result_entries_by_task(
         task_name = result.get("task_name") or rfile.parent.name.rsplit("__", 1)[0]
         mtime = rfile.stat().st_mtime
         previous = latest_by_task.get(task_name)
-        if previous is None or mtime > previous[0]:
+        if previous is None or mtime > previous[0] or (
+            mtime == previous[0] and str(rfile) > str(previous[1])
+        ):
             latest_by_task[task_name] = (mtime, rfile, result)
     return [(rfile, result) for _, rfile, result in latest_by_task.values()]
 
@@ -252,7 +259,11 @@ def _git_ls_remote_contains(repo: str, sha: str, requested_ref: str | None) -> b
     url = f"https://github.com/{repo}.git"
     ref_args: list[str] = []
     if requested_ref:
-        ref_args = [requested_ref, f"refs/heads/{requested_ref}", f"refs/tags/{requested_ref}"]
+        ref_args = [
+            requested_ref,
+            f"refs/heads/{requested_ref}",
+            f"refs/tags/{requested_ref}",
+        ]
     completed = subprocess.run(
         ["git", "ls-remote", url, *ref_args],
         capture_output=True,
@@ -311,7 +322,9 @@ def _source_git_truth_issues(
         )
     elif isinstance(repo, str) and isinstance(head, str):
         requested_ref_raw = source.get("requested_ref")
-        requested_ref = requested_ref_raw if isinstance(requested_ref_raw, str) else None
+        requested_ref = (
+            requested_ref_raw if isinstance(requested_ref_raw, str) else None
+        )
         if remote_reachable is None:
             remote_reachable, reachability_issues = _verify_remote_reachability(
                 repo, head, requested_ref, label
@@ -332,7 +345,9 @@ def _source_git_truth_issues(
     if status is None:
         issues.append(f"{label}: source.local_path git status could not be read")
     elif bool(status) != bool(source.get("dirty")):
-        issues.append(f"{label}: source.dirty does not match source.local_path git status")
+        issues.append(
+            f"{label}: source.dirty does not match source.local_path git status"
+        )
     elif status and source.get("dirty") is False:
         issues.append(f"{label}: source.local_path git worktree is dirty")
 
@@ -445,9 +460,9 @@ def check_agent(agent_dir: Path) -> dict:
                     f"{r.get('task_name', '?')}: config.json environment {config.get('environment')!r} does not match expected {_expected_label(expected_environment)}"
                 )
                 findings["ok"] = False
-            if expected_concurrency is not _MISSING and str(config.get("concurrency")) != str(
-                expected_concurrency
-            ):
+            if expected_concurrency is not _MISSING and str(
+                config.get("concurrency")
+            ) != str(expected_concurrency):
                 findings["issues"].append(
                     f"{r.get('task_name', '?')}: config.json concurrency {config.get('concurrency')!r} does not match expected {_expected_label(expected_concurrency)}"
                 )
@@ -467,9 +482,7 @@ def check_agent(agent_dir: Path) -> dict:
             else:
                 idle_timeout_issue = None
             if idle_timeout_issue:
-                findings["issues"].append(
-                    idle_timeout_issue
-                )
+                findings["issues"].append(idle_timeout_issue)
                 findings["ok"] = False
             config_source_issues = source_issues(
                 config.get("source"),
@@ -552,7 +565,10 @@ def check_agent(agent_dir: Path) -> dict:
                             f"summary.json agent {summary_agent!r} does not match result.json agent {result.get('agent')!r}"
                         )
                         findings["ok"] = False
-            if expected_model is not _MISSING and summary.get("model") != expected_model:
+            if (
+                expected_model is not _MISSING
+                and summary.get("model") != expected_model
+            ):
                 findings["issues"].append(
                     f"summary.json model {summary.get('model')!r} does not match expected {_expected_label(expected_model)}"
                 )
@@ -565,9 +581,9 @@ def check_agent(agent_dir: Path) -> dict:
                     f"summary.json environment {summary.get('environment')!r} does not match expected {_expected_label(expected_environment)}"
                 )
                 findings["ok"] = False
-            if expected_concurrency is not _MISSING and str(summary.get("concurrency")) != str(
-                expected_concurrency
-            ):
+            if expected_concurrency is not _MISSING and str(
+                summary.get("concurrency")
+            ) != str(expected_concurrency):
                 findings["issues"].append(
                     f"summary.json concurrency {summary.get('concurrency')!r} does not match expected {_expected_label(expected_concurrency)}"
                 )
@@ -587,9 +603,7 @@ def check_agent(agent_dir: Path) -> dict:
             else:
                 idle_timeout_issue = None
             if idle_timeout_issue:
-                findings["issues"].append(
-                    idle_timeout_issue
-                )
+                findings["issues"].append(idle_timeout_issue)
                 findings["ok"] = False
             summary_source = summary.get("source")
             for result_file, r in latest_result_entries:
@@ -720,9 +734,7 @@ def _identity_expectation_issues(
     required = ("model", "environment", "concurrency")
     for agent_dir in agent_dirs:
         missing = [
-            field
-            for field in required
-            if not _has_expected(agent_dir.name, field)
+            field for field in required if not _has_expected(agent_dir.name, field)
         ]
         if missing:
             label = (

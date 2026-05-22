@@ -44,6 +44,7 @@ from typing import Any
 import yaml
 
 from benchflow._types import Role, Scene, Turn
+from benchflow._utils.config import normalize_agent_idle_timeout
 from benchflow.rollout import RolloutConfig
 
 logger = logging.getLogger(__name__)
@@ -116,8 +117,8 @@ def rollout_config_from_dict(
         rollout_name=raw.get("rollout_name"),
         jobs_dir=raw.get("jobs_dir", "jobs"),
         concurrency=raw.get("concurrency", 1),
-        agent_idle_timeout=raw.get(
-            "agent_idle_timeout_sec", raw.get("agent_idle_timeout", 600)
+        agent_idle_timeout=normalize_agent_idle_timeout(
+            raw.get("agent_idle_timeout_sec", raw.get("agent_idle_timeout", 600))
         ),
         context_root=raw.get("context_root"),
         agent=raw.get("agent", "claude-agent-acp"),

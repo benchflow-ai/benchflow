@@ -500,7 +500,11 @@ def _build_rollout_result(
                 "finished_at": str(result.finished_at),
                 "timing": timing,
                 "scenes": _scene_metadata(scenes or []),
-                **({"source": source_provenance} if source_provenance is not None else {}),
+                **(
+                    {"source": source_provenance}
+                    if source_provenance is not None
+                    else {}
+                ),
             },
             indent=2,
         )
@@ -771,9 +775,7 @@ class RolloutConfig:
 
         self.agent = normalize_agent_name(self.agent)
         self.sandbox_user = normalize_sandbox_user(self.sandbox_user)
-        self.agent_idle_timeout = normalize_agent_idle_timeout(
-            self.agent_idle_timeout
-        )
+        self.agent_idle_timeout = normalize_agent_idle_timeout(self.agent_idle_timeout)
         for scene in self.scenes:
             for role in scene.roles:
                 role.agent = normalize_agent_name(role.agent)
@@ -1725,7 +1727,9 @@ class Rollout:
                 if multi_role:
                     if current_role is None:
                         raise RuntimeError("No active role after scene turn execution")
-                    for recipient, content in await self._read_scene_outbox(current_role):
+                    for recipient, content in await self._read_scene_outbox(
+                        current_role
+                    ):
                         turn_counter += 1
                         inbox.setdefault(recipient, []).append(
                             f"**From {current_role}:** {content}"

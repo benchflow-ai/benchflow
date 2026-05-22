@@ -105,8 +105,9 @@ def source_matches_parent(
             return False
         parent_local_path = Path(parent_local).resolve(strict=False)
         result_local_path = Path(result_local).resolve(strict=False)
-        if result_local_path != parent_local_path and not result_local_path.is_relative_to(
-            parent_local_path
+        if (
+            result_local_path != parent_local_path
+            and not result_local_path.is_relative_to(parent_local_path)
         ):
             return False
     return True

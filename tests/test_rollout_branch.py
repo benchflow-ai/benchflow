@@ -40,7 +40,9 @@ class FakeEnvironment:
 
 
 def _rollout(tmp_path: Path) -> Rollout:
-    return Rollout(RolloutConfig(task_path=tmp_path / "task", scenes=[Scene.single(agent="dummy")]))
+    return Rollout(
+        RolloutConfig(task_path=tmp_path / "task", scenes=[Scene.single(agent="dummy")])
+    )
 
 
 _STATEFUL_MANIFEST = EnvironmentManifest.model_validate_toml(

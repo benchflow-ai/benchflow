@@ -141,8 +141,7 @@ class LearnerStore:
         """
         if generation not in self.history:
             raise ValueError(
-                f"unknown generation {generation} — "
-                f"known: {sorted(self.history)}"
+                f"unknown generation {generation} — known: {sorted(self.history)}"
             )
         if generation > self._generation:
             raise ValueError(
@@ -159,9 +158,7 @@ class LearnerStore:
         Generation 0 (the empty store) is excluded — it had no rollout and so
         no metric. The result is the learning curve the Job plots.
         """
-        return [
-            self.history[n].metric for n in sorted(self.history) if n != 0
-        ]
+        return [self.history[n].metric for n in sorted(self.history) if n != 0]
 
     def _best_metric(self) -> float | None:
         """The highest metric across committed generations, or None if none."""

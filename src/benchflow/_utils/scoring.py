@@ -16,9 +16,8 @@ VERIFIER_FAILED = "verifier_failure"
 VERIFIER_INFRA = "verifier_infra"
 VERIFIER_TIMEOUT = "verifier_timeout"
 
-ResultOutcome = Literal[
-    "passed", "failed", "errored", "verifier_errored", "unscored"
-]
+ScoreOutcome = Literal["passed", "failed", "errored", "verifier_errored"]
+ResultOutcome = Literal["passed", "failed", "errored", "verifier_errored", "unscored"]
 
 
 def extract_reward(result: Mapping[str, Any]) -> float | None:
@@ -27,38 +26,6 @@ def extract_reward(result: Mapping[str, Any]) -> float | None:
     if not isinstance(rewards, dict):
         return None
     return rewards.get("reward")
-
-
-def classify_result_outcome(result: Mapping[str, Any]) -> ResultOutcome:
-    """Classify a result into exactly one reporting bucket.
-
-    Verifier failures are infrastructure failures even if another field also
-    exists. Otherwise a verifier-produced reward is authoritative when present.
-    """
-    if result.get("verifier_error"):
-        return "verifier_errored"
-    reward = extract_reward(result)
-    if reward == 1.0:
-        return "passed"
-    if reward is not None:
-        return "failed"
-    if result.get("error"):
-        return "errored"
-    return "unscored"
-
-
-def count_result_outcomes(results: Iterable[Mapping[str, Any]]) -> dict[str, int]:
-    """Count result outcome buckets using ``classify_result_outcome``."""
-    counts = {
-        "passed": 0,
-        "failed": 0,
-        "errored": 0,
-        "verifier_errored": 0,
-        "unscored": 0,
-    }
-    for result in results:
-        counts[classify_result_outcome(result)] += 1
-    return counts
 
 
 def classify_error(error: str | None) -> str | None:
@@ -131,8 +98,8 @@ def classify_result(
     reward: float | None,
     error: str | None,
     verifier_error: str | None,
-) -> str:
-    """Classify a single result into exactly one terminal bucket.
+) -> ScoreOutcome:
+    """Classify a single result into exactly one score bucket.
 
     Returns one of ``"passed"``, ``"failed"``, ``"errored"``,
     ``"verifier_errored"``. The buckets are disjoint and exhaustive, so
@@ -162,18 +129,81 @@ def classify_result(
     return "errored"
 
 
-def classify_result_dict(result: dict) -> str:
-    """Classify a result dict (as persisted to ``result.json``) into a bucket.
+def classify_score_outcome(result: Mapping[str, Any]) -> ScoreOutcome:
+    """Classify a persisted result for score/invariant accounting.
 
-    Thin wrapper over :func:`classify_result` for the dict-shaped results
-    used by ``Evaluation.run()``. See :func:`classify_result` for the
-    bucket precedence rules.
+    This is the canonical terminal score view. It keeps the four score
+    buckets disjoint and gives an explicit reward or agent error precedence
+    over verifier evidence so ``EvaluationResult`` cannot double-count tasks.
     """
     return classify_result(
         reward=extract_reward(result),
         error=result.get("error"),
         verifier_error=result.get("verifier_error"),
     )
+
+
+def classify_result_dict(result: Mapping[str, Any]) -> ScoreOutcome:
+    """Backward-compatible alias for score/invariant accounting."""
+    return classify_score_outcome(result)
+
+
+def classify_audit_outcome(result: Mapping[str, Any]) -> ResultOutcome:
+    """Classify a result for audit/reporting evidence.
+
+    Audit summaries intentionally surface verifier evidence first. A task with
+    ``verifier_error`` is counted as ``verifier_errored`` even if an agent
+    error or stale reward is also present, because result auditors need the
+    verifier failure to be visible instead of hidden behind the score bucket.
+    """
+    if result.get("verifier_error"):
+        return "verifier_errored"
+    reward = extract_reward(result)
+    if reward == 1.0:
+        return "passed"
+    if reward is not None:
+        return "failed"
+    if result.get("error"):
+        return "errored"
+    return "unscored"
+
+
+def classify_result_outcome(result: Mapping[str, Any]) -> ResultOutcome:
+    """Backward-compatible alias for audit/reporting outcome accounting."""
+    return classify_audit_outcome(result)
+
+
+def _empty_counts(*, include_unscored: bool) -> dict[str, int]:
+    counts = {
+        "passed": 0,
+        "failed": 0,
+        "errored": 0,
+        "verifier_errored": 0,
+    }
+    if include_unscored:
+        counts["unscored"] = 0
+    return counts
+
+
+def count_score_outcomes(results: Iterable[Mapping[str, Any]]) -> dict[str, int]:
+    """Count score buckets with reward/agent-error precedence."""
+    counts = _empty_counts(include_unscored=False)
+    for result in results:
+        counts[classify_score_outcome(result)] += 1
+    return counts
+
+
+def count_audit_outcomes(results: Iterable[Mapping[str, Any]]) -> dict[str, int]:
+    """Count audit buckets with verifier-evidence precedence."""
+    counts = _empty_counts(include_unscored=True)
+    for result in results:
+        counts[classify_audit_outcome(result)] += 1
+    return counts
+
+
+def count_result_outcomes(results: Iterable[Mapping[str, Any]]) -> dict[str, int]:
+    """Backward-compatible alias for audit/reporting outcome accounting."""
+    return count_audit_outcomes(results)
 
 
 def pass_rate(*, passed: int, total: int) -> float:

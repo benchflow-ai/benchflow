@@ -42,15 +42,26 @@ def test_collect_repo_status_counts_dirty_state(monkeypatch):
     }
 
 
-def test_repo_fingerprint_changes_when_dirty_file_content_changes(tmp_path: Path, monkeypatch):
+def test_repo_fingerprint_changes_when_dirty_file_content_changes(
+    tmp_path: Path, monkeypatch
+):
     """Guards the dashboard repo sync added after v0.5-integration@ffef85d."""
     subprocess.run(["git", "init"], cwd=tmp_path, check=True, stdout=subprocess.DEVNULL)
-    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "config", "user.name", "Test User"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Test User"], cwd=tmp_path, check=True
+    )
     tracked = tmp_path / "tracked.txt"
     tracked.write_text("one\n")
     subprocess.run(["git", "add", "tracked.txt"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "commit", "-m", "init"], cwd=tmp_path, check=True, stdout=subprocess.DEVNULL)
+    subprocess.run(
+        ["git", "commit", "-m", "init"],
+        cwd=tmp_path,
+        check=True,
+        stdout=subprocess.DEVNULL,
+    )
 
     monkeypatch.setattr(serve, "ROOT", tmp_path)
     clean = serve.repo_fingerprint()
@@ -130,7 +141,7 @@ def test_index_ticket_view_and_sync_contract():
         "safeLinearUrl",
         "linearLink",
         'target="_blank"',
-        'aria-pressed',
+        "aria-pressed",
         "SELECTED_TICKET_ID",
         "Architecture",
         "renderArchitecture",
@@ -139,7 +150,7 @@ def test_index_ticket_view_and_sync_contract():
         "file.modified_at",
         "file.path || node.path || file.name",
         "SYNC_ERROR",
-        "nav.innerHTML = \"\"",
+        'nav.innerHTML = ""',
         "setInterval(() => loadData(false), 5000)",
         "d.jobs && d.jobs.source && d.jobs.source.path",
         "d.jobs && d.jobs.source && d.jobs.source.configured",
@@ -196,7 +207,7 @@ def test_jobs_browser_tree_uses_artifact_workspace_width():
     assert "--tree-width: clamp(260px, 28%, 380px)" in body
     assert "var(--tree-width) 6px minmax(0, 1fr)" in body
     assert 'fileBrowser(roots, { treeLabel: "jobs/", resizable: true })' in html
-    assert "setProperty(\"--tree-width\"" in html
+    assert 'setProperty("--tree-width"' in html
 
 
 def test_collect_jobs_reports_latest_artifact_timestamp(tmp_path: Path, monkeypatch):
@@ -485,7 +496,9 @@ def test_task_row_artifacts_include_full_path_and_modified_date(tmp_path: Path):
     verifier = rollout / "verifier"
     verifier.mkdir(parents=True)
     result = rollout / "result.json"
-    result.write_text(json.dumps({"task_name": "task-a", "rewards": {"reward": 1.0}, "timing": {}}))
+    result.write_text(
+        json.dumps({"task_name": "task-a", "rewards": {"reward": 1.0}, "timing": {}})
+    )
     (rollout / "config.json").write_text(json.dumps({"agent": "codex"}))
     reward = verifier / "reward.txt"
     reward.write_text("1.0\n")
@@ -493,7 +506,9 @@ def test_task_row_artifacts_include_full_path_and_modified_date(tmp_path: Path):
     os.utime(reward, (stamp, stamp))
 
     row = generate._task_row(rollout)
-    artifact = next(item for item in row["artifacts"] if item["name"] == "verifier/reward.txt")
+    artifact = next(
+        item for item in row["artifacts"] if item["name"] == "verifier/reward.txt"
+    )
 
     assert artifact["path"] == str(reward)
     assert artifact["modified_at"] == "2026-05-22 01:30:00"
@@ -760,9 +775,7 @@ def test_collect_jobs_reads_configured_external_worktree_jobs(
     assert jobs["groups"][0]["name"] == "main"
 
 
-def test_collect_jobs_reads_configured_external_jobs_dir(
-    tmp_path: Path, monkeypatch
-):
+def test_collect_jobs_reads_configured_external_jobs_dir(tmp_path: Path, monkeypatch):
     """Guards restart commands that point directly at the producer jobs/ dir."""
     previous_jobs = tmp_path / "previous-worktree" / "jobs"
     rollout = previous_jobs / "2026-05-21__23-57-23" / "task__abc123"
@@ -811,9 +824,7 @@ def test_collect_jobs_transitions_from_empty_to_nonempty_external_root(
     assert after["groups"][0]["runs"][0]["tasks"][0]["name"] == "task"
 
 
-def test_collect_jobs_reuses_remembered_external_jobs_root(
-    tmp_path: Path, monkeypatch
-):
+def test_collect_jobs_reuses_remembered_external_jobs_root(tmp_path: Path, monkeypatch):
     """Guards dashboard restarts from losing git-ignored jobs when env is absent."""
     repo = tmp_path / "repo"
     dash = repo / "dashboard"
@@ -850,12 +861,16 @@ def test_repo_fingerprint_changes_when_configured_jobs_root_changes(
     repo = tmp_path / "repo"
     repo.mkdir()
     subprocess.run(["git", "init"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
-    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"], cwd=repo, check=True
+    )
     subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True)
     tracked = repo / "tracked.txt"
     tracked.write_text("one\n")
     subprocess.run(["git", "add", "tracked.txt"], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-m", "init"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
+    subprocess.run(
+        ["git", "commit", "-m", "init"], cwd=repo, check=True, stdout=subprocess.DEVNULL
+    )
 
     external = tmp_path / "previous-worktree" / "jobs" / "2026-05-21__23-57-23"
     external.mkdir(parents=True)
@@ -863,7 +878,9 @@ def test_repo_fingerprint_changes_when_configured_jobs_root_changes(
     artifact.write_text("{}\n")
 
     monkeypatch.setattr(serve, "ROOT", repo)
-    monkeypatch.setenv("BENCHFLOW_DASHBOARD_JOBS_ROOT", str(tmp_path / "previous-worktree"))
+    monkeypatch.setenv(
+        "BENCHFLOW_DASHBOARD_JOBS_ROOT", str(tmp_path / "previous-worktree")
+    )
 
     before = serve.repo_fingerprint()
     artifact.write_text("[]\n")
@@ -879,12 +896,16 @@ def test_repo_fingerprint_changes_when_configured_jobs_root_gets_first_artifact(
     repo = tmp_path / "repo"
     repo.mkdir()
     subprocess.run(["git", "init"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
-    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"], cwd=repo, check=True
+    )
     subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True)
     tracked = repo / "tracked.txt"
     tracked.write_text("one\n")
     subprocess.run(["git", "add", "tracked.txt"], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-m", "init"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
+    subprocess.run(
+        ["git", "commit", "-m", "init"], cwd=repo, check=True, stdout=subprocess.DEVNULL
+    )
 
     previous_worktree = tmp_path / "previous-worktree"
     (previous_worktree / "jobs").mkdir(parents=True)
@@ -909,12 +930,16 @@ def test_repo_fingerprint_tracks_remembered_external_jobs_root(
     (repo / "jobs").mkdir(parents=True)
     dash.mkdir(parents=True)
     subprocess.run(["git", "init"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
-    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"], cwd=repo, check=True
+    )
     subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True)
     tracked = repo / "tracked.txt"
     tracked.write_text("one\n")
     subprocess.run(["git", "add", "tracked.txt"], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-m", "init"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
+    subprocess.run(
+        ["git", "commit", "-m", "init"], cwd=repo, check=True, stdout=subprocess.DEVNULL
+    )
 
     previous_jobs = tmp_path / "previous-worktree" / "jobs"
     rollout = previous_jobs / "2026-05-21__23-57-23" / "task__abc123"

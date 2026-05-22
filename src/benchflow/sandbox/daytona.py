@@ -984,16 +984,10 @@ class DaytonaSandbox(BaseSandbox):
             else:
                 remaining = deadline - loop.time()
                 if remaining <= 0:
-                    raise RuntimeError(
-                        f"Command timed out after {timeout_sec} seconds"
-                    )
-                await asyncio.sleep(
-                    min(_DAYTONA_COMMAND_POLL_INTERVAL_SEC, remaining)
-                )
+                    raise RuntimeError(f"Command timed out after {timeout_sec} seconds")
+                await asyncio.sleep(min(_DAYTONA_COMMAND_POLL_INTERVAL_SEC, remaining))
                 if loop.time() >= deadline:
-                    raise RuntimeError(
-                        f"Command timed out after {timeout_sec} seconds"
-                    )
+                    raise RuntimeError(f"Command timed out after {timeout_sec} seconds")
             response = await self._get_session_command_with_retry(
                 session_id,
                 response.id,  # type: ignore[union-attr]

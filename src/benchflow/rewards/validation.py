@@ -33,10 +33,15 @@ def validate_reward_map(
             f"{source} returned rewards without numeric 'reward' between 0.0 and 1.0"
         )
 
-    parsed: RewardMap = {}
+    parsed: RewardMap = {"reward": reward}
     for key, value in rewards.items():
+        if key == "reward":
+            continue
         if key == "rubric":
             parsed[str(key)] = _validate_rubric(value, source=source)
+            continue
+        if isinstance(value, bool) or not isinstance(value, int | float):
+            parsed[str(key)] = value
             continue
         if not is_valid_reward_number(value):
             raise ValueError(

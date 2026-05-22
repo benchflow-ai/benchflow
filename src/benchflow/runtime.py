@@ -243,13 +243,16 @@ class RuntimeResult:
     def passed(self) -> bool:
         from benchflow._utils.scoring import classify_result_outcome
 
-        return classify_result_outcome(
-            {
-                "rewards": self.rewards,
-                "error": self.error,
-                "verifier_error": self.verifier_error,
-            }
-        ) == "passed"
+        return (
+            classify_result_outcome(
+                {
+                    "rewards": self.rewards,
+                    "error": self.error,
+                    "verifier_error": self.verifier_error,
+                }
+            )
+            == "passed"
+        )
 
     @property
     def verified(self) -> bool:

@@ -62,6 +62,18 @@ def _cache_dir() -> Path:
     return _repo_root() / ".cache" / "datasets"
 
 
+def _lock_is_stale(lock_path: Path) -> bool:
+    try:
+        pid = int(lock_path.read_text().strip())
+    except (OSError, ValueError):
+        return True
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return True
+    return False
+
+
 @contextmanager
 def _repo_cache_lock(org: str, repo: str):
     """Serialize mutation of the shared git checkout for one repo."""
@@ -73,8 +85,19 @@ def _repo_cache_lock(org: str, repo: str):
     while fd is None:
         try:
             fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            os.write(fd, str(os.getpid()).encode("ascii"))
+            try:
+                os.write(fd, str(os.getpid()).encode("ascii"))
+            except OSError:
+                os.close(fd)
+                fd = None
+                with suppress(FileNotFoundError):
+                    lock_path.unlink()
+                raise
         except FileExistsError as e:
+            if _lock_is_stale(lock_path):
+                with suppress(FileNotFoundError):
+                    lock_path.unlink()
+                continue
             if time.monotonic() >= deadline:
                 raise TimeoutError(
                     f"Timed out waiting for source cache lock {lock_path}"
@@ -143,6 +166,10 @@ def _clone_repo_unlocked(org: str, repo: str, ref: str | None = None) -> Path:
     cache = _cache_dir() / org / repo
     if cache.exists() and (cache / ".git").exists():
         if ref:
+            if _looks_like_commit_sha(ref):
+                head = _git_stdout(cache, "rev-parse", "HEAD")
+                if head == ref:
+                    return cache
             logger.info("Refreshing %s/%s at %s", org, repo, ref)
             _checkout_fetched_ref(cache, ref)
         return cache
@@ -314,7 +341,11 @@ def resolve_source_with_metadata(
             resolved_sha=resolved_sha,
         )
 
-    target = snapshot_root / canonical_source_path if canonical_source_path else snapshot_root
+    target = (
+        snapshot_root / canonical_source_path
+        if canonical_source_path
+        else snapshot_root
+    )
 
     return ResolvedSource(
         path=target,
@@ -436,7 +467,9 @@ def infer_task_source_provenance(task_path: Path) -> dict[str, Any] | None:
 
 
 def _is_hex(value: str) -> bool:
-    return len(value) in {40, 64} and all(ch in "0123456789abcdef" for ch in value.lower())
+    return len(value) in {40, 64} and all(
+        ch in "0123456789abcdef" for ch in value.lower()
+    )
 
 
 # ---------------------------------------------------------------------------

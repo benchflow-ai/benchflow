@@ -229,6 +229,7 @@ dev = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "ruff" },
+    { name = "toml" },
     { name = "ty" },
 ]
 judge = [
@@ -265,6 +266,7 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.7.0" },
     { name = "tenacity", marker = "extra == 'sandbox-daytona'", specifier = ">=8.0" },
     { name = "tenacity", marker = "extra == 'sandbox-modal'", specifier = ">=8.0" },
+    { name = "toml", marker = "extra == 'dev'", specifier = ">=0.10" },
     { name = "ty", marker = "extra == 'dev'", specifier = ">=0.0.1a1" },
     { name = "typer", specifier = ">=0.9" },
 ]

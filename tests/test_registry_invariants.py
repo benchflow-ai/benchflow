@@ -165,10 +165,10 @@ def test_js_agent_install_respects_explicit_npm_package_specs():
     """Guards v0.5-integration@27752fa against moving npm latest installs."""
     pinned_cmd = _js_agent_install("gemini", "@google/gemini-cli@0.42.0")
     dist_tag_cmd = _js_agent_install("test-agent", "some-agent@next")
-    scoped_default_cmd = _js_agent_install("codex-acp", "@agentclientprotocol/codex-acp")
-    scoped_dist_tag_cmd = _js_agent_install(
-        "pi", "@mariozechner/pi-coding-agent@next"
+    scoped_default_cmd = _js_agent_install(
+        "codex-acp", "@agentclientprotocol/codex-acp"
     )
+    scoped_dist_tag_cmd = _js_agent_install("pi", "@mariozechner/pi-coding-agent@next")
     default_cmd = _js_agent_install("test-agent", "some-agent")
 
     assert "@google/gemini-cli@0.42.0" in pinned_cmd
