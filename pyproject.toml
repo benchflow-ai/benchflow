@@ -15,6 +15,7 @@ dependencies = [
     "litellm[proxy]==1.88.0rc1",
     "tomli-w>=1.0",
     "typer>=0.9",
+    "a2a-sdk==0.3.20",
 ]
 authors = [
     { name = "Xiangyi Li", email = "xiangyi@benchflow.ai" },
@@ -162,4 +163,9 @@ exclude = [
     "src/benchflow/rewards/file_readers.py",
     "src/benchflow/rewards/rubric_config.py",
     "src/benchflow/experimental/mcp/reviewer_server.py",
+]
+
+[dependency-groups]
+dev = [
+    "a2a-sdk[http-server]==0.3.20",
 ]

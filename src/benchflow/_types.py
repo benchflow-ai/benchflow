@@ -20,6 +20,9 @@ Concretely:
   environment variables and skills, and wires up the ACP transport.
 * BenchFlow ensures sandbox networking allows inter-agent communication
   (all roles in a scene share a sandbox, so localhost is reachable).
+* AgentBeats A2A participants are an explicit role transport boundary, not an
+  ACP alias. A2A roles supply a participant endpoint and skip ACP process
+  installation/connection.
 * The ``capabilities`` field on :class:`Role` is a **declaration** — it
   tells downstream tooling / dashboards what the agent supports, but
   BenchFlow itself does not act on it.
@@ -34,6 +37,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
+
+RoleTransport = Literal["acp", "a2a"]
 
 
 @dataclass
@@ -56,6 +62,8 @@ class Role:
     idle_timeout_sec: int | None = None
     skills_dir: str | Path | None = None
     capabilities: list[str] | None = None  # e.g. ["tool-use", "agent-as-tool", "loop"]
+    transport: RoleTransport = "acp"
+    endpoint_url: str | None = None
 
 
 @dataclass

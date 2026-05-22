@@ -3,7 +3,40 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from benchflow.sandbox._base import ExecResult
 from benchflow.sandbox.docker import DockerSandbox
+
+
+def test_docker_logs_mount_fast_path_enabled_by_default(monkeypatch) -> None:
+    monkeypatch.delenv("BENCHFLOW_DOCKER_LOGS_HOST_MOUNTED", raising=False)
+    sandbox = DockerSandbox.__new__(DockerSandbox)
+
+    assert sandbox.is_mounted is True
+
+
+@pytest.mark.parametrize("value", ["0", "false", "False", "no", "off"])
+def test_docker_logs_mount_fast_path_can_be_disabled(monkeypatch, value: str) -> None:
+    monkeypatch.setenv("BENCHFLOW_DOCKER_LOGS_HOST_MOUNTED", value)
+    sandbox = DockerSandbox.__new__(DockerSandbox)
+
+    assert sandbox.is_mounted is False
+
+
+@pytest.mark.asyncio
+async def test_prebuilt_stop_does_not_remove_images() -> None:
+    sandbox = DockerSandbox.__new__(DockerSandbox)
+    sandbox._keep_containers = False
+    sandbox._use_prebuilt = True
+    sandbox._chown_to_host_user = AsyncMock()
+    sandbox._run_docker_compose_command = AsyncMock(
+        return_value=ExecResult(stdout="", stderr=None, return_code=0)
+    )
+
+    await sandbox.stop(delete=True)
+
+    sandbox._run_docker_compose_command.assert_awaited_once_with(
+        ["down", "--volumes", "--remove-orphans", "-t", "5"], timeout_sec=120
+    )
 
 
 @pytest.mark.asyncio
