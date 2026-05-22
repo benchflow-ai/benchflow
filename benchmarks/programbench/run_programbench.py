@@ -52,9 +52,10 @@ async def main():
     from benchflow.evaluation import Evaluation
 
     args = _parse_args()
-    tasks_dir = ensure_converted_tasks()
     job = Evaluation.from_yaml(args.config)
-    job._tasks_dir = tasks_dir  # type: ignore[attr-defined]
+    if job._config.source_provenance is None:
+        tasks_dir = ensure_converted_tasks()
+        job._tasks_dir = tasks_dir  # type: ignore[attr-defined]
     result = await job.run()
     print(f"\nScore: {result.passed}/{result.total} ({result.score:.1%})")
 

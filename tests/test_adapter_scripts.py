@@ -3,6 +3,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import yaml
+
 
 def test_harvey_lab_run_script_help_works():
     """Guards ENG-81: Harvey run script is invokable by path."""
@@ -32,6 +34,17 @@ def test_programbench_run_script_help_works():
 
     assert result.returncode == 0
     assert "Run ProgramBench via BenchFlow" in result.stdout
+
+
+def test_programbench_eval_yaml_uses_benchmarks_source():
+    """Guards Cycle C: ProgramBench smoke configs must record source provenance."""
+    repo = Path(__file__).resolve().parents[1]
+    config = yaml.safe_load(
+        (repo / "benchmarks/programbench/programbench-gemini-flash-lite.yaml").read_text()
+    )
+    source = config["source"]
+    assert source["repo"] == "benchflow-ai/benchmarks"
+    assert source["path"] == "datasets/programbench/tasks"
 
 
 def test_opaquetoolsbench_run_script_help_works():
