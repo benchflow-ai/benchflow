@@ -11,7 +11,9 @@ import asyncio
 import contextlib
 import logging
 import os
+import re
 import shlex
+import tempfile
 import uuid
 from abc import ABC, abstractmethod
 from typing import Any
@@ -20,6 +22,8 @@ logger = logging.getLogger(__name__)
 
 _BUFFER_LIMIT = 10 * 1024 * 1024  # 10MB readline buffer
 _DIAG_TRUNCATE = 2000  # max chars for diagnostic stderr in error messages
+_BOOTSTRAP_DONE = "__BENCHFLOW_BOOTSTRAP_DONE__"
+_ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 async def drain_oversized_line(reader: asyncio.StreamReader) -> int:
@@ -289,6 +293,53 @@ class DaytonaProcess(LiveProcess):
         self._is_dind = is_dind
         self._compose_cmd_prefix = compose_cmd_prefix
         self._compose_cmd_base = compose_cmd_base
+        self._ssh_config_path: str | None = None
+        self._ssh_config_cleanup_task: asyncio.Task[None] | None = None
+
+    @staticmethod
+    def _write_ssh_config(ssh_user: str) -> str:
+        fd, path = tempfile.mkstemp(prefix="benchflow_daytona_ssh_", text=True)
+        try:
+            with os.fdopen(fd, "w") as f:
+                f.write("Host benchflow-daytona\n")
+                f.write("  HostName ssh.app.daytona.io\n")
+                f.write(f"  User {ssh_user}\n")
+                f.write("  StrictHostKeyChecking no\n")
+                f.write("  UserKnownHostsFile /dev/null\n")
+                f.write("  LogLevel ERROR\n")
+            os.chmod(path, 0o600)
+        except Exception:
+            with contextlib.suppress(Exception):
+                os.close(fd)
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(path)
+            raise
+        return path
+
+    @staticmethod
+    def _ssh_args(ssh_config_path: str, remote_cmd: str) -> list[str]:
+        return [
+            "ssh",
+            "-F",
+            ssh_config_path,
+            "benchflow-daytona",
+            remote_cmd,
+        ]
+
+    def _unlink_ssh_config(self, path: str) -> None:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(path)
+        if self._ssh_config_path == path:
+            self._ssh_config_path = None
+
+    async def _cleanup_ssh_config_after_exit(
+        self,
+        process: asyncio.subprocess.Process,
+        path: str,
+    ) -> None:
+        with contextlib.suppress(Exception):
+            await process.wait()
+        self._unlink_ssh_config(path)
 
     @classmethod
     async def from_sandbox_env(cls, env: Any) -> "DaytonaProcess":
@@ -321,15 +372,87 @@ class DaytonaProcess(LiveProcess):
             compose_cmd_base=compose_cmd_base,
         )
 
+    @staticmethod
+    def _bootstrap_env_command(
+        *,
+        remote_env_path: str,
+        env_keys: list[str],
+        shell_exports: bool,
+    ) -> str:
+        remote_env_path_q = shlex.quote(remote_env_path)
+        keys = " ".join(shlex.quote(key) for key in env_keys)
+        if shell_exports:
+            write_value = (
+                "  printf 'export %s=' \"$key\" >> \"$env_file\"\n"
+                "  quote_env_value \"$(printenv \"$key\")\" >> \"$env_file\"\n"
+                "  printf '\\n' >> \"$env_file\"\n"
+            )
+        else:
+            write_value = (
+                "  printf '%s=%s\\n' \"$key\" \"$(printenv \"$key\")\" "
+                '>> "$env_file"\n'
+            )
+        script = (
+            f"env_file={remote_env_path_q}\n"
+            "success=0\n"
+            "umask 077\n"
+            'trap \'[ "$success" = 1 ] || rm -f "$env_file"\' EXIT\n'
+            ': > "$env_file"\n'
+            "quote_env_value() {\n"
+            "  printf \"'\"\n"
+            "  printf '%s' \"$1\" | sed \"s/'/'\\\\\\\\''/g\"\n"
+            "  printf \"'\"\n"
+            "}\n"
+            f"for key in {keys}; do\n"
+            f"{write_value}"
+            "done\n"
+            "success=1\n"
+            f"echo {_BOOTSTRAP_DONE}\n"
+        )
+        return f"sh -c {shlex.quote(script)}"
+
+    async def _cleanup_remote_env_file(self, remote_env_path: str) -> None:
+        with contextlib.suppress(Exception):
+            await self._sandbox.process.exec(
+                f"rm -f {shlex.quote(remote_env_path)}",
+                timeout=10,
+            )
+
+    async def _bootstrap_env_file(
+        self,
+        *,
+        remote_env_path: str,
+        env: dict[str, str],
+        shell_exports: bool,
+    ) -> None:
+        env_keys = list(env)
+        invalid = [key for key in env_keys if not _ENV_KEY_RE.match(key)]
+        if invalid:
+            raise ValueError(
+                "Invalid environment variable name(s): "
+                + ", ".join(sorted(invalid))
+            )
+        command = self._bootstrap_env_command(
+            remote_env_path=remote_env_path,
+            env_keys=env_keys,
+            shell_exports=shell_exports,
+        )
+        response = await self._sandbox.process.exec(command, env=env, timeout=30)
+        stdout_text = str(getattr(response, "result", "") or "")
+        exit_code = getattr(response, "exit_code", 1)
+        if exit_code != 0 or _BOOTSTRAP_DONE not in stdout_text.splitlines():
+            raise RuntimeError(
+                "Failed to bootstrap Daytona agent env "
+                f"(rc={exit_code}): {stdout_text[:_DIAG_TRUNCATE]}"
+            )
+
     async def start(
         self,
         command: str,
         env: dict[str, str] | None = None,
         cwd: str | None = None,
     ) -> None:
-        # Get SSH credentials
-        ssh_access = await self._sandbox.create_ssh_access()
-        ssh_target = f"{ssh_access.token}@ssh.app.daytona.io"
+        remote_env_path = None
 
         if self._is_dind:
             # Build the docker compose exec command to run inside the DinD VM.
@@ -346,13 +469,16 @@ class DaytonaProcess(LiveProcess):
             # Use a Python-generated unique suffix instead of a shell `$$`
             # expansion: shlex.join() (below) single-quotes the --env-file arg,
             # so `$$` would survive as a literal in the docker compose call
-            # while the cat > ... heredoc would expand it — the file would be
-            # written to one path and read from another. uuid.uuid4 sidesteps
-            # the entire shell-expansion-vs-quoting problem.
-            remote_env_path = None
+            # while the SDK bootstrap shell would expand it — the file would
+            # be written to one path and read from another. uuid.uuid4
+            # sidesteps the entire shell-expansion-vs-quoting problem.
             if env:
                 remote_env_path = f"/tmp/benchflow_env_{uuid.uuid4().hex[:16]}.env"
-                env_lines = "\n".join(f"{k}={v}" for k, v in env.items())
+                await self._bootstrap_env_file(
+                    remote_env_path=remote_env_path,
+                    env=env,
+                    shell_exports=False,
+                )
                 inner_parts.extend(["--env-file", remote_env_path])
             inner_parts.extend(["main", "bash", "-c", command])
             inner_cmd = shlex.join(inner_parts)
@@ -363,63 +489,72 @@ class DaytonaProcess(LiveProcess):
                 remote_cmd = inner_cmd
 
             if remote_env_path:
-                # Write env file, set trap for cleanup, then run the command
-                write_cmd = (
-                    f"umask 077 && cat > {remote_env_path} <<'__BENCHFLOW_ENV__'\n"
-                    f"{env_lines}\n__BENCHFLOW_ENV__"
-                )
                 remote_cmd = (
-                    f"{write_cmd}\ntrap 'rm -f {remote_env_path}' EXIT\n{remote_cmd}"
+                    f"trap 'rm -f {shlex.quote(remote_env_path)}' EXIT; {remote_cmd}"
                 )
         else:
             # Direct sandbox — run command via SSH.
             # Write env vars to a file on the remote host and source it,
             # instead of passing as `env K=V` args visible in ps aux.
             env_prefix = ""
-            remote_env_path = None
             if env:
                 # Python-generated unique suffix; see DinD branch above for why
                 # $$ shell expansion is fragile across quoting boundaries.
                 remote_env_path = f"/tmp/benchflow_env_{uuid.uuid4().hex[:16]}.env"
-                env_lines = "\n".join(
-                    f"export {k}={shlex.quote(v)}" for k, v in env.items()
+                await self._bootstrap_env_file(
+                    remote_env_path=remote_env_path,
+                    env=env,
+                    shell_exports=True,
                 )
-                env_prefix = f". {remote_env_path} && "
+                remote_env_path_q = shlex.quote(remote_env_path)
+                env_prefix = f". {remote_env_path_q} && rm -f {remote_env_path_q} && "
             if cwd:
                 remote_cmd = f"cd {shlex.quote(cwd)} && {env_prefix}{command}"
             else:
                 remote_cmd = f"{env_prefix}{command}"
-
             if remote_env_path:
-                write_cmd = (
-                    f"umask 077 && cat > {remote_env_path} <<'__BENCHFLOW_ENV__'\n"
-                    f"{env_lines}\n__BENCHFLOW_ENV__"
-                )
                 remote_cmd = (
-                    f"{write_cmd}\ntrap 'rm -f {remote_env_path}' EXIT\n{remote_cmd}"
+                    f"trap 'rm -f {shlex.quote(remote_env_path)}' EXIT; {remote_cmd}"
                 )
 
-        cmd = [
-            "ssh",
-            "-o",
-            "StrictHostKeyChecking=no",
-            "-o",
-            "UserKnownHostsFile=/dev/null",
-            "-o",
-            "LogLevel=ERROR",
-            ssh_target,
-            remote_cmd,
-        ]
+        try:
+            ssh_access = await self._sandbox.create_ssh_access()
+            ssh_config_path = self._write_ssh_config(ssh_access.token)
+            self._ssh_config_path = ssh_config_path
+            cmd = self._ssh_args(ssh_config_path, remote_cmd)
 
-        logger.debug(f"DaytonaProcess: ssh {ssh_target} {remote_cmd[:100]}...")
-        self._process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            limit=_BUFFER_LIMIT,
+            logger.debug(
+                "DaytonaProcess: ssh benchflow-daytona %s...",
+                remote_cmd[:100],
+            )
+            self._process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                limit=_BUFFER_LIMIT,
+            )
+        except Exception:
+            if remote_env_path:
+                await self._cleanup_remote_env_file(remote_env_path)
+            await self.close()
+            raise
+        self._ssh_config_cleanup_task = asyncio.create_task(
+            self._cleanup_ssh_config_after_exit(self._process, ssh_config_path)
         )
         logger.info(f"Daytona process started (pid={self._process.pid})")
+
+    async def close(self) -> None:
+        try:
+            await super().close()
+        finally:
+            if self._ssh_config_cleanup_task:
+                self._ssh_config_cleanup_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self._ssh_config_cleanup_task
+                self._ssh_config_cleanup_task = None
+            if self._ssh_config_path:
+                self._unlink_ssh_config(self._ssh_config_path)
 
 
 class DaytonaPtyProcess(LiveProcess):
