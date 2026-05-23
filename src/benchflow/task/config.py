@@ -325,17 +325,18 @@ class TaskConfig(BaseModel):
         return None if expected is None else list(expected)
 
     def model_dump_toml(self) -> str:
-        import toml as _toml  # optional dep — only needed for TOML serialisation
+        import tomli_w  # optional dep — only needed for TOML serialisation
 
         public = self.model_dump(
             mode="json",
             by_alias=True,
             exclude={"verifier": {"memory": {"expected_skills"}}},
+            exclude_none=True,
         )
         memory = (public.get("verifier") or {}).get("memory") or {}
         if isinstance(memory, dict) and not memory:
             public["verifier"].pop("memory", None)
-        return _toml.dumps(public)
+        return tomli_w.dumps(public)
 
     @property
     def environment(self) -> SandboxConfig:
