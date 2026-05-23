@@ -46,7 +46,7 @@ def _skill_dir_names(root: Path) -> set[str]:
 async def test_sdk_self_gen_runs_creator_then_solver_in_one_trial_with_isolated_contexts(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Guards PR #233: self-gen is one BYOS-style trial with two scenes."""
+    """Guards PR #233: self-gen uses two scenes and scene-local skill activation."""
     task = _make_task(tmp_path)
     skill_creator_root = _make_skill_creator_root(tmp_path)
     original_skills = tmp_path / "original-skills"
@@ -120,7 +120,10 @@ async def test_sdk_self_gen_runs_creator_then_solver_in_one_trial_with_isolated_
     assert trial_cfg.skills_dir is None
     assert trial_cfg.prompts is None
     assert trial_cfg.self_gen_no_internet is True
-    assert trial_cfg.export_generated_skills_to is None
+    export_target = Path(trial_cfg.export_generated_skills_to)
+    assert export_target.parent.parent == tmp_path / "jobs" / "_self_gen"
+    assert export_target.parent.name.startswith("task-")
+    assert export_target.name == "generated-skills"
     assert len(trial_cfg.pre_agent_hooks or []) == 1
 
     env_commands = []
@@ -137,6 +140,9 @@ async def test_sdk_self_gen_runs_creator_then_solver_in_one_trial_with_isolated_
             {"timeout_sec": 10},
         )
     ]
+    assert all("/root/generated-skills" not in cmd for cmd, _ in env_commands)
+    assert all("/root/skills" not in cmd for cmd, _ in env_commands)
+    assert all("/app/workspace/generated-skills" not in cmd for cmd, _ in env_commands)
 
     assert [scene.name for scene in trial_cfg.scenes] == [
         "self-gen-creator",
@@ -156,6 +162,64 @@ async def test_sdk_self_gen_runs_creator_then_solver_in_one_trial_with_isolated_
     assert solver_scene.name == "self-gen-solver"
     assert solver_scene.skills_dir == "/app/generated-skills"
     assert solver_scene.turns[0].prompt is None
+
+
+@pytest.mark.asyncio
+async def test_sdk_self_gen_cleanup_exports_generated_skills_to_sidecar(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Guards PR #346: self-gen solver skills are durably exported for audit."""
+    task = _make_task(tmp_path)
+    skill_creator_root = _make_skill_creator_root(tmp_path)
+    seen_configs = []
+    solver_result = RunResult(task_name="task", rewards={"reward": 1.0})
+
+    class FakeTrial:
+        def __init__(self, config):
+            self._config = config
+
+        @classmethod
+        async def create(cls, config):
+            seen_configs.append(config)
+            return cls(config)
+
+        async def run(self):
+            return solver_result
+
+    monkeypatch.setattr("benchflow.self_gen.Rollout", FakeTrial)
+
+    await SDK().run(
+        task_path=task,
+        agent="opencode",
+        model="google/gemini-3.1-pro-preview",
+        jobs_dir=tmp_path / "jobs",
+        environment="daytona",
+        skill_mode="self-gen",
+        skill_creator_dir=skill_creator_root,
+    )
+
+    trial_cfg = seen_configs[0]
+    export_target = Path(trial_cfg.export_generated_skills_to)
+    downloads = []
+
+    class FakeEnv:
+        async def download_dir(self, source_dir, target_dir):
+            target = Path(target_dir)
+            downloads.append((source_dir, target))
+            skill = target / "solver-made"
+            skill.mkdir(parents=True)
+            (skill / "SKILL.md").write_text("# Solver Made\n")
+
+    rollout = Rollout.__new__(Rollout)
+    rollout._config = trial_cfg
+    rollout._env = FakeEnv()
+
+    await Rollout._export_generated_skills(rollout)
+
+    assert downloads == [(trial_cfg.generated_skills_root, export_target)]
+    assert export_target.parent.parent == tmp_path / "jobs" / "_self_gen"
+    assert (export_target / "solver-made" / "SKILL.md").read_text() == "# Solver Made\n"
+    assert rollout._evolved_skills == {"solver-made": "# Solver Made\n"}
 
 
 @pytest.mark.asyncio
@@ -210,6 +274,7 @@ async def test_job_self_gen_uses_strict_orchestration(
         "self-gen-creator",
         "self-gen-solver",
     ]
+    assert seen_configs[0].scenes[1].skills_dir == "/app/generated-skills"
 
 
 @pytest.mark.asyncio

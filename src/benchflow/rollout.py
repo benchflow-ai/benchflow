@@ -670,11 +670,11 @@ async def _verify_rollout(
     from benchflow.task import Verifier
 
     rollout_paths.verifier_dir.mkdir(parents=True, exist_ok=True)
-    await harden_before_verify(env, task, sandbox_user, workspace=workspace)
-    logger.info("Running verifier...")
     t0 = datetime.now()
     verifier_error = None
     try:
+        await harden_before_verify(env, task, sandbox_user, workspace=workspace)
+        logger.info("Running verifier...")
         verifier = Verifier(task=task, rollout_paths=rollout_paths, sandbox=env)
         verifier_result = await asyncio.wait_for(
             verifier.verify(),
@@ -1406,8 +1406,9 @@ class Rollout:
         verify() still does full hardening.
         """
         from benchflow.sandbox.lockdown import (
-            _build_cleanup_cmd,
-            _read_hardening_config,
+            cleanup_verifier_python_hooks,
+            clear_verifier_output_dir,
+            ensure_legacy_app_dir,
         )
         from benchflow.task import Verifier
 
@@ -1415,17 +1416,33 @@ class Rollout:
         # Clean verifier output dir — chmod 777 so non-root verifier processes can write.
         # Keep /app present for task/verifier paths that still use the legacy
         # rootdir fallback; tasks that populate /app are unaffected.
-        await self._env.exec(
-            "rm -rf /logs/verifier && mkdir -p /logs/verifier /app && "
-            "chmod 777 /logs/verifier",
-            user="root",
-            timeout_sec=10,
-        )
-        # Purge agent-injected conftest/sitecustomize/.pth without
-        # killing processes or restoring workspace.
-        # Honor per-task [verifier.hardening] opt-outs from task.toml.
-        hardening = _read_hardening_config(getattr(self._task, "task_dir", None))
-        await self._env.exec(_build_cleanup_cmd(hardening), user="root", timeout_sec=10)
+        try:
+            await clear_verifier_output_dir(
+                self._env,
+                "Soft verifier setup failed: clearing verifier output directory",
+                user="root",
+                timeout_sec=10,
+            )
+            await ensure_legacy_app_dir(
+                self._env,
+                "Soft verifier setup failed: preparing /app",
+                user="root",
+                timeout_sec=10,
+            )
+            # Purge agent-injected conftest/sitecustomize/.pth without
+            # killing processes or restoring workspace.
+            # Honor per-task [verifier.hardening] opt-outs from task.toml.
+            await cleanup_verifier_python_hooks(
+                self._env,
+                getattr(self._task, "task_dir", None),
+                "Soft verifier setup failed: purging Python injection hooks",
+                user="root",
+                timeout_sec=10,
+            )
+        except Exception as e:
+            verifier_error = f"soft verifier crashed: {e}"
+            logger.error(verifier_error)
+            return None, None, verifier_error
 
         rewards = None
         verifier_output = None
@@ -1454,11 +1471,10 @@ class Rollout:
                 f"soft verifier timed out after "
                 f"{self._task.config.verifier.timeout_sec}s"
             )
-            logger.warning(verifier_error)
+            logger.error(verifier_error)
         except Exception as e:
             verifier_error = f"soft verifier crashed: {e}"
-            logger.warning(verifier_error)
-
+            logger.error(verifier_error)
         return rewards, verifier_output, verifier_error
 
     # ── Phase 5: CLEANUP ──
@@ -1634,14 +1650,19 @@ class Rollout:
         if self._env is None:
             raise RuntimeError("Environment is not started")
 
-        source = str(scene.skills_dir)
+        source_value = scene.skills_dir
+        source = str(source_value)
         local_source = Path(source).expanduser()
-        if local_source.is_dir():
+        if isinstance(source_value, os.PathLike) and local_source.is_dir():
             remote_source = f"/skills/{_safe_skill_name(scene.name)}"
             await _ensure_sandbox_dir(self._env, Path(remote_source).parent)
             await self._env.upload_dir(local_source, remote_source)
         elif source.startswith("/"):
             remote_source = source
+        elif local_source.is_dir():
+            remote_source = f"/skills/{_safe_skill_name(scene.name)}"
+            await _ensure_sandbox_dir(self._env, Path(remote_source).parent)
+            await self._env.upload_dir(local_source, remote_source)
         else:
             raise FileNotFoundError(f"Scene skills_dir not found: {scene.skills_dir}")
 

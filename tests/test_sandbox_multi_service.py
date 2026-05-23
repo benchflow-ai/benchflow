@@ -14,6 +14,11 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from benchflow.sandbox._base import ExecResult
+from benchflow.sandbox._compose import (
+    compose_cp_destination,
+    compose_mkdir_p_command,
+    compose_parent_mkdir_p_command,
+)
 from benchflow.sandbox.docker import DockerSandbox
 from benchflow.sandbox.process import DockerProcess
 
@@ -236,6 +241,205 @@ class TestSingleContainerFileTransferRejection:
         strategy = _DaytonaDirect.__new__(_DaytonaDirect)
         with pytest.raises(ValueError, match="single-container"):
             await strategy.upload_dir("/host/tests", "/tests", service="target")
+
+
+class TestDaytonaDirectFileTransfer:
+    """Direct Daytona uploads should match single-container path prep semantics."""
+
+    @pytest.mark.asyncio
+    async def test_upload_dir_creates_target_before_sdk_upload(self) -> None:
+        """Guards the follow-up to f7d382b against direct Daytona images with no /app."""
+        pytest.importorskip("daytona")  # sandbox-daytona optional dependency
+        from benchflow.sandbox.daytona import _DaytonaDirect
+
+        strategy = _DaytonaDirect.__new__(_DaytonaDirect)
+        strategy._env = MagicMock()
+        events: list[tuple[object, ...]] = []
+
+        async def fake_exec(
+            command,
+            cwd=None,
+            env=None,
+            timeout_sec=None,
+            user=None,
+        ):
+            del cwd, env
+            events.append(("exec", command, user, timeout_sec))
+            return ExecResult(stdout="", stderr="", return_code=0)
+
+        async def fake_upload(source_dir, target_dir):
+            events.append(("upload", source_dir, target_dir))
+
+        strategy._env._sandbox_exec = fake_exec
+        strategy._env._sdk_upload_dir = fake_upload
+
+        await strategy.upload_dir("/host/skills", "/app dir/skills")
+
+        assert events == [
+            ("exec", "mkdir -p '/app dir/skills'", "root", 30),
+            ("upload", "/host/skills", "/app dir/skills"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_upload_dir_reports_destination_prep_failure(self) -> None:
+        """Guards the follow-up to f7d382b against hidden direct Daytona mkdir failures."""
+        pytest.importorskip("daytona")  # sandbox-daytona optional dependency
+        from benchflow.sandbox.daytona import _DaytonaDirect
+
+        strategy = _DaytonaDirect.__new__(_DaytonaDirect)
+        strategy._env = MagicMock()
+
+        async def fake_exec(
+            command,
+            cwd=None,
+            env=None,
+            timeout_sec=None,
+            user=None,
+        ):
+            del command, cwd, env, timeout_sec, user
+            return ExecResult(
+                stdout="mkdir stdout",
+                stderr="mkdir denied",
+                return_code=13,
+            )
+
+        strategy._env._sandbox_exec = fake_exec
+        strategy._env._sdk_upload_dir = AsyncMock()
+
+        with pytest.raises(RuntimeError) as exc_info:
+            await strategy.upload_dir("/host/skills", "/app/skills")
+
+        message = str(exc_info.value)
+        assert "destination prep failed" in message
+        assert "mkdir stdout" in message
+        assert "mkdir denied" in message
+        strategy._env._sdk_upload_dir.assert_not_awaited()
+
+
+class TestDaytonaDinDServiceFileTransfer:
+    """Daytona DinD uploads must prepare compose-container destinations."""
+
+    def test_compose_upload_helpers_do_not_require_daytona_sdk(self) -> None:
+        """Guards Daytona path preparation in dev envs without sandbox-daytona."""
+        assert compose_mkdir_p_command("/app/skills") == "mkdir -p /app/skills"
+        assert (
+            compose_mkdir_p_command("/app with spaces/skills")
+            == "mkdir -p '/app with spaces/skills'"
+        )
+        assert (
+            compose_parent_mkdir_p_command("/app with spaces/instruction.md")
+            == "mkdir -p '/app with spaces'"
+        )
+        assert compose_parent_mkdir_p_command("instruction.md") is None
+        assert compose_cp_destination("target", "/app/skills") == "target:/app/skills"
+
+    def _make_strategy(self):
+        pytest.importorskip("daytona")  # sandbox-daytona optional dependency
+        from benchflow.sandbox.daytona import _DaytonaDinD
+
+        strategy = _DaytonaDinD.__new__(_DaytonaDinD)
+        strategy._env = MagicMock()
+        strategy._env._sdk_upload_dir = AsyncMock()
+        strategy._env._sdk_upload_file = AsyncMock()
+        strategy._vm_exec = AsyncMock(
+            return_value=ExecResult(stdout="", stderr="", return_code=0)
+        )
+        return strategy
+
+    @pytest.mark.asyncio
+    async def test_dind_upload_dir_creates_target_before_compose_cp(self) -> None:
+        """Guards full SkillsBench Daytona tasks whose images have no /app."""
+        strategy = self._make_strategy()
+        captured: list[list[str]] = []
+
+        async def fake_compose_exec(subcommand, timeout_sec=None):
+            captured.append(subcommand)
+            return ExecResult(stdout="", stderr="", return_code=0)
+
+        strategy._compose_exec = fake_compose_exec  # type: ignore[method-assign]
+        await strategy.upload_dir("/host/skills", "/app/skills")
+
+        assert captured[0][-3:] == ["sh", "-c", "mkdir -p /app/skills"]
+        assert "-u" in captured[0]
+        assert captured[0][captured[0].index("-u") + 1] == "root"
+        assert captured[1][0] == "cp"
+        assert captured[1][1].endswith("/.")
+        assert captured[1][2] == "main:/app/skills"
+
+    @pytest.mark.asyncio
+    async def test_dind_upload_file_creates_parent_before_compose_cp(self) -> None:
+        """Guards file uploads into images whose Dockerfile uses WORKDIR /root."""
+        strategy = self._make_strategy()
+        captured: list[list[str]] = []
+
+        async def fake_compose_exec(subcommand, timeout_sec=None):
+            captured.append(subcommand)
+            return ExecResult(stdout="", stderr="", return_code=0)
+
+        strategy._compose_exec = fake_compose_exec  # type: ignore[method-assign]
+        await strategy.upload_file("/host/instruction.md", "/app dir/instruction.md")
+
+        assert captured[0][-3:] == ["sh", "-c", "mkdir -p '/app dir'"]
+        assert captured[1][0] == "cp"
+        assert captured[1][2] == "main:/app dir/instruction.md"
+
+    @pytest.mark.asyncio
+    async def test_dind_upload_file_reports_destination_prep_failure(self) -> None:
+        """Destination prep failures should not be hidden by a later compose cp."""
+        strategy = self._make_strategy()
+        captured: list[list[str]] = []
+
+        async def fake_compose_exec(subcommand, timeout_sec=None):
+            del timeout_sec
+            captured.append(subcommand)
+            return ExecResult(stdout="", stderr="mkdir denied", return_code=13)
+
+        strategy._compose_exec = fake_compose_exec  # type: ignore[method-assign]
+
+        with pytest.raises(RuntimeError, match="destination prep failed"):
+            await strategy.upload_file("/host/instruction.md", "/app/instruction.md")
+
+        assert len(captured) == 1
+        assert captured[0][-3:] == ["sh", "-c", "mkdir -p /app"]
+
+    @pytest.mark.asyncio
+    async def test_dind_upload_dir_creates_named_service_target(self) -> None:
+        """Guards Daytona DinD uploads into non-main compose services."""
+        strategy = self._make_strategy()
+        captured: list[list[str]] = []
+
+        async def fake_compose_exec(subcommand, timeout_sec=None):
+            captured.append(subcommand)
+            return ExecResult(stdout="", stderr="", return_code=0)
+
+        strategy._compose_exec = fake_compose_exec  # type: ignore[method-assign]
+        await strategy.upload_dir("/host/skills", "/target app/skills", service="target")
+
+        assert captured[0][-4:] == ["target", "sh", "-c", "mkdir -p '/target app/skills'"]
+        assert "-u" in captured[0]
+        assert captured[0][captured[0].index("-u") + 1] == "root"
+        assert captured[1][0] == "cp"
+        assert captured[1][1].endswith("/.")
+        assert captured[1][2] == "target:/target app/skills"
+
+    @pytest.mark.asyncio
+    async def test_dind_upload_dir_reports_destination_prep_failure(self) -> None:
+        """Directory upload prep failures should mention mkdir stderr directly."""
+        strategy = self._make_strategy()
+        captured: list[list[str]] = []
+
+        async def fake_compose_exec(subcommand, timeout_sec=None):
+            del timeout_sec
+            captured.append(subcommand)
+            return ExecResult(stdout="", stderr="read-only target", return_code=30)
+
+        strategy._compose_exec = fake_compose_exec  # type: ignore[method-assign]
+
+        with pytest.raises(RuntimeError, match="read-only target"):
+            await strategy.upload_dir("/host/skills", "/app/skills", service="target")
+
+        assert len(captured) == 1
+        assert captured[0][-3:] == ["sh", "-c", "mkdir -p /app/skills"]
 
 
 class TestDockerProcessServiceSelection:
