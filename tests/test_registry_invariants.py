@@ -43,12 +43,9 @@ VALID_ACP_MODEL_FORMATS = {
     "registered-provider/model",
 }
 JS_ACP_AGENTS = {
-    "claude-agent-acp",
-    "pi-acp",
-    "openclaw",
-    "codex-acp",
-    "gemini",
-    "opencode",
+    name
+    for name, cfg in AGENTS.items()
+    if cfg.protocol == "acp" and "npm install" in cfg.install_cmd
 }
 
 
@@ -159,6 +156,14 @@ def test_js_acp_agents_use_isolated_node_runtime(name):
         assert fragment not in install_cmd, (
             f"{name!r} JS agent install must not mutate task Node/npm via {fragment!r}"
         )
+
+
+@pytest.mark.parametrize("name", sorted(JS_ACP_AGENTS))
+def test_js_acp_agent_install_is_posix_sh_compatible(name):
+    """Guards the full SkillsBench Daytona run against dash rejecting pipefail."""
+    install_cmd = AGENTS[name].install_cmd
+
+    assert "set -o pipefail" not in install_cmd
 
 
 def test_js_agent_install_respects_explicit_npm_package_specs():

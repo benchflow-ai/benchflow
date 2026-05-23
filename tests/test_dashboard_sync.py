@@ -81,11 +81,17 @@ def test_repo_fingerprint_changes_when_dirty_file_content_changes(
     assert untracked_once != untracked_twice
 
 
-def test_syncing_handler_returns_503_on_failed_refresh(monkeypatch):
-    """Guards the dashboard repo sync added after v0.5-integration@ffef85d."""
+def test_syncing_handler_serves_cached_data_on_failed_refresh(
+    tmp_path: Path, monkeypatch
+):
+    """Guards v0.5-integration dashboard polling against transient refresh failures."""
     handler = object.__new__(serve.SyncingDashboardHandler)
     sent: list[tuple[int, str | None]] = []
     handler.send_error = lambda code, message=None: sent.append((code, message))  # type: ignore[method-assign]
+    dash = tmp_path / "dashboard"
+    dash.mkdir()
+    (dash / "data.json").write_text("{}")
+    monkeypatch.setattr(serve, "DASH", dash)
 
     class FailedResult:
         returncode = 1
@@ -111,14 +117,16 @@ def test_syncing_handler_returns_503_on_failed_refresh(monkeypatch):
         lambda _cmd, check=False: runs.append(_cmd) or FailedResult(),
     )
 
-    assert handler._sync_data_json() is False
-    assert handler._sync_data_json() is False
-    assert sent == [
-        (503, "data.json refresh failed; refusing to serve stale dashboard data"),
-        (503, "data.json refresh failed; retrying after cooldown"),
-    ]
+    assert handler._sync_data_json() is True
+    assert handler._sync_data_json() is True
+    assert sent == []
     assert len(runs) == 1
     assert len(fingerprints) == 2
+    cached = json.loads((dash / "data.json").read_text())
+    assert cached["sync_error"] == (
+        "data.json refresh failed; serving last successful data.json"
+    )
+    assert cached["sync_failed_at"]
 
 
 def test_index_ticket_view_and_sync_contract():
@@ -138,6 +146,8 @@ def test_index_ticket_view_and_sync_contract():
         ".vleft",
         ".sync-banner",
         "Dashboard data is not refreshing.",
+        "dataSyncError",
+        "sync_error",
         "safeLinearUrl",
         "linearLink",
         'target="_blank"',
@@ -248,6 +258,206 @@ def test_collect_jobs_reports_latest_artifact_timestamp(tmp_path: Path, monkeypa
     assert run["tasks"][0]["latest_modified_at"] == "2026-05-21 17:28:03"
 
 
+def test_collect_jobs_keeps_nested_three_mode_runs_visible(
+    tmp_path: Path, monkeypatch
+):
+    """Guards current branch commit f7d382b against the real 3-mode job shape."""
+    jobs = tmp_path / "jobs"
+    parent_name = (
+        "20260523-003051-skillsbench-3modes-gemini31-flash-lite-"
+        "daytona-release-subset"
+    )
+    timestamp = "2026-05-23__00-31-36"
+    parent = jobs / "e2e" / parent_name
+    (parent / "configs").mkdir(parents=True)
+    (parent / "configs" / "baseline.toml").write_text("mode = 'baseline'\n")
+    for helper_name in ("configs", "_self_gen", "notes", ".scratch", "__pycache__"):
+        helper_dir = parent / helper_name
+        helper_dir.mkdir(parents=True, exist_ok=True)
+        (helper_dir / "summary.json").write_text(json.dumps({"concurrency": 64}))
+        task_name = f"skill-eval-{helper_name.replace('_', '-')}"
+        task_dir = helper_dir / timestamp / f"{task_name}__abc123"
+        task_dir.mkdir(parents=True)
+        (task_dir / "result.json").write_text(
+            json.dumps(
+                {
+                    "task_name": task_name,
+                    "agent": "codex",
+                    "rewards": {"reward": 1.0},
+                    "timing": {},
+                }
+            )
+        )
+        (task_dir / "config.json").write_text(json.dumps({"agent": "codex"}))
+    modes = ("baseline", "with-task-skills", "self-gen")
+    for mode in modes:
+        mode_dir = parent / mode
+        mode_dir.mkdir(parents=True)
+        (mode_dir / "summary.json").write_text(json.dumps({"concurrency": 32}))
+        run = mode_dir / timestamp
+        task_dir = run / f"skill-eval-{mode}__abc123"
+        task_dir.mkdir(parents=True)
+        (task_dir / "result.json").write_text(
+            json.dumps(
+                {
+                    "task_name": f"skill-eval-{mode}",
+                    "agent": "codex",
+                    "rewards": {"reward": 1.0},
+                    "timing": {},
+                }
+            )
+        )
+        (task_dir / "config.json").write_text(json.dumps({"agent": "codex"}))
+
+    monkeypatch.setenv(generate.JOBS_ROOT_ENV, str(jobs))
+
+    data = generate.collect_jobs()
+
+    assert data["archived_runs"] == 0
+    assert data["archived_tasks"] == 0
+    assert data["total_tasks"] == 3
+    assert data["total_runs"] == 3
+    group = data["groups"][0]
+    assert group["name"] == "e2e"
+    runs = {run["id"]: run for run in group["runs"]}
+    assert set(runs) == {
+        f"{parent_name}/baseline/{timestamp}",
+        f"{parent_name}/with-task-skills/{timestamp}",
+        f"{parent_name}/self-gen/{timestamp}",
+    }
+    for run in runs.values():
+        assert "SkillsBench" in run["targets"]
+        assert "high-concurrency" in run["signals"]
+        assert len(run["tasks"]) == 1
+
+
+def test_collect_jobs_keeps_parent_summary_timestamp_runs_visible(
+    tmp_path: Path, monkeypatch
+):
+    """Guards current branch commit f7d382b against archiving all-task runs."""
+    jobs = tmp_path / "jobs"
+    parent_name = "20260522-165420-skillsbench-all-gemini31-flash-lite-daytona-c64"
+    timestamp = "2026-05-22__16-54-22"
+    parent = jobs / "e2e" / parent_name
+    parent.mkdir(parents=True)
+    (parent / "summary.json").write_text(
+        json.dumps(
+            {
+                "total": 94,
+                "score": "8.5%",
+                "concurrency": 64,
+                "source": {"repo": "benchflow-ai/skillsbench", "path": "tasks"},
+            }
+        )
+    )
+    task_dir = parent / timestamp / "jax-computing-basics__abc123"
+    task_dir.mkdir(parents=True)
+    (task_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "jax-computing-basics",
+                "agent": "gemini",
+                "model": "gemini-3.1-flash-lite-preview",
+                "environment": "daytona",
+                "rewards": {"reward": 0.0},
+                "timing": {},
+            }
+        )
+    )
+    (task_dir / "config.json").write_text(json.dumps({"agent": "gemini"}))
+
+    monkeypatch.setenv(generate.JOBS_ROOT_ENV, str(jobs))
+
+    data = generate.collect_jobs()
+
+    assert data["archived_runs"] == 0
+    assert data["total_tasks"] == 1
+    run = data["groups"][0]["runs"][0]
+    assert run["id"] == f"{parent_name}/{timestamp}"
+    assert run["summary"]["total"] == 94
+    assert run["summary"]["score"] == "8.5%"
+    assert "SkillsBench" in run["targets"]
+    assert "high-concurrency" in run["signals"]
+
+
+def test_collect_jobs_keeps_parent_summary_mode_timestamp_runs_visible(
+    tmp_path: Path, monkeypatch
+):
+    """Guards current branch commit f7d382b against archiving mixed summary runs."""
+    jobs = tmp_path / "jobs"
+    parent_name = "20260523-004433-skillsbench-mixed-gemini31-flash-lite"
+    timestamp = "2026-05-23__00-44-33"
+    parent = jobs / "e2e" / parent_name
+    parent.mkdir(parents=True)
+    source = {"repo": "benchflow-ai/skillsbench", "path": "tasks"}
+    (parent / "summary.json").write_text(
+        json.dumps({"total": 3, "concurrency": 64, "source": source})
+    )
+    mode = parent / "self-gen"
+    mode.mkdir()
+    (mode / "summary.json").write_text(
+        json.dumps({"total": 1, "concurrency": 9, "source": source})
+    )
+    task_dir = mode / timestamp / "jax-computing-basics__abc123"
+    task_dir.mkdir(parents=True)
+    (task_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "jax-computing-basics",
+                "agent": "codex",
+                "rewards": {"reward": 1.0},
+                "timing": {},
+            }
+        )
+    )
+    (task_dir / "config.json").write_text(json.dumps({"agent": "codex"}))
+
+    monkeypatch.setenv(generate.JOBS_ROOT_ENV, str(jobs))
+
+    data = generate.collect_jobs()
+
+    assert data["archived_runs"] == 0
+    assert data["total_tasks"] == 1
+    run = data["groups"][0]["runs"][0]
+    assert run["id"] == f"{parent_name}/self-gen/{timestamp}"
+    assert run["summary"]["total"] == 1
+    assert run["summary"]["concurrency"] == 9
+    assert "SkillsBench" in run["targets"]
+
+
+def test_collect_jobs_does_not_leak_group_summary_into_many_direct_runs(
+    tmp_path: Path, monkeypatch
+):
+    """Guards current branch commit f7d382b against broad summary fallback."""
+    jobs = tmp_path / "jobs"
+    group = jobs / "custom"
+    group.mkdir(parents=True)
+    (group / "summary.json").write_text(json.dumps({"concurrency": 64}))
+    for name in ("2026-05-22__01-00-00", "2026-05-22__02-00-00"):
+        task_dir = group / name / f"task-{name[-8:-6]}__abc123"
+        task_dir.mkdir(parents=True)
+        (task_dir / "result.json").write_text(
+            json.dumps(
+                {
+                    "task_name": "task",
+                    "agent": "oracle",
+                    "rewards": {"reward": 1.0},
+                    "timing": {},
+                }
+            )
+        )
+        (task_dir / "config.json").write_text(json.dumps({"agent": "oracle"}))
+
+    monkeypatch.setenv(generate.JOBS_ROOT_ENV, str(jobs))
+
+    data = generate.collect_jobs()
+
+    assert data["groups"] == []
+    assert data["total_tasks"] == 0
+    assert data["archived_runs"] == 2
+    assert data["archived_tasks"] == 2
+
+
 def test_collect_jobs_archives_generic_timestamp_rollouts(tmp_path: Path, monkeypatch):
     """Guards codex/v05-integration-followup@5f05423 dashboard cleanup."""
     jobs = tmp_path / "jobs"
@@ -309,7 +519,12 @@ def test_collect_jobs_archives_acp_smoke_without_target_evidence(
 def test_collect_jobs_archives_empty_task_dirs_and_target_named_placeholders(
     tmp_path: Path, monkeypatch
 ):
-    """Guards codex/v05-integration-followup@5f05423 placeholder cleanup."""
+    """Guards codex/v05-integration-followup@5f05423 placeholder cleanup.
+
+    Updated after PR #346 stopped emitting phantom empty RunRecords for
+    unrecognized group children (e.g. smoke-test/programbench-daytona with
+    no timestamp dirs or task rollouts).
+    """
     jobs = tmp_path / "jobs"
     (jobs / "2026-05-22__03-45-00" / "task__empty").mkdir(parents=True)
     (jobs / "smoke-test" / "programbench-daytona").mkdir(parents=True)
@@ -323,7 +538,7 @@ def test_collect_jobs_archives_empty_task_dirs_and_target_named_placeholders(
 
     assert data["groups"] == []
     assert data["total_tasks"] == 0
-    assert data["archived_runs"] == 3
+    assert data["archived_runs"] == 2
     assert data["archived_tasks"] == 1
 
 
@@ -682,6 +897,7 @@ const document = {
 
 const data = {
   generated_at: "2026-05-22 00:00:00",
+  sync_error: "refresh failed; serving cached data",
   summary: {
     tests: { passed: 1, failed: 0, skipped: 0, total: 1 },
     jobs_total: 1,
@@ -712,6 +928,7 @@ const context = {
   document,
   location: { hash: "#Jobs" },
   window: { scrollTo() {} },
+  scrollTo() {},
   MouseEvent: class { constructor(type) { this.type = type; } },
   setTimeout: fn => fn(),
   setInterval() {},
@@ -730,7 +947,7 @@ if (!main.textContent.includes("Could not load data.json")) {
   throw new Error("initial failure did not render the load error");
 }
 await context.loadData(false);
-if (!main.textContent.includes("1 tasks in 1 groups")) {
+if (!main.textContent.includes("1 rollout row in 1 groups")) {
   throw new Error("late successful poll did not render Jobs counts: " + main.textContent);
 }
 if (!nav.textContent.includes("jobs/main/")) {
@@ -738,6 +955,12 @@ if (!nav.textContent.includes("jobs/main/")) {
 }
 if (!main.textContent.includes("Memory 50%")) {
   throw new Error("Jobs task meta did not render memory score: " + main.textContent);
+}
+if (!main.textContent.includes("Dashboard data is not refreshing") || !main.textContent.includes("refresh failed; serving cached data")) {
+  throw new Error("cached-data sync error banner did not render: " + main.textContent);
+}
+if (!gen.textContent.includes("sync failed: refresh failed; serving cached data")) {
+  throw new Error("cached-data sync error did not render in generated header: " + gen.textContent);
 }
 """
 
@@ -900,10 +1123,55 @@ def test_task_row_falls_back_to_memory_reward_event(tmp_path: Path):
 
 
 def test_index_renders_canonical_task_outcome():
-    """Guards dashboard status rendering against local reclassification drift."""
-    html = Path("dashboard/index.html").read_text()
-    assert "function taskOutcomeBadge(outcome)" in html
-    assert "const status = taskOutcomeBadge(tk.outcome)" in html
+    """Guards v0.5-integration@f7d382b against dashboard status reclassification drift."""
+    if not shutil.which("node"):
+        pytest.skip("node is required for the dashboard DOM outcome contract")
+
+    code = r"""
+import fs from "node:fs";
+import vm from "node:vm";
+const html = fs.readFileSync("dashboard/index.html", "utf8");
+let script = html.match(/<script>([\s\S]*)<\/script>/)[1];
+script = script.replace(/loadData\(true\);\s*setInterval\(\(\) => loadData\(false\), 5000\);/, "");
+
+const document = {
+  createElement: () => ({ className: "", style: {}, dataset: {} }),
+  querySelectorAll: () => [],
+  getElementById: () => ({ innerHTML: "", appendChild() {} }),
+};
+
+const context = {
+  console,
+  document,
+  location: { hash: "" },
+  window: { scrollTo() {} },
+  scrollTo() {},
+  setTimeout: fn => fn(),
+  setInterval() {},
+  fetch() { throw new Error("fetch should not run in this badge test"); },
+};
+context.window = context;
+
+vm.createContext(context);
+vm.runInContext(script, context);
+
+const failed = context.taskOutcomeBadge("failed");
+if (failed.text !== "failed" || !/\berror\b/.test(failed.cls) || /\bok\b/.test(failed.cls) || /\bgood\b/.test(failed.cls)) {
+  throw new Error("failed badge was not rendered as non-green error: " + JSON.stringify(failed));
+}
+const passed = context.taskOutcomeBadge("passed");
+if (passed.text !== "ok" || !/\bok\b/.test(passed.cls)) {
+  throw new Error("passed outcome badge was not rendered as ok: " + JSON.stringify(passed));
+}
+"""
+
+    subprocess.run(
+        ["node", "--input-type=module", "-e", code],
+        cwd=generate.ROOT,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
 
 
 def test_index_jobs_empty_state_uses_total_tasks():
@@ -1125,6 +1393,149 @@ def test_collect_jobs_transitions_from_empty_to_nonempty_external_root(
     assert after["groups"][0]["runs"][0]["tasks"][0]["name"] == "external-evidence"
 
 
+def _write_collectable_rollout(jobs_root: Path) -> Path:
+    rollout = jobs_root / "2026-05-21__23-57-23" / "task__abc123"
+    rollout.mkdir(parents=True)
+    (rollout / "result.json").write_text(
+        json.dumps(
+            {"task_name": "external-evidence", "rewards": {"reward": 1.0}, "timing": {}}
+        )
+    )
+    (rollout / "config.json").write_text(json.dumps({"agent": "codex"}))
+    return rollout
+
+
+def test_dashboard_jobs_root_ignores_stale_remembered_deep_result_json(
+    tmp_path: Path, monkeypatch
+):
+    """Guards v0.5-integration@ffef85d against stale deep artifact roots."""
+    repo = tmp_path / "repo"
+    dash = repo / "dashboard"
+    local_jobs = repo / "jobs"
+    local_jobs.mkdir(parents=True)
+    dash.mkdir(parents=True)
+    previous_jobs = tmp_path / "previous-worktree" / "jobs"
+    deep_artifact = (
+        previous_jobs / "archive" / "scratch" / "nested" / "not-a-task" / "result.json"
+    )
+    deep_artifact.parent.mkdir(parents=True)
+    deep_artifact.write_text("{}\n")
+    out = dash / "data.json"
+    out.write_text(json.dumps({"jobs": {"source": {"path": str(previous_jobs)}}}))
+
+    monkeypatch.delenv("BENCHFLOW_DASHBOARD_JOBS_ROOT", raising=False)
+    monkeypatch.setattr(generate, "ROOT", repo)
+    monkeypatch.setattr(generate, "DASH", dash)
+    monkeypatch.setattr(generate, "OUT", out)
+    monkeypatch.setattr(serve, "ROOT", repo)
+    monkeypatch.setattr(serve, "DASH", dash)
+
+    assert generate.dashboard_jobs_root() == local_jobs.resolve()
+    assert serve._dashboard_jobs_root() == local_jobs.resolve()
+
+
+def test_dashboard_jobs_root_accepts_valid_remembered_jobs_root(
+    tmp_path: Path, monkeypatch
+):
+    """Guards v0.5-integration@ffef85d remembered jobs-root restarts."""
+    repo = tmp_path / "repo"
+    dash = repo / "dashboard"
+    (repo / "jobs").mkdir(parents=True)
+    dash.mkdir(parents=True)
+    previous_jobs = tmp_path / "previous-worktree" / "jobs"
+    _write_collectable_rollout(previous_jobs)
+    out = dash / "data.json"
+    out.write_text(json.dumps({"jobs": {"source": {"path": str(previous_jobs)}}}))
+
+    monkeypatch.delenv("BENCHFLOW_DASHBOARD_JOBS_ROOT", raising=False)
+    monkeypatch.setattr(generate, "ROOT", repo)
+    monkeypatch.setattr(generate, "DASH", dash)
+    monkeypatch.setattr(generate, "OUT", out)
+    monkeypatch.setattr(serve, "ROOT", repo)
+    monkeypatch.setattr(serve, "DASH", dash)
+
+    assert generate.dashboard_jobs_root() == previous_jobs.resolve()
+    assert serve._dashboard_jobs_root() == previous_jobs.resolve()
+
+
+def test_dashboard_jobs_root_accepts_parent_summary_timestamp_jobs_root(
+    tmp_path: Path, monkeypatch
+):
+    """Guards v0.5-integration@f7d382b remembered all-task run roots."""
+    repo = tmp_path / "repo"
+    dash = repo / "dashboard"
+    (repo / "jobs").mkdir(parents=True)
+    dash.mkdir(parents=True)
+    previous_jobs = tmp_path / "previous-worktree" / "jobs"
+    parent = previous_jobs / "e2e" / "skillsbench-all"
+    parent.mkdir(parents=True)
+    (parent / "summary.json").write_text(json.dumps({"concurrency": 64}))
+    rollout = parent / "2026-05-22__16-54-22" / "task__abc123"
+    rollout.mkdir(parents=True)
+    (rollout / "result.json").write_text(
+        json.dumps({"task_name": "task", "rewards": {"reward": 1.0}, "timing": {}})
+    )
+    out = dash / "data.json"
+    out.write_text(json.dumps({"jobs": {"source": {"path": str(previous_jobs)}}}))
+
+    monkeypatch.delenv("BENCHFLOW_DASHBOARD_JOBS_ROOT", raising=False)
+    monkeypatch.setattr(generate, "ROOT", repo)
+    monkeypatch.setattr(generate, "DASH", dash)
+    monkeypatch.setattr(generate, "OUT", out)
+    monkeypatch.setattr(serve, "ROOT", repo)
+    monkeypatch.setattr(serve, "DASH", dash)
+
+    assert generate.dashboard_jobs_root() == previous_jobs.resolve()
+    assert serve._dashboard_jobs_root() == previous_jobs.resolve()
+
+
+def test_dashboard_jobs_root_accepts_parent_summary_with_mode_runs(
+    tmp_path: Path, monkeypatch
+):
+    """Guards current branch commit f7d382b against mixed nested run shapes."""
+    repo = tmp_path / "repo"
+    dash = repo / "dashboard"
+    (repo / "jobs").mkdir(parents=True)
+    dash.mkdir(parents=True)
+    previous_jobs = tmp_path / "previous-worktree" / "jobs"
+    parent = previous_jobs / "e2e" / "skillsbench-mixed"
+    parent.mkdir(parents=True)
+    (parent / "summary.json").write_text(json.dumps({"concurrency": 64}))
+    mode = parent / "self-gen"
+    mode.mkdir()
+    (mode / "summary.json").write_text(json.dumps({"concurrency": 9}))
+    rollout = mode / "2026-05-23__00-44-33" / "task__abc123"
+    rollout.mkdir(parents=True)
+    (rollout / "result.json").write_text(
+        json.dumps({"task_name": "task", "rewards": {"reward": 1.0}, "timing": {}})
+    )
+    out = dash / "data.json"
+    out.write_text(json.dumps({"jobs": {"source": {"path": str(previous_jobs)}}}))
+
+    monkeypatch.delenv("BENCHFLOW_DASHBOARD_JOBS_ROOT", raising=False)
+    monkeypatch.setattr(generate, "ROOT", repo)
+    monkeypatch.setattr(generate, "DASH", dash)
+    monkeypatch.setattr(generate, "OUT", out)
+    monkeypatch.setattr(serve, "ROOT", repo)
+    monkeypatch.setattr(serve, "DASH", dash)
+
+    assert generate.dashboard_jobs_root() == previous_jobs.resolve()
+    assert serve._dashboard_jobs_root() == previous_jobs.resolve()
+
+
+def test_dashboard_jobs_root_preserves_configured_empty_worktree_root(
+    tmp_path: Path, monkeypatch
+):
+    """Guards v0.5-integration@ffef85d explicit jobs-root configuration."""
+    previous_worktree = tmp_path / "previous-worktree"
+    (previous_worktree / "jobs").mkdir(parents=True)
+
+    monkeypatch.setenv("BENCHFLOW_DASHBOARD_JOBS_ROOT", str(previous_worktree))
+
+    assert generate.dashboard_jobs_root() == (previous_worktree / "jobs").resolve()
+    assert serve._dashboard_jobs_root() == (previous_worktree / "jobs").resolve()
+
+
 def test_collect_jobs_reuses_remembered_external_jobs_root(tmp_path: Path, monkeypatch):
     """Guards dashboard restarts from losing git-ignored jobs when env is absent."""
     repo = tmp_path / "repo"
@@ -1157,10 +1568,10 @@ def test_collect_jobs_reuses_remembered_external_jobs_root(tmp_path: Path, monke
     assert jobs["groups"][0]["name"] == "main"
 
 
-def test_repo_fingerprint_changes_when_configured_jobs_root_changes(
+def test_repo_fingerprint_does_not_walk_configured_jobs_root_contents(
     tmp_path: Path, monkeypatch
 ):
-    """Guards v0.5-integration@ffef85d auto-refresh for external jobs artifacts."""
+    """Guards dashboard polling against request-path scans of large jobs trees."""
     repo = tmp_path / "repo"
     repo.mkdir()
     subprocess.run(["git", "init"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
@@ -1189,76 +1600,91 @@ def test_repo_fingerprint_changes_when_configured_jobs_root_changes(
     artifact.write_text("[]\n")
     after = serve.repo_fingerprint()
 
-    assert before != after
+    assert before == after
 
 
-def test_repo_fingerprint_changes_when_configured_jobs_root_gets_first_artifact(
+def test_syncing_handler_refreshes_by_interval_when_fingerprint_is_stable(
     tmp_path: Path, monkeypatch
 ):
-    """Guards data.json refresh when an external jobs root goes 0 -> nonzero."""
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    subprocess.run(["git", "init"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
-    subprocess.run(
-        ["git", "config", "user.email", "test@example.com"], cwd=repo, check=True
-    )
-    subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True)
-    tracked = repo / "tracked.txt"
-    tracked.write_text("one\n")
-    subprocess.run(["git", "add", "tracked.txt"], cwd=repo, check=True)
-    subprocess.run(
-        ["git", "commit", "-m", "init"], cwd=repo, check=True, stdout=subprocess.DEVNULL
-    )
-
-    previous_worktree = tmp_path / "previous-worktree"
-    (previous_worktree / "jobs").mkdir(parents=True)
-    monkeypatch.setattr(serve, "ROOT", repo)
-    monkeypatch.setenv("BENCHFLOW_DASHBOARD_JOBS_ROOT", str(previous_worktree))
-
-    before = serve.repo_fingerprint()
-    rollout = previous_worktree / "jobs" / "2026-05-21__23-57-23" / "task__abc123"
-    rollout.mkdir(parents=True)
-    (rollout / "result.json").write_text("{}\n")
-    after = serve.repo_fingerprint()
-
-    assert before != after
-
-
-def test_repo_fingerprint_tracks_remembered_external_jobs_root(
-    tmp_path: Path, monkeypatch
-):
-    """Guards dashboard refresh after restart without the jobs-root env var."""
-    repo = tmp_path / "repo"
-    dash = repo / "dashboard"
-    (repo / "jobs").mkdir(parents=True)
-    dash.mkdir(parents=True)
-    subprocess.run(["git", "init"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
-    subprocess.run(
-        ["git", "config", "user.email", "test@example.com"], cwd=repo, check=True
-    )
-    subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True)
-    tracked = repo / "tracked.txt"
-    tracked.write_text("one\n")
-    subprocess.run(["git", "add", "tracked.txt"], cwd=repo, check=True)
-    subprocess.run(
-        ["git", "commit", "-m", "init"], cwd=repo, check=True, stdout=subprocess.DEVNULL
-    )
-
-    previous_jobs = tmp_path / "previous-worktree" / "jobs"
-    rollout = previous_jobs / "2026-05-21__23-57-23" / "task__abc123"
-    rollout.mkdir(parents=True)
-    artifact = rollout / "result.json"
-    artifact.write_text("{}\n")
-    (dash / "data.json").write_text(
-        json.dumps({"jobs": {"source": {"path": str(previous_jobs)}}})
-    )
-
-    monkeypatch.delenv("BENCHFLOW_DASHBOARD_JOBS_ROOT", raising=False)
-    monkeypatch.setattr(serve, "ROOT", repo)
+    """Guards live jobs refresh after removing jobs-tree hashing from polling."""
+    handler = object.__new__(serve.SyncingDashboardHandler)
+    sent: list[tuple[int, str | None]] = []
+    handler.send_error = lambda code, message=None: sent.append((code, message))  # type: ignore[method-assign]
+    dash = tmp_path / "dashboard"
+    dash.mkdir()
+    (dash / "data.json").write_text("{}")
     monkeypatch.setattr(serve, "DASH", dash)
 
-    before = serve.repo_fingerprint()
-    artifact.write_text("[]\n")
-    after = serve.repo_fingerprint()
+    class OkResult:
+        returncode = 0
 
-    assert before != after
+    serve.SyncingDashboardHandler.gen_cmd = ["generate"]
+    serve.SyncingDashboardHandler.last_repo_fingerprint = "same"
+    serve.SyncingDashboardHandler.last_refresh_at = time.monotonic() - 61
+    serve.SyncingDashboardHandler.refresh_interval = 60
+    serve.SyncingDashboardHandler.last_failed_refresh_at = None
+    serve.SyncingDashboardHandler.failed_refresh_error = None
+    serve.SyncingDashboardHandler.sync_lock = threading.Lock()
+
+    runs = []
+    monkeypatch.setattr(serve, "repo_fingerprint", lambda: "same")
+    monkeypatch.setattr(
+        serve.subprocess,
+        "run",
+        lambda _cmd, check=False: runs.append(_cmd) or OkResult(),
+    )
+
+    assert handler._sync_data_json() is True
+    assert runs == [["generate"]]
+    assert sent == []
+
+
+def test_dashboard_startup_serves_cached_data_when_initial_refresh_fails(
+    tmp_path: Path, monkeypatch
+):
+    """Guards local dashboard availability when startup generation is transiently down."""
+    dash = tmp_path / "dashboard"
+    dash.mkdir()
+    (dash / "data.json").write_text("{}")
+    monkeypatch.setattr(serve, "DASH", dash)
+    monkeypatch.setattr(serve, "ROOT", tmp_path)
+    monkeypatch.setattr(serve.sys, "argv", ["serve.py", "--port", "0"])
+    monkeypatch.setattr(serve, "repo_fingerprint", lambda: "cached")
+
+    class FailedResult:
+        returncode = 1
+
+    runs = []
+    monkeypatch.setattr(
+        serve.subprocess,
+        "run",
+        lambda _cmd, check=False: runs.append(_cmd) or FailedResult(),
+    )
+
+    class FakeServer:
+        allow_reuse_address = False
+        daemon_threads = False
+
+        def __init__(self, address, handler):
+            self.address = address
+            self.handler = handler
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def serve_forever(self):
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(serve.socketserver, "ThreadingTCPServer", FakeServer)
+    monkeypatch.setattr(serve.webbrowser, "open", lambda _url: None)
+
+    assert serve.main() == 0
+    assert len(runs) == 1
+    cached = json.loads((dash / "data.json").read_text())
+    assert cached["sync_error"] == (
+        "initial data.json refresh failed; serving last successful data.json"
+    )
+    assert cached["sync_failed_at"]

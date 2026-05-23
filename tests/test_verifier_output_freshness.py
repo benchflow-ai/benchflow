@@ -35,9 +35,10 @@ class _StatefulTargetSandbox:
 
     is_mounted = True
 
-    def __init__(self) -> None:
+    def __init__(self, *, fail_on_mountpoint_delete: bool = False) -> None:
         self.exec_calls: list[dict] = []
         self.remote_target_reward: str | None = "1.0"
+        self.fail_on_mountpoint_delete = fail_on_mountpoint_delete
 
     async def upload_dir(self, source_dir, target_dir, service: str = "main") -> None:
         del source_dir, target_dir, service
@@ -51,7 +52,13 @@ class _StatefulTargetSandbox:
 
     async def exec(self, command, service: str = "main", **kwargs) -> ExecResult:
         self.exec_calls.append({"command": command, "service": service, **kwargs})
-        if service == "target" and "rm -rf /logs/verifier" in command:
+        if self.fail_on_mountpoint_delete and "rm -rf /logs/verifier &&" in command:
+            return ExecResult(
+                stdout="",
+                stderr="rm: cannot remove '/logs/verifier': Device or resource busy",
+                return_code=1,
+            )
+        if service == "target" and "find /logs/verifier" in command:
             self.remote_target_reward = None
         return ExecResult(stdout="", stderr="", return_code=0)
 
@@ -64,17 +71,44 @@ async def test_mounted_target_verifier_clears_stale_remote_reward(
     task = _make_task(tmp_path)
     rollout_paths = RolloutPaths(tmp_path / "rollout")
     rollout_paths.mkdir()
-    sandbox = _StatefulTargetSandbox()
+    sandbox = _StatefulTargetSandbox(fail_on_mountpoint_delete=True)
 
     with pytest.raises(RewardFileNotFoundError):
         await Verifier(task, rollout_paths, sandbox).verify()
 
     commands = [call["command"] for call in sandbox.exec_calls]
     clear_index = next(
-        i for i, command in enumerate(commands) if "rm -rf /logs/verifier" in command
+        i for i, command in enumerate(commands) if "find /logs/verifier" in command
     )
     test_index = next(
         i for i, command in enumerate(commands) if "test-stdout.txt" in command
     )
     assert clear_index < test_index
     assert sandbox.exec_calls[clear_index]["service"] == "target"
+
+
+@pytest.mark.asyncio
+async def test_non_mounted_verifier_clears_contents_without_removing_mountpoint(
+    tmp_path: Path,
+) -> None:
+    """Guards v0.5-integration@2014952 from deleting Daytona DinD log mounts."""
+    task = _make_task(tmp_path)
+    task.config.verifier.service = "main"
+    rollout_paths = RolloutPaths(tmp_path / "rollout")
+    rollout_paths.mkdir()
+    sandbox = _StatefulTargetSandbox()
+    sandbox.is_mounted = False
+
+    with pytest.raises(RewardFileNotFoundError):
+        await Verifier(task, rollout_paths, sandbox).verify()
+
+    clear_command = next(
+        call["command"]
+        for call in sandbox.exec_calls
+        if "find /logs/verifier" in call["command"]
+    )
+    assert "rm -rf /logs/verifier &&" not in clear_command
+    assert "mkdir -p /logs/verifier" in clear_command
+    assert "find /logs/verifier -mindepth 1" in clear_command
+    assert "-exec rm -rf -- {} +" in clear_command
+    assert "mkdir -p /app" not in clear_command
