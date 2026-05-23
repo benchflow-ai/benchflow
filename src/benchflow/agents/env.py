@@ -91,6 +91,8 @@ def auto_inherit_env(
         "GOOGLE_CLOUD_LOCATION",
         "LLM_API_KEY",
         "LLM_BASE_URL",
+        "BENCHFLOW_PROVIDER_BASE_URL",
+        "BENCHFLOW_PROVIDER_API_KEY",
         "BENCHFLOW_PROVIDER_PROMPT_CACHE_RETENTION",
     }
     for cfg in PROVIDERS.values():
@@ -99,8 +101,13 @@ def auto_inherit_env(
         for env_var in cfg.url_params.values():
             keys.add(env_var)
     for key in keys:
-        if key in source:
-            agent_env.setdefault(key, source[key])
+        value = source.get(key)
+        # An exported-but-blank var ("export X=" or "export X=' '") is
+        # effectively unset; copying it can shadow a real value resolved
+        # downstream (e.g. a blank BENCHFLOW_PROVIDER_BASE_URL blocks
+        # provider URL resolution).
+        if value and value.strip():
+            agent_env.setdefault(key, value)
     # Mirror GEMINI_API_KEY as GOOGLE_API_KEY (some agents expect one or the other)
     if "GEMINI_API_KEY" in agent_env and "GOOGLE_API_KEY" not in agent_env:
         agent_env["GOOGLE_API_KEY"] = agent_env["GEMINI_API_KEY"]
