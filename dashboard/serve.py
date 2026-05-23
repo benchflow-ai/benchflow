@@ -21,6 +21,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import http.server
+import json
 import os
 import socketserver
 import subprocess
@@ -40,7 +41,6 @@ except ModuleNotFoundError:  # pragma: no cover - used when run as dashboard/ser
 
 DASH = Path(__file__).resolve().parent
 ROOT = DASH.parent
-JOBS_ROOT_ENV = "BENCHFLOW_DASHBOARD_JOBS_ROOT"
 
 
 def _git_bytes(args: list[str]) -> bytes:
@@ -51,22 +51,18 @@ def _dashboard_jobs_root() -> Path:
     return resolve_dashboard_jobs_root(ROOT, DASH / "data.json")
 
 
-def _digest_tree(digest: hashlib._Hash, root: Path, *, label: str) -> None:
-    digest.update(label.encode())
-    digest.update(b"\0")
-    digest.update(str(root).encode())
-    digest.update(b"\0")
-    if not root.is_dir():
-        digest.update(b"missing")
-        return
-    for path in sorted(p for p in root.rglob("*") if p.is_file()):
-        rel = path.relative_to(root).as_posix()
-        digest.update(rel.encode())
-        with contextlib.suppress(Exception):
-            stat = path.stat()
-            digest.update(f"{stat.st_size}:{stat.st_mtime_ns}".encode())
-            if stat.st_size <= 1_000_000:
-                digest.update(path.read_bytes())
+def _data_json_exists() -> bool:
+    return (DASH / "data.json").is_file()
+
+
+def _mark_cached_data_refresh_error(message: str) -> None:
+    data_path = DASH / "data.json"
+    with contextlib.suppress(Exception):
+        data = json.loads(data_path.read_text())
+        if isinstance(data, dict):
+            data["sync_error"] = message
+            data["sync_failed_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+            data_path.write_text(json.dumps(data, indent=2))
 
 
 def repo_fingerprint() -> str:
@@ -98,7 +94,6 @@ def repo_fingerprint() -> str:
                 digest.update(f"{stat.st_size}:{stat.st_mtime_ns}".encode())
                 if stat.st_size <= 1_000_000:
                     digest.update(path.read_bytes())
-    _digest_tree(digest, _dashboard_jobs_root(), label=JOBS_ROOT_ENV)
     return digest.hexdigest()
 
 
@@ -119,6 +114,8 @@ class SyncingDashboardHandler(http.server.SimpleHTTPRequestHandler):
 
     def _sync_data_json(self) -> bool:
         if self._in_failure_backoff():
+            if _data_json_exists():
+                return True
             self.send_error(503, "data.json refresh failed; retrying after cooldown")
             return False
 
@@ -130,6 +127,8 @@ class SyncingDashboardHandler(http.server.SimpleHTTPRequestHandler):
             return True
         with type(self).sync_lock:
             if self._in_failure_backoff():
+                if _data_json_exists():
+                    return True
                 self.send_error(
                     503, "data.json refresh failed; retrying after cooldown"
                 )
@@ -147,14 +146,19 @@ class SyncingDashboardHandler(http.server.SimpleHTTPRequestHandler):
             result = subprocess.run(type(self).gen_cmd, check=False)
             if result.returncode != 0:
                 type(self).last_failed_refresh_at = time.monotonic()
-                type(
-                    self
-                ).failed_refresh_error = (
-                    "data.json refresh failed; refusing to serve stale dashboard data"
+                type(self).failed_refresh_error = (
+                    "data.json refresh failed; serving last successful data.json"
                 )
+                if _data_json_exists():
+                    _mark_cached_data_refresh_error(type(self).failed_refresh_error)
+                    print(
+                        "data.json refresh failed; serving last successful data.json",
+                        flush=True,
+                    )
+                    return True
                 self.send_error(
                     503,
-                    "data.json refresh failed; refusing to serve stale dashboard data",
+                    "data.json refresh failed and no cached data.json is available",
                 )
                 return False
             type(self).last_repo_fingerprint = repo_fingerprint()
@@ -184,7 +188,15 @@ def main() -> int:
     print("refreshing data.json ...", flush=True)
     result = subprocess.run(gen, check=False)
     if result.returncode != 0:
-        return result.returncode
+        if not _data_json_exists():
+            return result.returncode
+        _mark_cached_data_refresh_error(
+            "initial data.json refresh failed; serving last successful data.json"
+        )
+        print(
+            "initial data.json refresh failed; serving last successful data.json",
+            flush=True,
+        )
 
     SyncingDashboardHandler.gen_cmd = gen
     SyncingDashboardHandler.last_repo_fingerprint = repo_fingerprint()

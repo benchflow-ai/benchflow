@@ -705,6 +705,7 @@ function dataSignature(d) {
     d.jobs && d.jobs.source && d.jobs.source.available,
     d.jobs && d.jobs.source && d.jobs.source.remembered,
     d.jobs && d.jobs.source && d.jobs.source.latest_modified_at,
+    d.sync_error,
     d.jobs && d.jobs.total_tasks,
     jobGroups,
   ].join("|");
@@ -725,13 +726,18 @@ function repoLine() {
     parts.push(`<span class="mono">${esc(r.head || "")}</span>`);
     parts.push(`<span>${esc(state)}</span>`);
   }
-  if (SYNC_ERROR) parts.push(`<span class="bad">sync failed: ${esc(SYNC_ERROR)}</span>`);
+  const syncError = dataSyncError(DATA);
+  if (syncError) parts.push(`<span class="bad">sync failed: ${esc(syncError)}</span>`);
   return parts.length ? `<div class="repo-line">${parts.join("")}</div>` : "";
 }
+function dataSyncError(d) {
+  return SYNC_ERROR || (d && d.sync_error) || null;
+}
 function syncBanner() {
-  if (!SYNC_ERROR) return null;
+  const syncError = dataSyncError(DATA);
+  if (!syncError) return null;
   return el("div", "sync-banner",
-    `<b>Dashboard data is not refreshing.</b><span>${esc(SYNC_ERROR)}</span>`);
+    `<b>Dashboard data is not refreshing.</b><span>${esc(syncError)}</span>`);
 }
 
 // ---- file-content viewer (one component, used by Jobs + Timeline) ----------
@@ -1688,7 +1694,8 @@ function updateGenerated(d) {
   const repo = d.repo && d.repo.available
     ? `<br>${esc(d.repo.branch || "")} @ ${esc(d.repo.head || "")}${d.repo.dirty ? ` · ${esc(d.repo.changes)} changed` : ""}`
     : "";
-  const sync = SYNC_ERROR ? `<br><span class="bad">sync failed: ${esc(SYNC_ERROR)}</span>` : "";
+  const syncError = dataSyncError(d);
+  const sync = syncError ? `<br><span class="bad">sync failed: ${esc(syncError)}</span>` : "";
   const latestJob = d.jobs && d.jobs.source && d.jobs.source.latest_modified_at
     ? `<br>jobs latest ${esc(d.jobs.source.latest_modified_at)}`
     : "";
@@ -1708,7 +1715,7 @@ function renderCurrent() {
 
 function applyData(d, initial) {
   const previous = DATA_SIGNATURE;
-  const hadSyncError = !!SYNC_ERROR;
+  const hadSyncError = !!dataSyncError(DATA);
   DATA = d;
   DATA_SIGNATURE = dataSignature(d);
   SYNC_ERROR = null;

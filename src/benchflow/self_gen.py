@@ -121,7 +121,10 @@ def _ensure_generated_skills_hook(config: RolloutConfig):
 
 
 def _single_trial_config(
-    config: RolloutConfig, creator_skills_root: Path, skill_creator_name: str
+    config: RolloutConfig,
+    creator_skills_root: Path,
+    skill_creator_name: str,
+    artifact_root: Path,
 ) -> RolloutConfig:
     return replace(
         config,
@@ -137,6 +140,9 @@ def _single_trial_config(
             _ensure_generated_skills_hook(config),
         ],
         include_task_skills=False,
+        export_generated_skills_to=(
+            config.export_generated_skills_to or artifact_root / "generated-skills"
+        ),
     )
 
 
@@ -156,6 +162,6 @@ async def run_self_gen(config: RolloutConfig):
         skill_creator_dir, artifact_root / "creator-skills"
     )
     trial = await Rollout.create(
-        _single_trial_config(config, creator_skills_root, skill_creator_name)
+        _single_trial_config(config, creator_skills_root, skill_creator_name, artifact_root)
     )
     return await trial.run()
