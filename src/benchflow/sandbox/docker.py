@@ -360,8 +360,9 @@ class DockerSandbox(BaseSandbox):
                 self.logger.warning(f"Docker compose stop failed: {e}")
         elif delete:
             try:
-                down_command = ["down", "--volumes", "--remove-orphans"]
-                if not self._use_prebuilt:
+                if _env_flag_enabled("BENCHFLOW_DOCKER_SAFE_CLEANUP", default=False):
+                    down_command = ["down", "--remove-orphans"]
+                elif not self._use_prebuilt:
                     down_command = [
                         "down",
                         "--rmi",
@@ -369,6 +370,8 @@ class DockerSandbox(BaseSandbox):
                         "--volumes",
                         "--remove-orphans",
                     ]
+                else:
+                    down_command = ["down", "--volumes", "--remove-orphans"]
                 await self._run_docker_compose_command(down_command)
             except Exception as e:
                 self.logger.warning(f"Docker compose down failed: {e}")
