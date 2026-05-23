@@ -519,7 +519,12 @@ def test_collect_jobs_archives_acp_smoke_without_target_evidence(
 def test_collect_jobs_archives_empty_task_dirs_and_target_named_placeholders(
     tmp_path: Path, monkeypatch
 ):
-    """Guards codex/v05-integration-followup@5f05423 placeholder cleanup."""
+    """Guards codex/v05-integration-followup@5f05423 placeholder cleanup.
+
+    Updated after PR #346 stopped emitting phantom empty RunRecords for
+    unrecognized group children (e.g. smoke-test/programbench-daytona with
+    no timestamp dirs or task rollouts).
+    """
     jobs = tmp_path / "jobs"
     (jobs / "2026-05-22__03-45-00" / "task__empty").mkdir(parents=True)
     (jobs / "smoke-test" / "programbench-daytona").mkdir(parents=True)
@@ -533,7 +538,7 @@ def test_collect_jobs_archives_empty_task_dirs_and_target_named_placeholders(
 
     assert data["groups"] == []
     assert data["total_tasks"] == 0
-    assert data["archived_runs"] == 3
+    assert data["archived_runs"] == 2
     assert data["archived_tasks"] == 1
 
 
