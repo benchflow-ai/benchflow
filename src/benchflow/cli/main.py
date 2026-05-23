@@ -1103,6 +1103,20 @@ def eval_create(
         list[str] | None,
         typer.Option("--agent-env", help="Agent env var (KEY=VALUE)"),
     ] = None,
+    include: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--include",
+            help="Only run these task names; repeatable (e.g. --include jax-computing-basics --include data-to-d3)",
+        ),
+    ] = None,
+    exclude: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--exclude",
+            help="Skip these task names; repeatable (e.g. --exclude quantum-numerical-simulation)",
+        ),
+    ] = None,
 ) -> None:
     """Run an evaluation — single task or batch.
 
@@ -1112,6 +1126,8 @@ def eval_create(
 
     _apply_dotenv_to_process_env()
     parsed_env = _parse_agent_env(agent_env)
+    include_tasks = set(include) if include else set()
+    exclude_tasks = set(exclude) if exclude else set()
     sources = [bool(config_file), bool(tasks_dir), bool(source_repo), bool(source_env)]
     if sum(sources) > 1:
         console.print(
@@ -1151,6 +1167,10 @@ def eval_create(
             j._config.concurrency = concurrency
         if agent_idle_timeout is not None:
             j._config.agent_idle_timeout = eval_agent_idle_timeout
+        if include_tasks:
+            j._config.include_tasks = include_tasks
+        if exclude_tasks:
+            j._config.exclude_tasks = exclude_tasks
         result = asyncio.run(j.run())
         console.print(
             f"\n[bold]Score: {result.passed}/{result.total} "
@@ -1244,6 +1264,8 @@ def eval_create(
                 skill_creator_dir=str(skill_creator_dir) if skill_creator_dir else None,
                 self_gen_no_internet=self_gen_no_internet,
                 source_provenance=resolved.provenance,
+                include_tasks=include_tasks,
+                exclude_tasks=exclude_tasks,
             ),
         )
         result = asyncio.run(j.run())
@@ -1310,6 +1332,8 @@ def eval_create(
                         str(skill_creator_dir) if skill_creator_dir else None
                     ),
                     self_gen_no_internet=self_gen_no_internet,
+                    include_tasks=include_tasks,
+                    exclude_tasks=exclude_tasks,
                 ),
             )
             result = asyncio.run(j.run())
