@@ -291,6 +291,9 @@ class TestEvalCreateRouting:
             "MODAL_TOKEN_SECRET=modal-secret\n"
         )
         monkeypatch.setenv("BENCHFLOW_DOTENV_PATH", str(env_file))
+        monkeypatch.delenv("DAYTONA_API_KEY", raising=False)
+        monkeypatch.delenv("MODAL_TOKEN_ID", raising=False)
+        monkeypatch.delenv("MODAL_TOKEN_SECRET", raising=False)
         captured = {}
 
         async def fake_run(self, **kwargs):
