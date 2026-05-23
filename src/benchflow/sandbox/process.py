@@ -510,9 +510,13 @@ class DaytonaProcess(LiveProcess):
             )
             if remote_env_path:
                 remote_env_path_q = shlex.quote(remote_env_path)
+                # Source the env file to populate vars, then exec compose.
+                # The EXIT trap handles cleanup; we intentionally keep the file
+                # alive until exit so that compose_cmd_prefix wrappers (which
+                # may re-exec the shell) still inherit the sourced vars.
                 remote_cmd = (
                     f"trap 'rm -f {remote_env_path_q}' EXIT; "
-                    f". {remote_env_path_q} && rm -f {remote_env_path_q} && "
+                    f". {remote_env_path_q} && "
                     f"{remote_cmd}"
                 )
         else:
