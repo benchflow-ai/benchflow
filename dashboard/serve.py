@@ -21,7 +21,6 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import http.server
-import json
 import os
 import socketserver
 import subprocess
@@ -34,6 +33,11 @@ from functools import partial
 from pathlib import Path
 from typing import ClassVar
 
+try:
+    from dashboard.generate import resolve_dashboard_jobs_root
+except ModuleNotFoundError:  # pragma: no cover - used when run as dashboard/serve.py
+    from generate import resolve_dashboard_jobs_root  # type: ignore[no-redef]
+
 DASH = Path(__file__).resolve().parent
 ROOT = DASH.parent
 JOBS_ROOT_ENV = "BENCHFLOW_DASHBOARD_JOBS_ROOT"
@@ -44,43 +48,7 @@ def _git_bytes(args: list[str]) -> bytes:
 
 
 def _dashboard_jobs_root() -> Path:
-    raw = os.environ.get(JOBS_ROOT_ENV)
-    if not raw:
-        local_jobs = ROOT / "jobs"
-        if _jobs_tree_has_rollouts(local_jobs):
-            return local_jobs
-        return _remembered_jobs_root() or local_jobs
-    candidate = Path(raw).expanduser()
-    if candidate.name != "jobs" and (candidate / "jobs").is_dir():
-        candidate = candidate / "jobs"
-    return candidate.resolve()
-
-
-def _jobs_tree_has_rollouts(jobs: Path) -> bool:
-    if not jobs.is_dir():
-        return False
-    with contextlib.suppress(Exception):
-        return any(
-            p.name in {"result.json", "config.json", "timing.json", "prompts.json"}
-            for p in jobs.rglob("*")
-            if p.is_file()
-        )
-    return False
-
-
-def _remembered_jobs_root() -> Path | None:
-    data_path = DASH / "data.json"
-    if not data_path.is_file():
-        return None
-    with contextlib.suppress(Exception):
-        data = json.loads(data_path.read_text())
-        raw = ((data.get("jobs") or {}).get("source") or {}).get("path")
-        if not raw:
-            return None
-        remembered = Path(str(raw)).expanduser().resolve()
-        if remembered.is_dir() and _jobs_tree_has_rollouts(remembered):
-            return remembered
-    return None
+    return resolve_dashboard_jobs_root(ROOT, DASH / "data.json")
 
 
 def _digest_tree(digest: hashlib._Hash, root: Path, *, label: str) -> None:

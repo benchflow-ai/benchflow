@@ -1406,11 +1406,9 @@ class Rollout:
         verify() still does full hardening.
         """
         from benchflow.sandbox.lockdown import (
-            _CLEAR_VERIFIER_DIR_CMD,
-            _ENSURE_APP_DIR_CMD,
-            _build_cleanup_cmd,
-            _checked_exec,
-            _read_hardening_config,
+            cleanup_verifier_python_hooks,
+            clear_verifier_output_dir,
+            ensure_legacy_app_dir,
         )
         from benchflow.task import Verifier
 
@@ -1419,16 +1417,14 @@ class Rollout:
         # Keep /app present for task/verifier paths that still use the legacy
         # rootdir fallback; tasks that populate /app are unaffected.
         try:
-            await _checked_exec(
+            await clear_verifier_output_dir(
                 self._env,
-                _CLEAR_VERIFIER_DIR_CMD,
                 "Soft verifier setup failed: clearing verifier output directory",
                 user="root",
                 timeout_sec=10,
             )
-            await _checked_exec(
+            await ensure_legacy_app_dir(
                 self._env,
-                _ENSURE_APP_DIR_CMD,
                 "Soft verifier setup failed: preparing /app",
                 user="root",
                 timeout_sec=10,
@@ -1436,10 +1432,9 @@ class Rollout:
             # Purge agent-injected conftest/sitecustomize/.pth without
             # killing processes or restoring workspace.
             # Honor per-task [verifier.hardening] opt-outs from task.toml.
-            hardening = _read_hardening_config(getattr(self._task, "task_dir", None))
-            await _checked_exec(
+            await cleanup_verifier_python_hooks(
                 self._env,
-                _build_cleanup_cmd(hardening),
+                getattr(self._task, "task_dir", None),
                 "Soft verifier setup failed: purging Python injection hooks",
                 user="root",
                 timeout_sec=10,

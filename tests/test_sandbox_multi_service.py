@@ -243,6 +243,79 @@ class TestSingleContainerFileTransferRejection:
             await strategy.upload_dir("/host/tests", "/tests", service="target")
 
 
+class TestDaytonaDirectFileTransfer:
+    """Direct Daytona uploads should match single-container path prep semantics."""
+
+    @pytest.mark.asyncio
+    async def test_upload_dir_creates_target_before_sdk_upload(self) -> None:
+        """Guards the follow-up to f7d382b against direct Daytona images with no /app."""
+        pytest.importorskip("daytona")  # sandbox-daytona optional dependency
+        from benchflow.sandbox.daytona import _DaytonaDirect
+
+        strategy = _DaytonaDirect.__new__(_DaytonaDirect)
+        strategy._env = MagicMock()
+        events: list[tuple[object, ...]] = []
+
+        async def fake_exec(
+            command,
+            cwd=None,
+            env=None,
+            timeout_sec=None,
+            user=None,
+        ):
+            del cwd, env
+            events.append(("exec", command, user, timeout_sec))
+            return ExecResult(stdout="", stderr="", return_code=0)
+
+        async def fake_upload(source_dir, target_dir):
+            events.append(("upload", source_dir, target_dir))
+
+        strategy._env._sandbox_exec = fake_exec
+        strategy._env._sdk_upload_dir = fake_upload
+
+        await strategy.upload_dir("/host/skills", "/app dir/skills")
+
+        assert events == [
+            ("exec", "mkdir -p '/app dir/skills'", "root", 30),
+            ("upload", "/host/skills", "/app dir/skills"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_upload_dir_reports_destination_prep_failure(self) -> None:
+        """Guards the follow-up to f7d382b against hidden direct Daytona mkdir failures."""
+        pytest.importorskip("daytona")  # sandbox-daytona optional dependency
+        from benchflow.sandbox.daytona import _DaytonaDirect
+
+        strategy = _DaytonaDirect.__new__(_DaytonaDirect)
+        strategy._env = MagicMock()
+
+        async def fake_exec(
+            command,
+            cwd=None,
+            env=None,
+            timeout_sec=None,
+            user=None,
+        ):
+            del command, cwd, env, timeout_sec, user
+            return ExecResult(
+                stdout="mkdir stdout",
+                stderr="mkdir denied",
+                return_code=13,
+            )
+
+        strategy._env._sandbox_exec = fake_exec
+        strategy._env._sdk_upload_dir = AsyncMock()
+
+        with pytest.raises(RuntimeError) as exc_info:
+            await strategy.upload_dir("/host/skills", "/app/skills")
+
+        message = str(exc_info.value)
+        assert "destination prep failed" in message
+        assert "mkdir stdout" in message
+        assert "mkdir denied" in message
+        strategy._env._sdk_upload_dir.assert_not_awaited()
+
+
 class TestDaytonaDinDServiceFileTransfer:
     """Daytona DinD uploads must prepare compose-container destinations."""
 
