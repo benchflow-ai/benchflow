@@ -436,10 +436,11 @@ class DockerSandbox(BaseSandbox):
                     ["stop", "-t", "5"], timeout_sec=90
                 )
             elif delete:
-                # Prebuilt images are shared across rollouts; only remove
-                # images that this sandbox built itself.
-                down_command = ["down", "--volumes", "--remove-orphans", "-t", "5"]
-                if not self._use_prebuilt:
+                if _env_flag_enabled("BENCHFLOW_DOCKER_SAFE_CLEANUP", default=False):
+                    # Shared-runtime mode: leave images and volumes in place,
+                    # only remove this rollout's containers.
+                    down_command = ["down", "--remove-orphans", "-t", "5"]
+                elif not self._use_prebuilt:
                     down_command = [
                         "down",
                         "--rmi",
@@ -449,6 +450,10 @@ class DockerSandbox(BaseSandbox):
                         "-t",
                         "5",
                     ]
+                else:
+                    # Prebuilt images are shared across rollouts; only remove
+                    # images that this sandbox built itself.
+                    down_command = ["down", "--volumes", "--remove-orphans", "-t", "5"]
                 await self._run_docker_compose_command(down_command, timeout_sec=120)
             else:
                 await self._run_docker_compose_command(

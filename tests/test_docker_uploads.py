@@ -40,6 +40,26 @@ async def test_prebuilt_stop_does_not_remove_images() -> None:
 
 
 @pytest.mark.asyncio
+async def test_agentbeats_safe_cleanup_skips_image_and_volume_removal(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("BENCHFLOW_DOCKER_SAFE_CLEANUP", "true")
+    sandbox = DockerSandbox.__new__(DockerSandbox)
+    sandbox._keep_containers = False
+    sandbox._use_prebuilt = False
+    sandbox._chown_to_host_user = AsyncMock()
+    sandbox._run_docker_compose_command = AsyncMock(
+        return_value=ExecResult(stdout="", stderr=None, return_code=0)
+    )
+
+    await sandbox.stop(delete=True)
+
+    sandbox._run_docker_compose_command.assert_awaited_once_with(
+        ["down", "--remove-orphans", "-t", "5"], timeout_sec=120
+    )
+
+
+@pytest.mark.asyncio
 async def test_docker_upload_dir_creates_target_before_compose_cp() -> None:
     """Guards the v0.5 edit-pdf Docker failure where /app did not exist."""
     sandbox = DockerSandbox.__new__(DockerSandbox)
