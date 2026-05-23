@@ -222,9 +222,10 @@ class TestVerifierDirWipe:
         )
         assert "rm -rf /logs/verifier &&" not in match.args[0]
         assert "command -v find" in match.args[0]
-        assert "|| {" in match.args[0]
-        assert "|| (" not in match.args[0]
+        # The find-preferred path uses -exec rm -rf; the else branch falls
+        # back to rm -rf /logs/verifier/* for images that lack find.
         assert "-exec rm -rf -- {} +" in match.args[0]
+        assert "else" in match.args[0]
         assert match.kwargs.get("user") == "root"
 
     @pytest.mark.asyncio

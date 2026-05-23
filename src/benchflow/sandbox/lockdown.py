@@ -644,12 +644,17 @@ async def _trusted_verifier_pythonpath(
 # directory itself: Daytona DinD bind-mounts it from the remote VM, so deleting
 # the mountpoint fails with "Device or resource busy". ``find ... -exec ... +``
 # avoids glob ARG_MAX failures if an agent floods the world-writable log dir.
+# When ``find`` is unavailable (minimal service images), fall back to
+# ``rm -rf /logs/verifier/* ...`` which handles the common case but may miss
+# dot-files and can hit ARG_MAX on extreme floods.
 _CLEAR_VERIFIER_DIR_CMD = (
-    "command -v find >/dev/null 2>&1 || "
-    "{ echo 'BenchFlow verifier cleanup requires find' >&2; exit 127; }; "
     "if [ -L /logs/verifier ]; then rm -f /logs/verifier; fi && "
     "mkdir -p /logs/verifier && "
-    "find /logs/verifier -mindepth 1 -exec rm -rf -- {} + && "
+    "if command -v find >/dev/null 2>&1; then "
+    "find /logs/verifier -mindepth 1 -exec rm -rf -- {} +; "
+    "else "
+    "rm -rf /logs/verifier/* /logs/verifier/.[!.]* /logs/verifier/..?* 2>/dev/null; true; "
+    "fi && "
     "chmod 777 /logs/verifier"
 )
 
