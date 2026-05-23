@@ -520,3 +520,33 @@ async def test_scene_skills_link_remote_generated_root() -> None:
         "ln -sfn /app/generated-skills /home/agent/.claude/skills" in cmd
         for cmd in trial._env._exec_log
     )
+
+
+async def test_scene_skills_prefers_remote_string_path_over_matching_host_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """String sandbox paths stay remote even if the host has a matching path."""
+    original_is_dir = Path.is_dir
+
+    def fake_is_dir(path: Path) -> bool:
+        if path.as_posix() == "/app/generated-skills":
+            return True
+        return original_is_dir(path)
+
+    monkeypatch.setattr(Path, "is_dir", fake_is_dir)
+    scene = Scene(
+        name="solve",
+        roles=[Role("solver", "claude-agent-acp", "haiku")],
+        turns=[Turn("solver")],
+        skills_dir="/app/generated-skills",
+    )
+    trial = _make_trial(scene)
+    trial._agent_cwd = "/app"
+
+    await trial._activate_scene_skills(scene)
+
+    assert trial._env._uploads == []
+    assert any(
+        "ln -sfn /app/generated-skills /home/agent/.claude/skills" in cmd
+        for cmd in trial._env._exec_log
+    )

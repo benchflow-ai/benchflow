@@ -1650,14 +1650,19 @@ class Rollout:
         if self._env is None:
             raise RuntimeError("Environment is not started")
 
-        source = str(scene.skills_dir)
+        source_value = scene.skills_dir
+        source = str(source_value)
         local_source = Path(source).expanduser()
-        if local_source.is_dir():
+        if isinstance(source_value, os.PathLike) and local_source.is_dir():
             remote_source = f"/skills/{_safe_skill_name(scene.name)}"
             await _ensure_sandbox_dir(self._env, Path(remote_source).parent)
             await self._env.upload_dir(local_source, remote_source)
         elif source.startswith("/"):
             remote_source = source
+        elif local_source.is_dir():
+            remote_source = f"/skills/{_safe_skill_name(scene.name)}"
+            await _ensure_sandbox_dir(self._env, Path(remote_source).parent)
+            await self._env.upload_dir(local_source, remote_source)
         else:
             raise FileNotFoundError(f"Scene skills_dir not found: {scene.skills_dir}")
 

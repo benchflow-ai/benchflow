@@ -81,11 +81,17 @@ def test_repo_fingerprint_changes_when_dirty_file_content_changes(
     assert untracked_once != untracked_twice
 
 
-def test_syncing_handler_returns_503_on_failed_refresh(monkeypatch):
-    """Guards the dashboard repo sync added after v0.5-integration@ffef85d."""
+def test_syncing_handler_serves_cached_data_on_failed_refresh(
+    tmp_path: Path, monkeypatch
+):
+    """Guards v0.5-integration dashboard polling against transient refresh failures."""
     handler = object.__new__(serve.SyncingDashboardHandler)
     sent: list[tuple[int, str | None]] = []
     handler.send_error = lambda code, message=None: sent.append((code, message))  # type: ignore[method-assign]
+    dash = tmp_path / "dashboard"
+    dash.mkdir()
+    (dash / "data.json").write_text("{}")
+    monkeypatch.setattr(serve, "DASH", dash)
 
     class FailedResult:
         returncode = 1
@@ -111,14 +117,16 @@ def test_syncing_handler_returns_503_on_failed_refresh(monkeypatch):
         lambda _cmd, check=False: runs.append(_cmd) or FailedResult(),
     )
 
-    assert handler._sync_data_json() is False
-    assert handler._sync_data_json() is False
-    assert sent == [
-        (503, "data.json refresh failed; refusing to serve stale dashboard data"),
-        (503, "data.json refresh failed; retrying after cooldown"),
-    ]
+    assert handler._sync_data_json() is True
+    assert handler._sync_data_json() is True
+    assert sent == []
     assert len(runs) == 1
     assert len(fingerprints) == 2
+    cached = json.loads((dash / "data.json").read_text())
+    assert cached["sync_error"] == (
+        "data.json refresh failed; serving last successful data.json"
+    )
+    assert cached["sync_failed_at"]
 
 
 def test_index_ticket_view_and_sync_contract():
@@ -138,6 +146,8 @@ def test_index_ticket_view_and_sync_contract():
         ".vleft",
         ".sync-banner",
         "Dashboard data is not refreshing.",
+        "dataSyncError",
+        "sync_error",
         "safeLinearUrl",
         "linearLink",
         'target="_blank"',
@@ -882,6 +892,7 @@ const document = {
 
 const data = {
   generated_at: "2026-05-22 00:00:00",
+  sync_error: "refresh failed; serving cached data",
   summary: {
     tests: { passed: 1, failed: 0, skipped: 0, total: 1 },
     jobs_total: 1,
@@ -939,6 +950,12 @@ if (!nav.textContent.includes("jobs/main/")) {
 }
 if (!main.textContent.includes("Memory 50%")) {
   throw new Error("Jobs task meta did not render memory score: " + main.textContent);
+}
+if (!main.textContent.includes("Dashboard data is not refreshing") || !main.textContent.includes("refresh failed; serving cached data")) {
+  throw new Error("cached-data sync error banner did not render: " + main.textContent);
+}
+if (!gen.textContent.includes("sync failed: refresh failed; serving cached data")) {
+  throw new Error("cached-data sync error did not render in generated header: " + gen.textContent);
 }
 """
 
@@ -1546,10 +1563,10 @@ def test_collect_jobs_reuses_remembered_external_jobs_root(tmp_path: Path, monke
     assert jobs["groups"][0]["name"] == "main"
 
 
-def test_repo_fingerprint_changes_when_configured_jobs_root_changes(
+def test_repo_fingerprint_does_not_walk_configured_jobs_root_contents(
     tmp_path: Path, monkeypatch
 ):
-    """Guards v0.5-integration@ffef85d auto-refresh for external jobs artifacts."""
+    """Guards dashboard polling against request-path scans of large jobs trees."""
     repo = tmp_path / "repo"
     repo.mkdir()
     subprocess.run(["git", "init"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
@@ -1578,76 +1595,91 @@ def test_repo_fingerprint_changes_when_configured_jobs_root_changes(
     artifact.write_text("[]\n")
     after = serve.repo_fingerprint()
 
-    assert before != after
+    assert before == after
 
 
-def test_repo_fingerprint_changes_when_configured_jobs_root_gets_first_artifact(
+def test_syncing_handler_refreshes_by_interval_when_fingerprint_is_stable(
     tmp_path: Path, monkeypatch
 ):
-    """Guards data.json refresh when an external jobs root goes 0 -> nonzero."""
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    subprocess.run(["git", "init"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
-    subprocess.run(
-        ["git", "config", "user.email", "test@example.com"], cwd=repo, check=True
-    )
-    subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True)
-    tracked = repo / "tracked.txt"
-    tracked.write_text("one\n")
-    subprocess.run(["git", "add", "tracked.txt"], cwd=repo, check=True)
-    subprocess.run(
-        ["git", "commit", "-m", "init"], cwd=repo, check=True, stdout=subprocess.DEVNULL
-    )
-
-    previous_worktree = tmp_path / "previous-worktree"
-    (previous_worktree / "jobs").mkdir(parents=True)
-    monkeypatch.setattr(serve, "ROOT", repo)
-    monkeypatch.setenv("BENCHFLOW_DASHBOARD_JOBS_ROOT", str(previous_worktree))
-
-    before = serve.repo_fingerprint()
-    rollout = previous_worktree / "jobs" / "2026-05-21__23-57-23" / "task__abc123"
-    rollout.mkdir(parents=True)
-    (rollout / "result.json").write_text("{}\n")
-    after = serve.repo_fingerprint()
-
-    assert before != after
-
-
-def test_repo_fingerprint_tracks_remembered_external_jobs_root(
-    tmp_path: Path, monkeypatch
-):
-    """Guards dashboard refresh after restart without the jobs-root env var."""
-    repo = tmp_path / "repo"
-    dash = repo / "dashboard"
-    (repo / "jobs").mkdir(parents=True)
-    dash.mkdir(parents=True)
-    subprocess.run(["git", "init"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
-    subprocess.run(
-        ["git", "config", "user.email", "test@example.com"], cwd=repo, check=True
-    )
-    subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True)
-    tracked = repo / "tracked.txt"
-    tracked.write_text("one\n")
-    subprocess.run(["git", "add", "tracked.txt"], cwd=repo, check=True)
-    subprocess.run(
-        ["git", "commit", "-m", "init"], cwd=repo, check=True, stdout=subprocess.DEVNULL
-    )
-
-    previous_jobs = tmp_path / "previous-worktree" / "jobs"
-    rollout = previous_jobs / "2026-05-21__23-57-23" / "task__abc123"
-    rollout.mkdir(parents=True)
-    artifact = rollout / "result.json"
-    artifact.write_text("{}\n")
-    (dash / "data.json").write_text(
-        json.dumps({"jobs": {"source": {"path": str(previous_jobs)}}})
-    )
-
-    monkeypatch.delenv("BENCHFLOW_DASHBOARD_JOBS_ROOT", raising=False)
-    monkeypatch.setattr(serve, "ROOT", repo)
+    """Guards live jobs refresh after removing jobs-tree hashing from polling."""
+    handler = object.__new__(serve.SyncingDashboardHandler)
+    sent: list[tuple[int, str | None]] = []
+    handler.send_error = lambda code, message=None: sent.append((code, message))  # type: ignore[method-assign]
+    dash = tmp_path / "dashboard"
+    dash.mkdir()
+    (dash / "data.json").write_text("{}")
     monkeypatch.setattr(serve, "DASH", dash)
 
-    before = serve.repo_fingerprint()
-    artifact.write_text("[]\n")
-    after = serve.repo_fingerprint()
+    class OkResult:
+        returncode = 0
 
-    assert before != after
+    serve.SyncingDashboardHandler.gen_cmd = ["generate"]
+    serve.SyncingDashboardHandler.last_repo_fingerprint = "same"
+    serve.SyncingDashboardHandler.last_refresh_at = time.monotonic() - 61
+    serve.SyncingDashboardHandler.refresh_interval = 60
+    serve.SyncingDashboardHandler.last_failed_refresh_at = None
+    serve.SyncingDashboardHandler.failed_refresh_error = None
+    serve.SyncingDashboardHandler.sync_lock = threading.Lock()
+
+    runs = []
+    monkeypatch.setattr(serve, "repo_fingerprint", lambda: "same")
+    monkeypatch.setattr(
+        serve.subprocess,
+        "run",
+        lambda _cmd, check=False: runs.append(_cmd) or OkResult(),
+    )
+
+    assert handler._sync_data_json() is True
+    assert runs == [["generate"]]
+    assert sent == []
+
+
+def test_dashboard_startup_serves_cached_data_when_initial_refresh_fails(
+    tmp_path: Path, monkeypatch
+):
+    """Guards local dashboard availability when startup generation is transiently down."""
+    dash = tmp_path / "dashboard"
+    dash.mkdir()
+    (dash / "data.json").write_text("{}")
+    monkeypatch.setattr(serve, "DASH", dash)
+    monkeypatch.setattr(serve, "ROOT", tmp_path)
+    monkeypatch.setattr(serve.sys, "argv", ["serve.py", "--port", "0"])
+    monkeypatch.setattr(serve, "repo_fingerprint", lambda: "cached")
+
+    class FailedResult:
+        returncode = 1
+
+    runs = []
+    monkeypatch.setattr(
+        serve.subprocess,
+        "run",
+        lambda _cmd, check=False: runs.append(_cmd) or FailedResult(),
+    )
+
+    class FakeServer:
+        allow_reuse_address = False
+        daemon_threads = False
+
+        def __init__(self, address, handler):
+            self.address = address
+            self.handler = handler
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def serve_forever(self):
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(serve.socketserver, "ThreadingTCPServer", FakeServer)
+    monkeypatch.setattr(serve.webbrowser, "open", lambda _url: None)
+
+    assert serve.main() == 0
+    assert len(runs) == 1
+    cached = json.loads((dash / "data.json").read_text())
+    assert cached["sync_error"] == (
+        "initial data.json refresh failed; serving last successful data.json"
+    )
+    assert cached["sync_failed_at"]
