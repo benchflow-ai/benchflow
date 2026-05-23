@@ -5,7 +5,7 @@ from __future__ import annotations
 import shlex
 import shutil
 from dataclasses import replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from uuid import uuid4
 
 from benchflow.rollout import (
@@ -21,6 +21,11 @@ from benchflow.rollout import (
     _self_gen_prompt,
     _skill_frontmatter_name,
 )
+
+
+def _normalize_sandbox_path(path: str) -> str:
+    normalized = PurePosixPath(path).as_posix().rstrip("/")
+    return normalized or "/"
 
 
 def _find_skill_creator_dir(skills_root: Path, skill_name: str) -> Path:
@@ -93,19 +98,24 @@ def _solver_scene(config: RolloutConfig) -> Scene:
     )
 
 
+def _self_gen_setup_commands(generated_skills_root: str) -> list[str]:
+    generated_skills_root = _normalize_sandbox_path(generated_skills_root)
+    q_root = shlex.quote(generated_skills_root)
+    return [f"mkdir -p {q_root} && chmod 777 {q_root}"]
+
+
 def _ensure_generated_skills_hook(config: RolloutConfig):
     generated_skills_root = config.generated_skills_root or GENERATED_SKILLS_ROOT
+    setup_commands = _self_gen_setup_commands(generated_skills_root)
 
     async def ensure_generated_skills(env):
-        q_root = shlex.quote(generated_skills_root)
-        result = await env.exec(
-            f"mkdir -p {q_root} && chmod 777 {q_root}", timeout_sec=10
-        )
-        if result.return_code != 0:
-            raise RuntimeError(
-                "Failed to create self-gen generated skills directory: "
-                f"{result.stderr or result.stdout}"
-            )
+        for command in setup_commands:
+            result = await env.exec(command, timeout_sec=10)
+            if result.return_code != 0:
+                raise RuntimeError(
+                    "Failed to prepare self-gen generated skills paths: "
+                    f"{result.stderr or result.stdout}"
+                )
 
     return ensure_generated_skills
 

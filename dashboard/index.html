@@ -1386,7 +1386,8 @@ function artifactBadge(a) {
 function taskOutcomeBadge(outcome) {
   if (outcome === "verifier_errored") return { text: "verifier", cls: "verifier" };
   if (outcome === "errored") return { text: "error", cls: "error" };
-  if (outcome === "passed" || outcome === "failed") return { text: "ok", cls: "ok" };
+  if (outcome === "failed") return { text: "failed", cls: "error" };
+  if (outcome === "passed") return { text: "ok", cls: "ok" };
   return { text: "pending", cls: "warn" };
 }
 
@@ -1433,9 +1434,18 @@ function runNode(run, firstPath) {
   const target = (run.targets || []).slice(0, 3).join(", ");
   const signal = (run.signals || []).slice(0, 3).join(", ");
   const tags = [target, signal].filter(Boolean).join(" · ");
+  const summary = run.summary || {};
+  const summaryBits = [];
+  if (summary.total != null && Number(summary.total) !== (run.tasks || []).length)
+    summaryBits.push(`${summary.total} benchmark tasks`);
+  if (summary.score) summaryBits.push(`score ${summary.score}`);
+  if (summary.passed != null || summary.failed != null || summary.errored != null || summary.verifier_errored != null)
+    summaryBits.push(`${summary.passed || 0} pass/${summary.failed || 0} fail/${summary.errored || 0} err/${summary.verifier_errored || 0} verifier`);
   return {
     type: "folder", label: run.id + "/",
-    meta: `${run.tasks.length} task${run.tasks.length === 1 ? "" : "s"}${latest}` +
+    meta: `${run.tasks.length} rollout row${run.tasks.length === 1 ? "" : "s"}` +
+          (summaryBits.length ? ` · ${summaryBits.join(" · ")}` : "") +
+          latest +
           (tags ? ` · ${tags}` : ""),
     open: !!firstPath,
     children: (run.tasks || []).map((tk, ti) => taskNode(tk, firstPath && ti === 0)),
@@ -1485,6 +1495,8 @@ function renderJobs() {
     : "";
   const archivedRuns = Number(j.archived_runs || 0);
   const archivedTasks = Number(j.archived_tasks || 0);
+  const totalRows = Number(j.total_tasks || 0);
+  const totalRowLabel = `${totalRows} rollout row${totalRows === 1 ? "" : "s"}`;
   const archiveParts = [];
   if (archivedRuns) archiveParts.push(`${archivedRuns} low-signal run${archivedRuns === 1 ? "" : "s"}`);
   if (archivedTasks) archiveParts.push(`${archivedTasks} task${archivedTasks === 1 ? "" : "s"}`);
@@ -1493,7 +1505,7 @@ function renderJobs() {
     : "";
   wrap.appendChild(el("h1", "page", "Jobs &amp; artifacts"));
   wrap.appendChild(el("div", "sub-ttl",
-    `Every rollout under <code title="${esc(sourcePath)}">${esc(sourceDisplay)}</code> — ${j.total_tasks} tasks in ${j.groups.length} groups.` +
+    `Every rollout under <code title="${esc(sourcePath)}">${esc(sourceDisplay)}</code> — ${totalRowLabel} in ${j.groups.length} groups.` +
     latestNote + archiveNote + sourceNote + ` Browse the tree; click a file to view it. Each group links to its advisories.`));
   if (!j.total_tasks) {
     const hint = source.configured

@@ -689,6 +689,41 @@ async def _checked_exec(env: Any, command: str, label: str, **kwargs: Any) -> An
         )
     return result
 
+
+async def clear_verifier_output_dir(
+    env: Any,
+    label: str = "Verifier setup failed: clearing verifier output directory",
+    **kwargs: Any,
+) -> Any:
+    """Clear verifier outputs while preserving bind mounts.
+
+    This helper is intentionally service-aware: final anti-tamper hardening
+    stays on the agent container, but a verifier running in another service may
+    still need its own writable ``/logs/verifier`` output directory.
+    """
+    return await _checked_exec(env, _CLEAR_VERIFIER_DIR_CMD, label, **kwargs)
+
+
+async def ensure_legacy_app_dir(
+    env: Any,
+    label: str = "Verifier setup failed: preparing /app",
+    **kwargs: Any,
+) -> Any:
+    """Prepare the legacy verifier ``/app`` rootdir fallback."""
+    return await _checked_exec(env, _ENSURE_APP_DIR_CMD, label, **kwargs)
+
+
+async def cleanup_verifier_python_hooks(
+    env: Any,
+    task_dir: "Path | str | None",
+    label: str = "Verifier setup failed: purging Python injection hooks",
+    **kwargs: Any,
+) -> Any:
+    """Purge agent-injected Python hook files using task hardening settings."""
+    hardening = _read_hardening_config(task_dir)
+    return await _checked_exec(env, _build_cleanup_cmd(hardening), label, **kwargs)
+
+
 # Per-task hardening opt-outs. Tasks declare these in task.toml under
 # [verifier.hardening] when their legitimate test setup conflicts with the
 # default cleanup (e.g. qutebrowser ships a real conftest.py that the cleanup

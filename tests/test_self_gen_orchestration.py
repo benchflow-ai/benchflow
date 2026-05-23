@@ -46,7 +46,7 @@ def _skill_dir_names(root: Path) -> set[str]:
 async def test_sdk_self_gen_runs_creator_then_solver_in_one_trial_with_isolated_contexts(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Guards PR #233: self-gen is one BYOS-style trial with two scenes."""
+    """Guards PR #233: self-gen uses two scenes and scene-local skill activation."""
     task = _make_task(tmp_path)
     skill_creator_root = _make_skill_creator_root(tmp_path)
     original_skills = tmp_path / "original-skills"
@@ -137,6 +137,9 @@ async def test_sdk_self_gen_runs_creator_then_solver_in_one_trial_with_isolated_
             {"timeout_sec": 10},
         )
     ]
+    assert all("/root/generated-skills" not in cmd for cmd, _ in env_commands)
+    assert all("/root/skills" not in cmd for cmd, _ in env_commands)
+    assert all("/app/workspace/generated-skills" not in cmd for cmd, _ in env_commands)
 
     assert [scene.name for scene in trial_cfg.scenes] == [
         "self-gen-creator",
@@ -210,6 +213,7 @@ async def test_job_self_gen_uses_strict_orchestration(
         "self-gen-creator",
         "self-gen-solver",
     ]
+    assert seen_configs[0].scenes[1].skills_dir == "/app/generated-skills"
 
 
 @pytest.mark.asyncio

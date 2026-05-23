@@ -332,6 +332,16 @@ class _DaytonaDirect(_DaytonaStrategy):
                 f"and cannot target service {service!r}. Multi-container "
                 "(vulhub-style) tasks require a docker-compose.yaml (#248)."
             )
+        prep_result = await self._env._sandbox_exec(
+            f"mkdir -p {shlex.quote(target_dir)}",
+            timeout_sec=30,
+            user="root",
+        )
+        if prep_result.return_code != 0:
+            raise RuntimeError(
+                "Daytona direct upload_dir destination prep failed: "
+                f"{_exec_failure_output(prep_result)}"
+            )
         await self._env._sdk_upload_dir(source_dir, target_dir)
 
     async def download_file(self, source_path: str, target_path: Path | str) -> None:

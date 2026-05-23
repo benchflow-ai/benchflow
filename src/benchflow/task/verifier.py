@@ -21,7 +21,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from benchflow.rewards.validation import is_valid_reward_number, validate_reward_map
-from benchflow.sandbox.lockdown import _CLEAR_VERIFIER_DIR_CMD, _exec_failure_detail
+from benchflow.sandbox.lockdown import clear_verifier_output_dir
 from benchflow.task.env import resolve_env_vars
 from benchflow.task.paths import RolloutPaths, SandboxPaths
 
@@ -167,18 +167,15 @@ class Verifier:
             self._sandbox, "is_mounted", False
         )
         if not verifier_outputs_are_mounted:
-            result = await self._sandbox.exec(
-                _CLEAR_VERIFIER_DIR_CMD,
-                user="root",
-                service=service,
-                timeout_sec=10,
-            )
-            return_code = _exec_return_code(result)
-            if return_code != 0:
-                raise VerifierOutputParseError(
-                    "Verifier setup failed: clearing verifier output directory "
-                    f"exited with rc={return_code}{_exec_failure_detail(result)}"
+            try:
+                await clear_verifier_output_dir(
+                    self._sandbox,
+                    user="root",
+                    service=service,
+                    timeout_sec=10,
                 )
+            except RuntimeError as e:
+                raise VerifierOutputParseError(str(e)) from e
 
         try:
             await self._sandbox.upload_dir(

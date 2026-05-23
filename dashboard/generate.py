@@ -31,6 +31,7 @@ import re
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from types import ModuleType
@@ -170,30 +171,31 @@ def _memory_score_from_result(result: dict) -> float | None:
     return _load_reward_events_module().memory_score_from_result(result)
 
 
-def _jobs_tree_has_rollouts(jobs: Path) -> bool:
-    if not jobs.is_dir():
-        return False
-    with contextlib.suppress(Exception):
-        return any(
-            p.name in {"result.json", "config.json", "timing.json", "prompts.json"}
-            for p in jobs.rglob("*")
-            if p.is_file()
-        )
-    return False
-
-
-def _remembered_jobs_root() -> Path | None:
-    if not OUT.is_file():
+def remembered_jobs_root(out: Path) -> Path | None:
+    if not out.is_file():
         return None
     with contextlib.suppress(Exception):
-        data = json.loads(OUT.read_text())
+        data = json.loads(out.read_text())
         raw = ((data.get("jobs") or {}).get("source") or {}).get("path")
         if not raw:
             return None
         remembered = Path(str(raw)).expanduser().resolve()
-        if remembered.is_dir() and _jobs_tree_has_rollouts(remembered):
+        if remembered.is_dir() and jobs_tree_has_rollouts(remembered):
             return remembered
     return None
+
+
+def resolve_dashboard_jobs_root(root: Path, out: Path, raw: str | None = None) -> Path:
+    raw = os.environ.get(JOBS_ROOT_ENV) if raw is None else raw
+    if not raw:
+        local_jobs = root / "jobs"
+        if jobs_tree_has_rollouts(local_jobs):
+            return local_jobs
+        return remembered_jobs_root(out) or local_jobs
+    candidate = Path(raw).expanduser()
+    if candidate.name != "jobs" and (candidate / "jobs").is_dir():
+        candidate = candidate / "jobs"
+    return candidate.resolve()
 
 
 def dashboard_jobs_root() -> Path:
@@ -203,16 +205,7 @@ def dashboard_jobs_root() -> Path:
     from the run-producing worktree. Operators can point the dashboard at
     either that worktree root or at its ``jobs/`` directory directly.
     """
-    raw = os.environ.get(JOBS_ROOT_ENV)
-    if not raw:
-        local_jobs = ROOT / "jobs"
-        if _jobs_tree_has_rollouts(local_jobs):
-            return local_jobs
-        return _remembered_jobs_root() or local_jobs
-    candidate = Path(raw).expanduser()
-    if candidate.name != "jobs" and (candidate / "jobs").is_dir():
-        candidate = candidate / "jobs"
-    return candidate.resolve()
+    return resolve_dashboard_jobs_root(ROOT, OUT)
 
 
 def _jobs_source(jobs: Path) -> dict:
@@ -617,13 +610,39 @@ def _task_record(d: Path) -> tuple[dict, RunTaskEvidence]:
     return task, _task_visibility_evidence(d, task, result, config)
 
 
-def _run_summary(run_dir: Path, group_dir: Path, n_group_runs: int) -> dict:
-    summary = _read_json(run_dir / "summary.json")
-    if summary:
-        return summary
-    if n_group_runs == 1:
-        return _read_json(group_dir / "summary.json")
+@dataclass(frozen=True)
+class RunRecord:
+    id: str
+    run_dir: Path
+    task_dirs: list[Path]
+    summary_dir: Path | None = None
+
+
+def _run_summary(run: RunRecord) -> dict:
+    for summary_dir in (run.run_dir, run.summary_dir):
+        if summary_dir is None:
+            continue
+        summary = _read_json(summary_dir / "summary.json")
+        if summary:
+            return summary
     return {}
+
+
+def _run_summary_row(summary: dict) -> dict:
+    keys = (
+        "total",
+        "passed",
+        "failed",
+        "errored",
+        "verifier_errored",
+        "score",
+        "score_excl_errors",
+        "concurrency",
+        "agent",
+        "model",
+        "environment",
+    )
+    return {key: summary[key] for key in keys if key in summary}
 
 
 def _is_task_dir(d: Path) -> bool:
@@ -650,6 +669,117 @@ def _is_task_dir(d: Path) -> bool:
     )
 
 
+def _task_dirs(run_dir: Path) -> list[Path]:
+    return [c for c in sorted(run_dir.iterdir()) if c.is_dir() and _is_task_dir(c)]
+
+
+_IGNORED_JOB_DIR_NAMES = {"configs", "_self_gen", "notes", "__pycache__"}
+
+
+def _is_ignored_jobs_dir(d: Path) -> bool:
+    return d.name in _IGNORED_JOB_DIR_NAMES or d.name.startswith(".")
+
+
+def _job_child_dirs(root: Path) -> list[Path]:
+    return [
+        child
+        for child in sorted(root.iterdir())
+        if child.is_dir() and not _is_ignored_jobs_dir(child)
+    ]
+
+
+def _nested_run_dirs(root: Path, group_dir: Path) -> list[RunRecord]:
+    """Return explicit parent/timestamp and parent/mode/timestamp run dirs.
+
+    The dashboard intentionally does not recurse arbitrary helper trees. Nested
+    runs are used for bounded benchmark comparisons such as
+    ``e2e/<experiment>/<timestamp>/<task rollout>`` and
+    ``e2e/<experiment>/<mode>/<timestamp>/<task rollout>``.
+    """
+    runs: list[RunRecord] = []
+    if (root / "summary.json").is_file():
+        for run_dir in sorted(root.iterdir()):
+            if not run_dir.is_dir() or _is_ignored_jobs_dir(run_dir):
+                continue
+            if not TS_RE.match(run_dir.name):
+                continue
+            task_dirs = _task_dirs(run_dir)
+            if task_dirs:
+                runs.append(
+                    RunRecord(
+                        id=run_dir.relative_to(group_dir).as_posix(),
+                        run_dir=run_dir,
+                        task_dirs=task_dirs,
+                        summary_dir=root,
+                    )
+                )
+    for mode_dir in sorted(root.iterdir()):
+        if not mode_dir.is_dir() or _is_ignored_jobs_dir(mode_dir):
+            continue
+        if not (mode_dir / "summary.json").is_file():
+            continue
+        for run_dir in sorted(mode_dir.iterdir()):
+            if not run_dir.is_dir() or _is_ignored_jobs_dir(run_dir):
+                continue
+            if not TS_RE.match(run_dir.name):
+                continue
+            task_dirs = _task_dirs(run_dir)
+            if task_dirs:
+                runs.append(
+                    RunRecord(
+                        id=run_dir.relative_to(group_dir).as_posix(),
+                        run_dir=run_dir,
+                        task_dirs=task_dirs,
+                        summary_dir=mode_dir,
+                    )
+                )
+    return runs
+
+
+def jobs_tree_runs(jobs: Path) -> dict[str, list[RunRecord]]:
+    """Return the canonical dashboard groups/runs grammar for a jobs tree."""
+    groups: dict[str, list[RunRecord]] = {}
+    if not jobs.is_dir():
+        return groups
+
+    for top in _job_child_dirs(jobs):
+        if TS_RE.match(top.name):
+            groups.setdefault("main", []).append(
+                RunRecord(id=top.name, run_dir=top, task_dirs=_task_dirs(top))
+            )
+            continue
+
+        runs = groups.setdefault(top.name, [])
+        direct: list[Path] = []
+        for child in _job_child_dirs(top):
+            if _is_task_dir(child):
+                direct.append(child)
+                continue
+            task_dirs = _task_dirs(child)
+            if task_dirs:
+                runs.append(RunRecord(id=child.name, run_dir=child, task_dirs=task_dirs))
+                continue
+            nested_runs = _nested_run_dirs(child, top)
+            if nested_runs:
+                runs.extend(nested_runs)
+            else:
+                runs.append(RunRecord(id=child.name, run_dir=child, task_dirs=[]))
+        if direct:
+            runs.append(
+                RunRecord(id="(tasks)", run_dir=top, task_dirs=direct, summary_dir=top)
+            )
+    return groups
+
+
+def jobs_tree_has_rollouts(jobs: Path) -> bool:
+    """Return true when ``jobs`` contains a shape ``collect_jobs`` can collect."""
+    with contextlib.suppress(Exception):
+        return any(
+            run.task_dirs for runs in jobs_tree_runs(jobs).values() for run in runs
+        )
+    return False
+
+
 def collect_jobs() -> dict:
     """Scan jobs/ into groups → runs → tasks, mirroring the folder layout."""
     jobs = dashboard_jobs_root()
@@ -664,42 +794,7 @@ def collect_jobs() -> dict:
             "source": source,
         }
 
-    # group name -> { run id -> [task dirs] }, plus paths for run-level evidence.
-    groups: dict[str, dict[str, list[Path]]] = {}
-    run_dirs: dict[tuple[str, str], Path] = {}
-    group_dirs: dict[str, Path] = {}
-    for top in sorted(jobs.iterdir()):
-        if not top.is_dir():
-            continue
-        if TS_RE.match(top.name):
-            # an ungrouped run directly under jobs/
-            runs = groups.setdefault("main", {})
-            runs[top.name] = [
-                c for c in sorted(top.iterdir()) if c.is_dir() and _is_task_dir(c)
-            ]
-            group_dirs.setdefault("main", jobs)
-            run_dirs[("main", top.name)] = top
-        else:
-            # a named group: e2e / e2e-branch / environment. Its children
-            # are either run dirs (holding task dirs) or task dirs directly.
-            runs = groups.setdefault(top.name, {})
-            group_dirs[top.name] = top
-            direct: list[Path] = []
-            for child in sorted(top.iterdir()):
-                if not child.is_dir():
-                    continue
-                if _is_task_dir(child):
-                    direct.append(child)
-                else:
-                    runs[child.name] = [
-                        c
-                        for c in sorted(child.iterdir())
-                        if c.is_dir() and _is_task_dir(c)
-                    ]
-                    run_dirs[(top.name, child.name)] = child
-            if direct:
-                runs["(tasks)"] = direct
-                run_dirs[(top.name, "(tasks)")] = top
+    groups = jobs_tree_runs(jobs)
 
     total = 0
     archived_tasks = 0
@@ -712,21 +807,18 @@ def collect_jobs() -> dict:
             name, {"label": name, "blurb": "", "capability": None, "advisories": []}
         )
         run_list: list[dict] = []
-        n_group_runs = len(groups[name])
-        group_dir = group_dirs.get(name, jobs / name)
-        for run_id in sorted(groups[name], reverse=True):
-            task_dirs = groups[name][run_id]
+        for run in sorted(groups[name], key=lambda item: item.id, reverse=True):
+            task_dirs = run.task_dirs
             records = [_task_record(d) for d in task_dirs]
             tasks = [task for task, _evidence in records]
             task_evidence = [evidence for _task, evidence in records]
             total_runs += 1
-            run_dir = run_dirs.get((name, run_id), group_dir / run_id)
-            summary = _run_summary(run_dir, group_dir, n_group_runs)
+            summary = _run_summary(run)
             visibility = decide_run_visibility(
                 RunVisibilityContext(
                     group_name=name,
-                    run_id=run_id,
-                    run_path=run_dir.as_posix(),
+                    run_id=run.id,
+                    run_path=run.run_dir.as_posix(),
                     summary=summary,
                     tasks=task_evidence,
                 )
@@ -738,12 +830,13 @@ def collect_jobs() -> dict:
             total += len(tasks)
             run_list.append(
                 {
-                    "id": run_id,
+                    "id": run.id,
                     "latest_modified_at": _latest_timestamp(
                         [task.get("latest_modified_at") for task in tasks]
                     ),
                     "signals": list(visibility.signals),
                     "targets": list(visibility.targets),
+                    "summary": _run_summary_row(summary),
                     "tasks": tasks,
                 }
             )
@@ -1293,9 +1386,9 @@ def main() -> int:
     print(f"wrote {OUT.relative_to(ROOT)}")
     print(
         f"  tests: {s['passed']}p/{s['failed']}f/{s['skipped']}s   "
-        f"jobs: {jobs['total_tasks']} tasks in {len(jobs['groups'])} groups   "
+        f"jobs: {jobs['total_tasks']} rollout rows in {len(jobs['groups'])} groups   "
         f"archived: {jobs.get('archived_runs', 0)} runs/"
-        f"{jobs.get('archived_tasks', 0)} tasks   "
+        f"{jobs.get('archived_tasks', 0)} rollout rows   "
         f"experiments: {len(experiments)}   "
         f"capabilities: {data['summary']['capabilities_shipped']}/"
         f"{data['summary']['capabilities_total']}"
