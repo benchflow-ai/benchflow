@@ -716,8 +716,9 @@ def _nested_run_dirs(root: Path, group_dir: Path) -> list[RunRecord]:
     for mode_dir in sorted(root.iterdir()):
         if not mode_dir.is_dir() or _is_ignored_jobs_dir(mode_dir):
             continue
-        if not (mode_dir / "summary.json").is_file():
+        if TS_RE.match(mode_dir.name):
             continue
+        mode_summary_dir = mode_dir if (mode_dir / "summary.json").is_file() else None
         for run_dir in sorted(mode_dir.iterdir()):
             if not run_dir.is_dir() or _is_ignored_jobs_dir(run_dir):
                 continue
@@ -730,7 +731,7 @@ def _nested_run_dirs(root: Path, group_dir: Path) -> list[RunRecord]:
                         id=run_dir.relative_to(group_dir).as_posix(),
                         run_dir=run_dir,
                         task_dirs=task_dirs,
-                        summary_dir=mode_dir,
+                        summary_dir=mode_summary_dir,
                     )
                 )
     return runs
@@ -762,8 +763,6 @@ def jobs_tree_runs(jobs: Path) -> dict[str, list[RunRecord]]:
             nested_runs = _nested_run_dirs(child, top)
             if nested_runs:
                 runs.extend(nested_runs)
-            else:
-                runs.append(RunRecord(id=child.name, run_dir=child, task_dirs=[]))
         if direct:
             runs.append(
                 RunRecord(id="(tasks)", run_dir=top, task_dirs=direct, summary_dir=top)
