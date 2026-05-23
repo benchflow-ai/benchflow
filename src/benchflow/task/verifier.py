@@ -21,7 +21,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from benchflow.rewards.validation import is_valid_reward_number, validate_reward_map
-from benchflow.sandbox.lockdown import clear_verifier_output_dir
+from benchflow.sandbox.lockdown import _exec_return_code, clear_verifier_output_dir
 from benchflow.task.env import resolve_env_vars
 from benchflow.task.paths import RolloutPaths, SandboxPaths
 
@@ -383,13 +383,3 @@ class Verifier:
             json.dumps({"reward": score}, indent=2, allow_nan=False)
         )
         return VerifierResult(rewards={"reward": score})
-
-
-def _exec_return_code(result: Any) -> int:
-    if result is None:
-        return 0
-    for name in ("return_code", "exit_code"):
-        value = getattr(result, name, None)
-        if isinstance(value, int) and not isinstance(value, bool):
-            return value
-    return 0
