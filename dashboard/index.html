@@ -1444,7 +1444,7 @@ function runNode(run, firstPath) {
   const summaryBits = [];
   if (summary.total != null && Number(summary.total) !== (run.tasks || []).length)
     summaryBits.push(`${summary.total} benchmark tasks`);
-  if (summary.score) summaryBits.push(`score ${summary.score}`);
+  if (summary.score != null) summaryBits.push(`score ${summary.score}`);
   if (summary.passed != null || summary.failed != null || summary.errored != null || summary.verifier_errored != null)
     summaryBits.push(`${summary.passed || 0} pass/${summary.failed || 0} fail/${summary.errored || 0} err/${summary.verifier_errored || 0} verifier`);
   return {
