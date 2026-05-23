@@ -473,6 +473,137 @@ class TestEvalCreateRouting:
         assert "no summary" not in result.stdout
 
 
+class TestEvalCreateIncludeExclude:
+    """Guards ENG-159: --include and --exclude flags wire through to EvaluationConfig."""
+
+    def test_eval_create_include_via_tasks_dir(self, tmp_path: Path):
+        """Guards ENG-159: --include reaches EvaluationConfig for --tasks-dir batch runs."""
+        from types import SimpleNamespace
+
+        from benchflow.cli.main import eval_create
+        from benchflow.evaluation import Evaluation
+
+        tasks = tmp_path / "tasks"
+        tasks.mkdir()
+        (tasks / "task-a").mkdir()
+        (tasks / "task-a" / "task.toml").write_text('schema_version = "1.1"\n')
+        (tasks / "task-b").mkdir()
+        (tasks / "task-b" / "task.toml").write_text('schema_version = "1.1"\n')
+        captured = {}
+
+        async def fake_run(self):
+            captured["include"] = self._config.include_tasks
+            captured["exclude"] = self._config.exclude_tasks
+            return SimpleNamespace(passed=0, total=0, score=0.0, errored=0)
+
+        with patch.object(Evaluation, "run", new=fake_run):
+            eval_create(
+                config_file=None,
+                tasks_dir=tasks,
+                source_repo=None,
+                source_path=None,
+                source_ref=None,
+                agent="oracle",
+                model=None,
+                environment="docker",
+                concurrency=1,
+                jobs_dir=str(tmp_path / "jobs"),
+                sandbox_user="agent",
+                sandbox_setup_timeout=120,
+                skills_dir=None,
+                skill_mode="default",
+                skill_creator_dir=None,
+                self_gen_no_internet=False,
+                agent_env=None,
+                include=["task-a"],
+                exclude=["task-b"],
+            )
+
+        assert captured["include"] == {"task-a"}
+        assert captured["exclude"] == {"task-b"}
+
+    def test_eval_create_include_overrides_yaml(self, tmp_path: Path):
+        """Guards ENG-159: CLI --include overrides YAML include list."""
+        from types import SimpleNamespace
+
+        from benchflow.cli.main import eval_create
+        from benchflow.evaluation import Evaluation
+
+        tasks = tmp_path / "tasks"
+        tasks.mkdir()
+        config = tmp_path / "config.yaml"
+        config.write_text(
+            f"tasks_dir: {tasks}\nagent: oracle\ninclude:\n  - yaml-task\n"
+        )
+        captured = {}
+
+        async def fake_run(self):
+            captured["include"] = self._config.include_tasks
+            return SimpleNamespace(passed=0, total=0, score=0.0, errored=0)
+
+        with patch.object(Evaluation, "run", new=fake_run):
+            eval_create(config_file=config, include=["cli-task"])
+
+        assert captured["include"] == {"cli-task"}
+
+    def test_eval_create_no_include_preserves_yaml(self, tmp_path: Path):
+        """Guards ENG-159: without CLI --include, YAML include list is preserved."""
+        from types import SimpleNamespace
+
+        from benchflow.cli.main import eval_create
+        from benchflow.evaluation import Evaluation
+
+        tasks = tmp_path / "tasks"
+        tasks.mkdir()
+        config = tmp_path / "config.yaml"
+        config.write_text(
+            f"tasks_dir: {tasks}\nagent: oracle\ninclude:\n  - yaml-task\n"
+        )
+        captured = {}
+
+        async def fake_run(self):
+            captured["include"] = self._config.include_tasks
+            return SimpleNamespace(passed=0, total=0, score=0.0, errored=0)
+
+        with patch.object(Evaluation, "run", new=fake_run):
+            eval_create(config_file=config)
+
+        assert captured["include"] == {"yaml-task"}
+
+    def test_eval_create_cli_runner_include_flag(self, tmp_path: Path):
+        """Guards ENG-159: --include flag works via CliRunner end-to-end."""
+        from types import SimpleNamespace
+
+        from benchflow.cli.main import app
+        from benchflow.evaluation import Evaluation
+
+        tasks = tmp_path / "tasks"
+        tasks.mkdir()
+        (tasks / "task-a").mkdir()
+        (tasks / "task-a" / "task.toml").write_text('schema_version = "1.1"\n')
+        captured = {}
+
+        async def fake_run(self):
+            captured["include"] = self._config.include_tasks
+            captured["exclude"] = self._config.exclude_tasks
+            return SimpleNamespace(passed=0, total=0, score=0.0, errored=0)
+
+        with patch.object(Evaluation, "run", new=fake_run):
+            result = CliRunner().invoke(
+                app,
+                [
+                    "eval", "create",
+                    "--tasks-dir", str(tasks),
+                    "--include", "task-a",
+                    "--exclude", "task-b",
+                ],
+            )
+
+        assert result.exit_code == 0
+        assert captured["include"] == {"task-a"}
+        assert captured["exclude"] == {"task-b"}
+
+
 class TestEffectiveModel:
     """The helper introduced in Layer 3 — single source of truth for the rule
     "oracle never gets a model; non-oracle agents fall back to DEFAULT_MODEL"."""
