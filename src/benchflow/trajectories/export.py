@@ -29,7 +29,7 @@ import json
 import logging
 import math
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from benchflow.adapters.ors import ORSAdapter
 from benchflow.rewards.protocol import VerifyResult
@@ -235,10 +235,11 @@ def reward_map_to_verify_result(
         for i, item in enumerate(rubric):
             if not isinstance(item, dict):
                 continue
-            score = item.get("score")
+            rubric_item = cast(dict[str, Any], item)
+            score = rubric_item.get("score")
             if not isinstance(score, (int, float)) or isinstance(score, bool):
                 continue
-            name = str(item.get("name") or f"rubric_{i}")
+            name = str(rubric_item.get("name") or f"rubric_{i}")
             items[name] = float(score)
 
     return VerifyResult(reward=headline, items=items, error=error)
