@@ -146,3 +146,80 @@ class TestDaytonaExecEnvSecrecy:
         # the regression marker is ``env KEY=`` adjacency at a word boundary.)
         assert "env OPENAI_API_KEY=" not in cmd
         assert "env AUTHORIZATION=" not in cmd
+
+    @pytest.mark.asyncio
+    async def test_daytona_dind_exec_no_secret_in_argv(self) -> None:
+        """``_DaytonaDinD.exec`` must not emit ``docker compose exec -e K=V ...``.
+
+        The DinD strategy is the multi-service compose path: ``exec`` runs
+        ``docker compose exec -T -e KEY=VALUE ... <service> sh -c <command>``
+        inside the DinD VM. Putting ``-e KEY=VALUE`` flags on the argv leaks
+        every verifier env var (LLM judge API keys, agent tokens) into the
+        DinD VM process list and any provider-side command audit log on every
+        multi-service task. Regression for the #412 follow-up.
+        """
+        pytest.importorskip("daytona")  # sandbox-daytona optional dependency
+        from benchflow.sandbox._base import ExecResult
+        from benchflow.sandbox.daytona import _DaytonaDinD
+
+        strategy = _DaytonaDinD.__new__(_DaytonaDinD)
+        captured: list[list[str]] = []
+
+        async def fake_compose_exec(subcommand, timeout_sec=None):
+            captured.append(subcommand)
+            return ExecResult(stdout="", stderr="", return_code=0)
+
+        strategy._compose_exec = fake_compose_exec  # type: ignore[method-assign]
+
+        await strategy.exec(
+            "run-verifier",
+            env={"OPENAI_API_KEY": "sk-dind-leak", "AUTHORIZATION": "Bearer dind"},
+            service="main",
+        )
+
+        sub = captured[0]
+        # No raw secret values anywhere in the compose argv.
+        joined = " ".join(sub)
+        assert "sk-dind-leak" not in joined
+        assert "Bearer dind" not in joined
+        # And no ``-e KEY=VALUE`` flags at all — those are exactly what
+        # would land in ``ps`` and Daytona audit logs.
+        assert "-e" not in sub
+        assert not any(
+            token.startswith("OPENAI_API_KEY=") or token.startswith("AUTHORIZATION=")
+            for token in sub
+        )
+        # The wrapped command is still routed to the target container via
+        # ``sh -c <wrapper>`` and the wrapper sources an env file inside it.
+        assert sub[-3] == "sh"
+        assert sub[-2] == "-c"
+        wrapped = sub[-1]
+        assert wrapped.startswith("trap 'rm -f ")
+        assert "base64 -d" in wrapped
+        assert wrapped.endswith("run-verifier")
+
+    @pytest.mark.asyncio
+    async def test_daytona_dind_exec_without_env_unchanged(self) -> None:
+        """No env -> no wrapping; the user command is passed through verbatim.
+
+        Guards against the wrapper being applied for empty/None env (which
+        would change behavior unnecessarily and complicate debugging).
+        """
+        pytest.importorskip("daytona")
+        from benchflow.sandbox._base import ExecResult
+        from benchflow.sandbox.daytona import _DaytonaDinD
+
+        strategy = _DaytonaDinD.__new__(_DaytonaDinD)
+        captured: list[list[str]] = []
+
+        async def fake_compose_exec(subcommand, timeout_sec=None):
+            captured.append(subcommand)
+            return ExecResult(stdout="", stderr="", return_code=0)
+
+        strategy._compose_exec = fake_compose_exec  # type: ignore[method-assign]
+
+        await strategy.exec("echo hi", service="main")
+
+        sub = captured[0]
+        assert sub[-1] == "echo hi"
+        assert "-e" not in sub
