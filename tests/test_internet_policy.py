@@ -151,7 +151,7 @@ async def test_connect_as_applies_web_policy_to_role_env(tmp_path):
         patch("benchflow.rollout.resolve_agent_env", side_effect=fake_resolve),
         patch("benchflow.rollout.connect_acp") as connect_acp,
     ):
-        connect_acp.return_value = (MagicMock(), MagicMock(), "agent")
+        connect_acp.return_value = (MagicMock(), MagicMock(), MagicMock(), "agent")
         await trial.connect_as(cfg.scenes[0].roles[0])
 
     assert captured["env"]["BENCHFLOW_PROVIDER_BASE_URL"] == "http://localhost:8080/v1"
@@ -229,7 +229,7 @@ async def test_connect_as_applies_hard_web_policy_to_role_agent(tmp_path):
         ) as apply_policy,
         patch("benchflow.rollout.connect_acp", new=AsyncMock()) as connect_acp,
     ):
-        connect_acp.return_value = (MagicMock(), MagicMock(), "agent")
+        connect_acp.return_value = (MagicMock(), MagicMock(), MagicMock(), "agent")
         await trial.connect_as(role)
 
     apply_policy.assert_awaited_once()

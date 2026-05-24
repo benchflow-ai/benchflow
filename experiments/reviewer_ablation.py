@@ -156,7 +156,7 @@ async def _run_acp(
     agent_env = resolve_agent_env(AGENT, MODEL, None)
     agent_env.pop("_BENCHFLOW_SUBSCRIPTION_AUTH", None)
     t0 = time.time()
-    acp_client, session, _ = await connect_acp(
+    acp_client, session, _adapter, _ = await connect_acp(
         env=env,
         agent=AGENT,
         agent_launch=launch_cmd,

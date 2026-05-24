@@ -81,7 +81,7 @@ async def _role_runner(env, role: SceneRole, prompt: str) -> None:
     agent_env = {}
     agent_launch = AGENT_LAUNCH.get(agent_name, agent_name)
 
-    client, session, _ = await connect_acp(
+    client, session, _adapter, _ = await connect_acp(
         env=env,
         agent=agent_name,
         agent_launch=agent_launch,
