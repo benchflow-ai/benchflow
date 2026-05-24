@@ -150,6 +150,12 @@ def _parse_role(raw: dict) -> Role:
         agent=raw["agent"],
         model=raw.get("model"),
         env=raw.get("env", {}),
+        timeout_sec=raw.get("timeout_sec"),
+        idle_timeout_sec=raw.get("idle_timeout_sec"),
+        skills_dir=raw.get("skills_dir"),
+        capabilities=raw.get("capabilities"),
+        transport=raw.get("transport", "acp"),
+        endpoint_url=raw.get("endpoint_url"),
     )
 
 

@@ -42,12 +42,13 @@ import contextlib
 import json
 import logging
 import os
+import posixpath
 import shlex
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from benchflow._types import Role, Scene, Turn
 from benchflow._utils.config import normalize_agent_name, normalize_sandbox_user
@@ -90,6 +91,9 @@ from benchflow.trajectories._capture import (
     _scrape_agent_trajectory,
 )
 
+if TYPE_CHECKING:
+    from benchflow.agents.a2a import A2AParticipantAdapter
+
 logger = logging.getLogger(__name__)
 
 _DISALLOW_WEB_TOOLS_ENV = "BENCHFLOW_DISALLOW_WEB_TOOLS"
@@ -109,6 +113,10 @@ def _apply_web_policy(agent_env: dict[str, str], *, disallow: bool) -> dict[str,
     if not disallow:
         return agent_env
     return {**agent_env, _DISALLOW_WEB_TOOLS_ENV: "1"}
+
+
+def _is_a2a_role(role: Role) -> bool:
+    return role.transport == "a2a"
 
 
 def _agent_launch_with_web_policy(agent: str, *, disallow: bool) -> str:
@@ -369,6 +377,8 @@ def _role_metadata(role: Role) -> dict[str, Any]:
         "idle_timeout_sec": role.idle_timeout_sec,
         "skills_dir": str(role.skills_dir) if role.skills_dir else None,
         "capabilities": role.capabilities,
+        "transport": role.transport,
+        "endpoint_url": role.endpoint_url if role.transport == "a2a" else None,
         "env_keys": sorted(role.env),
     }
 
@@ -387,6 +397,26 @@ def _scene_metadata(scenes: list[Scene]) -> list[dict[str, Any]]:
         }
         for scene in scenes
     ]
+
+
+def _split_protocol_trajectory(
+    trajectory: list[dict],
+) -> tuple[list[dict], list[dict]]:
+    a2a = [
+        event
+        for event in trajectory
+        if isinstance(event, dict) and event.get("protocol") == "a2a"
+    ]
+    acp = [
+        event
+        for event in trajectory
+        if not (isinstance(event, dict) and event.get("protocol") == "a2a")
+    ]
+    return acp, a2a
+
+
+def _write_jsonl(path: Path, events: list[dict]) -> None:
+    path.write_text("\n".join(json.dumps(e, default=str) for e in events))
 
 
 def _build_rollout_result(
@@ -448,9 +478,11 @@ def _build_rollout_result(
     timing = {k: round(v, 1) for k, v in timing.items()}
     traj_dir = rollout_dir / "trajectory"
     traj_dir.mkdir(parents=True, exist_ok=True)
-    (traj_dir / "acp_trajectory.jsonl").write_text(
-        "\n".join(json.dumps(e, default=str) for e in trajectory)
-    )
+    acp_trajectory, a2a_trajectory = _split_protocol_trajectory(trajectory)
+    if a2a_trajectory:
+        _write_jsonl(traj_dir / "a2a_trajectory.jsonl", a2a_trajectory)
+    if acp_trajectory or not a2a_trajectory:
+        _write_jsonl(traj_dir / "acp_trajectory.jsonl", acp_trajectory)
     rollout_dir.mkdir(parents=True, exist_ok=True)
     (rollout_dir / "result.json").write_text(
         json.dumps(
@@ -619,8 +651,10 @@ async def _run_oracle(
     return trajectory, "oracle"
 
 
-async def _publish_trajectory_for_verifier(env, trajectory: list[dict]) -> None:
-    """Make the captured ACP trajectory available inside /logs for verifiers."""
+async def _publish_trajectory_for_verifier(
+    env, trajectory: list[dict], filename: str = "acp_trajectory.jsonl"
+) -> None:
+    """Make a captured participant trajectory available inside /logs for verifiers."""
     if not trajectory:
         return
     await env.exec("mkdir -p /logs/agent", user="root", timeout_sec=10)
@@ -629,7 +663,7 @@ async def _publish_trajectory_for_verifier(env, trajectory: list[dict]) -> None:
         f.write("\n")
         tmp_path = f.name
     try:
-        await env.upload_file(tmp_path, "/logs/agent/acp_trajectory.jsonl")
+        await env.upload_file(tmp_path, f"/logs/agent/{filename}")
     finally:
         with contextlib.suppress(FileNotFoundError):
             os.unlink(tmp_path)
@@ -737,6 +771,7 @@ class RolloutConfig:
     include_task_skills: bool = True
     skip_verify: bool = False
     export_generated_skills_to: str | Path | None = None
+    a2a_adapter: A2AParticipantAdapter | None = None
 
     def __post_init__(self) -> None:
         self.agent = normalize_agent_name(self.agent)
@@ -744,6 +779,8 @@ class RolloutConfig:
         for scene in self.scenes:
             for role in scene.roles:
                 role.agent = normalize_agent_name(role.agent)
+                if role.transport not in {"acp", "a2a"}:
+                    raise ValueError(f"Unknown role transport: {role.transport}")
 
     @classmethod
     def from_legacy(
@@ -821,6 +858,15 @@ class RolloutConfig:
             return scenes[0].roles[0].model
         return self.model
 
+    @property
+    def first_acp_role(self) -> Role | None:
+        """First role that still uses BenchFlow's ACP coding-agent transport."""
+        for scene in self.effective_scenes:
+            for role in scene.roles:
+                if role.transport == "acp":
+                    return role
+        return None
+
 
 class Rollout:
     """Decomposed trial lifecycle with independently-callable phases."""
@@ -859,6 +905,8 @@ class Rollout:
 
         # Populated by execute()
         self._trajectory: list[dict] = []
+        self._a2a_adapter: A2AParticipantAdapter | None = config.a2a_adapter
+        self._a2a_artifacts: list[dict[str, Any]] = []
         self._n_tool_calls: int = 0
         self._trajectory_source: TrajectorySource | None = None
         self._partial_trajectory: bool = False
@@ -939,13 +987,24 @@ class Rollout:
             self._rollout_name,
         ) = _init_rollout(cfg.task_path, cfg.job_name, cfg.rollout_name, cfg.jobs_dir)
 
+        first_acp_role = cfg.first_acp_role
+        env_agent = first_acp_role.agent if first_acp_role else cfg.primary_agent
+        env_model = first_acp_role.model if first_acp_role else cfg.primary_model
+        env_overrides = {**(cfg.agent_env or {})}
+        if first_acp_role:
+            env_overrides.update(first_acp_role.env or {})
         self._disallow_web_tools = (
-            _task_disallows_internet(self._task) or cfg.self_gen_no_internet
-        ) and cfg.primary_agent != "oracle"
-        self._agent_env = _apply_web_policy(
-            resolve_agent_env(cfg.primary_agent, cfg.primary_model, cfg.agent_env),
-            disallow=self._disallow_web_tools,
+            (_task_disallows_internet(self._task) or cfg.self_gen_no_internet)
+            and env_agent != "oracle"
+            and first_acp_role is not None
         )
+        if first_acp_role:
+            self._agent_env = _apply_web_policy(
+                resolve_agent_env(env_agent, env_model, env_overrides),
+                disallow=self._disallow_web_tools,
+            )
+        else:
+            self._agent_env = dict(cfg.agent_env or {})
         self._resolved_prompts = _resolve_prompts(
             cfg.task_path,
             cfg.prompts,
@@ -953,9 +1012,13 @@ class Rollout:
             skill_nudge=_skill_nudge(cfg.agent_env),
             agent=cfg.primary_agent,
         )
-        self._agent_launch = _agent_launch_with_web_policy(
-            cfg.primary_agent,
-            disallow=self._disallow_web_tools,
+        self._agent_launch = (
+            _agent_launch_with_web_policy(
+                env_agent,
+                disallow=self._disallow_web_tools,
+            )
+            if first_acp_role
+            else ""
         )
 
         # Copy task dir to temp when Dockerfile mutations are needed
@@ -1064,7 +1127,39 @@ class Rollout:
             self._phase = "installed"
             return
 
-        agent_name = cfg.primary_agent
+        install_role = cfg.first_acp_role
+        if install_role is None:
+            if cfg.sandbox_user:
+                self._agent_cwd = await setup_sandbox_user(
+                    self._env,
+                    cfg.sandbox_user,
+                    workspace=self._agent_cwd,
+                    timeout_sec=cfg.sandbox_setup_timeout,
+                )
+            await _snapshot_build_config(self._env, workspace=self._agent_cwd)
+            await _seed_verifier_workspace(
+                self._env, workspace=self._agent_cwd, sandbox_user=cfg.sandbox_user
+            )
+            await deploy_skills(
+                self._env,
+                getattr(self, "_effective_task_path", cfg.task_path),
+                cfg.skills_dir,
+                None,
+                cfg.sandbox_user,
+                self._agent_cwd,
+                self._task,
+                include_task_skills=cfg.include_task_skills,
+            )
+            if cfg.export_generated_skills_to:
+                await _ensure_sandbox_dir(
+                    self._env, cfg.generated_skills_root, cfg.sandbox_user
+                )
+            await lockdown_paths(self._env, self._effective_locked)
+            self._phase = "installed"
+            return
+
+        agent_name = install_role.agent
+        agent_model = install_role.model
         self._agent_cfg = await install_agent(self._env, agent_name, rollout_dir)
         if cfg.sandbox_user:
             self._agent_cwd = await setup_sandbox_user(
@@ -1079,7 +1174,7 @@ class Rollout:
             agent_name,
             self._agent_env,
             self._agent_cfg,
-            cfg.primary_model,
+            agent_model,
             cred_home,
         )
         if self._agent_env.get("_BENCHFLOW_SUBSCRIPTION_AUTH"):
@@ -1241,7 +1336,13 @@ class Rollout:
                     f"Using scraped trajectory ({len(scraped)} events) — UNTRUSTED"
                 )
 
-        await _publish_trajectory_for_verifier(self._env, self._trajectory)
+        acp_trajectory, a2a_trajectory = _split_protocol_trajectory(self._trajectory)
+        await _publish_trajectory_for_verifier(
+            self._env, acp_trajectory, "acp_trajectory.jsonl"
+        )
+        await _publish_trajectory_for_verifier(
+            self._env, a2a_trajectory, "a2a_trajectory.jsonl"
+        )
 
         self._rewards, self._verifier_error = await _verify_rollout(
             self._env,
@@ -1516,6 +1617,265 @@ class Rollout:
                 self._config.sandbox_user,
             )
 
+    def _get_a2a_adapter(self) -> A2AParticipantAdapter:
+        if self._a2a_adapter is None:
+            from benchflow.agents.a2a import A2AClientParticipantAdapter
+
+            self._a2a_adapter = A2AClientParticipantAdapter()
+        return self._a2a_adapter
+
+    def _a2a_request_for_role(
+        self,
+        role: Role,
+        scene: Scene,
+        prompts: list[str],
+    ):
+        if not role.endpoint_url:
+            raise ValueError(f"A2A role {role.name!r} requires endpoint_url")
+        from benchflow.agents.a2a import A2AParticipantRequest
+
+        skills_dir = role.skills_dir or scene.skills_dir or self._config.skills_dir
+        if skills_dir is None and self._config.include_task_skills:
+            skills_dir = "/app/skills"
+        timeout = role.timeout_sec if role.timeout_sec is not None else self._timeout
+        idle_timeout = (
+            role.idle_timeout_sec
+            if role.idle_timeout_sec is not None
+            else self._config.agent_idle_timeout
+        )
+        return A2AParticipantRequest(
+            endpoint_url=role.endpoint_url,
+            role_name=role.name,
+            prompt="\n\n".join(prompts),
+            workspace=self._agent_cwd,
+            skills_dir=str(skills_dir) if skills_dir else None,
+            timeout_sec=timeout,
+            idle_timeout_sec=idle_timeout,
+            metadata={
+                "task_name": self._config.task_path.name,
+                "rollout_name": self._rollout_name,
+                "scene": scene.name,
+                "role": role.name,
+                "transport": role.transport,
+            },
+        )
+
+    async def _execute_a2a_turn(
+        self,
+        role: Role,
+        scene: Scene,
+        prompts: list[str],
+    ) -> None:
+        """Execute one role turn through the AgentBeats A2A participant adapter."""
+        from benchflow.agents.a2a import A2AParticipantResult, A2ATrajectoryEvent
+
+        adapter = self._get_a2a_adapter()
+        request = self._a2a_request_for_role(role, scene, prompts)
+        timeout = request.timeout_sec if request.timeout_sec is not None else None
+        t0 = datetime.now()
+        handle = await adapter.start(request)
+        self._append_a2a_event(
+            role,
+            scene,
+            handle.task_id,
+            A2ATrajectoryEvent(
+                kind="task_update",
+                payload={
+                    "status": "started",
+                    "endpoint_url": request.endpoint_url,
+                    "workspace": request.workspace,
+                    "skills_dir": request.skills_dir,
+                },
+            ),
+        )
+        try:
+            result = await asyncio.wait_for(adapter.wait(handle), timeout=timeout)
+        except TimeoutError:
+            await adapter.cancel(handle, "timeout")
+            result = A2AParticipantResult(
+                status="timeout",
+                trajectory=(
+                    A2ATrajectoryEvent(
+                        kind="error",
+                        payload={
+                            "error_type": "a2a_timeout",
+                            "timeout_sec": timeout,
+                        },
+                    ),
+                ),
+                error_type="a2a_timeout",
+            )
+
+        for event in result.trajectory:
+            self._append_a2a_event(role, scene, handle.task_id, event)
+        self._append_a2a_event(
+            role,
+            scene,
+            handle.task_id,
+            A2ATrajectoryEvent(
+                kind="task_update",
+                payload={"status": result.status, "error_type": result.error_type},
+            ),
+        )
+        await self._materialize_a2a_files(role, scene, handle.task_id, result)
+        self._persist_a2a_artifacts(role, scene, handle.task_id, result)
+        if result.final_response is not None:
+            self._append_a2a_event(
+                role,
+                scene,
+                handle.task_id,
+                A2ATrajectoryEvent(
+                    kind="final_response",
+                    payload=dict(result.final_response),
+                ),
+            )
+
+        if result.status != "completed":
+            self._error = result.error_type or f"a2a_{result.status}"
+        self._agent_name = role.agent or role.name
+        self._trajectory_source = (
+            "a2a" if self._trajectory_source is None else self._trajectory_source
+        )
+        if "agent_execution" not in self._timing:
+            self._timing["agent_execution"] = (datetime.now() - t0).total_seconds()
+        self._phase = "executed"
+
+    def _append_a2a_event(
+        self,
+        role: Role,
+        scene: Scene,
+        task_id: str,
+        event: Any,
+    ) -> None:
+        payload = dict(getattr(event, "payload", {}) or {})
+        self._trajectory.append(
+            {
+                "protocol": "a2a",
+                "type": getattr(event, "kind", "task_update"),
+                "timestamp": getattr(event, "timestamp", None),
+                "task_id": task_id,
+                "scene": scene.name,
+                "role": role.name,
+                "participant": role.agent,
+                "payload": payload,
+            }
+        )
+
+    def _persist_a2a_artifacts(
+        self,
+        role: Role,
+        scene: Scene,
+        task_id: str,
+        result: Any,
+    ) -> None:
+        if not result.artifacts:
+            return
+        rollout_dir = self._require_rollout_dir()
+        artifact_dir = rollout_dir / "artifacts"
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        for artifact in result.artifacts:
+            data = {
+                **asdict(artifact),
+                "protocol": "a2a",
+                "task_id": task_id,
+                "scene": scene.name,
+                "role": role.name,
+            }
+            self._a2a_artifacts.append(data)
+        self._write_a2a_artifact_manifest()
+
+    async def _materialize_a2a_files(
+        self,
+        role: Role,
+        scene: Scene,
+        task_id: str,
+        result: Any,
+    ) -> None:
+        file_specs = list(self._iter_a2a_file_specs(result.final_response))
+        if not file_specs:
+            return
+        artifact_dir = self._require_rollout_dir() / "artifacts"
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        for index, spec in enumerate(file_specs):
+            raw_path = spec.get("path") or spec.get("name")
+            if not isinstance(raw_path, str) or not raw_path.strip():
+                raise ValueError("A2A file artifact requires a non-empty path")
+            remote_path = self._normalize_a2a_output_path(raw_path)
+            content = spec.get("content", "")
+            if not isinstance(content, str):
+                content = json.dumps(content, indent=2, sort_keys=True)
+            await self._upload_a2a_file(remote_path, content)
+            self._a2a_artifacts.append(
+                {
+                    "name": spec.get("name") or posixpath.basename(remote_path),
+                    "uri": f"sandbox://{remote_path}",
+                    "media_type": spec.get("media_type") or "text/plain",
+                    "digest": spec.get("digest"),
+                    "protocol": "a2a",
+                    "task_id": task_id,
+                    "scene": scene.name,
+                    "role": role.name,
+                    "materialized": True,
+                    "index": index,
+                }
+            )
+        self._write_a2a_artifact_manifest()
+
+    def _iter_a2a_file_specs(self, value: Any):
+        if isinstance(value, dict):
+            files = value.get("files")
+            if isinstance(files, list):
+                for item in files:
+                    if isinstance(item, dict):
+                        yield item
+            for key in ("data", "artifacts", "parts", "root"):
+                if key in value:
+                    yield from self._iter_a2a_file_specs(value[key])
+        elif isinstance(value, list):
+            for item in value:
+                yield from self._iter_a2a_file_specs(item)
+
+    def _normalize_a2a_output_path(self, path: str) -> str:
+        workspace = posixpath.normpath(self._agent_cwd or "/app")
+        candidate = (
+            posixpath.normpath(posixpath.join(workspace, path))
+            if not path.startswith("/")
+            else posixpath.normpath(path)
+        )
+        if candidate != workspace and not candidate.startswith(f"{workspace}/"):
+            raise ValueError(
+                "A2A materialized files must stay under the rollout workspace"
+            )
+        return candidate
+
+    async def _upload_a2a_file(self, remote_path: str, content: str) -> None:
+        parent = shlex.quote(posixpath.dirname(remote_path))
+        await self._env.exec(f"mkdir -p {parent}", user="root", timeout_sec=10)
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".a2a", delete=False) as f:
+            f.write(content)
+            tmp_path = f.name
+        try:
+            await self._env.upload_file(tmp_path, remote_path)
+        finally:
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(tmp_path)
+        if self._config.sandbox_user:
+            user = shlex.quote(self._config.sandbox_user)
+            await self._env.exec(
+                f"chown {user}:{user} {shlex.quote(remote_path)}",
+                user="root",
+                timeout_sec=10,
+            )
+
+    def _write_a2a_artifact_manifest(self) -> None:
+        if not self._a2a_artifacts:
+            return
+        artifact_dir = self._require_rollout_dir() / "artifacts"
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        (artifact_dir / "a2a_artifacts.json").write_text(
+            json.dumps(self._a2a_artifacts, indent=2, default=str)
+        )
+
     async def _run_scene(self, scene: Scene) -> None:
         """Execute one scene: for each turn, connect as the turn's role, execute, disconnect.
 
@@ -1534,6 +1894,7 @@ class Rollout:
 
         role_map = {r.name: r for r in scene.roles}
         current_role: str | None = None
+        current_transport: str | None = None
         multi_role = len(scene.roles) > 1
         scene_messages: list[dict] = []
 
@@ -1552,12 +1913,6 @@ class Rollout:
             if not role:
                 raise ValueError(f"Turn references unknown role {turn.role!r}")
 
-            if current_role != turn.role:
-                if current_role is not None:
-                    await self.disconnect()
-                await self.connect_as(role)
-                current_role = turn.role
-
             if turn.prompt:
                 base_prompt = turn.prompt
             elif self._resolved_prompts:
@@ -1574,7 +1929,20 @@ class Rollout:
             else:
                 prompts = [base_prompt]
 
-            await self.execute(prompts=prompts)
+            if _is_a2a_role(role):
+                if current_transport == "acp":
+                    await self.disconnect()
+                current_role = turn.role
+                current_transport = "a2a"
+                await self._execute_a2a_turn(role, scene, prompts)
+            else:
+                if current_role != turn.role or current_transport != "acp":
+                    if current_transport == "acp":
+                        await self.disconnect()
+                    await self.connect_as(role)
+                    current_role = turn.role
+                    current_transport = "acp"
+                await self.execute(prompts=prompts)
 
             if multi_role:
                 if current_role is None:
@@ -1594,7 +1962,7 @@ class Rollout:
                         }
                     )
 
-        if current_role is not None:
+        if current_transport == "acp":
             await self.disconnect()
 
         if scene_messages and self._rollout_dir:
@@ -1779,6 +2147,8 @@ class Rollout:
         from the primary agent (which was set up in install_agent()).
         Updates _agent_launch so disconnect() kills the correct process.
         """
+        if _is_a2a_role(role):
+            raise RuntimeError("A2A roles must execute through _execute_a2a_turn()")
         cfg = self._config
         rollout_dir = self._require_rollout_dir()
         t0 = datetime.now()

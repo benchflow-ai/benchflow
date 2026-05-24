@@ -19,7 +19,7 @@ import subprocess
 import sys
 import uuid
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from pydantic import BaseModel
 
@@ -39,6 +39,16 @@ from benchflow.task.env import resolve_env_vars
 from benchflow.task.paths import RolloutPaths, SandboxPaths
 
 logger = logging.getLogger("benchflow")
+
+
+_FALSE_ENV_VALUES = {"0", "false", "no", "off"}
+
+
+def _env_flag_enabled(name: str, *, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in _FALSE_ENV_VALUES
 
 
 def _sanitize_docker_image_name(name: str) -> str:
@@ -117,8 +127,8 @@ class DockerSandbox(BaseSandbox):
         task_env_config: SandboxConfig,
         keep_containers: bool = False,
         mounts_json: list[dict[str, str]] | None = None,
-        *args: object,
-        **kwargs: object,
+        *args: Any,
+        **kwargs: Any,
     ) -> None:
         super().__init__(
             environment_dir=environment_dir,
@@ -188,7 +198,7 @@ class DockerSandbox(BaseSandbox):
 
     @property
     def is_mounted(self) -> bool:
-        return True
+        return _env_flag_enabled("BENCHFLOW_DOCKER_LOGS_HOST_MOUNTED", default=True)
 
     @property
     def _dockerfile_path(self) -> Path:
@@ -350,9 +360,19 @@ class DockerSandbox(BaseSandbox):
                 self.logger.warning(f"Docker compose stop failed: {e}")
         elif delete:
             try:
-                await self._run_docker_compose_command(
-                    ["down", "--rmi", "all", "--volumes", "--remove-orphans"]
-                )
+                if _env_flag_enabled("BENCHFLOW_DOCKER_SAFE_CLEANUP", default=False):
+                    down_command = ["down", "--remove-orphans"]
+                elif not self._use_prebuilt:
+                    down_command = [
+                        "down",
+                        "--rmi",
+                        "all",
+                        "--volumes",
+                        "--remove-orphans",
+                    ]
+                else:
+                    down_command = ["down", "--volumes", "--remove-orphans"]
+                await self._run_docker_compose_command(down_command)
             except Exception as e:
                 self.logger.warning(f"Docker compose down failed: {e}")
         else:
@@ -468,7 +488,7 @@ class DockerSandbox(BaseSandbox):
         user = self._resolve_user(user)
         env = self._merge_env(env)
 
-        exec_command: list[str] = ["exec"]
+        exec_command: list[str] = ["exec", "-T"]
 
         if cwd:
             exec_command.extend(["-w", cwd])

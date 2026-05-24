@@ -40,7 +40,7 @@ class TestDockerSandboxServiceExec:
         sandbox._run_docker_compose_command = fake_run  # type: ignore[method-assign]
         await sandbox.exec("echo hi")
 
-        assert captured[0] == ["exec", "main", "sh", "-c", "echo hi"]
+        assert captured[0] == ["exec", "-T", "main", "sh", "-c", "echo hi"]
 
     @pytest.mark.asyncio
     async def test_exec_targets_named_service(self) -> None:
@@ -55,7 +55,14 @@ class TestDockerSandboxServiceExec:
         sandbox._run_docker_compose_command = fake_run  # type: ignore[method-assign]
         await sandbox.exec("test -f /tmp/pwned", service="target")
 
-        assert captured[0] == ["exec", "target", "sh", "-c", "test -f /tmp/pwned"]
+        assert captured[0] == [
+            "exec",
+            "-T",
+            "target",
+            "sh",
+            "-c",
+            "test -f /tmp/pwned",
+        ]
 
     @pytest.mark.asyncio
     async def test_exec_in_service_wrapper(self) -> None:
@@ -70,7 +77,7 @@ class TestDockerSandboxServiceExec:
         sandbox._run_docker_compose_command = fake_run  # type: ignore[method-assign]
         await sandbox.exec_in_service("db", "mysql -e 'SELECT 1'")
 
-        assert captured[0] == ["exec", "db", "sh", "-c", "mysql -e 'SELECT 1'"]
+        assert captured[0] == ["exec", "-T", "db", "sh", "-c", "mysql -e 'SELECT 1'"]
 
     @pytest.mark.asyncio
     async def test_exec_service_with_user_and_cwd(self) -> None:
