@@ -62,6 +62,11 @@ RunResult = RolloutResult
 
 logger = logging.getLogger(__name__)
 
+# Label applied to every container/network BenchFlow's compose files create.
+# Used to scope Docker prune calls so we only delete our own resources and never
+# touch unrelated containers/networks on shared developer or CI hosts.
+BENCHFLOW_OWNED_LABEL = "benchflow.owned=true"
+
 _SENTINEL: Any = object()  # default value for _sdk; tests replace with AsyncMock
 
 
@@ -540,15 +545,40 @@ class Evaluation:
         return completed
 
     def _prune_docker(self):
-        """Clean up Docker resources."""
+        """Clean up Docker resources owned by BenchFlow.
+
+        Scoped via ``--filter label=benchflow.owned=true`` so we only remove
+        containers/networks our own compose files created. Unrelated Docker
+        workloads on the same host are left untouched. The label is applied in
+        ``sandbox/_compose_files/docker-compose-base.yaml``.
+        """
         if self._config.environment != "docker":
             return
+        label_filter = f"label={BENCHFLOW_OWNED_LABEL}"
         try:
             subprocess.run(
-                ["docker", "container", "prune", "-f"], capture_output=True, timeout=30
+                [
+                    "docker",
+                    "container",
+                    "prune",
+                    "-f",
+                    "--filter",
+                    label_filter,
+                ],
+                capture_output=True,
+                timeout=30,
             )
             subprocess.run(
-                ["docker", "network", "prune", "-f"], capture_output=True, timeout=30
+                [
+                    "docker",
+                    "network",
+                    "prune",
+                    "-f",
+                    "--filter",
+                    label_filter,
+                ],
+                capture_output=True,
+                timeout=30,
             )
         except Exception as e:
             logger.warning(f"Docker prune failed: {e}")
