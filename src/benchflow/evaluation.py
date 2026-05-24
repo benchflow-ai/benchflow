@@ -243,8 +243,9 @@ class Evaluation:
         If ``jobs_dir`` already contains exactly one timestamped job
         directory, reuse it so that a second ``Evaluation.run()`` call
         resumes into the same directory instead of creating an orphan.
-        When zero or multiple job dirs exist, fall back to a fresh
-        timestamp.
+        When zero job dirs exist (or ``jobs_dir`` itself does not exist),
+        fall back to a fresh timestamp.  When multiple exist, resume into
+        the most recent (alphabetically last).
 
         Guards ENG-160: auto-generated job_name must be stable across
         resume calls.
