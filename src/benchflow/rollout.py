@@ -833,6 +833,15 @@ class RolloutConfig:
     def __post_init__(self) -> None:
         from benchflow._utils.config import normalize_agent_idle_timeout
 
+        if not isinstance(self.task_path, Path):
+            self.task_path = Path(self.task_path)
+        if self.context_root is not None and not isinstance(self.context_root, Path):
+            self.context_root = Path(self.context_root)
+        if self.skills_dir is not None and not isinstance(self.skills_dir, Path):
+            self.skills_dir = Path(self.skills_dir)
+        if not isinstance(self.jobs_dir, Path):
+            self.jobs_dir = Path(self.jobs_dir)
+
         self.agent = normalize_agent_name(self.agent)
         self.sandbox_user = normalize_sandbox_user(self.sandbox_user)
         self.agent_idle_timeout = normalize_agent_idle_timeout(self.agent_idle_timeout)
