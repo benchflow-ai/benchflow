@@ -45,6 +45,7 @@ def rollout_result_payload(
         "rewards": result.rewards,
         "error": result.error,
         "verifier_error": result.verifier_error,
+        "export_error": result.export_error,
         "n_tool_calls": result.n_tool_calls,
         "agent_result": agent_result_from_rollout(result),
         **(
