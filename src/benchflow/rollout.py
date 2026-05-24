@@ -953,6 +953,14 @@ class Rollout:
         self._agent_name: str = ""
         self._active_role: Role | None = None
 
+        # Serializes ACP / agent-process state mutations across scenes that
+        # are scheduled concurrently via :pyattr:`Scene.parallel_group`. The
+        # current single-ACP-transport model can only host one connected
+        # agent at a time, so parallel-group scenes share this lock; the
+        # ``asyncio.gather`` scheduling still gives them concurrent task
+        # progress between connect/execute/disconnect critical sections.
+        self._scene_lock: asyncio.Lock = asyncio.Lock()
+
         # Populated by execute()
         self._trajectory: list[dict] = []
         self._n_tool_calls: int = 0
@@ -1634,8 +1642,7 @@ class Rollout:
                         if cfg.user is not None:
                             await self._run_user_loop()
                         else:
-                            for scene in cfg.effective_scenes:
-                                await self._run_scene(scene)
+                            await self._run_scenes(cfg.effective_scenes)
                     except TimeoutError as e:
                         agent_timed_out = True
                         detail = str(e).strip()
@@ -1784,6 +1791,74 @@ class Rollout:
                 self._config.sandbox_user,
             )
 
+    async def _run_scenes(self, scenes: list[Scene]) -> None:
+        """Dispatch scenes, honoring :pyattr:`Scene.parallel_group`.
+
+        Consecutive scenes that share a non-empty ``parallel_group`` are
+        scheduled concurrently via :func:`asyncio.gather`. Scenes with no
+        group (or distinct groups) run sequentially in declaration order.
+
+        Concurrency model (ENG / issue #417): the Rollout currently owns a
+        single ACP transport (``self._acp_client``) and one connected
+        agent process at a time. Parallel-group scenes therefore share
+        :pyattr:`_scene_lock` and serialize on connect/execute/disconnect
+        critical sections, while still benefiting from concurrent task
+        scheduling (cooperative interleaving outside the critical section,
+        deterministic recovery on failure of any sibling scene). True
+        per-scene agent concurrency requires a per-scene ACP context — a
+        follow-up refactor; this fix makes ``parallel_group`` actually
+        schedule rather than silently no-op.
+
+        Same-group scenes must have disjoint role names, otherwise outbox
+        messages would collide on the shared sandbox filesystem.
+        """
+        if not scenes:
+            return
+
+        # Group *consecutive* scenes that share a non-empty parallel_group.
+        # None / "" / distinct values flush the current group.
+        groups: list[list[Scene]] = []
+        current: list[Scene] = []
+        current_key: str | None = None
+        for scene in scenes:
+            key = scene.parallel_group or None
+            if key is not None and key == current_key:
+                current.append(scene)
+            else:
+                if current:
+                    groups.append(current)
+                current = [scene]
+                current_key = key
+        if current:
+            groups.append(current)
+
+        for group in groups:
+            if len(group) == 1:
+                await self._run_scene(group[0])
+                continue
+
+            # Validate: scenes in the same parallel_group must have
+            # disjoint role names (outbox files key on role name).
+            seen_roles: dict[str, str] = {}
+            for scene in group:
+                for role in scene.roles:
+                    prior = seen_roles.get(role.name)
+                    if prior is not None:
+                        raise ValueError(
+                            f"parallel_group={group[0].parallel_group!r}: "
+                            f"role {role.name!r} appears in both "
+                            f"{prior!r} and {scene.name!r}; same-group scenes "
+                            f"must use disjoint role names."
+                        )
+                    seen_roles[role.name] = scene.name
+
+            logger.info(
+                f"[Scene] parallel_group={group[0].parallel_group!r}: "
+                f"scheduling {len(group)} scenes concurrently "
+                f"({[s.name for s in group]})"
+            )
+            await asyncio.gather(*(self._run_scene(scene) for scene in group))
+
     async def _run_scene(self, scene: Scene) -> None:
         """Execute one scene: for each turn, connect as the turn's role, execute, disconnect.
 
@@ -1793,89 +1868,105 @@ class Rollout:
         injects received messages into the next turn's prompt.
 
         Inter-role messages are persisted to ``rollout_dir/scene_messages.jsonl``.
+
+        When called concurrently from :meth:`_run_scenes` for a
+        :pyattr:`Scene.parallel_group`, the body acquires
+        :pyattr:`_scene_lock` so each scene observes a consistent
+        ACP-transport view (see :meth:`_run_scenes` docstring).
         """
         cfg = self._config
-        logger.info(
-            f"[Scene] {scene.name} — {len(scene.turns)} turns, {len(scene.roles)} roles"
-        )
-        await self._activate_scene_skills(scene)
-
-        role_map = {r.name: r for r in scene.roles}
-        current_role: str | None = None
-        multi_role = len(scene.roles) > 1
-        scene_messages: list[dict] = []
-
-        if multi_role:
-            setup_cmd = f"rm -rf {self._OUTBOX_DIR} && mkdir -p {self._OUTBOX_DIR}"
-            if cfg.sandbox_user:
-                user = shlex.quote(cfg.sandbox_user)
-                setup_cmd += f" && chown {user}:{user} {self._OUTBOX_DIR}"
-            await self._env.exec(setup_cmd, timeout_sec=10)
-
-        inbox: dict[str, list[str]] = {r.name: [] for r in scene.roles}
-        turn_counter = 0
-
-        try:
-            for _i, turn in enumerate(scene.turns):
-                role = role_map.get(turn.role)
-                if not role:
-                    raise ValueError(f"Turn references unknown role {turn.role!r}")
-
-                if current_role != turn.role:
-                    if current_role is not None:
-                        await self.disconnect()
-                    await self.connect_as(role)
-                    current_role = turn.role
-
-                if turn.prompt:
-                    base_prompt = turn.prompt
-                elif self._resolved_prompts:
-                    base_prompt = self._resolved_prompts[0]
-                else:
-                    base_prompt = "Solve the task described in /app/instruction.md"
-
-                pending = inbox.get(turn.role, [])
-                if pending:
-                    parts = [base_prompt, "\n---\nMessages from other agents:\n"]
-                    parts.extend(pending)
-                    prompts = ["\n".join(parts)]
-                    inbox[turn.role] = []
-                else:
-                    prompts = [base_prompt]
-
-                await self.execute(prompts=prompts)
-
-                if multi_role:
-                    if current_role is None:
-                        raise RuntimeError("No active role after scene turn execution")
-                    for recipient, content in await self._read_scene_outbox(
-                        current_role
-                    ):
-                        turn_counter += 1
-                        inbox.setdefault(recipient, []).append(
-                            f"**From {current_role}:** {content}"
-                        )
-                        scene_messages.append(
-                            {
-                                "scene": scene.name,
-                                "turn": turn_counter,
-                                "sender": current_role,
-                                "recipient": recipient,
-                                "content": content,
-                            }
-                        )
-        finally:
-            if current_role is not None:
-                await self.disconnect()
-
-        if scene_messages and self._rollout_dir:
-            msg_path = self._rollout_dir / "scene_messages.jsonl"
-            with msg_path.open("a") as f:
-                for m in scene_messages:
-                    f.write(json.dumps(m) + "\n")
+        async with self._scene_lock:
             logger.info(
-                f"[Scene] {scene.name}: {len(scene_messages)} messages → {msg_path}"
+                f"[Scene] {scene.name} — {len(scene.turns)} turns, "
+                f"{len(scene.roles)} roles"
             )
+            await self._activate_scene_skills(scene)
+
+            role_map = {r.name: r for r in scene.roles}
+            current_role: str | None = None
+            multi_role = len(scene.roles) > 1
+            scene_messages: list[dict] = []
+
+            if multi_role:
+                setup_cmd = (
+                    f"rm -rf {self._OUTBOX_DIR} && mkdir -p {self._OUTBOX_DIR}"
+                )
+                if cfg.sandbox_user:
+                    user = shlex.quote(cfg.sandbox_user)
+                    setup_cmd += f" && chown {user}:{user} {self._OUTBOX_DIR}"
+                await self._env.exec(setup_cmd, timeout_sec=10)
+
+            inbox: dict[str, list[str]] = {r.name: [] for r in scene.roles}
+            turn_counter = 0
+
+            try:
+                for _i, turn in enumerate(scene.turns):
+                    role = role_map.get(turn.role)
+                    if not role:
+                        raise ValueError(
+                            f"Turn references unknown role {turn.role!r}"
+                        )
+
+                    if current_role != turn.role:
+                        if current_role is not None:
+                            await self.disconnect()
+                        await self.connect_as(role)
+                        current_role = turn.role
+
+                    if turn.prompt:
+                        base_prompt = turn.prompt
+                    elif self._resolved_prompts:
+                        base_prompt = self._resolved_prompts[0]
+                    else:
+                        base_prompt = (
+                            "Solve the task described in /app/instruction.md"
+                        )
+
+                    pending = inbox.get(turn.role, [])
+                    if pending:
+                        parts = [base_prompt, "\n---\nMessages from other agents:\n"]
+                        parts.extend(pending)
+                        prompts = ["\n".join(parts)]
+                        inbox[turn.role] = []
+                    else:
+                        prompts = [base_prompt]
+
+                    await self.execute(prompts=prompts)
+
+                    if multi_role:
+                        if current_role is None:
+                            raise RuntimeError(
+                                "No active role after scene turn execution"
+                            )
+                        for recipient, content in await self._read_scene_outbox(
+                            current_role
+                        ):
+                            turn_counter += 1
+                            inbox.setdefault(recipient, []).append(
+                                f"**From {current_role}:** {content}"
+                            )
+                            scene_messages.append(
+                                {
+                                    "scene": scene.name,
+                                    "turn": turn_counter,
+                                    "sender": current_role,
+                                    "recipient": recipient,
+                                    "content": content,
+                                }
+                            )
+            finally:
+                if current_role is not None:
+                    await self.disconnect()
+
+            if scene_messages and self._rollout_dir:
+                msg_path = self._rollout_dir / "scene_messages.jsonl"
+                with msg_path.open("a") as f:
+                    for m in scene_messages:
+                        f.write(json.dumps(m) + "\n")
+                logger.info(
+                    f"[Scene] {scene.name}: {len(scene_messages)} "
+                    f"messages → {msg_path}"
+                )
 
     async def _read_scene_outbox(self, sender: str) -> list[tuple[str, str]]:
         """Read and clear outbox files left by *sender*. Returns [(recipient, content), ...]."""
