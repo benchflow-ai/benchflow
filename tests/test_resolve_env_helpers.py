@@ -86,6 +86,58 @@ class TestAutoInheritEnv:
         auto_inherit_env(env)
         assert env["OPENAI_BASE_URL"] == "https://custom.openai.example/v1"
 
+    def test_inherits_benchflow_provider_api_key(self, monkeypatch):
+        """Guards issue #817: host BENCHFLOW_PROVIDER_API_KEY must be inherited.
+
+        Users on self-hosted / proxy endpoints export BENCHFLOW_PROVIDER_API_KEY
+        directly; without it on the allowlist the host value is silently dropped.
+        """
+        monkeypatch.setenv("BENCHFLOW_PROVIDER_API_KEY", "sk-provider-host")
+        env: dict[str, str] = {}
+        auto_inherit_env(env)
+        assert env["BENCHFLOW_PROVIDER_API_KEY"] == "sk-provider-host"
+
+    def test_inherits_benchflow_provider_base_url(self, monkeypatch):
+        """Guards issue #817: host BENCHFLOW_PROVIDER_BASE_URL must be inherited."""
+        monkeypatch.setenv("BENCHFLOW_PROVIDER_BASE_URL", "http://my-vllm-host:8000/v1")
+        env: dict[str, str] = {}
+        auto_inherit_env(env)
+        assert env["BENCHFLOW_PROVIDER_BASE_URL"] == "http://my-vllm-host:8000/v1"
+
+    def test_empty_string_host_value_not_inherited(self, monkeypatch):
+        """An exported-but-empty host var ('export X=') must not be inherited.
+
+        Copying '' would shadow a real value resolved downstream — an empty
+        BENCHFLOW_PROVIDER_BASE_URL would block resolve_provider_env's
+        setdefault from filling the provider's real endpoint.
+        """
+        monkeypatch.setenv("BENCHFLOW_PROVIDER_BASE_URL", "")
+        env: dict[str, str] = {}
+        auto_inherit_env(env)
+        assert "BENCHFLOW_PROVIDER_BASE_URL" not in env
+
+    def test_whitespace_only_host_value_not_inherited(self, monkeypatch):
+        """A whitespace-only host var ('export X=" "') is also effectively unset.
+
+        '   ' is truthy, so a bare `if value:` guard would still copy it and
+        shadow downstream resolution exactly like an empty string does.
+        """
+        monkeypatch.setenv("BENCHFLOW_PROVIDER_BASE_URL", "   ")
+        env: dict[str, str] = {}
+        auto_inherit_env(env)
+        assert "BENCHFLOW_PROVIDER_BASE_URL" not in env
+
+    def test_empty_openai_base_url_not_inherited(self, monkeypatch):
+        """Empty-skip applies to every allowlisted key, not just the #817 keys.
+
+        OPENAI_BASE_URL has always been on the allowlist, so this pins the
+        empty-skip guard itself — independent of the #817 allowlist additions.
+        """
+        monkeypatch.setenv("OPENAI_BASE_URL", "")
+        env: dict[str, str] = {}
+        auto_inherit_env(env)
+        assert "OPENAI_BASE_URL" not in env
+
 
 # ── inject_vertex_credentials ──
 
@@ -479,3 +531,140 @@ class TestResolveAgentEnvOracle:
         # Provider env never resolved — oracle never calls an LLM.
         assert "BENCHFLOW_PROVIDER_MODEL" not in result
         assert "_BENCHFLOW_SUBSCRIPTION_AUTH" not in result
+
+
+class TestResolveAgentEnvHostProviderEndpoint:
+    """Guards issue #817: host BENCHFLOW_PROVIDER_* must reach the agent env.
+
+    Users running self-hosted / OpenAI-compatible endpoints export
+    BENCHFLOW_PROVIDER_BASE_URL (and BENCHFLOW_PROVIDER_API_KEY) on the host.
+    auto_inherit_env's allowlist must include them — otherwise the host value
+    is silently dropped, resolve_provider_env fills BENCHFLOW_PROVIDER_BASE_URL
+    with the vllm provider's empty default, and the agent falls back to
+    api.openai.com (401 Unauthorized).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clean_env(self, monkeypatch, tmp_path):
+        """Isolate from the host environment and any real .env file."""
+        for k in (
+            "BENCHFLOW_PROVIDER_BASE_URL",
+            "BENCHFLOW_PROVIDER_API_KEY",
+            "OPENAI_API_KEY",
+            "OPENAI_BASE_URL",
+            "ZAI_API_KEY",
+        ):
+            monkeypatch.delenv(k, raising=False)
+        empty = tmp_path / "empty.env"
+        empty.write_text("")
+        monkeypatch.setenv("BENCHFLOW_DOTENV_PATH", str(empty))
+
+    def test_host_provider_base_url_survives_into_resolved_env(self, monkeypatch):
+        """vllm has an empty registry base_url — the host value must fill it."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-vllm-test")
+        monkeypatch.setenv("BENCHFLOW_PROVIDER_BASE_URL", "http://my-vllm-host:8000/v1")
+
+        result = resolve_agent_env("codex-acp", "vllm/Qwen-test", {})
+
+        assert result["BENCHFLOW_PROVIDER_BASE_URL"] == "http://my-vllm-host:8000/v1"
+        # codex-acp env_mapping translates it to the agent-native var too.
+        assert result["OPENAI_BASE_URL"] == "http://my-vllm-host:8000/v1"
+
+    def test_explicit_agent_env_beats_host_provider_base_url(self, monkeypatch):
+        """An explicit --agent-env override wins over the host value end-to-end."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-vllm-test")
+        monkeypatch.setenv("BENCHFLOW_PROVIDER_BASE_URL", "http://host/v1")
+
+        result = resolve_agent_env(
+            "codex-acp",
+            "vllm/Qwen-test",
+            {"BENCHFLOW_PROVIDER_BASE_URL": "http://explicit/v1"},
+        )
+
+        assert result["BENCHFLOW_PROVIDER_BASE_URL"] == "http://explicit/v1"
+
+    def test_host_provider_base_url_overrides_resolved_provider_url(self, monkeypatch):
+        """For a provider with a real registry URL (zai), the host value wins.
+
+        vllm resolves to an empty base_url; zai resolves to a real endpoint, so
+        this proves the host override beats a *non-empty* resolved value.
+        """
+        monkeypatch.setenv("ZAI_API_KEY", "zk-test")
+        monkeypatch.setenv("BENCHFLOW_PROVIDER_BASE_URL", "http://host-proxy:9000/v1")
+
+        result = resolve_agent_env("codex-acp", "zai/glm-5", {})
+
+        assert result["BENCHFLOW_PROVIDER_BASE_URL"] == "http://host-proxy:9000/v1"
+
+    def test_no_host_override_keeps_resolved_provider_url(self, monkeypatch):
+        """Sanity counterpart: without a host override zai's own endpoint is used."""
+        monkeypatch.setenv("ZAI_API_KEY", "zk-test")
+
+        result = resolve_agent_env("codex-acp", "zai/glm-5", {})
+
+        assert result["BENCHFLOW_PROVIDER_BASE_URL"] == "https://api.z.ai/api/paas/v4"
+
+    def test_empty_host_base_url_does_not_shadow_resolved_url(self, monkeypatch):
+        """'export BENCHFLOW_PROVIDER_BASE_URL=' must not blank a real URL."""
+        monkeypatch.setenv("ZAI_API_KEY", "zk-test")
+        monkeypatch.setenv("BENCHFLOW_PROVIDER_BASE_URL", "")
+
+        result = resolve_agent_env("codex-acp", "zai/glm-5", {})
+
+        assert result["BENCHFLOW_PROVIDER_BASE_URL"] == "https://api.z.ai/api/paas/v4"
+
+    def test_provider_keys_inherited_from_dotenv_file(self, monkeypatch, tmp_path):
+        """resolve_agent_env also inherits BENCHFLOW_PROVIDER_* from a .env file."""
+        env_file = tmp_path / ".env"
+        env_file.write_text(
+            "BENCHFLOW_PROVIDER_BASE_URL=http://dotenv-host:8000/v1\n"
+            "BENCHFLOW_PROVIDER_API_KEY=sk-from-dotenv\n"
+        )
+        monkeypatch.setenv("BENCHFLOW_DOTENV_PATH", str(env_file))
+
+        result = resolve_agent_env("codex-acp", "vllm/Qwen-test", {})
+
+        assert result["BENCHFLOW_PROVIDER_BASE_URL"] == "http://dotenv-host:8000/v1"
+        assert result["OPENAI_BASE_URL"] == "http://dotenv-host:8000/v1"
+        assert result["OPENAI_API_KEY"] == "sk-from-dotenv"
+
+    def test_openhands_host_provider_keys_map_to_llm_vars(self, monkeypatch):
+        """openhands maps BENCHFLOW_PROVIDER_{BASE_URL,API_KEY} → LLM_{BASE_URL,API_KEY}."""
+        monkeypatch.setenv("BENCHFLOW_PROVIDER_BASE_URL", "http://my-vllm-host:8000/v1")
+        monkeypatch.setenv("BENCHFLOW_PROVIDER_API_KEY", "sk-provider-host")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-vllm")
+
+        result = resolve_agent_env("openhands", "vllm/Qwen-test", {})
+
+        assert result["LLM_BASE_URL"] == "http://my-vllm-host:8000/v1"
+        assert result["LLM_API_KEY"] == "sk-provider-host"
+
+    def test_whitespace_host_base_url_does_not_shadow_resolved_url(self, monkeypatch):
+        """'export BENCHFLOW_PROVIDER_BASE_URL=" "' must not blank a real URL.
+
+        A whitespace-only value is the same operator mistake as an empty one
+        and must not shadow the provider's resolved endpoint.
+        """
+        monkeypatch.setenv("ZAI_API_KEY", "zk-test")
+        monkeypatch.setenv("BENCHFLOW_PROVIDER_BASE_URL", "   ")
+
+        result = resolve_agent_env("codex-acp", "zai/glm-5", {})
+
+        assert result["BENCHFLOW_PROVIDER_BASE_URL"] == "https://api.z.ai/api/paas/v4"
+
+    def test_empty_host_provider_api_key_does_not_shadow_resolved_key(
+        self, monkeypatch
+    ):
+        """'export BENCHFLOW_PROVIDER_API_KEY=' must not shadow the resolved key.
+
+        The empty-string class of bug applies to the API key too: an empty host
+        value must not block resolve_provider_env from filling it from the
+        provider's own credential (ZAI_API_KEY here).
+        """
+        monkeypatch.setenv("ZAI_API_KEY", "zk-test")
+        monkeypatch.setenv("BENCHFLOW_PROVIDER_API_KEY", "")
+
+        result = resolve_agent_env("codex-acp", "zai/glm-5", {})
+
+        assert result["BENCHFLOW_PROVIDER_API_KEY"] == "zk-test"
+        assert result["OPENAI_API_KEY"] == "zk-test"
