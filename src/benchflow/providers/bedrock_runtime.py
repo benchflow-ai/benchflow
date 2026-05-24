@@ -259,30 +259,78 @@ def anthropic_request_to_bedrock_converse(body: dict[str, Any]) -> dict[str, Any
     return payload
 
 
+def _responses_function_call_to_bedrock_block(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "toolUse": {
+            "toolUseId": item["call_id"],
+            "name": item["name"],
+            "input": json.loads(item.get("arguments") or "{}"),
+        }
+    }
+
+
+def _responses_function_call_output_to_bedrock_block(
+    item: dict[str, Any],
+) -> dict[str, Any]:
+    output = item.get("output", "")
+    if not isinstance(output, str):
+        output = json.dumps(output)
+    return {
+        "toolResult": {
+            "toolUseId": item["call_id"],
+            "content": [{"text": output}] if output else [],
+            "status": "success",
+        }
+    }
+
+
 def openai_responses_request_to_bedrock_converse(
     body: dict[str, Any],
 ) -> dict[str, Any]:
-    """Translate an OpenAI Responses request to Converse kwargs."""
+    """Translate an OpenAI Responses request to Converse kwargs.
+
+    OpenAI Responses ``input`` may contain message items with a role and content,
+    plus top-level tool-flow items (``function_call``, ``function_call_output``,
+    ``reasoning``) that do not carry a role. Top-level tool items are folded into
+    adjacent assistant/user messages so Bedrock Converse sees a valid alternating
+    transcript; reasoning items are dropped (Bedrock has no equivalent surface).
+    """
     input_items = body.get("input", [])
     if isinstance(input_items, str):
         input_items = [
             {"role": "user", "content": [{"type": "input_text", "text": input_items}]}
         ]
-    messages = []
-    for item in input_items:
-        if item.get("type") == "message":
-            role = item["role"]
-            content = item.get("content", [])
+    messages: list[dict[str, Any]] = []
+
+    def _append(role: str, block: dict[str, Any]) -> None:
+        if messages and messages[-1]["role"] == role:
+            messages[-1]["content"].append(block)
         else:
-            role = item["role"]
-            content = item.get("content", [])
-        assert isinstance(role, str)
-        messages.append(
-            {
-                "role": role,
-                "content": _responses_content_to_bedrock(role, content),
-            }
-        )
+            messages.append({"role": role, "content": [block]})
+
+    for item in input_items:
+        item_type = item.get("type")
+        if item_type == "function_call":
+            _append("assistant", _responses_function_call_to_bedrock_block(item))
+            continue
+        if item_type == "function_call_output":
+            _append("user", _responses_function_call_output_to_bedrock_block(item))
+            continue
+        if item_type == "reasoning":
+            # Bedrock Converse has no input-side reasoning surface; drop it.
+            continue
+        if item_type is not None and item_type != "message":
+            raise ValueError(
+                f"Unsupported OpenAI Responses input item type: {item_type!r}"
+            )
+        role = item.get("role")
+        if not isinstance(role, str):
+            raise ValueError(
+                f"OpenAI Responses message item missing string role: {item!r}"
+            )
+        content = item.get("content", [])
+        for block in _responses_content_to_bedrock(role, content):
+            _append(role, block)
 
     payload: dict[str, Any] = {
         "modelId": body["model"],
