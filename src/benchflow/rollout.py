@@ -1384,18 +1384,24 @@ class Rollout:
         self._n_tool_calls += new_tools
         self._trajectory_source = "acp"
 
-        # Grow the tree by one Step. A linear rollout is a degree-1 tree — the
-        # cursor walks down a chain, one node per execute() call. This is
-        # additive: it never alters the trajectory or any linear output.
-        step = Step(
-            id=f"step-{len(self._trajectory)}",
-            data={"events": new_events, "n_tool_calls": new_tools},
-        )
+        # Grow the tree at Step-level granularity — one Step per ACP event
+        # (tool_call, agent_message, agent_thought, user_message). A single
+        # execute() call walks the cursor down N nodes when it produced N
+        # events. Closes #414: branch/process-reward/value targets the
+        # individual action, not a collapsed turn.
+        #
+        # Empty-event executes still emit one Step so the tree advances at
+        # least once per execute() call — the cursor must move, and a branch
+        # child's pending node must get populated (see rollout_branch).
+        steps = self._build_step_batch(new_events, new_tools)
+        first_step, *rest_steps = steps
         if node is not None:
             # Fill a pre-attached pending node (a branch child) in place — the
             # child's real continuation Step lands on the child node itself.
-            self._cursor = self._tree.populate(node, step)
+            self._cursor = self._tree.populate(node, first_step)
         else:
+            self._cursor = self._tree.advance(self._cursor, first_step)
+        for step in rest_steps:
             self._cursor = self._tree.advance(self._cursor, step)
 
         if "agent_execution" not in self._timing:
@@ -1403,6 +1409,51 @@ class Rollout:
 
         self._phase = "executed"
         return trajectory, n_tool_calls
+
+    def _build_step_batch(
+        self, new_events: list[dict], new_tools: int
+    ) -> list[Step]:
+        """Build one Step per ACP event from the events appended this execute.
+
+        Step-level granularity (closes #414) — each ACP event (tool_call,
+        agent_message, agent_thought, user_message) becomes a Step the tree
+        can address for branching, reward shaping, and value estimation.
+        Empty-event executes still produce one Step so the cursor advances
+        and any pending branch-child node gets populated.
+        """
+        base = len(self._trajectory) - len(new_events)
+        if not new_events:
+            return [
+                Step(
+                    id=f"step-{base}-empty",
+                    data={"event": None, "n_tool_calls": 0},
+                )
+            ]
+        steps: list[Step] = []
+        for offset, event in enumerate(new_events):
+            traj_index = base + offset
+            event_type = (
+                event.get("type", "event") if isinstance(event, dict) else "event"
+            )
+            is_tool_call = event_type == "tool_call"
+            steps.append(
+                Step(
+                    id=f"step-{traj_index}-{event_type}",
+                    data={
+                        "event": event,
+                        "event_type": event_type,
+                        "n_tool_calls": 1 if is_tool_call else 0,
+                    },
+                )
+            )
+        # n_tool_calls across the batch should equal the new_tools reported
+        # by execute_prompts. If they disagree (legacy/non-tool_call events
+        # counted as tools by the agent shim) attribute the remainder to the
+        # last step so the per-execute total still matches.
+        batch_tools = sum(s.data["n_tool_calls"] for s in steps)
+        if batch_tools != new_tools and steps:
+            steps[-1].data["n_tool_calls"] += new_tools - batch_tools
+        return steps
 
     # ── Phase 3d: BRANCH ──
 
