@@ -203,7 +203,7 @@ class _FakeRollout:
         self._partial_trajectory = False
         self._session_tool_count = 0
         self._session_traj_count = 0
-        self._executed_prompts: list = []
+        self._executed_prompts: list[str] = []
 
     async def disconnect(self):
         pass
