@@ -30,7 +30,11 @@ from typing import Any
 
 import yaml
 
-from benchflow.adapters.inbound import InboundTask, carry_native_subtrees
+from benchflow.adapters.inbound import (
+    InboundTask,
+    carry_native_subtrees,
+    manifest_from_task_config,
+)
 from benchflow.task.config import TaskConfig
 
 # Terminal-Bench top-level keys that become BenchFlow [metadata]. Everything
@@ -96,13 +100,20 @@ class TerminalBenchAdapter:
 
         # InboundTask.name is the bare task id (the dir name); the native
         # PackageInfo, however, requires the namespaced org/name form.
-        config = cls._build_config(f"terminal-bench/{root.name}", raw)
+        namespaced = f"terminal-bench/{root.name}"
+        config = cls._build_config(namespaced, raw)
         files = cls._build_file_map(root)
+
+        # Environment-plane seam. Terminal-Bench ships a root Dockerfile
+        # and no manifest, so the synthesized manifest names the same
+        # image tag the framework's build pipeline will produce.
+        manifest = manifest_from_task_config(name=namespaced, config=config)
 
         return InboundTask(
             name=root.name,
             source=cls.source,
             instruction=str(instruction),
+            manifest=manifest,
             config=config,
             files=files,
         )
