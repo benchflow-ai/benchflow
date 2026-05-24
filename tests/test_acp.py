@@ -500,6 +500,92 @@ class TestACPIdleWatchdog:
                     await client.task
 
 
+class TestIdleTimeoutDiagnostics:
+    """Guards ENG-149: idle timeouts must carry structured diagnostics."""
+
+    @pytest.mark.asyncio
+    async def test_idle_timeout_raises_with_structured_info(self) -> None:
+        """Guards ENG-149: IdleTimeoutError carries idle_timeout_info dict."""
+        from benchflow.acp.runtime import IdleTimeoutError, execute_prompts
+
+        class HangingClient:
+            async def prompt(self, _prompt: str):
+                await asyncio.Future()
+
+        session = ACPSession("diag-session")
+        with pytest.raises(IdleTimeoutError) as exc_info:
+            await execute_prompts(
+                HangingClient(),  # type: ignore[arg-type]
+                session,
+                ["solve"],
+                timeout=30,
+                idle_timeout=1,
+            )
+        info = exc_info.value.idle_timeout_info
+        assert info["reason"] == "idle_timeout"
+        assert info["idle_timeout_sec"] == 1
+        assert info["idle_duration_sec"] >= 1
+        assert isinstance(info["n_tool_calls"], int)
+        assert isinstance(info["n_message_chunks"], int)
+        assert isinstance(info["n_thought_chunks"], int)
+        assert isinstance(info["wall_clock_elapsed_sec"], int)
+        assert "last_activity_at" in info
+
+    @pytest.mark.asyncio
+    async def test_idle_timeout_info_reflects_activity_counts(self) -> None:
+        """Guards ENG-149: diagnostics include the session's activity counts."""
+        from benchflow.acp.runtime import IdleTimeoutError, execute_prompts
+
+        class OneToolThenHang:
+            def __init__(self, session):
+                self._session = session
+                self._called = False
+
+            async def prompt(self, _prompt: str):
+                if not self._called:
+                    self._called = True
+                    self._session.tool_calls.append(
+                        MagicMock(status=ToolCallStatus.COMPLETED)
+                    )
+                    await asyncio.sleep(0.1)
+                await asyncio.Future()
+
+        session = ACPSession("diag-activity")
+        client = OneToolThenHang(session)
+        with pytest.raises(IdleTimeoutError) as exc_info:
+            await execute_prompts(
+                client,  # type: ignore[arg-type]
+                session,
+                ["solve"],
+                timeout=30,
+                idle_timeout=1,
+            )
+        info = exc_info.value.idle_timeout_info
+        assert info["n_tool_calls"] == 1
+
+    @pytest.mark.asyncio
+    async def test_wall_clock_timeout_has_no_idle_info(self) -> None:
+        """Wall-clock timeouts (not idle) must NOT carry idle_timeout_info."""
+        from benchflow.acp.runtime import execute_prompts
+
+        class SlowClient:
+            async def prompt(self, _prompt: str):
+                await asyncio.Future()
+
+        session = ACPSession("wall-clock-session")
+        # Add continuous activity to prevent idle timeout
+        session.tool_calls.append(MagicMock(status=ToolCallStatus.COMPLETED))
+        with pytest.raises(TimeoutError) as exc_info:
+            await execute_prompts(
+                SlowClient(),  # type: ignore[arg-type]
+                session,
+                ["solve"],
+                timeout=2,
+                idle_timeout=None,
+            )
+        assert not hasattr(exc_info.value, "idle_timeout_info")
+
+
 class TestConnectAcpModelSelection:
     """Verify connect_acp passes the right model string to set_model."""
 
