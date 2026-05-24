@@ -27,7 +27,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from benchflow.adapters.inbound import InboundTask, carry_native_subtrees
+from benchflow.adapters.inbound import (
+    InboundTask,
+    carry_native_subtrees,
+    manifest_from_task_config,
+)
+from benchflow.environment.manifest import EnvironmentManifest
 from benchflow.task.config import TaskConfig
 
 # Foreign files carried straight through, keyed by their native location.
@@ -79,6 +84,11 @@ class HarborAdapter:
 
         name = config.task.name if config.task is not None else root.name
 
+        # Environment-plane seam: prefer a sibling environment.toml (some
+        # Harbor benchmarks ship one — chi-bench, clawsbench), otherwise
+        # derive a baseline manifest from the legacy [environment] section.
+        manifest = cls._load_manifest(root, name=name, config=config)
+
         # Harbor's directory layout is already the native one; the file map
         # is an identity mapping over whatever passthrough files exist.
         files: dict[str, Path] = {}
@@ -99,9 +109,27 @@ class HarborAdapter:
             name=name,
             source=cls.source,
             instruction=instruction,
+            manifest=manifest,
             config=config,
             files=files,
         )
+
+    @staticmethod
+    def _load_manifest(
+        root: Path, *, name: str, config: TaskConfig
+    ) -> EnvironmentManifest:
+        """Load the task's Environment-plane manifest.
+
+        Harbor benchmarks that already follow the Environment-plane shape
+        ship a sibling ``environment.toml`` (clawsbench, chi-bench); legacy
+        single-container Harbor tasks do not. Either case yields a
+        validated manifest so the inbound result is uniformly
+        manifest-backed.
+        """
+        manifest_path = root / "environment.toml"
+        if manifest_path.is_file():
+            return EnvironmentManifest.model_validate_toml(manifest_path.read_text())
+        return manifest_from_task_config(name=name, config=config)
 
 
 def from_harbor_task(task_dir: Path | str) -> InboundTask:
