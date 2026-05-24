@@ -72,9 +72,7 @@ async def test_evaluation_run_rejects_empty_tasks_dir(tmp_path):
     """
     tasks_dir = tmp_path / "empty"
     tasks_dir.mkdir()
-    job = Evaluation(
-        tasks_dir=tasks_dir, jobs_dir=tmp_path / "jobs", job_name="empty"
-    )
+    job = Evaluation(tasks_dir=tasks_dir, jobs_dir=tmp_path / "jobs", job_name="empty")
 
     with pytest.raises(EmptyTaskSelectionError):
         await job.run()

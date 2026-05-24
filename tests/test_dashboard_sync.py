@@ -258,14 +258,11 @@ def test_collect_jobs_reports_latest_artifact_timestamp(tmp_path: Path, monkeypa
     assert run["tasks"][0]["latest_modified_at"] == "2026-05-21 17:28:03"
 
 
-def test_collect_jobs_keeps_nested_three_mode_runs_visible(
-    tmp_path: Path, monkeypatch
-):
+def test_collect_jobs_keeps_nested_three_mode_runs_visible(tmp_path: Path, monkeypatch):
     """Guards current branch commit f7d382b against the real 3-mode job shape."""
     jobs = tmp_path / "jobs"
     parent_name = (
-        "20260523-003051-skillsbench-3modes-gemini31-flash-lite-"
-        "daytona-release-subset"
+        "20260523-003051-skillsbench-3modes-gemini31-flash-lite-daytona-release-subset"
     )
     timestamp = "2026-05-23__00-31-36"
     parent = jobs / "e2e" / parent_name

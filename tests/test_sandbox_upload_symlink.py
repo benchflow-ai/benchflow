@@ -58,9 +58,7 @@ async def test_daytona_sdk_upload_dir_skips_symlinked_files(
         await env._sdk_upload_dir(src, "/remote/dst")
 
     assert upload_files.await_count == 1
-    sources = [
-        u.source for u in upload_files.await_args.kwargs["files"]
-    ]
+    sources = [u.source for u in upload_files.await_args.kwargs["files"]]
     # The symlinked file is not in the upload set.
     assert not any(str(secret) in s for s in sources)
     assert not any(s.endswith("/leak.txt") for s in sources)
@@ -98,9 +96,7 @@ async def test_modal_upload_dir_skips_symlinked_files(
     with caplog.at_level(logging.WARNING):
         await sandbox.upload_dir(src, "/remote/dst")
 
-    uploaded_sources = [
-        call.args[0] for call in sandbox.upload_file.await_args_list
-    ]
+    uploaded_sources = [call.args[0] for call in sandbox.upload_file.await_args_list]
     assert all(str(secret) not in str(s) for s in uploaded_sources)
     assert not any(str(s).endswith("/leak.txt") for s in uploaded_sources)
     assert any(str(s).endswith("/real.txt") for s in uploaded_sources)

@@ -423,14 +423,13 @@ class DaytonaProcess(LiveProcess):
         keys = " ".join(shlex.quote(key) for key in env_keys)
         if shell_exports:
             write_value = (
-                "  printf 'export %s=' \"$key\" >> \"$env_file\"\n"
-                "  quote_env_value \"$(printenv \"$key\")\" >> \"$env_file\"\n"
+                '  printf \'export %s=\' "$key" >> "$env_file"\n'
+                '  quote_env_value "$(printenv "$key")" >> "$env_file"\n'
                 "  printf '\\n' >> \"$env_file\"\n"
             )
         else:
             write_value = (
-                "  printf '%s=%s\\n' \"$key\" \"$(printenv \"$key\")\" "
-                '>> "$env_file"\n'
+                '  printf \'%s=%s\\n\' "$key" "$(printenv "$key")" >> "$env_file"\n'
             )
         script = (
             f"env_file={remote_env_path_q}\n"
@@ -439,9 +438,9 @@ class DaytonaProcess(LiveProcess):
             'trap \'[ "$success" = 1 ] || rm -f "$env_file"\' EXIT\n'
             ': > "$env_file"\n'
             "quote_env_value() {\n"
-            "  printf \"'\"\n"
+            '  printf "\'"\n'
             "  printf '%s' \"$1\" | sed \"s/'/'\\\\\\\\''/g\"\n"
-            "  printf \"'\"\n"
+            '  printf "\'"\n'
             "}\n"
             f"for key in {keys}; do\n"
             f"{write_value}"
@@ -710,9 +709,7 @@ class DaytonaPtyProcess(LiveProcess):
 
             while True:
                 try:
-                    line = await asyncio.wait_for(
-                        self._line_buffer.get(), timeout=120
-                    )
+                    line = await asyncio.wait_for(self._line_buffer.get(), timeout=120)
                     decoded = line.decode(errors="replace").strip()
                     logger.debug(f"DaytonaPtyProcess drain: {decoded[:120]}")
                     if marker in decoded:

@@ -126,7 +126,12 @@ async def test_trial_connect_as_starts_bedrock_runtime_for_role(tmp_path):
         patch("benchflow.rollout.apply_web_tool_policy", new=AsyncMock()),
         patch("benchflow.rollout.connect_acp", new_callable=AsyncMock) as connect_acp,
     ):
-        connect_acp.return_value = (AsyncMock(), AsyncMock(), AsyncMock(), "claude-agent-acp")
+        connect_acp.return_value = (
+            AsyncMock(),
+            AsyncMock(),
+            AsyncMock(),
+            "claude-agent-acp",
+        )
         await trial.connect_as(role)
 
     ensure_runtime.assert_awaited_once()

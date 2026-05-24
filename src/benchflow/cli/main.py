@@ -1155,7 +1155,9 @@ def eval_create(
             else DEFAULT_AGENT_IDLE_TIMEOUT_SEC
         )
     except ValueError as exc:
-        console.print(f"[red]Invalid --agent-idle-timeout {agent_idle_timeout!r}: {exc}[/red]")
+        console.print(
+            f"[red]Invalid --agent-idle-timeout {agent_idle_timeout!r}: {exc}[/red]"
+        )
         raise typer.Exit(1) from None
     output_jobs_dir = jobs_dir or "jobs"
 
@@ -1609,9 +1611,7 @@ def _monitor_not_implemented() -> None:
 def monitor_run(
     source: Annotated[
         str,
-        typer.Argument(
-            help="Source trajectory (persisted rollout dir, file, or URI)."
-        ),
+        typer.Argument(help="Source trajectory (persisted rollout dir, file, or URI)."),
     ],
     rubric: Annotated[
         Path | None,

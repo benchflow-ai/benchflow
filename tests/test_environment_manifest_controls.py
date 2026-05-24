@@ -74,10 +74,10 @@ def _write_task(root: Path, name: str = "demo-task") -> Path:
     (task_dir / "tests").mkdir()
     (task_dir / "instruction.md").write_text("Do it.\n")
     (task_dir / "task.toml").write_text(
-        "version = \"1.0\"\n"
+        'version = "1.0"\n'
         "[agent]\ntimeout_sec = 1\n"
         "[verifier]\ntimeout_sec = 1\n"
-        "[environment]\ndocker_image = \"task-toml-image:latest\"\n"
+        '[environment]\ndocker_image = "task-toml-image:latest"\n'
     )
     (task_dir / "environment" / "Dockerfile").write_text("FROM ubuntu:24.04\n")
     return task_dir
@@ -123,9 +123,7 @@ def test_resolve_manifest_runtime_env_binds_task_id_and_forwards_present_host_va
         # MANIFEST_FWD_MISSING intentionally absent
         "UNRELATED": "ignored",
     }
-    env = resolve_manifest_runtime_env(
-        _CHI_MANIFEST, task_id="task-42", host_env=host
-    )
+    env = resolve_manifest_runtime_env(_CHI_MANIFEST, task_id="task-42", host_env=host)
     assert env == {"TASK_ID": "task-42", "MANIFEST_FWD_API_KEY": "secret-abc"}
 
 

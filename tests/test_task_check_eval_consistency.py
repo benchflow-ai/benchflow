@@ -19,7 +19,9 @@ from benchflow.cli.main import app
 from benchflow.evaluation import Evaluation, EvaluationConfig
 
 
-def _make_task_missing_agent(parent: Path, name: str = "malformed-missing-agent") -> Path:
+def _make_task_missing_agent(
+    parent: Path, name: str = "malformed-missing-agent"
+) -> Path:
     """Create a task package whose task.toml has no [agent] section."""
     task = parent / name
     task.mkdir()

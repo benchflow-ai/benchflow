@@ -214,9 +214,7 @@ def resolve_manifest_runtime_env(
         if key in source_env:
             resolved_env[key] = source_env[key]
         else:
-            logger.debug(
-                "manifest forward_env: host env var %r not set; skipping", key
-            )
+            logger.debug("manifest forward_env: host env var %r not set; skipping", key)
 
     return resolved_env
 

@@ -236,7 +236,9 @@ class TestVerifierDirWipe:
         def side_effect(cmd, **kwargs):
             del kwargs
             if "find /logs/verifier" in cmd:
-                return MagicMock(stdout="", stderr="Device or resource busy", exit_code=1)
+                return MagicMock(
+                    stdout="", stderr="Device or resource busy", exit_code=1
+                )
             return MagicMock(stdout="", stderr="", exit_code=0)
 
         env = _make_env(side_effect=side_effect)

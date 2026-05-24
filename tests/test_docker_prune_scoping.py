@@ -107,9 +107,7 @@ class TestPruneScopedToLabel:
 
     def test_subprocess_failure_is_swallowed(self, docker_eval):
         """Prune is best-effort; a subprocess error must not propagate."""
-        with patch(
-            "benchflow.evaluation.subprocess.run", side_effect=OSError("boom")
-        ):
+        with patch("benchflow.evaluation.subprocess.run", side_effect=OSError("boom")):
             # Should not raise.
             docker_eval._prune_docker()
 
@@ -140,8 +138,7 @@ class TestComposeBaseLabelsResources:
             assert labels.get("benchflow.owned") in ("true", True)
         else:
             assert any(
-                "benchflow.owned" in entry and "true" in str(entry)
-                for entry in labels
+                "benchflow.owned" in entry and "true" in str(entry) for entry in labels
             )
 
     def test_default_network_carries_benchflow_owned_label(self):

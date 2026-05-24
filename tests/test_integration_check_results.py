@@ -1761,8 +1761,10 @@ def test_check_results_flags_transport_error_with_diagnostics(
     assert findings["ok"] is False
     assert any("rc=255" in issue for issue in findings["issues"])
     assert any("transport closed" in issue for issue in findings["issues"])
-    assert any("INVALIDATED" in issue and "transport" in issue.lower()
-               for issue in findings["issues"])
+    assert any(
+        "INVALIDATED" in issue and "transport" in issue.lower()
+        for issue in findings["issues"]
+    )
 
 
 def test_check_results_transport_error_without_info_still_flagged(
@@ -1809,8 +1811,10 @@ def test_check_results_transport_error_without_info_still_flagged(
     findings = check_agent(agent_dir)
 
     assert findings["ok"] is False
-    assert any("INVALIDATED" in issue and "transport" in issue.lower()
-               for issue in findings["issues"])
+    assert any(
+        "INVALIDATED" in issue and "transport" in issue.lower()
+        for issue in findings["issues"]
+    )
 
 
 def test_check_results_flags_verifier_dep_install_failure(
@@ -1860,10 +1864,7 @@ def test_check_results_flags_verifier_dep_install_failure(
     findings = check_agent(agent_dir)
 
     assert findings["ok"] is False
-    assert any(
-        "dependency install failed" in issue
-        for issue in findings["issues"]
-    )
+    assert any("dependency install failed" in issue for issue in findings["issues"])
     assert any(
         "INVALIDATED" in issue and "dependency install" in issue.lower()
         for issue in findings["issues"]
@@ -1932,6 +1933,8 @@ def test_check_results_flags_verifier_timeout(tmp_path: Path) -> None:
         for issue in findings["issues"]
     )
     assert any(
-        "INVALIDATED" in issue and "verifier" in issue.lower() and "timeout" in issue.lower()
+        "INVALIDATED" in issue
+        and "verifier" in issue.lower()
+        and "timeout" in issue.lower()
         for issue in findings["issues"]
     )

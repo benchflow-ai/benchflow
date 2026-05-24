@@ -93,9 +93,7 @@ class TestTopLevelToolItems:
 
         payload = openai_responses_request_to_bedrock_converse(body)
 
-        assert (
-            payload["messages"][0]["content"][0]["toolUse"]["input"] == {}
-        )
+        assert payload["messages"][0]["content"][0]["toolUse"]["input"] == {}
 
     def test_reasoning_items_are_skipped(self):
         body = {

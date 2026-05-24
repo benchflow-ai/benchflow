@@ -16,18 +16,18 @@ from benchflow._paths import assert_within, safe_path_segment
 @pytest.mark.parametrize(
     "bad",
     [
-        "",          # empty
-        ".",         # current dir
-        "..",        # parent dir
-        "a/b",       # forward slash separator
-        "a\\b",      # backslash separator
-        "../escape", # traversal prefix
-        "-x",        # leading dash (CLI flag risk)
-        " name",     # leading whitespace
-        "name ",     # trailing whitespace
-        "\tname",    # leading tab
-        "na\x00me", # NUL byte
-        "\x00",     # bare NUL
+        "",  # empty
+        ".",  # current dir
+        "..",  # parent dir
+        "a/b",  # forward slash separator
+        "a\\b",  # backslash separator
+        "../escape",  # traversal prefix
+        "-x",  # leading dash (CLI flag risk)
+        " name",  # leading whitespace
+        "name ",  # trailing whitespace
+        "\tname",  # leading tab
+        "na\x00me",  # NUL byte
+        "\x00",  # bare NUL
     ],
 )
 def test_rejects_unsafe(bad: str) -> None:
@@ -42,7 +42,7 @@ def test_rejects_unsafe(bad: str) -> None:
         "a",
         "skill_name",
         "MixedCase123",
-        "Tëst-üñïcödé",   # arbitrary unicode is allowed
+        "Tëst-üñïcödé",  # arbitrary unicode is allowed
         "name.with.dots",
         "_underscore_lead",
         "a-b-c",

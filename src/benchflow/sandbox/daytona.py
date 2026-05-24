@@ -146,9 +146,7 @@ def _wrap_daytona_command_with_env_file(env: dict[str, str], command: str) -> st
             ", ".join(sorted(skipped)),
         )
 
-    env_body = "".join(
-        f"export {k}={shlex.quote(v)}\n" for k, v in exportable.items()
-    )
+    env_body = "".join(f"export {k}={shlex.quote(v)}\n" for k, v in exportable.items())
     encoded = base64.b64encode(env_body.encode()).decode()
     env_path = f"/tmp/.benchflow_daytona_env_{uuid4().hex[:16]}"
     return (
@@ -1139,9 +1137,7 @@ class DaytonaSandbox(BaseSandbox):
         # Clean up any previous failed sandbox before retry
         if self._sandbox is not None:
             try:
-                self.logger.warning(
-                    "Cleaning up previous sandbox before retry"
-                )
+                self.logger.warning("Cleaning up previous sandbox before retry")
                 await self._sandbox.delete()
             except Exception as cleanup_err:
                 self.logger.debug(f"Cleanup of previous sandbox failed: {cleanup_err}")
@@ -1277,9 +1273,7 @@ class DaytonaSandbox(BaseSandbox):
             # runs under ``sh``-compatible POSIX constructs so the surrounding
             # ``bash -c`` / ``su -s /bin/bash -c`` shells handle it fine.
             if env:
-                command = (
-                    f"{shell} {shlex.quote(_wrap_daytona_command_with_env_file(env, command))}"
-                )
+                command = f"{shell} {shlex.quote(_wrap_daytona_command_with_env_file(env, command))}"
             else:
                 command = f"{shell} {shlex.quote(command)}"
 
