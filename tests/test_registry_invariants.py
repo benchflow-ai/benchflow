@@ -11,6 +11,8 @@ start with ``BENCHFLOW_PROVIDER_``).
 """
 
 import re
+import shutil
+import subprocess
 
 import pytest
 
@@ -158,12 +160,57 @@ def test_js_acp_agents_use_isolated_node_runtime(name):
         )
 
 
-@pytest.mark.parametrize("name", sorted(JS_ACP_AGENTS))
-def test_js_acp_agent_install_is_posix_sh_compatible(name):
-    """Guards the full SkillsBench Daytona run against dash rejecting pipefail."""
-    install_cmd = AGENTS[name].install_cmd
+# Bash-isms not supported by dash (Ubuntu/Debian's /bin/sh). The sandbox
+# Docker/Daytona exec paths invoke ``sh -c install_cmd``; if /bin/sh is dash
+# (ubuntu:24.04 base), any of these aborts the install on line 1. See #341.
+_BASH_ISM_PATTERNS = {
+    "set -o pipefail":      re.compile(r"\bpipefail\b"),
+    "[[ ... ]]":            re.compile(r"\[\[\s"),
+    "<<< (here-string)":    re.compile(r"<<<"),
+    "$(( ... )) (arith)":   re.compile(r"\$\(\("),
+    "function name() {}":   re.compile(r"(?:^|[\s;&|])function\s+\w"),
+    "declare/local -":      re.compile(r"\b(?:declare|local)\s+-"),
+    "<(...) (proc subst)":  re.compile(r"[^<]<\("),
+}
 
-    assert "set -o pipefail" not in install_cmd
+
+@pytest.mark.parametrize("name,cfg", AGENTS.items(), ids=list(AGENTS.keys()))
+def test_agent_install_cmd_is_posix_sh_compatible(name, cfg):
+    """Install runs under ``sh -c`` (dash on Ubuntu); reject bash-isms.
+
+    Regression guard for #341: ``set -o pipefail`` at the top of the Node
+    bootstrap aborted the install on line 1 when /bin/sh was dash.
+    """
+    for label, pattern in _BASH_ISM_PATTERNS.items():
+        assert not pattern.search(cfg.install_cmd), (
+            f"{name!r} install_cmd contains bash-ism {label!r}; the sandbox "
+            "runs install_cmd under ``sh -c`` and /bin/sh is dash on Ubuntu "
+            "(see #341). Rewrite using POSIX sh, or run the script with "
+            "/bin/bash explicitly."
+        )
+
+
+@pytest.mark.skipif(
+    shutil.which("dash") is None,
+    reason="dash not installed on host; covered in CI",
+)
+@pytest.mark.parametrize("name,cfg", AGENTS.items(), ids=list(AGENTS.keys()))
+def test_agent_install_cmd_parses_under_dash(name, cfg):
+    """``dash -n`` syntax-checks every install_cmd against the real shell.
+
+    Catches bash-isms the regex sweep misses (e.g. brace expansion edge cases,
+    invalid redirections under dash). Complements the regex check above.
+    """
+    result = subprocess.run(
+        ["dash", "-n"],
+        input=cfg.install_cmd,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, (
+        f"{name!r} install_cmd failed dash syntax check:\n{result.stderr}"
+    )
 
 
 def test_js_agent_install_respects_explicit_npm_package_specs():
