@@ -146,3 +146,26 @@ Linear already tracks: ENG-147 (Daytona retry), ENG-149–158 (failure semantics
 ## Dashboard
 
 Generated with `BENCHFLOW_DASHBOARD_JOBS_ROOT=/tmp/bf-audit-jobs`. Core outcome/reward/error mirror `result.json`; **`error_category` not promoted to row UI**; OPEN-2 advisory still open (ENG-157).
+
+---
+
+## HuggingFace artifact upload (2026-05-24)
+
+**Dataset:** [benchflow/v05-integration-e2e-artifacts](https://huggingface.co/datasets/benchflow/v05-integration-e2e-artifacts)
+
+**Latest bundle (16 rollouts):** [runs/2026-05-24T170416Z](https://huggingface.co/datasets/benchflow/v05-integration-e2e-artifacts/tree/main/runs/2026-05-24T170416Z)
+
+Each upload includes per-rollout artifacts plus `manifest.json` (task, agent, model, rewards, trajectory_source). Hosted-env `.venv` trees are excluded.
+
+Uploader: `scripts/upload_e2e_artifacts_to_hf.py` (requires `uv pip install huggingface_hub`).
+
+### Continued testing after upload
+
+| Run | Outcome |
+|-----|---------|
+| `continue1` (acp_smoke + skills-dir + nudge) | reward 0 — gemini `write_file` JS error |
+| `continue-skillsbench` (`citation-check`) | reward 0 — 900s timeout, partial trajectory |
+| `bf.run` with `str` task_path | ENG-166 (fixed in branch: coerce to `Path`) |
+| `bf.run` with `Path` task_path | reward 0 — same write_file bug |
+
+**New findings:** skill nudge skipped for flat `skills_dir` layout; single-task eval omits `summary.json`; no ACP→normalized trajectory export for ENG-139 yet.
