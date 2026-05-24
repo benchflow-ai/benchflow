@@ -115,9 +115,22 @@ def test_run_hosted_env_uses_controlled_verifiers_venv(tmp_path, monkeypatch):
     sampling_args = json.loads(calls[2][calls[2].index("--sampling-args") + 1])
     assert sampling_args == {}
 
+    # Hosted-env-specific evidence keeps its hub identity for forensics.
+    hosted = json.loads((result.run_dir / "hosted_env" / "hosted_run.json").read_text())
+    assert hosted["env_uid"] == "primeintellect:primeintellect/general-agent@0.1.1"
+    assert hosted["rewards"] == {"reward": 1.0}
+
+    # The contract result.json matches the native rollout schema so dashboards
+    # and release checks can treat hosted runs as first-class evidence.
     payload = json.loads((result.run_dir / "result.json").read_text())
-    assert payload["env_uid"] == "primeintellect:primeintellect/general-agent@0.1.1"
+    assert payload["task_name"] == "primeintellect:primeintellect/general-agent@0.1.1"
     assert payload["rewards"] == {"reward": 1.0}
+    assert payload["agent"] == "gemini"
+    assert payload["agent_name"] == "verifiers"
+    assert payload["source"]["type"] == "hosted_env"
+    assert payload["source"]["env_uid"] == (
+        "primeintellect:primeintellect/general-agent@0.1.1"
+    )
 
 
 def test_run_hosted_env_uses_unique_collision_safe_run_dirs(tmp_path, monkeypatch):
