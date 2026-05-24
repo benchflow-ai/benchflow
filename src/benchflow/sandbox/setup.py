@@ -545,8 +545,18 @@ def _create_sandbox_environment(
     rollout_name: str,
     rollout_paths: RolloutPaths,
     preserve_agent_network: bool = False,
+    environment_manifest: Any = None,
 ) -> Any:
-    """Create a sandbox environment (Docker, Daytona, or Modal)."""
+    """Create a sandbox environment (Docker, Daytona, or Modal).
+
+    When ``environment_manifest`` is provided, its declared controls take
+    effect at sandbox-construction time: the manifest's runnable ``image``
+    overrides ``task.config.environment.docker_image`` (so the manifest —
+    not the task's local Dockerfile — drives image selection), and the
+    manifest's ``task_selection`` + ``forward_env`` are resolved into a
+    persistent env overlay so the values reach the container's entrypoint
+    via compose and every subsequent ``sandbox.exec`` call.
+    """
     env_config = task.config.environment
     environment_dir = task_path / "environment"
     if not environment_dir.exists():
@@ -559,6 +569,25 @@ def _create_sandbox_environment(
         env_config = env_config.model_copy(deep=True)
         env_config.allow_internet = True
 
+    manifest_env: dict[str, str] = {}
+    if environment_manifest is not None:
+        from benchflow.environment.manifest import (
+            resolve_manifest_image,
+            resolve_manifest_runtime_env,
+        )
+
+        manifest_image = resolve_manifest_image(environment_manifest)
+        if manifest_image:
+            # Image control point — manifest's run target wins over task.toml's
+            # docker_image so a benchmark author can pin the runtime image
+            # from the manifest without editing every task.toml.
+            if env_config is task.config.environment:
+                env_config = env_config.model_copy(deep=True)
+            env_config.docker_image = manifest_image
+        manifest_env = resolve_manifest_runtime_env(
+            environment_manifest, task_id=task_path.name
+        )
+
     if sandbox_type == "docker":
         from benchflow.sandbox.docker import DockerSandbox
 
@@ -568,6 +597,7 @@ def _create_sandbox_environment(
             session_id=rollout_name,
             rollout_paths=rollout_paths,
             task_env_config=env_config,
+            persistent_env=manifest_env or None,
         )
     elif sandbox_type == "daytona":
         try:
@@ -608,6 +638,7 @@ def _create_sandbox_environment(
             task_env_config=env_config,
             auto_stop_interval_mins=1440,
             auto_delete_interval_mins=1440,
+            persistent_env=manifest_env or None,
         )
     elif sandbox_type == "modal":
         try:
@@ -622,6 +653,7 @@ def _create_sandbox_environment(
             session_id=rollout_name,
             rollout_paths=rollout_paths,
             task_env_config=env_config,
+            persistent_env=manifest_env or None,
         )
     else:
         raise ValueError(

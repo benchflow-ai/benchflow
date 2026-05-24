@@ -19,11 +19,15 @@ The schema is honest to the two real stateful-multi-service benchmarks:
 
 from __future__ import annotations
 
+import logging
+import os
 import tomllib
 from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
+
+logger = logging.getLogger(__name__)
 
 
 class ServiceSpec(BaseModel):
@@ -173,3 +177,56 @@ def load_manifest(path: str | Path) -> EnvironmentManifest:
     """Load and validate an environment manifest from a TOML file."""
     text = Path(path).read_text()
     return EnvironmentManifest.model_validate_toml(text)
+
+
+def resolve_manifest_runtime_env(
+    manifest: EnvironmentManifest,
+    *,
+    task_id: str,
+    host_env: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Resolve the env vars the manifest contributes to the sandbox runtime.
+
+    Combines two manifest control points into a single dict:
+
+    * ``task_selection`` — when ``mechanism = "env_var"`` and
+      ``inject_into = "entrypoint"``, the task id is bound under the
+      configured key so the image entrypoint (or any in-sandbox service the
+      framework starts) sees it at PID 1.
+    * ``forward_env`` — each declared key is looked up in ``host_env``
+      (defaults to ``os.environ``) and forwarded into the container. Keys
+      missing on the host are silently skipped — the benchmark author owns
+      the policy of whether absence is an error.
+
+    The returned dict is suitable for merging into ``persistent_env`` so
+    every subsequent ``sandbox.exec`` call and the compose-up environment
+    both observe the values (see ``BaseSandbox._merge_env`` and Docker's
+    compose env injection).
+    """
+    resolved_env: dict[str, str] = {}
+    source_env = host_env if host_env is not None else dict(os.environ)
+
+    sel = manifest.task_selection
+    if sel.mechanism == "env_var" and sel.inject_into == "entrypoint":
+        resolved_env[sel.key] = task_id
+
+    for key in manifest.forward_env.keys:
+        if key in source_env:
+            resolved_env[key] = source_env[key]
+        else:
+            logger.debug(
+                "manifest forward_env: host env var %r not set; skipping", key
+            )
+
+    return resolved_env
+
+
+def resolve_manifest_image(manifest: EnvironmentManifest) -> str | None:
+    """Return the image the manifest declares as the sandbox run target.
+
+    ``image`` (a ready-to-run image, chi-bench style) is the run target when
+    set. ``base_image`` is what per-task images are built FROM (smolclaws
+    style) — it is *not* a runnable target on its own, so this returns
+    ``None`` and the existing task-built path remains in effect.
+    """
+    return manifest.image
