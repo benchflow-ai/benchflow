@@ -162,6 +162,8 @@ class TestORSAdapter:
             "reward": 0.5,
             "source": "mid-check",
             "step": 3,
+            "space": "output",
+            "granularity": "terminal",
             "timestamp": "2025-06-01T12:00:00",
         }
 
@@ -169,6 +171,75 @@ class TestORSAdapter:
         vr = VerifyResult(reward=1.0, items={"A": 1.0}, events=[])
         ors = ORSAdapter.verify_result_to_ors(vr)
         assert ors["metadata"]["events"] == []
+
+    def test_reward_event_preserves_non_output_space_and_step_granularity(
+        self,
+    ) -> None:
+        """ORS event dict carries (space, granularity) — issue #391.
+
+        Without these tags, memory/action/reasoning process rewards become
+        indistinguishable from output-space terminal rewards after export.
+        """
+        event = RewardEvent(
+            type="dense",
+            reward=0.5,
+            source="memory-scorer",
+            step=2,
+            space="memory",
+            granularity="step",
+        )
+        d = ORSAdapter.reward_event_to_ors(event)
+        assert d["space"] == "memory"
+        assert d["granularity"] == "step"
+
+    def test_verify_result_preserves_headline_space_and_granularity(self) -> None:
+        """ORS metadata carries the aggregate ``(space, granularity)`` tag."""
+        vr = VerifyResult(
+            reward=0.7,
+            items={"action-scorer": 0.7},
+            events=[],
+            space="action",
+            granularity="step",
+        )
+        ors = ORSAdapter.verify_result_to_ors(vr)
+        assert ors["metadata"]["space"] == "action"
+        assert ors["metadata"]["granularity"] == "step"
+
+    def test_verify_result_events_keep_per_event_tags(self) -> None:
+        """A mixed event list keeps each event's own ``(space, granularity)``."""
+        events = [
+            RewardEvent(
+                type="terminal",
+                reward=1.0,
+                source="output-judge",
+                space="output",
+                granularity="terminal",
+            ),
+            RewardEvent(
+                type="dense",
+                reward=0.4,
+                source="reasoning-scorer",
+                step=1,
+                space="reasoning",
+                granularity="step",
+            ),
+            RewardEvent(
+                type="dense",
+                reward=0.2,
+                source="memory-scorer",
+                step=2,
+                space="memory",
+                granularity="step",
+            ),
+        ]
+        vr = VerifyResult(reward=0.6, items={}, events=events)
+        ors = ORSAdapter.verify_result_to_ors(vr)
+        exported = ors["metadata"]["events"]
+        assert [(e["space"], e["granularity"]) for e in exported] == [
+            ("output", "terminal"),
+            ("reasoning", "step"),
+            ("memory", "step"),
+        ]
 
 
 # ---------------------------------------------------------------------------
