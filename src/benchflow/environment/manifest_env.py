@@ -17,10 +17,12 @@ probes ``command -v`` and starts only the services actually installed (the
 same idea as ``detect_services_from_dockerfile``).
 
 Environment-state ``snapshot``/``restore`` are real here — roll-back over the
-SQLite files an ``[environment.state]`` table declares. The sidecar /
-shared-fleet topology (host-exposed ports, ``wait_for_readiness`` over httpx)
-and ``reset`` remain the platform layer; this adapter raises
-``NotImplementedError`` for ``reset``.
+SQLite files an ``[environment.state]`` table declares. ``reset`` returns the
+environment to the per-task baseline by stopping the services the framework
+started, restoring the baseline snapshot captured during ``provision`` (when
+``[environment.state]`` is declared), and restarting the services. The sidecar
+/ shared-fleet topology (host-exposed ports, ``wait_for_readiness`` over
+httpx) remains the platform layer.
 """
 
 from __future__ import annotations
@@ -54,6 +56,10 @@ class ManifestEnvironment:
         self._sandbox = sandbox
         self._handle: EnvHandle | None = None
         self._started: list[ServiceSpec] = []
+        # Baseline captured during ``provision`` for stateful manifests so
+        # ``reset`` can return the environment to its initial per-task state
+        # (distinct from arbitrary snapshot roll-back).
+        self._baseline: StateSnapshot | None = None
 
     async def provision(self, ctx: Any) -> EnvHandle:
         """Start the manifest's services inside the sandbox.
@@ -89,6 +95,11 @@ class ManifestEnvironment:
                 self._started.append(svc)
         endpoints = {p: f"http://localhost:{p}" for p in m.all_ports}
         self._handle = EnvHandle(name=m.name, endpoints=endpoints)
+        # Capture a baseline of the declared state so ``reset`` can return the
+        # environment to its per-task initial state. Stateless manifests have
+        # no [environment.state] table — ``reset`` then just restarts services.
+        if m.state is not None:
+            self._baseline = await self._capture_baseline()
         return self._handle
 
     async def readiness(self) -> ReadinessProbe:
@@ -152,13 +163,21 @@ class ManifestEnvironment:
         ``sqlite3 .backup`` (a consistent online backup) into a per-snapshot
         directory inside the sandbox.
         """
-        spec = self._manifest.state
-        if spec is None:
+        if self._manifest.state is None:
             raise RuntimeError(
                 f"environment '{self._manifest.name}' declares no "
                 "[environment.state]; snapshot/restore are unsupported for a "
                 "stateless environment"
             )
+        return await self._capture_baseline()
+
+    async def _capture_baseline(self) -> StateSnapshot:
+        """Copy the declared state files into a fresh in-sandbox snapshot dir.
+
+        Caller guarantees ``self._manifest.state`` is not None.
+        """
+        spec = self._manifest.state
+        assert spec is not None  # caller checks
         snap_id = uuid4().hex[:12]
         snap_dir = f"/tmp/benchflow-snapshots/{snap_id}"
         cmds = [f"mkdir -p {shlex.quote(snap_dir)}"]
@@ -189,4 +208,47 @@ class ManifestEnvironment:
         await self._sandbox.exec(" && ".join(cmds), timeout_sec=120)
 
     async def reset(self) -> None:
-        raise NotImplementedError("environment reset is not yet implemented")
+        """Return the environment to its per-task initial state.
+
+        Distinct from ``restore`` (which rolls back to an arbitrary snapshot):
+        ``reset`` returns to the baseline captured during ``provision`` so the
+        environment can be reused for a fresh episode without tearing down the
+        sandbox. The sequence is the inverse of ``provision`` for the same
+        manifest:
+
+        1. Stop the services the framework started (best-effort ``pkill``).
+        2. Restore the baseline state snapshot, if a baseline exists. A
+           stateless manifest skips this step.
+        3. Restart the previously-started services so the environment is ready
+           for the next episode.
+
+        When the image entrypoint owns the lifecycle (``owns_lifecycle = true``)
+        the framework cannot restart services itself; ``reset`` then only
+        restores baseline state (if declared) and leaves the entrypoint-owned
+        services running.
+        """
+        if self._handle is None:
+            raise RuntimeError(
+                f"environment '{self._manifest.name}' has not been provisioned; "
+                "call provision() before reset()"
+            )
+        # 1. Stop framework-started services so the SQLite restore is consistent.
+        if self._started:
+            for svc in self._started:
+                binary = svc.command.split()[0]
+                with contextlib.suppress(Exception):
+                    await self._sandbox.exec(
+                        f"pkill -f {shlex.quote(binary)}", timeout_sec=10
+                    )
+        # 2. Restore the per-task baseline state, if any.
+        if self._baseline is not None:
+            await self.restore(self._baseline)
+        # 3. Restart the same services we previously started, in the same
+        #    background-with-log shape provision() uses. owns_lifecycle = true
+        #    manifests reach this with an empty self._started — nothing to do.
+        for svc in self._started:
+            log = f"/tmp/benchflow-env-{svc.name}.log"
+            await self._sandbox.exec(
+                f"{svc.command} > {log} 2>&1 &",
+                timeout_sec=15,
+            )
