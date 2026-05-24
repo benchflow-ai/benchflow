@@ -1,15 +1,22 @@
-"""Sandbox snapshot/restore — filesystem-level checkpointing.
+"""Workspace snapshot/restore — filesystem-level helper, NOT the Sandbox primitive.
 
-Provides snapshot(name) -> ref and restore(ref) for any environment that
-supports env.exec().  Works on both Docker and Daytona sandboxes.
+Provides ``workspace_snapshot(name) -> ref`` and ``workspace_restore(ref)``
+for any environment that supports ``env.exec()``. Works on Docker and
+Daytona sandboxes.
 
-Implementation: tar the workspace directory into /tmp/.benchflow_snapshots/.
-In-place restore by clearing and untarring.  Sandbox-agnostic — no Docker
-daemon or Daytona snapshot API required.
+**Scope** (#384): this is a *workspace-only* tar/untar helper, not the
+container-level snapshot/restore the Branch lifecycle calls. It captures
+files under a single directory (default ``/app``); it does **not** snapshot
+the container filesystem, mounted volumes, process state, sibling compose
+services, or provider images.
 
-For 0.3+, Daytona's _experimental_create_snapshot can be swapped in as an
-optimization for branching rollouts (new sandbox from snapshot), but the
-filesystem approach covers the rewind use case and is provable now.
+Container-level snapshot/restore lives on the Sandbox contract itself —
+see :meth:`benchflow.sandbox.protocol.Sandbox.snapshot` and the
+``supports_snapshot`` capability gate. ``Rollout.branch`` composes those
+with Environment-state snapshots for full Branch semantics.
+
+The historical ``snapshot``/``restore``/``list_snapshots`` names are kept
+as backward-compatible aliases.
 """
 
 import logging
@@ -22,11 +29,12 @@ logger = logging.getLogger(__name__)
 _SNAP_DIR = "/tmp/.benchflow_snapshots"
 
 
-async def snapshot(env, name: str, workspace: str = "/app") -> str:
-    """Create a named snapshot of the workspace.
+async def workspace_snapshot(env, name: str, workspace: str = "/app") -> str:
+    """Create a named *workspace-only* snapshot — tar of ``workspace``.
 
-    Returns a reference string suitable for restore() and for recording
-    in trial metadata / rewards.jsonl.
+    Returns a reference string suitable for ``workspace_restore()`` and for
+    recording in trial metadata / rewards.jsonl. This does **not** capture
+    container state — use :meth:`Sandbox.snapshot` for that (#384).
     """
     if not _re.match(r"^[a-zA-Z0-9_-]+$", name):
         raise ValueError(
@@ -45,10 +53,12 @@ async def snapshot(env, name: str, workspace: str = "/app") -> str:
     return ref
 
 
-async def restore(env, ref: str, workspace: str = "/app") -> None:
-    """Restore workspace to a named snapshot.
+async def workspace_restore(env, ref: str, workspace: str = "/app") -> None:
+    """Restore ``workspace`` to a named workspace snapshot.
 
-    ref: the string returned by snapshot() — format is "fs:{name}:{path}".
+    ref: the string returned by ``workspace_snapshot()`` — format is
+    ``"fs:{name}:{path}"``. Does not restore container state — use
+    :meth:`Sandbox.restore` for that (#384).
     """
     parts = ref.split(":", 2)
     if len(parts) != 3 or parts[0] != "fs":
@@ -74,8 +84,8 @@ async def restore(env, ref: str, workspace: str = "/app") -> None:
     logger.info(f"Snapshot restored: {ref}")
 
 
-async def list_snapshots(env) -> list[str]:
-    """List available snapshot names."""
+async def list_workspace_snapshots(env) -> list[str]:
+    """List available *workspace* snapshot names."""
     result = await env.exec(f"ls {_SNAP_DIR}/*.tar.gz 2>/dev/null || true")
     if not (result.stdout or "").strip():
         return []
@@ -83,3 +93,15 @@ async def list_snapshots(env) -> list[str]:
         PurePosixPath(line.strip()).stem.removesuffix(".tar")
         for line in (result.stdout or "").strip().splitlines()
     ]
+
+
+# ── Backward-compatibility aliases ────────────────────────────────────────
+#
+# Pre-#384 these were ``snapshot`` / ``restore`` / ``list_snapshots`` and
+# exported as ``bf.snapshot`` etc. The names looked like the Sandbox lifecycle
+# primitive but only ever covered a single workspace directory. The renamed
+# functions above make the scope explicit; the old names stay as aliases so
+# external callers (proof scripts, downstream tasks) keep working.
+snapshot = workspace_snapshot
+restore = workspace_restore
+list_snapshots = list_workspace_snapshots

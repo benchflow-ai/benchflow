@@ -1460,6 +1460,8 @@ class Rollout:
         self,
         n: int,
         run_child: ChildRunner | None = None,
+        *,
+        require_sandbox_snapshot: bool = False,
     ) -> float:
         """Branch the rollout at the cursor into ``n`` child continuations.
 
@@ -1474,8 +1476,16 @@ class Rollout:
         default restores the env, connects a fresh agent, runs the continuation,
         and scores it. A caller that needs per-child prompts binds them into the
         ``run_child`` closure.
+
+        ``require_sandbox_snapshot`` gates the branch on the active Sandbox
+        implementing container-level snapshot/restore. When True, providers
+        without that capability (Modal, Daytona DinD) fail closed with a clear
+        diagnostic rather than running with a half-consistent checkpoint
+        (#384, Branch lifecycle in docs/architecture.md).
         """
-        return await _branch_engine(self, n, run_child)
+        return await _branch_engine(
+            self, n, run_child, require_sandbox_snapshot=require_sandbox_snapshot
+        )
 
     # ── Phase 4: VERIFY ──
 
