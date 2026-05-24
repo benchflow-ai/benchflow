@@ -56,6 +56,7 @@ def test_eval_create_single_task_self_gen_passes_trial_config(tmp_path: Path):
 
     cfg = captured["config"]
     assert cfg.skill_mode == "self-gen"
-    assert cfg.skills_dir == str(provided_skills)
+    # RolloutConfig.__post_init__ coerces str path inputs to Path (ENG-166).
+    assert cfg.skills_dir == provided_skills
     assert cfg.skill_creator_dir == str(skill_creator)
     assert cfg.self_gen_no_internet is True
