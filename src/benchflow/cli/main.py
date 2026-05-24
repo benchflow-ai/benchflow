@@ -1122,7 +1122,11 @@ def eval_create(
 
     Sandbox: docker, daytona, or modal.
     """
-    from benchflow.evaluation import Evaluation, EvaluationConfig
+    from benchflow.evaluation import (
+        EmptyTaskSelectionError,
+        Evaluation,
+        EvaluationConfig,
+    )
 
     _apply_dotenv_to_process_env()
     parsed_env = _parse_agent_env(agent_env)
@@ -1175,7 +1179,11 @@ def eval_create(
             j._config.include_tasks = include_tasks
         if exclude_tasks:
             j._config.exclude_tasks = exclude_tasks
-        result = asyncio.run(j.run())
+        try:
+            result = asyncio.run(j.run())
+        except EmptyTaskSelectionError as e:
+            console.print(f"[red]{e}[/red]")
+            raise typer.Exit(1) from None
         console.print(
             f"\n[bold]Score: {result.passed}/{result.total} "
             f"({result.score:.1%})[/bold], errors={result.errored}"
@@ -1272,7 +1280,11 @@ def eval_create(
                 exclude_tasks=exclude_tasks,
             ),
         )
-        result = asyncio.run(j.run())
+        try:
+            result = asyncio.run(j.run())
+        except EmptyTaskSelectionError as e:
+            console.print(f"[red]{e}[/red]")
+            raise typer.Exit(1) from None
         console.print(
             f"\n[bold]Score: {result.passed}/{result.total} "
             f"({result.score:.1%})[/bold], errors={result.errored}"
@@ -1281,71 +1293,42 @@ def eval_create(
     elif tasks_dir:
         resolved_tasks_dir = tasks_dir
         eff_model = effective_model(eval_agent, model)
-        # Smart detection: if tasks_dir has task.toml, it's a single task
-        if (resolved_tasks_dir / "task.toml").exists():
-            from benchflow.sdk import SDK
-
-            async def _run():
-                return await SDK().run(
-                    task_path=resolved_tasks_dir,
-                    agent=eval_agent,
-                    model=eff_model,
-                    job_name=None,
-                    rollout_name=None,
-                    jobs_dir=output_jobs_dir,
-                    concurrency=eval_concurrency,
-                    agent_idle_timeout=eval_agent_idle_timeout,
-                    environment=eval_environment,
-                    agent_env=parsed_env,
-                    skills_dir=str(skills_dir) if skills_dir else None,
-                    sandbox_user=sandbox_user,
-                    sandbox_setup_timeout=sandbox_setup_timeout,
-                    skill_mode=skill_mode,
-                    skill_creator_dir=(
-                        str(skill_creator_dir) if skill_creator_dir else None
-                    ),
-                    self_gen_no_internet=self_gen_no_internet,
-                )
-
-            run_result = asyncio.run(_run())
-            reward = (run_result.rewards or {}).get("reward")
-            console.print(f"\n[bold]Task:[/bold] {resolved_tasks_dir.name}")
-            console.print(
-                f"[bold]Agent:[/bold] {eval_agent} ({eff_model or 'no model'})"
-            )
-            console.print(f"[bold]Reward:[/bold] {reward}")
-            console.print(f"[bold]Tool calls:[/bold] {run_result.n_tool_calls}")
-            _exit_if_run_result_failed(run_result)
-        else:
-            # Directory of tasks — batch run
-            j = Evaluation(
-                tasks_dir=str(resolved_tasks_dir),
-                jobs_dir=output_jobs_dir,
-                config=EvaluationConfig(
-                    agent=eval_agent,
-                    model=eff_model,
-                    environment=eval_environment,
-                    concurrency=eval_concurrency,
-                    agent_idle_timeout=eval_agent_idle_timeout,
-                    agent_env=parsed_env,
-                    sandbox_user=sandbox_user,
-                    sandbox_setup_timeout=sandbox_setup_timeout,
-                    skills_dir=str(skills_dir) if skills_dir else None,
-                    skill_mode=skill_mode,
-                    skill_creator_dir=(
-                        str(skill_creator_dir) if skill_creator_dir else None
-                    ),
-                    self_gen_no_internet=self_gen_no_internet,
-                    include_tasks=include_tasks,
-                    exclude_tasks=exclude_tasks,
+        # Single-task and batch share one orchestration path. Evaluation
+        # handles both layouts (Evaluation._get_task_dirs detects when
+        # tasks_dir itself contains task.toml) and applies include/exclude
+        # filters uniformly (#400, #401, #407).
+        j = Evaluation(
+            tasks_dir=str(resolved_tasks_dir),
+            jobs_dir=output_jobs_dir,
+            config=EvaluationConfig(
+                agent=eval_agent,
+                model=eff_model,
+                environment=eval_environment,
+                concurrency=eval_concurrency,
+                agent_idle_timeout=eval_agent_idle_timeout,
+                agent_env=parsed_env,
+                sandbox_user=sandbox_user,
+                sandbox_setup_timeout=sandbox_setup_timeout,
+                skills_dir=str(skills_dir) if skills_dir else None,
+                skill_mode=skill_mode,
+                skill_creator_dir=(
+                    str(skill_creator_dir) if skill_creator_dir else None
                 ),
-            )
+                self_gen_no_internet=self_gen_no_internet,
+                include_tasks=include_tasks,
+                exclude_tasks=exclude_tasks,
+            ),
+        )
+        try:
             result = asyncio.run(j.run())
-            console.print(
-                f"\n[bold]Score: {result.passed}/{result.total} "
-                f"({result.score:.1%})[/bold], errors={result.errored}"
-            )
-            _exit_if_evaluation_had_errors(result)
+        except EmptyTaskSelectionError as e:
+            console.print(f"[red]{e}[/red]")
+            raise typer.Exit(1) from None
+        console.print(
+            f"\n[bold]Score: {result.passed}/{result.total} "
+            f"({result.score:.1%})[/bold], errors={result.errored}"
+        )
+        _exit_if_evaluation_had_errors(result)
     else:
         console.print(
             "[red]Provide --config, --tasks-dir, --source-repo, or --source-env[/red]"
