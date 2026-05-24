@@ -504,13 +504,34 @@ def check_agent(agent_dir: Path) -> dict:
 
     # Infrastructure errors
     infra_errors = []
+    idle_timeout_tasks: list[str] = []
     for r in results:
         err = r.get("error")
-        if err and classify_error(str(err)) in INFRA_ERROR_CATEGORIES:
-            infra_errors.append(f"{r.get('task_name', '?')}: {err}")
+        cat = classify_error(str(err)) if err else None
+        if cat and cat in INFRA_ERROR_CATEGORIES:
+            task = r.get("task_name", "?")
+            if cat == "idle_timeout":
+                info = r.get("idle_timeout_info")
+                if info:
+                    infra_errors.append(
+                        f"{task}: idle timeout after "
+                        f"{info.get('idle_duration_sec', '?')}s idle "
+                        f"({info.get('n_tool_calls', '?')} tool calls, "
+                        f"{info.get('wall_clock_elapsed_sec', '?')}s wall)"
+                    )
+                else:
+                    infra_errors.append(f"{task}: {err}")
+                idle_timeout_tasks.append(task)
+            else:
+                infra_errors.append(f"{task}: {err}")
     if infra_errors:
         findings["issues"].extend(infra_errors)
         findings["ok"] = False
+    if idle_timeout_tasks:
+        findings["issues"].append(
+            f"INVALIDATED: {len(idle_timeout_tasks)} task(s) hit idle timeout "
+            f"and should be rerun: {', '.join(idle_timeout_tasks)}"
+        )
 
     # Summary.json — bench eval create writes it at the agent_dir root
     summary_path = agent_dir / "summary.json"

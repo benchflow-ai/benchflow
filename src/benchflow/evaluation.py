@@ -942,6 +942,13 @@ class Evaluation:
             f"{job_result.verifier_errored} != {job_result.total}"
         )
 
+        # Count error categories across all results for summary diagnostics.
+        error_category_counts: dict[str, int] = {}
+        for r in all_results.values():
+            cat = classify_error(r.get("error"))
+            if cat:
+                error_category_counts[cat] = error_category_counts.get(cat, 0) + 1
+
         # Save summary
         summary = {
             "job_name": self._job_name,
@@ -955,6 +962,8 @@ class Evaluation:
             "failed": audit_counts["failed"],
             "errored": audit_counts["errored"],
             "verifier_errored": audit_counts["verifier_errored"],
+            "idle_timeout": error_category_counts.get(IDLE_TIMEOUT, 0),
+            "error_categories": error_category_counts or None,
             "score": f"{pass_rate(passed=audit_counts['passed'], total=job_result.total):.1%}",
             "score_excl_errors": f"{pass_rate_excl_errors(passed=audit_counts['passed'], failed=audit_counts['failed']):.1%}",
             "elapsed_sec": elapsed,
@@ -968,6 +977,14 @@ class Evaluation:
             **summary_source_fields(cfg.source_provenance, all_results),
         }
         (self._jobs_dir / "summary.json").write_text(json.dumps(summary, indent=2))
+
+        idle_count = error_category_counts.get(IDLE_TIMEOUT, 0)
+        if idle_count > 0:
+            pct = idle_count / job_result.total * 100
+            logger.warning(
+                f"{idle_count} tasks ({pct:.0f}%) hit idle timeout — "
+                f"check idle_timeout_info in result.json for diagnostics"
+            )
 
         if audit_counts["verifier_errored"] > 0:
             pct = audit_counts["verifier_errored"] / job_result.total * 100
@@ -984,6 +1001,7 @@ class Evaluation:
         logger.info(
             f"Job complete: {job_result.passed}/{job_result.total} "
             f"({job_result.score:.1%}), errors={job_result.errored}, "
+            f"idle_timeouts={idle_count}, "
             f"time={elapsed / 60:.1f}min"
         )
 

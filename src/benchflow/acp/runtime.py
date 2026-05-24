@@ -20,6 +20,7 @@ Does not own:
 import asyncio
 import contextlib
 import logging
+from datetime import UTC, datetime
 from pathlib import Path
 
 from benchflow.acp.client import ACPClient
@@ -31,6 +32,14 @@ from benchflow.sandbox.process import DaytonaProcess, DaytonaPtyProcess, DockerP
 from benchflow.trajectories._capture import _capture_session_trajectory
 
 logger = logging.getLogger(__name__)
+
+
+class IdleTimeoutError(TimeoutError):
+    """Agent idle watchdog fired. Carries structured diagnostics."""
+
+    def __init__(self, message: str, info: dict):
+        super().__init__(message)
+        self.idle_timeout_info: dict = info
 
 
 _ACP_CONNECT_MAX_RETRIES = 3
@@ -349,11 +358,22 @@ async def _prompt_with_idle_watchdog(
                 last_progress = now
                 last_count = cur_count
             if now - last_progress >= idle_timeout:
-                raise TimeoutError(
+                idle_info = {
+                    "reason": "idle_timeout",
+                    "idle_timeout_sec": idle_timeout,
+                    "idle_duration_sec": int(now - last_progress),
+                    "wall_clock_elapsed_sec": int(now - (deadline - timeout)),
+                    "n_tool_calls": len(session.tool_calls),
+                    "n_message_chunks": len(session.message_chunks),
+                    "n_thought_chunks": len(session.thought_chunks),
+                    "last_activity_at": datetime.now(UTC).isoformat(),
+                }
+                raise IdleTimeoutError(
                     f"Agent idle for {idle_timeout}s with no new tool call, "
                     f"message, or thought "
                     f"(last activity {int(now - last_progress)}s ago, "
-                    f"{len(session.tool_calls)} tool calls so far)"
+                    f"{len(session.tool_calls)} tool calls so far)",
+                    info=idle_info,
                 )
             if now > deadline:
                 raise TimeoutError(
