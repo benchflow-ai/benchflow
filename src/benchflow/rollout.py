@@ -1040,6 +1040,11 @@ class Rollout:
         self._n_tool_calls: int = 0
         self._trajectory_source: TrajectorySource | None = None
         self._partial_trajectory: bool = False
+        # Every prompt actually sent to the agent across all execute() calls —
+        # this is what `n_prompts` and `prompts.json` should reflect for Scene
+        # rollouts where each turn issues its own prompt. The original
+        # `_resolved_prompts` is only the static base task prompt set.
+        self._executed_prompts: list[str] = []
 
         # The tree-native execution model (architecture.md, "tree-native").
         # A linear rollout is a degree-1 tree; execute() grows it one Step at a
@@ -1490,6 +1495,7 @@ class Rollout:
 
         self._trajectory.extend(new_events)
         self._n_tool_calls += new_tools
+        self._executed_prompts.extend(effective_prompts)
         self._trajectory_source = "acp"
 
         # Grow the tree at Step-level granularity — one Step per ACP event
@@ -1512,8 +1518,13 @@ class Rollout:
         for step in rest_steps:
             self._cursor = self._tree.advance(self._cursor, step)
 
-        if "agent_execution" not in self._timing:
-            self._timing["agent_execution"] = (datetime.now() - t0).total_seconds()
+        # Accumulate execution time across all execute() calls — Scene rollouts
+        # invoke execute() once per turn, and the previous "set only on first
+        # call" behaviour undercounted multi-turn agent time.
+        elapsed = (datetime.now() - t0).total_seconds()
+        self._timing["agent_execution"] = (
+            self._timing.get("agent_execution", 0.0) + elapsed
+        )
 
         self._phase = "executed"
         return trajectory, n_tool_calls
@@ -2464,6 +2475,13 @@ class Rollout:
 
     def _build_result(self) -> RolloutResult:
         rollout_dir = self._require_rollout_dir()
+        # For Scene/multi-turn rollouts, each execute() call records the
+        # prompt(s) it sent into self._executed_prompts. Use that as the
+        # authoritative prompt list so n_prompts and prompts.json reflect
+        # every prompt the agent actually received (issue #377). Fall back
+        # to the resolved base prompts when no execute() ran (e.g. setup
+        # failure paths).
+        prompts = self._executed_prompts or self._resolved_prompts
         return _build_rollout_result(
             rollout_dir,
             task_name=self._config.task_path.name,
@@ -2472,7 +2490,7 @@ class Rollout:
             agent_name=self._agent_name,
             model=self._config.primary_model,
             n_tool_calls=self._n_tool_calls,
-            prompts=self._resolved_prompts,
+            prompts=prompts,
             error=self._error,
             verifier_error=self._verifier_error,
             trajectory=self._trajectory,
