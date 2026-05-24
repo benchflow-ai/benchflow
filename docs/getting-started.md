@@ -65,13 +65,26 @@ export OPENAI_API_KEY=sk-...
 export CODEX_API_KEY=sk-...       # Codex alias for OPENAI_API_KEY
 export GEMINI_API_KEY=...
 export LLM_API_KEY=...           # OpenHands / LiteLLM-compatible providers
+export AZURE_API_KEY=...
+export AZURE_API_ENDPOINT=https://<resource>.openai.azure.com/
 ```
 
 benchflow auto-inherits well-known API key env vars from your shell into the sandbox.
+Provider-prefixed models can use credentials that differ from the agent's
+native default auth. For Azure Foundry, use models such as
+`azure-foundry-openai/gpt-5.5` or
+`azure-foundry-anthropic/claude-opus-4-5`; benchflow derives the Azure resource
+from `AZURE_API_ENDPOINT` and maps `AZURE_API_KEY` onto the selected agent's
+native auth env inside the sandbox.
 
 ### Precedence
 
-If multiple credentials are set, benchflow / the agent CLI uses (high to low): cloud provider creds → `ANTHROPIC_AUTH_TOKEN` → `ANTHROPIC_API_KEY` → `apiKeyHelper` → `CLAUDE_CODE_OAUTH_TOKEN` → host subscription OAuth. To force a lower-priority option, unset the higher one in your shell before running.
+If multiple credentials are set, benchflow / the agent CLI uses provider-specific
+credentials selected by the model prefix first, then the agent's native auth
+precedence. For Claude, native auth is (high to low): cloud provider creds →
+`ANTHROPIC_AUTH_TOKEN` → `ANTHROPIC_API_KEY` → `apiKeyHelper` →
+`CLAUDE_CODE_OAUTH_TOKEN` → host subscription OAuth. To force a lower-priority
+option, unset the higher one in your shell before running.
 
 ## Run your first eval
 

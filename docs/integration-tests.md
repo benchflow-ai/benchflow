@@ -13,6 +13,10 @@ The core matrix runs 9 SkillsBench tasks across all 8 registered agents on Dayto
 | `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` | claude-agent-acp |
 | `OPENAI_API_KEY` | codex-acp |
 
+This table covers the default integration suite models. Provider-specific
+integration lanes may require different credentials; Azure Foundry lanes use
+`AZURE_API_KEY` plus `AZURE_API_ENDPOINT`.
+
 ## Quick Start
 
 ```bash
@@ -246,6 +250,10 @@ All 8 registered agents run by default:
 | openhands | gemini-3.1-flash-lite-preview | |
 
 Agents missing credentials are automatically skipped.
+
+The notes above describe the default integration configs. Provider-prefixed
+model lanes can override the native agent auth requirements; Azure Foundry
+models use `AZURE_API_KEY` plus `AZURE_API_ENDPOINT`.
 
 ## Standalone YAML Configs
 

@@ -237,6 +237,12 @@ Common choices:
 | OpenHands | `openhands` (alias: `oh`) | `LLM_API_KEY` |
 | Harvey LAB harness | `harvey-lab-harness` (alias: `harvey-lab`) | Provider key matching model |
 
+The auth column shows each agent's native/default credentials. Provider-prefixed
+models can use provider-specific credentials instead; for example, Azure
+Foundry models use `AZURE_API_KEY` plus `AZURE_API_ENDPOINT` with prefixes such
+as `azure-foundry-openai/gpt-5.5` or
+`azure-foundry-anthropic/claude-opus-4-5`.
+
 Any agent can also be run via [ACPX](https://acpx.sh/) by prefixing with `acpx/`:
 
 ```bash
