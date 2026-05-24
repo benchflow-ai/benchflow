@@ -404,6 +404,41 @@ def _scene_metadata(scenes: list[Scene]) -> list[dict[str, Any]]:
     ]
 
 
+def _parse_transport_error(e: ConnectionError) -> dict:
+    """Extract structured fields from a ConnectionError message.
+
+    Guards ENG-148: ACP transport rc=255 must carry actionable diagnostics.
+    """
+    import re as _re
+
+    msg = str(e)
+    info: dict[str, Any] = {"reason": "transport_closed", "raw_message": msg[:500]}
+
+    rc_match = _re.search(r"rc=(\d+|None)", msg)
+    if rc_match:
+        raw = rc_match.group(1)
+        info["process_exit_code"] = int(raw) if raw != "None" else None
+
+    pid_match = _re.search(r"pid=(\d+)", msg)
+    if pid_match:
+        info["process_pid"] = int(pid_match.group(1))
+
+    if "still alive but its stdout/transport closed" in msg:
+        info["transport_diagnosis"] = "remote_session_killed"
+    elif "exited with rc=" in msg:
+        info["transport_diagnosis"] = "process_exited"
+    elif "PTY readline" in msg:
+        info["transport_diagnosis"] = "pty_error"
+    else:
+        info["transport_diagnosis"] = "unknown"
+
+    stderr_match = _re.search(r"stderr: (.+)", msg, _re.DOTALL)
+    if stderr_match:
+        info["stderr_snippet"] = stderr_match.group(1).strip()[:500]
+
+    return info
+
+
 def _build_rollout_result(
     rollout_dir: Path,
     *,
@@ -435,6 +470,7 @@ def _build_rollout_result(
     source_provenance: dict[str, Any] | None = None,
     idle_timeout_info: dict | None = None,
     sandbox_startup_info: dict | None = None,
+    transport_error_info: dict | None = None,
 ) -> RolloutResult:
     """Build RolloutResult and write result.json, timing.json, prompts.json, trajectory."""
     finished_at = datetime.now()
@@ -501,6 +537,7 @@ def _build_rollout_result(
                 "verifier_error": result.verifier_error,
                 "idle_timeout_info": idle_timeout_info,
                 "sandbox_startup_info": sandbox_startup_info,
+                "transport_error_info": transport_error_info,
                 "partial_trajectory": result.partial_trajectory,
                 "trajectory_source": result.trajectory_source,
                 "started_at": str(result.started_at),
@@ -920,6 +957,7 @@ class Rollout:
         self._error_category: str | None = None
         self._idle_timeout_info: dict | None = None
         self._sandbox_startup_info: dict | None = None
+        self._transport_error_info: dict | None = None
 
         # Populated by _export_generated_skills() — the skills the agent
         # generated/evolved, captured for a continual-learning LearnerStore.
@@ -1620,6 +1658,8 @@ class Rollout:
             logger.error(self._error)
         except ConnectionError as e:
             self._error = str(e)
+            self._transport_error_info = _parse_transport_error(e)
+            await self._probe_sandbox_health()
             logger.error(f"Agent connection lost: {self._error}")
         except SandboxStartupError as e:
             self._error = f"Sandbox startup failed: {e}"
@@ -2080,6 +2120,32 @@ class Rollout:
 
     # ── Internal helpers ──
 
+    async def _probe_sandbox_health(self) -> None:
+        """Quick health probe after transport death. Enriches _transport_error_info.
+
+        Guards ENG-148: distinguishes Daytona session killed vs agent crash.
+        """
+        if self._transport_error_info is None or self._env is None:
+            return
+        try:
+            result = await asyncio.wait_for(
+                self._env.exec("echo __BENCHFLOW_HEALTH_OK__", timeout_sec=10),
+                timeout=15,
+            )
+            stdout = str(getattr(result, "stdout", "") or "").strip()
+            raw_rc = getattr(result, "return_code", None)
+            rc = int(raw_rc) if isinstance(raw_rc, (int, float)) else None
+            if "__BENCHFLOW_HEALTH_OK__" in stdout:
+                self._transport_error_info["sandbox_reachable"] = True
+                self._transport_error_info["sandbox_probe_rc"] = rc
+            else:
+                self._transport_error_info["sandbox_reachable"] = False
+                self._transport_error_info["sandbox_probe_rc"] = rc
+                self._transport_error_info["sandbox_probe_stdout"] = stdout[:200]
+        except Exception as probe_err:
+            self._transport_error_info["sandbox_reachable"] = False
+            self._transport_error_info["sandbox_probe_error"] = str(probe_err)[:200]
+
     def _classify_acp_error(self, e: ACPError) -> str:
         if "Invalid API key" in e.message:
             from benchflow.agents.env import check_subscription_auth
@@ -2135,5 +2201,6 @@ class Rollout:
             source_provenance=self._config.source_provenance,
             idle_timeout_info=self._idle_timeout_info,
             sandbox_startup_info=self._sandbox_startup_info,
+            transport_error_info=self._transport_error_info,
             **self._usage_metrics,
         )

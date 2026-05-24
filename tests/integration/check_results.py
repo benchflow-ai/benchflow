@@ -506,6 +506,7 @@ def check_agent(agent_dir: Path) -> dict:
     infra_errors = []
     idle_timeout_tasks: list[str] = []
     sandbox_startup_tasks: list[str] = []
+    transport_error_tasks: list[str] = []
     for r in results:
         err = r.get("error")
         cat = classify_error(str(err)) if err else None
@@ -538,6 +539,19 @@ def check_agent(agent_dir: Path) -> dict:
                 else:
                     infra_errors.append(f"{task}: {err}")
                 sandbox_startup_tasks.append(task)
+            elif cat == "pipe_closed":
+                tinfo = r.get("transport_error_info")
+                if tinfo:
+                    rc = tinfo.get("process_exit_code", "?")
+                    diag = tinfo.get("transport_diagnosis", "?")
+                    reachable = tinfo.get("sandbox_reachable", "?")
+                    infra_errors.append(
+                        f"{task}: transport closed (rc={rc}, "
+                        f"diagnosis={diag}, sandbox_reachable={reachable})"
+                    )
+                else:
+                    infra_errors.append(f"{task}: {err}")
+                transport_error_tasks.append(task)
             else:
                 infra_errors.append(f"{task}: {err}")
     if infra_errors:
@@ -553,6 +567,12 @@ def check_agent(agent_dir: Path) -> dict:
             f"INVALIDATED: {len(sandbox_startup_tasks)} task(s) failed during "
             f"sandbox startup and should be rerun: "
             f"{', '.join(sandbox_startup_tasks)}"
+        )
+    if transport_error_tasks:
+        findings["issues"].append(
+            f"INVALIDATED: {len(transport_error_tasks)} task(s) lost ACP transport "
+            f"(pipe closed / rc=255) and should be rerun: "
+            f"{', '.join(transport_error_tasks)}"
         )
 
     # Summary.json — bench eval create writes it at the agent_dir root

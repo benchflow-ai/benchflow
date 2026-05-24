@@ -917,3 +917,114 @@ class TestSandboxStartupDiagnostics:
         retry_obj = DaytonaSandbox._create_sandbox.retry  # type: ignore[attr-defined]
         stop = retry_obj.stop
         assert stop.max_attempt_number == 3
+
+
+class TestTransportErrorDiagnostics:
+    """Guards ENG-148: ACP transport rc=255 must carry structured diagnostics."""
+
+    def test_parse_transport_error_rc255(self) -> None:
+        """Guards ENG-148: _parse_transport_error extracts rc, pid, diagnosis from
+        the ConnectionError message produced by process.py when SSH dies."""
+        from benchflow.rollout import _parse_transport_error
+
+        err = ConnectionError(
+            "Process closed stdout (rc=255): "
+            "Local subprocess exited with rc=255 before stdout closed.\n"
+            "stderr: Connection to sandbox lost"
+        )
+        info = _parse_transport_error(err)
+        assert info["reason"] == "transport_closed"
+        assert info["process_exit_code"] == 255
+        assert info["transport_diagnosis"] == "process_exited"
+        assert "Connection to sandbox lost" in info["stderr_snippet"]
+
+    def test_parse_transport_error_rc_none_remote_killed(self) -> None:
+        """Guards ENG-148: rc=None means the local process is alive but the remote
+        transport (SSH/Daytona) was killed."""
+        from benchflow.rollout import _parse_transport_error
+
+        err = ConnectionError(
+            "Process closed stdout (rc=None): "
+            "Local subprocess (pid=12345) is still alive but its "
+            "stdout/transport closed. This usually means the remote "
+            "container or SSH session was killed"
+        )
+        info = _parse_transport_error(err)
+        assert info["process_exit_code"] is None
+        assert info["process_pid"] == 12345
+        assert info["transport_diagnosis"] == "remote_session_killed"
+
+    def test_parse_transport_error_pty(self) -> None:
+        """Guards ENG-148: PTY readline errors get distinct diagnosis."""
+        from benchflow.rollout import _parse_transport_error
+
+        err = ConnectionError("PTY readline timeout (900s)")
+        info = _parse_transport_error(err)
+        assert info["transport_diagnosis"] == "pty_error"
+
+    def test_parse_transport_error_unknown(self) -> None:
+        """Guards ENG-148: unrecognized ConnectionError gets diagnosis=unknown."""
+        from benchflow.rollout import _parse_transport_error
+
+        err = ConnectionError("something unexpected")
+        info = _parse_transport_error(err)
+        assert info["transport_diagnosis"] == "unknown"
+        assert info["reason"] == "transport_closed"
+
+    def test_transport_error_info_in_result_json(self, tmp_path) -> None:
+        """Guards ENG-148: transport_error_info is written to result.json."""
+        from benchflow.rollout import _build_rollout_result
+
+        transport_info = {
+            "reason": "transport_closed",
+            "process_exit_code": 255,
+            "transport_diagnosis": "process_exited",
+            "sandbox_reachable": False,
+        }
+        result = _build_rollout_result(
+            tmp_path,
+            task_name="video-filler-word-remover",
+            rollout_name="video-filler__abc123",
+            agent="gemini",
+            agent_name="gemini-cli",
+            model="gemini-2.0-flash-lite",
+            n_tool_calls=8,
+            prompts=["solve"],
+            error="Process closed stdout (rc=255): Local subprocess exited with rc=255",
+            verifier_error=None,
+            trajectory=[],
+            partial_trajectory=True,
+            rewards=None,
+            started_at=__import__("datetime").datetime.now(),
+            timing={"agent": 10.0},
+            transport_error_info=transport_info,
+        )
+        rj = __import__("json").loads((tmp_path / "result.json").read_text())
+        assert rj["transport_error_info"] == transport_info
+        assert rj["error_category"] == "pipe_closed"
+        assert result.error is not None
+
+    def test_transport_error_info_none_when_no_transport_error(self, tmp_path) -> None:
+        """Guards ENG-148: transport_error_info is null for non-transport errors."""
+        from benchflow.rollout import _build_rollout_result
+
+        result = _build_rollout_result(
+            tmp_path,
+            task_name="hello-world",
+            rollout_name="hello__abc",
+            agent="gemini",
+            agent_name="gemini-cli",
+            model="gemini-2.0-flash-lite",
+            n_tool_calls=5,
+            prompts=["solve"],
+            error=None,
+            verifier_error=None,
+            trajectory=[],
+            partial_trajectory=False,
+            rewards={"reward": 1.0},
+            started_at=__import__("datetime").datetime.now(),
+            timing={"agent": 5.0},
+        )
+        rj = __import__("json").loads((tmp_path / "result.json").read_text())
+        assert rj["transport_error_info"] is None
+        assert result.rewards == {"reward": 1.0}
