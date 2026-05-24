@@ -99,6 +99,40 @@ def _dashboard_source_path(path: Path) -> str:
     return str(path)
 
 
+def _scrub_host_path(path: Path) -> str:
+    """Return a portable, non-host-revealing rendering of an absolute path.
+
+    The published ``data.json`` is served to anyone with dashboard access,
+    so absolute host paths must not appear in it — they'd leak local
+    usernames, worktree names, and tmp-dir layout. We render paths in
+    order of preference:
+
+    1. ``<relative>`` when ``path`` is under the repo root (``ROOT``)
+    2. ``~/<relative>`` when ``path`` is under the operator's home dir
+       (still round-trips through ``Path(...).expanduser()`` for callers
+       like :func:`remembered_jobs_root`)
+    3. ``<basename>`` for everything else — drops temp-dir layout, mount
+       points, and other host-shape signals. Round-trip support outside
+       HOME is not a goal: those paths are ephemeral and cannot survive
+       a republish anyway.
+
+    See issue #408.
+    """
+    try:
+        return str(path.relative_to(ROOT))
+    except ValueError:
+        pass
+    home = Path.home()
+    try:
+        rel = path.relative_to(home)
+    except ValueError:
+        # Outside ROOT and HOME — drop everything but the basename. For the
+        # degenerate ``Path('/')`` case ``name`` is empty; treat that as the
+        # root sentinel so we still don't echo the raw ``str(path)``.
+        return path.name or "/"
+    return f"~/{rel.as_posix()}" if rel.parts else "~"
+
+
 def collect_architecture() -> dict:
     source = _dashboard_source_path(ARCHITECTURE_MD)
     if not ARCHITECTURE_MD.is_file():
@@ -211,11 +245,16 @@ def dashboard_jobs_root() -> Path:
 def _jobs_source(jobs: Path) -> dict:
     configured = bool(os.environ.get(JOBS_ROOT_ENV))
     local_jobs = (ROOT / "jobs").resolve()
+    scrubbed = _scrub_host_path(jobs)
     return {
-        "path": str(jobs),
+        # ``path`` is host-scrubbed (see _scrub_host_path / issue #408): repo
+        # root → relative; HOME → ``~/…`` (round-trips through expanduser());
+        # elsewhere → basename only. The published data.json never carries an
+        # absolute host path here.
+        "path": scrubbed,
         "label": str(jobs.relative_to(ROOT))
         if jobs.is_relative_to(ROOT)
-        else str(jobs),
+        else scrubbed,
         "configured": configured,
         "remembered": not configured and jobs.resolve() != local_jobs,
         "available": jobs.is_dir(),
@@ -417,7 +456,10 @@ def _artifact(name: str, kind: str, path: Path) -> dict:
     stat = path.stat()
     artifact = {
         "name": name,
-        "path": str(path),
+        # ``path`` is host-scrubbed (see _scrub_host_path / issue #408): repo
+        # root → relative; HOME → ``~/…``; elsewhere → basename only. The
+        # published data.json never carries an absolute host path here.
+        "path": _scrub_host_path(path),
         "modified_at": datetime.fromtimestamp(stat.st_mtime).strftime(
             "%Y-%m-%d %H:%M:%S"
         ),
