@@ -271,9 +271,17 @@ class Verifier:
             self._rollout_paths.reward_text_path.exists()
             or self._rollout_paths.reward_json_path.exists()
         ):
-            raise VerifierOutputParseError(
-                f"Verifier script exited with rc={test_return_code}; "
-                "refusing reward output from failed verifier"
+            # ENG-150: Verifier produced a reward file but exited nonzero.
+            # This is common when test frameworks exit with the count of
+            # failures (e.g. pytest exits 1 when all tests fail → reward 0).
+            # Since _clear_reward_outputs() wiped stale files before this run,
+            # any reward file present was written by THIS invocation. Accept
+            # the reward so the result is classified as "failed" (honest model
+            # failure) instead of "verifier_errored" (infrastructure problem).
+            self._logger.warning(
+                "Verifier exited with rc=%d but produced reward output; "
+                "accepting reward (reward files were cleared before this run)",
+                test_return_code,
             )
 
         if self._rollout_paths.reward_text_path.exists():
