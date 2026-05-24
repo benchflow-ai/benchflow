@@ -1049,13 +1049,13 @@ def eval_create(
         typer.Option("--concurrency", help="Max concurrent tasks"),
     ] = None,
     agent_idle_timeout: Annotated[
-        int | None,
+        str | None,
         typer.Option(
             "--agent-idle-timeout",
-            min=0,
             help=(
-                "Abort ACP prompts after this many idle seconds; "
-                "0 disables idle detection."
+                "Abort ACP prompts after this many idle seconds (default: 600). "
+                "Pass 0 or 'none' to disable the idle watchdog and fall back to "
+                "the task's wall-clock timeout."
             ),
         ),
     ] = None,
@@ -1140,11 +1140,15 @@ def eval_create(
     eval_environment = environment or "docker"
     sandbox_user = normalize_sandbox_user(sandbox_user)
     eval_concurrency = concurrency if concurrency is not None else 4
-    eval_agent_idle_timeout = normalize_agent_idle_timeout(
-        agent_idle_timeout
-        if agent_idle_timeout is not None
-        else DEFAULT_AGENT_IDLE_TIMEOUT_SEC
-    )
+    try:
+        eval_agent_idle_timeout = normalize_agent_idle_timeout(
+            agent_idle_timeout
+            if agent_idle_timeout is not None
+            else DEFAULT_AGENT_IDLE_TIMEOUT_SEC
+        )
+    except ValueError as exc:
+        console.print(f"[red]Invalid --agent-idle-timeout {agent_idle_timeout!r}: {exc}[/red]")
+        raise typer.Exit(1) from None
     output_jobs_dir = jobs_dir or "jobs"
 
     if config_file:
