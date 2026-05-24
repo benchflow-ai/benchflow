@@ -34,6 +34,7 @@ class TestAutoInheritEnv:
             pytest.param("AWS_BEARER_TOKEN_BEDROCK", "bedrock-token", id="bedrock"),
             pytest.param("AWS_REGION", "us-east-1", id="bedrock-region"),
             pytest.param("ZAI_API_KEY", "zk-host", id="provider"),
+            pytest.param("AZURE_API_KEY", "az-host", id="azure-api-key-alias"),
         ],
     )
     def test_inherits_key(self, monkeypatch, env_name, env_value):
@@ -138,6 +139,34 @@ class TestAutoInheritEnv:
         auto_inherit_env(env)
         assert "OPENAI_BASE_URL" not in env
 
+    @pytest.mark.parametrize(
+        "alias",
+        [
+            "AZURE_API_KEY",
+            "AZURE_OPENAI_API_KEY",
+            "AZURE_AI_FOUNDRY_ANTHROPIC_API_KEY",
+        ],
+    )
+    def test_azure_key_aliases_mirror_to_foundry_key(self, alias):
+        env = {alias: "az-test"}
+        auto_inherit_env(env)
+        assert env["AZURE_AI_FOUNDRY_API_KEY"] == "az-test"
+
+    def test_azure_endpoint_alias_derives_resource(self):
+        env = {
+            "AZURE_API_ENDPOINT": "https://example-resource.openai.azure.com/"
+        }
+        auto_inherit_env(env)
+        assert env["AZURE_AI_FOUNDRY_RESOURCE"] == "example-resource"
+
+    def test_azure_resource_alias_takes_precedence_over_endpoint(self):
+        env = {
+            "AZURE_OPENAI_RESOURCE": "explicit-resource",
+            "AZURE_API_ENDPOINT": "https://endpoint-resource.openai.azure.com/",
+        }
+        auto_inherit_env(env)
+        assert env["AZURE_AI_FOUNDRY_RESOURCE"] == "explicit-resource"
+
 
 # ── inject_vertex_credentials ──
 
@@ -228,6 +257,48 @@ class TestResolveProviderEnv:
         assert env["BENCHFLOW_PROVIDER_BASE_URL"] == "https://api.z.ai/api/paas/v4"
         assert env["BENCHFLOW_PROVIDER_PROTOCOL"] == "openai-responses"
         assert env["OPENAI_BASE_URL"] == "https://api.z.ai/api/paas/v4"
+
+    def test_azure_foundry_openai_maps_to_codex_env(self):
+        env = {
+            "AZURE_AI_FOUNDRY_API_KEY": "az-test",
+            "AZURE_AI_FOUNDRY_RESOURCE": "example-resource",
+        }
+        resolve_provider_env(env, "azure-foundry-openai/gpt-5.5", "codex-acp")
+        assert env["BENCHFLOW_PROVIDER_NAME"] == "azure-foundry-openai"
+        assert env["BENCHFLOW_PROVIDER_MODEL"] == "gpt-5.5"
+        assert env["BENCHFLOW_PROVIDER_PROTOCOL"] == "openai-responses"
+        assert (
+            env["BENCHFLOW_PROVIDER_BASE_URL"]
+            == "https://example-resource.openai.azure.com/openai/v1"
+        )
+        assert env["OPENAI_API_KEY"] == "az-test"
+        assert (
+            env["OPENAI_BASE_URL"]
+            == "https://example-resource.openai.azure.com/openai/v1"
+        )
+
+    def test_azure_foundry_anthropic_maps_to_claude_env(self):
+        env = {
+            "AZURE_AI_FOUNDRY_API_KEY": "az-test",
+            "AZURE_AI_FOUNDRY_RESOURCE": "example-resource",
+        }
+        resolve_provider_env(
+            env,
+            "azure-foundry-anthropic/claude-opus-4-5",
+            "claude-agent-acp",
+        )
+        assert env["BENCHFLOW_PROVIDER_NAME"] == "azure-foundry-anthropic"
+        assert env["BENCHFLOW_PROVIDER_MODEL"] == "claude-opus-4-5"
+        assert env["BENCHFLOW_PROVIDER_PROTOCOL"] == "anthropic-messages"
+        assert (
+            env["BENCHFLOW_PROVIDER_BASE_URL"]
+            == "https://example-resource.services.ai.azure.com/anthropic"
+        )
+        assert env["ANTHROPIC_AUTH_TOKEN"] == "az-test"
+        assert (
+            env["ANTHROPIC_BASE_URL"]
+            == "https://example-resource.services.ai.azure.com/anthropic"
+        )
 
     def test_aws_bedrock_sets_placeholder_provider_key_for_codex(self):
         env = {
@@ -531,6 +602,71 @@ class TestResolveAgentEnvOracle:
         # Provider env never resolved — oracle never calls an LLM.
         assert "BENCHFLOW_PROVIDER_MODEL" not in result
         assert "_BENCHFLOW_SUBSCRIPTION_AUTH" not in result
+
+
+class TestResolveAgentEnvAzureFoundry:
+    """Azure aliases resolve through the same provider/env pipeline as other providers."""
+
+    @pytest.fixture(autouse=True)
+    def _clean_env(self, monkeypatch, tmp_path):
+        """Isolate from the host environment and any real .env file."""
+        for k in (
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_AUTH_TOKEN",
+            "AZURE_AI_FOUNDRY_API_KEY",
+            "AZURE_AI_FOUNDRY_RESOURCE",
+            "AZURE_AI_FOUNDRY_ANTHROPIC_API_KEY",
+            "AZURE_AI_FOUNDRY_ENDPOINT",
+            "AZURE_API_ENDPOINT",
+            "AZURE_API_KEY",
+            "AZURE_OPENAI_API_KEY",
+            "AZURE_OPENAI_ENDPOINT",
+            "AZURE_OPENAI_RESOURCE",
+            "AZURE_RESOURCE",
+            "CODEX_ACCESS_TOKEN",
+            "OPENAI_API_KEY",
+            "OPENAI_BASE_URL",
+        ):
+            monkeypatch.delenv(k, raising=False)
+        empty = tmp_path / "empty.env"
+        empty.write_text("")
+        monkeypatch.setenv("BENCHFLOW_DOTENV_PATH", str(empty))
+
+    def test_codex_uses_azure_api_key_and_endpoint_aliases(self, monkeypatch):
+        monkeypatch.setenv("AZURE_API_KEY", "az-test")
+        monkeypatch.setenv(
+            "AZURE_API_ENDPOINT", "https://example-resource.openai.azure.com/"
+        )
+
+        result = resolve_agent_env("codex-acp", "azure-foundry-openai/gpt-5.5", {})
+
+        assert result["AZURE_AI_FOUNDRY_API_KEY"] == "az-test"
+        assert result["AZURE_AI_FOUNDRY_RESOURCE"] == "example-resource"
+        assert result["OPENAI_API_KEY"] == "az-test"
+        assert (
+            result["OPENAI_BASE_URL"]
+            == "https://example-resource.openai.azure.com/openai/v1"
+        )
+
+    def test_claude_uses_same_azure_key_on_anthropic_surface(self, monkeypatch):
+        monkeypatch.setenv("AZURE_API_KEY", "az-test")
+        monkeypatch.setenv(
+            "AZURE_API_ENDPOINT", "https://example-resource.openai.azure.com/"
+        )
+
+        result = resolve_agent_env(
+            "claude-agent-acp",
+            "azure-foundry-anthropic/claude-opus-4-5",
+            {},
+        )
+
+        assert result["AZURE_AI_FOUNDRY_API_KEY"] == "az-test"
+        assert result["AZURE_AI_FOUNDRY_RESOURCE"] == "example-resource"
+        assert result["ANTHROPIC_AUTH_TOKEN"] == "az-test"
+        assert (
+            result["ANTHROPIC_BASE_URL"]
+            == "https://example-resource.services.ai.azure.com/anthropic"
+        )
 
 
 class TestResolveAgentEnvHostProviderEndpoint:

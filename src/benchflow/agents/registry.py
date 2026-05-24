@@ -91,7 +91,7 @@ _JS_AGENT_PATH = (
     f"{_BENCHFLOW_NODE_PREFIX}/bin:$PATH"
 )
 _NODE_INSTALL = (
-    "set -o pipefail; "
+    "set -e; "
     "export DEBIAN_FRONTEND=noninteractive; "
     f"BF_NODE_DIR={_BENCHFLOW_NODE_PREFIX}; "
     "BF_NODE_VERSION=22.14.0; "

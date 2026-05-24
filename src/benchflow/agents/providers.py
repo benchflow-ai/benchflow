@@ -127,6 +127,34 @@ PROVIDERS: dict[str, ProviderConfig] = {
             }
         ],
     ),
+    # ── Azure AI Foundry providers ──
+    #
+    # Foundry exposes different protocol surfaces. Keep those surfaces explicit
+    # in provider prefixes, while sharing one Azure resource/key env contract.
+    "azure-foundry-openai": ProviderConfig(
+        name="azure-foundry-openai",
+        base_url="https://{resource}.openai.azure.com/openai/v1",
+        api_protocol="openai-responses",
+        auth_type="api_key",
+        auth_env="AZURE_AI_FOUNDRY_API_KEY",
+        url_params={
+            "resource": "AZURE_AI_FOUNDRY_RESOURCE",
+        },
+        endpoints={
+            "openai-completions": "https://{resource}.openai.azure.com/openai/v1",
+            "openai-responses": "https://{resource}.openai.azure.com/openai/v1",
+        },
+    ),
+    "azure-foundry-anthropic": ProviderConfig(
+        name="azure-foundry-anthropic",
+        base_url="https://{resource}.services.ai.azure.com/anthropic",
+        api_protocol="anthropic-messages",
+        auth_type="api_key",
+        auth_env="AZURE_AI_FOUNDRY_API_KEY",
+        url_params={
+            "resource": "AZURE_AI_FOUNDRY_RESOURCE",
+        },
+    ),
     # ── OpenAI-compatible inference servers (user-supplied base_url) ──
     "vllm": ProviderConfig(
         name="vllm",
