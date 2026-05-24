@@ -165,17 +165,17 @@ class ACPSessionAdapter:
 
     This adapter is the thin, documented seam that re-unifies them into a
     single ``Session``. It is **not** an ACP rewrite — it delegates every
-    call straight through. Two gaps with the architecture's shape, kept
-    explicit here rather than papered over:
+    call straight through. One residual gap with the architecture's shape,
+    kept explicit here rather than papered over:
 
-    * ``ACPClient`` exposes no ``on_ask_user`` hook. ACP's agent-initiated
-      channel is ``session/request_permission``, which the client today
-      auto-approves in ``_handle_agent_request``. The adapter stores the
-      handler so the contract is honest; wiring it into the client's
-      permission path is a follow-up (NudgeBench forces it).
     * ``steps`` maps onto ``ACPSession.events`` — the chronological event
       log. The kernel's ``Step`` noun is not yet a typed object, so the
       adapter surfaces the raw event dicts.
+
+    ``on_ask_user`` forwards to ``ACPClient.on_ask_user`` so the registered
+    handler runs on the live ACP ``session/request_permission`` path; without
+    that forwarding the handler was bypassed and the auto-approve policy ran
+    unconditionally (#382).
     """
 
     def __init__(self, client: ACPClient) -> None:
@@ -199,10 +199,39 @@ class ACPSessionAdapter:
     def on_ask_user(self, handler: AskUserHandler) -> None:
         """Register the agent-initiated ``ask_user`` handler.
 
-        Stored on the adapter; see the class docstring for the gap with
-        ``ACPClient``'s current auto-approve permission path.
+        Translates the architecture-level :class:`AskUserHandler` (which
+        receives an :class:`AskUserRequest` and returns the answer text)
+        into the ACP-level callable :class:`ACPClient.on_ask_user` expects
+        (which receives the raw ACP ``params`` dict and returns the
+        ``optionId`` to select). Without this forwarding the handler is
+        registered but never invoked — the bug behind #382.
         """
         self._ask_user_handler = handler
+
+        async def _bridge(params: dict[str, Any]) -> str:
+            options_raw = params.get("options", []) or []
+            # Surface the enumerated option IDs as the branchable set. The
+            # raw ACP payload also carries ``kind`` / ``name`` per option,
+            # but the architecture-level ``AskUserRequest`` is intentionally
+            # minimal — handlers that need richer context can read the raw
+            # params via ``ACPClient.on_ask_user`` directly.
+            options = [
+                str(o.get("optionId", ""))
+                for o in options_raw
+                if isinstance(o, dict) and o.get("optionId")
+            ]
+            tool_call = params.get("toolCall") or {}
+            prompt = (
+                str(tool_call.get("title", "")) if isinstance(tool_call, dict) else ""
+            )
+            request = AskUserRequest(
+                prompt=prompt,
+                options=options,
+                request_id=str(params.get("sessionId", "")),
+            )
+            return await handler(request)
+
+        self._client.on_ask_user(_bridge)
 
     @property
     def steps(self) -> list[Any]:
