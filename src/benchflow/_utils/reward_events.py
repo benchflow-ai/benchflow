@@ -6,7 +6,6 @@ from collections.abc import Mapping
 from typing import Any
 
 _EVENT_FIELDS = ("type", "reward", "source", "space", "granularity", "step")
-_JSONL_META_FIELDS = ("space", "granularity")
 
 
 def reward_event_to_dict(event: Any) -> dict[str, Any]:
@@ -25,9 +24,14 @@ def reward_event_to_dict(event: Any) -> dict[str, Any]:
 
 
 def reward_event_to_jsonl_record(event: Any, *, ts: str) -> dict[str, Any]:
-    """Serialize one reward event into the rollout ``rewards.jsonl`` shape."""
+    """Serialize one reward event into the rollout ``rewards.jsonl`` shape.
+
+    ``space`` and ``granularity`` are first-class fields on the line —
+    the architecture tags every reward record ``(space, granularity, value)``,
+    so consumers (dashboard, trainer, monitor) must not have to dig into
+    ``meta`` to distinguish Output/Action/Reasoning/Memory/Latent signal.
+    """
     data = reward_event_to_dict(event)
-    meta = {field: data[field] for field in _JSONL_META_FIELDS if data.get(field)}
     return {
         "ts": ts,
         "type": data.get("type"),
@@ -35,7 +39,9 @@ def reward_event_to_jsonl_record(event: Any, *, ts: str) -> dict[str, Any]:
         "value": data.get("reward"),
         "tag": data.get("space") or data.get("source") or "reward",
         "step_index": data.get("step"),
-        "meta": meta,
+        "space": data.get("space") or "output",
+        "granularity": data.get("granularity") or "terminal",
+        "meta": {},
     }
 
 

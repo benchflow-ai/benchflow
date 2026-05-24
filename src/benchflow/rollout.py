@@ -257,7 +257,15 @@ def _write_rewards_jsonl(
     rewards: dict | None,
     finished_at: datetime,
 ) -> None:
-    """Write rewards.jsonl — one JSON line per reward event."""
+    """Write rewards.jsonl — one JSON line per reward event.
+
+    Architecture (``docs/architecture.md``, "Evaluation — the five spaces"):
+    every reward record is tagged ``(space, granularity, value)``. Promote
+    those tags from any verifier-supplied per-item dict to first-class
+    fields on each line, falling back to the ``RewardEvent`` defaults
+    (``space="output"``; ``granularity="step"`` for rubric items,
+    ``"terminal"`` for the scalar reward) when the verifier omits them.
+    """
     from typing import cast
 
     if not rewards:
@@ -277,16 +285,18 @@ def _write_rewards_jsonl(
                     "value": rubric_item.get("score", 0.0),
                     "tag": rubric_item.get("name", f"rubric_{i}"),
                     "step_index": i,
+                    "space": rubric_item.get("space", "output"),
+                    "granularity": rubric_item.get("granularity", "step"),
                     "meta": {
                         k: v
                         for k, v in rubric_item.items()
-                        if k not in ("score", "name")
+                        if k not in ("score", "name", "space", "granularity")
                     },
                 }
             )
     scalar = rewards.get("reward")
     if scalar is not None:
-        non_event_keys = {"reward", "rubric"}
+        non_event_keys = {"reward", "rubric", "space", "granularity"}
         events.append(
             {
                 "ts": finished_at.isoformat(),
@@ -295,6 +305,8 @@ def _write_rewards_jsonl(
                 "value": scalar,
                 "tag": "reward",
                 "step_index": None,
+                "space": rewards.get("space", "output"),
+                "granularity": rewards.get("granularity", "terminal"),
                 "meta": {k: v for k, v in rewards.items() if k not in non_event_keys},
             }
         )
