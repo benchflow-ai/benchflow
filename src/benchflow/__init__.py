@@ -79,6 +79,8 @@ from benchflow.sandbox import (
     ImageConfig,
     ImageRef,
     Sandbox,
+    SandboxImage,
+    SandboxSnapshotNotSupported,
     build_service_hooks,
     detect_services_from_dockerfile,
     register_service,
@@ -88,7 +90,14 @@ from benchflow.sandbox import (
 from benchflow.sandbox import ExecResult as SandboxExecResult
 from benchflow.sandbox.protocol import ExecResult
 from benchflow.sandbox.setup import stage_dockerfile_deps
-from benchflow.sandbox.snapshot import list_snapshots, restore, snapshot
+from benchflow.sandbox.snapshot import (
+    list_snapshots,
+    list_workspace_snapshots,
+    restore,
+    snapshot,
+    workspace_restore,
+    workspace_snapshot,
+)
 from benchflow.sandbox.user import BaseUser, FunctionUser, PassthroughUser, RoundResult
 from benchflow.scenes import MailboxTransport, Message, MessageTransport, SceneRole
 from benchflow.scenes import Scene as SceneRuntime
@@ -127,6 +136,8 @@ __all__ = [
     # Sandbox protocol
     "Sandbox",
     "SandboxExecResult",
+    "SandboxImage",
+    "SandboxSnapshotNotSupported",
     "ImageBuilder",
     "ImageConfig",
     "ImageRef",
@@ -175,7 +186,11 @@ __all__ = [
     "Message",
     "MessageTransport",
     "MailboxTransport",
-    # Env snapshots
+    # Workspace snapshots (filesystem helper — NOT the Sandbox primitive, #384)
+    "workspace_snapshot",
+    "workspace_restore",
+    "list_workspace_snapshots",
+    # Backward-compatible aliases for the above (pre-#384 names)
     "snapshot",
     "restore",
     "list_snapshots",

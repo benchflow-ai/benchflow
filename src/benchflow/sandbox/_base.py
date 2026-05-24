@@ -17,6 +17,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from benchflow.sandbox.protocol import SandboxImage, SandboxSnapshotNotSupported
 from benchflow.task.config import SandboxConfig
 from benchflow.task.env import resolve_env_vars
 from benchflow.task.paths import RolloutPaths
@@ -304,3 +305,46 @@ class BaseSandbox(ABC):
 
     async def attach(self) -> None:
         raise NotImplementedError("This environment does not support attaching.")
+
+    # ── Container-level snapshot/restore (Branch substrate) ──────────────
+    #
+    # Part of the Sandbox contract (``docs/architecture.md``): the Branch
+    # lifecycle composes container ⊃ environment-state ⊃ agent-session in
+    # that order. Backends that cannot snapshot the container (Modal, the
+    # Daytona DinD/compose strategy today) leave the defaults in place and
+    # raise :class:`SandboxSnapshotNotSupported`. ``Rollout.branch()`` gates
+    # on :attr:`supports_snapshot` and fails closed with a clear diagnostic
+    # rather than producing a half-consistent checkpoint (#384).
+
+    @property
+    def supports_snapshot(self) -> bool:
+        """Whether this backend implements container-level snapshot/restore.
+
+        Default ``False`` so new backends are safe-by-default — they must
+        opt-in by overriding both this property and ``snapshot``/``restore``.
+        """
+        return False
+
+    async def snapshot(self, name: str | None = None) -> SandboxImage:
+        """Capture the current container state as a re-usable image.
+
+        Default implementation raises :class:`SandboxSnapshotNotSupported`;
+        Docker and Daytona-direct override this with provider-native commit
+        and snapshot APIs respectively.
+        """
+        raise SandboxSnapshotNotSupported(
+            f"{type(self).__name__} does not support container-level snapshots. "
+            "Branch requires a provider whose Sandbox can checkpoint the "
+            "container layer; see docs/architecture.md, 'The hard part'."
+        )
+
+    async def restore(self, image: SandboxImage) -> None:
+        """Restore the container to a previously captured snapshot.
+
+        Default implementation raises :class:`SandboxSnapshotNotSupported`.
+        """
+        raise SandboxSnapshotNotSupported(
+            f"{type(self).__name__} does not support container-level restore. "
+            "Branch requires a provider whose Sandbox can checkpoint the "
+            "container layer; see docs/architecture.md, 'The hard part'."
+        )
