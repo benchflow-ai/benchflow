@@ -839,14 +839,22 @@ class _DaytonaDinD(_DaytonaStrategy):
         parts: list[str] = ["exec", "-T"]
         if cwd:
             parts.extend(["-w", cwd])
-        if env:
-            for k, v in env.items():
-                parts.extend(["-e", f"{k}={v}"])
         if user is not None:
             parts.extend(["-u", str(user)])
+        # Env vars are materialized inside the target container via a
+        # mode-0600 file and sourced, rather than passed as ``-e KEY=VALUE``
+        # flags. The flags would land in the DinD VM's process list (visible
+        # to ``ps`` and any Daytona session audit log) and leak verifier
+        # API keys / agent secrets on every multi-service task (#412
+        # follow-up). Matches the wrapping that ``DaytonaSandbox._sandbox_exec``
+        # already applies to the outer VM-side command.
+        if env:
+            command = _wrap_daytona_command_with_env_file(env, command)
         # Use POSIX ``sh`` rather than ``bash``: with multi-service support
         # (#248), ``service`` can target arbitrary task containers, and
-        # Alpine/distroless/minimal images often ship no ``/bin/bash``.
+        # Alpine/distroless/minimal images often ship no ``/bin/bash``. The
+        # wrapped command uses only POSIX constructs (``trap``, ``base64 -d``,
+        # ``set -a``/``. file``).
         parts.extend([service, "sh", "-c", command])
 
         return await self._compose_exec(parts, timeout_sec=timeout_sec)
