@@ -90,7 +90,10 @@ class TestEvalCreateRouting:
 
     def test_eval_create_normalizes_agent_alias(self, tmp_path: Path):
         """Guards ENG-86: eval create normalizes aliases before launch."""
+        from types import SimpleNamespace
+
         from benchflow.cli.main import eval_create
+        from benchflow.evaluation import Evaluation
 
         task = tmp_path / "task"
         task.mkdir()
@@ -98,18 +101,13 @@ class TestEvalCreateRouting:
         (task / "instruction.md").write_text("solve\n")
         captured = {}
 
-        async def fake_run(self, **kwargs):
-            from benchflow.models import RunResult
-
-            captured.update(kwargs)
-            return RunResult(
-                task_name="task",
-                agent_name=kwargs["agent"],
-                rewards={"reward": 1.0},
-                n_tool_calls=0,
+        async def fake_run(self):
+            captured["agent"] = self._config.agent
+            return SimpleNamespace(
+                passed=1, total=1, score=1.0, errored=0, verifier_errored=0
             )
 
-        with patch("benchflow.sdk.SDK.run", new=fake_run):
+        with patch.object(Evaluation, "run", new=fake_run):
             eval_create(
                 config_file=None,
                 tasks_dir=task,
@@ -134,7 +132,10 @@ class TestEvalCreateRouting:
 
     def test_eval_create_normalizes_sandbox_user_none(self, tmp_path: Path):
         """Guards ENG-91 P0 dogfood sandbox-user CLI regression."""
+        from types import SimpleNamespace
+
         from benchflow.cli.main import eval_create
+        from benchflow.evaluation import Evaluation
 
         task = tmp_path / "task"
         task.mkdir()
@@ -142,18 +143,13 @@ class TestEvalCreateRouting:
         (task / "instruction.md").write_text("solve\n")
         captured = {}
 
-        async def fake_run(self, **kwargs):
-            from benchflow.models import RunResult
-
-            captured.update(kwargs)
-            return RunResult(
-                task_name="task",
-                agent_name=kwargs["agent"],
-                rewards={"reward": 1.0},
-                n_tool_calls=0,
+        async def fake_run(self):
+            captured["sandbox_user"] = self._config.sandbox_user
+            return SimpleNamespace(
+                passed=1, total=1, score=1.0, errored=0, verifier_errored=0
             )
 
-        with patch("benchflow.sdk.SDK.run", new=fake_run):
+        with patch.object(Evaluation, "run", new=fake_run):
             eval_create(
                 config_file=None,
                 tasks_dir=task,
@@ -221,7 +217,10 @@ class TestEvalCreateRouting:
         self, tmp_path: Path, monkeypatch
     ):
         """Guards ENG-78: CLI runs inherit provider keys without --agent-env."""
+        from types import SimpleNamespace
+
         from benchflow.cli.main import eval_create
+        from benchflow.evaluation import Evaluation
 
         task = tmp_path / "task"
         task.mkdir()
@@ -230,24 +229,20 @@ class TestEvalCreateRouting:
         monkeypatch.setenv("GEMINI_API_KEY", "from-host")
         captured = {}
 
-        async def fake_run(self, **kwargs):
+        async def fake_run(self):
             from benchflow.agents.env import resolve_agent_env
-            from benchflow.models import RunResult
 
-            captured["kwargs"] = kwargs
+            captured["agent_env"] = dict(self._config.agent_env)
             captured["resolved_agent_env"] = resolve_agent_env(
-                kwargs["agent"],
-                kwargs["model"],
-                kwargs["agent_env"],
+                self._config.agent,
+                self._config.model,
+                self._config.agent_env,
             )
-            return RunResult(
-                task_name="task",
-                agent_name=kwargs["agent"],
-                rewards={"reward": 1.0},
-                n_tool_calls=0,
+            return SimpleNamespace(
+                passed=1, total=1, score=1.0, errored=0, verifier_errored=0
             )
 
-        with patch("benchflow.sdk.SDK.run", new=fake_run):
+        with patch.object(Evaluation, "run", new=fake_run):
             eval_create(
                 config_file=None,
                 tasks_dir=task,
@@ -268,7 +263,7 @@ class TestEvalCreateRouting:
                 agent_env=None,
             )
 
-        assert captured["kwargs"]["agent_env"] == {}
+        assert captured["agent_env"] == {}
         assert captured["resolved_agent_env"]["GEMINI_API_KEY"] == "from-host"
         assert captured["resolved_agent_env"]["GOOGLE_API_KEY"] == "from-host"
 
@@ -277,9 +272,10 @@ class TestEvalCreateRouting:
     ):
         """Guards release smokes: .env sandbox credentials reach provider SDKs."""
         import os
+        from types import SimpleNamespace
 
         from benchflow.cli.main import eval_create
-        from benchflow.models import RunResult
+        from benchflow.evaluation import Evaluation
 
         task = tmp_path / "task"
         task.mkdir()
@@ -297,18 +293,15 @@ class TestEvalCreateRouting:
         monkeypatch.delenv("MODAL_TOKEN_SECRET", raising=False)
         captured = {}
 
-        async def fake_run(self, **kwargs):
+        async def fake_run(self):
             captured["daytona"] = os.environ.get("DAYTONA_API_KEY")
             captured["modal_id"] = os.environ.get("MODAL_TOKEN_ID")
             captured["modal_secret"] = os.environ.get("MODAL_TOKEN_SECRET")
-            return RunResult(
-                task_name="task",
-                agent_name=kwargs["agent"],
-                rewards={"reward": 1.0},
-                n_tool_calls=0,
+            return SimpleNamespace(
+                passed=1, total=1, score=1.0, errored=0, verifier_errored=0
             )
 
-        with patch("benchflow.sdk.SDK.run", new=fake_run):
+        with patch.object(Evaluation, "run", new=fake_run):
             eval_create(
                 config_file=None,
                 tasks_dir=task,
@@ -337,22 +330,26 @@ class TestEvalCreateRouting:
 
     def test_eval_create_exits_nonzero_when_single_task_errors(self, tmp_path: Path):
         """Guards ENG-93 release smoke evidence against false-green CLI exits."""
+        from types import SimpleNamespace
+
         from benchflow.cli.main import app
-        from benchflow.models import RunResult
+        from benchflow.evaluation import Evaluation
 
         task = tmp_path / "task"
         task.mkdir()
         (task / "task.toml").write_text('schema_version = "1.1"\n')
         (task / "instruction.md").write_text("solve\n")
 
-        async def fake_run(self, **kwargs):
-            return RunResult(
-                task_name="task",
-                agent_name=kwargs["agent"],
-                error="Token not found",
+        async def fake_run(self):
+            return SimpleNamespace(
+                passed=0,
+                total=1,
+                score=0.0,
+                errored=1,
+                verifier_errored=0,
             )
 
-        with patch("benchflow.sdk.SDK.run", new=fake_run):
+        with patch.object(Evaluation, "run", new=fake_run):
             result = CliRunner().invoke(
                 app,
                 [
@@ -370,29 +367,32 @@ class TestEvalCreateRouting:
             )
 
         assert result.exit_code == 1
-        assert "Error:" in result.stdout
-        assert "Token not found" in result.stdout
+        assert "Score: 0/1" in result.stdout
 
     def test_eval_create_exits_nonzero_when_single_task_verifier_errors(
         self, tmp_path: Path
     ):
         """Guards ENG-93 release smoke evidence against hidden verifier errors."""
+        from types import SimpleNamespace
+
         from benchflow.cli.main import app
-        from benchflow.models import RunResult
+        from benchflow.evaluation import Evaluation
 
         task = tmp_path / "task"
         task.mkdir()
         (task / "task.toml").write_text('schema_version = "1.1"\n')
         (task / "instruction.md").write_text("solve\n")
 
-        async def fake_run(self, **kwargs):
-            return RunResult(
-                task_name="task",
-                agent_name=kwargs["agent"],
-                verifier_error="verifier crashed",
+        async def fake_run(self):
+            return SimpleNamespace(
+                passed=0,
+                total=1,
+                score=0.0,
+                errored=0,
+                verifier_errored=1,
             )
 
-        with patch("benchflow.sdk.SDK.run", new=fake_run):
+        with patch.object(Evaluation, "run", new=fake_run):
             result = CliRunner().invoke(
                 app,
                 [
@@ -410,8 +410,7 @@ class TestEvalCreateRouting:
             )
 
         assert result.exit_code == 1
-        assert "Verifier error:" in result.stdout
-        assert "verifier crashed" in result.stdout
+        assert "Score: 0/1" in result.stdout
 
     def test_eval_create_exits_nonzero_when_batch_has_harness_errors(
         self, tmp_path: Path

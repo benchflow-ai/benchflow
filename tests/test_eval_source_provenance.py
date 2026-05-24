@@ -261,16 +261,13 @@ def test_eval_create_single_task_applies_concurrency_override(monkeypatch, tmp_p
     (task_dir / "task.toml").write_text("[task]\n")
     captured = {}
 
-    async def fake_sdk_run(self, **kwargs):
-        captured["concurrency"] = kwargs["concurrency"]
+    async def fake_eval_run(self):
+        captured["concurrency"] = self._config.concurrency
         return SimpleNamespace(
-            rewards={"reward": 1.0},
-            n_tool_calls=0,
-            error=None,
-            verifier_error=None,
+            passed=1, total=1, score=1.0, errored=0, verifier_errored=0
         )
 
-    monkeypatch.setattr("benchflow.sdk.SDK.run", fake_sdk_run)
+    monkeypatch.setattr("benchflow.evaluation.Evaluation.run", fake_eval_run)
 
     result = CliRunner().invoke(
         app,
@@ -297,16 +294,13 @@ def test_eval_create_single_task_applies_agent_idle_timeout(monkeypatch, tmp_pat
     (task_dir / "task.toml").write_text("[task]\n")
     captured = {}
 
-    async def fake_sdk_run(self, **kwargs):
-        captured["agent_idle_timeout"] = kwargs["agent_idle_timeout"]
+    async def fake_eval_run(self):
+        captured["agent_idle_timeout"] = self._config.agent_idle_timeout
         return SimpleNamespace(
-            rewards={"reward": 0.0},
-            n_tool_calls=0,
-            error="Agent idle for 45s with no new tool call, message, or thought",
-            verifier_error=None,
+            passed=0, total=1, score=0.0, errored=1, verifier_errored=0
         )
 
-    monkeypatch.setattr("benchflow.sdk.SDK.run", fake_sdk_run)
+    monkeypatch.setattr("benchflow.evaluation.Evaluation.run", fake_eval_run)
 
     result = CliRunner().invoke(
         app,

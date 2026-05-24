@@ -65,6 +65,14 @@ logger = logging.getLogger(__name__)
 _SENTINEL: Any = object()  # default value for _sdk; tests replace with AsyncMock
 
 
+class EmptyTaskSelectionError(ValueError):
+    """Raised when task discovery + include/exclude filters resolve to zero tasks.
+
+    Failing fast is preferred over silently writing a 0/0 summary.json that
+    downstream dashboards may ingest as evidence (#407).
+    """
+
+
 @dataclass
 class RetryConfig:
     """Configuration for retry behavior.
@@ -898,6 +906,21 @@ class Evaluation:
     async def run(self) -> EvaluationResult:
         """Execute the job."""
         task_dirs = self._get_task_dirs()
+        if not task_dirs:
+            # Fail fast on an empty selection (#407). Silently writing a
+            # 0/0 summary.json would surface as an apparently successful
+            # eval in downstream dashboards and release evidence.
+            cfg = self._config
+            detail_parts = [f"tasks_dir={self._tasks_dir}"]
+            if cfg.include_tasks:
+                detail_parts.append(f"include={sorted(cfg.include_tasks)}")
+            if cfg.exclude_tasks:
+                detail_parts.append(f"exclude={sorted(cfg.exclude_tasks)}")
+            raise EmptyTaskSelectionError(
+                "No tasks selected after include/exclude filtering "
+                f"({', '.join(detail_parts)}). Refusing to publish an "
+                "empty 0/0 summary."
+            )
         completed = self._get_completed_tasks()
         remaining = [d for d in task_dirs if d.name not in completed]
 
