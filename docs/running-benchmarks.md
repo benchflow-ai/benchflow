@@ -17,7 +17,7 @@ This guide covers how to run them — from a single task to a full evaluation sw
 |-----------|-------|--------------|--------|
 | [Harvey LAB](https://github.com/harveyai/harvey-labs) | 1,251 | LLM-as-judge (per-criterion) | `benchmarks/harvey-lab/` |
 | [ProgramBench](https://programbench.com) | 201 | Deterministic unit tests | `benchmarks/programbench/` |
-| [SkillsBench](https://github.com/benchflow-ai/skillsbench) | 94+ | Unit tests | `benchmarks/skillsbench-*.yaml` |
+| [SkillsBench](https://github.com/benchflow-ai/skillsbench) | 94+ | Unit tests | `--source-repo benchflow-ai/skillsbench --source-path tasks` |
 
 Each adapted benchmark includes:
 - **`benchflow.py`** — converter: raw benchmark → BenchFlow task format
@@ -91,9 +91,10 @@ bench eval create \
   --source-path tasks/edit-pdf \
   --agent gemini --model gemini-3.1-flash-lite-preview
 
-# ProgramBench — single task
+# ProgramBench — single task (tasks are generated at runtime by the converter;
+# see "Running ProgramBench" below for the generation step)
 bench eval create \
-  benchmarks/programbench/tasks/abishekvashok__cmatrix.5c082c6 \
+  --tasks-dir benchmarks/programbench/tasks/abishekvashok__cmatrix.5c082c6 \
   --agent gemini --model gemini-3.1-flash-lite-preview --sandbox docker
 
 # Claude Code on Daytona
@@ -192,13 +193,32 @@ bench eval create \
 ## Running ProgramBench
 
 201 program-reconstruction tasks across 7 languages (C, Rust, Go, C++, Java, Haskell, Bash).
-Tasks are **generated** at runtime from the ProgramBench repo's metadata.
+Tasks are **generated** at runtime from the ProgramBench repo's metadata —
+`benchmarks/programbench/tasks/` is not checked into this repo and must be
+produced first.
 
 ### Prerequisites
 
 - Docker (images are linux/amd64 only — use a Linux x86_64 machine)
 - ~20GB disk for Docker images
 - Internet access for HuggingFace test blob downloads during verification
+- A local clone of [`programbench`](https://programbench.com) (passed via
+  `--programbench-dir` to the generator)
+
+### Generate the tasks
+
+```bash
+# All 200 tasks
+python -m benchmarks.programbench.main \
+    --programbench-dir ~/programbench \
+    --output-dir benchmarks/programbench/tasks
+
+# Or a single task
+python -m benchmarks.programbench.main \
+    --programbench-dir ~/programbench \
+    --output-dir benchmarks/programbench/tasks \
+    --task-ids abishekvashok__cmatrix.5c082c6
+```
 
 ### Run all tasks
 
@@ -206,7 +226,7 @@ Tasks are **generated** at runtime from the ProgramBench repo's metadata.
 bench eval create --config benchmarks/programbench/programbench-gemini-flash-lite.yaml
 ```
 
-### Run a single task
+### Run a single task (after generation)
 
 ```bash
 bench eval create \
@@ -288,8 +308,9 @@ bench eval create \
 
 A **stateful** benchmark — one with mock services, databases, or accounts the
 agent acts on — declares its world in an `environment.toml` manifest and runs
-on the [Environment plane](./environment-plane.md). Pass the manifest with
-`--environment-manifest`:
+on the [Environment plane](./environment-plane.md). The `--environment-manifest`
+flag currently lives on the legacy `bench run` command (hidden in `--help` but
+still callable); porting it to `bench eval create` is tracked separately.
 
 ```bash
 bench run benchmarks/clawsbench/tasks/<task> \

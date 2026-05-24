@@ -159,7 +159,9 @@ reaches them on `localhost`. During a rollout:
    is healthy.
 3. `Rollout.cleanup()` tears the environment down.
 
-Run a task against an environment manifest:
+Run a task against an environment manifest. `--environment-manifest` currently
+lives on the legacy `bench run` command (hidden in `--help` but still
+callable); porting it to `bench eval create` is tracked separately.
 
 ```bash
 bench run benchmarks/clawsbench/tasks/<task> \
