@@ -136,12 +136,14 @@ PROVIDERS: dict[str, ProviderConfig] = {
     "azure-foundry-openai": ProviderConfig(
         name="azure-foundry-openai",
         base_url="https://{resource}.openai.azure.com/openai/v1",
-        api_protocol="openai-responses",
+        # Use the broadest OpenAI-compatible default for agents that do not
+        # declare their own protocol (e.g. pi-acp). Responses-native agents
+        # still select the explicit openai-responses endpoint below.
+        api_protocol="openai-completions",
         auth_type="api_key",
         auth_env="AZURE_API_KEY",
         url_params={"resource": "AZURE_RESOURCE"},
         endpoints={
-            "openai-completions": "https://{resource}.openai.azure.com/openai/v1",
             "openai-responses": "https://{resource}.openai.azure.com/openai/v1",
         },
     ),
