@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import base64
 import importlib
 import logging
 import os
+import re
 import shlex
 from abc import abstractmethod
 from pathlib import Path
@@ -106,6 +108,53 @@ class SandboxStartupError(RuntimeError):
             "build_timeout_sec": build_timeout_sec,
             "raw_message": str(message)[:500],
         }
+
+
+# A POSIX shell identifier: a name the shell can ``export``. Keys outside this
+# grammar (e.g. containing ``.`` or ``-``) are valid process env keys but cannot
+# be assigned via ``export NAME=...``; sourcing such a line aborts the whole
+# ``. {env_path}`` step. Matches ``DockerSandbox._SHELL_IDENTIFIER_RE``.
+_DAYTONA_SHELL_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _wrap_daytona_command_with_env_file(env: dict[str, str], command: str) -> str:
+    """Return *command* prefixed to materialize *env* from a file.
+
+    Mirrors :meth:`benchflow.sandbox.docker.DockerSandbox._wrap_command_with_env_file`
+    so secrets never reach the remote process argv (visible via ``ps``, Daytona
+    audit logs, or any provider-side command logging). The env vars are
+    base64-encoded into the command string (not visible as individual
+    ``KEY=VALUE`` argv entries), decoded to a mode-0600 file inside the sandbox,
+    sourced, and unconditionally removed via ``trap ... EXIT``.
+
+    Issue #412: previously this used ``env K=V ...`` argv, which placed raw
+    secret values into the remote command line.
+    """
+    exportable: dict[str, str] = {}
+    skipped: list[str] = []
+    for k, v in env.items():
+        if _DAYTONA_SHELL_IDENTIFIER_RE.match(k):
+            exportable[k] = v
+        else:
+            skipped.append(k)
+    if skipped:
+        logger.warning(
+            "Skipping env var(s) with non-identifier names (cannot be "
+            "exported by the shell): %s",
+            ", ".join(sorted(skipped)),
+        )
+
+    env_body = "".join(
+        f"export {k}={shlex.quote(v)}\n" for k, v in exportable.items()
+    )
+    encoded = base64.b64encode(env_body.encode()).decode()
+    env_path = f"/tmp/.benchflow_daytona_env_{uuid4().hex[:16]}"
+    return (
+        f"trap 'rm -f {env_path}' EXIT && "
+        f"(umask 077 && printf %s {shlex.quote(encoded)} | base64 -d > "
+        f"{env_path}) && set -a && . {env_path} && set +a && "
+        f"{command}"
+    )
 
 
 def _exec_failure_output(result: ExecResult) -> str:
@@ -1134,11 +1183,20 @@ class DaytonaSandbox(BaseSandbox):
         try:
             await self._sandbox.process.create_session(session_id)
 
-            command = f"{shell} {shlex.quote(command)}"
-
+            # Env vars are written to a temp file inside the sandbox and
+            # sourced rather than passed as ``env KEY=value ...`` argv. The
+            # argv form would leak verifier API keys / agent secrets into the
+            # remote process list and any provider-side command audit log
+            # (#412). The wrapping must happen before the ``timeout``/``su``
+            # prefixes so they too see the exported vars; the wrapper itself
+            # runs under ``sh``-compatible POSIX constructs so the surrounding
+            # ``bash -c`` / ``su -s /bin/bash -c`` shells handle it fine.
             if env:
-                env_args = " ".join(f"{k}={shlex.quote(v)}" for k, v in env.items())
-                command = f"env {env_args} {command}"
+                command = (
+                    f"{shell} {shlex.quote(_wrap_daytona_command_with_env_file(env, command))}"
+                )
+            else:
+                command = f"{shell} {shlex.quote(command)}"
 
             if timeout_sec:
                 command = f"timeout {timeout_sec} {command}"

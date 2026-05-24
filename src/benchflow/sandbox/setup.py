@@ -333,6 +333,11 @@ def _stage_copy_source(src_path: str, env_dir: Path, context_root: Path) -> str:
     Returns the original ``src_path`` unchanged when it cannot or should not be
     staged (absolute path, build arg, ``.``, glob, or a source that does not
     exist under ``context_root``).
+
+    Sources that resolve outside ``context_root`` (e.g. ``../outside-secret``)
+    are rejected: with a permissive SDK ``context_root`` a malicious Dockerfile
+    could otherwise stage arbitrary host files into ``environment/_deps/``
+    where they then enter the build context (issue #363).
     """
     # Skip sources already relative to env dir, absolute, or using build args.
     if src_path.startswith("/") or src_path.startswith("$") or src_path == ".":
@@ -342,6 +347,28 @@ def _stage_copy_source(src_path: str, env_dir: Path, context_root: Path) -> str:
         return src_path
 
     abs_src = context_root / src_path
+    # Reject sources that escape ``context_root`` via ``..`` or symlinks.
+    # ``resolve(strict=False)`` collapses ``..`` segments without requiring the
+    # file to exist yet (Dockerfile lint can run before sources are present).
+    try:
+        resolved_src = abs_src.resolve(strict=False)
+        resolved_root = context_root.resolve(strict=False)
+    except (OSError, RuntimeError):
+        # Unresolvable paths (e.g. symlink loops) — refuse to stage them.
+        logger.warning(
+            "stage_dockerfile_deps: refusing to stage COPY source %r "
+            "(path could not be resolved)",
+            src_path,
+        )
+        return src_path
+    if not resolved_src.is_relative_to(resolved_root):
+        logger.warning(
+            "stage_dockerfile_deps: refusing to stage COPY source %r — "
+            "resolves outside context_root %s",
+            src_path,
+            resolved_root,
+        )
+        return src_path
     if not abs_src.exists():
         return src_path
 
