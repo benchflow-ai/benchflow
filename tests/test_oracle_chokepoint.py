@@ -19,6 +19,7 @@ The classes below pin each layer at the right altitude:
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -882,3 +883,123 @@ class TestEvalCreateOracleCLI:
         assert cfg.primary_model is None
         # Layer 1: chokepoint did not inject provider env or raise.
         assert "BENCHFLOW_PROVIDER_MODEL" not in captured["agent_env"]
+
+
+# ── ENG-149: idle timeout diagnostics in result.json ──
+
+
+class TestIdleTimeoutResultDiagnostics:
+    """Guards ENG-149: result.json must record structured idle timeout diagnostics
+    so check_results/dashboard can identify invalidated measurements."""
+
+    def test_error_category_persisted_for_idle_timeout(self, tmp_path):
+        """Guards ENG-149: result.json contains error_category='idle_timeout'."""
+        from benchflow._utils.scoring import classify_error
+        from benchflow.rollout import _build_rollout_result
+
+        error = "Agent idle for 600s with no new tool call, message, or thought (last activity 602s ago, 3 tool calls so far)"
+        idle_info = {
+            "reason": "idle_timeout",
+            "idle_timeout_sec": 600,
+            "idle_duration_sec": 602,
+            "wall_clock_elapsed_sec": 605,
+            "n_tool_calls": 3,
+            "n_message_chunks": 0,
+            "n_thought_chunks": 1,
+            "last_activity_at": "2026-05-23T16:00:00+00:00",
+        }
+        from datetime import datetime
+
+        result = _build_rollout_result(
+            tmp_path,
+            task_name="court-form-filling",
+            rollout_name="trial-0",
+            agent="gemini",
+            agent_name="gemini-agent",
+            model="google/gemini-3.1-flash-lite-preview",
+            n_tool_calls=3,
+            prompts=["solve"],
+            error=error,
+            verifier_error=None,
+            trajectory=[],
+            partial_trajectory=True,
+            rewards=None,
+            started_at=datetime.now(),
+            timing={},
+            idle_timeout_info=idle_info,
+        )
+        assert result.error == error
+        result_json = json.loads((tmp_path / "result.json").read_text())
+        assert result_json["error_category"] == "idle_timeout"
+        assert result_json["idle_timeout_info"] == idle_info
+        assert result_json["idle_timeout_info"]["n_tool_calls"] == 3
+        assert result_json["idle_timeout_info"]["idle_duration_sec"] == 602
+        # Also verify classify_error agrees
+        assert classify_error(error) == "idle_timeout"
+
+    def test_error_category_persisted_for_non_idle_errors(self, tmp_path):
+        """Guards ENG-149: error_category is set for all error types."""
+        from datetime import datetime
+
+        from benchflow.rollout import _build_rollout_result
+
+        _build_rollout_result(
+            tmp_path,
+            task_name="some-task",
+            rollout_name="trial-0",
+            agent="gemini",
+            agent_name="gemini-agent",
+            model="google/gemini-3.1-flash-lite-preview",
+            n_tool_calls=0,
+            prompts=["solve"],
+            error="install failed: npm ERR!",
+            verifier_error=None,
+            trajectory=[],
+            partial_trajectory=False,
+            rewards=None,
+            started_at=datetime.now(),
+            timing={},
+        )
+        result_json = json.loads((tmp_path / "result.json").read_text())
+        assert result_json["error_category"] == "install_failure"
+        assert result_json["idle_timeout_info"] is None
+
+    def test_error_category_null_on_success(self, tmp_path):
+        """Guards ENG-149: error_category is null when no error."""
+        from datetime import datetime
+
+        from benchflow.rollout import _build_rollout_result
+
+        _build_rollout_result(
+            tmp_path,
+            task_name="passing-task",
+            rollout_name="trial-0",
+            agent="gemini",
+            agent_name="gemini-agent",
+            model="google/gemini-3.1-flash-lite-preview",
+            n_tool_calls=5,
+            prompts=["solve"],
+            error=None,
+            verifier_error=None,
+            trajectory=[],
+            partial_trajectory=False,
+            rewards={"reward": 1.0},
+            started_at=datetime.now(),
+            timing={},
+        )
+        result_json = json.loads((tmp_path / "result.json").read_text())
+        assert result_json["error_category"] is None
+        assert result_json["idle_timeout_info"] is None
+
+    def test_classify_error_categories_comprehensive(self):
+        """Guards ENG-149: all expected error categories are classified."""
+        from benchflow._utils.scoring import classify_error
+
+        assert classify_error("Agent idle for 600s with no new tool call") == "idle_timeout"
+        assert classify_error("install failed: pip error") == "install_failure"
+        assert classify_error("Agent closed stdout") == "pipe_closed"
+        assert classify_error("ACP error: session closed") == "acp_error"
+        assert classify_error("prompt exceeded wall-clock budget 300s") == "timeout"
+        assert classify_error("connection lost to sandbox") == "infra_failure"
+        assert classify_error(None) is None
+        assert classify_error("") is None

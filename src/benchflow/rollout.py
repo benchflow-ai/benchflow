@@ -51,6 +51,7 @@ from typing import Any
 
 from benchflow._types import Role, Scene, Turn
 from benchflow._utils.config import normalize_agent_name, normalize_sandbox_user
+from benchflow._utils.scoring import classify_error
 from benchflow.acp.client import ACPClient, ACPError
 from benchflow.acp.runtime import connect_acp, execute_prompts
 from benchflow.agents.credentials import (
@@ -431,6 +432,7 @@ def _build_rollout_result(
     price_source: str | None = None,
     evolved_skills: dict[str, str] | None = None,
     source_provenance: dict[str, Any] | None = None,
+    idle_timeout_info: dict | None = None,
 ) -> RolloutResult:
     """Build RolloutResult and write result.json, timing.json, prompts.json, trajectory."""
     finished_at = datetime.now()
@@ -493,7 +495,9 @@ def _build_rollout_result(
                     "price_source": result.price_source,
                 },
                 "error": result.error,
+                "error_category": classify_error(result.error),
                 "verifier_error": result.verifier_error,
+                "idle_timeout_info": idle_timeout_info,
                 "partial_trajectory": result.partial_trajectory,
                 "trajectory_source": result.trajectory_source,
                 "started_at": str(result.started_at),
@@ -910,6 +914,8 @@ class Rollout:
         self._rewards: dict | None = None
         self._verifier_error: str | None = None
         self._error: str | None = None
+        self._error_category: str | None = None
+        self._idle_timeout_info: dict | None = None
 
         # Populated by _export_generated_skills() — the skills the agent
         # generated/evolved, captured for a continual-learning LearnerStore.
@@ -1576,6 +1582,9 @@ class Rollout:
                         self._error = (
                             detail or f"Agent timed out after {self._timeout}s"
                         )
+                        self._idle_timeout_info = getattr(
+                            e, "idle_timeout_info", None
+                        )
                         logger.error(self._error)
                 finally:
                     if cfg.oracle_access:
@@ -1601,6 +1610,9 @@ class Rollout:
             # generic wall-clock message only when there's no detail.
             detail = str(e).strip()
             self._error = detail or f"Agent timed out after {self._timeout}s"
+            self._idle_timeout_info = getattr(
+                e, "idle_timeout_info", None
+            )
             logger.error(self._error)
         except ConnectionError as e:
             self._error = str(e)
@@ -2091,5 +2103,6 @@ class Rollout:
             scenes=self._config.effective_scenes,
             evolved_skills=self._evolved_skills,
             source_provenance=self._config.source_provenance,
+            idle_timeout_info=self._idle_timeout_info,
             **self._usage_metrics,
         )
