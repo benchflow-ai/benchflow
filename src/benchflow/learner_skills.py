@@ -33,11 +33,15 @@ orchestrator (``evaluation.py``) drives it.
 
 from __future__ import annotations
 
+import logging
 import shutil
 from pathlib import Path
 from typing import Any
 
+from benchflow._paths import safe_path_segment
 from benchflow.learner_store import LearnerState
+
+logger = logging.getLogger(__name__)
 
 #: The single skill file inside each ``<name>/`` skill pack directory.
 SKILL_FILE = "SKILL.md"
@@ -59,7 +63,12 @@ def materialize_skills(state: LearnerState, dest: Path | str) -> Path:
         shutil.rmtree(dest_path)
     dest_path.mkdir(parents=True, exist_ok=True)
     for name, body in state.skills.items():
-        pack = dest_path / str(name)
+        # Reject skill names that would path-traverse out of ``dest_path``
+        # — names come from ``LearnerState.skills`` which can originate from
+        # arbitrary rollout output, and ``../escaped`` would write a SKILL.md
+        # outside the intended skills root.
+        safe_segment = safe_path_segment(str(name), kind="skill name")
+        pack = dest_path / safe_segment
         pack.mkdir(parents=True, exist_ok=True)
         (pack / SKILL_FILE).write_text(_body_text(body))
     return dest_path
@@ -81,8 +90,27 @@ def capture_skills(export_dir: Path | str) -> dict[str, str]:
     if not root.is_dir():
         return {}
     skills: dict[str, str] = {}
-    for pack in sorted(p for p in root.iterdir() if p.is_dir()):
+    # Sort by name for deterministic iteration. Use ``iterdir`` directly so
+    # symlinked packs surface as symlinks (``is_dir()`` follows symlinks and
+    # would let an attacker exfiltrate any readable SKILL.md on disk by
+    # symlinking the pack into the export directory).
+    for pack in sorted(root.iterdir(), key=lambda p: p.name):
+        if pack.is_symlink():
+            logger.warning(
+                "Skipping symlinked skill pack %s — refusing to follow symlinks",
+                pack,
+            )
+            continue
+        if not pack.is_dir():
+            continue
         skill_md = pack / SKILL_FILE
+        # Reject SKILL.md that is itself a symlink (could point outside root).
+        if skill_md.is_symlink():
+            logger.warning(
+                "Skipping symlinked SKILL.md at %s — refusing to follow symlinks",
+                skill_md,
+            )
+            continue
         if skill_md.is_file():
             skills[pack.name] = skill_md.read_text()
     return skills
