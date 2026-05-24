@@ -25,7 +25,7 @@ jobs:
         run: uv python install 3.12
 
       - name: Install dependencies
-        run: uv sync --extra dev --locked
+        run: uv sync --extra dev --extra sandbox-daytona --extra sandbox-modal --locked
 
       - name: Lint
         run: uv run ruff check src tests
@@ -43,5 +43,5 @@ jobs:
         # Runs against the same locked deps the test job just installed.
         # `--no-deps` because pip-audit shouldn't re-resolve; the lockfile is the source of truth.
         run: |
-          uv export --locked --extra dev --format requirements-txt --no-hashes --output-file /tmp/req-audit
+          uv export --locked --extra dev --extra sandbox-daytona --extra sandbox-modal --format requirements-txt --no-hashes --output-file /tmp/req-audit
           uv run --with pip-audit pip-audit -r /tmp/req-audit --no-deps --disable-pip
