@@ -1868,3 +1868,70 @@ def test_check_results_flags_verifier_dep_install_failure(
         "INVALIDATED" in issue and "dependency install" in issue.lower()
         for issue in findings["issues"]
     )
+
+
+def test_check_results_flags_verifier_timeout(tmp_path: Path) -> None:
+    """Guards ENG-152: check_results detects verifier timeout failures
+    and flags them as INVALIDATED with budget/elapsed details."""
+    agent_dir = tmp_path / "agentA"
+    task_dir = agent_dir / "quantum-numerical-simulation" / "quantum__abc123"
+    task_dir.mkdir(parents=True)
+    (task_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "quantum-numerical-simulation",
+                "rollout_name": "quantum__abc123",
+                "rewards": None,
+                "agent": "gemini",
+                "agent_name": "gemini-cli",
+                "model": "gemini-2.0-flash-lite",
+                "n_tool_calls": 0,
+                "n_prompts": 1,
+                "error": None,
+                "error_category": None,
+                "verifier_error": "verifier timed out after 240s",
+                "verifier_error_category": "verifier_timeout",
+                "verifier_timeout_info": {
+                    "timeout_budget_sec": 240.0,
+                    "elapsed_sec": 240.1,
+                    "task_name": "quantum-numerical-simulation",
+                },
+                "idle_timeout_info": None,
+                "sandbox_startup_info": None,
+                "transport_error_info": None,
+                "partial_trajectory": False,
+                "trajectory_source": None,
+                "started_at": "2026-05-23 10:00:00",
+                "finished_at": "2026-05-23 10:04:00",
+                "timing": {"agent": 0.0, "verifier": 240.1, "total": 240.5},
+            }
+        )
+    )
+    traj_dir = task_dir / "trajectory"
+    traj_dir.mkdir()
+    (traj_dir / "acp_trajectory.jsonl").write_text("")
+    (agent_dir / "summary.json").write_text(
+        json.dumps(
+            {
+                "total": 1,
+                "passed": 0,
+                "failed": 0,
+                "errored": 0,
+                "verifier_errored": 1,
+                "score": "0.0%",
+                "source": _source(),
+            }
+        )
+    )
+
+    findings = check_agent(agent_dir)
+
+    assert findings["ok"] is False
+    assert any(
+        "verifier timed out" in issue and "budget=240" in issue
+        for issue in findings["issues"]
+    )
+    assert any(
+        "INVALIDATED" in issue and "verifier" in issue.lower() and "timeout" in issue.lower()
+        for issue in findings["issues"]
+    )
