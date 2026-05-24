@@ -165,6 +165,16 @@ def test_js_acp_agent_npm_failures_are_visible(name):
     )
 
 
+@pytest.mark.parametrize("name", sorted(JS_ACP_AGENTS))
+def test_js_acp_agent_install_commands_are_posix_sh_compatible(name):
+    """Guards the fix for commit 6c9e733 against the regression where Docker
+    JS-agent installs failed before launch because install_cmd used bash-only
+    `set -o pipefail` under DockerSandbox.exec()'s POSIX `sh -c`.
+    """
+    install_cmd = AGENTS[name].install_cmd
+    assert "set -o pipefail" not in install_cmd
+
+
 @pytest.mark.parametrize("name,cfg", AGENTS.items(), ids=list(AGENTS.keys()))
 def test_agent_credential_and_subscription_auth(name, cfg):
     """Optional credential_files and subscription_auth structures."""
