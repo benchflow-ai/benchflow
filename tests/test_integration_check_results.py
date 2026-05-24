@@ -1637,3 +1637,107 @@ def test_check_results_rejects_malformed_duplicate_task_result(
 
     assert findings["ok"] is False
     assert any("bad result file" in issue for issue in findings["issues"])
+
+
+def test_check_results_flags_transport_error_with_diagnostics(
+    tmp_path: Path,
+) -> None:
+    """Guards ENG-148: check_results surfaces structured transport_error_info
+    for pipe_closed errors and flags them as INVALIDATED."""
+    agent_dir = tmp_path / "agentA"
+    run_dir = agent_dir / "2026-05-18__00-00-00" / "task-a"
+    run_dir.mkdir(parents=True)
+    (run_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "task-a",
+                "agent": "agentA",
+                "model": "test-model",
+                "rewards": None,
+                "error": "Process closed stdout (rc=255): Local subprocess exited",
+                "verifier_error": None,
+                "transport_error_info": {
+                    "reason": "transport_closed",
+                    "process_exit_code": 255,
+                    "transport_diagnosis": "process_exited",
+                    "sandbox_reachable": False,
+                },
+                "source": _source(),
+            }
+        )
+    )
+    _write_config(run_dir)
+    (agent_dir / "summary.json").write_text(
+        json.dumps(
+            {
+                "agent": "agentA",
+                "model": "test-model",
+                "environment": "daytona",
+                "concurrency": 64,
+                "agent_idle_timeout_sec": 600,
+                "total": 1,
+                "passed": 0,
+                "failed": 0,
+                "errored": 1,
+                "verifier_errored": 0,
+                "score": "0.0%",
+                "source": _source(),
+            }
+        )
+    )
+
+    findings = check_agent(agent_dir)
+
+    assert findings["ok"] is False
+    assert any("rc=255" in issue for issue in findings["issues"])
+    assert any("transport closed" in issue for issue in findings["issues"])
+    assert any("INVALIDATED" in issue and "transport" in issue.lower()
+               for issue in findings["issues"])
+
+
+def test_check_results_transport_error_without_info_still_flagged(
+    tmp_path: Path,
+) -> None:
+    """Guards ENG-148: pipe_closed results without transport_error_info
+    still get flagged as infra errors."""
+    agent_dir = tmp_path / "agentA"
+    run_dir = agent_dir / "2026-05-18__00-00-00" / "task-a"
+    run_dir.mkdir(parents=True)
+    (run_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "task-a",
+                "agent": "agentA",
+                "model": "test-model",
+                "rewards": None,
+                "error": "Agent process closed stdout",
+                "verifier_error": None,
+                "source": _source(),
+            }
+        )
+    )
+    _write_config(run_dir)
+    (agent_dir / "summary.json").write_text(
+        json.dumps(
+            {
+                "agent": "agentA",
+                "model": "test-model",
+                "environment": "daytona",
+                "concurrency": 64,
+                "agent_idle_timeout_sec": 600,
+                "total": 1,
+                "passed": 0,
+                "failed": 0,
+                "errored": 1,
+                "verifier_errored": 0,
+                "score": "0.0%",
+                "source": _source(),
+            }
+        )
+    )
+
+    findings = check_agent(agent_dir)
+
+    assert findings["ok"] is False
+    assert any("INVALIDATED" in issue and "transport" in issue.lower()
+               for issue in findings["issues"])
