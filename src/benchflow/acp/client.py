@@ -177,11 +177,25 @@ class ACPClient:
             await self._transport.send(response)
 
         else:
-            # Unknown method — return empty result (agent handles tools internally)
+            # Unsupported method. BenchFlow's ACP client only implements
+            # ``session/request_permission``; fs/terminal/* are intentionally
+            # not advertised in ``initialize`` (see ``ClientCapabilities``
+            # below). Reply with JSON-RPC method-not-found instead of an empty
+            # success — a bogus ``{}`` response can let an agent silently
+            # believe a file read or terminal spawn succeeded when nothing
+            # ran, corrupting trajectories.
+            logger.warning(
+                "ACPClient received unsupported request %r — replying "
+                "method-not-found",
+                method,
+            )
             response = {
                 "jsonrpc": "2.0",
                 "id": req_id,
-                "result": {},
+                "error": {
+                    "code": -32601,
+                    "message": f"Method not found: {method}",
+                },
             }
             await self._transport.send(response)
 
@@ -192,12 +206,21 @@ class ACPClient:
         await self._transport.start()
 
     async def initialize(self) -> InitializeResult:
-        """Send initialize handshake."""
+        """Send initialize handshake.
+
+        Only advertise capabilities that ``_handle_agent_request`` actually
+        implements. BenchFlow runs ACP agents inside a sandboxed container —
+        the agent owns its own filesystem and terminal access there, so we
+        do NOT proxy ``fs/read_text_file``, ``fs/write_text_file`` or
+        ``terminal/*`` back through ACP. Advertising them ``True`` while
+        replying ``{}`` to the actual requests would let the agent believe
+        side-effects happened when nothing ran (see issue #365).
+        """
         params = InitializeParams(
             protocol_version=ACP_PROTOCOL_VERSION,
             client_capabilities=ClientCapabilities(
-                fs=FsCapabilities(read_text_file=True, write_text_file=True),
-                terminal=True,
+                fs=FsCapabilities(read_text_file=False, write_text_file=False),
+                terminal=False,
                 auth=AuthCapabilities(),
             ),
             client_info=ClientInfo(name="benchflow", version="2.0.0"),
