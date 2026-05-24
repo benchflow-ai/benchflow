@@ -607,8 +607,8 @@ def check_agent(agent_dir: Path) -> dict:
         if vcat == "verifier_timeout":
             task = r.get("task_name", "?")
             vti = r.get("verifier_timeout_info")
-            budget = vti.get("timeout_budget_sec") if vti else "?"
-            elapsed = vti.get("elapsed_sec") if vti else "?"
+            budget = vti.get("timeout_budget_sec", "?") if vti else "?"
+            elapsed = vti.get("elapsed_sec", "?") if vti else "?"
             verifier_timeout_tasks.append(task)
             findings["issues"].append(
                 f"{task}: verifier timed out (budget={budget}s, elapsed={elapsed}s) — "
