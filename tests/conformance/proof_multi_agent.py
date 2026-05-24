@@ -77,7 +77,7 @@ async def role_runner(env, role: SceneRole, prompt: str) -> None:
     rollout_dir = Path(f"/tmp/multi-agent-proof/{role.name}")
     rollout_dir.mkdir(parents=True, exist_ok=True)
     launch_cmd = AGENT_LAUNCH.get(role.agent, role.agent)
-    acp_client, session, _agent_name = await connect_acp(
+    acp_client, session, _adapter, _agent_name = await connect_acp(
         env=env,
         agent=role.agent,
         agent_launch=launch_cmd,
