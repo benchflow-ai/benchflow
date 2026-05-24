@@ -10,8 +10,10 @@ The contract surface is **stable**, but split by altitude:
   for the verifier, and tear it down.
 * **Roll-back** — ``snapshot`` / ``restore``. The substrate ``Rollout.branch()``
   runs on; ``ManifestEnvironment`` implements them for SQLite-backed state.
-* **Platform layer** — ``reset``. Declared so it wires in later without a
-  contract change; ``ManifestEnvironment`` raises ``NotImplementedError``.
+* **Reset** — ``reset``. Returns the environment to its per-task initial
+  state without tearing down the sandbox. ``ManifestEnvironment`` cycles the
+  framework-started services and restores the baseline captured during
+  ``provision`` for stateful manifests.
 """
 
 from __future__ import annotations
