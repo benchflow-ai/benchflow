@@ -32,7 +32,16 @@ def expected_skills_for_task(task_dir: Path) -> list[str] | None:
 def evolved_skills_for_result(
     result: RolloutResult, export_dir: Path
 ) -> dict[str, Any]:
-    """Return skills captured from a rollout, preferring the result payload."""
+    """Return skills captured from a rollout, preferring the result payload.
+
+    When the rollout's skill export failed (``result.export_error``), the
+    ``export_dir`` is half-written and re-reading it would re-introduce the
+    same partial state the rollout already signalled as unsafe. Return ``{}``
+    in that case so callers don't accidentally feed broken artifacts into
+    the LearnerStore (#389 follow-up).
+    """
+    if result.export_error is not None:
+        return {}
     if result.evolved_skills is not None:
         return dict(result.evolved_skills)
     return capture_skills(export_dir)
