@@ -101,9 +101,16 @@ def auto_inherit_env(
     for key in keys:
         if key in source:
             agent_env.setdefault(key, source[key])
-    # Mirror GEMINI_API_KEY as GOOGLE_API_KEY (some agents expect one or the other)
+    # Mirror GEMINI_API_KEY / GOOGLE_API_KEY in both directions. The Gemini
+    # CLI reads GEMINI_API_KEY natively; other tooling (and the public Gemini
+    # docs) advertise GOOGLE_API_KEY. Users following either convention must
+    # work — without the reverse mirror, setting only GOOGLE_API_KEY on the
+    # host passes the requires_env check but the in-sandbox CLI fails auth
+    # (#342).
     if "GEMINI_API_KEY" in agent_env and "GOOGLE_API_KEY" not in agent_env:
         agent_env["GOOGLE_API_KEY"] = agent_env["GEMINI_API_KEY"]
+    if "GOOGLE_API_KEY" in agent_env and "GEMINI_API_KEY" not in agent_env:
+        agent_env["GEMINI_API_KEY"] = agent_env["GOOGLE_API_KEY"]
     # Mirror GEMINI_API_KEY as GOOGLE_GENERATIVE_AI_API_KEY (opencode/models.dev convention)
     if (
         "GEMINI_API_KEY" in agent_env

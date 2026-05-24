@@ -134,6 +134,14 @@ DEFAULT_JOB_MODE = "parallel-independent"
 def effective_model(agent: str, model: str | None) -> str | None:
     """Resolve the model an agent should run with.
 
+    Resolution order:
+      1. An explicit ``--model`` always wins.
+      2. The agent's own ``default_model`` (e.g. ``gemini-2.5-flash`` for the
+         gemini agent) — keeps each agent on its native provider.
+      3. ``DEFAULT_MODEL`` only when the caller is on the default agent.
+         Substituting it under any other agent silently cross-wires providers
+         and was the root cause of #343 (gemini eval demanding ANTHROPIC_API_KEY).
+
     Oracle runs solve.sh and never calls an LLM, so it never receives a model
     (the chokepoint in resolve_agent_env defends, but callers should also stop
     materializing DEFAULT_MODEL into oracle configs to keep the data honest —
@@ -141,7 +149,21 @@ def effective_model(agent: str, model: str | None) -> str | None:
     """
     if agent == "oracle":
         return None
-    return model or DEFAULT_MODEL
+    if model:
+        return model
+    # Look up the agent's own default. Unknown agents (raw-command fallback)
+    # bypass the registry lookup and use the global default.
+    from benchflow.agents.registry import AGENTS
+
+    agent_cfg = AGENTS.get(agent)
+    if agent_cfg and agent_cfg.default_model:
+        return agent_cfg.default_model
+    if agent == DEFAULT_AGENT or agent_cfg is None:
+        return DEFAULT_MODEL
+    raise ValueError(
+        f"agent {agent!r} has no default model; pass --model "
+        f"(refusing to fall back to {DEFAULT_MODEL!r} from a different provider)"
+    )
 
 
 @dataclass
