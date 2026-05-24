@@ -30,7 +30,9 @@ versions state.
 from __future__ import annotations
 
 import copy
+import json
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 __all__ = ["LearnerState", "LearnerStore"]
@@ -193,3 +195,86 @@ class LearnerStore:
             return False
         self.commit(state, metric=metric)
         return True
+
+    # --- persistence ---
+    #
+    # The store is otherwise pure data, but a continual-learning Job survives
+    # process death only if it can be reloaded from disk on resume. These
+    # helpers serialize the full history (every generation, in number order)
+    # plus the live pointer and the next-number counter, so a reloaded store
+    # is byte-identical to the in-memory one. The Job orchestrator
+    # (``evaluation.py``) writes the file under the job directory and reads
+    # it back on resume; the store itself just knows the shape.
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serializable snapshot of the entire store — every generation."""
+        return {
+            "version": 1,
+            "generation": self._generation,
+            "next_number": self._next_number,
+            "history": [
+                {
+                    "number": gen.number,
+                    "metric": gen.metric,
+                    "memory": copy.deepcopy(gen.state.memory),
+                    "skills": copy.deepcopy(gen.state.skills),
+                }
+                for gen in (self.history[n] for n in sorted(self.history))
+            ],
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> LearnerStore:
+        """Rebuild a store from a :meth:`to_dict` snapshot."""
+        version = data.get("version", 1)
+        if version != 1:
+            raise ValueError(
+                f"unsupported learner_store snapshot version {version!r} — "
+                f"expected 1"
+            )
+        store = cls()
+        store.history = {
+            int(entry["number"]): Generation(
+                number=int(entry["number"]),
+                state=LearnerState(
+                    memory=copy.deepcopy(entry.get("memory") or {}),
+                    skills=copy.deepcopy(entry.get("skills") or {}),
+                ),
+                metric=entry.get("metric"),
+            )
+            for entry in data.get("history") or []
+        }
+        if 0 not in store.history:
+            # Generation 0 is the empty starting state; a snapshot that drops
+            # it would corrupt :meth:`_revert` and :meth:`learning_curve`.
+            store.history[0] = Generation(number=0, state=LearnerState())
+        store._generation = int(data.get("generation", 0))
+        # next_number defaults to one past the highest known number, so a
+        # store with no explicit counter still stamps unique generations.
+        store._next_number = int(
+            data.get("next_number", max(store.history) + 1)
+        )
+        if store._generation not in store.history:
+            raise ValueError(
+                f"learner_store snapshot pointer generation={store._generation} "
+                f"missing from history {sorted(store.history)}"
+            )
+        return store
+
+    def save(self, path: Path | str) -> None:
+        """Atomically write a JSON snapshot to ``path``.
+
+        Atomic via write-then-rename so a crash mid-save leaves the previous
+        snapshot intact — a half-written file would silently corrupt the
+        learning curve on the next resume.
+        """
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(self.to_dict(), indent=2))
+        tmp.replace(path)
+
+    @classmethod
+    def load(cls, path: Path | str) -> LearnerStore:
+        """Load a snapshot from ``path``."""
+        return cls.from_dict(json.loads(Path(path).read_text()))
