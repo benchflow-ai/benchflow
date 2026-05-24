@@ -1,6 +1,7 @@
 """ACP client — benchflow acts as the client, agents are ACP servers."""
 
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from .session import ACPSession
@@ -23,6 +24,33 @@ from .types import (
 logger = logging.getLogger(__name__)
 
 
+# Callable invoked when the agent issues ``session/request_permission``.
+# Receives the raw params dict and returns the option_id to select.
+AskUserHandler = Callable[[dict[str, Any]], Awaitable[str]]
+
+
+def _auto_approve_option_id(options: list[dict[str, Any]]) -> str:
+    """Pick the most permissive ``optionId`` from an ACP permission ``options`` list.
+
+    Default fall-back when no ``on_ask_user`` handler is registered — the
+    benchmark-mode behaviour BenchFlow has shipped since the ACP integration
+    landed. Preferred order: ``bypassPermissions`` → ``allow_always`` →
+    ``allow_once`` → the first option offered.
+    """
+    if not options:
+        return "default"
+    option_id = options[0].get("optionId", "default")
+    for opt in options:
+        if opt.get("optionId") == "bypassPermissions":
+            return "bypassPermissions"
+        if opt.get("kind") == "allow_always":
+            option_id = opt.get("optionId", option_id)
+            break
+        if opt.get("kind") == "allow_once":
+            option_id = opt.get("optionId", option_id)
+    return option_id
+
+
 class ACPClient:
     """Client that speaks ACP to an agent process.
 
@@ -34,6 +62,22 @@ class ACPClient:
         self._request_id = 100000  # High start to avoid collision with agent IDs
         self._session: ACPSession | None = None
         self._initialize_result: InitializeResult | None = None
+        self._ask_user_handler: AskUserHandler | None = None
+
+    def on_ask_user(self, handler: AskUserHandler | None) -> None:
+        """Register the agent-initiated ``session/request_permission`` handler.
+
+        The handler receives the raw ACP ``params`` dict (with ``options``,
+        ``toolCall``, etc.) and returns the ``optionId`` the client should
+        select. Pass ``None`` to clear the handler and restore the default
+        auto-approve policy.
+
+        ``ACPSessionAdapter.on_ask_user`` forwards to this method so that
+        registering through the Agent-plane :class:`Session` contract wires
+        the live ACP request path — without this hook, the contract is
+        bypassed and rollout-branching logic cannot intercept (#382).
+        """
+        self._ask_user_handler = handler
 
     @classmethod
     def from_config(
@@ -149,20 +193,28 @@ class ACPClient:
         params = msg.get("params", {})
 
         if method == "session/request_permission":
-            # Auto-approve all permissions in benchmark mode
-            # claude-agent-acp expects: outcome.outcome="selected", outcome.optionId
+            # If a Session.on_ask_user handler is registered, route the request
+            # through it so the user-facing dispatch (rollout branching, scripted
+            # policies, real-human) can decide. Fall back to auto-approve only
+            # when no handler is registered (preserves the benchmark-mode default
+            # so existing rollouts keep working). See #382.
+            # claude-agent-acp expects: outcome.outcome="selected", outcome.optionId.
             options = params.get("options", [])
-            # Pick the most permissive option available
-            option_id = options[0].get("optionId", "default") if options else "default"
-            for opt in options:
-                if opt.get("optionId") == "bypassPermissions":
-                    option_id = "bypassPermissions"
-                    break
-                if opt.get("kind") == "allow_always":
-                    option_id = opt.get("optionId", option_id)
-                    break
-                if opt.get("kind") == "allow_once":
-                    option_id = opt.get("optionId", option_id)
+            handler = self._ask_user_handler
+            if handler is not None:
+                try:
+                    option_id = await handler(params)
+                except Exception as e:
+                    # A misbehaving handler must not deadlock the agent — log and
+                    # fall back to auto-approve so the rollout makes progress.
+                    logger.warning(
+                        "on_ask_user handler raised %s; falling back to "
+                        "auto-approve for session/request_permission",
+                        e,
+                    )
+                    option_id = _auto_approve_option_id(options)
+            else:
+                option_id = _auto_approve_option_id(options)
 
             response = {
                 "jsonrpc": "2.0",
