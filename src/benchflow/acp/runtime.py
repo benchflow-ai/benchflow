@@ -289,8 +289,7 @@ async def connect_acp(
             with contextlib.suppress(Exception):
                 await acp_client.close()
             raise RuntimeError(
-                f"Failed to set model {acp_model_id!r} via ACP for agent "
-                f"{agent!r}: {e}"
+                f"Failed to set model {acp_model_id!r} via ACP for agent {agent!r}: {e}"
             ) from e
     elif model:
         logger.info(

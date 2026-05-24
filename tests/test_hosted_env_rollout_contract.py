@@ -112,7 +112,9 @@ def test_hosted_env_writes_rewards_jsonl(tmp_path, monkeypatch):
 
     rewards_path = result.run_dir / "rewards.jsonl"
     assert rewards_path.exists(), "rewards.jsonl must be written"
-    events = [json.loads(line) for line in rewards_path.read_text().splitlines() if line]
+    events = [
+        json.loads(line) for line in rewards_path.read_text().splitlines() if line
+    ]
     # At least one terminal verifier reward event.
     terminal = [e for e in events if e["type"] == "terminal" and e["tag"] == "reward"]
     assert len(terminal) == 1

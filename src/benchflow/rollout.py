@@ -392,9 +392,7 @@ def _write_config(
     source_provenance: dict[str, Any] | None = None,
 ) -> None:
     """Write config.json to rollout_dir with secrets filtered out."""
-    recorded_env = {
-        k: v for k, v in agent_env.items() if not _is_secret_env_key(k)
-    }
+    recorded_env = {k: v for k, v in agent_env.items() if not _is_secret_env_key(k)}
     config_data = {
         "task_path": str(task_path),
         "agent": agent,
@@ -1646,9 +1644,7 @@ class Rollout:
         self._phase = "executed"
         return trajectory, n_tool_calls
 
-    def _build_step_batch(
-        self, new_events: list[dict], new_tools: int
-    ) -> list[Step]:
+    def _build_step_batch(self, new_events: list[dict], new_tools: int) -> list[Step]:
         """Build one Step per ACP event from the events appended this execute.
 
         Step-level granularity (closes #414) — each ACP event (tool_call,
@@ -1743,15 +1739,17 @@ class Rollout:
 
         await _publish_trajectory_for_verifier(self._env, self._trajectory)
 
-        self._rewards, self._verifier_error, self._verifier_timeout_info = (
-            await _verify_rollout(
-                self._env,
-                self._task,
-                self._rollout_paths,
-                self._timing,
-                sandbox_user=cfg.sandbox_user,
-                workspace=self._agent_cwd,
-            )
+        (
+            self._rewards,
+            self._verifier_error,
+            self._verifier_timeout_info,
+        ) = await _verify_rollout(
+            self._env,
+            self._task,
+            self._rollout_paths,
+            self._timing,
+            sandbox_user=cfg.sandbox_user,
+            workspace=self._agent_cwd,
         )
 
         self._phase = "verified"
@@ -1954,9 +1952,7 @@ class Rollout:
                         self._error = (
                             detail or f"Agent timed out after {self._timeout}s"
                         )
-                        self._idle_timeout_info = getattr(
-                            e, "idle_timeout_info", None
-                        )
+                        self._idle_timeout_info = getattr(e, "idle_timeout_info", None)
                         logger.error(self._error)
                 finally:
                     if cfg.oracle_access:
@@ -1982,9 +1978,7 @@ class Rollout:
             # generic wall-clock message only when there's no detail.
             detail = str(e).strip()
             self._error = detail or f"Agent timed out after {self._timeout}s"
-            self._idle_timeout_info = getattr(
-                e, "idle_timeout_info", None
-            )
+            self._idle_timeout_info = getattr(e, "idle_timeout_info", None)
             logger.error(self._error)
         except ConnectionError as e:
             self._error = str(e)
@@ -2033,9 +2027,7 @@ class Rollout:
         last_err: Exception | None = None
         for attempt in range(3):
             try:
-                await self._env.download_dir(
-                    self._config.generated_skills_root, target
-                )
+                await self._env.download_dir(self._config.generated_skills_root, target)
                 break
             except Exception as e:
                 last_err = e
@@ -2193,9 +2185,7 @@ class Rollout:
             scene_messages: list[dict] = []
 
             if multi_role:
-                setup_cmd = (
-                    f"rm -rf {self._OUTBOX_DIR} && mkdir -p {self._OUTBOX_DIR}"
-                )
+                setup_cmd = f"rm -rf {self._OUTBOX_DIR} && mkdir -p {self._OUTBOX_DIR}"
                 if cfg.sandbox_user:
                     user = shlex.quote(cfg.sandbox_user)
                     setup_cmd += f" && chown {user}:{user} {self._OUTBOX_DIR}"
@@ -2208,9 +2198,7 @@ class Rollout:
                 for _i, turn in enumerate(scene.turns):
                     role = role_map.get(turn.role)
                     if not role:
-                        raise ValueError(
-                            f"Turn references unknown role {turn.role!r}"
-                        )
+                        raise ValueError(f"Turn references unknown role {turn.role!r}")
 
                     if current_role != turn.role:
                         if current_role is not None:
@@ -2223,9 +2211,7 @@ class Rollout:
                     elif self._resolved_prompts:
                         base_prompt = self._resolved_prompts[0]
                     else:
-                        base_prompt = (
-                            "Solve the task described in /app/instruction.md"
-                        )
+                        base_prompt = "Solve the task described in /app/instruction.md"
 
                     pending = inbox.get(turn.role, [])
                     if pending:
@@ -2269,8 +2255,7 @@ class Rollout:
                     for m in scene_messages:
                         f.write(json.dumps(m) + "\n")
                 logger.info(
-                    f"[Scene] {scene.name}: {len(scene_messages)} "
-                    f"messages → {msg_path}"
+                    f"[Scene] {scene.name}: {len(scene_messages)} messages → {msg_path}"
                 )
 
     async def _read_scene_outbox(self, sender: str) -> list[tuple[str, str]]:

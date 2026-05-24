@@ -42,9 +42,7 @@ def test_stage_copy_source_rejects_dotdot_traversal(tmp_path: Path) -> None:
     # The path is returned unchanged (not rewritten to ``_deps/``) and no
     # ``_deps/`` entry is created from outside the context.
     assert rewritten == "../outside-secret.txt"
-    assert not (env_dir / "_deps").exists() or not any(
-        (env_dir / "_deps").iterdir()
-    )
+    assert not (env_dir / "_deps").exists() or not any((env_dir / "_deps").iterdir())
     # The outside file is untouched (we did not move/copy it).
     assert outside.read_text() == "HOST_ONLY_SECRET"
 
@@ -83,10 +81,7 @@ def test_stage_dockerfile_deps_does_not_exfiltrate_outside(tmp_path: Path) -> No
     """
     context_root, env_dir, outside = _setup_context(tmp_path)
     dockerfile = env_dir / "Dockerfile"
-    dockerfile.write_text(
-        "FROM scratch\n"
-        "COPY ../outside-secret.txt /loot\n"
-    )
+    dockerfile.write_text("FROM scratch\nCOPY ../outside-secret.txt /loot\n")
 
     # ``stage_dockerfile_deps`` expects ``task_path/environment/Dockerfile``;
     # here task_path is ``env_dir.parent`` (i.e. ``context_root``).

@@ -141,9 +141,7 @@ def test_release_evidence_flags_missing_junit_as_stale(tmp_path: Path, monkeypat
     assert any("junit.xml missing" in r for r in evidence["stale_reasons"])
 
 
-def test_release_evidence_flags_junit_older_than_pyproject(
-    tmp_path: Path, monkeypatch
-):
+def test_release_evidence_flags_junit_older_than_pyproject(tmp_path: Path, monkeypatch):
     """A version bump after the last suite run leaves the evidence stale."""
     repo = _make_repo(tmp_path)
     junit = repo / "dashboard" / "junit.xml"
@@ -292,7 +290,7 @@ def test_project_version_parses_common_pyproject_formats(
 ):
     """The version regex tolerates whitespace variants seen in real configs."""
     repo = _make_repo(tmp_path)
-    (repo / "pyproject.toml").write_text(f"[project]\nname = \"x\"\n{version_line}\n")
+    (repo / "pyproject.toml").write_text(f'[project]\nname = "x"\n{version_line}\n')
     _retarget_generate(monkeypatch, repo)
 
     expected = version_line.split('"')[1]

@@ -26,9 +26,7 @@ from benchflow.sandbox.setup import _inject_skills_into_dockerfile
 
 def _make_task(skills_dir: str | None):
     return SimpleNamespace(
-        config=SimpleNamespace(
-            environment=SimpleNamespace(skills_dir=skills_dir)
-        )
+        config=SimpleNamespace(environment=SimpleNamespace(skills_dir=skills_dir))
     )
 
 

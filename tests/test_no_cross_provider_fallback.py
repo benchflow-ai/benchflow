@@ -51,9 +51,7 @@ class TestNoCrossProviderFallback:
         assert "--model" in msg
         assert "fake-no-default-2" in msg
 
-    def test_empty_string_model_still_raises_for_non_default_agent(
-        self, monkeypatch
-    ):
+    def test_empty_string_model_still_raises_for_non_default_agent(self, monkeypatch):
         """Empty string == no model (legacy YAML shape) must also raise."""
         fake = AgentConfig(
             name="fake-no-default-3",

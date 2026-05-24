@@ -106,7 +106,9 @@ def test_write_rollout_verifiers_jsonl_emits_canonical_path(tmp_path):
         environment="bench",
     )
     artifact = rollout_dir / ROLLOUT_ARTIFACT_RELPATH
-    assert artifact.exists(), "trainer/verifiers.jsonl must exist after a scored rollout"
+    assert artifact.exists(), (
+        "trainer/verifiers.jsonl must exist after a scored rollout"
+    )
     lines = artifact.read_text().splitlines()
     assert len(lines) == 1
     parsed = json.loads(lines[0])

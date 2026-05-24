@@ -270,7 +270,9 @@ async def test_reset_restarts_framework_started_services_for_stateless_env():
     sandbox.exec_calls.clear()
     await env.reset()
     pkills = [c for c in sandbox.exec_calls if "pkill" in c]
-    restarts = [c for c in sandbox.exec_calls if "serve" in c and c.rstrip().endswith("&")]
+    restarts = [
+        c for c in sandbox.exec_calls if "serve" in c and c.rstrip().endswith("&")
+    ]
     assert len(pkills) == 2, "reset must stop every framework-started service"
     assert len(restarts) == 2, "reset must restart every framework-started service"
     # No restore — there is no [environment.state] table, so no snapshot

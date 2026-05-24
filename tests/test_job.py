@@ -242,8 +242,15 @@ class TestJobResumeScoped:
         tasks_dir.mkdir(exist_ok=True)
         return jobs_dir, job_dir, tasks_dir
 
-    def _write_result(self, job_dir, task_name, rollout_suffix="abc",
-                      rewards=None, error=None, verifier_error=None):
+    def _write_result(
+        self,
+        job_dir,
+        task_name,
+        rollout_suffix="abc",
+        rewards=None,
+        error=None,
+        verifier_error=None,
+    ):
         rollout_dir = job_dir / f"{task_name}__{rollout_suffix}"
         rollout_dir.mkdir(parents=True, exist_ok=True)
         data = {
@@ -267,8 +274,9 @@ class TestJobResumeScoped:
         # Write a result in a DIFFERENT job directory — must not be found.
         other_job = jobs_dir / "run-2"
         other_job.mkdir()
-        self._write_result(other_job, "task-b", rollout_suffix="xyz",
-                           rewards={"reward": 0.0})
+        self._write_result(
+            other_job, "task-b", rollout_suffix="xyz", rewards={"reward": 0.0}
+        )
 
         job = Evaluation(tasks_dir=tasks_dir, jobs_dir=jobs_dir, job_name="run-1")
         completed = job._get_completed_tasks()
@@ -282,12 +290,14 @@ class TestJobResumeScoped:
         """
         jobs_dir, job_dir, tasks_dir = self._setup_job(tmp_path)
         # First attempt — errored (no reward).
-        self._write_result(job_dir, "task-a", rollout_suffix="attempt1",
-                           error="install failed")
+        self._write_result(
+            job_dir, "task-a", rollout_suffix="attempt1", error="install failed"
+        )
         time.sleep(0.05)
         # Second attempt — succeeded.
-        self._write_result(job_dir, "task-a", rollout_suffix="attempt2",
-                           rewards={"reward": 1.0})
+        self._write_result(
+            job_dir, "task-a", rollout_suffix="attempt2", rewards={"reward": 1.0}
+        )
 
         job = Evaluation(tasks_dir=tasks_dir, jobs_dir=jobs_dir, job_name="my-job")
         completed = job._get_completed_tasks()
@@ -323,9 +333,7 @@ class TestJobResumeScoped:
         Guards ENG-160: config check scoped to job dir, not jobs_dir root.
         """
         jobs_dir, job_dir, tasks_dir = self._setup_job(tmp_path, "my-job")
-        result_file = self._write_result(
-            job_dir, "task-a", rewards={"reward": 1.0}
-        )
+        result_file = self._write_result(job_dir, "task-a", rewards={"reward": 1.0})
         (result_file.parent / "config.json").write_text(
             json.dumps({"agent": "old-agent"})
         )

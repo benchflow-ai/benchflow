@@ -53,9 +53,7 @@ class TestEffectiveModelHonorsAgentDefault:
         )
 
     def test_explicit_model_overrides_agent_default(self):
-        assert (
-            effective_model("gemini", "gemini-3.1-pro") == "gemini-3.1-pro"
-        )
+        assert effective_model("gemini", "gemini-3.1-pro") == "gemini-3.1-pro"
 
     def test_default_agent_still_uses_global_default(self):
         """Backwards-compat: the DEFAULT_AGENT still falls back to DEFAULT_MODEL

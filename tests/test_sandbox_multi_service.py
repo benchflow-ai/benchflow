@@ -413,9 +413,16 @@ class TestDaytonaDinDServiceFileTransfer:
             return ExecResult(stdout="", stderr="", return_code=0)
 
         strategy._compose_exec = fake_compose_exec  # type: ignore[method-assign]
-        await strategy.upload_dir("/host/skills", "/target app/skills", service="target")
+        await strategy.upload_dir(
+            "/host/skills", "/target app/skills", service="target"
+        )
 
-        assert captured[0][-4:] == ["target", "sh", "-c", "mkdir -p '/target app/skills'"]
+        assert captured[0][-4:] == [
+            "target",
+            "sh",
+            "-c",
+            "mkdir -p '/target app/skills'",
+        ]
         assert "-u" in captured[0]
         assert captured[0][captured[0].index("-u") + 1] == "root"
         assert captured[1][0] == "cp"

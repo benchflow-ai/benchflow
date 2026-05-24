@@ -487,7 +487,9 @@ def _write_run_artifacts(
             "usage_source": "unavailable",
             "price_source": None,
         },
-        "error": result.error if result.returncode != 0 or not result.verifiers_error else None,
+        "error": result.error
+        if result.returncode != 0 or not result.verifiers_error
+        else None,
         "error_category": None,
         "verifier_error": result.verifiers_error,
         "verifier_error_category": None,
@@ -709,7 +711,9 @@ def _collect_prompts(output_dir: Path, config: HostedEnvRunConfig) -> list[str]:
                     continue
                 if not isinstance(row, dict):
                     continue
-                raw_prompt = row.get("prompt") or row.get("question") or row.get("input")
+                raw_prompt = (
+                    row.get("prompt") or row.get("question") or row.get("input")
+                )
                 text = _stringify_prompt(raw_prompt)
                 if text and text not in seen:
                     seen.add(text)

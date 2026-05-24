@@ -592,10 +592,14 @@ class TestEvalCreateIncludeExclude:
             result = CliRunner().invoke(
                 app,
                 [
-                    "eval", "create",
-                    "--tasks-dir", str(tasks),
-                    "--include", "task-a",
-                    "--exclude", "task-b",
+                    "eval",
+                    "create",
+                    "--tasks-dir",
+                    str(tasks),
+                    "--include",
+                    "task-a",
+                    "--exclude",
+                    "task-b",
                 ],
             )
 
@@ -619,9 +623,7 @@ class TestVerifierNonzeroExitRewardAcceptance:
         assert outcome == "failed"
 
     @pytest.mark.asyncio
-    async def test_nonzero_exit_reward_zero_accepted_by_verifier(
-        self, tmp_path: Path
-    ):
+    async def test_nonzero_exit_reward_zero_accepted_by_verifier(self, tmp_path: Path):
         """Guards ENG-150: Verifier accepts reward file when script exits nonzero."""
         from unittest.mock import AsyncMock, MagicMock
 
@@ -694,9 +696,7 @@ class TestVerifierNonzeroExitRewardAcceptance:
         ) -> MagicMock:
             if sandbox.exec.await_count == 1:
                 return MagicMock(return_code=0, stdout="")
-            rollout_paths.reward_json_path.write_text(
-                json.dumps({"reward": 0.0})
-            )
+            rollout_paths.reward_json_path.write_text(json.dumps({"reward": 0.0}))
             return MagicMock(return_code=1, stdout="tests failed")
 
         sandbox.exec = AsyncMock(side_effect=exec_writes_reward_json)
@@ -720,7 +720,9 @@ class TestVerifierNonzeroExitRewardAcceptance:
         """Guards ENG-150 doesn't regress: rc!=0 with NO reward file is still an error."""
         from benchflow._utils.scoring import classify_result
 
-        outcome = classify_result(reward=None, error=None, verifier_error="verifier crashed: rc=7")
+        outcome = classify_result(
+            reward=None, error=None, verifier_error="verifier crashed: rc=7"
+        )
         assert outcome == "verifier_errored"
 
 
@@ -994,7 +996,10 @@ class TestIdleTimeoutResultDiagnostics:
         """Guards ENG-149: all expected error categories are classified."""
         from benchflow._utils.scoring import classify_error
 
-        assert classify_error("Agent idle for 600s with no new tool call") == "idle_timeout"
+        assert (
+            classify_error("Agent idle for 600s with no new tool call")
+            == "idle_timeout"
+        )
         assert classify_error("install failed: pip error") == "install_failure"
         assert classify_error("Agent closed stdout") == "pipe_closed"
         assert classify_error("ACP error: session closed") == "acp_error"

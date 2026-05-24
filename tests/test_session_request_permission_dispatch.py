@@ -86,9 +86,7 @@ async def test_request_permission_invokes_session_on_ask_user_handler():
     sent = client._transport.sent
     assert len(sent) == 1
     assert sent[0]["id"] == 123
-    assert sent[0]["result"] == {
-        "outcome": {"outcome": "selected", "optionId": "deny"}
-    }
+    assert sent[0]["result"] == {"outcome": {"outcome": "selected", "optionId": "deny"}}
 
 
 @pytest.mark.asyncio
@@ -227,10 +225,7 @@ def test_auto_approve_option_id_preserves_legacy_priority_order():
         == "second"
     )
     # No recognised kinds — fall back to first option's id.
-    assert (
-        _auto_approve_option_id([{"optionId": "only", "kind": "reject"}])
-        == "only"
-    )
+    assert _auto_approve_option_id([{"optionId": "only", "kind": "reject"}]) == "only"
     # Empty options — sentinel.
     assert _auto_approve_option_id([]) == "default"
 
@@ -291,6 +286,4 @@ def test_synchronous_dispatch_with_event_loop():
         )
     )
 
-    assert (
-        client._transport.sent[0]["result"]["outcome"]["optionId"] == "allow_once"
-    )
+    assert client._transport.sent[0]["result"]["outcome"]["optionId"] == "allow_once"
