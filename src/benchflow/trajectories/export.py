@@ -14,11 +14,29 @@ reward is validated and JSON-safe.
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any
 
 from benchflow.adapters.ors import ORSAdapter
 from benchflow.rewards.protocol import VerifyResult
+
+
+def _scrub_non_finite(value: Any) -> Any:
+    """Replace ``NaN`` / ``Infinity`` floats with ``None`` recursively.
+
+    Plain ``json.dumps`` emits non-finite floats as the bare tokens ``NaN``,
+    ``Infinity``, ``-Infinity`` — valid Python but rejected by strict JSON
+    parsers (jq, serde, Node ``JSON.parse``). We normalize to ``null`` so
+    downstream trainer ingestion never sees an invalid JSONL line.
+    """
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {k: _scrub_non_finite(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_scrub_non_finite(v) for v in value]
+    return value
 
 
 def _split_prompt_completion(
@@ -75,9 +93,17 @@ def trajectory_to_verifiers_record(
 def export_trajectories_to_jsonl(
     records: list[dict[str, Any]], path: str | Path
 ) -> None:
-    """Write Verifiers records to a JSONL file — one JSON object per line."""
+    """Write Verifiers records to a JSONL file — one JSON object per line.
+
+    Non-finite floats (``NaN``, ``±Infinity``) anywhere in a record are
+    normalized to ``null`` before serialization, and ``allow_nan=False`` is
+    set as defense-in-depth so any future regression that lets a non-finite
+    slip through raises ``ValueError`` instead of producing JSONL that
+    strict parsers reject.
+    """
     out = Path(path)
     out.parent.mkdir(parents=True, exist_ok=True)
     with out.open("w") as f:
         for rec in records:
-            f.write(json.dumps(rec, default=str) + "\n")
+            clean = _scrub_non_finite(rec)
+            f.write(json.dumps(clean, default=str, allow_nan=False) + "\n")
