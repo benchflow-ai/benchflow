@@ -45,6 +45,12 @@ from benchflow.evaluation import (
 )
 from benchflow.metrics import BenchmarkMetrics, collect_metrics
 from benchflow.models import AgentInstallError, AgentTimeoutError, RolloutResult
+from benchflow.monitor import (
+    Monitor,
+    MonitorConfig,
+    MonitorNotImplementedError,
+    MonitorResult,
+)
 
 # Rewards protocol (v0.4 — composable Rubric + RewardFunc)
 from benchflow.rewards import (
@@ -157,6 +163,11 @@ __all__ = [
     "AgentInstallError",
     "AgentTimeoutError",
     "RolloutResult",
+    # Monitor mode — scaffolded API surface (#386)
+    "Monitor",
+    "MonitorConfig",
+    "MonitorResult",
+    "MonitorNotImplementedError",
     # Runtime
     "Agent",
     "Environment",
