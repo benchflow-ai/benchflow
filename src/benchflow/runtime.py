@@ -319,6 +319,12 @@ class Runtime:
 
         Runtime is the stable user-facing surface. Trial owns the
         decomposed lifecycle phases underneath.
+
+        Honours the caller-supplied :class:`Environment`: the live
+        ``env.inner`` sandbox is reused instead of creating a second one
+        (fixes #388). If the caller has not yet called ``env.start()``
+        we start it now so ``env`` stays in a consistent state and the
+        underlying sandbox is brought up exactly once.
         """
         from benchflow._types import Scene
         from benchflow.rollout import Rollout, RolloutConfig
@@ -347,6 +353,16 @@ class Runtime:
         )
 
         rollout = await Rollout.create(trial_config)
+
+        # If the caller has not started the Environment yet, do it now so
+        # the Environment's _started flag stays accurate and the caller's
+        # later env.stop() works. Then hand the live sandbox to Rollout —
+        # this is what makes Runtime honour the input Environment instead
+        # of silently building a second one. #388.
+        if not self.env._started:
+            await self.env.start()
+        rollout.use_prebuilt_env(self.env.inner)
+
         run_result = await rollout.run()
 
         reward = (run_result.rewards or {}).get("reward")

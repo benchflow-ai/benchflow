@@ -632,12 +632,24 @@ def _resolve_prompts(
     return [p if p is not None else instruction for p in prompts]
 
 
-async def _start_env_and_upload(env: Any, task_path: Path, timing: dict) -> None:
-    """Start environment and upload task files."""
-    logger.info(f"Starting environment: {task_path.name}")
-    t0 = datetime.now()
-    await env.start(force_build=False)
-    timing["environment_setup"] = (datetime.now() - t0).total_seconds()
+async def _start_env_and_upload(
+    env: Any, task_path: Path, timing: dict, *, skip_start: bool = False
+) -> None:
+    """Start environment and upload task files.
+
+    ``skip_start=True`` is used when the sandbox was created and started
+    by the caller (Runtime with a live Environment, #388) — we still
+    upload task files but must not re-run ``start()`` since most sandbox
+    backends (e.g. daytona) are not idempotent.
+    """
+    if skip_start:
+        logger.info(f"Reusing caller-owned environment: {task_path.name}")
+        timing["environment_setup"] = 0.0
+    else:
+        logger.info(f"Starting environment: {task_path.name}")
+        t0 = datetime.now()
+        await env.start(force_build=False)
+        timing["environment_setup"] = (datetime.now() - t0).total_seconds()
     if (task_path / "instruction.md").exists():
         await env.upload_file(task_path / "instruction.md", "/instruction.md")
     task_skills = task_path / "environment" / "skills"
@@ -935,6 +947,10 @@ class Rollout:
         self._resolved_prompts: list[str] = []
         self._agent_launch: str = ""
         self._env: Any = None
+        # When True, Rollout treats _env as caller-owned: setup() skips
+        # creating a new sandbox and cleanup() skips stopping it. Set via
+        # use_prebuilt_env() — see Runtime.execute() for the public path.
+        self._env_externally_owned: bool = False
         self._environment: ManifestEnvironment | None = None
         self._timeout: int = 0
         self._timing: dict[str, float] = {}
@@ -988,6 +1004,22 @@ class Rollout:
                 "Evaluation.run(), or bf.run(RolloutConfig(...)) instead of Rollout.create()."
             )
         return cls(config)
+
+    def use_prebuilt_env(self, inner: Any) -> None:
+        """Inject a caller-owned sandbox; skip creation and teardown.
+
+        When the public Runtime API receives a live ``Environment`` (one
+        the caller already constructed, possibly started, and may want to
+        reuse), the Rollout must evaluate inside that same sandbox rather
+        than spinning up a second one. Call this before ``setup()``/
+        ``run()``: ``setup()`` will then skip ``_create_environment`` and
+        ``cleanup()`` will skip stopping the sandbox — the caller owns the
+        lifecycle. Fixes #388.
+        """
+        if inner is None:
+            raise ValueError("use_prebuilt_env() requires a non-None sandbox")
+        self._env = inner
+        self._env_externally_owned = True
 
     @property
     def env(self) -> Any:
@@ -1098,14 +1130,19 @@ class Rollout:
 
         self._effective_task_path = effective_task_path
 
-        self._env = _create_environment(
-            cfg.environment,
-            self._task,
-            effective_task_path,
-            self._rollout_name,
-            self._rollout_paths,
-            preserve_agent_network=self._disallow_web_tools,
-        )
+        # Honour an externally-supplied sandbox (use_prebuilt_env, set by
+        # Runtime.execute() when the caller passes a live Environment).
+        # Without this guard, every Runtime.execute() would build a second
+        # sandbox and silently discard the caller's prepared one — #388.
+        if self._env is None:
+            self._env = _create_environment(
+                cfg.environment,
+                self._task,
+                effective_task_path,
+                self._rollout_name,
+                self._rollout_paths,
+                preserve_agent_network=self._disallow_web_tools,
+            )
         self._timeout = int(self._task.config.agent.timeout_sec or 0)
 
         _write_config(
@@ -1134,7 +1171,12 @@ class Rollout:
 
     async def start(self) -> None:
         """Start the environment and upload task files."""
-        await _start_env_and_upload(self._env, self._config.task_path, self._timing)
+        await _start_env_and_upload(
+            self._env,
+            self._config.task_path,
+            self._timing,
+            skip_start=self._env_externally_owned,
+        )
 
         for hook in self._config.pre_agent_hooks or []:
             await hook(self._env)
@@ -1582,10 +1624,15 @@ class Rollout:
                 self._provider_runtime = None
             except Exception as e:
                 logger.warning(f"Provider runtime stop failed: {e}")
-            try:
-                await self._env.stop(delete=True)
-            except Exception as e:
-                logger.warning(f"Cleanup failed: {e}")
+            # An externally-owned sandbox (use_prebuilt_env) belongs to the
+            # caller — leave it running so they can reuse it or stop it
+            # themselves. #388. getattr() keeps tests that bypass __init__
+            # via Rollout.__new__() working.
+            if not getattr(self, "_env_externally_owned", False):
+                try:
+                    await self._env.stop(delete=True)
+                except Exception as e:
+                    logger.warning(f"Cleanup failed: {e}")
 
         if hasattr(self, "_task_tmp") and self._task_tmp:
             import shutil
