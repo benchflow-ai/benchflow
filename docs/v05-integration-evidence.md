@@ -100,6 +100,22 @@ Full SkillsBench baseline with gemini-2.5-flash on Daytona, no skills.
   bug
 - **No secret leaks found**
 
+## ENG-155: Self-Gen Subset (5 tasks)
+
+5 SkillsBench tasks in self-gen mode (skill-creator generates a skill, then
+agent solves with generated skill). gemini-2.5-flash on Daytona.
+
+| Task | Reward | Notes |
+|---|---|---|
+| jax-computing-basics | 0.0 | agent failure (232 tool calls in creator) |
+| grid-dispatch-operator | 0.0 | 2 idle timeouts, 3 attempts total |
+| threejs-to-obj | 0.0 | ENG-150 rc=1 accepted |
+| weighted-gdp-calc | 0.0 | agent failure |
+| shock-analysis-supply | 0.0 | agent failure |
+
+Score: 0/5 (0.0%). 0 secret leaks, 0 infra errors. All diagnostic fields present.
+Idle timeout diagnostics correctly populated for grid-dispatch-operator retries.
+
 ## Artifact Archive
 
 Scrubbed evidence uploaded to HuggingFace:
@@ -107,6 +123,7 @@ Scrubbed evidence uploaded to HuggingFace:
 
 Contents:
 - `9task-baseline-gemini-2.5-flash/` — full result.json + trajectory for each task
+- `eng155-selfgen-gemini-2.5-flash/` — self-gen mode results (5 tasks)
 - `dogfood-evidence/` — trace-to-task and hosted-env release gate artifacts
 - `README.md` — this evidence summary
 
@@ -115,6 +132,6 @@ Contents:
 | Ticket | Description | Status |
 |---|---|---|
 | ENG-154 | Rerun 8 JS-dependent SkillsBench tasks | Complete (1/8 passed) |
-| ENG-155 | Rerun self-gen SkillsBench subset | Running |
+| ENG-155 | Rerun self-gen SkillsBench subset | Complete (0/5 passed) |
 | ENG-156 | Full 94-task SkillsBench baseline | Complete (9/94 passed) |
 | — | HF artifact upload | Complete |
