@@ -72,11 +72,49 @@ Hosted env compatibility: 3/3 PASS + Harbor inventory
 Decoupling checks: 20/20 PASS
 ```
 
-## Operational Work (In Progress)
+## ENG-154: JS-Dependent Task Rerun (8 tasks)
+
+Reran 8 SkillsBench tasks that depend on JS/Node.js after the fixed ACP
+install path. gemini-2.5-flash on Daytona, no skills.
+
+| Task | Reward | Notes |
+|---|---|---|
+| data-to-d3 | 0.0 | agent failure |
+| fix-build-agentops | 0.0 | agent failure |
+| fix-visual-stability | 0.0 | agent failure |
+| radar-vital-signs | 1.0 | passed |
+| react-performance-debugging | 0.0 | agent failure |
+| threejs-structure-parser | 0.0 | agent failure |
+| threejs-to-obj | 0.0 | agent failure |
+| video-filler-word-remover | 0.0 | agent failure |
+
+Score: 1/8 unique tasks (12.5%). 0 secret leaks, 0 infra errors, 0 verifier errors.
+All failures are agent-level, not infrastructure.
+
+## ENG-156: Full 94-Task Baseline
+
+Full SkillsBench baseline with gemini-2.5-flash on Daytona, no skills.
+
+- **Score:** 9/94 tasks with reward > 0 (9.6%)
+- **Failure breakdown:** 73 agent quality failures, 11 idle timeouts, 1 verifier
+  bug
+- **No secret leaks found**
+
+## Artifact Archive
+
+Scrubbed evidence uploaded to HuggingFace:
+[benchflow/v05-release-evidence](https://huggingface.co/datasets/benchflow/v05-release-evidence) (private)
+
+Contents:
+- `9task-baseline-gemini-2.5-flash/` — full result.json + trajectory for each task
+- `dogfood-evidence/` — trace-to-task and hosted-env release gate artifacts
+- `README.md` — this evidence summary
+
+## Operational Work
 
 | Ticket | Description | Status |
 |---|---|---|
-| ENG-154 | Rerun 8 JS-dependent SkillsBench tasks | Subagent running (4/8 done) |
-| ENG-155 | Rerun self-gen SkillsBench subset | Subagent launched |
-| ENG-156 | Full 94-task SkillsBench × 3 modes | Subagent running |
-| — | HF artifact upload | Pending credentials |
+| ENG-154 | Rerun 8 JS-dependent SkillsBench tasks | Complete (1/8 passed) |
+| ENG-155 | Rerun self-gen SkillsBench subset | Running |
+| ENG-156 | Full 94-task SkillsBench baseline | Complete (9/94 passed) |
+| — | HF artifact upload | Complete |
