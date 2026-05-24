@@ -1589,5 +1589,88 @@ def environment_cleanup(
     _cleanup_daytona_sandboxes(dry_run=dry_run, max_age_minutes=max_age_minutes)
 
 
+monitor_app = typer.Typer(
+    help=(
+        "Monitor mode — score a rollout in production (#386). "
+        "API surface scaffold; runtime not yet implemented."
+    ),
+)
+app.add_typer(monitor_app, name="monitor")
+
+
+def _monitor_not_implemented() -> None:
+    """Emit the canonical not-implemented message and exit non-zero.
+
+    Centralised so every ``bench monitor`` subcommand fails closed with the
+    same wording and exit code, matching the issue's "fail closed with a
+    clear not-implemented status" requirement.
+    """
+    from benchflow.monitor import not_implemented_message
+
+    console.print("[yellow]Monitor mode not implemented yet.[/yellow]")
+    console.print(not_implemented_message())
+    # Exit code 2 (not 1) — distinguishes "feature absent" from "feature
+    # ran and failed", so CI dashboards do not conflate the two.
+    raise typer.Exit(2)
+
+
+@monitor_app.command("run")
+def monitor_run(
+    source: Annotated[
+        str,
+        typer.Argument(
+            help="Source trajectory (persisted rollout dir, file, or URI)."
+        ),
+    ],
+    rubric: Annotated[
+        Path | None,
+        typer.Option("--rubric", help="Rubric/verifier definition to score against."),
+    ] = None,
+    jobs_dir: Annotated[
+        str,
+        typer.Option("--jobs-dir", help="Output root for monitor artifacts."),
+    ] = "jobs/monitor",
+    run_name: Annotated[
+        str | None,
+        typer.Option("--run-name", help="Human-readable id for this monitor run."),
+    ] = None,
+) -> None:
+    """Score one trajectory under monitor semantics. **Not yet implemented (#386).**"""
+    del source, rubric, jobs_dir, run_name  # accepted for API stability
+    _monitor_not_implemented()
+
+
+@monitor_app.command("replay")
+def monitor_replay(
+    trajectory_path: Annotated[
+        Path,
+        typer.Argument(help="Path to a persisted rollout/trajectory to re-score."),
+    ],
+    jobs_dir: Annotated[
+        str,
+        typer.Option("--jobs-dir", help="Output root for monitor artifacts."),
+    ] = "jobs/monitor",
+) -> None:
+    """Re-score a persisted rollout under monitor semantics. **Not yet implemented (#386).**"""
+    del trajectory_path, jobs_dir  # accepted for API stability
+    _monitor_not_implemented()
+
+
+@monitor_app.command("watch")
+def monitor_watch(
+    source: Annotated[
+        str,
+        typer.Argument(help="Live event source (webhook, polling endpoint, queue)."),
+    ],
+    jobs_dir: Annotated[
+        str,
+        typer.Option("--jobs-dir", help="Output root for monitor artifacts."),
+    ] = "jobs/monitor",
+) -> None:
+    """Stream-score live production events. **Not yet implemented (#386).**"""
+    del source, jobs_dir  # accepted for API stability
+    _monitor_not_implemented()
+
+
 if __name__ == "__main__":
     app()
