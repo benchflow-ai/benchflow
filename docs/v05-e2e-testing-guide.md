@@ -13,11 +13,15 @@ uv sync --extra dev --locked
 export GEMINI_API_KEY=<your-gemini-key>
 export DAYTONA_API_KEY=<your-daytona-key>
 
-# optional: tasks directory (SkillsBench)
-TASKS=.cache/datasets/benchflow-ai/skillsbench/tasks
+# tasks directory (SkillsBench)
+export TASKS=.cache/datasets/benchflow-ai/skillsbench/tasks
 ```
 
 All commands below assume you are in the repo root.
+
+> **Note:** SkillsBench does not include a trivial "hello-world" task.
+> The examples below use `weighted-gdp-calc` (fast, ~5 tool calls) as the
+> default lightweight task. Swap in any task name from `$TASKS/`.
 
 ---
 
@@ -28,7 +32,7 @@ Run a batch eval with only one task included:
 ```bash
 uv run bench eval create \
   --tasks-dir $TASKS \
-  --include hello-world-task \
+  --include weighted-gdp-calc \
   --agent gemini --model gemini-2.5-flash \
   --sandbox daytona \
   --jobs-dir /tmp/test-include
@@ -43,15 +47,18 @@ Repeat with `--exclude`:
 ```bash
 uv run bench eval create \
   --tasks-dir $TASKS \
-  --exclude hello-world-task \
+  --include weighted-gdp-calc \
+  --include shock-analysis-supply \
+  --exclude shock-analysis-supply \
   --agent gemini --model gemini-2.5-flash \
   --sandbox daytona \
   --jobs-dir /tmp/test-exclude
 ```
 
 **Verify:**
-- The excluded task does not appear in the job directory.
-- `summary.json` total is (all tasks - 1).
+- Console prints `Job: 1 tasks` (shock-analysis-supply excluded).
+- Only `weighted-gdp-calc` appears in the job directory.
+- `summary.json` total is 1.
 
 ---
 
@@ -69,7 +76,7 @@ uv run bench eval create \
 ```
 
 **Verify in `result.json`:**
-- `"reward": 0.0` (or whatever the agent earns).
+- `"rewards": {"reward": 0.0}` (or whatever the agent earns).
 - `"error": null` — NOT `"verifier_errored"`.
 - `"verifier_error": null`.
 - Console log contains: `Verifier exited with rc=1 but produced reward output; accepting reward`.
@@ -110,10 +117,10 @@ Transport errors (rc=255, SSH drops) are rare in normal runs. To verify the
 field exists even in non-error cases:
 
 ```bash
-# run any successful task
+# run any task
 uv run bench eval create \
   --tasks-dir $TASKS \
-  --include hello-world-task \
+  --include weighted-gdp-calc \
   --agent gemini --model gemini-2.5-flash \
   --sandbox daytona \
   --jobs-dir /tmp/test-eng148
@@ -144,7 +151,7 @@ Sandbox startup failures are intermittent. To verify the field exists:
 # run any task on Daytona
 uv run bench eval create \
   --tasks-dir $TASKS \
-  --include hello-world-task \
+  --include weighted-gdp-calc \
   --agent gemini --model gemini-2.5-flash \
   --sandbox daytona \
   --jobs-dir /tmp/test-eng147
@@ -205,11 +212,11 @@ uv run bench eval create \
 ## 8. CTRF path consistency lint (ENG-153, PR #356)
 
 ```bash
-uv run bench tasks check $TASKS/hello-world-task
+uv run bench tasks check $TASKS/weighted-gdp-calc
 ```
 
 **Verify:**
-- No CTRF path consistency warnings.
+- `✓ weighted-gdp-calc — valid`.
 - Exit code 0.
 
 To see a failure, create a task with mismatched CTRF paths and run `bench tasks check`.
@@ -226,7 +233,7 @@ JOBS=/tmp/test-eng160
 # first run
 uv run bench eval create \
   --tasks-dir $TASKS \
-  --include hello-world-task \
+  --include weighted-gdp-calc \
   --agent gemini --model gemini-2.5-flash \
   --sandbox daytona \
   --jobs-dir $JOBS
@@ -234,7 +241,7 @@ uv run bench eval create \
 # second run (resume)
 uv run bench eval create \
   --tasks-dir $TASKS \
-  --include hello-world-task \
+  --include weighted-gdp-calc \
   --agent gemini --model gemini-2.5-flash \
   --sandbox daytona \
   --jobs-dir $JOBS
@@ -269,7 +276,7 @@ LINEAR_API_KEY=<your-key> python dashboard/serve.py
 ```bash
 uv run bench eval create \
   --tasks-dir $TASKS \
-  --include hello-world-task \
+  --include weighted-gdp-calc \
   --agent gemini --model gemini-2.5-flash \
   --sandbox daytona \
   --skill-mode self-gen \
@@ -310,15 +317,22 @@ for field in [
 
 After running any eval, validate results programmatically:
 
+Point the script at the timestamped job subdirectory (not the root `--jobs-dir`)
+and pass identity args so it knows what to expect:
+
 ```bash
-python tests/integration/check_results.py /tmp/test-include
+# find the job subdir
+JOB_DIR=$(ls -d /tmp/test-include/20*/ | head -1)
+
+uv run python tests/integration/check_results.py "$JOB_DIR" \
+  agent=gemini model=gemini-2.5-flash environment=daytona concurrency=4
 ```
 
 **Verify:**
-- Prints a score table.
+- Prints a score table with pass/fail/error counts.
 - Reports `INVALIDATED` for any tasks with idle timeouts, transport errors, or
   sandbox startup failures (with the structured diagnostic info).
-- Exit code 0 for clean runs.
+- Source provenance warnings are expected for local runs (git remote mismatch).
 
 ---
 
