@@ -833,6 +833,17 @@ class Evaluation:
         improvement stamps a new generation, a regression is reverted. An
         errored rollout (no reward) leaves the store untouched.
         """
+        # Skip everything when the skill export itself failed (#389 follow-up).
+        # The export dir is half-written and ``result.evolved_skills`` is None,
+        # so committing would poison the LearnerStore with an empty/partial
+        # generation even though the verifier may have produced rewards.
+        if result.export_error is not None:
+            logger.warning(
+                f"Learner store: {td.name} skill export failed — "
+                f"skipping generation commit, staying at generation "
+                f"{store.generation}"
+            )
+            return
         # 2/3. CAPTURE — the skills the agent generated/evolved. Prefer the
         # result's own field (the real Rollout populates it); fall back to
         # reading the export dir directly.
