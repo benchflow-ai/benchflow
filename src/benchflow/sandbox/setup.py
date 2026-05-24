@@ -12,6 +12,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, NoReturn, cast
 
+from benchflow._paths import ignore_symlinks, is_safe_regular_file
 from benchflow.agents.registry import AGENTS
 from benchflow.task import RolloutPaths, Task
 
@@ -36,6 +37,18 @@ _IGNORE_DIRS = {
     ".mypy_cache",
     ".ruff_cache",
 }
+
+
+def _stage_ignore(directory: str, contents: list[str]) -> list[str]:
+    """``shutil.copytree`` ignore callback: drop noise dirs *and* every symlink.
+
+    Composes :func:`shutil.ignore_patterns` for ``_IGNORE_DIRS`` with
+    :func:`benchflow._paths.ignore_symlinks` so a task-controlled symlink
+    cannot smuggle host files into the Docker build context (#411).
+    """
+    pattern_skip = set(shutil.ignore_patterns(*_IGNORE_DIRS)(directory, contents))
+    link_skip = set(ignore_symlinks(directory, contents))
+    return sorted(pattern_skip | link_skip)
 
 
 _HEREDOC_RE = re.compile(r"<<-?\s*['\"]?([A-Za-z0-9_.-]+)['\"]?")
@@ -345,20 +358,40 @@ def _stage_copy_source(src_path: str, env_dir: Path, context_root: Path) -> str:
     if not abs_src.exists():
         return src_path
 
+    # Reject symlinked sources outright (#411). Following a symlink here
+    # would bake the link target into the Docker build context, which is an
+    # exfiltration sink. ``abs_src.is_symlink()`` does *not* follow the
+    # link, so this is checked before any read.
+    if abs_src.is_symlink():
+        logger.warning(
+            "stage_dockerfile_deps: refusing to stage symlinked source %s",
+            abs_src,
+        )
+        return src_path
+
     dep_name = _dep_local_name(src_path)
     local_dest = env_dir / "_deps" / dep_name
 
     if abs_src.is_dir():
         if local_dest.exists():
             shutil.rmtree(local_dest)
+        # ``symlinks=False`` is the default but we re-state it for
+        # readability; the composed ignore drops both noise dirs and any
+        # symlink found inside the tree.
         shutil.copytree(
             abs_src,
             local_dest,
-            ignore=shutil.ignore_patterns(*_IGNORE_DIRS),
+            symlinks=False,
+            ignore=_stage_ignore,
         )
-    else:
+    elif is_safe_regular_file(abs_src):
         local_dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(abs_src, local_dest)
+    else:
+        logger.warning(
+            "stage_dockerfile_deps: refusing non-regular source %s", abs_src
+        )
+        return src_path
 
     return f"_deps/{dep_name}"
 
@@ -451,7 +484,10 @@ def _inject_skills_into_dockerfile(task_path: Path, skills_dir: Path) -> None:
     dest = env_dir / "_deps" / "skills"
     if dest.exists():
         shutil.rmtree(dest)
-    shutil.copytree(skills_dir, dest, ignore=shutil.ignore_patterns(*_IGNORE_DIRS))
+    # Refuse to follow symlinks under skills_dir (#411). A symlink baked
+    # into the image would otherwise serve attacker-chosen content to every
+    # agent for the lifetime of the build.
+    shutil.copytree(skills_dir, dest, symlinks=False, ignore=_stage_ignore)
 
     lines = [
         "",
