@@ -506,12 +506,24 @@ def _detect_dind_mount() -> tuple[str, str] | None:
         return None
 
 
+_DIND_PATCH_APPLIED = False
+
+
 def _patch_docker_dind() -> None:
     """Monkey-patch DockerSandboxEnvVars for DinD path translation.
 
     When running inside a devcontainer, HOST_*_PATH env vars need to use
-    host filesystem paths, not container paths. Applied once at import time.
+    host filesystem paths, not container paths.
+
+    Idempotent: safe to call repeatedly; only applies the wrapper once.
+    Called from ``Rollout.__init__`` so importing ``benchflow.rollout`` has
+    no side effects on sandbox/provider behavior — only constructing a
+    rollout activates the DinD compatibility shim.
     """
+    global _DIND_PATCH_APPLIED
+    if _DIND_PATCH_APPLIED:
+        return
+
     dind_mount = _detect_dind_mount()
     if not dind_mount:
         return
@@ -536,6 +548,7 @@ def _patch_docker_dind() -> None:
         return env
 
     DockerSandboxEnvVars.to_env_dict = _patched  # type: ignore[assignment, ty:invalid-assignment]
+    _DIND_PATCH_APPLIED = True
 
 
 def _create_sandbox_environment(
