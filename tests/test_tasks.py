@@ -133,11 +133,73 @@ class TestInitTask:
         assert (task / "tests" / "test_outputs.py").exists()
         assert (task / "solution" / "solve.sh").exists()
 
-    def test_task_toml_is_valid(self, tmp_path):
-        """Scaffolded task.toml should pass check_task validation."""
-        task = init_task("valid-task", parent_dir=tmp_path)
+    def test_scaffold_fails_check_until_placeholders_replaced(self, tmp_path):
+        """Freshly scaffolded task must FAIL `bench tasks check` (#360).
+
+        Otherwise authors can `bench tasks init foo && bench tasks check foo`
+        and get a green ✓ on a task that auto-passes with reward 1.0 —
+        silent false positives in eval sets.
+        """
+        task = init_task("scaffolded", parent_dir=tmp_path)
         issues = check_task(task)
-        assert issues == []
+        assert issues, "scaffold must not pass check_task before editing"
+        # instruction.md, tests/test.sh and solution/solve.sh all carry the
+        # placeholder marker — each must be flagged so the author sees what
+        # to replace.
+        joined = "\n".join(issues)
+        assert "instruction.md" in joined
+        assert "tests/test.sh" in joined
+        assert "solution/solve.sh" in joined
+
+    def test_scaffold_passes_check_after_placeholders_replaced(self, tmp_path):
+        """Once the author replaces every [REPLACE: ...] marker, check passes."""
+        task = init_task("editable", parent_dir=tmp_path)
+        (task / "instruction.md").write_text("# editable\n\nDo the thing.\n")
+        (task / "tests" / "test.sh").write_text(
+            '#!/bin/bash\necho "1.0" > /logs/verifier/reward.txt\n'
+        )
+        (task / "solution" / "solve.sh").write_text(
+            "#!/bin/bash\ntouch /app/output.txt\n"
+        )
+        assert check_task(task) == []
+
+    def test_scaffold_test_sh_defaults_to_failure(self, tmp_path):
+        """Scaffolded verifier writes 0.0, not 1.0 (#360).
+
+        Fail-closed default means even if check_task were skipped, the task
+        cannot give a passing reward without explicit author edits.
+        """
+        task = init_task("fail-closed", parent_dir=tmp_path)
+        test_sh = (task / "tests" / "test.sh").read_text()
+        assert 'echo "0.0"' in test_sh
+        assert 'echo "1.0"' not in test_sh
+
+    def test_scaffold_solution_does_not_satisfy_verifier(self, tmp_path):
+        """The placeholder solution must NOT make the placeholder verifier
+        pass — issue #360 calls this out explicitly: solution and test must
+        not collide on a default-pass.
+
+        We simulate by reading both files and checking that solve.sh exits
+        nonzero (it does not produce side effects) while test.sh writes 0.0.
+        """
+        task = init_task("collision", parent_dir=tmp_path)
+        solve = (task / "solution" / "solve.sh").read_text()
+        test_sh = (task / "tests" / "test.sh").read_text()
+        # Solve.sh must not write a passing reward itself (no echo of 1.0
+        # into the reward file).
+        assert "reward.txt" not in solve
+        assert 'echo "1.0"' not in solve
+        # Test.sh must default to 0.0 reward.
+        assert 'echo "0.0"' in test_sh
+        # And the solve script signals it's a placeholder by exiting nonzero.
+        assert "exit 1" in solve
+
+    def test_scaffold_pytest_template_fails(self, tmp_path):
+        """The pytest verifier template fails until edited (#360)."""
+        task = init_task("py-fail", parent_dir=tmp_path)
+        text = (task / "tests" / "test_outputs.py").read_text()
+        assert "pytest.fail" in text
+        assert "assert True" not in text
 
     def test_no_pytest_skips_test_outputs(self, tmp_path):
         task = init_task("no-pytest", parent_dir=tmp_path, no_pytest=True)
