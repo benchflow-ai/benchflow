@@ -599,6 +599,29 @@ def check_agent(agent_dir: Path) -> dict:
             f"fixing the index policy: {', '.join(dep_install_tasks)}"
         )
 
+    # Verifier timeout failures (ENG-152)
+    verifier_timeout_tasks: list[str] = []
+    for r in results:
+        verifier_err = r.get("verifier_error")
+        vcat = classify_verifier_error(verifier_err) if verifier_err else None
+        if vcat == "verifier_timeout":
+            task = r.get("task_name", "?")
+            vti = r.get("verifier_timeout_info")
+            budget = vti.get("timeout_budget_sec", "?") if vti else "?"
+            elapsed = vti.get("elapsed_sec", "?") if vti else "?"
+            verifier_timeout_tasks.append(task)
+            findings["issues"].append(
+                f"{task}: verifier timed out (budget={budget}s, elapsed={elapsed}s) — "
+                f"measurement invalid (verifier never produced reward)"
+            )
+            findings["ok"] = False
+    if verifier_timeout_tasks:
+        findings["issues"].append(
+            f"INVALIDATED: {len(verifier_timeout_tasks)} task(s) had verifier "
+            f"timeouts — increase timeout_sec or reduce verifier cost: "
+            f"{', '.join(verifier_timeout_tasks)}"
+        )
+
     # Summary.json — bench eval create writes it at the agent_dir root
     summary_path = agent_dir / "summary.json"
     if not summary_path.exists():

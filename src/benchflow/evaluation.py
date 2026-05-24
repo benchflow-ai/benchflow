@@ -1080,6 +1080,15 @@ class Evaluation:
                 f"and fix the task's index policy"
             )
 
+        verifier_timeout_count = verifier_error_category_counts.get(
+            VERIFIER_TIMEOUT, 0
+        )
+        if verifier_timeout_count > 0:
+            pct = verifier_timeout_count / job_result.total * 100
+            logger.warning(
+                f"{verifier_timeout_count} tasks ({pct:.0f}%) had verifier timeouts — "
+                f"check verifier_timeout_info in result.json for budget/elapsed details"
+            )
         if audit_counts["verifier_errored"] > 0:
             pct = audit_counts["verifier_errored"] / job_result.total * 100
             logger.warning(
