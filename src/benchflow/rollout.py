@@ -1554,7 +1554,17 @@ class Rollout:
             try:
                 await self._export_generated_skills()
             except Exception as e:
-                logger.warning(f"Generated skill export failed: {e}")
+                # Surface export failure as a rollout error so it cannot be
+                # confused with a successful-but-empty skill update (ENG/PR #389).
+                # An export that was configured-but-failed must not collapse
+                # into the same observable state as "agent honestly produced no
+                # skills". Preserve any pre-existing agent/run error: skill
+                # export happens during cleanup, after the agent already ran.
+                export_error = f"Skill export failed: {e}"
+                logger.error(export_error)
+                if self._error is None:
+                    self._error = export_error
+                self._evolved_skills = None
 
         usage_runtime = getattr(self, "_usage_runtime", None)
         if usage_runtime is not None:
