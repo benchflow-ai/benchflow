@@ -55,11 +55,17 @@ env             = { OPENAI_API_KEY = "${OPENAI_API_KEY}" }  # host vars to injec
 
 ## Multi-container tasks
 
-A task may ship an `environment/docker-compose.yaml` alongside (or instead of)
-the `Dockerfile`. The agent always runs in the `main` service; any additional
+A task may ship an `environment/docker-compose.yaml` alongside the
+`Dockerfile`. The agent always runs in the `main` service; any additional
 services you declare become sibling containers on the same Docker network.
 This supports vulhub-style CVE tasks where the agent attacks a separate target
 container over the network.
+
+> `environment/Dockerfile` is always required — `bench tasks check` rejects
+> a task that ships only a `docker-compose.yaml`. If your `main` service
+> uses a prebuilt `image:` and needs no build context, still include a
+> minimal `Dockerfile` (e.g. `FROM <same-image>`) so structural validation
+> and other tooling agree on the task package shape.
 
 ```yaml
 # environment/docker-compose.yaml

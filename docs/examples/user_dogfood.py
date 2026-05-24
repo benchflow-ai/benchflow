@@ -12,9 +12,8 @@ Usage:
 import asyncio
 import logging
 
-from benchflow.user import FunctionUser, RoundResult
-
 import benchflow as bf
+from benchflow import FunctionUser, RoundResult
 from benchflow.rollout import RolloutConfig, Scene
 
 logging.basicConfig(level=logging.INFO, format="%(name)s %(message)s")
