@@ -1225,6 +1225,15 @@ class Evaluation:
         # expects summary.json at the top level.
         (self._jobs_dir / "summary.json").write_text(summary_text)
 
+        # Aggregate per-rollout trainer artifacts into job_dir/verifiers.jsonl
+        # — the architecture's train-mode seam (issue #385).
+        try:
+            from benchflow.trajectories.export import write_job_verifiers_jsonl
+
+            write_job_verifiers_jsonl(job_dir)
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning("Job-level trainer artifact aggregation failed: %s", e)
+
         idle_count = error_category_counts.get(IDLE_TIMEOUT, 0)
         if idle_count > 0:
             pct = idle_count / job_result.total * 100
