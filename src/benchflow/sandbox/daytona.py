@@ -33,6 +33,7 @@ from benchflow.sandbox._compose import (
     compose_mkdir_p_command,
     compose_parent_mkdir_p_command,
 )
+from benchflow.sandbox.protocol import SandboxImage, SandboxSnapshotNotSupported
 from benchflow.task.config import SandboxConfig
 from benchflow.task.env import resolve_env_vars
 from benchflow.task.paths import RolloutPaths, SandboxPaths
@@ -180,6 +181,11 @@ class DaytonaClientManager:
 class _DaytonaStrategy:
     """Base for Daytona implementation strategies."""
 
+    # Strategies declare whether they can satisfy container-level snapshots;
+    # the DaytonaSandbox wrapper forwards the question to its strategy so the
+    # capability tracks the active mode (direct vs. DinD/compose) — see #384.
+    supports_snapshot: bool = False
+
     def __init__(self, env: DaytonaSandbox) -> None:
         self._env = env
 
@@ -230,9 +236,25 @@ class _DaytonaStrategy:
     @abstractmethod
     async def attach(self) -> None: ...
 
+    async def snapshot(self, name: str | None = None) -> SandboxImage:
+        """Capture a provider-level snapshot. Default: not supported."""
+        raise SandboxSnapshotNotSupported(
+            f"{type(self).__name__} does not support container-level snapshots."
+        )
+
+    async def restore(self, image: SandboxImage) -> None:
+        """Restore from a provider-level snapshot. Default: not supported."""
+        raise SandboxSnapshotNotSupported(
+            f"{type(self).__name__} does not support container-level restore."
+        )
+
 
 class _DaytonaDirect(_DaytonaStrategy):
     """Direct sandbox strategy — single-container behavior."""
+
+    # Daytona ships a native sandbox-snapshot API on AsyncSandbox; the direct
+    # strategy uses it for the container layer of Branch (#384).
+    supports_snapshot: bool = True
 
     async def start(self, force_build: bool) -> None:
         env = self._env
@@ -424,6 +446,60 @@ class _DaytonaDirect(_DaytonaStrategy):
             "ssh",
             ["ssh", f"{ssh_access.token}@ssh.app.daytona.io"],
         )
+
+    async def snapshot(self, name: str | None = None) -> SandboxImage:
+        """Create a Daytona snapshot from the current sandbox state.
+
+        Wraps ``AsyncSandbox._experimental_create_snapshot``; the snapshot
+        name is the ``ref`` other Daytona sandboxes can be created from via
+        :class:`CreateSandboxFromSnapshotParams`.
+        """
+        env = self._env
+        if not env._sandbox:
+            raise SandboxSnapshotNotSupported(
+                "DaytonaSandbox.snapshot requires a started sandbox; call "
+                "start() before snapshot()."
+            )
+        snap_name = name or f"bf-snap-{env.environment_name}-{uuid4().hex[:12]}"
+        # Daytona names: lowercase, dash-separated, ascii — sanitize defensively.
+        snap_name = snap_name.lower().replace("_", "-")
+        await env._sandbox._experimental_create_snapshot(snap_name)
+        env.logger.info(f"Snapshot created: {snap_name}")
+        return SandboxImage(
+            provider="daytona",
+            ref=snap_name,
+            meta={"sandbox_id": getattr(env._sandbox, "id", "") or ""},
+        )
+
+    async def restore(self, image: SandboxImage) -> None:
+        """Replace the current Daytona sandbox with one from ``image``.
+
+        Daytona snapshots are immutable — restore is implemented by deleting
+        the current sandbox and creating a fresh one from the snapshot,
+        matching the provider's native semantics.
+        """
+        env = self._env
+        if image.provider != "daytona":
+            raise SandboxSnapshotNotSupported(
+                f"DaytonaSandbox.restore cannot consume a {image.provider!r} "
+                f"snapshot (got ref={image.ref!r}); snapshots are not portable "
+                "across providers."
+            )
+        if env._sandbox is not None:
+            try:
+                await env._sandbox.delete()
+            except Exception as e:
+                env.logger.warning(f"Failed to delete sandbox before restore: {e}")
+            env._sandbox = None
+
+        params = CreateSandboxFromSnapshotParams(
+            auto_delete_interval=env._auto_delete_interval,
+            auto_stop_interval=env._auto_stop_interval,
+            snapshot=image.ref,
+            network_block_all=env._network_block_all,
+        )
+        await env._create_sandbox(params=params)
+        env.logger.info(f"Snapshot restored: {image.ref}")
 
 
 class _DaytonaDinD(_DaytonaStrategy):
@@ -1334,3 +1410,15 @@ class DaytonaSandbox(BaseSandbox):
 
     async def attach(self) -> None:
         return await self._strategy.attach()
+
+    # ── Container snapshot/restore — delegates to active strategy (#384) ──
+
+    @property
+    def supports_snapshot(self) -> bool:
+        return self._strategy.supports_snapshot
+
+    async def snapshot(self, name: str | None = None) -> SandboxImage:
+        return await self._strategy.snapshot(name)
+
+    async def restore(self, image: SandboxImage) -> None:
+        return await self._strategy.restore(image)

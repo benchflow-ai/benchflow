@@ -14,6 +14,8 @@ from benchflow.sandbox.protocol import (
     ImageConfig,
     ImageRef,
     Sandbox,
+    SandboxImage,
+    SandboxSnapshotNotSupported,
 )
 from benchflow.sandbox.services import (
     SERVICES,
@@ -29,6 +31,8 @@ __all__ = [
     "ImageConfig",
     "ImageRef",
     "Sandbox",
+    "SandboxImage",
+    "SandboxSnapshotNotSupported",
     "ServiceConfig",
     "SERVICES",
     "build_service_hooks",

@@ -98,6 +98,8 @@ async def branch(
     rollout: Rollout,
     n: int,
     run_child: ChildRunner | None = None,
+    *,
+    require_sandbox_snapshot: bool = False,
 ) -> float:
     """Branch ``rollout`` at its cursor into ``n`` child continuations.
 
@@ -131,6 +133,26 @@ async def branch(
         )
     if n < 2:
         raise ValueError(f"a branch forks into >= 2 children, got n={n}")
+
+    # Fail closed when the run requires a three-layer checkpoint but the
+    # sandbox cannot snapshot the container layer (#384). The Branch
+    # lifecycle composes container ⊃ environment-state ⊃ agent-session;
+    # without the container layer, restoring only environment state can
+    # produce inconsistent state for runs that mutate process/service state
+    # the Environment manifest does not capture.
+    if require_sandbox_snapshot:
+        sandbox = getattr(rollout, "_env", None)
+        supports = getattr(sandbox, "supports_snapshot", False)
+        if not supports:
+            sandbox_name = type(sandbox).__name__ if sandbox else "<none>"
+            raise RuntimeError(
+                f"branch(require_sandbox_snapshot=True) cannot run: the active "
+                f"sandbox {sandbox_name!r} does not implement container-level "
+                "snapshot/restore. Use a provider whose Sandbox satisfies the "
+                "checkpoint contract (DockerSandbox or DaytonaSandbox in direct "
+                "mode), or drop require_sandbox_snapshot if Environment-state "
+                "checkpoint is sufficient for this run."
+            )
 
     parent = rollout._cursor
     runner = run_child if run_child is not None else make_default_runner(rollout)
