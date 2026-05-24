@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from benchflow._utils.task_authoring import check_task, init_task
+from benchflow._utils.task_authoring import _check_ctrf_path, check_task, init_task
 
 
 class TestCheckTask:
@@ -157,3 +157,69 @@ class TestInitTask:
     def test_creates_parent_dirs(self, tmp_path):
         task = init_task("deep", parent_dir=tmp_path / "nested" / "tasks")
         assert task.exists()
+
+
+class TestCtrfPathLint:
+    """_check_ctrf_path detects non-standard CTRF output paths (ENG-153).
+
+    Guards PR #356 — ensures `bench tasks check` catches inconsistent
+    CTRF paths before they reach production evals.
+    """
+
+    def test_standard_path_no_issues(self, tmp_path):
+        sh = tmp_path / "test.sh"
+        sh.write_text("pytest --ctrf /logs/verifier/ctrf.json /tests/test_outputs.py\n")
+        assert _check_ctrf_path(sh) == []
+
+    def test_standard_path_equals_form(self, tmp_path):
+        sh = tmp_path / "test.sh"
+        sh.write_text("pytest --ctrf=/logs/verifier/ctrf.json /tests/test_outputs.py\n")
+        assert _check_ctrf_path(sh) == []
+
+    def test_nonstandard_filename_flagged(self, tmp_path):
+        sh = tmp_path / "test.sh"
+        sh.write_text("pytest --ctrf /logs/verifier/ctrf-report.json /tests\n")
+        issues = _check_ctrf_path(sh)
+        assert len(issues) == 1
+        assert "ctrf-report.json" in issues[0]
+        assert "non-standard" in issues[0]
+
+    def test_relative_path_flagged(self, tmp_path):
+        sh = tmp_path / "test.sh"
+        sh.write_text("pytest --ctrf ctrf.json /tests/test_outputs.py\n")
+        issues = _check_ctrf_path(sh)
+        assert len(issues) == 1
+        assert "ctrf.json" in issues[0]
+
+    def test_variable_path_skipped(self, tmp_path):
+        sh = tmp_path / "test.sh"
+        sh.write_text('pytest --ctrf "$CTRF_DIR/ctrf.json" /tests\n')
+        assert _check_ctrf_path(sh) == []
+
+    def test_commented_ctrf_ignored(self, tmp_path):
+        sh = tmp_path / "test.sh"
+        sh.write_text("# pytest --ctrf /bad/path.json\npytest /tests\n")
+        assert _check_ctrf_path(sh) == []
+
+    def test_no_ctrf_flag_no_issues(self, tmp_path):
+        sh = tmp_path / "test.sh"
+        sh.write_text("pytest /tests/test_outputs.py\n")
+        assert _check_ctrf_path(sh) == []
+
+    def test_check_task_integrates_ctrf_lint(self, tmp_path):
+        """check_task() calls _check_ctrf_path as part of validation."""
+        task = tmp_path / "bad-ctrf"
+        task.mkdir()
+        (task / "task.toml").write_text(
+            "[agent]\ntimeout_sec = 300\n[verifier]\ntimeout_sec = 120\n"
+        )
+        (task / "instruction.md").write_text("# Task\n")
+        (task / "environment").mkdir()
+        (task / "environment" / "Dockerfile").write_text("FROM ubuntu:24.04\n")
+        tests = task / "tests"
+        tests.mkdir()
+        (tests / "test.sh").write_text(
+            "pytest --ctrf /logs/verifier/ctrf-report.json /tests\n"
+        )
+        issues = check_task(task)
+        assert any("non-standard CTRF path" in i for i in issues)
