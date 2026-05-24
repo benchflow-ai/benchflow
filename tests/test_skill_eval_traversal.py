@@ -36,9 +36,7 @@ def _write_skill_dir(
     """Build a minimal skill directory with one eval case."""
     skill = root / "skill"
     (skill / "evals").mkdir(parents=True)
-    (skill / "SKILL.md").write_text(
-        "---\nname: audit-skill\n---\n# Audit skill\n"
-    )
+    (skill / "SKILL.md").write_text("---\nname: audit-skill\n---\n# Audit skill\n")
     payload: dict = {"cases": [{"id": case_id, "question": "q"}]}
     if skill_name is not None:
         payload["skill_name"] = skill_name

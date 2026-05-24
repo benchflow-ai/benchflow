@@ -26,9 +26,7 @@ def test_evaluation_single_task_dir_respects_include(tmp_path):
     task_dir = tmp_path / "pass-json"
     _write_task(task_dir)
     cfg = EvaluationConfig(include_tasks={"no-such-task"})
-    job = Evaluation(
-        tasks_dir=task_dir, jobs_dir=tmp_path / "jobs", config=cfg
-    )
+    job = Evaluation(tasks_dir=task_dir, jobs_dir=tmp_path / "jobs", config=cfg)
     assert job._get_task_dirs() == []
 
 
@@ -37,9 +35,7 @@ def test_evaluation_single_task_dir_respects_exclude(tmp_path):
     task_dir = tmp_path / "pass-json"
     _write_task(task_dir)
     cfg = EvaluationConfig(exclude_tasks={"pass-json"})
-    job = Evaluation(
-        tasks_dir=task_dir, jobs_dir=tmp_path / "jobs", config=cfg
-    )
+    job = Evaluation(tasks_dir=task_dir, jobs_dir=tmp_path / "jobs", config=cfg)
     assert job._get_task_dirs() == []
 
 

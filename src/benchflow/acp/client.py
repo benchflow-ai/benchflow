@@ -237,8 +237,7 @@ class ACPClient:
             # believe a file read or terminal spawn succeeded when nothing
             # ran, corrupting trajectories.
             logger.warning(
-                "ACPClient received unsupported request %r — replying "
-                "method-not-found",
+                "ACPClient received unsupported request %r — replying method-not-found",
                 method,
             )
             response = {

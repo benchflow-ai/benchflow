@@ -97,9 +97,7 @@ def test_task_artifacts_skips_symlink_at_rollout_root(
     assert any("result.json" in r.message for r in caplog.records)
 
 
-def test_file_payload_refuses_symlink(
-    tmp_path: Path, generate: ModuleType
-) -> None:
+def test_file_payload_refuses_symlink(tmp_path: Path, generate: ModuleType) -> None:
     """The shared ``_file_payload`` helper must reject symlinks directly."""
     secret = _secret_outside(tmp_path)
     link = tmp_path / "link.txt"

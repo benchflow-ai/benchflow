@@ -77,7 +77,11 @@ class TestDenseEventTags:
 
         func = LLMJudgeRewardFunc(
             criteria=[
-                {"description": "Tool choice quality", "id": "tools", "space": "action"},
+                {
+                    "description": "Tool choice quality",
+                    "id": "tools",
+                    "space": "action",
+                },
             ],
         )
         await func.score(tmp_path)

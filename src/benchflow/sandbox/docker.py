@@ -463,9 +463,7 @@ class DockerSandbox(BaseSandbox):
                 "running; call start() before snapshot()."
             )
         suffix = name or uuid.uuid4().hex[:12]
-        tag = _sanitize_docker_image_name(
-            f"bf-snap-{self.environment_name}-{suffix}"
-        )
+        tag = _sanitize_docker_image_name(f"bf-snap-{self.environment_name}-{suffix}")
         proc = await asyncio.create_subprocess_exec(
             "docker",
             "commit",
@@ -547,9 +545,7 @@ class DockerSandbox(BaseSandbox):
         cid = (result.stdout or "").strip().splitlines()
         return cid[0] if cid else None
 
-    async def _docker_cli(
-        self, args: list[str], check: bool = True
-    ) -> ExecResult:
+    async def _docker_cli(self, args: list[str], check: bool = True) -> ExecResult:
         """Run a raw ``docker`` CLI command — bypasses compose."""
         proc = await asyncio.create_subprocess_exec(
             "docker",
@@ -565,8 +561,7 @@ class DockerSandbox(BaseSandbox):
         )
         if check and result.return_code != 0:
             raise RuntimeError(
-                f"docker {' '.join(args)} failed: "
-                f"{result.stderr or result.stdout}"
+                f"docker {' '.join(args)} failed: {result.stderr or result.stdout}"
             )
         return result
 

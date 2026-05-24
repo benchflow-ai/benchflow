@@ -229,8 +229,7 @@ class LearnerStore:
         version = data.get("version", 1)
         if version != 1:
             raise ValueError(
-                f"unsupported learner_store snapshot version {version!r} — "
-                f"expected 1"
+                f"unsupported learner_store snapshot version {version!r} — expected 1"
             )
         store = cls()
         store.history = {
@@ -251,9 +250,7 @@ class LearnerStore:
         store._generation = int(data.get("generation", 0))
         # next_number defaults to one past the highest known number, so a
         # store with no explicit counter still stamps unique generations.
-        store._next_number = int(
-            data.get("next_number", max(store.history) + 1)
-        )
+        store._next_number = int(data.get("next_number", max(store.history) + 1))
         if store._generation not in store.history:
             raise ValueError(
                 f"learner_store snapshot pointer generation={store._generation} "

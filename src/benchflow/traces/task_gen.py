@@ -249,9 +249,7 @@ def _build_instruction(trace: ParsedTrace) -> str:
     # ``..`` segments or absolute paths in instruction.md mislead the agent
     # and pair badly with the verifier and oracle that consume the same list.
     files = [
-        rel
-        for f in trace.files_edited
-        if (rel := _safe_relativize(f)) is not None
+        rel for f in trace.files_edited if (rel := _safe_relativize(f)) is not None
     ]
     if files:
         lines.append("## Expected Changes")
@@ -359,9 +357,7 @@ def _build_test_sh(trace: ParsedTrace) -> str:
     # Drop traversal/absolute paths so the verifier never asserts existence
     # of files outside /app — see issue #376.
     files = [
-        rel
-        for f in trace.files_edited
-        if (rel := _safe_relativize(f)) is not None
+        rel for f in trace.files_edited if (rel := _safe_relativize(f)) is not None
     ]
     if not files:
         return (

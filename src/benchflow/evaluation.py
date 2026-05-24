@@ -290,13 +290,12 @@ class Evaluation:
         """
         if jobs_dir.is_dir():
             job_dirs = sorted(
-                d for d in jobs_dir.iterdir()
+                d
+                for d in jobs_dir.iterdir()
                 if d.is_dir() and not d.name.startswith(".")
             )
             if len(job_dirs) == 1:
-                logger.info(
-                    f"Resuming into existing job directory: {job_dirs[0].name}"
-                )
+                logger.info(f"Resuming into existing job directory: {job_dirs[0].name}")
                 return job_dirs[0].name
             if len(job_dirs) > 1:
                 latest = job_dirs[-1]
@@ -1086,10 +1085,14 @@ class Evaluation:
         if completed:
             # Check config.json (written by SDK.run) for the registry agent name
             job_dir = self._jobs_dir / self._job_name
-            sample_dir = next(
-                (d for d in job_dir.iterdir() if d.is_dir()),
-                None,
-            ) if job_dir.exists() else None
+            sample_dir = (
+                next(
+                    (d for d in job_dir.iterdir() if d.is_dir()),
+                    None,
+                )
+                if job_dir.exists()
+                else None
+            )
             prev_agent = ""
             if sample_dir:
                 for cfg_file in sample_dir.rglob("config.json"):
@@ -1257,9 +1260,7 @@ class Evaluation:
                 f"{pipe_count} tasks ({pct:.0f}%) lost transport (pipe closed / rc=255) — "
                 f"check transport_error_info in result.json for diagnostics"
             )
-        dep_install_count = verifier_error_category_counts.get(
-            VERIFIER_DEP_INSTALL, 0
-        )
+        dep_install_count = verifier_error_category_counts.get(VERIFIER_DEP_INSTALL, 0)
         if dep_install_count > 0:
             pct = dep_install_count / job_result.total * 100
             logger.warning(
@@ -1268,9 +1269,7 @@ class Evaluation:
                 f"and fix the task's index policy"
             )
 
-        verifier_timeout_count = verifier_error_category_counts.get(
-            VERIFIER_TIMEOUT, 0
-        )
+        verifier_timeout_count = verifier_error_category_counts.get(VERIFIER_TIMEOUT, 0)
         if verifier_timeout_count > 0:
             pct = verifier_timeout_count / job_result.total * 100
             logger.warning(
