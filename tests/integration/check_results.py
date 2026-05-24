@@ -505,6 +505,7 @@ def check_agent(agent_dir: Path) -> dict:
     # Infrastructure errors
     infra_errors = []
     idle_timeout_tasks: list[str] = []
+    sandbox_startup_tasks: list[str] = []
     transport_error_tasks: list[str] = []
     for r in results:
         err = r.get("error")
@@ -523,6 +524,21 @@ def check_agent(agent_dir: Path) -> dict:
                 else:
                     infra_errors.append(f"{task}: {err}")
                 idle_timeout_tasks.append(task)
+            elif cat == "sandbox_setup":
+                sinfo = r.get("sandbox_startup_info")
+                if sinfo:
+                    sid = sinfo.get("sandbox_id", "?")
+                    state = sinfo.get("sandbox_state", "?")
+                    attempts = sinfo.get("attempts", "?")
+                    build_to = sinfo.get("build_timeout_sec", "?")
+                    infra_errors.append(
+                        f"{task}: sandbox startup failed (sandbox_id={sid}, "
+                        f"state={state}, attempts={attempts}, "
+                        f"build_timeout_sec={build_to})"
+                    )
+                else:
+                    infra_errors.append(f"{task}: {err}")
+                sandbox_startup_tasks.append(task)
             elif cat == "pipe_closed":
                 tinfo = r.get("transport_error_info")
                 if tinfo:
@@ -545,6 +561,12 @@ def check_agent(agent_dir: Path) -> dict:
         findings["issues"].append(
             f"INVALIDATED: {len(idle_timeout_tasks)} task(s) hit idle timeout "
             f"and should be rerun: {', '.join(idle_timeout_tasks)}"
+        )
+    if sandbox_startup_tasks:
+        findings["issues"].append(
+            f"INVALIDATED: {len(sandbox_startup_tasks)} task(s) failed during "
+            f"sandbox startup and should be rerun: "
+            f"{', '.join(sandbox_startup_tasks)}"
         )
     if transport_error_tasks:
         findings["issues"].append(

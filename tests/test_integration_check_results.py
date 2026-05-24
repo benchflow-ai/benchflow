@@ -1639,6 +1639,76 @@ def test_check_results_rejects_malformed_duplicate_task_result(
     assert any("bad result file" in issue for issue in findings["issues"])
 
 
+def test_check_results_flags_sandbox_startup_error_with_diagnostics(
+    tmp_path: Path,
+) -> None:
+    """Guards ENG-147: check_results surfaces structured sandbox_startup_info
+    for sandbox_setup errors and flags them as INVALIDATED."""
+    agent_dir = tmp_path / "agentA"
+    run_dir = agent_dir / "2026-05-23__00-00-00" / "task-a"
+    run_dir.mkdir(parents=True)
+    (run_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "task-a",
+                "agent": "agentA",
+                "model": "test-model",
+                "rewards": None,
+                "error": "Sandbox startup failed: Sandbox creation failed after retries: timeout",
+                "verifier_error": None,
+                "sandbox_startup_info": {
+                    "reason": "sandbox_startup_failed",
+                    "sandbox_id": "abc-123",
+                    "sandbox_state": "creating",
+                    "attempts": 3,
+                    "build_timeout_sec": 600.0,
+                    "raw_message": "timeout",
+                },
+                "source": _source(),
+            }
+        )
+    )
+    findings = check_agent(agent_dir)
+    assert findings["ok"] is False
+    assert any(
+        "sandbox startup failed" in issue and "abc-123" in issue
+        for issue in findings["issues"]
+    )
+    assert any(
+        "INVALIDATED" in issue and "sandbox startup" in issue
+        for issue in findings["issues"]
+    )
+
+
+def test_check_results_sandbox_startup_without_info(
+    tmp_path: Path,
+) -> None:
+    """Guards ENG-147: check_results handles sandbox_setup errors without
+    structured info (bare error string fallback)."""
+    agent_dir = tmp_path / "agentA"
+    run_dir = agent_dir / "2026-05-23__00-00-00" / "task-a"
+    run_dir.mkdir(parents=True)
+    (run_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "task-a",
+                "agent": "agentA",
+                "model": "test-model",
+                "rewards": None,
+                "error": "Sandbox startup failed: unknown error",
+                "verifier_error": None,
+                "source": _source(),
+            }
+        )
+    )
+    findings = check_agent(agent_dir)
+    assert findings["ok"] is False
+    assert any(
+        "INVALIDATED" in issue and "sandbox startup" in issue
+        for issue in findings["issues"]
+    )
+
+
 def test_check_results_flags_transport_error_with_diagnostics(
     tmp_path: Path,
 ) -> None:
