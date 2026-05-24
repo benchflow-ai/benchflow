@@ -88,7 +88,7 @@ install path. gemini-2.5-flash on Daytona, no skills.
 | threejs-to-obj | 0.0 | agent failure |
 | video-filler-word-remover | 0.0 | agent failure |
 
-Score: 1/9 unique tasks (11.1%). 0 secret leaks, 0 infra errors, 0 verifier errors.
+Score: 1/8 unique tasks (12.5%). 0 secret leaks, 0 infra errors, 0 verifier errors.
 All failures are agent-level, not infrastructure.
 
 ## ENG-156: Full 94-Task Baseline
@@ -96,8 +96,8 @@ All failures are agent-level, not infrastructure.
 Full SkillsBench baseline with gemini-2.5-flash on Daytona, no skills.
 
 - **Score:** 9/94 tasks with reward > 0 (9.6%)
-- **Failure breakdown:** 72 agent quality failures, 11 idle timeouts, 2 verifier
-  bugs, 1 sandbox infra error
+- **Failure breakdown:** 73 agent quality failures, 11 idle timeouts, 1 verifier
+  bug
 - **No secret leaks found**
 
 ## Artifact Archive
@@ -114,7 +114,7 @@ Contents:
 
 | Ticket | Description | Status |
 |---|---|---|
-| ENG-154 | Rerun 8 JS-dependent SkillsBench tasks | Complete (1/9 passed) |
+| ENG-154 | Rerun 8 JS-dependent SkillsBench tasks | Complete (1/8 passed) |
 | ENG-155 | Rerun self-gen SkillsBench subset | Running |
 | ENG-156 | Full 94-task SkillsBench baseline | Complete (9/94 passed) |
 | — | HF artifact upload | Complete |
