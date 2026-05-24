@@ -1,6 +1,7 @@
 """Task authoring — init and check benchmark tasks."""
 
 import logging
+import re
 import tomllib
 from pathlib import Path
 
@@ -59,7 +60,36 @@ def check_task(task_dir: Path) -> list[str]:
             "Missing tests/ directory (verifier needs test.sh or evaluate.py)"
         )
 
+    # Check CTRF output path consistency (ENG-153)
+    test_sh = task_dir / "tests" / "test.sh"
+    if test_sh.exists():
+        issues.extend(_check_ctrf_path(test_sh))
+
     return issues
+
+
+_CTRF_STANDARD_PATH = "/logs/verifier/ctrf.json"
+
+
+def _check_ctrf_path(test_sh: Path) -> list[str]:
+    """Warn when test.sh uses --ctrf with a non-standard output path."""
+    try:
+        text = test_sh.read_text()
+    except OSError:
+        return []
+    uncommented = "\n".join(line.split("#", 1)[0] for line in text.splitlines())
+    match = re.search(r"--ctrf[= ]([^\s\\]+)", uncommented)
+    if not match:
+        return []
+    path_arg = match.group(1).strip('"').strip("'")
+    if path_arg.startswith("$"):
+        return []
+    if path_arg != _CTRF_STANDARD_PATH:
+        return [
+            f"test.sh uses non-standard CTRF path '{path_arg}' "
+            f"(expected '{_CTRF_STANDARD_PATH}')"
+        ]
+    return []
 
 
 def init_task(
