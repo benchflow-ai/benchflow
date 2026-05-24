@@ -396,14 +396,23 @@ AGENTS: dict[str, AgentConfig] = {
         install_cmd=_js_agent_install("gemini", "@google/gemini-cli@0.42.0"),
         launch_cmd=_js_agent_launch("gemini", "--acp --yolo"),
         protocol="acp",
-        requires_env=["GOOGLE_API_KEY"],
+        # The Gemini CLI reads GEMINI_API_KEY natively. GOOGLE_API_KEY is
+        # accepted as an alias: auto_inherit_env mirrors it both ways so users
+        # can set either one. Advertise GEMINI_API_KEY here so `agent show`
+        # matches what the CLI actually reads (#342).
+        requires_env=["GEMINI_API_KEY"],
+        # Default to a sane Gemini model so `--agent gemini` works without
+        # --model and never cross-wires to a Claude default (#343).
+        default_model="gemini-2.5-flash",
         # api_protocol intentionally empty: Gemini speaks Google's native
         # GenerateContent format, which no current PROVIDERS entry exposes as
         # a multi-endpoint option. Set this when a Gemini-compatible provider
         # with multiple endpoints (e.g. OpenRouter) is added.
         env_mapping={
             "BENCHFLOW_PROVIDER_BASE_URL": "GEMINI_API_BASE_URL",
-            "BENCHFLOW_PROVIDER_API_KEY": "GOOGLE_API_KEY",
+            # Map to the CLI-native var; auto_inherit_env mirrors it to
+            # GOOGLE_API_KEY for compatibility with users who set that alias.
+            "BENCHFLOW_PROVIDER_API_KEY": "GEMINI_API_KEY",
         },
         subscription_auth=SubscriptionAuth(
             replaces_env="GEMINI_API_KEY",

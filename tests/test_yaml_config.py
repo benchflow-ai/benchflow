@@ -279,7 +279,12 @@ datasets:
 
 
 def test_from_legacy_yaml_defaults(tmp_path):
-    """Test legacy YAML with minimal config."""
+    """Test legacy YAML with minimal config.
+
+    Non-default agents must declare a model (either via ``model_name`` here or
+    via ``AgentConfig.default_model``) — #343 stopped silent fallback to a
+    Claude default for cross-provider agents like ``pi-acp``.
+    """
     tasks = tmp_path / "tasks" / "task-a"
     tasks.mkdir(parents=True)
     (tasks / "task.toml").write_text('version = "1.0"')
@@ -288,6 +293,7 @@ def test_from_legacy_yaml_defaults(tmp_path):
     config.write_text("""
 agents:
   - name: pi-acp
+    model_name: claude-haiku-4-5-20251001
 datasets:
   - path: tasks
 """)
@@ -348,6 +354,7 @@ jobs_dir: jobs/my-run
 skills_dir: skills
 agents:
   - name: pi-acp
+    model_name: claude-haiku-4-5-20251001
 datasets:
   - path: tasks
 """)
