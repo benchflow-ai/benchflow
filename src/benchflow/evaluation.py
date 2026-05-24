@@ -33,6 +33,7 @@ from benchflow._utils.learner_memory import (
     evolved_skills_for_result,
     expected_skills_for_task,
     memory_delta_from_skills,
+    patch_learner_generation_artifact,
 )
 from benchflow._utils.reward_events import memory_summary
 from benchflow._utils.scoring import (
@@ -292,8 +293,16 @@ class Evaluation:
         # The persistent learner store for sequential-shared (continual
         # learning) jobs — the one owner. parallel-independent jobs leave it
         # None.
+        #
+        # On resume, the store is restored from the per-job JSON snapshot so
+        # rollout N+1 still inherits the (memory + skills) state earlier
+        # rollouts evolved. Without this restore an interrupted continual-
+        # learning job would silently mix old result rows with a fresh empty
+        # store (issue #394).
         self.learner_store: LearnerStore | None = (
-            LearnerStore() if self._config.job_mode == "sequential-shared" else None
+            self._load_or_init_learner_store()
+            if self._config.job_mode == "sequential-shared"
+            else None
         )
         # Per-rollout continual-learning skill dirs, set by
         # _run_sequential_shared before each _run_task call and consumed by
@@ -303,6 +312,42 @@ class Evaluation:
         # One RolloutNode per sequential-shared rollout, each carrying that
         # rollout's memory_delta — the Memory-space scorer's input.
         self.learner_nodes: list[RolloutNode] = []
+
+    def _learner_store_path(self) -> Path:
+        """Where the persisted LearnerStore snapshot lives for this job."""
+        return self._jobs_dir / self._job_name / "learner_store.json"
+
+    def _load_or_init_learner_store(self) -> LearnerStore:
+        """Restore the per-job LearnerStore snapshot, or start fresh.
+
+        A corrupt snapshot is a hard failure rather than a silent reset: a
+        resumed continual-learning job that secretly started from an empty
+        store is exactly the bug this guards (issue #394).
+        """
+        snapshot = self._learner_store_path()
+        if not snapshot.is_file():
+            return LearnerStore()
+        try:
+            store = LearnerStore.load(snapshot)
+        except (ValueError, OSError, json.JSONDecodeError) as e:
+            raise RuntimeError(
+                f"Could not load persisted LearnerStore from {snapshot}: {e}. "
+                f"Delete the file or use a fresh jobs_dir to start a new run."
+            ) from e
+        logger.info(
+            f"Resumed LearnerStore from {snapshot} at generation "
+            f"{store.generation} ({len(store.history) - 1} prior rollouts)"
+        )
+        return store
+
+    def _save_learner_store(self) -> None:
+        """Persist the current LearnerStore so the next process can resume it."""
+        if self.learner_store is None:
+            return
+        try:
+            self.learner_store.save(self._learner_store_path())
+        except OSError as e:
+            logger.warning(f"Could not persist LearnerStore: {e}")
 
     @classmethod
     def from_yaml(cls, path: str | Path, **kwargs) -> Evaluation:
@@ -787,6 +832,7 @@ class Evaluation:
                 # 1. READ — materialize the store's current skills so the
                 # rollout starts from the evolved set.
                 before_state = store.current()
+                before_generation = store.generation
                 skills_dir = work_root / f"rollout-{i}-skills"
                 export_dir = work_root / f"rollout-{i}-evolved"
                 materialize_skills(before_state, skills_dir)
@@ -814,7 +860,7 @@ class Evaluation:
                 pairs.append((td.name, result))
 
                 await self._commit_learner_generation(
-                    store, td, result, before_state, export_dir
+                    store, td, result, before_state, before_generation, export_dir
                 )
         return pairs
 
@@ -824,6 +870,7 @@ class Evaluation:
         td: Path,
         result: RunResult,
         before_state: LearnerState,
+        before_generation: int,
         export_dir: Path,
     ) -> None:
         """Capture a rollout's evolved skills and commit the next generation.
@@ -832,6 +879,10 @@ class Evaluation:
         offers the captured (memory + skills) state to the store: an
         improvement stamps a new generation, a regression is reverted. An
         errored rollout (no reward) leaves the store untouched.
+
+        Persists the store and stamps generation metadata onto the result
+        artifact (which inherited from / which it produced) so a resumed job
+        can audit the learning curve across processes — see issue #394.
         """
         # 2/3. CAPTURE — the skills the agent generated/evolved. Prefer the
         # result's own field (the real Rollout populates it); fall back to
@@ -866,20 +917,39 @@ class Evaluation:
 
         # 4. COMMIT — offer the evolved (memory + skills) state to the store.
         reward = result.rewards.get("reward") if result.rewards else None
-        if reward is None:
-            return
-        # Commit the normalized `after_skills` (str-valued) — not the raw
-        # `evolved_skills` — so the committed store state is byte-identical
-        # to the `memory_delta` recorded above.
-        next_state = LearnerState(
-            memory=before_state.memory,
-            skills=after_skills,
-        )
-        kept = store.commit_or_revert(next_state, metric=float(reward))
-        if not kept:
-            logger.info(
-                f"Learner store: {td.name} regressed (reward={reward}) — "
-                f"reverted, staying at generation {store.generation}"
+        committed_generation: int | None = None
+        kept: bool | None = None
+        if reward is not None:
+            # Commit the normalized `after_skills` (str-valued) — not the raw
+            # `evolved_skills` — so the committed store state is byte-identical
+            # to the `memory_delta` recorded above.
+            next_state = LearnerState(
+                memory=before_state.memory,
+                skills=after_skills,
+            )
+            kept = store.commit_or_revert(next_state, metric=float(reward))
+            if kept:
+                committed_generation = store.generation
+            else:
+                logger.info(
+                    f"Learner store: {td.name} regressed (reward={reward}) — "
+                    f"reverted, staying at generation {store.generation}"
+                )
+
+        # Persist the store after every rollout so an interrupted job can
+        # resume from the last committed generation (#394). We save even when
+        # the rollout did not commit (errored or reverted) so the snapshot's
+        # pointer matches the live store.
+        self._save_learner_store()
+
+        # Stamp generation metadata on the result artifact so a resumed run
+        # can audit which rollout inherited which store generation.
+        if result_path is not None:
+            patch_learner_generation_artifact(
+                result_path,
+                inherited_from=before_generation,
+                produced=committed_generation,
+                committed=kept,
             )
 
     def _learner_node(self, td: Path) -> RolloutNode:
@@ -901,16 +971,29 @@ class Evaluation:
         completed = self._get_completed_tasks()
         remaining = [d for d in task_dirs if d.name not in completed]
 
-        # A resumed sequential-shared job cannot continue the learning curve:
-        # the LearnerStore is process-local, so completed rollouts' evolved
-        # skills are gone and the curve restarts at generation 0.
+        # A resumed sequential-shared job rebuilds the LearnerStore from the
+        # per-job snapshot under ``<job>/learner_store.json``. If that file
+        # is missing while completed rollouts exist, the run cannot honestly
+        # continue the learning curve — the older rollouts' evolved skills
+        # are lost. Fail closed (#394) rather than silently mix old result
+        # rows with a fresh empty store.
         if completed and self._config.job_mode == "sequential-shared":
-            logger.warning(
-                f"Resuming a continual-learning (sequential-shared) job with "
-                f"{len(completed)} task(s) already done: the LearnerStore is "
-                f"not persisted across processes, so the learning curve "
-                f"restarts at generation 0 and earlier rollouts' evolved "
-                f"skills are lost. Use a fresh jobs_dir for a clean run."
+            snapshot = self._learner_store_path()
+            if not snapshot.is_file():
+                raise RuntimeError(
+                    f"Cannot resume sequential-shared job: "
+                    f"{len(completed)} completed task(s) but no persisted "
+                    f"LearnerStore at {snapshot}. The learning curve would "
+                    f"restart at generation 0 and earlier rollouts' evolved "
+                    f"skills are lost. Use a fresh jobs_dir for a clean run, "
+                    f"or restore the snapshot from a backup."
+                )
+            assert self.learner_store is not None
+            logger.info(
+                f"Resuming sequential-shared job at generation "
+                f"{self.learner_store.generation} "
+                f"({len(completed)} completed task(s), "
+                f"{len(remaining)} remaining)"
             )
 
         # Warn if resuming with different config than completed tasks
@@ -1037,6 +1120,16 @@ class Evaluation:
             **usage_summary(all_results),
             **summary_source_fields(cfg.source_provenance, all_results),
         }
+        # Surface continual-learning provenance — generation, curve — so a
+        # resumed run can be audited end-to-end (#394).
+        if cfg.job_mode == "sequential-shared" and self.learner_store is not None:
+            summary["learner_store"] = {
+                "generation": self.learner_store.generation,
+                "learning_curve": self.learner_store.learning_curve(),
+                "snapshot_path": str(
+                    self._learner_store_path().relative_to(self._jobs_dir)
+                ),
+            }
         # Write summary into the job directory so each run is self-contained.
         job_dir = self._jobs_dir / self._job_name
         job_dir.mkdir(parents=True, exist_ok=True)

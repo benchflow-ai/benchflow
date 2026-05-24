@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,8 @@ from benchflow.models import RolloutResult
 from benchflow.rewards.memory_scorer import MEMORY_STATE_KEY, MemoryScorer
 from benchflow.task.config import TaskConfig
 from benchflow.trajectories.tree import RolloutNode
+
+logger = logging.getLogger(__name__)
 
 
 def expected_skills_for_task(task_dir: Path) -> list[str] | None:
@@ -112,3 +115,39 @@ def _last_reward_jsonl_ts(text: str) -> str | None:
             if isinstance(ts, str):
                 return ts
     return None
+
+
+def patch_learner_generation_artifact(
+    result_path: Path,
+    *,
+    inherited_from: int,
+    produced: int | None,
+    committed: bool | None,
+) -> None:
+    """Stamp continual-learning generation metadata onto a result artifact.
+
+    Records which store generation the rollout inherited from and (if it
+    committed) which generation it produced. ``committed`` is ``None`` for an
+    unscored rollout, ``True`` for an accepted commit, ``False`` when
+    :meth:`LearnerStore.commit_or_revert` rejected a regression.
+
+    Additive — readers that do not know about the ``learner_generation`` block
+    just skip it. Guards issue #394: a resumed run can audit per-rollout
+    which generation it consumed and produced.
+    """
+    if not result_path.is_file():
+        return
+    try:
+        data = json.loads(result_path.read_text())
+    except (OSError, json.JSONDecodeError) as e:
+        logger.debug(f"Could not stamp generation metadata on {result_path}: {e}")
+        return
+    data["learner_generation"] = {
+        "inherited_from": inherited_from,
+        "produced": produced,
+        "committed": committed,
+    }
+    try:
+        result_path.write_text(json.dumps(data, indent=2))
+    except OSError as e:
+        logger.debug(f"Could not stamp generation metadata on {result_path}: {e}")
