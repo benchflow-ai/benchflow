@@ -27,13 +27,16 @@ tasks:
 # ── Conversion ───────────────────────────────────────────────────────
 # How raw benchmark data is converted to BenchFlow task format.
 conversion:
-  script: benchflow.py           # CLI: --output-dir, --limit, --overwrite, --task-ids
+  script: benchflow.py           # CLI: --opaquetoolsbench-dir, --output-dir, --limit, --overwrite, --task-ids
   source_format: "JSON config files in tool_configs/"
-  has_oracle_solutions: false
+  has_oracle_solutions: true
   oracle_notes: >
     Ground truth is provided as Python function-call strings
     (e.g. "calc_binomial_probability(n=20, k=5, p=0.6)"). The
-    agent must produce equivalent function call(s) as JSON.
+    converter emits solution/solve.sh per task — it parses the
+    ground-truth Python calls with ast and writes the equivalent
+    JSON function-call array to /app/output/response.json,
+    matching the agent's expected output format.
   docker_image_pinned: true      # python:3.13-slim pinned by digest
 
 # ── Verification ─────────────────────────────────────────────────────
