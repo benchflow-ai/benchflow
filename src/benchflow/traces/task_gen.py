@@ -161,6 +161,46 @@ def _relativize_path(path: str) -> str:
     return path
 
 
+def _is_safe_workspace_path(path: str) -> bool:
+    """Return True if ``path`` is safe to embed in a generated task artifact.
+
+    Generated ``test.sh`` and ``solve.sh`` ``cd /app`` before operating on
+    these paths. A path containing ``..`` segments or starting with ``/``
+    escapes the workspace, so the verifier and oracle can read or write
+    arbitrary host locations (see GitHub issue #376).
+
+    Empty strings are also unsafe — they'd produce shell commands that
+    silently target the current directory.
+    """
+    if not path:
+        return False
+    if path.startswith("/"):
+        return False
+    if "\x00" in path:
+        return False
+    # Use PurePosixPath-style splitting; trace paths use forward slashes
+    # even when the agent ran on Windows-like surfaces.
+    return ".." not in Path(path).parts
+
+
+def _safe_relativize(path: str) -> str | None:
+    """Return ``_relativize_path(path)`` if the result is workspace-safe.
+
+    Returns ``None`` (with a warning log) for unsafe inputs — the caller
+    should drop the offending entry from generated artifacts so the task
+    does not encode writes or verification outside the workspace.
+    """
+    relative = _relativize_path(path)
+    if not _is_safe_workspace_path(relative):
+        logger.warning(
+            "Dropping trace path %r (relativized to %r) — escapes task workspace",
+            path,
+            relative,
+        )
+        return None
+    return relative
+
+
 def _globify_path(path: str) -> str:
     """Replace timestamp-bearing directory segments with globs.
 
@@ -204,8 +244,15 @@ def _build_instruction(trace: ParsedTrace) -> str:
 
     lines = [prompt, ""]
 
-    # Add context about what the agent actually did as implicit requirements
-    files = [_relativize_path(f) for f in trace.files_edited]
+    # Add context about what the agent actually did as implicit requirements.
+    # Drop trace paths that would escape the task workspace (issue #376) —
+    # ``..`` segments or absolute paths in instruction.md mislead the agent
+    # and pair badly with the verifier and oracle that consume the same list.
+    files = [
+        rel
+        for f in trace.files_edited
+        if (rel := _safe_relativize(f)) is not None
+    ]
     if files:
         lines.append("## Expected Changes")
         lines.append("")
@@ -309,7 +356,13 @@ def _build_test_sh(trace: ParsedTrace) -> str:
     exist.  Otherwise falls back to file-existence checks.
     Writes reward to /logs/verifier/reward.txt per BenchFlow contract.
     """
-    files = [_relativize_path(f) for f in trace.files_edited]
+    # Drop traversal/absolute paths so the verifier never asserts existence
+    # of files outside /app — see issue #376.
+    files = [
+        rel
+        for f in trace.files_edited
+        if (rel := _safe_relativize(f)) is not None
+    ]
     if not files:
         return (
             "#!/bin/bash\n"
@@ -370,24 +423,32 @@ def _build_test_sh(trace: ParsedTrace) -> str:
 
 
 def _tool_call_file_write(tc_input: dict[str, object]) -> tuple[str, str] | None:
-    """Extract a file path and best-effort final content from a write/edit call."""
+    """Extract a file path and best-effort final content from a write/edit call.
+
+    Drops the write entirely if the relativized path would escape the task
+    workspace (absolute or contains ``..``) — see issue #376.
+    """
     path = tc_input.get("file_path") or tc_input.get("path")
     if not isinstance(path, str) or not path:
         return None
 
+    safe = _safe_relativize(path)
+    if safe is None:
+        return None
+
     content = tc_input.get("content")
     if isinstance(content, str):
-        return _relativize_path(path), content
+        return safe, content
 
     new_string = tc_input.get("new_string")
     if isinstance(new_string, str):
-        return _relativize_path(path), new_string
+        return safe, new_string
 
     text = tc_input.get("text")
     if isinstance(text, str):
-        return _relativize_path(path), text
+        return safe, text
 
-    return _relativize_path(path), ""
+    return safe, ""
 
 
 def _solution_writes_from_trace(trace: ParsedTrace) -> list[tuple[str, str]]:
@@ -406,6 +467,9 @@ def _solution_writes_from_trace(trace: ParsedTrace) -> list[tuple[str, str]]:
                 path = tc.input.get("file_path") or tc.input.get("path")
                 edits = tc.input.get("edits")
                 if isinstance(path, str) and isinstance(edits, list):
+                    safe = _safe_relativize(path)
+                    if safe is None:
+                        continue
                     parts = []
                     for edit in edits:
                         if isinstance(edit, dict):
@@ -413,7 +477,7 @@ def _solution_writes_from_trace(trace: ParsedTrace) -> list[tuple[str, str]]:
                             new_string = edit_input.get("new_string")
                             if isinstance(new_string, str):
                                 parts.append(new_string)
-                    writes_by_path[_relativize_path(path)] = "\n".join(parts)
+                    writes_by_path[safe] = "\n".join(parts)
 
     return list(writes_by_path.items())
 
