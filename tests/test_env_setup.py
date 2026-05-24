@@ -257,6 +257,7 @@ class TestCreateEnvironment:
             session_id="trial",
             rollout_paths=rollout_paths,
             task_env_config=env_config,
+            persistent_env=None,
         )
         assert result is modal_env.return_value
 

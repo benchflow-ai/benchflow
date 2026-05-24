@@ -126,7 +126,7 @@ async def test_set_model_success_still_returns_session(tmp_path) -> None:
         ),
         patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
     ):
-        client, session, agent_name = await connect_acp(
+        client, session, _adapter, agent_name = await connect_acp(
             env=mock_env,
             agent="test-agent",
             agent_launch="test-agent",
