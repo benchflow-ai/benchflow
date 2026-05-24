@@ -25,6 +25,7 @@ from pathlib import Path
 
 from benchflow.acp.client import ACPClient
 from benchflow.acp.container_transport import ContainerTransport
+from benchflow.agents.protocol import ACPSessionAdapter
 from benchflow.agents.providers import find_provider, strip_provider_prefix
 from benchflow.agents.registry import AGENTS
 from benchflow.sandbox.lockdown import build_priv_drop_cmd
@@ -169,8 +170,17 @@ async def connect_acp(
     rollout_dir: Path,
     environment: str,
     agent_cwd: str,
-) -> tuple[ACPClient, object, str]:
-    """Create ACP transport, connect, init session, set model. Return (client, session, agent_name).
+) -> tuple[ACPClient, object, ACPSessionAdapter, str]:
+    """Create ACP transport, connect, init session, set model.
+
+    Returns ``(client, session, session_adapter, agent_name)``. ``session`` is
+    the raw :class:`~benchflow.acp.session.ACPSession` (still passed to
+    ``execute_prompts`` for trajectory capture and the idle watchdog).
+    ``session_adapter`` is the :class:`ACPSessionAdapter` bound to ``client``;
+    registering an ``on_ask_user`` handler on it is the only way a handler
+    reaches the live ``session/request_permission`` path on the wire. Without
+    instantiating the adapter here, every handler the kernel registers stayed
+    dormant and the auto-approve policy ran unconditionally (#382 follow-up).
 
     Retries with exponential backoff on ConnectionError (Daytona SSH storms).
     """
@@ -269,7 +279,8 @@ async def connect_acp(
             f"Skipping ACP set_model for {agent} — launch/env config owns model selection"
         )
 
-    return acp_client, session, agent_name
+    session_adapter = ACPSessionAdapter(acp_client)
+    return acp_client, session, session_adapter, agent_name
 
 
 async def execute_prompts(
