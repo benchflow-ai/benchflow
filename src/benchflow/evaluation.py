@@ -236,6 +236,38 @@ class Evaluation:
         result = await evaluation.run()
     """
 
+    @staticmethod
+    def _resolve_job_name(jobs_dir: Path) -> str:
+        """Pick a job_name when none was explicitly provided.
+
+        If ``jobs_dir`` already contains exactly one timestamped job
+        directory, reuse it so that a second ``Evaluation.run()`` call
+        resumes into the same directory instead of creating an orphan.
+        When zero or multiple job dirs exist, fall back to a fresh
+        timestamp.
+
+        Guards ENG-160: auto-generated job_name must be stable across
+        resume calls.
+        """
+        if jobs_dir.is_dir():
+            job_dirs = sorted(
+                d for d in jobs_dir.iterdir()
+                if d.is_dir() and not d.name.startswith(".")
+            )
+            if len(job_dirs) == 1:
+                logger.info(
+                    f"Resuming into existing job directory: {job_dirs[0].name}"
+                )
+                return job_dirs[0].name
+            if len(job_dirs) > 1:
+                latest = job_dirs[-1]
+                logger.info(
+                    f"Multiple job directories found ({len(job_dirs)}); "
+                    f"resuming into most recent: {latest.name}"
+                )
+                return latest.name
+        return datetime.now().strftime("%Y-%m-%d__%H-%M-%S")
+
     def __init__(
         self,
         tasks_dir: str | Path,
@@ -247,7 +279,8 @@ class Evaluation:
         self._tasks_dir = Path(tasks_dir)
         self._jobs_dir = Path(jobs_dir)
         self._config = config or EvaluationConfig()
-        self._job_name = job_name or datetime.now().strftime("%Y-%m-%d__%H-%M-%S")
+        self._job_name = job_name or self._resolve_job_name(self._jobs_dir)
+        self._explicit_job_name = job_name is not None
         self._on_result = on_result
         # Kept for test mocking compat; _run_task prefers Rollout
         from benchflow.sdk import SDK
@@ -470,20 +503,37 @@ class Evaluation:
         )
 
     def _get_completed_tasks(self) -> dict[str, dict]:
-        """Load tasks that already have results with rewards or verifier errors."""
-        completed = {}
-        for rfile in self._jobs_dir.rglob("result.json"):
+        """Load tasks that already have results with rewards or verifier errors.
+
+        Scoped to the current job directory (``_jobs_dir / _job_name``) to
+        prevent cross-job contamination.  When multiple result.json files
+        exist for the same task (retry artifacts), the newest by mtime wins.
+
+        Guards ENG-160: orphan retry artifacts no longer pollute resume.
+        """
+        job_dir = self._jobs_dir / self._job_name
+        if not job_dir.exists():
+            return {}
+        # Collect every result keyed by (task_name) → keep newest by mtime.
+        best: dict[str, tuple[float, dict]] = {}
+        for rfile in job_dir.rglob("result.json"):
             try:
                 r = json.loads(rfile.read_text())
                 task = r["task_name"]
                 if r.get("rewards") is not None or r.get("verifier_error"):
-                    if r.get("verifier_error"):
-                        logger.info(
-                            f"Skipping verifier-errored task on resume: {task} ({r['verifier_error'][:80]})"
-                        )
-                    completed[task] = r
+                    mtime = rfile.stat().st_mtime
+                    prev = best.get(task)
+                    if prev is None or (mtime, str(rfile)) >= (prev[0], ""):
+                        best[task] = (mtime, r)
             except Exception as e:
                 logger.debug(f"Skipping corrupt result file {rfile}: {e}")
+        completed: dict[str, dict] = {}
+        for task, (_mt, r) in best.items():
+            if r.get("verifier_error"):
+                logger.info(
+                    f"Skipping verifier-errored task on resume: {task} ({r['verifier_error'][:80]})"
+                )
+            completed[task] = r
         return completed
 
     def _prune_docker(self):
@@ -863,10 +913,11 @@ class Evaluation:
         # Warn if resuming with different config than completed tasks
         if completed:
             # Check config.json (written by SDK.run) for the registry agent name
+            job_dir = self._jobs_dir / self._job_name
             sample_dir = next(
-                (d for d in self._jobs_dir.iterdir() if d.is_dir()),
+                (d for d in job_dir.iterdir() if d.is_dir()),
                 None,
-            )
+            ) if job_dir.exists() else None
             prev_agent = ""
             if sample_dir:
                 for cfg_file in sample_dir.rglob("config.json"):
@@ -976,7 +1027,14 @@ class Evaluation:
             **usage_summary(all_results),
             **summary_source_fields(cfg.source_provenance, all_results),
         }
-        (self._jobs_dir / "summary.json").write_text(json.dumps(summary, indent=2))
+        # Write summary into the job directory so each run is self-contained.
+        job_dir = self._jobs_dir / self._job_name
+        job_dir.mkdir(parents=True, exist_ok=True)
+        summary_text = json.dumps(summary, indent=2)
+        (job_dir / "summary.json").write_text(summary_text)
+        # Backward-compat: also write to jobs_dir root for tooling that
+        # expects summary.json at the top level.
+        (self._jobs_dir / "summary.json").write_text(summary_text)
 
         idle_count = error_category_counts.get(IDLE_TIMEOUT, 0)
         if idle_count > 0:
