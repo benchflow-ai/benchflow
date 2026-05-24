@@ -18,6 +18,12 @@ Usage::
     LINEAR_API_KEY=... python dashboard/generate.py  # mirror roadmap from Linear
     python dashboard/generate.py --run-tests         # re-run tests, then mirror
     python dashboard/generate.py --allow-missing-linear  # local UI dev only
+    python dashboard/generate.py --allow-stale-evidence  # local UI dev only
+
+Production generation also refuses to publish when the junit test evidence is
+missing or older than the release surface (the project version in
+``pyproject.toml`` or the HEAD commit) — so the dashboard never ships a stale
+or empty test-evidence summary as if it were release-fresh.
 """
 
 from __future__ import annotations
@@ -260,7 +266,11 @@ def collect_tests() -> dict:
             "summary": {"passed": 0, "failed": 0, "skipped": 0, "total": 0},
             "suites": [],
             "failures": [],
+            "modified_at": None,
         }
+    modified_at = datetime.fromtimestamp(JUNIT.stat().st_mtime).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
     root = ET.parse(JUNIT).getroot()
     suites: dict[str, dict] = {}
     failures: list[dict] = []
@@ -301,6 +311,7 @@ def collect_tests() -> dict:
         },
         "suites": suite_list,
         "failures": failures,
+        "modified_at": modified_at,
     }
 
 
@@ -1322,6 +1333,106 @@ def collect_repo_status() -> dict:
     }
 
 
+PYPROJECT_TOML = ROOT / "pyproject.toml"
+_VERSION_RE = re.compile(r'^\s*version\s*=\s*"([^"]+)"', re.MULTILINE)
+
+
+def _project_version() -> str | None:
+    """Read ``version = "..."`` from the project ``pyproject.toml``."""
+    try:
+        text = PYPROJECT_TOML.read_text()
+    except OSError:
+        return None
+    match = _VERSION_RE.search(text)
+    return match.group(1) if match else None
+
+
+def _git_iso_time(args: list[str]) -> str | None:
+    """Return an ISO-8601 commit time from a git command, or None on failure."""
+    try:
+        return _git([*args, "--format=%cI"]) or None
+    except Exception:
+        return None
+
+
+def _parse_iso(stamp: str | None) -> datetime | None:
+    if not stamp:
+        return None
+    with contextlib.suppress(ValueError):
+        return datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    return None
+
+
+def _parse_local(stamp: str | None) -> datetime | None:
+    if not stamp:
+        return None
+    with contextlib.suppress(ValueError):
+        return datetime.strptime(stamp, "%Y-%m-%d %H:%M:%S")
+    return None
+
+
+def collect_release_evidence(tests: dict) -> dict:
+    """Decide whether the bundled test evidence is fresh for the current release.
+
+    The dashboard is published as a release-evidence surface; if the test
+    evidence is missing or older than what the working copy claims to ship,
+    refuse to publish (unless the operator explicitly opts into stale data).
+
+    Freshness is checked against two signals on the release surface:
+
+    * ``pyproject.toml`` — the file that carries the project ``version``.
+      A version bump without re-running the suite makes the bundled evidence
+      stale by definition.
+    * The HEAD commit time — any code change since the last suite run makes
+      the evidence stale relative to the code it is supposed to attest to.
+
+    Returns a record with the freshness verdict, the stale reasons, and the
+    timestamps used so the dashboard UI (and tests) can surface them.
+    """
+    junit_local = _parse_local(tests.get("modified_at"))
+    junit_available = bool(tests.get("available"))
+
+    version = _project_version()
+    pyproject_at: datetime | None = None
+    if PYPROJECT_TOML.is_file():
+        with contextlib.suppress(OSError):
+            pyproject_at = datetime.fromtimestamp(PYPROJECT_TOML.stat().st_mtime)
+    head_at = _parse_iso(_git_iso_time(["log", "-1", "HEAD"]))
+
+    reasons: list[str] = []
+    if not junit_available or junit_local is None:
+        reasons.append("junit.xml missing — no test evidence has been recorded")
+    else:
+        if pyproject_at is not None and junit_local < pyproject_at.replace(
+            microsecond=0
+        ):
+            reasons.append(
+                f"junit.xml ({tests.get('modified_at')}) is older than "
+                f"pyproject.toml version={version!r}"
+            )
+        if head_at is not None:
+            head_local = head_at.astimezone().replace(tzinfo=None, microsecond=0)
+            if junit_local < head_local:
+                reasons.append(
+                    f"junit.xml ({tests.get('modified_at')}) is older than "
+                    f"HEAD commit ({head_local.strftime('%Y-%m-%d %H:%M:%S')})"
+                )
+
+    def _fmt(dt: datetime | None) -> str | None:
+        return dt.strftime("%Y-%m-%d %H:%M:%S") if dt else None
+
+    return {
+        "version": version,
+        "junit_modified_at": tests.get("modified_at"),
+        "pyproject_modified_at": _fmt(pyproject_at),
+        "head_committed_at": _fmt(
+            head_at.astimezone().replace(tzinfo=None) if head_at else None
+        ),
+        "stale_reasons": reasons,
+        "fresh": not reasons,
+    }
+
+
 def build_data() -> dict:
     tests = collect_tests()
     jobs = collect_jobs()
@@ -1329,6 +1440,7 @@ def build_data() -> dict:
     roadmap = collect_roadmap()
     architecture = collect_architecture()
     repo = collect_repo_status()
+    release_evidence = collect_release_evidence(tests)
 
     done = sum(1 for c in CONCEPT_MAP["capabilities"] if c["status"] == "shipped")
     all_issues = _roadmap_issues(roadmap)
@@ -1348,6 +1460,7 @@ def build_data() -> dict:
             "advisories_open": sum(
                 1 for a in ADVISORIES["items"] if a["status"] == "open"
             ),
+            "release_evidence_fresh": release_evidence["fresh"],
         },
         "concept_map": CONCEPT_MAP,
         "architecture": architecture,
@@ -1357,6 +1470,7 @@ def build_data() -> dict:
         "jobs": jobs,
         "experiments": experiments,
         "advisories": ADVISORIES,
+        "release_evidence": release_evidence,
     }
 
 
@@ -1375,6 +1489,23 @@ def main() -> int:
         print(f"error: Roadmap must mirror live Linear: {error}", file=sys.stderr)
         print(
             "hint: set LINEAR_API_KEY or pass --allow-missing-linear for local UI dev",
+            file=sys.stderr,
+        )
+        return 1
+    evidence = data["release_evidence"]
+    if not evidence["fresh"] and "--allow-stale-evidence" not in sys.argv:
+        print(
+            "error: dashboard refuses to publish stale release evidence:",
+            file=sys.stderr,
+        )
+        for reason in evidence["stale_reasons"]:
+            print(f"  - {reason}", file=sys.stderr)
+        print(
+            "hint: run `python dashboard/generate.py --run-tests` to refresh,",
+            file=sys.stderr,
+        )
+        print(
+            "      or pass --allow-stale-evidence for local UI dev only",
             file=sys.stderr,
         )
         return 1
