@@ -767,6 +767,14 @@ def test_main_refuses_non_live_roadmap_without_local_dev_flag(
                 },
                 "milestones": [],
             },
+            "release_evidence": {
+                "version": "0.0.0",
+                "junit_modified_at": None,
+                "pyproject_modified_at": None,
+                "head_committed_at": None,
+                "stale_reasons": [],
+                "fresh": True,
+            },
         },
     )
     monkeypatch.setattr(sys, "argv", ["generate.py"])
