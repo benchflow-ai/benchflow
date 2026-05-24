@@ -46,12 +46,16 @@ from benchflow.evaluation import (
 from benchflow.metrics import BenchmarkMetrics, collect_metrics
 from benchflow.models import AgentInstallError, AgentTimeoutError, RolloutResult
 
-# Rewards protocol (v0.4 — composable Rubric + RewardFunc)
+# Rewards plane. Reward is the canonical node-based contract
+# (``score(node) -> VerifyResult``); RewardFunc is the legacy path-based shape
+# (``score(rollout_dir) -> float``) adapted into Reward via PathReward.
 from benchflow.rewards import (
     CodeExecRewardFunc,
     Criterion,
     JudgeConfig,
     LLMJudgeRewardFunc,
+    PathReward,
+    Reward,
     RewardEvent,
     RewardFunc,
     Rubric,
@@ -108,10 +112,12 @@ from benchflow.trajectories.types import Trajectory
 # may change without notice.
 __all__ = [
     "__version__",
-    # Rewards protocol (v0.4)
+    # Rewards plane
+    "Reward",
     "Rubric",
     "RewardFunc",
     "RewardEvent",
+    "PathReward",
     "VerifyResult",
     "TestRewardFunc",
     "LLMJudgeRewardFunc",
