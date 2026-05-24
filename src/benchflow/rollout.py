@@ -1237,6 +1237,7 @@ class Rollout:
                 self._rollout_name,
                 self._rollout_paths,
                 preserve_agent_network=self._disallow_web_tools,
+                environment_manifest=cfg.environment_manifest,
             )
         self._timeout = int(self._task.config.agent.timeout_sec or 0)
 
