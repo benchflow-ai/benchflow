@@ -19,6 +19,7 @@ from uuid import uuid4
 
 from tenacity import retry, stop_after_attempt, wait_exponential
 
+from benchflow._paths import iter_safe_tree
 from benchflow.sandbox._base import (
     BaseSandbox,
     ExecResult,
@@ -1198,16 +1199,20 @@ class DaytonaSandbox(BaseSandbox):
         file_uploads = []
         source_dir = Path(source_dir)
 
-        for file_path in source_dir.rglob("*"):
-            if file_path.is_file():
-                relative_path = file_path.relative_to(source_dir).as_posix()
-                destination_path = f"{target_dir}/{relative_path}"
-                file_uploads.append(
-                    FileUpload(
-                        source=str(file_path),
-                        destination=destination_path,
-                    )
+        # Walk with followlinks=False and skip symlinks (#411): a task or
+        # workspace symlink under source_dir must not exfiltrate host files
+        # into the remote Daytona sandbox.
+        for file_path in iter_safe_tree(
+            source_dir, context=f"daytona upload_dir {source_dir}"
+        ):
+            relative_path = file_path.relative_to(source_dir).as_posix()
+            destination_path = f"{target_dir}/{relative_path}"
+            file_uploads.append(
+                FileUpload(
+                    source=str(file_path),
+                    destination=destination_path,
                 )
+            )
 
         if file_uploads:
             await self._sandbox.fs.upload_files(files=file_uploads)
