@@ -49,20 +49,20 @@ Notebooks and runnable example scripts live under [`docs/examples/`](./docs/exam
 Benchmark datasets live in external Git repos and are referenced with two fields:
 
 ```yaml
-# benchmarks/skillsbench-claude-glm51.yaml
+# benchmarks/harvey-lab/harvey-lab-gemini-flash-lite.yaml
 source:
-  repo: benchflow-ai/skillsbench   # GitHub org/repo
-  path: tasks                       # optional subpath within repo
+  repo: benchflow-ai/benchmarks    # GitHub org/repo
+  path: datasets/harvey-lab/tasks  # optional subpath within repo
   ref: main                         # optional branch/tag
-agent: claude-agent-acp
-model: claude-sonnet-4-6
+agent: gemini
+model: gemini/gemini-3.1-flash-lite-preview
 ```
 
 Run any benchmark via the CLI:
 
 ```bash
-# From a YAML config
-bench eval create --config benchmarks/skillsbench-claude-glm51.yaml
+# From a YAML config (shipped with the repo)
+bench eval create --config benchmarks/harvey-lab/harvey-lab-gemini-flash-lite.yaml
 
 # Inline — mirrors the YAML source fields
 bench eval create \
