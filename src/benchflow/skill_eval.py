@@ -16,6 +16,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from string import Template
 
+from benchflow._paths import assert_within, safe_path_segment
+
 logger = logging.getLogger(__name__)
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
@@ -195,10 +197,19 @@ def load_eval_dataset(skill_dir: str | Path) -> EvalDataset:
         else:
             skill_name = skill_dir.name
 
+    # Reject skill names that would path-traverse when used as a directory
+    # segment in generate_tasks (skills/<skill_name>) or GEPA exports.
+    safe_path_segment(skill_name, kind="skill name")
+
     cases = []
     seen_ids = set()
     for i, c in enumerate(data["cases"]):
         case_id = c.get("id", f"case-{i:03d}")
+        # Reject case ids that would path-traverse when used as a directory
+        # segment in generate_tasks or as a filename component in
+        # export_gepa_traces. Fail early at load time so callers see the
+        # offending case rather than a write outside the output tree.
+        safe_path_segment(case_id, kind="case id")
         if case_id in seen_ids:
             raise ValueError(f"Duplicate case id: {case_id}")
         seen_ids.add(case_id)
@@ -250,12 +261,19 @@ def generate_tasks(
     output_dir.mkdir(parents=True, exist_ok=True)
     task_dirs = []
 
+    # Defense in depth: load_eval_dataset already rejects unsafe ids/names,
+    # but re-validate here so any future caller constructing an EvalDataset
+    # by hand still gets the same safety guarantee.
+    safe_path_segment(dataset.skill_name, kind="skill name")
+
     # Read templates
     judge_template = (TEMPLATES_DIR / "judge.py.tmpl").read_text()
     test_sh_template = (TEMPLATES_DIR / "test.sh.tmpl").read_text()
 
     for case in dataset.cases:
+        safe_path_segment(case.id, kind="case id")
         task_dir = output_dir / case.id
+        assert_within(task_dir, output_dir)
         task_dir.mkdir(parents=True, exist_ok=True)
 
         # instruction.md
@@ -309,7 +327,10 @@ def generate_tasks(
 
         # Copy skill into environment if with_skill mode
         if with_skill:
-            skills_dst = env_dir / "skills" / dataset.skill_name
+            skills_root = env_dir / "skills"
+            skills_root.mkdir(parents=True, exist_ok=True)
+            skills_dst = skills_root / dataset.skill_name
+            assert_within(skills_dst, skills_root)
             if skills_dst.exists():
                 shutil.rmtree(skills_dst)
             shutil.copytree(
@@ -738,9 +759,15 @@ def export_gepa_traces(
 
     # Write per-case traces
     for cr in result.case_results:
+        # Reject case ids that would path-traverse out of traces_dir via the
+        # generated filename. load_eval_dataset already rejects unsafe ids,
+        # but CaseResult objects can be constructed independently (e.g. by a
+        # caller assembling a SkillEvalResult by hand).
+        safe_path_segment(cr.case_id, kind="case id")
         agent_label = cr.agent.split("/")[-1] if "/" in cr.agent else cr.agent
         mode = "with" if cr.with_skill else "without"
         trace_file = traces_dir / f"{cr.case_id}-{agent_label}-{mode}.json"
+        assert_within(trace_file, traces_dir)
         trace_file.write_text(
             json.dumps(
                 {
