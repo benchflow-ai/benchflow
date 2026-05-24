@@ -1730,6 +1730,18 @@ function applyData(d, initial) {
 }
 
 function loadData(initial) {
+  if (window.location.protocol === "file:") {
+    if (initial) {
+      document.getElementById("main").innerHTML =
+        `<div class="card empty">` +
+        `<strong>Cannot load data.json over file://</strong><br><br>` +
+        `Browsers block fetch() from file:// URLs for security reasons. ` +
+        `Use the built-in dev server instead:<br><br>` +
+        `<code>python dashboard/serve.py</code><br><br>` +
+        `Then open <code>http://localhost:8777</code> in your browser.</div>`;
+    }
+    return Promise.resolve();
+  }
   return fetch("data.json?_=" + Date.now())
     .then(r => {
       if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);

@@ -1257,12 +1257,12 @@ ADVISORIES = {
         {
             "id": "OPEN-2",
             "severity": "note",
-            "status": "open",
+            "status": "resolved",
             "agent": "Reviewer 4 (quality)",
             "capability": None,
             "group": None,
             "title": "thermo-nuclear code-quality-review skill not installed",
-            "detail": "Reviewer 4 was assigned the cursor thermo-nuclear skill; it is not installed locally, so an adversarial review was used as the fallback.",
+            "detail": "Resolved: the thermo-nuclear code-quality-review skill is now installed and actively used by subagents in PRs #347-#356.",
         },
         {
             "id": "OPEN-3",
