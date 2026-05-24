@@ -772,14 +772,16 @@ def _ensure_canonical_rewards(rewards: dict | None) -> dict:
     return validate_reward_map(rewards, source="verifier")
 
 
-# Apply Docker DinD patch at import time.
-def _apply_dind_patch() -> None:
+def _install_docker_compat() -> None:
+    """Activate the Docker DinD compatibility shim.
+
+    Called from ``Rollout.__init__`` so importing ``benchflow.rollout`` has
+    no side effects on the Docker sandbox. The underlying patch is
+    idempotent — safe to call once per rollout construction.
+    """
     from benchflow.sandbox.setup import _patch_docker_dind
 
     _patch_docker_dind()
-
-
-_apply_dind_patch()
 
 
 __all__ = [
@@ -933,6 +935,11 @@ class Rollout:
     """Decomposed trial lifecycle with independently-callable phases."""
 
     def __init__(self, config: RolloutConfig) -> None:
+        # Activate Docker DinD compatibility shim on first rollout
+        # construction (idempotent). Keeps `import benchflow.rollout`
+        # side-effect free with respect to sandbox/provider behavior.
+        _install_docker_compat()
+
         self._config = config
         self._phase = "created"
 
