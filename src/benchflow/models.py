@@ -90,6 +90,10 @@ class RolloutResult:
         error:        Error description string, or None on success.
         verifier_error: Verifier error description, or None if verifier succeeded
                       or was not reached. Separate from ``error`` (agent errors).
+        export_error: Skill-export error description, or None if export succeeded
+                      or was not configured. Separate from ``error`` (which would
+                      mis-classify export-time infra failures as agent failures)
+                      and ``verifier_error``. See #389 follow-up.
         partial_trajectory: True when the trajectory was salvaged from a timed-out
                       or crashed session and may be incomplete.
         trajectory_source: Provenance label for ``trajectory`` — one of
@@ -131,6 +135,7 @@ class RolloutResult:
         price_source: str | None = None,
         error: str | None = None,
         verifier_error: str | None = None,
+        export_error: str | None = None,
         partial_trajectory: bool = False,
         trajectory_source: TrajectorySource | None = None,
         reward_events: list[RewardEvent] | None = None,
@@ -158,6 +163,7 @@ class RolloutResult:
         self.price_source = price_source
         self.error = error
         self.verifier_error = verifier_error
+        self.export_error = export_error
         self.partial_trajectory = partial_trajectory
         self.trajectory_source = trajectory_source
         self.reward_events = reward_events
@@ -168,15 +174,24 @@ class RolloutResult:
 
     @property
     def success(self) -> bool:
-        """True when the trial completed without agent or verifier error.
+        """True when the trial completed without agent, verifier, or export error.
 
-        Agent errors (error) and verifier errors (verifier_error) both
-        indicate an incomplete trial. Rewards may still be zero on success.
+        Agent errors (error), verifier errors (verifier_error), and skill-export
+        errors (export_error) all indicate an incomplete trial. Rewards may
+        still be zero on success.
         """
-        return self.error is None and self.verifier_error is None
+        return (
+            self.error is None
+            and self.verifier_error is None
+            and self.export_error is None
+        )
 
     def __repr__(self) -> str:
-        status = "OK" if self.success else f"ERROR: {self.error or self.verifier_error}"
+        status = (
+            "OK"
+            if self.success
+            else f"ERROR: {self.error or self.verifier_error or self.export_error}"
+        )
         return (
             f"RolloutResult(task={self.task_name}, {status}, "
             f"rewards={self.rewards}, "

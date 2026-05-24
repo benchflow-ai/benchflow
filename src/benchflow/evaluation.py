@@ -944,6 +944,17 @@ class Evaluation:
         artifact (which inherited from / which it produced) so a resumed job
         can audit the learning curve across processes — see issue #394.
         """
+        # Skip everything when the skill export itself failed (#389 follow-up).
+        # The export dir is half-written and ``result.evolved_skills`` is None,
+        # so committing would poison the LearnerStore with an empty/partial
+        # generation even though the verifier may have produced rewards.
+        if result.export_error is not None:
+            logger.warning(
+                f"Learner store: {td.name} skill export failed — "
+                f"skipping generation commit, staying at generation "
+                f"{store.generation}"
+            )
+            return
         # 2/3. CAPTURE — the skills the agent generated/evolved. Prefer the
         # result's own field (the real Rollout populates it); fall back to
         # reading the export dir directly.

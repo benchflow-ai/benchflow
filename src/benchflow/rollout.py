@@ -495,6 +495,7 @@ def _build_rollout_result(
     verifier_error: str | None,
     trajectory: list[dict],
     partial_trajectory: bool,
+    export_error: str | None = None,
     trajectory_source: TrajectorySource | None = None,
     rewards: dict | None,
     started_at: datetime,
@@ -537,6 +538,7 @@ def _build_rollout_result(
         price_source=price_source,
         error=error,
         verifier_error=verifier_error,
+        export_error=export_error,
         partial_trajectory=partial_trajectory,
         trajectory_source=trajectory_source,
         evolved_skills=evolved_skills,
@@ -581,6 +583,7 @@ def _build_rollout_result(
                 "verifier_error_category": classify_verifier_error(
                     result.verifier_error
                 ),
+                "export_error": result.export_error,
                 "idle_timeout_info": idle_timeout_info,
                 "sandbox_startup_info": sandbox_startup_info,
                 "transport_error_info": transport_error_info,
@@ -1057,6 +1060,11 @@ class Rollout:
         self._rewards: dict | None = None
         self._verifier_error: str | None = None
         self._error: str | None = None
+        # Populated by _export_generated_skills() on failure (#389 follow-up).
+        # Kept separate from self._error so classify_error() does not mis-tag
+        # an export-time infra failure ("connection lost") as the agent's own
+        # infra_failure category in dashboards.
+        self._export_error: str | None = None
         self._idle_timeout_info: dict | None = None
         self._sandbox_startup_info: dict | None = None
         self._transport_error_info: dict | None = None
@@ -1734,16 +1742,17 @@ class Rollout:
             try:
                 await self._export_generated_skills()
             except Exception as e:
-                # Surface export failure as a rollout error so it cannot be
-                # confused with a successful-but-empty skill update (ENG/PR #389).
-                # An export that was configured-but-failed must not collapse
-                # into the same observable state as "agent honestly produced no
-                # skills". Preserve any pre-existing agent/run error: skill
-                # export happens during cleanup, after the agent already ran.
+                # Surface export failure on a dedicated sibling channel
+                # (#389 follow-up). Routing it through self._error caused
+                # classify_error("Skill export failed: ... connection lost")
+                # to mis-tag the rollout as agent infra_failure, polluting
+                # the agent-error dashboards. Keep the agent/verifier error
+                # channels untouched: export runs during cleanup, after the
+                # agent already finished.
                 export_error = f"Skill export failed: {e}"
                 logger.error(export_error)
-                if self._error is None:
-                    self._error = export_error
+                if self._export_error is None:
+                    self._export_error = export_error
                 self._evolved_skills = None
 
         usage_runtime = getattr(self, "_usage_runtime", None)
@@ -2493,6 +2502,7 @@ class Rollout:
             prompts=prompts,
             error=self._error,
             verifier_error=self._verifier_error,
+            export_error=self._export_error,
             trajectory=self._trajectory,
             partial_trajectory=self._partial_trajectory,
             trajectory_source=self._trajectory_source,

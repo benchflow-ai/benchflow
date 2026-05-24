@@ -36,6 +36,7 @@ def _bare_rollout(tmp_path: Path, export_target: Path | None) -> Rollout:
     rollout._rollout_dir = tmp_path
     rollout._evolved_skills = None
     rollout._error = None
+    rollout._export_error = None
     # Stub the bits cleanup() touches but we don't care about for this test.
     rollout.disconnect = AsyncMock()
     rollout._capture_partial_acp_trajectory = lambda: None
@@ -43,8 +44,14 @@ def _bare_rollout(tmp_path: Path, export_target: Path | None) -> Rollout:
 
 
 @pytest.mark.asyncio
-async def test_cleanup_surfaces_export_failure_on_rollout_error(tmp_path):
-    """Export failures must set _error, not silently log-and-continue."""
+async def test_cleanup_surfaces_export_failure_on_dedicated_channel(tmp_path):
+    """Export failures must set _export_error, not _error.
+
+    Routing export failures through ``_error`` mis-classifies infra-shaped
+    messages like "connection lost" as agent ``infra_failure`` in
+    ``classify_error``, contaminating the agent-error dashboards. The
+    dedicated sibling channel keeps the two signals separable.
+    """
     rollout = _bare_rollout(tmp_path, export_target=tmp_path / "exports")
     rollout._export_generated_skills = AsyncMock(
         side_effect=RuntimeError("download failed")
@@ -52,10 +59,12 @@ async def test_cleanup_surfaces_export_failure_on_rollout_error(tmp_path):
 
     await rollout.cleanup()
 
-    # The export failure is now observable on the rollout — success is gone.
-    assert rollout._error is not None
-    assert "Skill export failed" in rollout._error
-    assert "download failed" in rollout._error
+    # Export failure surfaces on the dedicated channel only.
+    assert rollout._export_error is not None
+    assert "Skill export failed" in rollout._export_error
+    assert "download failed" in rollout._export_error
+    # The agent-error channel is untouched: the agent itself didn't fail.
+    assert rollout._error is None
     # And we did NOT collapse into a "honestly empty" skill update: the
     # evolved_skills field stays None, distinct from {} (no-op success).
     assert rollout._evolved_skills is None
@@ -63,7 +72,7 @@ async def test_cleanup_surfaces_export_failure_on_rollout_error(tmp_path):
 
 @pytest.mark.asyncio
 async def test_cleanup_export_failure_does_not_clobber_agent_error(tmp_path):
-    """Agent errors take priority — export failure must not overwrite them."""
+    """Agent errors and export errors live on separate channels."""
     rollout = _bare_rollout(tmp_path, export_target=tmp_path / "exports")
     rollout._error = "Agent timed out after 600s"
     rollout._export_generated_skills = AsyncMock(
@@ -72,14 +81,16 @@ async def test_cleanup_export_failure_does_not_clobber_agent_error(tmp_path):
 
     await rollout.cleanup()
 
-    # Pre-existing agent error wins: it ran first, it's the more useful signal.
+    # Both errors are preserved, on their own channels.
     assert rollout._error == "Agent timed out after 600s"
+    assert rollout._export_error is not None
+    assert "download failed" in rollout._export_error
     assert rollout._evolved_skills is None
 
 
 @pytest.mark.asyncio
-async def test_cleanup_no_export_configured_leaves_error_empty(tmp_path):
-    """When export is not configured, cleanup must not invent an error."""
+async def test_cleanup_no_export_configured_leaves_errors_empty(tmp_path):
+    """When export is not configured, cleanup must not invent any error."""
     rollout = _bare_rollout(tmp_path, export_target=None)
     # Sentinel: if _export_generated_skills is called at all, fail loudly.
     rollout._export_generated_skills = AsyncMock(
@@ -89,11 +100,12 @@ async def test_cleanup_no_export_configured_leaves_error_empty(tmp_path):
     await rollout.cleanup()
 
     assert rollout._error is None
+    assert rollout._export_error is None
     assert rollout._evolved_skills is None
 
 
 @pytest.mark.asyncio
-async def test_cleanup_successful_export_leaves_error_empty(tmp_path):
+async def test_cleanup_successful_export_leaves_errors_empty(tmp_path):
     """A successful export must not be confused with a failure."""
     rollout = _bare_rollout(tmp_path, export_target=tmp_path / "exports")
 
@@ -105,6 +117,7 @@ async def test_cleanup_successful_export_leaves_error_empty(tmp_path):
     await rollout.cleanup()
 
     assert rollout._error is None
+    assert rollout._export_error is None
     assert rollout._evolved_skills == {"skill-a": "# Skill A\n"}
 
 
@@ -113,7 +126,8 @@ async def test_build_result_after_export_failure_is_not_success(tmp_path):
     """The visible RolloutResult must reflect the export failure as not-success.
 
     The whole point of #389: empty-but-successful must be impossible to
-    confuse with failed-and-produced-empty in the downstream result.
+    confuse with failed-and-produced-empty in the downstream result. The
+    fixup adds: export_error must not bleed into the agent error channel.
     """
     rollout = _bare_rollout(tmp_path, export_target=tmp_path / "exports")
     rollout._export_generated_skills = AsyncMock(
@@ -151,6 +165,11 @@ async def test_build_result_after_export_failure_is_not_success(tmp_path):
     result = rollout._build_result()
 
     assert result.success is False
-    assert result.error is not None
-    assert "Skill export failed" in result.error
+    # The agent-error channel is empty — the agent itself didn't fail.
+    # Only the export channel carries the failure, so dashboards that
+    # group by ``error_category`` see no spurious infra_failure bump.
+    assert result.error is None
+    assert result.export_error is not None
+    assert "Skill export failed" in result.export_error
+    assert "sandbox lost connection" in result.export_error
     assert result.evolved_skills is None
