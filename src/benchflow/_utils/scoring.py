@@ -16,6 +16,7 @@ TIMED_OUT = "timeout"
 VERIFIER_FAILED = "verifier_failure"
 VERIFIER_INFRA = "verifier_infra"
 VERIFIER_TIMEOUT = "verifier_timeout"
+VERIFIER_DEP_INSTALL = "verifier_dep_install"
 
 ScoreOutcome = Literal["passed", "failed", "errored", "verifier_errored"]
 ResultOutcome = Literal["passed", "failed", "errored", "verifier_errored", "unscored"]
@@ -76,12 +77,25 @@ def classify_verifier_error(verifier_error: str | None) -> str | None:
         return None
     lower = verifier_error.lower()
     if "verifier crashed" in verifier_error:
+        if _looks_like_verifier_dep_install_error(lower):
+            return VERIFIER_DEP_INSTALL
         if _looks_like_verifier_infra_error(lower):
             return VERIFIER_INFRA
         return VERIFIER_FAILED
     if "verifier timed out" in verifier_error:
         return VERIFIER_TIMEOUT
     return "verifier_other"
+
+
+def _looks_like_verifier_dep_install_error(error: str) -> bool:
+    """Detect verifier dependency installation failures (ENG-151)."""
+    markers = (
+        "dependency install failed",
+        "no solution found",
+        "could not find a version",
+        "resolution impossible",
+    )
+    return any(marker in error for marker in markers)
 
 
 def _looks_like_verifier_infra_error(error: str) -> bool:

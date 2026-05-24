@@ -1028,3 +1028,109 @@ class TestTransportErrorDiagnostics:
         rj = __import__("json").loads((tmp_path / "result.json").read_text())
         assert rj["transport_error_info"] is None
         assert result.rewards == {"reward": 1.0}
+
+
+class TestVerifierDepInstallDiagnostics:
+    """Guards ENG-151: verifier dep install failures must be classified distinctly."""
+
+    def test_classify_verifier_dep_install_error(self) -> None:
+        """Guards ENG-151: classify_verifier_error detects dependency install
+        patterns and returns VERIFIER_DEP_INSTALL."""
+        from benchflow._utils.scoring import (
+            VERIFIER_DEP_INSTALL,
+            classify_verifier_error,
+        )
+
+        assert (
+            classify_verifier_error(
+                "verifier crashed: verifier exited with rc=1; "
+                "dependency install failed"
+            )
+            == VERIFIER_DEP_INSTALL
+        )
+        assert (
+            classify_verifier_error(
+                "verifier crashed: No solution found when resolving dependencies"
+            )
+            == VERIFIER_DEP_INSTALL
+        )
+        assert (
+            classify_verifier_error(
+                "verifier crashed: Could not find a version that satisfies "
+                "the requirement torch==2.1.2+cpu"
+            )
+            == VERIFIER_DEP_INSTALL
+        )
+
+    def test_classify_verifier_dep_install_not_false_positive(self) -> None:
+        """Guards ENG-151: normal verifier crashes are NOT classified as
+        dep install failures."""
+        from benchflow._utils.scoring import (
+            VERIFIER_DEP_INSTALL,
+            classify_verifier_error,
+        )
+
+        assert (
+            classify_verifier_error("verifier crashed: assert False")
+            != VERIFIER_DEP_INSTALL
+        )
+        assert (
+            classify_verifier_error("verifier timed out after 900s")
+            != VERIFIER_DEP_INSTALL
+        )
+        assert classify_verifier_error(None) is None
+
+    def test_verifier_error_category_in_result_json(self, tmp_path: Path) -> None:
+        """Guards ENG-151: result.json includes verifier_error_category field."""
+        from benchflow.rollout import _build_rollout_result
+
+        result = _build_rollout_result(
+            tmp_path,
+            task_name="simpo-code-reproduction",
+            rollout_name="simpo__abc123",
+            agent="gemini",
+            agent_name="gemini-cli",
+            model="gemini-2.0-flash-lite",
+            n_tool_calls=0,
+            prompts=["solve"],
+            error=None,
+            verifier_error=(
+                "verifier crashed: verifier exited with rc=1; "
+                "dependency install failed"
+            ),
+            trajectory=[],
+            partial_trajectory=False,
+            rewards=None,
+            started_at=__import__("datetime").datetime.now(),
+            timing={"agent": 0.0},
+        )
+        rj = __import__("json").loads((tmp_path / "result.json").read_text())
+        assert rj["verifier_error_category"] == "verifier_dep_install"
+        assert result.verifier_error is not None
+
+    def test_verifier_error_category_null_when_no_verifier_error(
+        self, tmp_path: Path
+    ) -> None:
+        """Guards ENG-151: verifier_error_category is null for successful runs."""
+        from benchflow.rollout import _build_rollout_result
+
+        result = _build_rollout_result(
+            tmp_path,
+            task_name="hello-world",
+            rollout_name="hello__abc",
+            agent="gemini",
+            agent_name="gemini-cli",
+            model="gemini-2.0-flash-lite",
+            n_tool_calls=5,
+            prompts=["solve"],
+            error=None,
+            verifier_error=None,
+            trajectory=[],
+            partial_trajectory=False,
+            rewards={"reward": 1.0},
+            started_at=__import__("datetime").datetime.now(),
+            timing={"agent": 5.0},
+        )
+        rj = __import__("json").loads((tmp_path / "result.json").read_text())
+        assert rj["verifier_error_category"] is None
+        assert result.rewards == {"reward": 1.0}

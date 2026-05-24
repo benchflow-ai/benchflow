@@ -51,7 +51,7 @@ from typing import Any
 
 from benchflow._types import Role, Scene, Turn
 from benchflow._utils.config import normalize_agent_name, normalize_sandbox_user
-from benchflow._utils.scoring import classify_error
+from benchflow._utils.scoring import classify_error, classify_verifier_error
 from benchflow.acp.client import ACPClient, ACPError
 from benchflow.acp.runtime import connect_acp, execute_prompts
 from benchflow.agents.credentials import (
@@ -535,6 +535,9 @@ def _build_rollout_result(
                 "error": result.error,
                 "error_category": classify_error(result.error),
                 "verifier_error": result.verifier_error,
+                "verifier_error_category": classify_verifier_error(
+                    result.verifier_error
+                ),
                 "idle_timeout_info": idle_timeout_info,
                 "sandbox_startup_info": sandbox_startup_info,
                 "transport_error_info": transport_error_info,
