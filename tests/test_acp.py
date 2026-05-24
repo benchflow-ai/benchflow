@@ -1134,3 +1134,130 @@ class TestVerifierDepInstallDiagnostics:
         rj = __import__("json").loads((tmp_path / "result.json").read_text())
         assert rj["verifier_error_category"] is None
         assert result.rewards == {"reward": 1.0}
+
+
+class TestVerifierTimeoutDiagnostics:
+    """Guards ENG-152: verifier timeouts must produce structured diagnostics."""
+
+    def test_classify_verifier_timeout(self) -> None:
+        """Guards ENG-152: classify_verifier_error returns VERIFIER_TIMEOUT
+        for timeout messages."""
+        from benchflow._utils.scoring import (
+            VERIFIER_TIMEOUT,
+            classify_verifier_error,
+        )
+
+        assert (
+            classify_verifier_error("verifier timed out after 240s")
+            == VERIFIER_TIMEOUT
+        )
+        assert (
+            classify_verifier_error("verifier timed out after 600.0s")
+            == VERIFIER_TIMEOUT
+        )
+
+    def test_classify_verifier_timeout_not_false_positive(self) -> None:
+        """Guards ENG-152: non-timeout verifier errors are NOT classified as
+        timeout."""
+        from benchflow._utils.scoring import (
+            VERIFIER_TIMEOUT,
+            classify_verifier_error,
+        )
+
+        assert (
+            classify_verifier_error("verifier crashed: assert False")
+            != VERIFIER_TIMEOUT
+        )
+        assert (
+            classify_verifier_error(
+                "verifier crashed: dependency install failed"
+            )
+            != VERIFIER_TIMEOUT
+        )
+
+    def test_verifier_timeout_info_in_result_json(self, tmp_path: Path) -> None:
+        """Guards ENG-152: result.json includes verifier_timeout_info when
+        verifier times out."""
+        from benchflow.rollout import _build_rollout_result
+
+        _build_rollout_result(
+            tmp_path,
+            task_name="quantum-numerical-simulation",
+            rollout_name="quantum__abc123",
+            agent="gemini",
+            agent_name="gemini-cli",
+            model="gemini-2.0-flash-lite",
+            n_tool_calls=0,
+            prompts=["solve"],
+            error=None,
+            verifier_error="verifier timed out after 240s",
+            trajectory=[],
+            partial_trajectory=False,
+            rewards=None,
+            started_at=__import__("datetime").datetime.now(),
+            timing={"agent": 0.0},
+            verifier_timeout_info={
+                "timeout_budget_sec": 240.0,
+                "elapsed_sec": 240.1,
+                "task_name": "quantum-numerical-simulation",
+            },
+        )
+        rj = __import__("json").loads((tmp_path / "result.json").read_text())
+        assert rj["verifier_error_category"] == "verifier_timeout"
+        vti = rj["verifier_timeout_info"]
+        assert vti is not None
+        assert vti["timeout_budget_sec"] == 240.0
+        assert vti["elapsed_sec"] == 240.1
+        assert vti["task_name"] == "quantum-numerical-simulation"
+
+    def test_verifier_timeout_info_null_when_no_timeout(
+        self, tmp_path: Path
+    ) -> None:
+        """Guards ENG-152: verifier_timeout_info is null for non-timeout runs."""
+        from benchflow.rollout import _build_rollout_result
+
+        _build_rollout_result(
+            tmp_path,
+            task_name="hello-world",
+            rollout_name="hello__abc",
+            agent="gemini",
+            agent_name="gemini-cli",
+            model="gemini-2.0-flash-lite",
+            n_tool_calls=5,
+            prompts=["solve"],
+            error=None,
+            verifier_error=None,
+            trajectory=[],
+            partial_trajectory=False,
+            rewards={"reward": 1.0},
+            started_at=__import__("datetime").datetime.now(),
+            timing={"agent": 5.0},
+        )
+        rj = __import__("json").loads((tmp_path / "result.json").read_text())
+        assert rj["verifier_timeout_info"] is None
+
+    def test_verifier_timeout_info_null_for_crash(self, tmp_path: Path) -> None:
+        """Guards ENG-152: verifier_timeout_info is null when verifier crashes
+        (not a timeout)."""
+        from benchflow.rollout import _build_rollout_result
+
+        _build_rollout_result(
+            tmp_path,
+            task_name="some-task",
+            rollout_name="some__abc",
+            agent="gemini",
+            agent_name="gemini-cli",
+            model="gemini-2.0-flash-lite",
+            n_tool_calls=0,
+            prompts=["solve"],
+            error=None,
+            verifier_error="verifier crashed: assert False",
+            trajectory=[],
+            partial_trajectory=False,
+            rewards=None,
+            started_at=__import__("datetime").datetime.now(),
+            timing={"agent": 0.0},
+        )
+        rj = __import__("json").loads((tmp_path / "result.json").read_text())
+        assert rj["verifier_error_category"] == "verifier_failure"
+        assert rj["verifier_timeout_info"] is None

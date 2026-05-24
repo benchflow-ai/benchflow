@@ -471,6 +471,7 @@ def _build_rollout_result(
     idle_timeout_info: dict | None = None,
     sandbox_startup_info: dict | None = None,
     transport_error_info: dict | None = None,
+    verifier_timeout_info: dict | None = None,
 ) -> RolloutResult:
     """Build RolloutResult and write result.json, timing.json, prompts.json, trajectory."""
     finished_at = datetime.now()
@@ -541,6 +542,7 @@ def _build_rollout_result(
                 "idle_timeout_info": idle_timeout_info,
                 "sandbox_startup_info": sandbox_startup_info,
                 "transport_error_info": transport_error_info,
+                "verifier_timeout_info": verifier_timeout_info,
                 "partial_trajectory": result.partial_trajectory,
                 "trajectory_source": result.trajectory_source,
                 "started_at": str(result.started_at),
@@ -711,28 +713,39 @@ async def _verify_rollout(
     timing: dict,
     sandbox_user: str | None = None,
     workspace: str | None = None,
-) -> tuple[dict | None, str | None]:
-    """Run verifier with pre-verification hardening."""
+) -> tuple[dict | None, str | None, dict | None]:
+    """Run verifier with pre-verification hardening.
+
+    Returns (rewards, verifier_error, verifier_timeout_info).
+    """
     from benchflow.sandbox.lockdown import harden_before_verify
     from benchflow.task import Verifier
 
     rollout_paths.verifier_dir.mkdir(parents=True, exist_ok=True)
     t0 = datetime.now()
     verifier_error = None
+    verifier_timeout_info: dict | None = None
+    timeout_budget = task.config.verifier.timeout_sec
     try:
         await harden_before_verify(env, task, sandbox_user, workspace=workspace)
         logger.info("Running verifier...")
         verifier = Verifier(task=task, rollout_paths=rollout_paths, sandbox=env)
         verifier_result = await asyncio.wait_for(
             verifier.verify(),
-            timeout=task.config.verifier.timeout_sec,
+            timeout=timeout_budget,
         )
         timing["verifier"] = (datetime.now() - t0).total_seconds()
         rewards = _ensure_canonical_rewards(verifier_result.rewards)
         logger.info(f"Rewards: {rewards}")
     except TimeoutError:
-        timing["verifier"] = (datetime.now() - t0).total_seconds()
-        verifier_error = f"verifier timed out after {task.config.verifier.timeout_sec}s"
+        elapsed = (datetime.now() - t0).total_seconds()
+        timing["verifier"] = elapsed
+        verifier_error = f"verifier timed out after {timeout_budget}s"
+        verifier_timeout_info = {
+            "timeout_budget_sec": timeout_budget,
+            "elapsed_sec": round(elapsed, 1),
+            "task_name": task.config.name,
+        }
         rewards = None
         logger.error(verifier_error)
     except Exception as e:
@@ -740,7 +753,7 @@ async def _verify_rollout(
         verifier_error = f"verifier crashed: {e}"
         rewards = None
         logger.error(verifier_error)
-    return rewards, verifier_error
+    return rewards, verifier_error, verifier_timeout_info
 
 
 def _ensure_canonical_rewards(rewards: dict | None) -> dict:
@@ -961,6 +974,7 @@ class Rollout:
         self._idle_timeout_info: dict | None = None
         self._sandbox_startup_info: dict | None = None
         self._transport_error_info: dict | None = None
+        self._verifier_timeout_info: dict | None = None
 
         # Populated by _export_generated_skills() — the skills the agent
         # generated/evolved, captured for a continual-learning LearnerStore.
@@ -1433,13 +1447,15 @@ class Rollout:
 
         await _publish_trajectory_for_verifier(self._env, self._trajectory)
 
-        self._rewards, self._verifier_error = await _verify_rollout(
-            self._env,
-            self._task,
-            self._rollout_paths,
-            self._timing,
-            sandbox_user=cfg.sandbox_user,
-            workspace=self._agent_cwd,
+        self._rewards, self._verifier_error, self._verifier_timeout_info = (
+            await _verify_rollout(
+                self._env,
+                self._task,
+                self._rollout_paths,
+                self._timing,
+                sandbox_user=cfg.sandbox_user,
+                workspace=self._agent_cwd,
+            )
         )
 
         self._phase = "verified"
@@ -2205,5 +2221,6 @@ class Rollout:
             idle_timeout_info=self._idle_timeout_info,
             sandbox_startup_info=self._sandbox_startup_info,
             transport_error_info=self._transport_error_info,
+            verifier_timeout_info=self._verifier_timeout_info,
             **self._usage_metrics,
         )

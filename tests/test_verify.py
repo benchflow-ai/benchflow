@@ -119,10 +119,12 @@ class TestSdkVerify:
                 new_callable=AsyncMock,
             ),
         ):
-            rewards, verifier_error = await sdk._verify(env, task, tp, timing)
+            rewards, verifier_error, vti = await sdk._verify(env, task, tp, timing)
         assert rewards is None
         assert "timed out" in verifier_error
         assert "verifier" in timing
+        assert vti is not None
+        assert vti["timeout_budget_sec"] == 0.1
 
     @pytest.mark.asyncio
     async def test_verifier_crash(self, verify_harness):
@@ -137,9 +139,10 @@ class TestSdkVerify:
                 new_callable=AsyncMock,
             ),
         ):
-            rewards, verifier_error = await sdk._verify(env, task, tp, timing)
+            rewards, verifier_error, vti = await sdk._verify(env, task, tp, timing)
         assert rewards is None
         assert "crashed" in verifier_error and "kaboom" in verifier_error
+        assert vti is None
 
     @pytest.mark.asyncio
     async def test_verifier_returning_no_rewards_is_verifier_error(
@@ -158,10 +161,11 @@ class TestSdkVerify:
                 new_callable=AsyncMock,
             ),
         ):
-            rewards, verifier_error = await sdk._verify(env, task, tp, timing)
+            rewards, verifier_error, vti = await sdk._verify(env, task, tp, timing)
         assert rewards is None
         assert "verifier returned no rewards" in verifier_error
         assert "verifier" in timing
+        assert vti is None
 
     @pytest.mark.parametrize(
         "rewards",
@@ -191,10 +195,11 @@ class TestSdkVerify:
                 new_callable=AsyncMock,
             ),
         ):
-            parsed_rewards, verifier_error = await sdk._verify(env, task, tp, timing)
+            parsed_rewards, verifier_error, vti = await sdk._verify(env, task, tp, timing)
         assert parsed_rewards is None
         assert "without numeric 'reward'" in verifier_error
         assert "verifier" in timing
+        assert vti is None
 
     @patch("benchflow.rewards.llm.call_judge", new_callable=AsyncMock)
     @pytest.mark.asyncio
@@ -237,7 +242,7 @@ input_dir = "/app/output"
             "benchflow.sandbox.lockdown.harden_before_verify",
             new_callable=AsyncMock,
         ):
-            rewards, verifier_error = await SDK()._verify(
+            rewards, verifier_error, vti = await SDK()._verify(
                 env, task, rollout_paths, timing
             )
 
@@ -246,6 +251,7 @@ input_dir = "/app/output"
         assert "llm-judge input" in verifier_error
         assert "/app/output" in verifier_error
         assert "verifier" in timing
+        assert vti is None
         mock_judge.assert_not_awaited()
 
     @patch("benchflow.rewards.llm.call_judge", new_callable=AsyncMock)
@@ -296,7 +302,7 @@ input_dir = "/app/output"
             "benchflow.sandbox.lockdown.harden_before_verify",
             new_callable=AsyncMock,
         ):
-            rewards, verifier_error = await SDK()._verify(
+            rewards, verifier_error, vti = await SDK()._verify(
                 env, task, rollout_paths, timing
             )
 
@@ -306,6 +312,7 @@ input_dir = "/app/output"
         assert "provider down" not in verifier_error
         assert not rollout_paths.reward_json_path.exists()
         assert "verifier" in timing
+        assert vti is None
 
     @pytest.mark.asyncio
     async def test_verifier_success(self, verify_harness):
@@ -322,9 +329,10 @@ input_dir = "/app/output"
                 new_callable=AsyncMock,
             ),
         ):
-            rewards, verifier_error = await sdk._verify(env, task, tp, timing)
+            rewards, verifier_error, vti = await sdk._verify(env, task, tp, timing)
         assert rewards == {"reward": 1.0}
         assert verifier_error is None
+        assert vti is None
 
 
 # ---------------------------------------------------------------------------
@@ -774,7 +782,7 @@ class TestScrapedTrajectoryTrust:
                     patch(
                         "benchflow.rollout._verify_rollout",
                         new_callable=AsyncMock,
-                        return_value=({"reward": 1.0}, None),
+                        return_value=({"reward": 1.0}, None, None),
                     ),
                 ],
             ),

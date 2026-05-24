@@ -140,7 +140,7 @@ class SDK:
         timing: dict,
         sandbox_user: str | None = None,
         workspace: str | None = None,
-    ) -> tuple[dict | None, str | None]:
+    ) -> tuple[dict | None, str | None, dict | None]:
         return await _verify_rollout(
             env,
             task,
