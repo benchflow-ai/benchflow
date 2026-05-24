@@ -4,7 +4,7 @@
 
 ### Added
 
-- **Azure AI Foundry providers** — new `azure-foundry-openai/` and `azure-foundry-anthropic/` prefixes routing through Foundry's unified resource. Set `AZURE_API_KEY` and `AZURE_API_ENDPOINT` (or any of the `AZURE_OPENAI_*` / `AZURE_AI_FOUNDRY_*` aliases) and benchflow derives the resource name, base URL, and per-surface auth env automatically.
+- **Azure AI Foundry providers** — new `azure-foundry-openai/` and `azure-foundry-anthropic/` prefixes routing through Foundry's unified resource. Export `AZURE_API_KEY` plus `AZURE_API_ENDPOINT` (e.g. `https://<resource>.openai.azure.com/`); benchflow derives the resource name from the endpoint host, builds the per-surface base URL, and maps the key onto the agent-native auth env automatically. Missing/unrecognized endpoints fail fast with a clear error instead of falling through to `api.openai.com`.
 
 ### Fixed
 

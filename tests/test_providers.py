@@ -52,7 +52,7 @@ class TestFindProvider:
         name, cfg = find_provider(model)
         assert name in {"azure-foundry-openai", "azure-foundry-anthropic"}
         assert cfg.api_protocol == expected_protocol
-        assert cfg.auth_env == "AZURE_AI_FOUNDRY_API_KEY"
+        assert cfg.auth_env == "AZURE_API_KEY"
 
 
 # ── resolve_base_url: template expansion ──
@@ -126,7 +126,7 @@ class TestResolveBaseUrl:
 
     def test_azure_openai_resource_expansion(self):
         p = PROVIDERS["azure-foundry-openai"]
-        env = {"AZURE_AI_FOUNDRY_RESOURCE": "example-resource"}
+        env = {"AZURE_RESOURCE": "example-resource"}
         assert (
             resolve_base_url(p, env)
             == "https://example-resource.openai.azure.com/openai/v1"
@@ -134,7 +134,7 @@ class TestResolveBaseUrl:
 
     def test_azure_anthropic_resource_expansion(self):
         p = PROVIDERS["azure-foundry-anthropic"]
-        env = {"AZURE_AI_FOUNDRY_RESOURCE": "example-resource"}
+        env = {"AZURE_RESOURCE": "example-resource"}
         assert (
             resolve_base_url(p, env)
             == "https://example-resource.services.ai.azure.com/anthropic"
@@ -158,13 +158,10 @@ class TestResolveAuthEnv:
         assert resolve_auth_env("aws-bedrock/openai.gpt-oss-20b-1:0") is None
 
     def test_azure_foundry_uses_shared_key(self):
-        assert (
-            resolve_auth_env("azure-foundry-openai/gpt-5.5")
-            == "AZURE_AI_FOUNDRY_API_KEY"
-        )
+        assert resolve_auth_env("azure-foundry-openai/gpt-5.5") == "AZURE_API_KEY"
         assert (
             resolve_auth_env("azure-foundry-anthropic/claude-opus-4-5")
-            == "AZURE_AI_FOUNDRY_API_KEY"
+            == "AZURE_API_KEY"
         )
 
 
@@ -189,8 +186,7 @@ class TestRegistryIntegration:
         from benchflow.agents.registry import infer_env_key_for_model
 
         assert (
-            infer_env_key_for_model("azure-foundry-openai/gpt-5.5")
-            == "AZURE_AI_FOUNDRY_API_KEY"
+            infer_env_key_for_model("azure-foundry-openai/gpt-5.5") == "AZURE_API_KEY"
         )
 
     def test_is_vertex_model_zai_direct(self):

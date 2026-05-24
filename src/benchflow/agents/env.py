@@ -31,14 +31,6 @@ _AUTH_CONTEXT_GROUPS = (
     frozenset({"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"}),
     frozenset({"GEMINI_API_KEY", "GOOGLE_API_KEY"}),
     frozenset({"OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN"}),
-    frozenset(
-        {
-            "AZURE_AI_FOUNDRY_API_KEY",
-            "AZURE_API_KEY",
-            "AZURE_OPENAI_API_KEY",
-            "AZURE_AI_FOUNDRY_ANTHROPIC_API_KEY",
-        }
-    ),
 )
 _EXPLICIT_AGENT_NATIVE_BRIDGE_KEYS = frozenset({"LLM_API_KEY"})
 _BEDROCK_PROXY_PLACEHOLDER_API_KEY = "bedrock-proxy"
@@ -47,59 +39,29 @@ _CODEX_ACCESS_TOKEN_ENV = "CODEX_ACCESS_TOKEN"
 _CUSTOM_OPENAI_ENDPOINT_KEYS = frozenset(
     {"BENCHFLOW_PROVIDER_BASE_URL", "OPENAI_BASE_URL"}
 )
-_AZURE_FOUNDRY_API_KEY_ENV = "AZURE_AI_FOUNDRY_API_KEY"
-_AZURE_FOUNDRY_API_KEY_ALIASES = (
-    "AZURE_API_KEY",
-    "AZURE_OPENAI_API_KEY",
-    "AZURE_AI_FOUNDRY_ANTHROPIC_API_KEY",
-)
-_AZURE_FOUNDRY_RESOURCE_ENV = "AZURE_AI_FOUNDRY_RESOURCE"
-_AZURE_FOUNDRY_RESOURCE_ALIASES = (
-    "AZURE_OPENAI_RESOURCE",
-    "AZURE_RESOURCE",
-)
-_AZURE_FOUNDRY_ENDPOINT_ALIASES = (
-    "AZURE_API_ENDPOINT",
-    "AZURE_OPENAI_ENDPOINT",
-    "AZURE_AI_FOUNDRY_ENDPOINT",
-)
+_AZURE_RESOURCE_ENV = "AZURE_RESOURCE"
+_AZURE_ENDPOINT_ENV = "AZURE_API_ENDPOINT"
+_AZURE_HOST_SUFFIXES = (".openai.azure.com", ".services.ai.azure.com")
 
 
-def _azure_resource_from_endpoint(endpoint: str) -> str | None:
-    """Extract the Azure resource name from a public Azure AI endpoint."""
-    candidate = endpoint.strip()
-    if not candidate:
-        return None
-    if "://" not in candidate:
-        candidate = f"https://{candidate}"
-    parsed = urlparse(candidate)
+def _derive_azure_resource(agent_env: dict[str, str]) -> None:
+    """Populate AZURE_RESOURCE from AZURE_API_ENDPOINT when not already set."""
+    if agent_env.get(_AZURE_RESOURCE_ENV):
+        return
+    endpoint = agent_env.get(_AZURE_ENDPOINT_ENV, "").strip()
+    if not endpoint:
+        return
+    if "://" not in endpoint:
+        endpoint = f"https://{endpoint}"
+    parsed = urlparse(endpoint)
     host = (parsed.netloc or parsed.path.split("/", 1)[0]).split("@")[-1]
-    host = host.split(":", 1)[0].strip().lower()
-    for suffix in (".openai.azure.com", ".services.ai.azure.com"):
+    host = host.split(":", 1)[0].lower()
+    for suffix in _AZURE_HOST_SUFFIXES:
         if host.endswith(suffix):
             resource = host[: -len(suffix)]
-            return resource or None
-    return None
-
-
-def _mirror_azure_foundry_env(agent_env: dict[str, str]) -> None:
-    """Normalize Azure aliases to BenchFlow's canonical Foundry env names."""
-    if _AZURE_FOUNDRY_API_KEY_ENV not in agent_env:
-        for alias in _AZURE_FOUNDRY_API_KEY_ALIASES:
-            if agent_env.get(alias):
-                agent_env[_AZURE_FOUNDRY_API_KEY_ENV] = agent_env[alias]
-                break
-    if _AZURE_FOUNDRY_RESOURCE_ENV not in agent_env:
-        for alias in _AZURE_FOUNDRY_RESOURCE_ALIASES:
-            if agent_env.get(alias):
-                agent_env[_AZURE_FOUNDRY_RESOURCE_ENV] = agent_env[alias]
-                break
-    if _AZURE_FOUNDRY_RESOURCE_ENV not in agent_env:
-        for alias in _AZURE_FOUNDRY_ENDPOINT_ALIASES:
-            resource = _azure_resource_from_endpoint(agent_env.get(alias, ""))
             if resource:
-                agent_env[_AZURE_FOUNDRY_RESOURCE_ENV] = resource
-                break
+                agent_env[_AZURE_RESOURCE_ENV] = resource
+            return
 
 
 def _missing_provider_base_url_message(
@@ -111,13 +73,11 @@ def _missing_provider_base_url_message(
     """Return a user-facing error when a provider URL template cannot resolve."""
     required = ", ".join(required_envs)
     if provider_name.startswith("azure-foundry-"):
-        endpoint_aliases = ", ".join(_AZURE_FOUNDRY_ENDPOINT_ALIASES)
         return (
-            f"Azure AI Foundry model {model!r} requires "
-            f"{_AZURE_FOUNDRY_RESOURCE_ENV} or a public Azure endpoint alias "
-            f"({endpoint_aliases}) to build the provider base URL. "
-            "Export AZURE_API_ENDPOINT=https://<resource>.openai.azure.com/ "
-            f"or pass --agent-env {_AZURE_FOUNDRY_RESOURCE_ENV}=<resource>."
+            f"Azure AI Foundry model {model!r} requires {_AZURE_RESOURCE_ENV} "
+            f"or {_AZURE_ENDPOINT_ENV} to build the provider base URL. "
+            f"Export {_AZURE_ENDPOINT_ENV}=https://<resource>.openai.azure.com/ "
+            f"or pass --agent-env {_AZURE_RESOURCE_ENV}=<resource>."
         )
     return (
         f"Provider {provider_name!r} for model {model!r} requires {required} "
@@ -178,9 +138,11 @@ def auto_inherit_env(
         "BENCHFLOW_PROVIDER_BASE_URL",
         "BENCHFLOW_PROVIDER_API_KEY",
         "BENCHFLOW_PROVIDER_PROMPT_CACHE_RETENTION",
-        *_AZURE_FOUNDRY_API_KEY_ALIASES,
-        *_AZURE_FOUNDRY_RESOURCE_ALIASES,
-        *_AZURE_FOUNDRY_ENDPOINT_ALIASES,
+        # AZURE_API_KEY / AZURE_RESOURCE are picked up automatically below via
+        # cfg.auth_env / cfg.url_params; only AZURE_API_ENDPOINT is listed
+        # explicitly because it is a user-facing convenience input, not a
+        # provider-config field.
+        _AZURE_ENDPOINT_ENV,
     }
     for cfg in PROVIDERS.values():
         if cfg.auth_env:
@@ -212,7 +174,7 @@ def auto_inherit_env(
         "AWS_REGION" in explicit_keys and "AWS_DEFAULT_REGION" not in explicit_keys
     ) or ("AWS_REGION" in agent_env and "AWS_DEFAULT_REGION" not in agent_env):
         agent_env["AWS_DEFAULT_REGION"] = agent_env["AWS_REGION"]
-    _mirror_azure_foundry_env(agent_env)
+    _derive_azure_resource(agent_env)
     # CLAUDE_CODE_OAUTH_TOKEN is a separate auth path — Claude CLI reads it
     # directly. Don't map to ANTHROPIC_API_KEY (different auth mechanism).
 
