@@ -13,6 +13,7 @@ from pathlib import Path, PurePosixPath
 
 from tenacity import retry, stop_after_attempt, wait_exponential
 
+from benchflow._paths import iter_safe_tree
 from benchflow.sandbox._base import BaseSandbox, ExecResult
 from benchflow.task.config import SandboxConfig
 from benchflow.task.paths import RolloutPaths, SandboxPaths
@@ -241,16 +242,20 @@ class ModalSandbox(BaseSandbox):
 
         await self.exec(f"mkdir -p {target_dir}", user="root")
 
-        for file_path in source_path.rglob("*"):
-            if file_path.is_file():
-                relative_path = file_path.relative_to(source_path).as_posix()
-                target_file_path = str(PurePosixPath(target_dir) / relative_path)
+        # Walk with followlinks=False and skip symlinks (#411): a task or
+        # workspace symlink under source_path must not exfiltrate host files
+        # into the remote Modal sandbox.
+        for file_path in iter_safe_tree(
+            source_path, context=f"modal upload_dir {source_path}"
+        ):
+            relative_path = file_path.relative_to(source_path).as_posix()
+            target_file_path = str(PurePosixPath(target_dir) / relative_path)
 
-                target_file_parent = str(PurePosixPath(target_file_path).parent)
-                if target_file_parent != target_dir:
-                    await self.exec(f"mkdir -p {target_file_parent}", user="root")
+            target_file_parent = str(PurePosixPath(target_file_path).parent)
+            if target_file_parent != target_dir:
+                await self.exec(f"mkdir -p {target_file_parent}", user="root")
 
-                await self.upload_file(file_path, target_file_path)
+            await self.upload_file(file_path, target_file_path)
 
     @retry(
         stop=stop_after_attempt(2),
