@@ -78,6 +78,7 @@ from benchflow.providers.runtime import (
 from benchflow.rewards.validation import validate_reward_map
 from benchflow.rollout_branch import ChildRunner
 from benchflow.rollout_branch import branch as _branch_engine
+from benchflow.sandbox.daytona import SandboxStartupError
 from benchflow.sandbox.lockdown import (
     _resolve_locked_paths,
     _seed_verifier_workspace,
@@ -468,6 +469,7 @@ def _build_rollout_result(
     evolved_skills: dict[str, str] | None = None,
     source_provenance: dict[str, Any] | None = None,
     idle_timeout_info: dict | None = None,
+    sandbox_startup_info: dict | None = None,
     transport_error_info: dict | None = None,
 ) -> RolloutResult:
     """Build RolloutResult and write result.json, timing.json, prompts.json, trajectory."""
@@ -534,6 +536,7 @@ def _build_rollout_result(
                 "error_category": classify_error(result.error),
                 "verifier_error": result.verifier_error,
                 "idle_timeout_info": idle_timeout_info,
+                "sandbox_startup_info": sandbox_startup_info,
                 "transport_error_info": transport_error_info,
                 "partial_trajectory": result.partial_trajectory,
                 "trajectory_source": result.trajectory_source,
@@ -953,6 +956,7 @@ class Rollout:
         self._error: str | None = None
         self._error_category: str | None = None
         self._idle_timeout_info: dict | None = None
+        self._sandbox_startup_info: dict | None = None
         self._transport_error_info: dict | None = None
 
         # Populated by _export_generated_skills() — the skills the agent
@@ -1657,6 +1661,10 @@ class Rollout:
             self._transport_error_info = _parse_transport_error(e)
             await self._probe_sandbox_health()
             logger.error(f"Agent connection lost: {self._error}")
+        except SandboxStartupError as e:
+            self._error = f"Sandbox startup failed: {e}"
+            self._sandbox_startup_info = e.sandbox_startup_info
+            logger.error(self._error)
         except ACPError as e:
             self._error = self._classify_acp_error(e)
             logger.error(self._error)
@@ -1683,13 +1691,35 @@ class Rollout:
         Also captures the exported skill packs into ``self._evolved_skills``
         — the ``name -> body`` dict a continual-learning Job commits to its
         persistent LearnerStore (capability 5).
+
+        Retries transient download failures up to 3 times (guards ENG-147).
         """
         export_target = self._config.export_generated_skills_to
         if export_target is None:
             return
         target = Path(export_target)
         target.mkdir(parents=True, exist_ok=True)
-        await self._env.download_dir(self._config.generated_skills_root, target)
+
+        last_err: Exception | None = None
+        for attempt in range(3):
+            try:
+                await self._env.download_dir(
+                    self._config.generated_skills_root, target
+                )
+                break
+            except Exception as e:
+                last_err = e
+                if attempt < 2:
+                    delay = 2 ** (attempt + 1)
+                    logger.warning(
+                        f"Skill export attempt {attempt + 1} failed: {e}. "
+                        f"Retrying in {delay}s..."
+                    )
+                    await asyncio.sleep(delay)
+        else:
+            raise RuntimeError(
+                f"Skill export failed after 3 attempts: {last_err}"
+            ) from last_err
 
         from benchflow.learner_skills import capture_skills
 
@@ -2170,6 +2200,7 @@ class Rollout:
             evolved_skills=self._evolved_skills,
             source_provenance=self._config.source_provenance,
             idle_timeout_info=self._idle_timeout_info,
+            sandbox_startup_info=self._sandbox_startup_info,
             transport_error_info=self._transport_error_info,
             **self._usage_metrics,
         )

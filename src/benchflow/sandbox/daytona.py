@@ -79,6 +79,33 @@ logger = logging.getLogger("benchflow")
 
 _SandboxParams = CreateSandboxFromImageParams | CreateSandboxFromSnapshotParams
 _DAYTONA_COMMAND_POLL_INTERVAL_SEC = 1.0
+_STARTUP_HARD_TIMEOUT_BUFFER_SEC = 120
+
+
+class SandboxStartupError(RuntimeError):
+    """Raised when Daytona sandbox creation fails or times out.
+
+    Guards ENG-147: carries structured diagnostics for result.json.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        sandbox_id: str | None = None,
+        sandbox_state: str | None = None,
+        attempts: int = 0,
+        build_timeout_sec: float | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.sandbox_startup_info: dict = {
+            "reason": "sandbox_startup_failed",
+            "sandbox_id": sandbox_id,
+            "sandbox_state": sandbox_state,
+            "attempts": attempts,
+            "build_timeout_sec": build_timeout_sec,
+            "raw_message": str(message)[:500],
+        }
 
 
 def _exec_failure_output(result: ExecResult) -> str:
@@ -271,7 +298,17 @@ class _DaytonaDirect(_DaytonaStrategy):
                 network_block_all=env._network_block_all,
             )
 
-        await env._create_sandbox(params=params)
+        try:
+            await env._create_sandbox(params=params)
+        except (TimeoutError, RuntimeError, Exception) as e:
+            sandbox_id = getattr(env._sandbox, "id", None) if env._sandbox else None
+            raise SandboxStartupError(
+                f"Sandbox creation failed after retries: {e}",
+                sandbox_id=sandbox_id,
+                sandbox_state="error",
+                attempts=3,
+                build_timeout_sec=env.task_env_config.build_timeout_sec,
+            ) from e
 
         await env._sandbox_exec(
             f"mkdir -p {SandboxPaths.agent_dir} {SandboxPaths.verifier_dir} && "
@@ -568,7 +605,17 @@ class _DaytonaDinD(_DaytonaStrategy):
                 network_block_all=False,
             )
 
-        await env._create_sandbox(params=params)
+        try:
+            await env._create_sandbox(params=params)
+        except (TimeoutError, RuntimeError, Exception) as e:
+            sandbox_id = getattr(env._sandbox, "id", None) if env._sandbox else None
+            raise SandboxStartupError(
+                f"Sandbox creation failed after retries: {e}",
+                sandbox_id=sandbox_id,
+                sandbox_state="error",
+                attempts=3,
+                build_timeout_sec=env.task_env_config.build_timeout_sec,
+            ) from e
 
         env.logger.debug("Starting Docker daemon inside DinD sandbox...")
         await self._vm_exec(
@@ -942,8 +989,8 @@ class DaytonaSandbox(BaseSandbox):
     # ── Shared helpers used by both strategies ──────────────────────────
 
     @retry(
-        stop=stop_after_attempt(2),
-        wait=wait_exponential(multiplier=1, min=1, max=10),
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=2, min=2, max=30),
         reraise=True,
     )
     async def _create_sandbox(
@@ -955,16 +1002,39 @@ class DaytonaSandbox(BaseSandbox):
                 "Client manager not initialized. This should never happen."
             )
 
+        # Clean up any previous failed sandbox before retry
+        if self._sandbox is not None:
+            try:
+                self.logger.warning(
+                    "Cleaning up previous sandbox before retry"
+                )
+                await self._sandbox.delete()
+            except Exception as cleanup_err:
+                self.logger.debug(f"Cleanup of previous sandbox failed: {cleanup_err}")
+            finally:
+                self._sandbox = None
+
         daytona = await self._client_manager.get_client()
+        build_timeout = round(self.task_env_config.build_timeout_sec)
+        hard_timeout = build_timeout + _STARTUP_HARD_TIMEOUT_BUFFER_SEC
 
         create_task = asyncio.ensure_future(
             daytona.create(
                 params=params,
-                timeout=round(self.task_env_config.build_timeout_sec),
+                timeout=build_timeout,
             )
         )
         try:
-            self._sandbox = await asyncio.shield(create_task)
+            self._sandbox = await asyncio.wait_for(
+                asyncio.shield(create_task), timeout=hard_timeout
+            )
+        except TimeoutError:
+            self.logger.error(
+                f"Sandbox creation timed out after {hard_timeout}s "
+                f"(build_timeout={build_timeout}s + buffer={_STARTUP_HARD_TIMEOUT_BUFFER_SEC}s)"
+            )
+            create_task.cancel()
+            raise
         except asyncio.CancelledError:
             try:
                 self._sandbox = await asyncio.wait_for(create_task, timeout=30)
@@ -1107,7 +1177,7 @@ class DaytonaSandbox(BaseSandbox):
         return result
 
     @retry(
-        stop=stop_after_attempt(2),
+        stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=1, max=10),
         reraise=True,
     )
@@ -1117,7 +1187,7 @@ class DaytonaSandbox(BaseSandbox):
         await self._sandbox.fs.upload_file(str(source_path), target_path)
 
     @retry(
-        stop=stop_after_attempt(2),
+        stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=1, max=10),
         reraise=True,
     )
@@ -1143,7 +1213,7 @@ class DaytonaSandbox(BaseSandbox):
             await self._sandbox.fs.upload_files(files=file_uploads)
 
     @retry(
-        stop=stop_after_attempt(2),
+        stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=1, max=10),
         reraise=True,
     )
@@ -1155,7 +1225,7 @@ class DaytonaSandbox(BaseSandbox):
         await self._sandbox.fs.download_file(source_path, str(target_path))
 
     @retry(
-        stop=stop_after_attempt(2),
+        stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=1, max=10),
         reraise=True,
     )

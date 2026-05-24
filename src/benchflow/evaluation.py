@@ -41,6 +41,7 @@ from benchflow._utils.scoring import (
     INFRA_ERROR,
     INSTALL_FAILED,
     PIPE_CLOSED,
+    SANDBOX_SETUP,
     VERIFIER_INFRA,
     VERIFIER_TIMEOUT,
     classify_error,
@@ -1045,6 +1046,14 @@ class Evaluation:
                 f"check idle_timeout_info in result.json for diagnostics"
             )
 
+        sandbox_count = error_category_counts.get(SANDBOX_SETUP, 0)
+        if sandbox_count > 0:
+            pct = sandbox_count / job_result.total * 100
+            logger.warning(
+                f"{sandbox_count} tasks ({pct:.0f}%) failed during sandbox startup — "
+                f"check sandbox_startup_info in result.json for diagnostics"
+            )
+
         pipe_count = error_category_counts.get(PIPE_CLOSED, 0)
         if pipe_count > 0:
             pct = pipe_count / job_result.total * 100
@@ -1052,7 +1061,6 @@ class Evaluation:
                 f"{pipe_count} tasks ({pct:.0f}%) lost transport (pipe closed / rc=255) — "
                 f"check transport_error_info in result.json for diagnostics"
             )
-
         if audit_counts["verifier_errored"] > 0:
             pct = audit_counts["verifier_errored"] / job_result.total * 100
             logger.warning(
