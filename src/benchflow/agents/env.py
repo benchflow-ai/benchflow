@@ -16,7 +16,6 @@ Does not own:
     - Setting model via ACP session/set_model — see _acp_run.py
 """
 
-import contextlib
 import json
 import logging
 import os
@@ -101,6 +100,29 @@ def _mirror_azure_foundry_env(agent_env: dict[str, str]) -> None:
             if resource:
                 agent_env[_AZURE_FOUNDRY_RESOURCE_ENV] = resource
                 break
+
+
+def _missing_provider_base_url_message(
+    *,
+    provider_name: str,
+    model: str,
+    required_envs: list[str],
+) -> str:
+    """Return a user-facing error when a provider URL template cannot resolve."""
+    required = ", ".join(required_envs)
+    if provider_name.startswith("azure-foundry-"):
+        endpoint_aliases = ", ".join(_AZURE_FOUNDRY_ENDPOINT_ALIASES)
+        return (
+            f"Azure AI Foundry model {model!r} requires "
+            f"{_AZURE_FOUNDRY_RESOURCE_ENV} or a public Azure endpoint alias "
+            f"({endpoint_aliases}) to build the provider base URL. "
+            "Export AZURE_API_ENDPOINT=https://<resource>.openai.azure.com/ "
+            f"or pass --agent-env {_AZURE_FOUNDRY_RESOURCE_ENV}=<resource>."
+        )
+    return (
+        f"Provider {provider_name!r} for model {model!r} requires {required} "
+        "to build the provider base URL."
+    )
 
 
 def _normalize_openhands_model(model: str) -> str:
@@ -322,11 +344,22 @@ def resolve_provider_env(
     if _prov:
         _prov_name, _prov_cfg = _prov
         agent_env.setdefault("BENCHFLOW_PROVIDER_NAME", _prov_name)
-        # URL params missing — will fail later with clear error
-        with contextlib.suppress(KeyError):
+        if "BENCHFLOW_PROVIDER_BASE_URL" not in agent_env:
+            try:
+                base_url = resolve_base_url(
+                    _prov_cfg, agent_env, protocol=agent_protocol or None
+                )
+            except KeyError as exc:
+                raise ValueError(
+                    _missing_provider_base_url_message(
+                        provider_name=_prov_name,
+                        model=model,
+                        required_envs=list(_prov_cfg.url_params.values()),
+                    )
+                ) from exc
             agent_env.setdefault(
                 "BENCHFLOW_PROVIDER_BASE_URL",
-                resolve_base_url(_prov_cfg, agent_env, protocol=agent_protocol or None),
+                base_url,
             )
         agent_env.setdefault(
             "BENCHFLOW_PROVIDER_PROTOCOL",

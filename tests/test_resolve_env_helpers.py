@@ -623,6 +623,8 @@ class TestResolveAgentEnvAzureFoundry:
             "AZURE_OPENAI_ENDPOINT",
             "AZURE_OPENAI_RESOURCE",
             "AZURE_RESOURCE",
+            "BENCHFLOW_PROVIDER_API_KEY",
+            "BENCHFLOW_PROVIDER_BASE_URL",
             "CODEX_ACCESS_TOKEN",
             "OPENAI_API_KEY",
             "OPENAI_BASE_URL",
@@ -667,6 +669,41 @@ class TestResolveAgentEnvAzureFoundry:
             result["ANTHROPIC_BASE_URL"]
             == "https://example-resource.services.ai.azure.com/anthropic"
         )
+
+    def test_azure_api_key_without_endpoint_fails_fast(self, monkeypatch):
+        """Guards PR #3: Azure aliases must not fall through to default OpenAI."""
+        monkeypatch.setenv("AZURE_API_KEY", "az-test")
+
+        with pytest.raises(
+            ValueError,
+            match=r"Azure AI Foundry model .* requires AZURE_AI_FOUNDRY_RESOURCE",
+        ):
+            resolve_agent_env("codex-acp", "azure-foundry-openai/gpt-4o", {})
+
+    def test_azure_api_key_with_unrecognized_endpoint_fails_fast(self, monkeypatch):
+        """Guards PR #3: non-Azure endpoint aliases must fail before launch."""
+        monkeypatch.setenv("AZURE_API_KEY", "az-test")
+        monkeypatch.setenv("AZURE_API_ENDPOINT", "https://example.com/")
+
+        with pytest.raises(
+            ValueError,
+            match=r"AZURE_API_ENDPOINT=https://<resource>\.openai\.azure\.com/",
+        ):
+            resolve_agent_env("codex-acp", "azure-foundry-openai/gpt-4o", {})
+
+    def test_explicit_provider_base_url_can_override_azure_resource(self):
+        """Guards PR #3: explicit provider base URL remains a valid override."""
+        result = resolve_agent_env(
+            "codex-acp",
+            "azure-foundry-openai/gpt-4o",
+            {
+                "AZURE_API_KEY": "az-test",
+                "BENCHFLOW_PROVIDER_BASE_URL": "https://proxy.example/openai/v1",
+            },
+        )
+
+        assert result["BENCHFLOW_PROVIDER_BASE_URL"] == "https://proxy.example/openai/v1"
+        assert result["OPENAI_BASE_URL"] == "https://proxy.example/openai/v1"
 
 
 class TestResolveAgentEnvHostProviderEndpoint:
