@@ -8,17 +8,21 @@ live Typer parser so doc rot is caught in CI.
 
 from __future__ import annotations
 
+import re
+
 from typer.testing import CliRunner
 
 from benchflow.cli.main import app
 
 runner = CliRunner()
 
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
 
 def _help(args: list[str]) -> str:
     result = runner.invoke(app, [*args, "--help"], terminal_width=200)
     assert result.exit_code == 0, result.output
-    return result.output
+    return _ANSI_RE.sub("", result.output)
 
 
 def test_top_level_help_lists_public_groups() -> None:

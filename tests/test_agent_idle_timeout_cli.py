@@ -143,7 +143,10 @@ def test_eval_create_idle_timeout_overrides_yaml_config(tmp_path: Path):
 
 def test_cli_runner_help_documents_none_sentinel():
     """Help text should describe both integer and 'none' usage."""
+    import re
+
     result = CliRunner().invoke(app, ["eval", "create", "--help"])
     assert result.exit_code == 0
-    assert "--agent-idle-timeout" in result.output
-    assert "none" in result.output
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+    assert "--agent-idle-timeout" in plain
+    assert "none" in plain

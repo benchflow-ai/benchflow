@@ -57,6 +57,9 @@ def test_manifest_drives_a_scored_exportable_record(tmp_path):
 
 def test_cli_run_exposes_environment_manifest_flag():
     """`bench run` advertises the --environment-manifest flag."""
+    import re
+
     result = CliRunner().invoke(app, ["run", "--help"])
     assert result.exit_code == 0
-    assert "--environment-manifest" in result.output
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+    assert "--environment-manifest" in plain
