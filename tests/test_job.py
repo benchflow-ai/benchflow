@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import time
 from unittest.mock import AsyncMock
 
 import pytest
@@ -226,70 +227,118 @@ class TestRunTaskLoop:
         assert result.rewards == {"reward": 1.0}
 
 
-class TestJobResume:
-    """Tests for Evaluation._get_completed_tasks — resume logic."""
+class TestJobResumeScoped:
+    """Tests for Evaluation._get_completed_tasks scoped to job directory.
 
-    def _setup_jobs_dir(self, tmp_path):
+    Guards ENG-160: orphan retry artifacts and cross-job contamination.
+    """
+
+    def _setup_job(self, tmp_path, job_name="my-job"):
+        """Create jobs_dir/job_name directory structure."""
         jobs_dir = tmp_path / "jobs"
-        jobs_dir.mkdir()
-        return jobs_dir
-
-    def _write_result(self, jobs_dir, task_name, rewards=None, error=None):
-        trial_dir = jobs_dir / f"trial-{task_name}"
-        trial_dir.mkdir(parents=True, exist_ok=True)
-        data = {"task_name": task_name, "rewards": rewards, "error": error}
-        (trial_dir / "result.json").write_text(json.dumps(data))
-        return trial_dir
-
-    def test_valid_resume(self, tmp_path):
-        jobs_dir = self._setup_jobs_dir(tmp_path)
-        self._write_result(jobs_dir, "task-a", rewards={"reward": 1.0})
-        self._write_result(jobs_dir, "task-b", rewards={"reward": 0.0})
-
+        job_dir = jobs_dir / job_name
+        job_dir.mkdir(parents=True)
         tasks_dir = tmp_path / "tasks"
-        tasks_dir.mkdir()
-        job = Evaluation(tasks_dir=tasks_dir, jobs_dir=jobs_dir)
+        tasks_dir.mkdir(exist_ok=True)
+        return jobs_dir, job_dir, tasks_dir
+
+    def _write_result(self, job_dir, task_name, rollout_suffix="abc",
+                      rewards=None, error=None, verifier_error=None):
+        rollout_dir = job_dir / f"{task_name}__{rollout_suffix}"
+        rollout_dir.mkdir(parents=True, exist_ok=True)
+        data = {
+            "task_name": task_name,
+            "rewards": rewards,
+            "error": error,
+            "verifier_error": verifier_error,
+        }
+        result_file = rollout_dir / "result.json"
+        result_file.write_text(json.dumps(data))
+        return result_file
+
+    def test_resume_scoped_to_job_dir(self, tmp_path):
+        """_get_completed_tasks only finds results inside the current job directory.
+
+        Guards ENG-160: prevents cross-job contamination on resume.
+        """
+        jobs_dir, job_dir, tasks_dir = self._setup_job(tmp_path, "run-1")
+        self._write_result(job_dir, "task-a", rewards={"reward": 1.0})
+
+        # Write a result in a DIFFERENT job directory — must not be found.
+        other_job = jobs_dir / "run-2"
+        other_job.mkdir()
+        self._write_result(other_job, "task-b", rollout_suffix="xyz",
+                           rewards={"reward": 0.0})
+
+        job = Evaluation(tasks_dir=tasks_dir, jobs_dir=jobs_dir, job_name="run-1")
         completed = job._get_completed_tasks()
         assert "task-a" in completed
-        assert "task-b" in completed
-        assert len(completed) == 2
+        assert "task-b" not in completed
 
-    def test_corrupt_file_skipped(self, tmp_path):
-        jobs_dir = self._setup_jobs_dir(tmp_path)
-        self._write_result(jobs_dir, "task-a", rewards={"reward": 1.0})
-        # Write corrupt JSON
-        corrupt_dir = jobs_dir / "trial-corrupt"
+    def test_retry_dedup_picks_latest(self, tmp_path):
+        """When retries create multiple result.json for the same task, newest wins.
+
+        Guards ENG-160: orphan retry artifacts deduped by mtime.
+        """
+        jobs_dir, job_dir, tasks_dir = self._setup_job(tmp_path)
+        # First attempt — errored (no reward).
+        self._write_result(job_dir, "task-a", rollout_suffix="attempt1",
+                           error="install failed")
+        time.sleep(0.05)
+        # Second attempt — succeeded.
+        self._write_result(job_dir, "task-a", rollout_suffix="attempt2",
+                           rewards={"reward": 1.0})
+
+        job = Evaluation(tasks_dir=tasks_dir, jobs_dir=jobs_dir, job_name="my-job")
+        completed = job._get_completed_tasks()
+        assert "task-a" in completed
+        assert completed["task-a"]["rewards"] == {"reward": 1.0}
+
+    def test_corrupt_file_skipped_scoped(self, tmp_path):
+        """Corrupt result.json is silently skipped during resume scan."""
+        jobs_dir, job_dir, tasks_dir = self._setup_job(tmp_path)
+        self._write_result(job_dir, "task-a", rewards={"reward": 1.0})
+        corrupt_dir = job_dir / "bad-rollout__zzz"
         corrupt_dir.mkdir()
         (corrupt_dir / "result.json").write_text("{invalid json")
 
-        tasks_dir = tmp_path / "tasks"
-        tasks_dir.mkdir()
-        job = Evaluation(tasks_dir=tasks_dir, jobs_dir=jobs_dir)
+        job = Evaluation(tasks_dir=tasks_dir, jobs_dir=jobs_dir, job_name="my-job")
         completed = job._get_completed_tasks()
         assert "task-a" in completed
         assert len(completed) == 1
 
-    @pytest.mark.asyncio
-    async def test_config_mismatch_warning(self, tmp_path, caplog):
-        """Guards the event-loop flake observed on v0.5-integration@ffef85d."""
-        jobs_dir = self._setup_jobs_dir(tmp_path)
-        trial_dir = self._write_result(jobs_dir, "task-a", rewards={"reward": 1.0})
-        (trial_dir / "config.json").write_text(json.dumps({"agent": "old-agent"}))
+    def test_no_rewards_is_incomplete_scoped(self, tmp_path):
+        """result.json with rewards=None and no verifier_error is NOT completed."""
+        jobs_dir, job_dir, tasks_dir = self._setup_job(tmp_path)
+        self._write_result(job_dir, "task-a", error="timeout")
 
-        tasks_dir = tmp_path / "tasks"
-        tasks_dir.mkdir()
-        # Create task dirs so remaining is computed
-        (tasks_dir / "task-a").mkdir()
-        (tasks_dir / "task-a" / "task.toml").write_text(
-            'version = "1.0"\n[verifier]\ntimeout_sec = 60\n[agent]\ntimeout_sec = 60\n[environment]\n'
+        job = Evaluation(tasks_dir=tasks_dir, jobs_dir=jobs_dir, job_name="my-job")
+        completed = job._get_completed_tasks()
+        assert len(completed) == 0
+
+    @pytest.mark.asyncio
+    async def test_config_mismatch_warning_scoped(self, tmp_path, caplog):
+        """Resume detects agent mismatch from config.json inside current job dir.
+
+        Guards ENG-160: config check scoped to job dir, not jobs_dir root.
+        """
+        jobs_dir, job_dir, tasks_dir = self._setup_job(tmp_path, "my-job")
+        result_file = self._write_result(
+            job_dir, "task-a", rewards={"reward": 1.0}
         )
-        (tasks_dir / "task-b").mkdir()
-        (tasks_dir / "task-b" / "task.toml").write_text(
-            'version = "1.0"\n[verifier]\ntimeout_sec = 60\n[agent]\ntimeout_sec = 60\n[environment]\n'
+        (result_file.parent / "config.json").write_text(
+            json.dumps({"agent": "old-agent"})
         )
+        for name in ("task-a", "task-b"):
+            (tasks_dir / name).mkdir(exist_ok=True)
+            (tasks_dir / name / "task.toml").write_text(
+                'version = "1.0"\n[verifier]\ntimeout_sec = 60\n'
+                "[agent]\ntimeout_sec = 60\n[environment]\n"
+            )
         cfg = EvaluationConfig(agent="new-agent")
-        job = Evaluation(tasks_dir=tasks_dir, jobs_dir=jobs_dir, config=cfg)
-        # Patch _run_task so run() doesn't actually run anything real
+        job = Evaluation(
+            tasks_dir=tasks_dir, jobs_dir=jobs_dir, config=cfg, job_name="my-job"
+        )
         job._sdk = AsyncMock()
         job._sdk.run = AsyncMock(
             return_value=RunResult(task_name="task-b", rewards={"reward": 1.0})
@@ -298,17 +347,100 @@ class TestJobResume:
             await job.run()
         assert any("old-agent" in msg for msg in caplog.messages)
 
-    def test_no_rewards_is_incomplete(self, tmp_path):
-        """result.json with rewards=None is NOT treated as completed."""
-        jobs_dir = self._setup_jobs_dir(tmp_path)
-        self._write_result(jobs_dir, "task-a", rewards=None, error="timeout")
-
+    def test_empty_job_dir_returns_empty(self, tmp_path):
+        """Non-existent job directory returns empty completed dict."""
         tasks_dir = tmp_path / "tasks"
         tasks_dir.mkdir()
-        job = Evaluation(tasks_dir=tasks_dir, jobs_dir=jobs_dir)
-        completed = job._get_completed_tasks()
-        assert "task-a" not in completed
-        assert len(completed) == 0
+        job = Evaluation(
+            tasks_dir=tasks_dir, jobs_dir=tmp_path / "jobs", job_name="nonexistent"
+        )
+        assert job._get_completed_tasks() == {}
+
+
+class TestResolveJobName:
+    """Tests for Evaluation._resolve_job_name — auto-detect job_name for resume.
+
+    Guards ENG-160: auto-generated job_name must be stable across resume calls.
+    """
+
+    def test_no_existing_dirs_generates_timestamp(self, tmp_path):
+        """Fresh jobs_dir with no subdirectories → new timestamp."""
+        jobs_dir = tmp_path / "jobs"
+        jobs_dir.mkdir()
+        name = Evaluation._resolve_job_name(jobs_dir)
+        # Timestamp format: YYYY-MM-DD__HH-MM-SS (20 chars)
+        assert "__" in name
+        assert len(name) == 20
+
+    def test_nonexistent_jobs_dir_generates_timestamp(self, tmp_path):
+        """jobs_dir doesn't exist yet → new timestamp."""
+        name = Evaluation._resolve_job_name(tmp_path / "nonexistent")
+        assert "__" in name
+
+    def test_single_job_dir_reuses_it(self, tmp_path):
+        """Exactly one existing job dir → reuse it for stable resume.
+
+        Guards ENG-160: second Evaluation call resumes into same directory.
+        """
+        jobs_dir = tmp_path / "jobs"
+        (jobs_dir / "2026-05-23__12-00-00").mkdir(parents=True)
+        name = Evaluation._resolve_job_name(jobs_dir)
+        assert name == "2026-05-23__12-00-00"
+
+    def test_multiple_job_dirs_picks_latest(self, tmp_path):
+        """Multiple job dirs → pick the most recent (alphabetically last).
+
+        Guards ENG-160: consistent resume target when multiple runs exist.
+        """
+        jobs_dir = tmp_path / "jobs"
+        (jobs_dir / "2026-05-23__10-00-00").mkdir(parents=True)
+        (jobs_dir / "2026-05-23__12-00-00").mkdir(parents=True)
+        name = Evaluation._resolve_job_name(jobs_dir)
+        assert name == "2026-05-23__12-00-00"
+
+    def test_hidden_dirs_ignored(self, tmp_path):
+        """Dotfiles/hidden dirs are not treated as job directories."""
+        jobs_dir = tmp_path / "jobs"
+        (jobs_dir / ".cache").mkdir(parents=True)
+        name = Evaluation._resolve_job_name(jobs_dir)
+        assert "__" in name  # Generated timestamp, not ".cache"
+
+
+class TestSummaryInJobDir:
+    """Guards ENG-160: summary.json written inside job directory.
+
+    Verifies summary.json is written to both jobs_dir/job_name/summary.json
+    (self-contained) and jobs_dir/summary.json (backward compat).
+    """
+
+    @pytest.mark.asyncio
+    async def test_summary_written_to_job_dir_and_root(self, tmp_path):
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        (tasks_dir / "task-0").mkdir()
+        (tasks_dir / "task-0" / "task.toml").write_text(
+            'version = "1.0"\n[verifier]\ntimeout_sec = 60\n'
+            "[agent]\ntimeout_sec = 60\n[environment]\n"
+        )
+        jobs_dir = tmp_path / "jobs"
+        cfg = EvaluationConfig(retry=RetryConfig(max_retries=0))
+        job = Evaluation(
+            tasks_dir=tasks_dir, jobs_dir=jobs_dir, config=cfg, job_name="test-run"
+        )
+        job._sdk = AsyncMock()
+        job._sdk.run = AsyncMock(
+            return_value=RunResult(task_name="task-0", rewards={"reward": 1.0})
+        )
+        await job.run()
+
+        # Both paths must exist and contain identical content.
+        root_summary = jobs_dir / "summary.json"
+        job_summary = jobs_dir / "test-run" / "summary.json"
+        assert root_summary.exists()
+        assert job_summary.exists()
+        assert json.loads(root_summary.read_text()) == json.loads(
+            job_summary.read_text()
+        )
 
 
 class TestJobRunOrchestration:
