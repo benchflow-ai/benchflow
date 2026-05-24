@@ -606,7 +606,50 @@ def _build_rollout_result(
     (rollout_dir / "timing.json").write_text(json.dumps(timing, indent=2))
     (rollout_dir / "prompts.json").write_text(json.dumps(prompts, indent=2))
     _write_rewards_jsonl(rollout_dir, rewards, finished_at)
+    _write_trainer_artifact(
+        rollout_dir,
+        task_name=task_name,
+        prompts=prompts,
+        trajectory=trajectory,
+        rewards=rewards,
+        model=model,
+        verifier_error=verifier_error,
+    )
     return result
+
+
+def _write_trainer_artifact(
+    rollout_dir: Path,
+    *,
+    task_name: str,
+    prompts: list[str],
+    trajectory: list[dict],
+    rewards: dict | None,
+    model: str | None,
+    verifier_error: str | None,
+) -> None:
+    """Emit ``rollout_dir/trainer/verifiers.jsonl`` for this scored rollout.
+
+    The architecture's train-mode seam (issue #385): every scored rollout
+    that reaches result-building should produce a trainer-ready Verifiers /
+    ORS record so prime-rl / Verifiers can ingest the run directly. Failures
+    here are logged but never block result writing.
+    """
+    from benchflow.trajectories.export import write_rollout_verifiers_jsonl
+
+    try:
+        write_rollout_verifiers_jsonl(
+            rollout_dir,
+            task_id=task_name,
+            prompts=prompts,
+            trajectory=trajectory,
+            rewards=rewards,
+            model=model,
+            environment=task_name,
+            error=verifier_error,
+        )
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning("Trainer artifact write failed: %s", e)
 
 
 def _resolve_prompts(
