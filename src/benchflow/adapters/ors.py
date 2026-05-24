@@ -24,11 +24,17 @@ def _json_safe_float(value: float) -> float:
 
 
 def _event_to_dict(event: RewardEvent) -> dict[str, Any]:
+    # space/granularity are the architecture's mandatory ``(space, granularity,
+    # value)`` reward-record tag (docs/architecture.md, "Every reward record is
+    # tagged"). Preserve them on the outbound ORS seam so memory/action/
+    # reasoning process events stay distinguishable downstream.
     return {
         "type": event.type,
         "reward": _json_safe_float(event.reward),
         "source": event.source,
         "step": event.step,
+        "space": event.space,
+        "granularity": event.granularity,
         "timestamp": event.ts,
     }
 
@@ -59,6 +65,11 @@ class ORSAdapter:
             "items": items,
             "events": [_event_to_dict(e) for e in result.events],
             "error": metadata_error,
+            # Headline ``(space, granularity)`` tag of the aggregate reward —
+            # mirrors the per-event tags above so downstream trainers know
+            # which evaluation space the top-level ``reward`` belongs to.
+            "space": result.space,
+            "granularity": result.granularity,
         }
         if not reward_is_valid:
             metadata["raw_reward"] = repr(result.reward)

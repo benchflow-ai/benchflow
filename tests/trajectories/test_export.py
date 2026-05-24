@@ -7,6 +7,7 @@ metrics, is_completed, is_truncated, example_id, info.
 
 import json
 
+from benchflow.rewards.events import RewardEvent
 from benchflow.rewards.protocol import VerifyResult
 from benchflow.trajectories.export import (
     export_trajectories_to_jsonl,
@@ -117,3 +118,40 @@ def test_export_creates_parent_directory(tmp_path):
     out = tmp_path / "nested" / "deep" / "dataset.jsonl"
     export_trajectories_to_jsonl([], out)
     assert out.exists()
+
+
+def test_record_preserves_reward_space_and_granularity_tags():
+    """Trainer JSONL keeps ``(space, granularity)`` per event and headline.
+
+    Regression for issue #391: ORS reward-event export dropped both tags,
+    so memory/action/reasoning process events lost their evaluation-space
+    metadata at the trainer seam.
+    """
+    events = [
+        RewardEvent(
+            type="dense",
+            reward=0.4,
+            source="memory-scorer",
+            step=2,
+            space="memory",
+            granularity="step",
+        ),
+    ]
+    rec = trajectory_to_verifiers_record(
+        task_id="t",
+        messages=_sample_trajectory(),
+        verify_result=VerifyResult(
+            reward=0.4,
+            items={"memory-scorer": 0.4},
+            events=events,
+            space="memory",
+            granularity="step",
+        ),
+        model="m",
+        environment="clawsbench",
+    )
+    meta = rec["info"]["reward_metadata"]
+    assert meta["space"] == "memory"
+    assert meta["granularity"] == "step"
+    assert meta["events"][0]["space"] == "memory"
+    assert meta["events"][0]["granularity"] == "step"
