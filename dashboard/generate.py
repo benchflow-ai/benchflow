@@ -66,6 +66,7 @@ JOBS_ROOT_ENV = "BENCHFLOW_DASHBOARD_JOBS_ROOT"
 _ROADMAP_MODULE: ModuleType | None = None
 _SCORING_MODULE: ModuleType | None = None
 _REWARD_EVENTS_MODULE: ModuleType | None = None
+_PATHS_MODULE: ModuleType | None = None
 
 
 def _load_local_module(module_name: str, path: Path) -> ModuleType:
@@ -209,6 +210,28 @@ def _load_reward_events_module() -> ModuleType:
 
 def _memory_score_from_result(result: dict) -> float | None:
     return _load_reward_events_module().memory_score_from_result(result)
+
+
+def _load_paths_module() -> ModuleType:
+    """Load the symlink-safe traversal helpers without importing ``benchflow``."""
+    global _PATHS_MODULE
+    if _PATHS_MODULE is not None:
+        return _PATHS_MODULE
+    paths_path = SRC / "benchflow" / "_paths.py"
+    _PATHS_MODULE = _load_local_module("_benchflow_dashboard_paths", paths_path)
+    return _PATHS_MODULE
+
+
+def _is_safe_regular_file(p: Path) -> bool:
+    return bool(_load_paths_module().is_safe_regular_file(p))
+
+
+def _iter_safe_children(directory: Path, *, context: str):
+    yield from _load_paths_module().iter_safe_children(directory, context=context)
+
+
+def _iter_safe_tree(root: Path, *, context: str):
+    yield from _load_paths_module().iter_safe_tree(root, context=context)
 
 
 def remembered_jobs_root(out: Path) -> Path | None:
@@ -432,10 +455,15 @@ def _lang_for(p: Path) -> str:
 def _file_payload(p: Path) -> tuple[str | None, int, bool, str]:
     """Read a text file, capped. Returns (content, total_lines, truncated, lang).
 
-    Binary and unreadable files return ``(None, 0, False, lang)``. The line
-    count is the file's *real* length even when the embedded content is capped.
+    Binary and unreadable files return ``(None, 0, False, lang)``. Symlinks
+    are refused outright (#390, #416) — an attacker-placed link inside an
+    artifact or labs directory must never push host-readable content into
+    ``data.json``. The line count is the file's *real* length even when the
+    embedded content is capped.
     """
     lang = _lang_for(p)
+    if not _is_safe_regular_file(p):
+        return None, 0, False, lang
     try:
         raw = p.read_bytes()
     except Exception:
@@ -544,14 +572,17 @@ def _task_artifacts(d: Path) -> list[dict]:
     verbatim.
     """
     arts: list[dict] = []
-    for child in sorted(d.iterdir()):
-        if child.is_file() and not _is_empty(child):  # R1: skip 0-byte files
+    for child in _iter_safe_children(d, context="rollout artifacts"):
+        if _is_safe_regular_file(child) and not _is_empty(child):  # R1: skip 0-byte files
             arts.append(_artifact(child.name, _ART_KIND.get(child.name, "file"), child))
     for sub in ("trajectory", "verifier", "agent", "artifacts"):
         subdir = d / sub
         if not subdir.is_dir():
             continue
-        for f in sorted(p for p in subdir.rglob("*") if p.is_file()):
+        # `iter_safe_tree` walks with followlinks=False and rejects symlinked
+        # files; this is the #390 fix — agent-controlled artifact symlinks
+        # must never embed host file content into ``data.json``.
+        for f in _iter_safe_tree(subdir, context=f"rollout artifacts/{sub}"):
             if _is_empty(f):  # R1: skip 0-byte files
                 continue
             rel = f.relative_to(d).as_posix()
@@ -1005,8 +1036,10 @@ def collect_experiments() -> list[dict]:
     exp = ROOT / "experiments"
     if exp.is_dir():
         buckets: dict[str, dict] = {}
-        for f in sorted(exp.iterdir()):
-            if not f.is_file() or f.name.startswith(".") or _is_empty(f):
+        # Symlinks under experiments/ are refused (#416) so an attacker
+        # cannot leak host files through the experiments timeline.
+        for f in _iter_safe_children(exp, context="experiments timeline"):
+            if not _is_safe_regular_file(f) or f.name.startswith(".") or _is_empty(f):
                 continue
             low = f.name.lower()
             match = next((r for r in EXP_RULES if r[0] in low), None)
@@ -1041,13 +1074,16 @@ def collect_experiments() -> list[dict]:
 
     labs = ROOT / "labs"
     if labs.is_dir():
-        for sub in sorted(labs.iterdir()):
+        # Symlinks under labs/<sub> are refused (#416). `iter_safe_children`
+        # rejects symlinked lab roots; `iter_safe_tree` walks without
+        # following links inside each lab.
+        for sub in _iter_safe_children(labs, context="labs timeline"):
             if not sub.is_dir() or sub.name.startswith("."):
                 continue
             all_files = [
                 p
-                for p in sorted(sub.rglob("*"))
-                if p.is_file() and not p.name.startswith(".") and not _is_empty(p)
+                for p in _iter_safe_tree(sub, context=f"labs/{sub.name}")
+                if not p.name.startswith(".") and not _is_empty(p)
             ]
             cap = 60
             files = all_files[:cap]

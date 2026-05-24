@@ -1,31 +1,39 @@
-"""Path safety helpers — reject (don't slugify) unsafe path inputs.
+"""Path safety helpers — reject unsafe inputs and refuse to follow symlinks.
 
-BenchFlow accepts user-controlled strings (case ids, skill names, trace file
-paths) and uses them as filesystem path segments. A name like ``../escape``
-or ``a/b`` traverses outside the intended tree, so we validate each segment
-before it is used as a path component.
+Two independent helper sets live here:
 
-These helpers **reject** invalid names rather than slugifying them. The reasoning:
+1. **Segment validation** (``safe_path_segment``, ``assert_within``):
+   Reject user-controlled strings (case ids, skill names) that would traverse
+   outside the intended tree.
 
-* A silent slug rewrites the identifier the caller passed in; two distinct
-  inputs (``a/b`` and ``a-b``) collapse to the same directory, which can
-  shadow data or make GEPA / job-result lookups fall back to the wrong case.
-* Slugification can also mask programmer error — a typo that produces ``..``
-  silently maps to a usable name instead of surfacing the bug.
-* Callers that genuinely need a forgiving UX (e.g. user-facing tooling that
-  derives a slug from a free-form title) can slugify upstream, then call
-  :func:`safe_path_segment` on the slug as a final guard.
-
-For containment checks across multiple segments (or once a full path has been
-constructed), use :func:`assert_within`, which resolves symlinks and verifies
-the resulting path stays under a known root.
+2. **Symlink defense** (``is_safe_regular_file``, ``iter_safe_tree``, etc.):
+   Walk directories we do not own without following symlinks, so an
+   attacker-placed link cannot pull host files into dashboard payloads,
+   judge prompts, or sandbox uploads.
 """
 
 from __future__ import annotations
 
+import logging
+import os
+import stat
+from collections.abc import Iterator
 from pathlib import Path
 
-__all__ = ["safe_path_segment", "assert_within"]
+__all__ = [
+    "safe_path_segment",
+    "assert_within",
+    "is_safe_regular_file",
+    "is_safe_regular_dir",
+    "iter_safe_children",
+    "iter_safe_tree",
+    "ignore_symlinks",
+]
+
+logger = logging.getLogger(__name__)
+
+
+# ── Segment validation ───────────────────────────────────────────────
 
 
 def safe_path_segment(name: str, *, kind: str = "name") -> str:
@@ -88,10 +96,6 @@ def assert_within(child: Path, root: Path) -> Path:
     Uses :meth:`Path.resolve` so symlinks are followed and ``..`` segments
     collapsed before the containment check. Returns the resolved child.
 
-    Defense-in-depth helper for sites that already validated each path
-    segment but want to be sure no later code (e.g. ``shutil.copytree``,
-    ``Path.write_text``) escaped via an unexpected route.
-
     Args:
         child: A path that should be inside ``root``.
         root: The directory ``child`` must not escape.
@@ -113,3 +117,104 @@ def assert_within(child: Path, root: Path) -> Path:
             f"which is outside {resolved_root}"
         ) from exc
     return resolved_child
+
+
+# ── Symlink defense ──────────────────────────────────────────────────
+
+
+def is_safe_regular_file(path: Path) -> bool:
+    """True if *path* exists, is a regular file, and is not a symlink.
+
+    Uses ``os.lstat`` so symlinks, fifos, sockets, and device files all
+    return False. A non-existent path also returns False.
+    """
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return False
+    return stat.S_ISREG(st.st_mode) and not stat.S_ISLNK(st.st_mode)
+
+
+def is_safe_regular_dir(path: Path) -> bool:
+    """True if *path* is a directory and not a symlink to one."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return False
+    return stat.S_ISDIR(st.st_mode) and not stat.S_ISLNK(st.st_mode)
+
+
+def iter_safe_children(
+    directory: Path,
+    *,
+    context: str = "directory walk",
+) -> Iterator[Path]:
+    """Yield direct children of *directory*, skipping symlinks with a warning."""
+    try:
+        entries = sorted(directory.iterdir())
+    except (OSError, NotADirectoryError):
+        return
+    for child in entries:
+        if child.is_symlink():
+            logger.warning(
+                "%s: skipping symlink %s (refusing to follow)", context, child
+            )
+            continue
+        yield child
+
+
+def iter_safe_tree(
+    root: Path,
+    *,
+    context: str = "tree walk",
+) -> Iterator[Path]:
+    """Recursively yield regular files under *root*, never following symlinks.
+
+    Uses ``os.walk(followlinks=False)`` so directory symlinks are also not
+    descended into.
+    """
+    if not is_safe_regular_dir(root):
+        if Path(root).is_symlink():
+            logger.warning(
+                "%s: refusing to descend into symlinked root %s", context, root
+            )
+        return
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        base = Path(dirpath)
+        kept_dirs: list[str] = []
+        for name in dirnames:
+            child = base / name
+            if child.is_symlink():
+                logger.warning(
+                    "%s: skipping symlinked directory %s (refusing to follow)",
+                    context,
+                    child,
+                )
+                continue
+            kept_dirs.append(name)
+        dirnames[:] = sorted(kept_dirs)
+        for name in sorted(filenames):
+            f = base / name
+            if not is_safe_regular_file(f):
+                logger.warning(
+                    "%s: skipping non-regular path %s (symlink or special file)",
+                    context,
+                    f,
+                )
+                continue
+            yield f
+
+
+def ignore_symlinks(directory: str, contents: list[str]) -> list[str]:
+    """``shutil.copytree`` ``ignore=`` callback that drops every symlink."""
+    skipped: list[str] = []
+    for name in contents:
+        if Path(directory, name).is_symlink():
+            skipped.append(name)
+    if skipped:
+        logger.warning(
+            "copytree: skipping symlinked entries under %s: %s",
+            directory,
+            ", ".join(sorted(skipped)),
+        )
+    return skipped
