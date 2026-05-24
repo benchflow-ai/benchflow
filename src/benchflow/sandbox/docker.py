@@ -34,6 +34,7 @@ from benchflow.sandbox._compose import (
     COMPOSE_NO_NETWORK_PATH,
     COMPOSE_PREBUILT_PATH,
 )
+from benchflow.sandbox.protocol import SandboxImage
 from benchflow.task.config import SandboxConfig
 from benchflow.task.env import resolve_env_vars
 from benchflow.task.paths import RolloutPaths, SandboxPaths
@@ -430,6 +431,144 @@ class DockerSandbox(BaseSandbox):
             ["cp", f"{service}:{source_dir}/.", str(target_dir)],
             check=True,
         )
+
+    # ── Container snapshot/restore (Branch substrate) ────────────────────
+    #
+    # ``docker commit`` captures the ``main`` container's filesystem into a
+    # local image; restore re-creates ``main`` from that image. Snapshots
+    # are container-level only — they include the filesystem the agent has
+    # mutated, but **not** mounted host volumes (rollout dir, verifier dir)
+    # and **not** sibling compose services. The Branch lifecycle composes
+    # this with the Environment-state snapshot (DB dump) that captures the
+    # mounted/sidecar state separately (#384).
+
+    @property
+    def supports_snapshot(self) -> bool:
+        return True
+
+    async def snapshot(self, name: str | None = None) -> SandboxImage:
+        """Commit the current ``main`` container into a re-usable image.
+
+        Uses ``docker commit`` so the snapshot lives in the local Docker
+        image store. Returns a :class:`SandboxImage` whose ``ref`` is the
+        committed image tag — pass it back to :meth:`restore` to roll the
+        ``main`` container back to this checkpoint.
+        """
+        from benchflow.sandbox.protocol import SandboxSnapshotNotSupported
+
+        container_id = await self._main_container_id()
+        if not container_id:
+            raise SandboxSnapshotNotSupported(
+                "DockerSandbox.snapshot requires the main container to be "
+                "running; call start() before snapshot()."
+            )
+        suffix = name or uuid.uuid4().hex[:12]
+        tag = _sanitize_docker_image_name(
+            f"bf-snap-{self.environment_name}-{suffix}"
+        )
+        proc = await asyncio.create_subprocess_exec(
+            "docker",
+            "commit",
+            container_id,
+            tag,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout_bytes, stderr_bytes = await proc.communicate()
+        if proc.returncode != 0:
+            raise RuntimeError(
+                "docker commit failed: "
+                f"{(stderr_bytes or stdout_bytes or b'').decode(errors='replace')}"
+            )
+        digest = (stdout_bytes or b"").decode(errors="replace").strip()
+        self.logger.info(f"Snapshot created: {tag} ({digest})")
+        return SandboxImage(
+            provider="docker",
+            ref=tag,
+            meta={"container_id": container_id, "digest": digest},
+        )
+
+    async def restore(self, image: SandboxImage) -> None:
+        """Restore the ``main`` container from a previously committed image.
+
+        Stops and removes the current ``main`` container, then ``docker
+        run``s a replacement from ``image.ref``. Sibling compose services
+        are untouched — they keep running as before, matching the
+        documented container-only scope of the Sandbox layer.
+        """
+        from benchflow.sandbox.protocol import SandboxSnapshotNotSupported
+
+        if image.provider != "docker":
+            raise SandboxSnapshotNotSupported(
+                f"DockerSandbox.restore cannot consume a {image.provider!r} "
+                f"snapshot (got ref={image.ref!r}); snapshots are not portable "
+                "across providers."
+            )
+
+        container_id = await self._main_container_id()
+        if container_id:
+            await self._docker_cli(["stop", container_id])
+            await self._docker_cli(["rm", "-f", container_id])
+
+        project_name = _sanitize_docker_compose_project_name(self.session_id)
+        new_name = f"{project_name}-main-restored-{uuid.uuid4().hex[:8]}"
+
+        run_cmd = [
+            "run",
+            "--detach",
+            "--name",
+            new_name,
+            "--network",
+            f"{project_name}_default",
+            "--label",
+            f"com.docker.compose.project={project_name}",
+            "--label",
+            "com.docker.compose.service=main",
+            image.ref,
+            "sleep",
+            "infinity",
+        ]
+        result = await self._docker_cli(run_cmd, check=False)
+        if result.return_code != 0:
+            raise RuntimeError(
+                f"docker run from snapshot {image.ref!r} failed: "
+                f"{result.stderr or result.stdout}"
+            )
+        self.logger.info(f"Snapshot restored: {image.ref} -> {new_name}")
+
+    async def _main_container_id(self) -> str | None:
+        """Return the container id of the ``main`` compose service, or None."""
+        try:
+            result = await self._run_docker_compose_command(
+                ["ps", "-q", "main"], check=False
+            )
+        except RuntimeError:
+            return None
+        cid = (result.stdout or "").strip().splitlines()
+        return cid[0] if cid else None
+
+    async def _docker_cli(
+        self, args: list[str], check: bool = True
+    ) -> ExecResult:
+        """Run a raw ``docker`` CLI command — bypasses compose."""
+        proc = await asyncio.create_subprocess_exec(
+            "docker",
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout_bytes, stderr_bytes = await proc.communicate()
+        result = ExecResult(
+            stdout=(stdout_bytes or b"").decode(errors="replace"),
+            stderr=(stderr_bytes or b"").decode(errors="replace"),
+            return_code=proc.returncode or 0,
+        )
+        if check and result.return_code != 0:
+            raise RuntimeError(
+                f"docker {' '.join(args)} failed: "
+                f"{result.stderr or result.stdout}"
+            )
+        return result
 
     async def services(self) -> list[str]:
         """List compose service names defined for this sandbox.
