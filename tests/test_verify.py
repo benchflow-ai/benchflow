@@ -767,7 +767,7 @@ class TestScrapedTrajectoryTrust:
                     patch(
                         "benchflow.rollout.connect_acp",
                         new_callable=AsyncMock,
-                        return_value=(mock_acp, mock_session, "test-agent"),
+                        return_value=(mock_acp, mock_session, MagicMock(), "test-agent"),
                     ),
                     patch(
                         "benchflow.rollout.execute_prompts",
@@ -832,7 +832,7 @@ class TestScrapedTrajectoryTrust:
                 patch(
                     "benchflow.rollout.connect_acp",
                     new_callable=AsyncMock,
-                    return_value=(mock_acp, mock_session, "test-agent"),
+                    return_value=(mock_acp, mock_session, MagicMock(), "test-agent"),
                 ),
                 patch(
                     "benchflow.rollout.execute_prompts",

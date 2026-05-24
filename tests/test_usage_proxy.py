@@ -635,7 +635,7 @@ async def test_rollout_connect_wires_usage_proxy_before_acp(tmp_path, monkeypatc
         assert kwargs["agent_env"]["OPENAI_BASE_URL"] == (
             "http://host.docker.internal:32124"
         )
-        return (AsyncMock(), AsyncMock(), "codex-acp")
+        return (AsyncMock(), AsyncMock(), AsyncMock(), "codex-acp")
 
     monkeypatch.setattr("benchflow.rollout.ensure_bedrock_proxy_runtime", fake_bedrock)
     monkeypatch.setattr("benchflow.rollout.ensure_usage_proxy_runtime", fake_usage)

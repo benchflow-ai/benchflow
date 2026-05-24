@@ -63,7 +63,7 @@ class TestConnectAsEnvMerge:
             patch("benchflow.rollout.resolve_agent_env", side_effect=fake_resolve),
             patch("benchflow.rollout.connect_acp", new_callable=AsyncMock) as mock_conn,
         ):
-            mock_conn.return_value = (AsyncMock(), AsyncMock(), "agent")
+            mock_conn.return_value = (AsyncMock(), AsyncMock(), AsyncMock(), "agent")
             role = _mock_trial._config.scenes[0].roles[0]
             await _mock_trial.connect_as(role)
 
@@ -89,7 +89,7 @@ class TestConnectAsEnvMerge:
             patch("benchflow.rollout.resolve_agent_env", side_effect=fake_resolve),
             patch("benchflow.rollout.connect_acp", new_callable=AsyncMock) as mock_conn,
         ):
-            mock_conn.return_value = (AsyncMock(), AsyncMock(), "agent")
+            mock_conn.return_value = (AsyncMock(), AsyncMock(), AsyncMock(), "agent")
             role = _mock_trial._config.scenes[0].roles[0]
             await _mock_trial.connect_as(role)
 
@@ -115,7 +115,7 @@ class TestConnectAsEnvMerge:
             patch("benchflow.rollout.resolve_agent_env", side_effect=fake_resolve),
             patch("benchflow.rollout.connect_acp", new_callable=AsyncMock) as mock_conn,
         ):
-            mock_conn.return_value = (AsyncMock(), AsyncMock(), "agent")
+            mock_conn.return_value = (AsyncMock(), AsyncMock(), AsyncMock(), "agent")
             role = _mock_trial._config.scenes[0].roles[0]
             await _mock_trial.connect_as(role)
 
@@ -136,7 +136,7 @@ class TestConnectAsEnvMerge:
             patch("benchflow.rollout.resolve_agent_env", side_effect=fake_resolve),
             patch("benchflow.rollout.connect_acp", new_callable=AsyncMock) as mock_conn,
         ):
-            mock_conn.return_value = (AsyncMock(), AsyncMock(), "agent")
+            mock_conn.return_value = (AsyncMock(), AsyncMock(), AsyncMock(), "agent")
             role = _mock_trial._config.scenes[0].roles[0]
             await _mock_trial.connect_as(role)
 
@@ -174,7 +174,7 @@ class TestConnectAsEnvMerge:
             patch("benchflow.rollout.connect_acp", new_callable=AsyncMock) as mock_conn,
         ):
             mock_bedrock.return_value = ({"ANTHROPIC_API_KEY": "from-config"}, None)
-            mock_conn.return_value = (AsyncMock(), AsyncMock(), "agent")
+            mock_conn.return_value = (AsyncMock(), AsyncMock(), AsyncMock(), "agent")
 
             await _mock_trial.connect_as(role)
 
