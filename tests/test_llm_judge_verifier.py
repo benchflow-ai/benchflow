@@ -629,38 +629,10 @@ class TestTestScriptStillDefault:
         with pytest.raises(RewardFileNotFoundError, match="No reward file found"):
             await Verifier(task, rollout_paths, sandbox).verify()
 
-    @pytest.mark.asyncio
-    async def test_nonzero_test_script_with_reward_file_accepts_reward(
-        self, tmp_path: Path
-    ) -> None:
-        """Guards ENG-150: nonzero exit + valid reward → accepted, not verifier_errored.
-
-        Replaces pre-ENG-150 test that rejected reward when rc!=0. Since
-        _clear_reward_outputs() wipes stale files before the run, any reward
-        file present was written by THIS invocation — safe to accept.
-        """
-        task = _make_task(tmp_path, 'version = "1.0"\n[verifier]\n')
-        task.paths.tests_dir = task.task_dir / "tests"
-        task.paths.test_path = task.task_dir / "tests" / "test.sh"
-
-        sandbox = MagicMock()
-        sandbox.upload_dir = AsyncMock()
-        sandbox.is_mounted = True
-
-        rollout_paths = RolloutPaths(tmp_path / "rollout")
-        rollout_paths.mkdir()
-
-        async def exec_failed_reward(*_args: object, **_kwargs: object) -> MagicMock:
-            if sandbox.exec.await_count == 1:
-                return MagicMock(return_code=0, stdout="")
-            rollout_paths.reward_text_path.write_text("1.0")
-            return MagicMock(return_code=1, stdout="boom")
-
-        sandbox.exec = AsyncMock(side_effect=exec_failed_reward)
-
-        result = await Verifier(task, rollout_paths, sandbox).verify()
-        assert result.rewards is not None
-        assert result.rewards["reward"] == 1.0
+    # NOTE: pre-ENG-150 test `test_nonzero_test_script_cannot_turn_reward_file_into_pass`
+    # was deleted here (not rewritten). ENG-150 intentionally changed the verifier
+    # contract: nonzero exit + valid reward is now accepted. The new behavior is
+    # covered by TestVerifierNonzeroExitRewardAcceptance in test_oracle_chokepoint.py.
 
     @pytest.mark.asyncio
     async def test_reward_json_requires_canonical_reward_key(
