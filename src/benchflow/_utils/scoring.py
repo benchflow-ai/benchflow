@@ -9,6 +9,7 @@ PIPE_CLOSED = "pipe_closed"
 ACP_ERROR = "acp_error"
 IDLE_TIMEOUT = "idle_timeout"
 INFRA_ERROR = "infra_failure"
+SANDBOX_SETUP = "sandbox_setup"
 TIMED_OUT = "timeout"
 
 # Verifier error category constants
@@ -41,6 +42,8 @@ def classify_error(error: str | None) -> str | None:
         return PIPE_CLOSED
     if "ACP error" in error:
         return ACP_ERROR
+    if "sandbox startup" in lower or "sandbox creation" in lower:
+        return SANDBOX_SETUP
     if "prompt exceeded wall-clock budget" in lower:
         return TIMED_OUT
     if _looks_like_infra_error(lower):
