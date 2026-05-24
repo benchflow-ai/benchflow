@@ -263,7 +263,25 @@ async def connect_acp(
             await asyncio.wait_for(acp_client.set_model(acp_model_id), timeout=60)
             logger.info(f"Model set to: {acp_model_id} (from {acp_model_input})")
         except Exception as e:
-            logger.warning(f"Failed to set model via ACP: {e}")
+            # Fail closed — silently continuing leaves the run on the agent's
+            # default/previous model while result metadata claims ``model`` was
+            # honored. That mis-attributes the entire trajectory. The caller
+            # asked for a specific model; if ACP can't honor it we abort the
+            # rollout. Agents that genuinely don't support ``session/set_model``
+            # should set ``supports_acp_set_model=False`` in the registry so
+            # ``_should_skip_acp_set_model`` short-circuits this branch.
+            logger.error(
+                "ACP session/set_model failed for agent=%s model=%s: %s",
+                agent,
+                acp_model_id,
+                e,
+            )
+            with contextlib.suppress(Exception):
+                await acp_client.close()
+            raise RuntimeError(
+                f"Failed to set model {acp_model_id!r} via ACP for agent "
+                f"{agent!r}: {e}"
+            ) from e
     elif model:
         logger.info(
             f"Skipping ACP set_model for {agent} — launch/env config owns model selection"
