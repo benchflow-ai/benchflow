@@ -344,39 +344,4 @@ uv run ruff check .
 
 **Verify:** 1910+ passed, 0 failed. ruff + ty clean.
 
----
 
-## Quick Smoke Test (all features in one run)
-
-A single command that exercises most features at once:
-
-```bash
-uv run bench eval create \
-  --tasks-dir $TASKS \
-  --include hello-world-task \
-  --include threejs-to-obj \
-  --exclude data-to-d3 \
-  --agent gemini --model gemini-2.5-flash \
-  --sandbox daytona \
-  --agent-idle-timeout 600 \
-  --jobs-dir /tmp/smoke-test
-
-# then audit
-python tests/integration/check_results.py /tmp/smoke-test
-grep -rn "AIzaSy\|dtn_" /tmp/smoke-test/
-python3 -c "
-import json, pathlib
-for f in pathlib.Path('/tmp/smoke-test').rglob('result.json'):
-    r = json.loads(f.read_text())
-    fields = ['error_category','idle_timeout_info','sandbox_startup_info',
-              'transport_error_info','verifier_timeout_info','verifier_error_category']
-    missing = [k for k in fields if k not in r]
-    print(f'{f.parent.name}: reward={r.get(\"reward\")}, missing_diags={missing}')
-"
-```
-
-**Verify:**
-- 2 tasks run (hello-world-task + threejs-to-obj), data-to-d3 excluded.
-- All 6 diagnostic fields present in every result.json.
-- No secret leaks.
-- `threejs-to-obj` shows ENG-150 behavior (rc=1 accepted if verifier produces reward).
