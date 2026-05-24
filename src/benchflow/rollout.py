@@ -970,7 +970,6 @@ class Rollout:
         self._rewards: dict | None = None
         self._verifier_error: str | None = None
         self._error: str | None = None
-        self._error_category: str | None = None
         self._idle_timeout_info: dict | None = None
         self._sandbox_startup_info: dict | None = None
         self._transport_error_info: dict | None = None
