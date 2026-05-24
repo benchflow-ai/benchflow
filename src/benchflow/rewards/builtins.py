@@ -16,6 +16,7 @@ from benchflow.rewards.rubric_config import (
     JudgeConfig,
     RubricConfig,
     ScoringConfig,
+    _coerce_space,
     load_rubric,
 )
 from benchflow.rewards.validation import is_valid_reward_number
@@ -223,6 +224,7 @@ class LLMJudgeRewardFunc:
                         max=raw.get("max", 100.0),
                         weight=raw.get("weight", 1.0),
                         files=raw.get("files", []),
+                        space=_coerce_space(raw.get("space")),
                     )
                 )
             return RubricConfig(
@@ -339,6 +341,15 @@ class LLMJudgeRewardFunc:
                     reward=norm_score,
                     source=f"criterion:{criterion.id}",
                     step=idx,
+                    # Dense per-criterion events are step-granularity by
+                    # construction (``step=idx`` is set). The space is whatever
+                    # the rubric declared for the criterion — defaults to
+                    # ``"output"`` to preserve back-compat, but a process-like
+                    # criterion can opt into ``"action"`` / ``"reasoning"`` /
+                    # ``"memory"`` so trainers and ORS adapters can tell a
+                    # dense signal from a terminal outcome (#396).
+                    space=criterion.space,
+                    granularity="step",
                 )
             )
 
