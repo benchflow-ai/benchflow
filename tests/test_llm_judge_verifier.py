@@ -630,10 +630,15 @@ class TestTestScriptStillDefault:
             await Verifier(task, rollout_paths, sandbox).verify()
 
     @pytest.mark.asyncio
-    async def test_nonzero_test_script_cannot_turn_reward_file_into_pass(
+    async def test_nonzero_test_script_with_reward_file_accepts_reward(
         self, tmp_path: Path
     ) -> None:
-        """Guards the reward-output regression on v0.5-integration@ffef85d."""
+        """Guards ENG-150: nonzero exit + valid reward → accepted, not verifier_errored.
+
+        Replaces pre-ENG-150 test that rejected reward when rc!=0. Since
+        _clear_reward_outputs() wipes stale files before the run, any reward
+        file present was written by THIS invocation — safe to accept.
+        """
         task = _make_task(tmp_path, 'version = "1.0"\n[verifier]\n')
         task.paths.tests_dir = task.task_dir / "tests"
         task.paths.test_path = task.task_dir / "tests" / "test.sh"
@@ -653,8 +658,9 @@ class TestTestScriptStillDefault:
 
         sandbox.exec = AsyncMock(side_effect=exec_failed_reward)
 
-        with pytest.raises(VerifierOutputParseError, match="rc=1"):
-            await Verifier(task, rollout_paths, sandbox).verify()
+        result = await Verifier(task, rollout_paths, sandbox).verify()
+        assert result.rewards is not None
+        assert result.rewards["reward"] == 1.0
 
     @pytest.mark.asyncio
     async def test_reward_json_requires_canonical_reward_key(

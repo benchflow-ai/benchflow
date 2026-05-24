@@ -604,6 +604,126 @@ class TestEvalCreateIncludeExclude:
         assert captured["exclude"] == {"task-b"}
 
 
+class TestVerifierNonzeroExitRewardAcceptance:
+    """Guards ENG-150: verifiers exiting nonzero after reward 0 must be
+    classified as 'failed' (honest model failure), not 'verifier_errored'."""
+
+    @pytest.mark.asyncio
+    async def test_nonzero_exit_with_reward_zero_classified_as_failed(
+        self, tmp_path: Path
+    ):
+        """Guards ENG-150: rc!=0 + reward=0.0 → 'failed', not 'verifier_errored'."""
+        from benchflow._utils.scoring import classify_result
+
+        outcome = classify_result(reward=0.0, error=None, verifier_error=None)
+        assert outcome == "failed"
+
+    @pytest.mark.asyncio
+    async def test_nonzero_exit_reward_zero_accepted_by_verifier(
+        self, tmp_path: Path
+    ):
+        """Guards ENG-150: Verifier accepts reward file when script exits nonzero."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from benchflow.task import RolloutPaths, Verifier
+        from benchflow.task.config import TaskConfig
+
+        task_dir = tmp_path / "task"
+        task_dir.mkdir()
+        tests_dir = task_dir / "tests"
+        tests_dir.mkdir()
+        test_sh = tests_dir / "test.sh"
+        test_sh.write_text("#!/bin/bash\nexit 1\n")
+
+        task = MagicMock()
+        task.config = TaskConfig.model_validate_toml('version = "1.0"\n[verifier]\n')
+        task.paths.tests_dir = tests_dir
+        task.paths.test_path = test_sh
+
+        sandbox = MagicMock()
+        sandbox.upload_dir = AsyncMock()
+        sandbox.is_mounted = True
+
+        rollout_paths = RolloutPaths(tmp_path / "rollout")
+        rollout_paths.mkdir()
+
+        async def exec_writes_reward_zero(
+            *_args: object, **_kwargs: object
+        ) -> MagicMock:
+            if sandbox.exec.await_count == 1:
+                return MagicMock(return_code=0, stdout="")
+            rollout_paths.reward_text_path.write_text("0.0")
+            return MagicMock(return_code=1, stdout="tests failed")
+
+        sandbox.exec = AsyncMock(side_effect=exec_writes_reward_zero)
+
+        result = await Verifier(task, rollout_paths, sandbox).verify()
+        assert result.rewards is not None
+        assert result.rewards["reward"] == 0.0
+
+    @pytest.mark.asyncio
+    async def test_nonzero_exit_reward_json_zero_accepted(self, tmp_path: Path):
+        """Guards ENG-150: reward.json with reward=0 accepted despite rc!=0."""
+        import json
+        from unittest.mock import AsyncMock, MagicMock
+
+        from benchflow.task import RolloutPaths, Verifier
+        from benchflow.task.config import TaskConfig
+
+        task_dir = tmp_path / "task"
+        task_dir.mkdir()
+        tests_dir = task_dir / "tests"
+        tests_dir.mkdir()
+        test_sh = tests_dir / "test.sh"
+        test_sh.write_text("#!/bin/bash\nexit 1\n")
+
+        task = MagicMock()
+        task.config = TaskConfig.model_validate_toml('version = "1.0"\n[verifier]\n')
+        task.paths.tests_dir = tests_dir
+        task.paths.test_path = test_sh
+
+        sandbox = MagicMock()
+        sandbox.upload_dir = AsyncMock()
+        sandbox.is_mounted = True
+
+        rollout_paths = RolloutPaths(tmp_path / "rollout")
+        rollout_paths.mkdir()
+
+        async def exec_writes_reward_json(
+            *_args: object, **_kwargs: object
+        ) -> MagicMock:
+            if sandbox.exec.await_count == 1:
+                return MagicMock(return_code=0, stdout="")
+            rollout_paths.reward_json_path.write_text(
+                json.dumps({"reward": 0.0})
+            )
+            return MagicMock(return_code=1, stdout="tests failed")
+
+        sandbox.exec = AsyncMock(side_effect=exec_writes_reward_json)
+
+        result = await Verifier(task, rollout_paths, sandbox).verify()
+        assert result.rewards is not None
+        assert result.rewards["reward"] == 0.0
+
+    def test_end_to_end_scoring_nonzero_verifier_reward_zero(self):
+        """Guards ENG-150: full classify_score_outcome pipeline gives 'failed'."""
+        from benchflow._utils.scoring import classify_score_outcome
+
+        result = {
+            "rewards": {"reward": 0.0},
+            "error": None,
+            "verifier_error": None,
+        }
+        assert classify_score_outcome(result) == "failed"
+
+    def test_nonzero_exit_no_reward_still_verifier_error(self, tmp_path: Path):
+        """Guards ENG-150 doesn't regress: rc!=0 with NO reward file is still an error."""
+        from benchflow._utils.scoring import classify_result
+
+        outcome = classify_result(reward=None, error=None, verifier_error="verifier crashed: rc=7")
+        assert outcome == "verifier_errored"
+
+
 class TestEffectiveModel:
     """The helper introduced in Layer 3 — single source of truth for the rule
     "oracle never gets a model; non-oracle agents fall back to DEFAULT_MODEL"."""
