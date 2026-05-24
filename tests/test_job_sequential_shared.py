@@ -451,7 +451,9 @@ async def test_sequential_shared_surfaces_memory_scores_in_summary_and_artifacts
         "value": 0.5,
         "tag": "memory",
         "step_index": None,
-        "meta": {"space": "memory", "granularity": "terminal"},
+        "space": "memory",
+        "granularity": "terminal",
+        "meta": {},
     }
     serialized_rewards = json.dumps(reward_lines)
     assert "expected_skills" not in serialized_rewards
