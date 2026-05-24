@@ -207,9 +207,19 @@ a branch quiesces the agent and services, restores a snapshot, and explores
 an alternative continuation. An environment with no `[environment.state]`
 table is stateless — `snapshot`/`restore` raise `RuntimeError`.
 
+## Reset — `reset`
+
+`reset` returns the environment to the per-task baseline so it can be reused
+for a fresh episode without tearing down the sandbox (distinct from
+`restore`, which rolls back to an arbitrary snapshot). For an environment
+that declares an `[environment.state]` table, `provision` captures a
+baseline; `reset` then stops the framework-started services, restores the
+baseline, and restarts the services. For an `owns_lifecycle = true` manifest
+the framework cannot restart entrypoint-owned services; `reset` is then a
+no-op (and the host must recycle the container for a hard reset).
+
 ## Not yet implemented
 
-`ManifestEnvironment` raises `NotImplementedError` or does not exercise:
+`ManifestEnvironment` does not exercise:
 
-- **`reset`** — full environment reset (distinct from snapshot roll-back).
 - **Sidecar / shared-fleet topology** — host-exposed ports, `AccountBroker`.

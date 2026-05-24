@@ -251,7 +251,77 @@ async def test_snapshot_restore_on_stateless_env_raise_clear_error():
         await env.restore(StateSnapshot(id="x"))
 
 
-async def test_reset_not_implemented():
+async def test_reset_before_provision_is_a_clear_error():
+    """Reset has no baseline before provision — fail loudly instead of silently
+    doing nothing. Guards the fix for #383: reset() used to ``raise
+    NotImplementedError`` unconditionally, masking real lifecycle bugs."""
     env = ManifestEnvironment(CLAWS, sandbox=FakeSandbox())
-    with pytest.raises(NotImplementedError):
+    with pytest.raises(RuntimeError, match="provision"):
         await env.reset()
+
+
+async def test_reset_restarts_framework_started_services_for_stateless_env():
+    """A stateless framework-started manifest has no baseline to restore, but
+    reset must still cycle the services so the next episode starts from a
+    clean process state. Guards the fix for #383."""
+    sandbox = FakeSandbox()
+    env = ManifestEnvironment(CLAWS, sandbox=sandbox)
+    await env.provision(ctx=None)
+    sandbox.exec_calls.clear()
+    await env.reset()
+    pkills = [c for c in sandbox.exec_calls if "pkill" in c]
+    restarts = [c for c in sandbox.exec_calls if "serve" in c and c.rstrip().endswith("&")]
+    assert len(pkills) == 2, "reset must stop every framework-started service"
+    assert len(restarts) == 2, "reset must restart every framework-started service"
+    # No restore — there is no [environment.state] table, so no snapshot
+    # directory should be copied back over the live state files.
+    assert not any("/tmp/benchflow-snapshots/" in c for c in sandbox.exec_calls)
+
+
+async def test_reset_restores_baseline_state_for_stateful_env():
+    """A stateful manifest captures a baseline during provision; reset must
+    copy the baseline files back over the live paths so the next episode sees
+    the seed data, not whatever the previous agent left behind. Guards the
+    fix for #383."""
+    sandbox = FakeSandbox()
+    env = ManifestEnvironment(CLAWS_STATEFUL, sandbox=sandbox)
+    await env.provision(ctx=None)
+    # Baseline backup runs during provision, before reset is called.
+    provision_backups = [c for c in sandbox.exec_calls if ".backup" in c]
+    assert provision_backups, "provision must capture a baseline for stateful manifests"
+    sandbox.exec_calls.clear()
+    await env.reset()
+    restore_cmds = [c for c in sandbox.exec_calls if "/tmp/benchflow-snapshots/" in c]
+    assert restore_cmds, "reset must copy the baseline state files back"
+    assert "/data/gmail.db" in restore_cmds[0]
+    # And restart the service we previously started.
+    assert any("serve" in c and c.rstrip().endswith("&") for c in sandbox.exec_calls)
+
+
+async def test_reset_on_owns_lifecycle_env_does_not_touch_services():
+    """When the image entrypoint owns the lifecycle, the framework never
+    started the services and cannot restart them. Reset on a stateless
+    owns_lifecycle manifest is therefore a no-op against the sandbox.
+    Guards the fix for #383."""
+    sandbox = FakeSandbox()
+    env = ManifestEnvironment(CHI, sandbox=sandbox)
+    await env.provision(ctx=None)
+    sandbox.exec_calls.clear()
+    await env.reset()
+    assert sandbox.exec_calls == []
+
+
+async def test_reset_is_idempotent_across_multiple_calls():
+    """Reset can be called repeatedly between episodes — each call must
+    re-stop and re-start the framework-started services without drifting
+    state. Guards the fix for #383."""
+    sandbox = FakeSandbox()
+    env = ManifestEnvironment(CLAWS, sandbox=sandbox)
+    await env.provision(ctx=None)
+    await env.reset()
+    sandbox.exec_calls.clear()
+    await env.reset()
+    pkills = [c for c in sandbox.exec_calls if "pkill" in c]
+    restarts = [c for c in sandbox.exec_calls if "serve" in c]
+    assert len(pkills) == 2
+    assert len(restarts) == 2
