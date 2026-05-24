@@ -1012,6 +1012,22 @@ class Rollout:
         # Populated by connect()
         self._acp_client: ACPClient | None = None
         self._session: Any = None
+        # ``_session_adapter`` carries the Agent-plane :class:`Session` contract
+        # over the live ACP client (architecture.md, "The four contracts").
+        # The kernel registers ``on_ask_user`` handlers through it so the live
+        # ``session/request_permission`` path runs the handler instead of the
+        # auto-approve fallback (#382 follow-up — instantiating the adapter
+        # here is what makes the wire path honour the contract).
+        self._session_adapter: Any = None
+        # Sticky ``on_ask_user`` handler. Stored on the rollout (not the
+        # adapter) because connect()/_reconnect_for_role() rebuild the adapter
+        # each time we attach a new agent process; the handler the caller
+        # registered before the first connect must follow across reconnects.
+        # The "ever set" flag distinguishes "never registered" (default
+        # auto-approve policy) from "explicitly cleared" (caller passed
+        # ``None`` to roll back to auto-approve).
+        self._ask_user_handler: Any = None
+        self._ask_user_handler_set: bool = False
         self._agent_name: str = ""
         self._active_role: Role | None = None
 
@@ -1377,7 +1393,12 @@ class Rollout:
             environment=cfg.environment,
             session_id=getattr(self, "_rollout_name", "") or "",
         )
-        self._acp_client, self._session, self._agent_name = await connect_acp(
+        (
+            self._acp_client,
+            self._session,
+            self._session_adapter,
+            self._agent_name,
+        ) = await connect_acp(
             env=self._env,
             agent=cfg.primary_agent,
             agent_launch=self._agent_launch,
@@ -1388,6 +1409,7 @@ class Rollout:
             environment=cfg.environment,
             agent_cwd=self._agent_cwd,
         )
+        self._reapply_ask_user_handler()
 
         if "agent_setup" not in self._timing:
             self._timing["agent_setup"] = (datetime.now() - t0).total_seconds()
@@ -1404,6 +1426,7 @@ class Rollout:
                 logger.warning(f"ACP client close failed: {e}")
             self._acp_client = None
             self._session = None
+            self._session_adapter = None
         # Kill any lingering agent processes to prevent context bleed between scenes
         if self._env and self._agent_launch.strip():
             agent_cmd = self._agent_launch.split()[0].split("/")[-1]
@@ -1413,6 +1436,48 @@ class Rollout:
         self._session_tool_count = 0
         self._session_traj_count = 0
         self._phase = "installed"
+
+    def on_ask_user(self, handler: Any) -> None:
+        """Register the agent-initiated ``session/request_permission`` handler.
+
+        Forwards to :meth:`ACPSessionAdapter.on_ask_user` on the live adapter
+        so the handler runs on the wire path; before #382's follow-up the
+        adapter was never instantiated in production and the auto-approve
+        policy ran unconditionally. The handler is sticky — stored on the
+        rollout so reconnects (e.g. ``_reconnect_for_role``) re-register it
+        on the freshly bound adapter via :meth:`_reapply_ask_user_handler`.
+
+        Pass ``None`` to clear; the client's most-permissive auto-approve
+        policy takes over (preserves the benchmark-mode default).
+        """
+        self._ask_user_handler = handler
+        self._ask_user_handler_set = True
+        self._reapply_ask_user_handler()
+
+    def _reapply_ask_user_handler(self) -> None:
+        """Re-bind any registered ``on_ask_user`` handler to the live adapter.
+
+        ``getattr`` defaults guard ``Rollout`` instances built via
+        ``__new__`` in tests that pre-date the on_ask_user field — they
+        skip ``__init__`` and only set the attributes their scenarios use.
+        """
+        adapter = getattr(self, "_session_adapter", None)
+        if adapter is None:
+            return
+        # No-op when the caller never touched on_ask_user — leaves the
+        # default auto-approve path alone and avoids redundant client calls
+        # from the connect()/_reconnect_for_role() hot paths.
+        if not getattr(self, "_ask_user_handler_set", False):
+            return
+        handler = getattr(self, "_ask_user_handler", None)
+        if handler is None:
+            # Explicit clear — drop the bridge closure on the client so
+            # the default most-permissive policy takes over.
+            client = getattr(self, "_acp_client", None)
+            if client is not None:
+                client.on_ask_user(None)
+            return
+        adapter.on_ask_user(handler)
 
     def _capture_partial_acp_trajectory(self) -> None:
         if self._trajectory or not self._acp_client or not self._acp_client.session:
@@ -2322,7 +2387,12 @@ class Rollout:
 
         self._agent_launch = agent_launch
 
-        self._acp_client, self._session, self._agent_name = await connect_acp(
+        (
+            self._acp_client,
+            self._session,
+            self._session_adapter,
+            self._agent_name,
+        ) = await connect_acp(
             env=self._env,
             agent=role.agent,
             agent_launch=agent_launch,
@@ -2333,6 +2403,7 @@ class Rollout:
             environment=cfg.environment,
             agent_cwd=self._agent_cwd,
         )
+        self._reapply_ask_user_handler()
         self._active_role = role
 
         if "agent_setup" not in self._timing:
