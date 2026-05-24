@@ -133,7 +133,7 @@ For stronger isolation, use the MCP reviewer server pattern. The reviewer runs a
 ```python
 from pathlib import Path
 
-from benchflow.mcp.hooks import mcp_reviewer_hook
+from benchflow.experimental.mcp.hooks import mcp_reviewer_hook
 from benchflow.rollout import RolloutConfig, Scene, Role, Turn
 
 config = RolloutConfig(
@@ -152,7 +152,7 @@ config = RolloutConfig(
 result = await bf.run(config)
 ```
 
-The MCP reviewer server (`benchflow.mcp.reviewer_server`) runs as a background process in the sandbox. It exposes `review_code` and `get_review_status` tools via streamable-http. The reviewer LLM reads the code but has **no ability to write files** -- all it can do is return feedback text.
+The MCP reviewer server (`benchflow.experimental.mcp.reviewer_server`) runs as a background process in the sandbox. It exposes `review_code` and `get_review_status` tools via streamable-http. The reviewer LLM reads the code but has **no ability to write files** -- all it can do is return feedback text.
 
 ### Results
 
