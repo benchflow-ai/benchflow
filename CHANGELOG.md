@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Azure AI Foundry providers** — new `azure-foundry-openai/` and `azure-foundry-anthropic/` prefixes routing through Foundry's unified resource. Set `AZURE_API_KEY` and `AZURE_API_ENDPOINT` (or any of the `AZURE_OPENAI_*` / `AZURE_AI_FOUNDRY_*` aliases) and benchflow derives the resource name, base URL, and per-surface auth env automatically.
+
 ### Fixed
 
 - Inherit `BENCHFLOW_PROVIDER_BASE_URL` / `BENCHFLOW_PROVIDER_API_KEY` from the host environment so self-hosted / OpenAI-compatible endpoints route correctly instead of falling back to `api.openai.com`; empty or whitespace-only host values are skipped so they cannot shadow the resolved provider URL (benchflow-ai/skillsbench#817).

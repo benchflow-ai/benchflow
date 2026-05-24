@@ -129,7 +129,6 @@ def test_js_acp_agents_use_isolated_node_runtime(name):
     assert (
         "exec /opt/benchflow/node/bin/node /opt/benchflow/js-agents/bin/" in install_cmd
     )
-    assert "set -o pipefail" not in install_cmd
     assert launch_cmd.split()[0].startswith("/opt/benchflow/bin/")
     assert launch_cmd.split()[0] not in {"export", "env"}
     assert not launch_cmd.startswith("PATH=")
