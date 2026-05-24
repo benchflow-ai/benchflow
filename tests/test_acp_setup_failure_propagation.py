@@ -49,9 +49,7 @@ async def test_set_model_failure_aborts_rollout(tmp_path) -> None:
             "benchflow.acp.runtime.DockerProcess.from_sandbox_env",
             return_value=MagicMock(),
         ),
-        patch(
-            "benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()
-        ),
+        patch("benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()),
         patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
         pytest.raises(RuntimeError, match="Failed to set model"),
     ):
@@ -87,9 +85,7 @@ async def test_set_model_timeout_aborts_rollout(tmp_path) -> None:
             "benchflow.acp.runtime.DockerProcess.from_sandbox_env",
             return_value=MagicMock(),
         ),
-        patch(
-            "benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()
-        ),
+        patch("benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()),
         patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
         pytest.raises(RuntimeError, match="Failed to set model"),
     ):
@@ -121,9 +117,7 @@ async def test_set_model_success_still_returns_session(tmp_path) -> None:
             "benchflow.acp.runtime.DockerProcess.from_sandbox_env",
             return_value=MagicMock(),
         ),
-        patch(
-            "benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()
-        ),
+        patch("benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()),
         patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
     ):
         client, session, _adapter, agent_name = await connect_acp(
@@ -161,9 +155,7 @@ async def test_no_model_does_not_call_set_model(tmp_path) -> None:
             "benchflow.acp.runtime.DockerProcess.from_sandbox_env",
             return_value=MagicMock(),
         ),
-        patch(
-            "benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()
-        ),
+        patch("benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()),
         patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
     ):
         await connect_acp(

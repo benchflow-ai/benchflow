@@ -415,9 +415,7 @@ def _stage_copy_source(src_path: str, env_dir: Path, context_root: Path) -> str:
         local_dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(abs_src, local_dest)
     else:
-        logger.warning(
-            "stage_dockerfile_deps: refusing non-regular source %s", abs_src
-        )
+        logger.warning("stage_dockerfile_deps: refusing non-regular source %s", abs_src)
         return src_path
 
     return f"_deps/{dep_name}"

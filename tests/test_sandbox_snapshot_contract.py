@@ -123,9 +123,9 @@ class TestModalSnapshotCapability:
         from benchflow.sandbox.modal_impl import ModalSandbox
 
         # ModalSandbox inherits the default (False) from BaseSandbox.
-        prop = ModalSandbox.__dict__.get(
-            "supports_snapshot"
-        ) or ModalSandbox.__mro__[1].__dict__.get("supports_snapshot")
+        prop = ModalSandbox.__dict__.get("supports_snapshot") or ModalSandbox.__mro__[
+            1
+        ].__dict__.get("supports_snapshot")
         result = prop.fget(None)  # type: ignore[arg-type, union-attr]
         assert result is False
 

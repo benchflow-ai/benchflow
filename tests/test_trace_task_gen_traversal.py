@@ -105,9 +105,7 @@ def test_unsafe_paths_dropped_from_generated_artifacts(
 
 
 def test_safe_path_kept_unsafe_dropped(tmp_path: Path) -> None:
-    trace = _trace_with_paths(
-        ["src/keep_me.py", "../../tmp/drop_me.txt"]
-    )
+    trace = _trace_with_paths(["src/keep_me.py", "../../tmp/drop_me.txt"])
     task_dir = generate_task(trace, tmp_path / "tasks")
 
     instruction = (task_dir / "instruction.md").read_text()

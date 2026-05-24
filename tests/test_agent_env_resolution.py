@@ -105,9 +105,7 @@ class TestResolveAgentEnvGemini:
         monkeypatch.setenv("BENCHFLOW_DOTENV_PATH", str(tmp_path / "no.env"))
 
         with pytest.raises(ValueError, match="GEMINI_API_KEY"):
-            resolve_agent_env(
-                agent="gemini", model="gemini-2.5-flash", agent_env=None
-            )
+            resolve_agent_env(agent="gemini", model="gemini-2.5-flash", agent_env=None)
 
     def test_explicit_agent_env_overrides_host(self, monkeypatch, tmp_path):
         """Explicit --agent-env GEMINI_API_KEY=... wins over the host env."""

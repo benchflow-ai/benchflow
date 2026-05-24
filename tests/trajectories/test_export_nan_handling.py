@@ -20,9 +20,7 @@ from benchflow.trajectories.export import export_trajectories_to_jsonl
 
 def test_nan_reward_emits_null_not_nan_token(tmp_path):
     out = tmp_path / "dataset.jsonl"
-    export_trajectories_to_jsonl(
-        [{"example_id": 1, "reward": math.nan}], out
-    )
+    export_trajectories_to_jsonl([{"example_id": 1, "reward": math.nan}], out)
     raw = out.read_text()
     # Bare NaN token would be invalid JSON for strict parsers.
     assert "NaN" not in raw

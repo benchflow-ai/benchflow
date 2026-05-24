@@ -195,7 +195,9 @@ class TestSdkVerify:
                 new_callable=AsyncMock,
             ),
         ):
-            parsed_rewards, verifier_error, vti = await sdk._verify(env, task, tp, timing)
+            parsed_rewards, verifier_error, vti = await sdk._verify(
+                env, task, tp, timing
+            )
         assert parsed_rewards is None
         assert "without numeric 'reward'" in verifier_error
         assert "verifier" in timing
@@ -767,7 +769,12 @@ class TestScrapedTrajectoryTrust:
                     patch(
                         "benchflow.rollout.connect_acp",
                         new_callable=AsyncMock,
-                        return_value=(mock_acp, mock_session, MagicMock(), "test-agent"),
+                        return_value=(
+                            mock_acp,
+                            mock_session,
+                            MagicMock(),
+                            "test-agent",
+                        ),
                     ),
                     patch(
                         "benchflow.rollout.execute_prompts",

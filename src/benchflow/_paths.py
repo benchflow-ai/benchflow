@@ -73,9 +73,7 @@ def safe_path_segment(name: str, *, kind: str = "name") -> str:
     if name in (".", ".."):
         raise ValueError(f"{kind} must not be '.' or '..' (got {name!r})")
     if "/" in name or "\\" in name:
-        raise ValueError(
-            f"{kind} must not contain path separators (got {name!r})"
-        )
+        raise ValueError(f"{kind} must not contain path separators (got {name!r})")
     if "\x00" in name:
         raise ValueError(f"{kind} must not contain NUL bytes (got {name!r})")
     if name != name.strip():

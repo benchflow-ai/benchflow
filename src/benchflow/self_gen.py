@@ -162,6 +162,8 @@ async def run_self_gen(config: RolloutConfig):
         skill_creator_dir, artifact_root / "creator-skills"
     )
     trial = await Rollout.create(
-        _single_trial_config(config, creator_skills_root, skill_creator_name, artifact_root)
+        _single_trial_config(
+            config, creator_skills_root, skill_creator_name, artifact_root
+        )
     )
     return await trial.run()

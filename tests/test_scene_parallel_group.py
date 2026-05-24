@@ -150,9 +150,7 @@ async def test_distinct_parallel_groups_run_sequentially() -> None:
         i for i, (kind, n) in enumerate(timeline) if kind == "end" and n in ("a", "b")
     )
     first_g2_start = min(
-        i
-        for i, (kind, n) in enumerate(timeline)
-        if kind == "start" and n in ("c", "d")
+        i for i, (kind, n) in enumerate(timeline) if kind == "start" and n in ("c", "d")
     )
     assert last_g1_end < first_g2_start
 

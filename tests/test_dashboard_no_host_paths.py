@@ -141,9 +141,7 @@ def test_collect_jobs_uses_repo_relative_path_for_local_jobs(
     assert artifact_paths, "fixture should have produced at least one artifact"
     for p in artifact_paths:
         assert not os.path.isabs(p), f"artifact path is absolute: {p!r}"
-        assert p.startswith("jobs/"), (
-            f"artifact path should be repo-relative: {p!r}"
-        )
+        assert p.startswith("jobs/"), f"artifact path should be repo-relative: {p!r}"
 
 
 def test_scrub_host_path_falls_back_to_basename_outside_root_and_home(

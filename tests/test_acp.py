@@ -1043,8 +1043,7 @@ class TestVerifierDepInstallDiagnostics:
 
         assert (
             classify_verifier_error(
-                "verifier crashed: verifier exited with rc=1; "
-                "dependency install failed"
+                "verifier crashed: verifier exited with rc=1; dependency install failed"
             )
             == VERIFIER_DEP_INSTALL
         )
@@ -1095,8 +1094,7 @@ class TestVerifierDepInstallDiagnostics:
             prompts=["solve"],
             error=None,
             verifier_error=(
-                "verifier crashed: verifier exited with rc=1; "
-                "dependency install failed"
+                "verifier crashed: verifier exited with rc=1; dependency install failed"
             ),
             trajectory=[],
             partial_trajectory=False,
@@ -1148,8 +1146,7 @@ class TestVerifierTimeoutDiagnostics:
         )
 
         assert (
-            classify_verifier_error("verifier timed out after 240s")
-            == VERIFIER_TIMEOUT
+            classify_verifier_error("verifier timed out after 240s") == VERIFIER_TIMEOUT
         )
         assert (
             classify_verifier_error("verifier timed out after 600.0s")
@@ -1169,9 +1166,7 @@ class TestVerifierTimeoutDiagnostics:
             != VERIFIER_TIMEOUT
         )
         assert (
-            classify_verifier_error(
-                "verifier crashed: dependency install failed"
-            )
+            classify_verifier_error("verifier crashed: dependency install failed")
             != VERIFIER_TIMEOUT
         )
 
@@ -1210,9 +1205,7 @@ class TestVerifierTimeoutDiagnostics:
         assert vti["elapsed_sec"] == 240.1
         assert vti["task_name"] == "quantum-numerical-simulation"
 
-    def test_verifier_timeout_info_null_when_no_timeout(
-        self, tmp_path: Path
-    ) -> None:
+    def test_verifier_timeout_info_null_when_no_timeout(self, tmp_path: Path) -> None:
         """Guards ENG-152: verifier_timeout_info is null for non-timeout runs."""
         from benchflow.rollout import _build_rollout_result
 

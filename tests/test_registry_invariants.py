@@ -164,13 +164,13 @@ def test_js_acp_agents_use_isolated_node_runtime(name):
 # Docker/Daytona exec paths invoke ``sh -c install_cmd``; if /bin/sh is dash
 # (ubuntu:24.04 base), any of these aborts the install on line 1. See #341.
 _BASH_ISM_PATTERNS = {
-    "set -o pipefail":      re.compile(r"\bpipefail\b"),
-    "[[ ... ]]":            re.compile(r"\[\[\s"),
-    "<<< (here-string)":    re.compile(r"<<<"),
-    "$(( ... )) (arith)":   re.compile(r"\$\(\("),
-    "function name() {}":   re.compile(r"(?:^|[\s;&|])function\s+\w"),
-    "declare/local -":      re.compile(r"\b(?:declare|local)\s+-"),
-    "<(...) (proc subst)":  re.compile(r"[^<]<\("),
+    "set -o pipefail": re.compile(r"\bpipefail\b"),
+    "[[ ... ]]": re.compile(r"\[\[\s"),
+    "<<< (here-string)": re.compile(r"<<<"),
+    "$(( ... )) (arith)": re.compile(r"\$\(\("),
+    "function name() {}": re.compile(r"(?:^|[\s;&|])function\s+\w"),
+    "declare/local -": re.compile(r"\b(?:declare|local)\s+-"),
+    "<(...) (proc subst)": re.compile(r"[^<]<\("),
 }
 
 
