@@ -793,6 +793,8 @@ def tasks_check(
     task_dir: Annotated[Path, typer.Argument(help="Path to task directory")],
 ) -> None:
     """Validate a task directory structure."""
+    from rich.markup import escape
+
     from benchflow._utils.task_authoring import check_task
 
     issues = check_task(task_dir)
@@ -801,7 +803,9 @@ def tasks_check(
     else:
         console.print(f"[red]✗[/red] {task_dir.name} — {len(issues)} issue(s):")
         for issue in issues:
-            console.print(f"  [yellow]→[/yellow] {issue}")
+            # Escape Rich markup so literal section names like "[agent]"
+            # render verbatim instead of being parsed as styling (#379).
+            console.print(f"  [yellow]→[/yellow] {escape(issue)}")
         raise typer.Exit(1)
 
 

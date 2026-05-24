@@ -28,15 +28,16 @@ def check_task(task_dir: Path) -> list[str]:
             issues.append(f"Missing required directory: {d}/")
 
     # Validate task.toml
+    # Note: [agent] and [agent].timeout_sec are optional at runtime
+    # (AgentConfig defaults to timeout_sec=None → no wall-clock cap). We
+    # only surface parse errors here so `bench tasks check` and
+    # `bench eval create` agree on what a "valid" task looks like.
+    # See #379.
     toml_path = task_dir / "task.toml"
     if toml_path.exists():
         try:
             with open(toml_path, "rb") as f:
-                config = tomllib.load(f)
-            if "agent" not in config:
-                issues.append("task.toml missing [agent] section")
-            elif "timeout_sec" not in config.get("agent", {}):
-                issues.append("task.toml [agent] missing timeout_sec")
+                tomllib.load(f)
         except Exception as e:
             issues.append(f"task.toml parse error: {e}")
 

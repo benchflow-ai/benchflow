@@ -81,17 +81,28 @@ class TestCheckTask:
         issues = check_task(task)
         assert "instruction.md is empty" in issues
 
-    def test_task_toml_missing_agent_section(self, tmp_path):
+    def test_task_toml_missing_agent_section_is_allowed(self, tmp_path):
+        """[agent] is optional — runtime AgentConfig defaults to no timeout.
+
+        Guards #379: bench tasks check and bench eval create must agree on
+        the missing-[agent] contract. The runtime accepts it, so check_task
+        does too.
+        """
         task = self._make_valid_task(tmp_path)
         (task / "task.toml").write_text("[verifier]\ntimeout_sec = 120\n")
         issues = check_task(task)
-        assert "task.toml missing [agent] section" in issues
+        assert not any("agent" in i for i in issues)
 
-    def test_task_toml_missing_timeout_sec(self, tmp_path):
+    def test_task_toml_missing_timeout_sec_is_allowed(self, tmp_path):
+        """[agent].timeout_sec is optional — defaults to no wall-clock cap.
+
+        Guards #379: keeps check_task in sync with AgentConfig (timeout_sec
+        defaults to None).
+        """
         task = self._make_valid_task(tmp_path)
         (task / "task.toml").write_text("[agent]\n")
         issues = check_task(task)
-        assert "task.toml [agent] missing timeout_sec" in issues
+        assert not any("timeout_sec" in i for i in issues)
 
     def test_task_toml_parse_error(self, tmp_path):
         task = self._make_valid_task(tmp_path)
