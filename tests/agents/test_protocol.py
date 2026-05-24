@@ -146,19 +146,32 @@ def test_adapter_steps_empty_without_session():
     assert adapter.steps == []
 
 
-def test_adapter_on_ask_user_stores_handler():
-    """The agent-initiated hook is registered on the adapter."""
+def test_adapter_on_ask_user_stores_and_forwards_handler():
+    """The agent-initiated hook is registered on the adapter and forwarded.
+
+    Forwarding to ``ACPClient.on_ask_user`` is the load-bearing fix for
+    #382: without it the handler was stored but never invoked, and the ACP
+    transport silently auto-approved every ``session/request_permission``.
+    """
 
     class FakeClient:
-        pass
+        def __init__(self):
+            self.bridge = None
 
-    adapter = ACPSessionAdapter(FakeClient())  # type: ignore[arg-type]
+        def on_ask_user(self, handler):
+            self.bridge = handler
+
+    client = FakeClient()
+    adapter = ACPSessionAdapter(client)  # type: ignore[arg-type]
 
     async def handler(request):
         return "answer"
 
     adapter.on_ask_user(handler)
     assert adapter._ask_user_handler is handler
+    # The adapter wires a bridge callable into the client; without this
+    # forwarding the live ACP request path can't invoke the handler.
+    assert client.bridge is not None
 
 
 def test_acp_client_is_not_yet_an_agent():
