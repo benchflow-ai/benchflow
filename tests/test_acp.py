@@ -807,3 +807,113 @@ class TestConnectAcpModelSelection:
 
         mock_pty.assert_awaited_once_with(mock_env)
         mock_ssh.assert_not_awaited()
+
+
+class TestSandboxStartupDiagnostics:
+    """Guards ENG-147: sandbox startup failures must carry structured diagnostics."""
+
+    def test_sandbox_startup_error_has_info_dict(self) -> None:
+        """Guards ENG-147: SandboxStartupError carries sandbox_startup_info dict
+        with all required fields for result.json."""
+        from benchflow.sandbox.daytona import SandboxStartupError
+
+        err = SandboxStartupError(
+            "Sandbox creation failed after retries: timeout of 1200000ms exceeded",
+            sandbox_id="e7d8ab0f-47da-40b1-b179-46e1363fe014",
+            sandbox_state="creating",
+            attempts=3,
+            build_timeout_sec=600.0,
+        )
+        info = err.sandbox_startup_info
+        assert info["reason"] == "sandbox_startup_failed"
+        assert info["sandbox_id"] == "e7d8ab0f-47da-40b1-b179-46e1363fe014"
+        assert info["sandbox_state"] == "creating"
+        assert info["attempts"] == 3
+        assert info["build_timeout_sec"] == 600.0
+        assert "timeout of 1200000ms" in info["raw_message"]
+
+    def test_sandbox_startup_error_is_runtime_error(self) -> None:
+        """Guards ENG-147: SandboxStartupError is a RuntimeError subclass
+        so existing except-RuntimeError paths still catch it."""
+        from benchflow.sandbox.daytona import SandboxStartupError
+
+        err = SandboxStartupError("test")
+        assert isinstance(err, RuntimeError)
+
+    def test_classify_error_sandbox_startup(self) -> None:
+        """Guards ENG-147: classify_error recognises sandbox startup failures."""
+        from benchflow._utils.scoring import SANDBOX_SETUP, classify_error
+
+        assert classify_error("Sandbox startup failed: timeout") == SANDBOX_SETUP
+        assert classify_error("Sandbox creation failed after retries") == SANDBOX_SETUP
+        assert classify_error("normal error") != SANDBOX_SETUP
+
+    def test_sandbox_startup_info_in_result_json(self, tmp_path: Path) -> None:
+        """Guards ENG-147: _build_rollout_result writes sandbox_startup_info to result.json."""
+        from benchflow.rollout import _build_rollout_result
+
+        info = {
+            "reason": "sandbox_startup_failed",
+            "sandbox_id": "abc123",
+            "sandbox_state": "error",
+            "attempts": 3,
+            "build_timeout_sec": 600.0,
+            "raw_message": "timeout",
+        }
+        result = _build_rollout_result(
+            tmp_path,
+            task_name="test-task",
+            rollout_name="run-1",
+            agent="oracle",
+            agent_name="oracle",
+            model=None,
+            n_tool_calls=0,
+            prompts=["solve"],
+            error="Sandbox startup failed: timeout",
+            verifier_error=None,
+            trajectory=[],
+            partial_trajectory=False,
+            rewards=None,
+            started_at=__import__("datetime").datetime.now(),
+            timing={"agent": 0.0},
+            sandbox_startup_info=info,
+        )
+        rj = __import__("json").loads((tmp_path / "result.json").read_text())
+        assert rj["sandbox_startup_info"] == info
+        assert rj["error_category"] == "sandbox_setup"
+        assert result.error == "Sandbox startup failed: timeout"
+
+    def test_sandbox_startup_info_null_when_no_startup_error(
+        self, tmp_path: Path
+    ) -> None:
+        """Guards ENG-147: sandbox_startup_info is null for non-startup errors."""
+        from benchflow.rollout import _build_rollout_result
+
+        result = _build_rollout_result(
+            tmp_path,
+            task_name="test-task",
+            rollout_name="run-1",
+            agent="oracle",
+            agent_name="oracle",
+            model=None,
+            n_tool_calls=5,
+            prompts=["solve"],
+            error=None,
+            verifier_error=None,
+            trajectory=[],
+            partial_trajectory=False,
+            rewards={"reward": 1.0},
+            started_at=__import__("datetime").datetime.now(),
+            timing={"agent": 5.0},
+        )
+        rj = __import__("json").loads((tmp_path / "result.json").read_text())
+        assert rj["sandbox_startup_info"] is None
+        assert result.rewards == {"reward": 1.0}
+
+    def test_create_sandbox_retry_count_is_three(self) -> None:
+        """Guards ENG-147: _create_sandbox retries 3 times, not 2."""
+        from benchflow.sandbox.daytona import DaytonaSandbox
+
+        retry_obj = DaytonaSandbox._create_sandbox.retry  # type: ignore[attr-defined]
+        stop = retry_obj.stop
+        assert stop.max_attempt_number == 3
