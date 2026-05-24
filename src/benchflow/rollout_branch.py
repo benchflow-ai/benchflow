@@ -65,6 +65,7 @@ class _LinearState:
     partial_trajectory: bool
     session_tool_count: int
     session_traj_count: int
+    executed_prompts: list[str]
 
     @classmethod
     def capture(cls, rollout: Rollout) -> _LinearState:
@@ -79,6 +80,7 @@ class _LinearState:
             partial_trajectory=rollout._partial_trajectory,
             session_tool_count=getattr(rollout, "_session_tool_count", 0),
             session_traj_count=getattr(rollout, "_session_traj_count", 0),
+            executed_prompts=list(rollout._executed_prompts),
         )
 
     def restore_onto(self, rollout: Rollout) -> None:
@@ -92,6 +94,7 @@ class _LinearState:
         rollout._partial_trajectory = self.partial_trajectory
         rollout._session_tool_count = self.session_tool_count
         rollout._session_traj_count = self.session_traj_count
+        rollout._executed_prompts = list(self.executed_prompts)
 
 
 async def branch(
