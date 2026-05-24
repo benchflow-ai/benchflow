@@ -1009,7 +1009,7 @@ def test_task_row_uses_result_outcome_not_stale_reward_file(tmp_path: Path):
 
 
 def test_task_row_artifacts_include_full_path_and_modified_date(tmp_path: Path):
-    """Guards the file viewer header contract for full paths and dates."""
+    """Guards the file viewer header contract for scrubbed paths and dates."""
     rollout = tmp_path / "task-a__abc123"
     verifier = rollout / "verifier"
     verifier.mkdir(parents=True)
@@ -1028,7 +1028,10 @@ def test_task_row_artifacts_include_full_path_and_modified_date(tmp_path: Path):
         item for item in row["artifacts"] if item["name"] == "verifier/reward.txt"
     )
 
-    assert artifact["path"] == str(reward)
+    # Path is host-scrubbed (#408): no absolute host path is published. For an
+    # artifact outside ROOT and HOME, the rendering drops the host layout.
+    assert "/" not in artifact["path"] or not artifact["path"].startswith("/")
+    assert str(tmp_path) not in artifact["path"]
     assert artifact["modified_at"] == "2026-05-22 01:30:00"
     assert "Raw verifier boundary output" in artifact["note"]
 
@@ -1333,7 +1336,10 @@ def test_collect_jobs_reads_configured_external_worktree_jobs(
 
     jobs = generate.collect_jobs()
 
-    assert jobs["source"]["path"] == str((previous_worktree / "jobs").resolve())
+    # Path is host-scrubbed (#408) — no absolute /Users, /home, /private/tmp
+    # prefix may appear in the published data.json.
+    assert not jobs["source"]["path"].startswith(("/Users/", "/home/", "/private/"))
+    assert str(previous_worktree) not in jobs["source"]["path"]
     assert jobs["source"]["configured"] is True
     assert jobs["source"]["available"] is True
     assert jobs["total_tasks"] == 1
@@ -1356,7 +1362,9 @@ def test_collect_jobs_reads_configured_external_jobs_dir(tmp_path: Path, monkeyp
 
     jobs = generate.collect_jobs()
 
-    assert jobs["source"]["path"] == str(previous_jobs.resolve())
+    # Path is host-scrubbed (#408) — no absolute host path may leak.
+    assert not jobs["source"]["path"].startswith(("/Users/", "/home/", "/private/"))
+    assert str(previous_jobs) not in jobs["source"]["path"]
     assert jobs["source"]["configured"] is True
     assert jobs["source"]["available"] is True
     assert jobs["total_tasks"] == 1
@@ -1372,7 +1380,9 @@ def test_collect_jobs_transitions_from_empty_to_nonempty_external_root(
     monkeypatch.setenv("BENCHFLOW_DASHBOARD_JOBS_ROOT", str(previous_worktree))
 
     before = generate.collect_jobs()
-    assert before["source"]["path"] == str((previous_worktree / "jobs").resolve())
+    # Path is host-scrubbed (#408) — no absolute host path may leak.
+    assert not before["source"]["path"].startswith(("/Users/", "/home/", "/private/"))
+    assert str(previous_worktree) not in before["source"]["path"]
     assert before["source"]["configured"] is True
     assert before["groups"] == []
     assert before["total_tasks"] == 0
@@ -1561,7 +1571,9 @@ def test_collect_jobs_reuses_remembered_external_jobs_root(tmp_path: Path, monke
 
     jobs = generate.collect_jobs()
 
-    assert jobs["source"]["path"] == str(previous_jobs.resolve())
+    # Path is host-scrubbed (#408) — no absolute host path may leak.
+    assert not jobs["source"]["path"].startswith(("/Users/", "/home/", "/private/"))
+    assert str(previous_jobs) not in jobs["source"]["path"]
     assert jobs["source"]["configured"] is False
     assert jobs["source"]["remembered"] is True
     assert jobs["total_tasks"] == 1
