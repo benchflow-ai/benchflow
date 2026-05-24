@@ -137,6 +137,7 @@ async def test_build_result_after_export_failure_is_not_success(tmp_path):
     rollout._rollout_name = "rollout-1"
     rollout._n_tool_calls = 0
     rollout._resolved_prompts = []
+    rollout._executed_prompts = []
     rollout._verifier_error = None
     rollout._partial_trajectory = False
     rollout._trajectory_source = None
