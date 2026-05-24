@@ -325,7 +325,7 @@ class TaskConfig(BaseModel):
         return None if expected is None else list(expected)
 
     def model_dump_toml(self) -> str:
-        import tomli_w  # optional dep — only needed for TOML serialisation
+        import tomli_w
 
         public = self.model_dump(
             mode="json",

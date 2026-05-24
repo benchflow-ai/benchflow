@@ -160,7 +160,7 @@ def _latest_result_entries_by_task(
         task_name = result.get("task_name") or rfile.parent.name.rsplit("__", 1)[0]
         mtime = rfile.stat().st_mtime
         previous = latest_by_task.get(task_name)
-        if previous is None or mtime >= previous[0]:
+        if previous is None or (mtime, str(rfile)) >= (previous[0], str(previous[1])):
             latest_by_task[task_name] = (mtime, rfile, result)
     return [(rfile, result) for _, rfile, result in latest_by_task.values()]
 

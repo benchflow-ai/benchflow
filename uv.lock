@@ -217,6 +217,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "pyyaml" },
     { name = "rich" },
+    { name = "tomli-w" },
     { name = "typer" },
 ]
 
@@ -229,7 +230,6 @@ dev = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "ruff" },
-    { name = "tomli-w" },
     { name = "ty" },
 ]
 judge = [
@@ -266,7 +266,7 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.7.0" },
     { name = "tenacity", marker = "extra == 'sandbox-daytona'", specifier = ">=8.0" },
     { name = "tenacity", marker = "extra == 'sandbox-modal'", specifier = ">=8.0" },
-    { name = "tomli-w", marker = "extra == 'dev'", specifier = ">=1.0" },
+    { name = "tomli-w", specifier = ">=1.0" },
     { name = "ty", marker = "extra == 'dev'", specifier = ">=0.0.1a1" },
     { name = "typer", specifier = ">=0.9" },
 ]
