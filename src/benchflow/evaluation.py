@@ -42,6 +42,7 @@ from benchflow._utils.scoring import (
     INSTALL_FAILED,
     PIPE_CLOSED,
     SANDBOX_SETUP,
+    VERIFIER_DEP_INSTALL,
     VERIFIER_INFRA,
     VERIFIER_TIMEOUT,
     classify_error,
@@ -997,10 +998,16 @@ class Evaluation:
 
         # Count error categories across all results for summary diagnostics.
         error_category_counts: dict[str, int] = {}
+        verifier_error_category_counts: dict[str, int] = {}
         for r in all_results.values():
             cat = classify_error(r.get("error"))
             if cat:
                 error_category_counts[cat] = error_category_counts.get(cat, 0) + 1
+            vcat = classify_verifier_error(r.get("verifier_error"))
+            if vcat:
+                verifier_error_category_counts[vcat] = (
+                    verifier_error_category_counts.get(vcat, 0) + 1
+                )
 
         # Save summary
         summary = {
@@ -1017,6 +1024,7 @@ class Evaluation:
             "verifier_errored": audit_counts["verifier_errored"],
             "idle_timeout": error_category_counts.get(IDLE_TIMEOUT, 0),
             "error_categories": error_category_counts or None,
+            "verifier_error_categories": verifier_error_category_counts or None,
             "score": f"{pass_rate(passed=audit_counts['passed'], total=job_result.total):.1%}",
             "score_excl_errors": f"{pass_rate_excl_errors(passed=audit_counts['passed'], failed=audit_counts['failed']):.1%}",
             "elapsed_sec": elapsed,
@@ -1061,6 +1069,17 @@ class Evaluation:
                 f"{pipe_count} tasks ({pct:.0f}%) lost transport (pipe closed / rc=255) — "
                 f"check transport_error_info in result.json for diagnostics"
             )
+        dep_install_count = verifier_error_category_counts.get(
+            VERIFIER_DEP_INSTALL, 0
+        )
+        if dep_install_count > 0:
+            pct = dep_install_count / job_result.total * 100
+            logger.warning(
+                f"{dep_install_count} tasks ({pct:.0f}%) failed during verifier "
+                f"dependency install — check verifier_error_category in result.json "
+                f"and fix the task's index policy"
+            )
+
         if audit_counts["verifier_errored"] > 0:
             pct = audit_counts["verifier_errored"] / job_result.total * 100
             logger.warning(

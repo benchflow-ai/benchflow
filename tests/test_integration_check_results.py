@@ -1811,3 +1811,60 @@ def test_check_results_transport_error_without_info_still_flagged(
     assert findings["ok"] is False
     assert any("INVALIDATED" in issue and "transport" in issue.lower()
                for issue in findings["issues"])
+
+
+def test_check_results_flags_verifier_dep_install_failure(
+    tmp_path: Path,
+) -> None:
+    """Guards ENG-151: check_results detects verifier dependency install
+    failures and flags them as INVALIDATED."""
+    agent_dir = tmp_path / "agentA"
+    run_dir = agent_dir / "2026-05-24__00-00-00" / "simpo-code-reproduction"
+    run_dir.mkdir(parents=True)
+    (run_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "simpo-code-reproduction",
+                "agent": "agentA",
+                "model": "test-model",
+                "rewards": None,
+                "error": None,
+                "verifier_error": (
+                    "verifier crashed: verifier exited with rc=1; "
+                    "dependency install failed"
+                ),
+                "source": _source(),
+            }
+        )
+    )
+    _write_config(run_dir)
+    (agent_dir / "summary.json").write_text(
+        json.dumps(
+            {
+                "agent": "agentA",
+                "model": "test-model",
+                "environment": "daytona",
+                "concurrency": 64,
+                "agent_idle_timeout_sec": 600,
+                "total": 1,
+                "passed": 0,
+                "failed": 0,
+                "errored": 0,
+                "verifier_errored": 1,
+                "score": "0.0%",
+                "source": _source(),
+            }
+        )
+    )
+
+    findings = check_agent(agent_dir)
+
+    assert findings["ok"] is False
+    assert any(
+        "dependency install failed" in issue
+        for issue in findings["issues"]
+    )
+    assert any(
+        "INVALIDATED" in issue and "dependency install" in issue.lower()
+        for issue in findings["issues"]
+    )

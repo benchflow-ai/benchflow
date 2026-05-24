@@ -27,7 +27,11 @@ from typing import Any, cast
 
 from benchflow._utils.config import normalize_agent_idle_timeout
 from benchflow._utils.reward_events import memory_score_from_result
-from benchflow._utils.scoring import classify_error, count_result_outcomes
+from benchflow._utils.scoring import (
+    classify_error,
+    classify_verifier_error,
+    count_result_outcomes,
+)
 from benchflow._utils.source_provenance import source_issues, source_matches_parent
 
 EXPECTED: dict[str, Any] = {}
@@ -573,6 +577,26 @@ def check_agent(agent_dir: Path) -> dict:
             f"INVALIDATED: {len(transport_error_tasks)} task(s) lost ACP transport "
             f"(pipe closed / rc=255) and should be rerun: "
             f"{', '.join(transport_error_tasks)}"
+        )
+
+    # Verifier dependency install failures (ENG-151)
+    dep_install_tasks: list[str] = []
+    for r in results:
+        verifier_err = r.get("verifier_error")
+        vcat = classify_verifier_error(verifier_err) if verifier_err else None
+        if vcat == "verifier_dep_install":
+            task = r.get("task_name", "?")
+            dep_install_tasks.append(task)
+            findings["issues"].append(
+                f"{task}: verifier dependency install failed — "
+                f"measurement invalid (verifier never reached tests)"
+            )
+            findings["ok"] = False
+    if dep_install_tasks:
+        findings["issues"].append(
+            f"INVALIDATED: {len(dep_install_tasks)} task(s) failed during "
+            f"verifier dependency install and should be rerun after "
+            f"fixing the index policy: {', '.join(dep_install_tasks)}"
         )
 
     # Summary.json — bench eval create writes it at the agent_dir root
