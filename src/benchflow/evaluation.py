@@ -1045,6 +1045,14 @@ class Evaluation:
                 f"check idle_timeout_info in result.json for diagnostics"
             )
 
+        pipe_count = error_category_counts.get(PIPE_CLOSED, 0)
+        if pipe_count > 0:
+            pct = pipe_count / job_result.total * 100
+            logger.warning(
+                f"{pipe_count} tasks ({pct:.0f}%) lost transport (pipe closed / rc=255) — "
+                f"check transport_error_info in result.json for diagnostics"
+            )
+
         if audit_counts["verifier_errored"] > 0:
             pct = audit_counts["verifier_errored"] / job_result.total * 100
             logger.warning(
