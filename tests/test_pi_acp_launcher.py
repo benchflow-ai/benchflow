@@ -109,8 +109,7 @@ class TestSetupProviderOpenAI:
         provider = config["providers"]["azure-foundry-openai"]
         assert provider["api"] == "openai-completions"
         assert (
-            provider["baseUrl"]
-            == "https://example-resource.openai.azure.com/openai/v1"
+            provider["baseUrl"] == "https://example-resource.openai.azure.com/openai/v1"
         )
         assert provider["apiKey"] == "az-test"
         assert provider["models"][0]["id"] == "gpt-5.5"
