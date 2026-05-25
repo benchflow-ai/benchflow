@@ -25,6 +25,8 @@ running (architecture.md, capability #8).
 
 from __future__ import annotations
 
+import re
+import shlex
 from pathlib import Path
 from typing import Any
 
@@ -202,12 +204,148 @@ class TerminalBenchAdapter:
             if src.is_file():
                 _place(native, src)
 
+        # The Dockerfile's build context. Terminal-Bench Dockerfiles routinely
+        # COPY/ADD task-root files (requirements.txt, app/, etc.) into the
+        # image; the legacy adapter only carried the Dockerfile itself, so the
+        # converted task built against an empty context and failed at
+        # ``docker build`` time. Walk the Dockerfile's COPY/ADD instructions
+        # and place every referenced source into the environment/ subtree
+        # under its same relative path (so ``COPY requirements.txt /tmp``
+        # resolves against environment/requirements.txt, which is where the
+        # remapped Dockerfile lives). See issue #362.
+        dockerfile = root / "Dockerfile"
+        if dockerfile.is_file():
+            for src_rel in _dockerfile_context_sources(dockerfile):
+                src = root / src_rel
+                # Tolerate sources that don't exist on disk (URL ADDs, build
+                # args expanded at build time, stage-name --from=builder
+                # references already filtered upstream) — the adapter is a
+                # pure translator, not a Dockerfile validator.
+                if not src.exists():
+                    continue
+                if src.is_file():
+                    _place(f"environment/{src_rel}", src)
+                elif src.is_dir():
+                    for entry in sorted(p for p in src.rglob("*") if p.is_file()):
+                        _place(
+                            f"environment/{entry.relative_to(root).as_posix()}",
+                            entry,
+                        )
+
         # The tests/ subtree is already native — carry it verbatim, with the
         # same collision check so a native tests/test.sh can't silently
         # collide with a remapped root run-tests.sh.
         carry_native_subtrees(root, _place, subtrees=("tests",))
 
         return files
+
+
+# A Dockerfile instruction line — captures the verb and the rest. We only
+# care about COPY / ADD; comments and blank lines are filtered separately.
+_DOCKERFILE_INSTRUCTION = re.compile(r"^\s*(\w+)\s+(.*)$", re.IGNORECASE)
+# Stage references like ``--from=builder`` carry no real source path on the
+# build context; same for HTTP(S) URLs in ADD instructions.
+_URL_SOURCE = re.compile(r"^https?://", re.IGNORECASE)
+
+
+def _dockerfile_context_sources(dockerfile: Path) -> list[str]:
+    """Extract build-context source paths referenced by COPY/ADD instructions.
+
+    Returns a list of *task-root-relative* paths the Dockerfile expects to
+    find in its build context. Designed for the Terminal-Bench case, where
+    the Dockerfile sits at the task root and its build context is the task
+    root itself.
+
+    Implementation notes:
+
+    * Line continuations (``\\``) are joined before parsing so a multi-line
+      ``COPY`` carries all of its sources.
+    * Comments (``# ...``), blank lines, and ``--flag=value`` arguments are
+      skipped. ``--from=stage`` sources are skipped (they reference an
+      earlier build stage, not the build context).
+    * Shell-form (``COPY src dst``) and exec-form (``COPY ["src", "dst"]``)
+      are both handled.
+    * URL sources (``ADD https://...``) are skipped — they aren't part of
+      the build context.
+    * Sources with ``$VAR`` interpolation are skipped — we can't resolve
+      build args without executing the build.
+    * Absolute paths and ``..`` escapes are skipped — they don't address a
+      file inside the task directory.
+    """
+    sources: list[str] = []
+    try:
+        text = dockerfile.read_text(errors="replace")
+    except OSError:
+        return sources
+
+    # Join line continuations: a trailing ``\`` (optionally followed by
+    # whitespace) folds the next line into the current instruction.
+    joined = re.sub(r"\\\s*\n", " ", text)
+
+    for raw_line in joined.splitlines():
+        line = raw_line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        match = _DOCKERFILE_INSTRUCTION.match(line)
+        if not match:
+            continue
+        verb = match.group(1).upper()
+        if verb not in ("COPY", "ADD"):
+            continue
+
+        rest = match.group(2).strip()
+        # Exec form: ["src1", "src2", "dst"] — parse as JSON-ish list.
+        if rest.startswith("["):
+            try:
+                import json as _json
+
+                parts = _json.loads(rest)
+                if not isinstance(parts, list):
+                    continue
+                tokens = [str(p) for p in parts]
+            except (ValueError, TypeError):
+                continue
+        else:
+            try:
+                tokens = shlex.split(rest, posix=True)
+            except ValueError:
+                continue
+
+        # Drop --flag=value arguments (--from=, --chown=, --chmod=, ...).
+        # A --from=<stage> source is *not* in the build context — skip the
+        # whole instruction in that case.
+        positional: list[str] = []
+        skip_instruction = False
+        for tok in tokens:
+            if tok.startswith("--"):
+                if tok.startswith("--from="):
+                    skip_instruction = True
+                continue
+            positional.append(tok)
+        if skip_instruction:
+            continue
+        # Need at least one source and one destination.
+        if len(positional) < 2:
+            continue
+
+        for src in positional[:-1]:
+            if _URL_SOURCE.match(src):
+                continue
+            if "$" in src or "{" in src:
+                # Build-arg / env interpolation — can't resolve statically.
+                continue
+            # Normalize and reject anything that doesn't address a file
+            # inside the build context (absolute paths, parent escapes).
+            normalized = src.lstrip("./")
+            if not normalized:
+                continue
+            if src.startswith("/") or normalized.startswith("../"):
+                continue
+            if any(part == ".." for part in normalized.split("/")):
+                continue
+            sources.append(normalized)
+
+    return sources
 
 
 def from_terminal_bench_task(task_dir: Path | str) -> InboundTask:
