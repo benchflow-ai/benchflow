@@ -41,7 +41,10 @@ class TestEnvMappingField:
 
     def test_gemini_has_mapping(self):
         cfg = AGENTS["gemini"]
-        assert cfg.env_mapping["BENCHFLOW_PROVIDER_BASE_URL"] == "GEMINI_API_BASE_URL"
+        assert (
+            cfg.env_mapping["BENCHFLOW_PROVIDER_BASE_URL"]
+            == "GOOGLE_GEMINI_BASE_URL"
+        )
         # #342: map BENCHFLOW_PROVIDER_API_KEY to the CLI-native var. The
         # bidirectional mirror in auto_inherit_env handles GOOGLE_API_KEY
         # callers transparently.
