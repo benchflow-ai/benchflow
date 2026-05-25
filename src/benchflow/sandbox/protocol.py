@@ -52,7 +52,8 @@ class SandboxStartupError(RuntimeError):
     ``sandbox-daytona`` / ``sandbox-modal`` extras) can still import
     ``benchflow.rollout`` and reference this exception type without pulling
     in optional provider SDKs (issue #358). Provider-specific backends
-    re-raise this same type with structured ``sandbox_startup_info`` for
+    re-raise this same type with a structured
+    :class:`~benchflow.diagnostics.SandboxStartupDiagnostic` for
     ``result.json``.
     """
 
@@ -66,14 +67,27 @@ class SandboxStartupError(RuntimeError):
         build_timeout_sec: float | None = None,
     ) -> None:
         super().__init__(message)
-        self.sandbox_startup_info: dict = {
-            "reason": "sandbox_startup_failed",
-            "sandbox_id": sandbox_id,
-            "sandbox_state": sandbox_state,
-            "attempts": attempts,
-            "build_timeout_sec": build_timeout_sec,
-            "raw_message": str(message)[:500],
-        }
+        # Local import keeps ``protocol`` cycle-free for any future
+        # ``diagnostics`` -> sandbox importers.
+        from benchflow.diagnostics import SandboxStartupDiagnostic
+
+        self.diagnostic: SandboxStartupDiagnostic = SandboxStartupDiagnostic(
+            sandbox_id=sandbox_id,
+            sandbox_state=sandbox_state,
+            attempts=attempts,
+            build_timeout_sec=build_timeout_sec,
+            raw_message=str(message)[:500],
+        )
+
+    @property
+    def sandbox_startup_info(self) -> dict:
+        """Back-compat view returning the flat ``result.json`` dict.
+
+        Existing tests and integrations index this directly; routing
+        through ``self.diagnostic.to_dict()`` keeps the schema in one place
+        (issues #503, #504).
+        """
+        return self.diagnostic.to_dict()
 
 
 @runtime_checkable

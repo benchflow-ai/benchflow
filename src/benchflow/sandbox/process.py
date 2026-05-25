@@ -135,12 +135,34 @@ class LiveProcess(ABC):
                     "container or SSH session was killed (e.g. Daytona idle "
                     "sleep, agent hung with no output)."
                 )
+                diagnosis = "remote_session_killed"
             else:
                 hint = f"Local subprocess exited with rc={rc} before stdout closed."
+                diagnosis = "process_exited"
             msg = f"Process closed stdout (rc={rc}): {hint}"
+            stderr_snippet: str | None = None
             if stderr_text:
-                msg += f"\nstderr: {stderr_text[:_DIAG_TRUNCATE]}"
-            raise ConnectionError(msg)
+                stderr_snippet = stderr_text[:_DIAG_TRUNCATE]
+                msg += f"\nstderr: {stderr_snippet}"
+            # Raise a structured TransportClosedError at the source so
+            # downstream code (rollout._build_rollout_result) doesn't have
+            # to regex-parse the human-readable message back into fields
+            # (issue #504).
+            from benchflow.diagnostics import (
+                TransportClosedDiagnostic,
+                TransportClosedError,
+            )
+
+            raise TransportClosedError(
+                msg,
+                TransportClosedDiagnostic(
+                    raw_message=msg[:500],
+                    process_exit_code=rc,
+                    process_pid=pid,
+                    transport_diagnosis=diagnosis,
+                    stderr_snippet=stderr_snippet,
+                ),
+            )
         return line
 
     async def writeline(self, data: str) -> None:
@@ -726,15 +748,38 @@ class DaytonaPtyProcess(LiveProcess):
         logger.info("DaytonaPtyProcess: marker seen, agent starting")
 
     async def readline(self) -> bytes:
+        from benchflow.diagnostics import (
+            TransportClosedDiagnostic,
+            TransportClosedError,
+        )
+
         if self._closed:
-            raise ConnectionError("PTY closed")
+            msg = "PTY closed"
+            raise TransportClosedError(
+                msg,
+                TransportClosedDiagnostic(
+                    raw_message=msg, transport_diagnosis="pty_error"
+                ),
+            )
         try:
             line = await asyncio.wait_for(self._line_buffer.get(), timeout=900)
             return line
         except TimeoutError as e:
-            raise ConnectionError("PTY readline timeout (900s)") from e
+            msg = "PTY readline timeout (900s)"
+            raise TransportClosedError(
+                msg,
+                TransportClosedDiagnostic(
+                    raw_message=msg, transport_diagnosis="pty_error"
+                ),
+            ) from e
         except Exception as e:
-            raise ConnectionError(f"PTY readline error: {e}") from e
+            msg = f"PTY readline error: {e}"
+            raise TransportClosedError(
+                msg,
+                TransportClosedDiagnostic(
+                    raw_message=msg[:500], transport_diagnosis="pty_error"
+                ),
+            ) from e
 
     async def writeline(self, data: str) -> None:
         if not self._pty or self._closed:

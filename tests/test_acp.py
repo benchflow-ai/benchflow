@@ -926,56 +926,129 @@ class TestSandboxStartupDiagnostics:
 
 
 class TestTransportErrorDiagnostics:
-    """Guards ENG-148: ACP transport rc=255 must carry structured diagnostics."""
+    """Guards ENG-148 / #504: ACP transport must carry structured diagnostics.
 
-    def test_parse_transport_error_rc255(self) -> None:
-        """Guards ENG-148: _parse_transport_error extracts rc, pid, diagnosis from
-        the ConnectionError message produced by process.py when SSH dies."""
-        from benchflow.rollout import _parse_transport_error
+    The diagnostic is now raised at the *source* (``sandbox/process.py``) as
+    a :class:`~benchflow.diagnostics.TransportClosedError` carrying a typed
+    :class:`~benchflow.diagnostics.TransportClosedDiagnostic` — downstream
+    code never regex-parses the error string back into fields.
+    """
 
-        err = ConnectionError(
-            "Process closed stdout (rc=255): "
-            "Local subprocess exited with rc=255 before stdout closed.\n"
-            "stderr: Connection to sandbox lost"
+    @pytest.mark.asyncio
+    async def test_live_process_raises_typed_transport_error_with_rc(self) -> None:
+        """``LiveProcess.readline`` raises ``TransportClosedError`` with the
+        structured ``process_exit_code`` filled in (issue #504)."""
+        from benchflow.diagnostics import TransportClosedError
+        from benchflow.sandbox.process import LiveProcess
+
+        class _StubProcess:
+            def __init__(self) -> None:
+                self.returncode = 255
+                self.pid = 4242
+                self.stdout = self
+                self.stderr = self
+
+            async def readline(self) -> bytes:
+                return b""
+
+            async def read(self, _n: int) -> bytes:
+                return b"Connection to sandbox lost"
+
+        class _LP(LiveProcess):
+            async def start(self, command, env=None, cwd=None) -> None:  # pragma: no cover - unused
+                pass
+
+        lp = _LP()
+        lp._process = _StubProcess()  # type: ignore[assignment]
+        with pytest.raises(TransportClosedError) as exc_info:
+            await lp.readline()
+        diag = exc_info.value.diagnostic
+        assert diag.process_exit_code == 255
+        assert diag.transport_diagnosis == "process_exited"
+        assert diag.stderr_snippet is not None
+        assert "Connection to sandbox lost" in diag.stderr_snippet
+
+    @pytest.mark.asyncio
+    async def test_live_process_raises_typed_transport_error_when_remote_killed(
+        self,
+    ) -> None:
+        """rc=None ⇒ remote session was killed; the diagnostic must carry
+        the pid and the ``remote_session_killed`` diagnosis (issue #504)."""
+        from benchflow.diagnostics import TransportClosedError
+        from benchflow.sandbox.process import LiveProcess
+
+        class _StubProcess:
+            def __init__(self) -> None:
+                self.returncode = None
+                self.pid = 12345
+                self.stdout = self
+                self.stderr = None
+
+            async def readline(self) -> bytes:
+                return b""
+
+        class _LP(LiveProcess):
+            async def start(self, command, env=None, cwd=None) -> None:  # pragma: no cover - unused
+                pass
+
+        lp = _LP()
+        lp._process = _StubProcess()  # type: ignore[assignment]
+        with pytest.raises(TransportClosedError) as exc_info:
+            await lp.readline()
+        diag = exc_info.value.diagnostic
+        assert diag.process_exit_code is None
+        assert diag.process_pid == 12345
+        assert diag.transport_diagnosis == "remote_session_killed"
+
+    def test_transport_closed_error_is_a_connection_error(self) -> None:
+        """``TransportClosedError`` extends ``ConnectionError`` so existing
+        ``except ConnectionError`` paths still catch it (issue #504)."""
+        from benchflow.diagnostics import (
+            TransportClosedDiagnostic,
+            TransportClosedError,
         )
-        info = _parse_transport_error(err)
-        assert info["reason"] == "transport_closed"
-        assert info["process_exit_code"] == 255
-        assert info["transport_diagnosis"] == "process_exited"
-        assert "Connection to sandbox lost" in info["stderr_snippet"]
 
-    def test_parse_transport_error_rc_none_remote_killed(self) -> None:
-        """Guards ENG-148: rc=None means the local process is alive but the remote
-        transport (SSH/Daytona) was killed."""
-        from benchflow.rollout import _parse_transport_error
+        err = TransportClosedError("test", TransportClosedDiagnostic(raw_message="test"))
+        assert isinstance(err, ConnectionError)
+        assert err.diagnostic.transport_diagnosis == "unknown"
 
-        err = ConnectionError(
-            "Process closed stdout (rc=None): "
-            "Local subprocess (pid=12345) is still alive but its "
-            "stdout/transport closed. This usually means the remote "
-            "container or SSH session was killed"
+    def test_diagnostic_round_trips_through_result_json(self, tmp_path) -> None:
+        """The structured diagnostic survives the dataclass → dict → JSON →
+        dict roundtrip used by result.json (issue #503)."""
+        from benchflow.diagnostics import (
+            DIAGNOSTIC_BY_FIELD,
+            RolloutDiagnostics,
+            TransportClosedDiagnostic,
         )
-        info = _parse_transport_error(err)
-        assert info["process_exit_code"] is None
-        assert info["process_pid"] == 12345
-        assert info["transport_diagnosis"] == "remote_session_killed"
 
-    def test_parse_transport_error_pty(self) -> None:
-        """Guards ENG-148: PTY readline errors get distinct diagnosis."""
-        from benchflow.rollout import _parse_transport_error
-
-        err = ConnectionError("PTY readline timeout (900s)")
-        info = _parse_transport_error(err)
-        assert info["transport_diagnosis"] == "pty_error"
-
-    def test_parse_transport_error_unknown(self) -> None:
-        """Guards ENG-148: unrecognized ConnectionError gets diagnosis=unknown."""
-        from benchflow.rollout import _parse_transport_error
-
-        err = ConnectionError("something unexpected")
-        info = _parse_transport_error(err)
-        assert info["transport_diagnosis"] == "unknown"
-        assert info["reason"] == "transport_closed"
+        rd = RolloutDiagnostics()
+        rd.set(
+            TransportClosedDiagnostic(
+                raw_message="boom",
+                process_exit_code=255,
+                process_pid=99,
+                transport_diagnosis="process_exited",
+                stderr_snippet="oops",
+                sandbox_reachable=False,
+            )
+        )
+        fields = rd.to_result_fields()
+        assert fields["transport_error_info"] is not None
+        roundtripped = fields["transport_error_info"]
+        assert roundtripped["process_exit_code"] == 255
+        assert roundtripped["transport_diagnosis"] == "process_exited"
+        assert roundtripped["sandbox_reachable"] is False
+        # The registry can rebuild a typed diagnostic from the dict.
+        cls = DIAGNOSTIC_BY_FIELD["transport_error_info"]
+        rebuilt = cls(
+            **{
+                k: v
+                for k, v in roundtripped.items()
+                if k in TransportClosedDiagnostic._init_fields()
+            }
+        )
+        assert isinstance(rebuilt, TransportClosedDiagnostic)
+        assert rebuilt.process_exit_code == 255
 
     def test_transport_error_info_in_result_json(self, tmp_path) -> None:
         """Guards ENG-148: transport_error_info is written to result.json."""
@@ -1034,6 +1107,94 @@ class TestTransportErrorDiagnostics:
         rj = __import__("json").loads((tmp_path / "result.json").read_text())
         assert rj["transport_error_info"] is None
         assert result.rewards == {"reward": 1.0}
+
+
+class TestDiagnosticRegistry:
+    """Guards #503: the diagnostic registry is the single source of truth.
+
+    Every diagnostic shape — result.json field name, summary warning,
+    check_results invalidation line — flows from the same registry. Adding
+    a new diagnostic should require adding ONE class, not coordinated
+    edits across rollout/evaluation/check_results.
+    """
+
+    def test_every_diagnostic_round_trips_through_result_fields(self) -> None:
+        """Every registered Diagnostic serializes under its own field name."""
+        from benchflow.diagnostics import (
+            DIAGNOSTIC_BY_FIELD,
+            DIAGNOSTIC_REGISTRY,
+            RolloutDiagnostics,
+        )
+
+        # Field name → class lookup must mirror the registry.
+        assert set(DIAGNOSTIC_BY_FIELD.keys()) == {d.field for d in DIAGNOSTIC_REGISTRY}
+        # An empty collector renders every field as None.
+        empty = RolloutDiagnostics().to_result_fields()
+        for diag_cls in DIAGNOSTIC_REGISTRY:
+            assert empty[diag_cls.field] is None
+
+    def test_summary_warning_uses_registry_metadata(self) -> None:
+        """Summary warning text comes from the registry's
+        ``summary_description``, not a per-call f-string in evaluation.py."""
+        from benchflow.diagnostics import (
+            IdleTimeoutDiagnostic,
+            TransportClosedDiagnostic,
+            summary_warning,
+        )
+
+        msg = summary_warning(IdleTimeoutDiagnostic, count=3, total=10)
+        assert "3 tasks (30%) hit idle timeout" in msg
+        assert "idle_timeout_info" in msg
+        msg = summary_warning(TransportClosedDiagnostic, count=2, total=10)
+        assert "lost transport" in msg
+        assert "transport_error_info" in msg
+
+    def test_format_issue_for_field_dispatches_via_registry(self) -> None:
+        """check_results renders per-task invalidation lines through the
+        registry — no per-diagnostic format string lives in check_results.py."""
+        from benchflow.diagnostics import format_issue_for_field
+
+        line = format_issue_for_field(
+            "idle_timeout_info",
+            "task-1",
+            {
+                "idle_duration_sec": 602,
+                "n_tool_calls": 3,
+                "wall_clock_elapsed_sec": 605,
+            },
+        )
+        assert "task-1: idle timeout after 602s idle (3 tool calls" in line
+
+        line = format_issue_for_field(
+            "transport_error_info",
+            "task-2",
+            {
+                "process_exit_code": 255,
+                "transport_diagnosis": "process_exited",
+                "sandbox_reachable": False,
+            },
+        )
+        assert (
+            "task-2: transport closed (rc=255, diagnosis=process_exited" in line
+        )
+
+    def test_sandbox_startup_error_diagnostic_view_is_consistent(self) -> None:
+        """``SandboxStartupError.sandbox_startup_info`` reflects the same
+        dict the registry serializer produces — one schema, one source."""
+        from benchflow.diagnostics import RolloutDiagnostics
+        from benchflow.sandbox.protocol import SandboxStartupError
+
+        err = SandboxStartupError(
+            "boom",
+            sandbox_id="sb-1",
+            sandbox_state="error",
+            attempts=2,
+            build_timeout_sec=600.0,
+        )
+        rd = RolloutDiagnostics()
+        rd.set(err.diagnostic)
+        fields = rd.to_result_fields()
+        assert fields["sandbox_startup_info"] == err.sandbox_startup_info
 
 
 class TestVerifierDepInstallDiagnostics:

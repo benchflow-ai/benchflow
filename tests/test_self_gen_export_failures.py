@@ -147,10 +147,9 @@ async def test_build_result_after_export_failure_is_not_success(tmp_path):
     rollout._started_at = datetime.now()
     rollout._timing = {}
     rollout._agent_name = ""
-    rollout._idle_timeout_info = None
-    rollout._sandbox_startup_info = None
-    rollout._transport_error_info = None
-    rollout._verifier_timeout_info = None
+    from benchflow.diagnostics import RolloutDiagnostics
+
+    rollout._diagnostics = RolloutDiagnostics()
     rollout._usage_metrics = {
         "n_input_tokens": None,
         "n_output_tokens": None,
