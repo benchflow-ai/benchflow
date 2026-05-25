@@ -33,6 +33,10 @@ from benchflow._utils.scoring import (
     count_result_outcomes,
 )
 from benchflow._utils.source_provenance import source_issues, source_matches_parent
+from benchflow.trajectories.metrics import (
+    count_skill_invocations,
+    result_skill_invocations,
+)
 
 EXPECTED: dict[str, Any] = {}
 EXPECTED_FIELDS = {
@@ -177,6 +181,28 @@ def _expected_label(value: Any) -> str:
     if value is _MISSING:
         return "<missing>"
     return "null" if value is None else repr(value)
+
+
+def _nonnegative_int_issue(value: Any, label: str) -> str | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return f"{label} must be a non-negative integer"
+    return None
+
+
+def _load_acp_trajectory(path: Path) -> list[dict[str, Any]] | None:
+    trajectory_path = path.parent / "trajectory" / "acp_trajectory.jsonl"
+    if not trajectory_path.exists():
+        return None
+    trajectory: list[dict[str, Any]] = []
+    try:
+        for line in trajectory_path.read_text().splitlines():
+            if line.strip():
+                event = json.loads(line)
+                if isinstance(event, dict):
+                    trajectory.append(event)
+    except (json.JSONDecodeError, OSError):
+        return None
+    return trajectory
 
 
 def _latest_results_by_task(result_entries: list[tuple[Path, dict]]) -> list[dict]:
@@ -405,6 +431,39 @@ def check_agent(agent_dir: Path) -> dict:
         if missing:
             findings["issues"].append(f"{r.get('task_name', '?')}: missing {missing}")
             findings["ok"] = False
+        skill_count = r.get("n_skill_invocations")
+        agent_result = r.get("agent_result") or {}
+        agent_skill_count = agent_result.get("n_skill_invocations")
+        if skill_count is not None:
+            issue = _nonnegative_int_issue(
+                skill_count, f"{r.get('task_name', '?')}: n_skill_invocations"
+            )
+            if issue:
+                findings["issues"].append(issue)
+                findings["ok"] = False
+            if agent_skill_count is not None and agent_skill_count != skill_count:
+                findings["issues"].append(
+                    f"{r.get('task_name', '?')}: agent_result.n_skill_invocations "
+                    "does not match result.json n_skill_invocations"
+                )
+                findings["ok"] = False
+            trajectory = _load_acp_trajectory(result_file)
+            if trajectory is not None:
+                expected_skill_count = count_skill_invocations(trajectory)
+                if skill_count != expected_skill_count:
+                    findings["issues"].append(
+                        f"{r.get('task_name', '?')}: n_skill_invocations={skill_count} "
+                        f"but trajectory implies {expected_skill_count}"
+                    )
+                    findings["ok"] = False
+        if agent_skill_count is not None:
+            issue = _nonnegative_int_issue(
+                agent_skill_count,
+                f"{r.get('task_name', '?')}: agent_result.n_skill_invocations",
+            )
+            if issue:
+                findings["issues"].append(issue)
+                findings["ok"] = False
         found_source_issues = source_issues(
             r.get("source"),
             f"{r.get('task_name', '?')}: result.json",
@@ -717,6 +776,18 @@ def check_agent(agent_dir: Path) -> dict:
                             f"summary source does not cover {r.get('task_name', '?')}"
                         )
                         findings["ok"] = False
+            for field in ("total_skill_invocations", "avg_skill_invocations"):
+                if field in summary:
+                    value = summary[field]
+                    if (
+                        isinstance(value, bool)
+                        or not isinstance(value, int | float)
+                        or value < 0
+                    ):
+                        findings["issues"].append(
+                            f"summary.json {field} must be a non-negative number"
+                        )
+                        findings["ok"] = False
             findings["summary"] = summary
         except json.JSONDecodeError:
             findings["issues"].append("summary.json: invalid JSON")
@@ -751,6 +822,23 @@ def check_agent(agent_dir: Path) -> dict:
                 findings["issues"].append(
                     f"summary.json memory_score={summary['memory_score']} "
                     f"but results imply {implied}"
+                )
+                findings["ok"] = False
+        if "total_skill_invocations" in summary:
+            implied = sum(result_skill_invocations(result) for result in latest_results)
+            if summary["total_skill_invocations"] != implied:
+                findings["issues"].append(
+                    "summary.json total_skill_invocations="
+                    f"{summary['total_skill_invocations']} but results imply {implied}"
+                )
+                findings["ok"] = False
+        if "avg_skill_invocations" in summary:
+            total = sum(result_skill_invocations(result) for result in latest_results)
+            implied = round(total / len(latest_results), 1) if latest_results else 0.0
+            if abs(float(summary["avg_skill_invocations"]) - implied) > 1e-9:
+                findings["issues"].append(
+                    "summary.json avg_skill_invocations="
+                    f"{summary['avg_skill_invocations']} but results imply {implied}"
                 )
                 findings["ok"] = False
 
