@@ -20,7 +20,7 @@ from benchflow.scenes import (
 
 
 def test_scene_compiles_turns_to_steps() -> None:
-    """Guards the fix for issue #413: Scene lowers to explicit Steps."""
+    """Guards the fix from PR #515 for issue #413: Scene lowers to Steps."""
     scene = Scene(
         name="review",
         roles=[
@@ -49,7 +49,7 @@ def test_scene_compiles_turns_to_steps() -> None:
 
 
 def test_scene_compiler_uses_instruction_fallback() -> None:
-    """Guards the fix for issue #413: default prompts are resolved at compile time."""
+    """Guards the fix from PR #515 for issue #413: prompt fallback lowers early."""
     scene = Scene.single(agent="gemini", model="flash")
 
     assert (
@@ -58,7 +58,7 @@ def test_scene_compiler_uses_instruction_fallback() -> None:
 
 
 def test_scene_compiler_rejects_unknown_role() -> None:
-    """Guards the fix for issue #413: role validation happens during desugaring."""
+    """Guards the fix from PR #515 for issue #413: validate roles in desugaring."""
     scene = Scene(
         name="bad",
         roles=[Role("agent", "gemini")],
@@ -70,12 +70,12 @@ def test_scene_compiler_rejects_unknown_role() -> None:
 
 
 def test_scene_type_has_no_runtime_scheduler_metadata() -> None:
-    """Guards the fix for issue #413: Scene carries no scheduler fields."""
+    """Guards the fix from PR #515 for issue #413: Scene has no scheduler fields."""
     assert "parallel_group" not in {field.name for field in fields(Scene)}
 
 
 def test_benchflow_no_longer_exports_runtime_scene_api() -> None:
-    """Guards the fix for issue #413: runtime Scene surface is not public."""
+    """Guards the fix from PR #515 for issue #413: runtime Scene API is private."""
     for name in (
         "SceneRuntime",
         "SceneRole",
@@ -88,7 +88,7 @@ def test_benchflow_no_longer_exports_runtime_scene_api() -> None:
 
 
 def test_scenes_module_has_no_scheduler_runtime() -> None:
-    """Guards the fix for issue #413 against reintroducing a Scene scheduler."""
+    """Guards the fix from PR #515 for issue #413 against Scene schedulers."""
     tree = ast.parse(Path("src/benchflow/scenes.py").read_text())
     runtime_defs = {
         node.name

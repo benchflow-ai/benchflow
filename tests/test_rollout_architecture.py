@@ -39,7 +39,7 @@ def _imported_modules(path: Path) -> set[str]:
 
 
 def test_rollout_kernel_does_not_import_concrete_planes() -> None:
-    """Guards the fix for issue #415: rollout depends on contracts only."""
+    """Guards the fix from PR #515 for issue #415: rollout imports contracts."""
     imported = _imported_modules(ROLL_OUT)
 
     assert imported.isdisjoint(CONCRETE_PLANE_MODULES)
@@ -48,7 +48,7 @@ def test_rollout_kernel_does_not_import_concrete_planes() -> None:
 
 
 def test_concrete_plane_bindings_live_at_composition_boundary() -> None:
-    """Guards the fix for issue #415: concrete imports stay out of the kernel."""
+    """Guards the fix from PR #515 for issue #415: concrete imports stay outside."""
     imported = _imported_modules(Path("src/benchflow/rollout_planes.py"))
 
     assert imported >= COMPOSITION_BOUNDARY_MODULES

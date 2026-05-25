@@ -85,7 +85,7 @@ def self_review_scene() -> Scene:
 async def test_run_steps_executes_compiled_turns(
     coder_reviewer_scene: Scene,
 ) -> None:
-    """Guards the fix for issue #413: rollout runs Steps, not Scene schedulers."""
+    """Guards the fix from PR #515 for issue #413: rollout runs compiled Steps."""
     trial = _make_trial(coder_reviewer_scene)
     prompts_received: list[tuple[str, list[str]]] = []
     roles_connected: list[str] = []
@@ -120,7 +120,7 @@ async def test_run_steps_executes_compiled_turns(
 
 
 async def test_run_steps_reuses_session_for_same_role(self_review_scene: Scene) -> None:
-    """Guards the fix for issue #413: repeated same-role turns are plain Steps."""
+    """Guards the fix from PR #515 for issue #413: same-role turns stay Steps."""
     trial = _make_trial(self_review_scene)
     prompts_received: list[str] = []
 
@@ -144,7 +144,7 @@ async def test_run_steps_reuses_session_for_same_role(self_review_scene: Scene) 
 async def test_run_steps_disconnects_active_agent_when_execute_times_out(
     self_review_scene: Scene,
 ) -> None:
-    """Guards timeout cleanup for compiled Scene Steps."""
+    """Guards the fix from PR #515 for issue #413: Step timeout cleanup."""
     trial = _make_trial(self_review_scene)
 
     async def fake_execute(prompts=None):
