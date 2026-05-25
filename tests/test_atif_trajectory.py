@@ -448,6 +448,221 @@ class TestTrajectoryProxy:
             stream_server.close()
             await stream_server.wait_closed()
 
+    @pytest.mark.asyncio
+    async def test_proxy_reconstructs_gemini_streaming_usage(self) -> None:
+        """Regression for #375: Gemini's SSE chunks carry ``usageMetadata`` per
+        chunk and no ``type`` / ``choices`` fields. Before this fix the proxy
+        fell through to a raw-events fallback, so token counts and the model
+        name were dropped — Docker Gemini runs reported ``usage_source:
+        unavailable`` despite the proxy capturing every chunk."""
+
+        async def gemini_handler(
+            reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+        ) -> None:
+            await reader.readline()
+            headers = {}
+            while True:
+                line = await reader.readline()
+                if line in (b"\r\n", b"\n", b""):
+                    break
+                k, _, v = line.decode().partition(":")
+                headers[k.strip().lower()] = v.strip()
+            cl = int(headers.get("content-length", "0"))
+            if cl > 0:
+                await reader.readexactly(cl)
+
+            # Gemini's streamGenerateContent?alt=sse chunks. usageMetadata is
+            # cumulative — the last chunk carries the final totals.
+            frames = [
+                {
+                    "candidates": [
+                        {
+                            "content": {
+                                "role": "model",
+                                "parts": [{"text": "Hello "}],
+                            },
+                            "index": 0,
+                        }
+                    ],
+                    "modelVersion": "gemini-3.1-flash-lite-preview",
+                    "usageMetadata": {
+                        "promptTokenCount": 11,
+                        "candidatesTokenCount": 1,
+                        "totalTokenCount": 12,
+                    },
+                },
+                {
+                    "candidates": [
+                        {
+                            "content": {
+                                "role": "model",
+                                "parts": [{"text": "world"}],
+                            },
+                            "finishReason": "STOP",
+                            "index": 0,
+                        }
+                    ],
+                    "modelVersion": "gemini-3.1-flash-lite-preview",
+                    "usageMetadata": {
+                        "promptTokenCount": 11,
+                        "candidatesTokenCount": 4,
+                        "totalTokenCount": 15,
+                    },
+                },
+            ]
+            body = b"".join(
+                f"data: {json.dumps(frame)}\n\n".encode() for frame in frames
+            )
+            writer.write(
+                b"HTTP/1.1 200 OK\r\n"
+                b"content-type: text/event-stream\r\n"
+                + f"content-length: {len(body)}\r\n\r\n".encode()
+                + body
+            )
+            await writer.drain()
+            writer.close()
+
+        stream_server = await asyncio.start_server(gemini_handler, "127.0.0.1", 0)
+        stream_port = stream_server.sockets[0].getsockname()[1]
+
+        proxy = TrajectoryProxy(
+            target=f"http://127.0.0.1:{stream_port}",
+            session_id="gemini-stream-test",
+            agent_name="gemini",
+        )
+        await proxy.start()
+
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    f"{proxy.base_url}/v1beta/models/"
+                    "gemini-3.1-flash-lite-preview:streamGenerateContent?alt=sse",
+                    json={
+                        "contents": [
+                            {"role": "user", "parts": [{"text": "say hi"}]}
+                        ],
+                        "stream": True,
+                    },
+                )
+                assert resp.status_code == 200
+
+            traj = proxy.trajectory
+            assert len(traj.exchanges) == 1
+
+            # The captured response body must carry Gemini-shaped fields the
+            # downstream token/cost extractors expect — not the
+            # ``_raw_events`` fallback that drops usageMetadata.
+            body = traj.exchanges[0].response.body
+            assert "_raw_events" not in body, (
+                "Gemini SSE response fell through to raw-events fallback; "
+                "usageMetadata would be lost"
+            )
+            assert body.get("usageMetadata", {}).get("promptTokenCount") == 11
+            assert body.get("usageMetadata", {}).get("candidatesTokenCount") == 4
+            assert body.get("usageMetadata", {}).get("totalTokenCount") == 15
+            # Text parts are concatenated across chunks.
+            assert body["candidates"][0]["content"]["parts"][0]["text"] == "Hello world"
+
+            # End-to-end: the Trajectory accessors that feed extract_usage
+            # see the cumulative counts.
+            assert traj.total_input_tokens == 11
+            assert traj.total_output_tokens == 4
+            assert traj.total_provider_tokens == 15
+        finally:
+            await proxy.stop()
+            stream_server.close()
+            await stream_server.wait_closed()
+
+    @pytest.mark.asyncio
+    async def test_extract_usage_populates_gemini_telemetry_after_stream(self) -> None:
+        """Regression for #375 — assert the full pipeline: a Gemini streaming
+        response goes through the proxy and ``extract_usage`` returns
+        populated token fields with ``usage_source=provider_response``
+        (not the ``unavailable`` defaults seen in the bug)."""
+        from benchflow.providers.runtime import ProviderRuntime, extract_usage
+
+        async def gemini_handler(
+            reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+        ) -> None:
+            await reader.readline()
+            headers = {}
+            while True:
+                line = await reader.readline()
+                if line in (b"\r\n", b"\n", b""):
+                    break
+                k, _, v = line.decode().partition(":")
+                headers[k.strip().lower()] = v.strip()
+            cl = int(headers.get("content-length", "0"))
+            if cl > 0:
+                await reader.readexactly(cl)
+
+            frame = {
+                "candidates": [
+                    {
+                        "content": {
+                            "role": "model",
+                            "parts": [{"text": "done"}],
+                        },
+                        "finishReason": "STOP",
+                        "index": 0,
+                    }
+                ],
+                "modelVersion": "gemini-2.5-flash",
+                "usageMetadata": {
+                    "promptTokenCount": 100,
+                    "candidatesTokenCount": 50,
+                    "totalTokenCount": 150,
+                },
+            }
+            body = f"data: {json.dumps(frame)}\n\n".encode()
+            writer.write(
+                b"HTTP/1.1 200 OK\r\n"
+                b"content-type: text/event-stream\r\n"
+                + f"content-length: {len(body)}\r\n\r\n".encode()
+                + body
+            )
+            await writer.drain()
+            writer.close()
+
+        server = await asyncio.start_server(gemini_handler, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+
+        proxy = TrajectoryProxy(
+            target=f"http://127.0.0.1:{port}",
+            session_id="gemini-extract-usage",
+            agent_name="gemini",
+        )
+        await proxy.start()
+
+        try:
+            async with httpx.AsyncClient() as client:
+                await client.post(
+                    f"{proxy.base_url}/v1beta/models/"
+                    "gemini-2.5-flash:streamGenerateContent?alt=sse",
+                    json={"contents": [], "stream": True},
+                )
+
+            runtime = ProviderRuntime(
+                kind="usage-proxy",
+                host="127.0.0.1",
+                port=proxy.port,
+                backend_model="gemini-2.5-flash",
+                server=proxy,
+            )
+            usage = extract_usage(runtime)
+        finally:
+            await proxy.stop()
+            server.close()
+            await server.wait_closed()
+
+        assert usage["usage_source"] == "provider_response"
+        assert usage["n_input_tokens"] == 100
+        assert usage["n_output_tokens"] == 50
+        assert usage["total_tokens"] == 150
+        # gemini-2.5-flash has a pricing entry, so cost must be populated.
+        assert usage["cost_usd"] is not None
+        assert usage["cost_usd"] > 0
+
 
 class TestOTelCollector:
     @pytest.mark.asyncio
