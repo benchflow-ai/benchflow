@@ -19,11 +19,10 @@ from string import Template
 from typing import Any
 
 import tomli_w
-from pydantic import ValidationError
 
 from benchflow._paths import assert_within, safe_path_segment
 
-from .schema import DEFAULT_SKILL_MOUNT_DIR, _EvalsJsonModel
+from .schema import DEFAULT_SKILL_MOUNT_DIR, validate_evals_json
 
 logger = logging.getLogger(__name__)
 
@@ -198,18 +197,10 @@ def load_eval_dataset(skill_dir: str | Path) -> EvalDataset:
 
     data = json.loads(evals_json.read_text())
 
-    # Top-level shape: "cases" must be present; emit the historical error
-    # message so callers depending on the exact text keep working.
-    if "cases" not in data:
-        raise ValueError("evals.json must contain a 'cases' array")
-
     # Schema validation — surfaces type errors, unknown fields, unsafe
-    # judge_model values, and the empty-cases case with one consistent
-    # ValidationError instead of a downstream TOML parse failure.
-    try:
-        parsed = _EvalsJsonModel.model_validate(data)
-    except ValidationError as e:
-        raise ValueError(f"evals.json failed schema validation: {e}") from e
+    # judge_model values, and the empty-cases case before any generated
+    # artifact can be written (#424).
+    parsed = validate_evals_json(data)
 
     # Parse skill name from evals.json or SKILL.md
     skill_name = parsed.skill_name
