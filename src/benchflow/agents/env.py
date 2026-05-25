@@ -16,11 +16,11 @@ Does not own:
     - Setting model via ACP session/set_model — see _acp_run.py
 """
 
-import contextlib
 import json
 import logging
 import os
 from pathlib import Path
+from urllib.parse import urlparse
 
 from benchflow._dotenv import load_dotenv_env
 from benchflow.agents.registry import AGENTS
@@ -39,6 +39,77 @@ _CODEX_ACCESS_TOKEN_ENV = "CODEX_ACCESS_TOKEN"
 _CUSTOM_OPENAI_ENDPOINT_KEYS = frozenset(
     {"BENCHFLOW_PROVIDER_BASE_URL", "OPENAI_BASE_URL"}
 )
+_AZURE_RESOURCE_ENV = "AZURE_RESOURCE"
+_AZURE_ENDPOINT_ENV = "AZURE_API_ENDPOINT"
+_AZURE_HOST_SUFFIXES = (".openai.azure.com", ".services.ai.azure.com")
+
+
+def _derive_azure_resource(agent_env: dict[str, str]) -> None:
+    """Populate AZURE_RESOURCE from AZURE_API_ENDPOINT when not already set."""
+    if agent_env.get(_AZURE_RESOURCE_ENV):
+        return
+    endpoint = agent_env.get(_AZURE_ENDPOINT_ENV, "").strip()
+    if not endpoint:
+        return
+    if "://" not in endpoint:
+        endpoint = f"https://{endpoint}"
+    parsed = urlparse(endpoint)
+    host = (parsed.netloc or parsed.path.split("/", 1)[0]).split("@")[-1]
+    host = host.split(":", 1)[0].lower()
+    for suffix in _AZURE_HOST_SUFFIXES:
+        if host.endswith(suffix):
+            resource = host[: -len(suffix)]
+            if resource:
+                agent_env[_AZURE_RESOURCE_ENV] = resource
+            return
+
+
+def _missing_provider_base_url_message(
+    *,
+    provider_name: str,
+    model: str,
+    required_envs: list[str],
+) -> str:
+    """Return a user-facing error when a provider URL template cannot resolve."""
+    required = ", ".join(required_envs)
+    if provider_name.startswith("azure-foundry-"):
+        return (
+            f"Azure AI Foundry model {model!r} requires {_AZURE_RESOURCE_ENV} "
+            f"or {_AZURE_ENDPOINT_ENV} to build the provider base URL. "
+            f"Export {_AZURE_ENDPOINT_ENV}=https://<resource>.openai.azure.com/ "
+            f"or pass --agent-env {_AZURE_RESOURCE_ENV}=<resource>."
+        )
+    return (
+        f"Provider {provider_name!r} for model {model!r} requires {required} "
+        "to build the provider base URL."
+    )
+
+
+def _provider_supports_agent_protocol(provider, agent_protocol: str) -> bool:
+    """Return True when a registered provider can serve the agent protocol."""
+    if not agent_protocol:
+        return True
+    if agent_protocol in provider.all_endpoints:
+        return True
+    # Providers like vllm have no canonical URL; the caller supplies both URL
+    # and semantics at runtime, so preserve their existing flexible behavior.
+    return not provider.base_url
+
+
+def _unsupported_provider_protocol_message(
+    *,
+    agent: str,
+    agent_protocol: str,
+    provider_name: str,
+    model: str,
+    supported_protocols: list[str],
+) -> str:
+    supported = ", ".join(supported_protocols)
+    return (
+        f"Agent {agent!r} requires provider protocol {agent_protocol!r}, but "
+        f"provider {provider_name!r} for model {model!r} only supports "
+        f"{supported}. Use a provider prefix that matches the agent protocol."
+    )
 
 
 def _normalize_openhands_model(model: str) -> str:
@@ -94,6 +165,11 @@ def auto_inherit_env(
         "BENCHFLOW_PROVIDER_BASE_URL",
         "BENCHFLOW_PROVIDER_API_KEY",
         "BENCHFLOW_PROVIDER_PROMPT_CACHE_RETENTION",
+        # AZURE_API_KEY / AZURE_RESOURCE are picked up automatically below via
+        # cfg.auth_env / cfg.url_params; only AZURE_API_ENDPOINT is listed
+        # explicitly because it is a user-facing convenience input, not a
+        # provider-config field.
+        _AZURE_ENDPOINT_ENV,
     }
     for cfg in PROVIDERS.values():
         if cfg.auth_env:
@@ -125,6 +201,7 @@ def auto_inherit_env(
         "AWS_REGION" in explicit_keys and "AWS_DEFAULT_REGION" not in explicit_keys
     ) or ("AWS_REGION" in agent_env and "AWS_DEFAULT_REGION" not in agent_env):
         agent_env["AWS_DEFAULT_REGION"] = agent_env["AWS_REGION"]
+    _derive_azure_resource(agent_env)
     # CLAUDE_CODE_OAUTH_TOKEN is a separate auth path — Claude CLI reads it
     # directly. Don't map to ANTHROPIC_API_KEY (different auth mechanism).
 
@@ -256,11 +333,32 @@ def resolve_provider_env(
     if _prov:
         _prov_name, _prov_cfg = _prov
         agent_env.setdefault("BENCHFLOW_PROVIDER_NAME", _prov_name)
-        # URL params missing — will fail later with clear error
-        with contextlib.suppress(KeyError):
+        if not _provider_supports_agent_protocol(_prov_cfg, agent_protocol):
+            raise ValueError(
+                _unsupported_provider_protocol_message(
+                    agent=agent,
+                    agent_protocol=agent_protocol,
+                    provider_name=_prov_name,
+                    model=model,
+                    supported_protocols=sorted(_prov_cfg.all_endpoints),
+                )
+            )
+        if "BENCHFLOW_PROVIDER_BASE_URL" not in agent_env:
+            try:
+                base_url = resolve_base_url(
+                    _prov_cfg, agent_env, protocol=agent_protocol or None
+                )
+            except KeyError as exc:
+                raise ValueError(
+                    _missing_provider_base_url_message(
+                        provider_name=_prov_name,
+                        model=model,
+                        required_envs=list(_prov_cfg.url_params.values()),
+                    )
+                ) from exc
             agent_env.setdefault(
                 "BENCHFLOW_PROVIDER_BASE_URL",
-                resolve_base_url(_prov_cfg, agent_env, protocol=agent_protocol or None),
+                base_url,
             )
         agent_env.setdefault(
             "BENCHFLOW_PROVIDER_PROTOCOL",

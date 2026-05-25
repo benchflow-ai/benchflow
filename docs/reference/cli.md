@@ -7,7 +7,9 @@ BenchFlow uses a resource-verb pattern: `bench <resource> <verb>`.
 
 ### bench agent list
 
-List all registered agents with their protocol and auth requirements.
+List all registered agents with their protocol and native/default auth
+requirements. Provider-prefixed models may use provider-specific credentials;
+Azure Foundry models use `AZURE_API_KEY` plus `AZURE_API_ENDPOINT`.
 
 ```bash
 bench agent list
@@ -15,7 +17,8 @@ bench agent list
 
 ### bench agent show
 
-Show details for a specific agent.
+Show details for a specific agent, including native/default auth and a note
+about provider-specific credentials.
 
 ```bash
 bench agent show gemini

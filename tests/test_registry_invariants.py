@@ -310,6 +310,8 @@ def test_provider_models_and_credentials(name, cfg):
     [
         ("google-vertex/gemini-2.5-pro", "google-vertex"),
         ("anthropic-vertex/claude-sonnet-4-6", "anthropic-vertex"),
+        ("azure-foundry-openai/gpt-5.5", "azure-foundry-openai"),
+        ("azure-foundry-anthropic/claude-opus-4-5", "azure-foundry-anthropic"),
         ("aws-bedrock/openai.gpt-oss-20b-1:0", "aws-bedrock"),
         ("zai/glm-5", "zai"),
         ("vllm/local-model", "vllm"),

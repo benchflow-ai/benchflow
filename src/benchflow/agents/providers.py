@@ -127,6 +127,34 @@ PROVIDERS: dict[str, ProviderConfig] = {
             }
         ],
     ),
+    # ── Azure AI Foundry providers ──
+    #
+    # Foundry exposes different protocol surfaces. Keep those surfaces explicit
+    # in provider prefixes, while sharing one Azure resource/key env contract.
+    # AZURE_RESOURCE is normally derived from AZURE_API_ENDPOINT in env.py;
+    # users can also set it directly via --agent-env.
+    "azure-foundry-openai": ProviderConfig(
+        name="azure-foundry-openai",
+        base_url="https://{resource}.openai.azure.com/openai/v1",
+        # Use the broadest OpenAI-compatible default for agents that do not
+        # declare their own protocol (e.g. pi-acp). Responses-native agents
+        # still select the explicit openai-responses endpoint below.
+        api_protocol="openai-completions",
+        auth_type="api_key",
+        auth_env="AZURE_API_KEY",
+        url_params={"resource": "AZURE_RESOURCE"},
+        endpoints={
+            "openai-responses": "https://{resource}.openai.azure.com/openai/v1",
+        },
+    ),
+    "azure-foundry-anthropic": ProviderConfig(
+        name="azure-foundry-anthropic",
+        base_url="https://{resource}.services.ai.azure.com/anthropic",
+        api_protocol="anthropic-messages",
+        auth_type="api_key",
+        auth_env="AZURE_API_KEY",
+        url_params={"resource": "AZURE_RESOURCE"},
+    ),
     # ── OpenAI-compatible inference servers (user-supplied base_url) ──
     "vllm": ProviderConfig(
         name="vllm",

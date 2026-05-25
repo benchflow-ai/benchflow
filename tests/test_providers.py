@@ -41,6 +41,19 @@ class TestFindProvider:
         assert name == "aws-bedrock"
         assert cfg.auth_type == "aws"
 
+    @pytest.mark.parametrize(
+        ("model", "expected_protocol"),
+        [
+            ("azure-foundry-openai/gpt-5.5", "openai-completions"),
+            ("azure-foundry-anthropic/claude-opus-4-5", "anthropic-messages"),
+        ],
+    )
+    def test_azure_foundry_prefixes(self, model, expected_protocol):
+        name, cfg = find_provider(model)
+        assert name in {"azure-foundry-openai", "azure-foundry-anthropic"}
+        assert cfg.api_protocol == expected_protocol
+        assert cfg.auth_env == "AZURE_API_KEY"
+
 
 # ── resolve_base_url: template expansion ──
 
@@ -111,6 +124,22 @@ class TestResolveBaseUrl:
             == "https://api.z.ai/api/paas/v4"
         )
 
+    def test_azure_openai_resource_expansion(self):
+        p = PROVIDERS["azure-foundry-openai"]
+        env = {"AZURE_RESOURCE": "example-resource"}
+        assert (
+            resolve_base_url(p, env)
+            == "https://example-resource.openai.azure.com/openai/v1"
+        )
+
+    def test_azure_anthropic_resource_expansion(self):
+        p = PROVIDERS["azure-foundry-anthropic"]
+        env = {"AZURE_RESOURCE": "example-resource"}
+        assert (
+            resolve_base_url(p, env)
+            == "https://example-resource.services.ai.azure.com/anthropic"
+        )
+
 
 # ── resolve_auth_env: which env var does this provider need? ──
 
@@ -127,6 +156,13 @@ class TestResolveAuthEnv:
 
     def test_aws_bedrock_returns_none(self):
         assert resolve_auth_env("aws-bedrock/openai.gpt-oss-20b-1:0") is None
+
+    def test_azure_foundry_uses_shared_key(self):
+        assert resolve_auth_env("azure-foundry-openai/gpt-5.5") == "AZURE_API_KEY"
+        assert (
+            resolve_auth_env("azure-foundry-anthropic/claude-opus-4-5")
+            == "AZURE_API_KEY"
+        )
 
 
 # ── Integration: backward compat with registry.py ──
@@ -145,6 +181,13 @@ class TestRegistryIntegration:
         from benchflow.agents.registry import infer_env_key_for_model
 
         assert infer_env_key_for_model("aws-bedrock/openai.gpt-oss-20b-1:0") is None
+
+    def test_infer_env_key_for_azure_foundry(self):
+        from benchflow.agents.registry import infer_env_key_for_model
+
+        assert (
+            infer_env_key_for_model("azure-foundry-openai/gpt-5.5") == "AZURE_API_KEY"
+        )
 
     def test_is_vertex_model_zai_direct(self):
         """zai/ (direct API) is NOT vertex."""

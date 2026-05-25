@@ -34,6 +34,12 @@ class TestAutoInheritEnv:
             pytest.param("AWS_BEARER_TOKEN_BEDROCK", "bedrock-token", id="bedrock"),
             pytest.param("AWS_REGION", "us-east-1", id="bedrock-region"),
             pytest.param("ZAI_API_KEY", "zk-host", id="provider"),
+            pytest.param("AZURE_API_KEY", "az-host", id="azure-api-key"),
+            pytest.param(
+                "AZURE_API_ENDPOINT",
+                "https://example.openai.azure.com/",
+                id="azure-api-endpoint",
+            ),
         ],
     )
     def test_inherits_key(self, monkeypatch, env_name, env_value):
@@ -138,6 +144,25 @@ class TestAutoInheritEnv:
         auto_inherit_env(env)
         assert "OPENAI_BASE_URL" not in env
 
+    def test_azure_endpoint_derives_resource(self):
+        env = {"AZURE_API_ENDPOINT": "https://example-resource.openai.azure.com/"}
+        auto_inherit_env(env)
+        assert env["AZURE_RESOURCE"] == "example-resource"
+
+    def test_azure_resource_takes_precedence_over_endpoint(self):
+        env = {
+            "AZURE_RESOURCE": "explicit-resource",
+            "AZURE_API_ENDPOINT": "https://endpoint-resource.openai.azure.com/",
+        }
+        auto_inherit_env(env)
+        assert env["AZURE_RESOURCE"] == "explicit-resource"
+
+    def test_azure_anthropic_endpoint_alias_derives_resource(self):
+        """AZURE_API_ENDPOINT also derives resource from the Anthropic-surface host."""
+        env = {"AZURE_API_ENDPOINT": "https://example-resource.services.ai.azure.com/"}
+        auto_inherit_env(env)
+        assert env["AZURE_RESOURCE"] == "example-resource"
+
 
 # ── inject_vertex_credentials ──
 
@@ -228,6 +253,48 @@ class TestResolveProviderEnv:
         assert env["BENCHFLOW_PROVIDER_BASE_URL"] == "https://api.z.ai/api/paas/v4"
         assert env["BENCHFLOW_PROVIDER_PROTOCOL"] == "openai-responses"
         assert env["OPENAI_BASE_URL"] == "https://api.z.ai/api/paas/v4"
+
+    def test_azure_foundry_openai_maps_to_codex_env(self):
+        env = {
+            "AZURE_API_KEY": "az-test",
+            "AZURE_RESOURCE": "example-resource",
+        }
+        resolve_provider_env(env, "azure-foundry-openai/gpt-5.5", "codex-acp")
+        assert env["BENCHFLOW_PROVIDER_NAME"] == "azure-foundry-openai"
+        assert env["BENCHFLOW_PROVIDER_MODEL"] == "gpt-5.5"
+        assert env["BENCHFLOW_PROVIDER_PROTOCOL"] == "openai-responses"
+        assert (
+            env["BENCHFLOW_PROVIDER_BASE_URL"]
+            == "https://example-resource.openai.azure.com/openai/v1"
+        )
+        assert env["OPENAI_API_KEY"] == "az-test"
+        assert (
+            env["OPENAI_BASE_URL"]
+            == "https://example-resource.openai.azure.com/openai/v1"
+        )
+
+    def test_azure_foundry_anthropic_maps_to_claude_env(self):
+        env = {
+            "AZURE_API_KEY": "az-test",
+            "AZURE_RESOURCE": "example-resource",
+        }
+        resolve_provider_env(
+            env,
+            "azure-foundry-anthropic/claude-opus-4-5",
+            "claude-agent-acp",
+        )
+        assert env["BENCHFLOW_PROVIDER_NAME"] == "azure-foundry-anthropic"
+        assert env["BENCHFLOW_PROVIDER_MODEL"] == "claude-opus-4-5"
+        assert env["BENCHFLOW_PROVIDER_PROTOCOL"] == "anthropic-messages"
+        assert (
+            env["BENCHFLOW_PROVIDER_BASE_URL"]
+            == "https://example-resource.services.ai.azure.com/anthropic"
+        )
+        assert env["ANTHROPIC_AUTH_TOKEN"] == "az-test"
+        assert (
+            env["ANTHROPIC_BASE_URL"]
+            == "https://example-resource.services.ai.azure.com/anthropic"
+        )
 
     def test_aws_bedrock_sets_placeholder_provider_key_for_codex(self):
         env = {
@@ -531,6 +598,144 @@ class TestResolveAgentEnvOracle:
         # Provider env never resolved — oracle never calls an LLM.
         assert "BENCHFLOW_PROVIDER_MODEL" not in result
         assert "_BENCHFLOW_SUBSCRIPTION_AUTH" not in result
+
+
+class TestResolveAgentEnvAzureFoundry:
+    """AZURE_API_KEY + AZURE_API_ENDPOINT resolve through the provider/env pipeline."""
+
+    @pytest.fixture(autouse=True)
+    def _clean_env(self, monkeypatch, tmp_path):
+        """Isolate from the host environment and any real .env file."""
+        for k in (
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_AUTH_TOKEN",
+            "AZURE_API_ENDPOINT",
+            "AZURE_API_KEY",
+            "AZURE_RESOURCE",
+            "BENCHFLOW_PROVIDER_API_KEY",
+            "BENCHFLOW_PROVIDER_BASE_URL",
+            "CODEX_ACCESS_TOKEN",
+            "OPENAI_API_KEY",
+            "OPENAI_BASE_URL",
+        ):
+            monkeypatch.delenv(k, raising=False)
+        empty = tmp_path / "empty.env"
+        empty.write_text("")
+        monkeypatch.setenv("BENCHFLOW_DOTENV_PATH", str(empty))
+
+    def test_codex_uses_azure_api_key_and_endpoint(self, monkeypatch):
+        monkeypatch.setenv("AZURE_API_KEY", "az-test")
+        monkeypatch.setenv(
+            "AZURE_API_ENDPOINT", "https://example-resource.openai.azure.com/"
+        )
+
+        result = resolve_agent_env("codex-acp", "azure-foundry-openai/gpt-5.5", {})
+
+        assert result["AZURE_API_KEY"] == "az-test"
+        assert result["AZURE_RESOURCE"] == "example-resource"
+        assert result["OPENAI_API_KEY"] == "az-test"
+        assert (
+            result["OPENAI_BASE_URL"]
+            == "https://example-resource.openai.azure.com/openai/v1"
+        )
+
+    def test_claude_uses_same_azure_key_on_anthropic_surface(self, monkeypatch):
+        monkeypatch.setenv("AZURE_API_KEY", "az-test")
+        monkeypatch.setenv(
+            "AZURE_API_ENDPOINT", "https://example-resource.openai.azure.com/"
+        )
+
+        result = resolve_agent_env(
+            "claude-agent-acp",
+            "azure-foundry-anthropic/claude-opus-4-5",
+            {},
+        )
+
+        assert result["AZURE_API_KEY"] == "az-test"
+        assert result["AZURE_RESOURCE"] == "example-resource"
+        assert result["ANTHROPIC_AUTH_TOKEN"] == "az-test"
+        assert (
+            result["ANTHROPIC_BASE_URL"]
+            == "https://example-resource.services.ai.azure.com/anthropic"
+        )
+
+    def test_azure_openai_rejects_anthropic_agent_protocol(self, monkeypatch):
+        """Guards PR #422: unsupported agent/provider protocol pairs fail fast."""
+        monkeypatch.setenv("AZURE_API_KEY", "az-test")
+        monkeypatch.setenv(
+            "AZURE_API_ENDPOINT", "https://example-resource.openai.azure.com/"
+        )
+
+        with pytest.raises(
+            ValueError,
+            match=(
+                r"claude-agent-acp.*requires provider protocol "
+                r"'anthropic-messages'.*azure-foundry-openai.*only supports "
+                r"openai-completions, openai-responses"
+            ),
+        ):
+            resolve_agent_env(
+                "claude-agent-acp",
+                "azure-foundry-openai/gpt-5.5",
+                {},
+            )
+
+    def test_azure_anthropic_rejects_openai_agent_protocol(self, monkeypatch):
+        """Guards PR #422: fallback must not send OpenAI traffic to Anthropic."""
+        monkeypatch.setenv("AZURE_API_KEY", "az-test")
+        monkeypatch.setenv(
+            "AZURE_API_ENDPOINT", "https://example-resource.openai.azure.com/"
+        )
+
+        with pytest.raises(
+            ValueError,
+            match=(
+                r"codex-acp.*requires provider protocol 'openai-responses'.*"
+                r"azure-foundry-anthropic.*only supports anthropic-messages"
+            ),
+        ):
+            resolve_agent_env(
+                "codex-acp",
+                "azure-foundry-anthropic/claude-opus-4-5",
+                {},
+            )
+
+    def test_azure_api_key_without_endpoint_fails_fast(self, monkeypatch):
+        """Guards PR #3: Azure routes must not fall through to default OpenAI."""
+        monkeypatch.setenv("AZURE_API_KEY", "az-test")
+
+        with pytest.raises(
+            ValueError,
+            match=r"Azure AI Foundry model .* requires AZURE_RESOURCE",
+        ):
+            resolve_agent_env("codex-acp", "azure-foundry-openai/gpt-4o", {})
+
+    def test_azure_api_key_with_unrecognized_endpoint_fails_fast(self, monkeypatch):
+        """Guards PR #3: non-Azure endpoint hosts must fail before launch."""
+        monkeypatch.setenv("AZURE_API_KEY", "az-test")
+        monkeypatch.setenv("AZURE_API_ENDPOINT", "https://example.com/")
+
+        with pytest.raises(
+            ValueError,
+            match=r"AZURE_API_ENDPOINT=https://<resource>\.openai\.azure\.com/",
+        ):
+            resolve_agent_env("codex-acp", "azure-foundry-openai/gpt-4o", {})
+
+    def test_explicit_provider_base_url_can_override_azure_resource(self):
+        """Guards PR #3: explicit provider base URL remains a valid override."""
+        result = resolve_agent_env(
+            "codex-acp",
+            "azure-foundry-openai/gpt-4o",
+            {
+                "AZURE_API_KEY": "az-test",
+                "BENCHFLOW_PROVIDER_BASE_URL": "https://proxy.example/openai/v1",
+            },
+        )
+
+        assert (
+            result["BENCHFLOW_PROVIDER_BASE_URL"] == "https://proxy.example/openai/v1"
+        )
+        assert result["OPENAI_BASE_URL"] == "https://proxy.example/openai/v1"
 
 
 class TestResolveAgentEnvHostProviderEndpoint:

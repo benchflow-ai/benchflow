@@ -119,6 +119,8 @@ cases also need a supported judge key available in the environment. Exact-match
 cases can avoid the judge model, but they still need a working agent.
 For Codex agents, that auth can be `OPENAI_API_KEY`, `CODEX_API_KEY`,
 `CODEX_ACCESS_TOKEN`, or a host `~/.codex/auth.json` login.
+Provider-prefixed models can use provider-specific credentials instead; Azure
+Foundry models use `AZURE_API_KEY` plus `AZURE_API_ENDPOINT`.
 
 When a supported judge key is present on the host (`GOOGLE_API_KEY`,
 `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, or `OPENAI_API_KEY`), generated tasks
