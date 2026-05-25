@@ -455,3 +455,62 @@ sandbox_user: testuser
         assert job._config.agent_env == {}
         assert job._config.sandbox_user == "agent"
         assert job._config.sandbox_setup_timeout == 120
+
+
+def test_legacy_yaml_maps_include_exclude_filters(tmp_path):
+    """Guards #500: legacy YAML must not silently drop include/exclude filters."""
+    tasks = tmp_path / "tasks"
+    for name in ("alpha", "beta", "gamma"):
+        td = tasks / name
+        td.mkdir(parents=True)
+        (td / "task.toml").write_text('version = "1.0"')
+
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        """
+agents:
+  - name: claude-agent-acp
+    model_name: anthropic/claude-haiku-4-5-20251001
+datasets:
+  - path: tasks
+include:
+  - alpha
+  - beta
+exclude:
+  - gamma
+"""
+    )
+
+    job = Evaluation.from_yaml(config)
+    cfg = job._config
+    assert cfg.include_tasks == {"alpha", "beta"}
+    assert cfg.exclude_tasks == {"gamma"}
+
+
+def test_legacy_yaml_accepts_plural_include_exclude(tmp_path):
+    """Plural spellings ('includes'/'excludes') must also map (#500)."""
+    tasks = tmp_path / "tasks"
+    for name in ("alpha", "beta"):
+        td = tasks / name
+        td.mkdir(parents=True)
+        (td / "task.toml").write_text('version = "1.0"')
+
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        """
+agents:
+  - name: claude-agent-acp
+    model_name: anthropic/claude-haiku-4-5-20251001
+datasets:
+  - path: tasks
+includes:
+  - alpha
+excludes:
+  - beta
+"""
+    )
+
+    job = Evaluation.from_yaml(config)
+    cfg = job._config
+    assert cfg.include_tasks == {"alpha"}
+    assert cfg.exclude_tasks == {"beta"}

@@ -452,6 +452,55 @@ def _lang_for(p: Path) -> str:
     return _LANG.get(p.suffix.lower(), "text")
 
 
+# Credential-rule env var names that secret scanners flag on sight. We never
+# embed their *values* in data.json, but reviewer artifacts (agent configs,
+# rollout logs, etc.) frequently mention the variable *names*, which is
+# enough to trip naive scanners and create artifact-sharing noise (#494).
+# These are well-known agent credential rule names — not secrets, just the
+# names the rules look for.
+_CREDENTIAL_ENV_VAR_NAMES = frozenset(
+    {
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "AWS_BEARER_TOKEN_BEDROCK",
+        "AZURE_API_KEY",
+        "BENCHFLOW_PROVIDER_API_KEY",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "CODEX_ACCESS_TOKEN",
+        "CODEX_API_KEY",
+        "DAYTONA_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+        "GOOGLE_GENERATIVE_AI_API_KEY",
+        "GROQ_API_KEY",
+        "HUGGINGFACE_API_KEY",
+        "LINEAR_API_KEY",
+        "LLM_API_KEY",
+        "MODAL_TOKEN_ID",
+        "MODAL_TOKEN_SECRET",
+        "MORPH_API_KEY",
+        "OPENAI_API_KEY",
+        "OPENROUTER_API_KEY",
+        "TOGETHER_API_KEY",
+        "XAI_API_KEY",
+    }
+)
+_CREDENTIAL_ENV_VAR_PATTERN = re.compile(
+    r"\b(" + "|".join(sorted(re.escape(n) for n in _CREDENTIAL_ENV_VAR_NAMES)) + r")\b"
+)
+
+
+def _scrub_credential_env_names(text: str) -> str:
+    """Mask credential-rule env var *names* in embedded artifact content.
+
+    Replaces each occurrence with ``<CREDENTIAL_ENV>`` so artifact-sharing
+    pipelines do not flag the unredacted name. We do not touch values — none
+    are ever embedded in the first place.
+    """
+    return _CREDENTIAL_ENV_VAR_PATTERN.sub("<CREDENTIAL_ENV>", text)
+
+
 def _file_payload(p: Path) -> tuple[str | None, int, bool, str]:
     """Read a text file, capped. Returns (content, total_lines, truncated, lang).
 
@@ -480,6 +529,7 @@ def _file_payload(p: Path) -> tuple[str | None, int, bool, str]:
     if len(text) > _MAX_BYTES:
         text = text[:_MAX_BYTES]
         truncated = True
+    text = _scrub_credential_env_names(text)
     return text, total, truncated, lang
 
 
