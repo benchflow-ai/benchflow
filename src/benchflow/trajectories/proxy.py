@@ -475,9 +475,24 @@ def _decompress_brotli(data: bytes) -> bytes:
 def _reconstruct_response(events: list[dict[str, Any]]) -> dict[str, Any]:
     """Reconstruct a complete API response from SSE events.
 
-    Works with both Anthropic (message_start/content_block_delta/message_delta)
-    and OpenAI (choices[].delta) streaming formats.
+    Works with Anthropic (message_start/content_block_delta/message_delta),
+    OpenAI (choices[].delta), and Gemini (candidates[] + usageMetadata)
+    streaming formats. The Gemini path matters for usage telemetry: every
+    Gemini SSE chunk carries an incremental ``usageMetadata`` block, and
+    losing it means Gemini Docker runs surface ``usage_source: unavailable``
+    despite the proxy capturing every byte (see issue #375).
     """
+    # Try Gemini format early — its events carry neither ``type`` nor
+    # ``choices`` and would otherwise fall through to the raw-events
+    # fallback, dropping ``usageMetadata`` on the floor.
+    if any(
+        ("candidates" in event and isinstance(event.get("candidates"), list))
+        or "usageMetadata" in event
+        or "modelVersion" in event
+        for event in events
+    ) and not any(event.get("type") or event.get("choices") for event in events):
+        return _reconstruct_gemini_response(events)
+
     # Try Anthropic format first
     message: dict[str, Any] = {}
     content_blocks: dict[int, dict[str, Any]] = {}
@@ -594,3 +609,102 @@ def _reconstruct_response(events: list[dict[str, Any]]) -> dict[str, Any]:
 
     # Fallback: return raw events
     return {"_raw_events": events}
+
+
+def _reconstruct_gemini_response(events: list[dict[str, Any]]) -> dict[str, Any]:
+    """Reconstruct a Gemini generateContent response from SSE chunks.
+
+    Each Gemini streaming chunk looks like::
+
+        {
+          "candidates": [{
+            "content": {"role": "model", "parts": [{"text": "..."}]},
+            "finishReason": "STOP",
+            "index": 0
+          }],
+          "modelVersion": "gemini-3.1-flash-lite-preview",
+          "usageMetadata": {
+            "promptTokenCount": 11,
+            "candidatesTokenCount": 4,
+            "totalTokenCount": 15
+          }
+        }
+
+    Incremental chunks carry partial text in ``candidates[0].content.parts[i].text``
+    that we concatenate; ``usageMetadata`` is cumulative per the Gemini API
+    contract, so the *last* chunk's value is the final total. We keep this
+    shape verbatim under ``usageMetadata`` (not ``usage``) so the existing
+    Trajectory accessors in ``trajectories.types`` find it.
+    """
+    # Aggregate text parts by (candidate_index, part_index). Tool/function
+    # call parts and inline data are passed through from the most recent
+    # chunk that supplied them (Gemini sends them whole, not as text deltas).
+    candidates: dict[int, dict[str, Any]] = {}
+    usage_metadata: dict[str, Any] = {}
+    model_version: str = ""
+    prompt_feedback: dict[str, Any] = {}
+
+    for event in events:
+        if isinstance(event.get("modelVersion"), str):
+            model_version = event["modelVersion"]
+        if isinstance(event.get("usageMetadata"), dict):
+            # Cumulative per Gemini's contract — overwrite so the last chunk
+            # wins. Falling back to .update() would be wrong if a key
+            # disappeared mid-stream, which Gemini doesn't promise.
+            usage_metadata = dict(event["usageMetadata"])
+        if isinstance(event.get("promptFeedback"), dict):
+            prompt_feedback = event["promptFeedback"]
+
+        for cand in event.get("candidates", []) or []:
+            if not isinstance(cand, dict):
+                continue
+            idx = cand.get("index", 0)
+            existing = candidates.setdefault(
+                idx,
+                {
+                    "content": {"role": "model", "parts": []},
+                    "index": idx,
+                },
+            )
+            content = cand.get("content")
+            if isinstance(content, dict):
+                role = content.get("role")
+                if isinstance(role, str):
+                    existing["content"]["role"] = role
+                for part_idx, part in enumerate(content.get("parts", []) or []):
+                    if not isinstance(part, dict):
+                        continue
+                    parts_list = existing["content"]["parts"]
+                    while len(parts_list) <= part_idx:
+                        parts_list.append({})
+                    target = parts_list[part_idx]
+                    if "text" in part:
+                        target["text"] = target.get("text", "") + (part.get("text") or "")
+                    # Function calls / inline data / other part shapes —
+                    # carry the most recent value verbatim. Gemini sends
+                    # these whole rather than as deltas.
+                    for key, value in part.items():
+                        if key == "text":
+                            continue
+                        target[key] = value
+            if "finishReason" in cand:
+                existing["finishReason"] = cand["finishReason"]
+            if "safetyRatings" in cand:
+                existing["safetyRatings"] = cand["safetyRatings"]
+            if "citationMetadata" in cand:
+                existing["citationMetadata"] = cand["citationMetadata"]
+
+    response: dict[str, Any] = {
+        "candidates": [candidates[i] for i in sorted(candidates)],
+    }
+    # The model field is consumed by _model_from_trajectory; mirror Gemini's
+    # ``modelVersion`` into the standard ``model`` slot so downstream pricing
+    # lookup works without a special case.
+    if model_version:
+        response["modelVersion"] = model_version
+        response["model"] = model_version
+    if usage_metadata:
+        response["usageMetadata"] = usage_metadata
+    if prompt_feedback:
+        response["promptFeedback"] = prompt_feedback
+    return response
