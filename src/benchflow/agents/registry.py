@@ -409,7 +409,7 @@ AGENTS: dict[str, AgentConfig] = {
         # a multi-endpoint option. Set this when a Gemini-compatible provider
         # with multiple endpoints (e.g. OpenRouter) is added.
         env_mapping={
-            "BENCHFLOW_PROVIDER_BASE_URL": "GEMINI_API_BASE_URL",
+            "BENCHFLOW_PROVIDER_BASE_URL": "GOOGLE_GEMINI_BASE_URL",
             # Map to the CLI-native var; auto_inherit_env mirrors it to
             # GOOGLE_API_KEY for compatibility with users who set that alias.
             "BENCHFLOW_PROVIDER_API_KEY": "GEMINI_API_KEY",

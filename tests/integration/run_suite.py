@@ -408,6 +408,14 @@ def _render_value(value: Any) -> str:
             if evidence_dir:
                 parts.append(f"evidence={evidence_dir}")
             return "; ".join(parts)
+        if value.get("kind") == "harbor_skillsbench_baseline":
+            repo = value.get("repo")
+            ref = value.get("ref")
+            path = value.get("path")
+            return f"harbor-skillsbench:{repo}/{path}@{ref}"
+        if value.get("kind") == "benchflow_results":
+            path = value.get("path")
+            return f"benchflow-results:{path}"
         if "env_uid" in value:
             hub_url = value.get("hub_url")
             suffix = f" [{hub_url}]" if hub_url else ""
@@ -470,6 +478,17 @@ def _run_hosted_env_evidence_checker(argv: list[str]) -> int:
         from tests.integration.check_hosted_env_evidence import main as evidence_main
     except ModuleNotFoundError:
         from check_hosted_env_evidence import main as evidence_main
+
+    return evidence_main(argv)
+
+
+def _run_skillsbench_harbor_parity_checker(argv: list[str]) -> int:
+    try:
+        from tests.integration.check_skillsbench_harbor_parity import (
+            main as evidence_main,
+        )
+    except ModuleNotFoundError:
+        from check_skillsbench_harbor_parity import main as evidence_main
 
     return evidence_main(argv)
 
@@ -556,6 +575,51 @@ def run_hosted_env_evidence(
     return _run_hosted_env_evidence_checker(checker_args)
 
 
+def run_skillsbench_harbor_parity(
+    lanes: list[Mapping[str, Any]], args: argparse.Namespace
+) -> int:
+    """Run SkillsBench-vs-Harbor parity validation."""
+    lane_ids = [lane["id"] for lane in lanes]
+    unsupported = [
+        lane_id for lane_id in lane_ids if lane_id != "skillsbench-harbor-parity"
+    ]
+    if unsupported:
+        raise SuiteError(
+            "--execute-skillsbench-harbor-parity only supports "
+            "skillsbench-harbor-parity; unsupported selected lane(s): "
+            f"{', '.join(unsupported)}"
+        )
+    if "skillsbench-harbor-parity" not in lane_ids:
+        raise SuiteError(
+            "--execute-skillsbench-harbor-parity requires lane "
+            "skillsbench-harbor-parity"
+        )
+    if args.skillsbench_harbor_benchflow_root is None:
+        raise SuiteError("--skillsbench-harbor-benchflow-root is required")
+    if args.skillsbench_harbor_baseline_root is None:
+        raise SuiteError("--skillsbench-harbor-baseline-root is required")
+
+    checker_args = [
+        "--benchflow-root",
+        str(args.skillsbench_harbor_benchflow_root),
+        "--harbor-baseline-root",
+        str(args.skillsbench_harbor_baseline_root),
+        "--harbor-baseline-ref",
+        args.skillsbench_harbor_baseline_ref,
+        "--max-outcome-rate-delta",
+        str(args.skillsbench_harbor_max_outcome_rate_delta),
+        "--max-mean-reward-delta",
+        str(args.skillsbench_harbor_max_mean_reward_delta),
+        "--max-task-reward-delta",
+        str(args.skillsbench_harbor_max_task_reward_delta),
+    ]
+    for task in args.skillsbench_harbor_task or []:
+        checker_args.extend(["--task", task])
+    if args.skillsbench_harbor_no_require_trajectories:
+        checker_args.append("--no-require-trajectories")
+    return _run_skillsbench_harbor_parity_checker(checker_args)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Plan BenchFlow integration suite lanes from a manifest."
@@ -615,6 +679,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Execute hosted-env compatibility-board evidence validation.",
     )
     parser.add_argument(
+        "--execute-skillsbench-harbor-parity",
+        action="store_true",
+        help="Execute SkillsBench-vs-Harbor parity validation.",
+    )
+    parser.add_argument(
         "--adapter-evidence-repo-root",
         type=Path,
         default=Path.cwd(),
@@ -669,6 +738,50 @@ def build_parser() -> argparse.ArgumentParser:
         default=2,
         help="Number of Harbor registry task refs to inventory.",
     )
+    parser.add_argument(
+        "--skillsbench-harbor-benchflow-root",
+        type=Path,
+        help="BenchFlow result root to compare against the Harbor baseline.",
+    )
+    parser.add_argument(
+        "--skillsbench-harbor-baseline-root",
+        type=Path,
+        help="Local pinned benchflow-ai/skillsbench-trajectories baseline root.",
+    )
+    parser.add_argument(
+        "--skillsbench-harbor-baseline-ref",
+        default="2d86fe82f6a06f7c7b3a22a3ae90d554d0e9655c",
+        help="Pinned skillsbench-trajectories ref expected at the baseline root.",
+    )
+    parser.add_argument(
+        "--skillsbench-harbor-task",
+        action="append",
+        default=[],
+        help="SkillsBench task to compare. May be repeated.",
+    )
+    parser.add_argument(
+        "--skillsbench-harbor-no-require-trajectories",
+        action="store_true",
+        help="Do not require trajectory artifacts during Harbor parity.",
+    )
+    parser.add_argument(
+        "--skillsbench-harbor-max-outcome-rate-delta",
+        type=float,
+        default=0.25,
+        help="Allowed outcome-rate drift for SkillsBench-vs-Harbor parity.",
+    )
+    parser.add_argument(
+        "--skillsbench-harbor-max-mean-reward-delta",
+        type=float,
+        default=0.25,
+        help="Allowed mean-reward drift for SkillsBench-vs-Harbor parity.",
+    )
+    parser.add_argument(
+        "--skillsbench-harbor-max-task-reward-delta",
+        type=float,
+        default=0.0,
+        help="Allowed per-task reward movement outside Harbor observed range.",
+    )
     return parser
 
 
@@ -692,6 +805,7 @@ def main(argv: list[str] | None = None) -> int:
             args.execute_adapter_evidence,
             args.execute_trace_evidence,
             args.execute_hosted_env_evidence,
+            args.execute_skillsbench_harbor_parity,
         ]
         if args.dry_run and any(execution_modes):
             parser.error("use either --dry-run or an execution mode, not both")
@@ -729,10 +843,14 @@ def main(argv: list[str] | None = None) -> int:
         if args.execute_hosted_env_evidence:
             return run_hosted_env_evidence(lanes, args)
 
+        if args.execute_skillsbench_harbor_parity:
+            return run_skillsbench_harbor_parity(lanes, args)
+
         parser.error(
             "execution is not implemented yet; pass --dry-run or "
             "--execute-adapter-evidence, --execute-trace-evidence, or "
-            "--execute-hosted-env-evidence"
+            "--execute-hosted-env-evidence, or "
+            "--execute-skillsbench-harbor-parity"
         )
     except SuiteError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
