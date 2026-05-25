@@ -14,7 +14,7 @@ from benchflow._utils.diagnostics import (
 
 
 def test_flat_result_diagnostics_are_serialized_from_one_helper() -> None:
-    """Guards the fix from PR TBD against #503: result.json diagnostic fields
+    """Guards the fix from PR #509 against #503: result.json diagnostic fields
     are serialized through the shared flat diagnostic contract."""
     transport_info = {"reason": "transport_closed"}
     verifier_timeout_info = {"timeout_budget_sec": 60, "elapsed_sec": 60.1}
@@ -37,7 +37,7 @@ def test_flat_result_diagnostics_are_serialized_from_one_helper() -> None:
 
 
 def test_diagnostic_registry_drives_summary_and_checker_rendering() -> None:
-    """Guards the fix from PR TBD against #503: summary warnings and result
+    """Guards the fix from PR #509 against #503: summary warnings and result
     checker diagnostics share one registry instead of parallel branches."""
     transport_result = {
         "task_name": "task-a",

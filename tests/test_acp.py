@@ -980,7 +980,7 @@ class TestTransportErrorDiagnostics:
         assert info["reason"] == "transport_closed"
 
     def test_typed_transport_error_survives_message_wording_change(self) -> None:
-        """Guards the fix from PR TBD against #504: transport diagnostics must
+        """Guards the fix from PR #509 against #504: transport diagnostics must
         not depend on parsing human-readable process error text."""
         from benchflow.rollout import _parse_transport_error
         from benchflow.sandbox.process import TransportClosedError
@@ -1005,7 +1005,7 @@ class TestTransportErrorDiagnostics:
     async def test_probe_sandbox_health_logs_traceback_and_error_type(
         self, caplog
     ) -> None:
-        """Guards the fix from PR TBD against #502: sandbox health probe
+        """Guards the fix from PR #509 against #502: sandbox health probe
         failures keep traceback logs and a structured exception type."""
         from benchflow.rollout import Rollout
 
@@ -1240,7 +1240,7 @@ class TestVerifierTimeoutDiagnostics:
     async def test_verify_rollout_timeout_uses_task_name(
         self, tmp_path: Path, monkeypatch
     ) -> None:
-        """Guards the fix from PR TBD against #495: verifier timeout handling
+        """Guards the fix from PR #509 against #495: verifier timeout handling
         reads Task.name instead of the absent TaskConfig.name field."""
         from benchflow.rollout import _verify_rollout
 
