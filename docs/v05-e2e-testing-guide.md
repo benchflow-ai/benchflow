@@ -7,7 +7,9 @@ How to manually verify every feature shipped in v0.5-integration.
 ```bash
 # install benchflow from the v0.5-integration branch
 git checkout v0.5-integration
-uv sync --extra dev --locked
+# `sandbox-daytona` is required for the `--sandbox daytona` scenarios below.
+# (Add `--extra sandbox-modal` similarly if you plan to swap in `--sandbox modal`.)
+uv sync --extra dev --extra sandbox-daytona --locked
 
 # required env vars (set your own keys)
 export GEMINI_API_KEY=<your-gemini-key>
@@ -22,6 +24,16 @@ All commands below assume you are in the repo root.
 > **Note:** SkillsBench does not include a trivial "hello-world" task.
 > The examples below use `weighted-gdp-calc` (fast, ~5 tool calls) as the
 > default lightweight task. Swap in any task name from `$TASKS/`.
+
+> **Usage telemetry caveat (Daytona / Modal):** For remote sandboxes
+> (`--sandbox daytona`, `--sandbox modal`) the agent runs on a remote host
+> that cannot reach the host-side usage proxy, so token/cost telemetry is
+> intentionally unavailable. You will see a log line that begins with
+> `Skipping host-side usage telemetry proxy:` and the resulting
+> `result.json` will report `agent_result.usage_source == "unavailable"`
+> with `null` token/cost fields. This is not an infra failure — confirm by
+> checking `summary.json.telemetry_coverage`. Local sandboxes (e.g.
+> `--sandbox docker`) do populate usage telemetry.
 
 ---
 
@@ -113,8 +125,20 @@ uv run bench eval create \
 
 ## 4. Transport error diagnostics (ENG-148, PR #352)
 
-Transport errors (rc=255, SSH drops) are rare in normal runs. To verify the
-field exists even in non-error cases:
+Transport errors (rc=255, SSH drops) are rare in normal runs. There are two
+distinct things this section verifies, and they live in two different fields
+that are easy to confuse:
+
+- **Top-level `error_category`** — produced by
+  `benchflow._utils.scoring.classify_error(...)`. For transport drops the
+  only category it can emit is `pipe_closed` (matched from the substring
+  `closed stdout` in the error message). Values like `remote_session_killed`
+  and `pty_error` are **not** top-level `error_category` values.
+- **Nested `transport_error_info.transport_diagnosis`** — produced by
+  `benchflow.rollout._parse_transport_error(...)`. This is where the finer
+  categorization lives.
+
+### Normal-path schema check
 
 ```bash
 # run any task
@@ -129,17 +153,46 @@ uv run bench eval create \
 **Verify in `result.json`:**
 - `"transport_error_info": null` — field is present but null (no transport error).
 
+### Provoking a real transport error
+
 To provoke a real transport error, kill the Daytona sandbox mid-run (advanced):
 ```bash
 # in another terminal, while a long task is running:
 daytona sandbox delete <sandbox-id>
 ```
 
-**Verify in `result.json`:**
-- `"transport_error_info"` is a dict with `process_exit_code`,
-  `transport_diagnosis`, `sandbox_reachable`, `stderr_snippet`.
-- `"error_category"` is one of: `pipe_closed`, `remote_session_killed`,
-  `pty_error`.
+**Verify in `result.json`** — `transport_error_info` is a dict produced by
+`_parse_transport_error(...)` with:
+
+- **Always present:**
+  - `reason` — currently the constant string `"transport_closed"`.
+  - `raw_message` — first 500 chars of the underlying `ConnectionError`.
+  - `transport_diagnosis` — one of:
+    - `"remote_session_killed"` (message contains
+      `"still alive but its stdout/transport closed"`),
+    - `"process_exited"` (message contains `"exited with rc="`),
+    - `"pty_error"` (message contains `"PTY readline"`),
+    - `"unknown"` (none of the above).
+- **Conditional (only when the underlying message exposed them):**
+  - `process_exit_code` — int or `None`, parsed from `rc=...`.
+  - `process_pid` — int, parsed from `pid=...`.
+  - `stderr_snippet` — first 500 chars after `stderr: ...`.
+- **Enriched by `_probe_sandbox_health(...)` after the transport dies:**
+  - `sandbox_reachable` — bool.
+  - `sandbox_probe_rc` — int or `None`.
+  - `sandbox_probe_stdout` — present when the probe ran but did not echo
+    the expected marker.
+  - `sandbox_probe_error` — present when the probe itself raised.
+
+**Verify the top-level field too:**
+- `"error_category"` is `"pipe_closed"` when the underlying error contained
+  `closed stdout`; otherwise it may be `"acp_error"`, `"infra_failure"`, or
+  `"other"` depending on which marker matched in `classify_error(...)`. It
+  is **not** `"remote_session_killed"` or `"pty_error"` — those belong only
+  to `transport_error_info.transport_diagnosis`.
+
+> See also §16 for a deterministic failure-path recipe that avoids the live
+> `daytona sandbox delete` dance.
 
 ---
 
@@ -160,13 +213,36 @@ uv run bench eval create \
 **Verify in `result.json`:**
 - `"sandbox_startup_info": null` — field present, null on success.
 
-If a startup failure does occur, the field will contain:
-`sandbox_id`, `sandbox_state`, `attempts`, `build_timeout_sec`.
+If a Daytona sandbox creation failure does occur, the field is populated
+from `benchflow.sandbox.protocol.SandboxStartupError.sandbox_startup_info`
+and contains the full schema:
+
+- `reason` — currently the constant string `"sandbox_startup_failed"`.
+- `sandbox_id` — the Daytona sandbox id when one was allocated before the
+  failure, otherwise `null`.
+- `sandbox_state` — currently the constant string `"error"` for Daytona
+  creation failures.
+- `attempts` — **note: currently hardcoded to `3`** in
+  `src/benchflow/sandbox/daytona.py` (both call sites), not an observed
+  retry counter. Treat this as the configured retry budget, not the
+  number of attempts actually made before the failure.
+- `build_timeout_sec` — `env.task_env_config.build_timeout_sec`.
+- `raw_message` — first 500 chars of the underlying error message.
+
+**Coverage limit — export/download timeouts are not captured here.**
+The self-gen skill export/download retry path in `daytona.py` raises a
+plain `RuntimeError` after exhausting its retries; it does **not** wrap the
+failure in `SandboxStartupError`, so `sandbox_startup_info` stays `null`
+for that failure mode. Only sandbox _creation_ failures populate this
+field today.
 
 The retry logic is also covered by unit tests:
 ```bash
 uv run python -m pytest tests/ -k "sandbox_startup" -v
 ```
+
+> See also §16 for a deterministic failure-path recipe (fake backend) that
+> exercises `sandbox_startup_info` without relying on live Daytona flakiness.
 
 ---
 
@@ -249,7 +325,17 @@ uv run bench eval create \
 
 **Verify:**
 - Second run logs: `Resuming into existing job directory`.
-- No orphan retry directories created (only one task dir per task, not duplicates).
+- Resume scanning dedupes by task name and chooses the newest result by
+  mtime, so retry artifacts on disk do not cause duplicate work. Concrete
+  checks:
+  - Second run reports `1 done, 0 to run` (the prior result is picked up).
+  - `summary.json.total` remains `1` (no duplicate accounting).
+  - No duplicate task scheduled on resume.
+  - Retry artifact directories named `task__<uuid8>/` **may** still exist
+    on disk from earlier attempts — that is expected. The invariant is
+    that `_get_completed_tasks(...)` in `src/benchflow/evaluation.py`
+    keys results by `task_name` and keeps only the newest by mtime, so
+    orphan retry dirs do not pollute resume decisions.
 - `summary.json` in both the job subdir and the root `--jobs-dir` (identical content).
 
 ---
@@ -262,12 +348,22 @@ LINEAR_API_KEY=<your-key> python dashboard/serve.py
 ```
 
 **Verify ENG-157 (stale advisory):**
-- Advisories section does NOT show a "thermo-nuclear" advisory banner.
+- The "thermo-nuclear code-quality-review skill not installed" item must
+  not appear under **Open follow-ups** — that section is rendered from
+  advisories with `status === "open"`. It is expected and fine for the
+  item to still appear under **Resolved** (the underlying entry in
+  `dashboard/generate.py` has `status: "resolved"` and a `Resolved: ...`
+  detail). Reviewers should assert on the rendered section, not on the
+  raw presence of the string in `data.json`.
 
 **Verify ENG-158 (file:// guidance):**
-- If the dashboard is opened as a `file://` URL instead of via `serve.py`, it
-  shows a clear error message with recovery instructions:
-  `"This page must be served over HTTP"` and the command to start the server.
+- If the dashboard is opened as a `file://` URL instead of via `serve.py`,
+  it renders an error card with the heading
+  **"Cannot load data.json over file://"**, a short explanation, and the
+  recovery command `python dashboard/serve.py` plus the URL
+  `http://localhost:8777`. Reviewers should assert on this rendered copy;
+  the older string `"This page must be served over HTTP"` is **not**
+  emitted by the current dashboard.
 
 ---
 
@@ -357,5 +453,57 @@ uv run ruff check .
 ```
 
 **Verify:** 1910+ passed, 0 failed. ruff + ty clean.
+
+---
+
+## 16. Deterministic failure-path coverage for diagnostic fields
+
+Sections §3 (idle timeout), §4 (transport), §5 (sandbox startup), §6
+(verifier dep install), and §7 (verifier timeout) document the diagnostic
+fields, but most of the **live** recipes only exercise the **normal path**
+(field present, value `null`) — `transport_error_info`,
+`sandbox_startup_info`, and `verifier_timeout_info` in particular are
+extremely hard to trigger end-to-end on Daytona without long, flaky runs.
+
+For each failure path there is a deterministic unit/integration test that
+shapes and validates the diagnostic. Use this as the canonical
+failure-path coverage; treat the live recipes above as smoke tests, not as
+proof that every error category has been exercised.
+
+```bash
+# Idle timeout (ENG-149) — field shape + classification
+uv run python -m pytest tests/test_scoring.py -k "idle_timeout" -v
+
+# Transport error (ENG-148) — _parse_transport_error categories, classify_error
+#   pipe_closed, and the result.json write path
+uv run python -m pytest tests/test_scoring.py::TestClassifyError::test_pipe_closed -v
+uv run python -m pytest tests/test_acp.py -k "transport_error_info" -v
+
+# Sandbox startup failure (ENG-147) — SandboxStartupError schema + result.json
+uv run python -m pytest tests/test_base_install_imports.py -k "sandbox_startup" -v
+uv run python -m pytest tests/test_acp.py -k "sandbox_startup_info" -v
+
+# Verifier dep install (ENG-151) — classifier markers
+uv run python -m pytest tests/test_acp.py -k "verifier_dep_install" -v
+
+# Verifier timeout (ENG-152) — verifier wait_for path + verifier_timeout_info
+uv run python -m pytest tests/test_verify.py::TestSdkVerify::test_verifier_timeout -v
+uv run python -m pytest tests/test_integration_check_results.py -k "verifier_timeout" -v
+```
+
+**Verify:** All tests pass. These tests assert the field shape (keys,
+types, categories) that the §4–§7 live recipes only partially cover.
+
+**Known gaps the test suite does *not* cover today:**
+
+- Daytona _export/download_ retry failures raise plain `RuntimeError`, not
+  `SandboxStartupError`, so they do not populate `sandbox_startup_info`
+  (see §5). There is no deterministic fixture that surfaces these as a
+  structured diagnostic in `result.json` — that is a product gap to track
+  separately, not a documentation gap.
+- The `transport_diagnosis` values `process_exited` and `unknown` are
+  exercised in `tests/test_rollout.py` indirectly via `_parse_transport_error`
+  message-shape tests, but there is no live recipe for them. Add one via
+  a fake transport fixture if you need true end-to-end coverage.
 
 
