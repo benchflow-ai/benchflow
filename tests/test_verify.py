@@ -124,7 +124,9 @@ class TestSdkVerify:
         assert "timed out" in verifier_error
         assert "verifier" in timing
         assert vti is not None
-        assert vti["timeout_budget_sec"] == 0.1
+        # ``vti`` is now a typed :class:`VerifierTimeoutDiagnostic` (issue
+        # #503); attribute access replaces the legacy dict indexing.
+        assert vti.timeout_budget_sec == 0.1
 
     @pytest.mark.asyncio
     async def test_verifier_timeout_reads_task_name_not_config_name(self, tmp_path):
@@ -176,8 +178,10 @@ class TestSdkVerify:
         assert verifier_error is not None
         assert "timed out" in verifier_error
         assert vti is not None
-        assert vti["task_name"] == "real-task-name"
-        assert vti["timeout_budget_sec"] == 0.1
+        # ``vti`` is now a typed :class:`VerifierTimeoutDiagnostic` (issue
+        # #503); attribute access replaces the legacy dict indexing.
+        assert vti.task_name == "real-task-name"
+        assert vti.timeout_budget_sec == 0.1
 
     @pytest.mark.asyncio
     async def test_verifier_crash(self, verify_harness):

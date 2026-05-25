@@ -28,6 +28,8 @@ from pathlib import Path
 from typing import Any, cast
 from uuid import uuid4
 
+from benchflow.diagnostics import RolloutDiagnostics
+
 logger = logging.getLogger(__name__)
 
 PRIME_SIMPLE_INDEX = "https://hub.primeintellect.ai/primeintellect/simple/"
@@ -493,10 +495,11 @@ def _write_run_artifacts(
         "error_category": None,
         "verifier_error": result.verifiers_error,
         "verifier_error_category": None,
-        "idle_timeout_info": None,
-        "sandbox_startup_info": None,
-        "transport_error_info": None,
-        "verifier_timeout_info": None,
+        # Empty diagnostic slots — keyed by the canonical registry so
+        # adding a new diagnostic doesn't require touching hosted_env
+        # (issue #503). Hosted runs don't produce these (the harness ran
+        # remote), so all fields serialize as ``None``.
+        **RolloutDiagnostics().to_result_fields(),
         "partial_trajectory": False,
         "trajectory_source": "hosted_env" if trajectory else None,
         "started_at": str(started_at),
