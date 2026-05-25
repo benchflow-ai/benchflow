@@ -134,9 +134,10 @@ that are easy to confuse:
   only category it can emit is `pipe_closed` (matched from the substring
   `closed stdout` in the error message). Values like `remote_session_killed`
   and `pty_error` are **not** top-level `error_category` values.
-- **Nested `transport_error_info.transport_diagnosis`** — produced by
-  `benchflow.rollout._parse_transport_error(...)`. This is where the finer
-  categorization lives.
+- **Nested `transport_error_info.transport_diagnosis`** — emitted by
+  `benchflow.acp.transport` / `benchflow.sandbox.process` at the source via
+  the structured `TransportClosedDiagnostic` and surfaced through
+  `RolloutDiagnostics`. This is where the finer categorization lives.
 
 ### Normal-path schema check
 
@@ -161,8 +162,8 @@ To provoke a real transport error, kill the Daytona sandbox mid-run (advanced):
 daytona sandbox delete <sandbox-id>
 ```
 
-**Verify in `result.json`** — `transport_error_info` is a dict produced by
-`_parse_transport_error(...)` with:
+**Verify in `result.json`** — `transport_error_info` is the serialized
+`TransportClosedDiagnostic` (see `benchflow.diagnostics`) with:
 
 - **Always present:**
   - `reason` — currently the constant string `"transport_closed"`.
@@ -183,6 +184,10 @@ daytona sandbox delete <sandbox-id>
   - `sandbox_probe_stdout` — present when the probe ran but did not echo
     the expected marker.
   - `sandbox_probe_error` — present when the probe itself raised.
+  - `sandbox_probe_error_type` — exception class name (preserved alongside
+    `sandbox_probe_error` so post-mortem keeps the original type).
+  - `sandbox_probe_traceback` — last 2000 chars of `traceback.format_exc()`
+    captured when the probe raised.
 
 **Verify the top-level field too:**
 - `"error_category"` is `"pipe_closed"` when the underlying error contained
@@ -214,8 +219,9 @@ uv run bench eval create \
 - `"sandbox_startup_info": null` — field present, null on success.
 
 If a Daytona sandbox creation failure does occur, the field is populated
-from `benchflow.sandbox.protocol.SandboxStartupError.sandbox_startup_info`
-and contains the full schema:
+from `benchflow.sandbox.protocol.SandboxStartupError.diagnostic.to_dict()`
+(a `SandboxStartupDiagnostic` defined in `benchflow.diagnostics`) and
+contains the full schema:
 
 - `reason` — currently the constant string `"sandbox_startup_failed"`.
 - `sandbox_id` — the Daytona sandbox id when one was allocated before the
@@ -474,7 +480,7 @@ proof that every error category has been exercised.
 # Idle timeout (ENG-149) — field shape + classification
 uv run python -m pytest tests/test_scoring.py -k "idle_timeout" -v
 
-# Transport error (ENG-148) — _parse_transport_error categories, classify_error
+# Transport error (ENG-148) — TransportClosedDiagnostic categories, classify_error
 #   pipe_closed, and the result.json write path
 uv run python -m pytest tests/test_scoring.py::TestClassifyError::test_pipe_closed -v
 uv run python -m pytest tests/test_acp.py -k "transport_error_info" -v
@@ -502,8 +508,9 @@ types, categories) that the §4–§7 live recipes only partially cover.
   structured diagnostic in `result.json` — that is a product gap to track
   separately, not a documentation gap.
 - The `transport_diagnosis` values `process_exited` and `unknown` are
-  exercised in `tests/test_rollout.py` indirectly via `_parse_transport_error`
-  message-shape tests, but there is no live recipe for them. Add one via
-  a fake transport fixture if you need true end-to-end coverage.
+  exercised in `tests/test_acp.py` and `tests/test_sandbox_process.py`
+  via the source-side `TransportClosedDiagnostic` emission, but there is
+  no live recipe for them. Add one via a fake transport fixture if you
+  need true end-to-end coverage.
 
 
