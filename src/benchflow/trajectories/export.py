@@ -27,10 +27,10 @@ from __future__ import annotations
 
 import json
 import logging
-import math
 from pathlib import Path
 from typing import Any, cast
 
+from benchflow._utils.json import scrub_non_finite as _scrub_non_finite
 from benchflow.adapters.ors import ORSAdapter
 from benchflow.rewards.protocol import VerifyResult
 
@@ -39,23 +39,6 @@ logger = logging.getLogger(__name__)
 # Canonical artifact locations (see issue #385).
 ROLLOUT_ARTIFACT_RELPATH = "trainer/verifiers.jsonl"
 JOB_ARTIFACT_FILENAME = "verifiers.jsonl"
-
-
-def _scrub_non_finite(value: Any) -> Any:
-    """Replace ``NaN`` / ``Infinity`` floats with ``None`` recursively.
-
-    Plain ``json.dumps`` emits non-finite floats as the bare tokens ``NaN``,
-    ``Infinity``, ``-Infinity`` — valid Python but rejected by strict JSON
-    parsers (jq, serde, Node ``JSON.parse``). We normalize to ``null`` so
-    downstream trainer ingestion never sees an invalid JSONL line.
-    """
-    if isinstance(value, float):
-        return value if math.isfinite(value) else None
-    if isinstance(value, dict):
-        return {k: _scrub_non_finite(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_scrub_non_finite(v) for v in value]
-    return value
 
 
 def _split_prompt_completion(

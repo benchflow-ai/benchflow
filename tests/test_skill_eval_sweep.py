@@ -1,7 +1,7 @@
 """Regression tests for the skill-eval correctness sweep.
 
-Guards the fixes from PR `fix: skill-eval correctness sweep
-(#392 #393 #406 #424 #425 #426)` against the regressions documented in
+Guards the fixes from PR #485 (`fix: skill-eval correctness sweep
+(#392 #393 #406 #424 #425 #426)`) against the regressions documented in
 each linked issue.
 """
 
@@ -14,13 +14,12 @@ from pathlib import Path
 
 import pytest
 
+from benchflow._utils import json as json_helpers
 from benchflow.skill_eval import (
     CaseResult,
     EvalCase,
     EvalDataset,
     SkillEvalResult,
-    _json_safe_dumps,
-    _scrub_non_finite,
     _toml_quote,
     export_gepa_traces,
     generate_tasks,
@@ -62,7 +61,7 @@ def _make_skill(
 
 
 class TestCaseEnvironmentOverrides:
-    """Guards #392: cases[].environment must reach generated task.toml/case.json."""
+    """Guards PR #485 / #392: cases[].environment reaches generated artifacts."""
 
     def test_case_environment_lands_in_task_toml(self, tmp_path):
         skill = _make_skill(
@@ -123,7 +122,7 @@ class TestCaseEnvironmentOverrides:
 
 
 class TestTomlEscape:
-    """Guards #393: skill_name must be TOML-escaped before interpolation."""
+    """Guards PR #485 / #393: skill_name is TOML-escaped before interpolation."""
 
     def test_toml_quote_escapes_basic_string_specials(self):
         assert _toml_quote('hello "world"') == '"hello \\"world\\""'
@@ -165,7 +164,7 @@ class TestTomlEscape:
 
 
 class TestJudgeResultCopy:
-    """Guards #406: test.sh must copy judge_result.json to /logs/verifier/."""
+    """Guards PR #485 / #406: test.sh copies judge_result.json to verifier logs."""
 
     def test_generated_test_sh_copies_judge_result(self, tmp_path):
         skill = _make_skill(tmp_path)
@@ -186,10 +185,15 @@ class TestJudgeResultCopy:
 
 
 class TestEvalsJsonSchema:
-    """Guards #424: evals.json must be schema-validated before generation."""
+    """Guards PR #485 / #424: evals.json is strictly validated before generation."""
 
     def test_non_numeric_timeout_sec_rejected(self, tmp_path):
         skill = _make_skill(tmp_path, defaults={"timeout_sec": "abc"})
+        with pytest.raises(ValueError, match=r"timeout_sec"):
+            load_eval_dataset(skill)
+
+    def test_string_timeout_sec_rejected(self, tmp_path):
+        skill = _make_skill(tmp_path, defaults={"timeout_sec": "120"})
         with pytest.raises(ValueError, match=r"timeout_sec"):
             load_eval_dataset(skill)
 
@@ -248,6 +252,22 @@ class TestEvalsJsonSchema:
         with pytest.raises(ValueError, match=r"environment"):
             load_eval_dataset(skill)
 
+    def test_null_environment_rejected(self, tmp_path):
+        skill = _make_skill(
+            tmp_path,
+            cases=[{"id": "case-001", "question": "q", "environment": None}],
+        )
+        with pytest.raises(ValueError, match=r"environment"):
+            load_eval_dataset(skill)
+
+    def test_explicit_null_case_id_rejected(self, tmp_path):
+        skill = _make_skill(
+            tmp_path,
+            cases=[{"id": None, "question": "q"}],
+        )
+        with pytest.raises(ValueError, match=r"id"):
+            load_eval_dataset(skill)
+
     def test_valid_dataset_still_loads(self, tmp_path):
         skill = _make_skill(
             tmp_path,
@@ -271,7 +291,7 @@ class TestEvalsJsonSchema:
 
 
 class TestGepaTraceContents:
-    """Guards #425: traces/*.json must contain actual trace data, not summary-only."""
+    """Guards PR #485 / #425: traces/*.json contain trace data, not summaries."""
 
     def test_trace_file_includes_trajectory_and_prompt(self, tmp_path):
         skill = _make_skill(tmp_path)
@@ -341,12 +361,12 @@ class TestGepaTraceContents:
 
 
 class TestGepaNonFiniteHandling:
-    """Guards #426: NaN/Infinity must not appear in GEPA JSON outputs."""
+    """Guards PR #485 / #426: NaN/Infinity never appear in GEPA JSON outputs."""
 
     def test_scrub_non_finite_recursive(self):
         nan = float("nan")
         inf = float("inf")
-        scrubbed = _scrub_non_finite(
+        scrubbed = json_helpers.scrub_non_finite(
             {
                 "a": nan,
                 "b": [1.0, inf, -inf, "ok", {"c": nan}],
@@ -358,7 +378,7 @@ class TestGepaNonFiniteHandling:
         assert scrubbed["d"] == 3.14
 
     def test_json_safe_dumps_emits_null_for_nan(self):
-        text = _json_safe_dumps({"score": float("nan")})
+        text = json_helpers.json_safe_dumps({"score": float("nan")})
         # No raw NaN token; null is the standard JSON representation we use.
         assert "NaN" not in text
         assert json.loads(text) == {"score": None}
@@ -436,7 +456,7 @@ class TestGepaNonFiniteHandling:
 
 
 class TestGenerateTasksDefenseInDepth:
-    """An EvalDataset hand-built with case.environment must still flow through."""
+    """Guards PR #485: hand-built EvalDataset environments still flow through."""
 
     def test_handbuilt_dataset_environment_block(self, tmp_path):
         skill_dir = tmp_path / "skill"

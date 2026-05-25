@@ -9,30 +9,22 @@ Usage:
 import contextlib
 import json
 import logging
-import math
-import re
 import shutil
 import tempfile
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from string import Template
-from typing import Any
-
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from benchflow._paths import assert_within, safe_path_segment
+from benchflow._skill_eval_constants import DEFAULT_SKILL_MOUNT_DIR, JUDGE_API_ENV_KEYS
+from benchflow._skill_eval_schema import validate_evals_json
+from benchflow._utils.json import json_safe_dumps as _json_safe_dumps
+from benchflow._utils.toml import toml_quote as _toml_quote
 
 logger = logging.getLogger(__name__)
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
-DEFAULT_SKILL_MOUNT_DIR = "/skills"
-JUDGE_API_ENV_KEYS = (
-    "GOOGLE_API_KEY",
-    "GEMINI_API_KEY",
-    "ANTHROPIC_API_KEY",
-    "OPENAI_API_KEY",
-)
 
 
 def _validate_container_path(value: object, field: str) -> str:
@@ -47,175 +39,6 @@ def _validate_container_path(value: object, field: str) -> str:
     ):
         raise ValueError(f"{field} must be an absolute container path like /skills")
     return value.rstrip("/")
-
-
-# ---------------------------------------------------------------------------
-# evals.json schema (#424)
-# ---------------------------------------------------------------------------
-#
-# Pydantic models below validate ``evals.json`` at the input boundary BEFORE
-# any TOML / Python / Dockerfile generation runs. Without this, a malformed
-# field (e.g. a non-numeric ``timeout_sec`` or a ``judge_model`` value with
-# quotes/newlines) would silently flow into generated artifacts and surface
-# as a confusing downstream parse error (invalid TOML, ``SyntaxError`` in
-# generated judge.py, etc.). Issue #424 documents that production footgun.
-
-
-def _toml_quote(value: str) -> str:
-    """Return ``value`` as a TOML basic-string literal.
-
-    Escapes the characters TOML's basic-string grammar requires (``\\``,
-    ``"``, control chars) so callers can safely interpolate untrusted text
-    into a generated ``task.toml``. Guards the fix from issue #393, where
-    ``skill_name`` was injected raw and a value containing ``" ]`` plus a
-    newline could inject duplicate sections.
-    """
-    out = []
-    for ch in value:
-        if ch == "\\":
-            out.append("\\\\")
-        elif ch == '"':
-            out.append('\\"')
-        elif ch == "\b":
-            out.append("\\b")
-        elif ch == "\t":
-            out.append("\\t")
-        elif ch == "\n":
-            out.append("\\n")
-        elif ch == "\f":
-            out.append("\\f")
-        elif ch == "\r":
-            out.append("\\r")
-        elif ord(ch) < 0x20 or ord(ch) == 0x7F:
-            out.append(f"\\u{ord(ch):04x}")
-        else:
-            out.append(ch)
-    return '"' + "".join(out) + '"'
-
-
-def _scrub_non_finite(value: Any) -> Any:
-    """Replace ``NaN`` / ``±Infinity`` floats with ``None`` recursively.
-
-    Mirror of the trajectory exporter helper added in PR #442. Strict JSON
-    parsers (jq, serde, Node ``JSON.parse``) reject the bare tokens
-    ``NaN`` / ``Infinity`` that vanilla ``json.dumps`` emits for non-finite
-    floats. We normalize to ``null`` so GEPA trace + summary artifacts stay
-    portable JSON (issue #426).
-    """
-    if isinstance(value, float):
-        return value if math.isfinite(value) else None
-    if isinstance(value, dict):
-        return {k: _scrub_non_finite(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_scrub_non_finite(v) for v in value]
-    return value
-
-
-def _json_safe_dumps(obj: Any, **kwargs: Any) -> str:
-    """``json.dumps`` with NaN/Infinity scrubbed AND ``allow_nan=False``.
-
-    The scrub pass turns non-finite floats into ``null`` so downstream
-    parsers succeed; ``allow_nan=False`` is defense-in-depth that turns
-    any future regression into a loud ``ValueError`` at write time rather
-    than silently producing invalid JSON.
-    """
-    return json.dumps(_scrub_non_finite(obj), allow_nan=False, **kwargs)
-
-
-_SAFE_JUDGE_MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/\-]*$")
-
-
-class _EvalCaseModel(BaseModel):
-    """Schema for a single case in ``evals.json``.
-
-    Extra fields are rejected so typos like ``expecte_behavior`` fail fast
-    instead of being silently dropped. Field shapes match ``EvalCase``.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    id: str | None = None
-    question: str
-    ground_truth: str = ""
-    expected_behavior: list[str] = Field(default_factory=list)
-    expected_skill: str = ""
-    expected_script: str = ""
-    environment: dict[str, str] = Field(default_factory=dict)
-
-    @field_validator("expected_behavior", mode="before")
-    @classmethod
-    def _reject_string_expected_behavior(cls, v: Any) -> Any:
-        if isinstance(v, str):
-            raise ValueError(
-                "expected_behavior must be a list of strings, got a single string. "
-                "Wrap it in a list: [\"<rubric item>\"]."
-            )
-        return v
-
-    @field_validator("environment", mode="before")
-    @classmethod
-    def _reject_non_string_env_values(cls, v: Any) -> Any:
-        if v is None:
-            return {}
-        if not isinstance(v, dict):
-            raise ValueError("environment must be a mapping of str -> str")
-        bad = {k: val for k, val in v.items() if not isinstance(val, str)}
-        if bad:
-            raise ValueError(
-                "environment values must be strings; "
-                f"non-string entries: {sorted(bad)}"
-            )
-        return v
-
-
-class _EvalDefaultsModel(BaseModel):
-    """Schema for ``defaults`` block in ``evals.json``."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    timeout_sec: int = 300
-    judge_model: str = "gemini-3.1-flash-lite"
-    skill_mount_dir: str = DEFAULT_SKILL_MOUNT_DIR
-
-    @field_validator("timeout_sec")
-    @classmethod
-    def _positive_timeout(cls, v: int) -> int:
-        if v <= 0:
-            raise ValueError(f"timeout_sec must be a positive int, got {v!r}")
-        return v
-
-    @field_validator("judge_model")
-    @classmethod
-    def _safe_judge_model(cls, v: str) -> str:
-        # Generated judge.py interpolates ``judge_model`` into a Python
-        # string literal. A value containing quotes, backslashes, or
-        # newlines could break the generated source. Restrict to a
-        # conservative model-id alphabet — every real provider/model
-        # identifier we ship fits this shape.
-        if not _SAFE_JUDGE_MODEL_RE.match(v):
-            raise ValueError(
-                f"judge_model {v!r} contains unsafe characters; "
-                "only alphanumerics, '.', '_', ':', '/', '-' are allowed"
-            )
-        return v
-
-
-class _EvalsJsonModel(BaseModel):
-    """Top-level schema for ``evals.json``."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    version: str = "1"
-    skill_name: str = ""
-    defaults: _EvalDefaultsModel = Field(default_factory=_EvalDefaultsModel)
-    cases: list[_EvalCaseModel]
-
-    @field_validator("cases")
-    @classmethod
-    def _non_empty_cases(cls, v: list[_EvalCaseModel]) -> list[_EvalCaseModel]:
-        if not v:
-            raise ValueError("evals.json 'cases' array is empty")
-        return v
 
 
 # ---------------------------------------------------------------------------
@@ -365,18 +188,10 @@ def load_eval_dataset(skill_dir: str | Path) -> EvalDataset:
 
     data = json.loads(evals_json.read_text())
 
-    # Top-level shape: "cases" must be present; emit the historical error
-    # message so callers depending on the exact text keep working.
-    if "cases" not in data:
-        raise ValueError("evals.json must contain a 'cases' array")
-
     # Schema validation — surfaces type errors, unknown fields, unsafe
-    # judge_model values, and the empty-cases case with one consistent
-    # ValidationError instead of a downstream TOML parse failure.
-    try:
-        parsed = _EvalsJsonModel.model_validate(data)
-    except ValidationError as e:
-        raise ValueError(f"evals.json failed schema validation: {e}") from e
+    # judge_model values, and the empty-cases case before any generated
+    # artifact can be written (#424).
+    parsed = validate_evals_json(data)
 
     # Parse skill name from evals.json or SKILL.md
     skill_name = parsed.skill_name
