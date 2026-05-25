@@ -162,7 +162,7 @@ class TestGenerateTask:
     def test_content_verifier_rejects_wrong_content(
         self, simple_trace: ParsedTrace, tmp_path: Path
     ) -> None:
-        """Guards this PR's fix for #359: exact writes must verify content."""
+        """Guards PR #487's fix for #359: exact writes verify content."""
         task_dir = generate_task(simple_trace, tmp_path / "tasks")
         work_dir = tmp_path / "work"
         work_dir.mkdir()
@@ -175,7 +175,7 @@ class TestGenerateTask:
     def test_content_verifier_accepts_exact_content(
         self, simple_trace: ParsedTrace, tmp_path: Path
     ) -> None:
-        """Guards this PR's fix for #359: exact writes still pass when correct."""
+        """Guards PR #487's fix for #359: exact writes still pass when correct."""
         task_dir = generate_task(simple_trace, tmp_path / "tasks")
         work_dir = tmp_path / "work"
         work_dir.mkdir()
@@ -186,7 +186,7 @@ class TestGenerateTask:
         assert reward == "1.0"
 
     def test_edit_only_verifier_fails_closed_without_git(self, tmp_path: Path) -> None:
-        """Guards this PR's fix for #359: edit fragments must not auto-pass."""
+        """Guards PR #487's fix for #359: edit fragments must not auto-pass."""
         trace = ParsedTrace(
             trace_id="edit-only",
             session_id="s",
@@ -247,7 +247,7 @@ class TestGenerateTask:
         assert solve_sh.stat().st_mode & stat.S_IXUSR
 
     def test_solution_sh_does_not_replay_edit_fragments(self, tmp_path: Path) -> None:
-        """Guards this PR's fix for #359: Edit.new_string is not final content."""
+        """Guards PR #487's fix for #359: Edit.new_string is not final content."""
         trace = ParsedTrace(
             trace_id="edit-fragment",
             session_id="s",
@@ -399,7 +399,7 @@ class TestGenerateTask:
     def test_overwrite_removes_stale_files(
         self, simple_trace: ParsedTrace, tmp_path: Path
     ) -> None:
-        """Guards this PR's fix for #359: overwrite replaces stale artifacts."""
+        """Guards PR #487's fix for #359: overwrite replaces stale artifacts."""
         task_dir = generate_task(simple_trace, tmp_path)
         (task_dir / "tests" / "stale.sh").write_text("#!/bin/bash\n")
         stale_asset = task_dir / "assets" / "old.txt"
@@ -415,7 +415,7 @@ class TestGenerateTask:
     def test_unsafe_git_commit_rejected_before_overwrite(
         self, simple_trace: ParsedTrace, tmp_path: Path
     ) -> None:
-        """Guards this PR's fix for #359: commit metadata is not shell code."""
+        """Guards PR #487's fix for #359: commit metadata is not shell code."""
         task_dir = generate_task(simple_trace, tmp_path)
         (task_dir / "marker.txt").write_text("keep")
         simple_trace.git = GitContext(
@@ -431,7 +431,7 @@ class TestGenerateTask:
     def test_git_status_verifier_accepts_untracked_new_file(
         self, tmp_path: Path
     ) -> None:
-        """Guards this PR's fix for #359: new untracked files count as changed."""
+        """Guards PR #487's fix for #359: new untracked files count as changed."""
         trace = ParsedTrace(
             trace_id="git-new-file",
             session_id="s",
@@ -640,14 +640,14 @@ class TestGithubCloneUrl:
         )
 
     def test_github_ssh_url_normalized_to_https(self) -> None:
-        """Guards this PR's fix for #359: public GitHub SSH remotes are clean."""
+        """Guards PR #487's fix for #359: public GitHub SSH remotes are clean."""
         assert (
             _github_clone_url("git@github.com:octocat/Hello-World.git")
             == "https://github.com/octocat/Hello-World.git"
         )
 
     def test_non_github_ssh_url_rejected(self) -> None:
-        """Guards this PR's fix for #359: unsupported SSH remotes fail closed."""
+        """Guards PR #487's fix for #359: unsupported SSH remotes fail closed."""
         with pytest.raises(ValueError, match="SSH"):
             _github_clone_url("git@gitlab.com:octocat/Hello-World.git")
 
