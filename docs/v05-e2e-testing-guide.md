@@ -7,7 +7,7 @@ How to manually verify every feature shipped in v0.5-integration.
 ```bash
 # install benchflow from the v0.5-integration branch
 git checkout v0.5-integration
-uv sync --extra dev --locked
+uv sync --extra dev --extra sandbox-daytona --locked
 
 # required env vars (set your own keys)
 export GEMINI_API_KEY=<your-gemini-key>
@@ -18,6 +18,11 @@ export TASKS=.cache/datasets/benchflow-ai/skillsbench/tasks
 ```
 
 All commands below assume you are in the repo root.
+
+The live Daytona scenarios below are smoke checks. When a failure mode is not
+triggered, the related diagnostic field should still be present with a `null`
+value. Deterministic failure-path checks live in the unit/integration tests
+called out in the relevant sections.
 
 > **Note:** SkillsBench does not include a trivial "hello-world" task.
 > The examples below use `weighted-gdp-calc` (fast, ~5 tool calls) as the
@@ -129,6 +134,14 @@ uv run bench eval create \
 **Verify in `result.json`:**
 - `"transport_error_info": null` — field is present but null (no transport error).
 
+The normal-path smoke does not prove the transport failure classifications. Use
+the fixture coverage below for deterministic checks:
+
+```bash
+uv run python -m pytest tests/test_acp.py -k "transport_error" -v
+uv run python -m pytest tests/test_integration_check_results.py -k "transport_error" -v
+```
+
 To provoke a real transport error, kill the Daytona sandbox mid-run (advanced):
 ```bash
 # in another terminal, while a long task is running:
@@ -136,10 +149,19 @@ daytona sandbox delete <sandbox-id>
 ```
 
 **Verify in `result.json`:**
-- `"transport_error_info"` is a dict with `process_exit_code`,
-  `transport_diagnosis`, `sandbox_reachable`, `stderr_snippet`.
-- `"error_category"` is one of: `pipe_closed`, `remote_session_killed`,
-  `pty_error`.
+- Top-level `"error_category"` is classified from the agent error string. A
+  closed stdout transport error reports `"pipe_closed"`; other transport-like
+  failures may classify as `"acp_error"`, `"infra_failure"`, or `"other"`
+  depending on the error text.
+- `"transport_error_info"` is a dict with required keys `reason`,
+  `raw_message`, and `transport_diagnosis`.
+- `transport_diagnosis` is the nested transport-specific diagnosis, such as
+  `remote_session_killed`, `process_exited`, `pty_error`, or `unknown`.
+- `process_exit_code`, `process_pid`, and `stderr_snippet` are present only
+  when the transport error message contains those details.
+- Sandbox probe keys such as `sandbox_reachable`, `sandbox_probe_rc`,
+  `sandbox_probe_stdout`, and `sandbox_probe_error` are added only if the
+  post-failure sandbox probe runs.
 
 ---
 
@@ -161,7 +183,13 @@ uv run bench eval create \
 - `"sandbox_startup_info": null` — field present, null on success.
 
 If a startup failure does occur, the field will contain:
-`sandbox_id`, `sandbox_state`, `attempts`, `build_timeout_sec`.
+`reason`, `sandbox_id`, `sandbox_state`, `attempts`, `build_timeout_sec`, and
+`raw_message`.
+
+In the current Daytona creation failure path, `attempts` records the configured
+creation retry budget (`3`), not a live observed counter. Skill export/download
+retry failures are reported separately as `export_error`; they do not populate
+`sandbox_startup_info`.
 
 The retry logic is also covered by unit tests:
 ```bash
@@ -184,8 +212,17 @@ uv run bench eval create \
 ```
 
 **Verify in `result.json`:**
-- If verifier dep install fails: `"verifier_error_category": "dep_install"`.
+- If verifier dep install fails:
+  `"verifier_error_category": "verifier_dep_install"`.
 - If verifier succeeds: `"verifier_error_category": null`.
+
+The live task can pass or fail for reasons other than dependency installation.
+Use the deterministic fixture coverage for the failure-path category:
+
+```bash
+uv run python -m pytest tests/test_acp.py -k "verifier_error_category" -v
+uv run python -m pytest tests/test_integration_check_results.py -k "verifier_dep_install" -v
+```
 
 ---
 
@@ -206,6 +243,14 @@ uv run bench eval create \
 - If verifier times out: `"verifier_timeout_info"` has `timeout_budget_sec`,
   `elapsed_sec`, `task_name`.
 - If verifier finishes: `"verifier_timeout_info": null`.
+
+This live scenario is expensive and may finish without timing out. Use the
+deterministic fixture coverage for the failure-path timeout metadata:
+
+```bash
+uv run python -m pytest tests/test_acp.py -k "verifier_timeout_info" -v
+uv run python -m pytest tests/test_integration_check_results.py -k "verifier_timeout" -v
+```
 
 ---
 
@@ -249,7 +294,11 @@ uv run bench eval create \
 
 **Verify:**
 - Second run logs: `Resuming into existing job directory`.
-- No orphan retry directories created (only one task dir per task, not duplicates).
+- Retry directories may exist, but resume scans by task name and chooses the
+  newest relevant result.
+- Second run reports `Job: 1 tasks, 1 done, 0 to run`.
+- Orphan retry artifacts must not cause duplicate pending work or duplicate
+  summary counts.
 - `summary.json` in both the job subdir and the root `--jobs-dir` (identical content).
 
 ---
@@ -262,12 +311,14 @@ LINEAR_API_KEY=<your-key> python dashboard/serve.py
 ```
 
 **Verify ENG-157 (stale advisory):**
-- Advisories section does NOT show a "thermo-nuclear" advisory banner.
+- The thermo-nuclear advisory does NOT appear under `Open follow-ups`.
+- It may appear under `Resolved` with `status: "resolved"`.
 
 **Verify ENG-158 (file:// guidance):**
 - If the dashboard is opened as a `file://` URL instead of via `serve.py`, it
   shows a clear error message with recovery instructions:
-  `"This page must be served over HTTP"` and the command to start the server.
+  `"Cannot load data.json over file://"` and the command
+  `python dashboard/serve.py`.
 
 ---
 
@@ -310,6 +361,19 @@ for field in [
     assert field in r, f"Missing: {field}"
     print(f"  {field}: {r[field]}")
 ```
+
+For remote sandboxes (`daytona`, `modal`), token and cost usage telemetry is
+expected to be unavailable because the host-side usage proxy is unreachable from
+the remote agent. This is not an infrastructure failure. Check:
+
+```python
+assert r["agent_result"]["usage_source"] == "unavailable"
+assert r["agent_result"]["tokens_in"] is None
+assert r["agent_result"]["tokens_out"] is None
+```
+
+Then inspect `summary.json` for `telemetry_coverage`; Daytona and Modal smoke
+runs may report zero coverage by design.
 
 ---
 
@@ -357,5 +421,3 @@ uv run ruff check .
 ```
 
 **Verify:** 1910+ passed, 0 failed. ruff + ty clean.
-
-
