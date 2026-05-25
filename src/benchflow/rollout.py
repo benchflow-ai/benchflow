@@ -909,6 +909,12 @@ class RolloutConfig:
     # (e.g. gemini-cli not responding). None disables idle detection and
     # falls back to the agent's wall-clock timeout (task.toml [agent]).
     agent_idle_timeout: int | None = 600
+    # Hard wall-clock budget for the agent prompt, in seconds. When set,
+    # overrides the per-task default (``task.toml [agent] timeout_sec``).
+    # ``None`` keeps the task's own default — this is the seam through which
+    # ``Runtime(RuntimeConfig(timeout=...))`` enforces a caller-supplied
+    # budget without editing every task.toml (#378).
+    timeout: int | None = None
 
     # User-driven progressive-disclosure loop
     user: BaseUser | None = None
@@ -1280,7 +1286,13 @@ class Rollout:
                 preserve_agent_network=self._disallow_web_tools,
                 environment_manifest=cfg.environment_manifest,
             )
-        self._timeout = int(self._task.config.agent.timeout_sec or 0)
+        # Caller-supplied wall-clock budget (e.g. RuntimeConfig.timeout)
+        # wins over the task's own default. Without this override there is
+        # no way to tighten/loosen the agent budget per run — see #378.
+        if cfg.timeout is not None:
+            self._timeout = int(cfg.timeout)
+        else:
+            self._timeout = int(self._task.config.agent.timeout_sec or 0)
 
         _write_config(
             self._rollout_dir,

@@ -159,15 +159,25 @@ reaches them on `localhost`. During a rollout:
    is healthy.
 3. `Rollout.cleanup()` tears the environment down.
 
-Run a task against an environment manifest. `--environment-manifest` currently
-lives on the legacy `bench run` command (hidden in `--help` but still
-callable); porting it to `bench eval create` is tracked separately.
+Run a task against an environment manifest. `--environment-manifest` is
+available on both the legacy `bench run` command (single task) and on
+`bench eval create` (batch / Job API) so manifest-backed evaluations can
+be driven through the same Job pipeline used for regular benchmark sweeps.
 
 ```bash
+# single task
 bench run benchmarks/clawsbench/tasks/<task> \
   --environment-manifest benchmarks/clawsbench/environment.toml \
   --agent claude-agent-acp --model claude-haiku-4-5
+
+# batch / Job API
+bench eval create --tasks-dir benchmarks/clawsbench/tasks \
+  --environment-manifest benchmarks/clawsbench/environment.toml \
+  --agent claude-agent-acp --model claude-haiku-4-5
 ```
+
+YAML configs may declare the same seam with ``environment_manifest:
+<path>`` at the top level so the batch run is reproducible from disk.
 
 `--environment-manifest` is distinct from `--sandbox`: the sandbox is *where*
 it runs (the Sandbox plane); the environment manifest is *the world* (the
