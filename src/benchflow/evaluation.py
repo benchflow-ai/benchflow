@@ -557,6 +557,20 @@ class Evaluation:
         sandbox_locked_paths = raw.get("sandbox_locked_paths")
         sandbox_setup_timeout = raw.get("sandbox_setup_timeout", 120)
 
+        # Map legacy include/exclude task filters. Accept both singular and
+        # plural spellings ("include"/"includes", "exclude"/"excludes") so
+        # ported configs do not silently lose their filtering (#500).
+        include: set[str] = set()
+        for key in ("include", "includes", "include_tasks"):
+            values = raw.get(key)
+            if values:
+                include.update(values)
+        exclude: set[str] = set()
+        for key in ("exclude", "excludes", "exclude_tasks"):
+            values = raw.get(key)
+            if values:
+                exclude.update(values)
+
         config = EvaluationConfig(
             agent=agent_name,
             model=model,
@@ -571,6 +585,8 @@ class Evaluation:
             agent_idle_timeout=raw.get(
                 "agent_idle_timeout_sec", raw.get("agent_idle_timeout", 600)
             ),
+            include_tasks=include,
+            exclude_tasks=exclude,
             skill_mode=raw.get("skill_mode", "default"),
             skill_creator_dir=(
                 str(Path(raw["skill_creator_dir"]))
