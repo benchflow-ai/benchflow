@@ -612,7 +612,9 @@ def test_infer_task_source_provenance_for_cached_benchmark_repo(tmp_path, monkey
         "GIT_COMMITTER_NAME": "BenchFlow Test",
         "GIT_COMMITTER_EMAIL": "test@example.com",
     }
-    sp.run(["git", "init", "-b", "main"], cwd=cache_root, check=True, capture_output=True)
+    sp.run(
+        ["git", "init", "-b", "main"], cwd=cache_root, check=True, capture_output=True
+    )
     sp.run(
         [
             "git",
@@ -625,7 +627,13 @@ def test_infer_task_source_provenance_for_cached_benchmark_repo(tmp_path, monkey
         check=True,
         capture_output=True,
     )
-    sp.run(["git", "add", "."], cwd=cache_root, check=True, capture_output=True, env={**env})
+    sp.run(
+        ["git", "add", "."],
+        cwd=cache_root,
+        check=True,
+        capture_output=True,
+        env={**env},
+    )
     sp.run(
         ["git", "commit", "-m", "seed"],
         cwd=cache_root,

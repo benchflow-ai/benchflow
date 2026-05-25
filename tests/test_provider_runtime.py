@@ -350,8 +350,5 @@ class TestUsageProxyRuntime:
             updated["BENCHFLOW_PROVIDER_BASE_URL"]
             == "http://host.docker.internal:43210"
         )
-        assert (
-            updated["GOOGLE_GEMINI_BASE_URL"]
-            == "http://host.docker.internal:43210"
-        )
+        assert updated["GOOGLE_GEMINI_BASE_URL"] == "http://host.docker.internal:43210"
         assert "GEMINI_API_BASE_URL" not in updated

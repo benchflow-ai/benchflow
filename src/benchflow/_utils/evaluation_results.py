@@ -122,9 +122,7 @@ def skill_invocation_summary(results: dict[str, dict]) -> dict[str, Any]:
     total = sum(result_skill_invocations(result) for result in results.values())
     return {
         "total_skill_invocations": total,
-        "avg_skill_invocations": (
-            round(total / len(results), 1) if results else 0.0
-        ),
+        "avg_skill_invocations": (round(total / len(results), 1) if results else 0.0),
     }
 
 

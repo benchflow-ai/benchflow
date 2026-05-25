@@ -538,9 +538,7 @@ class TestTrajectoryProxy:
                     f"{proxy.base_url}/v1beta/models/"
                     "gemini-3.1-flash-lite-preview:streamGenerateContent?alt=sse",
                     json={
-                        "contents": [
-                            {"role": "user", "parts": [{"text": "say hi"}]}
-                        ],
+                        "contents": [{"role": "user", "parts": [{"text": "say hi"}]}],
                         "stream": True,
                     },
                 )

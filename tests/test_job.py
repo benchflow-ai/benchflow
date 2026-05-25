@@ -605,9 +605,7 @@ class TestJobRunOrchestration:
         assert summary["telemetry_coverage"] == 2 / 3
 
     @pytest.mark.asyncio
-    async def test_summary_json_aggregates_tool_calls_and_phase_timing(
-        self, tmp_path
-    ):
+    async def test_summary_json_aggregates_tool_calls_and_phase_timing(self, tmp_path):
         """Issue #501: summary.json must aggregate per-rollout n_tool_calls and
         timing so reviewers don't have to inspect each result.json by hand.
 
@@ -684,9 +682,7 @@ class TestJobRunOrchestration:
         assert summary["timing_coverage"] == 1.0
 
     @pytest.mark.asyncio
-    async def test_summary_json_phase_timing_handles_missing_blocks(
-        self, tmp_path
-    ):
+    async def test_summary_json_phase_timing_handles_missing_blocks(self, tmp_path):
         """Mocked rollouts (no timing in RunResult, no rollout_name) must not
         crash phase_timing_summary — they just lower timing_coverage to 0.0
         while tool-call aggregation still works.

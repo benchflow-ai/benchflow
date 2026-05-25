@@ -300,8 +300,7 @@ class TestTerminalBenchAdapter:
         converted task fails because the build context is incomplete."""
         task_dir = _write_tb_task(tmp_path)
         (task_dir / "Dockerfile").write_text(
-            "FROM python:3.12-slim\n"
-            "COPY requirements.txt /tmp/requirements.txt\n"
+            "FROM python:3.12-slim\nCOPY requirements.txt /tmp/requirements.txt\n"
         )
         (task_dir / "requirements.txt").write_text("pytest\n")
 
@@ -316,9 +315,7 @@ class TestTerminalBenchAdapter:
         """A ``COPY app/ /app/`` must carry every file under app/ — directory
         sources expand to all their files relative to the task root."""
         task_dir = _write_tb_task(tmp_path)
-        (task_dir / "Dockerfile").write_text(
-            "FROM python:3.12-slim\nCOPY app/ /app/\n"
-        )
+        (task_dir / "Dockerfile").write_text("FROM python:3.12-slim\nCOPY app/ /app/\n")
         app_dir = task_dir / "app"
         app_dir.mkdir()
         (app_dir / "main.py").write_text("print('hi')\n")
@@ -377,8 +374,7 @@ class TestTerminalBenchAdapter:
         """``ADD https://...`` fetches over HTTP, no build-context file."""
         task_dir = _write_tb_task(tmp_path)
         (task_dir / "Dockerfile").write_text(
-            "FROM python:3.12-slim\n"
-            "ADD https://example.com/data.tgz /opt/data.tgz\n"
+            "FROM python:3.12-slim\nADD https://example.com/data.tgz /opt/data.tgz\n"
         )
 
         # Should not raise and should not try to resolve the URL as a file.

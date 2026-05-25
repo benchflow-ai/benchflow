@@ -53,8 +53,9 @@ class EnvironmentSnapshotError(RuntimeError):
     evidence as if they were real.
     """
 
-    def __init__(self, message: str, *, command: str, exit_code: int,
-                 stdout: str, stderr: str) -> None:
+    def __init__(
+        self, message: str, *, command: str, exit_code: int, stdout: str, stderr: str
+    ) -> None:
         super().__init__(message)
         self.command = command
         self.exit_code = exit_code

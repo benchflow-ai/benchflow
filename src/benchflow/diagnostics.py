@@ -70,9 +70,9 @@ class Diagnostic:
         dataclass; this lets it reuse the dataclass's formatting rules
         without having to reconstruct the instance.
         """
-        return cls(**{k: v for k, v in info.items() if k in cls._init_fields()}).format_issue(
-            task_name
-        )
+        return cls(
+            **{k: v for k, v in info.items() if k in cls._init_fields()}
+        ).format_issue(task_name)
 
     @classmethod
     def _init_fields(cls) -> set[str]:
@@ -161,9 +161,7 @@ class TransportClosedDiagnostic(Diagnostic):
 
     def format_issue(self, task_name: str) -> str:
         rc = self.process_exit_code if self.process_exit_code is not None else "?"
-        reachable = (
-            "?" if self.sandbox_reachable is None else self.sandbox_reachable
-        )
+        reachable = "?" if self.sandbox_reachable is None else self.sandbox_reachable
         return (
             f"{task_name}: transport closed (rc={rc}, "
             f"diagnosis={self.transport_diagnosis}, sandbox_reachable={reachable})"
@@ -326,7 +324,9 @@ class RolloutDiagnostics:
         to ``None`` so the result schema stays stable.
         """
         return {
-            d.field: self._events[d.field].to_dict() if d.field in self._events else None
+            d.field: self._events[d.field].to_dict()
+            if d.field in self._events
+            else None
             for d in DIAGNOSTIC_REGISTRY
         }
 

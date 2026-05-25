@@ -73,7 +73,8 @@ def _write_benchflow_result(root: Path, task: str, reward: float, rollout: str) 
     trajectory = rollout_dir / "trajectory" / "acp_trajectory.jsonl"
     trajectory.parent.mkdir(parents=True, exist_ok=True)
     trajectory.write_text(
-        json.dumps({"type": "user_message", "text": "solve"}) + "\n"
+        json.dumps({"type": "user_message", "text": "solve"})
+        + "\n"
         + json.dumps({"type": "assistant_message", "text": "done"})
         + "\n"
     )

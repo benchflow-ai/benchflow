@@ -700,7 +700,9 @@ def _reconstruct_gemini_response(events: list[dict[str, Any]]) -> dict[str, Any]
                         parts_list.append({})
                     target = parts_list[part_idx]
                     if "text" in part:
-                        target["text"] = target.get("text", "") + (part.get("text") or "")
+                        target["text"] = target.get("text", "") + (
+                            part.get("text") or ""
+                        )
                     # Function calls / inline data / other part shapes —
                     # carry the most recent value verbatim. Gemini sends
                     # these whole rather than as deltas.
