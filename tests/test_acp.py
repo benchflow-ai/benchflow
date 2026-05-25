@@ -911,12 +911,18 @@ class TestSandboxStartupDiagnostics:
         assert result.rewards == {"reward": 1.0}
 
     def test_create_sandbox_retry_count_is_three(self) -> None:
-        """Guards ENG-147: _create_sandbox retries 3 times, not 2."""
+        """Guards ENG-147: _create_sandbox retries 3 times, not 2.
+
+        The retry contract is now declared lazily on the wrapper (issue #358:
+        ``tenacity`` is an optional dep, so the real ``tenacity.retry`` only
+        materializes on first call). The ``retry_config`` attribute exposes
+        the original kwargs so this guard can run without importing tenacity
+        or actually triggering a sandbox creation.
+        """
         from benchflow.sandbox.daytona import DaytonaSandbox
 
-        retry_obj = DaytonaSandbox._create_sandbox.retry  # type: ignore[attr-defined]
-        stop = retry_obj.stop
-        assert stop.max_attempt_number == 3
+        config = DaytonaSandbox._create_sandbox.retry_config  # type: ignore[attr-defined]
+        assert config["stop_after_attempt"] == 3
 
 
 class TestTransportErrorDiagnostics:
