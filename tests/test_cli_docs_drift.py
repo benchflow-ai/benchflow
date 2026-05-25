@@ -62,6 +62,7 @@ def test_eval_create_help_lists_all_documented_flags() -> None:
         "--agent",
         "--model",
         "--sandbox",
+        "--environment-manifest",
         "--concurrency",
         "--agent-idle-timeout",
         "--jobs-dir",
@@ -81,12 +82,12 @@ def test_eval_create_help_lists_all_documented_flags() -> None:
         )
 
 
-def test_eval_create_does_not_accept_environment_manifest() -> None:
-    """Doc fix: `--environment-manifest` is on legacy `bench run`, not `bench
-    eval create`. Confirm the supported public command does NOT advertise it,
-    so we don't silently re-add it without updating the docs."""
+def test_eval_create_accepts_environment_manifest() -> None:
+    """`bench eval create --environment-manifest` is the batch seam for
+    Environment-plane rollouts — same flag as `bench run` (#398). Guard
+    against silent removal so the docs and CLI stay in sync."""
     out = _help(["eval", "create"])
-    assert "--environment-manifest" not in out
+    assert "--environment-manifest" in out
 
 
 def test_documented_subcommands_exist() -> None:

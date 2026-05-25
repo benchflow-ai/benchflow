@@ -344,6 +344,8 @@ class Runtime:
             sandbox_locked_paths=config.sandbox_locked_paths,
             sandbox_setup_timeout=config.sandbox_setup_timeout,
             jobs_dir=config.jobs_dir,
+            rollout_name=config.rollout_name,
+            timeout=config.timeout,
             context_root=config.context_root,
             pre_agent_hooks=config.pre_agent_hooks,
             agent=self.agent.name,
@@ -366,6 +368,11 @@ class Runtime:
         run_result = await rollout.run()
 
         reward = (run_result.rewards or {}).get("reward")
+        # The Rollout owns the on-disk artifact directory; lift it into the
+        # RuntimeResult so callers can locate result.json / trajectory/ etc.
+        # without scanning jobs_dir. Required because RuntimeResult's
+        # docstring promises an artifact-oriented surface (#378).
+        rollout_dir = getattr(rollout, "_rollout_dir", None)
         return RuntimeResult(
             task_name=run_result.task_name,
             rollout_name=run_result.rollout_name,
@@ -375,6 +382,7 @@ class Runtime:
             error=run_result.error,
             verifier_error=run_result.verifier_error,
             trajectory=run_result.trajectory,
+            rollout_dir=rollout_dir,
             started_at=run_result.started_at,
             finished_at=run_result.finished_at,
         )

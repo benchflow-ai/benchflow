@@ -1048,6 +1048,18 @@ def eval_create(
         str | None,
         typer.Option("--sandbox", help="Sandbox: docker, daytona, or modal"),
     ] = None,
+    environment_manifest: Annotated[
+        Path | None,
+        typer.Option(
+            "--environment-manifest",
+            help=(
+                "Path to an Environment-plane manifest (environment.toml). "
+                "Applied to every rollout in the batch so the manifest-declared "
+                "stateful environment is provisioned, gated on readiness, and "
+                "torn down — same seam as `bench run --environment-manifest`."
+            ),
+        ),
+    ] = None,
     concurrency: Annotated[
         int | None,
         typer.Option("--concurrency", help="Max concurrent tasks"),
@@ -1161,6 +1173,22 @@ def eval_create(
         raise typer.Exit(1) from None
     output_jobs_dir = jobs_dir or "jobs"
 
+    # Resolve the optional Environment-plane manifest once and reuse across
+    # every source branch (config / source_repo / tasks_dir / source_env).
+    # Bench eval create's batch surface mirrors `bench run` so manifest-backed
+    # rollouts can be driven through the Job pipeline (#398).
+    eval_env_manifest = None
+    if environment_manifest is not None:
+        from benchflow.environment.manifest import load_manifest
+
+        try:
+            eval_env_manifest = load_manifest(environment_manifest)
+        except (OSError, ValueError) as exc:
+            console.print(
+                f"[red]Could not load --environment-manifest {environment_manifest}: {exc}[/red]"
+            )
+            raise typer.Exit(1) from None
+
     if config_file:
         j = Evaluation.from_yaml(config_file)
         if agent is not None:
@@ -1185,6 +1213,11 @@ def eval_create(
             j._config.include_tasks = include_tasks
         if exclude_tasks:
             j._config.exclude_tasks = exclude_tasks
+        # CLI --environment-manifest wins over whatever the YAML carried
+        # so an operator can override a baseline manifest without editing
+        # the config file.
+        if eval_env_manifest is not None:
+            j._config.environment_manifest = eval_env_manifest
         try:
             result = asyncio.run(j.run())
         except EmptyTaskSelectionError as e:
@@ -1217,6 +1250,11 @@ def eval_create(
         if eval_agent != DEFAULT_AGENT:
             console.print(
                 f"[dim]source-env records --agent {eval_agent!r}, but executes the model endpoint through Verifiers.[/dim]"
+            )
+        if eval_env_manifest is not None:
+            console.print(
+                "[yellow]--environment-manifest is for benchflow Environment-plane rollouts; "
+                "the hosted Verifiers environment owns its own provisioning. Ignoring.[/yellow]"
             )
 
         try:
@@ -1284,6 +1322,7 @@ def eval_create(
                 source_provenance=resolved.provenance,
                 include_tasks=include_tasks,
                 exclude_tasks=exclude_tasks,
+                environment_manifest=eval_env_manifest,
             ),
         )
         try:
@@ -1323,6 +1362,7 @@ def eval_create(
                 self_gen_no_internet=self_gen_no_internet,
                 include_tasks=include_tasks,
                 exclude_tasks=exclude_tasks,
+                environment_manifest=eval_env_manifest,
             ),
         )
         try:
