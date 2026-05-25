@@ -603,3 +603,119 @@ class TestJobRunOrchestration:
         assert summary["total_cost_usd"] == 0.003
         assert summary["avg_cost_per_trial_usd"] == 0.0015
         assert summary["telemetry_coverage"] == 2 / 3
+
+    @pytest.mark.asyncio
+    async def test_summary_json_aggregates_tool_calls_and_phase_timing(
+        self, tmp_path
+    ):
+        """Issue #501: summary.json must aggregate per-rollout n_tool_calls and
+        timing so reviewers don't have to inspect each result.json by hand.
+
+        We seed the resume path with three pre-written result.json files that
+        carry known n_tool_calls and timing blocks, then assert the aggregates
+        match by hand-computation. Using the resume path keeps the test free
+        of the rollout writer machinery while still exercising the exact
+        ``all_results`` shape that drives ``phase_timing_summary``.
+        """
+        job = self._make_job(tmp_path, n_tasks=3, concurrency=1)
+        job_dir = job._jobs_dir / job._job_name
+        job_dir.mkdir(parents=True, exist_ok=True)
+
+        seeded = [
+            {
+                "task_name": "task-0",
+                "n_tool_calls": 4,
+                "timing": {
+                    "environment_setup": 1.0,
+                    "agent_setup": 2.0,
+                    "agent_execution": 10.0,
+                    "verifier": 3.0,
+                    "total": 16.0,
+                },
+            },
+            {
+                "task_name": "task-1",
+                "n_tool_calls": 6,
+                "timing": {
+                    "environment_setup": 1.5,
+                    "agent_setup": 2.5,
+                    "agent_execution": 20.0,
+                    "verifier": 5.0,
+                    "total": 29.0,
+                },
+            },
+            {
+                "task_name": "task-2",
+                "n_tool_calls": 2,
+                "timing": {
+                    "environment_setup": 0.5,
+                    "agent_setup": 1.0,
+                    "agent_execution": 4.0,
+                    "verifier": 1.0,
+                    "total": 6.5,
+                },
+            },
+        ]
+        for entry in seeded:
+            rdir = job_dir / entry["task_name"]
+            rdir.mkdir(parents=True, exist_ok=True)
+            (rdir / "result.json").write_text(
+                json.dumps({**entry, "rewards": {"reward": 1.0}}, indent=2)
+            )
+
+        await job.run()
+
+        summary = json.loads((job_dir / "summary.json").read_text())
+        # Tool-call aggregates — counts every rollout regardless of outcome.
+        assert summary["total_tool_calls"] == 12
+        assert summary["avg_tool_calls_per_task"] == pytest.approx(4.0)
+        assert summary["max_tool_calls_per_task"] == 6
+        # Phase totals (sums) — hand-computed from the seeded timing blocks.
+        assert summary["environment_setup_time_sec"] == 3.0
+        assert summary["agent_setup_time_sec"] == 5.5
+        assert summary["agent_execution_time_sec"] == 34.0
+        assert summary["verifier_time_sec"] == 9.0
+        assert summary["total_time_sec"] == 51.5
+        # Averages and maxes round-trip with rollout.py's 0.1s precision.
+        assert summary["avg_verifier_time_sec"] == pytest.approx(3.0)
+        assert summary["max_verifier_time_sec"] == 5.0
+        assert summary["max_agent_execution_time_sec"] == 20.0
+        # Coverage is 1.0 — every rollout reported a timing block.
+        assert summary["timing_coverage"] == 1.0
+
+    @pytest.mark.asyncio
+    async def test_summary_json_phase_timing_handles_missing_blocks(
+        self, tmp_path
+    ):
+        """Mocked rollouts (no timing in RunResult, no rollout_name) must not
+        crash phase_timing_summary — they just lower timing_coverage to 0.0
+        while tool-call aggregation still works.
+        """
+        job = self._make_job(tmp_path, n_tasks=2, concurrency=1)
+        job._sdk = AsyncMock()
+        job._sdk.run = AsyncMock(
+            side_effect=[
+                RunResult(
+                    task_name="task-0",
+                    rewards={"reward": 1.0},
+                    n_tool_calls=7,
+                ),
+                RunResult(
+                    task_name="task-1",
+                    rewards={"reward": 1.0},
+                    n_tool_calls=3,
+                ),
+            ]
+        )
+
+        await job.run()
+
+        summary = json.loads((job._jobs_dir / "summary.json").read_text())
+        assert summary["total_tool_calls"] == 10
+        assert summary["max_tool_calls_per_task"] == 7
+        assert summary["timing_coverage"] == 0.0
+        # No data → sums collapse to 0.0 and avg/max are null (distinguishable
+        # from "ran but cost nothing").
+        assert summary["agent_execution_time_sec"] == 0.0
+        assert summary["avg_agent_execution_time_sec"] is None
+        assert summary["max_agent_execution_time_sec"] is None
