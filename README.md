@@ -104,3 +104,9 @@ For a release: bump `pyproject.toml` to the next stable version, tag `v<version>
 ## License
 
 Apache-2.0.
+
+## Newcomer guidance
+
+If you are new to the project, start by looking for issues labeled `good first issue`, `help wanted`, or documentation-related tasks. These issues are usually smaller in scope and are a good way to learn the contribution workflow.
+
+Before opening a pull request, please make sure your change is focused, easy to review, and related to the issue you are addressing.
