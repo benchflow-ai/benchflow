@@ -88,13 +88,13 @@ def test_scrubbed_record_does_not_mutate_input(tmp_path):
 def test_allow_nan_false_is_active_defense(monkeypatch, tmp_path):
     """If the scrubber is ever bypassed, serialization must still raise.
 
-    Patch ``_scrub_non_finite`` to a no-op so a NaN reaches ``json.dumps``;
-    ``allow_nan=False`` should turn that into ``ValueError`` rather than
-    silently writing an invalid JSONL line.
+    Patch ``scrub_non_finite`` (the shared helper) to a no-op so a NaN
+    reaches ``json.dumps``; ``allow_nan=False`` should turn that into
+    ``ValueError`` rather than silently writing an invalid JSONL line.
     """
     from benchflow.trajectories import export as export_mod
 
-    monkeypatch.setattr(export_mod, "_scrub_non_finite", lambda v: v)
+    monkeypatch.setattr(export_mod, "scrub_non_finite", lambda v: v)
     with pytest.raises(ValueError):
         export_trajectories_to_jsonl(
             [{"example_id": 6, "reward": math.nan}], tmp_path / "out.jsonl"

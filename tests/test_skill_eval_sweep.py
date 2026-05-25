@@ -14,14 +14,12 @@ from pathlib import Path
 
 import pytest
 
+from benchflow._utils.json_safe import dumps_finite, scrub_non_finite
 from benchflow.skill_eval import (
     CaseResult,
     EvalCase,
     EvalDataset,
     SkillEvalResult,
-    _json_safe_dumps,
-    _scrub_non_finite,
-    _toml_quote,
     export_gepa_traces,
     generate_tasks,
     load_eval_dataset,
@@ -123,14 +121,13 @@ class TestCaseEnvironmentOverrides:
 
 
 class TestTomlEscape:
-    """Guards #393: skill_name must be TOML-escaped before interpolation."""
+    """Guards #393: skill_name must be TOML-escaped before interpolation.
 
-    def test_toml_quote_escapes_basic_string_specials(self):
-        assert _toml_quote('hello "world"') == '"hello \\"world\\""'
-        assert _toml_quote("with\nnewline") == '"with\\nnewline"'
-        assert _toml_quote("back\\slash") == '"back\\\\slash"'
-        # Control chars get \uXXXX form.
-        assert _toml_quote("\x01") == '"\\u0001"'
+    The generator routes every interpolated value through ``tomli_w.dumps``
+    (the canonical TOML writer used across the codebase), so the only
+    contract worth pinning is the end-to-end round-trip below: a hostile
+    skill_name must produce valid, single-section TOML.
+    """
 
     def test_skill_name_with_quote_and_newline_does_not_break_toml(self, tmp_path):
         """The exact #393 repro must produce valid, single-section TOML."""
@@ -346,7 +343,7 @@ class TestGepaNonFiniteHandling:
     def test_scrub_non_finite_recursive(self):
         nan = float("nan")
         inf = float("inf")
-        scrubbed = _scrub_non_finite(
+        scrubbed = scrub_non_finite(
             {
                 "a": nan,
                 "b": [1.0, inf, -inf, "ok", {"c": nan}],
@@ -357,8 +354,8 @@ class TestGepaNonFiniteHandling:
         assert scrubbed["b"] == [1.0, None, None, "ok", {"c": None}]
         assert scrubbed["d"] == 3.14
 
-    def test_json_safe_dumps_emits_null_for_nan(self):
-        text = _json_safe_dumps({"score": float("nan")})
+    def test_dumps_finite_emits_null_for_nan(self):
+        text = dumps_finite({"score": float("nan")})
         # No raw NaN token; null is the standard JSON representation we use.
         assert "NaN" not in text
         assert json.loads(text) == {"score": None}
