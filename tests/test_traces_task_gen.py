@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -86,6 +87,17 @@ def no_prompt_trace() -> ParsedTrace:
     )
 
 
+def _run_generated_verifier(task_dir: Path, work_dir: Path, logs_dir: Path) -> str:
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    script = (
+        (task_dir / "tests" / "test.sh")
+        .read_text()
+        .replace("/logs/verifier", str(logs_dir))
+    )
+    subprocess.run(["bash"], input=script, text=True, cwd=work_dir, check=True)
+    return (logs_dir / "reward.txt").read_text().strip()
+
+
 # ---------------------------------------------------------------------------
 # Task generation tests
 # ---------------------------------------------------------------------------
@@ -147,6 +159,65 @@ class TestGenerateTask:
         assert "hello.txt" in content
         assert "/logs/verifier/reward.txt" in content
 
+    def test_content_verifier_rejects_wrong_content(
+        self, simple_trace: ParsedTrace, tmp_path: Path
+    ) -> None:
+        """Guards PR #487's fix for #359: exact writes verify content."""
+        task_dir = generate_task(simple_trace, tmp_path / "tasks")
+        work_dir = tmp_path / "work"
+        work_dir.mkdir()
+        (work_dir / "hello.txt").write_text("wrong\n")
+
+        reward = _run_generated_verifier(task_dir, work_dir, tmp_path / "logs-wrong")
+
+        assert reward == "0.0"
+
+    def test_content_verifier_accepts_exact_content(
+        self, simple_trace: ParsedTrace, tmp_path: Path
+    ) -> None:
+        """Guards PR #487's fix for #359: exact writes still pass when correct."""
+        task_dir = generate_task(simple_trace, tmp_path / "tasks")
+        work_dir = tmp_path / "work"
+        work_dir.mkdir()
+        (work_dir / "hello.txt").write_text("Hello")
+
+        reward = _run_generated_verifier(task_dir, work_dir, tmp_path / "logs-ok")
+
+        assert reward == "1.0"
+
+    def test_edit_only_verifier_fails_closed_without_git(self, tmp_path: Path) -> None:
+        """Guards PR #487's fix for #359: edit fragments must not auto-pass."""
+        trace = ParsedTrace(
+            trace_id="edit-only",
+            session_id="s",
+            steps=[
+                TraceStep(role="user", content="Update README"),
+                TraceStep(
+                    role="assistant",
+                    content="Edited.",
+                    tool_calls=[
+                        ToolCall(
+                            name="Edit",
+                            input={
+                                "file_path": "README.md",
+                                "old_string": "old",
+                                "new_string": "new fragment",
+                            },
+                        )
+                    ],
+                ),
+            ],
+            outcome="success",
+        )
+        task_dir = generate_task(trace, tmp_path / "tasks")
+        work_dir = tmp_path / "work"
+        work_dir.mkdir()
+        (work_dir / "README.md").write_text("new fragment\n")
+
+        reward = _run_generated_verifier(task_dir, work_dir, tmp_path / "logs")
+
+        assert reward == "0.0"
+
     def test_test_sh_is_executable(
         self, simple_trace: ParsedTrace, tmp_path: Path
     ) -> None:
@@ -168,12 +239,43 @@ class TestGenerateTask:
         assert solve_sh.exists()
         content = solve_sh.read_text()
         assert "Auto-generated oracle solution" in content
-        assert "cat > hello.txt" in content
-        assert "Hello" in content
+        assert '"path":"hello.txt"' in content
+        assert "path.write_bytes" in content
 
         import stat
 
         assert solve_sh.stat().st_mode & stat.S_IXUSR
+
+    def test_solution_sh_does_not_replay_edit_fragments(self, tmp_path: Path) -> None:
+        """Guards PR #487's fix for #359: Edit.new_string is not final content."""
+        trace = ParsedTrace(
+            trace_id="edit-fragment",
+            session_id="s",
+            steps=[
+                TraceStep(role="user", content="Patch README"),
+                TraceStep(
+                    role="assistant",
+                    content="Patched.",
+                    tool_calls=[
+                        ToolCall(
+                            name="Edit",
+                            input={
+                                "file_path": "README.md",
+                                "old_string": "hello",
+                                "new_string": "world",
+                            },
+                        )
+                    ],
+                ),
+            ],
+            outcome="success",
+        )
+
+        task_dir = generate_task(trace, tmp_path)
+        solve_sh = (task_dir / "solution" / "solve.sh").read_text()
+
+        assert "No replayable file writes" in solve_sh
+        assert "path.write_bytes" not in solve_sh
 
     def test_dockerfile_generated(
         self, simple_trace: ParsedTrace, tmp_path: Path
@@ -212,6 +314,8 @@ class TestGenerateTask:
 
         assert "https://github.com/octocat/Hello-World.git" in dockerfile
         assert "https://github.com/https://github.com" not in dockerfile
+        assert "git fetch --depth 1 origin deadbeef" in dockerfile
+        assert "|| true" not in dockerfile
 
     def test_passes_bench_tasks_check(
         self, simple_trace: ParsedTrace, tmp_path: Path
@@ -238,8 +342,10 @@ class TestGenerateTask:
         assert test_sh.exists()
         content = test_sh.read_text()
         assert "/logs/verifier/reward.txt" in content
-        assert 'echo "0.0"' in content
-        assert 'echo "1.0"' not in content
+        work_dir = tmp_path / "work-no-files"
+        work_dir.mkdir()
+        reward = _run_generated_verifier(task_dir, work_dir, tmp_path / "logs")
+        assert reward == "0.0"
 
     def test_hard_difficulty(self, complex_trace: ParsedTrace, tmp_path: Path) -> None:
         task_dir = generate_task(complex_trace, tmp_path)
@@ -289,6 +395,86 @@ class TestGenerateTask:
         # Overwrite should regenerate
         task_dir = generate_task(simple_trace, tmp_path, overwrite=True)
         assert (task_dir / "task.toml").exists()
+
+    def test_overwrite_removes_stale_files(
+        self, simple_trace: ParsedTrace, tmp_path: Path
+    ) -> None:
+        """Guards PR #487's fix for #359: overwrite replaces stale artifacts."""
+        task_dir = generate_task(simple_trace, tmp_path)
+        (task_dir / "tests" / "stale.sh").write_text("#!/bin/bash\n")
+        stale_asset = task_dir / "assets" / "old.txt"
+        stale_asset.parent.mkdir()
+        stale_asset.write_text("old")
+
+        regenerated = generate_task(simple_trace, tmp_path, overwrite=True)
+
+        assert regenerated == task_dir
+        assert not (task_dir / "tests" / "stale.sh").exists()
+        assert not stale_asset.exists()
+
+    def test_unsafe_git_commit_rejected_before_overwrite(
+        self, simple_trace: ParsedTrace, tmp_path: Path
+    ) -> None:
+        """Guards PR #487's fix for #359: commit metadata is not shell code."""
+        task_dir = generate_task(simple_trace, tmp_path)
+        (task_dir / "marker.txt").write_text("keep")
+        simple_trace.git = GitContext(
+            repo="octocat/Hello-World",
+            commit_before="deadbeef; touch /tmp/pwned",
+        )
+
+        with pytest.raises(ValueError, match="commit_before"):
+            generate_task(simple_trace, tmp_path, overwrite=True)
+
+        assert (task_dir / "marker.txt").read_text() == "keep"
+
+    def test_git_status_verifier_accepts_untracked_new_file(
+        self, tmp_path: Path
+    ) -> None:
+        """Guards PR #487's fix for #359: new untracked files count as changed."""
+        trace = ParsedTrace(
+            trace_id="git-new-file",
+            session_id="s",
+            steps=[
+                TraceStep(role="user", content="Create new.txt"),
+                TraceStep(
+                    role="assistant",
+                    content="Created.",
+                    tool_calls=[ToolCall(name="Edit", input={"file_path": "new.txt"})],
+                ),
+            ],
+            git=GitContext(repo="octocat/Hello-World", commit_before="deadbeef"),
+            outcome="success",
+        )
+        task_dir = generate_task(trace, tmp_path / "tasks")
+        work_dir = tmp_path / "repo"
+        work_dir.mkdir()
+        subprocess.run(
+            ["git", "init"], cwd=work_dir, check=True, stdout=subprocess.PIPE
+        )
+        subprocess.run(
+            ["git", "config", "user.email", "benchflow@example.com"],
+            cwd=work_dir,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "BenchFlow"],
+            cwd=work_dir,
+            check=True,
+        )
+        (work_dir / "README.md").write_text("base\n")
+        subprocess.run(["git", "add", "README.md"], cwd=work_dir, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", "base"],
+            cwd=work_dir,
+            check=True,
+            stdout=subprocess.PIPE,
+        )
+        (work_dir / "new.txt").write_text("created\n")
+
+        reward = _run_generated_verifier(task_dir, work_dir, tmp_path / "logs")
+
+        assert reward == "1.0"
 
     def test_custom_author(self, simple_trace: ParsedTrace, tmp_path: Path) -> None:
         task_dir = generate_task(simple_trace, tmp_path, author="my-team")
@@ -453,9 +639,23 @@ class TestGithubCloneUrl:
             == "https://github.com/octocat/Hello-World.git"
         )
 
+    def test_github_ssh_url_normalized_to_https(self) -> None:
+        """Guards PR #487's fix for #359: public GitHub SSH remotes are clean."""
+        assert (
+            _github_clone_url("git@github.com:octocat/Hello-World.git")
+            == "https://github.com/octocat/Hello-World.git"
+        )
+
+    def test_non_github_ssh_url_rejected(self) -> None:
+        """Guards PR #487's fix for #359: unsupported SSH remotes fail closed."""
+        with pytest.raises(ValueError, match="SSH"):
+            _github_clone_url("git@gitlab.com:octocat/Hello-World.git")
+
 
 class TestVerifierGlobPatterns:
-    def test_test_sh_uses_compgen_for_timestamp_paths(self, tmp_path: Path) -> None:
+    def test_test_sh_uses_glob_payload_for_timestamp_paths(
+        self, tmp_path: Path
+    ) -> None:
         trace = ParsedTrace(
             trace_id="ts-trace",
             session_id="s",
@@ -478,10 +678,11 @@ class TestVerifierGlobPatterns:
         )
         task_dir = generate_task(trace, tmp_path)
         test_sh = (task_dir / "tests" / "test.sh").read_text()
-        assert "compgen -G" in test_sh
         assert "*_create_invoices/up.sql" in test_sh
 
-    def test_test_sh_uses_exact_check_for_static_paths(self, tmp_path: Path) -> None:
+    def test_test_sh_uses_content_verifier_for_static_paths(
+        self, tmp_path: Path
+    ) -> None:
         trace = ParsedTrace(
             trace_id="static-trace",
             session_id="s",
@@ -502,8 +703,8 @@ class TestVerifierGlobPatterns:
         )
         task_dir = generate_task(trace, tmp_path)
         test_sh = (task_dir / "tests" / "test.sh").read_text()
-        assert "[ ! -f" in test_sh
-        assert "compgen" not in test_sh
+        assert "src/main.py" in test_sh
+        assert "Content mismatch" in test_sh
 
 
 # ---------------------------------------------------------------------------

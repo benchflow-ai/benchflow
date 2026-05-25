@@ -581,3 +581,72 @@ def test_source_dataclass_resolve(tmp_path, monkeypatch):
         == tmp_path / ".cache" / "datasets" / "benchflow-ai" / "benchmarks" / "tb2"
     )
     assert target.exists()
+
+
+def test_infer_task_source_provenance_for_cached_benchmark_repo(tmp_path, monkeypatch):
+    """Guards #492: tasks under ``.cache/datasets/<org>/<repo>/...`` must
+    attribute provenance to the cached benchmark repo (its remote/HEAD), not
+    to the BenchFlow worktree. Without this, ``check_results.py`` warns
+    ``source.resolved_sha does not match local_path git HEAD`` and friends
+    on legitimate local cached-benchmark runs.
+    """
+    import subprocess as sp
+
+    monkeypatch.chdir(tmp_path)
+    # Make the BenchFlow worktree marker live at tmp_path so ``_repo_root()``
+    # resolves here (matching the production layout under .cache/datasets).
+    (tmp_path / ".git").mkdir()
+
+    cache_root = tmp_path / ".cache" / "datasets" / "benchflow-ai" / "skillsbench"
+    tasks_dir = cache_root / "tasks"
+    task_dir = tasks_dir / "task-a"
+    task_dir.mkdir(parents=True)
+    (task_dir / "task.toml").write_text("[task]\n")
+    (task_dir / "instruction.md").write_text("Solve it.\n")
+
+    # Stand up a real git repo at the cache root so ``_git_stdout`` produces
+    # the expected HEAD/remote/status results.
+    env = {
+        "GIT_AUTHOR_NAME": "BenchFlow Test",
+        "GIT_AUTHOR_EMAIL": "test@example.com",
+        "GIT_COMMITTER_NAME": "BenchFlow Test",
+        "GIT_COMMITTER_EMAIL": "test@example.com",
+    }
+    sp.run(["git", "init", "-b", "main"], cwd=cache_root, check=True, capture_output=True)
+    sp.run(
+        [
+            "git",
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/benchflow-ai/skillsbench.git",
+        ],
+        cwd=cache_root,
+        check=True,
+        capture_output=True,
+    )
+    sp.run(["git", "add", "."], cwd=cache_root, check=True, capture_output=True, env={**env})
+    sp.run(
+        ["git", "commit", "-m", "seed"],
+        cwd=cache_root,
+        check=True,
+        capture_output=True,
+        env={**env},
+    )
+    head = sp.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=cache_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    provenance = task_download.infer_task_source_provenance(task_dir)
+
+    assert provenance is not None
+    assert provenance["type"] == "github"
+    assert provenance["repo"] == "benchflow-ai/skillsbench"
+    assert provenance["resolved_sha"] == head
+    assert provenance["path"] == "tasks/task-a"
+    assert provenance["local_path"] == str(task_dir.resolve())
+    assert provenance["dirty"] is False

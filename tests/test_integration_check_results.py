@@ -164,6 +164,116 @@ def _write_config(
     (path / "config.json").write_text(json.dumps(config))
 
 
+def test_check_results_accepts_skill_invocation_metrics(tmp_path: Path) -> None:
+    """Guards issue #507: result checker accepts valid structured skill counts."""
+    agent_dir = tmp_path / "agentA"
+    run_dir = agent_dir / "2026-05-24__00-00-00" / "task-a"
+    run_dir.mkdir(parents=True)
+    (run_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "task-a",
+                "agent": "agentA",
+                "model": "test-model",
+                "rewards": {"reward": 1.0},
+                "error": None,
+                "verifier_error": None,
+                "n_skill_invocations": 1,
+                "agent_result": {"n_skill_invocations": 1},
+                "source": _source(),
+            }
+        )
+    )
+    traj_dir = run_dir / "trajectory"
+    traj_dir.mkdir()
+    (traj_dir / "acp_trajectory.jsonl").write_text(
+        json.dumps({"type": "tool_call", "kind": "skill", "title": "calculator"})
+        + "\n"
+    )
+    _write_config(run_dir)
+    (agent_dir / "summary.json").write_text(
+        json.dumps(
+            {
+                "agent": "agentA",
+                "model": "test-model",
+                "environment": "daytona",
+                "concurrency": 64,
+                "agent_idle_timeout_sec": 600,
+                "total": 1,
+                "passed": 1,
+                "failed": 0,
+                "errored": 0,
+                "verifier_errored": 0,
+                "score": "100.0%",
+                "total_skill_invocations": 1,
+                "avg_skill_invocations": 1.0,
+                "source": _source(),
+            }
+        )
+    )
+
+    findings = check_agent(agent_dir)
+
+    assert findings["ok"] is True
+
+
+def test_check_results_flags_skill_invocation_mismatch(tmp_path: Path) -> None:
+    """Guards issue #507: result checker compares skill counts to ACP trajectory."""
+    agent_dir = tmp_path / "agentA"
+    run_dir = agent_dir / "2026-05-24__00-00-00" / "task-a"
+    run_dir.mkdir(parents=True)
+    (run_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "task-a",
+                "agent": "agentA",
+                "model": "test-model",
+                "rewards": {"reward": 1.0},
+                "error": None,
+                "verifier_error": None,
+                "n_skill_invocations": 0,
+                "agent_result": {"n_skill_invocations": 0},
+                "source": _source(),
+            }
+        )
+    )
+    traj_dir = run_dir / "trajectory"
+    traj_dir.mkdir()
+    (traj_dir / "acp_trajectory.jsonl").write_text(
+        json.dumps({"type": "tool_call", "kind": "skill", "title": "calculator"})
+        + "\n"
+    )
+    _write_config(run_dir)
+    (agent_dir / "summary.json").write_text(
+        json.dumps(
+            {
+                "agent": "agentA",
+                "model": "test-model",
+                "environment": "daytona",
+                "concurrency": 64,
+                "agent_idle_timeout_sec": 600,
+                "total": 1,
+                "passed": 1,
+                "failed": 0,
+                "errored": 0,
+                "verifier_errored": 0,
+                "score": "100.0%",
+                "total_skill_invocations": 0,
+                "avg_skill_invocations": 0.0,
+                "source": _source(),
+            }
+        )
+    )
+
+    findings = check_agent(agent_dir)
+
+    assert findings["ok"] is False
+    assert any(
+        "n_skill_invocations=0 but trajectory implies 1" in issue
+        for issue in findings["issues"]
+    )
+
+
 def test_check_results_requires_source_provenance(tmp_path: Path) -> None:
     """Guards v0.5-integration@cb8759e against unaudited source artifacts."""
     agent_dir = tmp_path / "agentA"

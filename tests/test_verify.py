@@ -124,7 +124,65 @@ class TestSdkVerify:
         assert "timed out" in verifier_error
         assert "verifier" in timing
         assert vti is not None
-        assert vti["timeout_budget_sec"] == 0.1
+        # ``vti`` is now a typed :class:`VerifierTimeoutDiagnostic` (issue
+        # #503); attribute access replaces the legacy dict indexing.
+        assert vti.timeout_budget_sec == 0.1
+
+    @pytest.mark.asyncio
+    async def test_verifier_timeout_reads_task_name_not_config_name(self, tmp_path):
+        """Guards #495: timeout handler must read task.name, not task.config.name.
+
+        ``TaskConfig`` has no ``name`` field — the task name lives on ``Task``.
+        A real verifier timeout would otherwise crash with AttributeError
+        inside the ``except TimeoutError`` handler.
+        """
+        from benchflow.contracts import default_rollout_planes
+        from benchflow.rollout import _verify_rollout
+        from benchflow.task.config import TaskConfig
+
+        # Build a real-shaped task: name lives on Task; TaskConfig has no name.
+        config = TaskConfig.model_validate(
+            {
+                "version": "1.0",
+                "metadata": {"author_name": "benchflow"},
+                "agent": {"timeout_sec": 30},
+                "verifier": {"timeout_sec": 0.1},
+                "environment": {"cpus": 1, "memory_mb": 1024},
+            }
+        )
+        assert not hasattr(config, "name")  # the bug condition
+
+        task = MagicMock()
+        task.name = "real-task-name"
+        task.config = config
+
+        env = MagicMock()
+        rollout_paths = MagicMock()
+        rollout_paths.verifier_dir = tmp_path / "verifier"
+
+        mock_v = MagicMock()
+        mock_v.verify = lambda: asyncio.sleep(10)
+
+        timing: dict = {}
+        with (
+            patch("benchflow.task.Verifier", return_value=mock_v),
+            patch(
+                "benchflow.sandbox.lockdown.harden_before_verify",
+                new_callable=AsyncMock,
+            ),
+        ):
+            rewards, verifier_error, vti = await _verify_rollout(
+                env, task, rollout_paths, timing, default_rollout_planes()
+            )
+
+        assert rewards is None
+        assert verifier_error is not None
+        assert "timed out" in verifier_error
+        assert vti is not None
+        # ``vti`` is now a typed :class:`VerifierTimeoutDiagnostic` (issue
+        # #503); attribute access replaces the legacy dict indexing.
+        assert vti.task_name == "real-task-name"
+        assert vti.timeout_budget_sec == 0.1
 
     @pytest.mark.asyncio
     async def test_verifier_crash(self, verify_harness):

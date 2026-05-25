@@ -33,8 +33,8 @@ bench eval create \
   --agent-env BENCHFLOW_SKILL_NUDGE=name
 ```
 
-Other nudge modes are `description` and `full`. Omit
-`--agent-env BENCHFLOW_SKILL_NUDGE=...` to leave BenchFlow's runtime default off.
+See [Architecture: skill loading](../architecture.md#skill-loading) for the
+skill loading semantics and available nudge modes.
 
 ## Demos
 

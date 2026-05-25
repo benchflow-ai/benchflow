@@ -33,6 +33,10 @@ from benchflow._utils.scoring import (
     count_result_outcomes,
 )
 from benchflow._utils.source_provenance import source_issues, source_matches_parent
+from benchflow.trajectories.metrics import (
+    count_skill_invocations,
+    result_skill_invocations,
+)
 
 EXPECTED: dict[str, Any] = {}
 EXPECTED_FIELDS = {
@@ -177,6 +181,28 @@ def _expected_label(value: Any) -> str:
     if value is _MISSING:
         return "<missing>"
     return "null" if value is None else repr(value)
+
+
+def _nonnegative_int_issue(value: Any, label: str) -> str | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return f"{label} must be a non-negative integer"
+    return None
+
+
+def _load_acp_trajectory(path: Path) -> list[dict[str, Any]] | None:
+    trajectory_path = path.parent / "trajectory" / "acp_trajectory.jsonl"
+    if not trajectory_path.exists():
+        return None
+    trajectory: list[dict[str, Any]] = []
+    try:
+        for line in trajectory_path.read_text().splitlines():
+            if line.strip():
+                event = json.loads(line)
+                if isinstance(event, dict):
+                    trajectory.append(event)
+    except (json.JSONDecodeError, OSError):
+        return None
+    return trajectory
 
 
 def _latest_results_by_task(result_entries: list[tuple[Path, dict]]) -> list[dict]:
@@ -405,6 +431,39 @@ def check_agent(agent_dir: Path) -> dict:
         if missing:
             findings["issues"].append(f"{r.get('task_name', '?')}: missing {missing}")
             findings["ok"] = False
+        skill_count = r.get("n_skill_invocations")
+        agent_result = r.get("agent_result") or {}
+        agent_skill_count = agent_result.get("n_skill_invocations")
+        if skill_count is not None:
+            issue = _nonnegative_int_issue(
+                skill_count, f"{r.get('task_name', '?')}: n_skill_invocations"
+            )
+            if issue:
+                findings["issues"].append(issue)
+                findings["ok"] = False
+            if agent_skill_count is not None and agent_skill_count != skill_count:
+                findings["issues"].append(
+                    f"{r.get('task_name', '?')}: agent_result.n_skill_invocations "
+                    "does not match result.json n_skill_invocations"
+                )
+                findings["ok"] = False
+            trajectory = _load_acp_trajectory(result_file)
+            if trajectory is not None:
+                expected_skill_count = count_skill_invocations(trajectory)
+                if skill_count != expected_skill_count:
+                    findings["issues"].append(
+                        f"{r.get('task_name', '?')}: n_skill_invocations={skill_count} "
+                        f"but trajectory implies {expected_skill_count}"
+                    )
+                    findings["ok"] = False
+        if agent_skill_count is not None:
+            issue = _nonnegative_int_issue(
+                agent_skill_count,
+                f"{r.get('task_name', '?')}: agent_result.n_skill_invocations",
+            )
+            if issue:
+                findings["issues"].append(issue)
+                findings["ok"] = False
         found_source_issues = source_issues(
             r.get("source"),
             f"{r.get('task_name', '?')}: result.json",
@@ -506,77 +565,46 @@ def check_agent(agent_dir: Path) -> dict:
                 )
                 findings["ok"] = False
 
-    # Infrastructure errors
-    infra_errors = []
-    idle_timeout_tasks: list[str] = []
-    sandbox_startup_tasks: list[str] = []
-    transport_error_tasks: list[str] = []
+    # Infrastructure errors — driven from the central diagnostic registry
+    # so adding a new diagnostic kind doesn't require editing this file
+    # (issue #503).
+    from benchflow.diagnostics import DIAGNOSTIC_REGISTRY, format_issue_for_field
+
+    _CATEGORY_TO_DIAGNOSTIC = {
+        d.category: d for d in DIAGNOSTIC_REGISTRY if d.category and d.channel == "error"
+    }
+    _INVALIDATION_DESCRIPTIONS = {
+        "idle_timeout": ("hit idle timeout", ""),
+        "sandbox_setup": ("failed during sandbox startup", ""),
+        "pipe_closed": (
+            "lost ACP transport (pipe closed / rc=255)",
+            "",
+        ),
+    }
+
+    infra_errors: list[str] = []
+    invalidated_by_category: dict[str, list[str]] = {}
     for r in results:
         err = r.get("error")
         cat = classify_error(str(err)) if err else None
         if cat and cat in INFRA_ERROR_CATEGORIES:
             task = r.get("task_name", "?")
-            if cat == "idle_timeout":
-                info = r.get("idle_timeout_info")
-                if info:
-                    infra_errors.append(
-                        f"{task}: idle timeout after "
-                        f"{info.get('idle_duration_sec', '?')}s idle "
-                        f"({info.get('n_tool_calls', '?')} tool calls, "
-                        f"{info.get('wall_clock_elapsed_sec', '?')}s wall)"
-                    )
-                else:
-                    infra_errors.append(f"{task}: {err}")
-                idle_timeout_tasks.append(task)
-            elif cat == "sandbox_setup":
-                sinfo = r.get("sandbox_startup_info")
-                if sinfo:
-                    sid = sinfo.get("sandbox_id", "?")
-                    state = sinfo.get("sandbox_state", "?")
-                    attempts = sinfo.get("attempts", "?")
-                    build_to = sinfo.get("build_timeout_sec", "?")
-                    infra_errors.append(
-                        f"{task}: sandbox startup failed (sandbox_id={sid}, "
-                        f"state={state}, attempts={attempts}, "
-                        f"build_timeout_sec={build_to})"
-                    )
-                else:
-                    infra_errors.append(f"{task}: {err}")
-                sandbox_startup_tasks.append(task)
-            elif cat == "pipe_closed":
-                tinfo = r.get("transport_error_info")
-                if tinfo:
-                    rc = tinfo.get("process_exit_code", "?")
-                    diag = tinfo.get("transport_diagnosis", "?")
-                    reachable = tinfo.get("sandbox_reachable", "?")
-                    infra_errors.append(
-                        f"{task}: transport closed (rc={rc}, "
-                        f"diagnosis={diag}, sandbox_reachable={reachable})"
-                    )
-                else:
-                    infra_errors.append(f"{task}: {err}")
-                transport_error_tasks.append(task)
+            diag_cls = _CATEGORY_TO_DIAGNOSTIC.get(cat)
+            info = r.get(diag_cls.field) if diag_cls else None
+            if diag_cls and info:
+                infra_errors.append(format_issue_for_field(diag_cls.field, task, info))
             else:
                 infra_errors.append(f"{task}: {err}")
+            if cat in _INVALIDATION_DESCRIPTIONS:
+                invalidated_by_category.setdefault(cat, []).append(task)
     if infra_errors:
         findings["issues"].extend(infra_errors)
         findings["ok"] = False
-    if idle_timeout_tasks:
+    for cat, tasks in invalidated_by_category.items():
+        desc, _ = _INVALIDATION_DESCRIPTIONS[cat]
         findings["issues"].append(
-            f"INVALIDATED: {len(idle_timeout_tasks)} task(s) hit idle timeout "
-            f"and should be rerun: {', '.join(idle_timeout_tasks)}"
-        )
-    if sandbox_startup_tasks:
-        findings["issues"].append(
-            f"INVALIDATED: {len(sandbox_startup_tasks)} task(s) failed during "
-            f"sandbox startup and should be rerun: "
-            f"{', '.join(sandbox_startup_tasks)}"
-        )
-    if transport_error_tasks:
-        findings["issues"].append(
-            f"INVALIDATED: {len(transport_error_tasks)} task(s) lost ACP transport "
-            f"(pipe closed / rc=255) and should be rerun: "
-            f"{', '.join(transport_error_tasks)}"
+            f"INVALIDATED: {len(tasks)} task(s) {desc} "
+            f"and should be rerun: {', '.join(tasks)}"
         )
 
     # Verifier dependency install failures (ENG-151)
@@ -599,21 +627,30 @@ def check_agent(agent_dir: Path) -> dict:
             f"fixing the index policy: {', '.join(dep_install_tasks)}"
         )
 
-    # Verifier timeout failures (ENG-152)
+    # Verifier timeout failures (ENG-152) — rendered from the diagnostic
+    # registry; falls back to a plain message when the structured
+    # verifier_timeout_info dict is absent.
+    _VERIFIER_DIAGS = {
+        d.category: d for d in DIAGNOSTIC_REGISTRY if d.channel == "verifier_error"
+    }
     verifier_timeout_tasks: list[str] = []
     for r in results:
         verifier_err = r.get("verifier_error")
         vcat = classify_verifier_error(verifier_err) if verifier_err else None
         if vcat == "verifier_timeout":
             task = r.get("task_name", "?")
-            vti = r.get("verifier_timeout_info")
-            budget = vti.get("timeout_budget_sec", "?") if vti else "?"
-            elapsed = vti.get("elapsed_sec", "?") if vti else "?"
+            diag_cls = _VERIFIER_DIAGS.get(vcat)
+            vti = r.get(diag_cls.field) if diag_cls else None
             verifier_timeout_tasks.append(task)
-            findings["issues"].append(
-                f"{task}: verifier timed out (budget={budget}s, elapsed={elapsed}s) — "
-                f"measurement invalid (verifier never produced reward)"
-            )
+            if diag_cls and vti:
+                findings["issues"].append(
+                    format_issue_for_field(diag_cls.field, task, vti)
+                )
+            else:
+                findings["issues"].append(
+                    f"{task}: verifier timed out — measurement invalid "
+                    f"(verifier never produced reward)"
+                )
             findings["ok"] = False
     if verifier_timeout_tasks:
         findings["issues"].append(
@@ -739,6 +776,18 @@ def check_agent(agent_dir: Path) -> dict:
                             f"summary source does not cover {r.get('task_name', '?')}"
                         )
                         findings["ok"] = False
+            for field in ("total_skill_invocations", "avg_skill_invocations"):
+                if field in summary:
+                    value = summary[field]
+                    if (
+                        isinstance(value, bool)
+                        or not isinstance(value, int | float)
+                        or value < 0
+                    ):
+                        findings["issues"].append(
+                            f"summary.json {field} must be a non-negative number"
+                        )
+                        findings["ok"] = False
             findings["summary"] = summary
         except json.JSONDecodeError:
             findings["issues"].append("summary.json: invalid JSON")
@@ -773,6 +822,23 @@ def check_agent(agent_dir: Path) -> dict:
                 findings["issues"].append(
                     f"summary.json memory_score={summary['memory_score']} "
                     f"but results imply {implied}"
+                )
+                findings["ok"] = False
+        if "total_skill_invocations" in summary:
+            implied = sum(result_skill_invocations(result) for result in latest_results)
+            if summary["total_skill_invocations"] != implied:
+                findings["issues"].append(
+                    "summary.json total_skill_invocations="
+                    f"{summary['total_skill_invocations']} but results imply {implied}"
+                )
+                findings["ok"] = False
+        if "avg_skill_invocations" in summary:
+            total = sum(result_skill_invocations(result) for result in latest_results)
+            implied = round(total / len(latest_results), 1) if latest_results else 0.0
+            if abs(float(summary["avg_skill_invocations"]) - implied) > 1e-9:
+                findings["issues"].append(
+                    "summary.json avg_skill_invocations="
+                    f"{summary['avg_skill_invocations']} but results imply {implied}"
                 )
                 findings["ok"] = False
 

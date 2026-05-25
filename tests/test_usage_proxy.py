@@ -50,6 +50,7 @@ def test_result_json_contains_unavailable_usage_defaults(tmp_path):
     assert result.usage_source == "unavailable"
     assert data["agent_result"] == {
         "n_tool_calls": 3,
+        "n_skill_invocations": 0,
         "n_prompts": 1,
         "n_input_tokens": None,
         "n_output_tokens": None,

@@ -13,6 +13,7 @@ from typing import Any
 
 from benchflow._types import Scene
 from benchflow.contracts import default_rollout_planes
+from benchflow.diagnostics import VerifierTimeoutDiagnostic
 from benchflow.environment.manifest import EnvironmentManifest
 from benchflow.models import RolloutResult, TrajectorySource
 from benchflow.rollout import (
@@ -141,7 +142,7 @@ class SDK:
         timing: dict,
         sandbox_user: str | None = None,
         workspace: str | None = None,
-    ) -> tuple[dict | None, str | None, dict | None]:
+    ) -> tuple[dict | None, str | None, VerifierTimeoutDiagnostic | None]:
         return await _verify_rollout(
             env,
             task,

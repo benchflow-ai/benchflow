@@ -61,6 +61,7 @@ from benchflow.contracts import (
     SandboxStartupFailure,
     default_rollout_planes,
 )
+from benchflow.diagnostics import RolloutDiagnostics, VerifierTimeoutDiagnostic
 from benchflow.environment.manifest import EnvironmentManifest
 from benchflow.models import RolloutResult, TrajectorySource
 from benchflow.rewards.validation import validate_reward_map
@@ -76,6 +77,7 @@ from benchflow.trajectories._capture import (
     _capture_session_trajectory,
     _scrape_agent_trajectory,
 )
+from benchflow.trajectories.metrics import count_skill_invocations
 from benchflow.trajectories.tree import RolloutNode, RolloutTree, Step
 
 logger = logging.getLogger(__name__)
@@ -421,41 +423,6 @@ def _scene_metadata(scenes: list[Scene]) -> list[dict[str, Any]]:
     ]
 
 
-def _parse_transport_error(e: ConnectionError) -> dict:
-    """Extract structured fields from a ConnectionError message.
-
-    Guards ENG-148: ACP transport rc=255 must carry actionable diagnostics.
-    """
-    import re as _re
-
-    msg = str(e)
-    info: dict[str, Any] = {"reason": "transport_closed", "raw_message": msg[:500]}
-
-    rc_match = _re.search(r"rc=(\d+|None)", msg)
-    if rc_match:
-        raw = rc_match.group(1)
-        info["process_exit_code"] = int(raw) if raw != "None" else None
-
-    pid_match = _re.search(r"pid=(\d+)", msg)
-    if pid_match:
-        info["process_pid"] = int(pid_match.group(1))
-
-    if "still alive but its stdout/transport closed" in msg:
-        info["transport_diagnosis"] = "remote_session_killed"
-    elif "exited with rc=" in msg:
-        info["transport_diagnosis"] = "process_exited"
-    elif "PTY readline" in msg:
-        info["transport_diagnosis"] = "pty_error"
-    else:
-        info["transport_diagnosis"] = "unknown"
-
-    stderr_match = _re.search(r"stderr: (.+)", msg, _re.DOTALL)
-    if stderr_match:
-        info["stderr_snippet"] = stderr_match.group(1).strip()[:500]
-
-    return info
-
-
 def _build_rollout_result(
     rollout_dir: Path,
     *,
@@ -486,13 +453,18 @@ def _build_rollout_result(
     price_source: str | None = None,
     evolved_skills: dict[str, str] | None = None,
     source_provenance: dict[str, Any] | None = None,
-    idle_timeout_info: dict | None = None,
-    sandbox_startup_info: dict | None = None,
-    transport_error_info: dict | None = None,
-    verifier_timeout_info: dict | None = None,
+    diagnostics: RolloutDiagnostics | None = None,
 ) -> RolloutResult:
-    """Build RolloutResult and write result.json, timing.json, prompts.json, trajectory."""
+    """Build RolloutResult and write result.json, timing.json, prompts.json, trajectory.
+
+    Diagnostics flow through the :class:`RolloutDiagnostics` collector
+    (issue #503). Callers that previously passed per-field ``*_info``
+    dicts should construct a collector and ``set()`` typed diagnostics.
+    """
+    if diagnostics is None:
+        diagnostics = RolloutDiagnostics()
     finished_at = datetime.now()
+    n_skill_invocations = count_skill_invocations(trajectory)
     result = RolloutResult(
         task_name=task_name,
         rollout_name=rollout_name,
@@ -502,6 +474,7 @@ def _build_rollout_result(
         agent_name=agent_name,
         model=model,
         n_tool_calls=n_tool_calls,
+        n_skill_invocations=n_skill_invocations,
         n_prompts=len(prompts),
         n_input_tokens=n_input_tokens,
         n_output_tokens=n_output_tokens,
@@ -539,9 +512,11 @@ def _build_rollout_result(
                 "agent_name": result.agent_name,
                 "model": result.model,
                 "n_tool_calls": result.n_tool_calls,
+                "n_skill_invocations": result.n_skill_invocations,
                 "n_prompts": result.n_prompts,
                 "agent_result": {
                     "n_tool_calls": result.n_tool_calls,
+                    "n_skill_invocations": result.n_skill_invocations,
                     "n_prompts": result.n_prompts,
                     "n_input_tokens": result.n_input_tokens,
                     "n_output_tokens": result.n_output_tokens,
@@ -559,10 +534,7 @@ def _build_rollout_result(
                     result.verifier_error
                 ),
                 "export_error": result.export_error,
-                "idle_timeout_info": idle_timeout_info,
-                "sandbox_startup_info": sandbox_startup_info,
-                "transport_error_info": transport_error_info,
-                "verifier_timeout_info": verifier_timeout_info,
+                **diagnostics.to_result_fields(),
                 "partial_trajectory": result.partial_trajectory,
                 "trajectory_source": result.trajectory_source,
                 "started_at": str(result.started_at),
@@ -788,15 +760,17 @@ async def _verify_rollout(
     planes: RolloutPlanes,
     sandbox_user: str | None = None,
     workspace: str | None = None,
-) -> tuple[dict | None, str | None, dict | None]:
+) -> tuple[dict | None, str | None, VerifierTimeoutDiagnostic | None]:
     """Run verifier with pre-verification hardening.
 
-    Returns (rewards, verifier_error, verifier_timeout_info).
+    Returns ``(rewards, verifier_error, verifier_timeout_diagnostic)``. The
+    diagnostic is non-``None`` only when the verifier exceeded its timeout
+    budget — the agent-error channel is unused (issue #503).
     """
     rollout_paths.verifier_dir.mkdir(parents=True, exist_ok=True)
     t0 = datetime.now()
     verifier_error = None
-    verifier_timeout_info: dict | None = None
+    verifier_timeout: VerifierTimeoutDiagnostic | None = None
     timeout_budget = task.config.verifier.timeout_sec
     try:
         await planes.harden_before_verify(env, task, sandbox_user, workspace=workspace)
@@ -813,11 +787,11 @@ async def _verify_rollout(
         elapsed = (datetime.now() - t0).total_seconds()
         timing["verifier"] = elapsed
         verifier_error = f"verifier timed out after {timeout_budget}s"
-        verifier_timeout_info = {
-            "timeout_budget_sec": timeout_budget,
-            "elapsed_sec": round(elapsed, 1),
-            "task_name": task.config.name,
-        }
+        verifier_timeout = VerifierTimeoutDiagnostic(
+            timeout_budget_sec=timeout_budget,
+            elapsed_sec=round(elapsed, 1),
+            task_name=task.name,
+        )
         rewards = None
         logger.error(verifier_error)
     except Exception as e:
@@ -825,7 +799,7 @@ async def _verify_rollout(
         verifier_error = f"verifier crashed: {e}"
         rewards = None
         logger.error(verifier_error)
-    return rewards, verifier_error, verifier_timeout_info
+    return rewards, verifier_error, verifier_timeout
 
 
 def _ensure_canonical_rewards(rewards: dict | None) -> dict:
@@ -1094,10 +1068,11 @@ class Rollout:
         # an export-time infra failure ("connection lost") as the agent's own
         # infra_failure category in dashboards.
         self._export_error: str | None = None
-        self._idle_timeout_info: dict | None = None
-        self._sandbox_startup_info: dict | None = None
-        self._transport_error_info: dict | None = None
-        self._verifier_timeout_info: dict | None = None
+        # Single bag for the four parallel diagnostic fields the old code
+        # carried as separate attrs (issue #503). Each callsite that used
+        # to assign to one of those slots now calls ``self._diagnostics.set(...)``
+        # with a typed Diagnostic value.
+        self._diagnostics: RolloutDiagnostics = RolloutDiagnostics()
 
         # Populated by _export_generated_skills() — the skills the agent
         # generated/evolved, captured for a continual-learning LearnerStore.
@@ -1739,7 +1714,7 @@ class Rollout:
         (
             self._rewards,
             self._verifier_error,
-            self._verifier_timeout_info,
+            verifier_timeout_diag,
         ) = await _verify_rollout(
             self._env,
             self._task,
@@ -1749,6 +1724,8 @@ class Rollout:
             sandbox_user=cfg.sandbox_user,
             workspace=self._agent_cwd,
         )
+        if verifier_timeout_diag is not None:
+            self._diagnostics.set(verifier_timeout_diag)
 
         self._phase = "verified"
         return self._rewards
@@ -1954,7 +1931,7 @@ class Rollout:
                         self._error = (
                             detail or f"Agent timed out after {self._timeout}s"
                         )
-                        self._idle_timeout_info = getattr(e, "idle_timeout_info", None)
+                        self._diagnostics.capture_idle(e)
                         logger.error(self._error)
                 finally:
                     if cfg.oracle_access:
@@ -1980,16 +1957,16 @@ class Rollout:
             # generic wall-clock message only when there's no detail.
             detail = str(e).strip()
             self._error = detail or f"Agent timed out after {self._timeout}s"
-            self._idle_timeout_info = getattr(e, "idle_timeout_info", None)
+            self._diagnostics.capture_idle(e)
             logger.error(self._error)
         except ConnectionError as e:
             self._error = str(e)
-            self._transport_error_info = _parse_transport_error(e)
+            self._diagnostics.capture_transport(e)
             await self._probe_sandbox_health()
             logger.error(f"Agent connection lost: {self._error}")
         except SandboxStartupFailure as e:
             self._error = f"Sandbox startup failed: {e}"
-            self._sandbox_startup_info = e.sandbox_startup_info
+            self._diagnostics.set(e.diagnostic)
             logger.error(self._error)
         except AgentProtocolError as e:
             self._error = self._classify_acp_error(e)
@@ -2369,11 +2346,12 @@ class Rollout:
     # ── Internal helpers ──
 
     async def _probe_sandbox_health(self) -> None:
-        """Quick health probe after transport death. Enriches _transport_error_info.
+        """Quick health probe after transport death. Enriches transport diagnostic.
 
         Guards ENG-148: distinguishes Daytona session killed vs agent crash.
         """
-        if self._transport_error_info is None or self._env is None:
+        diag = self._diagnostics.transport_closed
+        if diag is None or self._env is None:
             return
         try:
             result = await asyncio.wait_for(
@@ -2384,15 +2362,20 @@ class Rollout:
             raw_rc = getattr(result, "return_code", None)
             rc = int(raw_rc) if isinstance(raw_rc, (int, float)) else None
             if "__BENCHFLOW_HEALTH_OK__" in stdout:
-                self._transport_error_info["sandbox_reachable"] = True
-                self._transport_error_info["sandbox_probe_rc"] = rc
+                diag.sandbox_reachable = True
+                diag.sandbox_probe_rc = rc
             else:
-                self._transport_error_info["sandbox_reachable"] = False
-                self._transport_error_info["sandbox_probe_rc"] = rc
-                self._transport_error_info["sandbox_probe_stdout"] = stdout[:200]
+                diag.sandbox_reachable = False
+                diag.sandbox_probe_rc = rc
+                diag.sandbox_probe_stdout = stdout[:200]
         except Exception as probe_err:
-            self._transport_error_info["sandbox_reachable"] = False
-            self._transport_error_info["sandbox_probe_error"] = str(probe_err)[:200]
+            import traceback
+
+            logger.exception("sandbox health probe failed")
+            diag.sandbox_reachable = False
+            diag.sandbox_probe_error = str(probe_err)[:200]
+            diag.sandbox_probe_error_type = type(probe_err).__name__
+            diag.sandbox_probe_traceback = traceback.format_exc()[-2000:]
 
     def _classify_acp_error(self, e: AgentProtocolError) -> str:
         if "Invalid API key" in e.message:
@@ -2455,9 +2438,6 @@ class Rollout:
             scenes=self._config.effective_scenes,
             evolved_skills=self._evolved_skills,
             source_provenance=self._config.source_provenance,
-            idle_timeout_info=self._idle_timeout_info,
-            sandbox_startup_info=self._sandbox_startup_info,
-            transport_error_info=self._transport_error_info,
-            verifier_timeout_info=self._verifier_timeout_info,
+            diagnostics=self._diagnostics,
             **self._usage_metrics,
         )

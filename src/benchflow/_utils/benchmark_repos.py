@@ -414,6 +414,42 @@ def infer_task_source_provenance(task_path: Path) -> dict[str, Any] | None:
                 "file_hashes": task_file_hashes(task_resolved),
             }
 
+    # Non-snapshot resolve_source() cache layout:
+    # .cache/datasets/<org>/<repo>/<subpath...>. Attribute provenance to the
+    # cached benchmark repo's git remote/HEAD instead of falling through to
+    # the BenchFlow worktree (#492).
+    if cache_rel is not None and len(cache_rel.parts) >= 2:
+        org, repo_name, *rest = cache_rel.parts
+        if not repo_name.endswith("__snapshots") and not repo_name.startswith("_"):
+            cached_repo_root = cache_root / org / repo_name
+            if (cached_repo_root / ".git").exists():
+                resolved_sha = _git_stdout(cached_repo_root, "rev-parse", "HEAD")
+                if resolved_sha:
+                    source_path = "/".join(rest)
+                    rel_for_status = source_path or "."
+                    status = _git_stdout(
+                        cached_repo_root,
+                        "status",
+                        "--porcelain",
+                        "--",
+                        rel_for_status,
+                    )
+                    return {
+                        "type": "github",
+                        "repo": f"{org}/{repo_name}",
+                        "requested_ref": _git_stdout(
+                            cached_repo_root,
+                            "rev-parse",
+                            "--abbrev-ref",
+                            "HEAD",
+                        ),
+                        "resolved_sha": resolved_sha,
+                        "path": source_path,
+                        "local_path": str(task_resolved),
+                        "dirty": bool(status),
+                        "file_hashes": task_file_hashes(task_resolved),
+                    }
+
     repo_root = _repo_root()
     try:
         rel = task_resolved.relative_to(repo_root.resolve(strict=False))

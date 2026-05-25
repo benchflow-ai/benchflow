@@ -9,12 +9,31 @@ from benchflow._utils.reward_events import (
     reward_event_to_dict,
 )
 from benchflow.models import RolloutResult
+from benchflow.trajectories.metrics import (
+    count_skill_invocations,
+    result_skill_invocations,
+)
+
+# Phase keys produced by Rollout (see rollout.py — environment_setup,
+# agent_setup, agent_execution, verifier, total). Kept here so summary
+# aggregation stays in lockstep with the rollout writer.
+_TIMING_PHASES: tuple[str, ...] = (
+    "environment_setup",
+    "agent_setup",
+    "agent_execution",
+    "verifier",
+    "total",
+)
 
 
 def agent_result_from_rollout(result: RolloutResult) -> dict[str, Any]:
     """Return the serialized agent_result block for an in-memory rollout result."""
+    n_skill_invocations = result.n_skill_invocations or count_skill_invocations(
+        result.trajectory
+    )
     return {
         "n_tool_calls": result.n_tool_calls,
+        "n_skill_invocations": n_skill_invocations,
         "n_prompts": result.n_prompts,
         "n_input_tokens": result.n_input_tokens,
         "n_output_tokens": result.n_output_tokens,
@@ -40,6 +59,9 @@ def rollout_result_payload(
     task_source = result.source_provenance or task_source_provenance(
         source_provenance, tasks_dir / task_name
     )
+    n_skill_invocations = result.n_skill_invocations or count_skill_invocations(
+        result.trajectory
+    )
     return {
         "task_name": result.task_name,
         "rewards": result.rewards,
@@ -47,6 +69,7 @@ def rollout_result_payload(
         "verifier_error": result.verifier_error,
         "export_error": result.export_error,
         "n_tool_calls": result.n_tool_calls,
+        "n_skill_invocations": n_skill_invocations,
         "agent_result": agent_result_from_rollout(result),
         **(
             {"reward_events": [reward_event_to_dict(event) for event in reward_events]}
@@ -92,3 +115,69 @@ def usage_summary(results: dict[str, dict]) -> dict[str, Any]:
         ),
         "telemetry_coverage": (len(covered) / len(completed) if completed else 0.0),
     }
+
+
+def skill_invocation_summary(results: dict[str, dict]) -> dict[str, Any]:
+    """Aggregate structured skill invocation counts for summary.json."""
+    total = sum(result_skill_invocations(result) for result in results.values())
+    return {
+        "total_skill_invocations": total,
+        "avg_skill_invocations": (
+            round(total / len(results), 1) if results else 0.0
+        ),
+    }
+
+
+def _round_secs(value: float) -> float:
+    """Round a duration in seconds to the same precision rollout.py uses."""
+    return round(float(value), 1)
+
+
+def tool_call_summary(results: dict[str, dict]) -> dict[str, Any]:
+    """Aggregate per-rollout ``n_tool_calls`` across every result in the job.
+
+    Unlike ``usage_summary``, this counts EVERY rollout — including errored
+    and verifier-errored ones — because tool-call cost is paid regardless of
+    whether verification succeeded. Reviewers asking "how many tool calls did
+    this job consume?" want the literal sum, not a success-filtered one.
+    """
+    counts = [int(r.get("n_tool_calls") or 0) for r in results.values()]
+    total = sum(counts)
+    return {
+        "total_tool_calls": total,
+        "avg_tool_calls_per_task": (total / len(counts)) if counts else 0.0,
+        "max_tool_calls_per_task": max(counts) if counts else 0,
+    }
+
+
+def phase_timing_summary(results: dict[str, dict]) -> dict[str, Any]:
+    """Aggregate per-phase wall-clock timing across every rollout.
+
+    Sums and averages cover any rollout that recorded a ``timing`` block, so
+    reviewers can answer "how much time went to agent vs verifier?" without
+    inspecting each ``result.json``. Phase keys follow ``rollout.py``:
+    ``environment_setup``, ``agent_setup``, ``agent_execution``, ``verifier``,
+    ``total``. The ``timing_coverage`` ratio surfaces when phase data is
+    incomplete (e.g. mocked test runs that don't persist ``timing``).
+    """
+    timings: list[dict[str, float]] = []
+    for r in results.values():
+        t = r.get("timing")
+        if isinstance(t, dict) and t:
+            timings.append(t)
+
+    out: dict[str, Any] = {
+        "timing_coverage": (len(timings) / len(results)) if results else 0.0,
+    }
+    for phase in _TIMING_PHASES:
+        values = [
+            float(t[phase]) for t in timings if isinstance(t.get(phase), (int, float))
+        ]
+        # Phases with no data get a 0.0 sum + null avg/max so downstream
+        # readers can distinguish "ran but cost nothing" from "no data".
+        out[f"{phase}_time_sec"] = _round_secs(sum(values)) if values else 0.0
+        out[f"avg_{phase}_time_sec"] = (
+            _round_secs(sum(values) / len(values)) if values else None
+        )
+        out[f"max_{phase}_time_sec"] = _round_secs(max(values)) if values else None
+    return out

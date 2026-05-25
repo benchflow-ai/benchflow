@@ -145,7 +145,7 @@ class TrajectoryProxy:
                     body=body,
                 )
 
-                is_streaming = body.get("stream", False)
+                is_streaming = body.get("stream", False) or _is_sse_request_path(path)
 
                 start_time = time.monotonic()
                 target_url = f"{self._target}{path}"
@@ -220,10 +220,18 @@ class TrajectoryProxy:
         duration_ms = (time.monotonic() - start_time) * 1000
 
         resp_body: dict[str, Any] = {}
-        try:
-            resp_body = resp.json()
-        except (json.JSONDecodeError, ValueError):
-            resp_body = {"raw": resp.text[:_RAW_RESP_TRUNCATE]}
+        content_type = resp.headers.get("content-type", "").lower()
+        if "text/event-stream" in content_type:
+            try:
+                resp_body = _reconstruct_sse_response(resp.content)
+            except Exception as e:
+                logger.warning(f"SSE response reconstruction failed: {e}")
+                resp_body = {"raw": resp.text[:_RAW_RESP_TRUNCATE]}
+        else:
+            try:
+                resp_body = resp.json()
+            except (json.JSONDecodeError, ValueError):
+                resp_body = {"raw": resp.text[:_RAW_RESP_TRUNCATE]}
 
         self._record_exchange(
             req, resp.status_code, dict(resp.headers), resp_body, duration_ms
@@ -418,6 +426,19 @@ def _is_openai_generation_path(path: str) -> bool:
     return request_path.endswith("/responses") or request_path.endswith(
         "/chat/completions"
     )
+
+
+def _is_sse_request_path(path: str) -> bool:
+    """Return True for provider endpoints that stream SSE without a body flag."""
+    request_path = path.split("?", 1)[0].rstrip("/")
+    return request_path.endswith(":streamGenerateContent") or "alt=sse" in path
+
+
+def _reconstruct_sse_response(body_bytes: bytes) -> dict[str, Any]:
+    events, sse_buffer = _parse_sse_events_buffer(body_bytes.decode(errors="replace"))
+    if sse_buffer.strip():
+        events.extend(_parse_sse_events(sse_buffer.encode()))
+    return _reconstruct_response(events)
 
 
 def _decode_request_body(body_bytes: bytes, content_encoding: str) -> bytes:
