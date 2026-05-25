@@ -92,9 +92,7 @@ async def test_setup_reuses_prebuilt_env_no_new_sandbox(
         create_calls.append((args, kwargs))
         return _FakeInner()
 
-    monkeypatch.setattr(
-        "benchflow.rollout._create_environment", fake_create_environment
-    )
+    monkeypatch.setattr(rollout._planes, "create_environment", fake_create_environment)
 
     await rollout.setup()
 
@@ -121,9 +119,7 @@ async def test_setup_without_prebuilt_env_still_creates_one(
         create_calls.append((args, kwargs))
         return created
 
-    monkeypatch.setattr(
-        "benchflow.rollout._create_environment", fake_create_environment
-    )
+    monkeypatch.setattr(rollout._planes, "create_environment", fake_create_environment)
 
     await rollout.setup()
 

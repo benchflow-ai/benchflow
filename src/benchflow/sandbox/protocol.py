@@ -79,6 +79,9 @@ class SandboxStartupError(RuntimeError):
             raw_message=str(message)[:500],
         )
 
+SandboxStartupFailure = SandboxStartupError
+
+
 @runtime_checkable
 class Sandbox(Protocol):
     """Run-only: isolated execution environment.

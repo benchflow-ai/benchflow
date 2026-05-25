@@ -4,6 +4,8 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from benchflow.agents.errors import AgentProtocolError
+
 from .session import ACPSession
 from .transport import StdioTransport, Transport
 from .types import (
@@ -378,7 +380,7 @@ class ACPClient:
         await self._transport.close()
 
 
-class ACPError(Exception):
+class ACPError(AgentProtocolError):
     """Error from ACP agent."""
 
     def __init__(self, code: int, message: str):

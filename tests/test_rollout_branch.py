@@ -96,7 +96,7 @@ async def test_execute_grows_the_tree_by_one_step(tmp_path: Path, monkeypatch):
     async def fake_execute_prompts(*_a, **_kw):
         return [{"role": "agent", "text": "hi"}], 1
 
-    monkeypatch.setattr("benchflow.rollout.execute_prompts", fake_execute_prompts)
+    monkeypatch.setattr(rollout._planes, "execute_prompts", fake_execute_prompts)
     rollout._acp_client = object()  # execute() only needs this non-None
 
     root = rollout.tree.root
@@ -186,7 +186,7 @@ async def test_branch_does_not_corrupt_the_parent_rollout(tmp_path: Path, monkey
     async def fake_execute_prompts(*_a, **_kw):
         return [{"role": "agent", "text": "parent-step"}], 2
 
-    monkeypatch.setattr("benchflow.rollout.execute_prompts", fake_execute_prompts)
+    monkeypatch.setattr(rollout._planes, "execute_prompts", fake_execute_prompts)
     rollout._acp_client = object()
     await rollout.execute(["p1"])
     await rollout.execute(["p2"])
@@ -241,7 +241,7 @@ async def test_post_branch_execute_grows_off_the_parent_cursor(
     async def fake_execute_prompts(*_a, **_kw):
         return [{"role": "agent", "text": "x"}], 1
 
-    monkeypatch.setattr("benchflow.rollout.execute_prompts", fake_execute_prompts)
+    monkeypatch.setattr(rollout._planes, "execute_prompts", fake_execute_prompts)
     rollout._acp_client = object()
     await rollout.execute(["p1"])
     parent = rollout._cursor
@@ -276,7 +276,7 @@ async def test_branch_child_continuation_attaches_to_the_child_node(
     async def fake_execute_prompts(*_a, **_kw):
         return [{"role": "agent", "text": "child-work"}], 1
 
-    monkeypatch.setattr("benchflow.rollout.execute_prompts", fake_execute_prompts)
+    monkeypatch.setattr(rollout._planes, "execute_prompts", fake_execute_prompts)
 
     async def fake_connect_inner(self):
         self._acp_client = object()
@@ -419,7 +419,7 @@ async def test_linear_rollout_run_never_branches(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(rollout, "setup", fake_setup)
     monkeypatch.setattr(rollout, "start", noop)
     monkeypatch.setattr(rollout, "install_agent", noop)
-    monkeypatch.setattr(rollout, "_run_scene", noop)
+    monkeypatch.setattr(rollout, "_run_steps", noop)
     monkeypatch.setattr(rollout, "verify", noop)
     monkeypatch.setattr(rollout, "cleanup", noop)
 

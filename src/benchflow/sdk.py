@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from benchflow._types import Scene
+from benchflow.contracts import default_rollout_planes
 from benchflow.diagnostics import VerifierTimeoutDiagnostic
 from benchflow.environment.manifest import EnvironmentManifest
 from benchflow.models import RolloutResult, TrajectorySource
@@ -147,6 +148,7 @@ class SDK:
             task,
             rollout_paths,
             timing,
+            default_rollout_planes(),
             sandbox_user=sandbox_user,
             workspace=workspace,
         )

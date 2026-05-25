@@ -140,9 +140,9 @@ def test_oracle_branch_setup_calls():
     Checks the code structure because the full run() mock surface is too
     expensive for a unit test. Four specific bugs are guarded:
 
-    1. _seed_verifier_workspace missing → /testbed_verify never seeded →
+    1. seed_verifier_workspace missing → /testbed_verify never seeded →
        full workspace restore in harden_before_verify has nothing to rsync from
-    2. _snapshot_build_config missing → workspace not snapshotted; oracle can tamper setup.py
+    2. snapshot_build_config missing → workspace not snapshotted; oracle can tamper setup.py
     3. agent_cwd not set → _verify(workspace=None) → restore skipped entirely
     4. agent_cwd hardcoded to "/app" → breaks tasks whose WORKDIR is /testbed or other;
        must be detected via `pwd` like the non-oracle path
@@ -156,12 +156,12 @@ def test_oracle_branch_setup_calls():
     assert oracle_pos != -1, "oracle branch not found in Rollout.install_agent"
     oracle_block = source[oracle_pos:]
 
-    assert "_seed_verifier_workspace" in oracle_block, (
-        "_seed_verifier_workspace not in oracle branch — "
+    assert "seed_verifier_workspace" in oracle_block, (
+        "seed_verifier_workspace not in oracle branch — "
         "/testbed_verify never seeded, full workspace restore has nothing to rsync from"
     )
-    assert "_snapshot_build_config" in oracle_block, (
-        "_snapshot_build_config not in oracle branch — build-config tampering not mitigated"
+    assert "snapshot_build_config" in oracle_block, (
+        "snapshot_build_config not in oracle branch — build-config tampering not mitigated"
     )
     assert "agent_cwd" in oracle_block, (
         "agent_cwd not assigned in oracle branch — _verify(workspace=None) skips restore"

@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 # a prompt (end_turn / max_tokens / refusal / cancelled / …); the Agent
 # plane reuses it rather than minting a parallel one.
 from benchflow.acp.types import StopReason
+from benchflow.agents.errors import AgentProtocolError
 
 if TYPE_CHECKING:
     from benchflow.acp.client import ACPClient
@@ -35,6 +36,7 @@ __all__ = [
     "ACPSessionAdapter",
     "Agent",
     "AgentCapabilities",
+    "AgentProtocolError",
     "AskUserHandler",
     "AskUserRequest",
     "Session",

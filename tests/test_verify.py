@@ -136,6 +136,7 @@ class TestSdkVerify:
         A real verifier timeout would otherwise crash with AttributeError
         inside the ``except TimeoutError`` handler.
         """
+        from benchflow.contracts import default_rollout_planes
         from benchflow.rollout import _verify_rollout
         from benchflow.task.config import TaskConfig
 
@@ -171,7 +172,7 @@ class TestSdkVerify:
             ),
         ):
             rewards, verifier_error, vti = await _verify_rollout(
-                env, task, rollout_paths, timing
+                env, task, rollout_paths, timing, default_rollout_planes()
             )
 
         assert rewards is None
@@ -778,26 +779,57 @@ class TestScrapedTrajectoryTrust:
     @contextlib.contextmanager
     def _patch_sdk_run(self, sdk, mock_env, extra_patches):
         """Apply shared + extra patches for SDK.run() internals."""
+        planes = MagicMock()
+        planes.install_docker_compat.return_value = None
+        planes.extract_usage.return_value = {
+            "n_input_tokens": None,
+            "n_output_tokens": None,
+            "n_cache_read_tokens": None,
+            "n_cache_creation_tokens": None,
+            "total_tokens": None,
+            "cost_usd": None,
+            "usage_source": "unavailable",
+            "price_source": None,
+        }
+        planes.resolve_locked_paths.return_value = []
+        planes.resolve_agent_env.side_effect = lambda _agent, _model, env: env or {}
+        planes.agent_launch.side_effect = lambda agent, *, disallow_web_tools: agent
+        planes.create_environment.return_value = mock_env
+        planes.stage_dockerfile_deps.return_value = None
+        planes.inject_skills_into_dockerfile.return_value = None
+        planes.setup_sandbox_user = AsyncMock(return_value="/app")
+        planes.snapshot_build_config = AsyncMock()
+        planes.seed_verifier_workspace = AsyncMock()
+        planes.install_agent = AsyncMock(
+            return_value=MagicMock(
+                credential_files={},
+                home_dirs=[],
+                skill_paths=[],
+                env_mapping={},
+            )
+        )
+        planes.write_credential_files = AsyncMock()
+        planes.upload_subscription_auth = AsyncMock()
+        planes.apply_web_tool_policy = AsyncMock()
+        planes.deploy_skills = AsyncMock()
+        planes.lockdown_paths = AsyncMock()
+        planes.ensure_bedrock_proxy_runtime = AsyncMock(
+            side_effect=lambda **kwargs: (kwargs["agent_env"], None)
+        )
+        planes.ensure_usage_proxy_runtime = AsyncMock(
+            side_effect=lambda **kwargs: (kwargs["agent_env"], None)
+        )
+        planes.connect_acp = AsyncMock()
+        planes.execute_prompts = AsyncMock()
+        planes.stop_provider_runtime = AsyncMock()
         patches = [
-            patch("benchflow.rollout._create_environment", return_value=mock_env),
-            patch(
-                "benchflow.rollout.install_agent",
-                new_callable=AsyncMock,
-                return_value=MagicMock(
-                    credential_files={},
-                    home_dirs=[],
-                    skill_paths=[],
-                    env_mapping={},
-                ),
-            ),
-            patch("benchflow.rollout.write_credential_files", new_callable=AsyncMock),
-            patch("benchflow.rollout.deploy_skills", new_callable=AsyncMock),
+            patch("benchflow.rollout.default_rollout_planes", return_value=planes),
             *extra_patches,
         ]
         with contextlib.ExitStack() as stack:
             for p in patches:
                 stack.enter_context(p)
-            yield
+            yield planes
 
     @pytest.mark.asyncio
     async def test_scraped_trajectory_preserves_n_tool_calls(
@@ -824,21 +856,6 @@ class TestScrapedTrajectoryTrust:
                 mock_env,
                 [
                     patch(
-                        "benchflow.rollout.connect_acp",
-                        new_callable=AsyncMock,
-                        return_value=(
-                            mock_acp,
-                            mock_session,
-                            MagicMock(),
-                            "test-agent",
-                        ),
-                    ),
-                    patch(
-                        "benchflow.rollout.execute_prompts",
-                        new_callable=AsyncMock,
-                        return_value=([], 5),
-                    ),
-                    patch(
                         "benchflow.rollout._scrape_agent_trajectory",
                         new_callable=AsyncMock,
                         return_value=forged,
@@ -849,9 +866,16 @@ class TestScrapedTrajectoryTrust:
                         return_value=({"reward": 1.0}, None, None),
                     ),
                 ],
-            ),
+            ) as planes,
             caplog.at_level(logging.WARNING),
         ):
+            planes.connect_acp.return_value = (
+                mock_acp,
+                mock_session,
+                MagicMock(),
+                "test-agent",
+            )
+            planes.execute_prompts.return_value = ([], 5)
             result = await sdk.run(
                 task_dir,
                 agent="test-agent",
@@ -894,16 +918,6 @@ class TestScrapedTrajectoryTrust:
             mock_env,
             [
                 patch(
-                    "benchflow.rollout.connect_acp",
-                    new_callable=AsyncMock,
-                    return_value=(mock_acp, mock_session, MagicMock(), "test-agent"),
-                ),
-                patch(
-                    "benchflow.rollout.execute_prompts",
-                    new_callable=AsyncMock,
-                    side_effect=ConnectionError("lost"),
-                ),
-                patch(
                     "benchflow.rollout._capture_session_trajectory",
                     return_value=partial_events,
                 ),
@@ -913,7 +927,14 @@ class TestScrapedTrajectoryTrust:
                     return_value=[],
                 ),
             ],
-        ):
+        ) as planes:
+            planes.connect_acp.return_value = (
+                mock_acp,
+                mock_session,
+                MagicMock(),
+                "test-agent",
+            )
+            planes.execute_prompts.side_effect = ConnectionError("lost")
             result = await sdk.run(
                 task_dir,
                 agent="test-agent",

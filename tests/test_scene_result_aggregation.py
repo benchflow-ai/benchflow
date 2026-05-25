@@ -81,7 +81,7 @@ async def test_execute_records_every_prompt(
             cumulative["tools"] += 1
         return list(cumulative["traj"]), int(cumulative["tools"])
 
-    monkeypatch.setattr("benchflow.rollout.execute_prompts", fake_execute_prompts)
+    monkeypatch.setattr(rollout._planes, "execute_prompts", fake_execute_prompts)
 
     await rollout.execute(prompts=["turn-1"])
     await rollout.execute(prompts=["turn-2"])
@@ -100,7 +100,7 @@ async def test_agent_execution_time_accumulates(
     async def fake_execute_prompts(*args: Any, **kwargs: Any) -> tuple[list[dict], int]:
         return [], 0
 
-    monkeypatch.setattr("benchflow.rollout.execute_prompts", fake_execute_prompts)
+    monkeypatch.setattr(rollout._planes, "execute_prompts", fake_execute_prompts)
 
     # Drive three turns and assert agent_execution monotonically grows.
     await rollout.execute(prompts=["t1"])
@@ -140,7 +140,7 @@ async def test_build_result_emits_all_executed_prompts(
         cumulative["tools"] += 2  # pretend each turn invoked 2 tools
         return list(cumulative["traj"]), int(cumulative["tools"])
 
-    monkeypatch.setattr("benchflow.rollout.execute_prompts", fake_execute_prompts)
+    monkeypatch.setattr(rollout._planes, "execute_prompts", fake_execute_prompts)
 
     await rollout.execute(prompts=["base task instruction"])
     await rollout.execute(prompts=["reviewer feedback prompt"])

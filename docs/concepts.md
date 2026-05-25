@@ -60,12 +60,12 @@ print(result.rewards)            # {'reward': 1.0}
 
 ## Scenes, Roles, Turns
 
-A **Scene** is one interaction region. Inside a Scene:
+A **Scene** is authoring sugar for Step metadata. Inside a Scene:
 - **Roles** are the agents that participate (one or more).
 - **Turns** are the prompt sequence — which Role acts when, and what they're told.
 - All Roles share the same sandbox filesystem.
 
-Single-agent runs are a Scene with one Role and one Turn. Multi-agent patterns (coder + reviewer, simulated user + assistant) are Scenes with multiple Roles and ordered Turns.
+Before rollout execution, BenchFlow desugars Scenes into explicit rollout Steps carrying role, prompt, and skill attribution. Scene has no runtime object, scheduler, message router, or lifecycle.
 
 ```python
 Scene(
@@ -76,13 +76,11 @@ Scene(
     ],
     turns=[
         Turn(role="coder"),
-        Turn(role="reviewer", prompt="Read /app/ and write feedback to /app/.outbox/coder.json."),
+        Turn(role="reviewer", prompt="Review the current workspace."),
         Turn(role="coder",    prompt="Read the reviewer's feedback and revise."),
     ],
 )
 ```
-
-Roles communicate via **outbox files**: write JSON to `/app/.outbox/{recipient}.json` and the scheduler injects it into the next Turn's prompt.
 
 A Rollout may have multiple Scenes — used for staged flows like "skill generation → solve" (BYOS / Bring Your Own Skill). Same sandbox, sequential Scenes.
 
@@ -98,7 +96,7 @@ A User is a `BaseUser` subclass (or `FunctionUser` wrapping a function) with two
 
 Between rounds, benchflow runs `soft_verify()` (verifier without the destructive parts of full hardening), gives the user the round's `RoundResult` (trajectory, rewards, verifier output, tool count), and lets the user decide round N+1's prompt.
 
-The User is the lighter-weight alternative to a Scene with a simulated-user Role: no second LLM, no outbox protocol, just a Python function. Use it when the loop logic is rule-based (compress instruction → show test failures as hints → stop on pass). See [`progressive-disclosure.md`](./progressive-disclosure.md) for the full guide.
+Use `BaseUser` when the loop logic is rule-based (compress instruction → show test failures as hints → stop on pass). See [`progressive-disclosure.md`](./progressive-disclosure.md) for the full guide.
 
 ---
 

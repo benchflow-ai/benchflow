@@ -481,9 +481,44 @@ def test_eval_create_source_repo_writes_requested_concurrency_to_rollout_config(
             path=tasks_root, provenance=source
         ),
     )
+
+    class FakePlanes:
+        def install_docker_compat(self):
+            return None
+
+        def extract_usage(self, _runtime):
+            return {
+                "n_input_tokens": None,
+                "n_output_tokens": None,
+                "n_cache_read_tokens": None,
+                "n_cache_creation_tokens": None,
+                "total_tokens": None,
+                "cost_usd": None,
+                "usage_source": "unavailable",
+                "price_source": None,
+            }
+
+        def resolve_locked_paths(self, _sandbox_user, _locked_paths):
+            return []
+
+        def resolve_agent_env(self, _agent, _model, agent_env):
+            return agent_env or {}
+
+        def agent_launch(self, agent, *, disallow_web_tools):
+            return agent
+
+        def stage_dockerfile_deps(self, *_args, **_kwargs):
+            return None
+
+        def inject_skills_into_dockerfile(self, *_args, **_kwargs):
+            return None
+
+        def create_environment(self, *_args, **_kwargs):
+            return object()
+
     monkeypatch.setattr(
-        "benchflow.rollout._create_environment",
-        lambda *args, **kwargs: object(),
+        "benchflow.rollout.default_rollout_planes",
+        lambda: FakePlanes(),
     )
 
     async def setup_only_run(self):
