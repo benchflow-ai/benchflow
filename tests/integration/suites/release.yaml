@@ -67,6 +67,7 @@ execution_profiles:
     lanes:
       - shared-sandbox-smoke
       - skillsbench-agent-matrix
+      - skillsbench-harbor-parity
       - adapter-release-set
       - hosted-env-compatibility-board
       - terminal-bench-smoke
@@ -385,6 +386,32 @@ lanes:
       - Every credentialed agent produces valid result.json files.
       - "No infrastructure errors: agent install, timeout, pipe closed, or sandbox setup."
       - summary.json contains total, passed, failed, errored, and score.
+
+  - id: skillsbench-harbor-parity
+    release_blocker: true
+    purpose: Compare BenchFlow SkillsBench outputs against a pinned Harbor trajectory/result baseline.
+    evidence_command: uv run python tests/integration/run_suite.py --lane skillsbench-harbor-parity --execute-skillsbench-harbor-parity --skillsbench-harbor-benchflow-root <benchflow-jobs-root> --skillsbench-harbor-baseline-root <local-skillsbench-trajectories-checkout>
+    sources:
+      - kind: harbor_skillsbench_baseline
+        repo: benchflow-ai/skillsbench-trajectories
+        path: shenghan/gemini-cli/gemini3flash/noskills
+        ref: 2d86fe82f6a06f7c7b3a22a3ae90d554d0e9655c
+        schema_notes:
+          - Harbor stores rewards under verifier_result.rewards.reward.
+          - Harbor stores agent trajectories as ATIF JSON under agent/trajectory.json.
+      - kind: benchflow_results
+        path: jobs/integration-<run-id>/<agent>
+        schema_notes:
+          - BenchFlow stores rewards under rewards.reward.
+          - BenchFlow stores ACP trajectories as trajectory/acp_trajectory.jsonl.
+    matrix:
+      task_sets:
+        - skillsbench_release_subset
+    acceptance:
+      - Harbor baseline root is pinned to the recorded skillsbench-trajectories SHA.
+      - Expected schema differences are normalized explicitly before comparison.
+      - Compared tasks have result.json and trajectory artifacts on both sides.
+      - Outcome-rate, mean-reward, and per-task reward drift remain within the configured parity thresholds.
 
   - id: adapter-release-set
     release_blocker: true

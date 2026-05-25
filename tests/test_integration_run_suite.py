@@ -287,6 +287,7 @@ def test_full_release_dry_run_passes_current_release_gate(
     captured = capsys.readouterr()
     assert "Profile: full-release" in captured.out
     assert "shared-sandbox-smoke" in captured.out
+    assert "skillsbench-harbor-parity" in captured.out
     assert "hosted-env-compatibility-board" in captured.out
     assert "terminal-bench-smoke" in captured.out
     assert "trace-to-task-e2e" in captured.out
