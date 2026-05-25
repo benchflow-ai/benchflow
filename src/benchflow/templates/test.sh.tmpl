@@ -10,3 +10,11 @@ python3 /tests/judge.py
 
 # Copy reward to verifier output
 cp /tests/reward.txt /logs/verifier/reward.txt
+
+# Copy criterion-level rubric details where the skill-eval collector reads
+# them (#406). judge.py writes /tests/judge_result.json; without this
+# copy CaseResult.rubric_results was silently None even when the judge
+# produced rich detail.
+if [ -f /tests/judge_result.json ]; then
+    cp /tests/judge_result.json /logs/verifier/judge_result.json
+fi
