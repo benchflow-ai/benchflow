@@ -376,6 +376,13 @@ def _repo_slug_from_git_root(repo_root: Path) -> str | None:
     return None
 
 
+def _git_root_for_path(path: Path) -> Path | None:
+    root = _git_stdout(path, "rev-parse", "--show-toplevel")
+    if not root:
+        return None
+    return Path(root).resolve(strict=False)
+
+
 def infer_task_source_provenance(task_path: Path) -> dict[str, Any] | None:
     """Infer github source provenance for tasks under repo or dataset cache paths."""
     try:
@@ -413,6 +420,33 @@ def infer_task_source_provenance(task_path: Path) -> dict[str, Any] | None:
                 ),
                 "file_hashes": task_file_hashes(task_resolved),
             }
+
+    git_root = _git_root_for_path(task_resolved)
+    if git_root is not None:
+        repo_slug = _repo_slug_from_git_root(git_root)
+        resolved_sha = _git_stdout(git_root, "rev-parse", "HEAD")
+        if repo_slug and resolved_sha:
+            try:
+                rel = task_resolved.relative_to(git_root.resolve(strict=False))
+            except ValueError:
+                rel = None
+            if rel is not None:
+                branch = _git_stdout(git_root, "rev-parse", "--abbrev-ref", "HEAD")
+                requested_ref = branch if branch and branch != "HEAD" else None
+                return {
+                    "type": "github",
+                    "repo": repo_slug,
+                    "requested_ref": requested_ref,
+                    "resolved_sha": resolved_sha,
+                    "path": rel.as_posix(),
+                    "local_path": str(task_resolved),
+                    "dirty": bool(
+                        _git_stdout(
+                            git_root, "status", "--porcelain", "--", rel.as_posix()
+                        )
+                    ),
+                    "file_hashes": task_file_hashes(task_resolved),
+                }
 
     repo_root = _repo_root()
     try:

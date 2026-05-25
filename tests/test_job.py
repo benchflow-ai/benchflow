@@ -603,3 +603,49 @@ class TestJobRunOrchestration:
         assert summary["total_cost_usd"] == 0.003
         assert summary["avg_cost_per_trial_usd"] == 0.0015
         assert summary["telemetry_coverage"] == 2 / 3
+
+    @pytest.mark.asyncio
+    async def test_summary_json_includes_tool_and_phase_aggregates(self, tmp_path):
+        """Guards the fix from PR #TBD against summary metric omissions from #501."""
+        job = self._make_job(tmp_path, n_tasks=2, concurrency=1)
+        job._sdk = AsyncMock()
+        job._sdk.run = AsyncMock(
+            side_effect=[
+                RunResult(
+                    task_name="task-0",
+                    rewards={"reward": 1.0},
+                    n_tool_calls=3,
+                    timing={
+                        "environment_setup": 1.0,
+                        "agent_setup": 0.5,
+                        "agent_execution": 4.0,
+                        "verifier": 2.0,
+                        "total": 7.5,
+                    },
+                ),
+                RunResult(
+                    task_name="task-1",
+                    rewards={"reward": 1.0},
+                    n_tool_calls=5,
+                    timing={
+                        "environment_setup": 0.5,
+                        "agent_setup": 1.0,
+                        "agent_execution": 2.0,
+                        "verifier": 1.5,
+                        "total": 5.0,
+                    },
+                ),
+            ]
+        )
+
+        await job.run()
+
+        summary = json.loads((job._jobs_dir / "summary.json").read_text())
+        assert summary["total_tool_calls"] == 8
+        assert summary["avg_tool_calls_per_task"] == 4.0
+        assert summary["environment_setup_time_sec"] == 1.5
+        assert summary["agent_setup_time_sec"] == 1.5
+        assert summary["agent_execution_time_sec"] == 6.0
+        assert summary["agent_time_sec"] == 7.5
+        assert summary["verifier_time_sec"] == 3.5
+        assert summary["rollout_time_sec"] == 12.5

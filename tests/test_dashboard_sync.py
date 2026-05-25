@@ -1412,6 +1412,54 @@ def _write_collectable_rollout(jobs_root: Path) -> Path:
     return rollout
 
 
+def test_dashboard_review_export_sanitizes_credential_env_var_names(
+    tmp_path: Path, monkeypatch
+):
+    """Guards the fix from PR #TBD against dashboard artifact noise from #494."""
+    jobs = tmp_path / "jobs"
+    rollout = jobs / "2026-05-21__23-57-23" / "task__abc123"
+    rollout.mkdir(parents=True)
+    (rollout / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "task",
+                "rewards": {"reward": 1.0},
+                "timing": {},
+                "source": {
+                    "repo": "benchflow-ai/skillsbench",
+                    "path": "tasks/task",
+                },
+            }
+        )
+    )
+    (rollout / "config.json").write_text(
+        json.dumps(
+            {
+                "agent": "gemini",
+                "model": "gemini-test",
+                "environment": "daytona",
+                "requires_env": [
+                    "GEMINI_API_KEY",
+                    "GOOGLE_API_KEY",
+                    "DAYTONA_API_KEY",
+                ],
+            }
+        )
+    )
+    monkeypatch.setenv(generate.JOBS_ROOT_ENV, str(jobs))
+
+    raw = json.dumps(generate.collect_jobs())
+    sanitized = json.dumps(generate._sanitize_credential_names(json.loads(raw)))
+
+    assert "GEMINI_API_KEY" in raw
+    assert "GOOGLE_API_KEY" in raw
+    assert "DAYTONA_API_KEY" in raw
+    assert "GEMINI_API_KEY" not in sanitized
+    assert "GOOGLE_API_KEY" not in sanitized
+    assert "DAYTONA_API_KEY" not in sanitized
+    assert "[credential-env-var]" in sanitized
+
+
 def test_dashboard_jobs_root_ignores_stale_remembered_deep_result_json(
     tmp_path: Path, monkeypatch
 ):

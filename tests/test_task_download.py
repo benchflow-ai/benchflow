@@ -1,6 +1,7 @@
 """Tests for benchmark task repository materialization."""
 
 import shutil
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -321,6 +322,56 @@ def test_task_source_provenance_rejects_task_outside_source_root(tmp_path):
 
     with pytest.raises(ValueError, match="outside source"):
         task_source_provenance(provenance, outside_task)
+
+
+def test_task_source_provenance_infers_cached_checkout_git_root(tmp_path, monkeypatch):
+    """Guards the fix from PR #TBD against cached task provenance drift from #492."""
+    monkeypatch.chdir(tmp_path)
+    repo = tmp_path / ".cache" / "datasets" / "benchflow-ai" / "skillsbench"
+    task = repo / "tasks" / "sample-task"
+    task.mkdir(parents=True)
+    (task / "task.toml").write_text("[task]\n")
+    (task / "instruction.md").write_text("Solve it.\n")
+
+    repo.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
+    subprocess.run(
+        ["git", "checkout", "-b", "main"],
+        cwd=repo,
+        check=True,
+        stdout=subprocess.DEVNULL,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"], cwd=repo, check=True
+    )
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True)
+    subprocess.run(
+        [
+            "git",
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/benchflow-ai/skillsbench.git",
+        ],
+        cwd=repo,
+        check=True,
+    )
+    subprocess.run(["git", "add", "tasks"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "--no-gpg-sign", "-m", "init"],
+        cwd=repo,
+        check=True,
+        stdout=subprocess.DEVNULL,
+    )
+
+    provenance = task_source_provenance(None, task)
+
+    assert provenance is not None
+    assert provenance["repo"] == "benchflow-ai/skillsbench"
+    assert provenance["requested_ref"] == "main"
+    assert provenance["path"] == "tasks/sample-task"
+    assert provenance["local_path"] == str(task)
+    assert set(provenance["file_hashes"]) == {"instruction.md", "task.toml"}
 
 
 def test_resolve_source_with_metadata_records_canonical_source_path(

@@ -278,6 +278,30 @@ datasets:
     assert job._config.model == "vllm/Qwen/Qwen3.5-35B-A3B"
 
 
+def test_legacy_yaml_maps_include_exclude_filters(tmp_path, monkeypatch):
+    """Guards the fix from PR #TBD against legacy YAML filter drops from #500."""
+    _make_tasks(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    config = tmp_path / "config.yaml"
+    config.write_text("""
+include:
+  - task-a
+  - task-c
+excludes:
+  - task-c
+agents:
+  - name: oracle
+datasets:
+  - path: tasks
+""")
+
+    job = Evaluation.from_yaml(config)
+
+    assert job._config.include_tasks == {"task-a", "task-c"}
+    assert job._config.exclude_tasks == {"task-c"}
+    assert [task.name for task in job._get_task_dirs()] == ["task-a"]
+
+
 def test_from_legacy_yaml_defaults(tmp_path):
     """Test legacy YAML with minimal config.
 

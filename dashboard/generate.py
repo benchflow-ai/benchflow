@@ -17,6 +17,7 @@ Usage::
 
     LINEAR_API_KEY=... python dashboard/generate.py  # mirror roadmap from Linear
     python dashboard/generate.py --run-tests         # re-run tests, then mirror
+    python dashboard/generate.py --sanitize-credential-names  # review export
     python dashboard/generate.py --allow-missing-linear  # local UI dev only
     python dashboard/generate.py --allow-stale-evidence  # local UI dev only
 
@@ -63,6 +64,10 @@ OUT = DASH / "data.json"
 ARCHITECTURE_MD = DASH / "architecture.md"
 TS_RE = re.compile(r"^\d{4}-\d{2}-\d{2}__\d{2}-\d{2}-\d{2}$")
 JOBS_ROOT_ENV = "BENCHFLOW_DASHBOARD_JOBS_ROOT"
+_CREDENTIAL_ENV_NAME_RE = re.compile(
+    r"\b[A-Z][A-Z0-9_]*(?:API_KEY|ACCESS_TOKEN|AUTH_TOKEN|OAUTH_TOKEN|SECRET|CREDENTIALS?)\b"
+)
+_CREDENTIAL_ENV_PLACEHOLDER = "[credential-env-var]"
 _ROADMAP_MODULE: ModuleType | None = None
 _SCORING_MODULE: ModuleType | None = None
 _REWARD_EVENTS_MODULE: ModuleType | None = None
@@ -77,6 +82,26 @@ def _load_local_module(module_name: str, path: Path) -> ModuleType:
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def _sanitize_credential_names(value):
+    if isinstance(value, str):
+        return _CREDENTIAL_ENV_NAME_RE.sub(_CREDENTIAL_ENV_PLACEHOLDER, value)
+    if isinstance(value, list):
+        return [_sanitize_credential_names(item) for item in value]
+    if isinstance(value, dict):
+        sanitized = {}
+        for key, item in value.items():
+            sanitized_key = _sanitize_credential_names(key)
+            if isinstance(sanitized_key, str):
+                base = sanitized_key
+                suffix = 2
+                while sanitized_key in sanitized:
+                    sanitized_key = f"{base}_{suffix}"
+                    suffix += 1
+            sanitized[sanitized_key] = _sanitize_credential_names(item)
+        return sanitized
+    return value
 
 
 def _load_roadmap_module() -> ModuleType:
@@ -1511,7 +1536,7 @@ def collect_release_evidence(tests: dict) -> dict:
     }
 
 
-def build_data() -> dict:
+def build_data(*, sanitize_credential_names: bool = False) -> dict:
     tests = collect_tests()
     jobs = collect_jobs()
     experiments = collect_experiments()
@@ -1522,7 +1547,7 @@ def build_data() -> dict:
 
     done = sum(1 for c in CONCEPT_MAP["capabilities"] if c["status"] == "shipped")
     all_issues = _roadmap_issues(roadmap)
-    return {
+    data = {
         "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "summary": {
             "tests": tests["summary"],
@@ -1550,13 +1575,21 @@ def build_data() -> dict:
         "advisories": ADVISORIES,
         "release_evidence": release_evidence,
     }
+    if sanitize_credential_names:
+        return _sanitize_credential_names(data)
+    return data
 
 
 # --------------------------------------------------------------------------
 def main() -> int:
     if "--run-tests" in sys.argv:
         run_suite()
-    data = build_data()
+    sanitize_credential_names = "--sanitize-credential-names" in sys.argv
+    data = (
+        build_data(sanitize_credential_names=True)
+        if sanitize_credential_names
+        else build_data()
+    )
     if (
         data["roadmap"].get("source", {}).get("kind") != "linear-live"
         and "--allow-missing-linear" not in sys.argv
@@ -1592,6 +1625,8 @@ def main() -> int:
     jobs = data["jobs"]
     experiments = data["experiments"]
     print(f"wrote {OUT.relative_to(ROOT)}")
+    if sanitize_credential_names:
+        print("  review export: credential env-var names sanitized")
     print(
         f"  tests: {s['passed']}p/{s['failed']}f/{s['skipped']}s   "
         f"jobs: {jobs['total_tasks']} rollout rows in {len(jobs['groups'])} groups   "

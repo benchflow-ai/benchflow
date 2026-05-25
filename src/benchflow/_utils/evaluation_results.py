@@ -47,6 +47,7 @@ def rollout_result_payload(
         "verifier_error": result.verifier_error,
         "export_error": result.export_error,
         "n_tool_calls": result.n_tool_calls,
+        "timing": result.timing,
         "agent_result": agent_result_from_rollout(result),
         **(
             {"reward_events": [reward_event_to_dict(event) for event in reward_events]}
@@ -91,4 +92,49 @@ def usage_summary(results: dict[str, dict]) -> dict[str, Any]:
             round(total_cost / len(covered), 10) if covered else None
         ),
         "telemetry_coverage": (len(covered) / len(completed) if completed else 0.0),
+    }
+
+
+def _numeric(value: Any) -> float:
+    if isinstance(value, bool):
+        return 0.0
+    if isinstance(value, int | float):
+        return float(value)
+    return 0.0
+
+
+def rollout_metrics_summary(results: dict[str, dict]) -> dict[str, Any]:
+    """Aggregate rollout-level tool-call and phase timing metrics."""
+    total_tasks = len(results)
+
+    def tool_calls(result: dict) -> int:
+        direct = result.get("n_tool_calls")
+        if isinstance(direct, int) and not isinstance(direct, bool):
+            return direct
+        nested = (result.get("agent_result") or {}).get("n_tool_calls")
+        return nested if isinstance(nested, int) and not isinstance(nested, bool) else 0
+
+    def timing_total(field: str) -> float:
+        return round(
+            sum(
+                _numeric((result.get("timing") or {}).get(field))
+                for result in results.values()
+            ),
+            1,
+        )
+
+    agent_setup = timing_total("agent_setup")
+    agent_execution = timing_total("agent_execution")
+    total_tool_calls = sum(tool_calls(result) for result in results.values())
+    return {
+        "total_tool_calls": total_tool_calls,
+        "avg_tool_calls_per_task": (
+            round(total_tool_calls / total_tasks, 2) if total_tasks else 0.0
+        ),
+        "environment_setup_time_sec": timing_total("environment_setup"),
+        "agent_setup_time_sec": agent_setup,
+        "agent_execution_time_sec": agent_execution,
+        "agent_time_sec": round(agent_setup + agent_execution, 1),
+        "verifier_time_sec": timing_total("verifier"),
+        "rollout_time_sec": timing_total("total"),
     }

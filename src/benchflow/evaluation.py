@@ -25,6 +25,7 @@ from typing import Any
 import yaml
 
 from benchflow._utils.evaluation_results import (
+    rollout_metrics_summary,
     rollout_result_payload,
     usage_summary,
 )
@@ -70,6 +71,22 @@ logger = logging.getLogger(__name__)
 BENCHFLOW_OWNED_LABEL = "benchflow.owned=true"
 
 _SENTINEL: Any = object()  # default value for _sdk; tests replace with AsyncMock
+
+
+def _task_filter_set(raw: dict[str, Any], *keys: str) -> set[str]:
+    """Parse YAML task-filter fields from singular/plural spellings."""
+    filters: set[str] = set()
+    for key in keys:
+        value = raw.get(key)
+        if value is None:
+            continue
+        if isinstance(value, str):
+            filters.add(value)
+            continue
+        if not isinstance(value, (list, tuple, set)):
+            raise ValueError(f"YAML field {key!r} must be a string or list of strings")
+        filters.update(str(item) for item in value)
+    return filters
 
 
 class EmptyTaskSelectionError(ValueError):
@@ -467,8 +484,8 @@ class Evaluation:
         prompts = raw.get("prompts")
 
         agent_env_raw = raw.get("agent_env", {})
-        exclude = set(raw.get("exclude", []))
-        include = set(raw.get("include", []))
+        exclude = _task_filter_set(raw, "exclude", "excludes")
+        include = _task_filter_set(raw, "include", "includes")
         sandbox_user = raw.get("sandbox_user", "agent")
         sandbox_locked_paths = raw.get("sandbox_locked_paths")
         sandbox_setup_timeout = raw.get("sandbox_setup_timeout", 120)
@@ -544,6 +561,8 @@ class Evaluation:
         # Orchestrator
         orch = raw.get("orchestrator", {})
         concurrency = orch.get("n_concurrent_trials", 4)
+        exclude = _task_filter_set(raw, "exclude", "excludes")
+        include = _task_filter_set(raw, "include", "includes")
 
         jobs_dir = Path(raw.get("jobs_dir", "jobs"))
         max_retries = (
@@ -571,6 +590,8 @@ class Evaluation:
             agent_idle_timeout=raw.get(
                 "agent_idle_timeout_sec", raw.get("agent_idle_timeout", 600)
             ),
+            exclude_tasks=exclude,
+            include_tasks=include,
             skill_mode=raw.get("skill_mode", "default"),
             skill_creator_dir=(
                 str(Path(raw["skill_creator_dir"]))
@@ -1225,6 +1246,7 @@ class Evaluation:
             "memory": memory,
             "memory_scores": memory_scores,
             **usage_summary(all_results),
+            **rollout_metrics_summary(all_results),
             **summary_source_fields(cfg.source_provenance, all_results),
         }
         # Surface continual-learning provenance — generation, curve — so a

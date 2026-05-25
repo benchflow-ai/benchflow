@@ -516,6 +516,8 @@ def _build_rollout_result(
 ) -> RolloutResult:
     """Build RolloutResult and write result.json, timing.json, prompts.json, trajectory."""
     finished_at = datetime.now()
+    timing["total"] = (finished_at - started_at).total_seconds()
+    timing = {k: round(v, 1) for k, v in timing.items()}
     result = RolloutResult(
         task_name=task_name,
         rollout_name=rollout_name,
@@ -541,11 +543,10 @@ def _build_rollout_result(
         trajectory_source=trajectory_source,
         evolved_skills=evolved_skills,
         source_provenance=source_provenance,
+        timing=timing,
         started_at=started_at,
         finished_at=finished_at,
     )
-    timing["total"] = (finished_at - started_at).total_seconds()
-    timing = {k: round(v, 1) for k, v in timing.items()}
     traj_dir = rollout_dir / "trajectory"
     traj_dir.mkdir(parents=True, exist_ok=True)
     (traj_dir / "acp_trajectory.jsonl").write_text(
