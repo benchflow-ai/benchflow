@@ -112,7 +112,19 @@ class StdioTransport(Transport):
                 logger.warning(f"Skipped oversized line: {e}")
                 continue
             if not line:
-                raise ConnectionError("Agent process closed stdout")
+                from benchflow.diagnostics import (
+                    TransportClosedDiagnostic,
+                    TransportClosedError,
+                )
+
+                msg = "Agent process closed stdout"
+                raise TransportClosedError(
+                    msg,
+                    TransportClosedDiagnostic(
+                        raw_message=msg,
+                        transport_diagnosis="process_exited",
+                    ),
+                )
             text = line.decode().strip()
             if not text:
                 continue

@@ -42,7 +42,6 @@ from benchflow._utils.scoring import (
     INFRA_ERROR,
     INSTALL_FAILED,
     PIPE_CLOSED,
-    SANDBOX_SETUP,
     VERIFIER_DEP_INSTALL,
     VERIFIER_INFRA,
     VERIFIER_TIMEOUT,
@@ -54,6 +53,7 @@ from benchflow._utils.scoring import (
     pass_rate_excl_errors,
 )
 from benchflow._utils.source_provenance import summary_source_fields
+from benchflow.diagnostics import DIAGNOSTIC_REGISTRY, summary_warning
 from benchflow.environment.manifest import EnvironmentManifest
 from benchflow.learner_store import LearnerState, LearnerStore
 from benchflow.models import RolloutResult
@@ -557,6 +557,20 @@ class Evaluation:
         sandbox_locked_paths = raw.get("sandbox_locked_paths")
         sandbox_setup_timeout = raw.get("sandbox_setup_timeout", 120)
 
+        # Map legacy include/exclude task filters. Accept both singular and
+        # plural spellings ("include"/"includes", "exclude"/"excludes") so
+        # ported configs do not silently lose their filtering (#500).
+        include: set[str] = set()
+        for key in ("include", "includes", "include_tasks"):
+            values = raw.get(key)
+            if values:
+                include.update(values)
+        exclude: set[str] = set()
+        for key in ("exclude", "excludes", "exclude_tasks"):
+            values = raw.get(key)
+            if values:
+                exclude.update(values)
+
         config = EvaluationConfig(
             agent=agent_name,
             model=model,
@@ -571,6 +585,8 @@ class Evaluation:
             agent_idle_timeout=raw.get(
                 "agent_idle_timeout_sec", raw.get("agent_idle_timeout", 600)
             ),
+            include_tasks=include,
+            exclude_tasks=exclude,
             skill_mode=raw.get("skill_mode", "default"),
             skill_creator_dir=(
                 str(Path(raw["skill_creator_dir"]))
@@ -1255,29 +1271,22 @@ class Evaluation:
         except Exception as e:  # pragma: no cover - defensive
             logger.warning("Job-level trainer artifact aggregation failed: %s", e)
 
-        idle_count = error_category_counts.get(IDLE_TIMEOUT, 0)
-        if idle_count > 0:
-            pct = idle_count / job_result.total * 100
-            logger.warning(
-                f"{idle_count} tasks ({pct:.0f}%) hit idle timeout — "
-                f"check idle_timeout_info in result.json for diagnostics"
+        # Per-diagnostic summary warnings — driven by the registry so a
+        # new diagnostic class adds its warning automatically (issue #503).
+        for diag_cls in DIAGNOSTIC_REGISTRY:
+            if diag_cls.category is None:
+                continue
+            counts = (
+                error_category_counts
+                if diag_cls.channel == "error"
+                else verifier_error_category_counts
             )
+            count = counts.get(diag_cls.category, 0)
+            if count > 0:
+                logger.warning(summary_warning(diag_cls, count, job_result.total))
 
-        sandbox_count = error_category_counts.get(SANDBOX_SETUP, 0)
-        if sandbox_count > 0:
-            pct = sandbox_count / job_result.total * 100
-            logger.warning(
-                f"{sandbox_count} tasks ({pct:.0f}%) failed during sandbox startup — "
-                f"check sandbox_startup_info in result.json for diagnostics"
-            )
-
-        pipe_count = error_category_counts.get(PIPE_CLOSED, 0)
-        if pipe_count > 0:
-            pct = pipe_count / job_result.total * 100
-            logger.warning(
-                f"{pipe_count} tasks ({pct:.0f}%) lost transport (pipe closed / rc=255) — "
-                f"check transport_error_info in result.json for diagnostics"
-            )
+        # ENG-151: dep-install failures don't have a structured diagnostic
+        # yet — keep the standalone warning until they do.
         dep_install_count = verifier_error_category_counts.get(VERIFIER_DEP_INSTALL, 0)
         if dep_install_count > 0:
             pct = dep_install_count / job_result.total * 100
@@ -1285,14 +1294,6 @@ class Evaluation:
                 f"{dep_install_count} tasks ({pct:.0f}%) failed during verifier "
                 f"dependency install — check verifier_error_category in result.json "
                 f"and fix the task's index policy"
-            )
-
-        verifier_timeout_count = verifier_error_category_counts.get(VERIFIER_TIMEOUT, 0)
-        if verifier_timeout_count > 0:
-            pct = verifier_timeout_count / job_result.total * 100
-            logger.warning(
-                f"{verifier_timeout_count} tasks ({pct:.0f}%) had verifier timeouts — "
-                f"check verifier_timeout_info in result.json for budget/elapsed details"
             )
         if audit_counts["verifier_errored"] > 0:
             pct = audit_counts["verifier_errored"] / job_result.total * 100
@@ -1309,7 +1310,7 @@ class Evaluation:
         logger.info(
             f"Job complete: {job_result.passed}/{job_result.total} "
             f"({job_result.score:.1%}), errors={job_result.errored}, "
-            f"idle_timeouts={idle_count}, "
+            f"idle_timeouts={error_category_counts.get(IDLE_TIMEOUT, 0)}, "
             f"time={elapsed / 60:.1f}min"
         )
 
