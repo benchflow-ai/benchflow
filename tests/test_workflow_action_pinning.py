@@ -47,7 +47,11 @@ def _iter_uses(node: object):
 
 def _iter_uses_lines(workflow: Path) -> list[str]:
     """Return raw `uses:` lines (preserving trailing comments) from *workflow*."""
-    return [line for line in workflow.read_text().splitlines() if re.search(r"^\s*-?\s*uses:", line)]
+    return [
+        line
+        for line in workflow.read_text().splitlines()
+        if re.search(r"^\s*-?\s*uses:", line)
+    ]
 
 
 def _workflow_files() -> list[Path]:

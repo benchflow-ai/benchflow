@@ -41,8 +41,7 @@ def _make_skill(
         f"---\nname: {name}\ndescription: d\n---\n# {name}\n"
     )
     payload: dict = {
-        "cases": cases
-        or [{"id": "case-001", "question": "q", "ground_truth": "a"}],
+        "cases": cases or [{"id": "case-001", "question": "q", "ground_truth": "a"}],
     }
     if skill_name_field is not None:
         payload["skill_name"] = skill_name_field
@@ -443,9 +442,7 @@ class TestGepaNonFiniteHandling:
         text = (out / "summary.json").read_text()
         assert "NaN" not in text and "Infinity" not in text
         # Strict-parseable.
-        json.loads(
-            text, parse_constant=lambda c: pytest.fail(f"non-finite token: {c}")
-        )
+        json.loads(text, parse_constant=lambda c: pytest.fail(f"non-finite token: {c}"))
 
 
 # ---------------------------------------------------------------------------

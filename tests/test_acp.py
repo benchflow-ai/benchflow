@@ -959,7 +959,9 @@ class TestTransportErrorDiagnostics:
                 return b"Connection to sandbox lost"
 
         class _LP(LiveProcess):
-            async def start(self, command, env=None, cwd=None) -> None:  # pragma: no cover - unused
+            async def start(
+                self, command, env=None, cwd=None
+            ) -> None:  # pragma: no cover - unused
                 pass
 
         lp = _LP()
@@ -992,7 +994,9 @@ class TestTransportErrorDiagnostics:
                 return b""
 
         class _LP(LiveProcess):
-            async def start(self, command, env=None, cwd=None) -> None:  # pragma: no cover - unused
+            async def start(
+                self, command, env=None, cwd=None
+            ) -> None:  # pragma: no cover - unused
                 pass
 
         lp = _LP()
@@ -1012,7 +1016,9 @@ class TestTransportErrorDiagnostics:
             TransportClosedError,
         )
 
-        err = TransportClosedError("test", TransportClosedDiagnostic(raw_message="test"))
+        err = TransportClosedError(
+            "test", TransportClosedDiagnostic(raw_message="test")
+        )
         assert isinstance(err, ConnectionError)
         assert err.diagnostic.transport_diagnosis == "unknown"
 
@@ -1180,9 +1186,7 @@ class TestDiagnosticRegistry:
                 "sandbox_reachable": False,
             },
         )
-        assert (
-            "task-2: transport closed (rc=255, diagnosis=process_exited" in line
-        )
+        assert "task-2: transport closed (rc=255, diagnosis=process_exited" in line
 
     def test_sandbox_startup_error_diagnostic_view_is_consistent(self) -> None:
         """``SandboxStartupError.diagnostic.to_dict()`` reflects the same

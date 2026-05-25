@@ -571,7 +571,9 @@ def check_agent(agent_dir: Path) -> dict:
     from benchflow.diagnostics import DIAGNOSTIC_REGISTRY, format_issue_for_field
 
     _CATEGORY_TO_DIAGNOSTIC = {
-        d.category: d for d in DIAGNOSTIC_REGISTRY if d.category and d.channel == "error"
+        d.category: d
+        for d in DIAGNOSTIC_REGISTRY
+        if d.category and d.channel == "error"
     }
     _INVALIDATION_DESCRIPTIONS = {
         "idle_timeout": ("hit idle timeout", ""),

@@ -717,9 +717,7 @@ class Evaluation:
         rollout_name = getattr(result, "rollout_name", "") or ""
         if not rollout_name:
             return
-        rfile = (
-            self._jobs_dir / self._job_name / rollout_name / "result.json"
-        )
+        rfile = self._jobs_dir / self._job_name / rollout_name / "result.json"
         if not rfile.exists():
             return
         try:

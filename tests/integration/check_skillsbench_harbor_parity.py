@@ -282,9 +282,7 @@ def _baseline_pin_issues(root: Path, expected_ref: str) -> list[str]:
         ]
     actual = pin_path.read_text().strip()
     if actual != expected_ref:
-        return [
-            f"harbor: {PIN_FILE} has {actual}, expected pinned ref {expected_ref}"
-        ]
+        return [f"harbor: {PIN_FILE} has {actual}, expected pinned ref {expected_ref}"]
     return []
 
 
@@ -298,7 +296,9 @@ def _by_task(results: list[NormalizedResult]) -> dict[str, list[NormalizedResult
 def _distribution(results: list[NormalizedResult]) -> dict[str, Any]:
     total = len(results)
     counts = Counter(result.outcome for result in results)
-    rewards = [result.reward if result.reward is not None else 0.0 for result in results]
+    rewards = [
+        result.reward if result.reward is not None else 0.0 for result in results
+    ]
     mean_reward = sum(rewards) / total if total else 0.0
     return {
         "total": total,
@@ -360,8 +360,7 @@ def compare_result_sets(
             for result in [*benchflow_task_results, *harbor_task_results]:
                 if result.trajectory is None:
                     issues.append(
-                        f"{result.source}: {task}: missing trajectory for "
-                        f"{result.path}"
+                        f"{result.source}: {task}: missing trajectory for {result.path}"
                     )
 
         harbor_outcomes = {result.outcome for result in harbor_task_results}
@@ -488,8 +487,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Harbor baseline root: {harbor_root}")
     print(f"Harbor baseline ref: {args.harbor_baseline_ref}")
     print(
-        "Tasks: "
-        f"{', '.join(sorted(effective_tasks)) if effective_tasks else '(none)'}"
+        f"Tasks: {', '.join(sorted(effective_tasks)) if effective_tasks else '(none)'}"
     )
 
     if benchflow.results:

@@ -187,8 +187,7 @@ def test_check_results_accepts_skill_invocation_metrics(tmp_path: Path) -> None:
     traj_dir = run_dir / "trajectory"
     traj_dir.mkdir()
     (traj_dir / "acp_trajectory.jsonl").write_text(
-        json.dumps({"type": "tool_call", "kind": "skill", "title": "calculator"})
-        + "\n"
+        json.dumps({"type": "tool_call", "kind": "skill", "title": "calculator"}) + "\n"
     )
     _write_config(run_dir)
     (agent_dir / "summary.json").write_text(
@@ -240,8 +239,7 @@ def test_check_results_flags_skill_invocation_mismatch(tmp_path: Path) -> None:
     traj_dir = run_dir / "trajectory"
     traj_dir.mkdir()
     (traj_dir / "acp_trajectory.jsonl").write_text(
-        json.dumps({"type": "tool_call", "kind": "skill", "title": "calculator"})
-        + "\n"
+        json.dumps({"type": "tool_call", "kind": "skill", "title": "calculator"}) + "\n"
     )
     _write_config(run_dir)
     (agent_dir / "summary.json").write_text(
