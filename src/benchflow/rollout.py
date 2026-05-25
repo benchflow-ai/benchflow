@@ -479,27 +479,15 @@ def _build_rollout_result(
     evolved_skills: dict[str, str] | None = None,
     source_provenance: dict[str, Any] | None = None,
     diagnostics: RolloutDiagnostics | None = None,
-    idle_timeout_info: dict | None = None,
-    sandbox_startup_info: dict | None = None,
-    transport_error_info: dict | None = None,
-    verifier_timeout_info: dict | None = None,
 ) -> RolloutResult:
     """Build RolloutResult and write result.json, timing.json, prompts.json, trajectory.
 
-    Diagnostics may be passed either as a :class:`RolloutDiagnostics`
-    collector (the path Rollout.run() takes) or as the legacy per-field
-    ``*_info`` dicts (preserved for unit tests that build a single
-    diagnostic by name). The two paths share the same on-disk schema so
-    result.json stays stable (issue #503).
+    Diagnostics flow through the :class:`RolloutDiagnostics` collector
+    (issue #503). Callers that previously passed per-field ``*_info``
+    dicts should construct a collector and ``set()`` typed diagnostics.
     """
     if diagnostics is None:
         diagnostics = RolloutDiagnostics()
-    diagnostics.absorb_legacy_kwargs(
-        idle_timeout_info=idle_timeout_info,
-        sandbox_startup_info=sandbox_startup_info,
-        transport_error_info=transport_error_info,
-        verifier_timeout_info=verifier_timeout_info,
-    )
     finished_at = datetime.now()
     result = RolloutResult(
         task_name=task_name,
@@ -826,7 +814,7 @@ async def _verify_rollout(
         verifier_timeout = VerifierTimeoutDiagnostic(
             timeout_budget_sec=timeout_budget,
             elapsed_sec=round(elapsed, 1),
-            task_name=task.config.name,
+            task_name=task.name,
         )
         rewards = None
         logger.error(verifier_error)
@@ -2548,8 +2536,13 @@ class Rollout:
                 diag.sandbox_probe_rc = rc
                 diag.sandbox_probe_stdout = stdout[:200]
         except Exception as probe_err:
+            import traceback
+
+            logger.exception("sandbox health probe failed")
             diag.sandbox_reachable = False
             diag.sandbox_probe_error = str(probe_err)[:200]
+            diag.sandbox_probe_error_type = type(probe_err).__name__
+            diag.sandbox_probe_traceback = traceback.format_exc()[-2000:]
 
     def _classify_acp_error(self, e: ACPError) -> str:
         if "Invalid API key" in e.message:

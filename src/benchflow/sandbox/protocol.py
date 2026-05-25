@@ -79,17 +79,6 @@ class SandboxStartupError(RuntimeError):
             raw_message=str(message)[:500],
         )
 
-    @property
-    def sandbox_startup_info(self) -> dict:
-        """Back-compat view returning the flat ``result.json`` dict.
-
-        Existing tests and integrations index this directly; routing
-        through ``self.diagnostic.to_dict()`` keeps the schema in one place
-        (issues #503, #504).
-        """
-        return self.diagnostic.to_dict()
-
-
 @runtime_checkable
 class Sandbox(Protocol):
     """Run-only: isolated execution environment.

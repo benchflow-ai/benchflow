@@ -152,6 +152,8 @@ class TransportClosedDiagnostic(Diagnostic):
     sandbox_probe_rc: int | None = None
     sandbox_probe_stdout: str | None = None
     sandbox_probe_error: str | None = None
+    sandbox_probe_error_type: str | None = None
+    sandbox_probe_traceback: str | None = None
 
     field: ClassVar[str] = "transport_error_info"
     category: ClassVar[str | None] = "pipe_closed"
@@ -184,6 +186,8 @@ class TransportClosedDiagnostic(Diagnostic):
                 "sandbox_probe_rc",
                 "sandbox_probe_stdout",
                 "sandbox_probe_error",
+                "sandbox_probe_error_type",
+                "sandbox_probe_traceback",
             }:
                 continue
             if k == "raw_message" and not v:
@@ -233,17 +237,14 @@ DIAGNOSTIC_BY_FIELD: dict[str, type[Diagnostic]] = {
 class IdleTimeoutError(TimeoutError):
     """Raised by the idle watchdog when the agent stops producing activity.
 
-    Carries an :class:`IdleTimeoutDiagnostic` instance (and exposes the
-    legacy ``idle_timeout_info`` dict view for callers that still index it).
+    Carries an :class:`IdleTimeoutDiagnostic` instance via ``.diagnostic`` —
+    serialize via ``exc.diagnostic.to_dict()`` to recover the result.json
+    payload (issue #503).
     """
 
     def __init__(self, message: str, diagnostic: IdleTimeoutDiagnostic) -> None:
         super().__init__(message)
         self.diagnostic: IdleTimeoutDiagnostic = diagnostic
-
-    @property
-    def idle_timeout_info(self) -> dict[str, Any]:
-        return self.diagnostic.to_dict()
 
 
 class TransportClosedError(ConnectionError):
@@ -293,43 +294,11 @@ class RolloutDiagnostics:
         """Extract the IdleTimeoutDiagnostic from a TimeoutError, if present.
 
         Wall-clock TimeoutErrors carry no diagnostic; only idle-watchdog
-        timeouts attach one. The lookup uses the typed ``.diagnostic``
-        attribute first and falls back to the legacy
-        ``.idle_timeout_info`` dict so in-flight exception types still
-        serialize correctly during a rolling deploy (issue #503).
+        timeouts attach one via ``.diagnostic`` (issue #503).
         """
         diag = getattr(exc, "diagnostic", None)
         if isinstance(diag, IdleTimeoutDiagnostic):
             self.set(diag)
-            return
-        legacy = getattr(exc, "idle_timeout_info", None)
-        if isinstance(legacy, dict):
-            allowed = IdleTimeoutDiagnostic._init_fields()
-            self.set(
-                IdleTimeoutDiagnostic(
-                    **{k: v for k, v in legacy.items() if k in allowed}
-                )
-            )
-
-    def absorb_legacy_kwargs(self, **info_kwargs: dict | None) -> None:
-        """Convert ``{field_name: info_dict}`` kwargs into typed diagnostics.
-
-        ``_build_rollout_result`` and test fixtures still pass diagnostics
-        as flat ``idle_timeout_info=...``-style dicts. Route them through
-        the same registry the live path uses so result.json stays in one
-        schema (issue #503). Unknown keys in the dict are dropped — the
-        legacy code wrote the dict verbatim, which means stale fields
-        couldn't break the serializer.
-        """
-        for field_name, info in info_kwargs.items():
-            if not info:
-                continue
-            cls = DIAGNOSTIC_BY_FIELD.get(field_name)
-            if cls is None:
-                continue
-            self.set(
-                cls(**{k: v for k, v in info.items() if k in cls._init_fields()})
-            )
 
     def capture_transport(self, exc: ConnectionError) -> None:
         """Record the transport-closed diagnostic.

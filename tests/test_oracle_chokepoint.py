@@ -896,19 +896,21 @@ class TestIdleTimeoutResultDiagnostics:
     def test_error_category_persisted_for_idle_timeout(self, tmp_path):
         """Guards ENG-149: result.json contains error_category='idle_timeout'."""
         from benchflow._utils.scoring import classify_error
+        from benchflow.diagnostics import IdleTimeoutDiagnostic, RolloutDiagnostics
         from benchflow.rollout import _build_rollout_result
 
         error = "Agent idle for 600s with no new tool call, message, or thought (last activity 602s ago, 3 tool calls so far)"
-        idle_info = {
-            "reason": "idle_timeout",
-            "idle_timeout_sec": 600,
-            "idle_duration_sec": 602,
-            "wall_clock_elapsed_sec": 605,
-            "n_tool_calls": 3,
-            "n_message_chunks": 0,
-            "n_thought_chunks": 1,
-            "last_activity_at": "2026-05-23T16:00:00+00:00",
-        }
+        diag = IdleTimeoutDiagnostic(
+            idle_timeout_sec=600,
+            idle_duration_sec=602,
+            wall_clock_elapsed_sec=605,
+            n_tool_calls=3,
+            n_message_chunks=0,
+            n_thought_chunks=1,
+            last_activity_at="2026-05-23T16:00:00+00:00",
+        )
+        diagnostics = RolloutDiagnostics()
+        diagnostics.set(diag)
         from datetime import datetime
 
         result = _build_rollout_result(
@@ -927,12 +929,12 @@ class TestIdleTimeoutResultDiagnostics:
             rewards=None,
             started_at=datetime.now(),
             timing={},
-            idle_timeout_info=idle_info,
+            diagnostics=diagnostics,
         )
         assert result.error == error
         result_json = json.loads((tmp_path / "result.json").read_text())
         assert result_json["error_category"] == "idle_timeout"
-        assert result_json["idle_timeout_info"] == idle_info
+        assert result_json["idle_timeout_info"] == diag.to_dict()
         assert result_json["idle_timeout_info"]["n_tool_calls"] == 3
         assert result_json["idle_timeout_info"]["idle_duration_sec"] == 602
         # Also verify classify_error agrees

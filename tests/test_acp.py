@@ -505,7 +505,7 @@ class TestIdleTimeoutDiagnostics:
 
     @pytest.mark.asyncio
     async def test_idle_timeout_raises_with_structured_info(self) -> None:
-        """Guards ENG-149: IdleTimeoutError carries idle_timeout_info dict."""
+        """Guards ENG-149: IdleTimeoutError carries idle_timeout diagnostic."""
         from benchflow.acp.runtime import IdleTimeoutError, execute_prompts
 
         class HangingClient:
@@ -521,7 +521,7 @@ class TestIdleTimeoutDiagnostics:
                 timeout=30,
                 idle_timeout=1,
             )
-        info = exc_info.value.idle_timeout_info
+        info = exc_info.value.diagnostic.to_dict()
         assert info["reason"] == "idle_timeout"
         assert info["idle_timeout_sec"] == 1
         assert info["idle_duration_sec"] >= 1
@@ -560,12 +560,12 @@ class TestIdleTimeoutDiagnostics:
                 timeout=30,
                 idle_timeout=1,
             )
-        info = exc_info.value.idle_timeout_info
+        info = exc_info.value.diagnostic.to_dict()
         assert info["n_tool_calls"] == 1
 
     @pytest.mark.asyncio
     async def test_wall_clock_timeout_has_no_idle_info(self) -> None:
-        """Wall-clock timeouts (not idle) must NOT carry idle_timeout_info."""
+        """Wall-clock timeouts (not idle) must NOT carry an idle diagnostic."""
         from benchflow.acp.runtime import execute_prompts
 
         class SlowClient:
@@ -583,7 +583,9 @@ class TestIdleTimeoutDiagnostics:
                 timeout=2,
                 idle_timeout=None,
             )
-        assert not hasattr(exc_info.value, "idle_timeout_info")
+        # Wall-clock TimeoutErrors don't carry a structured diagnostic;
+        # only the idle watchdog raises IdleTimeoutError with one attached.
+        assert not hasattr(exc_info.value, "diagnostic")
 
 
 class TestConnectAcpModelSelection:
@@ -813,7 +815,7 @@ class TestSandboxStartupDiagnostics:
     """Guards ENG-147: sandbox startup failures must carry structured diagnostics."""
 
     def test_sandbox_startup_error_has_info_dict(self) -> None:
-        """Guards ENG-147: SandboxStartupError carries sandbox_startup_info dict
+        """Guards ENG-147: SandboxStartupError carries a SandboxStartupDiagnostic
         with all required fields for result.json."""
         from benchflow.sandbox.daytona import SandboxStartupError
 
@@ -824,7 +826,7 @@ class TestSandboxStartupDiagnostics:
             attempts=3,
             build_timeout_sec=600.0,
         )
-        info = err.sandbox_startup_info
+        info = err.diagnostic.to_dict()
         assert info["reason"] == "sandbox_startup_failed"
         assert info["sandbox_id"] == "e7d8ab0f-47da-40b1-b179-46e1363fe014"
         assert info["sandbox_state"] == "creating"
@@ -850,16 +852,18 @@ class TestSandboxStartupDiagnostics:
 
     def test_sandbox_startup_info_in_result_json(self, tmp_path: Path) -> None:
         """Guards ENG-147: _build_rollout_result writes sandbox_startup_info to result.json."""
+        from benchflow.diagnostics import RolloutDiagnostics, SandboxStartupDiagnostic
         from benchflow.rollout import _build_rollout_result
 
-        info = {
-            "reason": "sandbox_startup_failed",
-            "sandbox_id": "abc123",
-            "sandbox_state": "error",
-            "attempts": 3,
-            "build_timeout_sec": 600.0,
-            "raw_message": "timeout",
-        }
+        diag = SandboxStartupDiagnostic(
+            sandbox_id="abc123",
+            sandbox_state="error",
+            attempts=3,
+            build_timeout_sec=600.0,
+            raw_message="timeout",
+        )
+        diagnostics = RolloutDiagnostics()
+        diagnostics.set(diag)
         result = _build_rollout_result(
             tmp_path,
             task_name="test-task",
@@ -876,10 +880,10 @@ class TestSandboxStartupDiagnostics:
             rewards=None,
             started_at=__import__("datetime").datetime.now(),
             timing={"agent": 0.0},
-            sandbox_startup_info=info,
+            diagnostics=diagnostics,
         )
         rj = __import__("json").loads((tmp_path / "result.json").read_text())
-        assert rj["sandbox_startup_info"] == info
+        assert rj["sandbox_startup_info"] == diag.to_dict()
         assert rj["error_category"] == "sandbox_setup"
         assert result.error == "Sandbox startup failed: timeout"
 
@@ -1052,14 +1056,16 @@ class TestTransportErrorDiagnostics:
 
     def test_transport_error_info_in_result_json(self, tmp_path) -> None:
         """Guards ENG-148: transport_error_info is written to result.json."""
+        from benchflow.diagnostics import RolloutDiagnostics, TransportClosedDiagnostic
         from benchflow.rollout import _build_rollout_result
 
-        transport_info = {
-            "reason": "transport_closed",
-            "process_exit_code": 255,
-            "transport_diagnosis": "process_exited",
-            "sandbox_reachable": False,
-        }
+        diag = TransportClosedDiagnostic(
+            process_exit_code=255,
+            transport_diagnosis="process_exited",
+            sandbox_reachable=False,
+        )
+        diagnostics = RolloutDiagnostics()
+        diagnostics.set(diag)
         result = _build_rollout_result(
             tmp_path,
             task_name="video-filler-word-remover",
@@ -1076,10 +1082,10 @@ class TestTransportErrorDiagnostics:
             rewards=None,
             started_at=__import__("datetime").datetime.now(),
             timing={"agent": 10.0},
-            transport_error_info=transport_info,
+            diagnostics=diagnostics,
         )
         rj = __import__("json").loads((tmp_path / "result.json").read_text())
-        assert rj["transport_error_info"] == transport_info
+        assert rj["transport_error_info"] == diag.to_dict()
         assert rj["error_category"] == "pipe_closed"
         assert result.error is not None
 
@@ -1179,7 +1185,7 @@ class TestDiagnosticRegistry:
         )
 
     def test_sandbox_startup_error_diagnostic_view_is_consistent(self) -> None:
-        """``SandboxStartupError.sandbox_startup_info`` reflects the same
+        """``SandboxStartupError.diagnostic.to_dict()`` reflects the same
         dict the registry serializer produces — one schema, one source."""
         from benchflow.diagnostics import RolloutDiagnostics
         from benchflow.sandbox.protocol import SandboxStartupError
@@ -1194,7 +1200,7 @@ class TestDiagnosticRegistry:
         rd = RolloutDiagnostics()
         rd.set(err.diagnostic)
         fields = rd.to_result_fields()
-        assert fields["sandbox_startup_info"] == err.sandbox_startup_info
+        assert fields["sandbox_startup_info"] == err.diagnostic.to_dict()
 
 
 class TestVerifierDepInstallDiagnostics:
@@ -1340,8 +1346,17 @@ class TestVerifierTimeoutDiagnostics:
     def test_verifier_timeout_info_in_result_json(self, tmp_path: Path) -> None:
         """Guards ENG-152: result.json includes verifier_timeout_info when
         verifier times out."""
+        from benchflow.diagnostics import RolloutDiagnostics, VerifierTimeoutDiagnostic
         from benchflow.rollout import _build_rollout_result
 
+        diagnostics = RolloutDiagnostics()
+        diagnostics.set(
+            VerifierTimeoutDiagnostic(
+                timeout_budget_sec=240.0,
+                elapsed_sec=240.1,
+                task_name="quantum-numerical-simulation",
+            )
+        )
         _build_rollout_result(
             tmp_path,
             task_name="quantum-numerical-simulation",
@@ -1358,11 +1373,7 @@ class TestVerifierTimeoutDiagnostics:
             rewards=None,
             started_at=__import__("datetime").datetime.now(),
             timing={"agent": 0.0},
-            verifier_timeout_info={
-                "timeout_budget_sec": 240.0,
-                "elapsed_sec": 240.1,
-                "task_name": "quantum-numerical-simulation",
-            },
+            diagnostics=diagnostics,
         )
         rj = __import__("json").loads((tmp_path / "result.json").read_text())
         assert rj["verifier_error_category"] == "verifier_timeout"
