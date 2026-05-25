@@ -26,6 +26,32 @@ _BOOTSTRAP_DONE = "__BENCHFLOW_BOOTSTRAP_DONE__"
 _ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
+class TransportClosedError(ConnectionError):
+    """ConnectionError carrying stable transport diagnostics for result.json."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        process_exit_code: int | None = None,
+        process_pid: int | None = None,
+        transport_diagnosis: str = "unknown",
+        stderr_snippet: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        info: dict[str, Any] = {
+            "reason": "transport_closed",
+            "raw_message": message[:500],
+            "process_exit_code": process_exit_code,
+            "transport_diagnosis": transport_diagnosis,
+        }
+        if process_pid is not None:
+            info["process_pid"] = process_pid
+        if stderr_snippet:
+            info["stderr_snippet"] = stderr_snippet[:500]
+        self.transport_error_info = info
+
+
 async def _cleanup_daytona_remote_env_file(
     sandbox: Any,
     remote_env_path: str,
@@ -140,7 +166,15 @@ class LiveProcess(ABC):
             msg = f"Process closed stdout (rc={rc}): {hint}"
             if stderr_text:
                 msg += f"\nstderr: {stderr_text[:_DIAG_TRUNCATE]}"
-            raise ConnectionError(msg)
+            raise TransportClosedError(
+                msg,
+                process_exit_code=rc,
+                process_pid=pid,
+                transport_diagnosis=(
+                    "remote_session_killed" if rc is None else "process_exited"
+                ),
+                stderr_snippet=stderr_text or None,
+            )
         return line
 
     async def writeline(self, data: str) -> None:
@@ -727,14 +761,23 @@ class DaytonaPtyProcess(LiveProcess):
 
     async def readline(self) -> bytes:
         if self._closed:
-            raise ConnectionError("PTY closed")
+            raise TransportClosedError(
+                "PTY closed",
+                transport_diagnosis="pty_error",
+            )
         try:
             line = await asyncio.wait_for(self._line_buffer.get(), timeout=900)
             return line
         except TimeoutError as e:
-            raise ConnectionError("PTY readline timeout (900s)") from e
+            raise TransportClosedError(
+                "PTY readline timeout (900s)",
+                transport_diagnosis="pty_error",
+            ) from e
         except Exception as e:
-            raise ConnectionError(f"PTY readline error: {e}") from e
+            raise TransportClosedError(
+                f"PTY readline error: {e}",
+                transport_diagnosis="pty_error",
+            ) from e
 
     async def writeline(self, data: str) -> None:
         if not self._pty or self._closed:

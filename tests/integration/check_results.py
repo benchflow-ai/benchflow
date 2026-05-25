@@ -26,12 +26,16 @@ from pathlib import Path
 from typing import Any, cast
 
 from benchflow._utils.config import normalize_agent_idle_timeout
-from benchflow._utils.reward_events import memory_score_from_result
-from benchflow._utils.scoring import (
-    classify_error,
-    classify_verifier_error,
-    count_result_outcomes,
+from benchflow._utils.diagnostics import (
+    agent_infra_category,
+    format_agent_infra_issue,
+    format_agent_invalidation_messages,
+    format_verifier_diagnostic_issue,
+    format_verifier_invalidation_messages,
+    verifier_diagnostic_category,
 )
+from benchflow._utils.reward_events import memory_score_from_result
+from benchflow._utils.scoring import count_result_outcomes
 from benchflow._utils.source_provenance import source_issues, source_matches_parent
 
 EXPECTED: dict[str, Any] = {}
@@ -53,16 +57,6 @@ SUMMARY_REQUIRED = {
     "verifier_errored",
     "score",
 }
-INFRA_ERROR_CATEGORIES = {
-    "install_failure",
-    "timeout",
-    "idle_timeout",
-    "pipe_closed",
-    "sandbox_setup",
-    "infra_failure",
-}
-
-
 def load_results(agent_dir: Path) -> tuple[list[tuple[Path, dict]], list[str]]:
     """Load every result.json from an agent's jobs directory."""
     results: list[tuple[Path, dict]] = []
@@ -508,119 +502,32 @@ def check_agent(agent_dir: Path) -> dict:
 
     # Infrastructure errors
     infra_errors = []
-    idle_timeout_tasks: list[str] = []
-    sandbox_startup_tasks: list[str] = []
-    transport_error_tasks: list[str] = []
+    agent_invalidation_tasks: dict[str, list[str]] = {}
     for r in results:
-        err = r.get("error")
-        cat = classify_error(str(err)) if err else None
-        if cat and cat in INFRA_ERROR_CATEGORIES:
+        cat = agent_infra_category(r)
+        if cat:
             task = r.get("task_name", "?")
-            if cat == "idle_timeout":
-                info = r.get("idle_timeout_info")
-                if info:
-                    infra_errors.append(
-                        f"{task}: idle timeout after "
-                        f"{info.get('idle_duration_sec', '?')}s idle "
-                        f"({info.get('n_tool_calls', '?')} tool calls, "
-                        f"{info.get('wall_clock_elapsed_sec', '?')}s wall)"
-                    )
-                else:
-                    infra_errors.append(f"{task}: {err}")
-                idle_timeout_tasks.append(task)
-            elif cat == "sandbox_setup":
-                sinfo = r.get("sandbox_startup_info")
-                if sinfo:
-                    sid = sinfo.get("sandbox_id", "?")
-                    state = sinfo.get("sandbox_state", "?")
-                    attempts = sinfo.get("attempts", "?")
-                    build_to = sinfo.get("build_timeout_sec", "?")
-                    infra_errors.append(
-                        f"{task}: sandbox startup failed (sandbox_id={sid}, "
-                        f"state={state}, attempts={attempts}, "
-                        f"build_timeout_sec={build_to})"
-                    )
-                else:
-                    infra_errors.append(f"{task}: {err}")
-                sandbox_startup_tasks.append(task)
-            elif cat == "pipe_closed":
-                tinfo = r.get("transport_error_info")
-                if tinfo:
-                    rc = tinfo.get("process_exit_code", "?")
-                    diag = tinfo.get("transport_diagnosis", "?")
-                    reachable = tinfo.get("sandbox_reachable", "?")
-                    infra_errors.append(
-                        f"{task}: transport closed (rc={rc}, "
-                        f"diagnosis={diag}, sandbox_reachable={reachable})"
-                    )
-                else:
-                    infra_errors.append(f"{task}: {err}")
-                transport_error_tasks.append(task)
-            else:
-                infra_errors.append(f"{task}: {err}")
+            infra_errors.append(format_agent_infra_issue(r, cat))
+            agent_invalidation_tasks.setdefault(cat, []).append(str(task))
     if infra_errors:
         findings["issues"].extend(infra_errors)
         findings["ok"] = False
-    if idle_timeout_tasks:
-        findings["issues"].append(
-            f"INVALIDATED: {len(idle_timeout_tasks)} task(s) hit idle timeout "
-            f"and should be rerun: {', '.join(idle_timeout_tasks)}"
-        )
-    if sandbox_startup_tasks:
-        findings["issues"].append(
-            f"INVALIDATED: {len(sandbox_startup_tasks)} task(s) failed during "
-            f"sandbox startup and should be rerun: "
-            f"{', '.join(sandbox_startup_tasks)}"
-        )
-    if transport_error_tasks:
-        findings["issues"].append(
-            f"INVALIDATED: {len(transport_error_tasks)} task(s) lost ACP transport "
-            f"(pipe closed / rc=255) and should be rerun: "
-            f"{', '.join(transport_error_tasks)}"
-        )
+    findings["issues"].extend(
+        format_agent_invalidation_messages(agent_invalidation_tasks)
+    )
 
-    # Verifier dependency install failures (ENG-151)
-    dep_install_tasks: list[str] = []
+    # Invalidating verifier diagnostics (ENG-151 / ENG-152)
+    verifier_invalidation_tasks: dict[str, list[str]] = {}
     for r in results:
-        verifier_err = r.get("verifier_error")
-        vcat = classify_verifier_error(verifier_err) if verifier_err else None
-        if vcat == "verifier_dep_install":
+        vcat = verifier_diagnostic_category(r)
+        if vcat:
             task = r.get("task_name", "?")
-            dep_install_tasks.append(task)
-            findings["issues"].append(
-                f"{task}: verifier dependency install failed — "
-                f"measurement invalid (verifier never reached tests)"
-            )
+            verifier_invalidation_tasks.setdefault(vcat, []).append(str(task))
+            findings["issues"].append(format_verifier_diagnostic_issue(r, vcat))
             findings["ok"] = False
-    if dep_install_tasks:
-        findings["issues"].append(
-            f"INVALIDATED: {len(dep_install_tasks)} task(s) failed during "
-            f"verifier dependency install and should be rerun after "
-            f"fixing the index policy: {', '.join(dep_install_tasks)}"
-        )
-
-    # Verifier timeout failures (ENG-152)
-    verifier_timeout_tasks: list[str] = []
-    for r in results:
-        verifier_err = r.get("verifier_error")
-        vcat = classify_verifier_error(verifier_err) if verifier_err else None
-        if vcat == "verifier_timeout":
-            task = r.get("task_name", "?")
-            vti = r.get("verifier_timeout_info")
-            budget = vti.get("timeout_budget_sec", "?") if vti else "?"
-            elapsed = vti.get("elapsed_sec", "?") if vti else "?"
-            verifier_timeout_tasks.append(task)
-            findings["issues"].append(
-                f"{task}: verifier timed out (budget={budget}s, elapsed={elapsed}s) — "
-                f"measurement invalid (verifier never produced reward)"
-            )
-            findings["ok"] = False
-    if verifier_timeout_tasks:
-        findings["issues"].append(
-            f"INVALIDATED: {len(verifier_timeout_tasks)} task(s) had verifier "
-            f"timeouts — increase timeout_sec or reduce verifier cost: "
-            f"{', '.join(verifier_timeout_tasks)}"
-        )
+    findings["issues"].extend(
+        format_verifier_invalidation_messages(verifier_invalidation_tasks)
+    )
 
     # Summary.json — bench eval create writes it at the agent_dir root
     summary_path = agent_dir / "summary.json"

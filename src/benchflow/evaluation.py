@@ -24,6 +24,10 @@ from typing import Any
 
 import yaml
 
+from benchflow._utils.diagnostics import (
+    diagnostic_category_counts,
+    summary_diagnostic_warnings,
+)
 from benchflow._utils.evaluation_results import (
     rollout_result_payload,
     usage_summary,
@@ -42,8 +46,6 @@ from benchflow._utils.scoring import (
     INFRA_ERROR,
     INSTALL_FAILED,
     PIPE_CLOSED,
-    SANDBOX_SETUP,
-    VERIFIER_DEP_INSTALL,
     VERIFIER_INFRA,
     VERIFIER_TIMEOUT,
     classify_error,
@@ -1186,18 +1188,9 @@ class Evaluation:
             f"{job_result.verifier_errored} != {job_result.total}"
         )
 
-        # Count error categories across all results for summary diagnostics.
-        error_category_counts: dict[str, int] = {}
-        verifier_error_category_counts: dict[str, int] = {}
-        for r in all_results.values():
-            cat = classify_error(r.get("error"))
-            if cat:
-                error_category_counts[cat] = error_category_counts.get(cat, 0) + 1
-            vcat = classify_verifier_error(r.get("verifier_error"))
-            if vcat:
-                verifier_error_category_counts[vcat] = (
-                    verifier_error_category_counts.get(vcat, 0) + 1
-                )
+        error_category_counts, verifier_error_category_counts = (
+            diagnostic_category_counts(all_results.values())
+        )
 
         # Save summary
         summary = {
@@ -1255,45 +1248,13 @@ class Evaluation:
         except Exception as e:  # pragma: no cover - defensive
             logger.warning("Job-level trainer artifact aggregation failed: %s", e)
 
+        for message in summary_diagnostic_warnings(
+            total=job_result.total,
+            error_category_counts=error_category_counts,
+            verifier_error_category_counts=verifier_error_category_counts,
+        ):
+            logger.warning(message)
         idle_count = error_category_counts.get(IDLE_TIMEOUT, 0)
-        if idle_count > 0:
-            pct = idle_count / job_result.total * 100
-            logger.warning(
-                f"{idle_count} tasks ({pct:.0f}%) hit idle timeout — "
-                f"check idle_timeout_info in result.json for diagnostics"
-            )
-
-        sandbox_count = error_category_counts.get(SANDBOX_SETUP, 0)
-        if sandbox_count > 0:
-            pct = sandbox_count / job_result.total * 100
-            logger.warning(
-                f"{sandbox_count} tasks ({pct:.0f}%) failed during sandbox startup — "
-                f"check sandbox_startup_info in result.json for diagnostics"
-            )
-
-        pipe_count = error_category_counts.get(PIPE_CLOSED, 0)
-        if pipe_count > 0:
-            pct = pipe_count / job_result.total * 100
-            logger.warning(
-                f"{pipe_count} tasks ({pct:.0f}%) lost transport (pipe closed / rc=255) — "
-                f"check transport_error_info in result.json for diagnostics"
-            )
-        dep_install_count = verifier_error_category_counts.get(VERIFIER_DEP_INSTALL, 0)
-        if dep_install_count > 0:
-            pct = dep_install_count / job_result.total * 100
-            logger.warning(
-                f"{dep_install_count} tasks ({pct:.0f}%) failed during verifier "
-                f"dependency install — check verifier_error_category in result.json "
-                f"and fix the task's index policy"
-            )
-
-        verifier_timeout_count = verifier_error_category_counts.get(VERIFIER_TIMEOUT, 0)
-        if verifier_timeout_count > 0:
-            pct = verifier_timeout_count / job_result.total * 100
-            logger.warning(
-                f"{verifier_timeout_count} tasks ({pct:.0f}%) had verifier timeouts — "
-                f"check verifier_timeout_info in result.json for budget/elapsed details"
-            )
         if audit_counts["verifier_errored"] > 0:
             pct = audit_counts["verifier_errored"] / job_result.total * 100
             logger.warning(

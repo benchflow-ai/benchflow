@@ -1,8 +1,10 @@
 """Tests for ACP client ↔ mock agent — Step 10."""
 
 import asyncio
+import logging
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -977,6 +979,64 @@ class TestTransportErrorDiagnostics:
         assert info["transport_diagnosis"] == "unknown"
         assert info["reason"] == "transport_closed"
 
+    def test_typed_transport_error_survives_message_wording_change(self) -> None:
+        """Guards the fix from PR TBD against #504: transport diagnostics must
+        not depend on parsing human-readable process error text."""
+        from benchflow.rollout import _parse_transport_error
+        from benchflow.sandbox.process import TransportClosedError
+
+        err = TransportClosedError(
+            "Process stdout ended: local process used different text for exit code 255",
+            process_exit_code=255,
+            process_pid=12345,
+            transport_diagnosis="process_exited",
+            stderr_snippet="Connection to sandbox lost",
+        )
+
+        info = _parse_transport_error(err)
+
+        assert info["reason"] == "transport_closed"
+        assert info["process_exit_code"] == 255
+        assert info["process_pid"] == 12345
+        assert info["transport_diagnosis"] == "process_exited"
+        assert info["stderr_snippet"] == "Connection to sandbox lost"
+
+    @pytest.mark.asyncio
+    async def test_probe_sandbox_health_logs_traceback_and_error_type(
+        self, caplog
+    ) -> None:
+        """Guards the fix from PR TBD against #502: sandbox health probe
+        failures keep traceback logs and a structured exception type."""
+        from benchflow.rollout import Rollout
+
+        class ExplodingEnv:
+            async def exec(self, *args, **kwargs):
+                raise RuntimeError("probe backend exploded")
+
+        rollout = Rollout.__new__(Rollout)
+        rollout._transport_error_info = {"reason": "transport_closed"}
+        rollout._env = ExplodingEnv()
+
+        with caplog.at_level(logging.DEBUG, logger="benchflow.rollout"):
+            await rollout._probe_sandbox_health()
+
+        assert rollout._transport_error_info["sandbox_reachable"] is False
+        assert (
+            rollout._transport_error_info["sandbox_probe_error_type"] == "RuntimeError"
+        )
+        assert (
+            rollout._transport_error_info["sandbox_probe_error"]
+            == "probe backend exploded"
+        )
+        probe_logs = [
+            record
+            for record in caplog.records
+            if record.name == "benchflow.rollout"
+            and record.getMessage() == "sandbox health probe failed"
+        ]
+        assert probe_logs
+        assert probe_logs[0].exc_info
+
     def test_transport_error_info_in_result_json(self, tmp_path) -> None:
         """Guards ENG-148: transport_error_info is written to result.json."""
         from benchflow.rollout import _build_rollout_result
@@ -1175,6 +1235,47 @@ class TestVerifierTimeoutDiagnostics:
             classify_verifier_error("verifier crashed: dependency install failed")
             != VERIFIER_TIMEOUT
         )
+
+    @pytest.mark.asyncio
+    async def test_verify_rollout_timeout_uses_task_name(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Guards the fix from PR TBD against #495: verifier timeout handling
+        reads Task.name instead of the absent TaskConfig.name field."""
+        from benchflow.rollout import _verify_rollout
+
+        async def fake_harden_before_verify(*args, **kwargs):
+            return None
+
+        class SlowVerifier:
+            def __init__(self, **kwargs):
+                pass
+
+            async def verify(self):
+                await asyncio.Event().wait()
+
+        monkeypatch.setattr(
+            "benchflow.sandbox.lockdown.harden_before_verify",
+            fake_harden_before_verify,
+        )
+        monkeypatch.setattr("benchflow.task.Verifier", SlowVerifier)
+        task = SimpleNamespace(
+            name="quantum-numerical-simulation",
+            config=SimpleNamespace(verifier=SimpleNamespace(timeout_sec=0.001)),
+        )
+        rollout_paths = SimpleNamespace(verifier_dir=tmp_path / "verifier")
+        timing = {}
+
+        rewards, verifier_error, verifier_timeout_info = await _verify_rollout(
+            object(), task, rollout_paths, timing
+        )
+
+        assert rewards is None
+        assert verifier_error == "verifier timed out after 0.001s"
+        assert verifier_timeout_info is not None
+        assert verifier_timeout_info["task_name"] == "quantum-numerical-simulation"
+        assert verifier_timeout_info["timeout_budget_sec"] == 0.001
+        assert "verifier" in timing
 
     def test_verifier_timeout_info_in_result_json(self, tmp_path: Path) -> None:
         """Guards ENG-152: result.json includes verifier_timeout_info when

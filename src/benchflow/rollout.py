@@ -51,7 +51,7 @@ from typing import Any
 
 from benchflow._types import Role, Scene, Turn
 from benchflow._utils.config import normalize_agent_name, normalize_sandbox_user
-from benchflow._utils.scoring import classify_error, classify_verifier_error
+from benchflow._utils.diagnostics import serialize_flat_diagnostics
 from benchflow.acp.client import ACPClient, ACPError
 from benchflow.acp.runtime import connect_acp, execute_prompts
 from benchflow.agents.credentials import (
@@ -451,6 +451,10 @@ def _parse_transport_error(e: ConnectionError) -> dict:
     """
     import re as _re
 
+    structured = getattr(e, "transport_error_info", None)
+    if isinstance(structured, dict):
+        return dict(structured)
+
     msg = str(e)
     info: dict[str, Any] = {"reason": "transport_closed", "raw_message": msg[:500]}
 
@@ -576,16 +580,16 @@ def _build_rollout_result(
                     "price_source": result.price_source,
                 },
                 "error": result.error,
-                "error_category": classify_error(result.error),
                 "verifier_error": result.verifier_error,
-                "verifier_error_category": classify_verifier_error(
-                    result.verifier_error
-                ),
                 "export_error": result.export_error,
-                "idle_timeout_info": idle_timeout_info,
-                "sandbox_startup_info": sandbox_startup_info,
-                "transport_error_info": transport_error_info,
-                "verifier_timeout_info": verifier_timeout_info,
+                **serialize_flat_diagnostics(
+                    error=result.error,
+                    verifier_error=result.verifier_error,
+                    idle_timeout_info=idle_timeout_info,
+                    sandbox_startup_info=sandbox_startup_info,
+                    transport_error_info=transport_error_info,
+                    verifier_timeout_info=verifier_timeout_info,
+                ),
                 "partial_trajectory": result.partial_trajectory,
                 "trajectory_source": result.trajectory_source,
                 "started_at": str(result.started_at),
@@ -842,7 +846,7 @@ async def _verify_rollout(
         verifier_timeout_info = {
             "timeout_budget_sec": timeout_budget,
             "elapsed_sec": round(elapsed, 1),
-            "task_name": task.config.name,
+            "task_name": task.name,
         }
         rewards = None
         logger.error(verifier_error)
@@ -2560,7 +2564,11 @@ class Rollout:
                 self._transport_error_info["sandbox_probe_rc"] = rc
                 self._transport_error_info["sandbox_probe_stdout"] = stdout[:200]
         except Exception as probe_err:
+            logger.debug("sandbox health probe failed", exc_info=True)
             self._transport_error_info["sandbox_reachable"] = False
+            self._transport_error_info["sandbox_probe_error_type"] = type(
+                probe_err
+            ).__name__
             self._transport_error_info["sandbox_probe_error"] = str(probe_err)[:200]
 
     def _classify_acp_error(self, e: ACPError) -> str:
