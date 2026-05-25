@@ -29,6 +29,7 @@ _SHA_PINNED = re.compile(
     r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9._-]+(?:/[A-Za-z0-9._/-]+)?@[0-9a-f]{40}$"
 )
 _LOCAL_OR_DOCKER = re.compile(r"^(?:\./|docker://)")
+_VERSION_COMMENT = re.compile(r"#\s*v\d+\.\d+")
 
 
 def _iter_uses(node: object):
@@ -42,6 +43,11 @@ def _iter_uses(node: object):
     elif isinstance(node, list):
         for item in node:
             yield from _iter_uses(item)
+
+
+def _iter_uses_lines(workflow: Path) -> list[str]:
+    """Return raw `uses:` lines (preserving trailing comments) from *workflow*."""
+    return [line for line in workflow.read_text().splitlines() if re.search(r"^\s*-?\s*uses:", line)]
 
 
 def _workflow_files() -> list[Path]:
@@ -69,6 +75,29 @@ def test_workflow_actions_are_sha_pinned(workflow: Path) -> None:
     assert not unpinned, (
         f"{workflow.name} uses non-SHA-pinned actions: {unpinned}. "
         "Pin to a 40-char commit SHA and leave the tag in a trailing comment."
+    )
+
+
+@pytest.mark.parametrize("workflow", _workflow_files(), ids=lambda p: p.name)
+def test_sha_pins_have_version_comment(workflow: Path) -> None:
+    """Every SHA-pinned `uses:` must have a trailing `# vX.Y.Z` comment.
+
+    Guards PR #450 review finding: Dependabot and human readers rely on the
+    version comment to know which release a SHA corresponds to.
+    """
+    missing: list[str] = []
+    for line in _iter_uses_lines(workflow):
+        value = line.split("uses:", 1)[1].strip()
+        ref = value.split("#")[0].strip() if "#" in value else value.strip()
+        if _LOCAL_OR_DOCKER.match(ref):
+            continue
+        if not _SHA_PINNED.match(ref):
+            continue
+        if not _VERSION_COMMENT.search(line):
+            missing.append(ref)
+    assert not missing, (
+        f"{workflow.name} has SHA-pinned actions without a trailing version "
+        f"comment (e.g. `# v4.2.2`): {missing}"
     )
 
 
