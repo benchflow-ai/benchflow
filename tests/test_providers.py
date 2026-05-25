@@ -44,7 +44,7 @@ class TestFindProvider:
     @pytest.mark.parametrize(
         ("model", "expected_protocol"),
         [
-            ("azure-foundry-openai/gpt-5.5", "openai-responses"),
+            ("azure-foundry-openai/gpt-5.5", "openai-completions"),
             ("azure-foundry-anthropic/claude-opus-4-5", "anthropic-messages"),
         ],
     )

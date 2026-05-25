@@ -85,6 +85,33 @@ def _missing_provider_base_url_message(
     )
 
 
+def _provider_supports_agent_protocol(provider, agent_protocol: str) -> bool:
+    """Return True when a registered provider can serve the agent protocol."""
+    if not agent_protocol:
+        return True
+    if agent_protocol in provider.all_endpoints:
+        return True
+    # Providers like vllm have no canonical URL; the caller supplies both URL
+    # and semantics at runtime, so preserve their existing flexible behavior.
+    return not provider.base_url
+
+
+def _unsupported_provider_protocol_message(
+    *,
+    agent: str,
+    agent_protocol: str,
+    provider_name: str,
+    model: str,
+    supported_protocols: list[str],
+) -> str:
+    supported = ", ".join(supported_protocols)
+    return (
+        f"Agent {agent!r} requires provider protocol {agent_protocol!r}, but "
+        f"provider {provider_name!r} for model {model!r} only supports "
+        f"{supported}. Use a provider prefix that matches the agent protocol."
+    )
+
+
 def _normalize_openhands_model(model: str) -> str:
     """Translate benchflow model IDs to OpenHands/LiteLLM model IDs.
 
@@ -306,6 +333,16 @@ def resolve_provider_env(
     if _prov:
         _prov_name, _prov_cfg = _prov
         agent_env.setdefault("BENCHFLOW_PROVIDER_NAME", _prov_name)
+        if not _provider_supports_agent_protocol(_prov_cfg, agent_protocol):
+            raise ValueError(
+                _unsupported_provider_protocol_message(
+                    agent=agent,
+                    agent_protocol=agent_protocol,
+                    provider_name=_prov_name,
+                    model=model,
+                    supported_protocols=sorted(_prov_cfg.all_endpoints),
+                )
+            )
         if "BENCHFLOW_PROVIDER_BASE_URL" not in agent_env:
             try:
                 base_url = resolve_base_url(

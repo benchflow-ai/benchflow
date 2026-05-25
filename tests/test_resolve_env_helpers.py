@@ -659,6 +659,47 @@ class TestResolveAgentEnvAzureFoundry:
             == "https://example-resource.services.ai.azure.com/anthropic"
         )
 
+    def test_azure_openai_rejects_anthropic_agent_protocol(self, monkeypatch):
+        """Guards PR #422: unsupported agent/provider protocol pairs fail fast."""
+        monkeypatch.setenv("AZURE_API_KEY", "az-test")
+        monkeypatch.setenv(
+            "AZURE_API_ENDPOINT", "https://example-resource.openai.azure.com/"
+        )
+
+        with pytest.raises(
+            ValueError,
+            match=(
+                r"claude-agent-acp.*requires provider protocol "
+                r"'anthropic-messages'.*azure-foundry-openai.*only supports "
+                r"openai-completions, openai-responses"
+            ),
+        ):
+            resolve_agent_env(
+                "claude-agent-acp",
+                "azure-foundry-openai/gpt-5.5",
+                {},
+            )
+
+    def test_azure_anthropic_rejects_openai_agent_protocol(self, monkeypatch):
+        """Guards PR #422: fallback must not send OpenAI traffic to Anthropic."""
+        monkeypatch.setenv("AZURE_API_KEY", "az-test")
+        monkeypatch.setenv(
+            "AZURE_API_ENDPOINT", "https://example-resource.openai.azure.com/"
+        )
+
+        with pytest.raises(
+            ValueError,
+            match=(
+                r"codex-acp.*requires provider protocol 'openai-responses'.*"
+                r"azure-foundry-anthropic.*only supports anthropic-messages"
+            ),
+        ):
+            resolve_agent_env(
+                "codex-acp",
+                "azure-foundry-anthropic/claude-opus-4-5",
+                {},
+            )
+
     def test_azure_api_key_without_endpoint_fails_fast(self, monkeypatch):
         """Guards PR #3: Azure routes must not fall through to default OpenAI."""
         monkeypatch.setenv("AZURE_API_KEY", "az-test")
