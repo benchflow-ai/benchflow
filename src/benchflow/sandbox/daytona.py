@@ -16,11 +16,37 @@ import os
 import re
 import shlex
 from abc import abstractmethod
-from collections.abc import Callable
-from functools import wraps
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any
 from uuid import uuid4
+
+try:
+    from tenacity import (
+        retry,
+        retry_if_exception_type,
+        stop_after_attempt,
+        wait_exponential,
+    )
+except ImportError:  # base install without ``sandbox-daytona`` extras (#358)
+    # ``tenacity`` ships under the ``sandbox-daytona`` extra. The fallbacks below
+    # let this module import cleanly in a base install — ``DaytonaSandbox()`` is
+    # what requires the real SDK (and tenacity along with it).
+
+    def retry(*_args: Any, **_kwargs: Any) -> Any:
+        def _decorator(fn: Any) -> Any:
+            return fn
+
+        return _decorator
+
+    def stop_after_attempt(*_args: Any, **_kwargs: Any) -> Any:
+        return None
+
+    def wait_exponential(*_args: Any, **_kwargs: Any) -> Any:
+        return None
+
+    def retry_if_exception_type(*_args: Any, **_kwargs: Any) -> Any:
+        return None
+
 
 from benchflow._paths import iter_safe_tree
 from benchflow.sandbox._base import (
@@ -76,9 +102,9 @@ def _ensure_daytona_anyio_compat() -> None:
     anyio.AsyncContextManagerMixin = _AsyncContextManagerMixin  # type: ignore[attr-defined]
 
 
-# Module-level handles for the Daytona SDK + ``tenacity``. These optional deps
-# are pulled in lazily — see ``_load_daytona_sdk`` — so importing this module
-# in a base install does not require the ``sandbox-daytona`` extra (issue #358).
+# Module-level handles for the Daytona SDK. The SDK is shipped under the
+# ``sandbox-daytona`` extra and is pulled in lazily — see ``_load_daytona_sdk``
+# — so importing this module in a base install does not require it (#358).
 _DAYTONA_SDK_LOADED = False
 AsyncDaytona: Any = None
 AsyncSandbox: Any = None
@@ -91,8 +117,6 @@ Image: Any = None
 Resources: Any = None
 SessionExecuteRequest: Any = None
 SnapshotState: Any = None
-
-_F = TypeVar("_F", bound=Callable[..., Any])
 
 
 def _load_daytona_sdk() -> None:
@@ -134,59 +158,6 @@ def _load_daytona_sdk() -> None:
     SessionExecuteRequest = _daytona.SessionExecuteRequest
     SnapshotState = _snapshot.SnapshotState
     _DAYTONA_SDK_LOADED = True
-
-
-def _tenacity_retry(**retry_kwargs: Any) -> Callable[[_F], _F]:
-    """Defer ``tenacity.retry`` wiring until the wrapped method is first called.
-
-    ``tenacity`` is shipped under the ``sandbox-daytona`` extra; importing it at
-    class-definition time would break a base install (issue #358). This wrapper
-    materializes the real ``tenacity.retry`` decorator the first time the
-    wrapped coroutine is invoked, then caches the wrapped function so the
-    indirection costs one attribute lookup per call.
-    """
-
-    def decorate(func: _F) -> _F:
-        wrapped: dict[str, Callable[..., Any]] = {}
-
-        @wraps(func)
-        async def aw(*args: Any, **kwargs: Any) -> Any:
-            real = wrapped.get("fn")
-            if real is None:
-                try:
-                    from tenacity import (
-                        retry,
-                        stop_after_attempt,
-                        wait_exponential,
-                    )
-                except ImportError as e:
-                    raise ImportError(
-                        "The Daytona sandbox requires the 'sandbox-daytona' "
-                        "extra (tenacity). Install it with: "
-                        "pip install 'benchflow[sandbox-daytona]'"
-                    ) from e
-                # Resolve the *_after_attempt / wait_* factories so callers can
-                # pass plain ints/floats to this wrapper without importing
-                # tenacity themselves.
-                resolved: dict[str, Any] = {}
-                for k, v in retry_kwargs.items():
-                    if k == "stop_after_attempt":
-                        resolved["stop"] = stop_after_attempt(v)
-                    elif k == "wait_exponential":
-                        resolved["wait"] = wait_exponential(**v)
-                    else:
-                        resolved[k] = v
-                real = retry(**resolved)(func)
-                wrapped["fn"] = real
-            return await real(*args, **kwargs)
-
-        # Expose the original retry kwargs so callers / tests can verify the
-        # retry contract (e.g. ENG-147 asserts ``_create_sandbox`` retries 3
-        # times) without forcing the wrapped coroutine to actually run.
-        aw.retry_config = retry_kwargs  # type: ignore[attr-defined]
-        return aw  # type: ignore[return-value]
-
-    return decorate
 
 
 logger = logging.getLogger("benchflow")
@@ -1213,9 +1184,9 @@ class DaytonaSandbox(BaseSandbox):
 
     # ── Shared helpers used by both strategies ──────────────────────────
 
-    @_tenacity_retry(
-        stop_after_attempt=3,
-        wait_exponential={"multiplier": 2, "min": 2, "max": 30},
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=2, min=2, max=30),
         reraise=True,
     )
     async def _create_sandbox(
@@ -1265,18 +1236,18 @@ class DaytonaSandbox(BaseSandbox):
                 create_task.cancel()
             raise
 
-    @_tenacity_retry(
-        stop_after_attempt=2,
-        wait_exponential={"multiplier": 1, "min": 1, "max": 10},
+    @retry(
+        stop=stop_after_attempt(2),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
         reraise=True,
     )
     async def _stop_sandbox(self) -> None:
         if self._sandbox:
             await self._sandbox.delete()
 
-    @_tenacity_retry(
-        stop_after_attempt=3,
-        wait_exponential={"multiplier": 1, "min": 1, "max": 10},
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
         reraise=True,
     )
     async def _get_session_command_with_retry(
@@ -1286,9 +1257,9 @@ class DaytonaSandbox(BaseSandbox):
             raise RuntimeError("Sandbox not found. Please build the environment first.")
         return await self._sandbox.process.get_session_command(session_id, command_id)
 
-    @_tenacity_retry(
-        stop_after_attempt=3,
-        wait_exponential={"multiplier": 1, "min": 1, "max": 10},
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
         reraise=True,
     )
     async def _get_session_command_logs_with_retry(
@@ -1350,11 +1321,6 @@ class DaytonaSandbox(BaseSandbox):
         shell: str = "bash -c",
         user: str | int | None = None,
     ) -> ExecResult:
-        # Tests construct DaytonaSandbox via ``__new__`` to exercise this
-        # method in isolation — that skips ``__init__``'s _load_daytona_sdk()
-        # call. Ensure the SDK handles (e.g. ``SessionExecuteRequest``) are
-        # materialized before we touch them (issue #358).
-        _load_daytona_sdk()
         if not self._sandbox:
             raise RuntimeError("Sandbox not found. Please build the environment first.")
 
@@ -1411,9 +1377,9 @@ class DaytonaSandbox(BaseSandbox):
 
         return result
 
-    @_tenacity_retry(
-        stop_after_attempt=3,
-        wait_exponential={"multiplier": 1, "min": 1, "max": 10},
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
         reraise=True,
     )
     async def _sdk_upload_file(self, source_path: Path | str, target_path: str) -> None:
@@ -1421,9 +1387,9 @@ class DaytonaSandbox(BaseSandbox):
             raise RuntimeError("Sandbox not found. Please build the environment first.")
         await self._sandbox.fs.upload_file(str(source_path), target_path)
 
-    @_tenacity_retry(
-        stop_after_attempt=3,
-        wait_exponential={"multiplier": 1, "min": 1, "max": 10},
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
         reraise=True,
     )
     async def _sdk_upload_dir(self, source_dir: Path | str, target_dir: str) -> None:
@@ -1451,9 +1417,9 @@ class DaytonaSandbox(BaseSandbox):
         if file_uploads:
             await self._sandbox.fs.upload_files(files=file_uploads)
 
-    @_tenacity_retry(
-        stop_after_attempt=3,
-        wait_exponential={"multiplier": 1, "min": 1, "max": 10},
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
         reraise=True,
     )
     async def _sdk_download_file(
@@ -1463,9 +1429,9 @@ class DaytonaSandbox(BaseSandbox):
             raise RuntimeError("Sandbox not found. Please build the environment first.")
         await self._sandbox.fs.download_file(source_path, str(target_path))
 
-    @_tenacity_retry(
-        stop_after_attempt=3,
-        wait_exponential={"multiplier": 1, "min": 1, "max": 10},
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
         reraise=True,
     )
     async def _sdk_download_dir(self, source_dir: str, target_dir: Path | str) -> None:

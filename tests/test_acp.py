@@ -913,16 +913,16 @@ class TestSandboxStartupDiagnostics:
     def test_create_sandbox_retry_count_is_three(self) -> None:
         """Guards ENG-147: _create_sandbox retries 3 times, not 2.
 
-        The retry contract is now declared lazily on the wrapper (issue #358:
-        ``tenacity`` is an optional dep, so the real ``tenacity.retry`` only
-        materializes on first call). The ``retry_config`` attribute exposes
-        the original kwargs so this guard can run without importing tenacity
-        or actually triggering a sandbox creation.
+        The retry contract is declared with the standard ``@retry(...)``
+        decorator from tenacity. tenacity attaches the live ``stop`` /
+        ``wait`` config to the wrapped function as ``fn.retry``; assert via
+        that introspection hook rather than re-implementing scaffolding.
         """
+        pytest.importorskip("tenacity")  # ``sandbox-daytona`` extra
         from benchflow.sandbox.daytona import DaytonaSandbox
 
-        config = DaytonaSandbox._create_sandbox.retry_config  # type: ignore[attr-defined]
-        assert config["stop_after_attempt"] == 3
+        stop = DaytonaSandbox._create_sandbox.retry.stop  # type: ignore[attr-defined]
+        assert stop.max_attempt_number == 3
 
 
 class TestTransportErrorDiagnostics:

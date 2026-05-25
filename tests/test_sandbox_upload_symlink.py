@@ -40,7 +40,12 @@ async def test_daytona_sdk_upload_dir_skips_symlinked_files(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     pytest.importorskip("daytona")
-    from benchflow.sandbox.daytona import DaytonaSandbox
+    from benchflow.sandbox.daytona import DaytonaSandbox, _load_daytona_sdk
+
+    # ``__init__`` is what normally materializes the SDK handles
+    # ``_sdk_upload_dir`` consumes (e.g. ``FileUpload``). This test bypasses
+    # ``__init__`` via ``__new__``, so trigger the same lazy-load explicitly.
+    _load_daytona_sdk()
 
     secret = _planted_secret(tmp_path)
     src = tmp_path / "src"
