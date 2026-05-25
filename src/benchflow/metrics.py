@@ -20,6 +20,7 @@ from benchflow._utils.scoring import (
     pass_rate,
     pass_rate_excl_errors,
 )
+from benchflow.trajectories.metrics import result_skill_invocations
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,7 @@ class TaskMetrics:
     task_name: str
     reward: float | None = None
     n_tool_calls: int = 0
+    n_skill_invocations: int = 0
     n_prompts: int = 0
     error: str | None = None
     verifier_error: str | None = None
@@ -160,6 +162,16 @@ class BenchmarkMetrics:
         )
 
     @property
+    def avg_skill_invocations(self) -> float:
+        """Average structured skill invocations per completed task."""
+        completed = [t for t in self.tasks if t.completed]
+        return (
+            sum(t.n_skill_invocations for t in completed) / len(completed)
+            if completed
+            else 0.0
+        )
+
+    @property
     def avg_duration(self) -> float:
         """Average duration per completed task (seconds)."""
         completed = [t for t in self.tasks if t.completed and t.duration_sec > 0]
@@ -282,6 +294,7 @@ class BenchmarkMetrics:
             "score": f"{self.score:.1%}",
             "score_excl_errors": f"{self.score_excl_errors:.1%}",
             "avg_tool_calls": round(self.avg_tool_calls, 1),
+            "avg_skill_invocations": round(self.avg_skill_invocations, 1),
             "avg_duration_sec": round(self.avg_duration, 1),
             "total_input_tokens": self.total_input_tokens,
             "total_output_tokens": self.total_output_tokens,
@@ -366,6 +379,7 @@ def collect_metrics(
                 task_name=task_name,
                 reward=reward,
                 n_tool_calls=r.get("n_tool_calls", 0),
+                n_skill_invocations=result_skill_invocations(r),
                 n_prompts=r.get("n_prompts", 0),
                 error=r.get("error"),
                 verifier_error=r.get("verifier_error"),

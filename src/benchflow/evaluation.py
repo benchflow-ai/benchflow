@@ -27,6 +27,7 @@ import yaml
 from benchflow._utils.evaluation_results import (
     phase_timing_summary,
     rollout_result_payload,
+    skill_invocation_summary,
     tool_call_summary,
     usage_summary,
 )
@@ -1279,6 +1280,7 @@ class Evaluation:
             ),
             "memory": memory,
             "memory_scores": memory_scores,
+            **skill_invocation_summary(all_results),
             **usage_summary(all_results),
             **tool_call_summary(all_results),
             **phase_timing_summary(all_results),

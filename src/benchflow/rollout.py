@@ -100,6 +100,7 @@ from benchflow.trajectories._capture import (
     _capture_session_trajectory,
     _scrape_agent_trajectory,
 )
+from benchflow.trajectories.metrics import count_skill_invocations
 from benchflow.trajectories.tree import RolloutNode, RolloutTree, Step
 
 logger = logging.getLogger(__name__)
@@ -489,6 +490,7 @@ def _build_rollout_result(
     if diagnostics is None:
         diagnostics = RolloutDiagnostics()
     finished_at = datetime.now()
+    n_skill_invocations = count_skill_invocations(trajectory)
     result = RolloutResult(
         task_name=task_name,
         rollout_name=rollout_name,
@@ -498,6 +500,7 @@ def _build_rollout_result(
         agent_name=agent_name,
         model=model,
         n_tool_calls=n_tool_calls,
+        n_skill_invocations=n_skill_invocations,
         n_prompts=len(prompts),
         n_input_tokens=n_input_tokens,
         n_output_tokens=n_output_tokens,
@@ -535,9 +538,11 @@ def _build_rollout_result(
                 "agent_name": result.agent_name,
                 "model": result.model,
                 "n_tool_calls": result.n_tool_calls,
+                "n_skill_invocations": result.n_skill_invocations,
                 "n_prompts": result.n_prompts,
                 "agent_result": {
                     "n_tool_calls": result.n_tool_calls,
+                    "n_skill_invocations": result.n_skill_invocations,
                     "n_prompts": result.n_prompts,
                     "n_input_tokens": result.n_input_tokens,
                     "n_output_tokens": result.n_output_tokens,

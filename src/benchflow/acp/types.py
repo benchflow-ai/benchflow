@@ -78,6 +78,7 @@ class ToolKind(StrEnum):
     BROWSER = "browser"
     READ = "read"
     WRITE = "write"
+    SKILL = "skill"
 
 
 class ToolCallStatus(StrEnum):
