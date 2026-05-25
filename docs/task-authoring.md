@@ -252,6 +252,10 @@ bench eval create \
   --agent-env BENCHFLOW_SKILL_NUDGE=name
 ```
 
+Task-local skills are mounted through the selected agent's native skill paths.
+See [Architecture: skill loading](./architecture.md#skill-loading) for the
+canonical loading semantics and nudge modes.
+
 `bench tasks generate` converts agent traces (Claude Code sessions, opentraces records, or HuggingFace datasets) into task directories with `task.toml`, `instruction.md`, and a file-existence `test.sh`. Use `--dry-run` to preview traces before generating. See [CLI reference](./reference/cli.md#bench-tasks-generate) for all flags.
 
 `bench tasks check` validates that `task.toml`, `instruction.md` (non-empty), `environment/Dockerfile`, and `tests/` (non-empty) all exist, and that `[agent].timeout_sec` is set. Exits with code 1 on failure (CI-friendly).

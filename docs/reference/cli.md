@@ -96,10 +96,9 @@ bench eval create \
 | `--exclude` | — | Skip these task names; repeatable (e.g. `--exclude quantum-numerical-simulation`) |
 
 When mounting skills, the recommended docs default is
-`--agent-env BENCHFLOW_SKILL_NUDGE=name`. It prepends a short hint telling the agent
-which skills are available and where to read them. More verbose modes are
-`description` and `full`. Omit the env var to leave BenchFlow's runtime default
-off.
+`--agent-env BENCHFLOW_SKILL_NUDGE=name`. See
+[Architecture: skill loading](../architecture.md#skill-loading) for how
+`--skills-dir` is registered with each agent and how the nudge modes differ.
 
 `--source-env` is for external hosted environment hubs. The first supported
 runner is PrimeIntellect / Verifiers: BenchFlow preserves the hosted identity

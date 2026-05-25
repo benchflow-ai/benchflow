@@ -115,6 +115,25 @@ A Rollout is checkpointable because three snapshot layers compose — container 
 
 **Agent — who acts.** The agent under test (eval) or the policy under training — Han's harness, "not intelligent." Protocol: **ACP** (the official `agent-client-protocol`). BYO via `--agent-import-path`. The registry stores agent *declarations* as data, not install code in the kernel. A trainer-served policy endpoint (OpenAI-compatible, hot-swappable) is one agent provider type. The plane's real surface is the `Session` (below) — not just `connect`.
 
+### Skill loading
+
+BenchFlow treats mounted skills as agent-native memory, not prompt text. A
+`--skills-dir` value, or a task-local `environment/skills` directory, is copied
+into the sandbox and registered through the selected agent's registry
+`skill_paths`. For Claude Code via `claude-agent-acp`, that means the skill packs
+land under the Claude Code skill root (for example `$HOME/.claude/skills`) and
+are discovered by Claude Code's native skill mechanism.
+
+Claude Code reads each skill's frontmatter name and description for native
+discovery. The full `SKILL.md` body and bundled resources are loaded by the
+agent when it invokes or reads the skill; BenchFlow does not inline every
+mounted skill body into the task prompt by default.
+
+`BENCHFLOW_SKILL_NUDGE` is an optional prompt nudge layered on top of native
+discovery. Use `name` to tell the agent which skills are mounted, `description`
+to include each mounted skill's description, or `full` to include the full
+`SKILL.md` body. Omit the variable to keep BenchFlow's runtime default off.
+
 **Environment — the world (Han's S).** The stateful world the agent acts in. Owns the world's lifecycle: `provision / readiness / query / snapshot / restore / reset / teardown`. See "The Environment plane & the manifest."
 
 **Reward — how it's scored (Han's V).** `RewardFunc` / `Rubric` / verifier. `V: (task, completion, info) → [0,1]`, generalised to a graded, multi-space, multi-granularity signal over the trajectory tree. See "Evaluation."
