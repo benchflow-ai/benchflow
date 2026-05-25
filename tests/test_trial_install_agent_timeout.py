@@ -48,22 +48,22 @@ async def test_install_agent_forwards_sandbox_setup_timeout(
     lockdown_paths_mock = AsyncMock()
     setup_sandbox_user_mock = AsyncMock(return_value=expected_setup_return)
 
-    monkeypatch.setattr("benchflow.rollout.install_agent", install_agent_mock)
+    monkeypatch.setattr(trial._planes, "install_agent", install_agent_mock)
     monkeypatch.setattr(
-        "benchflow.rollout.write_credential_files", write_credential_files_mock
+        trial._planes, "write_credential_files", write_credential_files_mock
     )
     monkeypatch.setattr(
-        "benchflow.rollout.upload_subscription_auth", upload_subscription_auth_mock
+        trial._planes, "upload_subscription_auth", upload_subscription_auth_mock
     )
     monkeypatch.setattr(
-        "benchflow.rollout._snapshot_build_config", snapshot_build_config_mock
+        trial._planes, "snapshot_build_config", snapshot_build_config_mock
     )
     monkeypatch.setattr(
-        "benchflow.rollout._seed_verifier_workspace", seed_verifier_workspace_mock
+        trial._planes, "seed_verifier_workspace", seed_verifier_workspace_mock
     )
-    monkeypatch.setattr("benchflow.rollout.deploy_skills", deploy_skills_mock)
-    monkeypatch.setattr("benchflow.rollout.lockdown_paths", lockdown_paths_mock)
-    monkeypatch.setattr("benchflow.rollout.setup_sandbox_user", setup_sandbox_user_mock)
+    monkeypatch.setattr(trial._planes, "deploy_skills", deploy_skills_mock)
+    monkeypatch.setattr(trial._planes, "lockdown_paths", lockdown_paths_mock)
+    monkeypatch.setattr(trial._planes, "setup_sandbox_user", setup_sandbox_user_mock)
 
     await trial.install_agent()
 
@@ -120,17 +120,17 @@ async def test_install_agent_passes_effective_task_path_to_deploy_skills(
     trial._effective_task_path = effective_task_path
 
     deploy_skills_mock = AsyncMock()
-    monkeypatch.setattr("benchflow.rollout.install_agent", AsyncMock())
-    monkeypatch.setattr("benchflow.rollout.write_credential_files", AsyncMock())
-    monkeypatch.setattr("benchflow.rollout.upload_subscription_auth", AsyncMock())
-    monkeypatch.setattr("benchflow.rollout._snapshot_build_config", AsyncMock())
-    monkeypatch.setattr("benchflow.rollout._seed_verifier_workspace", AsyncMock())
-    monkeypatch.setattr("benchflow.rollout.deploy_skills", deploy_skills_mock)
-    monkeypatch.setattr("benchflow.rollout.lockdown_paths", AsyncMock())
+    monkeypatch.setattr(trial._planes, "install_agent", AsyncMock())
+    monkeypatch.setattr(trial._planes, "write_credential_files", AsyncMock())
+    monkeypatch.setattr(trial._planes, "upload_subscription_auth", AsyncMock())
+    monkeypatch.setattr(trial._planes, "snapshot_build_config", AsyncMock())
+    monkeypatch.setattr(trial._planes, "seed_verifier_workspace", AsyncMock())
+    monkeypatch.setattr(trial._planes, "deploy_skills", deploy_skills_mock)
+    monkeypatch.setattr(trial._planes, "lockdown_paths", AsyncMock())
     monkeypatch.setattr(
-        "benchflow.rollout.setup_sandbox_user", AsyncMock(return_value="/home/agent")
+        trial._planes, "setup_sandbox_user", AsyncMock(return_value="/home/agent")
     )
-    monkeypatch.setattr("benchflow.rollout.apply_web_tool_policy", AsyncMock())
+    monkeypatch.setattr(trial._planes, "apply_web_tool_policy", AsyncMock())
 
     await trial.install_agent()
 
@@ -161,18 +161,18 @@ async def test_install_agent_applies_web_policy_after_sandbox_setup(
 
     install_agent_mock = AsyncMock(return_value=MagicMock())
 
-    monkeypatch.setattr("benchflow.rollout.install_agent", install_agent_mock)
+    monkeypatch.setattr(trial._planes, "install_agent", install_agent_mock)
     monkeypatch.setattr(
-        "benchflow.rollout.write_credential_files", write_credential_files_mock
+        trial._planes, "write_credential_files", write_credential_files_mock
     )
-    monkeypatch.setattr("benchflow.rollout.upload_subscription_auth", AsyncMock())
-    monkeypatch.setattr("benchflow.rollout._snapshot_build_config", AsyncMock())
-    monkeypatch.setattr("benchflow.rollout._seed_verifier_workspace", AsyncMock())
-    monkeypatch.setattr("benchflow.rollout.deploy_skills", AsyncMock())
-    monkeypatch.setattr("benchflow.rollout.lockdown_paths", AsyncMock())
-    monkeypatch.setattr("benchflow.rollout.setup_sandbox_user", setup_sandbox_user_mock)
+    monkeypatch.setattr(trial._planes, "upload_subscription_auth", AsyncMock())
+    monkeypatch.setattr(trial._planes, "snapshot_build_config", AsyncMock())
+    monkeypatch.setattr(trial._planes, "seed_verifier_workspace", AsyncMock())
+    monkeypatch.setattr(trial._planes, "deploy_skills", AsyncMock())
+    monkeypatch.setattr(trial._planes, "lockdown_paths", AsyncMock())
+    monkeypatch.setattr(trial._planes, "setup_sandbox_user", setup_sandbox_user_mock)
     monkeypatch.setattr(
-        "benchflow.rollout.apply_web_tool_policy", apply_web_tool_policy_mock
+        trial._planes, "apply_web_tool_policy", apply_web_tool_policy_mock
     )
 
     await trial.install_agent()

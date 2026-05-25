@@ -10,8 +10,8 @@ and multi-agent runs. Everything else layers on top:
 Architecture:
     Agent  → thin wrapper around registry entry + model + creds
     Environment → wraps Docker/Daytona sandbox, owns lifecycle
-    Scene → 1+ roles + transport + scheduler (from _scene.py)
-    Runtime → env + scene + execute loop + verify
+    Scene → declarative roles + turns, lowered to rollout Steps
+    Runtime → env + rollout execution loop + verify
     RuntimeResult → trajectories + messages + rewards + snapshots
 """
 
@@ -60,11 +60,12 @@ class Environment:
         task_path: str | Path,
         sandbox: str = "daytona",
         rollout_name: str | None = None,
+        planes: Any | None = None,
     ) -> Environment:
         """Create an environment from a task directory."""
         from uuid import uuid4
 
-        from benchflow.sandbox.setup import _create_environment
+        from benchflow.contracts import default_rollout_planes
         from benchflow.task import RolloutPaths, Task
 
         task_path = Path(task_path)
@@ -77,12 +78,15 @@ class Environment:
             / f"{rollout_name}__{uuid4().hex[:8]}"
         )
         rollout_paths.mkdir()
-        inner = _create_environment(
-            sandbox_type=sandbox,
+        plane_bundle = planes or default_rollout_planes()
+        inner = plane_bundle.create_environment(
+            sandbox,
             task=task,
             task_path=task_path,
             rollout_name=rollout_name,
             rollout_paths=rollout_paths,
+            preserve_agent_network=False,
+            environment_manifest=None,
         )
         return cls(inner=inner, task_path=task_path, sandbox=sandbox)
 
@@ -221,7 +225,6 @@ class RuntimeResult:
         rollout_dir/prompts.json      — prompts sent to agent
 
     Optional artifacts:
-        rollout_dir/scene_trajectory.jsonl — inter-agent messages (multi-agent)
         rollout_dir/snapshots/             — checkpoint refs (if snapshot_policy != "none")
     """
 

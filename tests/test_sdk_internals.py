@@ -435,7 +435,6 @@ class TestWriteConfig:
             ],
             turns=[Turn("coder", "solve it")],
             skills_dir="/scene-skills",
-            parallel_group="pair",
         )
         self._write(
             tmp_path,
@@ -459,7 +458,6 @@ class TestWriteConfig:
             {
                 "name": "code-review",
                 "skills_dir": "/scene-skills",
-                "parallel_group": "pair",
                 "roles": [
                     {
                         "name": "coder",

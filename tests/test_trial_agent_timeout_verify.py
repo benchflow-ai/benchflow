@@ -45,8 +45,8 @@ async def test_agent_timeout_verifier_result_handling(
     async def install_agent():
         calls.append("install_agent")
 
-    async def run_scene(_scene):
-        calls.append("run_scene")
+    async def run_steps(_steps):
+        calls.append("run_steps")
         raise TimeoutError("Agent prompt exceeded wall-clock budget 5s")
 
     async def verify():
@@ -71,7 +71,7 @@ async def test_agent_timeout_verifier_result_handling(
     monkeypatch.setattr(trial, "setup", setup)
     monkeypatch.setattr(trial, "start", start)
     monkeypatch.setattr(trial, "install_agent", install_agent)
-    monkeypatch.setattr(trial, "_run_scene", run_scene)
+    monkeypatch.setattr(trial, "_run_steps", run_steps)
     monkeypatch.setattr(trial, "verify", verify)
     monkeypatch.setattr(trial, "cleanup", cleanup)
     monkeypatch.setattr(trial, "_build_result", build_result)
@@ -82,7 +82,7 @@ async def test_agent_timeout_verifier_result_handling(
         "setup",
         "start",
         "install_agent",
-        "run_scene",
+        "run_steps",
         "verify",
         "cleanup",
         "build_result",
