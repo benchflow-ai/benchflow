@@ -72,6 +72,9 @@ class RolloutResult:
         agent_name:   Name reported by the agent via ACP initialize handshake.
         model:        Model ID used (e.g. "google/gemini-3.1-flash-lite-preview").
         n_tool_calls: Total tool calls observed during the session.
+        n_skill_invocations: Total skill tool calls observed in structured ACP
+                      trajectory events. Counts only ``tool_call`` events whose
+                      structured ``kind`` is ``"skill"``.
         n_prompts:    Number of user prompts sent to the agent.
         n_input_tokens: Cumulative provider prompt/input tokens, or None when
                       provider telemetry was unavailable.
@@ -124,6 +127,7 @@ class RolloutResult:
         agent_name: str = "",
         model: str | None = None,
         n_tool_calls: int = 0,
+        n_skill_invocations: int = 0,
         n_prompts: int = 0,
         n_input_tokens: int | None = None,
         n_output_tokens: int | None = None,
@@ -152,6 +156,7 @@ class RolloutResult:
         self.agent_name = agent_name
         self.model = model
         self.n_tool_calls = n_tool_calls
+        self.n_skill_invocations = n_skill_invocations
         self.n_prompts = n_prompts
         self.n_input_tokens = n_input_tokens
         self.n_output_tokens = n_output_tokens

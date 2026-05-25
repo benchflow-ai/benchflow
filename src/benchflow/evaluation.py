@@ -26,6 +26,7 @@ import yaml
 
 from benchflow._utils.evaluation_results import (
     rollout_result_payload,
+    skill_invocation_summary,
     usage_summary,
 )
 from benchflow._utils.learner_memory import (
@@ -1224,6 +1225,7 @@ class Evaluation:
             ),
             "memory": memory,
             "memory_scores": memory_scores,
+            **skill_invocation_summary(all_results),
             **usage_summary(all_results),
             **summary_source_fields(cfg.source_provenance, all_results),
         }

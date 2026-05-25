@@ -9,12 +9,20 @@ from benchflow._utils.reward_events import (
     reward_event_to_dict,
 )
 from benchflow.models import RolloutResult
+from benchflow.trajectories.metrics import (
+    count_skill_invocations,
+    result_skill_invocations,
+)
 
 
 def agent_result_from_rollout(result: RolloutResult) -> dict[str, Any]:
     """Return the serialized agent_result block for an in-memory rollout result."""
+    n_skill_invocations = result.n_skill_invocations or count_skill_invocations(
+        result.trajectory
+    )
     return {
         "n_tool_calls": result.n_tool_calls,
+        "n_skill_invocations": n_skill_invocations,
         "n_prompts": result.n_prompts,
         "n_input_tokens": result.n_input_tokens,
         "n_output_tokens": result.n_output_tokens,
@@ -40,6 +48,9 @@ def rollout_result_payload(
     task_source = result.source_provenance or task_source_provenance(
         source_provenance, tasks_dir / task_name
     )
+    n_skill_invocations = result.n_skill_invocations or count_skill_invocations(
+        result.trajectory
+    )
     return {
         "task_name": result.task_name,
         "rewards": result.rewards,
@@ -47,6 +58,7 @@ def rollout_result_payload(
         "verifier_error": result.verifier_error,
         "export_error": result.export_error,
         "n_tool_calls": result.n_tool_calls,
+        "n_skill_invocations": n_skill_invocations,
         "agent_result": agent_result_from_rollout(result),
         **(
             {"reward_events": [reward_event_to_dict(event) for event in reward_events]}
@@ -91,4 +103,15 @@ def usage_summary(results: dict[str, dict]) -> dict[str, Any]:
             round(total_cost / len(covered), 10) if covered else None
         ),
         "telemetry_coverage": (len(covered) / len(completed) if completed else 0.0),
+    }
+
+
+def skill_invocation_summary(results: dict[str, dict]) -> dict[str, Any]:
+    """Aggregate structured skill invocation counts for summary.json."""
+    total = sum(result_skill_invocations(result) for result in results.values())
+    return {
+        "total_skill_invocations": total,
+        "avg_skill_invocations": (
+            round(total / len(results), 1) if results else 0.0
+        ),
     }

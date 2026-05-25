@@ -408,10 +408,17 @@ The `result.json` contains:
 ```json
 {
   "rewards": {"reward": 0.48},
+  "n_tool_calls": 12,
+  "n_skill_invocations": 2,
   "passed": true,
   "verifier_output": "..."
 }
 ```
+
+`n_skill_invocations` is derived from structured ACP trajectory events: BenchFlow
+counts only `tool_call` events whose `kind` is `skill`. Job `summary.json`
+also includes `total_skill_invocations` and `avg_skill_invocations` across the
+rollouts in the run.
 
 List evaluations:
 ```bash
