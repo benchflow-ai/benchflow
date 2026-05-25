@@ -42,6 +42,26 @@ from benchflow.environment.protocol import (
 )
 
 
+class EnvironmentSnapshotError(RuntimeError):
+    """Raised when a snapshot or restore sandbox command fails (issue #387).
+
+    Snapshot/restore are the substrate ``Rollout.branch()`` builds rollback on
+    — a silent infra failure here lets a Branch record a checkpoint that never
+    existed (or restore from a copy that did not happen), then score children
+    from corrupted state. Bubbling a typed error keeps that failure visible to
+    the caller so child rewards / estimated V(parent) never leak into release
+    evidence as if they were real.
+    """
+
+    def __init__(self, message: str, *, command: str, exit_code: int,
+                 stdout: str, stderr: str) -> None:
+        super().__init__(message)
+        self.command = command
+        self.exit_code = exit_code
+        self.stdout = stdout
+        self.stderr = stderr
+
+
 class ManifestEnvironment:
     """Runs a manifest-declared stateful environment over a Sandbox.
 
@@ -175,6 +195,11 @@ class ManifestEnvironment:
         """Copy the declared state files into a fresh in-sandbox snapshot dir.
 
         Caller guarantees ``self._manifest.state`` is not None.
+
+        Issue #387: if the sandbox command fails (sqlite3 missing, db file
+        absent, copy permission denied), raise ``EnvironmentSnapshotError``
+        rather than recording a checkpoint that never existed — Branch and
+        ``reset()`` depend on this being a real backup.
         """
         spec = self._manifest.state
         assert spec is not None  # caller checks
@@ -184,7 +209,18 @@ class ManifestEnvironment:
         for src in spec.paths:
             dest = f"{snap_dir}/{PurePosixPath(src).name}"
             cmds.append(f'sqlite3 {shlex.quote(src)} ".backup {shlex.quote(dest)}"')
-        await self._sandbox.exec(" && ".join(cmds), timeout_sec=120)
+        command = " && ".join(cmds)
+        result = await self._sandbox.exec(command, timeout_sec=120)
+        if result.return_code != 0:
+            raise EnvironmentSnapshotError(
+                f"snapshot failed for environment '{self._manifest.name}' "
+                f"(exit_code={result.return_code}): "
+                f"{(result.stderr or result.stdout or '').strip()[:500]}",
+                command=command,
+                exit_code=result.return_code,
+                stdout=result.stdout or "",
+                stderr=result.stderr or "",
+            )
         return StateSnapshot(id=snap_id, path=snap_dir)
 
     async def restore(self, snap: StateSnapshot) -> None:
@@ -193,6 +229,12 @@ class ManifestEnvironment:
         Copies each captured DB file from the snapshot directory back over
         its live path. The caller quiesces the agent and services first
         (the Branch lifecycle) so the copy is consistent.
+
+        Issue #387: if the sandbox ``cp`` command fails (snapshot directory
+        missing, destination not writable), raise
+        ``EnvironmentSnapshotError`` rather than silently returning success
+        — the live state is then unchanged and the caller must treat it as
+        an infra failure, not a successful rollback.
         """
         spec = self._manifest.state
         if spec is None:
@@ -205,7 +247,18 @@ class ManifestEnvironment:
         for dst in spec.paths:
             src = f"{snap.path}/{PurePosixPath(dst).name}"
             cmds.append(f"cp {shlex.quote(src)} {shlex.quote(dst)}")
-        await self._sandbox.exec(" && ".join(cmds), timeout_sec=120)
+        command = " && ".join(cmds)
+        result = await self._sandbox.exec(command, timeout_sec=120)
+        if result.return_code != 0:
+            raise EnvironmentSnapshotError(
+                f"restore failed for environment '{self._manifest.name}' "
+                f"snapshot {snap.id!r} (exit_code={result.return_code}): "
+                f"{(result.stderr or result.stdout or '').strip()[:500]}",
+                command=command,
+                exit_code=result.return_code,
+                stdout=result.stdout or "",
+                stderr=result.stderr or "",
+            )
 
     async def reset(self) -> None:
         """Return the environment to its per-task initial state.

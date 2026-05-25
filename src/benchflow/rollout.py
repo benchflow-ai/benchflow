@@ -78,7 +78,6 @@ from benchflow.providers.runtime import (
 from benchflow.rewards.validation import validate_reward_map
 from benchflow.rollout_branch import ChildRunner
 from benchflow.rollout_branch import branch as _branch_engine
-from benchflow.sandbox.daytona import SandboxStartupError
 from benchflow.sandbox.lockdown import (
     _resolve_locked_paths,
     _seed_verifier_workspace,
@@ -86,6 +85,7 @@ from benchflow.sandbox.lockdown import (
     lockdown_paths,
     setup_sandbox_user,
 )
+from benchflow.sandbox.protocol import SandboxStartupError
 from benchflow.sandbox.setup import (
     _create_environment,
     _inject_skills_into_dockerfile,

@@ -17,9 +17,36 @@ import re
 import shlex
 from abc import abstractmethod
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
-from tenacity import retry, stop_after_attempt, wait_exponential
+try:
+    from tenacity import (
+        retry,
+        retry_if_exception_type,
+        stop_after_attempt,
+        wait_exponential,
+    )
+except ImportError:  # base install without ``sandbox-daytona`` extras (#358)
+    # ``tenacity`` ships under the ``sandbox-daytona`` extra. The fallbacks below
+    # let this module import cleanly in a base install — ``DaytonaSandbox()`` is
+    # what requires the real SDK (and tenacity along with it).
+
+    def retry(*_args: Any, **_kwargs: Any) -> Any:
+        def _decorator(fn: Any) -> Any:
+            return fn
+
+        return _decorator
+
+    def stop_after_attempt(*_args: Any, **_kwargs: Any) -> Any:
+        return None
+
+    def wait_exponential(*_args: Any, **_kwargs: Any) -> Any:
+        return None
+
+    def retry_if_exception_type(*_args: Any, **_kwargs: Any) -> Any:
+        return None
+
 
 from benchflow._paths import iter_safe_tree
 from benchflow.sandbox._base import (
@@ -36,10 +63,21 @@ from benchflow.sandbox._compose import (
     compose_mkdir_p_command,
     compose_parent_mkdir_p_command,
 )
-from benchflow.sandbox.protocol import SandboxImage, SandboxSnapshotNotSupported
+from benchflow.sandbox.protocol import (
+    SandboxImage,
+    SandboxSnapshotNotSupported,
+    SandboxStartupError,
+)
 from benchflow.task.config import SandboxConfig
 from benchflow.task.env import resolve_env_vars
 from benchflow.task.paths import RolloutPaths, SandboxPaths
+
+# ``SandboxStartupError`` used to live in this module. It now lives in
+# ``benchflow.sandbox.protocol`` so a base install without the
+# ``sandbox-daytona`` extra can still import ``benchflow.rollout`` (issue #358).
+# Re-export here for backward compatibility — existing imports of
+# ``benchflow.sandbox.daytona.SandboxStartupError`` keep working.
+__all__ = ["DaytonaSandbox", "SandboxStartupError"]
 
 
 def _ensure_daytona_anyio_compat() -> None:
@@ -64,52 +102,73 @@ def _ensure_daytona_anyio_compat() -> None:
     anyio.AsyncContextManagerMixin = _AsyncContextManagerMixin  # type: ignore[attr-defined]
 
 
-_ensure_daytona_anyio_compat()
-_daytona = importlib.import_module("daytona")
-_snapshot = importlib.import_module("daytona._async.snapshot")
-AsyncDaytona = _daytona.AsyncDaytona
-AsyncSandbox = _daytona.AsyncSandbox
-CreateSandboxFromImageParams = _daytona.CreateSandboxFromImageParams
-CreateSandboxFromSnapshotParams = _daytona.CreateSandboxFromSnapshotParams
-DaytonaNotFoundError = _daytona.DaytonaNotFoundError
-FileDownloadRequest = _daytona.FileDownloadRequest
-FileUpload = _daytona.FileUpload
-Image = _daytona.Image
-Resources = _daytona.Resources
-SessionExecuteRequest = _daytona.SessionExecuteRequest
-SnapshotState = _snapshot.SnapshotState
+# Module-level handles for the Daytona SDK. The SDK is shipped under the
+# ``sandbox-daytona`` extra and is pulled in lazily — see ``_load_daytona_sdk``
+# — so importing this module in a base install does not require it (#358).
+_DAYTONA_SDK_LOADED = False
+AsyncDaytona: Any = None
+AsyncSandbox: Any = None
+CreateSandboxFromImageParams: Any = None
+CreateSandboxFromSnapshotParams: Any = None
+DaytonaNotFoundError: Any = None
+FileDownloadRequest: Any = None
+FileUpload: Any = None
+Image: Any = None
+Resources: Any = None
+SessionExecuteRequest: Any = None
+SnapshotState: Any = None
+
+
+def _load_daytona_sdk() -> None:
+    """Import the optional Daytona SDK on first use.
+
+    The Daytona Python SDK is shipped under the ``sandbox-daytona`` extra; a
+    base install of ``benchflow`` must not require it. This helper materializes
+    the module-level handles the strategy classes consume, and is idempotent so
+    it is cheap to call at the top of each entry-point method.
+    """
+    global _DAYTONA_SDK_LOADED
+    global AsyncDaytona, AsyncSandbox
+    global CreateSandboxFromImageParams, CreateSandboxFromSnapshotParams
+    global DaytonaNotFoundError, FileDownloadRequest, FileUpload
+    global Image, Resources, SessionExecuteRequest, SnapshotState
+
+    if _DAYTONA_SDK_LOADED:
+        return
+
+    _ensure_daytona_anyio_compat()
+    try:
+        _daytona = importlib.import_module("daytona")
+        _snapshot = importlib.import_module("daytona._async.snapshot")
+    except ImportError as e:
+        raise ImportError(
+            "The Daytona sandbox requires the 'sandbox-daytona' extra. "
+            "Install it with: pip install 'benchflow[sandbox-daytona]'"
+        ) from e
+
+    AsyncDaytona = _daytona.AsyncDaytona
+    AsyncSandbox = _daytona.AsyncSandbox
+    CreateSandboxFromImageParams = _daytona.CreateSandboxFromImageParams
+    CreateSandboxFromSnapshotParams = _daytona.CreateSandboxFromSnapshotParams
+    DaytonaNotFoundError = _daytona.DaytonaNotFoundError
+    FileDownloadRequest = _daytona.FileDownloadRequest
+    FileUpload = _daytona.FileUpload
+    Image = _daytona.Image
+    Resources = _daytona.Resources
+    SessionExecuteRequest = _daytona.SessionExecuteRequest
+    SnapshotState = _snapshot.SnapshotState
+    _DAYTONA_SDK_LOADED = True
+
 
 logger = logging.getLogger("benchflow")
 
-_SandboxParams = CreateSandboxFromImageParams | CreateSandboxFromSnapshotParams
+# ``_SandboxParams`` was previously a top-level union of two SDK types. The
+# SDK types are now loaded lazily (issue #358), so concrete sandbox params are
+# typed as ``Any`` here — callers build them inside methods that have already
+# called ``_load_daytona_sdk()``.
+_SandboxParams = Any
 _DAYTONA_COMMAND_POLL_INTERVAL_SEC = 1.0
 _STARTUP_HARD_TIMEOUT_BUFFER_SEC = 120
-
-
-class SandboxStartupError(RuntimeError):
-    """Raised when Daytona sandbox creation fails or times out.
-
-    Guards ENG-147: carries structured diagnostics for result.json.
-    """
-
-    def __init__(
-        self,
-        message: str,
-        *,
-        sandbox_id: str | None = None,
-        sandbox_state: str | None = None,
-        attempts: int = 0,
-        build_timeout_sec: float | None = None,
-    ) -> None:
-        super().__init__(message)
-        self.sandbox_startup_info: dict = {
-            "reason": "sandbox_startup_failed",
-            "sandbox_id": sandbox_id,
-            "sandbox_state": sandbox_state,
-            "attempts": attempts,
-            "build_timeout_sec": build_timeout_sec,
-            "raw_message": str(message)[:500],
-        }
 
 
 # A POSIX shell identifier: a name the shell can ``export``. Keys outside this
@@ -1059,6 +1118,11 @@ class DaytonaSandbox(BaseSandbox):
         auto_delete_interval_mins: int = 0,
         **kwargs: object,
     ) -> None:
+        # Materialize the optional Daytona SDK on first DaytonaSandbox
+        # instantiation. Importing this module is now free of the SDK
+        # dependency (issue #358); the SDK is required only at construction
+        # time of a real Daytona sandbox.
+        _load_daytona_sdk()
         # Detect compose mode before super().__init__ calls _validate_definition
         self._compose_mode = (environment_dir / "docker-compose.yaml").exists()
         self._kwargs = kwargs

@@ -101,8 +101,14 @@ class TestDaytonaExecEnvSecrecy:
         Stubs ``execute_session_command`` and inspects the command string
         that would be sent to the Daytona session API.
         """
-        from benchflow.sandbox.daytona import DaytonaSandbox
+        pytest.importorskip("daytona")  # sandbox-daytona optional dependency
+        from benchflow.sandbox.daytona import DaytonaSandbox, _load_daytona_sdk
 
+        # ``DaytonaSandbox.__init__`` is what normally materializes the SDK
+        # handles ``_sandbox_exec`` consumes (e.g. ``SessionExecuteRequest``).
+        # This test bypasses ``__init__`` to keep its setup tiny, so trigger
+        # the same lazy-load explicitly.
+        _load_daytona_sdk()
         sandbox = DaytonaSandbox.__new__(DaytonaSandbox)
 
         captured: dict[str, str] = {}

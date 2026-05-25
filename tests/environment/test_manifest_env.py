@@ -9,7 +9,10 @@ are handled by entry-point (`<binary> --help`) detection.
 import pytest
 
 from benchflow.environment.manifest import EnvironmentManifest
-from benchflow.environment.manifest_env import ManifestEnvironment
+from benchflow.environment.manifest_env import (
+    EnvironmentSnapshotError,
+    ManifestEnvironment,
+)
 from benchflow.environment.protocol import Environment, StateSnapshot
 from benchflow.sandbox.protocol import ExecResult
 
@@ -327,3 +330,81 @@ async def test_reset_is_idempotent_across_multiple_calls():
     restarts = [c for c in sandbox.exec_calls if "serve" in c]
     assert len(pkills) == 2
     assert len(restarts) == 2
+
+
+# --- #387: snapshot/restore must surface sandbox-command failures ----------
+
+
+class _FailingSandbox:
+    """Sandbox stand-in whose ``exec`` returns non-zero for snapshot/restore.
+
+    Mirrors the minimum surface ``ManifestEnvironment`` calls — readiness/
+    detection probes succeed so ``provision`` reaches the baseline-capture
+    step, but any ``.backup`` (snapshot) or ``cp`` (restore) command fails
+    so the regression for #387 has something to surface.
+    """
+
+    def __init__(self, *, fail_on: str) -> None:
+        self.exec_calls: list[str] = []
+        self._fail_on = fail_on
+        self.host = "localhost"
+        self.expose_ports: list[int] = []
+
+    async def exec(
+        self, cmd: str, *, user: str = "root", timeout_sec: int = 30
+    ) -> ExecResult:
+        self.exec_calls.append(cmd)
+        if self._fail_on in cmd:
+            return ExecResult(
+                return_code=1, stdout="", stderr="sqlite3: file is not a database"
+            )
+        return ExecResult(return_code=0, stdout="", stderr="")
+
+
+async def test_snapshot_raises_when_sandbox_command_fails():
+    """Guards the fix from PR #486 for #387: a failed ``sqlite3 .backup`` must
+    raise instead of returning a bogus StateSnapshot — otherwise Branch records
+    a checkpoint that never existed and children get scored against corrupted
+    state."""
+    sandbox = _FailingSandbox(fail_on=".backup")
+    # Build the env without calling provision() — provision would itself
+    # trigger _capture_baseline, and we want to test snapshot() in isolation.
+    env = ManifestEnvironment(CLAWS_STATEFUL, sandbox=sandbox)
+    with pytest.raises(EnvironmentSnapshotError) as exc_info:
+        await env.snapshot()
+    err = exc_info.value
+    assert err.exit_code == 1
+    assert ".backup" in err.command
+    assert "sqlite3" in err.stderr
+
+
+async def test_restore_raises_when_sandbox_command_fails():
+    """Guards the fix from PR #486 for #387: a failed ``cp`` during restore
+    must raise instead of returning success — the live state is unchanged but
+    the caller thinks rollback worked, which corrupts every subsequent branch
+    child."""
+    # Use a non-failing sandbox to take a snapshot, then swap in a failing
+    # one so restore's `cp` returns non-zero.
+    good_sandbox = FakeSandbox()
+    env = ManifestEnvironment(CLAWS_STATEFUL, sandbox=good_sandbox)
+    snap = await env.snapshot()
+
+    bad_sandbox = _FailingSandbox(fail_on="cp ")
+    env_for_restore = ManifestEnvironment(CLAWS_STATEFUL, sandbox=bad_sandbox)
+    with pytest.raises(EnvironmentSnapshotError) as exc_info:
+        await env_for_restore.restore(snap)
+    err = exc_info.value
+    assert err.exit_code == 1
+    assert "cp " in err.command
+    assert snap.id in str(err)
+
+
+async def test_provision_baseline_capture_failure_surfaces():
+    """Guards the fix from PR #486 for #387: ``provision`` captures a baseline
+    for stateful manifests via the same snapshot path — if the sandbox command
+    fails there, provision must raise rather than leaving the env with no
+    baseline + believing setup succeeded."""
+    sandbox = _FailingSandbox(fail_on=".backup")
+    env = ManifestEnvironment(CLAWS_STATEFUL, sandbox=sandbox)
+    with pytest.raises(EnvironmentSnapshotError):
+        await env.provision(ctx=None)

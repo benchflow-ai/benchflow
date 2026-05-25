@@ -13,7 +13,16 @@ class TestDaytonaCommandPolling:
     async def test_exec_times_out_when_daytona_command_never_exits(self) -> None:
         """Guards the v0.5 Daytona polling timeout regression."""
         pytest.importorskip("daytona")  # sandbox-daytona optional dependency
-        from benchflow.sandbox.daytona import DaytonaSandbox, _DaytonaDirect
+        from benchflow.sandbox.daytona import (
+            DaytonaSandbox,
+            _DaytonaDirect,
+            _load_daytona_sdk,
+        )
+
+        # ``__init__`` is what normally materializes the SDK handles
+        # ``_sandbox_exec`` consumes. This test bypasses ``__init__`` via
+        # ``__new__``, so trigger the same lazy-load explicitly.
+        _load_daytona_sdk()
 
         class FakeProcess:
             async def create_session(self, session_id):
