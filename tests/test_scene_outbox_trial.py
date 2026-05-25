@@ -1,14 +1,7 @@
-"""Tests for outbox-based inter-role messaging in Rollout._run_scene().
-
-Verifies that when bf.run(RolloutConfig) executes a multi-role Scene,
-outbox files written by one role are read and injected into the next
-role's prompt — bridging the _scene.py outbox convention with the
-Rollout lifecycle.
-"""
+"""Tests for executing Scene-authored Steps through Rollout."""
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from pathlib import Path
 from unittest.mock import AsyncMock
@@ -24,6 +17,7 @@ from benchflow.rollout import (
     _resolve_skill_creator_root,
     _self_gen_prompt,
 )
+from benchflow.scenes import compile_scenes_to_steps
 
 
 @dataclass
@@ -34,41 +28,18 @@ class FakeExecResult:
 
 
 class FakeEnv:
-    """Minimal sandbox mock that tracks outbox files."""
+    """Minimal sandbox mock for Step execution tests."""
 
     def __init__(self) -> None:
-        self._files: dict[str, str] = {}
         self._exec_log: list[str] = []
         self._uploads: list[tuple[Path, str]] = []
 
     async def exec(self, cmd: str, **kwargs) -> FakeExecResult:
         self._exec_log.append(cmd)
-        if "rm -rf /app/.outbox" in cmd:
-            self._files = {
-                k: v
-                for k, v in self._files.items()
-                if not k.startswith("/app/.outbox/")
-            }
-            return FakeExecResult()
-        if "ls /app/.outbox/" in cmd:
-            files = [f for f in self._files if f.startswith("/app/.outbox/")]
-            return FakeExecResult(stdout="\n".join(files))
-        if cmd.startswith("cat "):
-            path = cmd.split(" ", 1)[1]
-            return FakeExecResult(stdout=self._files.get(path, "{}"))
-        if cmd.startswith("rm -f "):
-            path = cmd.split()[-1]
-            self._files.pop(path, None)
-            return FakeExecResult()
         return FakeExecResult()
 
     async def upload_dir(self, src: Path, dst: str) -> None:
         self._uploads.append((Path(src), dst))
-
-    def stage_outbox(self, recipient: str, content: str) -> None:
-        self._files[f"/app/.outbox/{recipient}.json"] = json.dumps(
-            {"to": recipient, "content": content}
-        )
 
 
 def _make_trial(scene: Scene) -> Rollout:
@@ -93,10 +64,8 @@ def coder_reviewer_scene() -> Scene:
         ],
         turns=[
             Turn("coder"),
-            Turn(
-                "reviewer", "Review the code. Write feedback to /app/.outbox/coder.json"
-            ),
-            Turn("coder", "Read feedback and fix issues."),
+            Turn("reviewer", "Review the code."),
+            Turn("coder", "Fix issues."),
         ],
     )
 
@@ -113,9 +82,46 @@ def self_review_scene() -> Scene:
     )
 
 
-async def test_outbox_setup_for_multi_role(coder_reviewer_scene: Scene) -> None:
-    """Multi-role scenes set up /app/.outbox with correct ownership."""
+async def test_run_steps_executes_compiled_turns(
+    coder_reviewer_scene: Scene,
+) -> None:
+    """Guards the fix for issue #413: rollout runs Steps, not Scene schedulers."""
     trial = _make_trial(coder_reviewer_scene)
+    prompts_received: list[tuple[str, list[str]]] = []
+    roles_connected: list[str] = []
+    turn_roles = [turn.role for turn in coder_reviewer_scene.turns]
+
+    async def fake_connect_as(role: Role) -> None:
+        roles_connected.append(role.name)
+
+    async def fake_execute(prompts=None):
+        role = turn_roles[len(prompts_received)]
+        prompts_received.append((role, prompts or []))
+        return [], 0
+
+    trial.connect_as = fake_connect_as  # type: ignore[method-assign]
+    trial.disconnect = AsyncMock()
+    trial.execute = fake_execute  # type: ignore[method-assign,assignment]
+
+    await trial._run_steps(
+        compile_scenes_to_steps(
+            [coder_reviewer_scene], default_prompt=trial._resolved_prompts[0]
+        )
+    )
+
+    assert roles_connected == ["coder", "reviewer", "coder"]
+    assert prompts_received == [
+        ("coder", ["Solve the task"]),
+        ("reviewer", ["Review the code."]),
+        ("coder", ["Fix issues."]),
+    ]
+    assert trial.disconnect.call_count == 3
+    assert all("outbox" not in cmd for cmd in trial._env._exec_log)
+
+
+async def test_run_steps_reuses_session_for_same_role(self_review_scene: Scene) -> None:
+    """Guards the fix for issue #413: repeated same-role turns are plain Steps."""
+    trial = _make_trial(self_review_scene)
     prompts_received: list[str] = []
 
     async def fake_execute(prompts=None):
@@ -124,148 +130,21 @@ async def test_outbox_setup_for_multi_role(coder_reviewer_scene: Scene) -> None:
 
     trial.connect_as = AsyncMock()
     trial.disconnect = AsyncMock()
-    trial.execute = fake_execute
+    trial.execute = fake_execute  # type: ignore[method-assign,assignment]
 
-    await trial._run_scene(coder_reviewer_scene)
+    await trial._run_steps(
+        compile_scenes_to_steps([self_review_scene], default_prompt="Solve")
+    )
 
-    outbox_setup = [c for c in trial._env._exec_log if "mkdir -p /app/.outbox" in c]
-    assert len(outbox_setup) == 1
-    assert "chown agent:agent /app/.outbox" in outbox_setup[0]
-
-
-async def test_no_outbox_setup_for_single_role(self_review_scene: Scene) -> None:
-    """Single-role scenes skip outbox setup (no inter-role messaging needed)."""
-    trial = _make_trial(self_review_scene)
-
-    async def fake_execute(prompts=None):
-        return [], 0
-
-    trial.connect_as = AsyncMock()
-    trial.disconnect = AsyncMock()
-    trial.execute = fake_execute
-
-    await trial._run_scene(self_review_scene)
-
-    outbox_cmds = [c for c in trial._env._exec_log if "outbox" in c]
-    assert len(outbox_cmds) == 0
+    trial.connect_as.assert_awaited_once()
+    trial.disconnect.assert_awaited_once()
+    assert prompts_received == ["Solve", "Review your solution and fix edge cases."]
 
 
-async def test_outbox_messages_injected_into_prompt(
-    coder_reviewer_scene: Scene,
-) -> None:
-    """Outbox messages from coder are injected into reviewer's prompt."""
-    trial = _make_trial(coder_reviewer_scene)
-    prompts_received: list[tuple[str, list[str]]] = []
-    call_count = 0
-
-    async def fake_execute(prompts=None):
-        nonlocal call_count
-        # Track which role got which prompt
-        role = coder_reviewer_scene.turns[call_count].role
-        prompts_received.append((role, prompts or []))
-        # Coder writes to reviewer outbox on first turn
-        if call_count == 0:
-            trial._env.stage_outbox("reviewer", "Please review my regex implementation")
-        # Reviewer writes feedback to coder outbox on second turn
-        elif call_count == 1:
-            trial._env.stage_outbox(
-                "coder", "Edge case: empty string input not handled"
-            )
-        call_count += 1
-        return [], 0
-
-    trial.connect_as = AsyncMock()
-    trial.disconnect = AsyncMock()
-    trial.execute = fake_execute
-
-    await trial._run_scene(coder_reviewer_scene)
-
-    assert len(prompts_received) == 3
-
-    # Turn 0: coder gets base prompt (no messages yet)
-    assert prompts_received[0][0] == "coder"
-    assert "Messages from other agents" not in prompts_received[0][1][0]
-
-    # Turn 1: reviewer gets its prompt + coder's outbox message
-    assert prompts_received[1][0] == "reviewer"
-    assert "Please review my regex implementation" in prompts_received[1][1][0]
-    assert "From coder" in prompts_received[1][1][0]
-
-    # Turn 2: coder gets its prompt + reviewer's feedback
-    assert prompts_received[2][0] == "coder"
-    assert "Edge case: empty string input not handled" in prompts_received[2][1][0]
-    assert "From reviewer" in prompts_received[2][1][0]
-
-
-async def test_outbox_files_cleared_after_read(coder_reviewer_scene: Scene) -> None:
-    """Outbox files are removed after reading so they don't repeat."""
-    trial = _make_trial(coder_reviewer_scene)
-    call_count = 0
-
-    async def fake_execute(prompts=None):
-        nonlocal call_count
-        if call_count == 0:
-            trial._env.stage_outbox("reviewer", "msg1")
-        call_count += 1
-        return [], 0
-
-    trial.connect_as = AsyncMock()
-    trial.disconnect = AsyncMock()
-    trial.execute = fake_execute
-
-    await trial._run_scene(coder_reviewer_scene)
-
-    remaining = [f for f in trial._env._files if f.startswith("/app/.outbox/")]
-    assert len(remaining) == 0
-
-
-async def test_outbox_invalid_json_skipped(coder_reviewer_scene: Scene) -> None:
-    """Invalid JSON in outbox files is skipped without crashing."""
-    trial = _make_trial(coder_reviewer_scene)
-    call_count = 0
-
-    async def fake_execute(prompts=None):
-        nonlocal call_count
-        if call_count == 0:
-            trial._env._files["/app/.outbox/reviewer.json"] = "not valid json{{"
-        call_count += 1
-        return [], 0
-
-    trial.connect_as = AsyncMock()
-    trial.disconnect = AsyncMock()
-    trial.execute = fake_execute
-
-    # Should not raise
-    await trial._run_scene(coder_reviewer_scene)
-    assert call_count == 3
-
-
-async def test_role_switching_connects_and_disconnects(
-    coder_reviewer_scene: Scene,
-) -> None:
-    """Verify connect/disconnect happens on role switches."""
-    trial = _make_trial(coder_reviewer_scene)
-
-    async def fake_execute(prompts=None):
-        return [], 0
-
-    trial.connect_as = AsyncMock()
-    trial.disconnect = AsyncMock()
-    trial.execute = fake_execute
-
-    await trial._run_scene(coder_reviewer_scene)
-
-    # 3 turns: coder, reviewer, coder → 2 connect_as calls for role switches + 1 initial
-    # Initial connect for coder, then disconnect+connect for reviewer, then disconnect+connect for coder
-    assert trial.connect_as.call_count == 3
-    # disconnect after coder->reviewer, after reviewer->coder, and final disconnect
-    assert trial.disconnect.call_count == 3
-
-
-async def test_scene_disconnects_active_agent_when_execute_times_out(
+async def test_run_steps_disconnects_active_agent_when_execute_times_out(
     self_review_scene: Scene,
 ) -> None:
-    """Guards timeout cleanup before the verifier runs."""
+    """Guards timeout cleanup for compiled Scene Steps."""
     trial = _make_trial(self_review_scene)
 
     async def fake_execute(prompts=None):
@@ -273,46 +152,20 @@ async def test_scene_disconnects_active_agent_when_execute_times_out(
 
     trial.connect_as = AsyncMock()
     trial.disconnect = AsyncMock()
-    trial.execute = fake_execute
+    trial.execute = fake_execute  # type: ignore[method-assign,assignment]
 
     with pytest.raises(TimeoutError, match="wall-clock budget"):
-        await trial._run_scene(self_review_scene)
+        await trial._run_steps(
+            compile_scenes_to_steps([self_review_scene], default_prompt="Solve")
+        )
 
     trial.disconnect.assert_awaited_once()
-
-
-async def test_empty_outbox_no_injection() -> None:
-    """When no outbox files exist, prompt is used as-is."""
-    scene = Scene(
-        name="quiet",
-        roles=[
-            Role("a", "gemini", "flash"),
-            Role("b", "gemini", "flash"),
-        ],
-        turns=[Turn("a", "do stuff"), Turn("b", "also do stuff")],
-    )
-    trial = _make_trial(scene)
-    prompts_received: list[str] = []
-
-    async def fake_execute(prompts=None):
-        prompts_received.extend(prompts or [])
-        return [], 0
-
-    trial.connect_as = AsyncMock()
-    trial.disconnect = AsyncMock()
-    trial.execute = fake_execute
-
-    await trial._run_scene(scene)
-
-    assert prompts_received[0] == "do stuff"
-    assert prompts_received[1] == "also do stuff"
-    assert all("Messages from other agents" not in p for p in prompts_received)
 
 
 async def test_execute_uses_active_role_timeouts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Role-level timeouts must override rollout defaults during scene execution."""
+    """Role-level timeouts must override rollout defaults during Step execution."""
     role = Role(
         "solver",
         "gemini",
@@ -339,51 +192,15 @@ async def test_execute_uses_active_role_timeouts(
         captured["idle_timeout"] = idle_timeout
         return [], 0
 
-    monkeypatch.setattr("benchflow.rollout.execute_prompts", fake_execute_prompts)
+    monkeypatch.setattr(trial._planes, "execute_prompts", fake_execute_prompts)
 
     await trial.execute()
 
     assert captured == {"timeout": 12, "idle_timeout": 3}
 
 
-async def test_scene_messages_persisted(
-    coder_reviewer_scene: Scene, tmp_path: Path
-) -> None:
-    """Inter-role messages are saved to scene_messages.jsonl in rollout_dir."""
-    trial = _make_trial(coder_reviewer_scene)
-    trial._rollout_dir = tmp_path
-    call_count = 0
-
-    async def fake_execute(prompts=None):
-        nonlocal call_count
-        if call_count == 0:
-            trial._env.stage_outbox("reviewer", "Please review my code")
-        elif call_count == 1:
-            trial._env.stage_outbox("coder", "Found a bug on line 5")
-        call_count += 1
-        return [], 0
-
-    trial.connect_as = AsyncMock()
-    trial.disconnect = AsyncMock()
-    trial.execute = fake_execute
-
-    await trial._run_scene(coder_reviewer_scene)
-
-    msg_path = tmp_path / "scene_messages.jsonl"
-    assert msg_path.exists()
-    lines = [json.loads(ln) for ln in msg_path.read_text().strip().splitlines()]
-    assert len(lines) == 2
-    assert lines[0]["sender"] == "coder"
-    assert lines[0]["recipient"] == "reviewer"
-    assert lines[0]["content"] == "Please review my code"
-    assert lines[1]["sender"] == "reviewer"
-    assert lines[1]["recipient"] == "coder"
-    assert lines[1]["content"] == "Found a bug on line 5"
-    assert lines[0]["scene"] == "code-review"
-
-
 async def test_heterogeneous_agent_install(coder_reviewer_scene: Scene) -> None:
-    """connect_as installs non-primary agents."""
+    """connect_as still receives non-primary roles after Scene desugaring."""
     scene = Scene(
         name="hetero",
         roles=[
@@ -404,18 +221,18 @@ async def test_heterogeneous_agent_install(coder_reviewer_scene: Scene) -> None:
 
     installed_agents: list[str] = []
 
-    async def tracking_connect_as(role):
+    async def tracking_connect_as(role: Role) -> None:
         if role.agent != config.primary_agent:
             installed_agents.append(role.agent)
 
     async def fake_execute(prompts=None):
         return [], 0
 
-    trial.connect_as = tracking_connect_as
+    trial.connect_as = tracking_connect_as  # type: ignore[method-assign]
     trial.disconnect = AsyncMock()
-    trial.execute = fake_execute
+    trial.execute = fake_execute  # type: ignore[method-assign,assignment]
 
-    await trial._run_scene(scene)
+    await trial._run_steps(compile_scenes_to_steps([scene], default_prompt="Solve"))
 
     assert "claude-agent-acp" in installed_agents
 
@@ -492,7 +309,7 @@ async def test_scene_skills_upload_local_root_and_link_agent_paths(
     trial = _make_trial(scene)
     trial._agent_cwd = "/app"
 
-    await trial._activate_scene_skills(scene)
+    await trial._activate_step_skills(compile_scenes_to_steps([scene])[0])
 
     assert "mkdir -p /skills" in trial._env._exec_log
     assert trial._env._uploads == [(skills_root, "/skills/skill-gen")]
@@ -513,7 +330,7 @@ async def test_scene_skills_link_remote_generated_root() -> None:
     trial = _make_trial(scene)
     trial._agent_cwd = "/app"
 
-    await trial._activate_scene_skills(scene)
+    await trial._activate_step_skills(compile_scenes_to_steps([scene])[0])
 
     assert trial._env._uploads == []
     assert any(
@@ -523,17 +340,12 @@ async def test_scene_skills_link_remote_generated_root() -> None:
 
 
 async def test_scene_skills_prefers_remote_string_path_over_matching_host_path(
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """String sandbox paths stay remote even if the host has a matching path."""
-    original_is_dir = Path.is_dir
-
-    def fake_is_dir(path: Path) -> bool:
-        if path.as_posix() == "/app/generated-skills":
-            return True
-        return original_is_dir(path)
-
-    monkeypatch.setattr(Path, "is_dir", fake_is_dir)
+    """Absolute string skills_dir values are sandbox paths, not host uploads."""
+    host_root = tmp_path / "app" / "generated-skills"
+    host_root.mkdir(parents=True)
+    monkeypatch.chdir(tmp_path)
     scene = Scene(
         name="solve",
         roles=[Role("solver", "claude-agent-acp", "haiku")],
@@ -543,10 +355,7 @@ async def test_scene_skills_prefers_remote_string_path_over_matching_host_path(
     trial = _make_trial(scene)
     trial._agent_cwd = "/app"
 
-    await trial._activate_scene_skills(scene)
+    await trial._activate_step_skills(compile_scenes_to_steps([scene])[0])
 
     assert trial._env._uploads == []
-    assert any(
-        "ln -sfn /app/generated-skills /home/agent/.claude/skills" in cmd
-        for cmd in trial._env._exec_log
-    )
+    assert not any(cmd.startswith("mkdir -p /skills") for cmd in trial._env._exec_log)

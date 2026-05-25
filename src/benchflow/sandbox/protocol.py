@@ -76,6 +76,9 @@ class SandboxStartupError(RuntimeError):
         }
 
 
+SandboxStartupFailure = SandboxStartupError
+
+
 @runtime_checkable
 class Sandbox(Protocol):
     """Run-only: isolated execution environment.

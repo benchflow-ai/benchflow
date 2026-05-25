@@ -172,11 +172,6 @@ async def test_rollout_config_timeout_overrides_task_default(
     rollout = Rollout(cfg)
     rollout.use_prebuilt_env(_FakeInner())
 
-    monkeypatch.setattr(
-        "benchflow.rollout._create_environment",
-        lambda *a, **kw: _FakeInner(),
-    )
-
     await rollout.setup()
 
     assert rollout._timeout == 42, (
@@ -193,11 +188,6 @@ async def test_rollout_config_timeout_none_keeps_task_default(
     cfg = RolloutConfig(task_path=TASK_PATH, environment="docker")  # timeout=None
     rollout = Rollout(cfg)
     rollout.use_prebuilt_env(_FakeInner())
-
-    monkeypatch.setattr(
-        "benchflow.rollout._create_environment",
-        lambda *a, **kw: _FakeInner(),
-    )
 
     await rollout.setup()
 

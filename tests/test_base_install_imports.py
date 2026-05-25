@@ -9,8 +9,9 @@ package) must now be lazy-loaded inside the methods that actually need them.
 The tests below run inside the project's own venv (where tenacity may well be
 installed) but exercise the structural guarantees that keep #358 from
 regressing: ``SandboxStartupError`` must live in the optional-dep-free
-``protocol`` module, ``rollout.py`` must import it from there, and the
-``daytona`` module must import cleanly even when ``tenacity`` is hidden.
+``protocol`` module, ``rollout.py`` must reach startup failures only through
+contracts, and the ``daytona`` module must import cleanly even when
+``tenacity`` is hidden.
 """
 
 from __future__ import annotations
@@ -46,6 +47,7 @@ def test_legacy_sandbox_startup_error_import_path_still_works():
     from benchflow.sandbox.protocol import (
         SandboxStartupError as ProtocolPathSandboxStartupError,
     )
+
     assert DaytonaPathSandboxStartupError is ProtocolPathSandboxStartupError
 
 
@@ -59,9 +61,11 @@ def test_rollout_imports_sandbox_startup_error_from_protocol_not_daytona():
 
     src = Path(__file__).resolve().parent.parent / "src" / "benchflow" / "rollout.py"
     text = src.read_text()
-    assert "from benchflow.sandbox.protocol import SandboxStartupError" in text, (
-        "rollout.py must source SandboxStartupError from protocol (no optional "
-        "deps), not from benchflow.sandbox.daytona (forces tenacity / "
+    assert (
+        "SandboxStartupFailure" in text and "from benchflow.contracts import" in text
+    ), (
+        "rollout.py must source sandbox startup failures from contracts (no "
+        "optional deps), not from benchflow.sandbox.daytona (forces tenacity / "
         "daytona-SDK at import time)"
     )
     assert "from benchflow.sandbox.daytona import SandboxStartupError" not in text

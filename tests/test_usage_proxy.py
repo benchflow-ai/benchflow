@@ -637,9 +637,11 @@ async def test_rollout_connect_wires_usage_proxy_before_acp(tmp_path, monkeypatc
         )
         return (AsyncMock(), AsyncMock(), AsyncMock(), "codex-acp")
 
-    monkeypatch.setattr("benchflow.rollout.ensure_bedrock_proxy_runtime", fake_bedrock)
-    monkeypatch.setattr("benchflow.rollout.ensure_usage_proxy_runtime", fake_usage)
-    monkeypatch.setattr("benchflow.rollout.connect_acp", fake_connect_acp)
+    rollout._planes = SimpleNamespace(
+        ensure_bedrock_proxy_runtime=fake_bedrock,
+        ensure_usage_proxy_runtime=fake_usage,
+        connect_acp=fake_connect_acp,
+    )
 
     await rollout.connect()
 
@@ -651,7 +653,7 @@ async def test_rollout_cleanup_extracts_usage_and_writes_llm_trajectory(tmp_path
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
 
-    from benchflow.providers.runtime import ProviderRuntime
+    from benchflow.providers.runtime import ProviderRuntime, extract_usage
     from benchflow.rollout import Rollout, RolloutConfig
 
     class FakeServer:
@@ -681,6 +683,10 @@ async def test_rollout_cleanup_extracts_usage_and_writes_llm_trajectory(tmp_path
         port=32124,
         backend_model="claude-haiku-4-5-20251001",
         server=server,
+    )
+    rollout._planes = SimpleNamespace(
+        stop_provider_runtime=lambda runtime: runtime.server.stop(),
+        extract_usage=extract_usage,
     )
     rollout._rollout_dir = tmp_path
 

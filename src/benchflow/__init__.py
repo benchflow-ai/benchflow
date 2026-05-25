@@ -37,6 +37,12 @@ from benchflow.agents.registry import (
     list_agents,
     register_agent,
 )
+from benchflow.contracts.user import (
+    BaseUser,
+    FunctionUser,
+    PassthroughUser,
+    RoundResult,
+)
 from benchflow.evaluation import (
     Evaluation,
     EvaluationConfig,
@@ -108,9 +114,7 @@ from benchflow.sandbox.snapshot import (
     workspace_restore,
     workspace_snapshot,
 )
-from benchflow.sandbox.user import BaseUser, FunctionUser, PassthroughUser, RoundResult
-from benchflow.scenes import MailboxTransport, Message, MessageTransport, SceneRole
-from benchflow.scenes import Scene as SceneRuntime
+from benchflow.scenes import compile_scenes_to_steps
 from benchflow.sdk import SDK
 from benchflow.skills import SkillInfo, discover_skills, install_skill, parse_skill
 from benchflow.task import (
@@ -197,12 +201,8 @@ __all__ = [
     "Role",
     "Scene",
     "Turn",
-    # Multi-agent scene runtime
-    "SceneRole",
-    "SceneRuntime",
-    "Message",
-    "MessageTransport",
-    "MailboxTransport",
+    # Scene authoring desugaring
+    "compile_scenes_to_steps",
     # Workspace snapshots (filesystem helper — NOT the Sandbox primitive, #384)
     "workspace_snapshot",
     "workspace_restore",

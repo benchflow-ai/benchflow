@@ -1,198 +1,102 @@
-"""Tests for _scene.py — multi-agent scene runtime."""
+"""Scene desugaring tests."""
 
-import json
+from __future__ import annotations
+
+import ast
+from dataclasses import fields
 from pathlib import Path
 
 import pytest
 
-from benchflow.scenes import MailboxTransport, Message, Scene, SceneRole
+import benchflow
+from benchflow._types import Role, Scene, Turn
+from benchflow.scenes import (
+    DEFAULT_SCENE_PROMPT,
+    compile_scenes_to_steps,
+    scene_step_prompt,
+    scene_step_role,
+    scene_step_skills_dir,
+)
 
 
-@pytest.fixture
-def two_roles() -> dict[str, SceneRole]:
-    return {
-        "coder": SceneRole(
-            name="coder",
-            agent="claude-agent-acp",
-            model="claude-haiku-4-5-20251001",
-            instruction="You are a coder. Write code and notify the reviewer.",
-        ),
-        "reviewer": SceneRole(
-            name="reviewer",
-            agent="claude-agent-acp",
-            model="claude-haiku-4-5-20251001",
-            instruction="You are a reviewer. Review code from the coder.",
-        ),
+def test_scene_compiles_turns_to_steps() -> None:
+    """Guards the fix for issue #413: Scene lowers to explicit Steps."""
+    scene = Scene(
+        name="review",
+        roles=[
+            Role("coder", "gemini", "flash"),
+            Role("reviewer", "claude-agent-acp", "haiku"),
+        ],
+        turns=[
+            Turn("coder"),
+            Turn("reviewer", "Review the work."),
+        ],
+        skills_dir="/scene-skills",
+    )
+
+    steps = compile_scenes_to_steps([scene], default_prompt="Solve the task")
+
+    assert [step.id for step in steps] == [
+        "scene-0-turn-0-coder",
+        "scene-0-turn-1-reviewer",
+    ]
+    assert scene_step_role(steps[0]).name == "coder"
+    assert scene_step_prompt(steps[0]) == "Solve the task"
+    assert scene_step_role(steps[1]).name == "reviewer"
+    assert scene_step_prompt(steps[1]) == "Review the work."
+    assert scene_step_skills_dir(steps[0]) == "/scene-skills"
+    assert steps[0].data["type"] == "scene_turn"
+
+
+def test_scene_compiler_uses_instruction_fallback() -> None:
+    """Guards the fix for issue #413: default prompts are resolved at compile time."""
+    scene = Scene.single(agent="gemini", model="flash")
+
+    assert (
+        scene_step_prompt(compile_scenes_to_steps([scene])[0]) == DEFAULT_SCENE_PROMPT
+    )
+
+
+def test_scene_compiler_rejects_unknown_role() -> None:
+    """Guards the fix for issue #413: role validation happens during desugaring."""
+    scene = Scene(
+        name="bad",
+        roles=[Role("agent", "gemini")],
+        turns=[Turn("missing", "go")],
+    )
+
+    with pytest.raises(ValueError, match="unknown role"):
+        compile_scenes_to_steps([scene])
+
+
+def test_scene_type_has_no_runtime_scheduler_metadata() -> None:
+    """Guards the fix for issue #413: Scene carries no scheduler fields."""
+    assert "parallel_group" not in {field.name for field in fields(Scene)}
+
+
+def test_benchflow_no_longer_exports_runtime_scene_api() -> None:
+    """Guards the fix for issue #413: runtime Scene surface is not public."""
+    for name in (
+        "SceneRuntime",
+        "SceneRole",
+        "Message",
+        "MessageTransport",
+        "MailboxTransport",
+    ):
+        assert name not in benchflow.__all__
+        assert not hasattr(benchflow, name)
+
+
+def test_scenes_module_has_no_scheduler_runtime() -> None:
+    """Guards the fix for issue #413 against reintroducing a Scene scheduler."""
+    tree = ast.parse(Path("src/benchflow/scenes.py").read_text())
+    runtime_defs = {
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef)
     }
 
-
-def test_scene_requires_two_roles() -> None:
-    r = SceneRole(name="solo", agent="x", model="y", instruction="z")
-    with pytest.raises(ValueError, match="exactly 2 roles"):
-        Scene(roles={"solo": r})
-
-
-def test_scene_init(two_roles: dict[str, SceneRole]) -> None:
-    scene = Scene(roles=two_roles, max_rounds=5)
-    assert scene.role_names == ["coder", "reviewer"]
-    assert scene.max_rounds == 5
-    assert not scene.is_done
-    assert scene.trajectory == []
-
-
-def test_next_active_role(two_roles: dict[str, SceneRole]) -> None:
-    scene = Scene(roles=two_roles)
-    assert scene.next_active_role("coder") == "reviewer"
-    assert scene.next_active_role("reviewer") == "coder"
-
-
-async def test_send_message(two_roles: dict[str, SceneRole]) -> None:
-    scene = Scene(roles=two_roles, max_rounds=10)
-    result = await scene.send_message("coder", "reviewer", "please review")
-    assert "delivered" in result
-    assert len(scene.trajectory) == 1
-    assert scene.trajectory[0].sender == "coder"
-    assert scene.trajectory[0].recipient == "reviewer"
-    assert scene.trajectory[0].content == "please review"
-    assert scene.trajectory[0].turn == 1
-    assert scene.trajectory[0].kind == "direct"
-
-
-async def test_send_to_unknown_recipient(two_roles: dict[str, SceneRole]) -> None:
-    scene = Scene(roles=two_roles)
-    result = await scene.send_message("coder", "nobody", "hi")
-    assert "Error" in result
-    assert len(scene.trajectory) == 0
-
-
-async def test_round_counting(two_roles: dict[str, SceneRole]) -> None:
-    scene = Scene(roles=two_roles, max_rounds=3)
-    await scene.send_message("coder", "reviewer", "msg1")
-    await scene.send_message("reviewer", "coder", "msg2")
-    assert not scene.is_done
-    await scene.send_message("coder", "reviewer", "msg3")
-    assert scene.is_done
-
-
-async def test_end_scene(two_roles: dict[str, SceneRole]) -> None:
-    scene = Scene(roles=two_roles)
-    assert not scene.is_done
-    await scene.end_scene("reviewer", reward=1.0)
-    assert scene.is_done
-
-
-async def test_mailbox_transport() -> None:
-    transport = MailboxTransport()
-    msg = Message(id="abc", sender="a", recipient="b", content="hello", turn=1)
-    await transport.send(msg)
-    pending = await transport.list_pending("b")
-    assert len(pending) == 1
-    assert pending[0].content == "hello"
-
-    received = await transport.receive("b")
-    assert received is not None
-    assert received.content == "hello"
-
-    empty = await transport.receive("b")
-    assert empty is None
-
-
-async def test_build_prompt_for_role(two_roles: dict[str, SceneRole]) -> None:
-    scene = Scene(roles=two_roles)
-    inbox = [
-        Message(
-            id="x", sender="reviewer", recipient="coder", content="looks good", turn=1
-        )
-    ]
-    prompt = scene.build_prompt_for_role(two_roles["coder"], inbox)
-    assert "You are a coder" in prompt
-    assert "looks good" in prompt
-    assert "reviewer" in prompt
-    assert "send_message" in prompt
-
-
-class FakeEnv:
-    """Mock env with exec() that simulates outbox file writes."""
-
-    def __init__(self) -> None:
-        self._files: dict[str, str] = {}
-        self._exec_log: list[str] = []
-
-    async def exec(self, cmd: str, **kwargs) -> "FakeExecResult":
-        self._exec_log.append(cmd)
-        if cmd.startswith("rm -rf /tmp/outbox") or cmd.startswith("mkdir -p"):
-            self._files.clear()
-            return FakeExecResult("", "", 0)
-        if "ls /app/.outbox/" in cmd:
-            files = [f for f in self._files if f.startswith("/app/.outbox/")]
-            return FakeExecResult("\n".join(files), "", 0)
-        if cmd.startswith("cat "):
-            path = cmd.split(" ", 1)[1]
-            return FakeExecResult(self._files.get(path, "{}"), "", 0)
-        if cmd.startswith("rm -f "):
-            path = cmd.split()[-1]
-            self._files.pop(path, None)
-            return FakeExecResult("", "", 0)
-        return FakeExecResult("", "", 0)
-
-    def stage_outbox(self, recipient: str, content: str) -> None:
-        self._files[f"/app/.outbox/{recipient}.json"] = json.dumps(
-            {"to": recipient, "content": content}
-        )
-
-
-class FakeExecResult:
-    def __init__(self, stdout: str, stderr: str, return_code: int) -> None:
-        self.stdout = stdout
-        self.stderr = stderr
-        self.return_code = return_code
-
-
-async def test_scene_run_two_rounds(two_roles: dict[str, SceneRole]) -> None:
-    env = FakeEnv()
-    scene = Scene(roles=two_roles, max_rounds=4)
-    call_count = 0
-
-    async def mock_runner(e, role, prompt):
-        nonlocal call_count
-        call_count += 1
-        if role.name == "coder":
-            env.stage_outbox("reviewer", "please review my code")
-        elif role.name == "reviewer":
-            env.stage_outbox("coder", "looks good, approved")
-
-    trajectory = await scene.run(env, mock_runner)
-    assert call_count >= 2
-    assert len(trajectory) >= 2
-    assert trajectory[0].sender == "coder"
-    assert trajectory[0].recipient == "reviewer"
-    assert trajectory[1].sender == "reviewer"
-    assert trajectory[1].recipient == "coder"
-
-
-async def test_scene_run_stops_when_no_message(two_roles: dict[str, SceneRole]) -> None:
-    env = FakeEnv()
-    scene = Scene(roles=two_roles, max_rounds=10)
-
-    async def mock_runner(e, role, prompt):
-        if role.name == "coder":
-            env.stage_outbox("reviewer", "check this")
-
-    trajectory = await scene.run(env, mock_runner)
-    assert len(trajectory) == 1
-    assert trajectory[0].sender == "coder"
-
-
-@pytest.mark.asyncio
-async def test_save_trajectory(two_roles: dict[str, SceneRole], tmp_path: Path) -> None:
-    scene = Scene(roles=two_roles)
-    await scene.send_message("coder", "reviewer", "check this")
-    await scene.send_message("reviewer", "coder", "approved")
-    out = tmp_path / "scene_trajectory.jsonl"
-    scene.save_trajectory(out)
-    lines = [json.loads(ln) for ln in out.read_text().strip().splitlines()]
-    assert len(lines) == 2
-    assert lines[0]["sender"] == "coder"
-    assert lines[1]["sender"] == "reviewer"
-    assert lines[0]["turn"] == 1
-    assert lines[1]["turn"] == 2
+    assert "Scene" not in runtime_defs
+    assert "MailboxTransport" not in runtime_defs
+    assert "MessageTransport" not in runtime_defs
+    assert "run" not in runtime_defs

@@ -50,7 +50,7 @@ async def test_n_events_in_one_execute_produce_n_steps(
     async def fake_execute_prompts(*_a, **_kw):
         return _multi_event_session()
 
-    monkeypatch.setattr("benchflow.rollout.execute_prompts", fake_execute_prompts)
+    monkeypatch.setattr(rollout._planes, "execute_prompts", fake_execute_prompts)
     rollout._acp_client = object()  # only needs to be non-None
 
     root = rollout.tree.root
@@ -84,7 +84,7 @@ async def test_single_event_execute_still_produces_one_step(
     async def fake_execute_prompts(*_a, **_kw):
         return [{"type": "agent_message", "text": "hi"}], 0
 
-    monkeypatch.setattr("benchflow.rollout.execute_prompts", fake_execute_prompts)
+    monkeypatch.setattr(rollout._planes, "execute_prompts", fake_execute_prompts)
     rollout._acp_client = object()
 
     root = rollout.tree.root
@@ -112,7 +112,7 @@ async def test_zero_event_execute_still_emits_one_step(
     async def fake_execute_prompts(*_a, **_kw):
         return [], 0
 
-    monkeypatch.setattr("benchflow.rollout.execute_prompts", fake_execute_prompts)
+    monkeypatch.setattr(rollout._planes, "execute_prompts", fake_execute_prompts)
     rollout._acp_client = object()
 
     root = rollout.tree.root
@@ -140,7 +140,7 @@ async def test_branch_child_pending_node_populated_by_first_event(
     async def fake_execute_prompts(*_a, **_kw):
         return _multi_event_session()
 
-    monkeypatch.setattr("benchflow.rollout.execute_prompts", fake_execute_prompts)
+    monkeypatch.setattr(rollout._planes, "execute_prompts", fake_execute_prompts)
     rollout._acp_client = object()
 
     pending = rollout.tree.attach(rollout.tree.root)
@@ -193,7 +193,7 @@ async def test_tool_call_count_invariant_across_batch(
         ]
         return events, 2
 
-    monkeypatch.setattr("benchflow.rollout.execute_prompts", fake_execute_prompts)
+    monkeypatch.setattr(rollout._planes, "execute_prompts", fake_execute_prompts)
     rollout._acp_client = object()
 
     await rollout.execute(["go"])

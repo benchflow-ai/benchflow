@@ -52,46 +52,26 @@ from typing import Any
 from benchflow._types import Role, Scene, Turn
 from benchflow._utils.config import normalize_agent_name, normalize_sandbox_user
 from benchflow._utils.scoring import classify_error, classify_verifier_error
-from benchflow.acp.client import ACPClient, ACPError
-from benchflow.acp.runtime import connect_acp, execute_prompts
-from benchflow.agents.credentials import (
-    upload_subscription_auth,
-    write_credential_files,
+from benchflow.contracts import (
+    AgentProtocolError,
+    BaseUser,
+    Environment,
+    RolloutPlanes,
+    RoundResult,
+    SandboxStartupFailure,
+    default_rollout_planes,
 )
-from benchflow.agents.env import resolve_agent_env
-from benchflow.agents.install import (
-    _link_skill_paths,
-    apply_web_tool_policy,
-    deploy_skills,
-    install_agent,
-)
-from benchflow.agents.registry import AGENT_LAUNCH, AGENTS
 from benchflow.environment.manifest import EnvironmentManifest
-from benchflow.environment.manifest_env import ManifestEnvironment
 from benchflow.models import RolloutResult, TrajectorySource
-from benchflow.providers.runtime import (
-    ensure_bedrock_proxy_runtime,
-    ensure_usage_proxy_runtime,
-    extract_usage,
-    stop_provider_runtime,
-)
 from benchflow.rewards.validation import validate_reward_map
 from benchflow.rollout_branch import ChildRunner
 from benchflow.rollout_branch import branch as _branch_engine
-from benchflow.sandbox.lockdown import (
-    _resolve_locked_paths,
-    _seed_verifier_workspace,
-    _snapshot_build_config,
-    lockdown_paths,
-    setup_sandbox_user,
+from benchflow.scenes import (
+    compile_scenes_to_steps,
+    scene_step_prompt,
+    scene_step_role,
+    scene_step_skills_dir,
 )
-from benchflow.sandbox.protocol import SandboxStartupError
-from benchflow.sandbox.setup import (
-    _create_environment,
-    _inject_skills_into_dockerfile,
-    stage_dockerfile_deps,
-)
-from benchflow.sandbox.user import BaseUser, RoundResult
 from benchflow.trajectories._capture import (
     _capture_session_trajectory,
     _scrape_agent_trajectory,
@@ -119,15 +99,13 @@ def _apply_web_policy(agent_env: dict[str, str], *, disallow: bool) -> dict[str,
     return {**agent_env, _DISALLOW_WEB_TOOLS_ENV: "1"}
 
 
-def _agent_launch_with_web_policy(agent: str, *, disallow: bool) -> str:
+def _agent_launch_with_web_policy(
+    agent: str, *, disallow: bool, planes: RolloutPlanes | None = None
+) -> str:
     """Return launch command, appending the agent's no-web launch knob if any."""
-    launch = AGENT_LAUNCH.get(agent, agent)
-    if not disallow:
-        return launch
-    agent_cfg = AGENTS.get(agent)
-    if agent_cfg and agent_cfg.disallow_web_tools_launch_suffix:
-        return launch + agent_cfg.disallow_web_tools_launch_suffix
-    return launch
+    return (planes or default_rollout_planes()).agent_launch(
+        agent, disallow_web_tools=disallow
+    )
 
 
 def _skill_nudge(agent_env: dict[str, str] | None) -> str:
@@ -433,7 +411,6 @@ def _scene_metadata(scenes: list[Scene]) -> list[dict[str, Any]]:
         {
             "name": scene.name,
             "skills_dir": str(scene.skills_dir) if scene.skills_dir else None,
-            "parallel_group": scene.parallel_group,
             "roles": [_role_metadata(role) for role in scene.roles],
             "turns": [
                 {"role": turn.role, "has_prompt": turn.prompt is not None}
@@ -656,6 +633,7 @@ def _resolve_prompts(
     skills_dir: str | Path | None = None,
     skill_nudge: str = "",
     agent: str | None = None,
+    planes: RolloutPlanes | None = None,
 ) -> list[str]:
     """Read instruction.md and resolve prompt list."""
     instruction_path = task_path / "instruction.md"
@@ -664,11 +642,9 @@ def _resolve_prompts(
     instruction = instruction_path.read_text().strip()
 
     if skill_nudge:
-        from benchflow.agents.registry import AGENTS
-
         skill_display_path = "~/.claude/skills"
         if agent:
-            agent_cfg = AGENTS.get(agent)
+            agent_cfg = (planes or default_rollout_planes()).agent_config(agent)
             if agent_cfg and agent_cfg.skill_paths:
                 skill_display_path = agent_cfg.skill_paths[0].replace("$HOME", "~")
 
@@ -809,6 +785,7 @@ async def _verify_rollout(
     task: Any,
     rollout_paths: Any,
     timing: dict,
+    planes: RolloutPlanes,
     sandbox_user: str | None = None,
     workspace: str | None = None,
 ) -> tuple[dict | None, str | None, dict | None]:
@@ -816,18 +793,15 @@ async def _verify_rollout(
 
     Returns (rewards, verifier_error, verifier_timeout_info).
     """
-    from benchflow.sandbox.lockdown import harden_before_verify
-    from benchflow.task import Verifier
-
     rollout_paths.verifier_dir.mkdir(parents=True, exist_ok=True)
     t0 = datetime.now()
     verifier_error = None
     verifier_timeout_info: dict | None = None
     timeout_budget = task.config.verifier.timeout_sec
     try:
-        await harden_before_verify(env, task, sandbox_user, workspace=workspace)
+        await planes.harden_before_verify(env, task, sandbox_user, workspace=workspace)
         logger.info("Running verifier...")
-        verifier = Verifier(task=task, rollout_paths=rollout_paths, sandbox=env)
+        verifier = planes.verifier(task=task, rollout_paths=rollout_paths, sandbox=env)
         verifier_result = await asyncio.wait_for(
             verifier.verify(),
             timeout=timeout_budget,
@@ -858,16 +832,14 @@ def _ensure_canonical_rewards(rewards: dict | None) -> dict:
     return validate_reward_map(rewards, source="verifier")
 
 
-def _install_docker_compat() -> None:
+def _install_docker_compat(planes: RolloutPlanes | None = None) -> None:
     """Activate the Docker DinD compatibility shim.
 
     Called from ``Rollout.__init__`` so importing ``benchflow.rollout`` has
     no side effects on the Docker sandbox. The underlying patch is
     idempotent — safe to call once per rollout construction.
     """
-    from benchflow.sandbox.setup import _patch_docker_dind
-
-    _patch_docker_dind()
+    (planes or default_rollout_planes()).install_docker_compat()
 
 
 __all__ = [
@@ -935,6 +907,7 @@ class RolloutConfig:
     skip_verify: bool = False
     export_generated_skills_to: str | Path | None = None
     source_provenance: dict[str, Any] | None = None
+    planes: RolloutPlanes | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         from benchflow._utils.config import normalize_agent_idle_timeout
@@ -1036,10 +1009,11 @@ class Rollout:
     """Decomposed trial lifecycle with independently-callable phases."""
 
     def __init__(self, config: RolloutConfig) -> None:
+        self._planes = config.planes or default_rollout_planes()
         # Activate Docker DinD compatibility shim on first rollout
         # construction (idempotent). Keeps `import benchflow.rollout`
         # side-effect free with respect to sandbox/provider behavior.
-        _install_docker_compat()
+        _install_docker_compat(self._planes)
 
         self._config = config
         self._phase = "created"
@@ -1059,20 +1033,20 @@ class Rollout:
         # creating a new sandbox and cleanup() skips stopping it. Set via
         # use_prebuilt_env() — see Runtime.execute() for the public path.
         self._env_externally_owned: bool = False
-        self._environment: ManifestEnvironment | None = None
+        self._environment: Environment | None = None
         self._timeout: int = 0
         self._timing: dict[str, float] = {}
         self._effective_locked: list[str] = []
         self._disallow_web_tools: bool = False
         self._usage_runtime: Any = None
-        self._usage_metrics: dict[str, Any] = extract_usage(None)
+        self._usage_metrics: dict[str, Any] = self._planes.extract_usage(None)
 
         # Populated by install_agent()
         self._agent_cfg: Any = None
         self._agent_cwd: str = "/app"
 
         # Populated by connect()
-        self._acp_client: ACPClient | None = None
+        self._acp_client: Any = None
         self._session: Any = None
         # ``_session_adapter`` carries the Agent-plane :class:`Session` contract
         # over the live ACP client (architecture.md, "The four contracts").
@@ -1092,14 +1066,6 @@ class Rollout:
         self._ask_user_handler_set: bool = False
         self._agent_name: str = ""
         self._active_role: Role | None = None
-
-        # Serializes ACP / agent-process state mutations across scenes that
-        # are scheduled concurrently via :pyattr:`Scene.parallel_group`. The
-        # current single-ACP-transport model can only host one connected
-        # agent at a time, so parallel-group scenes share this lock; the
-        # ``asyncio.gather`` scheduling still gives them concurrent task
-        # progress between connect/execute/disconnect critical sections.
-        self._scene_lock: asyncio.Lock = asyncio.Lock()
 
         # Populated by execute()
         self._trajectory: list[dict] = []
@@ -1168,7 +1134,7 @@ class Rollout:
         return self._env
 
     @property
-    def acp_client(self) -> ACPClient | None:
+    def acp_client(self) -> Any:
         return self._acp_client
 
     @property
@@ -1220,7 +1186,7 @@ class Rollout:
                 "to the agent for the entire trial."
             )
 
-        self._effective_locked = _resolve_locked_paths(
+        self._effective_locked = self._planes.resolve_locked_paths(
             cfg.sandbox_user, cfg.sandbox_locked_paths
         )
 
@@ -1237,7 +1203,9 @@ class Rollout:
             _task_disallows_internet(self._task) or cfg.self_gen_no_internet
         ) and cfg.primary_agent != "oracle"
         self._agent_env = _apply_web_policy(
-            resolve_agent_env(cfg.primary_agent, cfg.primary_model, cfg.agent_env),
+            self._planes.resolve_agent_env(
+                cfg.primary_agent, cfg.primary_model, cfg.agent_env
+            ),
             disallow=self._disallow_web_tools,
         )
         self._resolved_prompts = _resolve_prompts(
@@ -1246,10 +1214,11 @@ class Rollout:
             skills_dir=cfg.skills_dir,
             skill_nudge=_skill_nudge(cfg.agent_env),
             agent=cfg.primary_agent,
+            planes=self._planes,
         )
-        self._agent_launch = _agent_launch_with_web_policy(
+        self._agent_launch = self._planes.agent_launch(
             cfg.primary_agent,
-            disallow=self._disallow_web_tools,
+            disallow_web_tools=self._disallow_web_tools,
         )
 
         # Copy task dir to temp when Dockerfile mutations are needed
@@ -1266,9 +1235,13 @@ class Rollout:
             self._task_tmp = tmp
 
         if cfg.context_root:
-            stage_dockerfile_deps(effective_task_path, Path(cfg.context_root))
+            self._planes.stage_dockerfile_deps(
+                effective_task_path, Path(cfg.context_root)
+            )
         if cfg.skills_dir:
-            _inject_skills_into_dockerfile(effective_task_path, Path(cfg.skills_dir))
+            self._planes.inject_skills_into_dockerfile(
+                effective_task_path, Path(cfg.skills_dir)
+            )
 
         self._effective_task_path = effective_task_path
 
@@ -1277,7 +1250,7 @@ class Rollout:
         # Without this guard, every Runtime.execute() would build a second
         # sandbox and silently discard the caller's prepared one — #388.
         if self._env is None:
-            self._env = _create_environment(
+            self._env = self._planes.create_environment(
                 cfg.environment,
                 self._task,
                 effective_task_path,
@@ -1333,7 +1306,7 @@ class Rollout:
         # Environment plane: provision the manifest-declared stateful
         # environment and gate on its readiness before the agent runs.
         if self._config.environment_manifest is not None:
-            self._environment = ManifestEnvironment(
+            self._environment = self._planes.manifest_environment(
                 self._config.environment_manifest, sandbox=self._env
             )
             await self._environment.provision(
@@ -1358,8 +1331,8 @@ class Rollout:
     async def install_agent(self) -> None:
         """Install the primary agent binary, set up credentials, sandbox user, skills, lockdown.
 
-        For heterogeneous multi-agent scenes (different agents per role),
-        each role's agent is installed on-demand in _run_scene/connect_as.
+        For heterogeneous scene-authored steps (different agents per role),
+        each role's agent is installed on-demand in connect_as().
         This method installs the primary agent to set up the sandbox baseline.
         """
         cfg = self._config
@@ -1371,17 +1344,19 @@ class Rollout:
 
         if cfg.primary_agent == "oracle":
             if cfg.sandbox_user:
-                await setup_sandbox_user(
+                await self._planes.setup_sandbox_user(
                     self._env,
                     cfg.sandbox_user,
                     workspace=self._agent_cwd,
                     timeout_sec=cfg.sandbox_setup_timeout,
                 )
-            await _snapshot_build_config(self._env, workspace=self._agent_cwd)
-            await _seed_verifier_workspace(
+            await self._planes.snapshot_build_config(
+                self._env, workspace=self._agent_cwd
+            )
+            await self._planes.seed_verifier_workspace(
                 self._env, workspace=self._agent_cwd, sandbox_user=cfg.sandbox_user
             )
-            await deploy_skills(
+            await self._planes.deploy_skills(
                 self._env,
                 getattr(self, "_effective_task_path", cfg.task_path),
                 cfg.skills_dir,
@@ -1395,21 +1370,23 @@ class Rollout:
                 await _ensure_sandbox_dir(
                     self._env, cfg.generated_skills_root, cfg.sandbox_user
                 )
-            await lockdown_paths(self._env, self._effective_locked)
+            await self._planes.lockdown_paths(self._env, self._effective_locked)
             self._phase = "installed"
             return
 
         agent_name = cfg.primary_agent
-        self._agent_cfg = await install_agent(self._env, agent_name, rollout_dir)
+        self._agent_cfg = await self._planes.install_agent(
+            self._env, agent_name, rollout_dir
+        )
         if cfg.sandbox_user:
-            self._agent_cwd = await setup_sandbox_user(
+            self._agent_cwd = await self._planes.setup_sandbox_user(
                 self._env,
                 cfg.sandbox_user,
                 workspace=self._agent_cwd,
                 timeout_sec=cfg.sandbox_setup_timeout,
             )
         cred_home = f"/home/{cfg.sandbox_user}" if cfg.sandbox_user else "/root"
-        await write_credential_files(
+        await self._planes.write_credential_files(
             self._env,
             agent_name,
             self._agent_env,
@@ -1418,20 +1395,22 @@ class Rollout:
             cred_home,
         )
         if self._agent_env.get("_BENCHFLOW_SUBSCRIPTION_AUTH"):
-            await upload_subscription_auth(self._env, agent_name, cred_home)
-        await apply_web_tool_policy(
+            await self._planes.upload_subscription_auth(
+                self._env, agent_name, cred_home
+            )
+        await self._planes.apply_web_tool_policy(
             self._env,
             agent_name,
             self._agent_cfg,
             cred_home,
             disallow=self._disallow_web_tools,
         )
-        await _snapshot_build_config(self._env, workspace=self._agent_cwd)
-        await _seed_verifier_workspace(
+        await self._planes.snapshot_build_config(self._env, workspace=self._agent_cwd)
+        await self._planes.seed_verifier_workspace(
             self._env, workspace=self._agent_cwd, sandbox_user=cfg.sandbox_user
         )
 
-        await deploy_skills(
+        await self._planes.deploy_skills(
             self._env,
             getattr(self, "_effective_task_path", cfg.task_path),
             cfg.skills_dir,
@@ -1445,7 +1424,7 @@ class Rollout:
             await _ensure_sandbox_dir(
                 self._env, cfg.generated_skills_root, cfg.sandbox_user
             )
-        await lockdown_paths(self._env, self._effective_locked)
+        await self._planes.lockdown_paths(self._env, self._effective_locked)
 
         self._phase = "installed"
 
@@ -1457,14 +1436,20 @@ class Rollout:
         rollout_dir = self._require_rollout_dir()
         t0 = datetime.now()
 
-        self._agent_env, self._provider_runtime = await ensure_bedrock_proxy_runtime(
+        (
+            self._agent_env,
+            self._provider_runtime,
+        ) = await self._planes.ensure_bedrock_proxy_runtime(
             agent=cfg.primary_agent,
             agent_env=self._agent_env,
             model=cfg.primary_model,
             runtime=getattr(self, "_provider_runtime", None),
             environment=cfg.environment,
         )
-        self._agent_env, self._usage_runtime = await ensure_usage_proxy_runtime(
+        (
+            self._agent_env,
+            self._usage_runtime,
+        ) = await self._planes.ensure_usage_proxy_runtime(
             agent=cfg.primary_agent,
             agent_env=self._agent_env,
             model=cfg.primary_model,
@@ -1477,7 +1462,7 @@ class Rollout:
             self._session,
             self._session_adapter,
             self._agent_name,
-        ) = await connect_acp(
+        ) = await self._planes.connect_acp(
             env=self._env,
             agent=cfg.primary_agent,
             agent_launch=self._agent_launch,
@@ -1605,7 +1590,7 @@ class Rollout:
             else self._config.agent_idle_timeout
         )
 
-        trajectory, n_tool_calls = await execute_prompts(
+        trajectory, n_tool_calls = await self._planes.execute_prompts(
             self._acp_client,
             self._session,
             effective_prompts,
@@ -1760,6 +1745,7 @@ class Rollout:
             self._task,
             self._rollout_paths,
             self._timing,
+            self._planes,
             sandbox_user=cfg.sandbox_user,
             workspace=self._agent_cwd,
         )
@@ -1778,25 +1764,18 @@ class Rollout:
         Returns (rewards, verifier_output, verifier_error). The final
         verify() still does full hardening.
         """
-        from benchflow.sandbox.lockdown import (
-            cleanup_verifier_python_hooks,
-            clear_verifier_output_dir,
-            ensure_legacy_app_dir,
-        )
-        from benchflow.task import Verifier
-
         self._rollout_paths.verifier_dir.mkdir(parents=True, exist_ok=True)
         # Clean verifier output dir — chmod 777 so non-root verifier processes can write.
         # Keep /app present for task/verifier paths that still use the legacy
         # rootdir fallback; tasks that populate /app are unaffected.
         try:
-            await clear_verifier_output_dir(
+            await self._planes.clear_verifier_output_dir(
                 self._env,
                 "Soft verifier setup failed: clearing verifier output directory",
                 user="root",
                 timeout_sec=10,
             )
-            await ensure_legacy_app_dir(
+            await self._planes.ensure_legacy_app_dir(
                 self._env,
                 "Soft verifier setup failed: preparing /app",
                 user="root",
@@ -1805,7 +1784,7 @@ class Rollout:
             # Purge agent-injected conftest/sitecustomize/.pth without
             # killing processes or restoring workspace.
             # Honor per-task [verifier.hardening] opt-outs from task.toml.
-            await cleanup_verifier_python_hooks(
+            await self._planes.cleanup_verifier_python_hooks(
                 self._env,
                 getattr(self._task, "task_dir", None),
                 "Soft verifier setup failed: purging Python injection hooks",
@@ -1821,7 +1800,7 @@ class Rollout:
         verifier_output = None
         verifier_error = None
         try:
-            verifier = Verifier(
+            verifier = self._planes.verifier(
                 task=self._task,
                 rollout_paths=self._rollout_paths,
                 sandbox=self._env,
@@ -1877,11 +1856,11 @@ class Rollout:
         usage_runtime = getattr(self, "_usage_runtime", None)
         if usage_runtime is not None:
             try:
-                await stop_provider_runtime(usage_runtime)
-                self._usage_metrics = extract_usage(usage_runtime)
+                await self._planes.stop_provider_runtime(usage_runtime)
+                self._usage_metrics = self._planes.extract_usage(usage_runtime)
             except Exception as e:
                 logger.warning(f"Usage telemetry runtime stop failed: {e}")
-                self._usage_metrics = extract_usage(None)
+                self._usage_metrics = self._planes.extract_usage(None)
             try:
                 self._write_llm_trajectory(usage_runtime)
             except Exception as e:
@@ -1896,7 +1875,9 @@ class Rollout:
 
         if self._env:
             try:
-                await stop_provider_runtime(getattr(self, "_provider_runtime", None))
+                await self._planes.stop_provider_runtime(
+                    getattr(self, "_provider_runtime", None)
+                )
                 self._provider_runtime = None
             except Exception as e:
                 logger.warning(f"Provider runtime stop failed: {e}")
@@ -1957,7 +1938,16 @@ class Rollout:
                         if cfg.user is not None:
                             await self._run_user_loop()
                         else:
-                            await self._run_scenes(cfg.effective_scenes)
+                            await self._run_steps(
+                                compile_scenes_to_steps(
+                                    cfg.effective_scenes,
+                                    default_prompt=(
+                                        self._resolved_prompts[0]
+                                        if self._resolved_prompts
+                                        else None
+                                    ),
+                                )
+                            )
                     except TimeoutError as e:
                         agent_timed_out = True
                         detail = str(e).strip()
@@ -1997,11 +1987,11 @@ class Rollout:
             self._transport_error_info = _parse_transport_error(e)
             await self._probe_sandbox_health()
             logger.error(f"Agent connection lost: {self._error}")
-        except SandboxStartupError as e:
+        except SandboxStartupFailure as e:
             self._error = f"Sandbox startup failed: {e}"
             self._sandbox_startup_info = e.sandbox_startup_info
             logger.error(self._error)
-        except ACPError as e:
+        except AgentProtocolError as e:
             self._error = self._classify_acp_error(e)
             logger.error(self._error)
         except Exception as e:
@@ -2017,9 +2007,7 @@ class Rollout:
             )
         return self._build_result()
 
-    # ── Scene execution ──
-
-    _OUTBOX_DIR = "/app/.outbox"
+    # ── Scene-authored Step execution ──
 
     async def _export_generated_skills(self) -> None:
         """Download creator-produced skills before sandbox cleanup.
@@ -2059,243 +2047,79 @@ class Rollout:
 
         self._evolved_skills = capture_skills(target)
 
-    async def _activate_scene_skills(self, scene: Scene) -> None:
-        """Activate scene-local skills by linking them into role discovery paths."""
-        if not scene.skills_dir:
+    async def _activate_step_skills(self, step: Step) -> None:
+        """Activate scene-local skills attached by the Scene desugaring pass."""
+        skills_dir = scene_step_skills_dir(step)
+        if not skills_dir:
             return
         if self._env is None:
             raise RuntimeError("Environment is not started")
 
-        source_value = scene.skills_dir
+        scene_name = str(step.data.get("scene") or "scene")
+        role = scene_step_role(step)
+        source_value = skills_dir
         source = str(source_value)
         local_source = Path(source).expanduser()
         if isinstance(source_value, os.PathLike) and local_source.is_dir():
-            remote_source = f"/skills/{_safe_skill_name(scene.name)}"
+            remote_source = f"/skills/{_safe_skill_name(scene_name)}"
             await _ensure_sandbox_dir(self._env, Path(remote_source).parent)
             await self._env.upload_dir(local_source, remote_source)
         elif source.startswith("/"):
             remote_source = source
         elif local_source.is_dir():
-            remote_source = f"/skills/{_safe_skill_name(scene.name)}"
+            remote_source = f"/skills/{_safe_skill_name(scene_name)}"
             await _ensure_sandbox_dir(self._env, Path(remote_source).parent)
             await self._env.upload_dir(local_source, remote_source)
         else:
-            raise FileNotFoundError(f"Scene skills_dir not found: {scene.skills_dir}")
+            raise FileNotFoundError(f"Scene skills_dir not found: {skills_dir}")
 
         home = (
             f"/home/{self._config.sandbox_user}"
             if self._config.sandbox_user
             else "/root"
         )
-        for role in scene.roles:
-            agent_cfg = AGENTS.get(role.agent)
-            if not agent_cfg or not agent_cfg.skill_paths:
-                continue
-            await _link_skill_paths(
-                self._env,
-                remote_source,
-                agent_cfg.skill_paths,
-                home,
-                self._agent_cwd,
-                self._config.sandbox_user,
-            )
-
-    async def _run_scenes(self, scenes: list[Scene]) -> None:
-        """Dispatch scenes, honoring :pyattr:`Scene.parallel_group`.
-
-        Consecutive scenes that share a non-empty ``parallel_group`` are
-        scheduled concurrently via :func:`asyncio.gather`. Scenes with no
-        group (or distinct groups) run sequentially in declaration order.
-
-        Concurrency model (ENG / issue #417): the Rollout currently owns a
-        single ACP transport (``self._acp_client``) and one connected
-        agent process at a time. Parallel-group scenes therefore share
-        :pyattr:`_scene_lock` and serialize on connect/execute/disconnect
-        critical sections, while still benefiting from concurrent task
-        scheduling (cooperative interleaving outside the critical section,
-        deterministic recovery on failure of any sibling scene). True
-        per-scene agent concurrency requires a per-scene ACP context — a
-        follow-up refactor; this fix makes ``parallel_group`` actually
-        schedule rather than silently no-op.
-
-        Same-group scenes must have disjoint role names, otherwise outbox
-        messages would collide on the shared sandbox filesystem.
-        """
-        if not scenes:
+        agent_cfg = self._planes.agent_config(role.agent)
+        if not agent_cfg or not agent_cfg.skill_paths:
             return
-
-        # Group *consecutive* scenes that share a non-empty parallel_group.
-        # None / "" / distinct values flush the current group.
-        groups: list[list[Scene]] = []
-        current: list[Scene] = []
-        current_key: str | None = None
-        for scene in scenes:
-            key = scene.parallel_group or None
-            if key is not None and key == current_key:
-                current.append(scene)
-            else:
-                if current:
-                    groups.append(current)
-                current = [scene]
-                current_key = key
-        if current:
-            groups.append(current)
-
-        for group in groups:
-            if len(group) == 1:
-                await self._run_scene(group[0])
-                continue
-
-            # Validate: scenes in the same parallel_group must have
-            # disjoint role names (outbox files key on role name).
-            seen_roles: dict[str, str] = {}
-            for scene in group:
-                for role in scene.roles:
-                    prior = seen_roles.get(role.name)
-                    if prior is not None:
-                        raise ValueError(
-                            f"parallel_group={group[0].parallel_group!r}: "
-                            f"role {role.name!r} appears in both "
-                            f"{prior!r} and {scene.name!r}; same-group scenes "
-                            f"must use disjoint role names."
-                        )
-                    seen_roles[role.name] = scene.name
-
-            logger.info(
-                f"[Scene] parallel_group={group[0].parallel_group!r}: "
-                f"scheduling {len(group)} scenes concurrently "
-                f"({[s.name for s in group]})"
-            )
-            await asyncio.gather(*(self._run_scene(scene) for scene in group))
-
-    async def _run_scene(self, scene: Scene) -> None:
-        """Execute one scene: for each turn, connect as the turn's role, execute, disconnect.
-
-        For multi-role scenes, agents communicate via outbox files:
-        an agent writes ``/app/.outbox/{recipient}.json`` with
-        ``{"to": "role_name", "content": "..."}`` and the scheduler
-        injects received messages into the next turn's prompt.
-
-        Inter-role messages are persisted to ``rollout_dir/scene_messages.jsonl``.
-
-        When called concurrently from :meth:`_run_scenes` for a
-        :pyattr:`Scene.parallel_group`, the body acquires
-        :pyattr:`_scene_lock` so each scene observes a consistent
-        ACP-transport view (see :meth:`_run_scenes` docstring).
-        """
-        cfg = self._config
-        async with self._scene_lock:
-            logger.info(
-                f"[Scene] {scene.name} — {len(scene.turns)} turns, "
-                f"{len(scene.roles)} roles"
-            )
-            await self._activate_scene_skills(scene)
-
-            role_map = {r.name: r for r in scene.roles}
-            current_role: str | None = None
-            multi_role = len(scene.roles) > 1
-            scene_messages: list[dict] = []
-
-            if multi_role:
-                setup_cmd = f"rm -rf {self._OUTBOX_DIR} && mkdir -p {self._OUTBOX_DIR}"
-                if cfg.sandbox_user:
-                    user = shlex.quote(cfg.sandbox_user)
-                    setup_cmd += f" && chown {user}:{user} {self._OUTBOX_DIR}"
-                await self._env.exec(setup_cmd, timeout_sec=10)
-
-            inbox: dict[str, list[str]] = {r.name: [] for r in scene.roles}
-            turn_counter = 0
-
-            try:
-                for _i, turn in enumerate(scene.turns):
-                    role = role_map.get(turn.role)
-                    if not role:
-                        raise ValueError(f"Turn references unknown role {turn.role!r}")
-
-                    if current_role != turn.role:
-                        if current_role is not None:
-                            await self.disconnect()
-                        await self.connect_as(role)
-                        current_role = turn.role
-
-                    if turn.prompt:
-                        base_prompt = turn.prompt
-                    elif self._resolved_prompts:
-                        base_prompt = self._resolved_prompts[0]
-                    else:
-                        base_prompt = "Solve the task described in /app/instruction.md"
-
-                    pending = inbox.get(turn.role, [])
-                    if pending:
-                        parts = [base_prompt, "\n---\nMessages from other agents:\n"]
-                        parts.extend(pending)
-                        prompts = ["\n".join(parts)]
-                        inbox[turn.role] = []
-                    else:
-                        prompts = [base_prompt]
-
-                    await self.execute(prompts=prompts)
-
-                    if multi_role:
-                        if current_role is None:
-                            raise RuntimeError(
-                                "No active role after scene turn execution"
-                            )
-                        for recipient, content in await self._read_scene_outbox(
-                            current_role
-                        ):
-                            turn_counter += 1
-                            inbox.setdefault(recipient, []).append(
-                                f"**From {current_role}:** {content}"
-                            )
-                            scene_messages.append(
-                                {
-                                    "scene": scene.name,
-                                    "turn": turn_counter,
-                                    "sender": current_role,
-                                    "recipient": recipient,
-                                    "content": content,
-                                }
-                            )
-            finally:
-                if current_role is not None:
-                    await self.disconnect()
-
-            if scene_messages and self._rollout_dir:
-                msg_path = self._rollout_dir / "scene_messages.jsonl"
-                with msg_path.open("a") as f:
-                    for m in scene_messages:
-                        f.write(json.dumps(m) + "\n")
-                logger.info(
-                    f"[Scene] {scene.name}: {len(scene_messages)} messages → {msg_path}"
-                )
-
-    async def _read_scene_outbox(self, sender: str) -> list[tuple[str, str]]:
-        """Read and clear outbox files left by *sender*. Returns [(recipient, content), ...]."""
-        result = await self._env.exec(
-            f"ls {self._OUTBOX_DIR}/*.json 2>/dev/null || true",
-            timeout_sec=10,
+        await self._planes.link_skill_paths(
+            self._env,
+            remote_source,
+            agent_cfg.skill_paths,
+            home,
+            self._agent_cwd,
+            self._config.sandbox_user,
         )
-        files = [
-            f.strip() for f in (result.stdout or "").strip().splitlines() if f.strip()
-        ]
-        messages: list[tuple[str, str]] = []
-        for fpath in files:
-            quoted = shlex.quote(fpath)
-            cat = await self._env.exec(f"cat {quoted}", timeout_sec=10)
-            try:
-                data = json.loads(cat.stdout or "{}")
-                recipient = data.get("to", "")
-                content = data.get("content", "")
-                if recipient and content:
-                    messages.append((recipient, content))
-                    logger.info(
-                        f"[Scene] outbox: {sender} → {recipient}: {content[:80]}"
-                    )
-            except json.JSONDecodeError:
-                logger.warning(f"[Scene] invalid JSON in outbox: {fpath}")
-            await self._env.exec(f"rm -f {quoted}", timeout_sec=10)
-        return messages
+
+    async def _run_steps(self, steps: list[Step]) -> None:
+        """Execute already-compiled rollout Steps in declaration order."""
+        current_role_key: tuple[Any, ...] | None = None
+        try:
+            for step in steps:
+                role = scene_step_role(step)
+                role_key = (
+                    role.name,
+                    role.agent,
+                    role.model,
+                    role.timeout_sec,
+                    role.idle_timeout_sec,
+                    tuple(sorted(role.env.items())),
+                )
+                logger.info(
+                    "[Step] %s scene=%s role=%s",
+                    step.id,
+                    step.data.get("scene"),
+                    role.name,
+                )
+                await self._activate_step_skills(step)
+                if current_role_key != role_key:
+                    if current_role_key is not None:
+                        await self.disconnect()
+                    await self.connect_as(role)
+                    current_role_key = role_key
+                await self.execute(prompts=[scene_step_prompt(step)])
+        finally:
+            if current_role_key is not None:
+                await self.disconnect()
 
     async def _run_user_loop(self) -> None:
         """Execute a user-driven progressive-disclosure loop.
@@ -2453,26 +2277,29 @@ class Rollout:
         if disallow_web_tools is None:
             disallow_web_tools = _task_disallows_internet(getattr(self, "_task", None))
         disallow_web_tools = bool(disallow_web_tools and role.agent != "oracle")
-        agent_launch = _agent_launch_with_web_policy(
+        agent_launch = self._planes.agent_launch(
             role.agent,
-            disallow=disallow_web_tools,
+            disallow_web_tools=disallow_web_tools,
         )
         agent_env = _apply_web_policy(
-            resolve_agent_env(
+            self._planes.resolve_agent_env(
                 role.agent,
                 role.model,
                 {**(cfg.agent_env or {}), **(role.env or {})},
             ),
             disallow=disallow_web_tools,
         )
-        agent_env, self._provider_runtime = await ensure_bedrock_proxy_runtime(
+        (
+            agent_env,
+            self._provider_runtime,
+        ) = await self._planes.ensure_bedrock_proxy_runtime(
             agent=role.agent,
             agent_env=agent_env,
             model=role.model,
             runtime=getattr(self, "_provider_runtime", None),
             environment=cfg.environment,
         )
-        agent_env, self._usage_runtime = await ensure_usage_proxy_runtime(
+        agent_env, self._usage_runtime = await self._planes.ensure_usage_proxy_runtime(
             agent=role.agent,
             agent_env=agent_env,
             model=role.model,
@@ -2486,12 +2313,14 @@ class Rollout:
             role_agent_differs or role.model != cfg.primary_model or bool(role.env)
         )
         if role_agent_differs:
-            agent_cfg = await install_agent(self._env, role.agent, rollout_dir)
+            agent_cfg = await self._planes.install_agent(
+                self._env, role.agent, rollout_dir
+            )
         else:
             agent_cfg = getattr(self, "_agent_cfg", None)
         if needs_role_credentials:
             cred_home = f"/home/{cfg.sandbox_user}" if cfg.sandbox_user else "/root"
-            await write_credential_files(
+            await self._planes.write_credential_files(
                 self._env,
                 role.agent,
                 agent_env,
@@ -2500,8 +2329,10 @@ class Rollout:
                 cred_home,
             )
             if agent_env.get("_BENCHFLOW_SUBSCRIPTION_AUTH"):
-                await upload_subscription_auth(self._env, role.agent, cred_home)
-            await apply_web_tool_policy(
+                await self._planes.upload_subscription_auth(
+                    self._env, role.agent, cred_home
+                )
+            await self._planes.apply_web_tool_policy(
                 self._env,
                 role.agent,
                 agent_cfg,
@@ -2516,7 +2347,7 @@ class Rollout:
             self._session,
             self._session_adapter,
             self._agent_name,
-        ) = await connect_acp(
+        ) = await self._planes.connect_acp(
             env=self._env,
             agent=role.agent,
             agent_launch=agent_launch,
@@ -2563,7 +2394,7 @@ class Rollout:
             self._transport_error_info["sandbox_reachable"] = False
             self._transport_error_info["sandbox_probe_error"] = str(probe_err)[:200]
 
-    def _classify_acp_error(self, e: ACPError) -> str:
+    def _classify_acp_error(self, e: AgentProtocolError) -> str:
         if "Invalid API key" in e.message:
             from benchflow.agents.env import check_subscription_auth
             from benchflow.agents.registry import infer_env_key_for_model
