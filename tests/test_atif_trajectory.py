@@ -574,6 +574,85 @@ class TestTrajectoryProxy:
             await stream_server.wait_closed()
 
     @pytest.mark.asyncio
+    async def test_proxy_reconstructs_gemini_sse_without_stream_flag(self) -> None:
+        """Guards the follow-up to PR #483: Gemini CLI's real
+        streamGenerateContent request uses ``alt=sse`` without a JSON
+        ``stream`` flag, so SSE detection must not depend on request body
+        shape alone (#375)."""
+
+        async def gemini_handler(
+            reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+        ) -> None:
+            await reader.readline()
+            headers = {}
+            while True:
+                line = await reader.readline()
+                if line in (b"\r\n", b"\n", b""):
+                    break
+                k, _, v = line.decode().partition(":")
+                headers[k.strip().lower()] = v.strip()
+            cl = int(headers.get("content-length", "0"))
+            if cl > 0:
+                await reader.readexactly(cl)
+
+            frame = {
+                "candidates": [
+                    {
+                        "content": {
+                            "role": "model",
+                            "parts": [{"text": "done"}],
+                        },
+                        "finishReason": "STOP",
+                        "index": 0,
+                    }
+                ],
+                "modelVersion": "gemini-2.5-flash",
+                "usageMetadata": {
+                    "promptTokenCount": 7,
+                    "candidatesTokenCount": 1,
+                    "totalTokenCount": 8,
+                },
+            }
+            body = f"data: {json.dumps(frame)}\r\n\r\n".encode()
+            writer.write(
+                b"HTTP/1.1 200 OK\r\n"
+                b"content-type: text/event-stream\r\n"
+                + f"content-length: {len(body)}\r\n\r\n".encode()
+                + body
+            )
+            await writer.drain()
+            writer.close()
+
+        stream_server = await asyncio.start_server(gemini_handler, "127.0.0.1", 0)
+        stream_port = stream_server.sockets[0].getsockname()[1]
+
+        proxy = TrajectoryProxy(
+            target=f"http://127.0.0.1:{stream_port}",
+            session_id="gemini-sse-no-stream-flag",
+            agent_name="gemini",
+        )
+        await proxy.start()
+
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    f"{proxy.base_url}/v1beta/models/"
+                    "gemini-2.5-flash:streamGenerateContent?alt=sse",
+                    json={"contents": []},
+                )
+                assert resp.status_code == 200
+
+            body = proxy.trajectory.exchanges[0].response.body
+            assert "raw" not in body
+            assert "_raw_events" not in body
+            assert body["usageMetadata"]["totalTokenCount"] == 8
+            assert proxy.trajectory.total_provider_tokens == 8
+        finally:
+            await proxy.stop()
+            stream_server.close()
+            await stream_server.wait_closed()
+
+    @pytest.mark.asyncio
     async def test_extract_usage_populates_gemini_telemetry_after_stream(self) -> None:
         """Regression for #375 — assert the full pipeline: a Gemini streaming
         response goes through the proxy and ``extract_usage`` returns

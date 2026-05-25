@@ -188,6 +188,7 @@ def _agent_base_url_envs(agent: str) -> list[str]:
             "ANTHROPIC_BASE_URL",
             "ANTHROPIC_BEDROCK_BASE_URL",
             "OPENAI_BASE_URL",
+            "GOOGLE_GEMINI_BASE_URL",
             "GEMINI_API_BASE_URL",
             "LLM_BASE_URL",
         ]
