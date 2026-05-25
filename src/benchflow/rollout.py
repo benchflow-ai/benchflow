@@ -842,7 +842,7 @@ async def _verify_rollout(
         verifier_timeout_info = {
             "timeout_budget_sec": timeout_budget,
             "elapsed_sec": round(elapsed, 1),
-            "task_name": task.config.name,
+            "task_name": task.name,
         }
         rewards = None
         logger.error(verifier_error)
@@ -2560,8 +2560,17 @@ class Rollout:
                 self._transport_error_info["sandbox_probe_rc"] = rc
                 self._transport_error_info["sandbox_probe_stdout"] = stdout[:200]
         except Exception as probe_err:
+            import traceback
+
+            logger.exception("sandbox health probe failed")
             self._transport_error_info["sandbox_reachable"] = False
             self._transport_error_info["sandbox_probe_error"] = str(probe_err)[:200]
+            self._transport_error_info["sandbox_probe_error_type"] = type(
+                probe_err
+            ).__name__
+            self._transport_error_info["sandbox_probe_traceback"] = (
+                traceback.format_exc()[-2000:]
+            )
 
     def _classify_acp_error(self, e: ACPError) -> str:
         if "Invalid API key" in e.message:
