@@ -911,11 +911,17 @@ class TestSandboxStartupDiagnostics:
         assert result.rewards == {"reward": 1.0}
 
     def test_create_sandbox_retry_count_is_three(self) -> None:
-        """Guards ENG-147: _create_sandbox retries 3 times, not 2."""
+        """Guards ENG-147: _create_sandbox retries 3 times, not 2.
+
+        The retry contract is declared with the standard ``@retry(...)``
+        decorator from tenacity. tenacity attaches the live ``stop`` /
+        ``wait`` config to the wrapped function as ``fn.retry``; assert via
+        that introspection hook rather than re-implementing scaffolding.
+        """
+        pytest.importorskip("tenacity")  # ``sandbox-daytona`` extra
         from benchflow.sandbox.daytona import DaytonaSandbox
 
-        retry_obj = DaytonaSandbox._create_sandbox.retry  # type: ignore[attr-defined]
-        stop = retry_obj.stop
+        stop = DaytonaSandbox._create_sandbox.retry.stop  # type: ignore[attr-defined]
         assert stop.max_attempt_number == 3
 
 

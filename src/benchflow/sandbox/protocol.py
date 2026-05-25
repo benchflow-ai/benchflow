@@ -44,6 +44,38 @@ class SandboxSnapshotNotSupported(NotImplementedError):
     """
 
 
+class SandboxStartupError(RuntimeError):
+    """Raised when sandbox creation fails or times out.
+
+    Lives in the core ``benchflow.sandbox.protocol`` module — and not in any
+    provider-specific backend — so a base install of ``benchflow`` (no
+    ``sandbox-daytona`` / ``sandbox-modal`` extras) can still import
+    ``benchflow.rollout`` and reference this exception type without pulling
+    in optional provider SDKs (issue #358). Provider-specific backends
+    re-raise this same type with structured ``sandbox_startup_info`` for
+    ``result.json``.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        sandbox_id: str | None = None,
+        sandbox_state: str | None = None,
+        attempts: int = 0,
+        build_timeout_sec: float | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.sandbox_startup_info: dict = {
+            "reason": "sandbox_startup_failed",
+            "sandbox_id": sandbox_id,
+            "sandbox_state": sandbox_state,
+            "attempts": attempts,
+            "build_timeout_sec": build_timeout_sec,
+            "raw_message": str(message)[:500],
+        }
+
+
 @runtime_checkable
 class Sandbox(Protocol):
     """Run-only: isolated execution environment.
