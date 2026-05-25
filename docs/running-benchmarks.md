@@ -309,10 +309,12 @@ bench eval create \
 A **stateful** benchmark — one with mock services, databases, or accounts the
 agent acts on — declares its world in an `environment.toml` manifest and runs
 on the [Environment plane](./environment-plane.md). The `--environment-manifest`
-flag currently lives on the legacy `bench run` command (hidden in `--help` but
-still callable); porting it to `bench eval create` is tracked separately.
+flag is available on both the single-task `bench run` command and on
+`bench eval create` (batch / Job API), so manifest-backed evaluations can be
+driven through the same pipeline as regular benchmark sweeps.
 
 ```bash
+# single task
 bench run benchmarks/clawsbench/tasks/<task> \
   --environment-manifest benchmarks/clawsbench/environment.toml \
   --agent claude-agent-acp --model claude-haiku-4-5
@@ -320,7 +322,15 @@ bench run benchmarks/clawsbench/tasks/<task> \
 bench run benchmarks/chi-bench/tasks/<task> \
   --environment-manifest benchmarks/chi-bench/environment.toml \
   --agent claude-agent-acp --model claude-haiku-4-5
+
+# batch via the Job API
+bench eval create --tasks-dir benchmarks/clawsbench/tasks \
+  --environment-manifest benchmarks/clawsbench/environment.toml \
+  --agent claude-agent-acp --model claude-haiku-4-5
 ```
+
+YAML configs may declare the same seam with ``environment_manifest:
+<path>`` at the top level so the batch run is reproducible from disk.
 
 `--environment-manifest` is distinct from `--sandbox`: the sandbox is *where*
 the rollout runs; the environment manifest is *the world* the agent acts in.

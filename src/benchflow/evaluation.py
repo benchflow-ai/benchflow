@@ -54,6 +54,7 @@ from benchflow._utils.scoring import (
     pass_rate_excl_errors,
 )
 from benchflow._utils.source_provenance import summary_source_fields
+from benchflow.environment.manifest import EnvironmentManifest
 from benchflow.learner_store import LearnerState, LearnerStore
 from benchflow.models import RolloutResult
 from benchflow.trajectories.tree import RolloutNode
@@ -204,6 +205,12 @@ class EvaluationConfig:
     self_gen_no_internet: bool = False
     job_mode: str = DEFAULT_JOB_MODE
     source_provenance: dict[str, Any] | None = None
+    # Environment-plane manifest applied to every rollout in the batch.
+    # When set, each task's RolloutConfig.environment_manifest is populated
+    # so the Environment plane (manifest-declared stateful environment,
+    # readiness gating, teardown) is exercised — closing the gap between
+    # single-rollout SDK.run() and the batch Evaluation/Job API (#398).
+    environment_manifest: EnvironmentManifest | None = None
 
     def __post_init__(self):
         from benchflow._utils.config import (
@@ -467,6 +474,15 @@ class Evaluation:
         sandbox_setup_timeout = raw.get("sandbox_setup_timeout", 120)
 
         agent_name = raw.get("agent", DEFAULT_AGENT)
+        # Optional environment-plane manifest path. Keeps YAML and CLI in
+        # sync so manifest-backed evaluations can be driven from either
+        # (#398).
+        env_manifest_raw = raw.get("environment_manifest")
+        env_manifest: EnvironmentManifest | None = None
+        if env_manifest_raw is not None:
+            from benchflow.environment.manifest import load_manifest
+
+            env_manifest = load_manifest(env_manifest_raw)
         config = EvaluationConfig(
             agent=agent_name,
             model=effective_model(agent_name, raw.get("model")),
@@ -493,6 +509,7 @@ class Evaluation:
             self_gen_no_internet=bool(raw.get("self_gen_no_internet", False)),
             job_mode=raw.get("job_mode", DEFAULT_JOB_MODE),
             source_provenance=source_provenance,
+            environment_manifest=env_manifest,
         )
         return cls(tasks_dir=tasks_dir, jobs_dir=jobs_dir, config=config, **kwargs)
 
@@ -697,6 +714,7 @@ class Evaluation:
             jobs_dir=str(self._jobs_dir),
             concurrency=cfg.concurrency,
             environment=cfg.environment,
+            environment_manifest=cfg.environment_manifest,
             skills_dir=skills_dir,
             sandbox_user=cfg.sandbox_user,
             sandbox_locked_paths=cfg.sandbox_locked_paths,
