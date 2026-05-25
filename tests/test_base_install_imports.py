@@ -21,7 +21,8 @@ import sys
 
 
 def test_sandbox_startup_error_lives_in_protocol():
-    """The exception must be importable from ``benchflow.sandbox.protocol`` —
+    """Guards the fix from PR #486 for #358: the exception must be importable
+    from ``benchflow.sandbox.protocol`` —
     the module that has no optional-dep imports — so a base install can
     reference it via ``benchflow.rollout`` without pulling Daytona deps."""
     from benchflow.sandbox.protocol import SandboxStartupError
@@ -35,7 +36,8 @@ def test_sandbox_startup_error_lives_in_protocol():
 
 
 def test_legacy_sandbox_startup_error_import_path_still_works():
-    """Existing code does ``from benchflow.sandbox.daytona import
+    """Guards the fix from PR #486 for #358: existing code does
+    ``from benchflow.sandbox.daytona import
     SandboxStartupError``; the re-export must point at the same class as the
     new protocol-module home so isinstance checks across both paths agree."""
     from benchflow.sandbox.daytona import (
@@ -48,7 +50,8 @@ def test_legacy_sandbox_startup_error_import_path_still_works():
 
 
 def test_rollout_imports_sandbox_startup_error_from_protocol_not_daytona():
-    """``rollout.py`` must not import from ``benchflow.sandbox.daytona`` —
+    """Guards the fix from PR #486 for #358: ``rollout.py`` must not import
+    from ``benchflow.sandbox.daytona`` —
     the daytona module path forces evaluation of optional Daytona deps and
     breaks the base install. This guards against #358 regressing as someone
     moves the import back."""
@@ -65,8 +68,9 @@ def test_rollout_imports_sandbox_startup_error_from_protocol_not_daytona():
 
 
 def test_daytona_module_imports_without_tenacity():
-    """Hide ``tenacity`` from ``sys.modules`` and pretend the daytona SDK is
-    missing, then re-import ``benchflow.sandbox.daytona``. The module must
+    """Guards the fix from PR #486 for #358: hide ``tenacity`` from
+    ``sys.modules`` and pretend the daytona SDK is missing, then re-import
+    ``benchflow.sandbox.daytona``. The module must
     load cleanly — the optional deps are only materialized when
     ``DaytonaSandbox`` is actually instantiated (#358)."""
 

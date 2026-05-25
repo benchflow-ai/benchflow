@@ -362,9 +362,10 @@ class _FailingSandbox:
 
 
 async def test_snapshot_raises_when_sandbox_command_fails():
-    """A failed ``sqlite3 .backup`` must raise instead of returning a bogus
-    StateSnapshot — otherwise Branch records a checkpoint that never existed
-    and children get scored against corrupted state (#387)."""
+    """Guards the fix from PR #486 for #387: a failed ``sqlite3 .backup`` must
+    raise instead of returning a bogus StateSnapshot — otherwise Branch records
+    a checkpoint that never existed and children get scored against corrupted
+    state."""
     sandbox = _FailingSandbox(fail_on=".backup")
     # Build the env without calling provision() — provision would itself
     # trigger _capture_baseline, and we want to test snapshot() in isolation.
@@ -378,9 +379,10 @@ async def test_snapshot_raises_when_sandbox_command_fails():
 
 
 async def test_restore_raises_when_sandbox_command_fails():
-    """A failed ``cp`` during restore must raise instead of returning success
-    — the live state is unchanged but the caller thinks rollback worked,
-    which corrupts every subsequent branch child (#387)."""
+    """Guards the fix from PR #486 for #387: a failed ``cp`` during restore
+    must raise instead of returning success — the live state is unchanged but
+    the caller thinks rollback worked, which corrupts every subsequent branch
+    child."""
     # Use a non-failing sandbox to take a snapshot, then swap in a failing
     # one so restore's `cp` returns non-zero.
     good_sandbox = FakeSandbox()
@@ -398,10 +400,10 @@ async def test_restore_raises_when_sandbox_command_fails():
 
 
 async def test_provision_baseline_capture_failure_surfaces():
-    """``provision`` captures a baseline for stateful manifests via the same
-    snapshot path — if the sandbox command fails there, provision must raise
-    rather than leaving the env with no baseline + believing setup succeeded
-    (#387)."""
+    """Guards the fix from PR #486 for #387: ``provision`` captures a baseline
+    for stateful manifests via the same snapshot path — if the sandbox command
+    fails there, provision must raise rather than leaving the env with no
+    baseline + believing setup succeeded."""
     sandbox = _FailingSandbox(fail_on=".backup")
     env = ManifestEnvironment(CLAWS_STATEFUL, sandbox=sandbox)
     with pytest.raises(EnvironmentSnapshotError):
