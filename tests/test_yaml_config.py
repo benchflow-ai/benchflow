@@ -279,7 +279,7 @@ datasets:
 
 
 def test_legacy_yaml_maps_include_exclude_filters(tmp_path, monkeypatch):
-    """Guards the fix from PR #TBD against legacy YAML filter drops from #500."""
+    """Guards the fix from PR #513 against legacy YAML filter drops from #500."""
     _make_tasks(tmp_path)
     monkeypatch.chdir(tmp_path)
     config = tmp_path / "config.yaml"

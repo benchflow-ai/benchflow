@@ -606,7 +606,7 @@ class TestJobRunOrchestration:
 
     @pytest.mark.asyncio
     async def test_summary_json_includes_tool_and_phase_aggregates(self, tmp_path):
-        """Guards the fix from PR #TBD against summary metric omissions from #501."""
+        """Guards the fix from PR #513 against summary metric omissions from #501."""
         job = self._make_job(tmp_path, n_tasks=2, concurrency=1)
         job._sdk = AsyncMock()
         job._sdk.run = AsyncMock(

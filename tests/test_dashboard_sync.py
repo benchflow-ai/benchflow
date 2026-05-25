@@ -1415,7 +1415,7 @@ def _write_collectable_rollout(jobs_root: Path) -> Path:
 def test_dashboard_review_export_sanitizes_credential_env_var_names(
     tmp_path: Path, monkeypatch
 ):
-    """Guards the fix from PR #TBD against dashboard artifact noise from #494."""
+    """Guards the fix from PR #513 against dashboard artifact noise from #494."""
     jobs = tmp_path / "jobs"
     rollout = jobs / "2026-05-21__23-57-23" / "task__abc123"
     rollout.mkdir(parents=True)

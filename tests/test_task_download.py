@@ -325,7 +325,7 @@ def test_task_source_provenance_rejects_task_outside_source_root(tmp_path):
 
 
 def test_task_source_provenance_infers_cached_checkout_git_root(tmp_path, monkeypatch):
-    """Guards the fix from PR #TBD against cached task provenance drift from #492."""
+    """Guards the fix from PR #513 against cached task provenance drift from #492."""
     monkeypatch.chdir(tmp_path)
     repo = tmp_path / ".cache" / "datasets" / "benchflow-ai" / "skillsbench"
     task = repo / "tasks" / "sample-task"
