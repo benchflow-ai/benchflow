@@ -31,8 +31,9 @@ def test_sandbox_startup_error_lives_in_protocol():
         "boom", sandbox_id="sb-1", sandbox_state="error", attempts=3
     )
     assert isinstance(err, RuntimeError)
-    assert err.sandbox_startup_info["sandbox_id"] == "sb-1"
-    assert err.sandbox_startup_info["attempts"] == 3
+    info = err.diagnostic.to_dict()
+    assert info["sandbox_id"] == "sb-1"
+    assert info["attempts"] == 3
 
 
 def test_legacy_sandbox_startup_error_import_path_still_works():
