@@ -41,6 +41,16 @@ from benchflow.task.paths import RolloutPaths, SandboxPaths
 
 logger = logging.getLogger("benchflow")
 
+_DOCKER_BUILD_RETRY_DELAYS_SEC = (2.0, 5.0)
+_DOCKER_BUILD_RETRYABLE_ERRORS = (
+    re.compile(r"at least one invalid signature was encountered", re.IGNORECASE),
+    re.compile(r"the repository '.+' is not signed", re.IGNORECASE),
+    re.compile(r"no space left on device", re.IGNORECASE),
+    re.compile(r"readtimeouterror", re.IGNORECASE),
+    re.compile(r"read timed out", re.IGNORECASE),
+    re.compile(r"connection (?:timed out|reset by peer)", re.IGNORECASE),
+)
+
 
 def _sanitize_docker_image_name(name: str) -> str:
     name = name.lower()
@@ -56,6 +66,10 @@ def _sanitize_docker_compose_project_name(name: str) -> str:
         name = "0" + name
     name = re.sub(r"[^a-z0-9_-]", "-", name)
     return name
+
+
+def _is_retryable_docker_build_error(message: str) -> bool:
+    return any(pattern.search(message) for pattern in _DOCKER_BUILD_RETRYABLE_ERRORS)
 
 
 class DockerSandboxEnvVars(BaseModel):
@@ -311,6 +325,30 @@ class DockerSandbox(BaseSandbox):
 
         return result
 
+    async def _run_docker_compose_build(self) -> None:
+        max_attempts = len(_DOCKER_BUILD_RETRY_DELAYS_SEC) + 1
+        for attempt in range(1, max_attempts + 1):
+            try:
+                await self._run_docker_compose_command(["build"])
+                return
+            except RuntimeError as exc:
+                if attempt == max_attempts or not _is_retryable_docker_build_error(
+                    str(exc)
+                ):
+                    raise
+
+                delay = _DOCKER_BUILD_RETRY_DELAYS_SEC[attempt - 1]
+                self.logger.warning(
+                    "Retrying Docker build for %s after transient failure "
+                    "(attempt %s/%s, retrying in %.1fs): %s",
+                    self.environment_name,
+                    attempt,
+                    max_attempts,
+                    delay,
+                    exc,
+                )
+                await asyncio.sleep(delay)
+
     async def start(self, force_build: bool) -> None:
         if self._mounts_json:
             self._mounts_compose_path = self._write_mounts_compose_file()
@@ -322,7 +360,7 @@ class DockerSandbox(BaseSandbox):
                 self.environment_name, asyncio.Lock()
             )
             async with lock:
-                await self._run_docker_compose_command(["build"])
+                await self._run_docker_compose_build()
 
         with contextlib.suppress(RuntimeError):
             await self._run_docker_compose_command(["down", "--remove-orphans"])

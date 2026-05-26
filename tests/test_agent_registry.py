@@ -66,6 +66,21 @@ class TestEnvMappingField:
 
         assert env["LLM_MODEL"] == "glm-5"
 
+    def test_openhands_bedrock_anthropic_model_uses_litellm_provider_prefix(self):
+        """Guards v0.5-integration@e55219d against OpenHands receiving a bare Bedrock profile id."""
+        env = {
+            "AWS_BEARER_TOKEN_BEDROCK": "bedrock-token",
+            "AWS_REGION": "us-west-2",
+        }
+
+        resolve_provider_env(
+            agent="openhands",
+            model="aws-bedrock/us.anthropic.claude-opus-4-7",
+            agent_env=env,
+        )
+
+        assert env["LLM_MODEL"] == "anthropic/us.anthropic.claude-opus-4-7"
+
 
 class TestOpenHandsConfig:
     def test_openhands_uses_agentskills_paths(self):
@@ -75,14 +90,35 @@ class TestOpenHandsConfig:
 
     def test_openhands_install_cmd_forces_github_main(self):
         cfg = AGENTS["openhands"]
-        assert "apt-get install -y -qq curl ca-certificates git" in cfg.install_cmd
+        assert (
+            "apt-get -o Acquire::Retries=3 install -y -qq curl ca-certificates git"
+            in cfg.install_cmd
+        )
+        assert "--with 'boto3>=1.40'" in cfg.install_cmd
         assert (
             "uv tool install --force --refresh "
+            "--with 'boto3>=1.40' "
             "--from 'git+https://github.com/OpenHands/OpenHands-CLI.git@main' "
             "openhands --python 3.12" in cfg.install_cmd
         )
         assert "command -v git" in cfg.install_cmd
         assert "install.openhands.dev/install.sh" not in cfg.install_cmd
+
+    def test_openhands_apt_bootstrap_retries_transient_mirror_failures(self):
+        """Guards the local fix on v0.5-integration@e55219d against Ubuntu mirror signature flakiness."""
+        cfg = AGENTS["openhands"]
+
+        assert "rm -rf /var/lib/apt/lists/*" in cfg.install_cmd
+        assert "apt-get clean" in cfg.install_cmd
+        assert "Acquire::Retries=3" in cfg.install_cmd
+        assert 'while [ "$attempt" -le 3 ]' in cfg.install_cmd
+        assert 'case "$attempt"' in cfg.install_cmd
+
+    def test_openhands_installs_boto3_for_bedrock_provider(self):
+        """Guards v0.5-integration@e55219d against OpenHands Bedrock runs missing boto3."""
+        cfg = AGENTS["openhands"]
+
+        assert "--with 'boto3>=1.40'" in cfg.install_cmd
 
     def test_openhands_skips_acp_set_model(self):
         cfg = AGENTS["openhands"]

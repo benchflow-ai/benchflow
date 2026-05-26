@@ -129,6 +129,10 @@ def _normalize_openhands_model(model: str) -> str:
     if model.startswith("google/gemini"):
         return f"gemini/{model.split('/', 1)[1]}"
     stripped = strip_provider_prefix(model)
+    if model.startswith("aws-bedrock/") and stripped.startswith(
+        ("anthropic.", "us.anthropic.", "global.anthropic.")
+    ):
+        return f"anthropic/{stripped}"
     lower = model.lower()
     if is_vertex_model(model) and "gemini" in lower:
         return f"vertex_ai/{stripped}"
