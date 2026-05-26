@@ -685,9 +685,7 @@ class TestDaytonaPtyProcessSecretTransport:
         assert "secret" not in calls[1].args[0]
 
     @pytest.mark.asyncio
-    async def test_pty_marker_timeout_raises_typed_transport_error(
-        self, monkeypatch
-    ):
+    async def test_pty_marker_timeout_raises_typed_transport_error(self, monkeypatch):
         """Guards PR #561: PTY startup marker timeouts stay retryable."""
         from benchflow.diagnostics import TransportClosedError
 

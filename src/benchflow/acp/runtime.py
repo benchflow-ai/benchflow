@@ -90,7 +90,10 @@ def _codex_session_model_id(model: str, session: object | None) -> str:
 
     requested_name = _codex_model_name(model)
     current_model = state.get("currentModelId")
-    if isinstance(current_model, str) and _codex_model_name(current_model) == requested_name:
+    if (
+        isinstance(current_model, str)
+        and _codex_model_name(current_model) == requested_name
+    ):
         return current_model
 
     available = state.get("availableModels")

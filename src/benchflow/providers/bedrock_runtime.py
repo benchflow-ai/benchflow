@@ -23,6 +23,12 @@ BEDROCK_CONNECT_TIMEOUT_SEC = 10
 BEDROCK_READ_TIMEOUT_SEC = 300
 
 
+class _FallbackBedrockConfig:
+    def __init__(self, *, connect_timeout: int, read_timeout: int) -> None:
+        self.connect_timeout = connect_timeout
+        self.read_timeout = read_timeout
+
+
 def resolve_bedrock_region(env: dict[str, str]) -> str:
     """Return AWS region from env or raise."""
     region = env.get("AWS_REGION") or env.get("AWS_DEFAULT_REGION")
@@ -63,12 +69,11 @@ def build_bedrock_client(
     try:
         from botocore.config import Config
     except ImportError:  # pragma: no cover - botocore ships with boto3
-        config = None
-    else:
-        config = Config(
-            connect_timeout=BEDROCK_CONNECT_TIMEOUT_SEC,
-            read_timeout=BEDROCK_READ_TIMEOUT_SEC,
-        )
+        Config = _FallbackBedrockConfig
+    config = Config(
+        connect_timeout=BEDROCK_CONNECT_TIMEOUT_SEC,
+        read_timeout=BEDROCK_READ_TIMEOUT_SEC,
+    )
     return boto3_module.client(
         service_name=BEDROCK_RUNTIME_SERVICE,
         region_name=normalized["AWS_REGION"],

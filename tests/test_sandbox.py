@@ -196,9 +196,7 @@ class TestDockerExecEnvSecrecy:
         assert sleeps == [2.0]
 
     @pytest.mark.asyncio
-    async def test_docker_build_retries_transient_pip_read_timeouts(
-        self, monkeypatch
-    ):
+    async def test_docker_build_retries_transient_pip_read_timeouts(self, monkeypatch):
         """Guards v0.5-integration@e55219d against pip download noise."""
         from benchflow.sandbox import docker as docker_module
         from benchflow.sandbox._base import ExecResult
