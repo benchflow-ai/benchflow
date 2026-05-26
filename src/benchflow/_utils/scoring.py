@@ -1,17 +1,28 @@
 """Pure scoring and classification helpers — no external dependencies."""
 
+from collections.abc import Iterable, Mapping
+from typing import Any, Literal
+
 # Error category constants
 INSTALL_FAILED = "install_failure"
 PIPE_CLOSED = "pipe_closed"
 ACP_ERROR = "acp_error"
+IDLE_TIMEOUT = "idle_timeout"
+INFRA_ERROR = "infra_failure"
+SANDBOX_SETUP = "sandbox_setup"
 TIMED_OUT = "timeout"
 
 # Verifier error category constants
 VERIFIER_FAILED = "verifier_failure"
+VERIFIER_INFRA = "verifier_infra"
 VERIFIER_TIMEOUT = "verifier_timeout"
+VERIFIER_DEP_INSTALL = "verifier_dep_install"
+
+ScoreOutcome = Literal["passed", "failed", "errored", "verifier_errored"]
+ResultOutcome = Literal["passed", "failed", "errored", "verifier_errored", "unscored"]
 
 
-def extract_reward(result: dict) -> float | None:
+def extract_reward(result: Mapping[str, Any]) -> float | None:
     """Extract the reward value from a result dict, or None if absent."""
     rewards = result.get("rewards")
     if not isinstance(rewards, dict):
@@ -23,26 +34,80 @@ def classify_error(error: str | None) -> str | None:
     """Classify an error string into a category, or None if no error."""
     if not error:
         return None
+    lower = error.lower()
+    if "agent idle for" in lower:
+        return IDLE_TIMEOUT
     if "install failed" in error:
         return INSTALL_FAILED
-    if "closed stdout" in error:
+    if "closed stdout" in lower:
         return PIPE_CLOSED
     if "ACP error" in error:
         return ACP_ERROR
-    if "timed out" in error:
+    if "sandbox startup" in lower or "sandbox creation" in lower:
+        return SANDBOX_SETUP
+    if "prompt exceeded wall-clock budget" in lower:
+        return TIMED_OUT
+    if _looks_like_infra_error(lower):
+        return INFRA_ERROR
+    if "timed out" in lower:
         return TIMED_OUT
     return "other"
+
+
+def _looks_like_infra_error(error: str) -> bool:
+    return any(
+        marker in error
+        for marker in (
+            "connection lost",
+            "connection reset",
+            "connection refused",
+            "broken pipe",
+            "sandbox not found",
+            "workspace not found",
+            "api connection",
+            "api timeout",
+            "temporarily unavailable",
+        )
+    )
 
 
 def classify_verifier_error(verifier_error: str | None) -> str | None:
     """Classify a verifier error string, or None if no error."""
     if not verifier_error:
         return None
+    lower = verifier_error.lower()
     if "verifier crashed" in verifier_error:
+        if _looks_like_verifier_dep_install_error(lower):
+            return VERIFIER_DEP_INSTALL
+        if _looks_like_verifier_infra_error(lower):
+            return VERIFIER_INFRA
         return VERIFIER_FAILED
     if "verifier timed out" in verifier_error:
         return VERIFIER_TIMEOUT
     return "verifier_other"
+
+
+def _looks_like_verifier_dep_install_error(error: str) -> bool:
+    """Detect verifier dependency installation failures (ENG-151)."""
+    markers = (
+        "dependency install failed",
+        "no solution found",
+        "could not find a version",
+        "resolution impossible",
+    )
+    return any(marker in error for marker in markers)
+
+
+def _looks_like_verifier_infra_error(error: str) -> bool:
+    return any(
+        marker in error
+        for marker in (
+            "failed to add tests directory",
+            "failed to download verifier directory",
+            "failed to download llm-judge input",
+            "verifier setup failed",
+        )
+    )
 
 
 def classify_result(
@@ -50,8 +115,8 @@ def classify_result(
     reward: float | None,
     error: str | None,
     verifier_error: str | None,
-) -> str:
-    """Classify a single result into exactly one terminal bucket.
+) -> ScoreOutcome:
+    """Classify a single result into exactly one score bucket.
 
     Returns one of ``"passed"``, ``"failed"``, ``"errored"``,
     ``"verifier_errored"``. The buckets are disjoint and exhaustive, so
@@ -81,18 +146,81 @@ def classify_result(
     return "errored"
 
 
-def classify_result_dict(result: dict) -> str:
-    """Classify a result dict (as persisted to ``result.json``) into a bucket.
+def classify_score_outcome(result: Mapping[str, Any]) -> ScoreOutcome:
+    """Classify a persisted result for score/invariant accounting.
 
-    Thin wrapper over :func:`classify_result` for the dict-shaped results
-    used by ``Evaluation.run()``. See :func:`classify_result` for the
-    bucket precedence rules.
+    This is the canonical terminal score view. It keeps the four score
+    buckets disjoint and gives an explicit reward or agent error precedence
+    over verifier evidence so ``EvaluationResult`` cannot double-count tasks.
     """
     return classify_result(
         reward=extract_reward(result),
         error=result.get("error"),
         verifier_error=result.get("verifier_error"),
     )
+
+
+def classify_result_dict(result: Mapping[str, Any]) -> ScoreOutcome:
+    """Backward-compatible alias for score/invariant accounting."""
+    return classify_score_outcome(result)
+
+
+def classify_audit_outcome(result: Mapping[str, Any]) -> ResultOutcome:
+    """Classify a result for audit/reporting evidence.
+
+    Audit summaries intentionally surface verifier evidence first. A task with
+    ``verifier_error`` is counted as ``verifier_errored`` even if an agent
+    error or stale reward is also present, because result auditors need the
+    verifier failure to be visible instead of hidden behind the score bucket.
+    """
+    if result.get("verifier_error"):
+        return "verifier_errored"
+    reward = extract_reward(result)
+    if reward == 1.0:
+        return "passed"
+    if reward is not None:
+        return "failed"
+    if result.get("error"):
+        return "errored"
+    return "unscored"
+
+
+def classify_result_outcome(result: Mapping[str, Any]) -> ResultOutcome:
+    """Backward-compatible alias for audit/reporting outcome accounting."""
+    return classify_audit_outcome(result)
+
+
+def _empty_counts(*, include_unscored: bool) -> dict[str, int]:
+    counts = {
+        "passed": 0,
+        "failed": 0,
+        "errored": 0,
+        "verifier_errored": 0,
+    }
+    if include_unscored:
+        counts["unscored"] = 0
+    return counts
+
+
+def count_score_outcomes(results: Iterable[Mapping[str, Any]]) -> dict[str, int]:
+    """Count score buckets with reward/agent-error precedence."""
+    counts = _empty_counts(include_unscored=False)
+    for result in results:
+        counts[classify_score_outcome(result)] += 1
+    return counts
+
+
+def count_audit_outcomes(results: Iterable[Mapping[str, Any]]) -> dict[str, int]:
+    """Count audit buckets with verifier-evidence precedence."""
+    counts = _empty_counts(include_unscored=True)
+    for result in results:
+        counts[classify_audit_outcome(result)] += 1
+    return counts
+
+
+def count_result_outcomes(results: Iterable[Mapping[str, Any]]) -> dict[str, int]:
+    """Backward-compatible alias for audit/reporting outcome accounting."""
+    return count_audit_outcomes(results)
 
 
 def pass_rate(*, passed: int, total: int) -> float:

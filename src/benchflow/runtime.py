@@ -10,8 +10,8 @@ and multi-agent runs. Everything else layers on top:
 Architecture:
     Agent  → thin wrapper around registry entry + model + creds
     Environment → wraps Docker/Daytona sandbox, owns lifecycle
-    Scene → 1+ roles + transport + scheduler (from _scene.py)
-    Runtime → env + scene + execute loop + verify
+    Scene → declarative roles + turns, lowered to rollout Steps
+    Runtime → env + rollout execution loop + verify
     RuntimeResult → trajectories + messages + rewards + snapshots
 """
 
@@ -60,11 +60,12 @@ class Environment:
         task_path: str | Path,
         sandbox: str = "daytona",
         rollout_name: str | None = None,
+        planes: Any | None = None,
     ) -> Environment:
         """Create an environment from a task directory."""
         from uuid import uuid4
 
-        from benchflow.sandbox.setup import _create_environment
+        from benchflow.contracts import default_rollout_planes
         from benchflow.task import RolloutPaths, Task
 
         task_path = Path(task_path)
@@ -77,12 +78,15 @@ class Environment:
             / f"{rollout_name}__{uuid4().hex[:8]}"
         )
         rollout_paths.mkdir()
-        inner = _create_environment(
-            sandbox_type=sandbox,
+        plane_bundle = planes or default_rollout_planes()
+        inner = plane_bundle.create_environment(
+            sandbox,
             task=task,
             task_path=task_path,
             rollout_name=rollout_name,
             rollout_paths=rollout_paths,
+            preserve_agent_network=False,
+            environment_manifest=None,
         )
         return cls(inner=inner, task_path=task_path, sandbox=sandbox)
 
@@ -221,7 +225,6 @@ class RuntimeResult:
         rollout_dir/prompts.json      — prompts sent to agent
 
     Optional artifacts:
-        rollout_dir/scene_trajectory.jsonl — inter-agent messages (multi-agent)
         rollout_dir/snapshots/             — checkpoint refs (if snapshot_policy != "none")
     """
 
@@ -241,11 +244,30 @@ class RuntimeResult:
 
     @property
     def passed(self) -> bool:
-        return self.reward is not None and self.reward > 0
+        from benchflow._utils.scoring import classify_result_outcome
+
+        return (
+            classify_result_outcome(
+                {
+                    "rewards": self.rewards,
+                    "error": self.error,
+                    "verifier_error": self.verifier_error,
+                }
+            )
+            == "passed"
+        )
 
     @property
     def verified(self) -> bool:
-        return self.verifier_error is None and self.reward is not None
+        from benchflow._utils.scoring import classify_result_outcome
+
+        return classify_result_outcome(
+            {
+                "rewards": self.rewards,
+                "error": self.error,
+                "verifier_error": self.verifier_error,
+            }
+        ) in {"passed", "failed"}
 
     def to_run_result(self) -> Any:
         """Convert to legacy RunResult for SDK.run() compat."""
@@ -300,6 +322,12 @@ class Runtime:
 
         Runtime is the stable user-facing surface. Trial owns the
         decomposed lifecycle phases underneath.
+
+        Honours the caller-supplied :class:`Environment`: the live
+        ``env.inner`` sandbox is reused instead of creating a second one
+        (fixes #388). If the caller has not yet called ``env.start()``
+        we start it now so ``env`` stays in a consistent state and the
+        underlying sandbox is brought up exactly once.
         """
         from benchflow._types import Scene
         from benchflow.rollout import Rollout, RolloutConfig
@@ -319,6 +347,8 @@ class Runtime:
             sandbox_locked_paths=config.sandbox_locked_paths,
             sandbox_setup_timeout=config.sandbox_setup_timeout,
             jobs_dir=config.jobs_dir,
+            rollout_name=config.rollout_name,
+            timeout=config.timeout,
             context_root=config.context_root,
             pre_agent_hooks=config.pre_agent_hooks,
             agent=self.agent.name,
@@ -328,9 +358,24 @@ class Runtime:
         )
 
         rollout = await Rollout.create(trial_config)
+
+        # If the caller has not started the Environment yet, do it now so
+        # the Environment's _started flag stays accurate and the caller's
+        # later env.stop() works. Then hand the live sandbox to Rollout —
+        # this is what makes Runtime honour the input Environment instead
+        # of silently building a second one. #388.
+        if not self.env._started:
+            await self.env.start()
+        rollout.use_prebuilt_env(self.env.inner)
+
         run_result = await rollout.run()
 
         reward = (run_result.rewards or {}).get("reward")
+        # The Rollout owns the on-disk artifact directory; lift it into the
+        # RuntimeResult so callers can locate result.json / trajectory/ etc.
+        # without scanning jobs_dir. Required because RuntimeResult's
+        # docstring promises an artifact-oriented surface (#378).
+        rollout_dir = getattr(rollout, "_rollout_dir", None)
         return RuntimeResult(
             task_name=run_result.task_name,
             rollout_name=run_result.rollout_name,
@@ -340,6 +385,7 @@ class Runtime:
             error=run_result.error,
             verifier_error=run_result.verifier_error,
             trajectory=run_result.trajectory,
+            rollout_dir=rollout_dir,
             started_at=run_result.started_at,
             finished_at=run_result.finished_at,
         )

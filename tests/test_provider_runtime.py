@@ -11,6 +11,7 @@ from benchflow.providers.runtime import (
     ProviderRuntime,
     _bedrock_frontend_model,
     ensure_bedrock_proxy_runtime,
+    ensure_usage_proxy_runtime,
     needs_provider_runtime,
     stop_provider_runtime,
 )
@@ -297,3 +298,57 @@ class TestBedrockProxyRemoteSandbox:
 
         with pytest.raises(AssertionError):
             _bedrock_proxy_command(environment="daytona")
+
+
+class TestUsageProxyRuntime:
+    @pytest.mark.asyncio
+    async def test_gemini_proxy_uses_cli_base_url_env(self, monkeypatch):
+        """Guards the follow-up to PR #483: Gemini CLI 0.42.0 reads
+        GOOGLE_GEMINI_BASE_URL, not GEMINI_API_BASE_URL (#375)."""
+
+        monkeypatch.setattr(
+            provider_runtime_mod, "_docker_host_address", lambda: "host.docker.internal"
+        )
+
+        class FakeProxy:
+            def __init__(
+                self,
+                *,
+                target,
+                session_id,
+                agent_name,
+                host,
+                port,
+                prompt_cache_retention=None,
+            ):
+                self.target = target
+                self.session_id = session_id
+                self.agent_name = agent_name
+                self.host = host
+                self.port = 43210
+                self.prompt_cache_retention = prompt_cache_retention
+
+            async def start(self):
+                return None
+
+            async def stop(self):
+                return None
+
+        monkeypatch.setattr(provider_runtime_mod, "TrajectoryProxy", FakeProxy)
+
+        updated, runtime = await ensure_usage_proxy_runtime(
+            agent="gemini",
+            agent_env={"GEMINI_API_KEY": "test-key"},
+            model="gemini-2.5-flash",
+            runtime=None,
+            environment="docker",
+        )
+
+        assert runtime is not None
+        assert runtime.server.target == "https://generativelanguage.googleapis.com"
+        assert (
+            updated["BENCHFLOW_PROVIDER_BASE_URL"]
+            == "http://host.docker.internal:43210"
+        )
+        assert updated["GOOGLE_GEMINI_BASE_URL"] == "http://host.docker.internal:43210"
+        assert "GEMINI_API_BASE_URL" not in updated

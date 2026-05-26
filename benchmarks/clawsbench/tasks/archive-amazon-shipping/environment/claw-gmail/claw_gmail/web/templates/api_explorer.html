@@ -1,0 +1,341 @@
+{% extends "base.html" %}
+
+{% block title %}API Explorer - Claw Gmail{% endblock %}
+
+{% block content %}
+<div class="max-w-5xl mx-auto py-6 px-6">
+    <div class="mb-6">
+        <h1 class="text-2xl font-normal text-gray-900 mb-1">API Explorer</h1>
+        <p class="text-sm text-gray-500">Interactive documentation for the Claw Gmail API. Base path: <code class="bg-gray-100 px-1.5 py-0.5 rounded text-xs">/gmail/v1</code></p>
+    </div>
+
+    <style>
+        .method-badge { font-size:11px; font-weight:600; padding:2px 8px; border-radius:4px; font-family:monospace; display:inline-block; min-width:52px; text-align:center; }
+        .method-get { background:#dbeafe; color:#1d4ed8; }
+        .method-post { background:#dcfce7; color:#166534; }
+        .method-put { background:#fef3c7; color:#92400e; }
+        .method-patch { background:#fce7f3; color:#9d174d; }
+        .method-delete { background:#fee2e2; color:#991b1b; }
+        .endpoint-card { border:1px solid #e5e7eb; border-radius:8px; margin-bottom:8px; overflow:hidden; }
+        .endpoint-header { padding:10px 16px; cursor:pointer; display:flex; align-items:center; gap:12px; }
+        .endpoint-header:hover { background:#f9fafb; }
+        .endpoint-body { display:none; border-top:1px solid #e5e7eb; padding:16px; background:#fafafa; }
+        .endpoint-card.open .endpoint-body { display:block; }
+        .endpoint-card.open .chevron { transform:rotate(90deg); }
+        .section-toggle { cursor:pointer; user-select:none; }
+        .section-toggle .section-chevron { transition:transform 0.15s; }
+        .section-toggle.open .section-chevron { transform:rotate(90deg); }
+        .code-block { background:#1e293b; color:#e2e8f0; padding:12px 16px; border-radius:6px; font-size:12px; font-family:'SF Mono',Monaco,Consolas,monospace; overflow-x:auto; white-space:pre; line-height:1.5; }
+        .try-btn { font-size:12px; padding:4px 12px; border:1px solid #d1d5db; border-radius:6px; background:#fff; cursor:pointer; color:#374151; }
+        .try-btn:hover { background:#f3f4f6; border-color:#9ca3af; }
+        .response-area { margin-top:12px; }
+    </style>
+
+    {% set user_id = "me" %}
+
+    {% macro endpoint(method, path, desc, example_req=None, example_resp=None, live_path=None) %}
+    <div class="endpoint-card" onclick="this.classList.toggle('open')">
+        <div class="endpoint-header">
+            <svg class="w-4 h-4 text-gray-400 chevron flex-shrink-0 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+            <span class="method-badge method-{{ method|lower }}">{{ method }}</span>
+            <code class="text-sm text-gray-800 flex-1">{{ path }}</code>
+            <span class="text-xs text-gray-500 hidden sm:inline">{{ desc }}</span>
+        </div>
+        <div class="endpoint-body" onclick="event.stopPropagation()">
+            <p class="text-sm text-gray-600 mb-3">{{ desc }}</p>
+            {% if example_resp %}
+            <div class="mb-3">
+                <div class="text-xs font-medium text-gray-500 mb-1">Example Response</div>
+                <div class="code-block">{{ example_resp }}</div>
+            </div>
+            {% endif %}
+            {% if example_req %}
+            <div class="mb-3">
+                <div class="text-xs font-medium text-gray-500 mb-1">Example Request Body</div>
+                <div class="code-block">{{ example_req }}</div>
+            </div>
+            {% endif %}
+            {% if live_path %}
+            <div class="flex items-center gap-2 mt-3">
+                <button class="try-btn"
+                        onclick="tryEndpoint(this, '{{ method }}', '{{ live_path }}', {{ example_req|default('null')|tojson }})">
+                    Try it live
+                </button>
+                <span class="text-xs text-gray-400">{{ method }} /gmail/v1{{ live_path }}</span>
+            </div>
+            <div class="response-area"></div>
+            {% endif %}
+        </div>
+    </div>
+    {% endmacro %}
+
+    {% macro section(title, icon, id) %}
+    <div class="mb-6">
+        <div class="section-toggle open flex items-center gap-2 mb-3 px-1" onclick="this.classList.toggle('open'); this.nextElementSibling.classList.toggle('hidden')">
+            <svg class="w-4 h-4 text-gray-400 section-chevron transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+            <span class="text-xs font-semibold text-gray-500 uppercase tracking-wider">{{ icon }} {{ title }}</span>
+        </div>
+        <div id="section-{{ id }}">
+            {{ caller() }}
+        </div>
+    </div>
+    {% endmacro %}
+
+    {# --- Profile --- #}
+    {% call section("Profile", "", "profile") %}
+    {{ endpoint("GET", "/users/{userId}/profile", "Get the current user's profile",
+        live_path="/users/me/profile",
+        example_resp='{
+  "emailAddress": "me@example.com",
+  "messagesTotal": 48,
+  "threadsTotal": 27,
+  "historyId": "1"
+}') }}
+    {% endcall %}
+
+    {# --- Messages --- #}
+    {% call section("Messages", "", "messages") %}
+    {{ endpoint("GET", "/users/{userId}/messages", "List messages in the user's mailbox",
+        live_path="/users/me/messages?maxResults=5",
+        example_resp='{
+  "messages": [
+    {"id": "abc123", "threadId": "thread456"}
+  ],
+  "nextPageToken": "...",
+  "resultSizeEstimate": 48
+}') }}
+    {{ endpoint("GET", "/users/{userId}/messages/{messageId}", "Get a specific message by ID",
+        live_path="/users/me/messages/" ~ sample_msg_id,
+        example_resp='{
+  "id": "' ~ sample_msg_id ~ '",
+  "threadId": "...",
+  "labelIds": ["INBOX"],
+  "snippet": "Hi team, ...",
+  "payload": { "headers": [...], "body": {...} },
+  "sizeEstimate": 1234,
+  "internalDate": "1740000000000"
+}') }}
+    {{ endpoint("POST", "/users/{userId}/messages/send", "Send a new message",
+        example_req='{
+  "raw": "base64-encoded-RFC2822-message"
+}',
+        example_resp='{
+  "id": "new_msg_id",
+  "threadId": "new_thread_id",
+  "labelIds": ["SENT"]
+}') }}
+    {{ endpoint("POST", "/users/{userId}/messages/{messageId}/modify", "Modify labels on a message",
+        example_req='{
+  "addLabelIds": ["STARRED"],
+  "removeLabelIds": ["UNREAD"]
+}',
+        example_resp='{
+  "id": "' ~ sample_msg_id ~ '",
+  "threadId": "...",
+  "labelIds": ["INBOX", "STARRED"]
+}') }}
+    {{ endpoint("POST", "/users/{userId}/messages/{messageId}/trash", "Move a message to trash",
+        example_resp='{
+  "id": "' ~ sample_msg_id ~ '",
+  "threadId": "...",
+  "labelIds": ["TRASH"]
+}') }}
+    {{ endpoint("POST", "/users/{userId}/messages/{messageId}/untrash", "Remove a message from trash") }}
+    {{ endpoint("DELETE", "/users/{userId}/messages/{messageId}", "Permanently delete a message") }}
+    {{ endpoint("POST", "/users/{userId}/messages/batchModify", "Modify labels on multiple messages",
+        example_req='{
+  "ids": ["msg1", "msg2"],
+  "addLabelIds": ["IMPORTANT"],
+  "removeLabelIds": []
+}') }}
+    {{ endpoint("POST", "/users/{userId}/messages/batchDelete", "Permanently delete multiple messages",
+        example_req='{
+  "ids": ["msg1", "msg2"]
+}') }}
+    {{ endpoint("POST", "/users/{userId}/messages", "Insert a message (import without sending)") }}
+    {{ endpoint("POST", "/users/{userId}/messages/import", "Import a message") }}
+    {% endcall %}
+
+    {# --- Threads --- #}
+    {% call section("Threads", "", "threads") %}
+    {{ endpoint("GET", "/users/{userId}/threads", "List threads in the user's mailbox",
+        live_path="/users/me/threads?maxResults=5",
+        example_resp='{
+  "threads": [
+    {"id": "thread123", "snippet": "...", "historyId": "1"}
+  ],
+  "nextPageToken": "...",
+  "resultSizeEstimate": 27
+}') }}
+    {{ endpoint("GET", "/users/{userId}/threads/{threadId}", "Get a specific thread with all messages",
+        live_path="/users/me/threads/" ~ sample_thread_id,
+        example_resp='{
+  "id": "' ~ sample_thread_id ~ '",
+  "historyId": "1",
+  "messages": [
+    {"id": "msg1", "snippet": "...", "payload": {...}}
+  ]
+}') }}
+    {{ endpoint("POST", "/users/{userId}/threads/{threadId}/modify", "Modify labels on all messages in a thread",
+        example_req='{
+  "addLabelIds": ["IMPORTANT"],
+  "removeLabelIds": []
+}') }}
+    {{ endpoint("POST", "/users/{userId}/threads/{threadId}/trash", "Move a thread to trash") }}
+    {{ endpoint("POST", "/users/{userId}/threads/{threadId}/untrash", "Remove a thread from trash") }}
+    {{ endpoint("DELETE", "/users/{userId}/threads/{threadId}", "Permanently delete a thread") }}
+    {% endcall %}
+
+    {# --- Labels --- #}
+    {% call section("Labels", "", "labels") %}
+    {{ endpoint("GET", "/users/{userId}/labels", "List all labels",
+        live_path="/users/me/labels",
+        example_resp='{
+  "labels": [
+    {"id": "INBOX", "name": "INBOX", "type": "system"},
+    {"id": "Label_1", "name": "My Label", "type": "user"}
+  ]
+}') }}
+    {{ endpoint("GET", "/users/{userId}/labels/{labelId}", "Get a specific label",
+        live_path="/users/me/labels/INBOX",
+        example_resp='{
+  "id": "INBOX",
+  "name": "INBOX",
+  "type": "system",
+  "messagesTotal": 30,
+  "messagesUnread": 8,
+  "threadsTotal": 20,
+  "threadsUnread": 6
+}') }}
+    {{ endpoint("POST", "/users/{userId}/labels", "Create a new label",
+        example_req='{
+  "name": "My New Label",
+  "labelListVisibility": "labelShow",
+  "messageListVisibility": "show"
+}') }}
+    {{ endpoint("PUT", "/users/{userId}/labels/{labelId}", "Update a label (full replace)") }}
+    {{ endpoint("PATCH", "/users/{userId}/labels/{labelId}", "Partially update a label") }}
+    {{ endpoint("DELETE", "/users/{userId}/labels/{labelId}", "Delete a label") }}
+    {% endcall %}
+
+    {# --- Drafts --- #}
+    {% call section("Drafts", "", "drafts") %}
+    {{ endpoint("GET", "/users/{userId}/drafts", "List drafts",
+        live_path="/users/me/drafts",
+        example_resp='{
+  "drafts": [
+    {"id": "draft1", "message": {"id": "msg1", "threadId": "..."}}
+  ],
+  "resultSizeEstimate": 1
+}') }}
+    {{ endpoint("GET", "/users/{userId}/drafts/{draftId}", "Get a specific draft",
+        live_path="/users/me/drafts/" ~ sample_draft_id) }}
+    {{ endpoint("POST", "/users/{userId}/drafts", "Create a new draft",
+        example_req='{
+  "message": {
+    "raw": "base64-encoded-RFC2822-message"
+  }
+}') }}
+    {{ endpoint("PUT", "/users/{userId}/drafts/{draftId}", "Replace a draft") }}
+    {{ endpoint("POST", "/users/{userId}/drafts/send", "Send a draft",
+        example_req='{
+  "id": "' ~ sample_draft_id ~ '"
+}') }}
+    {{ endpoint("DELETE", "/users/{userId}/drafts/{draftId}", "Delete a draft") }}
+    {% endcall %}
+
+    {# --- History --- #}
+    {% call section("History", "", "history") %}
+    {{ endpoint("GET", "/users/{userId}/history", "List history records",
+        live_path="/users/me/history?startHistoryId=1",
+        example_resp='{
+  "history": [
+    {"id": "1", "messages": [...], "messagesAdded": [...]}
+  ],
+  "historyId": "5"
+}') }}
+    {% endcall %}
+
+    {# --- Settings --- #}
+    {% call section("Settings", "", "settings") %}
+    {{ endpoint("GET", "/users/{userId}/settings/sendAs", "List send-as aliases",
+        live_path="/users/me/settings/sendAs") }}
+    {{ endpoint("GET", "/users/{userId}/settings/sendAs/{sendAsEmail}", "Get a send-as alias") }}
+    {{ endpoint("POST", "/users/{userId}/settings/sendAs", "Create a send-as alias") }}
+    {{ endpoint("PUT", "/users/{userId}/settings/sendAs/{sendAsEmail}", "Update a send-as alias") }}
+    {{ endpoint("DELETE", "/users/{userId}/settings/sendAs/{sendAsEmail}", "Delete a send-as alias") }}
+    {{ endpoint("GET", "/users/{userId}/settings/filters", "List filters",
+        live_path="/users/me/settings/filters") }}
+    {{ endpoint("GET", "/users/{userId}/settings/filters/{filterId}", "Get a filter") }}
+    {{ endpoint("POST", "/users/{userId}/settings/filters", "Create a filter") }}
+    {{ endpoint("DELETE", "/users/{userId}/settings/filters/{filterId}", "Delete a filter") }}
+    {{ endpoint("GET", "/users/{userId}/settings/forwardingAddresses", "List forwarding addresses",
+        live_path="/users/me/settings/forwardingAddresses") }}
+    {{ endpoint("POST", "/users/{userId}/settings/forwardingAddresses", "Create a forwarding address") }}
+    {{ endpoint("DELETE", "/users/{userId}/settings/forwardingAddresses/{forwardingEmail}", "Delete a forwarding address") }}
+    {{ endpoint("GET", "/users/{userId}/settings/delegates", "List delegates",
+        live_path="/users/me/settings/delegates") }}
+    {{ endpoint("POST", "/users/{userId}/settings/delegates", "Add a delegate") }}
+    {{ endpoint("DELETE", "/users/{userId}/settings/delegates/{delegateEmail}", "Remove a delegate") }}
+    {{ endpoint("GET", "/users/{userId}/settings/vacation", "Get vacation responder settings",
+        live_path="/users/me/settings/vacation") }}
+    {{ endpoint("PUT", "/users/{userId}/settings/vacation", "Update vacation responder") }}
+    {{ endpoint("GET", "/users/{userId}/settings/autoForwarding", "Get auto-forwarding settings",
+        live_path="/users/me/settings/autoForwarding") }}
+    {{ endpoint("PUT", "/users/{userId}/settings/autoForwarding", "Update auto-forwarding") }}
+    {{ endpoint("GET", "/users/{userId}/settings/imap", "Get IMAP settings",
+        live_path="/users/me/settings/imap") }}
+    {{ endpoint("PUT", "/users/{userId}/settings/imap", "Update IMAP settings") }}
+    {{ endpoint("GET", "/users/{userId}/settings/pop", "Get POP settings",
+        live_path="/users/me/settings/pop") }}
+    {{ endpoint("PUT", "/users/{userId}/settings/pop", "Update POP settings") }}
+    {{ endpoint("GET", "/users/{userId}/settings/language", "Get language settings",
+        live_path="/users/me/settings/language") }}
+    {{ endpoint("PUT", "/users/{userId}/settings/language", "Update language settings") }}
+    {% endcall %}
+
+    {# --- Admin --- #}
+    {% call section("Admin", "", "admin") %}
+    {{ endpoint("POST", "/_admin/reset", "Reset database to initial seed state",
+        example_resp='{
+  "status": "ok",
+  "message": "Reset to initial state"
+}') }}
+    {{ endpoint("GET", "/_admin/state", "Full state dump for evaluation") }}
+    {{ endpoint("GET", "/_admin/diff", "Diff current state vs initial snapshot") }}
+    {{ endpoint("GET", "/_admin/action_log", "Audit trail of all API calls") }}
+    {% endcall %}
+</div>
+
+<script>
+async function tryEndpoint(btn, method, path, body) {
+    const card = btn.closest('.endpoint-body');
+    let area = card.querySelector('.response-area');
+    area.innerHTML = '<div class="text-xs text-gray-400 py-2">Loading...</div>';
+    try {
+        const url = '/gmail/v1' + path;
+        const opts = {
+            method: method,
+            headers: {'Content-Type': 'application/json', 'X-Mock-Gmail-User': 'user1'},
+        };
+        if (body && method !== 'GET') opts.body = JSON.stringify(body);
+        const resp = await fetch(url, opts);
+        const text = await resp.text();
+        let formatted;
+        try {
+            formatted = JSON.stringify(JSON.parse(text), null, 2);
+        } catch(e) {
+            formatted = text;
+        }
+        area.innerHTML = '<div class="mt-2"><div class="flex items-center gap-2 mb-1"><span class="text-xs font-medium text-gray-500">Response</span><span class="text-xs ' + (resp.ok ? 'text-green-600' : 'text-red-600') + '">' + resp.status + '</span></div><div class="code-block" style="max-height:300px;overflow-y:auto">' + escapeHtml(formatted) + '</div></div>';
+    } catch(e) {
+        area.innerHTML = '<div class="text-xs text-red-500 py-2">Error: ' + escapeHtml(e.message) + '</div>';
+    }
+}
+function escapeHtml(s) {
+    const d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+}
+</script>
+{% endblock %}

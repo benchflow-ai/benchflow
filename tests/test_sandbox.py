@@ -157,6 +157,109 @@ class TestDockerExecEnvSecrecy:
         for arg in cmd:
             assert "sk-leak" not in arg
 
+    @pytest.mark.asyncio
+    async def test_docker_build_retries_transient_apt_signature_errors(
+        self, monkeypatch
+    ):
+        """Guards v0.5-integration@e55219d against apt signature noise."""
+        from benchflow.sandbox import docker as docker_module
+        from benchflow.sandbox._base import ExecResult
+        from benchflow.sandbox.docker import DockerSandbox
+
+        sandbox = DockerSandbox.__new__(DockerSandbox)
+        sandbox.environment_name = "apt-flake"
+        sandbox.logger = docker_module.logger
+
+        calls: list[list[str]] = []
+        sleeps: list[float] = []
+
+        async def fake_run(command):
+            calls.append(command)
+            if len(calls) == 1:
+                raise RuntimeError(
+                    "Docker compose command failed. Stdout: "
+                    "At least one invalid signature was encountered. "
+                    "The repository 'http://ports.ubuntu.com noble InRelease' "
+                    "is not signed."
+                )
+            return ExecResult(stdout="", stderr="", return_code=0)
+
+        async def fake_sleep(delay):
+            sleeps.append(delay)
+
+        monkeypatch.setattr(sandbox, "_run_docker_compose_command", fake_run)
+        monkeypatch.setattr(docker_module.asyncio, "sleep", fake_sleep)
+
+        await sandbox._run_docker_compose_build()
+
+        assert calls == [["build"], ["build"]]
+        assert sleeps == [2.0]
+
+    @pytest.mark.asyncio
+    async def test_docker_build_retries_transient_pip_read_timeouts(self, monkeypatch):
+        """Guards v0.5-integration@e55219d against pip download noise."""
+        from benchflow.sandbox import docker as docker_module
+        from benchflow.sandbox._base import ExecResult
+        from benchflow.sandbox.docker import DockerSandbox
+
+        sandbox = DockerSandbox.__new__(DockerSandbox)
+        sandbox.environment_name = "pip-flake"
+        sandbox.logger = docker_module.logger
+
+        calls: list[list[str]] = []
+        sleeps: list[float] = []
+
+        async def fake_run(command):
+            calls.append(command)
+            if len(calls) == 1:
+                raise RuntimeError(
+                    "Docker compose command failed. Stdout: "
+                    "pip._vendor.urllib3.exceptions.ReadTimeoutError: "
+                    "HTTPSConnectionPool(host='files.pythonhosted.org', "
+                    "port=443): Read timed out."
+                )
+            return ExecResult(stdout="", stderr="", return_code=0)
+
+        async def fake_sleep(delay):
+            sleeps.append(delay)
+
+        monkeypatch.setattr(sandbox, "_run_docker_compose_command", fake_run)
+        monkeypatch.setattr(docker_module.asyncio, "sleep", fake_sleep)
+
+        await sandbox._run_docker_compose_build()
+
+        assert calls == [["build"], ["build"]]
+        assert sleeps == [2.0]
+
+    @pytest.mark.asyncio
+    async def test_docker_build_does_not_retry_non_transient_errors(self, monkeypatch):
+        """Guards v0.5-integration@e55219d against broad retry masking."""
+        from benchflow.sandbox import docker as docker_module
+        from benchflow.sandbox.docker import DockerSandbox
+
+        sandbox = DockerSandbox.__new__(DockerSandbox)
+        sandbox.environment_name = "real-build-bug"
+        sandbox.logger = docker_module.logger
+
+        calls: list[list[str]] = []
+        sleeps: list[float] = []
+
+        async def fake_run(command):
+            calls.append(command)
+            raise RuntimeError("Docker compose command failed. Stdout: syntax error")
+
+        async def fake_sleep(delay):
+            sleeps.append(delay)
+
+        monkeypatch.setattr(sandbox, "_run_docker_compose_command", fake_run)
+        monkeypatch.setattr(docker_module.asyncio, "sleep", fake_sleep)
+
+        with pytest.raises(RuntimeError, match="syntax error"):
+            await sandbox._run_docker_compose_build()
+
+        assert calls == [["build"]]
+        assert sleeps == []
+
     def test_umask_scoped_to_env_file_write(self):
         """Guards bug I from PR #323: `umask 077` must not leak into the command.
 

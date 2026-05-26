@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -30,34 +30,33 @@ async def test_trial_connect_starts_bedrock_runtime_before_connect_acp(tmp_path)
     trial._agent_launch = "codex-acp"
     trial._agent_cwd = "/app"
     trial._agent_env = dict(cfg.agent_env)
+    planes = MagicMock()
+    planes.ensure_bedrock_proxy_runtime = AsyncMock(
+        return_value=(
+            {
+                **cfg.agent_env,
+                "OPENAI_BASE_URL": "http://host.docker.internal:32123",
+                "BENCHFLOW_PROVIDER_BASE_URL": "http://host.docker.internal:32123",
+            },
+            object(),
+        )
+    )
+    planes.ensure_usage_proxy_runtime = AsyncMock(
+        side_effect=lambda **kwargs: (kwargs["agent_env"], None)
+    )
+    planes.connect_acp = AsyncMock(
+        return_value=(AsyncMock(), AsyncMock(), AsyncMock(), "codex-acp")
+    )
+    trial._planes = planes
 
-    with (
-        patch(
-            "benchflow.rollout.ensure_bedrock_proxy_runtime",
-            new=AsyncMock(
-                return_value=(
-                    {
-                        **cfg.agent_env,
-                        "OPENAI_BASE_URL": "http://host.docker.internal:32123",
-                        "BENCHFLOW_PROVIDER_BASE_URL": "http://host.docker.internal:32123",
-                    },
-                    object(),
-                )
-            ),
-        ) as ensure_runtime,
-        patch(
-            "benchflow.rollout.ensure_usage_proxy_runtime",
-            new=AsyncMock(side_effect=lambda **kwargs: (kwargs["agent_env"], None)),
-        ),
-        patch("benchflow.rollout.connect_acp", new_callable=AsyncMock) as connect_acp,
-    ):
-        connect_acp.return_value = (AsyncMock(), AsyncMock(), "codex-acp")
-        await trial.connect()
+    await trial.connect()
 
-    ensure_runtime.assert_awaited_once()
-    assert ensure_runtime.await_args.kwargs["environment"] == "docker"
+    planes.ensure_bedrock_proxy_runtime.assert_awaited_once()
     assert (
-        connect_acp.await_args.kwargs["agent_env"]["OPENAI_BASE_URL"]
+        planes.ensure_bedrock_proxy_runtime.await_args.kwargs["environment"] == "docker"
+    )
+    assert (
+        planes.connect_acp.await_args.kwargs["agent_env"]["OPENAI_BASE_URL"]
         == "http://host.docker.internal:32123"
     )
 
@@ -89,49 +88,44 @@ async def test_trial_connect_as_starts_bedrock_runtime_for_role(tmp_path):
     trial._task = SimpleNamespace(
         config=SimpleNamespace(environment=SimpleNamespace(allow_internet=True))
     )
-
-    with (
-        patch(
-            "benchflow.rollout.resolve_agent_env",
-            return_value={
+    planes = MagicMock()
+    planes.agent_launch.return_value = "claude-agent-acp"
+    planes.resolve_agent_env.return_value = {
+        "AWS_BEARER_TOKEN_BEDROCK": "bedrock-token",
+        "AWS_REGION": "us-east-1",
+        "ANTHROPIC_AUTH_TOKEN": "bedrock-proxy",
+    }
+    planes.ensure_bedrock_proxy_runtime = AsyncMock(
+        return_value=(
+            {
                 "AWS_BEARER_TOKEN_BEDROCK": "bedrock-token",
                 "AWS_REGION": "us-east-1",
                 "ANTHROPIC_AUTH_TOKEN": "bedrock-proxy",
+                "ANTHROPIC_BASE_URL": "http://host.docker.internal:32123",
+                "BENCHFLOW_PROVIDER_BASE_URL": "http://host.docker.internal:32123",
             },
-        ),
-        patch(
-            "benchflow.rollout.ensure_bedrock_proxy_runtime",
-            new=AsyncMock(
-                return_value=(
-                    {
-                        "AWS_BEARER_TOKEN_BEDROCK": "bedrock-token",
-                        "AWS_REGION": "us-east-1",
-                        "ANTHROPIC_AUTH_TOKEN": "bedrock-proxy",
-                        "ANTHROPIC_BASE_URL": "http://host.docker.internal:32123",
-                        "BENCHFLOW_PROVIDER_BASE_URL": "http://host.docker.internal:32123",
-                    },
-                    object(),
-                )
-            ),
-        ) as ensure_runtime,
-        patch(
-            "benchflow.rollout.ensure_usage_proxy_runtime",
-            new=AsyncMock(side_effect=lambda **kwargs: (kwargs["agent_env"], None)),
-        ),
-        patch(
-            "benchflow.rollout.install_agent",
-            new=AsyncMock(return_value=SimpleNamespace()),
-        ),
-        patch("benchflow.rollout.write_credential_files", new=AsyncMock()),
-        patch("benchflow.rollout.apply_web_tool_policy", new=AsyncMock()),
-        patch("benchflow.rollout.connect_acp", new_callable=AsyncMock) as connect_acp,
-    ):
-        connect_acp.return_value = (AsyncMock(), AsyncMock(), "claude-agent-acp")
-        await trial.connect_as(role)
+            object(),
+        )
+    )
+    planes.ensure_usage_proxy_runtime = AsyncMock(
+        side_effect=lambda **kwargs: (kwargs["agent_env"], None)
+    )
+    planes.install_agent = AsyncMock(return_value=SimpleNamespace())
+    planes.write_credential_files = AsyncMock()
+    planes.upload_subscription_auth = AsyncMock()
+    planes.apply_web_tool_policy = AsyncMock()
+    planes.connect_acp = AsyncMock(
+        return_value=(AsyncMock(), AsyncMock(), AsyncMock(), "claude-agent-acp")
+    )
+    trial._planes = planes
 
-    ensure_runtime.assert_awaited_once()
-    assert ensure_runtime.await_args.kwargs["environment"] == "docker"
+    await trial.connect_as(role)
+
+    planes.ensure_bedrock_proxy_runtime.assert_awaited_once()
     assert (
-        connect_acp.await_args.kwargs["agent_env"]["ANTHROPIC_BASE_URL"]
+        planes.ensure_bedrock_proxy_runtime.await_args.kwargs["environment"] == "docker"
+    )
+    assert (
+        planes.connect_acp.await_args.kwargs["agent_env"]["ANTHROPIC_BASE_URL"]
         == "http://host.docker.internal:32123"
     )

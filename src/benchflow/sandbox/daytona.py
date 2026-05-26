@@ -9,16 +9,46 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import base64
 import importlib
 import logging
 import os
+import re
 import shlex
 from abc import abstractmethod
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
-from tenacity import retry, stop_after_attempt, wait_exponential
+try:
+    from tenacity import (
+        retry,
+        retry_if_exception_type,
+        stop_after_attempt,
+        wait_exponential,
+    )
+except ImportError:  # base install without ``sandbox-daytona`` extras (#358)
+    # ``tenacity`` ships under the ``sandbox-daytona`` extra. The fallbacks below
+    # let this module import cleanly in a base install — ``DaytonaSandbox()`` is
+    # what requires the real SDK (and tenacity along with it).
 
+    def retry(*_args: Any, **_kwargs: Any) -> Any:
+        def _decorator(fn: Any) -> Any:
+            return fn
+
+        return _decorator
+
+    def stop_after_attempt(*_args: Any, **_kwargs: Any) -> Any:
+        return None
+
+    def wait_exponential(*_args: Any, **_kwargs: Any) -> Any:
+        return None
+
+    def retry_if_exception_type(*_args: Any, **_kwargs: Any) -> Any:
+        return None
+
+
+from benchflow._paths import iter_safe_tree
 from benchflow.sandbox._base import (
     BaseSandbox,
     ExecResult,
@@ -29,10 +59,25 @@ from benchflow.sandbox._compose import (
     COMPOSE_BUILD_PATH,
     COMPOSE_NO_NETWORK_PATH,
     COMPOSE_PREBUILT_PATH,
+    compose_cp_destination,
+    compose_mkdir_p_command,
+    compose_parent_mkdir_p_command,
+)
+from benchflow.sandbox.protocol import (
+    SandboxImage,
+    SandboxSnapshotNotSupported,
+    SandboxStartupError,
 )
 from benchflow.task.config import SandboxConfig
 from benchflow.task.env import resolve_env_vars
 from benchflow.task.paths import RolloutPaths, SandboxPaths
+
+# ``SandboxStartupError`` used to live in this module. It now lives in
+# ``benchflow.sandbox.protocol`` so a base install without the
+# ``sandbox-daytona`` extra can still import ``benchflow.rollout`` (issue #358).
+# Re-export here for backward compatibility — existing imports of
+# ``benchflow.sandbox.daytona.SandboxStartupError`` keep working.
+__all__ = ["DaytonaSandbox", "SandboxStartupError"]
 
 
 def _ensure_daytona_anyio_compat() -> None:
@@ -57,24 +102,127 @@ def _ensure_daytona_anyio_compat() -> None:
     anyio.AsyncContextManagerMixin = _AsyncContextManagerMixin  # type: ignore[attr-defined]
 
 
-_ensure_daytona_anyio_compat()
-_daytona = importlib.import_module("daytona")
-_snapshot = importlib.import_module("daytona._async.snapshot")
-AsyncDaytona = _daytona.AsyncDaytona
-AsyncSandbox = _daytona.AsyncSandbox
-CreateSandboxFromImageParams = _daytona.CreateSandboxFromImageParams
-CreateSandboxFromSnapshotParams = _daytona.CreateSandboxFromSnapshotParams
-DaytonaNotFoundError = _daytona.DaytonaNotFoundError
-FileDownloadRequest = _daytona.FileDownloadRequest
-FileUpload = _daytona.FileUpload
-Image = _daytona.Image
-Resources = _daytona.Resources
-SessionExecuteRequest = _daytona.SessionExecuteRequest
-SnapshotState = _snapshot.SnapshotState
+# Module-level handles for the Daytona SDK. The SDK is shipped under the
+# ``sandbox-daytona`` extra and is pulled in lazily — see ``_load_daytona_sdk``
+# — so importing this module in a base install does not require it (#358).
+_DAYTONA_SDK_LOADED = False
+AsyncDaytona: Any = None
+AsyncSandbox: Any = None
+CreateSandboxFromImageParams: Any = None
+CreateSandboxFromSnapshotParams: Any = None
+DaytonaNotFoundError: Any = None
+FileDownloadRequest: Any = None
+FileUpload: Any = None
+Image: Any = None
+Resources: Any = None
+SessionExecuteRequest: Any = None
+SnapshotState: Any = None
+
+
+def _load_daytona_sdk() -> None:
+    """Import the optional Daytona SDK on first use.
+
+    The Daytona Python SDK is shipped under the ``sandbox-daytona`` extra; a
+    base install of ``benchflow`` must not require it. This helper materializes
+    the module-level handles the strategy classes consume, and is idempotent so
+    it is cheap to call at the top of each entry-point method.
+    """
+    global _DAYTONA_SDK_LOADED
+    global AsyncDaytona, AsyncSandbox
+    global CreateSandboxFromImageParams, CreateSandboxFromSnapshotParams
+    global DaytonaNotFoundError, FileDownloadRequest, FileUpload
+    global Image, Resources, SessionExecuteRequest, SnapshotState
+
+    if _DAYTONA_SDK_LOADED:
+        return
+
+    _ensure_daytona_anyio_compat()
+    try:
+        _daytona = importlib.import_module("daytona")
+        _snapshot = importlib.import_module("daytona._async.snapshot")
+    except ImportError as e:
+        raise ImportError(
+            "The Daytona sandbox requires the 'sandbox-daytona' extra. "
+            "Install it with: pip install 'benchflow[sandbox-daytona]'"
+        ) from e
+
+    AsyncDaytona = _daytona.AsyncDaytona
+    AsyncSandbox = _daytona.AsyncSandbox
+    CreateSandboxFromImageParams = _daytona.CreateSandboxFromImageParams
+    CreateSandboxFromSnapshotParams = _daytona.CreateSandboxFromSnapshotParams
+    DaytonaNotFoundError = _daytona.DaytonaNotFoundError
+    FileDownloadRequest = _daytona.FileDownloadRequest
+    FileUpload = _daytona.FileUpload
+    Image = _daytona.Image
+    Resources = _daytona.Resources
+    SessionExecuteRequest = _daytona.SessionExecuteRequest
+    SnapshotState = _snapshot.SnapshotState
+    _DAYTONA_SDK_LOADED = True
+
 
 logger = logging.getLogger("benchflow")
 
-_SandboxParams = CreateSandboxFromImageParams | CreateSandboxFromSnapshotParams
+# ``_SandboxParams`` was previously a top-level union of two SDK types. The
+# SDK types are now loaded lazily (issue #358), so concrete sandbox params are
+# typed as ``Any`` here — callers build them inside methods that have already
+# called ``_load_daytona_sdk()``.
+_SandboxParams = Any
+_DAYTONA_COMMAND_POLL_INTERVAL_SEC = 1.0
+_STARTUP_HARD_TIMEOUT_BUFFER_SEC = 120
+
+
+# A POSIX shell identifier: a name the shell can ``export``. Keys outside this
+# grammar (e.g. containing ``.`` or ``-``) are valid process env keys but cannot
+# be assigned via ``export NAME=...``; sourcing such a line aborts the whole
+# ``. {env_path}`` step. Matches ``DockerSandbox._SHELL_IDENTIFIER_RE``.
+_DAYTONA_SHELL_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _wrap_daytona_command_with_env_file(env: dict[str, str], command: str) -> str:
+    """Return *command* prefixed to materialize *env* from a file.
+
+    Mirrors :meth:`benchflow.sandbox.docker.DockerSandbox._wrap_command_with_env_file`
+    so secrets never reach the remote process argv (visible via ``ps``, Daytona
+    audit logs, or any provider-side command logging). The env vars are
+    base64-encoded into the command string (not visible as individual
+    ``KEY=VALUE`` argv entries), decoded to a mode-0600 file inside the sandbox,
+    sourced, and unconditionally removed via ``trap ... EXIT``.
+
+    Issue #412: previously this used ``env K=V ...`` argv, which placed raw
+    secret values into the remote command line.
+    """
+    exportable: dict[str, str] = {}
+    skipped: list[str] = []
+    for k, v in env.items():
+        if _DAYTONA_SHELL_IDENTIFIER_RE.match(k):
+            exportable[k] = v
+        else:
+            skipped.append(k)
+    if skipped:
+        logger.warning(
+            "Skipping env var(s) with non-identifier names (cannot be "
+            "exported by the shell): %s",
+            ", ".join(sorted(skipped)),
+        )
+
+    env_body = "".join(f"export {k}={shlex.quote(v)}\n" for k, v in exportable.items())
+    encoded = base64.b64encode(env_body.encode()).decode()
+    env_path = f"/tmp/.benchflow_daytona_env_{uuid4().hex[:16]}"
+    return (
+        f"trap 'rm -f {env_path}' EXIT && "
+        f"(umask 077 && printf %s {shlex.quote(encoded)} | base64 -d > "
+        f"{env_path}) && set -a && . {env_path} && set +a && "
+        f"{command}"
+    )
+
+
+def _exec_failure_output(result: ExecResult) -> str:
+    output = " ".join(
+        text.strip()
+        for text in (result.stdout or "", result.stderr or "")
+        if text and text.strip()
+    )
+    return output[:4000]
 
 
 def _daytona_preflight() -> None:
@@ -140,6 +288,11 @@ class DaytonaClientManager:
 class _DaytonaStrategy:
     """Base for Daytona implementation strategies."""
 
+    # Strategies declare whether they can satisfy container-level snapshots;
+    # the DaytonaSandbox wrapper forwards the question to its strategy so the
+    # capability tracks the active mode (direct vs. DinD/compose) — see #384.
+    supports_snapshot: bool = False
+
     def __init__(self, env: DaytonaSandbox) -> None:
         self._env = env
 
@@ -190,9 +343,25 @@ class _DaytonaStrategy:
     @abstractmethod
     async def attach(self) -> None: ...
 
+    async def snapshot(self, name: str | None = None) -> SandboxImage:
+        """Capture a provider-level snapshot. Default: not supported."""
+        raise SandboxSnapshotNotSupported(
+            f"{type(self).__name__} does not support container-level snapshots."
+        )
+
+    async def restore(self, image: SandboxImage) -> None:
+        """Restore from a provider-level snapshot. Default: not supported."""
+        raise SandboxSnapshotNotSupported(
+            f"{type(self).__name__} does not support container-level restore."
+        )
+
 
 class _DaytonaDirect(_DaytonaStrategy):
     """Direct sandbox strategy — single-container behavior."""
+
+    # Daytona ships a native sandbox-snapshot API on AsyncSandbox; the direct
+    # strategy uses it for the container layer of Branch (#384).
+    supports_snapshot: bool = True
 
     async def start(self, force_build: bool) -> None:
         env = self._env
@@ -258,7 +427,17 @@ class _DaytonaDirect(_DaytonaStrategy):
                 network_block_all=env._network_block_all,
             )
 
-        await env._create_sandbox(params=params)
+        try:
+            await env._create_sandbox(params=params)
+        except (TimeoutError, RuntimeError, Exception) as e:
+            sandbox_id = getattr(env._sandbox, "id", None) if env._sandbox else None
+            raise SandboxStartupError(
+                f"Sandbox creation failed after retries: {e}",
+                sandbox_id=sandbox_id,
+                sandbox_state="error",
+                attempts=3,
+                build_timeout_sec=env.task_env_config.build_timeout_sec,
+            ) from e
 
         await env._sandbox_exec(
             f"mkdir -p {SandboxPaths.agent_dir} {SandboxPaths.verifier_dir} && "
@@ -319,6 +498,16 @@ class _DaytonaDirect(_DaytonaStrategy):
                 f"and cannot target service {service!r}. Multi-container "
                 "(vulhub-style) tasks require a docker-compose.yaml (#248)."
             )
+        prep_result = await self._env._sandbox_exec(
+            f"mkdir -p {shlex.quote(target_dir)}",
+            timeout_sec=30,
+            user="root",
+        )
+        if prep_result.return_code != 0:
+            raise RuntimeError(
+                "Daytona direct upload_dir destination prep failed: "
+                f"{_exec_failure_output(prep_result)}"
+            )
         await self._env._sdk_upload_dir(source_dir, target_dir)
 
     async def download_file(self, source_path: str, target_path: Path | str) -> None:
@@ -364,6 +553,60 @@ class _DaytonaDirect(_DaytonaStrategy):
             "ssh",
             ["ssh", f"{ssh_access.token}@ssh.app.daytona.io"],
         )
+
+    async def snapshot(self, name: str | None = None) -> SandboxImage:
+        """Create a Daytona snapshot from the current sandbox state.
+
+        Wraps ``AsyncSandbox._experimental_create_snapshot``; the snapshot
+        name is the ``ref`` other Daytona sandboxes can be created from via
+        :class:`CreateSandboxFromSnapshotParams`.
+        """
+        env = self._env
+        if not env._sandbox:
+            raise SandboxSnapshotNotSupported(
+                "DaytonaSandbox.snapshot requires a started sandbox; call "
+                "start() before snapshot()."
+            )
+        snap_name = name or f"bf-snap-{env.environment_name}-{uuid4().hex[:12]}"
+        # Daytona names: lowercase, dash-separated, ascii — sanitize defensively.
+        snap_name = snap_name.lower().replace("_", "-")
+        await env._sandbox._experimental_create_snapshot(snap_name)
+        env.logger.info(f"Snapshot created: {snap_name}")
+        return SandboxImage(
+            provider="daytona",
+            ref=snap_name,
+            meta={"sandbox_id": getattr(env._sandbox, "id", "") or ""},
+        )
+
+    async def restore(self, image: SandboxImage) -> None:
+        """Replace the current Daytona sandbox with one from ``image``.
+
+        Daytona snapshots are immutable — restore is implemented by deleting
+        the current sandbox and creating a fresh one from the snapshot,
+        matching the provider's native semantics.
+        """
+        env = self._env
+        if image.provider != "daytona":
+            raise SandboxSnapshotNotSupported(
+                f"DaytonaSandbox.restore cannot consume a {image.provider!r} "
+                f"snapshot (got ref={image.ref!r}); snapshots are not portable "
+                "across providers."
+            )
+        if env._sandbox is not None:
+            try:
+                await env._sandbox.delete()
+            except Exception as e:
+                env.logger.warning(f"Failed to delete sandbox before restore: {e}")
+            env._sandbox = None
+
+        params = CreateSandboxFromSnapshotParams(
+            auto_delete_interval=env._auto_delete_interval,
+            auto_stop_interval=env._auto_stop_interval,
+            snapshot=image.ref,
+            network_block_all=env._network_block_all,
+        )
+        await env._create_sandbox(params=params)
+        env.logger.info(f"Snapshot restored: {image.ref}")
 
 
 class _DaytonaDinD(_DaytonaStrategy):
@@ -545,7 +788,17 @@ class _DaytonaDinD(_DaytonaStrategy):
                 network_block_all=False,
             )
 
-        await env._create_sandbox(params=params)
+        try:
+            await env._create_sandbox(params=params)
+        except (TimeoutError, RuntimeError, Exception) as e:
+            sandbox_id = getattr(env._sandbox, "id", None) if env._sandbox else None
+            raise SandboxStartupError(
+                f"Sandbox creation failed after retries: {e}",
+                sandbox_id=sandbox_id,
+                sandbox_state="error",
+                attempts=3,
+                build_timeout_sec=env.task_env_config.build_timeout_sec,
+            ) from e
 
         env.logger.debug("Starting Docker daemon inside DinD sandbox...")
         await self._vm_exec(
@@ -644,14 +897,22 @@ class _DaytonaDinD(_DaytonaStrategy):
         parts: list[str] = ["exec", "-T"]
         if cwd:
             parts.extend(["-w", cwd])
-        if env:
-            for k, v in env.items():
-                parts.extend(["-e", f"{k}={v}"])
         if user is not None:
             parts.extend(["-u", str(user)])
+        # Env vars are materialized inside the target container via a
+        # mode-0600 file and sourced, rather than passed as ``-e KEY=VALUE``
+        # flags. The flags would land in the DinD VM's process list (visible
+        # to ``ps`` and any Daytona session audit log) and leak verifier
+        # API keys / agent secrets on every multi-service task (#412
+        # follow-up). Matches the wrapping that ``DaytonaSandbox._sandbox_exec``
+        # already applies to the outer VM-side command.
+        if env:
+            command = _wrap_daytona_command_with_env_file(env, command)
         # Use POSIX ``sh`` rather than ``bash``: with multi-service support
         # (#248), ``service`` can target arbitrary task containers, and
-        # Alpine/distroless/minimal images often ship no ``/bin/bash``.
+        # Alpine/distroless/minimal images often ship no ``/bin/bash``. The
+        # wrapped command uses only POSIX constructs (``trap``, ``base64 -d``,
+        # ``set -a``/``. file``).
         parts.extend([service, "sh", "-c", command])
 
         return await self._compose_exec(parts, timeout_sec=timeout_sec)
@@ -660,8 +921,22 @@ class _DaytonaDinD(_DaytonaStrategy):
         temp = f"/tmp/benchflow_{uuid4().hex}"
         try:
             await self._env._sdk_upload_file(source_path, temp)
+            target_parent_cmd = compose_parent_mkdir_p_command(target_path)
+            if target_parent_cmd is not None:
+                prep_result = await self.exec(
+                    target_parent_cmd,
+                    timeout_sec=30,
+                    user="root",
+                    service="main",
+                )
+                if prep_result.return_code != 0:
+                    raise RuntimeError(
+                        "docker compose upload_file destination prep failed: "
+                        f"{_exec_failure_output(prep_result)}"
+                    )
             result = await self._compose_exec(
-                ["cp", temp, f"main:{target_path}"], timeout_sec=60
+                ["cp", temp, compose_cp_destination("main", target_path)],
+                timeout_sec=60,
             )
             if result.return_code != 0:
                 raise RuntimeError(
@@ -681,8 +956,20 @@ class _DaytonaDinD(_DaytonaStrategy):
         temp = f"/tmp/benchflow_{uuid4().hex}"
         try:
             await self._env._sdk_upload_dir(source_dir, temp)
+            prep_result = await self.exec(
+                compose_mkdir_p_command(target_dir),
+                timeout_sec=30,
+                user="root",
+                service=service,
+            )
+            if prep_result.return_code != 0:
+                raise RuntimeError(
+                    "docker compose upload_dir destination prep failed: "
+                    f"{_exec_failure_output(prep_result)}"
+                )
             result = await self._compose_exec(
-                ["cp", f"{temp}/.", f"{service}:{target_dir}"], timeout_sec=120
+                ["cp", f"{temp}/.", compose_cp_destination(service, target_dir)],
+                timeout_sec=120,
             )
             if result.return_code != 0:
                 raise RuntimeError(
@@ -831,6 +1118,11 @@ class DaytonaSandbox(BaseSandbox):
         auto_delete_interval_mins: int = 0,
         **kwargs: object,
     ) -> None:
+        # Materialize the optional Daytona SDK on first DaytonaSandbox
+        # instantiation. Importing this module is now free of the SDK
+        # dependency (issue #358); the SDK is required only at construction
+        # time of a real Daytona sandbox.
+        _load_daytona_sdk()
         # Detect compose mode before super().__init__ calls _validate_definition
         self._compose_mode = (environment_dir / "docker-compose.yaml").exists()
         self._kwargs = kwargs
@@ -893,8 +1185,8 @@ class DaytonaSandbox(BaseSandbox):
     # ── Shared helpers used by both strategies ──────────────────────────
 
     @retry(
-        stop=stop_after_attempt(2),
-        wait=wait_exponential(multiplier=1, min=1, max=10),
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=2, min=2, max=30),
         reraise=True,
     )
     async def _create_sandbox(
@@ -906,16 +1198,37 @@ class DaytonaSandbox(BaseSandbox):
                 "Client manager not initialized. This should never happen."
             )
 
+        # Clean up any previous failed sandbox before retry
+        if self._sandbox is not None:
+            try:
+                self.logger.warning("Cleaning up previous sandbox before retry")
+                await self._sandbox.delete()
+            except Exception as cleanup_err:
+                self.logger.debug(f"Cleanup of previous sandbox failed: {cleanup_err}")
+            finally:
+                self._sandbox = None
+
         daytona = await self._client_manager.get_client()
+        build_timeout = round(self.task_env_config.build_timeout_sec)
+        hard_timeout = build_timeout + _STARTUP_HARD_TIMEOUT_BUFFER_SEC
 
         create_task = asyncio.ensure_future(
             daytona.create(
                 params=params,
-                timeout=round(self.task_env_config.build_timeout_sec),
+                timeout=build_timeout,
             )
         )
         try:
-            self._sandbox = await asyncio.shield(create_task)
+            self._sandbox = await asyncio.wait_for(
+                asyncio.shield(create_task), timeout=hard_timeout
+            )
+        except TimeoutError:
+            self.logger.error(
+                f"Sandbox creation timed out after {hard_timeout}s "
+                f"(build_timeout={build_timeout}s + buffer={_STARTUP_HARD_TIMEOUT_BUFFER_SEC}s)"
+            )
+            create_task.cancel()
+            raise
         except asyncio.CancelledError:
             try:
                 self._sandbox = await asyncio.wait_for(create_task, timeout=30)
@@ -958,14 +1271,34 @@ class DaytonaSandbox(BaseSandbox):
             session_id, command_id
         )
 
-    async def _poll_response(self, session_id: str, command_id: str) -> ExecResult:
+    async def _poll_response(
+        self,
+        session_id: str,
+        command_id: str,
+        timeout_sec: int | float | None = None,
+    ) -> ExecResult:
         if not self._sandbox:
             raise RuntimeError("Sandbox not found. Please build the environment first.")
+
+        loop = asyncio.get_running_loop()
+        deadline = (
+            loop.time() + float(timeout_sec)
+            if timeout_sec is not None and timeout_sec > 0
+            else None
+        )
 
         response = await self._get_session_command_with_retry(session_id, command_id)
 
         while response.exit_code is None:  # type: ignore[union-attr]
-            await asyncio.sleep(1)
+            if deadline is None:
+                await asyncio.sleep(_DAYTONA_COMMAND_POLL_INTERVAL_SEC)
+            else:
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    raise RuntimeError(f"Command timed out after {timeout_sec} seconds")
+                await asyncio.sleep(min(_DAYTONA_COMMAND_POLL_INTERVAL_SEC, remaining))
+                if loop.time() >= deadline:
+                    raise RuntimeError(f"Command timed out after {timeout_sec} seconds")
             response = await self._get_session_command_with_retry(
                 session_id,
                 response.id,  # type: ignore[union-attr]
@@ -995,11 +1328,18 @@ class DaytonaSandbox(BaseSandbox):
         try:
             await self._sandbox.process.create_session(session_id)
 
-            command = f"{shell} {shlex.quote(command)}"
-
+            # Env vars are written to a temp file inside the sandbox and
+            # sourced rather than passed as ``env KEY=value ...`` argv. The
+            # argv form would leak verifier API keys / agent secrets into the
+            # remote process list and any provider-side command audit log
+            # (#412). The wrapping must happen before the ``timeout``/``su``
+            # prefixes so they too see the exported vars; the wrapper itself
+            # runs under ``sh``-compatible POSIX constructs so the surrounding
+            # ``bash -c`` / ``su -s /bin/bash -c`` shells handle it fine.
             if env:
-                env_args = " ".join(f"{k}={shlex.quote(v)}" for k, v in env.items())
-                command = f"env {env_args} {command}"
+                command = f"{shell} {shlex.quote(_wrap_daytona_command_with_env_file(env, command))}"
+            else:
+                command = f"{shell} {shlex.quote(command)}"
 
             if timeout_sec:
                 command = f"timeout {timeout_sec} {command}"
@@ -1026,7 +1366,11 @@ class DaytonaSandbox(BaseSandbox):
             if response.cmd_id is None:
                 raise RuntimeError("Cannot find command ID.")
 
-            result = await self._poll_response(session_id, response.cmd_id)
+            result = await self._poll_response(
+                session_id,
+                response.cmd_id,
+                timeout_sec=timeout_sec,
+            )
 
         finally:
             pass  # Don't delete session; Daytona kills child processes
@@ -1034,7 +1378,7 @@ class DaytonaSandbox(BaseSandbox):
         return result
 
     @retry(
-        stop=stop_after_attempt(2),
+        stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=1, max=10),
         reraise=True,
     )
@@ -1044,7 +1388,7 @@ class DaytonaSandbox(BaseSandbox):
         await self._sandbox.fs.upload_file(str(source_path), target_path)
 
     @retry(
-        stop=stop_after_attempt(2),
+        stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=1, max=10),
         reraise=True,
     )
@@ -1055,22 +1399,26 @@ class DaytonaSandbox(BaseSandbox):
         file_uploads = []
         source_dir = Path(source_dir)
 
-        for file_path in source_dir.rglob("*"):
-            if file_path.is_file():
-                relative_path = file_path.relative_to(source_dir).as_posix()
-                destination_path = f"{target_dir}/{relative_path}"
-                file_uploads.append(
-                    FileUpload(
-                        source=str(file_path),
-                        destination=destination_path,
-                    )
+        # Walk with followlinks=False and skip symlinks (#411): a task or
+        # workspace symlink under source_dir must not exfiltrate host files
+        # into the remote Daytona sandbox.
+        for file_path in iter_safe_tree(
+            source_dir, context=f"daytona upload_dir {source_dir}"
+        ):
+            relative_path = file_path.relative_to(source_dir).as_posix()
+            destination_path = f"{target_dir}/{relative_path}"
+            file_uploads.append(
+                FileUpload(
+                    source=str(file_path),
+                    destination=destination_path,
                 )
+            )
 
         if file_uploads:
             await self._sandbox.fs.upload_files(files=file_uploads)
 
     @retry(
-        stop=stop_after_attempt(2),
+        stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=1, max=10),
         reraise=True,
     )
@@ -1082,7 +1430,7 @@ class DaytonaSandbox(BaseSandbox):
         await self._sandbox.fs.download_file(source_path, str(target_path))
 
     @retry(
-        stop=stop_after_attempt(2),
+        stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=1, max=10),
         reraise=True,
     )
@@ -1191,3 +1539,15 @@ class DaytonaSandbox(BaseSandbox):
 
     async def attach(self) -> None:
         return await self._strategy.attach()
+
+    # ── Container snapshot/restore — delegates to active strategy (#384) ──
+
+    @property
+    def supports_snapshot(self) -> bool:
+        return self._strategy.supports_snapshot
+
+    async def snapshot(self, name: str | None = None) -> SandboxImage:
+        return await self._strategy.snapshot(name)
+
+    async def restore(self, image: SandboxImage) -> None:
+        return await self._strategy.restore(image)

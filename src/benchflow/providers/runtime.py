@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 from benchflow.agents.providers import find_provider, strip_provider_prefix
 from benchflow.agents.registry import AGENTS
@@ -18,6 +20,7 @@ BEDROCK_PROXY_BIND_HOST = "0.0.0.0"
 BEDROCK_PROXY_LOCAL_HOST = "127.0.0.1"
 USAGE_PROXY_BIND_HOST = "0.0.0.0"
 PROMPT_CACHE_RETENTION_ENV = "BENCHFLOW_PROVIDER_PROMPT_CACHE_RETENTION"
+DISABLE_USAGE_PROXY_ENV = "BENCHFLOW_DISABLE_USAGE_PROXY"
 _PROMPT_CACHE_RETENTION_VALUES = {"in_memory", "24h"}
 
 
@@ -38,7 +41,7 @@ class ProviderRuntime:
 
 
 def needs_provider_runtime(model: str | None) -> bool:
-    """True when the model must be routed through a local helper runtime."""
+    """True when the model needs Bedrock-specific runtime handling."""
     if not model:
         return False
     result = find_provider(model)
@@ -81,6 +84,51 @@ def _apply_agent_provider_mapping(
 def _bedrock_frontend_model(*, agent: str, backend_model: str) -> str:
     """Return the model name the upstream agent should see."""
     return backend_model
+
+
+def _direct_bedrock_frontend_model(*, agent: str, backend_model: str) -> str:
+    """Return the Bedrock-native model name for agents that can call AWS directly."""
+    if agent == "openhands":
+        return f"bedrock/{backend_model}"
+    raise ValueError(f"Agent {agent!r} does not support direct Bedrock routing")
+
+
+def _agent_supports_direct_bedrock(agent: str) -> bool:
+    return agent == "openhands"
+
+
+def _apply_direct_bedrock_agent_mapping(
+    agent_env: dict[str, str],
+    *,
+    agent: str,
+    backend_model: str,
+    environment: str,
+) -> dict[str, str]:
+    """Wire agent env vars for direct AWS Bedrock access without a host proxy."""
+    if not _agent_supports_direct_bedrock(agent):
+        raise RuntimeError(
+            f"Bedrock-routed models are not supported on the "
+            f"'{environment}' sandbox for agent {agent!r}: the host-side "
+            "Bedrock proxy is unreachable from that remote sandbox, and this "
+            "agent does not support direct Bedrock routing. "
+            "Use an agent with direct Bedrock support, run with '--sandbox docker', "
+            "or select a non-Bedrock model."
+        )
+
+    updated = dict(agent_env)
+    updated["BENCHFLOW_PROVIDER_MODEL"] = backend_model
+    updated.pop("BENCHFLOW_PROVIDER_BASE_URL", None)
+    for env_name in _agent_base_url_envs(agent):
+        updated.pop(env_name, None)
+
+    if agent == "openhands":
+        updated["LLM_MODEL"] = _direct_bedrock_frontend_model(
+            agent=agent,
+            backend_model=backend_model,
+        )
+        if updated.get("AWS_BEARER_TOKEN_BEDROCK"):
+            updated["LLM_API_KEY"] = updated["AWS_BEARER_TOKEN_BEDROCK"]
+    return updated
 
 
 def _docker_host_address() -> str:
@@ -163,6 +211,29 @@ def _bedrock_proxy_command(
     return BEDROCK_PROXY_LOCAL_HOST
 
 
+def _host_side_proxy_target_url(target: str, *, environment: str) -> str:
+    """Return the upstream URL a host-side proxy should dial.
+
+    The URL injected into an agent container may use Docker's host alias
+    (``host.docker.internal`` or the Linux bridge gateway). That address is for
+    the container. A proxy process running on the host should reach another
+    host-bound BenchFlow proxy through loopback instead.
+    """
+    if not host_proxy_reachable_from_agent(environment):
+        return target
+    parsed = urlsplit(target)
+    if not parsed.hostname:
+        return target
+    if parsed.hostname != _bedrock_proxy_command(environment=environment):
+        return target
+    netloc = BEDROCK_PROXY_LOCAL_HOST
+    if parsed.port is not None:
+        netloc = f"{netloc}:{parsed.port}"
+    return urlunsplit(
+        (parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment)
+    )
+
+
 def _usage_unavailable() -> dict[str, Any]:
     return {
         "n_input_tokens": None,
@@ -174,6 +245,10 @@ def _usage_unavailable() -> dict[str, Any]:
         "usage_source": "unavailable",
         "price_source": None,
     }
+
+
+def _env_flag_enabled(value: str | None) -> bool:
+    return value is not None and value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _agent_base_url_envs(agent: str) -> list[str]:
@@ -188,6 +263,7 @@ def _agent_base_url_envs(agent: str) -> list[str]:
             "ANTHROPIC_BASE_URL",
             "ANTHROPIC_BEDROCK_BASE_URL",
             "OPENAI_BASE_URL",
+            "GOOGLE_GEMINI_BASE_URL",
             "GEMINI_API_BASE_URL",
             "LLM_BASE_URL",
         ]
@@ -308,6 +384,16 @@ async def ensure_usage_proxy_runtime(
     """
     if agent == "oracle":
         return agent_env, runtime
+    if _env_flag_enabled(os.environ.get(DISABLE_USAGE_PROXY_ENV)):
+        if runtime is not None:
+            await stop_provider_runtime(runtime)
+        logger.info(
+            "Skipping host-side usage telemetry proxy: %s is enabled. "
+            "The agent will call the provider directly and usage telemetry "
+            "will be unavailable for this run.",
+            DISABLE_USAGE_PROXY_ENV,
+        )
+        return agent_env, None
     if not host_proxy_reachable_from_agent(environment):
         if runtime is not None:
             await stop_provider_runtime(runtime)
@@ -322,7 +408,10 @@ async def ensure_usage_proxy_runtime(
     target = _resolve_usage_proxy_target(agent, agent_env, model)
     if not target:
         return agent_env, runtime
-    target = target.rstrip("/")
+    target = _host_side_proxy_target_url(
+        target.rstrip("/"),
+        environment=environment,
+    )
 
     # A multi-role scene can switch providers between connect_as() calls. The
     # running proxy forwards to a fixed upstream, so reusing it would route the
@@ -417,16 +506,12 @@ async def ensure_bedrock_proxy_runtime(
     runtime: ProviderRuntime | None,
     environment: str,
 ) -> tuple[dict[str, str], ProviderRuntime | None]:
-    """Start the host-side Bedrock proxy if needed and wire env vars to it.
+    """Wire Bedrock-routed models through the best reachable path.
 
-    Unlike the usage telemetry proxy (pure telemetry — safe to skip when the
-    agent cannot reach the host), the Bedrock proxy is *load-bearing*: it
-    translates Anthropic/OpenAI requests into AWS Bedrock Converse calls and
-    signs them with host AWS credentials. There is no direct path for the
-    agent to reach Bedrock without it. So on a remote sandbox where the host
-    proxy is unreachable, the run cannot succeed — we fail fast here with an
-    actionable error instead of injecting an unreachable ``127.0.0.1`` base
-    URL that would surface as an opaque mid-run ``ECONNREFUSED``.
+    Same-host agents use BenchFlow's host-side Bedrock proxy, which translates
+    OpenAI/Anthropic-shaped requests into Bedrock Converse. Remote sandboxes
+    cannot reach that host-bound proxy, so agents with native Bedrock support
+    are configured to call AWS directly instead.
     """
     if not needs_provider_runtime(model):
         return agent_env, runtime
@@ -435,13 +520,21 @@ async def ensure_bedrock_proxy_runtime(
     if not host_proxy_reachable_from_agent(environment):
         if runtime is not None:
             await stop_provider_runtime(runtime)
-        raise RuntimeError(
-            f"Bedrock-routed models are not supported on the "
-            f"'{environment}' sandbox: the host-side Bedrock proxy that "
-            f"translates and signs requests to AWS Bedrock binds to the "
-            f"host machine and is unreachable from the agent, which runs "
-            f"on a separate remote host. Re-run with '--sandbox docker', "
-            f"or select a model that is not routed through AWS Bedrock."
+        logger.info(
+            "Skipping host-side Bedrock proxy: the '%s' sandbox runs the "
+            "agent on a remote host unreachable from the host proxy; wiring "
+            "%s for direct AWS Bedrock access.",
+            environment or "unknown",
+            agent,
+        )
+        return (
+            _apply_direct_bedrock_agent_mapping(
+                agent_env,
+                agent=agent,
+                backend_model=strip_provider_prefix(model),
+                environment=environment,
+            ),
+            None,
         )
 
     if runtime is None:

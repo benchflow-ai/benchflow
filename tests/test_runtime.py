@@ -104,6 +104,21 @@ def test_runtime_result_error() -> None:
     assert r.verified is False
 
 
+def test_runtime_result_verifier_error_precedes_reward() -> None:
+    r = RuntimeResult(
+        task_name="test-task",
+        rollout_name="trial-1",
+        reward=0.0,
+        rewards={"reward": 0.0},
+        n_tool_calls=3,
+        error=None,
+        verifier_error="verifier crashed: stale reward rejected",
+        trajectory=[],
+    )
+    assert r.passed is False
+    assert r.verified is False
+
+
 @pytest.mark.skipif(not _daytona_available, reason="daytona not installed")
 def test_environment_from_task() -> None:
     """Environment.from_task creates a wrapper with correct metadata."""

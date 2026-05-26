@@ -53,10 +53,24 @@ def _sse_json_bytes(payload: bytes) -> bytes:
 
 
 _STREAM_END = object()
+_BEDROCK_RUNTIME_MAX_ATTEMPTS = 4
+_BEDROCK_RUNTIME_RETRY_DELAYS_SEC = (1, 2, 4)
 
 
 def _next_stream_event(iterator: Any) -> Any:
     return next(iterator, _STREAM_END)
+
+
+def _is_retriable_bedrock_runtime_error(exc: Exception) -> bool:
+    """Return true for transient Bedrock transport failures before a response."""
+    name = exc.__class__.__name__
+    module = exc.__class__.__module__
+    return name in {
+        "ConnectionClosedError",
+        "ConnectTimeoutError",
+        "EndpointConnectionError",
+        "ReadTimeoutError",
+    } or (name == "NameResolutionError" and module.startswith("urllib3."))
 
 
 def _match_bedrock_model_path(path: str, suffix: str) -> str | None:
@@ -147,6 +161,29 @@ class BedrockProxyServer:
         client = self._client
         assert client is not None
         return client
+
+    async def _call_bedrock_runtime(self, operation: str, **payload: Any) -> Any:
+        method = getattr(self._require_client(), operation)
+        for attempt in range(1, _BEDROCK_RUNTIME_MAX_ATTEMPTS + 1):
+            try:
+                return await asyncio.to_thread(method, **payload)
+            except Exception as exc:
+                if (
+                    attempt >= _BEDROCK_RUNTIME_MAX_ATTEMPTS
+                    or not _is_retriable_bedrock_runtime_error(exc)
+                ):
+                    raise
+                delay = _BEDROCK_RUNTIME_RETRY_DELAYS_SEC[attempt - 1]
+                logger.warning(
+                    "Bedrock runtime %s failed on attempt %s/%s; retrying in %ss: %s",
+                    operation,
+                    attempt,
+                    _BEDROCK_RUNTIME_MAX_ATTEMPTS,
+                    delay,
+                    exc,
+                )
+                await asyncio.sleep(delay)
+        raise AssertionError("unreachable Bedrock runtime retry state")
 
     async def start(self) -> None:
         if self._client is None:
@@ -258,11 +295,10 @@ class BedrockProxyServer:
         body: dict[str, Any],
         writer: asyncio.StreamWriter,
     ) -> None:
-        client = self._require_client()
         model = self._backend_model or body["model"]
         payload = anthropic_request_to_bedrock_converse({**body, "model": model})
         if body.get("stream"):
-            response = await asyncio.to_thread(client.converse_stream, **payload)
+            response = await self._call_bedrock_runtime("converse_stream", **payload)
             writer.write(
                 b"HTTP/1.1 200 OK\r\n"
                 b"content-type: text/event-stream\r\n"
@@ -284,7 +320,7 @@ class BedrockProxyServer:
             await writer.drain()
             return
 
-        response = await asyncio.to_thread(client.converse, **payload)
+        response = await self._call_bedrock_runtime("converse", **payload)
         normalized = bedrock_response_to_anthropic(response, model=body["model"])
         writer.write(_json_http_response(200, normalized))
         await writer.drain()
@@ -294,11 +330,10 @@ class BedrockProxyServer:
         body: dict[str, Any],
         writer: asyncio.StreamWriter,
     ) -> None:
-        client = self._require_client()
         model = self._backend_model or body["model"]
         payload = openai_responses_request_to_bedrock_converse({**body, "model": model})
         if body.get("stream"):
-            response = await asyncio.to_thread(client.converse_stream, **payload)
+            response = await self._call_bedrock_runtime("converse_stream", **payload)
             writer.write(
                 b"HTTP/1.1 200 OK\r\n"
                 b"content-type: text/event-stream\r\n"
@@ -322,7 +357,7 @@ class BedrockProxyServer:
             await writer.drain()
             return
 
-        response = await asyncio.to_thread(client.converse, **payload)
+        response = await self._call_bedrock_runtime("converse", **payload)
         normalized = bedrock_response_to_openai_response(
             response,
             model=body["model"],

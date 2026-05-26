@@ -11,13 +11,16 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from benchflow._utils.reward_events import memory_score_from_result
 from benchflow._utils.scoring import (
+    classify_audit_outcome,
     classify_error,
-    classify_result,
+    classify_score_outcome,
     classify_verifier_error,
     pass_rate,
     pass_rate_excl_errors,
 )
+from benchflow.trajectories.metrics import result_skill_invocations
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +32,7 @@ class TaskMetrics:
     task_name: str
     reward: float | None = None
     n_tool_calls: int = 0
+    n_skill_invocations: int = 0
     n_prompts: int = 0
     error: str | None = None
     verifier_error: str | None = None
@@ -41,45 +45,65 @@ class TaskMetrics:
     total_tokens: int | None = None
     cost_usd: float | None = None
     usage_source: str = "unavailable"
+    memory_score: float | None = None
 
     @property
-    def _bucket(self) -> str:
-        """Terminal bucket via the shared classifier (see _utils.scoring).
+    def outcome(self) -> str:
+        return self.score_outcome
+
+    @property
+    def score_outcome(self) -> str:
+        """Terminal score bucket via the shared classifier (see _utils.scoring).
 
         Guarantees passed/failed/errored/verifier_errored are disjoint and
-        exhaustive — the same classification used by ``Evaluation.run()``.
+        exhaustive — the same classification used by ``EvaluationResult``.
         """
-        return classify_result(
-            reward=self.reward,
-            error=self.error,
-            verifier_error=self.verifier_error,
-        )
+        return classify_score_outcome(self._result_shape)
+
+    @property
+    def audit_outcome(self) -> str:
+        """Audit bucket that surfaces verifier-error evidence first."""
+        return classify_audit_outcome(self._result_shape)
+
+    @property
+    def _result_shape(self) -> dict[str, Any]:
+        return {
+            "rewards": {"reward": self.reward} if self.reward is not None else None,
+            "error": self.error,
+            "verifier_error": self.verifier_error,
+        }
 
     @property
     def passed(self) -> bool:
-        return self._bucket == "passed"
+        return self.score_outcome == "passed"
 
     @property
     def failed(self) -> bool:
-        return self._bucket == "failed"
+        return self.score_outcome == "failed"
 
     @property
     def errored(self) -> bool:
-        return self._bucket == "errored"
+        return self.score_outcome == "errored"
 
     @property
     def verifier_errored(self) -> bool:
-        """True when task failed due to verifier error (not agent error).
+        """Backward-compatible alias for verifier-error evidence."""
+        return self.has_verifier_error_evidence
 
-        Disjoint from `errored`: a task with both `error` and `verifier_error`
-        is classified as `errored` only, so the count buckets never overlap.
-        """
-        return self._bucket == "verifier_errored"
+    @property
+    def has_verifier_error_evidence(self) -> bool:
+        """True when the task carries verifier-error evidence."""
+        return self.verifier_error is not None
+
+    @property
+    def score_verifier_errored(self) -> bool:
+        """True when the disjoint score bucket is verifier_errored."""
+        return self.score_outcome == "verifier_errored"
 
     @property
     def completed(self) -> bool:
         """True when task reached a terminal non-error reward state."""
-        return self._bucket in ("passed", "failed")
+        return self.score_outcome in ("passed", "failed")
 
 
 @dataclass
@@ -109,8 +133,13 @@ class BenchmarkMetrics:
 
     @property
     def verifier_errored(self) -> int:
-        """Count of tasks that failed due to verifier error."""
-        return sum(1 for t in self.tasks if t.verifier_errored)
+        """Backward-compatible alias for score-verifier-error count."""
+        return self.score_verifier_errored
+
+    @property
+    def score_verifier_errored(self) -> int:
+        """Count of tasks whose disjoint score bucket is verifier_errored."""
+        return sum(1 for t in self.tasks if t.score_verifier_errored)
 
     @property
     def score(self) -> float:
@@ -125,7 +154,7 @@ class BenchmarkMetrics:
     @property
     def avg_tool_calls(self) -> float:
         """Average tool calls per completed task."""
-        completed = [t for t in self.tasks if not t.errored and not t.verifier_errored]
+        completed = [t for t in self.tasks if t.completed]
         return (
             sum(t.n_tool_calls for t in completed) / len(completed)
             if completed
@@ -133,13 +162,19 @@ class BenchmarkMetrics:
         )
 
     @property
+    def avg_skill_invocations(self) -> float:
+        """Average structured skill invocations per completed task."""
+        completed = [t for t in self.tasks if t.completed]
+        return (
+            sum(t.n_skill_invocations for t in completed) / len(completed)
+            if completed
+            else 0.0
+        )
+
+    @property
     def avg_duration(self) -> float:
         """Average duration per completed task (seconds)."""
-        completed = [
-            t
-            for t in self.tasks
-            if not t.errored and not t.verifier_errored and t.duration_sec > 0
-        ]
+        completed = [t for t in self.tasks if t.completed and t.duration_sec > 0]
         return (
             sum(t.duration_sec for t in completed) / len(completed)
             if completed
@@ -210,11 +245,35 @@ class BenchmarkMetrics:
         return len(self.telemetry_tasks) / len(completed)
 
     @property
+    def memory_scores(self) -> dict[str, float]:
+        return {
+            t.task_name: t.memory_score
+            for t in self.tasks
+            if t.memory_score is not None
+        }
+
+    @property
+    def memory_score(self) -> float | None:
+        scores = list(self.memory_scores.values())
+        if not scores:
+            return None
+        return sum(scores) / len(scores)
+
+    @property
+    def memory_summary(self) -> dict[str, Any]:
+        avg = self.memory_score
+        return {
+            "scored": len(self.memory_scores),
+            "avg_score": avg,
+            "score": f"{avg:.1%}" if avg is not None else None,
+        }
+
+    @property
     def verifier_error_breakdown(self) -> dict[str, int]:
         """Categorize verifier errors."""
         breakdown: dict[str, int] = {}
         for t in self.tasks:
-            if not t.verifier_errored:
+            if not t.has_verifier_error_evidence:
                 continue
             category = classify_verifier_error(t.verifier_error)
             if category:
@@ -235,6 +294,7 @@ class BenchmarkMetrics:
             "score": f"{self.score:.1%}",
             "score_excl_errors": f"{self.score_excl_errors:.1%}",
             "avg_tool_calls": round(self.avg_tool_calls, 1),
+            "avg_skill_invocations": round(self.avg_skill_invocations, 1),
             "avg_duration_sec": round(self.avg_duration, 1),
             "total_input_tokens": self.total_input_tokens,
             "total_output_tokens": self.total_output_tokens,
@@ -244,13 +304,19 @@ class BenchmarkMetrics:
             "total_cost_usd": self.total_cost_usd,
             "avg_cost_per_trial_usd": self.avg_cost_per_trial_usd,
             "telemetry_coverage": self.telemetry_coverage,
+            "memory_score": self.memory_score,
+            "memory_score_coverage": (
+                len(self.memory_scores) / self.total if self.total else 0.0
+            ),
+            "memory": self.memory_summary,
+            "memory_scores": self.memory_scores,
             "error_breakdown": self.error_breakdown,
             "verifier_error_breakdown": self.verifier_error_breakdown,
             "passed_tasks": sorted(t.task_name for t in self.tasks if t.passed),
             "failed_tasks": sorted(t.task_name for t in self.tasks if t.failed),
             "errored_tasks": sorted(t.task_name for t in self.tasks if t.errored),
             "verifier_errored_tasks": sorted(
-                t.task_name for t in self.tasks if t.verifier_errored
+                t.task_name for t in self.tasks if t.score_verifier_errored
             ),
         }
 
@@ -313,6 +379,7 @@ def collect_metrics(
                 task_name=task_name,
                 reward=reward,
                 n_tool_calls=r.get("n_tool_calls", 0),
+                n_skill_invocations=result_skill_invocations(r),
                 n_prompts=r.get("n_prompts", 0),
                 error=r.get("error"),
                 verifier_error=r.get("verifier_error"),
@@ -339,6 +406,7 @@ def collect_metrics(
                 usage_source=(r.get("agent_result") or {}).get(
                     "usage_source", r.get("usage_source", "unavailable")
                 ),
+                memory_score=memory_score_from_result(r),
             )
         )
 

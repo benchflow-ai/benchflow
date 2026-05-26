@@ -77,6 +77,26 @@ def _install_python_script(container_path: str, source: str) -> str:
     )
 
 
+def _apt_install(*packages: str) -> str:
+    """POSIX shell snippet for apt installs with transient mirror recovery."""
+    package_args = " ".join(shlex.quote(package) for package in packages)
+    return (
+        "( attempt=1; "
+        'while [ "$attempt" -le 3 ]; do '
+        "rm -rf /var/lib/apt/lists/*; "
+        "apt-get clean; "
+        "if apt-get -o Acquire::Retries=3 update -qq && "
+        f"apt-get -o Acquire::Retries=3 install -y -qq {package_args}; then "
+        "exit 0; "
+        "fi; "
+        'case "$attempt" in 1) sleep 2; attempt=2 ;; '
+        "2) sleep 4; attempt=3 ;; "
+        "*) sleep 6; attempt=4 ;; esac; "
+        "done; "
+        "exit 1 )"
+    )
+
+
 # Isolated Node.js bootstrap for JavaScript-based ACP agents.
 #
 # Keep this out of system prefixes. Task images may need their own Node/npm
@@ -131,17 +151,25 @@ _NODE_INSTALL = (
 )
 
 
+def _npm_package_spec(package: str) -> str:
+    """Return an npm install spec, defaulting unversioned packages to latest."""
+    if "@" in package.lstrip("@"):
+        return package
+    return f"{package}@latest"
+
+
 def _js_agent_install(binary: str, package: str) -> str:
     """Install an npm-distributed agent into BenchFlow's isolated prefix."""
     agent_bin = f"{_BENCHFLOW_JS_AGENT_PREFIX}/bin/{binary}"
     wrapper = f"{_BENCHFLOW_BIN_PREFIX}/{binary}"
+    package_spec = _npm_package_spec(package)
+    install_guard = "" if package_spec == package else f"[ -x {agent_bin} ] || "
     return (
         f"{_NODE_INSTALL} && "
         f"mkdir -p {_BENCHFLOW_JS_AGENT_PREFIX} {_BENCHFLOW_BIN_PREFIX} && "
         f'export PATH="{_JS_AGENT_PATH}" && '
-        f"( [ -x {agent_bin} ] || "
-        f"{_BENCHFLOW_NODE_PREFIX}/bin/npm install -g "
-        f"--prefix {_BENCHFLOW_JS_AGENT_PREFIX} {package}@latest ) && "
+        f"( {install_guard}{_BENCHFLOW_NODE_PREFIX}/bin/npm install -g "
+        f"--prefix {_BENCHFLOW_JS_AGENT_PREFIX} {package_spec} ) && "
         f"printf '%s\\n' '#!/bin/sh' "
         f"'exec {_BENCHFLOW_NODE_PREFIX}/bin/node {agent_bin} \"$@\"' "
         f"> {wrapper} && "
@@ -263,6 +291,9 @@ class AgentConfig:
     # Shell snippet run after credentials/subscription auth are written when
     # BenchFlow's no-web policy is active. Uses BENCHFLOW_AGENT_HOME for the
     # target home so settings land in the same home the agent will run from.
+    disallow_web_tools_owned_paths: list[str] = field(default_factory=list)
+    # Directories under $HOME that disallow_web_tools_setup_cmd may create and
+    # that must remain writable by the sandbox user after the root-run setup.
     disallow_web_tools_launch_suffix: str = ""
     # String appended to launch_cmd when BenchFlow's no-web policy is active.
     # Use for agents whose supported toggle is a launch/config override.
@@ -275,7 +306,7 @@ AGENTS: dict[str, AgentConfig] = {
         description="Claude Code via ACP (Anthropic's Agent Client Protocol)",
         skill_paths=["$HOME/.claude/skills"],
         install_cmd=_js_agent_install(
-            "claude-agent-acp", "@zed-industries/claude-agent-acp"
+            "claude-agent-acp", "@agentclientprotocol/claude-agent-acp"
         ),
         launch_cmd=_js_agent_launch("claude-agent-acp"),
         protocol="acp",
@@ -301,6 +332,7 @@ AGENTS: dict[str, AgentConfig] = {
             '[d["permissions"]["deny"].append(t) for t in ["WebSearch","WebFetch"] '
             'if t not in d["permissions"]["deny"]]',
         ),
+        disallow_web_tools_owned_paths=["$HOME/.claude"],
     ),
     "pi-acp": AgentConfig(
         name="pi-acp",
@@ -350,7 +382,7 @@ AGENTS: dict[str, AgentConfig] = {
         name="codex-acp",
         description="OpenAI Codex agent via ACP",
         skill_paths=["$HOME/.agents/skills"],
-        install_cmd=_js_agent_install("codex-acp", "@zed-industries/codex-acp"),
+        install_cmd=_js_agent_install("codex-acp", "@agentclientprotocol/codex-acp"),
         launch_cmd=_js_agent_launch(
             "codex-acp", "${OPENAI_BASE_URL:+-c openai_base_url=$OPENAI_BASE_URL}"
         ),
@@ -381,17 +413,26 @@ AGENTS: dict[str, AgentConfig] = {
         name="gemini",
         description="Google Gemini CLI via ACP",
         skill_paths=["$HOME/.gemini/skills"],
-        install_cmd=_js_agent_install("gemini", "@google/gemini-cli"),
+        install_cmd=_js_agent_install("gemini", "@google/gemini-cli@0.42.0"),
         launch_cmd=_js_agent_launch("gemini", "--acp --yolo"),
         protocol="acp",
-        requires_env=["GOOGLE_API_KEY"],
+        # The Gemini CLI reads GEMINI_API_KEY natively. GOOGLE_API_KEY is
+        # accepted as an alias: auto_inherit_env mirrors it both ways so users
+        # can set either one. Advertise GEMINI_API_KEY here so `agent show`
+        # matches what the CLI actually reads (#342).
+        requires_env=["GEMINI_API_KEY"],
+        # Default to a sane Gemini model so `--agent gemini` works without
+        # --model and never cross-wires to a Claude default (#343).
+        default_model="gemini-2.5-flash",
         # api_protocol intentionally empty: Gemini speaks Google's native
         # GenerateContent format, which no current PROVIDERS entry exposes as
         # a multi-endpoint option. Set this when a Gemini-compatible provider
         # with multiple endpoints (e.g. OpenRouter) is added.
         env_mapping={
-            "BENCHFLOW_PROVIDER_BASE_URL": "GEMINI_API_BASE_URL",
-            "BENCHFLOW_PROVIDER_API_KEY": "GOOGLE_API_KEY",
+            "BENCHFLOW_PROVIDER_BASE_URL": "GOOGLE_GEMINI_BASE_URL",
+            # Map to the CLI-native var; auto_inherit_env mirrors it to
+            # GOOGLE_API_KEY for compatibility with users who set that alias.
+            "BENCHFLOW_PROVIDER_API_KEY": "GEMINI_API_KEY",
         },
         subscription_auth=SubscriptionAuth(
             replaces_env="GEMINI_API_KEY",
@@ -414,6 +455,7 @@ AGENTS: dict[str, AgentConfig] = {
             '["google_web_search","web_fetch"] '
             'if t not in d["tools"]["exclude"]]',
         ),
+        disallow_web_tools_owned_paths=["$HOME/.gemini"],
     ),
     "opencode": AgentConfig(
         name="opencode",
@@ -435,6 +477,7 @@ AGENTS: dict[str, AgentConfig] = {
             "$BENCHFLOW_AGENT_HOME/.config/opencode/opencode.json",
             'd.setdefault("tools",{})["webfetch"]=False',
         ),
+        disallow_web_tools_owned_paths=["$HOME/.config/opencode"],
     ),
     "harvey-lab-harness": AgentConfig(
         name="harvey-lab-harness",
@@ -479,8 +522,7 @@ AGENTS: dict[str, AgentConfig] = {
             'export PATH="$HOME/.local/bin:$PATH" && '
             "( command -v curl >/dev/null 2>&1 && command -v git >/dev/null 2>&1 || "
             "  if command -v apt-get >/dev/null 2>&1; then "
-            "    apt-get update -qq && "
-            "    apt-get install -y -qq curl ca-certificates git >/dev/null 2>&1; "
+            f"    {_apt_install('curl', 'ca-certificates', 'git')}; "
             "  elif command -v dnf >/dev/null 2>&1; then "
             "    dnf -y install curl ca-certificates git >/dev/null 2>&1; "
             "  elif command -v apk >/dev/null 2>&1; then "
@@ -502,6 +544,7 @@ AGENTS: dict[str, AgentConfig] = {
             '    export PATH="$HOME/.local/bin:$PATH"; '
             "  fi && "
             "uv tool install --force --refresh "
+            "--with 'boto3>=1.40' "
             "--from 'git+https://github.com/OpenHands/OpenHands-CLI.git@main' "
             "openhands --python 3.12 && "
             "  uv tool list | grep -q '^openhands\\b' ) && "
@@ -524,6 +567,8 @@ AGENTS: dict[str, AgentConfig] = {
             '"$LLM_MODEL" "$LLM_API_KEY"; '
             'if [ -n "$LLM_BASE_URL" ]; then '
             'printf \',"base_url":"%s"\' "$LLM_BASE_URL"; fi; '
+            'if [ -n "$LLM_API_VERSION" ]; then '
+            'printf \',"api_version":"%s"\' "$LLM_API_VERSION"; fi; '
             "printf '}}'; } > ~/.openhands/agent_settings.json && "
             "openhands acp --always-approve --override-with-envs"
         ),
@@ -540,6 +585,7 @@ AGENTS: dict[str, AgentConfig] = {
             "printf '[agent]\\nenable_browsing = false\\n' "
             '> "$BENCHFLOW_AGENT_HOME/.openhands/config.toml"'
         ),
+        disallow_web_tools_owned_paths=["$HOME/.openhands"],
     ),
 }
 
@@ -726,6 +772,7 @@ def _acpx_wrap(config: AgentConfig) -> AgentConfig:
         subscription_auth=config.subscription_auth,
         supports_acp_set_model=config.supports_acp_set_model,
         disallow_web_tools_setup_cmd=config.disallow_web_tools_setup_cmd,
+        disallow_web_tools_owned_paths=config.disallow_web_tools_owned_paths,
         disallow_web_tools_launch_suffix=config.disallow_web_tools_launch_suffix,
     )
 
@@ -829,6 +876,7 @@ def register_agent(
     acp_model_format: str = "bare",
     supports_acp_set_model: bool = True,
     disallow_web_tools_setup_cmd: str = "",
+    disallow_web_tools_owned_paths: list[str] | None = None,
     disallow_web_tools_launch_suffix: str = "",
 ) -> AgentConfig:
     """Register a custom agent at runtime.
@@ -864,6 +912,7 @@ def register_agent(
         acp_model_format=acp_model_format,
         supports_acp_set_model=supports_acp_set_model,
         disallow_web_tools_setup_cmd=disallow_web_tools_setup_cmd,
+        disallow_web_tools_owned_paths=disallow_web_tools_owned_paths or [],
         disallow_web_tools_launch_suffix=disallow_web_tools_launch_suffix,
     )
     AGENTS[name] = config

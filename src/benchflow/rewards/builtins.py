@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import string
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Literal
 
@@ -15,10 +16,16 @@ from benchflow.rewards.rubric_config import (
     JudgeConfig,
     RubricConfig,
     ScoringConfig,
+    _coerce_space,
     load_rubric,
 )
+from benchflow.rewards.validation import is_valid_reward_number
 
 logger = logging.getLogger(__name__)
+
+
+class JudgeScoringError(RuntimeError):
+    """Raised when a judge call cannot produce a trustworthy score."""
 
 
 class TestRewardFunc:
@@ -163,7 +170,8 @@ class LLMJudgeRewardFunc:
         criteria: list[dict] | None = None,
         mode: Literal["batched", "individual"] = "individual",
         judge_model: str | None = None,
-        judge_env: dict[str, str] | None = None,
+        judge_env: Mapping[str, str] | None = None,
+        judge_errors_are_infra: bool = False,
     ) -> None:
         self.prompt = prompt
         # ``judge_model`` (an explicit ``[verifier.judge].model`` from
@@ -175,10 +183,11 @@ class LLMJudgeRewardFunc:
         # Resolved ``[verifier.env]`` credentials, threaded explicitly into
         # ``call_judge`` so concurrent judge runs do not race on a shared
         # ``os.environ`` (see ``call_judge``).
-        self._judge_env = judge_env or {}
+        self._judge_env = dict(judge_env or {})
         self.mode = mode
         self._rubric_path = rubric_path
         self._inline_criteria = criteria
+        self._judge_errors_are_infra = judge_errors_are_infra
         self._events: list[RewardEvent] = []
 
     def _resolve_model(self, rubric_default: str) -> str:
@@ -215,6 +224,7 @@ class LLMJudgeRewardFunc:
                         max=raw.get("max", 100.0),
                         weight=raw.get("weight", 1.0),
                         files=raw.get("files", []),
+                        space=_coerce_space(raw.get("space")),
                     )
                 )
             return RubricConfig(
@@ -305,6 +315,10 @@ class LLMJudgeRewardFunc:
                 # recording reward 0.0 (indistinguishable from a real fail).
                 raise
             except Exception as exc:
+                if self._judge_errors_are_infra:
+                    raise JudgeScoringError(
+                        f"Judge error on criterion {criterion.id}: {type(exc).__name__}"
+                    ) from exc
                 logger.warning("Judge error on criterion %s: %s", criterion.id, exc)
                 norm_score = 0.0
                 verdict = {
@@ -327,10 +341,29 @@ class LLMJudgeRewardFunc:
                     reward=norm_score,
                     source=f"criterion:{criterion.id}",
                     step=idx,
+                    # Dense per-criterion events are step-granularity by
+                    # construction (``step=idx`` is set). The space is whatever
+                    # the rubric declared for the criterion — defaults to
+                    # ``"output"`` to preserve back-compat, but a process-like
+                    # criterion can opt into ``"action"`` / ``"reasoning"`` /
+                    # ``"memory"`` so trainers and ORS adapters can tell a
+                    # dense signal from a terminal outcome (#396).
+                    space=criterion.space,
+                    granularity="step",
                 )
             )
 
         aggregate_score = self._aggregate(results, rubric.scoring)
+        if not is_valid_reward_number(aggregate_score):
+            if self._judge_errors_are_infra:
+                raise JudgeScoringError(
+                    "Judge aggregate reward must be finite and between 0.0 and 1.0"
+                )
+            logger.warning(
+                "Judge aggregate reward is invalid (%r); returning 0.0",
+                aggregate_score,
+            )
+            aggregate_score = 0.0
 
         # Write detailed results with the actual aggregated score
         self._write_details(rollout_dir, results, aggregate_score)
@@ -411,9 +444,15 @@ class LLMJudgeRewardFunc:
 
         raw = verdict.get("score", 0)
         try:
-            return criterion.normalize(float(raw))
+            raw_score = float(raw)
         except (TypeError, ValueError):
             return 0.0
+        if not math.isfinite(raw_score):
+            raise ValueError("Judge score must be finite")
+        score = criterion.normalize(raw_score)
+        if not is_valid_reward_number(score):
+            raise ValueError("Normalized judge score must be between 0.0 and 1.0")
+        return score
 
     @staticmethod
     def _aggregate(results: list[dict], scoring: ScoringConfig) -> float:
@@ -459,6 +498,7 @@ class LLMJudgeRewardFunc:
                         "results": results,
                     },
                     indent=2,
+                    allow_nan=False,
                     default=str,
                 )
             )

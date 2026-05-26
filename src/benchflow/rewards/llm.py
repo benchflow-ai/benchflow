@@ -29,6 +29,17 @@ class JudgeEnvironmentError(RuntimeError):
 # ------------------------------------------------------------------
 
 
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"Invalid JSON constant: {value}")
+
+
+def _loads_verdict_json(text: str) -> dict[str, Any]:
+    parsed = json.loads(text, parse_constant=_reject_json_constant)
+    if not isinstance(parsed, dict):
+        raise ValueError("Judge verdict must be a JSON object")
+    return parsed
+
+
 def parse_verdict(text: str) -> dict[str, Any]:
     """Extract a JSON verdict from an LLM response.
 
@@ -38,8 +49,8 @@ def parse_verdict(text: str) -> dict[str, Any]:
     match = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", text, re.DOTALL)
     if match:
         try:
-            return json.loads(match.group(1).strip())
-        except json.JSONDecodeError:
+            return _loads_verdict_json(match.group(1).strip())
+        except ValueError:
             pass
 
     # Balanced braces
@@ -53,8 +64,8 @@ def parse_verdict(text: str) -> dict[str, Any]:
                     depth -= 1
                 if depth == 0:
                     try:
-                        return json.loads(text[i : j + 1])
-                    except json.JSONDecodeError:
+                        return _loads_verdict_json(text[i : j + 1])
+                    except ValueError:
                         break
             break
 

@@ -19,6 +19,7 @@ The classes below pin each layer at the right altitude:
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -89,7 +90,10 @@ class TestEvalCreateRouting:
 
     def test_eval_create_normalizes_agent_alias(self, tmp_path: Path):
         """Guards ENG-86: eval create normalizes aliases before launch."""
+        from types import SimpleNamespace
+
         from benchflow.cli.main import eval_create
+        from benchflow.evaluation import Evaluation
 
         task = tmp_path / "task"
         task.mkdir()
@@ -97,18 +101,13 @@ class TestEvalCreateRouting:
         (task / "instruction.md").write_text("solve\n")
         captured = {}
 
-        async def fake_run(self, **kwargs):
-            from benchflow.models import RunResult
-
-            captured.update(kwargs)
-            return RunResult(
-                task_name="task",
-                agent_name=kwargs["agent"],
-                rewards={"reward": 1.0},
-                n_tool_calls=0,
+        async def fake_run(self):
+            captured["agent"] = self._config.agent
+            return SimpleNamespace(
+                passed=1, total=1, score=1.0, errored=0, verifier_errored=0
             )
 
-        with patch("benchflow.sdk.SDK.run", new=fake_run):
+        with patch.object(Evaluation, "run", new=fake_run):
             eval_create(
                 config_file=None,
                 tasks_dir=task,
@@ -133,7 +132,10 @@ class TestEvalCreateRouting:
 
     def test_eval_create_normalizes_sandbox_user_none(self, tmp_path: Path):
         """Guards ENG-91 P0 dogfood sandbox-user CLI regression."""
+        from types import SimpleNamespace
+
         from benchflow.cli.main import eval_create
+        from benchflow.evaluation import Evaluation
 
         task = tmp_path / "task"
         task.mkdir()
@@ -141,18 +143,13 @@ class TestEvalCreateRouting:
         (task / "instruction.md").write_text("solve\n")
         captured = {}
 
-        async def fake_run(self, **kwargs):
-            from benchflow.models import RunResult
-
-            captured.update(kwargs)
-            return RunResult(
-                task_name="task",
-                agent_name=kwargs["agent"],
-                rewards={"reward": 1.0},
-                n_tool_calls=0,
+        async def fake_run(self):
+            captured["sandbox_user"] = self._config.sandbox_user
+            return SimpleNamespace(
+                passed=1, total=1, score=1.0, errored=0, verifier_errored=0
             )
 
-        with patch("benchflow.sdk.SDK.run", new=fake_run):
+        with patch.object(Evaluation, "run", new=fake_run):
             eval_create(
                 config_file=None,
                 tasks_dir=task,
@@ -220,7 +217,10 @@ class TestEvalCreateRouting:
         self, tmp_path: Path, monkeypatch
     ):
         """Guards ENG-78: CLI runs inherit provider keys without --agent-env."""
+        from types import SimpleNamespace
+
         from benchflow.cli.main import eval_create
+        from benchflow.evaluation import Evaluation
 
         task = tmp_path / "task"
         task.mkdir()
@@ -229,24 +229,20 @@ class TestEvalCreateRouting:
         monkeypatch.setenv("GEMINI_API_KEY", "from-host")
         captured = {}
 
-        async def fake_run(self, **kwargs):
+        async def fake_run(self):
             from benchflow.agents.env import resolve_agent_env
-            from benchflow.models import RunResult
 
-            captured["kwargs"] = kwargs
+            captured["agent_env"] = dict(self._config.agent_env)
             captured["resolved_agent_env"] = resolve_agent_env(
-                kwargs["agent"],
-                kwargs["model"],
-                kwargs["agent_env"],
+                self._config.agent,
+                self._config.model,
+                self._config.agent_env,
             )
-            return RunResult(
-                task_name="task",
-                agent_name=kwargs["agent"],
-                rewards={"reward": 1.0},
-                n_tool_calls=0,
+            return SimpleNamespace(
+                passed=1, total=1, score=1.0, errored=0, verifier_errored=0
             )
 
-        with patch("benchflow.sdk.SDK.run", new=fake_run):
+        with patch.object(Evaluation, "run", new=fake_run):
             eval_create(
                 config_file=None,
                 tasks_dir=task,
@@ -267,7 +263,7 @@ class TestEvalCreateRouting:
                 agent_env=None,
             )
 
-        assert captured["kwargs"]["agent_env"] == {}
+        assert captured["agent_env"] == {}
         assert captured["resolved_agent_env"]["GEMINI_API_KEY"] == "from-host"
         assert captured["resolved_agent_env"]["GOOGLE_API_KEY"] == "from-host"
 
@@ -276,9 +272,10 @@ class TestEvalCreateRouting:
     ):
         """Guards release smokes: .env sandbox credentials reach provider SDKs."""
         import os
+        from types import SimpleNamespace
 
         from benchflow.cli.main import eval_create
-        from benchflow.models import RunResult
+        from benchflow.evaluation import Evaluation
 
         task = tmp_path / "task"
         task.mkdir()
@@ -291,20 +288,20 @@ class TestEvalCreateRouting:
             "MODAL_TOKEN_SECRET=modal-secret\n"
         )
         monkeypatch.setenv("BENCHFLOW_DOTENV_PATH", str(env_file))
+        monkeypatch.delenv("DAYTONA_API_KEY", raising=False)
+        monkeypatch.delenv("MODAL_TOKEN_ID", raising=False)
+        monkeypatch.delenv("MODAL_TOKEN_SECRET", raising=False)
         captured = {}
 
-        async def fake_run(self, **kwargs):
+        async def fake_run(self):
             captured["daytona"] = os.environ.get("DAYTONA_API_KEY")
             captured["modal_id"] = os.environ.get("MODAL_TOKEN_ID")
             captured["modal_secret"] = os.environ.get("MODAL_TOKEN_SECRET")
-            return RunResult(
-                task_name="task",
-                agent_name=kwargs["agent"],
-                rewards={"reward": 1.0},
-                n_tool_calls=0,
+            return SimpleNamespace(
+                passed=1, total=1, score=1.0, errored=0, verifier_errored=0
             )
 
-        with patch("benchflow.sdk.SDK.run", new=fake_run):
+        with patch.object(Evaluation, "run", new=fake_run):
             eval_create(
                 config_file=None,
                 tasks_dir=task,
@@ -333,22 +330,26 @@ class TestEvalCreateRouting:
 
     def test_eval_create_exits_nonzero_when_single_task_errors(self, tmp_path: Path):
         """Guards ENG-93 release smoke evidence against false-green CLI exits."""
+        from types import SimpleNamespace
+
         from benchflow.cli.main import app
-        from benchflow.models import RunResult
+        from benchflow.evaluation import Evaluation
 
         task = tmp_path / "task"
         task.mkdir()
         (task / "task.toml").write_text('schema_version = "1.1"\n')
         (task / "instruction.md").write_text("solve\n")
 
-        async def fake_run(self, **kwargs):
-            return RunResult(
-                task_name="task",
-                agent_name=kwargs["agent"],
-                error="Token not found",
+        async def fake_run(self):
+            return SimpleNamespace(
+                passed=0,
+                total=1,
+                score=0.0,
+                errored=1,
+                verifier_errored=0,
             )
 
-        with patch("benchflow.sdk.SDK.run", new=fake_run):
+        with patch.object(Evaluation, "run", new=fake_run):
             result = CliRunner().invoke(
                 app,
                 [
@@ -366,29 +367,32 @@ class TestEvalCreateRouting:
             )
 
         assert result.exit_code == 1
-        assert "Error:" in result.stdout
-        assert "Token not found" in result.stdout
+        assert "Score: 0/1" in result.stdout
 
     def test_eval_create_exits_nonzero_when_single_task_verifier_errors(
         self, tmp_path: Path
     ):
         """Guards ENG-93 release smoke evidence against hidden verifier errors."""
+        from types import SimpleNamespace
+
         from benchflow.cli.main import app
-        from benchflow.models import RunResult
+        from benchflow.evaluation import Evaluation
 
         task = tmp_path / "task"
         task.mkdir()
         (task / "task.toml").write_text('schema_version = "1.1"\n')
         (task / "instruction.md").write_text("solve\n")
 
-        async def fake_run(self, **kwargs):
-            return RunResult(
-                task_name="task",
-                agent_name=kwargs["agent"],
-                verifier_error="verifier crashed",
+        async def fake_run(self):
+            return SimpleNamespace(
+                passed=0,
+                total=1,
+                score=0.0,
+                errored=0,
+                verifier_errored=1,
             )
 
-        with patch("benchflow.sdk.SDK.run", new=fake_run):
+        with patch.object(Evaluation, "run", new=fake_run):
             result = CliRunner().invoke(
                 app,
                 [
@@ -406,8 +410,7 @@ class TestEvalCreateRouting:
             )
 
         assert result.exit_code == 1
-        assert "Verifier error:" in result.stdout
-        assert "verifier crashed" in result.stdout
+        assert "Score: 0/1" in result.stdout
 
     def test_eval_create_exits_nonzero_when_batch_has_harness_errors(
         self, tmp_path: Path
@@ -468,6 +471,259 @@ class TestEvalCreateRouting:
         assert result.exit_code == 0
         assert "1/2" in result.stdout
         assert "no summary" not in result.stdout
+
+
+class TestEvalCreateIncludeExclude:
+    """Guards ENG-159: --include and --exclude flags wire through to EvaluationConfig."""
+
+    def test_eval_create_include_via_tasks_dir(self, tmp_path: Path):
+        """Guards ENG-159: --include reaches EvaluationConfig for --tasks-dir batch runs."""
+        from types import SimpleNamespace
+
+        from benchflow.cli.main import eval_create
+        from benchflow.evaluation import Evaluation
+
+        tasks = tmp_path / "tasks"
+        tasks.mkdir()
+        (tasks / "task-a").mkdir()
+        (tasks / "task-a" / "task.toml").write_text('schema_version = "1.1"\n')
+        (tasks / "task-b").mkdir()
+        (tasks / "task-b" / "task.toml").write_text('schema_version = "1.1"\n')
+        captured = {}
+
+        async def fake_run(self):
+            captured["include"] = self._config.include_tasks
+            captured["exclude"] = self._config.exclude_tasks
+            return SimpleNamespace(passed=0, total=0, score=0.0, errored=0)
+
+        with patch.object(Evaluation, "run", new=fake_run):
+            eval_create(
+                config_file=None,
+                tasks_dir=tasks,
+                source_repo=None,
+                source_path=None,
+                source_ref=None,
+                agent="oracle",
+                model=None,
+                environment="docker",
+                concurrency=1,
+                jobs_dir=str(tmp_path / "jobs"),
+                sandbox_user="agent",
+                sandbox_setup_timeout=120,
+                skills_dir=None,
+                skill_mode="default",
+                skill_creator_dir=None,
+                self_gen_no_internet=False,
+                agent_env=None,
+                include=["task-a"],
+                exclude=["task-b"],
+            )
+
+        assert captured["include"] == {"task-a"}
+        assert captured["exclude"] == {"task-b"}
+
+    def test_eval_create_include_overrides_yaml(self, tmp_path: Path):
+        """Guards ENG-159: CLI --include overrides YAML include list."""
+        from types import SimpleNamespace
+
+        from benchflow.cli.main import eval_create
+        from benchflow.evaluation import Evaluation
+
+        tasks = tmp_path / "tasks"
+        tasks.mkdir()
+        config = tmp_path / "config.yaml"
+        config.write_text(
+            f"tasks_dir: {tasks}\nagent: oracle\ninclude:\n  - yaml-task\n"
+        )
+        captured = {}
+
+        async def fake_run(self):
+            captured["include"] = self._config.include_tasks
+            return SimpleNamespace(passed=0, total=0, score=0.0, errored=0)
+
+        with patch.object(Evaluation, "run", new=fake_run):
+            eval_create(config_file=config, include=["cli-task"])
+
+        assert captured["include"] == {"cli-task"}
+
+    def test_eval_create_no_include_preserves_yaml(self, tmp_path: Path):
+        """Guards ENG-159: without CLI --include, YAML include list is preserved."""
+        from types import SimpleNamespace
+
+        from benchflow.cli.main import eval_create
+        from benchflow.evaluation import Evaluation
+
+        tasks = tmp_path / "tasks"
+        tasks.mkdir()
+        config = tmp_path / "config.yaml"
+        config.write_text(
+            f"tasks_dir: {tasks}\nagent: oracle\ninclude:\n  - yaml-task\n"
+        )
+        captured = {}
+
+        async def fake_run(self):
+            captured["include"] = self._config.include_tasks
+            return SimpleNamespace(passed=0, total=0, score=0.0, errored=0)
+
+        with patch.object(Evaluation, "run", new=fake_run):
+            eval_create(config_file=config)
+
+        assert captured["include"] == {"yaml-task"}
+
+    def test_eval_create_cli_runner_include_flag(self, tmp_path: Path):
+        """Guards ENG-159: --include flag works via CliRunner end-to-end."""
+        from types import SimpleNamespace
+
+        from benchflow.cli.main import app
+        from benchflow.evaluation import Evaluation
+
+        tasks = tmp_path / "tasks"
+        tasks.mkdir()
+        (tasks / "task-a").mkdir()
+        (tasks / "task-a" / "task.toml").write_text('schema_version = "1.1"\n')
+        captured = {}
+
+        async def fake_run(self):
+            captured["include"] = self._config.include_tasks
+            captured["exclude"] = self._config.exclude_tasks
+            return SimpleNamespace(passed=0, total=0, score=0.0, errored=0)
+
+        with patch.object(Evaluation, "run", new=fake_run):
+            result = CliRunner().invoke(
+                app,
+                [
+                    "eval",
+                    "create",
+                    "--tasks-dir",
+                    str(tasks),
+                    "--include",
+                    "task-a",
+                    "--exclude",
+                    "task-b",
+                ],
+            )
+
+        assert result.exit_code == 0
+        assert captured["include"] == {"task-a"}
+        assert captured["exclude"] == {"task-b"}
+
+
+class TestVerifierNonzeroExitRewardAcceptance:
+    """Guards ENG-150: verifiers exiting nonzero after reward 0 must be
+    classified as 'failed' (honest model failure), not 'verifier_errored'."""
+
+    @pytest.mark.asyncio
+    async def test_nonzero_exit_with_reward_zero_classified_as_failed(
+        self, tmp_path: Path
+    ):
+        """Guards ENG-150: rc!=0 + reward=0.0 → 'failed', not 'verifier_errored'."""
+        from benchflow._utils.scoring import classify_result
+
+        outcome = classify_result(reward=0.0, error=None, verifier_error=None)
+        assert outcome == "failed"
+
+    @pytest.mark.asyncio
+    async def test_nonzero_exit_reward_zero_accepted_by_verifier(self, tmp_path: Path):
+        """Guards ENG-150: Verifier accepts reward file when script exits nonzero."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from benchflow.task import RolloutPaths, Verifier
+        from benchflow.task.config import TaskConfig
+
+        task_dir = tmp_path / "task"
+        task_dir.mkdir()
+        tests_dir = task_dir / "tests"
+        tests_dir.mkdir()
+        test_sh = tests_dir / "test.sh"
+        test_sh.write_text("#!/bin/bash\nexit 1\n")
+
+        task = MagicMock()
+        task.config = TaskConfig.model_validate_toml('version = "1.0"\n[verifier]\n')
+        task.paths.tests_dir = tests_dir
+        task.paths.test_path = test_sh
+
+        sandbox = MagicMock()
+        sandbox.upload_dir = AsyncMock()
+        sandbox.is_mounted = True
+
+        rollout_paths = RolloutPaths(tmp_path / "rollout")
+        rollout_paths.mkdir()
+
+        async def exec_writes_reward_zero(
+            *_args: object, **_kwargs: object
+        ) -> MagicMock:
+            if sandbox.exec.await_count == 1:
+                return MagicMock(return_code=0, stdout="")
+            rollout_paths.reward_text_path.write_text("0.0")
+            return MagicMock(return_code=1, stdout="tests failed")
+
+        sandbox.exec = AsyncMock(side_effect=exec_writes_reward_zero)
+
+        result = await Verifier(task, rollout_paths, sandbox).verify()
+        assert result.rewards is not None
+        assert result.rewards["reward"] == 0.0
+
+    @pytest.mark.asyncio
+    async def test_nonzero_exit_reward_json_zero_accepted(self, tmp_path: Path):
+        """Guards ENG-150: reward.json with reward=0 accepted despite rc!=0."""
+        import json
+        from unittest.mock import AsyncMock, MagicMock
+
+        from benchflow.task import RolloutPaths, Verifier
+        from benchflow.task.config import TaskConfig
+
+        task_dir = tmp_path / "task"
+        task_dir.mkdir()
+        tests_dir = task_dir / "tests"
+        tests_dir.mkdir()
+        test_sh = tests_dir / "test.sh"
+        test_sh.write_text("#!/bin/bash\nexit 1\n")
+
+        task = MagicMock()
+        task.config = TaskConfig.model_validate_toml('version = "1.0"\n[verifier]\n')
+        task.paths.tests_dir = tests_dir
+        task.paths.test_path = test_sh
+
+        sandbox = MagicMock()
+        sandbox.upload_dir = AsyncMock()
+        sandbox.is_mounted = True
+
+        rollout_paths = RolloutPaths(tmp_path / "rollout")
+        rollout_paths.mkdir()
+
+        async def exec_writes_reward_json(
+            *_args: object, **_kwargs: object
+        ) -> MagicMock:
+            if sandbox.exec.await_count == 1:
+                return MagicMock(return_code=0, stdout="")
+            rollout_paths.reward_json_path.write_text(json.dumps({"reward": 0.0}))
+            return MagicMock(return_code=1, stdout="tests failed")
+
+        sandbox.exec = AsyncMock(side_effect=exec_writes_reward_json)
+
+        result = await Verifier(task, rollout_paths, sandbox).verify()
+        assert result.rewards is not None
+        assert result.rewards["reward"] == 0.0
+
+    def test_end_to_end_scoring_nonzero_verifier_reward_zero(self):
+        """Guards ENG-150: full classify_score_outcome pipeline gives 'failed'."""
+        from benchflow._utils.scoring import classify_score_outcome
+
+        result = {
+            "rewards": {"reward": 0.0},
+            "error": None,
+            "verifier_error": None,
+        }
+        assert classify_score_outcome(result) == "failed"
+
+    def test_nonzero_exit_no_reward_still_verifier_error(self, tmp_path: Path):
+        """Guards ENG-150 doesn't regress: rc!=0 with NO reward file is still an error."""
+        from benchflow._utils.scoring import classify_result
+
+        outcome = classify_result(
+            reward=None, error=None, verifier_error="verifier crashed: rc=7"
+        )
+        assert outcome == "verifier_errored"
 
 
 class TestEffectiveModel:
@@ -628,3 +884,128 @@ class TestEvalCreateOracleCLI:
         assert cfg.primary_model is None
         # Layer 1: chokepoint did not inject provider env or raise.
         assert "BENCHFLOW_PROVIDER_MODEL" not in captured["agent_env"]
+
+
+# ── ENG-149: idle timeout diagnostics in result.json ──
+
+
+class TestIdleTimeoutResultDiagnostics:
+    """Guards ENG-149: result.json must record structured idle timeout diagnostics
+    so check_results/dashboard can identify invalidated measurements."""
+
+    def test_error_category_persisted_for_idle_timeout(self, tmp_path):
+        """Guards ENG-149: result.json contains error_category='idle_timeout'."""
+        from benchflow._utils.scoring import classify_error
+        from benchflow.diagnostics import IdleTimeoutDiagnostic, RolloutDiagnostics
+        from benchflow.rollout import _build_rollout_result
+
+        error = "Agent idle for 600s with no new tool call, message, or thought (last activity 602s ago, 3 tool calls so far)"
+        diag = IdleTimeoutDiagnostic(
+            idle_timeout_sec=600,
+            idle_duration_sec=602,
+            wall_clock_elapsed_sec=605,
+            n_tool_calls=3,
+            n_message_chunks=0,
+            n_thought_chunks=1,
+            last_activity_at="2026-05-23T16:00:00+00:00",
+        )
+        diagnostics = RolloutDiagnostics()
+        diagnostics.set(diag)
+        from datetime import datetime
+
+        result = _build_rollout_result(
+            tmp_path,
+            task_name="court-form-filling",
+            rollout_name="trial-0",
+            agent="gemini",
+            agent_name="gemini-agent",
+            model="google/gemini-3.1-flash-lite-preview",
+            n_tool_calls=3,
+            prompts=["solve"],
+            error=error,
+            verifier_error=None,
+            trajectory=[],
+            partial_trajectory=True,
+            rewards=None,
+            started_at=datetime.now(),
+            timing={},
+            diagnostics=diagnostics,
+        )
+        assert result.error == error
+        result_json = json.loads((tmp_path / "result.json").read_text())
+        assert result_json["error_category"] == "idle_timeout"
+        assert result_json["idle_timeout_info"] == diag.to_dict()
+        assert result_json["idle_timeout_info"]["n_tool_calls"] == 3
+        assert result_json["idle_timeout_info"]["idle_duration_sec"] == 602
+        # Also verify classify_error agrees
+        assert classify_error(error) == "idle_timeout"
+
+    def test_error_category_persisted_for_non_idle_errors(self, tmp_path):
+        """Guards ENG-149: error_category is set for all error types."""
+        from datetime import datetime
+
+        from benchflow.rollout import _build_rollout_result
+
+        _build_rollout_result(
+            tmp_path,
+            task_name="some-task",
+            rollout_name="trial-0",
+            agent="gemini",
+            agent_name="gemini-agent",
+            model="google/gemini-3.1-flash-lite-preview",
+            n_tool_calls=0,
+            prompts=["solve"],
+            error="install failed: npm ERR!",
+            verifier_error=None,
+            trajectory=[],
+            partial_trajectory=False,
+            rewards=None,
+            started_at=datetime.now(),
+            timing={},
+        )
+        result_json = json.loads((tmp_path / "result.json").read_text())
+        assert result_json["error_category"] == "install_failure"
+        assert result_json["idle_timeout_info"] is None
+
+    def test_error_category_null_on_success(self, tmp_path):
+        """Guards ENG-149: error_category is null when no error."""
+        from datetime import datetime
+
+        from benchflow.rollout import _build_rollout_result
+
+        _build_rollout_result(
+            tmp_path,
+            task_name="passing-task",
+            rollout_name="trial-0",
+            agent="gemini",
+            agent_name="gemini-agent",
+            model="google/gemini-3.1-flash-lite-preview",
+            n_tool_calls=5,
+            prompts=["solve"],
+            error=None,
+            verifier_error=None,
+            trajectory=[],
+            partial_trajectory=False,
+            rewards={"reward": 1.0},
+            started_at=datetime.now(),
+            timing={},
+        )
+        result_json = json.loads((tmp_path / "result.json").read_text())
+        assert result_json["error_category"] is None
+        assert result_json["idle_timeout_info"] is None
+
+    def test_classify_error_categories_comprehensive(self):
+        """Guards ENG-149: all expected error categories are classified."""
+        from benchflow._utils.scoring import classify_error
+
+        assert (
+            classify_error("Agent idle for 600s with no new tool call")
+            == "idle_timeout"
+        )
+        assert classify_error("install failed: pip error") == "install_failure"
+        assert classify_error("Agent closed stdout") == "pipe_closed"
+        assert classify_error("ACP error: session closed") == "acp_error"
+        assert classify_error("prompt exceeded wall-clock budget 300s") == "timeout"
+        assert classify_error("connection lost to sandbox") == "infra_failure"
+        assert classify_error(None) is None
+        assert classify_error("") is None

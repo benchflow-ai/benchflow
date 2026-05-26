@@ -92,6 +92,36 @@ def _skill_link_cmd(
     return f"mkdir -p {parent} && {chown}rm -rf {q_dest} && ln -sfn {q_source} {q_dest}"
 
 
+def _owner_from_home(home: str) -> str | None:
+    """Infer the sandbox user for normal /home/<user> agent homes."""
+    parts = Path(home).parts
+    if len(parts) == 3 and parts[0] == "/" and parts[1] == "home":
+        return parts[2]
+    return None
+
+
+def _policy_home_dirs(agent: str, agent_cfg: AgentConfig) -> list[str]:
+    """Agent home dirs a no-web setup command may create."""
+    dirs = set(agent_cfg.home_dirs)
+    for owned_path in agent_cfg.disallow_web_tools_owned_paths:
+        if not owned_path.startswith("$HOME/"):
+            raise ValueError(
+                f"disallow_web_tools_owned_paths entry {owned_path!r} must start with $HOME/"
+            )
+        rel = owned_path.removeprefix("$HOME/").rstrip("/")
+        if rel:
+            dirs.add(rel)
+    for skill_path in agent_cfg.skill_paths:
+        if skill_path.startswith("$HOME/"):
+            rel = skill_path.removeprefix("$HOME/")
+            top = rel.split("/", 1)[0]
+            if top:
+                dirs.add(top)
+    if not dirs:
+        dirs.add(f".{agent}")
+    return sorted(dirs)
+
+
 async def _link_skill_paths(
     env,
     source: str,
@@ -195,6 +225,18 @@ async def apply_web_tool_policy(
         f"export BENCHFLOW_AGENT_HOME={shlex.quote(home)}; "
         f"{agent_cfg.disallow_web_tools_setup_cmd}"
     )
+    owner = _owner_from_home(home)
+    if owner:
+        q_owner = shlex.quote(owner)
+        chowns = []
+        for dirname in _policy_home_dirs(agent, agent_cfg):
+            path = f"{home.rstrip('/')}/{dirname}"
+            q_path = shlex.quote(path)
+            chowns.append(
+                f"if [ -e {q_path} ]; then chown -R {q_owner}:{q_owner} {q_path}; fi"
+            )
+        if chowns:
+            cmd = f"{cmd} && {' && '.join(chowns)}"
     result = await env.exec(cmd, timeout_sec=15)
     if result.return_code != 0:
         stdout = (getattr(result, "stdout", "") or "").strip()

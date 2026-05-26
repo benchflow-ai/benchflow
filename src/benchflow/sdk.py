@@ -12,6 +12,9 @@ from pathlib import Path
 from typing import Any
 
 from benchflow._types import Scene
+from benchflow.contracts import default_rollout_planes
+from benchflow.diagnostics import VerifierTimeoutDiagnostic
+from benchflow.environment.manifest import EnvironmentManifest
 from benchflow.models import RolloutResult, TrajectorySource
 from benchflow.rollout import (
     _build_rollout_result,
@@ -82,7 +85,7 @@ class SDK:
         rollout_name: str,
         agent: str,
         agent_name: str,
-        model: str,
+        model: str | None,
         n_tool_calls: int,
         prompts: list[str],
         error: str | None,
@@ -94,6 +97,7 @@ class SDK:
         started_at: datetime,
         timing: dict[str, float],
         scenes: list[Scene] | None = None,
+        source_provenance: dict[str, Any] | None = None,
     ) -> RolloutResult:
         return _build_rollout_result(
             rollout_dir,
@@ -113,6 +117,7 @@ class SDK:
             started_at=started_at,
             timing=timing,
             scenes=scenes,
+            source_provenance=source_provenance,
         )
 
     async def _start_env_and_upload(
@@ -137,12 +142,13 @@ class SDK:
         timing: dict,
         sandbox_user: str | None = None,
         workspace: str | None = None,
-    ) -> tuple[dict | None, str | None]:
+    ) -> tuple[dict | None, str | None, VerifierTimeoutDiagnostic | None]:
         return await _verify_rollout(
             env,
             task,
             rollout_paths,
             timing,
+            default_rollout_planes(),
             sandbox_user=sandbox_user,
             workspace=workspace,
         )
@@ -158,7 +164,10 @@ class SDK:
         job_name: str | None = None,
         rollout_name: str | None = None,
         jobs_dir: str | Path = "jobs",
+        concurrency: int = 1,
+        agent_idle_timeout: int | None = 600,
         environment: str = "docker",
+        environment_manifest: EnvironmentManifest | None = None,
         skills_dir: str | Path | None = None,
         sandbox_user: str | None = "agent",
         sandbox_locked_paths: list[str] | None = None,
@@ -168,6 +177,7 @@ class SDK:
         skill_mode: str = "default",
         skill_creator_dir: str | Path | None = None,
         self_gen_no_internet: bool = False,
+        source_provenance: dict[str, Any] | None = None,
     ) -> RolloutResult:
         """Run a task — delegates to :func:`benchflow.run`."""
         from benchflow.rollout import RolloutConfig
@@ -182,7 +192,10 @@ class SDK:
             job_name=job_name,
             rollout_name=rollout_name,
             jobs_dir=jobs_dir,
+            concurrency=concurrency,
+            agent_idle_timeout=agent_idle_timeout,
             environment=environment,
+            environment_manifest=environment_manifest,
             skills_dir=skills_dir,
             sandbox_user=sandbox_user,
             sandbox_locked_paths=sandbox_locked_paths,
@@ -192,5 +205,6 @@ class SDK:
             skill_mode=skill_mode,
             skill_creator_dir=skill_creator_dir,
             self_gen_no_internet=self_gen_no_internet,
+            source_provenance=source_provenance,
         )
         return await run(config)  # type: ignore[return-value]  # ty: ignore[invalid-return-type]

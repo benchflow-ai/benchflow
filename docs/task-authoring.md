@@ -55,11 +55,17 @@ env             = { OPENAI_API_KEY = "${OPENAI_API_KEY}" }  # host vars to injec
 
 ## Multi-container tasks
 
-A task may ship an `environment/docker-compose.yaml` alongside (or instead of)
-the `Dockerfile`. The agent always runs in the `main` service; any additional
+A task may ship an `environment/docker-compose.yaml` alongside the
+`Dockerfile`. The agent always runs in the `main` service; any additional
 services you declare become sibling containers on the same Docker network.
 This supports vulhub-style CVE tasks where the agent attacks a separate target
 container over the network.
+
+> `environment/Dockerfile` is always required — `bench tasks check` rejects
+> a task that ships only a `docker-compose.yaml`. If your `main` service
+> uses a prebuilt `image:` and needs no build context, still include a
+> minimal `Dockerfile` (e.g. `FROM <same-image>`) so structural validation
+> and other tooling agree on the task package shape.
 
 ```yaml
 # environment/docker-compose.yaml
@@ -157,7 +163,7 @@ result = await bf.run(config)
 
 After the agent finishes, the BenchFlow runtime copies `tests/` to `/tests/` and runs `/tests/test.sh`. The working directory is the Dockerfile's `WORKDIR` (typically `/app/` in the example Dockerfile below).
 
-**Your script must write a single float (0.0–1.0) to `/logs/verifier/reward.txt`.**
+**Your script must write a single float (0.0–1.0) to `/logs/verifier/reward.txt`.** After writing the reward, exit `0`; a nonzero `test.sh` exit is treated as verifier infrastructure failure, not a scored task failure.
 
 | Path | Contents |
 |---|---|
@@ -245,6 +251,10 @@ bench eval create \
   --skills-dir tasks/my-task/environment/skills \
   --agent-env BENCHFLOW_SKILL_NUDGE=name
 ```
+
+Task-local skills are mounted through the selected agent's native skill paths.
+See [Architecture: skill loading](./architecture.md#skill-loading) for the
+canonical loading semantics and nudge modes.
 
 `bench tasks generate` converts agent traces (Claude Code sessions, opentraces records, or HuggingFace datasets) into task directories with `task.toml`, `instruction.md`, and a file-existence `test.sh`. Use `--dry-run` to preview traces before generating. See [CLI reference](./reference/cli.md#bench-tasks-generate) for all flags.
 

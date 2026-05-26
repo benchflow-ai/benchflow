@@ -8,7 +8,7 @@ jobs_dir: jobs/integration/codex-acp
 agent: codex-acp
 model: gpt-5.4-nano
 environment: daytona
-concurrency: 30
+concurrency: 64
 max_retries: 1
 
 include:

@@ -35,19 +35,19 @@ scenes:
           You are simulating a user who needs help with the task in /app/instruction.md.
           You have access to the solution in /solution/solve.sh.
           Give the assistant a high-level description of what you want. Do NOT reveal implementation details yet.
-          Write your message to /app/.outbox/assistant.json.
+          Write your guidance to /app/user-guidance.md.
       - role: assistant
       - role: user
         prompt: |
           Read the assistant's work in /app/. Compare against /solution/solve.sh.
           If incomplete, provide a targeted hint (one specific detail from the solution).
-          Write to /app/.outbox/assistant.json.
+          Update /app/user-guidance.md with the targeted hint.
       - role: assistant
         prompt: "The user provided additional guidance. Read it and continue working."
       - role: user
         prompt: |
           Final check. Read /app/ and compare to /solution/. If correct, write
-          {"to": "assistant", "content": "LGTM"} to /app/.outbox/assistant.json.
+          LGTM to /app/user-guidance.md.
           If not, give one final hint.
       - role: assistant
         prompt: "Address the user's latest feedback and finalize your solution."
@@ -82,7 +82,7 @@ result = await bf.run(config)
 ### Why this design
 
 - One sandbox, one ACP session — no sidecar container, no Docker Compose networking, no extra server to maintain.
-- Both agents share the sandbox filesystem and communicate through `/app/.outbox/{recipient}.json`.
+- Roles share the sandbox filesystem; any handoff is explicit task state, such as a file named in the next prompt. BenchFlow does not inject messages between turns.
 - The user agent is a real LLM with full tool access — it can read files, check outputs, and give nuanced feedback, not just templated responses.
 - Same task folder works for single-turn (baseline) and interactive (with user) via different YAML configs.
 
@@ -120,10 +120,10 @@ scenes:
         prompt: |
           You are an expert code reviewer. Read the task at /app/instruction.md
           and the coder's work in /app/. Write specific, actionable feedback.
-          IMPORTANT: Do NOT modify any files in /app/ except /app/.outbox/coder.json.
-          Write: {"to": "coder", "content": "Your specific feedback here."}
+          IMPORTANT: Do NOT modify any files in /app/ except /app/review-feedback.md.
+          Write your specific feedback to /app/review-feedback.md.
       - role: coder
-        prompt: "Read the reviewer's feedback and revise your solution."
+        prompt: "Read /app/review-feedback.md and revise your solution."
 ```
 
 ### Python (with MCP reviewer sidecar)
@@ -133,7 +133,7 @@ For stronger isolation, use the MCP reviewer server pattern. The reviewer runs a
 ```python
 from pathlib import Path
 
-from benchflow.mcp.hooks import mcp_reviewer_hook
+from benchflow.experimental.mcp.hooks import mcp_reviewer_hook
 from benchflow.rollout import RolloutConfig, Scene, Role, Turn
 
 config = RolloutConfig(
@@ -152,7 +152,7 @@ config = RolloutConfig(
 result = await bf.run(config)
 ```
 
-The MCP reviewer server (`benchflow.mcp.reviewer_server`) runs as a background process in the sandbox. It exposes `review_code` and `get_review_status` tools via streamable-http. The reviewer LLM reads the code but has **no ability to write files** -- all it can do is return feedback text.
+The MCP reviewer server (`benchflow.experimental.mcp.reviewer_server`) runs as a background process in the sandbox. It exposes `review_code` and `get_review_status` tools via streamable-http. The reviewer LLM reads the code but has **no ability to write files** -- all it can do is return feedback text.
 
 ### Results
 
@@ -336,9 +336,9 @@ scenes:
           You are reviewing code written by a different agent.
           Read /app/instruction.md for the task requirements.
           Examine the coder's work in /app/. Write specific feedback
-          to /app/.outbox/coder.json: {"to": "coder", "content": "..."}
+          to /app/review-feedback.md
       - role: coder
-        prompt: "Read the reviewer's feedback and revise your solution."
+        prompt: "Read /app/review-feedback.md and revise your solution."
 ```
 
 ### Python
@@ -440,6 +440,5 @@ tasks/schedule-meeting-from-email/
 └── tests/
     └── test.sh             # Verify: check gcal.db has the new event
 ```
-
 
 

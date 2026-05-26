@@ -9,6 +9,7 @@ from io import BytesIO
 import httpx
 import pytest
 
+import benchflow.providers.bedrock_proxy as bedrock_proxy
 from benchflow.providers.bedrock_proxy import BedrockProxyServer
 
 
@@ -146,6 +147,21 @@ class FakeUnsupportedCountTokensBedrockClient(FakeBedrockClient):
         )
 
 
+class EndpointConnectionError(Exception):
+    pass
+
+
+class FakeFlakyBedrockClient(FakeBedrockClient):
+    def __init__(self) -> None:
+        self.converse_calls = 0
+
+    def converse(self, **kwargs):
+        self.converse_calls += 1
+        if self.converse_calls == 1:
+            raise EndpointConnectionError("temporary dns failure")
+        return super().converse(**kwargs)
+
+
 class FakeBedrockHTTPClient:
     async def post(self, url, *, content, headers):
         assert headers["authorization"] == "Bearer bedrock-token"
@@ -254,6 +270,44 @@ async def test_bedrock_proxy_responses_route():
             body = resp.json()
             assert body["output_text"] == "hello from codex"
             assert body["usage"]["total_tokens"] == 11
+    finally:
+        task.cancel()
+        await server.stop()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+
+@pytest.mark.asyncio
+async def test_bedrock_proxy_retries_transient_runtime_transport_errors(monkeypatch):
+    """Guards v0.5-integration@e55219d against transient Bedrock DNS failures invalidating trials."""
+    monkeypatch.setattr(bedrock_proxy, "_BEDROCK_RUNTIME_RETRY_DELAYS_SEC", (0, 0, 0))
+    fake_client = FakeFlakyBedrockClient()
+    server = BedrockProxyServer(
+        host="127.0.0.1",
+        port=0,
+        client=fake_client,
+        backend_model="anthropic.claude-haiku-4-5-20251001-v1:0",
+        frontend_model="anthropic.claude-haiku-4-5-20251001-v1:0",
+    )
+    await server.start()
+    task = asyncio.create_task(server.serve_forever())
+    try:
+        async with httpx.AsyncClient(
+            base_url=f"http://127.0.0.1:{server.port}"
+        ) as client:
+            resp = await client.post(
+                "/v1/messages",
+                json={
+                    "model": "anthropic.claude-haiku-4-5-20251001-v1:0",
+                    "messages": [
+                        {"role": "user", "content": [{"type": "text", "text": "hi"}]}
+                    ],
+                    "max_tokens": 32,
+                },
+            )
+            assert resp.status_code == 200
+            assert resp.json()["content"][0]["text"] == "hello from claude"
+            assert fake_client.converse_calls == 2
     finally:
         task.cancel()
         await server.stop()

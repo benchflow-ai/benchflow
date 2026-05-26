@@ -11,6 +11,7 @@ import pytest
 
 from benchflow.rollout import Role, Rollout, RolloutConfig, Scene, Turn
 from benchflow.sandbox.user import BaseUser, FunctionUser, PassthroughUser, RoundResult
+from benchflow.task.verifier import VerifierResult
 
 # ── Unit tests for User types ──
 
@@ -374,7 +375,7 @@ class TestSoftVerify:
     async def test_soft_verify_success(self):
         trial = _make_user_trial(PassthroughUser())
 
-        mock_result = type("VR", (), {"rewards": {"exact_match": 1.0}})()
+        mock_result = type("VR", (), {"rewards": {"reward": 1.0, "exact_match": 1.0}})()
 
         with (
             patch("benchflow.task.Verifier") as MockVerifier,
@@ -386,14 +387,50 @@ class TestSoftVerify:
 
             rewards, _output, error = await trial.soft_verify()
 
-        assert rewards == {"exact_match": 1.0}
+        assert rewards == {"reward": 1.0, "exact_match": 1.0}
         assert error is None
+
+    @pytest.mark.asyncio
+    async def test_soft_verify_returning_no_rewards_is_verifier_error(self):
+        trial = _make_user_trial(PassthroughUser())
+
+        with (
+            patch("benchflow.task.Verifier") as MockVerifier,
+            patch("benchflow.sandbox.lockdown._read_hardening_config", return_value={}),
+            patch("benchflow.sandbox.lockdown._build_cleanup_cmd", return_value="true"),
+        ):
+            mock_instance = MockVerifier.return_value
+            mock_instance.verify = AsyncMock(return_value=VerifierResult(rewards=None))
+
+            rewards, _output, error = await trial.soft_verify()
+
+        assert rewards is None
+        assert "soft verifier crashed" in error
+        assert "verifier returned no rewards" in error
+
+    @pytest.mark.asyncio
+    async def test_soft_verify_returning_noncanonical_rewards_is_verifier_error(self):
+        trial = _make_user_trial(PassthroughUser())
+
+        with (
+            patch("benchflow.task.Verifier") as MockVerifier,
+            patch("benchflow.sandbox.lockdown._read_hardening_config", return_value={}),
+            patch("benchflow.sandbox.lockdown._build_cleanup_cmd", return_value="true"),
+        ):
+            mock_instance = MockVerifier.return_value
+            mock_instance.verify = AsyncMock(return_value=VerifierResult(rewards={}))
+
+            rewards, _output, error = await trial.soft_verify()
+
+        assert rewards is None
+        assert "soft verifier crashed" in error
+        assert "without numeric 'reward'" in error
 
     @pytest.mark.asyncio
     async def test_soft_verify_runs_cleanup_cmd(self):
         trial = _make_user_trial(PassthroughUser())
 
-        mock_result = type("VR", (), {"rewards": {}})()
+        mock_result = type("VR", (), {"rewards": {"reward": 0.0}})()
 
         with (
             patch("benchflow.task.verifier.Verifier") as MockVerifier,
@@ -410,3 +447,19 @@ class TestSoftVerify:
         # Verify cleanup command was executed
         exec_log = trial._env._exec_log
         assert any("cleanup_sentinel" in cmd for cmd in exec_log)
+        assert any("find /logs/verifier -mindepth 1" in cmd for cmd in exec_log)
+        assert any(cmd == "mkdir -p /app" for cmd in exec_log)
+
+    @pytest.mark.asyncio
+    async def test_soft_verify_reports_cleanup_failure(self):
+        trial = _make_user_trial(PassthroughUser())
+        trial._env.exec = AsyncMock(
+            return_value=FakeExecResult(stderr="Device or resource busy", return_code=1)
+        )
+
+        rewards, output, error = await trial.soft_verify()
+
+        assert rewards is None
+        assert output is None
+        assert "Soft verifier setup failed" in error
+        assert "Device or resource busy" in error

@@ -42,6 +42,9 @@ _CUSTOM_OPENAI_ENDPOINT_KEYS = frozenset(
 _AZURE_RESOURCE_ENV = "AZURE_RESOURCE"
 _AZURE_ENDPOINT_ENV = "AZURE_API_ENDPOINT"
 _AZURE_HOST_SUFFIXES = (".openai.azure.com", ".services.ai.azure.com")
+_CODEX_CONFIG_ENV = "CODEX_CONFIG"
+_CODEX_MODEL_PROVIDER_ENV = "MODEL_PROVIDER"
+_CODEX_PROVIDER_ID_PREFIX = "benchflow-"
 
 
 def _derive_azure_resource(agent_env: dict[str, str]) -> None:
@@ -126,6 +129,10 @@ def _normalize_openhands_model(model: str) -> str:
     if model.startswith("google/gemini"):
         return f"gemini/{model.split('/', 1)[1]}"
     stripped = strip_provider_prefix(model)
+    if model.startswith("aws-bedrock/") and stripped.startswith(
+        ("anthropic.", "us.anthropic.", "global.anthropic.")
+    ):
+        return f"anthropic/{stripped}"
     lower = model.lower()
     if is_vertex_model(model) and "gemini" in lower:
         return f"vertex_ai/{stripped}"
@@ -184,9 +191,11 @@ def auto_inherit_env(
         # provider URL resolution).
         if value and value.strip():
             agent_env.setdefault(key, value)
-    # Mirror GEMINI_API_KEY as GOOGLE_API_KEY (some agents expect one or the other)
+    # Mirror GEMINI_API_KEY / GOOGLE_API_KEY in both directions (#342).
     if "GEMINI_API_KEY" in agent_env and "GOOGLE_API_KEY" not in agent_env:
         agent_env["GOOGLE_API_KEY"] = agent_env["GEMINI_API_KEY"]
+    if "GOOGLE_API_KEY" in agent_env and "GEMINI_API_KEY" not in agent_env:
+        agent_env["GEMINI_API_KEY"] = agent_env["GOOGLE_API_KEY"]
     # Mirror GEMINI_API_KEY as GOOGLE_GENERATIVE_AI_API_KEY (opencode/models.dev convention)
     if (
         "GEMINI_API_KEY" in agent_env
@@ -436,6 +445,64 @@ def _shares_auth_context(required_key: str | None, candidate_key: str | None) ->
     )
 
 
+def _codex_provider_id(agent_env: dict[str, str]) -> str:
+    provider_name = agent_env.get("BENCHFLOW_PROVIDER_NAME", "openai-compatible")
+    safe_name = "".join(
+        char if char.isalnum() or char in {"-", "_"} else "-"
+        for char in provider_name.lower()
+    ).strip("-")
+    return f"{_CODEX_PROVIDER_ID_PREFIX}{safe_name or 'provider'}"
+
+
+def _load_codex_config(agent_env: dict[str, str]) -> dict:
+    raw_config = agent_env.get(_CODEX_CONFIG_ENV)
+    if not raw_config:
+        return {}
+    try:
+        config = json.loads(raw_config)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{_CODEX_CONFIG_ENV} must be valid JSON") from exc
+    if not isinstance(config, dict):
+        raise ValueError(f"{_CODEX_CONFIG_ENV} must decode to a JSON object")
+    return config
+
+
+def _configure_codex_custom_provider(
+    agent: str,
+    model: str | None,
+    agent_env: dict[str, str],
+) -> None:
+    """Expose BenchFlow provider routing through Codex's native config model."""
+    if agent != "codex-acp" or not model:
+        return
+
+    base_url = agent_env.get("BENCHFLOW_PROVIDER_BASE_URL") or agent_env.get(
+        "OPENAI_BASE_URL"
+    )
+    provider_model = agent_env.get("BENCHFLOW_PROVIDER_MODEL")
+    if not base_url or not provider_model:
+        return
+
+    provider_id = _codex_provider_id(agent_env)
+    config = _load_codex_config(agent_env)
+    providers = config.get("model_providers")
+    providers = {} if not isinstance(providers, dict) else dict(providers)
+
+    providers[provider_id] = {
+        "name": agent_env.get("BENCHFLOW_PROVIDER_NAME", "BenchFlow provider"),
+        "base_url": base_url,
+        "env_key": "OPENAI_API_KEY",
+        "wire_api": "responses",
+        "supports_websockets": False,
+    }
+    config["model_providers"] = providers
+    config["model_provider"] = provider_id
+    config["model"] = provider_model
+
+    agent_env[_CODEX_MODEL_PROVIDER_ENV] = provider_id
+    agent_env[_CODEX_CONFIG_ENV] = json.dumps(config, separators=(",", ":"))
+
+
 def resolve_agent_env(
     agent: str,
     model: str | None,
@@ -532,6 +599,7 @@ def resolve_agent_env(
                     "Pass it explicitly (for example via --agent-env/agent_env) "
                     "or define it in .env."
                 )
+        _configure_codex_custom_provider(agent, model, agent_env)
     else:
         # No model specified — still check subscription auth for required env vars
         if agent_cfg:

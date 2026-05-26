@@ -6,6 +6,12 @@ The core matrix runs 9 SkillsBench tasks across all 8 registered agents on Dayto
 
 ## Prerequisites
 
+Install Daytona sandbox support for local integration runs:
+
+```bash
+uv sync --extra dev --extra sandbox-daytona --locked
+```
+
 | Variable | Required for |
 |---|---|
 | `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) | gemini, pi-acp, openclaw, opencode, openhands |
@@ -29,12 +35,15 @@ tests/integration/run.sh gemini pi-acp claude-agent-acp
 
 # Review results from a previous run (no API calls)
 tests/integration/run.sh --check-only
+
+# Large validation override
+BENCHFLOW_INTEGRATION_CONCURRENCY=100 tests/integration/run.sh gemini
 ```
 
 ## What It Does
 
 1. **Resolves tasks** — downloads the full SkillsBench task set, then creates a symlinked subset of 9 selected tasks.
-2. **Launches agents in parallel** — each agent is started as a background process running `bench eval create` with concurrency=30.
+2. **Launches agents in parallel** — each agent is started as a background process running `bench eval create` with concurrency=64 by default. Set `BENCHFLOW_INTEGRATION_CONCURRENCY=100` for the large post-migration validation run.
 3. **Waits and reports** — as each agent finishes, prints its score line. After all complete, runs `check_results.py` to validate output schema and print the results table.
 
 ## Release Readiness Coverage
@@ -134,6 +143,45 @@ Hosted-env evidence writes `hosted-env-evidence.json` plus Harbor registry JSONL
 inventory under `dogfood/2026-05-19-release-gate/hosted-envs/` by default.
 OpenReward and PrimeIntellect remain hub-metadata checks until account/credited
 hosted eval support is available; Harbor has a public registry inventory path.
+
+SkillsBench-vs-Harbor parity is an offline checker over existing artifacts. It
+does not clone `benchflow-ai/skillsbench-trajectories` during the release run
+because that baseline repository is large. Supply a local checkout or extracted
+artifact root pinned to `2d86fe82f6a06f7c7b3a22a3ae90d554d0e9655c`:
+
+```bash
+uv run python tests/integration/run_suite.py --lane skillsbench-harbor-parity \
+  --execute-skillsbench-harbor-parity \
+  --skillsbench-harbor-benchflow-root jobs/integration-<run-id>/<agent> \
+  --skillsbench-harbor-baseline-root /path/to/skillsbench-trajectories/shenghan/gemini-cli/gemini3flash/noskills \
+  --skillsbench-harbor-task jax-computing-basics \
+  --skillsbench-harbor-task python-scala-translation \
+  --skillsbench-harbor-task jpg-ocr-stat \
+  --skillsbench-harbor-task grid-dispatch-operator \
+  --skillsbench-harbor-task threejs-to-obj \
+  --skillsbench-harbor-task data-to-d3 \
+  --skillsbench-harbor-task lake-warming-attribution \
+  --skillsbench-harbor-task weighted-gdp-calc \
+  --skillsbench-harbor-task shock-analysis-supply
+```
+
+The checker normalizes the expected schema differences explicitly: Harbor
+rewards come from `verifier_result.rewards.reward` and ATIF trajectories from
+`agent/trajectory.json`, while BenchFlow rewards come from `rewards.reward` and
+ACP trajectories from `trajectory/acp_trajectory.jsonl`. It fails on missing
+tasks, malformed artifacts, missing trajectories, unseen task outcomes, per-task
+reward movement outside the Harbor observed range, and aggregate
+outcome/reward-rate drift over the configured thresholds.
+
+To refresh the Harbor pin, fetch the baseline repository, inspect the candidate
+run root, run the parity checker against known BenchFlow evidence, and update
+`tests/integration/suites/release.yaml` plus the command above only after the
+new baseline is accepted:
+
+```bash
+git -C /path/to/skillsbench-trajectories fetch origin main
+git -C /path/to/skillsbench-trajectories rev-parse origin/main
+```
 
 Use `--fail-on-todo` whenever a dry-run plan is being used as release evidence. Despite the name, this gate fails on unresolved TODOs and explicit `blocked_by` entries. The `near-term`, `release-gated-cli`, `hosted-envs`, and `full-release` profiles are expected to pass the gate today. The `backlog` profile is expected to fail this gate until the future Firecracker/Kubernetes security DinD lane is resolved; that failure tracks planned coverage, not a current release blocker.
 
@@ -263,7 +311,7 @@ Each agent has a YAML config in `configs/` with an `include` list restricting to
 uv run bench eval create --config tests/integration/configs/gemini.yaml
 ```
 
-`run.sh` uses CLI arguments instead of these configs for parallel execution, but both approaches run the same 9 tasks.
+`run.sh` uses CLI arguments instead of these configs for parallel execution, but both approaches run the same 9 tasks at the active-dev concurrency of 64. The shell runner can be temporarily raised with `BENCHFLOW_INTEGRATION_CONCURRENCY=100` for the larger validation set.
 
 ## Result Validation
 

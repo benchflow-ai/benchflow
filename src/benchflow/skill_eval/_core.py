@@ -1,10 +1,11 @@
-"""Skill evaluation — generate tasks from evals.json, run with/without skill, compare.
+"""Skill evaluation core — dataclasses, dataset loading, task generation, runner.
 
-Usage:
-    from benchflow.skill_eval import SkillEvaluator
-    evaluator = SkillEvaluator(skill_dir="my-skill/")
-    result = await evaluator.run(agents=["claude-agent-acp"], environment="docker")
+The package-level :mod:`benchflow.skill_eval` re-exports the public names
+here. GEPA export lives in :mod:`benchflow.skill_eval.gepa_export`; the
+``evals.json`` Pydantic schema lives in :mod:`benchflow.skill_eval.schema`.
 """
+
+from __future__ import annotations
 
 import contextlib
 import json
@@ -15,11 +16,17 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from string import Template
+from typing import Any
+
+import tomli_w
+
+from benchflow._paths import assert_within, safe_path_segment
+
+from .schema import DEFAULT_SKILL_MOUNT_DIR, validate_evals_json
 
 logger = logging.getLogger(__name__)
 
-TEMPLATES_DIR = Path(__file__).parent / "templates"
-DEFAULT_SKILL_MOUNT_DIR = "/skills"
+TEMPLATES_DIR = Path(__file__).parent.parent / "templates"
 JUDGE_API_ENV_KEYS = (
     "GOOGLE_API_KEY",
     "GEMINI_API_KEY",
@@ -98,6 +105,11 @@ class CaseResult:
     error: str | None = None
     n_tool_calls: int = 0
     rubric_results: list[dict] | None = None
+    # Execution trace captured from the rollout dir. Populated by
+    # ``SkillEvaluator._run_job`` and consumed by ``export_gepa_traces``
+    # so GEPA trace files actually contain a trace (#425).
+    trajectory: list[dict] | None = None
+    prompt: str | None = None
 
 
 @dataclass
@@ -166,7 +178,15 @@ class SkillEvalResult:
 
 
 def load_eval_dataset(skill_dir: str | Path) -> EvalDataset:
-    """Load and validate evals/evals.json from a skill directory."""
+    """Load and validate ``evals/evals.json`` from a skill directory.
+
+    The raw JSON is first run through the Pydantic models in
+    :mod:`.schema` so wrong types and unsafe values (e.g. non-numeric
+    ``timeout_sec``, unsafe ``judge_model``, ``expected_behavior``
+    accidentally written as a string) are rejected with actionable errors
+    BEFORE any TOML/Python artifact generation. Guards the contract
+    documented in issue #424.
+    """
     skill_dir = Path(skill_dir)
     evals_json = skill_dir / "evals" / "evals.json"
     if not evals_json.exists():
@@ -177,14 +197,13 @@ def load_eval_dataset(skill_dir: str | Path) -> EvalDataset:
 
     data = json.loads(evals_json.read_text())
 
-    # Validate
-    if "cases" not in data:
-        raise ValueError("evals.json must contain a 'cases' array")
-    if not data["cases"]:
-        raise ValueError("evals.json 'cases' array is empty")
+    # Schema validation — surfaces type errors, unknown fields, unsafe
+    # judge_model values, and the empty-cases case before any generated
+    # artifact can be written (#424).
+    parsed = validate_evals_json(data)
 
     # Parse skill name from evals.json or SKILL.md
-    skill_name = data.get("skill_name", "")
+    skill_name = parsed.skill_name
     if not skill_name:
         skill_md = skill_dir / "SKILL.md"
         if skill_md.exists():
@@ -195,26 +214,32 @@ def load_eval_dataset(skill_dir: str | Path) -> EvalDataset:
         else:
             skill_name = skill_dir.name
 
+    # Reject skill names that would path-traverse when used as a directory
+    # segment in generate_tasks (skills/<skill_name>) or GEPA exports.
+    safe_path_segment(skill_name, kind="skill name")
+
     cases = []
     seen_ids = set()
-    for i, c in enumerate(data["cases"]):
-        case_id = c.get("id", f"case-{i:03d}")
+    for i, c in enumerate(parsed.cases):
+        case_id = c.id if c.id is not None else f"case-{i:03d}"
+        # Reject case ids that would path-traverse when used as a directory
+        # segment in generate_tasks or as a filename component in
+        # export_gepa_traces. Fail early at load time so callers see the
+        # offending case rather than a write outside the output tree.
+        safe_path_segment(case_id, kind="case id")
         if case_id in seen_ids:
             raise ValueError(f"Duplicate case id: {case_id}")
         seen_ids.add(case_id)
 
-        if "question" not in c:
-            raise ValueError(f"Case {case_id} missing 'question' field")
-
         cases.append(
             EvalCase(
                 id=case_id,
-                question=c["question"],
-                ground_truth=c.get("ground_truth", ""),
-                expected_behavior=c.get("expected_behavior", []),
-                expected_skill=c.get("expected_skill", skill_name),
-                expected_script=c.get("expected_script", ""),
-                environment=c.get("environment", {}),
+                question=c.question,
+                ground_truth=c.ground_truth,
+                expected_behavior=list(c.expected_behavior),
+                expected_skill=c.expected_skill or skill_name,
+                expected_script=c.expected_script,
+                environment=dict(c.environment),
             )
         )
 
@@ -222,14 +247,64 @@ def load_eval_dataset(skill_dir: str | Path) -> EvalDataset:
         skill_name=skill_name,
         skill_dir=skill_dir,
         cases=cases,
-        defaults=data.get("defaults", {}),
-        version=data.get("version", "1"),
+        defaults=parsed.defaults.model_dump(),
+        version=parsed.version,
     )
 
 
 # ---------------------------------------------------------------------------
 # Ephemeral task generation
 # ---------------------------------------------------------------------------
+
+
+def _build_task_toml(dataset: EvalDataset, case: EvalCase, with_skill: bool) -> str:
+    """Build the generated ``task.toml`` body via ``tomli_w.dumps``.
+
+    Routing every interpolation through ``tomli_w`` (the canonical TOML
+    writer already used in ``benchflow.task.config``) means hostile values
+    in ``skill_name`` or per-case ``environment`` overrides cannot inject
+    sections or escape the value position — that's #393, the bug the
+    earlier bespoke ``_toml_quote`` helper covered. Reusing the canonical
+    writer here both removes the duplicate escape logic and aligns with
+    the rest of the codebase.
+    """
+    import os
+
+    metadata: dict[str, Any] = {
+        "author_name": "benchflow-skill-eval",
+        "difficulty": "medium",
+        "category": "skill-eval",
+        "tags": ["skill-eval", dataset.skill_name],
+    }
+    verifier: dict[str, Any] = {"timeout_sec": 120}
+
+    # Forward host judge credentials into the verifier env via the
+    # ``${KEY}`` syntax the BenchFlow runner expands at task-launch time.
+    present_judge_keys = [k for k in JUDGE_API_ENV_KEYS if os.environ.get(k)]
+    if present_judge_keys:
+        verifier["env"] = {k: f"${{{k}}}" for k in present_judge_keys}
+
+    environment_block: dict[str, Any] = {
+        "cpus": 1,
+        "memory_mb": 2048,
+        "allow_internet": True,
+    }
+    if with_skill:
+        environment_block["skills_dir"] = dataset.skill_mount_dir
+    # Forward per-case ``environment`` overrides (#392). The runner reads
+    # ``[environment.env]`` and forwards entries to the sandbox.
+    if case.environment:
+        environment_block["env"] = dict(case.environment)
+
+    doc: dict[str, Any] = {
+        "version": "1.0",
+        "metadata": metadata,
+        "agent": {"timeout_sec": dataset.timeout_sec},
+        "verifier": verifier,
+        "environment": environment_block,
+    }
+
+    return tomli_w.dumps(doc)
 
 
 def generate_tasks(
@@ -250,45 +325,27 @@ def generate_tasks(
     output_dir.mkdir(parents=True, exist_ok=True)
     task_dirs = []
 
+    # Defense in depth: load_eval_dataset already rejects unsafe ids/names,
+    # but re-validate here so any future caller constructing an EvalDataset
+    # by hand still gets the same safety guarantee.
+    safe_path_segment(dataset.skill_name, kind="skill name")
+
     # Read templates
     judge_template = (TEMPLATES_DIR / "judge.py.tmpl").read_text()
     test_sh_template = (TEMPLATES_DIR / "test.sh.tmpl").read_text()
 
     for case in dataset.cases:
+        safe_path_segment(case.id, kind="case id")
         task_dir = output_dir / case.id
+        assert_within(task_dir, output_dir)
         task_dir.mkdir(parents=True, exist_ok=True)
 
         # instruction.md
         (task_dir / "instruction.md").write_text(case.question + "\n")
 
-        # task.toml
-        environment_lines = [
-            "[environment]",
-            "cpus = 1",
-            "memory_mb = 2048",
-            "allow_internet = true",
-        ]
-        if with_skill:
-            environment_lines.append(f'skills_dir = "{dataset.skill_mount_dir}"')
-
-        verifier_env_lines = _judge_env_lines()
-        verifier_env_block = (
-            "\n\n" + "\n".join(verifier_env_lines) if verifier_env_lines else ""
-        )
-
-        (task_dir / "task.toml").write_text(
-            f'version = "1.0"\n\n'
-            f"[metadata]\n"
-            f'author_name = "benchflow-skill-eval"\n'
-            f'difficulty = "medium"\n'
-            f'category = "skill-eval"\n'
-            f'tags = ["skill-eval", "{dataset.skill_name}"]\n\n'
-            f"[agent]\n"
-            f"timeout_sec = {dataset.timeout_sec}\n\n"
-            f"[verifier]\n"
-            f"timeout_sec = 120"
-            f"{verifier_env_block}\n\n" + "\n".join(environment_lines) + "\n"
-        )
+        # task.toml — built via ``tomli_w.dumps`` so every value is
+        # escaped by the canonical TOML writer (#393).
+        (task_dir / "task.toml").write_text(_build_task_toml(dataset, case, with_skill))
 
         # environment/
         env_dir = task_dir / "environment"
@@ -309,7 +366,10 @@ def generate_tasks(
 
         # Copy skill into environment if with_skill mode
         if with_skill:
-            skills_dst = env_dir / "skills" / dataset.skill_name
+            skills_root = env_dir / "skills"
+            skills_root.mkdir(parents=True, exist_ok=True)
+            skills_dst = skills_root / dataset.skill_name
+            assert_within(skills_dst, skills_root)
             if skills_dst.exists():
                 shutil.rmtree(skills_dst)
             shutil.copytree(
@@ -327,7 +387,9 @@ def generate_tasks(
         tests_dir = task_dir / "tests"
         tests_dir.mkdir(exist_ok=True)
 
-        # case.json — injected data for the judge
+        # case.json — injected data for the judge. ``environment`` is
+        # included so the judge (and downstream review tooling) can see
+        # which per-case env overrides were in effect (#392).
         (tests_dir / "case.json").write_text(
             json.dumps(
                 {
@@ -337,6 +399,7 @@ def generate_tasks(
                     "expected_behavior": case.expected_behavior,
                     "expected_skill": case.expected_skill,
                     "expected_script": case.expected_script,
+                    "environment": case.environment,
                 },
                 indent=2,
             )
@@ -397,16 +460,6 @@ def _default_dockerfile(dataset: EvalDataset, with_skill: bool) -> str:
         "WORKDIR /app",
     ]
     return "\n".join(lines) + "\n"
-
-
-def _judge_env_lines() -> list[str]:
-    """Return task.toml verifier env templates for host judge credentials."""
-    import os
-
-    present_keys = [key for key in JUDGE_API_ENV_KEYS if os.environ.get(key)]
-    if not present_keys:
-        return []
-    return ["[verifier.env]"] + [f'{key} = "${{{key}}}"' for key in present_keys]
 
 
 def _dockerfile_dir(path: str) -> str:
@@ -561,6 +614,9 @@ class SkillEvaluator:
 
         from benchflow.evaluation import Evaluation, EvaluationConfig, RetryConfig
 
+        # Import lazily to avoid a circular module load at import time.
+        from .gepa_export import _load_acp_trajectory, _load_prompt
+
         judge_env = {}
         for key in (
             "ANTHROPIC_API_KEY",
@@ -629,6 +685,13 @@ class SkillEvaluator:
                     with contextlib.suppress(json.JSONDecodeError, KeyError):
                         rubric_results = json.loads(judge_file.read_text()).get("items")
 
+                # Collect the actual ACP trajectory + prompt so GEPA trace
+                # files contain a real execution trace instead of just a
+                # summary (#425). Best-effort — older rollouts may be
+                # missing these files.
+                trajectory = _load_acp_trajectory(rollout_dir)
+                prompt = _load_prompt(rollout_dir, case)
+
                 results.append(
                     CaseResult(
                         case_id=case_id,
@@ -639,6 +702,8 @@ class SkillEvaluator:
                         error=error,
                         n_tool_calls=n_tool_calls,
                         rubric_results=rubric_results,
+                        trajectory=trajectory,
+                        prompt=prompt,
                     )
                 )
             else:
@@ -702,82 +767,3 @@ class SkillEvaluator:
             )
 
         return lifts
-
-
-# ---------------------------------------------------------------------------
-# GEPA export
-# ---------------------------------------------------------------------------
-
-
-def export_gepa_traces(
-    result: SkillEvalResult,
-    dataset: EvalDataset,
-    output_dir: str | Path,
-) -> Path:
-    """Export skill eval results in GEPA-compatible format.
-
-    GEPA reads execution traces paired with scores to evolve the skill text.
-
-    Output structure:
-        output_dir/
-        ├── skill.md              # current SKILL.md content
-        ├── traces/               # one file per case × agent
-        │   ├── case-001-claude.json
-        │   └── ...
-        └── summary.json          # aggregate scores
-    """
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    traces_dir = output_dir / "traces"
-    traces_dir.mkdir(exist_ok=True)
-
-    # Copy current SKILL.md
-    skill_md = dataset.skill_dir / "SKILL.md"
-    if skill_md.exists():
-        shutil.copy2(skill_md, output_dir / "skill.md")
-
-    # Write per-case traces
-    for cr in result.case_results:
-        agent_label = cr.agent.split("/")[-1] if "/" in cr.agent else cr.agent
-        mode = "with" if cr.with_skill else "without"
-        trace_file = traces_dir / f"{cr.case_id}-{agent_label}-{mode}.json"
-        trace_file.write_text(
-            json.dumps(
-                {
-                    "case_id": cr.case_id,
-                    "agent": cr.agent,
-                    "model": cr.model,
-                    "with_skill": cr.with_skill,
-                    "score": cr.reward,
-                    "rubric_results": cr.rubric_results,
-                    "n_tool_calls": cr.n_tool_calls,
-                    "error": cr.error,
-                    "skill_text": skill_md.read_text() if skill_md.exists() else None,
-                },
-                indent=2,
-            )
-        )
-
-    # Write summary
-    summary = {
-        "skill_name": result.skill_name,
-        "n_cases": result.n_cases,
-        "agents": result.agents,
-        "lifts": [
-            {
-                "agent": lift.agent,
-                "model": lift.model,
-                "with_skill_score": lift.with_skill_score,
-                "baseline_score": lift.baseline_score,
-                "lift": lift.lift,
-                "with_skill_passed": lift.with_skill_passed,
-                "baseline_passed": lift.baseline_passed,
-                "baseline_ran": lift.baseline_ran,
-            }
-            for lift in result.agent_lifts
-        ],
-    }
-    (output_dir / "summary.json").write_text(json.dumps(summary, indent=2))
-
-    logger.info(f"GEPA traces exported to {output_dir}")
-    return output_dir

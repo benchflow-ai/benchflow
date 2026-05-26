@@ -84,18 +84,24 @@ bench eval create \
 | `--agent` | `claude-agent-acp` | Agent name |
 | `--model` | Agent default | Model ID |
 | `--sandbox` | `docker` | Sandbox: docker, daytona, or modal |
+| `--environment-manifest` | — | Path to an Environment-plane manifest (`environment.toml`); applied to every rollout in the batch |
 | `--concurrency` | `4` | Max concurrent tasks (batch mode only) |
+| `--agent-idle-timeout` | (built-in default) | Abort ACP prompts after this many idle seconds; `0` disables idle detection |
 | `--jobs-dir` | `jobs` | Output directory |
 | `--sandbox-user` | `agent` | Sandbox user (null for root) |
 | `--sandbox-setup-timeout` | `120` | Timeout in seconds for sandbox user setup |
 | `--skills-dir` | — | Skills directory to deploy into each task sandbox |
+| `--skill-mode` | `default` | Skill mode: `default` or `self-gen` |
+| `--skill-creator-dir` | — | Path to a `skill-creator` directory (or a skills root containing it); used when `--skill-mode self-gen` |
+| `--self-gen-no-internet` | `false` | Disable web tools for the self-generated skill run |
 | `--agent-env` | — | Agent environment variable as `KEY=VALUE`; repeatable |
+| `--include` | — | Only run these task names; repeatable (e.g. `--include jax-computing-basics --include data-to-d3`) |
+| `--exclude` | — | Skip these task names; repeatable (e.g. `--exclude quantum-numerical-simulation`) |
 
 When mounting skills, the recommended docs default is
-`--agent-env BENCHFLOW_SKILL_NUDGE=name`. It prepends a short hint telling the agent
-which skills are available and where to read them. More verbose modes are
-`description` and `full`. Omit the env var to leave BenchFlow's runtime default
-off.
+`--agent-env BENCHFLOW_SKILL_NUDGE=name`. See
+[Architecture: skill loading](../architecture.md#skill-loading) for how
+`--skills-dir` is registered with each agent and how the nudge modes differ.
 
 `--source-env` is for external hosted environment hubs. The first supported
 runner is PrimeIntellect / Verifiers: BenchFlow preserves the hosted identity
@@ -116,6 +122,15 @@ bench eval list jobs/
 ```
 
 ## bench skills
+
+### bench skills list
+
+List skills discovered under the default skills roots (or `--dir`).
+
+```bash
+bench skills list
+bench skills list --dir ./skills
+```
 
 ### bench skills eval
 
@@ -177,6 +192,15 @@ bench tasks generate --from-hf opentraces-test --limit 50
 | `--author` | `benchflow-traces` | Author name for generated task metadata |
 | `--dry-run` | `false` | Preview traces without generating tasks |
 
+### bench tasks list-sources
+
+List known HuggingFace trace datasets. The aliases listed here can be passed
+to `bench tasks generate --from-hf`.
+
+```bash
+bench tasks list-sources
+```
+
 ## bench environment
 
 ### bench environment create
@@ -221,6 +245,32 @@ than 24 hours; use `--dry-run` to preview what would be deleted.
 ```bash
 bench environment cleanup --dry-run --max-age 1440
 ```
+
+## bench compat
+
+Third-party framework compatibility checks.
+
+### bench compat harbor-registry
+
+Inventory or structurally check representative Harbor registry tasks. Defaults
+to running an inventory pass against the public Harbor registry JSON.
+
+```bash
+# Inventory the public Harbor registry
+bench compat harbor-registry
+
+# Structural check, two tasks per dataset, JSONL output
+bench compat harbor-registry --level check --tasks-per-dataset 2 --out compat.jsonl
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--registry` | Harbor public registry URL | Harbor registry JSON URL or local file |
+| `--tasks-per-dataset` | `2` | Representative tasks selected per dataset |
+| `--level` | `inventory` | Compatibility level: `inventory` or `check` |
+| `--out` | — | Optional JSONL output path |
+| `--cache-dir` | `.cache/compat/harbor` | Cache directory for sparse clones |
+| `--limit` | — | Optional cap on selected task refs |
 
 ## YAML Config Format
 

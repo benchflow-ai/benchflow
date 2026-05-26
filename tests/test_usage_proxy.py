@@ -50,6 +50,7 @@ def test_result_json_contains_unavailable_usage_defaults(tmp_path):
     assert result.usage_source == "unavailable"
     assert data["agent_result"] == {
         "n_tool_calls": 3,
+        "n_skill_invocations": 0,
         "n_prompts": 1,
         "n_input_tokens": None,
         "n_output_tokens": None,
@@ -348,6 +349,85 @@ async def test_start_proxy_rewrites_env(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_usage_proxy_dials_loopback_for_host_bound_provider_proxy(monkeypatch):
+    """Guards v0.5-integration@e55219d against host-side proxy chains dialing Docker aliases."""
+    from benchflow.providers import runtime as provider_runtime_mod
+    from benchflow.providers.runtime import ensure_usage_proxy_runtime
+
+    monkeypatch.setattr(
+        provider_runtime_mod, "_docker_host_address", lambda: "host.docker.internal"
+    )
+
+    class FakeTrajectoryProxy:
+        def __init__(
+            self,
+            target,
+            session_id="",
+            agent_name="",
+            host="127.0.0.1",
+            port=0,
+            prompt_cache_retention=None,
+        ):
+            self.target = target
+            self.host = host
+            self.port = 32124
+            self.trajectory = Trajectory(session_id=session_id, agent_name=agent_name)
+
+        async def start(self):
+            return None
+
+        async def stop(self):
+            return None
+
+    monkeypatch.setattr(provider_runtime_mod, "TrajectoryProxy", FakeTrajectoryProxy)
+
+    updated, runtime = await ensure_usage_proxy_runtime(
+        agent="openhands",
+        agent_env={
+            "BENCHFLOW_PROVIDER_BASE_URL": "http://host.docker.internal:32123",
+            "LLM_BASE_URL": "http://host.docker.internal:32123",
+        },
+        model="aws-bedrock/anthropic.claude-opus-4-7",
+        runtime=None,
+        environment="docker",
+        session_id="rollout-1",
+    )
+
+    assert runtime is not None
+    assert runtime.server.target == "http://127.0.0.1:32123"
+    assert updated["LLM_BASE_URL"] == "http://host.docker.internal:32124"
+
+
+@pytest.mark.asyncio
+async def test_usage_proxy_can_be_disabled_for_operator_recovery(monkeypatch):
+    """Guards v0.5-integration@e55219d recovery runs when telemetry proxying blocks rollouts."""
+    from benchflow.providers import runtime as provider_runtime_mod
+    from benchflow.providers.runtime import ensure_usage_proxy_runtime
+
+    def _fail_start(*_args, **_kwargs):
+        raise AssertionError("TrajectoryProxy must not start when disabled")
+
+    monkeypatch.setenv("BENCHFLOW_DISABLE_USAGE_PROXY", "1")
+    monkeypatch.setattr(provider_runtime_mod, "TrajectoryProxy", _fail_start)
+
+    env = {
+        "BENCHFLOW_PROVIDER_BASE_URL": "http://host.docker.internal:32123",
+        "LLM_BASE_URL": "http://host.docker.internal:32123",
+    }
+    updated, runtime = await ensure_usage_proxy_runtime(
+        agent="openhands",
+        agent_env=env,
+        model="aws-bedrock/us.anthropic.claude-opus-4-7",
+        runtime=None,
+        environment="docker",
+        session_id="rollout-1",
+    )
+
+    assert runtime is None
+    assert updated == env
+
+
+@pytest.mark.asyncio
 async def test_start_proxy_uses_openai_v1_default_for_codex(monkeypatch):
     from benchflow.providers import runtime as provider_runtime_mod
     from benchflow.providers.runtime import ensure_usage_proxy_runtime
@@ -542,6 +622,57 @@ async def test_daytona_runtime_retired_when_environment_unreachable(monkeypatch)
     assert updated["ANTHROPIC_BASE_URL"] == "https://api.anthropic.com"
 
 
+@pytest.mark.asyncio
+async def test_daytona_openhands_bedrock_uses_direct_agent_mapping(monkeypatch):
+    """Guards v0.5-integration@e55219d against rejecting remote OpenHands Bedrock runs."""
+    from benchflow.providers import runtime as provider_runtime_mod
+    from benchflow.providers.runtime import ensure_bedrock_proxy_runtime
+
+    def _fail_start(*_args, **_kwargs):
+        raise AssertionError("BedrockProxyServer must not start for daytona")
+
+    monkeypatch.setattr(provider_runtime_mod, "BedrockProxyServer", _fail_start)
+
+    env = {
+        "AWS_BEARER_TOKEN_BEDROCK": "bedrock-token",
+        "AWS_REGION": "us-west-2",
+        "BENCHFLOW_PROVIDER_BASE_URL": "",
+        "BENCHFLOW_PROVIDER_API_KEY": "bedrock-proxy",
+        "LLM_BASE_URL": "",
+        "LLM_API_KEY": "bedrock-proxy",
+        "LLM_MODEL": "anthropic/us.anthropic.claude-opus-4-7",
+    }
+    updated, runtime = await ensure_bedrock_proxy_runtime(
+        agent="openhands",
+        agent_env=env,
+        model="aws-bedrock/us.anthropic.claude-opus-4-7",
+        runtime=None,
+        environment="daytona",
+    )
+
+    assert runtime is None
+    assert "BENCHFLOW_PROVIDER_BASE_URL" not in updated
+    assert "LLM_BASE_URL" not in updated
+    assert updated["LLM_MODEL"] == "bedrock/us.anthropic.claude-opus-4-7"
+    assert updated["LLM_API_KEY"] == "bedrock-token"
+    assert updated["AWS_BEARER_TOKEN_BEDROCK"] == "bedrock-token"
+
+
+@pytest.mark.asyncio
+async def test_daytona_bedrock_rejects_agents_without_direct_support():
+    """Guards v0.5-integration@e55219d against silently wiring unreachable Bedrock proxy URLs."""
+    from benchflow.providers.runtime import ensure_bedrock_proxy_runtime
+
+    with pytest.raises(RuntimeError, match="direct Bedrock support"):
+        await ensure_bedrock_proxy_runtime(
+            agent="codex-acp",
+            agent_env={"AWS_BEARER_TOKEN_BEDROCK": "bedrock-token"},
+            model="aws-bedrock/us.anthropic.claude-opus-4-7",
+            runtime=None,
+            environment="daytona",
+        )
+
+
 def test_host_proxy_reachable_only_for_local_environments():
     from benchflow.providers.runtime import host_proxy_reachable_from_agent
 
@@ -635,11 +766,13 @@ async def test_rollout_connect_wires_usage_proxy_before_acp(tmp_path, monkeypatc
         assert kwargs["agent_env"]["OPENAI_BASE_URL"] == (
             "http://host.docker.internal:32124"
         )
-        return (AsyncMock(), AsyncMock(), "codex-acp")
+        return (AsyncMock(), AsyncMock(), AsyncMock(), "codex-acp")
 
-    monkeypatch.setattr("benchflow.rollout.ensure_bedrock_proxy_runtime", fake_bedrock)
-    monkeypatch.setattr("benchflow.rollout.ensure_usage_proxy_runtime", fake_usage)
-    monkeypatch.setattr("benchflow.rollout.connect_acp", fake_connect_acp)
+    rollout._planes = SimpleNamespace(
+        ensure_bedrock_proxy_runtime=fake_bedrock,
+        ensure_usage_proxy_runtime=fake_usage,
+        connect_acp=fake_connect_acp,
+    )
 
     await rollout.connect()
 
@@ -651,7 +784,7 @@ async def test_rollout_cleanup_extracts_usage_and_writes_llm_trajectory(tmp_path
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
 
-    from benchflow.providers.runtime import ProviderRuntime
+    from benchflow.providers.runtime import ProviderRuntime, extract_usage
     from benchflow.rollout import Rollout, RolloutConfig
 
     class FakeServer:
@@ -674,12 +807,17 @@ async def test_rollout_cleanup_extracts_usage_and_writes_llm_trajectory(tmp_path
     rollout._acp_client = None
     rollout._agent_launch = ""
     rollout._env = SimpleNamespace(stop=AsyncMock())
+    rollout._environment = None
     rollout._usage_runtime = ProviderRuntime(
         kind="usage-proxy",
         host="host.docker.internal",
         port=32124,
         backend_model="claude-haiku-4-5-20251001",
         server=server,
+    )
+    rollout._planes = SimpleNamespace(
+        stop_provider_runtime=lambda runtime: runtime.server.stop(),
+        extract_usage=extract_usage,
     )
     rollout._rollout_dir = tmp_path
 

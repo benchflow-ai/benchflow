@@ -10,6 +10,7 @@ import pytest
 
 from benchflow._utils.scoring import (
     VERIFIER_FAILED,
+    VERIFIER_INFRA,
     VERIFIER_TIMEOUT,
     classify_verifier_error,
 )
@@ -27,6 +28,10 @@ from benchflow.models import RunResult
         (None, None),
         ("", None),
         ("verifier crashed: ImportError", VERIFIER_FAILED),
+        (
+            "verifier crashed: Failed to download verifier directory from sandbox",
+            VERIFIER_INFRA,
+        ),
         ("verifier timed out after 900s", VERIFIER_TIMEOUT),
         ("verifier did something weird", "verifier_other"),
     ],
@@ -114,10 +119,70 @@ class TestSdkVerify:
                 new_callable=AsyncMock,
             ),
         ):
-            rewards, verifier_error = await sdk._verify(env, task, tp, timing)
+            rewards, verifier_error, vti = await sdk._verify(env, task, tp, timing)
         assert rewards is None
         assert "timed out" in verifier_error
         assert "verifier" in timing
+        assert vti is not None
+        # ``vti`` is now a typed :class:`VerifierTimeoutDiagnostic` (issue
+        # #503); attribute access replaces the legacy dict indexing.
+        assert vti.timeout_budget_sec == 0.1
+
+    @pytest.mark.asyncio
+    async def test_verifier_timeout_reads_task_name_not_config_name(self, tmp_path):
+        """Guards #495: timeout handler must read task.name, not task.config.name.
+
+        ``TaskConfig`` has no ``name`` field — the task name lives on ``Task``.
+        A real verifier timeout would otherwise crash with AttributeError
+        inside the ``except TimeoutError`` handler.
+        """
+        from benchflow.contracts import default_rollout_planes
+        from benchflow.rollout import _verify_rollout
+        from benchflow.task.config import TaskConfig
+
+        # Build a real-shaped task: name lives on Task; TaskConfig has no name.
+        config = TaskConfig.model_validate(
+            {
+                "version": "1.0",
+                "metadata": {"author_name": "benchflow"},
+                "agent": {"timeout_sec": 30},
+                "verifier": {"timeout_sec": 0.1},
+                "environment": {"cpus": 1, "memory_mb": 1024},
+            }
+        )
+        assert not hasattr(config, "name")  # the bug condition
+
+        task = MagicMock()
+        task.name = "real-task-name"
+        task.config = config
+
+        env = MagicMock()
+        rollout_paths = MagicMock()
+        rollout_paths.verifier_dir = tmp_path / "verifier"
+
+        mock_v = MagicMock()
+        mock_v.verify = lambda: asyncio.sleep(10)
+
+        timing: dict = {}
+        with (
+            patch("benchflow.task.Verifier", return_value=mock_v),
+            patch(
+                "benchflow.sandbox.lockdown.harden_before_verify",
+                new_callable=AsyncMock,
+            ),
+        ):
+            rewards, verifier_error, vti = await _verify_rollout(
+                env, task, rollout_paths, timing, default_rollout_planes()
+            )
+
+        assert rewards is None
+        assert verifier_error is not None
+        assert "timed out" in verifier_error
+        assert vti is not None
+        # ``vti`` is now a typed :class:`VerifierTimeoutDiagnostic` (issue
+        # #503); attribute access replaces the legacy dict indexing.
+        assert vti.task_name == "real-task-name"
+        assert vti.timeout_budget_sec == 0.1
 
     @pytest.mark.asyncio
     async def test_verifier_crash(self, verify_harness):
@@ -132,9 +197,182 @@ class TestSdkVerify:
                 new_callable=AsyncMock,
             ),
         ):
-            rewards, verifier_error = await sdk._verify(env, task, tp, timing)
+            rewards, verifier_error, vti = await sdk._verify(env, task, tp, timing)
         assert rewards is None
         assert "crashed" in verifier_error and "kaboom" in verifier_error
+        assert vti is None
+
+    @pytest.mark.asyncio
+    async def test_verifier_returning_no_rewards_is_verifier_error(
+        self, verify_harness
+    ):
+        from benchflow.task.verifier import VerifierResult
+
+        sdk, env, task, tp = verify_harness
+        mock_v = MagicMock()
+        mock_v.verify = AsyncMock(return_value=VerifierResult(rewards=None))
+        timing = {}
+        with (
+            patch("benchflow.task.Verifier", return_value=mock_v),
+            patch(
+                "benchflow.sandbox.lockdown.harden_before_verify",
+                new_callable=AsyncMock,
+            ),
+        ):
+            rewards, verifier_error, vti = await sdk._verify(env, task, tp, timing)
+        assert rewards is None
+        assert "verifier returned no rewards" in verifier_error
+        assert "verifier" in timing
+        assert vti is None
+
+    @pytest.mark.parametrize(
+        "rewards",
+        [
+            {},
+            {"score": 1.0},
+            {"reward": float("nan")},
+            {"reward": float("inf")},
+            {"reward": True},
+            {"reward": 1.2},
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_verifier_returning_noncanonical_rewards_is_verifier_error(
+        self, verify_harness, rewards
+    ):
+        sdk, env, task, tp = verify_harness
+        mock_result = MagicMock()
+        mock_result.rewards = rewards
+        mock_v = MagicMock()
+        mock_v.verify = AsyncMock(return_value=mock_result)
+        timing = {}
+        with (
+            patch("benchflow.task.Verifier", return_value=mock_v),
+            patch(
+                "benchflow.sandbox.lockdown.harden_before_verify",
+                new_callable=AsyncMock,
+            ),
+        ):
+            parsed_rewards, verifier_error, vti = await sdk._verify(
+                env, task, tp, timing
+            )
+        assert parsed_rewards is None
+        assert "without numeric 'reward'" in verifier_error
+        assert "verifier" in timing
+        assert vti is None
+
+    @patch("benchflow.rewards.llm.call_judge", new_callable=AsyncMock)
+    @pytest.mark.asyncio
+    async def test_llm_judge_download_failure_is_verifier_error(
+        self, mock_judge, tmp_path
+    ):
+        """Guards the reward-output regression on v0.5-integration@ffef85d."""
+        from benchflow.sdk import SDK
+        from benchflow.task import RolloutPaths
+        from benchflow.task.config import TaskConfig
+
+        task_dir = tmp_path / "task"
+        (task_dir / "tests").mkdir(parents=True)
+        (task_dir / "tests" / "rubric.json").write_text(
+            json.dumps({"criteria": [{"id": "c1", "match_criteria": "ok"}]})
+        )
+        task = MagicMock()
+        task.paths.task_dir = task_dir
+        task.instruction = "Grade the deliverables."
+        task.config = TaskConfig.model_validate_toml(
+            """\
+version = "1.0"
+
+[verifier]
+type = "llm-judge"
+timeout_sec = 5
+
+[verifier.judge]
+rubric_path = "tests/rubric.json"
+input_dir = "/app/output"
+"""
+        )
+        rollout_paths = RolloutPaths(tmp_path / "rollout")
+        rollout_paths.mkdir()
+        env = MagicMock()
+        env.download_dir = AsyncMock(side_effect=RuntimeError("network down"))
+        timing = {}
+
+        with patch(
+            "benchflow.sandbox.lockdown.harden_before_verify",
+            new_callable=AsyncMock,
+        ):
+            rewards, verifier_error, vti = await SDK()._verify(
+                env, task, rollout_paths, timing
+            )
+
+        assert rewards is None
+        assert "verifier crashed" in verifier_error
+        assert "llm-judge input" in verifier_error
+        assert "/app/output" in verifier_error
+        assert "verifier" in timing
+        assert vti is None
+        mock_judge.assert_not_awaited()
+
+    @patch("benchflow.rewards.llm.call_judge", new_callable=AsyncMock)
+    @pytest.mark.asyncio
+    async def test_llm_judge_provider_failure_is_verifier_error(
+        self, mock_judge, tmp_path
+    ):
+        """Guards the reward-output regression on v0.5-integration@ffef85d."""
+        from benchflow.sdk import SDK
+        from benchflow.task import RolloutPaths
+        from benchflow.task.config import TaskConfig
+
+        mock_judge.side_effect = RuntimeError("provider down")
+        task_dir = tmp_path / "task"
+        (task_dir / "tests").mkdir(parents=True)
+        (task_dir / "tests" / "rubric.json").write_text(
+            json.dumps({"criteria": [{"id": "c1", "match_criteria": "ok"}]})
+        )
+        task = MagicMock()
+        task.paths.task_dir = task_dir
+        task.instruction = "Grade the deliverables."
+        task.config = TaskConfig.model_validate_toml(
+            """\
+version = "1.0"
+
+[verifier]
+type = "llm-judge"
+timeout_sec = 5
+
+[verifier.judge]
+rubric_path = "tests/rubric.json"
+input_dir = "/app/output"
+"""
+        )
+        rollout_paths = RolloutPaths(tmp_path / "rollout")
+        rollout_paths.mkdir()
+        env = MagicMock()
+
+        async def download_output(source_dir, target_dir):
+            del source_dir
+            target_dir.mkdir(parents=True, exist_ok=True)
+            (target_dir / "answer.txt").write_text("candidate answer")
+
+        env.download_dir = AsyncMock(side_effect=download_output)
+        timing = {}
+
+        with patch(
+            "benchflow.sandbox.lockdown.harden_before_verify",
+            new_callable=AsyncMock,
+        ):
+            rewards, verifier_error, vti = await SDK()._verify(
+                env, task, rollout_paths, timing
+            )
+
+        assert rewards is None
+        assert "verifier crashed" in verifier_error
+        assert "Judge error on criterion c1" in verifier_error
+        assert "provider down" not in verifier_error
+        assert not rollout_paths.reward_json_path.exists()
+        assert "verifier" in timing
+        assert vti is None
 
     @pytest.mark.asyncio
     async def test_verifier_success(self, verify_harness):
@@ -151,9 +389,10 @@ class TestSdkVerify:
                 new_callable=AsyncMock,
             ),
         ):
-            rewards, verifier_error = await sdk._verify(env, task, tp, timing)
+            rewards, verifier_error, vti = await sdk._verify(env, task, tp, timing)
         assert rewards == {"reward": 1.0}
         assert verifier_error is None
+        assert vti is None
 
 
 # ---------------------------------------------------------------------------
@@ -313,6 +552,24 @@ class TestJobRunLogs:
         summary = json.loads((job._jobs_dir / "summary.json").read_text())
         assert summary["verifier_errored"] == 1
 
+    @pytest.mark.asyncio
+    async def test_verifier_error_takes_precedence_over_agent_error_in_counts(
+        self, job_factory
+    ):
+        job, _ = job_factory(n_tasks=1)
+        job._sdk = AsyncMock()
+        job._sdk.run = AsyncMock(
+            return_value=RunResult(
+                task_name="task-0",
+                error="Agent prompt exceeded wall-clock budget 5s",
+                verifier_error="verifier crashed: No reward file found",
+            )
+        )
+        await job.run()
+        summary = json.loads((job._jobs_dir / "summary.json").read_text())
+        assert summary["errored"] == 0
+        assert summary["verifier_errored"] == 1
+
 
 # ---------------------------------------------------------------------------
 # EvaluationResult invariant
@@ -431,14 +688,39 @@ class TestMetricsVerifierError:
         (None, None, "verifier crashed: x", True),
         (1.0, None, None, False),
         (None, "timed out", None, False),
-        (0.0, None, "verifier crashed: x", False),  # reward set → not verifier_errored
+        (None, "timed out", "verifier crashed: x", True),
+        (0.0, None, "verifier crashed: x", True),
     ],
 )
 def test_task_metrics_verifier_errored(reward, error, verifier_error, expected):
     t = TaskMetrics(
         task_name="t", reward=reward, error=error, verifier_error=verifier_error
     )
+    assert t.has_verifier_error_evidence is expected
     assert t.verifier_errored is expected
+
+
+def test_reward_bearing_verifier_evidence_counts_as_completed_for_averages():
+    m = BenchmarkMetrics(
+        benchmark="test",
+        agent="test",
+        model="test",
+        tasks=[
+            TaskMetrics(
+                task_name="reward-with-verifier-evidence",
+                reward=0.0,
+                verifier_error="verifier crashed: stale reward rejected",
+                n_tool_calls=10,
+                duration_sec=20,
+            )
+        ],
+    )
+
+    assert m.failed == 1
+    assert m.score_verifier_errored == 0
+    assert m.tasks[0].has_verifier_error_evidence is True
+    assert m.avg_tool_calls == 10
+    assert m.avg_duration == 20
 
 
 class TestTrajectorySource:
@@ -497,32 +779,68 @@ class TestScrapedTrajectoryTrust:
     @contextlib.contextmanager
     def _patch_sdk_run(self, sdk, mock_env, extra_patches):
         """Apply shared + extra patches for SDK.run() internals."""
+        planes = MagicMock()
+        planes.install_docker_compat.return_value = None
+        planes.extract_usage.return_value = {
+            "n_input_tokens": None,
+            "n_output_tokens": None,
+            "n_cache_read_tokens": None,
+            "n_cache_creation_tokens": None,
+            "total_tokens": None,
+            "cost_usd": None,
+            "usage_source": "unavailable",
+            "price_source": None,
+        }
+        planes.resolve_locked_paths.return_value = []
+        planes.resolve_agent_env.side_effect = lambda _agent, _model, env: env or {}
+        planes.agent_launch.side_effect = lambda agent, *, disallow_web_tools: agent
+        planes.create_environment.return_value = mock_env
+        planes.stage_dockerfile_deps.return_value = None
+        planes.inject_skills_into_dockerfile.return_value = None
+        planes.setup_sandbox_user = AsyncMock(return_value="/app")
+        planes.snapshot_build_config = AsyncMock()
+        planes.seed_verifier_workspace = AsyncMock()
+        planes.install_agent = AsyncMock(
+            return_value=MagicMock(
+                credential_files={},
+                home_dirs=[],
+                skill_paths=[],
+                env_mapping={},
+            )
+        )
+        planes.write_credential_files = AsyncMock()
+        planes.upload_subscription_auth = AsyncMock()
+        planes.apply_web_tool_policy = AsyncMock()
+        planes.deploy_skills = AsyncMock()
+        planes.lockdown_paths = AsyncMock()
+        planes.ensure_bedrock_proxy_runtime = AsyncMock(
+            side_effect=lambda **kwargs: (kwargs["agent_env"], None)
+        )
+        planes.ensure_usage_proxy_runtime = AsyncMock(
+            side_effect=lambda **kwargs: (kwargs["agent_env"], None)
+        )
+        planes.connect_acp = AsyncMock()
+        planes.execute_prompts = AsyncMock()
+        planes.stop_provider_runtime = AsyncMock()
         patches = [
-            patch("benchflow.rollout._create_environment", return_value=mock_env),
-            patch(
-                "benchflow.rollout.install_agent",
-                new_callable=AsyncMock,
-                return_value=MagicMock(
-                    credential_files={},
-                    home_dirs=[],
-                    skill_paths=[],
-                    env_mapping={},
-                ),
-            ),
-            patch("benchflow.rollout.write_credential_files", new_callable=AsyncMock),
-            patch("benchflow.rollout.deploy_skills", new_callable=AsyncMock),
+            patch("benchflow.rollout.default_rollout_planes", return_value=planes),
             *extra_patches,
         ]
         with contextlib.ExitStack() as stack:
             for p in patches:
                 stack.enter_context(p)
-            yield
+            yield planes
 
     @pytest.mark.asyncio
     async def test_scraped_trajectory_preserves_n_tool_calls(
         self, sdk_run_mocks, caplog
     ):
-        """Main path: forged scraped trajectory must NOT overwrite ACP n_tool_calls."""
+        """Guards the reward-output regression on v0.5-integration@ffef85d.
+
+        SDK.run delegates to Rollout, so this test must mock the Rollout
+        verifier seam; otherwise the mock sandbox runs a real verifier and
+        produces result.json with a missing-reward verifier_error.
+        """
         sdk, mock_env, task_dir = sdk_run_mocks
 
         forged = [{"type": "tool_call", "name": f"fake_{i}"} for i in range(100)]
@@ -538,39 +856,50 @@ class TestScrapedTrajectoryTrust:
                 mock_env,
                 [
                     patch(
-                        "benchflow.rollout.connect_acp",
-                        new_callable=AsyncMock,
-                        return_value=(mock_acp, mock_session, "test-agent"),
-                    ),
-                    patch(
-                        "benchflow.rollout.execute_prompts",
-                        new_callable=AsyncMock,
-                        return_value=([], 5),
-                    ),
-                    patch(
                         "benchflow.rollout._scrape_agent_trajectory",
                         new_callable=AsyncMock,
                         return_value=forged,
                     ),
                     patch(
-                        "benchflow.sdk.SDK._verify",
+                        "benchflow.rollout._verify_rollout",
                         new_callable=AsyncMock,
-                        return_value=({"reward": 1.0}, None),
+                        return_value=({"reward": 1.0}, None, None),
                     ),
                 ],
-            ),
+            ) as planes,
             caplog.at_level(logging.WARNING),
         ):
+            planes.connect_acp.return_value = (
+                mock_acp,
+                mock_session,
+                MagicMock(),
+                "test-agent",
+            )
+            planes.execute_prompts.return_value = ([], 5)
             result = await sdk.run(
-                task_dir, agent="test-agent", agent_env={"TEST": "1"}, sandbox_user=None
+                task_dir,
+                agent="test-agent",
+                agent_env={"TEST": "1"},
+                sandbox_user=None,
+                jobs_dir=task_dir.parent / "jobs",
             )
 
         assert result.n_tool_calls == 5, (
             "ACP n_tool_calls must survive scraping fallback"
         )
+        assert result.rewards == {"reward": 1.0}
+        assert result.verifier_error is None
         assert result.trajectory_source == "scraped"
         assert len(result.trajectory) == 100
         assert any("UNTRUSTED" in m for m in caplog.messages)
+
+        matches = list(
+            (task_dir.parent / "jobs").glob(f"*/{result.rollout_name}/result.json")
+        )
+        assert len(matches) == 1
+        result_json = json.loads(matches[0].read_text())
+        assert result_json["rewards"] == {"reward": 1.0}
+        assert result_json["verifier_error"] is None
 
     @pytest.mark.asyncio
     async def test_partial_acp_uses_session_tool_calls(self, sdk_run_mocks):
@@ -589,16 +918,6 @@ class TestScrapedTrajectoryTrust:
             mock_env,
             [
                 patch(
-                    "benchflow.rollout.connect_acp",
-                    new_callable=AsyncMock,
-                    return_value=(mock_acp, mock_session, "test-agent"),
-                ),
-                patch(
-                    "benchflow.rollout.execute_prompts",
-                    new_callable=AsyncMock,
-                    side_effect=ConnectionError("lost"),
-                ),
-                patch(
                     "benchflow.rollout._capture_session_trajectory",
                     return_value=partial_events,
                 ),
@@ -608,9 +927,20 @@ class TestScrapedTrajectoryTrust:
                     return_value=[],
                 ),
             ],
-        ):
+        ) as planes:
+            planes.connect_acp.return_value = (
+                mock_acp,
+                mock_session,
+                MagicMock(),
+                "test-agent",
+            )
+            planes.execute_prompts.side_effect = ConnectionError("lost")
             result = await sdk.run(
-                task_dir, agent="test-agent", agent_env={"TEST": "1"}, sandbox_user=None
+                task_dir,
+                agent="test-agent",
+                agent_env={"TEST": "1"},
+                sandbox_user=None,
+                jobs_dir=task_dir.parent / "jobs",
             )
 
         assert result.n_tool_calls == 3, (

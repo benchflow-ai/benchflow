@@ -1,0 +1,148 @@
+{% extends "base.html" %}
+
+{% block title %}{{ messages[0].subject if messages else 'Thread' }} - Claw Gmail{% endblock %}
+
+{% block content %}
+<div class="max-w-4xl mx-auto py-4 px-6">
+    <!-- Toolbar -->
+    <div class="flex items-center gap-0.5 mb-2 -ml-2">
+        <a href="/" class="p-2 rounded-full hover:bg-gray-100" title="Back to inbox">
+            <span class="material-symbols-outlined text-[20px] text-gray-600">arrow_back</span>
+        </a>
+        <button class="p-2 rounded-full hover:bg-gray-100" title="Archive">
+            <span class="material-symbols-outlined text-[20px] text-gray-600">archive</span>
+        </button>
+        <button class="p-2 rounded-full hover:bg-gray-100" title="Report spam">
+            <span class="material-symbols-outlined text-[20px] text-gray-600">report</span>
+        </button>
+        {% if messages %}
+        <form action="/trash/{{ messages[0].id }}" method="post" class="inline">
+            <button type="submit" class="p-2 rounded-full hover:bg-gray-100" title="Delete">
+                <span class="material-symbols-outlined text-[20px] text-gray-600">delete</span>
+            </button>
+        </form>
+        {% endif %}
+        <div class="w-px h-5 bg-gray-300 mx-1"></div>
+        <button class="p-2 rounded-full hover:bg-gray-100" title="Mark as unread">
+            <span class="material-symbols-outlined text-[20px] text-gray-600">mail</span>
+        </button>
+        <button class="p-2 rounded-full hover:bg-gray-100" title="Snooze">
+            <span class="material-symbols-outlined text-[20px] text-gray-600">schedule</span>
+        </button>
+        <button class="p-2 rounded-full hover:bg-gray-100" title="Move to">
+            <span class="material-symbols-outlined text-[20px] text-gray-600">drive_file_move</span>
+        </button>
+        <button class="p-2 rounded-full hover:bg-gray-100" title="Labels">
+            <span class="material-symbols-outlined text-[20px] text-gray-600">label</span>
+        </button>
+        <button class="p-2 rounded-full hover:bg-gray-100" title="More">
+            <span class="material-symbols-outlined text-[20px] text-gray-600">more_vert</span>
+        </button>
+    </div>
+
+    <!-- Subject -->
+    <div class="flex items-center gap-3 mb-4">
+        <h1 class="text-xl font-normal text-gray-900 font-google-sans">
+            {{ messages[0].subject if messages else '(no subject)' }}
+        </h1>
+        <span class="text-xs bg-gray-200 text-gray-600 px-2 py-0.5 rounded-sm font-medium flex-shrink-0">Inbox</span>
+    </div>
+
+    <!-- Messages in thread -->
+    {% for msg in messages %}
+    <div class="rounded-lg mb-3 bg-white {{ 'shadow-sm border border-gray-200' if loop.last else 'border border-gray-100' }}">
+        <div class="flex items-start p-4 gap-3">
+            <!-- Avatar -->
+            <div class="w-10 h-10 rounded-full bg-blue-500 text-white flex items-center justify-center text-sm font-medium flex-shrink-0">
+                {{ msg.sender[0] | upper }}
+            </div>
+
+            <div class="flex-1 min-w-0">
+                <!-- Sender + date -->
+                <div class="flex items-center gap-1 mb-1">
+                    <span class="font-medium text-sm text-gray-900">
+                        {{ msg.sender.split('<')[0].strip() or msg.sender }}
+                    </span>
+                    <span class="material-symbols-outlined text-[16px] text-gray-500 cursor-pointer">arrow_drop_down</span>
+                    <span class="text-xs text-gray-500">
+                        &lt;{{ msg.sender.split('<')[1].rstrip('>') if '<' in msg.sender else msg.sender }}&gt;
+                    </span>
+                    <span class="flex-1"></span>
+                    <span class="text-xs text-gray-500 flex-shrink-0">
+                        {{ msg.internal_date.strftime('%b %d, %Y, %I:%M %p') if msg.internal_date else '' }}
+                    </span>
+                    <form action="/star/{{ msg.id }}" method="post" class="inline ml-1">
+                        <button type="submit">
+                            {% if msg.is_starred %}
+                            <svg class="w-5 h-5 text-yellow-400" fill="currentColor" viewBox="0 0 24 24">
+                                <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>
+                            </svg>
+                            {% else %}
+                            <span class="material-symbols-outlined text-[20px] text-gray-300 hover:text-yellow-400">star</span>
+                            {% endif %}
+                        </button>
+                    </form>
+                    <button class="p-1 rounded-full hover:bg-gray-100 ml-1">
+                        <span class="material-symbols-outlined text-[18px] text-gray-500">reply</span>
+                    </button>
+                    <button class="p-1 rounded-full hover:bg-gray-100">
+                        <span class="material-symbols-outlined text-[18px] text-gray-500">more_vert</span>
+                    </button>
+                </div>
+
+                <!-- To -->
+                <div class="text-xs text-gray-500 mb-3">
+                    to {{ msg.to.split(',')[0].split('<')[0].strip() if msg.to else 'me' }}
+                    {% if msg.cc %}<span class="ml-1">cc: {{ msg.cc.split(',')[0].split('<')[0].strip() }}</span>{% endif %}
+                    <span class="material-symbols-outlined text-[14px] text-gray-400 cursor-pointer align-middle">arrow_drop_down</span>
+                </div>
+
+                <!-- Body -->
+                {% if msg.body_html %}
+                <iframe srcdoc="{{ msg.body_html | e }}"
+                        sandbox="allow-same-origin"
+                        class="w-full border-0 rounded"
+                        style="min-height:80px"
+                        onload="this.style.height=(this.contentWindow.document.body.scrollHeight+24)+'px'">
+                </iframe>
+                {% else %}
+                <div class="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed font-roboto">{{ msg.body_plain }}</div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+    {% endfor %}
+
+    <!-- Reply / Forward buttons -->
+    <div id="reply-buttons" class="flex items-center gap-3 mb-8">
+        <button onclick="document.getElementById('reply-box').classList.remove('hidden'); document.getElementById('reply-buttons').classList.add('hidden');"
+                class="flex items-center gap-2 px-6 py-2 border border-gray-300 rounded-full text-sm text-gray-700 hover:bg-gray-100 hover:shadow-sm font-google-sans">
+            <span class="material-symbols-outlined text-[18px]">reply</span>
+            Reply
+        </button>
+        <button class="flex items-center gap-2 px-6 py-2 border border-gray-300 rounded-full text-sm text-gray-700 hover:bg-gray-100 hover:shadow-sm font-google-sans">
+            <span class="material-symbols-outlined text-[18px]">forward</span>
+            Forward
+        </button>
+    </div>
+
+    <!-- Hidden reply form (shown on click) -->
+    <div id="reply-box" class="hidden border border-gray-200 rounded-lg p-4 mb-8">
+        <form action="/compose" method="post">
+            <input type="hidden" name="thread_id" value="{{ thread.id }}">
+            {% if messages %}
+            <input type="hidden" name="to" value="{{ messages[-1].sender.split('<')[1].rstrip('>') if '<' in messages[-1].sender else messages[-1].sender }}">
+            <input type="hidden" name="subject" value="RE: {{ messages[0].subject }}">
+            {% endif %}
+            <textarea name="body" rows="4" placeholder="Reply..."
+                      class="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500 resize-none font-roboto"></textarea>
+            <div class="flex items-center gap-2 mt-2">
+                <button type="submit"
+                        class="px-6 py-2 bg-blue-600 text-white rounded-full text-sm hover:bg-blue-700 font-google-sans">
+                    Send
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}

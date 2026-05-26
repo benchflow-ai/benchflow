@@ -113,6 +113,136 @@ def test_rollout_yaml_loader_normalizes_alias_and_root_sandbox_user():
     assert cfg.sandbox_user is None
 
 
+def test_native_yaml_zero_agent_idle_timeout_disables_watchdog(tmp_path):
+    """Guards v0.5-idle-timeout@219906c against config/CLI semantic drift."""
+    tasks = tmp_path / "tasks" / "task-a"
+    tasks.mkdir(parents=True)
+    (tasks / "task.toml").write_text('version = "1.0"')
+
+    config = tmp_path / "config.yaml"
+    config.write_text("""
+tasks_dir: tasks
+agent: gemini
+agent_idle_timeout: 0
+""")
+
+    job = Evaluation.from_yaml(config)
+
+    assert job._config.agent_idle_timeout is None
+
+
+def test_legacy_yaml_zero_agent_idle_timeout_disables_watchdog(tmp_path):
+    """Guards v0.5-idle-timeout@219906c against legacy config semantic drift."""
+    tasks = tmp_path / "tasks" / "task-a"
+    tasks.mkdir(parents=True)
+    (tasks / "task.toml").write_text('version = "1.0"')
+
+    config = tmp_path / "config.yaml"
+    config.write_text("""
+n_attempts: 1
+agent_idle_timeout_sec: 0
+orchestrator:
+  n_concurrent_trials: 1
+environment:
+  type: docker
+agents:
+  - name: gemini
+    model_name: gemini-3.1-flash-lite-preview
+datasets:
+  - path: tasks
+""")
+
+    job = Evaluation.from_yaml(config)
+
+    assert job._config.agent_idle_timeout is None
+
+
+def test_rollout_yaml_zero_agent_idle_timeout_disables_watchdog():
+    """Guards v0.5-idle-timeout@219906c for direct RolloutConfig YAML loading."""
+    from benchflow._utils.yaml_loader import rollout_config_from_dict
+
+    cfg = rollout_config_from_dict(
+        {
+            "task_dir": "tests/examples/hello-world-task",
+            "agent": "gemini",
+            "agent_idle_timeout": 0,
+        }
+    )
+
+    assert cfg.agent_idle_timeout is None
+
+
+def test_native_yaml_rejects_bool_agent_idle_timeout(tmp_path):
+    """Guards v0.5-idle-timeout@1566fed against bool-to-int coercion."""
+    tasks = tmp_path / "tasks" / "task-a"
+    tasks.mkdir(parents=True)
+    (tasks / "task.toml").write_text('version = "1.0"')
+
+    config = tmp_path / "config.yaml"
+    config.write_text("""
+tasks_dir: tasks
+agent: gemini
+agent_idle_timeout: true
+""")
+
+    with pytest.raises(ValueError, match="integer seconds"):
+        Evaluation.from_yaml(config)
+
+
+def test_legacy_yaml_rejects_fractional_agent_idle_timeout(tmp_path):
+    """Guards v0.5-idle-timeout@1566fed against float truncation."""
+    tasks = tmp_path / "tasks" / "task-a"
+    tasks.mkdir(parents=True)
+    (tasks / "task.toml").write_text('version = "1.0"')
+
+    config = tmp_path / "config.yaml"
+    config.write_text("""
+n_attempts: 1
+agent_idle_timeout_sec: 1.5
+orchestrator:
+  n_concurrent_trials: 1
+environment:
+  type: docker
+agents:
+  - name: gemini
+    model_name: gemini-3.1-flash-lite-preview
+datasets:
+  - path: tasks
+""")
+
+    with pytest.raises(ValueError, match="integer seconds"):
+        Evaluation.from_yaml(config)
+
+
+def test_rollout_yaml_rejects_integral_float_agent_idle_timeout_contract():
+    """Guards v0.5-idle-timeout@1566fed; integer seconds reject floats like 1.0."""
+    from benchflow._utils.yaml_loader import rollout_config_from_dict
+
+    with pytest.raises(ValueError, match="integer seconds"):
+        rollout_config_from_dict(
+            {
+                "task_dir": "tests/examples/hello-world-task",
+                "agent": "gemini",
+                "agent_idle_timeout": 1.0,
+            }
+        )
+
+
+def test_rollout_yaml_accepts_numeric_string_agent_idle_timeout():
+    """Guards v0.5-idle-timeout@1566fed numeric-string compatibility."""
+    from benchflow._utils.yaml_loader import rollout_config_from_dict
+
+    cfg = rollout_config_from_dict(
+        {
+            "task_dir": "tests/examples/hello-world-task",
+            "agent": "gemini",
+            "agent_idle_timeout": "600",
+        }
+    )
+
+    assert cfg.agent_idle_timeout == 600
+
+
 def test_from_legacy_yaml(legacy_yaml):
     """Test loading legacy-format YAML."""
     job = Evaluation.from_yaml(legacy_yaml)
@@ -149,7 +279,12 @@ datasets:
 
 
 def test_from_legacy_yaml_defaults(tmp_path):
-    """Test legacy YAML with minimal config."""
+    """Test legacy YAML with minimal config.
+
+    Non-default agents must declare a model (either via ``model_name`` here or
+    via ``AgentConfig.default_model``) — #343 stopped silent fallback to a
+    Claude default for cross-provider agents like ``pi-acp``.
+    """
     tasks = tmp_path / "tasks" / "task-a"
     tasks.mkdir(parents=True)
     (tasks / "task.toml").write_text('version = "1.0"')
@@ -158,6 +293,7 @@ def test_from_legacy_yaml_defaults(tmp_path):
     config.write_text("""
 agents:
   - name: pi-acp
+    model_name: claude-haiku-4-5-20251001
 datasets:
   - path: tasks
 """)
@@ -218,6 +354,7 @@ jobs_dir: jobs/my-run
 skills_dir: skills
 agents:
   - name: pi-acp
+    model_name: claude-haiku-4-5-20251001
 datasets:
   - path: tasks
 """)
@@ -318,3 +455,62 @@ sandbox_user: testuser
         assert job._config.agent_env == {}
         assert job._config.sandbox_user == "agent"
         assert job._config.sandbox_setup_timeout == 120
+
+
+def test_legacy_yaml_maps_include_exclude_filters(tmp_path):
+    """Guards #500: legacy YAML must not silently drop include/exclude filters."""
+    tasks = tmp_path / "tasks"
+    for name in ("alpha", "beta", "gamma"):
+        td = tasks / name
+        td.mkdir(parents=True)
+        (td / "task.toml").write_text('version = "1.0"')
+
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        """
+agents:
+  - name: claude-agent-acp
+    model_name: anthropic/claude-haiku-4-5-20251001
+datasets:
+  - path: tasks
+include:
+  - alpha
+  - beta
+exclude:
+  - gamma
+"""
+    )
+
+    job = Evaluation.from_yaml(config)
+    cfg = job._config
+    assert cfg.include_tasks == {"alpha", "beta"}
+    assert cfg.exclude_tasks == {"gamma"}
+
+
+def test_legacy_yaml_accepts_plural_include_exclude(tmp_path):
+    """Plural spellings ('includes'/'excludes') must also map (#500)."""
+    tasks = tmp_path / "tasks"
+    for name in ("alpha", "beta"):
+        td = tasks / name
+        td.mkdir(parents=True)
+        (td / "task.toml").write_text('version = "1.0"')
+
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        """
+agents:
+  - name: claude-agent-acp
+    model_name: anthropic/claude-haiku-4-5-20251001
+datasets:
+  - path: tasks
+includes:
+  - alpha
+excludes:
+  - beta
+"""
+    )
+
+    job = Evaluation.from_yaml(config)
+    cfg = job._config
+    assert cfg.include_tasks == {"alpha"}
+    assert cfg.exclude_tasks == {"beta"}

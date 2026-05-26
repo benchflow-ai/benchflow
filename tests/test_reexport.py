@@ -78,12 +78,16 @@ def test_register_agent():
             launch_cmd="test-agent --acp",
             requires_env=["TEST_KEY"],
             description="Test agent",
+            disallow_web_tools_setup_cmd="true",
+            disallow_web_tools_owned_paths=["$HOME/.test-agent"],
         )
 
         assert "test-custom-agent" in AGENTS
         cfg, alias_model = get_agent("test-custom-agent")
         assert cfg.launch_cmd == "test-agent --acp"
         assert cfg.requires_env == ["TEST_KEY"]
+        assert cfg.disallow_web_tools_setup_cmd == "true"
+        assert cfg.disallow_web_tools_owned_paths == ["$HOME/.test-agent"]
         assert alias_model == ""
     finally:
         # register_agent writes to all three dicts; clean up all three to keep

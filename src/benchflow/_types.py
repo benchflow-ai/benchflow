@@ -1,8 +1,8 @@
 """Canonical Scene / Role / Turn data types for benchflow trials.
 
 These are the *declarative* types — they describe what a trial *will* do.
-Runtime classes (e.g. ``_scene.Scene``) consume these but are not defined
-here.
+``benchflow.scenes.compile_scenes_to_steps`` lowers them to rollout
+``Step`` objects before execution.
 
 Merged from the duplicate definitions that lived in ``trial.py`` and
 ``_scene.py`` prior to ENG-47.
@@ -67,13 +67,12 @@ class Turn:
 
 @dataclass
 class Scene:
-    """One interaction region — roles take turns executing prompts."""
+    """Authoring sugar for role/skill attribution over a sequence of turns."""
 
     name: str = "default"
     roles: list[Role] = field(default_factory=list)
     turns: list[Turn] = field(default_factory=list)
     skills_dir: str | Path | None = None
-    parallel_group: str | None = None  # scenes with same group execute concurrently
 
     @classmethod
     def single(
