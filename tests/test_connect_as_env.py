@@ -7,7 +7,7 @@ discarding all config-level env vars.
 """
 
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -48,6 +48,23 @@ class TestConnectAsEnvMerge:
         trial._agent_cwd = None
         trial._agent_cfg = MagicMock(credential_files=[])
         trial._phase = "idle"
+        planes = MagicMock()
+        planes.agent_launch.return_value = "claude-agent-acp"
+        planes.resolve_agent_env.side_effect = lambda _agent, _model, env: env or {}
+        planes.ensure_bedrock_proxy_runtime = AsyncMock(
+            side_effect=lambda **kwargs: (kwargs["agent_env"], None)
+        )
+        planes.ensure_usage_proxy_runtime = AsyncMock(
+            side_effect=lambda **kwargs: (kwargs["agent_env"], None)
+        )
+        planes.install_agent = AsyncMock()
+        planes.write_credential_files = AsyncMock()
+        planes.upload_subscription_auth = AsyncMock()
+        planes.apply_web_tool_policy = AsyncMock()
+        planes.connect_acp = AsyncMock(
+            return_value=(AsyncMock(), AsyncMock(), AsyncMock(), "agent")
+        )
+        trial._planes = planes
         return trial
 
     @pytest.mark.asyncio
@@ -59,13 +76,9 @@ class TestConnectAsEnvMerge:
             captured["env"] = env
             return env or {}
 
-        with (
-            patch("benchflow.rollout.resolve_agent_env", side_effect=fake_resolve),
-            patch("benchflow.rollout.connect_acp", new_callable=AsyncMock) as mock_conn,
-        ):
-            mock_conn.return_value = (AsyncMock(), AsyncMock(), "agent")
-            role = _mock_trial._config.scenes[0].roles[0]
-            await _mock_trial.connect_as(role)
+        _mock_trial._planes.resolve_agent_env.side_effect = fake_resolve
+        role = _mock_trial._config.scenes[0].roles[0]
+        await _mock_trial.connect_as(role)
 
         assert "BENCHFLOW_PROVIDER_BASE_URL" in captured["env"]
         assert (
@@ -85,13 +98,9 @@ class TestConnectAsEnvMerge:
             captured["env"] = env
             return env or {}
 
-        with (
-            patch("benchflow.rollout.resolve_agent_env", side_effect=fake_resolve),
-            patch("benchflow.rollout.connect_acp", new_callable=AsyncMock) as mock_conn,
-        ):
-            mock_conn.return_value = (AsyncMock(), AsyncMock(), "agent")
-            role = _mock_trial._config.scenes[0].roles[0]
-            await _mock_trial.connect_as(role)
+        _mock_trial._planes.resolve_agent_env.side_effect = fake_resolve
+        role = _mock_trial._config.scenes[0].roles[0]
+        await _mock_trial.connect_as(role)
 
         env = captured["env"]
         assert env["KEY"] == "from-config"
@@ -111,13 +120,9 @@ class TestConnectAsEnvMerge:
             captured["env"] = env
             return env or {}
 
-        with (
-            patch("benchflow.rollout.resolve_agent_env", side_effect=fake_resolve),
-            patch("benchflow.rollout.connect_acp", new_callable=AsyncMock) as mock_conn,
-        ):
-            mock_conn.return_value = (AsyncMock(), AsyncMock(), "agent")
-            role = _mock_trial._config.scenes[0].roles[0]
-            await _mock_trial.connect_as(role)
+        _mock_trial._planes.resolve_agent_env.side_effect = fake_resolve
+        role = _mock_trial._config.scenes[0].roles[0]
+        await _mock_trial.connect_as(role)
 
         env = captured["env"]
         assert env == {"A": "1", "B": "2", "C": "3", "D": "4"}
@@ -132,13 +137,9 @@ class TestConnectAsEnvMerge:
             captured["env"] = env
             return env or {}
 
-        with (
-            patch("benchflow.rollout.resolve_agent_env", side_effect=fake_resolve),
-            patch("benchflow.rollout.connect_acp", new_callable=AsyncMock) as mock_conn,
-        ):
-            mock_conn.return_value = (AsyncMock(), AsyncMock(), "agent")
-            role = _mock_trial._config.scenes[0].roles[0]
-            await _mock_trial.connect_as(role)
+        _mock_trial._planes.resolve_agent_env.side_effect = fake_resolve
+        role = _mock_trial._config.scenes[0].roles[0]
+        await _mock_trial.connect_as(role)
 
         assert captured["env"] == {}
 
@@ -152,34 +153,19 @@ class TestConnectAsEnvMerge:
         _mock_trial._config.scenes[0].roles = [primary, role]
         _mock_trial._config.agent_env = {"ANTHROPIC_API_KEY": "from-config"}
 
-        with (
-            patch(
-                "benchflow.rollout.resolve_agent_env",
-                return_value={"ANTHROPIC_API_KEY": "from-config"},
-            ),
-            patch(
-                "benchflow.rollout.ensure_bedrock_proxy_runtime",
-                new_callable=AsyncMock,
-            ) as mock_bedrock,
-            patch(
-                "benchflow.rollout.install_agent",
-                new_callable=AsyncMock,
-            ) as mock_install,
-            patch(
-                "benchflow.rollout.write_credential_files",
-                new_callable=AsyncMock,
-            ) as mock_write,
-            patch("benchflow.rollout.upload_subscription_auth", new_callable=AsyncMock),
-            patch("benchflow.rollout.apply_web_tool_policy", new_callable=AsyncMock),
-            patch("benchflow.rollout.connect_acp", new_callable=AsyncMock) as mock_conn,
-        ):
-            mock_bedrock.return_value = ({"ANTHROPIC_API_KEY": "from-config"}, None)
-            mock_conn.return_value = (AsyncMock(), AsyncMock(), "agent")
+        _mock_trial._planes.resolve_agent_env.side_effect = None
+        _mock_trial._planes.resolve_agent_env.return_value = {
+            "ANTHROPIC_API_KEY": "from-config"
+        }
+        _mock_trial._planes.ensure_bedrock_proxy_runtime.return_value = (
+            {"ANTHROPIC_API_KEY": "from-config"},
+            None,
+        )
 
-            await _mock_trial.connect_as(role)
+        await _mock_trial.connect_as(role)
 
-        mock_install.assert_not_awaited()
-        mock_write.assert_awaited_once()
-        args, _kwargs = mock_write.await_args
+        _mock_trial._planes.install_agent.assert_not_awaited()
+        _mock_trial._planes.write_credential_files.assert_awaited_once()
+        args, _kwargs = _mock_trial._planes.write_credential_files.await_args
         assert args[1] == "claude-agent-acp"
         assert args[4] == "other-model"

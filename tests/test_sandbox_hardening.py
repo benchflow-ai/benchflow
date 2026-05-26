@@ -135,7 +135,7 @@ class TestHardenSequence:
         cmds = [c.args[0] for c in env.exec.call_args_list]
         assert "pkill -u agent" in cmds[0]
         wipe_idx = next(
-            (i for i, c in enumerate(cmds) if "rm -rf /logs/verifier" in c), None
+            (i for i, c in enumerate(cmds) if "find /logs/verifier" in c), None
         )
         chown_idx = next(
             (i for i, c in enumerate(cmds) if "chown -R root:root /testbed" in c),
@@ -149,7 +149,7 @@ class TestHardenSequence:
         assert not any("rm -f /testbed/setup.py" in c for c in cmds)
         assert not any("rsync -a --delete /testbed_verify/" in c for c in cmds)
         assert any("mkdir -p /logs/verifier" in c for c in cmds)
-        assert any("mkdir -p /logs/verifier /app" in c for c in cmds)
+        assert any(c == "mkdir -p /app" for c in cmds)
         cleanup_cmd = next(c for c in cmds if "conftest.py" in c)
         assert "sitecustomize.py" in cleanup_cmd and ".pth" in cleanup_cmd
         assert "-not -path '/tests/*'" in cleanup_cmd
@@ -197,11 +197,11 @@ class TestHardenSequence:
 
 
 class TestVerifierDirWipe:
-    """Tier 1: /logs/verifier/ is wiped and recreated before the verifier runs."""
+    """Tier 1: /logs/verifier/ contents are wiped before the verifier runs."""
 
     @pytest.mark.asyncio
-    async def test_wipe_recreates_verifier_dir(self):
-        """rm -rf, mkdir -p, and chmod 777 are all in one atomic call; it runs as root."""
+    async def test_wipe_preserves_verifier_mountpoint(self):
+        """Clean children without deleting the Daytona DinD verifier mount."""
         from benchflow.sandbox.lockdown import harden_before_verify
 
         env = _make_env()
@@ -211,16 +211,40 @@ class TestVerifierDirWipe:
             (
                 c
                 for c in env.exec.call_args_list
-                if "rm -rf /logs/verifier" in c.args[0]
-                and "mkdir -p /logs/verifier /app" in c.args[0]
+                if "find /logs/verifier -mindepth 1" in c.args[0]
                 and "chmod 777 /logs/verifier" in c.args[0]
             ),
             None,
         )
         assert match is not None, (
-            "expected a single call with rm -rf, mkdir -p, and chmod 777 for /logs/verifier"
+            "expected a single call that clears /logs/verifier contents "
+            "without deleting the mountpoint"
         )
+        assert "rm -rf /logs/verifier &&" not in match.args[0]
+        assert "command -v find" in match.args[0]
+        # The find-preferred path uses -exec rm -rf; the else branch falls
+        # back to rm -rf /logs/verifier/* for images that lack find.
+        assert "-exec rm -rf -- {} +" in match.args[0]
+        assert "else" in match.args[0]
         assert match.kwargs.get("user") == "root"
+
+    @pytest.mark.asyncio
+    async def test_wipe_failure_is_not_ignored(self):
+        """Verifier setup must not continue with stale reward outputs after wipe failure."""
+        from benchflow.sandbox.lockdown import harden_before_verify
+
+        def side_effect(cmd, **kwargs):
+            del kwargs
+            if "find /logs/verifier" in cmd:
+                return MagicMock(
+                    stdout="", stderr="Device or resource busy", exit_code=1
+                )
+            return MagicMock(stdout="", stderr="", exit_code=0)
+
+        env = _make_env(side_effect=side_effect)
+
+        with pytest.raises(RuntimeError, match="Device or resource busy"):
+            await harden_before_verify(env, _make_task(), sandbox_user=None)
 
     def test_cleanup_cmd_no_maxdepth(self):
         """CLEANUP_CMD must not limit find depth so deeply nested conftest.py is caught."""

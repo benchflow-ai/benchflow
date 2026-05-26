@@ -56,15 +56,15 @@ The same field is also available on `JobConfig` and `RuntimeConfig`.
 
 ### Scene
 
-One interaction region — roles take turns executing prompts.
+Authoring sugar for role, prompt, and skill attribution. Scenes compile to
+explicit rollout Steps before execution; there is no runtime Scene object or
+message scheduler.
 
 ```python
 # Single-role shortcut
 scene = Scene.single(agent="gemini", model="gemini-3.1-flash-lite-preview")
 
-# Multi-role with turn order (coder-reviewer pattern)
-# Agents communicate via outbox: write /app/.outbox/{recipient}.json
-# Scheduler reads outbox after each turn, injects into next role's prompt
+# Multi-role with explicit turn order
 scene = Scene(
     name="coder-reviewer",
     roles=[
@@ -73,9 +73,8 @@ scene = Scene(
     ],
     turns=[
         Turn("coder"),                    # None prompt = instruction.md
-        Turn("reviewer", "Review the code. Write feedback to "
-             '/app/.outbox/coder.json as {"to":"coder","content":"..."}'),
-        Turn("coder", "Fix the issues."), # reviewer's feedback auto-injected
+        Turn("reviewer", "Review the current workspace."),
+        Turn("coder", "Fix the issues."),
     ],
 )
 ```
@@ -154,19 +153,16 @@ Rollout.run()
   │                     small config/auth dirs, chown the workspace — no
   │                     recursive copy of /root tool trees; agent binaries
   │                     must live on shared prefixes like /usr/local/bin)
-  ├─ for scene in scenes:
-  │    └─ _run_scene(scene)
-  │         ├─ setup /app/.outbox/ — (multi-role scenes only)
-  │         └─ for turn in scene.turns:
-  │              ├─ read outbox     — inject messages into prompt
-  │              ├─ connect_as(role) — open ACP session for this role
-  │              ├─ execute(prompts) — send prompts, collect trajectory
-  │              └─ disconnect()    — kill agent process, clean up
+  ├─ compile scenes → Steps
+  ├─ for step in steps:
+  │    ├─ connect_as(role) — open/reuse ACP session for this role
+  │    └─ execute(prompt)  — send prompt, collect trajectory, grow tree
   ├─ verify()         — run verifier, collect rewards
   └─ cleanup()        — stop sandbox
 ```
 
-Key: `disconnect()` kills the agent process between scenes to prevent context bleed. Each scene gets a fresh agent session.
+Key: scene boundaries are gone by execution time; role changes are represented
+as Step metadata and handled by the rollout executor.
 
 ## Multi-Turn vs Multi-Round
 
@@ -174,11 +170,11 @@ Key: `disconnect()` kills the agent process between scenes to prevent context bl
 |---------|-------|-------|---------------|---------|
 | **Single-turn** | 1 | 1 | — | Baseline benchmark |
 | **Multi-turn** | 1 | 2+ | Same session, sequential prompts | Self-review |
-| **Multi-round** | 2+ | 2+ | Outbox files between roles | Coder + Reviewer |
+| **Multi-role** | 2+ | 2+ | Explicit prompt sequence | Coder + Reviewer |
 
 **Multi-turn** = same agent gets multiple prompts. Use when a second pass catches errors (self-review, iterative refinement). The agent keeps its context across turns.
 
-**Multi-round** = different agents exchange turns. Use when tasks need multiple perspectives (code review, client-advisor). The scheduler reads outbox files and injects messages.
+**Multi-role** = different agents receive explicit turns. Use when tasks need multiple perspectives (code review, client-advisor). Any handoff text must be part of the declared prompt or agent-native communication, not a BenchFlow Scene scheduler.
 
 Both use the same API — `RolloutConfig` with different `Scene` configurations.
 
@@ -193,7 +189,7 @@ config = RolloutConfig(
         roles=[Role("coder", "gemini", "flash"), Role("reviewer", "gemini", "flash")],
         turns=[
             Turn("coder"),
-            Turn("reviewer", "Review /app/. Write feedback to /app/.outbox/coder.json"),
+            Turn("reviewer", "Review /app/. Summarize any issues."),
             Turn("coder", "Read feedback and fix."),
         ],
     )],

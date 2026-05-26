@@ -12,10 +12,36 @@ try:
 except ModuleNotFoundError:  # Python < 3.11
     import tomli as tomllib  # type: ignore[no-redef]  # ty: ignore[unresolved-import]
 
+from benchflow.rewards.events import Space
 
 # ------------------------------------------------------------------
 # Data models
 # ------------------------------------------------------------------
+
+# The valid evaluation spaces a criterion may declare. Mirrors
+# ``benchflow.rewards.events.Space`` so rubrics can tag a criterion as
+# ``"action"``, ``"reasoning"``, ``"memory"``, or ``"latent"`` instead of
+# letting it default to ``"output"`` — the architecture's outcome space.
+_VALID_SPACES: frozenset[str] = frozenset(
+    {"output", "action", "reasoning", "memory", "latent"}
+)
+
+
+def _coerce_space(raw: object) -> Space:
+    """Validate a raw ``space`` value from a rubric file.
+
+    Falls back to ``"output"`` when the field is absent. A present-but-invalid
+    value is rejected loudly — silently downgrading to ``"output"`` would
+    hide a misconfigured rubric and re-introduce the very mistag this
+    contract is meant to prevent.
+    """
+    if raw is None:
+        return "output"
+    if isinstance(raw, str) and raw in _VALID_SPACES:
+        return raw  # type: ignore[return-value]
+    raise ValueError(
+        f"Rubric criterion 'space' must be one of {sorted(_VALID_SPACES)}; got {raw!r}"
+    )
 
 
 @dataclass
@@ -30,6 +56,12 @@ class Criterion:
     max: float = 100.0
     weight: float = 1.0
     files: list[str] = field(default_factory=list)
+    # Evaluation space this criterion scores — propagated to every dense
+    # ``RewardEvent`` it emits. Defaults to ``"output"`` (the architecture's
+    # outcome space) so existing rubrics keep their current behaviour; tag a
+    # process-like criterion as ``"action"`` / ``"reasoning"`` / ``"memory"``
+    # to keep dense events from being mistaken for terminal outcome rewards.
+    space: Space = "output"
 
     @property
     def id(self) -> str:
@@ -97,6 +129,7 @@ def _parse_criterion(raw: dict) -> Criterion:
         max=raw.get("max", 100.0),
         weight=raw.get("weight", 1.0),
         files=raw.get("files", []),
+        space=_coerce_space(raw.get("space")),
     )
 
 
@@ -169,6 +202,7 @@ def load_rubric_json(path: Path) -> RubricConfig:
                 max=raw.get("max", 100.0),
                 weight=raw.get("weight", 1.0),
                 files=raw.get("files", []),
+                space=_coerce_space(raw.get("space")),
             )
         )
 

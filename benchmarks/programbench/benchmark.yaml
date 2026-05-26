@@ -26,7 +26,7 @@ tasks:
 # ── Conversion ───────────────────────────────────────────────────────
 # How raw benchmark data is converted to BenchFlow task format.
 conversion:
-  script: benchflow.py       # CLI: --output-dir, --limit, --overwrite, --task-ids
+  script: benchflow.py       # CLI: --output-dir, --programbench-dir, --limit, --overwrite, --task-ids
   generator: main.py         # python -m benchmarks.programbench.main --output-dir ...
   source_format: task.yaml + Docker images
   has_oracle_solutions: true

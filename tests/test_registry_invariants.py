@@ -11,6 +11,8 @@ start with ``BENCHFLOW_PROVIDER_``).
 """
 
 import re
+import shutil
+import subprocess
 
 import pytest
 
@@ -23,6 +25,7 @@ from benchflow.agents.registry import (
     AGENT_INSTALLERS,
     AGENT_LAUNCH,
     AGENTS,
+    _js_agent_install,
 )
 
 VALID_AGENT_PROTOCOLS = {"acp", "cli"}
@@ -42,12 +45,9 @@ VALID_ACP_MODEL_FORMATS = {
     "registered-provider/model",
 }
 JS_ACP_AGENTS = {
-    "claude-agent-acp",
-    "pi-acp",
-    "openclaw",
-    "codex-acp",
-    "gemini",
-    "opencode",
+    name
+    for name, cfg in AGENTS.items()
+    if cfg.protocol == "acp" and "npm install" in cfg.install_cmd
 }
 
 
@@ -82,6 +82,7 @@ def test_agent_collection_invariants(name, cfg):
     - env_mapping values: non-empty strings (agent-native env var names)
     - skill_paths: $HOME/ or $WORKSPACE/ relative
     - home_dirs: dot-prefixed (copied under sandbox $HOME)
+    - disallow_web_tools_owned_paths: $HOME/ relative
     """
     assert all(isinstance(k, str) and k for k in cfg.requires_env)
     for key, val in cfg.env_mapping.items():
@@ -95,6 +96,10 @@ def test_agent_collection_invariants(name, cfg):
         )
     for d in cfg.home_dirs:
         assert d.startswith("."), f"home_dirs entry {d!r} must start with '.'"
+    for path in cfg.disallow_web_tools_owned_paths:
+        assert path.startswith("$HOME/"), (
+            f"disallow_web_tools_owned_paths entry {path!r} must start with $HOME/"
+        )
 
 
 @pytest.mark.parametrize("name,cfg", AGENTS.items(), ids=list(AGENTS.keys()))
@@ -153,6 +158,87 @@ def test_js_acp_agents_use_isolated_node_runtime(name):
         assert fragment not in install_cmd, (
             f"{name!r} JS agent install must not mutate task Node/npm via {fragment!r}"
         )
+
+
+# Bash-isms not supported by dash (Ubuntu/Debian's /bin/sh). The sandbox
+# Docker/Daytona exec paths invoke ``sh -c install_cmd``; if /bin/sh is dash
+# (ubuntu:24.04 base), any of these aborts the install on line 1. See #341.
+_BASH_ISM_PATTERNS = {
+    "set -o pipefail": re.compile(r"\bpipefail\b"),
+    "[[ ... ]]": re.compile(r"\[\[\s"),
+    "<<< (here-string)": re.compile(r"<<<"),
+    "$(( ... )) (arith)": re.compile(r"\$\(\("),
+    "function name() {}": re.compile(r"(?:^|[\s;&|])function\s+\w"),
+    "declare/local -": re.compile(r"\b(?:declare|local)\s+-"),
+    "<(...) (proc subst)": re.compile(r"[^<]<\("),
+}
+
+
+@pytest.mark.parametrize("name,cfg", AGENTS.items(), ids=list(AGENTS.keys()))
+def test_agent_install_cmd_is_posix_sh_compatible(name, cfg):
+    """Install runs under ``sh -c`` (dash on Ubuntu); reject bash-isms.
+
+    Regression guard for #341: ``set -o pipefail`` at the top of the Node
+    bootstrap aborted the install on line 1 when /bin/sh was dash.
+    """
+    for label, pattern in _BASH_ISM_PATTERNS.items():
+        assert not pattern.search(cfg.install_cmd), (
+            f"{name!r} install_cmd contains bash-ism {label!r}; the sandbox "
+            "runs install_cmd under ``sh -c`` and /bin/sh is dash on Ubuntu "
+            "(see #341). Rewrite using POSIX sh, or run the script with "
+            "/bin/bash explicitly."
+        )
+
+
+@pytest.mark.skipif(
+    shutil.which("dash") is None,
+    reason="dash not installed on host; covered in CI",
+)
+@pytest.mark.parametrize("name,cfg", AGENTS.items(), ids=list(AGENTS.keys()))
+def test_agent_install_cmd_parses_under_dash(name, cfg):
+    """``dash -n`` syntax-checks every install_cmd against the real shell.
+
+    Catches bash-isms the regex sweep misses (e.g. brace expansion edge cases,
+    invalid redirections under dash). Complements the regex check above.
+    """
+    result = subprocess.run(
+        ["dash", "-n"],
+        input=cfg.install_cmd,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, (
+        f"{name!r} install_cmd failed dash syntax check:\n{result.stderr}"
+    )
+
+
+def test_js_agent_install_respects_explicit_npm_package_specs():
+    """Guards v0.5-integration@27752fa against moving npm latest installs."""
+    pinned_cmd = _js_agent_install("gemini", "@google/gemini-cli@0.42.0")
+    dist_tag_cmd = _js_agent_install("test-agent", "some-agent@next")
+    scoped_default_cmd = _js_agent_install(
+        "codex-acp", "@agentclientprotocol/codex-acp"
+    )
+    scoped_dist_tag_cmd = _js_agent_install("pi", "@mariozechner/pi-coding-agent@next")
+    default_cmd = _js_agent_install("test-agent", "some-agent")
+
+    assert "@google/gemini-cli@0.42.0" in pinned_cmd
+    assert "@google/gemini-cli@latest" not in pinned_cmd
+    assert "some-agent@next" in dist_tag_cmd
+    assert "some-agent@next@latest" not in dist_tag_cmd
+    assert "@agentclientprotocol/codex-acp@latest" in scoped_default_cmd
+    assert "@mariozechner/pi-coding-agent@next" in scoped_dist_tag_cmd
+    assert "@mariozechner/pi-coding-agent@next@latest" not in scoped_dist_tag_cmd
+    assert "some-agent@latest" in default_cmd
+
+
+def test_gemini_cli_install_is_pinned():
+    """Guards v0.5-integration@27752fa against Daytona installing moving latest."""
+    install_cmd = AGENTS["gemini"].install_cmd
+    assert "@google/gemini-cli@0.42.0" in install_cmd
+    assert "@google/gemini-cli@latest" not in install_cmd
+    assert "[ -x /opt/benchflow/js-agents/bin/gemini ] ||" not in install_cmd
 
 
 @pytest.mark.parametrize("name", sorted(JS_ACP_AGENTS))

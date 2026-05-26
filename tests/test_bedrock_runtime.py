@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import sys
 
@@ -54,6 +55,7 @@ class TestBedrockRuntimeEnv:
             )
 
     def test_build_bedrock_client_with_injected_boto3_module(self):
+        """Guards v0.5-integration@e55219d against Bedrock read-timeout proxy exits."""
         calls = {}
 
         class FakeBoto3:
@@ -69,10 +71,10 @@ class TestBedrockRuntimeEnv:
             boto3_module=FakeBoto3(),
         )
         assert client == {"ok": True}
-        assert calls == {
-            "service_name": "bedrock-runtime",
-            "region_name": "us-east-1",
-        }
+        assert calls["service_name"] == "bedrock-runtime"
+        assert calls["region_name"] == "us-east-1"
+        assert calls["config"].connect_timeout == 10
+        assert calls["config"].read_timeout == 300
 
 
 class TestAnthropicTranslation:
@@ -137,6 +139,92 @@ class TestAnthropicTranslation:
         }
         assert payload["toolConfig"]["toolChoice"] == {
             "tool": {"name": "lookup_weather"}
+        }
+
+    def test_opus47_request_omits_deprecated_sampling_params(self):
+        """Guards v0.5-integration@e55219d against Bedrock Opus4.7 sampling-param 400s."""
+        body = {
+            "model": "us.anthropic.claude-opus-4-7",
+            "messages": [{"role": "user", "content": "Hello"}],
+            "max_tokens": 256,
+            "temperature": 0.2,
+            "top_p": 0.9,
+            "stop_sequences": ["DONE"],
+        }
+
+        payload = anthropic_request_to_bedrock_converse(body)
+
+        assert payload["inferenceConfig"] == {
+            "maxTokens": 256,
+            "stopSequences": ["DONE"],
+        }
+
+    def test_tool_result_image_blocks_translate_to_bedrock_images(self):
+        """Guards v0.5-integration@e55219d against OpenHands image tool-result proxy crashes."""
+        image_bytes = b"fake jpeg bytes"
+        body = {
+            "model": "us.anthropic.claude-opus-4-7",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "toolu_1",
+                            "content": [
+                                {"type": "text", "text": "Screenshot attached."},
+                                {
+                                    "type": "image",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": "image/jpeg",
+                                        "data": base64.b64encode(image_bytes).decode(),
+                                    },
+                                },
+                            ],
+                        }
+                    ],
+                },
+            ],
+            "max_tokens": 256,
+        }
+
+        payload = anthropic_request_to_bedrock_converse(body)
+
+        content = payload["messages"][0]["content"][0]["toolResult"]["content"]
+        assert content[0] == {"text": "Screenshot attached."}
+        assert content[1] == {
+            "image": {"format": "jpeg", "source": {"bytes": image_bytes}}
+        }
+
+    def test_user_image_blocks_translate_to_bedrock_images(self):
+        """Guards v0.5-integration@e55219d against Anthropic image-message proxy crashes."""
+        image_bytes = b"fake png bytes"
+        body = {
+            "model": "us.anthropic.claude-opus-4-7",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "What is shown?"},
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/png",
+                                "data": base64.b64encode(image_bytes).decode(),
+                            },
+                        },
+                    ],
+                },
+            ],
+            "max_tokens": 256,
+        }
+
+        payload = anthropic_request_to_bedrock_converse(body)
+
+        assert payload["messages"][0]["content"][1] == {
+            "image": {"format": "png", "source": {"bytes": image_bytes}}
         }
 
     def test_bedrock_response_to_anthropic(self):
@@ -228,6 +316,20 @@ class TestOpenAIResponsesTranslation:
         )
         assert payload["inferenceConfig"]["maxTokens"] == 128
         assert payload["toolConfig"]["toolChoice"] == {"auto": {}}
+
+    def test_opus47_responses_request_omits_deprecated_sampling_params(self):
+        """Guards v0.5-integration@e55219d against Bedrock Opus4.7 sampling-param 400s."""
+        body = {
+            "model": "global.anthropic.claude-opus-4-7",
+            "input": "Hello",
+            "max_output_tokens": 128,
+            "temperature": 0.1,
+            "top_p": 0.95,
+        }
+
+        payload = openai_responses_request_to_bedrock_converse(body)
+
+        assert payload["inferenceConfig"] == {"maxTokens": 128}
 
     def test_bedrock_response_to_openai_response(self):
         response = {

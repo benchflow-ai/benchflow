@@ -11,6 +11,8 @@ import logging
 import subprocess
 from pathlib import Path
 
+from benchflow._paths import is_safe_regular_file, iter_safe_children
+
 logger = logging.getLogger(__name__)
 
 # File extensions we know how to handle.
@@ -46,13 +48,15 @@ def read_file_as_text(path: Path) -> str:
 def find_deliverables(directory: Path) -> dict[str, str]:
     """Discover and read all deliverable files in *directory*.
 
-    Skips files larger than 50 MB and hidden/internal files.
+    Skips files larger than 50 MB and hidden/internal files. Symlinks are
+    refused (#404) so an agent cannot exfiltrate host files into the judge
+    prompt by dropping a link inside the deliverable tree.
     """
     texts: dict[str, str] = {}
     if not directory.is_dir():
         return texts
-    for f in sorted(directory.iterdir()):
-        if not f.is_file():
+    for f in iter_safe_children(directory, context="judge deliverables"):
+        if not is_safe_regular_file(f):
             continue
         if f.name.startswith(".") or f.name == "rubric.json":
             continue

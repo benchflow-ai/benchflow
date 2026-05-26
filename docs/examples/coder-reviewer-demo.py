@@ -62,17 +62,12 @@ def coder_reviewer_config(
     reviewer_agent: str = "gemini",
     reviewer_model: str = "gemini-3.1-flash-lite-preview",
 ) -> RolloutConfig:
-    """Pattern 3: Coder + Reviewer — multi-round with outbox messaging.
+    """Pattern 3: Coder + Reviewer — explicit multi-role prompts.
 
     Flow:
       1. Coder attempts the task
-      2. Reviewer reads coder's work, writes feedback to /app/.outbox/coder.json
-      3. Coder receives feedback (injected by scheduler), revises solution
-
-    The outbox convention:
-      - Agent writes: /app/.outbox/{recipient}.json
-      - Format: {"to": "role_name", "content": "your message"}
-      - Scheduler reads, clears, and injects into next role's prompt
+      2. Reviewer reads coder's work, writes feedback to /app/review-feedback.md
+      3. Coder reads the declared feedback file and revises the solution
     """
     return RolloutConfig(
         task_path=task_path,
@@ -89,12 +84,11 @@ def coder_reviewer_config(
                         "reviewer",
                         "Review the code in /app/. Check for correctness, edge cases, "
                         "and adherence to the task requirements in /app/instruction.md. "
-                        "Write your feedback to /app/.outbox/coder.json as: "
-                        '{"to": "coder", "content": "Your specific feedback here."}',
+                        "Write your feedback to /app/review-feedback.md.",
                     ),
                     Turn(
                         "coder",
-                        "Read the reviewer's feedback and fix the issues. "
+                        "Read /app/review-feedback.md and fix the issues. "
                         "Focus only on what was flagged — don't start over.",
                     ),
                 ],

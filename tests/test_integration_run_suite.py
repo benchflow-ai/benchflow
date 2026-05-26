@@ -30,6 +30,19 @@ from tests.integration.run_suite import (
 
 SUITE_PATH = Path("tests/integration/suites/release.yaml")
 TERMINAL_BENCH_SMOKE_TASK = Path("tests/examples/terminal-bench-smoke-task")
+INTEGRATION_CONFIG_DIR = Path("tests/integration/configs")
+INTEGRATION_RUN_SH = Path("tests/integration/run.sh")
+SELECTED_SKILLSBENCH_TASKS = [
+    "jax-computing-basics",
+    "python-scala-translation",
+    "jpg-ocr-stat",
+    "grid-dispatch-operator",
+    "threejs-to-obj",
+    "data-to-d3",
+    "lake-warming-attribution",
+    "weighted-gdp-calc",
+    "shock-analysis-supply",
+]
 
 
 def test_release_suite_loads_and_tracks_backlog_lanes() -> None:
@@ -68,6 +81,68 @@ def test_release_suite_benchmarks_have_source_uids() -> None:
 
     assert "benchflow-ai/skillsbench:tasks@main" in seen
     assert "benchflow-ai/benchmarks:datasets/harvey-lab/tasks@main" in seen
+
+
+def test_integration_configs_use_active_dev_concurrency() -> None:
+    """Guards v0.5 active-dev E2E configs from falling back to concurrency 30."""
+    import yaml
+
+    configs = sorted(INTEGRATION_CONFIG_DIR.glob("*.yaml"))
+
+    assert configs
+    for path in configs:
+        data = yaml.safe_load(path.read_text())
+        assert data["environment"] == "daytona", path
+        assert data["concurrency"] == 64, path
+        assert data["include"] == SELECTED_SKILLSBENCH_TASKS, path
+
+
+def test_integration_runner_uses_overridable_active_dev_concurrency() -> None:
+    """Guards v0.5 active-dev shell runs while preserving a large-run override."""
+    script = INTEGRATION_RUN_SH.read_text()
+
+    assert "BENCHFLOW_INTEGRATION_CONCURRENCY:-64" in script
+    assert '--concurrency "$INTEGRATION_CONCURRENCY"' in script
+    assert "--concurrency 30" not in script
+    assert "jobs/integration-$RUN_ID" in script
+    assert '--jobs-dir "$JOBS_ROOT/$agent"' in script
+
+
+def test_integration_runner_rejects_silent_partial_runs() -> None:
+    """Guards v0.5 E2E evidence from passing when requested agents are skipped."""
+    script = INTEGRATION_RUN_SH.read_text()
+
+    assert "BENCHFLOW_INTEGRATION_ALLOW_SKIPS" in script
+    assert "ERROR: requested agents were skipped" in script
+    assert 'if [ "$ALLOW_SKIPS" != true ]; then' in script
+
+
+def test_integration_runner_requires_explicit_check_only_root() -> None:
+    """Guards v0.5 check-only mode from defaulting to stale jobs/integration."""
+    script = INTEGRATION_RUN_SH.read_text()
+
+    assert "--check-only requires BENCHFLOW_INTEGRATION_JOBS_ROOT" in script
+    assert 'JOBS_ROOT="jobs/integration"' not in script
+
+
+def test_integration_runner_uses_source_configs_for_auditable_provenance() -> None:
+    """Guards v0.5 run.sh from producing local no-source artifacts."""
+    script = INTEGRATION_RUN_SH.read_text()
+
+    assert 'config_file="tests/integration/configs/$agent.yaml"' in script
+    assert '--config "$config_file"' in script
+    assert "EXPECTED_CHECK_ARGS" in script
+    assert '"$agent.model=$(model_for_agent "$agent")"' in script
+    assert '--tasks-dir "$TASKS_DIR"' not in script
+
+
+def test_integration_runner_audits_after_nonzero_eval_exit() -> None:
+    """Guards Cycle B from skipping audit when bench eval exits on task failures."""
+    script = INTEGRATION_RUN_SH.read_text()
+
+    assert "continuing to audit" in script
+    assert "exit $?" in script
+    assert 'if [ "$FAILURES" -ne 0 ]; then' not in script
 
 
 def test_release_suite_hosted_env_hubs_have_hub_urls() -> None:
@@ -212,6 +287,7 @@ def test_full_release_dry_run_passes_current_release_gate(
     captured = capsys.readouterr()
     assert "Profile: full-release" in captured.out
     assert "shared-sandbox-smoke" in captured.out
+    assert "skillsbench-harbor-parity" in captured.out
     assert "hosted-env-compatibility-board" in captured.out
     assert "terminal-bench-smoke" in captured.out
     assert "trace-to-task-e2e" in captured.out

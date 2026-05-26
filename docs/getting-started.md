@@ -126,9 +126,9 @@ local directory, or `--config <config.yaml>` for a YAML config. Results land und
 `trajectory/acp_trajectory.jsonl` for the full agent trace.
 
 When you mount skills, use `BENCHFLOW_SKILL_NUDGE=name` as the default docs
-option. It tells the agent which skills are available and where to read them.
-For more context in the prompt, use `description` or `full`; omit the env var
-to keep BenchFlow's runtime default off.
+option. See [Architecture: skill loading](./architecture.md#skill-loading) for
+how mounted skills reach the agent and how `name`, `description`, and `full`
+differ.
 
 ## Run from Python
 

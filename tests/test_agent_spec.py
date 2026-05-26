@@ -66,6 +66,11 @@ class TestResolveAgent:
         assert config.name == "acpx:claude-agent-acp"
         assert "acpx" in config.launch_cmd
 
+    def test_resolve_acpx_preserves_web_policy_owned_paths(self):
+        """Guards v0.5-integration@27752fa against ACPX policy drift."""
+        config = resolve_agent("acpx/gemini")
+        assert config.disallow_web_tools_owned_paths == ["$HOME/.gemini"]
+
     def test_acpx_wrap_carries_routing_fields(self):
         """Regression for PR #322: _acpx_wrap must inherit api_protocol and
         default_model (and all other non-overridden fields) from the underlying

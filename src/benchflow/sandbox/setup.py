@@ -12,6 +12,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, NoReturn, cast
 
+from benchflow._paths import ignore_symlinks, is_safe_regular_file
 from benchflow.agents.registry import AGENTS
 from benchflow.task import RolloutPaths, Task
 
@@ -36,6 +37,18 @@ _IGNORE_DIRS = {
     ".mypy_cache",
     ".ruff_cache",
 }
+
+
+def _stage_ignore(directory: str, contents: list[str]) -> list[str]:
+    """``shutil.copytree`` ignore callback: drop noise dirs *and* every symlink.
+
+    Composes :func:`shutil.ignore_patterns` for ``_IGNORE_DIRS`` with
+    :func:`benchflow._paths.ignore_symlinks` so a task-controlled symlink
+    cannot smuggle host files into the Docker build context (#411).
+    """
+    pattern_skip = set(shutil.ignore_patterns(*_IGNORE_DIRS)(directory, contents))
+    link_skip = set(ignore_symlinks(directory, contents))
+    return sorted(pattern_skip | link_skip)
 
 
 _HEREDOC_RE = re.compile(r"<<-?\s*['\"]?([A-Za-z0-9_.-]+)['\"]?")
@@ -333,6 +346,11 @@ def _stage_copy_source(src_path: str, env_dir: Path, context_root: Path) -> str:
     Returns the original ``src_path`` unchanged when it cannot or should not be
     staged (absolute path, build arg, ``.``, glob, or a source that does not
     exist under ``context_root``).
+
+    Sources that resolve outside ``context_root`` (e.g. ``../outside-secret``)
+    are rejected: with a permissive SDK ``context_root`` a malicious Dockerfile
+    could otherwise stage arbitrary host files into ``environment/_deps/``
+    where they then enter the build context (issue #363).
     """
     # Skip sources already relative to env dir, absolute, or using build args.
     if src_path.startswith("/") or src_path.startswith("$") or src_path == ".":
@@ -342,7 +360,40 @@ def _stage_copy_source(src_path: str, env_dir: Path, context_root: Path) -> str:
         return src_path
 
     abs_src = context_root / src_path
+    # Reject sources that escape ``context_root`` via ``..`` or symlinks.
+    # ``resolve(strict=False)`` collapses ``..`` segments without requiring the
+    # file to exist yet (Dockerfile lint can run before sources are present).
+    try:
+        resolved_src = abs_src.resolve(strict=False)
+        resolved_root = context_root.resolve(strict=False)
+    except (OSError, RuntimeError):
+        # Unresolvable paths (e.g. symlink loops) — refuse to stage them.
+        logger.warning(
+            "stage_dockerfile_deps: refusing to stage COPY source %r "
+            "(path could not be resolved)",
+            src_path,
+        )
+        return src_path
+    if not resolved_src.is_relative_to(resolved_root):
+        logger.warning(
+            "stage_dockerfile_deps: refusing to stage COPY source %r — "
+            "resolves outside context_root %s",
+            src_path,
+            resolved_root,
+        )
+        return src_path
     if not abs_src.exists():
+        return src_path
+
+    # Reject symlinked sources outright (#411). Following a symlink here
+    # would bake the link target into the Docker build context, which is an
+    # exfiltration sink. ``abs_src.is_symlink()`` does *not* follow the
+    # link, so this is checked before any read.
+    if abs_src.is_symlink():
+        logger.warning(
+            "stage_dockerfile_deps: refusing to stage symlinked source %s",
+            abs_src,
+        )
         return src_path
 
     dep_name = _dep_local_name(src_path)
@@ -351,14 +402,21 @@ def _stage_copy_source(src_path: str, env_dir: Path, context_root: Path) -> str:
     if abs_src.is_dir():
         if local_dest.exists():
             shutil.rmtree(local_dest)
+        # ``symlinks=False`` is the default but we re-state it for
+        # readability; the composed ignore drops both noise dirs and any
+        # symlink found inside the tree.
         shutil.copytree(
             abs_src,
             local_dest,
-            ignore=shutil.ignore_patterns(*_IGNORE_DIRS),
+            symlinks=False,
+            ignore=_stage_ignore,
         )
-    else:
+    elif is_safe_regular_file(abs_src):
         local_dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(abs_src, local_dest)
+    else:
+        logger.warning("stage_dockerfile_deps: refusing non-regular source %s", abs_src)
+        return src_path
 
     return f"_deps/{dep_name}"
 
@@ -444,11 +502,17 @@ def _inject_skills_into_dockerfile(task_path: Path, skills_dir: Path) -> None:
     dockerfile_path = env_dir / "Dockerfile"
     if not dockerfile_path.exists() or not skills_dir.is_dir():
         return
+    if not any(skills_dir.iterdir()):
+        logger.info("Skills injection skipped: skills directory is empty")
+        return
 
     dest = env_dir / "_deps" / "skills"
     if dest.exists():
         shutil.rmtree(dest)
-    shutil.copytree(skills_dir, dest, ignore=shutil.ignore_patterns(*_IGNORE_DIRS))
+    # Refuse to follow symlinks under skills_dir (#411). A symlink baked
+    # into the image would otherwise serve attacker-chosen content to every
+    # agent for the lifetime of the build.
+    shutil.copytree(skills_dir, dest, symlinks=False, ignore=_stage_ignore)
 
     lines = [
         "",
@@ -503,12 +567,24 @@ def _detect_dind_mount() -> tuple[str, str] | None:
         return None
 
 
+_DIND_PATCH_APPLIED = False
+
+
 def _patch_docker_dind() -> None:
     """Monkey-patch DockerSandboxEnvVars for DinD path translation.
 
     When running inside a devcontainer, HOST_*_PATH env vars need to use
-    host filesystem paths, not container paths. Applied once at import time.
+    host filesystem paths, not container paths.
+
+    Idempotent: safe to call repeatedly; only applies the wrapper once.
+    Called from ``Rollout.__init__`` so importing ``benchflow.rollout`` has
+    no side effects on sandbox/provider behavior — only constructing a
+    rollout activates the DinD compatibility shim.
     """
+    global _DIND_PATCH_APPLIED
+    if _DIND_PATCH_APPLIED:
+        return
+
     dind_mount = _detect_dind_mount()
     if not dind_mount:
         return
@@ -533,6 +609,7 @@ def _patch_docker_dind() -> None:
         return env
 
     DockerSandboxEnvVars.to_env_dict = _patched  # type: ignore[assignment, ty:invalid-assignment]
+    _DIND_PATCH_APPLIED = True
 
 
 def _create_sandbox_environment(
@@ -542,8 +619,18 @@ def _create_sandbox_environment(
     rollout_name: str,
     rollout_paths: RolloutPaths,
     preserve_agent_network: bool = False,
+    environment_manifest: Any = None,
 ) -> Any:
-    """Create a sandbox environment (Docker, Daytona, or Modal)."""
+    """Create a sandbox environment (Docker, Daytona, or Modal).
+
+    When ``environment_manifest`` is provided, its declared controls take
+    effect at sandbox-construction time: the manifest's runnable ``image``
+    overrides ``task.config.environment.docker_image`` (so the manifest —
+    not the task's local Dockerfile — drives image selection), and the
+    manifest's ``task_selection`` + ``forward_env`` are resolved into a
+    persistent env overlay so the values reach the container's entrypoint
+    via compose and every subsequent ``sandbox.exec`` call.
+    """
     env_config = task.config.environment
     environment_dir = task_path / "environment"
     if not environment_dir.exists():
@@ -556,6 +643,25 @@ def _create_sandbox_environment(
         env_config = env_config.model_copy(deep=True)
         env_config.allow_internet = True
 
+    manifest_env: dict[str, str] = {}
+    if environment_manifest is not None:
+        from benchflow.environment.manifest import (
+            resolve_manifest_image,
+            resolve_manifest_runtime_env,
+        )
+
+        manifest_image = resolve_manifest_image(environment_manifest)
+        if manifest_image:
+            # Image control point — manifest's run target wins over task.toml's
+            # docker_image so a benchmark author can pin the runtime image
+            # from the manifest without editing every task.toml.
+            if env_config is task.config.environment:
+                env_config = env_config.model_copy(deep=True)
+            env_config.docker_image = manifest_image
+        manifest_env = resolve_manifest_runtime_env(
+            environment_manifest, task_id=task_path.name
+        )
+
     if sandbox_type == "docker":
         from benchflow.sandbox.docker import DockerSandbox
 
@@ -565,6 +671,7 @@ def _create_sandbox_environment(
             session_id=rollout_name,
             rollout_paths=rollout_paths,
             task_env_config=env_config,
+            persistent_env=manifest_env or None,
         )
     elif sandbox_type == "daytona":
         try:
@@ -605,6 +712,7 @@ def _create_sandbox_environment(
             task_env_config=env_config,
             auto_stop_interval_mins=1440,
             auto_delete_interval_mins=1440,
+            persistent_env=manifest_env or None,
         )
     elif sandbox_type == "modal":
         try:
@@ -619,6 +727,7 @@ def _create_sandbox_environment(
             session_id=rollout_name,
             rollout_paths=rollout_paths,
             task_env_config=env_config,
+            persistent_env=manifest_env or None,
         )
     else:
         raise ValueError(

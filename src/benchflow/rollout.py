@@ -51,44 +51,34 @@ from typing import Any
 
 from benchflow._types import Role, Scene, Turn
 from benchflow._utils.config import normalize_agent_name, normalize_sandbox_user
-from benchflow.acp.client import ACPClient, ACPError
-from benchflow.acp.runtime import connect_acp, execute_prompts
-from benchflow.agents.credentials import (
-    upload_subscription_auth,
-    write_credential_files,
+from benchflow._utils.scoring import classify_error, classify_verifier_error
+from benchflow.contracts import (
+    AgentProtocolError,
+    BaseUser,
+    Environment,
+    RolloutPlanes,
+    RoundResult,
+    SandboxStartupFailure,
+    default_rollout_planes,
 )
-from benchflow.agents.env import resolve_agent_env
-from benchflow.agents.install import (
-    _link_skill_paths,
-    apply_web_tool_policy,
-    deploy_skills,
-    install_agent,
-)
-from benchflow.agents.registry import AGENT_LAUNCH, AGENTS
+from benchflow.diagnostics import RolloutDiagnostics, VerifierTimeoutDiagnostic
+from benchflow.environment.manifest import EnvironmentManifest
 from benchflow.models import RolloutResult, TrajectorySource
-from benchflow.providers.runtime import (
-    ensure_bedrock_proxy_runtime,
-    ensure_usage_proxy_runtime,
-    extract_usage,
-    stop_provider_runtime,
+from benchflow.rewards.validation import validate_reward_map
+from benchflow.rollout_branch import ChildRunner
+from benchflow.rollout_branch import branch as _branch_engine
+from benchflow.scenes import (
+    compile_scenes_to_steps,
+    scene_step_prompt,
+    scene_step_role,
+    scene_step_skills_dir,
 )
-from benchflow.sandbox.lockdown import (
-    _resolve_locked_paths,
-    _seed_verifier_workspace,
-    _snapshot_build_config,
-    lockdown_paths,
-    setup_sandbox_user,
-)
-from benchflow.sandbox.setup import (
-    _create_environment,
-    _inject_skills_into_dockerfile,
-    stage_dockerfile_deps,
-)
-from benchflow.sandbox.user import BaseUser, RoundResult
 from benchflow.trajectories._capture import (
     _capture_session_trajectory,
     _scrape_agent_trajectory,
 )
+from benchflow.trajectories.metrics import count_skill_invocations
+from benchflow.trajectories.tree import RolloutNode, RolloutTree, Step
 
 logger = logging.getLogger(__name__)
 
@@ -111,15 +101,13 @@ def _apply_web_policy(agent_env: dict[str, str], *, disallow: bool) -> dict[str,
     return {**agent_env, _DISALLOW_WEB_TOOLS_ENV: "1"}
 
 
-def _agent_launch_with_web_policy(agent: str, *, disallow: bool) -> str:
+def _agent_launch_with_web_policy(
+    agent: str, *, disallow: bool, planes: RolloutPlanes | None = None
+) -> str:
     """Return launch command, appending the agent's no-web launch knob if any."""
-    launch = AGENT_LAUNCH.get(agent, agent)
-    if not disallow:
-        return launch
-    agent_cfg = AGENTS.get(agent)
-    if agent_cfg and agent_cfg.disallow_web_tools_launch_suffix:
-        return launch + agent_cfg.disallow_web_tools_launch_suffix
-    return launch
+    return (planes or default_rollout_planes()).agent_launch(
+        agent, disallow_web_tools=disallow
+    )
 
 
 def _skill_nudge(agent_env: dict[str, str] | None) -> str:
@@ -249,7 +237,15 @@ def _write_rewards_jsonl(
     rewards: dict | None,
     finished_at: datetime,
 ) -> None:
-    """Write rewards.jsonl — one JSON line per reward event."""
+    """Write rewards.jsonl — one JSON line per reward event.
+
+    Architecture (``docs/architecture.md``, "Evaluation — the five spaces"):
+    every reward record is tagged ``(space, granularity, value)``. Promote
+    those tags from any verifier-supplied per-item dict to first-class
+    fields on each line, falling back to the ``RewardEvent`` defaults
+    (``space="output"``; ``granularity="step"`` for rubric items,
+    ``"terminal"`` for the scalar reward) when the verifier omits them.
+    """
     from typing import cast
 
     if not rewards:
@@ -269,16 +265,18 @@ def _write_rewards_jsonl(
                     "value": rubric_item.get("score", 0.0),
                     "tag": rubric_item.get("name", f"rubric_{i}"),
                     "step_index": i,
+                    "space": rubric_item.get("space", "output"),
+                    "granularity": rubric_item.get("granularity", "step"),
                     "meta": {
                         k: v
                         for k, v in rubric_item.items()
-                        if k not in ("score", "name")
+                        if k not in ("score", "name", "space", "granularity")
                     },
                 }
             )
     scalar = rewards.get("reward")
     if scalar is not None:
-        non_event_keys = {"reward", "rubric"}
+        non_event_keys = {"reward", "rubric", "space", "granularity"}
         events.append(
             {
                 "ts": finished_at.isoformat(),
@@ -287,6 +285,8 @@ def _write_rewards_jsonl(
                 "value": scalar,
                 "tag": "reward",
                 "step_index": None,
+                "space": rewards.get("space", "output"),
+                "granularity": rewards.get("granularity", "terminal"),
                 "meta": {k: v for k, v in rewards.items() if k not in non_event_keys},
             }
         )
@@ -318,6 +318,39 @@ def _init_rollout(
     return task, rollout_dir, rollout_paths, started_at, job_name, rollout_name
 
 
+# Substrings that flag an env var name as secret-bearing for ``config.json``
+# redaction. Matching is case-insensitive (callers ``.upper()`` the key first)
+# and uses substring containment so derived names like ``MY_AUTH_HEADER``,
+# ``SESSION_COOKIE``, or ``GH_TOKEN`` are caught. This stays a denylist (rather
+# than an allowlist of safe keys) because agent env varies per agent — the
+# union of safe keys is not knowable here — but the list now covers the common
+# auth-bearing names that issue #410 called out (COOKIE, AUTHORIZATION, AUTH,
+# BEARER, SESSION) on top of the original KEY/TOKEN/SECRET/PASSWORD/CREDENTIALS.
+_SECRET_ENV_SUBSTRINGS: tuple[str, ...] = (
+    "KEY",
+    "TOKEN",
+    "SECRET",
+    "PASSWORD",
+    "CREDENTIALS",
+    "COOKIE",
+    "AUTHORIZATION",
+    "AUTH",
+    "BEARER",
+    "SESSION",
+)
+
+
+def _is_secret_env_key(name: str) -> bool:
+    """Return True if *name* looks like it carries a secret value.
+
+    Case-insensitive substring match against :data:`_SECRET_ENV_SUBSTRINGS`.
+    Used by :func:`_write_config` to drop secret-bearing entries before
+    persisting ``agent_env`` to the rollout's ``config.json``.
+    """
+    upper = name.upper()
+    return any(s in upper for s in _SECRET_ENV_SUBSTRINGS)
+
+
 def _write_config(
     rollout_dir: Path,
     *,
@@ -333,15 +366,13 @@ def _write_config(
     timeout: int,
     started_at: datetime,
     agent_env: dict[str, str],
+    concurrency: int | None = None,
+    agent_idle_timeout: int | None = None,
     scenes: list[Scene] | None = None,
+    source_provenance: dict[str, Any] | None = None,
 ) -> None:
     """Write config.json to rollout_dir with secrets filtered out."""
-    _secret_substrings = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIALS")
-    recorded_env = {
-        k: v
-        for k, v in agent_env.items()
-        if not any(s in k.upper() for s in _secret_substrings)
-    }
+    recorded_env = {k: v for k, v in agent_env.items() if not _is_secret_env_key(k)}
     config_data = {
         "task_path": str(task_path),
         "agent": agent,
@@ -353,10 +384,14 @@ def _write_config(
         "sandbox_setup_timeout": sandbox_setup_timeout,
         "context_root": str(context_root) if context_root else None,
         "timeout_sec": timeout,
+        "concurrency": concurrency,
+        "agent_idle_timeout_sec": agent_idle_timeout,
         "started_at": str(started_at),
         "agent_env": recorded_env,
         "scenes": _scene_metadata(scenes or []),
     }
+    if source_provenance is not None:
+        config_data["source"] = source_provenance
     (rollout_dir / "config.json").write_text(json.dumps(config_data, indent=2))
 
 
@@ -378,7 +413,6 @@ def _scene_metadata(scenes: list[Scene]) -> list[dict[str, Any]]:
         {
             "name": scene.name,
             "skills_dir": str(scene.skills_dir) if scene.skills_dir else None,
-            "parallel_group": scene.parallel_group,
             "roles": [_role_metadata(role) for role in scene.roles],
             "turns": [
                 {"role": turn.role, "has_prompt": turn.prompt is not None}
@@ -396,13 +430,14 @@ def _build_rollout_result(
     rollout_name: str,
     agent: str,
     agent_name: str,
-    model: str,
+    model: str | None,
     n_tool_calls: int,
     prompts: list[str],
     error: str | None,
     verifier_error: str | None,
     trajectory: list[dict],
     partial_trajectory: bool,
+    export_error: str | None = None,
     trajectory_source: TrajectorySource | None = None,
     rewards: dict | None,
     started_at: datetime,
@@ -416,9 +451,28 @@ def _build_rollout_result(
     cost_usd: float | None = None,
     usage_source: str = "unavailable",
     price_source: str | None = None,
+    evolved_skills: dict[str, str] | None = None,
+    source_provenance: dict[str, Any] | None = None,
+    diagnostics: RolloutDiagnostics | None = None,
 ) -> RolloutResult:
-    """Build RolloutResult and write result.json, timing.json, prompts.json, trajectory."""
+    """Build RolloutResult and write result.json, timing.json, prompts.json, trajectory.
+
+    Diagnostics flow through the :class:`RolloutDiagnostics` collector
+    (issue #503). Callers that previously passed per-field ``*_info``
+    dicts should construct a collector and ``set()`` typed diagnostics.
+    """
+    if diagnostics is None:
+        diagnostics = RolloutDiagnostics()
     finished_at = datetime.now()
+    n_skill_invocations = count_skill_invocations(trajectory)
+    error_category = (
+        diagnostics.category_for_channel("error") if error is not None else None
+    ) or classify_error(error)
+    verifier_error_category = (
+        diagnostics.category_for_channel("verifier_error")
+        if verifier_error is not None
+        else None
+    ) or classify_verifier_error(verifier_error)
     result = RolloutResult(
         task_name=task_name,
         rollout_name=rollout_name,
@@ -428,6 +482,7 @@ def _build_rollout_result(
         agent_name=agent_name,
         model=model,
         n_tool_calls=n_tool_calls,
+        n_skill_invocations=n_skill_invocations,
         n_prompts=len(prompts),
         n_input_tokens=n_input_tokens,
         n_output_tokens=n_output_tokens,
@@ -438,9 +493,14 @@ def _build_rollout_result(
         usage_source=usage_source,
         price_source=price_source,
         error=error,
+        error_category=error_category,
         verifier_error=verifier_error,
+        verifier_error_category=verifier_error_category,
+        export_error=export_error,
         partial_trajectory=partial_trajectory,
         trajectory_source=trajectory_source,
+        evolved_skills=evolved_skills,
+        source_provenance=source_provenance,
         started_at=started_at,
         finished_at=finished_at,
     )
@@ -462,9 +522,11 @@ def _build_rollout_result(
                 "agent_name": result.agent_name,
                 "model": result.model,
                 "n_tool_calls": result.n_tool_calls,
+                "n_skill_invocations": result.n_skill_invocations,
                 "n_prompts": result.n_prompts,
                 "agent_result": {
                     "n_tool_calls": result.n_tool_calls,
+                    "n_skill_invocations": result.n_skill_invocations,
                     "n_prompts": result.n_prompts,
                     "n_input_tokens": result.n_input_tokens,
                     "n_output_tokens": result.n_output_tokens,
@@ -476,13 +538,22 @@ def _build_rollout_result(
                     "price_source": result.price_source,
                 },
                 "error": result.error,
+                "error_category": result.error_category,
                 "verifier_error": result.verifier_error,
+                "verifier_error_category": result.verifier_error_category,
+                "export_error": result.export_error,
+                **diagnostics.to_result_fields(),
                 "partial_trajectory": result.partial_trajectory,
                 "trajectory_source": result.trajectory_source,
                 "started_at": str(result.started_at),
                 "finished_at": str(result.finished_at),
                 "timing": timing,
                 "scenes": _scene_metadata(scenes or []),
+                **(
+                    {"source": source_provenance}
+                    if source_provenance is not None
+                    else {}
+                ),
             },
             indent=2,
         )
@@ -490,7 +561,50 @@ def _build_rollout_result(
     (rollout_dir / "timing.json").write_text(json.dumps(timing, indent=2))
     (rollout_dir / "prompts.json").write_text(json.dumps(prompts, indent=2))
     _write_rewards_jsonl(rollout_dir, rewards, finished_at)
+    _write_trainer_artifact(
+        rollout_dir,
+        task_name=task_name,
+        prompts=prompts,
+        trajectory=trajectory,
+        rewards=rewards,
+        model=model,
+        verifier_error=verifier_error,
+    )
     return result
+
+
+def _write_trainer_artifact(
+    rollout_dir: Path,
+    *,
+    task_name: str,
+    prompts: list[str],
+    trajectory: list[dict],
+    rewards: dict | None,
+    model: str | None,
+    verifier_error: str | None,
+) -> None:
+    """Emit ``rollout_dir/trainer/verifiers.jsonl`` for this scored rollout.
+
+    The architecture's train-mode seam (issue #385): every scored rollout
+    that reaches result-building should produce a trainer-ready Verifiers /
+    ORS record so prime-rl / Verifiers can ingest the run directly. Failures
+    here are logged but never block result writing.
+    """
+    from benchflow.trajectories.export import write_rollout_verifiers_jsonl
+
+    try:
+        write_rollout_verifiers_jsonl(
+            rollout_dir,
+            task_id=task_name,
+            prompts=prompts,
+            trajectory=trajectory,
+            rewards=rewards,
+            model=model,
+            environment=task_name,
+            error=verifier_error,
+        )
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning("Trainer artifact write failed: %s", e)
 
 
 def _resolve_prompts(
@@ -499,6 +613,7 @@ def _resolve_prompts(
     skills_dir: str | Path | None = None,
     skill_nudge: str = "",
     agent: str | None = None,
+    planes: RolloutPlanes | None = None,
 ) -> list[str]:
     """Read instruction.md and resolve prompt list."""
     instruction_path = task_path / "instruction.md"
@@ -507,11 +622,9 @@ def _resolve_prompts(
     instruction = instruction_path.read_text().strip()
 
     if skill_nudge:
-        from benchflow.agents.registry import AGENTS
-
         skill_display_path = "~/.claude/skills"
         if agent:
-            agent_cfg = AGENTS.get(agent)
+            agent_cfg = (planes or default_rollout_planes()).agent_config(agent)
             if agent_cfg and agent_cfg.skill_paths:
                 skill_display_path = agent_cfg.skill_paths[0].replace("$HOME", "~")
 
@@ -561,12 +674,24 @@ def _resolve_prompts(
     return [p if p is not None else instruction for p in prompts]
 
 
-async def _start_env_and_upload(env: Any, task_path: Path, timing: dict) -> None:
-    """Start environment and upload task files."""
-    logger.info(f"Starting environment: {task_path.name}")
-    t0 = datetime.now()
-    await env.start(force_build=False)
-    timing["environment_setup"] = (datetime.now() - t0).total_seconds()
+async def _start_env_and_upload(
+    env: Any, task_path: Path, timing: dict, *, skip_start: bool = False
+) -> None:
+    """Start environment and upload task files.
+
+    ``skip_start=True`` is used when the sandbox was created and started
+    by the caller (Runtime with a live Environment, #388) — we still
+    upload task files but must not re-run ``start()`` since most sandbox
+    backends (e.g. daytona) are not idempotent.
+    """
+    if skip_start:
+        logger.info(f"Reusing caller-owned environment: {task_path.name}")
+        timing["environment_setup"] = 0.0
+    else:
+        logger.info(f"Starting environment: {task_path.name}")
+        t0 = datetime.now()
+        await env.start(force_build=False)
+        timing["environment_setup"] = (datetime.now() - t0).total_seconds()
     if (task_path / "instruction.md").exists():
         await env.upload_file(task_path / "instruction.md", "/instruction.md")
     task_skills = task_path / "environment" / "skills"
@@ -640,30 +765,41 @@ async def _verify_rollout(
     task: Any,
     rollout_paths: Any,
     timing: dict,
+    planes: RolloutPlanes,
     sandbox_user: str | None = None,
     workspace: str | None = None,
-) -> tuple[dict | None, str | None]:
-    """Run verifier with pre-verification hardening."""
-    from benchflow.sandbox.lockdown import harden_before_verify
-    from benchflow.task import Verifier
+) -> tuple[dict | None, str | None, VerifierTimeoutDiagnostic | None]:
+    """Run verifier with pre-verification hardening.
 
+    Returns ``(rewards, verifier_error, verifier_timeout_diagnostic)``. The
+    diagnostic is non-``None`` only when the verifier exceeded its timeout
+    budget — the agent-error channel is unused (issue #503).
+    """
     rollout_paths.verifier_dir.mkdir(parents=True, exist_ok=True)
-    await harden_before_verify(env, task, sandbox_user, workspace=workspace)
-    logger.info("Running verifier...")
     t0 = datetime.now()
     verifier_error = None
+    verifier_timeout: VerifierTimeoutDiagnostic | None = None
+    timeout_budget = task.config.verifier.timeout_sec
     try:
-        verifier = Verifier(task=task, rollout_paths=rollout_paths, sandbox=env)
+        await planes.harden_before_verify(env, task, sandbox_user, workspace=workspace)
+        logger.info("Running verifier...")
+        verifier = planes.verifier(task=task, rollout_paths=rollout_paths, sandbox=env)
         verifier_result = await asyncio.wait_for(
             verifier.verify(),
-            timeout=task.config.verifier.timeout_sec,
+            timeout=timeout_budget,
         )
         timing["verifier"] = (datetime.now() - t0).total_seconds()
-        rewards = verifier_result.rewards
+        rewards = _ensure_canonical_rewards(verifier_result.rewards)
         logger.info(f"Rewards: {rewards}")
     except TimeoutError:
-        timing["verifier"] = (datetime.now() - t0).total_seconds()
-        verifier_error = f"verifier timed out after {task.config.verifier.timeout_sec}s"
+        elapsed = (datetime.now() - t0).total_seconds()
+        timing["verifier"] = elapsed
+        verifier_error = f"verifier timed out after {timeout_budget}s"
+        verifier_timeout = VerifierTimeoutDiagnostic(
+            timeout_budget_sec=timeout_budget,
+            elapsed_sec=round(elapsed, 1),
+            task_name=task.name,
+        )
         rewards = None
         logger.error(verifier_error)
     except Exception as e:
@@ -671,17 +807,21 @@ async def _verify_rollout(
         verifier_error = f"verifier crashed: {e}"
         rewards = None
         logger.error(verifier_error)
-    return rewards, verifier_error
+    return rewards, verifier_error, verifier_timeout
 
 
-# Apply Docker DinD patch at import time.
-def _apply_dind_patch() -> None:
-    from benchflow.sandbox.setup import _patch_docker_dind
-
-    _patch_docker_dind()
+def _ensure_canonical_rewards(rewards: dict | None) -> dict:
+    return validate_reward_map(rewards, source="verifier")
 
 
-_apply_dind_patch()
+def _install_docker_compat(planes: RolloutPlanes | None = None) -> None:
+    """Activate the Docker DinD compatibility shim.
+
+    Called from ``Rollout.__init__`` so importing ``benchflow.rollout`` has
+    no side effects on the Docker sandbox. The underlying patch is
+    idempotent — safe to call once per rollout construction.
+    """
+    (planes or default_rollout_planes()).install_docker_compat()
 
 
 __all__ = [
@@ -711,13 +851,24 @@ class RolloutConfig:
     job_name: str | None = None
     rollout_name: str | None = None
     jobs_dir: str | Path = "jobs"
+    concurrency: int = 1
     context_root: str | Path | None = None
     pre_agent_hooks: list | None = None
+    # Environment plane — when set, Rollout provisions a manifest-declared
+    # stateful environment, gates on readiness before the agent runs, and
+    # tears it down in cleanup. None => no separate environment plane (default).
+    environment_manifest: EnvironmentManifest | None = None
     # Abort the prompt if no tool call arrives for this many seconds.
     # Catches agents that hung silently while the local process is alive
     # (e.g. gemini-cli not responding). None disables idle detection and
     # falls back to the agent's wall-clock timeout (task.toml [agent]).
     agent_idle_timeout: int | None = 600
+    # Hard wall-clock budget for the agent prompt, in seconds. When set,
+    # overrides the per-task default (``task.toml [agent] timeout_sec``).
+    # ``None`` keeps the task's own default — this is the seam through which
+    # ``Runtime(RuntimeConfig(timeout=...))`` enforces a caller-supplied
+    # budget without editing every task.toml (#378).
+    timeout: int | None = None
 
     # User-driven progressive-disclosure loop
     user: BaseUser | None = None
@@ -737,10 +888,24 @@ class RolloutConfig:
     include_task_skills: bool = True
     skip_verify: bool = False
     export_generated_skills_to: str | Path | None = None
+    source_provenance: dict[str, Any] | None = None
+    planes: RolloutPlanes | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
+        from benchflow._utils.config import normalize_agent_idle_timeout
+
+        if not isinstance(self.task_path, Path):
+            self.task_path = Path(self.task_path)
+        if self.context_root is not None and not isinstance(self.context_root, Path):
+            self.context_root = Path(self.context_root)
+        if self.skills_dir is not None and not isinstance(self.skills_dir, Path):
+            self.skills_dir = Path(self.skills_dir)
+        if not isinstance(self.jobs_dir, Path):
+            self.jobs_dir = Path(self.jobs_dir)
+
         self.agent = normalize_agent_name(self.agent)
         self.sandbox_user = normalize_sandbox_user(self.sandbox_user)
+        self.agent_idle_timeout = normalize_agent_idle_timeout(self.agent_idle_timeout)
         for scene in self.scenes:
             for role in scene.roles:
                 role.agent = normalize_agent_name(role.agent)
@@ -826,6 +991,12 @@ class Rollout:
     """Decomposed trial lifecycle with independently-callable phases."""
 
     def __init__(self, config: RolloutConfig) -> None:
+        self._planes = config.planes or default_rollout_planes()
+        # Activate Docker DinD compatibility shim on first rollout
+        # construction (idempotent). Keeps `import benchflow.rollout`
+        # side-effect free with respect to sandbox/provider behavior.
+        _install_docker_compat(self._planes)
+
         self._config = config
         self._phase = "created"
 
@@ -840,20 +1011,41 @@ class Rollout:
         self._resolved_prompts: list[str] = []
         self._agent_launch: str = ""
         self._env: Any = None
+        # When True, Rollout treats _env as caller-owned: setup() skips
+        # creating a new sandbox and cleanup() skips stopping it. Set via
+        # use_prebuilt_env() — see Runtime.execute() for the public path.
+        self._env_externally_owned: bool = False
+        self._environment: Environment | None = None
         self._timeout: int = 0
         self._timing: dict[str, float] = {}
         self._effective_locked: list[str] = []
         self._disallow_web_tools: bool = False
         self._usage_runtime: Any = None
-        self._usage_metrics: dict[str, Any] = extract_usage(None)
+        self._usage_metrics: dict[str, Any] = self._planes.extract_usage(None)
 
         # Populated by install_agent()
         self._agent_cfg: Any = None
         self._agent_cwd: str = "/app"
 
         # Populated by connect()
-        self._acp_client: ACPClient | None = None
+        self._acp_client: Any = None
         self._session: Any = None
+        # ``_session_adapter`` carries the Agent-plane :class:`Session` contract
+        # over the live ACP client (architecture.md, "The four contracts").
+        # The kernel registers ``on_ask_user`` handlers through it so the live
+        # ``session/request_permission`` path runs the handler instead of the
+        # auto-approve fallback (#382 follow-up — instantiating the adapter
+        # here is what makes the wire path honour the contract).
+        self._session_adapter: Any = None
+        # Sticky ``on_ask_user`` handler. Stored on the rollout (not the
+        # adapter) because connect()/_reconnect_for_role() rebuild the adapter
+        # each time we attach a new agent process; the handler the caller
+        # registered before the first connect must follow across reconnects.
+        # The "ever set" flag distinguishes "never registered" (default
+        # auto-approve policy) from "explicitly cleared" (caller passed
+        # ``None`` to roll back to auto-approve).
+        self._ask_user_handler: Any = None
+        self._ask_user_handler_set: bool = False
         self._agent_name: str = ""
         self._active_role: Role | None = None
 
@@ -862,11 +1054,37 @@ class Rollout:
         self._n_tool_calls: int = 0
         self._trajectory_source: TrajectorySource | None = None
         self._partial_trajectory: bool = False
+        # Every prompt actually sent to the agent across all execute() calls —
+        # this is what `n_prompts` and `prompts.json` should reflect for Scene
+        # rollouts where each turn issues its own prompt. The original
+        # `_resolved_prompts` is only the static base task prompt set.
+        self._executed_prompts: list[str] = []
+
+        # The tree-native execution model (architecture.md, "tree-native").
+        # A linear rollout is a degree-1 tree; execute() grows it one Step at a
+        # time, and branch() forks a node into N children. The tree is additive
+        # — it never alters linear behaviour or output.
+        self._tree: RolloutTree = RolloutTree()
+        self._cursor: RolloutNode = self._tree.root
 
         # Populated by verify()
         self._rewards: dict | None = None
         self._verifier_error: str | None = None
         self._error: str | None = None
+        # Populated by _export_generated_skills() on failure (#389 follow-up).
+        # Kept separate from self._error so classify_error() does not mis-tag
+        # an export-time infra failure ("connection lost") as the agent's own
+        # infra_failure category in dashboards.
+        self._export_error: str | None = None
+        # Single bag for the four parallel diagnostic fields the old code
+        # carried as separate attrs (issue #503). Each callsite that used
+        # to assign to one of those slots now calls ``self._diagnostics.set(...)``
+        # with a typed Diagnostic value.
+        self._diagnostics: RolloutDiagnostics = RolloutDiagnostics()
+
+        # Populated by _export_generated_skills() — the skills the agent
+        # generated/evolved, captured for a continual-learning LearnerStore.
+        self._evolved_skills: dict[str, str] | None = None
 
     @classmethod
     async def create(cls, config: RolloutConfig) -> Rollout:
@@ -878,17 +1096,42 @@ class Rollout:
             )
         return cls(config)
 
+    def use_prebuilt_env(self, inner: Any) -> None:
+        """Inject a caller-owned sandbox; skip creation and teardown.
+
+        When the public Runtime API receives a live ``Environment`` (one
+        the caller already constructed, possibly started, and may want to
+        reuse), the Rollout must evaluate inside that same sandbox rather
+        than spinning up a second one. Call this before ``setup()``/
+        ``run()``: ``setup()`` will then skip ``_create_environment`` and
+        ``cleanup()`` will skip stopping the sandbox — the caller owns the
+        lifecycle. Fixes #388.
+        """
+        if inner is None:
+            raise ValueError("use_prebuilt_env() requires a non-None sandbox")
+        self._env = inner
+        self._env_externally_owned = True
+
     @property
     def env(self) -> Any:
         return self._env
 
     @property
-    def acp_client(self) -> ACPClient | None:
+    def acp_client(self) -> Any:
         return self._acp_client
 
     @property
     def trajectory(self) -> list[dict]:
         return self._trajectory
+
+    @property
+    def tree(self) -> RolloutTree:
+        """The RolloutTree this rollout grows as it executes.
+
+        A linear rollout is a degree-1 tree; :meth:`branch` forks a node into
+        N children. ``tree.root`` is the start state s₀.
+        """
+        return self._tree
 
     @property
     def timing(self) -> dict[str, float]:
@@ -926,7 +1169,7 @@ class Rollout:
                 "to the agent for the entire trial."
             )
 
-        self._effective_locked = _resolve_locked_paths(
+        self._effective_locked = self._planes.resolve_locked_paths(
             cfg.sandbox_user, cfg.sandbox_locked_paths
         )
 
@@ -943,7 +1186,9 @@ class Rollout:
             _task_disallows_internet(self._task) or cfg.self_gen_no_internet
         ) and cfg.primary_agent != "oracle"
         self._agent_env = _apply_web_policy(
-            resolve_agent_env(cfg.primary_agent, cfg.primary_model, cfg.agent_env),
+            self._planes.resolve_agent_env(
+                cfg.primary_agent, cfg.primary_model, cfg.agent_env
+            ),
             disallow=self._disallow_web_tools,
         )
         self._resolved_prompts = _resolve_prompts(
@@ -952,10 +1197,11 @@ class Rollout:
             skills_dir=cfg.skills_dir,
             skill_nudge=_skill_nudge(cfg.agent_env),
             agent=cfg.primary_agent,
+            planes=self._planes,
         )
-        self._agent_launch = _agent_launch_with_web_policy(
+        self._agent_launch = self._planes.agent_launch(
             cfg.primary_agent,
-            disallow=self._disallow_web_tools,
+            disallow_web_tools=self._disallow_web_tools,
         )
 
         # Copy task dir to temp when Dockerfile mutations are needed
@@ -972,21 +1218,37 @@ class Rollout:
             self._task_tmp = tmp
 
         if cfg.context_root:
-            stage_dockerfile_deps(effective_task_path, Path(cfg.context_root))
+            self._planes.stage_dockerfile_deps(
+                effective_task_path, Path(cfg.context_root)
+            )
         if cfg.skills_dir:
-            _inject_skills_into_dockerfile(effective_task_path, Path(cfg.skills_dir))
+            self._planes.inject_skills_into_dockerfile(
+                effective_task_path, Path(cfg.skills_dir)
+            )
 
         self._effective_task_path = effective_task_path
 
-        self._env = _create_environment(
-            cfg.environment,
-            self._task,
-            effective_task_path,
-            self._rollout_name,
-            self._rollout_paths,
-            preserve_agent_network=self._disallow_web_tools,
-        )
-        self._timeout = int(self._task.config.agent.timeout_sec or 0)
+        # Honour an externally-supplied sandbox (use_prebuilt_env, set by
+        # Runtime.execute() when the caller passes a live Environment).
+        # Without this guard, every Runtime.execute() would build a second
+        # sandbox and silently discard the caller's prepared one — #388.
+        if self._env is None:
+            self._env = self._planes.create_environment(
+                cfg.environment,
+                self._task,
+                effective_task_path,
+                self._rollout_name,
+                self._rollout_paths,
+                preserve_agent_network=self._disallow_web_tools,
+                environment_manifest=cfg.environment_manifest,
+            )
+        # Caller-supplied wall-clock budget (e.g. RuntimeConfig.timeout)
+        # wins over the task's own default. Without this override there is
+        # no way to tighten/loosen the agent budget per run — see #378.
+        if cfg.timeout is not None:
+            self._timeout = int(cfg.timeout)
+        else:
+            self._timeout = int(self._task.config.agent.timeout_sec or 0)
 
         _write_config(
             self._rollout_dir,
@@ -1002,7 +1264,10 @@ class Rollout:
             timeout=self._timeout,
             started_at=self._started_at,
             agent_env=self._agent_env,
+            concurrency=cfg.concurrency,
+            agent_idle_timeout=cfg.agent_idle_timeout,
             scenes=cfg.effective_scenes,
+            source_provenance=cfg.source_provenance,
         )
 
         self._phase = "setup"
@@ -1011,10 +1276,36 @@ class Rollout:
 
     async def start(self) -> None:
         """Start the environment and upload task files."""
-        await _start_env_and_upload(self._env, self._config.task_path, self._timing)
+        await _start_env_and_upload(
+            self._env,
+            self._config.task_path,
+            self._timing,
+            skip_start=self._env_externally_owned,
+        )
 
         for hook in self._config.pre_agent_hooks or []:
             await hook(self._env)
+
+        # Environment plane: provision the manifest-declared stateful
+        # environment and gate on its readiness before the agent runs.
+        if self._config.environment_manifest is not None:
+            self._environment = self._planes.manifest_environment(
+                self._config.environment_manifest, sandbox=self._env
+            )
+            await self._environment.provision(
+                ctx={"task_id": self._config.task_path.name}
+            )
+            probe = await self._environment.readiness()
+            if not probe.ready:
+                raise RuntimeError(
+                    f"environment plane not ready: {probe.error} "
+                    f"(checked: {probe.checked})"
+                )
+            logger.info(
+                "environment '%s' ready (%d probe(s))",
+                self._config.environment_manifest.name,
+                len(probe.checked),
+            )
 
         self._phase = "started"
 
@@ -1023,8 +1314,8 @@ class Rollout:
     async def install_agent(self) -> None:
         """Install the primary agent binary, set up credentials, sandbox user, skills, lockdown.
 
-        For heterogeneous multi-agent scenes (different agents per role),
-        each role's agent is installed on-demand in _run_scene/connect_as.
+        For heterogeneous scene-authored steps (different agents per role),
+        each role's agent is installed on-demand in connect_as().
         This method installs the primary agent to set up the sandbox baseline.
         """
         cfg = self._config
@@ -1036,17 +1327,19 @@ class Rollout:
 
         if cfg.primary_agent == "oracle":
             if cfg.sandbox_user:
-                await setup_sandbox_user(
+                await self._planes.setup_sandbox_user(
                     self._env,
                     cfg.sandbox_user,
                     workspace=self._agent_cwd,
                     timeout_sec=cfg.sandbox_setup_timeout,
                 )
-            await _snapshot_build_config(self._env, workspace=self._agent_cwd)
-            await _seed_verifier_workspace(
+            await self._planes.snapshot_build_config(
+                self._env, workspace=self._agent_cwd
+            )
+            await self._planes.seed_verifier_workspace(
                 self._env, workspace=self._agent_cwd, sandbox_user=cfg.sandbox_user
             )
-            await deploy_skills(
+            await self._planes.deploy_skills(
                 self._env,
                 getattr(self, "_effective_task_path", cfg.task_path),
                 cfg.skills_dir,
@@ -1060,21 +1353,23 @@ class Rollout:
                 await _ensure_sandbox_dir(
                     self._env, cfg.generated_skills_root, cfg.sandbox_user
                 )
-            await lockdown_paths(self._env, self._effective_locked)
+            await self._planes.lockdown_paths(self._env, self._effective_locked)
             self._phase = "installed"
             return
 
         agent_name = cfg.primary_agent
-        self._agent_cfg = await install_agent(self._env, agent_name, rollout_dir)
+        self._agent_cfg = await self._planes.install_agent(
+            self._env, agent_name, rollout_dir
+        )
         if cfg.sandbox_user:
-            self._agent_cwd = await setup_sandbox_user(
+            self._agent_cwd = await self._planes.setup_sandbox_user(
                 self._env,
                 cfg.sandbox_user,
                 workspace=self._agent_cwd,
                 timeout_sec=cfg.sandbox_setup_timeout,
             )
         cred_home = f"/home/{cfg.sandbox_user}" if cfg.sandbox_user else "/root"
-        await write_credential_files(
+        await self._planes.write_credential_files(
             self._env,
             agent_name,
             self._agent_env,
@@ -1083,20 +1378,22 @@ class Rollout:
             cred_home,
         )
         if self._agent_env.get("_BENCHFLOW_SUBSCRIPTION_AUTH"):
-            await upload_subscription_auth(self._env, agent_name, cred_home)
-        await apply_web_tool_policy(
+            await self._planes.upload_subscription_auth(
+                self._env, agent_name, cred_home
+            )
+        await self._planes.apply_web_tool_policy(
             self._env,
             agent_name,
             self._agent_cfg,
             cred_home,
             disallow=self._disallow_web_tools,
         )
-        await _snapshot_build_config(self._env, workspace=self._agent_cwd)
-        await _seed_verifier_workspace(
+        await self._planes.snapshot_build_config(self._env, workspace=self._agent_cwd)
+        await self._planes.seed_verifier_workspace(
             self._env, workspace=self._agent_cwd, sandbox_user=cfg.sandbox_user
         )
 
-        await deploy_skills(
+        await self._planes.deploy_skills(
             self._env,
             getattr(self, "_effective_task_path", cfg.task_path),
             cfg.skills_dir,
@@ -1110,7 +1407,7 @@ class Rollout:
             await _ensure_sandbox_dir(
                 self._env, cfg.generated_skills_root, cfg.sandbox_user
             )
-        await lockdown_paths(self._env, self._effective_locked)
+        await self._planes.lockdown_paths(self._env, self._effective_locked)
 
         self._phase = "installed"
 
@@ -1122,14 +1419,20 @@ class Rollout:
         rollout_dir = self._require_rollout_dir()
         t0 = datetime.now()
 
-        self._agent_env, self._provider_runtime = await ensure_bedrock_proxy_runtime(
+        (
+            self._agent_env,
+            self._provider_runtime,
+        ) = await self._planes.ensure_bedrock_proxy_runtime(
             agent=cfg.primary_agent,
             agent_env=self._agent_env,
             model=cfg.primary_model,
             runtime=getattr(self, "_provider_runtime", None),
             environment=cfg.environment,
         )
-        self._agent_env, self._usage_runtime = await ensure_usage_proxy_runtime(
+        (
+            self._agent_env,
+            self._usage_runtime,
+        ) = await self._planes.ensure_usage_proxy_runtime(
             agent=cfg.primary_agent,
             agent_env=self._agent_env,
             model=cfg.primary_model,
@@ -1137,7 +1440,12 @@ class Rollout:
             environment=cfg.environment,
             session_id=getattr(self, "_rollout_name", "") or "",
         )
-        self._acp_client, self._session, self._agent_name = await connect_acp(
+        (
+            self._acp_client,
+            self._session,
+            self._session_adapter,
+            self._agent_name,
+        ) = await self._planes.connect_acp(
             env=self._env,
             agent=cfg.primary_agent,
             agent_launch=self._agent_launch,
@@ -1148,6 +1456,7 @@ class Rollout:
             environment=cfg.environment,
             agent_cwd=self._agent_cwd,
         )
+        self._reapply_ask_user_handler()
 
         if "agent_setup" not in self._timing:
             self._timing["agent_setup"] = (datetime.now() - t0).total_seconds()
@@ -1156,6 +1465,7 @@ class Rollout:
 
     async def disconnect(self) -> None:
         """Close the ACP client and clean up agent process, keeping the environment alive."""
+        self._capture_partial_acp_trajectory()
         if self._acp_client:
             try:
                 await self._acp_client.close()
@@ -1163,6 +1473,7 @@ class Rollout:
                 logger.warning(f"ACP client close failed: {e}")
             self._acp_client = None
             self._session = None
+            self._session_adapter = None
         # Kill any lingering agent processes to prevent context bleed between scenes
         if self._env and self._agent_launch.strip():
             agent_cmd = self._agent_launch.split()[0].split("/")[-1]
@@ -1173,14 +1484,77 @@ class Rollout:
         self._session_traj_count = 0
         self._phase = "installed"
 
+    def on_ask_user(self, handler: Any) -> None:
+        """Register the agent-initiated ``session/request_permission`` handler.
+
+        Forwards to :meth:`ACPSessionAdapter.on_ask_user` on the live adapter
+        so the handler runs on the wire path; before #382's follow-up the
+        adapter was never instantiated in production and the auto-approve
+        policy ran unconditionally. The handler is sticky — stored on the
+        rollout so reconnects (e.g. ``_reconnect_for_role``) re-register it
+        on the freshly bound adapter via :meth:`_reapply_ask_user_handler`.
+
+        Pass ``None`` to clear; the client's most-permissive auto-approve
+        policy takes over (preserves the benchmark-mode default).
+        """
+        self._ask_user_handler = handler
+        self._ask_user_handler_set = True
+        self._reapply_ask_user_handler()
+
+    def _reapply_ask_user_handler(self) -> None:
+        """Re-bind any registered ``on_ask_user`` handler to the live adapter.
+
+        ``getattr`` defaults guard ``Rollout`` instances built via
+        ``__new__`` in tests that pre-date the on_ask_user field — they
+        skip ``__init__`` and only set the attributes their scenarios use.
+        """
+        adapter = getattr(self, "_session_adapter", None)
+        if adapter is None:
+            return
+        # No-op when the caller never touched on_ask_user — leaves the
+        # default auto-approve path alone and avoids redundant client calls
+        # from the connect()/_reconnect_for_role() hot paths.
+        if not getattr(self, "_ask_user_handler_set", False):
+            return
+        handler = getattr(self, "_ask_user_handler", None)
+        if handler is None:
+            # Explicit clear — drop the bridge closure on the client so
+            # the default most-permissive policy takes over.
+            client = getattr(self, "_acp_client", None)
+            if client is not None:
+                client.on_ask_user(None)
+            return
+        adapter.on_ask_user(handler)
+
+    def _capture_partial_acp_trajectory(self) -> None:
+        if self._trajectory or not self._acp_client or not self._acp_client.session:
+            return
+        try:
+            captured = _capture_session_trajectory(self._acp_client.session)
+            if captured:
+                self._trajectory = captured
+                self._partial_trajectory = True
+                self._trajectory_source = "partial_acp"
+                self._n_tool_calls = len(self._acp_client.session.tool_calls)
+        except Exception as e:
+            logger.warning(f"Partial trajectory capture failed: {e}")
+
     # ── Phase 3c: EXECUTE ──
 
-    async def execute(self, prompts: list[str] | None = None) -> tuple[list[dict], int]:
+    async def execute(
+        self, prompts: list[str] | None = None, *, node: RolloutNode | None = None
+    ) -> tuple[list[dict], int]:
         """Run prompts through the ACP session. Returns (new trajectory, new tool calls).
 
         execute_prompts returns cumulative session trajectory. We track
         what we've already captured to avoid duplication when the same
         session is reused across multiple turns.
+
+        ``node`` — when given, a *pending* tree node (no incoming Step yet,
+        from :meth:`RolloutTree.attach`) whose Step this call fills in place,
+        instead of advancing the tree with a fresh child. The Branch engine
+        passes a pre-attached branch-child node here so the child's real
+        continuation Step lands on the child node itself.
         """
         effective_prompts = prompts or self._resolved_prompts
         if self._acp_client is None:
@@ -1199,7 +1573,7 @@ class Rollout:
             else self._config.agent_idle_timeout
         )
 
-        trajectory, n_tool_calls = await execute_prompts(
+        trajectory, n_tool_calls = await self._planes.execute_prompts(
             self._acp_client,
             self._session,
             effective_prompts,
@@ -1216,13 +1590,115 @@ class Rollout:
 
         self._trajectory.extend(new_events)
         self._n_tool_calls += new_tools
+        self._executed_prompts.extend(effective_prompts)
         self._trajectory_source = "acp"
 
-        if "agent_execution" not in self._timing:
-            self._timing["agent_execution"] = (datetime.now() - t0).total_seconds()
+        # Grow the tree at Step-level granularity — one Step per ACP event
+        # (tool_call, agent_message, agent_thought, user_message). A single
+        # execute() call walks the cursor down N nodes when it produced N
+        # events. Closes #414: branch/process-reward/value targets the
+        # individual action, not a collapsed turn.
+        #
+        # Empty-event executes still emit one Step so the tree advances at
+        # least once per execute() call — the cursor must move, and a branch
+        # child's pending node must get populated (see rollout_branch).
+        steps = self._build_step_batch(new_events, new_tools)
+        first_step, *rest_steps = steps
+        if node is not None:
+            # Fill a pre-attached pending node (a branch child) in place — the
+            # child's real continuation Step lands on the child node itself.
+            self._cursor = self._tree.populate(node, first_step)
+        else:
+            self._cursor = self._tree.advance(self._cursor, first_step)
+        for step in rest_steps:
+            self._cursor = self._tree.advance(self._cursor, step)
+
+        # Accumulate execution time across all execute() calls — Scene rollouts
+        # invoke execute() once per turn, and the previous "set only on first
+        # call" behaviour undercounted multi-turn agent time.
+        elapsed = (datetime.now() - t0).total_seconds()
+        self._timing["agent_execution"] = (
+            self._timing.get("agent_execution", 0.0) + elapsed
+        )
 
         self._phase = "executed"
         return trajectory, n_tool_calls
+
+    def _build_step_batch(self, new_events: list[dict], new_tools: int) -> list[Step]:
+        """Build one Step per ACP event from the events appended this execute.
+
+        Step-level granularity (closes #414) — each ACP event (tool_call,
+        agent_message, agent_thought, user_message) becomes a Step the tree
+        can address for branching, reward shaping, and value estimation.
+        Empty-event executes still produce one Step so the cursor advances
+        and any pending branch-child node gets populated.
+        """
+        base = len(self._trajectory) - len(new_events)
+        if not new_events:
+            return [
+                Step(
+                    id=f"step-{base}-empty",
+                    data={"event": None, "n_tool_calls": 0},
+                )
+            ]
+        steps: list[Step] = []
+        for offset, event in enumerate(new_events):
+            traj_index = base + offset
+            event_type = (
+                event.get("type", "event") if isinstance(event, dict) else "event"
+            )
+            is_tool_call = event_type == "tool_call"
+            steps.append(
+                Step(
+                    id=f"step-{traj_index}-{event_type}",
+                    data={
+                        "event": event,
+                        "event_type": event_type,
+                        "n_tool_calls": 1 if is_tool_call else 0,
+                    },
+                )
+            )
+        # n_tool_calls across the batch should equal the new_tools reported
+        # by execute_prompts. If they disagree (legacy/non-tool_call events
+        # counted as tools by the agent shim) attribute the remainder to the
+        # last step so the per-execute total still matches.
+        batch_tools = sum(s.data["n_tool_calls"] for s in steps)
+        if batch_tools != new_tools and steps:
+            steps[-1].data["n_tool_calls"] += new_tools - batch_tools
+        return steps
+
+    # ── Phase 3d: BRANCH ──
+
+    async def branch(
+        self,
+        n: int,
+        run_child: ChildRunner | None = None,
+        *,
+        require_sandbox_snapshot: bool = False,
+    ) -> float:
+        """Branch the rollout at the cursor into ``n`` child continuations.
+
+        Thin entry point — the Branch engine lives in
+        :mod:`benchflow.rollout_branch`. It checkpoints the Environment at the
+        cursor, runs each forked child as an isolated sub-rollout (its own
+        scoped state, a fresh agent session), and aggregates the children's
+        returns into V(parent). After this returns, the rollout's linear state
+        is exactly what it was before.
+
+        ``run_child`` is the per-child runner — injected for unit tests; the
+        default restores the env, connects a fresh agent, runs the continuation,
+        and scores it. A caller that needs per-child prompts binds them into the
+        ``run_child`` closure.
+
+        ``require_sandbox_snapshot`` gates the branch on the active Sandbox
+        implementing container-level snapshot/restore. When True, providers
+        without that capability (Modal, Daytona DinD) fail closed with a clear
+        diagnostic rather than running with a half-consistent checkpoint
+        (#384, Branch lifecycle in docs/architecture.md).
+        """
+        return await _branch_engine(
+            self, n, run_child, require_sandbox_snapshot=require_sandbox_snapshot
+        )
 
     # ── Phase 4: VERIFY ──
 
@@ -1243,14 +1719,21 @@ class Rollout:
 
         await _publish_trajectory_for_verifier(self._env, self._trajectory)
 
-        self._rewards, self._verifier_error = await _verify_rollout(
+        (
+            self._rewards,
+            self._verifier_error,
+            verifier_timeout_diag,
+        ) = await _verify_rollout(
             self._env,
             self._task,
             self._rollout_paths,
             self._timing,
+            self._planes,
             sandbox_user=cfg.sandbox_user,
             workspace=self._agent_cwd,
         )
+        if verifier_timeout_diag is not None:
+            self._diagnostics.set(verifier_timeout_diag)
 
         self._phase = "verified"
         return self._rewards
@@ -1266,33 +1749,43 @@ class Rollout:
         Returns (rewards, verifier_output, verifier_error). The final
         verify() still does full hardening.
         """
-        from benchflow.sandbox.lockdown import (
-            _build_cleanup_cmd,
-            _read_hardening_config,
-        )
-        from benchflow.task import Verifier
-
         self._rollout_paths.verifier_dir.mkdir(parents=True, exist_ok=True)
         # Clean verifier output dir — chmod 777 so non-root verifier processes can write.
         # Keep /app present for task/verifier paths that still use the legacy
         # rootdir fallback; tasks that populate /app are unaffected.
-        await self._env.exec(
-            "rm -rf /logs/verifier && mkdir -p /logs/verifier /app && "
-            "chmod 777 /logs/verifier",
-            user="root",
-            timeout_sec=10,
-        )
-        # Purge agent-injected conftest/sitecustomize/.pth without
-        # killing processes or restoring workspace.
-        # Honor per-task [verifier.hardening] opt-outs from task.toml.
-        hardening = _read_hardening_config(getattr(self._task, "task_dir", None))
-        await self._env.exec(_build_cleanup_cmd(hardening), user="root", timeout_sec=10)
+        try:
+            await self._planes.clear_verifier_output_dir(
+                self._env,
+                "Soft verifier setup failed: clearing verifier output directory",
+                user="root",
+                timeout_sec=10,
+            )
+            await self._planes.ensure_legacy_app_dir(
+                self._env,
+                "Soft verifier setup failed: preparing /app",
+                user="root",
+                timeout_sec=10,
+            )
+            # Purge agent-injected conftest/sitecustomize/.pth without
+            # killing processes or restoring workspace.
+            # Honor per-task [verifier.hardening] opt-outs from task.toml.
+            await self._planes.cleanup_verifier_python_hooks(
+                self._env,
+                getattr(self._task, "task_dir", None),
+                "Soft verifier setup failed: purging Python injection hooks",
+                user="root",
+                timeout_sec=10,
+            )
+        except Exception as e:
+            verifier_error = f"soft verifier crashed: {e}"
+            logger.error(verifier_error)
+            return None, None, verifier_error
 
         rewards = None
         verifier_output = None
         verifier_error = None
         try:
-            verifier = Verifier(
+            verifier = self._planes.verifier(
                 task=self._task,
                 rollout_paths=self._rollout_paths,
                 sandbox=self._env,
@@ -1301,7 +1794,7 @@ class Rollout:
                 verifier.verify(),
                 timeout=self._task.config.verifier.timeout_sec,
             )
-            rewards = verifier_result.rewards
+            rewards = _ensure_canonical_rewards(verifier_result.rewards)
             # Capture raw verifier output for the user
             cat = await self._env.exec(
                 "cat /logs/verifier/*.log 2>/dev/null || "
@@ -1315,44 +1808,44 @@ class Rollout:
                 f"soft verifier timed out after "
                 f"{self._task.config.verifier.timeout_sec}s"
             )
-            logger.warning(verifier_error)
+            logger.error(verifier_error)
         except Exception as e:
             verifier_error = f"soft verifier crashed: {e}"
-            logger.warning(verifier_error)
-
+            logger.error(verifier_error)
         return rewards, verifier_output, verifier_error
 
     # ── Phase 5: CLEANUP ──
 
     async def cleanup(self) -> None:
         """Close ACP client and stop the environment."""
-        if not self._trajectory and self._acp_client and self._acp_client.session:
-            try:
-                captured = _capture_session_trajectory(self._acp_client.session)
-                if captured:
-                    self._trajectory = captured
-                    self._partial_trajectory = True
-                    self._trajectory_source = "partial_acp"
-                    self._n_tool_calls = len(self._acp_client.session.tool_calls)
-            except Exception as e:
-                logger.warning(f"Partial trajectory capture failed: {e}")
-
+        self._capture_partial_acp_trajectory()
         await self.disconnect()
 
         if self._env and self._config.export_generated_skills_to:
             try:
                 await self._export_generated_skills()
             except Exception as e:
-                logger.warning(f"Generated skill export failed: {e}")
+                # Surface export failure on a dedicated sibling channel
+                # (#389 follow-up). Routing it through self._error caused
+                # classify_error("Skill export failed: ... connection lost")
+                # to mis-tag the rollout as agent infra_failure, polluting
+                # the agent-error dashboards. Keep the agent/verifier error
+                # channels untouched: export runs during cleanup, after the
+                # agent already finished.
+                export_error = f"Skill export failed: {e}"
+                logger.error(export_error)
+                if self._export_error is None:
+                    self._export_error = export_error
+                self._evolved_skills = None
 
         usage_runtime = getattr(self, "_usage_runtime", None)
         if usage_runtime is not None:
             try:
-                await stop_provider_runtime(usage_runtime)
-                self._usage_metrics = extract_usage(usage_runtime)
+                await self._planes.stop_provider_runtime(usage_runtime)
+                self._usage_metrics = self._planes.extract_usage(usage_runtime)
             except Exception as e:
                 logger.warning(f"Usage telemetry runtime stop failed: {e}")
-                self._usage_metrics = extract_usage(None)
+                self._usage_metrics = self._planes.extract_usage(None)
             try:
                 self._write_llm_trajectory(usage_runtime)
             except Exception as e:
@@ -1360,16 +1853,28 @@ class Rollout:
             finally:
                 self._usage_runtime = None
 
+        if self._environment is not None:
+            with contextlib.suppress(Exception):
+                await self._environment.teardown()
+            self._environment = None
+
         if self._env:
             try:
-                await stop_provider_runtime(getattr(self, "_provider_runtime", None))
+                await self._planes.stop_provider_runtime(
+                    getattr(self, "_provider_runtime", None)
+                )
                 self._provider_runtime = None
             except Exception as e:
                 logger.warning(f"Provider runtime stop failed: {e}")
-            try:
-                await self._env.stop(delete=True)
-            except Exception as e:
-                logger.warning(f"Cleanup failed: {e}")
+            # An externally-owned sandbox (use_prebuilt_env) belongs to the
+            # caller — leave it running so they can reuse it or stop it
+            # themselves. #388. getattr() keeps tests that bypass __init__
+            # via Rollout.__new__() working.
+            if not getattr(self, "_env_externally_owned", False):
+                try:
+                    await self._env.stop(delete=True)
+                except Exception as e:
+                    logger.warning(f"Cleanup failed: {e}")
 
         if hasattr(self, "_task_tmp") and self._task_tmp:
             import shutil
@@ -1418,14 +1923,23 @@ class Rollout:
                         if cfg.user is not None:
                             await self._run_user_loop()
                         else:
-                            for scene in cfg.effective_scenes:
-                                await self._run_scene(scene)
+                            await self._run_steps(
+                                compile_scenes_to_steps(
+                                    cfg.effective_scenes,
+                                    default_prompt=(
+                                        self._resolved_prompts[0]
+                                        if self._resolved_prompts
+                                        else None
+                                    ),
+                                )
+                            )
                     except TimeoutError as e:
                         agent_timed_out = True
                         detail = str(e).strip()
                         self._error = (
                             detail or f"Agent timed out after {self._timeout}s"
                         )
+                        self._diagnostics.capture_idle(e)
                         logger.error(self._error)
                 finally:
                     if cfg.oracle_access:
@@ -1437,7 +1951,11 @@ class Rollout:
 
             if not cfg.skip_verify:
                 await self.verify()
-                if agent_timed_out and self._rewards is None:
+                if (
+                    agent_timed_out
+                    and self._rewards is None
+                    and self._verifier_error is None
+                ):
                     self._rewards = {"reward": 0.0}
                     self._verifier_error = None
 
@@ -1447,11 +1965,18 @@ class Rollout:
             # generic wall-clock message only when there's no detail.
             detail = str(e).strip()
             self._error = detail or f"Agent timed out after {self._timeout}s"
+            self._diagnostics.capture_idle(e)
             logger.error(self._error)
         except ConnectionError as e:
             self._error = str(e)
+            self._diagnostics.capture_transport(e)
+            await self._probe_sandbox_health()
             logger.error(f"Agent connection lost: {self._error}")
-        except ACPError as e:
+        except SandboxStartupFailure as e:
+            self._error = f"Sandbox startup failed: {e}"
+            self._diagnostics.set(e.diagnostic)
+            logger.error(self._error)
+        except AgentProtocolError as e:
             self._error = self._classify_acp_error(e)
             logger.error(self._error)
         except Exception as e:
@@ -1467,171 +1992,119 @@ class Rollout:
             )
         return self._build_result()
 
-    # ── Scene execution ──
-
-    _OUTBOX_DIR = "/app/.outbox"
+    # ── Scene-authored Step execution ──
 
     async def _export_generated_skills(self) -> None:
-        """Download creator-produced skills before sandbox cleanup."""
+        """Download creator-produced skills before sandbox cleanup.
+
+        Also captures the exported skill packs into ``self._evolved_skills``
+        — the ``name -> body`` dict a continual-learning Job commits to its
+        persistent LearnerStore (capability 5).
+
+        Retries transient download failures up to 3 times (guards ENG-147).
+        """
         export_target = self._config.export_generated_skills_to
         if export_target is None:
             return
         target = Path(export_target)
         target.mkdir(parents=True, exist_ok=True)
-        await self._env.download_dir(self._config.generated_skills_root, target)
 
-    async def _activate_scene_skills(self, scene: Scene) -> None:
-        """Activate scene-local skills by linking them into role discovery paths."""
-        if not scene.skills_dir:
+        last_err: Exception | None = None
+        for attempt in range(3):
+            try:
+                await self._env.download_dir(self._config.generated_skills_root, target)
+                break
+            except Exception as e:
+                last_err = e
+                if attempt < 2:
+                    delay = 2 ** (attempt + 1)
+                    logger.warning(
+                        f"Skill export attempt {attempt + 1} failed: {e}. "
+                        f"Retrying in {delay}s..."
+                    )
+                    await asyncio.sleep(delay)
+        else:
+            raise RuntimeError(
+                f"Skill export failed after 3 attempts: {last_err}"
+            ) from last_err
+
+        from benchflow.learner_skills import capture_skills
+
+        self._evolved_skills = capture_skills(target)
+
+    async def _activate_step_skills(self, step: Step) -> None:
+        """Activate scene-local skills attached by the Scene desugaring pass."""
+        skills_dir = scene_step_skills_dir(step)
+        if not skills_dir:
             return
         if self._env is None:
             raise RuntimeError("Environment is not started")
 
-        source = str(scene.skills_dir)
+        scene_name = str(step.data.get("scene") or "scene")
+        role = scene_step_role(step)
+        source_value = skills_dir
+        source = str(source_value)
         local_source = Path(source).expanduser()
-        if local_source.is_dir():
-            remote_source = f"/skills/{_safe_skill_name(scene.name)}"
+        if isinstance(source_value, os.PathLike) and local_source.is_dir():
+            remote_source = f"/skills/{_safe_skill_name(scene_name)}"
             await _ensure_sandbox_dir(self._env, Path(remote_source).parent)
             await self._env.upload_dir(local_source, remote_source)
         elif source.startswith("/"):
             remote_source = source
+        elif local_source.is_dir():
+            remote_source = f"/skills/{_safe_skill_name(scene_name)}"
+            await _ensure_sandbox_dir(self._env, Path(remote_source).parent)
+            await self._env.upload_dir(local_source, remote_source)
         else:
-            raise FileNotFoundError(f"Scene skills_dir not found: {scene.skills_dir}")
+            raise FileNotFoundError(f"Scene skills_dir not found: {skills_dir}")
 
         home = (
             f"/home/{self._config.sandbox_user}"
             if self._config.sandbox_user
             else "/root"
         )
-        for role in scene.roles:
-            agent_cfg = AGENTS.get(role.agent)
-            if not agent_cfg or not agent_cfg.skill_paths:
-                continue
-            await _link_skill_paths(
-                self._env,
-                remote_source,
-                agent_cfg.skill_paths,
-                home,
-                self._agent_cwd,
-                self._config.sandbox_user,
-            )
-
-    async def _run_scene(self, scene: Scene) -> None:
-        """Execute one scene: for each turn, connect as the turn's role, execute, disconnect.
-
-        For multi-role scenes, agents communicate via outbox files:
-        an agent writes ``/app/.outbox/{recipient}.json`` with
-        ``{"to": "role_name", "content": "..."}`` and the scheduler
-        injects received messages into the next turn's prompt.
-
-        Inter-role messages are persisted to ``rollout_dir/scene_messages.jsonl``.
-        """
-        cfg = self._config
-        logger.info(
-            f"[Scene] {scene.name} — {len(scene.turns)} turns, {len(scene.roles)} roles"
+        agent_cfg = self._planes.agent_config(role.agent)
+        if not agent_cfg or not agent_cfg.skill_paths:
+            return
+        await self._planes.link_skill_paths(
+            self._env,
+            remote_source,
+            agent_cfg.skill_paths,
+            home,
+            self._agent_cwd,
+            self._config.sandbox_user,
         )
-        await self._activate_scene_skills(scene)
 
-        role_map = {r.name: r for r in scene.roles}
-        current_role: str | None = None
-        multi_role = len(scene.roles) > 1
-        scene_messages: list[dict] = []
-
-        if multi_role:
-            setup_cmd = f"rm -rf {self._OUTBOX_DIR} && mkdir -p {self._OUTBOX_DIR}"
-            if cfg.sandbox_user:
-                user = shlex.quote(cfg.sandbox_user)
-                setup_cmd += f" && chown {user}:{user} {self._OUTBOX_DIR}"
-            await self._env.exec(setup_cmd, timeout_sec=10)
-
-        inbox: dict[str, list[str]] = {r.name: [] for r in scene.roles}
-        turn_counter = 0
-
-        for _i, turn in enumerate(scene.turns):
-            role = role_map.get(turn.role)
-            if not role:
-                raise ValueError(f"Turn references unknown role {turn.role!r}")
-
-            if current_role != turn.role:
-                if current_role is not None:
-                    await self.disconnect()
-                await self.connect_as(role)
-                current_role = turn.role
-
-            if turn.prompt:
-                base_prompt = turn.prompt
-            elif self._resolved_prompts:
-                base_prompt = self._resolved_prompts[0]
-            else:
-                base_prompt = "Solve the task described in /app/instruction.md"
-
-            pending = inbox.get(turn.role, [])
-            if pending:
-                parts = [base_prompt, "\n---\nMessages from other agents:\n"]
-                parts.extend(pending)
-                prompts = ["\n".join(parts)]
-                inbox[turn.role] = []
-            else:
-                prompts = [base_prompt]
-
-            await self.execute(prompts=prompts)
-
-            if multi_role:
-                if current_role is None:
-                    raise RuntimeError("No active role after scene turn execution")
-                for recipient, content in await self._read_scene_outbox(current_role):
-                    turn_counter += 1
-                    inbox.setdefault(recipient, []).append(
-                        f"**From {current_role}:** {content}"
-                    )
-                    scene_messages.append(
-                        {
-                            "scene": scene.name,
-                            "turn": turn_counter,
-                            "sender": current_role,
-                            "recipient": recipient,
-                            "content": content,
-                        }
-                    )
-
-        if current_role is not None:
-            await self.disconnect()
-
-        if scene_messages and self._rollout_dir:
-            msg_path = self._rollout_dir / "scene_messages.jsonl"
-            with msg_path.open("a") as f:
-                for m in scene_messages:
-                    f.write(json.dumps(m) + "\n")
-            logger.info(
-                f"[Scene] {scene.name}: {len(scene_messages)} messages → {msg_path}"
-            )
-
-    async def _read_scene_outbox(self, sender: str) -> list[tuple[str, str]]:
-        """Read and clear outbox files left by *sender*. Returns [(recipient, content), ...]."""
-        result = await self._env.exec(
-            f"ls {self._OUTBOX_DIR}/*.json 2>/dev/null || true",
-            timeout_sec=10,
-        )
-        files = [
-            f.strip() for f in (result.stdout or "").strip().splitlines() if f.strip()
-        ]
-        messages: list[tuple[str, str]] = []
-        for fpath in files:
-            quoted = shlex.quote(fpath)
-            cat = await self._env.exec(f"cat {quoted}", timeout_sec=10)
-            try:
-                data = json.loads(cat.stdout or "{}")
-                recipient = data.get("to", "")
-                content = data.get("content", "")
-                if recipient and content:
-                    messages.append((recipient, content))
-                    logger.info(
-                        f"[Scene] outbox: {sender} → {recipient}: {content[:80]}"
-                    )
-            except json.JSONDecodeError:
-                logger.warning(f"[Scene] invalid JSON in outbox: {fpath}")
-            await self._env.exec(f"rm -f {quoted}", timeout_sec=10)
-        return messages
+    async def _run_steps(self, steps: list[Step]) -> None:
+        """Execute already-compiled rollout Steps in declaration order."""
+        current_role_key: tuple[Any, ...] | None = None
+        try:
+            for step in steps:
+                role = scene_step_role(step)
+                role_key = (
+                    role.name,
+                    role.agent,
+                    role.model,
+                    role.timeout_sec,
+                    role.idle_timeout_sec,
+                    tuple(sorted(role.env.items())),
+                )
+                logger.info(
+                    "[Step] %s scene=%s role=%s",
+                    step.id,
+                    step.data.get("scene"),
+                    role.name,
+                )
+                await self._activate_step_skills(step)
+                if current_role_key != role_key:
+                    if current_role_key is not None:
+                        await self.disconnect()
+                    await self.connect_as(role)
+                    current_role_key = role_key
+                await self.execute(prompts=[scene_step_prompt(step)])
+        finally:
+            if current_role_key is not None:
+                await self.disconnect()
 
     async def _run_user_loop(self) -> None:
         """Execute a user-driven progressive-disclosure loop.
@@ -1789,26 +2262,29 @@ class Rollout:
         if disallow_web_tools is None:
             disallow_web_tools = _task_disallows_internet(getattr(self, "_task", None))
         disallow_web_tools = bool(disallow_web_tools and role.agent != "oracle")
-        agent_launch = _agent_launch_with_web_policy(
+        agent_launch = self._planes.agent_launch(
             role.agent,
-            disallow=disallow_web_tools,
+            disallow_web_tools=disallow_web_tools,
         )
         agent_env = _apply_web_policy(
-            resolve_agent_env(
+            self._planes.resolve_agent_env(
                 role.agent,
                 role.model,
                 {**(cfg.agent_env or {}), **(role.env or {})},
             ),
             disallow=disallow_web_tools,
         )
-        agent_env, self._provider_runtime = await ensure_bedrock_proxy_runtime(
+        (
+            agent_env,
+            self._provider_runtime,
+        ) = await self._planes.ensure_bedrock_proxy_runtime(
             agent=role.agent,
             agent_env=agent_env,
             model=role.model,
             runtime=getattr(self, "_provider_runtime", None),
             environment=cfg.environment,
         )
-        agent_env, self._usage_runtime = await ensure_usage_proxy_runtime(
+        agent_env, self._usage_runtime = await self._planes.ensure_usage_proxy_runtime(
             agent=role.agent,
             agent_env=agent_env,
             model=role.model,
@@ -1822,12 +2298,14 @@ class Rollout:
             role_agent_differs or role.model != cfg.primary_model or bool(role.env)
         )
         if role_agent_differs:
-            agent_cfg = await install_agent(self._env, role.agent, rollout_dir)
+            agent_cfg = await self._planes.install_agent(
+                self._env, role.agent, rollout_dir
+            )
         else:
             agent_cfg = getattr(self, "_agent_cfg", None)
         if needs_role_credentials:
             cred_home = f"/home/{cfg.sandbox_user}" if cfg.sandbox_user else "/root"
-            await write_credential_files(
+            await self._planes.write_credential_files(
                 self._env,
                 role.agent,
                 agent_env,
@@ -1836,8 +2314,10 @@ class Rollout:
                 cred_home,
             )
             if agent_env.get("_BENCHFLOW_SUBSCRIPTION_AUTH"):
-                await upload_subscription_auth(self._env, role.agent, cred_home)
-            await apply_web_tool_policy(
+                await self._planes.upload_subscription_auth(
+                    self._env, role.agent, cred_home
+                )
+            await self._planes.apply_web_tool_policy(
                 self._env,
                 role.agent,
                 agent_cfg,
@@ -1847,7 +2327,12 @@ class Rollout:
 
         self._agent_launch = agent_launch
 
-        self._acp_client, self._session, self._agent_name = await connect_acp(
+        (
+            self._acp_client,
+            self._session,
+            self._session_adapter,
+            self._agent_name,
+        ) = await self._planes.connect_acp(
             env=self._env,
             agent=role.agent,
             agent_launch=agent_launch,
@@ -1858,6 +2343,7 @@ class Rollout:
             environment=cfg.environment,
             agent_cwd=self._agent_cwd,
         )
+        self._reapply_ask_user_handler()
         self._active_role = role
 
         if "agent_setup" not in self._timing:
@@ -1867,7 +2353,39 @@ class Rollout:
 
     # ── Internal helpers ──
 
-    def _classify_acp_error(self, e: ACPError) -> str:
+    async def _probe_sandbox_health(self) -> None:
+        """Quick health probe after transport death. Enriches transport diagnostic.
+
+        Guards ENG-148: distinguishes Daytona session killed vs agent crash.
+        """
+        diag = self._diagnostics.transport_closed
+        if diag is None or self._env is None:
+            return
+        try:
+            result = await asyncio.wait_for(
+                self._env.exec("echo __BENCHFLOW_HEALTH_OK__", timeout_sec=10),
+                timeout=15,
+            )
+            stdout = str(getattr(result, "stdout", "") or "").strip()
+            raw_rc = getattr(result, "return_code", None)
+            rc = int(raw_rc) if isinstance(raw_rc, (int, float)) else None
+            if "__BENCHFLOW_HEALTH_OK__" in stdout:
+                diag.sandbox_reachable = True
+                diag.sandbox_probe_rc = rc
+            else:
+                diag.sandbox_reachable = False
+                diag.sandbox_probe_rc = rc
+                diag.sandbox_probe_stdout = stdout[:200]
+        except Exception as probe_err:
+            import traceback
+
+            logger.exception("sandbox health probe failed")
+            diag.sandbox_reachable = False
+            diag.sandbox_probe_error = str(probe_err)[:200]
+            diag.sandbox_probe_error_type = type(probe_err).__name__
+            diag.sandbox_probe_traceback = traceback.format_exc()[-2000:]
+
+    def _classify_acp_error(self, e: AgentProtocolError) -> str:
         if "Invalid API key" in e.message:
             from benchflow.agents.env import check_subscription_auth
             from benchflow.agents.registry import infer_env_key_for_model
@@ -1900,17 +2418,25 @@ class Rollout:
 
     def _build_result(self) -> RolloutResult:
         rollout_dir = self._require_rollout_dir()
+        # For Scene/multi-turn rollouts, each execute() call records the
+        # prompt(s) it sent into self._executed_prompts. Use that as the
+        # authoritative prompt list so n_prompts and prompts.json reflect
+        # every prompt the agent actually received (issue #377). Fall back
+        # to the resolved base prompts when no execute() ran (e.g. setup
+        # failure paths).
+        prompts = self._executed_prompts or self._resolved_prompts
         return _build_rollout_result(
             rollout_dir,
             task_name=self._config.task_path.name,
             rollout_name=self._rollout_name or "",
             agent=self._config.primary_agent,
             agent_name=self._agent_name,
-            model=self._config.primary_model or "",
+            model=self._config.primary_model,
             n_tool_calls=self._n_tool_calls,
-            prompts=self._resolved_prompts,
+            prompts=prompts,
             error=self._error,
             verifier_error=self._verifier_error,
+            export_error=self._export_error,
             trajectory=self._trajectory,
             partial_trajectory=self._partial_trajectory,
             trajectory_source=self._trajectory_source,
@@ -1918,5 +2444,8 @@ class Rollout:
             started_at=self._require_started_at(),
             timing=self._timing,
             scenes=self._config.effective_scenes,
+            evolved_skills=self._evolved_skills,
+            source_provenance=self._config.source_provenance,
+            diagnostics=self._diagnostics,
             **self._usage_metrics,
         )

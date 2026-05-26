@@ -17,7 +17,7 @@ import os
 import re
 import shlex
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from benchflow.agents.registry import get_sandbox_home_dirs
 
@@ -640,12 +640,94 @@ async def _trusted_verifier_pythonpath(
     return ":".join(e for e in extras if isinstance(e, str))
 
 
-# Wipe and recreate /logs/verifier/ before the verifier runs.
-# rm -rf severs hardlinks, removes symlink replacements, and eliminates
-# variant filenames/subdirs the agent may have pre-staged.
+# Wipe /logs/verifier/ contents before the verifier runs. Do not remove the
+# directory itself: Daytona DinD bind-mounts it from the remote VM, so deleting
+# the mountpoint fails with "Device or resource busy". ``find ... -exec ... +``
+# avoids glob ARG_MAX failures if an agent floods the world-writable log dir.
+# When ``find`` is unavailable (minimal service images), fall back to
+# ``rm -rf /logs/verifier/* ...`` which handles the common case but may miss
+# dot-files and can hit ARG_MAX on extreme floods.
 _CLEAR_VERIFIER_DIR_CMD = (
-    "rm -rf /logs/verifier && mkdir -p /logs/verifier /app && chmod 777 /logs/verifier"
+    "if [ -L /logs/verifier ]; then rm -f /logs/verifier; fi && "
+    "mkdir -p /logs/verifier && "
+    "if command -v find >/dev/null 2>&1; then "
+    "find /logs/verifier -mindepth 1 -exec rm -rf -- {} +; "
+    "else "
+    "rm -rf /logs/verifier/* /logs/verifier/.[!.]* /logs/verifier/..?* 2>/dev/null; true; "
+    "fi && "
+    "chmod 777 /logs/verifier"
 )
+
+# Legacy verifier rootdir fallback for main-container verification paths.
+_ENSURE_APP_DIR_CMD = "mkdir -p /app"
+
+
+def _exec_return_code(result: Any) -> int:
+    if result is None:
+        return 0
+    for name in ("return_code", "exit_code"):
+        value = getattr(result, name, None)
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+    return 0
+
+
+def _exec_failure_detail(result: Any) -> str:
+    parts = []
+    for name in ("stdout", "stderr"):
+        value = getattr(result, name, None)
+        if value:
+            text = str(value).strip()
+            if text:
+                parts.append(f"{name}: {text[:2000]}")
+    if not parts:
+        return ""
+    return "\n" + "\n".join(parts)
+
+
+async def _checked_exec(env: Any, command: str, label: str, **kwargs: Any) -> Any:
+    result = await env.exec(command, **kwargs)
+    return_code = _exec_return_code(result)
+    if return_code != 0:
+        raise RuntimeError(
+            f"{label} exited with rc={return_code}{_exec_failure_detail(result)}"
+        )
+    return result
+
+
+async def clear_verifier_output_dir(
+    env: Any,
+    label: str = "Verifier setup failed: clearing verifier output directory",
+    **kwargs: Any,
+) -> Any:
+    """Clear verifier outputs while preserving bind mounts.
+
+    This helper is intentionally service-aware: final anti-tamper hardening
+    stays on the agent container, but a verifier running in another service may
+    still need its own writable ``/logs/verifier`` output directory.
+    """
+    return await _checked_exec(env, _CLEAR_VERIFIER_DIR_CMD, label, **kwargs)
+
+
+async def ensure_legacy_app_dir(
+    env: Any,
+    label: str = "Verifier setup failed: preparing /app",
+    **kwargs: Any,
+) -> Any:
+    """Prepare the legacy verifier ``/app`` rootdir fallback."""
+    return await _checked_exec(env, _ENSURE_APP_DIR_CMD, label, **kwargs)
+
+
+async def cleanup_verifier_python_hooks(
+    env: Any,
+    task_dir: "Path | str | None",
+    label: str = "Verifier setup failed: purging Python injection hooks",
+    **kwargs: Any,
+) -> Any:
+    """Purge agent-injected Python hook files using task hardening settings."""
+    hardening = _read_hardening_config(task_dir)
+    return await _checked_exec(env, _build_cleanup_cmd(hardening), label, **kwargs)
+
 
 # Per-task hardening opt-outs. Tasks declare these in task.toml under
 # [verifier.hardening] when their legitimate test setup conflicts with the
@@ -742,8 +824,8 @@ async def harden_before_verify(
     """Neutralize agent tampering before running the verifier.
 
     1. Kill sandbox-user processes (prevent concurrent writes during teardown).
-    2. Assert all sandbox-user processes are dead, then wipe/recreate
-       /logs/verifier/ with a clean root-owned directory.
+    2. Assert all sandbox-user processes are dead, then clear /logs/verifier/
+       contents while preserving remote bind mounts.
     3. Optionally restore the workspace from the pre-agent snapshot. This is
        destructive to legitimate workspace-edit answers, so it is opt-in.
     4. Purge symlinks and __pycache__ trees from workspace.
@@ -772,8 +854,19 @@ async def harden_before_verify(
             f"(sleep 1 && pkill -9 -u {sandbox_user}; sleep 1)",
             user="root",
         )
-    # Wipe and recreate /logs/verifier/ with a clean root-owned directory.
-    await env.exec(_CLEAR_VERIFIER_DIR_CMD, user="root")
+    # Wipe /logs/verifier/ contents while preserving remote bind mounts.
+    await _checked_exec(
+        env,
+        _CLEAR_VERIFIER_DIR_CMD,
+        "Verifier hardening failed: clearing verifier output directory",
+        user="root",
+    )
+    await _checked_exec(
+        env,
+        _ENSURE_APP_DIR_CMD,
+        "Verifier hardening failed: preparing /app",
+        user="root",
+    )
     if workspace and restore_workspace:
         await _restore_build_config(env, workspace)
         await _refresh_verifier_workspace(env, workspace)

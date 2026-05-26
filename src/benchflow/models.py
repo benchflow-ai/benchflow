@@ -12,8 +12,13 @@ from typing import TYPE_CHECKING, Any, Literal
 if TYPE_CHECKING:
     from benchflow.rewards.events import RewardEvent
 
-TrajectorySource = Literal["acp", "scraped", "partial_acp"]
-"""Provenance label for a captured trajectory. See RunResult.trajectory_source."""
+TrajectorySource = Literal["acp", "scraped", "partial_acp", "hosted_env"]
+"""Provenance label for a captured trajectory. See RunResult.trajectory_source.
+
+``"hosted_env"`` marks UNTRUSTED imported evidence produced by an external
+hub (e.g. PrimeIntellect Verifiers). The events are reconstructed from
+``vf-eval`` results, not captured over BenchFlow's ACP transport.
+"""
 
 
 class AgentInstallError(RuntimeError):
@@ -67,6 +72,9 @@ class RolloutResult:
         agent_name:   Name reported by the agent via ACP initialize handshake.
         model:        Model ID used (e.g. "google/gemini-3.1-flash-lite-preview").
         n_tool_calls: Total tool calls observed during the session.
+        n_skill_invocations: Total skill tool calls observed in structured ACP
+                      trajectory events. Counts only ``tool_call`` events whose
+                      structured ``kind`` is ``"skill"``.
         n_prompts:    Number of user prompts sent to the agent.
         n_input_tokens: Cumulative provider prompt/input tokens, or None when
                       provider telemetry was unavailable.
@@ -83,8 +91,14 @@ class RolloutResult:
                       "unavailable".
         price_source: Pricing table version used for cost_usd, or None.
         error:        Error description string, or None on success.
+        error_category: Stable category for ``error``, or None on success.
         verifier_error: Verifier error description, or None if verifier succeeded
                       or was not reached. Separate from ``error`` (agent errors).
+        verifier_error_category: Stable category for ``verifier_error``, or None.
+        export_error: Skill-export error description, or None if export succeeded
+                      or was not configured. Separate from ``error`` (which would
+                      mis-classify export-time infra failures as agent failures)
+                      and ``verifier_error``. See #389 follow-up.
         partial_trajectory: True when the trajectory was salvaged from a timed-out
                       or crashed session and may be incomplete.
         trajectory_source: Provenance label for ``trajectory`` — one of
@@ -94,6 +108,13 @@ class RolloutResult:
                       trajectory was captured.
         reward_events: Dense and terminal reward events from Rubric scoring.
                       None when the new reward pipeline was not used.
+        evolved_skills: The skills the rollout's agent generated or evolved,
+                      as a ``name -> body`` dict. Populated only by a
+                      continual-learning (``sequential-shared``) rollout that
+                      captured an exported skill set; None otherwise. This is
+                      the data path that feeds the persistent LearnerStore
+                      (capability 5).
+        source_provenance: Source repository/ref/file-hash evidence for the task.
         started_at:   Wall-clock start time.
         finished_at:  Wall-clock end time.
     """
@@ -102,12 +123,13 @@ class RolloutResult:
         self,
         task_name: str,
         rollout_name: str = "",
-        rewards: dict[str, float | int] | None = None,
+        rewards: dict[str, Any] | None = None,
         trajectory: list[dict[str, Any]] | None = None,
         agent: str = "",
         agent_name: str = "",
-        model: str = "",
+        model: str | None = None,
         n_tool_calls: int = 0,
+        n_skill_invocations: int = 0,
         n_prompts: int = 0,
         n_input_tokens: int | None = None,
         n_output_tokens: int | None = None,
@@ -118,10 +140,15 @@ class RolloutResult:
         usage_source: str = "unavailable",
         price_source: str | None = None,
         error: str | None = None,
+        error_category: str | None = None,
         verifier_error: str | None = None,
+        verifier_error_category: str | None = None,
+        export_error: str | None = None,
         partial_trajectory: bool = False,
         trajectory_source: TrajectorySource | None = None,
         reward_events: list[RewardEvent] | None = None,
+        evolved_skills: dict[str, str] | None = None,
+        source_provenance: dict[str, Any] | None = None,
         started_at: datetime | None = None,
         finished_at: datetime | None = None,
     ):
@@ -133,6 +160,7 @@ class RolloutResult:
         self.agent_name = agent_name
         self.model = model
         self.n_tool_calls = n_tool_calls
+        self.n_skill_invocations = n_skill_invocations
         self.n_prompts = n_prompts
         self.n_input_tokens = n_input_tokens
         self.n_output_tokens = n_output_tokens
@@ -143,24 +171,38 @@ class RolloutResult:
         self.usage_source = usage_source
         self.price_source = price_source
         self.error = error
+        self.error_category = error_category
         self.verifier_error = verifier_error
+        self.verifier_error_category = verifier_error_category
+        self.export_error = export_error
         self.partial_trajectory = partial_trajectory
         self.trajectory_source = trajectory_source
         self.reward_events = reward_events
+        self.evolved_skills = evolved_skills
+        self.source_provenance = source_provenance
         self.started_at = started_at
         self.finished_at = finished_at
 
     @property
     def success(self) -> bool:
-        """True when the trial completed without agent or verifier error.
+        """True when the trial completed without agent, verifier, or export error.
 
-        Agent errors (error) and verifier errors (verifier_error) both
-        indicate an incomplete trial. Rewards may still be zero on success.
+        Agent errors (error), verifier errors (verifier_error), and skill-export
+        errors (export_error) all indicate an incomplete trial. Rewards may
+        still be zero on success.
         """
-        return self.error is None and self.verifier_error is None
+        return (
+            self.error is None
+            and self.verifier_error is None
+            and self.export_error is None
+        )
 
     def __repr__(self) -> str:
-        status = "OK" if self.success else f"ERROR: {self.error or self.verifier_error}"
+        status = (
+            "OK"
+            if self.success
+            else f"ERROR: {self.error or self.verifier_error or self.export_error}"
+        )
         return (
             f"RolloutResult(task={self.task_name}, {status}, "
             f"rewards={self.rewards}, "

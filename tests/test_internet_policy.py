@@ -17,6 +17,29 @@ from benchflow.rollout import (
 )
 
 
+def _wire_fake_planes(trial: Rollout) -> MagicMock:
+    planes = MagicMock()
+    planes.agent_launch.side_effect = lambda agent, *, disallow_web_tools: (
+        f"{agent} --no-web" if disallow_web_tools else agent
+    )
+    planes.resolve_agent_env.side_effect = lambda _agent, _model, env: env or {}
+    planes.ensure_bedrock_proxy_runtime = AsyncMock(
+        side_effect=lambda **kwargs: (kwargs["agent_env"], None)
+    )
+    planes.ensure_usage_proxy_runtime = AsyncMock(
+        side_effect=lambda **kwargs: (kwargs["agent_env"], None)
+    )
+    planes.install_agent = AsyncMock(return_value=MagicMock())
+    planes.write_credential_files = AsyncMock()
+    planes.upload_subscription_auth = AsyncMock()
+    planes.apply_web_tool_policy = AsyncMock()
+    planes.connect_acp = AsyncMock(
+        return_value=(MagicMock(), MagicMock(), MagicMock(), "agent")
+    )
+    trial._planes = planes
+    return planes
+
+
 def test_task_disallows_internet_from_environment_config():
     task = SimpleNamespace(
         config=SimpleNamespace(environment=SimpleNamespace(allow_internet=False))
@@ -141,23 +164,23 @@ async def test_connect_as_applies_web_policy_to_role_env(tmp_path):
     trial._task = SimpleNamespace(
         config=SimpleNamespace(environment=SimpleNamespace(allow_internet=False))
     )
+    planes = _wire_fake_planes(trial)
     captured = {}
 
     def fake_resolve(agent, model, env):
         captured["env"] = env
         return env or {}
 
-    with (
-        patch("benchflow.rollout.resolve_agent_env", side_effect=fake_resolve),
-        patch("benchflow.rollout.connect_acp") as connect_acp,
-    ):
-        connect_acp.return_value = (MagicMock(), MagicMock(), "agent")
-        await trial.connect_as(cfg.scenes[0].roles[0])
+    planes.resolve_agent_env.side_effect = fake_resolve
+    await trial.connect_as(cfg.scenes[0].roles[0])
 
     assert captured["env"]["BENCHFLOW_PROVIDER_BASE_URL"] == "http://localhost:8080/v1"
     assert "BENCHFLOW_DISALLOW_WEB_TOOLS" not in captured["env"]
     assert (
-        connect_acp.call_args.kwargs["agent_env"]["BENCHFLOW_DISALLOW_WEB_TOOLS"] == "1"
+        planes.connect_acp.await_args.kwargs["agent_env"][
+            "BENCHFLOW_DISALLOW_WEB_TOOLS"
+        ]
+        == "1"
     )
 
 
@@ -215,33 +238,23 @@ async def test_connect_as_applies_hard_web_policy_to_role_agent(tmp_path):
     trial._agent_cwd = "/app"
     trial._phase = "idle"
     trial._disallow_web_tools = True
+    planes = _wire_fake_planes(trial)
+    planes.install_agent.return_value = AGENTS["gemini"]
 
-    with (
-        patch("benchflow.rollout.resolve_agent_env", return_value={}),
-        patch(
-            "benchflow.rollout.install_agent",
-            new=AsyncMock(return_value=AGENTS["gemini"]),
-        ),
-        patch("benchflow.rollout.write_credential_files", new=AsyncMock()),
-        patch("benchflow.rollout.upload_subscription_auth", new=AsyncMock()),
-        patch(
-            "benchflow.rollout.apply_web_tool_policy", new=AsyncMock()
-        ) as apply_policy,
-        patch("benchflow.rollout.connect_acp", new=AsyncMock()) as connect_acp,
-    ):
-        connect_acp.return_value = (MagicMock(), MagicMock(), "agent")
-        await trial.connect_as(role)
+    await trial.connect_as(role)
 
-    apply_policy.assert_awaited_once()
-    assert apply_policy.await_args.args[:4] == (
+    planes.apply_web_tool_policy.assert_awaited_once()
+    assert planes.apply_web_tool_policy.await_args.args[:4] == (
         {},
         "gemini",
         AGENTS["gemini"],
         "/home/agent",
     )
-    assert apply_policy.await_args.kwargs["disallow"] is True
+    assert planes.apply_web_tool_policy.await_args.kwargs["disallow"] is True
     assert (
-        connect_acp.await_args.kwargs["agent_env"]["BENCHFLOW_DISALLOW_WEB_TOOLS"]
+        planes.connect_acp.await_args.kwargs["agent_env"][
+            "BENCHFLOW_DISALLOW_WEB_TOOLS"
+        ]
         == "1"
     )
 

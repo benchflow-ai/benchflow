@@ -1,0 +1,121 @@
+"""Subprocess worker for sharded evaluation runs.
+
+The public ``bench eval create`` command uses this module when the operator asks
+for worker-level isolation. A worker runs one normal :class:`Evaluation` over a
+small include set and exits zero when BenchFlow completed the shard, even if the
+benchmark tasks themselves failed. Non-zero exits are reserved for control-plane
+failures so the parent can retry or report the shard cleanly.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import sys
+from pathlib import Path
+from typing import Any
+
+from benchflow.evaluation import Evaluation, EvaluationConfig, RetryConfig
+
+logging.basicConfig(level=logging.INFO, format="%(message)s")
+
+
+def _retry_config(raw: dict[str, Any]) -> RetryConfig:
+    retry = raw.get("retry") or {}
+    return RetryConfig(
+        max_retries=int(retry.get("max_retries", 2)),
+        retry_on_install=bool(retry.get("retry_on_install", True)),
+        retry_on_pipe=bool(retry.get("retry_on_pipe", True)),
+        retry_on_acp=bool(retry.get("retry_on_acp", True)),
+        retry_on_idle_timeout=bool(retry.get("retry_on_idle_timeout", True)),
+        retry_on_infra=bool(retry.get("retry_on_infra", True)),
+        retry_on_verifier_infra=bool(retry.get("retry_on_verifier_infra", True)),
+        wait_multiplier=float(retry.get("wait_multiplier", 2.0)),
+        min_wait_sec=float(retry.get("min_wait_sec", 1.0)),
+        max_wait_sec=float(retry.get("max_wait_sec", 30.0)),
+        exclude_categories=set(retry.get("exclude_categories", ["timeout"])),
+    )
+
+
+def _environment_manifest(raw: dict[str, Any]):
+    manifest_path = raw.get("environment_manifest_path")
+    if not manifest_path:
+        return None
+    from benchflow.environment.manifest import load_manifest
+
+    return load_manifest(Path(manifest_path))
+
+
+def _evaluation_config(raw: dict[str, Any]) -> EvaluationConfig:
+    return EvaluationConfig(
+        agent=raw.get("agent") or "claude-agent-acp",
+        model=raw.get("model"),
+        environment=raw.get("environment") or "docker",
+        concurrency=int(raw.get("concurrency") or 1),
+        prompts=raw.get("prompts"),
+        agent_env=dict(raw.get("agent_env") or {}),
+        retry=_retry_config(raw),
+        skills_dir=raw.get("skills_dir"),
+        sandbox_user=raw.get("sandbox_user", "agent"),
+        sandbox_locked_paths=raw.get("sandbox_locked_paths"),
+        sandbox_setup_timeout=int(raw.get("sandbox_setup_timeout") or 120),
+        agent_idle_timeout=raw.get("agent_idle_timeout"),
+        context_root=raw.get("context_root"),
+        exclude_tasks=set(raw.get("exclude_tasks") or []),
+        include_tasks=set(raw.get("include_tasks") or []),
+        skill_mode=raw.get("skill_mode") or "default",
+        skill_creator_dir=raw.get("skill_creator_dir"),
+        self_gen_no_internet=bool(raw.get("self_gen_no_internet", False)),
+        job_mode=raw.get("job_mode") or "parallel-independent",
+        source_provenance=raw.get("source_provenance"),
+        environment_manifest=_environment_manifest(raw),
+    )
+
+
+def _result_payload(result) -> dict[str, Any]:
+    return {
+        "job_name": result.job_name,
+        "total": result.total,
+        "passed": result.passed,
+        "failed": result.failed,
+        "errored": result.errored,
+        "verifier_errored": result.verifier_errored,
+        "elapsed_sec": result.elapsed_sec,
+        "score": result.score,
+        "score_excl_errors": result.score_excl_errors,
+    }
+
+
+async def run_worker(payload_path: Path) -> dict[str, Any]:
+    payload = json.loads(payload_path.read_text())
+    config = _evaluation_config(payload["config"])
+    evaluation = Evaluation(
+        tasks_dir=payload["tasks_dir"],
+        jobs_dir=payload["jobs_dir"],
+        config=config,
+    )
+    result = await evaluation.run()
+    result_payload = _result_payload(result)
+    output_path = Path(payload["result_path"])
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(result_payload, indent=2))
+    return result_payload
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = list(sys.argv[1:] if argv is None else argv)
+    if len(args) != 1:
+        print("Usage: python -m benchflow.eval_worker <payload.json>", file=sys.stderr)
+        return 2
+    try:
+        result = asyncio.run(run_worker(Path(args[0])))
+    except Exception as exc:
+        print(f"Worker failed: {exc}", file=sys.stderr)
+        return 1
+    print(json.dumps(result, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover - exercised by subprocess runs
+    raise SystemExit(main())

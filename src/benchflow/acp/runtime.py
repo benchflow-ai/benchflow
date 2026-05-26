@@ -20,21 +20,30 @@ Does not own:
 import asyncio
 import contextlib
 import logging
+from datetime import UTC, datetime
 from pathlib import Path
 
 from benchflow.acp.client import ACPClient
 from benchflow.acp.container_transport import ContainerTransport
+from benchflow.agents.protocol import ACPSessionAdapter
 from benchflow.agents.providers import find_provider, strip_provider_prefix
 from benchflow.agents.registry import AGENTS
+from benchflow.diagnostics import IdleTimeoutDiagnostic, IdleTimeoutError
 from benchflow.sandbox.lockdown import build_priv_drop_cmd
 from benchflow.sandbox.process import DaytonaProcess, DaytonaPtyProcess, DockerProcess
 from benchflow.trajectories._capture import _capture_session_trajectory
+
+# Re-exported for backwards compatibility — tests and downstream code
+# import ``IdleTimeoutError`` from this module. The canonical definition
+# lives in :mod:`benchflow.diagnostics` (issue #503).
+__all__ = ["IdleTimeoutError", "connect_acp", "execute_prompts"]
 
 logger = logging.getLogger(__name__)
 
 
 _ACP_CONNECT_MAX_RETRIES = 3
 _ACP_CONNECT_BASE_DELAY = 2.0
+_PROMPT_CANCEL_DRAIN_TIMEOUT_SEC = 0.25
 
 # models.dev provider inference — used when acp_model_format="provider/model"
 # to reconstruct "provider/model" from a bare model name.
@@ -55,8 +64,68 @@ _MODELSDEV_PROVIDER_HEURISTICS: list[tuple[str, str]] = [
 ]
 
 
+def _codex_model_name(model_id: str) -> str:
+    """Return the bare model name from a Codex ACP ``model[effort]`` ID."""
+    return model_id.split("[", 1)[0]
+
+
+def _codex_reasoning_effort(model_id: str) -> str:
+    """Return the reasoning effort suffix from a Codex ACP model ID."""
+    if "[" not in model_id or not model_id.endswith("]"):
+        return ""
+    return model_id.rsplit("[", 1)[1][:-1]
+
+
+def _codex_session_model_id(model: str, session: object | None) -> str:
+    """Map a bare Codex model to the exact ACP modelId returned by session/new.
+
+    ``@agentclientprotocol/codex-acp`` validates ``session/set_model`` against
+    model IDs shaped as ``model[reasoning-effort]``. BenchFlow's public model
+    IDs stay effort-free, so use the session's advertised model state to choose
+    the concrete Codex ACP ID.
+    """
+    state = getattr(session, "model_state", None)
+    if not isinstance(state, dict):
+        return model
+
+    requested_name = _codex_model_name(model)
+    current_model = state.get("currentModelId")
+    if (
+        isinstance(current_model, str)
+        and _codex_model_name(current_model) == requested_name
+    ):
+        return current_model
+
+    available = state.get("availableModels")
+    if not isinstance(available, list):
+        return model
+    candidates = [
+        entry.get("modelId")
+        for entry in available
+        if isinstance(entry, dict)
+        and isinstance(entry.get("modelId"), str)
+        and _codex_model_name(entry["modelId"]) == requested_name
+    ]
+    if not candidates:
+        return model
+
+    preferred_efforts = ("medium", "high", "low", "minimal", "none")
+    for effort in preferred_efforts:
+        for candidate in candidates:
+            if _codex_reasoning_effort(candidate) == effort:
+                return candidate
+    return candidates[0]
+
+
 def _format_acp_model(model: str, agent: str) -> str:
     """Format a model ID for ACP session/set_model based on agent requirements.
+
+    NOTE on "provider/model": this is NOT a non-standard ACP method. BenchFlow
+    only ever sends the standard ``session/set_model`` request (see
+    ``ACPClient.set_model``). ``provider/model`` is one of three *modelId string
+    formats* (``acp_model_format`` in the agent registry) describing how the
+    ``modelId`` argument of that standard call must be shaped for a given agent.
+    It deliberately does not appear in ``acp.meta.AGENT_METHODS``.
 
     Most agents expect a bare model name (e.g. "claude-sonnet-4-6").
     Agents with acp_model_format="provider/model" (e.g. opencode) need the
@@ -86,6 +155,18 @@ def _format_acp_model(model: str, agent: str) -> str:
         "Cannot infer models.dev provider for %r — defaulting to anthropic/", bare
     )
     return f"anthropic/{bare}"
+
+
+def _select_acp_model_id(
+    model: str,
+    agent: str,
+    session: object | None,
+) -> str:
+    """Return the concrete modelId to send through ACP session/set_model."""
+    formatted = _format_acp_model(model, agent)
+    if agent == "codex-acp":
+        return _codex_session_model_id(formatted, session)
+    return formatted
 
 
 def _should_skip_acp_set_model(
@@ -152,8 +233,17 @@ async def connect_acp(
     rollout_dir: Path,
     environment: str,
     agent_cwd: str,
-) -> tuple[ACPClient, object, str]:
-    """Create ACP transport, connect, init session, set model. Return (client, session, agent_name).
+) -> tuple[ACPClient, object, ACPSessionAdapter, str]:
+    """Create ACP transport, connect, init session, set model.
+
+    Returns ``(client, session, session_adapter, agent_name)``. ``session`` is
+    the raw :class:`~benchflow.acp.session.ACPSession` (still passed to
+    ``execute_prompts`` for trajectory capture and the idle watchdog).
+    ``session_adapter`` is the :class:`ACPSessionAdapter` bound to ``client``;
+    registering an ``on_ask_user`` handler on it is the only way a handler
+    reaches the live ``session/request_permission`` path on the wire. Without
+    instantiating the adapter here, every handler the kernel registers stayed
+    dormant and the auto-approve policy ran unconditionally (#382 follow-up).
 
     Retries with exponential backoff on ConnectionError (Daytona SSH storms).
     """
@@ -241,18 +331,36 @@ async def connect_acp(
 
     if model and not _should_skip_acp_set_model(agent, model, agent_env):
         acp_model_input = _resolve_acp_model_input(agent, model, agent_env)
-        acp_model_id = _format_acp_model(acp_model_input, agent)
+        acp_model_id = _select_acp_model_id(acp_model_input, agent, session)
         try:
             await asyncio.wait_for(acp_client.set_model(acp_model_id), timeout=60)
             logger.info(f"Model set to: {acp_model_id} (from {acp_model_input})")
         except Exception as e:
-            logger.warning(f"Failed to set model via ACP: {e}")
+            # Fail closed — silently continuing leaves the run on the agent's
+            # default/previous model while result metadata claims ``model`` was
+            # honored. That mis-attributes the entire trajectory. The caller
+            # asked for a specific model; if ACP can't honor it we abort the
+            # rollout. Agents that genuinely don't support ``session/set_model``
+            # should set ``supports_acp_set_model=False`` in the registry so
+            # ``_should_skip_acp_set_model`` short-circuits this branch.
+            logger.error(
+                "ACP session/set_model failed for agent=%s model=%s: %s",
+                agent,
+                acp_model_id,
+                e,
+            )
+            with contextlib.suppress(Exception):
+                await acp_client.close()
+            raise RuntimeError(
+                f"Failed to set model {acp_model_id!r} via ACP for agent {agent!r}: {e}"
+            ) from e
     elif model:
         logger.info(
             f"Skipping ACP set_model for {agent} — launch/env config owns model selection"
         )
 
-    return acp_client, session, agent_name
+    session_adapter = ACPSessionAdapter(acp_client)
+    return acp_client, session, session_adapter, agent_name
 
 
 async def execute_prompts(
@@ -285,8 +393,9 @@ async def execute_prompts(
                 acp_client, session, prompt, timeout, idle_timeout
             )
         session.mark_prompt_end()
+        # SDK ``PromptResponse.stop_reason`` is a plain string (e.g. "end_turn").
         logger.info(
-            f"  → {prompt_result.stop_reason.value}, "
+            f"  → {prompt_result.stop_reason}, "
             f"{len(session.tool_calls)} total tool calls"
         )
     trajectory = _capture_session_trajectory(session)
@@ -340,11 +449,21 @@ async def _prompt_with_idle_watchdog(
                 last_progress = now
                 last_count = cur_count
             if now - last_progress >= idle_timeout:
-                raise TimeoutError(
+                diag = IdleTimeoutDiagnostic(
+                    idle_timeout_sec=idle_timeout,
+                    idle_duration_sec=int(now - last_progress),
+                    wall_clock_elapsed_sec=int(now - (deadline - timeout)),
+                    n_tool_calls=len(session.tool_calls),
+                    n_message_chunks=len(session.message_chunks),
+                    n_thought_chunks=len(session.thought_chunks),
+                    last_activity_at=datetime.now(UTC).isoformat(),
+                )
+                raise IdleTimeoutError(
                     f"Agent idle for {idle_timeout}s with no new tool call, "
                     f"message, or thought "
                     f"(last activity {int(now - last_progress)}s ago, "
-                    f"{len(session.tool_calls)} tool calls so far)"
+                    f"{len(session.tool_calls)} tool calls so far)",
+                    diag,
                 )
             if now > deadline:
                 raise TimeoutError(
@@ -354,10 +473,25 @@ async def _prompt_with_idle_watchdog(
         return prompt_task.result()
     finally:
         # Always cancel + drain the prompt task on exit, including the
-        # external-cancellation path (CancelledError from sleep). Without this
-        # an outer cancel leaks the prompt task — it keeps running in the
-        # background until Trial.cleanup() eventually kills the agent process.
+        # external-cancellation path (CancelledError from sleep). Bound the
+        # drain so a non-cooperative Daytona/ACP read cannot hide the watchdog
+        # timeout forever; cleanup will tear down the live process.
         if not prompt_task.done():
             prompt_task.cancel()
-            with contextlib.suppress(BaseException):
-                await prompt_task
+            done, _pending = await asyncio.wait(
+                {prompt_task}, timeout=_PROMPT_CANCEL_DRAIN_TIMEOUT_SEC
+            )
+            if done:
+                with contextlib.suppress(BaseException):
+                    prompt_task.result()
+            else:
+                logger.warning(
+                    "ACP prompt task did not finish within %.2fs after cancellation",
+                    _PROMPT_CANCEL_DRAIN_TIMEOUT_SEC,
+                )
+
+                def _consume_prompt_result(task: asyncio.Task) -> None:
+                    with contextlib.suppress(BaseException):
+                        task.result()
+
+                prompt_task.add_done_callback(_consume_prompt_result)

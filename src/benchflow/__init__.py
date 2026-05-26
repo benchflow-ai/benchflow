@@ -10,9 +10,13 @@ Public API surface:
 - Metrics collection and aggregation
 """
 
+from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _version
 
-__version__ = _version("benchflow")
+try:
+    __version__ = _version("benchflow")
+except PackageNotFoundError:
+    __version__ = "0+unknown"
 
 # Core types
 from benchflow._types import Role, Scene, Turn
@@ -33,6 +37,12 @@ from benchflow.agents.registry import (
     list_agents,
     register_agent,
 )
+from benchflow.contracts.user import (
+    BaseUser,
+    FunctionUser,
+    PassthroughUser,
+    RoundResult,
+)
 from benchflow.evaluation import (
     Evaluation,
     EvaluationConfig,
@@ -41,13 +51,23 @@ from benchflow.evaluation import (
 )
 from benchflow.metrics import BenchmarkMetrics, collect_metrics
 from benchflow.models import AgentInstallError, AgentTimeoutError, RolloutResult
+from benchflow.monitor import (
+    Monitor,
+    MonitorConfig,
+    MonitorNotImplementedError,
+    MonitorResult,
+)
 
-# Rewards protocol (v0.4 — composable Rubric + RewardFunc)
+# Rewards plane. Reward is the canonical node-based contract
+# (``score(node) -> VerifyResult``); RewardFunc is the legacy path-based shape
+# (``score(rollout_dir) -> float``) adapted into Reward via PathReward.
 from benchflow.rewards import (
     CodeExecRewardFunc,
     Criterion,
     JudgeConfig,
     LLMJudgeRewardFunc,
+    PathReward,
+    Reward,
     RewardEvent,
     RewardFunc,
     Rubric,
@@ -75,6 +95,8 @@ from benchflow.sandbox import (
     ImageConfig,
     ImageRef,
     Sandbox,
+    SandboxImage,
+    SandboxSnapshotNotSupported,
     build_service_hooks,
     detect_services_from_dockerfile,
     register_service,
@@ -84,10 +106,15 @@ from benchflow.sandbox import (
 from benchflow.sandbox import ExecResult as SandboxExecResult
 from benchflow.sandbox.protocol import ExecResult
 from benchflow.sandbox.setup import stage_dockerfile_deps
-from benchflow.sandbox.snapshot import list_snapshots, restore, snapshot
-from benchflow.sandbox.user import BaseUser, FunctionUser, PassthroughUser, RoundResult
-from benchflow.scenes import MailboxTransport, Message, MessageTransport, SceneRole
-from benchflow.scenes import Scene as SceneRuntime
+from benchflow.sandbox.snapshot import (
+    list_snapshots,
+    list_workspace_snapshots,
+    restore,
+    snapshot,
+    workspace_restore,
+    workspace_snapshot,
+)
+from benchflow.scenes import compile_scenes_to_steps
 from benchflow.sdk import SDK
 from benchflow.skills import SkillInfo, discover_skills, install_skill, parse_skill
 from benchflow.task import (
@@ -104,10 +131,12 @@ from benchflow.trajectories.types import Trajectory
 # may change without notice.
 __all__ = [
     "__version__",
-    # Rewards protocol (v0.4)
+    # Rewards plane
+    "Reward",
     "Rubric",
     "RewardFunc",
     "RewardEvent",
+    "PathReward",
     "VerifyResult",
     "TestRewardFunc",
     "LLMJudgeRewardFunc",
@@ -123,6 +152,8 @@ __all__ = [
     # Sandbox protocol
     "Sandbox",
     "SandboxExecResult",
+    "SandboxImage",
+    "SandboxSnapshotNotSupported",
     "ImageBuilder",
     "ImageConfig",
     "ImageRef",
@@ -153,6 +184,11 @@ __all__ = [
     "AgentInstallError",
     "AgentTimeoutError",
     "RolloutResult",
+    # Monitor mode — scaffolded API surface (#386)
+    "Monitor",
+    "MonitorConfig",
+    "MonitorResult",
+    "MonitorNotImplementedError",
     # Runtime
     "Agent",
     "Environment",
@@ -165,13 +201,13 @@ __all__ = [
     "Role",
     "Scene",
     "Turn",
-    # Multi-agent scene runtime
-    "SceneRole",
-    "SceneRuntime",
-    "Message",
-    "MessageTransport",
-    "MailboxTransport",
-    # Env snapshots
+    # Scene authoring desugaring
+    "compile_scenes_to_steps",
+    # Workspace snapshots (filesystem helper — NOT the Sandbox primitive, #384)
+    "workspace_snapshot",
+    "workspace_restore",
+    "list_workspace_snapshots",
+    # Backward-compatible aliases for the above (pre-#384 names)
     "snapshot",
     "restore",
     "list_snapshots",

@@ -7,10 +7,25 @@ from benchflow.rollout import Rollout, RolloutConfig, Scene
 
 
 @pytest.mark.asyncio
-async def test_agent_timeout_without_verifier_reward_counts_as_zero(
-    tmp_path: Path, monkeypatch
+@pytest.mark.parametrize(
+    ("verifier_error", "expected_rewards", "expected_verifier_error"),
+    [
+        (
+            "verifier crashed: No reward file found",
+            None,
+            "verifier crashed: No reward file found",
+        ),
+        (None, {"reward": 0.0}, None),
+    ],
+)
+async def test_agent_timeout_verifier_result_handling(
+    tmp_path: Path,
+    monkeypatch,
+    verifier_error: str | None,
+    expected_rewards: dict[str, float] | None,
+    expected_verifier_error: str | None,
 ):
-    """Guards the 2026-05-05 agent-timeout reward fallback fix."""
+    """Guards the reward-output regression on v0.5-integration@ffef85d."""
     cfg = RolloutConfig(
         task_path=tmp_path / "task",
         scenes=[Scene.single(agent="dummy")],
@@ -30,14 +45,14 @@ async def test_agent_timeout_without_verifier_reward_counts_as_zero(
     async def install_agent():
         calls.append("install_agent")
 
-    async def run_scene(_scene):
-        calls.append("run_scene")
+    async def run_steps(_steps):
+        calls.append("run_steps")
         raise TimeoutError("Agent prompt exceeded wall-clock budget 5s")
 
     async def verify():
         calls.append("verify")
         trial._rewards = None
-        trial._verifier_error = "verifier crashed: No reward file found"
+        trial._verifier_error = verifier_error
         return trial._rewards
 
     async def cleanup():
@@ -56,7 +71,7 @@ async def test_agent_timeout_without_verifier_reward_counts_as_zero(
     monkeypatch.setattr(trial, "setup", setup)
     monkeypatch.setattr(trial, "start", start)
     monkeypatch.setattr(trial, "install_agent", install_agent)
-    monkeypatch.setattr(trial, "_run_scene", run_scene)
+    monkeypatch.setattr(trial, "_run_steps", run_steps)
     monkeypatch.setattr(trial, "verify", verify)
     monkeypatch.setattr(trial, "cleanup", cleanup)
     monkeypatch.setattr(trial, "_build_result", build_result)
@@ -67,11 +82,11 @@ async def test_agent_timeout_without_verifier_reward_counts_as_zero(
         "setup",
         "start",
         "install_agent",
-        "run_scene",
+        "run_steps",
         "verify",
         "cleanup",
         "build_result",
     ]
     assert result.error == "Agent prompt exceeded wall-clock budget 5s"
-    assert result.rewards == {"reward": 0.0}
-    assert result.verifier_error is None
+    assert result.rewards == expected_rewards
+    assert result.verifier_error == expected_verifier_error

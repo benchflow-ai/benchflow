@@ -17,7 +17,7 @@ This guide covers how to run them — from a single task to a full evaluation sw
 |-----------|-------|--------------|--------|
 | [Harvey LAB](https://github.com/harveyai/harvey-labs) | 1,251 | LLM-as-judge (per-criterion) | `benchmarks/harvey-lab/` |
 | [ProgramBench](https://programbench.com) | 201 | Deterministic unit tests | `benchmarks/programbench/` |
-| [SkillsBench](https://github.com/benchflow-ai/skillsbench) | 94+ | Unit tests | `benchmarks/skillsbench-*.yaml` |
+| [SkillsBench](https://github.com/benchflow-ai/skillsbench) | 94+ | Unit tests | `--source-repo benchflow-ai/skillsbench --source-path tasks` |
 
 Each adapted benchmark includes:
 - **`benchflow.py`** — converter: raw benchmark → BenchFlow task format
@@ -25,6 +25,19 @@ Each adapted benchmark includes:
 - **`<name>-*.yaml`** — job configs for different agents/models
 - **`parity_test.py`** — parity validation suite
 - **`parity_experiment.json`** — recorded parity results
+
+### Environment-plane benchmarks
+
+Stateful, multi-service benchmarks integrate differently: instead of a
+converter they ship an `environment.toml` **manifest** and run on the
+[Environment plane](./environment-plane.md). Two are onboarded:
+
+| Benchmark | Topology | Manifest |
+|-----------|----------|----------|
+| **ClawsBench** | mock Gmail/Slack/Calendar/Docs/Drive, framework-started | `benchmarks/clawsbench/environment.toml` |
+| **chi-bench** | ~25k-LOC healthcare simulator, image-owned lifecycle | `benchmarks/chi-bench/environment.toml` |
+
+See [Running a benchmark with an Environment manifest](#running-a-benchmark-with-an-environment-manifest) below.
 
 ---
 
@@ -78,9 +91,10 @@ bench eval create \
   --source-path tasks/edit-pdf \
   --agent gemini --model gemini-3.1-flash-lite-preview
 
-# ProgramBench — single task
+# ProgramBench — single task (tasks are generated at runtime by the converter;
+# see "Running ProgramBench" below for the generation step)
 bench eval create \
-  benchmarks/programbench/tasks/abishekvashok__cmatrix.5c082c6 \
+  --tasks-dir benchmarks/programbench/tasks/abishekvashok__cmatrix.5c082c6 \
   --agent gemini --model gemini-3.1-flash-lite-preview --sandbox docker
 
 # Claude Code on Daytona
@@ -179,13 +193,32 @@ bench eval create \
 ## Running ProgramBench
 
 201 program-reconstruction tasks across 7 languages (C, Rust, Go, C++, Java, Haskell, Bash).
-Tasks are **generated** at runtime from the ProgramBench repo's metadata.
+Tasks are **generated** at runtime from the ProgramBench repo's metadata —
+`benchmarks/programbench/tasks/` is not checked into this repo and must be
+produced first.
 
 ### Prerequisites
 
 - Docker (images are linux/amd64 only — use a Linux x86_64 machine)
 - ~20GB disk for Docker images
 - Internet access for HuggingFace test blob downloads during verification
+- A local clone of [`programbench`](https://programbench.com) (passed via
+  `--programbench-dir` to the generator)
+
+### Generate the tasks
+
+```bash
+# All 200 tasks
+python -m benchmarks.programbench.main \
+    --programbench-dir ~/programbench \
+    --output-dir benchmarks/programbench/tasks
+
+# Or a single task
+python -m benchmarks.programbench.main \
+    --programbench-dir ~/programbench \
+    --output-dir benchmarks/programbench/tasks \
+    --task-ids abishekvashok__cmatrix.5c082c6
+```
 
 ### Run all tasks
 
@@ -193,7 +226,7 @@ Tasks are **generated** at runtime from the ProgramBench repo's metadata.
 bench eval create --config benchmarks/programbench/programbench-gemini-flash-lite.yaml
 ```
 
-### Run a single task
+### Run a single task (after generation)
 
 ```bash
 bench eval create \
@@ -277,6 +310,89 @@ bench eval create \
 
 ---
 
+## Running a benchmark with an Environment manifest
+
+A **stateful** benchmark — one with mock services, databases, or accounts the
+agent acts on — declares its world in an `environment.toml` manifest and runs
+on the [Environment plane](./environment-plane.md). The `--environment-manifest`
+flag is available on both the single-task `bench run` command and on
+`bench eval create` (batch / Job API), so manifest-backed evaluations can be
+driven through the same pipeline as regular benchmark sweeps.
+
+```bash
+# single task
+bench run benchmarks/clawsbench/tasks/<task> \
+  --environment-manifest benchmarks/clawsbench/environment.toml \
+  --agent claude-agent-acp --model claude-haiku-4-5
+
+bench run benchmarks/chi-bench/tasks/<task> \
+  --environment-manifest benchmarks/chi-bench/environment.toml \
+  --agent claude-agent-acp --model claude-haiku-4-5
+
+# batch via the Job API
+bench eval create --tasks-dir benchmarks/clawsbench/tasks \
+  --environment-manifest benchmarks/clawsbench/environment.toml \
+  --agent claude-agent-acp --model claude-haiku-4-5
+```
+
+YAML configs may declare the same seam with ``environment_manifest:
+<path>`` at the top level so the batch run is reproducible from disk.
+
+`--environment-manifest` is distinct from `--sandbox`: the sandbox is *where*
+the rollout runs; the environment manifest is *the world* the agent acts in.
+BenchFlow provisions the environment, gates on its readiness before the agent
+runs, and tears it down afterward. See [the Environment plane](./environment-plane.md)
+for the full manifest schema, both onboarded benchmarks, and the
+`snapshot`/`restore` roll-back contract.
+
+---
+
+## Running foreign benchmarks (inbound adapters)
+
+BenchFlow runs benchmarks authored in other formats without converting them
+first. An **inbound adapter** translates a foreign task directory into
+BenchFlow-native shape; the rollout then runs natively. Two adapters ship:
+
+| Source format | Signature file | Adapter |
+|---------------|----------------|---------|
+| Harbor | `task.toml` | `HarborAdapter` |
+| Terminal-Bench | `task.yaml` | `TerminalBenchAdapter` |
+
+`benchflow.adapters.inbound.detect_adapter()` sniffs a task directory and
+picks the adapter whose format it matches (`task.toml` is checked first, so a
+directory carrying both is treated as Harbor — the native superset). Each
+adapter is a pure `Path -> InboundTask` translation: it reads a directory and
+returns an in-memory native task, building no sandboxes and running nothing.
+Terminal-Bench tasks are backward-compatible this way — old terminal-style
+tasks keep running on BenchFlow unchanged.
+
+---
+
+## Continual learning (`sequential-shared` job mode)
+
+By default a job runs its rollouts concurrently and isolated
+(`parallel-independent`). A **continual-learning** job instead runs them
+strictly in order over one persistent, versioned store of memory + skills —
+set `job_mode: sequential-shared` in the YAML config:
+
+```yaml
+source:
+  repo: benchflow-ai/skillsbench
+  path: tasks
+agent: claude-agent-acp
+model: claude-haiku-4-5
+job_mode: sequential-shared
+```
+
+In this mode each rollout reads the current `LearnerStore` state and, after
+it scores, offers its reward as a learning-curve metric: an improvement
+stamps a new generation, a regression is reverted to the best generation so
+far. Concurrency is ignored — a shared mutable store cannot be written by
+overlapping rollouts. See the [architecture doc](./architecture.md#the-eight-capabilities--how-each-fits),
+capability 5, for the full design.
+
+---
+
 ## Reading results
 
 Results land under `jobs/<job-name>/<rollout-name>/`:
@@ -298,10 +414,17 @@ The `result.json` contains:
 ```json
 {
   "rewards": {"reward": 0.48},
+  "n_tool_calls": 12,
+  "n_skill_invocations": 2,
   "passed": true,
   "verifier_output": "..."
 }
 ```
+
+`n_skill_invocations` is derived from structured ACP trajectory events: BenchFlow
+counts only `tool_call` events whose `kind` is `skill`. Job `summary.json`
+also includes `total_skill_invocations` and `avg_skill_invocations` across the
+rollouts in the run.
 
 List evaluations:
 ```bash

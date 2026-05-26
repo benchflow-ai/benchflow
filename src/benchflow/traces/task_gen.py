@@ -7,14 +7,18 @@ with a ``test.sh`` verifier derived from the trace outcome.
 
 from __future__ import annotations
 
+import base64
 import hashlib
+import json
 import logging
 import os
 import re
 import shlex
+import shutil
 import textwrap
+from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
+from urllib.parse import urlparse
 
 from benchflow.traces.models import ParsedTrace
 
@@ -49,6 +53,49 @@ _TIMEOUT_BY_DIFFICULTY = {
     "hard": 1200,
     "expert": 1800,
 }
+
+_WHOLE_FILE_WRITE_TOOLS = {"Write", "write_to_file"}
+_AMBIGUOUS_EDIT_TOOLS = {"Edit", "MultiEdit", "edit_file"}
+_GITHUB_REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+_GIT_COMMIT_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
+
+
+@dataclass(frozen=True)
+class _FileExpectation:
+    """A generated verifier/oracle target extracted from a trace."""
+
+    path: str
+    expected_content: str | None
+
+    @property
+    def has_dynamic_path(self) -> bool:
+        return _has_dynamic_segments(self.path)
+
+    @property
+    def target(self) -> str:
+        return _globify_path(self.path) if self.has_dynamic_path else self.path
+
+    def verifier_payload(self, *, has_git: bool) -> dict[str, str]:
+        if self.expected_content is not None:
+            return {
+                "kind": "content",
+                "path": self.path,
+                "target": self.target,
+                "content_b64": base64.b64encode(self.expected_content.encode()).decode(
+                    "ascii"
+                ),
+            }
+        if has_git:
+            return {
+                "kind": "git_status",
+                "path": self.path,
+                "target": self.target,
+            }
+        return {
+            "kind": "manual",
+            "path": self.path,
+            "target": self.target,
+        }
 
 
 def _estimate_difficulty(trace: ParsedTrace) -> str:
@@ -161,6 +208,46 @@ def _relativize_path(path: str) -> str:
     return path
 
 
+def _is_safe_workspace_path(path: str) -> bool:
+    """Return True if ``path`` is safe to embed in a generated task artifact.
+
+    Generated ``test.sh`` and ``solve.sh`` ``cd /app`` before operating on
+    these paths. A path containing ``..`` segments or starting with ``/``
+    escapes the workspace, so the verifier and oracle can read or write
+    arbitrary host locations (see GitHub issue #376).
+
+    Empty strings are also unsafe — they'd produce shell commands that
+    silently target the current directory.
+    """
+    if not path:
+        return False
+    if path.startswith("/"):
+        return False
+    if "\x00" in path:
+        return False
+    # Use PurePosixPath-style splitting; trace paths use forward slashes
+    # even when the agent ran on Windows-like surfaces.
+    return ".." not in Path(path).parts
+
+
+def _safe_relativize(path: str) -> str | None:
+    """Return ``_relativize_path(path)`` if the result is workspace-safe.
+
+    Returns ``None`` (with a warning log) for unsafe inputs — the caller
+    should drop the offending entry from generated artifacts so the task
+    does not encode writes or verification outside the workspace.
+    """
+    relative = _relativize_path(path)
+    if not _is_safe_workspace_path(relative):
+        logger.warning(
+            "Dropping trace path %r (relativized to %r) — escapes task workspace",
+            path,
+            relative,
+        )
+        return None
+    return relative
+
+
 def _globify_path(path: str) -> str:
     """Replace timestamp-bearing directory segments with globs.
 
@@ -204,8 +291,13 @@ def _build_instruction(trace: ParsedTrace) -> str:
 
     lines = [prompt, ""]
 
-    # Add context about what the agent actually did as implicit requirements
-    files = [_relativize_path(f) for f in trace.files_edited]
+    # Add context about what the agent actually did as implicit requirements.
+    # Drop trace paths that would escape the task workspace (issue #376) —
+    # ``..`` segments or absolute paths in instruction.md mislead the agent
+    # and pair badly with the verifier and oracle that consume the same list.
+    files = [
+        rel for f in trace.files_edited if (rel := _safe_relativize(f)) is not None
+    ]
     if files:
         lines.append("## Expected Changes")
         lines.append("")
@@ -304,125 +396,156 @@ def _build_task_toml(
 def _build_test_sh(trace: ParsedTrace) -> str:
     """Generate a test.sh verifier from the trace.
 
-    When git context is available (repo was cloned), checks that files
-    were **modified** relative to the base commit — not just that they
-    exist.  Otherwise falls back to file-existence checks.
+    Whole-file writes become exact content checks. Ambiguous edit-only traces
+    use git status when a base commit is available; otherwise the verifier
+    reports 0.0 and requires manual authoring instead of auto-passing a weak
+    existence check.
     Writes reward to /logs/verifier/reward.txt per BenchFlow contract.
     """
-    files = [_relativize_path(f) for f in trace.files_edited]
-    if not files:
-        return (
-            "#!/bin/bash\n"
-            f"# Auto-generated verifier from trace {trace.trace_id}\n"
-            "# No file checks available — manual verification required.\n"
-            'echo "No file checks available for this trace-generated task."\n'
-            'echo "0.0" > /logs/verifier/reward.txt\n'
-        )
-
+    expectations = _file_expectations_from_trace(trace)
     has_git = bool(trace.git.repo and trace.git.commit_before)
+    payload = [
+        expectation.verifier_payload(has_git=has_git)
+        for expectation in expectations[:20]
+    ]
+    payload_json = json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
-    checks: list[str] = []
-    for f in files[:20]:
-        if _has_dynamic_segments(f):
-            pattern = _globify_path(f)
-            quoted_pattern = shlex.quote(pattern)
-            checks.append(f"if ! compgen -G {quoted_pattern} > /dev/null 2>&1; then")
-            checks.append(f'  echo "Missing (pattern): {quoted_pattern}"')
-            checks.append("  PASS=0")
-            checks.append("fi")
-        elif has_git:
-            quoted = shlex.quote(f)
-            checks.append(
-                f"if ! git diff --name-only HEAD {quoted} 2>/dev/null | grep -q .; then"
-            )
-            checks.append(f'  echo "Not modified: {quoted}"')
-            checks.append("  PASS=0")
-            checks.append("fi")
-        else:
-            quoted = shlex.quote(f)
-            checks.append(f"if [ ! -f {quoted} ]; then")
-            checks.append(f'  echo "Missing: {quoted}"')
-            checks.append("  PASS=0")
-            checks.append("fi")
-
-    checks_block = "\n".join(checks)
-
-    header = f"#!/bin/bash\n# Auto-generated verifier from trace {trace.trace_id}\n"
-    if has_git:
-        header += "# Checks that expected files were modified vs base commit.\n"
+    header = (
+        "#!/bin/bash\n"
+        f"# Auto-generated verifier from trace {_shell_comment_text(trace.trace_id)}\n"
+    )
+    if not payload:
+        header += "# No file checks available; manual verification required.\n"
+    elif has_git:
+        header += (
+            "# Checks exact content where known, otherwise git working-tree status.\n"
+        )
     else:
-        header += "# Checks that expected files were created/modified.\n"
+        header += (
+            "# Checks exact content where known; unverifiable edits fail closed.\n"
+        )
+    for expectation in expectations[:20]:
+        header += f"# Expected: {_shell_comment_text(expectation.target)}\n"
 
     return (
         f"{header}"
         "set -euo pipefail\n"
         "\n"
-        "PASS=1\n"
+        "python3 - <<'PY'\n"
+        "import base64\n"
+        "import glob\n"
+        "import json\n"
+        "import pathlib\n"
+        "import subprocess\n"
+        "import sys\n"
         "\n"
-        f"{checks_block}\n"
+        f"CHECKS = json.loads({payload_json!r})\n"
+        "REWARD = pathlib.Path('/logs/verifier/reward.txt')\n"
+        "REWARD.parent.mkdir(parents=True, exist_ok=True)\n"
         "\n"
-        'if [ "$PASS" = "1" ]; then\n'
-        '  echo "1.0" > /logs/verifier/reward.txt\n'
-        "else\n"
-        '  echo "0.0" > /logs/verifier/reward.txt\n'
-        "fi\n"
+        "def targets(check):\n"
+        "    target = check['target']\n"
+        "    if target != check['path']:\n"
+        "        return sorted(p for p in glob.glob(target) if pathlib.Path(p).is_file())\n"
+        "    return [target] if pathlib.Path(target).is_file() else []\n"
+        "\n"
+        "def git_changed(path):\n"
+        "    try:\n"
+        "        result = subprocess.run(\n"
+        "            ['git', 'status', '--porcelain', '--', path],\n"
+        "            check=False,\n"
+        "            text=True,\n"
+        "            stdout=subprocess.PIPE,\n"
+        "            stderr=subprocess.DEVNULL,\n"
+        "        )\n"
+        "    except OSError:\n"
+        "        return False\n"
+        "    return result.returncode == 0 and bool(result.stdout.strip())\n"
+        "\n"
+        "passed = True\n"
+        "if not CHECKS:\n"
+        "    print('No file checks available for this trace-generated task.')\n"
+        "    passed = False\n"
+        "\n"
+        "for check in CHECKS:\n"
+        "    kind = check['kind']\n"
+        "    matched = targets(check)\n"
+        "    if kind == 'content':\n"
+        "        expected = base64.b64decode(check['content_b64'])\n"
+        "        if not matched:\n"
+        "            print(f\"Missing: {check['target']}\")\n"
+        "            passed = False\n"
+        "            continue\n"
+        "        if not any(pathlib.Path(path).read_bytes() == expected for path in matched):\n"
+        "            print(f\"Content mismatch: {check['target']}\")\n"
+        "            passed = False\n"
+        "    elif kind == 'git_status':\n"
+        "        candidates = matched or [check['path']]\n"
+        "        if not any(git_changed(path) for path in candidates):\n"
+        "            print(f\"Not modified: {check['target']}\")\n"
+        "            passed = False\n"
+        "    else:\n"
+        "        print(f\"Manual verification required: {check['target']}\")\n"
+        "        passed = False\n"
+        "\n"
+        "REWARD.write_text('1.0\\n' if passed else '0.0\\n')\n"
+        "sys.exit(0)\n"
+        "PY\n"
     )
 
 
-def _tool_call_file_write(tc_input: dict[str, object]) -> tuple[str, str] | None:
-    """Extract a file path and best-effort final content from a write/edit call."""
+def _tool_call_path(tc_input: dict[str, object]) -> str | None:
     path = tc_input.get("file_path") or tc_input.get("path")
     if not isinstance(path, str) or not path:
         return None
+    return _safe_relativize(path)
 
-    content = tc_input.get("content")
-    if isinstance(content, str):
-        return _relativize_path(path), content
 
-    new_string = tc_input.get("new_string")
-    if isinstance(new_string, str):
-        return _relativize_path(path), new_string
+def _whole_file_content(tc_input: dict[str, object]) -> str | None:
+    """Return final file content only for whole-file write tool inputs."""
+    for key in ("content", "text"):
+        value = tc_input.get(key)
+        if isinstance(value, str):
+            return value
+    return None
 
-    text = tc_input.get("text")
-    if isinstance(text, str):
-        return _relativize_path(path), text
 
-    return _relativize_path(path), ""
+def _file_expectations_from_trace(trace: ParsedTrace) -> list[_FileExpectation]:
+    """Return final per-path expectations without inventing edit content.
+
+    ``Write``/``write_to_file`` carry whole-file content and can be replayed
+    exactly. ``Edit``/``MultiEdit`` carry replacement fragments, so they are
+    intentionally classified as content-unknown unless a later whole-file
+    write supersedes them.
+    """
+    by_path: dict[str, _FileExpectation] = {}
+
+    for step in trace.steps:
+        for tc in step.tool_calls:
+            if tc.name in _WHOLE_FILE_WRITE_TOOLS:
+                path = _tool_call_path(tc.input)
+                if path is None:
+                    continue
+                by_path[path] = _FileExpectation(
+                    path=path,
+                    expected_content=_whole_file_content(tc.input),
+                )
+            elif tc.name in _AMBIGUOUS_EDIT_TOOLS:
+                path = _tool_call_path(tc.input)
+                if path is None:
+                    continue
+                by_path[path] = _FileExpectation(path=path, expected_content=None)
+
+    return list(by_path.values())
 
 
 def _solution_writes_from_trace(trace: ParsedTrace) -> list[tuple[str, str]]:
     """Return deterministic file writes that can replay a trace as an oracle."""
-    writes_by_path: dict[str, str] = {}
-    write_tools = {"Write", "Edit", "write_to_file", "edit_file"}
-
-    for step in trace.steps:
-        for tc in step.tool_calls:
-            if tc.name in write_tools:
-                write = _tool_call_file_write(tc.input)
-                if write is not None:
-                    path, content = write
-                    writes_by_path[path] = content
-            elif tc.name == "MultiEdit":
-                path = tc.input.get("file_path") or tc.input.get("path")
-                edits = tc.input.get("edits")
-                if isinstance(path, str) and isinstance(edits, list):
-                    parts = []
-                    for edit in edits:
-                        if isinstance(edit, dict):
-                            edit_input = cast("dict[str, object]", edit)
-                            new_string = edit_input.get("new_string")
-                            if isinstance(new_string, str):
-                                parts.append(new_string)
-                    writes_by_path[_relativize_path(path)] = "\n".join(parts)
-
-    return list(writes_by_path.items())
-
-
-def _heredoc_marker(content: str) -> str:
-    marker = "BENCHFLOW_TRACE_CONTENT"
-    while marker in content:
-        marker += "_END"
-    return marker
+    return [
+        (expectation.path, expectation.expected_content)
+        for expectation in _file_expectations_from_trace(trace)
+        if expectation.expected_content is not None
+    ]
 
 
 def _build_solution_sh(trace: ParsedTrace) -> str:
@@ -430,7 +553,7 @@ def _build_solution_sh(trace: ParsedTrace) -> str:
     writes = _solution_writes_from_trace(trace)
     header = (
         "#!/bin/bash\n"
-        f"# Auto-generated oracle solution from trace {trace.trace_id}\n"
+        f"# Auto-generated oracle solution from trace {_shell_comment_text(trace.trace_id)}\n"
         "set -euo pipefail\n"
         "cd /app\n\n"
     )
@@ -440,20 +563,29 @@ def _build_solution_sh(trace: ParsedTrace) -> str:
             'echo "No replayable file writes were found for this trace." >&2\nexit 1\n'
         )
 
-    blocks: list[str] = [header]
-    for path, content in writes:
-        quoted_path = shlex.quote(path)
-        parent = str(Path(path).parent)
-        if parent and parent != ".":
-            blocks.append(f"mkdir -p {shlex.quote(parent)}\n")
-        marker = _heredoc_marker(content)
-        blocks.append(f"cat > {quoted_path} <<'{marker}'\n")
-        blocks.append(content)
-        if content and not content.endswith("\n"):
-            blocks.append("\n")
-        blocks.append(f"{marker}\n")
+    payload = [
+        {
+            "path": path,
+            "content_b64": base64.b64encode(content.encode()).decode("ascii"),
+        }
+        for path, content in writes
+    ]
+    payload_json = json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
-    return "".join(blocks)
+    return (
+        header
+        + "python3 - <<'PY'\n"
+        + "import base64\n"
+        + "import json\n"
+        + "import pathlib\n"
+        + "\n"
+        + f"WRITES = json.loads({payload_json!r})\n"
+        + "for write in WRITES:\n"
+        + "    path = pathlib.Path(write['path'])\n"
+        + "    path.parent.mkdir(parents=True, exist_ok=True)\n"
+        + "    path.write_bytes(base64.b64decode(write['content_b64']))\n"
+        + "PY\n"
+    )
 
 
 def _build_dockerfile(trace: ParsedTrace | None = None) -> str:
@@ -461,6 +593,8 @@ def _build_dockerfile(trace: ParsedTrace | None = None) -> str:
 
     When the trace has git context (repo + commit), clones the repo at
     the specified commit so the agent has the actual codebase to work with.
+    The checkout must succeed; building against clone HEAD would make the
+    generated benchmark stale and misleading.
     """
     base = textwrap.dedent("""\
         FROM ubuntu:24.04
@@ -471,12 +605,15 @@ def _build_dockerfile(trace: ParsedTrace | None = None) -> str:
     """)
 
     if trace and trace.git.repo and trace.git.commit_before:
-        repo = trace.git.repo
-        commit = trace.git.commit_before
-        clone_url = _github_clone_url(repo)
+        clone_url = shlex.quote(_github_clone_url(trace.git.repo))
+        commit = _validate_git_commit(trace.git.commit_before)
+        quoted_commit = shlex.quote(commit)
         base += textwrap.dedent(f"""\
-            RUN git clone --depth 50 {clone_url} /app && \\
-                cd /app && git checkout {commit} || true
+            RUN git clone --no-checkout {clone_url} /app && \\
+                cd /app && \\
+                git fetch --depth 1 origin {quoted_commit} && \\
+                git checkout --detach {quoted_commit} && \\
+                case "$(git rev-parse --verify HEAD)" in {commit}*) ;; *) exit 1 ;; esac
 
             WORKDIR /app
         """)
@@ -487,15 +624,58 @@ def _build_dockerfile(trace: ParsedTrace | None = None) -> str:
 
 
 def _github_clone_url(repo: str) -> str:
-    """Return a clone URL for GitHub shorthand or full URLs."""
+    """Return a public HTTPS clone URL for GitHub shorthand or full URLs."""
     normalized = repo.strip()
     if normalized.endswith(".git"):
         normalized = normalized[:-4]
-    if normalized.startswith(("https://", "http://", "git@")):
-        return f"{normalized}.git"
+
+    if normalized.startswith("git@github.com:"):
+        return _github_https_url(normalized.removeprefix("git@github.com:"))
+
+    if normalized.startswith("ssh://git@github.com/"):
+        return _github_https_url(normalized.removeprefix("ssh://git@github.com/"))
+
+    if normalized.startswith(("https://", "http://")):
+        parsed = urlparse(normalized)
+        if parsed.netloc.lower() != "github.com":
+            raise ValueError(
+                "Trace git.repo must be a public GitHub HTTPS URL or owner/repo"
+            )
+        return _github_https_url(parsed.path.lstrip("/"))
+
+    if normalized.startswith("git@"):
+        raise ValueError("Trace git.repo SSH remotes are only supported for GitHub")
+
     if normalized.startswith("github.com/"):
-        return f"https://{normalized}.git"
+        return _github_https_url(normalized.removeprefix("github.com/"))
+
+    return _github_https_url(normalized)
+
+
+def _github_https_url(owner_repo: str) -> str:
+    normalized = owner_repo.strip().strip("/")
+    if normalized.endswith(".git"):
+        normalized = normalized[:-4]
+    if not _GITHUB_REPO_RE.fullmatch(normalized):
+        raise ValueError(
+            "Trace git.repo must identify a GitHub repository as owner/repo"
+        )
     return f"https://github.com/{normalized}.git"
+
+
+def _validate_git_commit(commit: str) -> str:
+    normalized = commit.strip()
+    if not _GIT_COMMIT_RE.fullmatch(normalized):
+        raise ValueError(
+            "Trace git.commit_before must be a 7-40 character hexadecimal commit"
+        )
+    return normalized.lower()
+
+
+def _shell_comment_text(value: str) -> str:
+    """Keep trace-controlled metadata inside a single shell comment line."""
+    clean = re.sub(r"[\r\n\t]+", " ", value)
+    return "".join(ch if 32 <= ord(ch) < 127 else "?" for ch in clean)
 
 
 def generate_task(
@@ -531,9 +711,9 @@ def generate_task(
         logger.info("Task %s already exists, skipping (use overwrite=True)", task_id)
         return task_dir
 
-    task_dir.mkdir(parents=True, exist_ok=True)
-
-    # Write task.toml
+    # Render every artifact before replacing an existing task directory. If
+    # trace metadata is unsafe (for example an unsupported git remote), fail
+    # without leaving a half-regenerated benchmark behind.
     effective_timeout = timeout_sec if timeout_sec > 0 else None
     task_name = f"trace-import/{task_id}"
     toml_content = _build_task_toml(
@@ -542,21 +722,32 @@ def generate_task(
         author=author,
         timeout_sec=effective_timeout,
     )
+    instruction = _build_instruction(trace)
+    dockerfile = _build_dockerfile(trace)
+    test_sh = _build_test_sh(trace)
+    solution_sh = _build_solution_sh(trace)
+
+    if task_dir.exists():
+        if task_dir.is_symlink() or task_dir.is_file():
+            task_dir.unlink()
+        else:
+            shutil.rmtree(task_dir)
+
+    task_dir.mkdir(parents=True, exist_ok=True)
+
     (task_dir / "task.toml").write_text(toml_content)
 
     # Write instruction.md
-    instruction = _build_instruction(trace)
     (task_dir / "instruction.md").write_text(instruction)
 
     # Write environment/Dockerfile
     env_dir = task_dir / "environment"
     env_dir.mkdir(exist_ok=True)
-    (env_dir / "Dockerfile").write_text(_build_dockerfile(trace))
+    (env_dir / "Dockerfile").write_text(dockerfile)
 
     # Write tests/test.sh
     tests_dir = task_dir / "tests"
     tests_dir.mkdir(exist_ok=True)
-    test_sh = _build_test_sh(trace)
     test_path = tests_dir / "test.sh"
     test_path.write_text(test_sh)
     test_path.chmod(0o755)
@@ -565,7 +756,7 @@ def generate_task(
     solution_dir = task_dir / "solution"
     solution_dir.mkdir(exist_ok=True)
     solution_path = solution_dir / "solve.sh"
-    solution_path.write_text(_build_solution_sh(trace))
+    solution_path.write_text(solution_sh)
     solution_path.chmod(0o755)
 
     logger.info(
