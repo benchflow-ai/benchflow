@@ -299,6 +299,7 @@ class ACPClient:
         )
         session_id = result.get("sessionId", "default")
         self._session = ACPSession(session_id)
+        self._session.model_state = result.get("models")
         if self._initialize_result:
             self._session.agent_info = self._initialize_result.agent_info
             self._session.agent_capabilities = (
@@ -314,6 +315,7 @@ class ACPClient:
         result = await self._send_request("session/load", params)
         loaded_id = result.get("sessionId", session_id)
         self._session = ACPSession(loaded_id)
+        self._session.model_state = result.get("models")
         if self._initialize_result:
             self._session.agent_info = self._initialize_result.agent_info
             self._session.agent_capabilities = (
