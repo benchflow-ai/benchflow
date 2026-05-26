@@ -245,6 +245,13 @@ async def deploy_skills(
             logger.info("Skills already injected via Dockerfile")
             effective_skills = "/skills"
 
+    # Auto-discover task-bundled skills already uploaded to /app/skills
+    # by _start_env_and_upload (from environment/skills/ in the task dir).
+    if not effective_skills and include_task_skills:
+        bundled = task_path / "environment" / "skills"
+        if bundled.is_dir():
+            effective_skills = "/app/skills"
+
     # Distribute to agent-specific discovery paths
     if agent_cfg is not None:
         skill_paths = agent_cfg.skill_paths
