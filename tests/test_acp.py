@@ -1093,7 +1093,46 @@ class TestTransportErrorDiagnostics:
         rj = __import__("json").loads((tmp_path / "result.json").read_text())
         assert rj["transport_error_info"] == diag.to_dict()
         assert rj["error_category"] == "pipe_closed"
+        assert result.error_category == "pipe_closed"
         assert result.error is not None
+
+    def test_transport_diagnostic_category_overrides_error_string(
+        self, tmp_path
+    ) -> None:
+        """Guards PR #561: typed transport diagnostics own result categorization."""
+        from benchflow.diagnostics import RolloutDiagnostics, TransportClosedDiagnostic
+        from benchflow.rollout import _build_rollout_result
+
+        diag = TransportClosedDiagnostic(
+            raw_message="DaytonaPtyProcess: timeout waiting for agent start marker",
+            transport_diagnosis="pty_startup_timeout",
+        )
+        diagnostics = RolloutDiagnostics()
+        diagnostics.set(diag)
+
+        result = _build_rollout_result(
+            tmp_path,
+            task_name="drone-planning-control",
+            rollout_name="drone__abc123",
+            agent="openhands",
+            agent_name="",
+            model="azure-foundry-openai/gpt-5.5",
+            n_tool_calls=0,
+            prompts=["solve"],
+            error="DaytonaPtyProcess: timeout waiting for agent start marker",
+            verifier_error=None,
+            trajectory=[],
+            partial_trajectory=False,
+            rewards=None,
+            started_at=__import__("datetime").datetime.now(),
+            timing={"environment_setup": 10.0},
+            diagnostics=diagnostics,
+        )
+
+        rj = __import__("json").loads((tmp_path / "result.json").read_text())
+        assert rj["transport_error_info"] == diag.to_dict()
+        assert rj["error_category"] == "pipe_closed"
+        assert result.error_category == "pipe_closed"
 
     def test_transport_error_info_none_when_no_transport_error(self, tmp_path) -> None:
         """Guards ENG-148: transport_error_info is null for non-transport errors."""

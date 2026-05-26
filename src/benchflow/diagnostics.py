@@ -330,6 +330,18 @@ class RolloutDiagnostics:
             for d in DIAGNOSTIC_REGISTRY
         }
 
+    def category_for_channel(self, channel: str) -> str | None:
+        """Return the structured error category for a result channel, if any."""
+        for diagnostic_cls in DIAGNOSTIC_REGISTRY:
+            diagnostic = self._events.get(diagnostic_cls.field)
+            if (
+                diagnostic is not None
+                and diagnostic_cls.channel == channel
+                and diagnostic_cls.category
+            ):
+                return diagnostic_cls.category
+        return None
+
     # Convenience accessors for callers that need to enrich an in-flight
     # diagnostic (e.g. probe_sandbox_health adds sandbox_reachable to
     # the transport diagnostic after the exception lands).

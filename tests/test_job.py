@@ -21,6 +21,14 @@ class TestRetryConfig:
         cfg = RetryConfig()
         assert cfg.should_retry("Process closed stdout (rc=None)")
 
+    def test_should_retry_structured_pipe_category(self):
+        """Guards PR #561: retry policy can use diagnostic-owned categories."""
+        cfg = RetryConfig()
+        assert cfg.should_retry(
+            "DaytonaPtyProcess: timeout waiting for agent start marker",
+            category="pipe_closed",
+        )
+
     def test_should_retry_acp_error(self):
         cfg = RetryConfig()
         assert cfg.should_retry("ACP error -32000: Authentication required")
@@ -223,6 +231,24 @@ class TestRunTaskLoop:
         job._sdk.run = AsyncMock(side_effect=[fail_result, ok_result])
 
         result = await job._run_task(tasks_dir / "task-0")
+        assert job._sdk.run.call_count == 2
+        assert result.rewards == {"reward": 1.0}
+
+    @pytest.mark.asyncio
+    async def test_retries_using_result_error_category(self, job_factory):
+        """Guards PR #561: PTY marker timeouts retry via structured category."""
+        job, tasks_dir = job_factory(n_tasks=1, max_retries=2)
+        marker_timeout = RunResult(
+            task_name="task-0",
+            error="DaytonaPtyProcess: timeout waiting for agent start marker",
+            error_category="pipe_closed",
+        )
+        ok_result = RunResult(task_name="task-0", rewards={"reward": 1.0})
+        job._sdk = AsyncMock()
+        job._sdk.run = AsyncMock(side_effect=[marker_timeout, ok_result])
+
+        result = await job._run_task(tasks_dir / "task-0")
+
         assert job._sdk.run.call_count == 2
         assert result.rewards == {"reward": 1.0}
 

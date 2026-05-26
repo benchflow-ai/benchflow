@@ -614,6 +614,7 @@ class DaytonaPtyProcess(LiveProcess):
     """
 
     _process = None  # Not used — override readline/writeline/close
+    _START_MARKER_TIMEOUT_SEC = 120
 
     def __init__(self, sandbox: Any, compose_cmd_prefix: str, compose_cmd_base: str):
         self._sandbox = sandbox
@@ -667,6 +668,12 @@ class DaytonaPtyProcess(LiveProcess):
         self._remote_env_path = None
         if remote_env_path:
             await _cleanup_daytona_remote_env_file(self._sandbox, remote_env_path)
+
+    def _clear_startup_output(self) -> None:
+        self._partial = b""
+        while not self._line_buffer.empty():
+            with contextlib.suppress(asyncio.QueueEmpty):
+                self._line_buffer.get_nowait()
 
     async def start(
         self,
@@ -723,23 +730,45 @@ class DaytonaPtyProcess(LiveProcess):
             # Use a marker + stty to cleanly hand over the PTY to the agent.
             # 1. Disable echo so typed commands don't appear in output
             # 2. Print marker so we know when to start reading ACP output
-            # 3. exec into compose exec so the agent owns the PTY
+            # 3. After the marker, exec into compose so the agent owns the PTY
+            #
+            # Keep the marker command separate from the agent command. The
+            # OpenHands launch command contains nested shell quoting; putting
+            # it on the same interactive-shell line means the shell must parse
+            # that whole line before running the marker echo.
             marker = f"__BENCHFLOW_ACP_{session_id}__"
-            setup = f"stty -echo 2>/dev/null; echo '{marker}'; {setup_exec_cmd}\n"
-            await self._pty.send_input(setup)
+            await self._pty.send_input(f"stty -echo 2>/dev/null; echo '{marker}'\n")
             logger.info("DaytonaPtyProcess: sent setup, waiting for marker...")
 
             while True:
                 try:
-                    line = await asyncio.wait_for(self._line_buffer.get(), timeout=120)
+                    line = await asyncio.wait_for(
+                        self._line_buffer.get(),
+                        timeout=self._START_MARKER_TIMEOUT_SEC,
+                    )
                     decoded = line.decode(errors="replace").strip()
                     logger.debug(f"DaytonaPtyProcess drain: {decoded[:120]}")
                     if marker in decoded:
                         break
                 except TimeoutError as e:
-                    raise ConnectionError(
-                        "DaytonaPtyProcess: timeout waiting for agent start marker"
+                    from benchflow.diagnostics import (
+                        TransportClosedDiagnostic,
+                        TransportClosedError,
+                    )
+
+                    msg = (
+                        "DaytonaPtyProcess: timeout waiting for agent start "
+                        f"marker (session={session_id})"
+                    )
+                    raise TransportClosedError(
+                        msg,
+                        TransportClosedDiagnostic(
+                            raw_message=msg,
+                            transport_diagnosis="pty_startup_timeout",
+                        ),
                     ) from e
+            self._clear_startup_output()
+            await self._pty.send_input(setup_exec_cmd + "\n")
         except Exception:
             await self._cleanup_started_env_file()
             await self.close()

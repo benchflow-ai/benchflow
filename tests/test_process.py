@@ -63,10 +63,17 @@ def _make_daytona_sandbox(token="abc", exit_code=0, result=None):
 
 
 class _FakeDaytonaPty:
-    def __init__(self, on_data, send_error=None, reject_exec_env_file=True):
+    def __init__(
+        self,
+        on_data,
+        send_error=None,
+        reject_exec_env_file=True,
+        emit_marker=True,
+    ):
         self._on_data = on_data
         self._send_error = send_error
         self._reject_exec_env_file = reject_exec_env_file
+        self._emit_marker = emit_marker
         self.inputs = []
         self.killed = False
         self.disconnected = False
@@ -83,8 +90,9 @@ class _FakeDaytonaPty:
                 assert "--env-file" not in parts[exec_index + 1 :]
         if self._send_error:
             raise self._send_error
-        marker = payload.split("echo '", 1)[1].split("'", 1)[0]
-        await self._on_data(f"{marker}\n".encode())
+        if self._emit_marker and "echo '" in payload:
+            marker = payload.split("echo '", 1)[1].split("'", 1)[0]
+            await self._on_data(f"{marker}\n".encode())
 
     async def kill(self):
         self.killed = True
@@ -93,14 +101,23 @@ class _FakeDaytonaPty:
         self.disconnected = True
 
 
-def _make_daytona_pty_sandbox(result=None, send_error=None, exit_code=0):
+def _make_daytona_pty_sandbox(
+    result=None,
+    send_error=None,
+    exit_code=0,
+    emit_marker=True,
+):
     sandbox = MagicMock()
     if result is None:
         result = "__BENCHFLOW_BOOTSTRAP_DONE__\n"
     ptys = []
 
     async def create_pty_session(*, id, on_data, envs=None):
-        pty = _FakeDaytonaPty(on_data=on_data, send_error=send_error)
+        pty = _FakeDaytonaPty(
+            on_data=on_data,
+            send_error=send_error,
+            emit_marker=emit_marker,
+        )
         ptys.append(pty)
         return pty
 
@@ -620,6 +637,10 @@ class TestDaytonaPtyProcessSecretTransport:
         await proc.start(command="codex-acp", env={"GEMINI_API_KEY": secret})
 
         assert ptys
+        assert len(ptys[0].inputs) == 2
+        assert "echo '__BENCHFLOW_ACP_" in ptys[0].inputs[0]
+        assert "docker compose -p test exec" not in ptys[0].inputs[0]
+        assert "docker compose -p test exec" in ptys[0].inputs[1]
         sent_payload = "\n".join(ptys[0].inputs)
         assert secret not in sent_payload
         bootstrap_call = sandbox.process.exec.await_args_list[0]
@@ -656,6 +677,35 @@ class TestDaytonaPtyProcessSecretTransport:
         assert ptys
         assert ptys[0].killed
         assert ptys[0].disconnected
+        calls = sandbox.process.exec.await_args_list
+        assert len(calls) == 2
+        assert calls[0].args[0].startswith("sh -c ")
+        assert calls[0].kwargs["env"] == {"GEMINI_API_KEY": "secret"}
+        assert calls[1].args[0].startswith("rm -f /tmp/benchflow_env_")
+        assert "secret" not in calls[1].args[0]
+
+    @pytest.mark.asyncio
+    async def test_pty_marker_timeout_raises_typed_transport_error(
+        self, monkeypatch
+    ):
+        """Guards PR #561: PTY startup marker timeouts stay retryable."""
+        from benchflow.diagnostics import TransportClosedError
+
+        monkeypatch.setattr(DaytonaPtyProcess, "_START_MARKER_TIMEOUT_SEC", 0.01)
+        sandbox, ptys = _make_daytona_pty_sandbox(emit_marker=False)
+        proc = DaytonaPtyProcess(
+            sandbox=sandbox,
+            compose_cmd_prefix="",
+            compose_cmd_base="docker compose -p test",
+        )
+
+        with pytest.raises(TransportClosedError) as exc_info:
+            await proc.start(command="codex-acp", env={"GEMINI_API_KEY": "secret"})
+
+        assert ptys
+        assert ptys[0].killed
+        assert ptys[0].disconnected
+        assert exc_info.value.diagnostic.transport_diagnosis == "pty_startup_timeout"
         calls = sandbox.process.exec.await_args_list
         assert len(calls) == 2
         assert calls[0].args[0].startswith("sh -c ")
