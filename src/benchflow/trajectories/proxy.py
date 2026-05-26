@@ -13,6 +13,7 @@ import time
 import zlib
 from datetime import datetime
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
@@ -41,6 +42,7 @@ class TrajectoryProxy:
         host: str = "127.0.0.1",
         port: int = 0,
         prompt_cache_retention: str | None = None,
+        path_prefix: str = "",
     ):
         if (
             prompt_cache_retention is not None
@@ -54,6 +56,7 @@ class TrajectoryProxy:
         self._host = host
         self._port = port
         self._prompt_cache_retention = prompt_cache_retention
+        self._path_prefix = _normalize_path_prefix(path_prefix)
         self._trajectory = Trajectory(
             session_id=session_id,
             agent_name=agent_name,
@@ -128,6 +131,25 @@ class TrajectoryProxy:
                 body_bytes = b""
                 if content_length > 0:
                     body_bytes = await reader.readexactly(content_length)
+
+                try:
+                    path = _strip_path_prefix(path, self._path_prefix)
+                except ValueError:
+                    await _write_json_response(
+                        writer,
+                        status_code=404,
+                        reason="Not Found",
+                        payload={"error": "not found"},
+                    )
+                    break
+                if _is_health_request(method, path):
+                    await _write_json_response(
+                        writer,
+                        status_code=200,
+                        reason="OK",
+                        payload={"status": "ok"},
+                    )
+                    break
 
                 body = _parse_request_body(body_bytes, headers)
                 body, body_bytes, headers = _apply_prompt_cache_retention(
@@ -394,6 +416,51 @@ def _parse_request_body(body_bytes: bytes, headers: dict[str, str]) -> dict[str,
     if isinstance(parsed, dict):
         return parsed
     return {"raw": parsed}
+
+
+def _normalize_path_prefix(path_prefix: str) -> str:
+    if not path_prefix:
+        return ""
+    if not path_prefix.startswith("/"):
+        raise ValueError("path_prefix must start with '/'")
+    return path_prefix.rstrip("/")
+
+
+def _strip_path_prefix(path: str, path_prefix: str) -> str:
+    if not path_prefix:
+        return path
+    parsed = urlsplit(path)
+    request_path = parsed.path or "/"
+    if request_path != path_prefix and not request_path.startswith(f"{path_prefix}/"):
+        raise ValueError("request path does not match proxy path prefix")
+    stripped_path = request_path[len(path_prefix) :] or "/"
+    return urlunsplit(("", "", stripped_path, parsed.query, parsed.fragment))
+
+
+def _is_health_request(method: str, path: str) -> bool:
+    if method.upper() != "GET":
+        return False
+    return (path.split("?", 1)[0].rstrip("/") or "/") in {
+        "/__benchflow_health",
+        "/health",
+    }
+
+
+async def _write_json_response(
+    writer: asyncio.StreamWriter,
+    *,
+    status_code: int,
+    reason: str,
+    payload: dict[str, Any],
+) -> None:
+    body = json.dumps(payload, separators=(",", ":")).encode()
+    writer.write(
+        f"HTTP/1.1 {status_code} {reason}\r\n".encode()
+        + b"content-type: application/json\r\n"
+        + f"content-length: {len(body)}\r\n\r\n".encode()
+        + body
+    )
+    await writer.drain()
 
 
 def _apply_prompt_cache_retention(

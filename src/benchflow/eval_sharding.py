@@ -124,6 +124,14 @@ def _config_payload(
         "self_gen_no_internet": config.self_gen_no_internet,
         "job_mode": config.job_mode,
         "source_provenance": config.source_provenance,
+        "usage_tracking": {
+            "usage_tracking": config.usage_tracking.mode,
+            "usage_proxy": {
+                "advertised_base_url": config.usage_tracking.advertised_base_url,
+                "bind_host": config.usage_tracking.bind_host,
+                "port": config.usage_tracking.port,
+            },
+        },
         "environment_manifest_path": (
             str(environment_manifest_path) if environment_manifest_path else None
         ),
