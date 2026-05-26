@@ -1077,6 +1077,31 @@ def eval_create(
         int | None,
         typer.Option("--concurrency", help="Max concurrent tasks"),
     ] = None,
+    worker_concurrency: Annotated[
+        int | None,
+        typer.Option(
+            "--worker-concurrency",
+            help=(
+                "Run batch eval through isolated worker subprocesses, each with "
+                "at most this many concurrent tasks; --concurrency remains the "
+                "aggregate target."
+            ),
+        ),
+    ] = None,
+    worker_retries: Annotated[
+        int,
+        typer.Option(
+            "--worker-retries",
+            help="Retry a crashed worker shard this many times, resuming its jobs_dir.",
+        ),
+    ] = 1,
+    worker_start_stagger_sec: Annotated[
+        float,
+        typer.Option(
+            "--worker-start-stagger-sec",
+            help="Seconds to stagger worker starts to avoid Daytona connection storms.",
+        ),
+    ] = 1.0,
     agent_idle_timeout: Annotated[
         str | None,
         typer.Option(
@@ -1167,6 +1192,17 @@ def eval_create(
             "[red]Choose only one source: --config, --tasks-dir, --source-repo, or --source-env[/red]"
         )
         raise typer.Exit(1)
+    if worker_concurrency is not None and not (tasks_dir or source_repo):
+        console.print(
+            "[red]--worker-concurrency is supported for --tasks-dir and --source-repo batch runs[/red]"
+        )
+        raise typer.Exit(1)
+    if worker_retries < 0:
+        console.print("[red]--worker-retries must be >= 0[/red]")
+        raise typer.Exit(1)
+    if worker_start_stagger_sec < 0:
+        console.print("[red]--worker-start-stagger-sec must be >= 0[/red]")
+        raise typer.Exit(1)
     eval_agent = (
         _normalize_eval_agent_or_exit(agent) if agent is not None else DEFAULT_AGENT
     )
@@ -1201,6 +1237,50 @@ def eval_create(
                 f"[red]Could not load --environment-manifest {environment_manifest}: {exc}[/red]"
             )
             raise typer.Exit(1) from None
+
+    def _run_batch_eval(
+        resolved_tasks_dir: Path,
+        eval_config: EvaluationConfig,
+    ):
+        try:
+            if worker_concurrency is None:
+                result = asyncio.run(
+                    Evaluation(
+                        tasks_dir=str(resolved_tasks_dir),
+                        jobs_dir=output_jobs_dir,
+                        config=eval_config,
+                    ).run()
+                )
+            else:
+                from benchflow.eval_sharding import (
+                    ShardWorkerError,
+                    run_sharded_evaluation,
+                )
+
+                result = asyncio.run(
+                    run_sharded_evaluation(
+                        tasks_dir=resolved_tasks_dir,
+                        jobs_dir=Path(output_jobs_dir),
+                        config=eval_config,
+                        worker_concurrency=worker_concurrency,
+                        worker_retries=worker_retries,
+                        worker_start_stagger_sec=worker_start_stagger_sec,
+                        environment_manifest_path=environment_manifest,
+                    )
+                )
+        except EmptyTaskSelectionError as e:
+            console.print(f"[red]{e}[/red]")
+            raise typer.Exit(1) from None
+        except (ValueError, ShardWorkerError) as e:
+            console.print(f"[red]{e}[/red]")
+            raise typer.Exit(1) from None
+
+        console.print(
+            f"\n[bold]Score: {result.passed}/{result.total} "
+            f"({result.score:.1%})[/bold], errors={result.errored}"
+        )
+        _exit_if_evaluation_had_errors(result)
+        return result
 
     if config_file:
         j = Evaluation.from_yaml(config_file)
@@ -1316,10 +1396,9 @@ def eval_create(
         )
         resolved_tasks_dir = resolved.path
         eff_model = effective_model(eval_agent, model)
-        j = Evaluation(
-            tasks_dir=str(resolved_tasks_dir),
-            jobs_dir=output_jobs_dir,
-            config=EvaluationConfig(
+        _run_batch_eval(
+            resolved_tasks_dir,
+            EvaluationConfig(
                 agent=eval_agent,
                 model=eff_model,
                 environment=eval_environment,
@@ -1338,16 +1417,6 @@ def eval_create(
                 environment_manifest=eval_env_manifest,
             ),
         )
-        try:
-            result = asyncio.run(j.run())
-        except EmptyTaskSelectionError as e:
-            console.print(f"[red]{e}[/red]")
-            raise typer.Exit(1) from None
-        console.print(
-            f"\n[bold]Score: {result.passed}/{result.total} "
-            f"({result.score:.1%})[/bold], errors={result.errored}"
-        )
-        _exit_if_evaluation_had_errors(result)
     elif tasks_dir:
         resolved_tasks_dir = tasks_dir
         eff_model = effective_model(eval_agent, model)
@@ -1355,10 +1424,9 @@ def eval_create(
         # handles both layouts (Evaluation._get_task_dirs detects when
         # tasks_dir itself contains task.toml) and applies include/exclude
         # filters uniformly (#400, #401, #407).
-        j = Evaluation(
-            tasks_dir=str(resolved_tasks_dir),
-            jobs_dir=output_jobs_dir,
-            config=EvaluationConfig(
+        _run_batch_eval(
+            resolved_tasks_dir,
+            EvaluationConfig(
                 agent=eval_agent,
                 model=eff_model,
                 environment=eval_environment,
@@ -1378,16 +1446,6 @@ def eval_create(
                 environment_manifest=eval_env_manifest,
             ),
         )
-        try:
-            result = asyncio.run(j.run())
-        except EmptyTaskSelectionError as e:
-            console.print(f"[red]{e}[/red]")
-            raise typer.Exit(1) from None
-        console.print(
-            f"\n[bold]Score: {result.passed}/{result.total} "
-            f"({result.score:.1%})[/bold], errors={result.errored}"
-        )
-        _exit_if_evaluation_had_errors(result)
     else:
         console.print(
             "[red]Provide --config, --tasks-dir, --source-repo, or --source-env[/red]"
