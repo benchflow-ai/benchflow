@@ -124,14 +124,7 @@ def _config_payload(
         "self_gen_no_internet": config.self_gen_no_internet,
         "job_mode": config.job_mode,
         "source_provenance": config.source_provenance,
-        "usage_tracking": {
-            "usage_tracking": config.usage_tracking.mode,
-            "usage_proxy": {
-                "advertised_base_url": config.usage_tracking.advertised_base_url,
-                "bind_host": config.usage_tracking.bind_host,
-                "port": config.usage_tracking.port,
-            },
-        },
+        "usage_tracking": config.usage_tracking.to_mapping(),
         "environment_manifest_path": (
             str(environment_manifest_path) if environment_manifest_path else None
         ),
@@ -287,6 +280,10 @@ async def run_sharded_evaluation(
         task_names,
         total_concurrency=config.concurrency,
         worker_concurrency=worker_concurrency,
+    )
+    config.usage_tracking.with_env_defaults().validate_parallelism(
+        concurrency=plan.total_concurrency,
+        worker_count=plan.worker_count,
     )
     if not plan.shards:
         from benchflow.evaluation import EmptyTaskSelectionError

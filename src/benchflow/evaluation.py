@@ -892,6 +892,7 @@ class Evaluation:
 
         cfg = self._config
         usage = cfg.usage_tracking.with_env_defaults()
+        usage.validate_parallelism(concurrency=cfg.concurrency)
         if usage.mode == "off" or host_proxy_reachable_from_agent(cfg.environment):
             return
         if not usage.uses_external_proxy:

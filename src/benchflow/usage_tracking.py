@@ -121,6 +121,34 @@ class UsageTrackingConfig:
     def has_fixed_proxy_port(self) -> bool:
         return self.port is not None and self.port > 0
 
+    def overlay(self, override: UsageTrackingConfig) -> UsageTrackingConfig:
+        """Return this config with explicitly supplied override fields applied."""
+        return UsageTrackingConfig.from_values(
+            mode=override._mode if override.mode_is_explicit else self._mode,
+            advertised_base_url=(
+                override.advertised_base_url
+                if override.advertised_base_url is not None
+                else self.advertised_base_url
+            ),
+            bind_host=(
+                override.bind_host if override.bind_host is not None else self.bind_host
+            ),
+            port=override.port if override.port is not None else self.port,
+        )
+
+    def validate_parallelism(self, *, concurrency: int, worker_count: int = 1) -> None:
+        if (
+            self.mode != "off"
+            and self.uses_external_proxy
+            and max(concurrency, worker_count) > 1
+        ):
+            raise ValueError(
+                "External usage proxy tracking currently supports only one "
+                "rollout per fixed local proxy port. Use --concurrency 1 and "
+                "one worker, or run separate jobs with separate "
+                f"{USAGE_PROXY_PORT_ENV} values/tunnels."
+            )
+
     @classmethod
     def from_values(
         cls,
@@ -173,6 +201,22 @@ class UsageTrackingConfig:
         if isinstance(value, dict):
             return cls.from_mapping(value)
         raise TypeError(f"invalid usage_tracking config: {type(value).__name__}")
+
+    def to_mapping(self) -> dict[str, Any]:
+        proxy: dict[str, Any] = {}
+        if self.advertised_base_url is not None:
+            proxy["advertised_base_url"] = self.advertised_base_url
+        if self.bind_host is not None:
+            proxy["bind_host"] = self.bind_host
+        if self.port is not None:
+            proxy["port"] = self.port
+
+        payload: dict[str, Any] = {}
+        if self.mode_is_explicit:
+            payload["usage_tracking"] = self.mode
+        if proxy:
+            payload["usage_proxy"] = proxy
+        return payload
 
     def with_env_defaults(self) -> UsageTrackingConfig:
         env_mode = os.environ.get(USAGE_TRACKING_ENV)

@@ -31,9 +31,10 @@ All commands below assume you are in the repo root.
 > "unavailable"` unless you configure an external tunnel/ingress with
 > `--usage-proxy-url` and `--usage-proxy-port`. Official batch runs that need
 > token/cost telemetry should use `--usage-tracking required` so the run fails
-> before the agent starts if the external endpoint is missing or unhealthy.
-> Local sandboxes (e.g. `--sandbox docker`) populate usage telemetry without a
-> tunnel.
+> before the agent starts if the external endpoint is missing or unhealthy. The
+> fixed-port tunnel mode supports one rollout per BenchFlow process; use
+> `--concurrency 1`, or run multiple jobs with separate ports/tunnels. Local
+> sandboxes (e.g. `--sandbox docker`) populate usage telemetry without a tunnel.
 
 ---
 
@@ -512,4 +513,3 @@ types, categories) that the §4–§7 live recipes only partially cover.
   via the source-side `TransportClosedDiagnostic` emission, but there is
   no live recipe for them. Add one via a fake transport fixture if you
   need true end-to-end coverage.
-

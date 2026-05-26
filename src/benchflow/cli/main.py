@@ -1351,7 +1351,9 @@ def eval_create(
         if agent_idle_timeout is not None:
             j._config.agent_idle_timeout = eval_agent_idle_timeout
         if usage_tracking_overridden:
-            j._config.usage_tracking = eval_usage_tracking
+            j._config.usage_tracking = j._config.usage_tracking.overlay(
+                eval_usage_tracking
+            )
         if include_tasks:
             j._config.include_tasks = include_tasks
         if exclude_tasks:
@@ -1363,7 +1365,7 @@ def eval_create(
             j._config.environment_manifest = eval_env_manifest
         try:
             result = asyncio.run(j.run())
-        except EmptyTaskSelectionError as e:
+        except (EmptyTaskSelectionError, ValueError) as e:
             console.print(f"[red]{e}[/red]")
             raise typer.Exit(1) from None
         console.print(

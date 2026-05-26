@@ -156,6 +156,7 @@ def test_evaluation_preflight_rejects_external_proxy_port_zero(tmp_path):
         tasks_dir=tmp_path,
         jobs_dir=tmp_path / "jobs",
         config=EvaluationConfig(
+            concurrency=1,
             environment="daytona",
             usage_tracking=UsageTrackingConfig(
                 mode="required",
@@ -169,6 +170,29 @@ def test_evaluation_preflight_rejects_external_proxy_port_zero(tmp_path):
         evaluation._preflight_usage_tracking()
 
 
+def test_evaluation_preflight_rejects_external_proxy_concurrency(tmp_path):
+    """Guards PR #568: one fixed external proxy port cannot host concurrency."""
+    from benchflow.evaluation import Evaluation, EvaluationConfig
+    from benchflow.usage_tracking import UsageTrackingConfig
+
+    evaluation = Evaluation(
+        tasks_dir=tmp_path,
+        jobs_dir=tmp_path / "jobs",
+        config=EvaluationConfig(
+            concurrency=2,
+            environment="daytona",
+            usage_tracking=UsageTrackingConfig(
+                mode="required",
+                advertised_base_url="https://usage-proxy.example.test",
+                port=18081,
+            ),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="supports only one rollout"):
+        evaluation._preflight_usage_tracking()
+
+
 def test_explicit_auto_usage_tracking_beats_env_default(monkeypatch):
     """Guards PR #568: explicit auto should override env-level required."""
     from benchflow.usage_tracking import USAGE_TRACKING_ENV, UsageTrackingConfig
@@ -177,6 +201,64 @@ def test_explicit_auto_usage_tracking_beats_env_default(monkeypatch):
 
     assert UsageTrackingConfig().with_env_defaults().mode == "required"
     assert UsageTrackingConfig(mode="auto").with_env_defaults().mode == "auto"
+
+
+def test_usage_tracking_shard_payload_preserves_implicit_env_mode(monkeypatch):
+    """Guards PR #568: sharded workers must still inherit env-level required."""
+    from benchflow.eval_sharding import EvalShard, _config_payload
+    from benchflow.eval_worker import _evaluation_config
+    from benchflow.evaluation import EvaluationConfig
+    from benchflow.usage_tracking import USAGE_TRACKING_ENV, UsageTrackingConfig
+
+    monkeypatch.setenv(USAGE_TRACKING_ENV, "required")
+    parent_config = EvaluationConfig(
+        environment="daytona",
+        usage_tracking=UsageTrackingConfig(),
+    )
+
+    payload = _config_payload(
+        parent_config,
+        shard=EvalShard(index=0, task_names=("task-a",), concurrency=1),
+        environment_manifest_path=None,
+    )
+    worker_config = _evaluation_config(payload)
+
+    assert "usage_tracking" not in payload["usage_tracking"]
+    assert worker_config.usage_tracking.mode_is_explicit is False
+    assert worker_config.usage_tracking.with_env_defaults().mode == "required"
+
+
+def test_usage_tracking_overlay_preserves_yaml_fields_for_partial_cli_override():
+    """Guards PR #568: partial CLI usage overrides must not erase YAML policy."""
+    from benchflow.usage_tracking import UsageTrackingConfig
+
+    yaml_config = UsageTrackingConfig(
+        mode="required",
+        advertised_base_url="https://old-proxy.example.test",
+        port=18081,
+    )
+    cli_override = UsageTrackingConfig(
+        advertised_base_url="https://new-proxy.example.test",
+    )
+
+    merged = yaml_config.overlay(cli_override)
+
+    assert merged.mode == "required"
+    assert merged.advertised_base_url == "https://new-proxy.example.test"
+    assert merged.port == 18081
+
+
+def test_external_usage_tracking_rejects_multiple_shard_workers():
+    """Guards PR #568: sharded workers cannot share one fixed proxy port."""
+    from benchflow.usage_tracking import UsageTrackingConfig
+
+    config = UsageTrackingConfig(
+        advertised_base_url="https://usage-proxy.example.test",
+        port=18081,
+    )
+
+    with pytest.raises(ValueError, match="supports only one rollout"):
+        config.validate_parallelism(concurrency=1, worker_count=2)
 
 
 def test_usage_proxy_advertised_base_url_rejects_path():

@@ -45,7 +45,7 @@ bench eval create \
   --usage-tracking required \
   --usage-proxy-url https://your-tunnel.example.com \
   --usage-proxy-port 18081 \
-  --concurrency 64 \
+  --concurrency 1 \
   --sandbox-setup-timeout 300
 
 # From local directory
@@ -112,9 +112,11 @@ When mounting skills, the recommended docs default is
 
 For official Daytona batch runs that must report provider token/cost telemetry,
 use `--usage-tracking required` with a tunnel or ingress URL pointing at the
-fixed `--usage-proxy-port`. Without an external URL, Daytona runs continue in
-`auto` mode and record `usage_source=unavailable` because the remote sandbox
-cannot reach a host-bound proxy.
+fixed `--usage-proxy-port`. The fixed-port tunnel mode supports one rollout per
+BenchFlow process; use `--concurrency 1`, or run multiple jobs with separate
+ports/tunnels. Without an external URL, Daytona runs continue in `auto` mode
+and record `usage_source=unavailable` because the remote sandbox cannot reach a
+host-bound proxy.
 
 `--source-env` is for external hosted environment hubs. The first supported
 runner is PrimeIntellect / Verifiers: BenchFlow preserves the hosted identity
