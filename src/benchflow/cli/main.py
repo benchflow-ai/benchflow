@@ -37,6 +37,24 @@ app = typer.Typer(
 )
 
 
+_PROVIDER_AUTH_MESSAGE = (
+    "Provider-prefixed models may use different credentials; Azure Foundry "
+    "models use AZURE_API_KEY + AZURE_API_ENDPOINT."
+)
+_REQUIRES_AUTH_NOTE = (
+    "Requires shows native/default agent auth. " + _PROVIDER_AUTH_MESSAGE
+)
+
+
+def _format_requires(agent) -> str:
+    sub_env = agent.subscription_auth.replaces_env if agent.subscription_auth else None
+    requires = [
+        f"{env_var} (or login)" if env_var == sub_env else env_var
+        for env_var in agent.requires_env
+    ]
+    return ", ".join(requires)
+
+
 def _parse_agent_env(entries: list[str] | None) -> dict[str, str]:
     parsed: dict[str, str] = {}
     for entry in entries or []:
@@ -415,20 +433,15 @@ def agents() -> None:
     table.add_column("Requires", style="yellow")
 
     for agent in list_agents():
-        sub_env = (
-            agent.subscription_auth.replaces_env if agent.subscription_auth else None
-        )
-        requires = [
-            f"{e} (or login)" if e == sub_env else e for e in agent.requires_env
-        ]
         table.add_row(
             agent.name,
             agent.description,
             agent.protocol,
-            ", ".join(requires),
+            _format_requires(agent),
         )
 
     console.print(table)
+    console.print(f"[dim]{_REQUIRES_AUTH_NOTE}[/dim]")
 
 
 @app.command(hidden=True, deprecated=True)
@@ -924,12 +937,11 @@ def agent_list() -> None:
     table.add_column("Requires", style="yellow")
 
     for a in list_agents():
-        sub_env = a.subscription_auth.replaces_env if a.subscription_auth else None
-        requires = [f"{e} (or login)" if e == sub_env else e for e in a.requires_env]
         aliases = ", ".join(sorted(reverse_aliases.get(a.name, [])))
-        table.add_row(a.name, aliases, a.description, a.protocol, ", ".join(requires))
+        table.add_row(a.name, aliases, a.description, a.protocol, _format_requires(a))
 
     console.print(table)
+    console.print(f"[dim]{_REQUIRES_AUTH_NOTE}[/dim]")
 
 
 @agent_app.command("show")
@@ -956,7 +968,8 @@ def agent_show(
     console.print(f"  Description: {cfg.description}")
     console.print(f"  Protocol:    {cfg.protocol}")
     console.print(f"  Launch:      {cfg.launch_cmd}")
-    console.print(f"  Requires:    {', '.join(cfg.requires_env) or '(none)'}")
+    console.print(f"  Requires:    {_format_requires(cfg) or '(none)'}")
+    console.print(f"  Provider auth: {_PROVIDER_AUTH_MESSAGE}")
     if cfg.subscription_auth:
         console.print(
             f"  Auth:        subscription via {cfg.subscription_auth.detect_file}"

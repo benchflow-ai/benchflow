@@ -24,7 +24,7 @@ BenchFlow runs AI agents against benchmark tasks in sandboxed environments. Sing
 uv tool install benchflow
 ```
 
-Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/). Set `DAYTONA_API_KEY` for Daytona runs or configure Modal auth for Modal runs; export the relevant agent API key (`GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, etc.) or run `claude login` / `codex --login` for subscription auth.
+Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/). Set `DAYTONA_API_KEY` for Daytona runs or configure Modal auth for Modal runs; export the relevant agent API key (`GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, etc.) or run `claude login` / `codex --login` for subscription auth. Provider-prefixed models may use provider-specific credentials; Azure Foundry models use `AZURE_API_KEY` plus `AZURE_API_ENDPOINT`.
 
 ## Documentation
 

@@ -75,7 +75,7 @@ Known residual risk:
 
 ## Related
 
-- [`labs/benchjack-sandbox-hardening/README.md`](../labs/benchjack-sandbox-hardening/README.md) — full BenchJack pattern catalog and repro instructions.
-- [`labs/reward-hack-matrix/README.md`](../labs/reward-hack-matrix/README.md) — methodology, exploit taxonomy, sweep results.
+- [`labs/benchjack-sandbox-hardening/README.md`](https://github.com/benchflow-ai/benchflow/tree/main/labs/benchjack-sandbox-hardening) — full BenchJack pattern catalog and repro instructions.
+- [`labs/reward-hack-matrix/README.md`](https://github.com/benchflow-ai/benchflow/tree/main/labs/reward-hack-matrix) — methodology, exploit taxonomy, sweep results.
 - [`progressive-disclosure.md`](./progressive-disclosure.md) — soft-verify (the relaxed hardening used between rounds in multi-round trials).
 - [`task-authoring.md`](./task-authoring.md) — the `task.toml` schema including `[verifier.hardening]` opt-outs.

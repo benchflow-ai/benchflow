@@ -1,0 +1,39 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "mint",
+  "name": "BenchFlow",
+  "colors": {
+    "primary": "#111827"
+  },
+  "navigation": {
+    "groups": [
+      {
+        "group": "Start here",
+        "pages": [
+          "docs/getting-started",
+          "docs/concepts"
+        ]
+      },
+      {
+        "group": "Guides",
+        "pages": [
+          "docs/running-benchmarks",
+          "docs/task-authoring",
+          "docs/use-cases",
+          "docs/progressive-disclosure",
+          "docs/skill-eval",
+          "docs/llm-judge",
+          "docs/sandbox-hardening"
+        ]
+      },
+      {
+        "group": "Reference",
+        "pages": [
+          "docs/reference/cli",
+          "docs/reference/python-api",
+          "docs/integration-tests"
+        ]
+      }
+    ]
+  }
+}

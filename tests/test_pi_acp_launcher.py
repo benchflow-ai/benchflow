@@ -63,6 +63,58 @@ class TestSetupProviderOpenAI:
         assert provider["apiKey"] == "test-key"
         assert provider["models"][0]["id"] == "Qwen3.5-35B"
 
+    def test_azure_foundry_openai_routes_through_models_json(
+        self, monkeypatch, tmp_path
+    ):
+        """Guards the fix from PR #422: pi-acp + Azure OpenAI must not fall
+        through to Pi's Anthropic env path.
+        """
+        import os
+
+        from benchflow.agents.env import resolve_agent_env
+        from benchflow.agents.pi_acp_launcher import setup_provider
+
+        empty_dotenv = tmp_path / "empty.env"
+        empty_dotenv.write_text("")
+        monkeypatch.setenv("BENCHFLOW_DOTENV_PATH", str(empty_dotenv))
+        for key in (
+            "AZURE_API_ENDPOINT",
+            "AZURE_API_KEY",
+            "AZURE_RESOURCE",
+            "OPENAI_API_KEY",
+            "OPENAI_BASE_URL",
+        ):
+            monkeypatch.delenv(key, raising=False)
+
+        resolved = resolve_agent_env(
+            "pi-acp",
+            "azure-foundry-openai/gpt-5.5",
+            {
+                "AZURE_API_KEY": "az-test",
+                "AZURE_RESOURCE": "example-resource",
+            },
+        )
+        for key in (
+            "BENCHFLOW_PROVIDER_PROTOCOL",
+            "BENCHFLOW_PROVIDER_BASE_URL",
+            "BENCHFLOW_PROVIDER_API_KEY",
+            "BENCHFLOW_PROVIDER_MODEL",
+            "BENCHFLOW_PROVIDER_NAME",
+        ):
+            monkeypatch.setenv(key, resolved[key])
+
+        setup_provider()
+
+        config = json.loads((tmp_path / ".pi" / "agent" / "models.json").read_text())
+        provider = config["providers"]["azure-foundry-openai"]
+        assert provider["api"] == "openai-completions"
+        assert (
+            provider["baseUrl"] == "https://example-resource.openai.azure.com/openai/v1"
+        )
+        assert provider["apiKey"] == "az-test"
+        assert provider["models"][0]["id"] == "gpt-5.5"
+        assert "ANTHROPIC_BASE_URL" not in os.environ
+
     def test_merges_with_existing_providers(self, monkeypatch, tmp_path):
         """Manually-added providers survive when a new one is registered."""
         config_dir = tmp_path / ".pi" / "agent"
