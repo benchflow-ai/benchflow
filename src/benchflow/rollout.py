@@ -521,6 +521,7 @@ def _build_rollout_result(
     source_provenance: dict[str, Any] | None = None,
     diagnostics: RolloutDiagnostics | None = None,
     skill_policy: TaskSkillPolicy | None = None,
+    sandbox_id: str | None = None,
 ) -> RolloutResult:
     """Build RolloutResult and write result.json, timing.json, prompts.json, trajectory.
 
@@ -640,6 +641,7 @@ def _build_rollout_result(
                     if source_provenance is not None
                     else {}
                 ),
+                "sandbox_id": sandbox_id,
             },
             indent=2,
         )
@@ -783,6 +785,25 @@ async def _start_env_and_upload(
         await env.upload_file(task_path / "instruction.md", "/instruction.md")
     if (task_path / "solution").is_dir():
         await env.upload_dir(task_path / "solution", "/solution")
+
+
+def _persist_sandbox_info(env: Any, rollout_dir: Path | None) -> None:
+    """Write sandbox.json with provider-side sandbox ID immediately after creation.
+
+    This ensures the sandbox ID is persisted even if the run is interrupted
+    before result.json is written.
+    """
+    sandbox_id = getattr(env, "sandbox_id", None)
+    if not isinstance(sandbox_id, str) or not rollout_dir:
+        return
+    provider = type(env).__name__
+    info = {
+        "sandbox_id": sandbox_id,
+        "provider": provider,
+        "created_at": str(datetime.now()),
+    }
+    (rollout_dir / "sandbox.json").write_text(json.dumps(info, indent=2))
+    logger.info(f"Sandbox {sandbox_id} ({provider})")
 
 
 async def _run_oracle(
@@ -1141,6 +1162,9 @@ class Rollout:
         self._usage_runtime: Any = None
         self._usage_metrics: dict[str, Any] = self._planes.extract_usage(None)
 
+        # Populated by start()
+        self._sandbox_id: str | None = None
+
         # Populated by install_agent()
         self._agent_cfg: Any = None
         self._agent_cwd: str = "/app"
@@ -1427,6 +1451,10 @@ class Rollout:
             self._timing,
             skip_start=self._env_externally_owned,
         )
+
+        sid = getattr(self._env, "sandbox_id", None)
+        self._sandbox_id = sid if isinstance(sid, str) else None
+        _persist_sandbox_info(self._env, self._rollout_dir)
 
         for hook in self._config.pre_agent_hooks or []:
             await hook(self._env)
@@ -2654,5 +2682,6 @@ class Rollout:
                 runtime_skills_dir=self._config.skills_dir,
                 declared_sandbox_skills_dir=None,
             ),
+            sandbox_id=self._sandbox_id,
             **self._usage_metrics,
         )

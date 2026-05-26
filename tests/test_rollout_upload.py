@@ -1,4 +1,4 @@
-"""Tests for rollout startup uploads."""
+"""Tests for rollout startup uploads and sandbox info persistence."""
 
 import json
 from pathlib import Path
@@ -13,6 +13,8 @@ from benchflow.rollout import (
     Rollout,
     RolloutConfig,
     Scene,
+    _build_rollout_result,
+    _persist_sandbox_info,
     _publish_trajectory_for_verifier,
     _start_env_and_upload,
 )
@@ -256,3 +258,93 @@ async def test_rollout_setup_records_self_gen_artifact_mode(
     assert config["skill_source"] == "self_generated"
     assert config["include_task_skills"] is False
     assert config["effective_skills_dir"] is None
+
+
+def test_persist_sandbox_info_writes_sandbox_json(tmp_path: Path) -> None:
+    """Guards the fix from PR #563 for issue #554: Daytona sandbox IDs must
+    be persisted immediately after creation so interrupted runs can be
+    audited and cleaned up."""
+
+    class FakeDaytonaSandbox:
+        sandbox_id = "sb-abc123"
+
+    _persist_sandbox_info(FakeDaytonaSandbox(), tmp_path)
+
+    info = json.loads((tmp_path / "sandbox.json").read_text())
+    assert info["sandbox_id"] == "sb-abc123"
+    assert info["provider"] == "FakeDaytonaSandbox"
+    assert "created_at" in info
+
+
+def test_persist_sandbox_info_skips_when_no_sandbox_id(tmp_path: Path) -> None:
+    """No sandbox.json for backends without a provider-side ID (e.g. Docker)."""
+
+    class FakeDockerSandbox:
+        sandbox_id = None
+
+    _persist_sandbox_info(FakeDockerSandbox(), tmp_path)
+    assert not (tmp_path / "sandbox.json").exists()
+
+
+def test_persist_sandbox_info_skips_when_no_rollout_dir() -> None:
+    """No crash when rollout_dir is None (shouldn't happen but be safe)."""
+
+    class FakeSandbox:
+        sandbox_id = "sb-xyz"
+
+    _persist_sandbox_info(FakeSandbox(), None)
+
+
+def test_result_json_includes_sandbox_id(tmp_path: Path) -> None:
+    """Guards the fix from PR #563 for issue #554: result.json should include
+    the sandbox_id for completed runs so post-mortem cleanup can reconcile
+    Daytona sandboxes against rollout artifacts."""
+    from datetime import datetime
+
+    _build_rollout_result(
+        tmp_path,
+        task_name="my-task",
+        rollout_name="my-rollout",
+        agent="oracle",
+        agent_name="oracle",
+        model="",
+        n_tool_calls=0,
+        prompts=[],
+        error=None,
+        verifier_error=None,
+        trajectory=[],
+        partial_trajectory=False,
+        rewards={"score": 1.0},
+        started_at=datetime(2026, 5, 25, 12, 0),
+        timing={},
+        sandbox_id="sb-daytona-123",
+    )
+
+    data = json.loads((tmp_path / "result.json").read_text())
+    assert data["sandbox_id"] == "sb-daytona-123"
+
+
+def test_result_json_sandbox_id_null_for_docker(tmp_path: Path) -> None:
+    """Docker runs have no provider-side sandbox ID."""
+    from datetime import datetime
+
+    _build_rollout_result(
+        tmp_path,
+        task_name="my-task",
+        rollout_name="my-rollout",
+        agent="oracle",
+        agent_name="oracle",
+        model="",
+        n_tool_calls=0,
+        prompts=[],
+        error=None,
+        verifier_error=None,
+        trajectory=[],
+        partial_trajectory=False,
+        rewards={"score": 1.0},
+        started_at=datetime(2026, 5, 25, 12, 0),
+        timing={},
+    )
+
+    data = json.loads((tmp_path / "result.json").read_text())
+    assert data["sandbox_id"] is None

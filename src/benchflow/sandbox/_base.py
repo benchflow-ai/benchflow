@@ -167,6 +167,16 @@ class BaseSandbox(ABC):
             merged.update(env)
         return merged or None
 
+    @property
+    def sandbox_id(self) -> str | None:
+        """Provider-side identifier for this sandbox instance.
+
+        Backends that allocate a remote resource (Daytona, Modal) override
+        this to return the provider's ID once the sandbox has been created.
+        Used for post-mortem cleanup and audit.
+        """
+        return None
+
     @abstractmethod
     def _validate_definition(self) -> None: ...
 

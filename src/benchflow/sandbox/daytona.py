@@ -1183,6 +1183,10 @@ class DaytonaSandbox(BaseSandbox):
         return self._compose_mode
 
     @property
+    def sandbox_id(self) -> str | None:
+        return self._sandbox.id if self._sandbox else None
+
+    @property
     def is_mounted(self) -> bool:
         return False
 
