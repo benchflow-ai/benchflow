@@ -89,7 +89,7 @@ class TestOpenHandsConfig:
         assert cfg.supports_acp_set_model is False
 
     def test_openhands_launch_cmd_writes_optional_azure_api_version(self):
-        """Guards the fix from branch bry/openhands-azure-api-version against dropping Azure API version config."""
+        """Guards the fix from PR #559 against dropping Azure API version config."""
         cfg = AGENTS["openhands"]
         assert 'if [ -n "$LLM_API_VERSION" ]' in cfg.launch_cmd
         assert ',"api_version":"%s"' in cfg.launch_cmd
