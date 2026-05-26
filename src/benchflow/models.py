@@ -91,8 +91,10 @@ class RolloutResult:
                       "unavailable".
         price_source: Pricing table version used for cost_usd, or None.
         error:        Error description string, or None on success.
+        error_category: Stable category for ``error``, or None on success.
         verifier_error: Verifier error description, or None if verifier succeeded
                       or was not reached. Separate from ``error`` (agent errors).
+        verifier_error_category: Stable category for ``verifier_error``, or None.
         export_error: Skill-export error description, or None if export succeeded
                       or was not configured. Separate from ``error`` (which would
                       mis-classify export-time infra failures as agent failures)
@@ -138,7 +140,9 @@ class RolloutResult:
         usage_source: str = "unavailable",
         price_source: str | None = None,
         error: str | None = None,
+        error_category: str | None = None,
         verifier_error: str | None = None,
+        verifier_error_category: str | None = None,
         export_error: str | None = None,
         partial_trajectory: bool = False,
         trajectory_source: TrajectorySource | None = None,
@@ -167,7 +171,9 @@ class RolloutResult:
         self.usage_source = usage_source
         self.price_source = price_source
         self.error = error
+        self.error_category = error_category
         self.verifier_error = verifier_error
+        self.verifier_error_category = verifier_error_category
         self.export_error = export_error
         self.partial_trajectory = partial_trajectory
         self.trajectory_source = trajectory_source

@@ -1875,6 +1875,63 @@ def test_check_results_flags_transport_error_with_diagnostics(
     )
 
 
+def test_check_results_uses_persisted_transport_error_category(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #561: structured categories invalidate marker timeouts."""
+    agent_dir = tmp_path / "agentA"
+    run_dir = agent_dir / "2026-05-18__00-00-00" / "task-a"
+    run_dir.mkdir(parents=True)
+    (run_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "task-a",
+                "agent": "agentA",
+                "model": "test-model",
+                "rewards": None,
+                "error": "DaytonaPtyProcess: timeout waiting for agent start marker",
+                "error_category": "pipe_closed",
+                "verifier_error": None,
+                "transport_error_info": {
+                    "reason": "transport_closed",
+                    "raw_message": "DaytonaPtyProcess: timeout waiting for agent start marker",
+                    "transport_diagnosis": "pty_startup_timeout",
+                    "sandbox_reachable": True,
+                },
+                "source": _source(),
+            }
+        )
+    )
+    _write_config(run_dir)
+    (agent_dir / "summary.json").write_text(
+        json.dumps(
+            {
+                "agent": "agentA",
+                "model": "test-model",
+                "environment": "daytona",
+                "concurrency": 64,
+                "agent_idle_timeout_sec": 600,
+                "total": 1,
+                "passed": 0,
+                "failed": 0,
+                "errored": 1,
+                "verifier_errored": 0,
+                "score": "0.0%",
+                "source": _source(),
+            }
+        )
+    )
+
+    findings = check_agent(agent_dir)
+
+    assert findings["ok"] is False
+    assert any("pty_startup_timeout" in issue for issue in findings["issues"])
+    assert any(
+        "INVALIDATED" in issue and "transport" in issue.lower()
+        for issue in findings["issues"]
+    )
+
+
 def test_check_results_transport_error_without_info_still_flagged(
     tmp_path: Path,
 ) -> None:

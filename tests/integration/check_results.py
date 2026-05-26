@@ -588,7 +588,7 @@ def check_agent(agent_dir: Path) -> dict:
     invalidated_by_category: dict[str, list[str]] = {}
     for r in results:
         err = r.get("error")
-        cat = classify_error(str(err)) if err else None
+        cat = r.get("error_category") or (classify_error(str(err)) if err else None)
         if cat and cat in INFRA_ERROR_CATEGORIES:
             task = r.get("task_name", "?")
             diag_cls = _CATEGORY_TO_DIAGNOSTIC.get(cat)
@@ -613,7 +613,9 @@ def check_agent(agent_dir: Path) -> dict:
     dep_install_tasks: list[str] = []
     for r in results:
         verifier_err = r.get("verifier_error")
-        vcat = classify_verifier_error(verifier_err) if verifier_err else None
+        vcat = r.get("verifier_error_category") or (
+            classify_verifier_error(verifier_err) if verifier_err else None
+        )
         if vcat == "verifier_dep_install":
             task = r.get("task_name", "?")
             dep_install_tasks.append(task)

@@ -105,9 +105,14 @@ class RetryConfig:
     max_wait_sec: float = 30.0
     exclude_categories: set[str] = field(default_factory=lambda: {"timeout"})
 
-    def should_retry(self, error: str | None) -> bool:
+    def should_retry(
+        self,
+        error: str | None,
+        *,
+        category: str | None = None,
+    ) -> bool:
         """Check if an error is retryable."""
-        category = classify_error(error)
+        category = category or classify_error(error)
         if not category:
             return False
         if category in self.exclude_categories:
@@ -836,7 +841,10 @@ class Evaluation:
                 result = await self._run_single_task(task_dir, cfg)
             last_result = result
 
-            retryable_agent_error = cfg.retry.should_retry(result.error)
+            retryable_agent_error = cfg.retry.should_retry(
+                result.error,
+                category=result.error_category,
+            )
             retryable_verifier_error = cfg.retry.should_retry_verifier_error(
                 result.verifier_error
             )
@@ -1244,10 +1252,12 @@ class Evaluation:
         error_category_counts: dict[str, int] = {}
         verifier_error_category_counts: dict[str, int] = {}
         for r in all_results.values():
-            cat = classify_error(r.get("error"))
+            cat = r.get("error_category") or classify_error(r.get("error"))
             if cat:
                 error_category_counts[cat] = error_category_counts.get(cat, 0) + 1
-            vcat = classify_verifier_error(r.get("verifier_error"))
+            vcat = r.get("verifier_error_category") or classify_verifier_error(
+                r.get("verifier_error")
+            )
             if vcat:
                 verifier_error_category_counts[vcat] = (
                     verifier_error_category_counts.get(vcat, 0) + 1

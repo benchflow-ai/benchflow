@@ -465,6 +465,14 @@ def _build_rollout_result(
         diagnostics = RolloutDiagnostics()
     finished_at = datetime.now()
     n_skill_invocations = count_skill_invocations(trajectory)
+    error_category = (
+        diagnostics.category_for_channel("error") if error is not None else None
+    ) or classify_error(error)
+    verifier_error_category = (
+        diagnostics.category_for_channel("verifier_error")
+        if verifier_error is not None
+        else None
+    ) or classify_verifier_error(verifier_error)
     result = RolloutResult(
         task_name=task_name,
         rollout_name=rollout_name,
@@ -485,7 +493,9 @@ def _build_rollout_result(
         usage_source=usage_source,
         price_source=price_source,
         error=error,
+        error_category=error_category,
         verifier_error=verifier_error,
+        verifier_error_category=verifier_error_category,
         export_error=export_error,
         partial_trajectory=partial_trajectory,
         trajectory_source=trajectory_source,
@@ -528,11 +538,9 @@ def _build_rollout_result(
                     "price_source": result.price_source,
                 },
                 "error": result.error,
-                "error_category": classify_error(result.error),
+                "error_category": result.error_category,
                 "verifier_error": result.verifier_error,
-                "verifier_error_category": classify_verifier_error(
-                    result.verifier_error
-                ),
+                "verifier_error_category": result.verifier_error_category,
                 "export_error": result.export_error,
                 **diagnostics.to_result_fields(),
                 "partial_trajectory": result.partial_trajectory,
