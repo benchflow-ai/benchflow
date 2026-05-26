@@ -6,7 +6,7 @@ from benchflow.eval_sharding import plan_eval_shards
 
 
 def test_plan_eval_shards_caps_worker_concurrency() -> None:
-    """Guards bry/eval-worker-shards against one process owning all Daytona sessions."""
+    """Guards the fix from PR #567 against one process owning all Daytona sessions."""
     plan = plan_eval_shards(
         [f"task-{i}" for i in range(5)],
         total_concurrency=5,
@@ -19,7 +19,7 @@ def test_plan_eval_shards_caps_worker_concurrency() -> None:
 
 
 def test_plan_eval_shards_assigns_each_task_once() -> None:
-    """Guards bry/eval-worker-shards against duplicate or dropped shard tasks."""
+    """Guards the fix from PR #567 against duplicate or dropped shard tasks."""
     tasks = [f"task-{i}" for i in range(9)]
 
     plan = plan_eval_shards(tasks, total_concurrency=6, worker_concurrency=2)
@@ -30,7 +30,7 @@ def test_plan_eval_shards_assigns_each_task_once() -> None:
 
 
 def test_plan_eval_shards_rejects_invalid_concurrency() -> None:
-    """Guards bry/eval-worker-shards against silently creating unusable workers."""
+    """Guards the fix from PR #567 against silently creating unusable workers."""
     with pytest.raises(ValueError, match="total_concurrency"):
         plan_eval_shards(["task"], total_concurrency=0, worker_concurrency=1)
 
