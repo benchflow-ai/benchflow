@@ -47,6 +47,7 @@ from benchflow._utils.scoring import (
     INFRA_ERROR,
     INSTALL_FAILED,
     PIPE_CLOSED,
+    PROVIDER_AUTH,
     VERIFIER_DEP_INSTALL,
     VERIFIER_INFRA,
     VERIFIER_TIMEOUT,
@@ -119,7 +120,9 @@ class RetryConfig:
     wait_multiplier: float = 2.0
     min_wait_sec: float = 1.0
     max_wait_sec: float = 30.0
-    exclude_categories: set[str] = field(default_factory=lambda: {"timeout"})
+    exclude_categories: set[str] = field(
+        default_factory=lambda: {"timeout", PROVIDER_AUTH}
+    )
 
     def should_retry(
         self,

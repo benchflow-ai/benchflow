@@ -10,7 +10,18 @@ ACP_ERROR = "acp_error"
 IDLE_TIMEOUT = "idle_timeout"
 INFRA_ERROR = "infra_failure"
 SANDBOX_SETUP = "sandbox_setup"
+PROVIDER_AUTH = "provider_auth"
 TIMED_OUT = "timeout"
+
+_PROVIDER_AUTH_MARKERS = (
+    "PERMISSION_DENIED",
+    "leaked",
+    "Failed to authenticate",
+    "Invalid bearer token",
+    "Invalid API key",
+    "was rejected as invalid",
+    "Unauthorized",
+)
 
 # Verifier error category constants
 VERIFIER_FAILED = "verifier_failure"
@@ -41,7 +52,9 @@ def classify_error(error: str | None) -> str | None:
         return INSTALL_FAILED
     if "closed stdout" in lower:
         return PIPE_CLOSED
-    if "ACP error" in error:
+    if "ACP error" in error or "was rejected as invalid" in error:
+        if any(m in error for m in _PROVIDER_AUTH_MARKERS):
+            return PROVIDER_AUTH
         return ACP_ERROR
     if "sandbox startup" in lower or "sandbox creation" in lower:
         return SANDBOX_SETUP

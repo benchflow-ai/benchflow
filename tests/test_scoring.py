@@ -83,6 +83,45 @@ class TestClassifyError:
     def test_other(self):
         assert classify_error("something unexpected") == "other"
 
+    def test_provider_auth_gemini_403(self):
+        """Guards the fix from PR #564 for issue #546: Gemini PERMISSION_DENIED
+        should be classified as provider_auth, not acp_error."""
+        assert (
+            classify_error(
+                'ACP error 403: PERMISSION_DENIED: Your API key was reported as leaked.'
+            )
+            == "provider_auth"
+        )
+
+    def test_provider_auth_claude_401(self):
+        """Guards the fix from PR #564 for issue #546: Claude 401 auth failure
+        should be classified as provider_auth."""
+        assert (
+            classify_error(
+                "ACP error -32603: Internal error: Failed to authenticate. "
+                "API Error: 401 Invalid bearer token"
+            )
+            == "provider_auth"
+        )
+
+    def test_provider_auth_invalid_api_key(self):
+        assert classify_error("ACP error -32001: Invalid API key") == "provider_auth"
+
+    def test_provider_auth_rejected_as_invalid(self):
+        """The message from _classify_acp_error when subscription auth exists."""
+        assert (
+            classify_error(
+                "GEMINI_API_KEY was rejected as invalid. "
+                "Subscription auth credentials exist — unset the env var "
+                "to use them: env -u GEMINI_API_KEY <command>"
+            )
+            == "provider_auth"
+        )
+
+    def test_acp_error_non_auth_still_retryable(self):
+        """Generic ACP errors without auth markers should stay acp_error."""
+        assert classify_error("ACP error -32000: connection refused") == "acp_error"
+
     def test_install_broad_match_not_used(self):
         """'install' alone should NOT match — only 'install failed'."""
         assert classify_error("installing dependencies") == "other"

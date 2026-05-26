@@ -31,7 +31,22 @@ class TestRetryConfig:
 
     def test_should_retry_acp_error(self):
         cfg = RetryConfig()
-        assert cfg.should_retry("ACP error -32000: Authentication required")
+        assert cfg.should_retry("ACP error -32000: connection refused")
+
+    def test_should_not_retry_provider_auth_gemini_403(self):
+        """Guards the fix from PR #564 for issue #546: provider auth failures
+        should not be retried — they waste Daytona sandbox quota."""
+        cfg = RetryConfig()
+        assert not cfg.should_retry(
+            'ACP error 403: PERMISSION_DENIED: Your API key was reported as leaked.'
+        )
+
+    def test_should_not_retry_provider_auth_claude_401(self):
+        cfg = RetryConfig()
+        assert not cfg.should_retry(
+            "ACP error -32603: Internal error: Failed to authenticate. "
+            "API Error: 401 Invalid bearer token"
+        )
 
     def test_should_not_retry_timeout(self):
         cfg = RetryConfig()
