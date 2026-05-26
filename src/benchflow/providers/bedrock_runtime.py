@@ -12,12 +12,15 @@ claude-agent-acp: text, tool calling, and basic inference config.
 
 from __future__ import annotations
 
+import base64
 import json
 import time
 from typing import Any
 
 BEDROCK_RUNTIME_SERVICE = "bedrock-runtime"
 BEDROCK_OPTIONAL_DEPENDENCY_HINT = "uv sync --extra bedrock"
+BEDROCK_CONNECT_TIMEOUT_SEC = 10
+BEDROCK_READ_TIMEOUT_SEC = 300
 
 
 def resolve_bedrock_region(env: dict[str, str]) -> str:
@@ -57,9 +60,19 @@ def build_bedrock_client(
                 "Bedrock support requires the optional 'bedrock' dependency group. "
                 f"Install it with: {BEDROCK_OPTIONAL_DEPENDENCY_HINT}"
             ) from exc
+    try:
+        from botocore.config import Config
+    except ImportError:  # pragma: no cover - botocore ships with boto3
+        config = None
+    else:
+        config = Config(
+            connect_timeout=BEDROCK_CONNECT_TIMEOUT_SEC,
+            read_timeout=BEDROCK_READ_TIMEOUT_SEC,
+        )
     return boto3_module.client(
         service_name=BEDROCK_RUNTIME_SERVICE,
         region_name=normalized["AWS_REGION"],
+        config=config,
     )
 
 
@@ -76,7 +89,33 @@ def _anthropic_system_to_bedrock(system: Any) -> list[dict[str, str]]:
     return blocks
 
 
-def _tool_result_content_blocks(content: Any) -> list[dict[str, str]]:
+_IMAGE_MEDIA_TYPE_TO_BEDROCK_FORMAT = {
+    "image/gif": "gif",
+    "image/jpeg": "jpeg",
+    "image/png": "png",
+    "image/webp": "webp",
+}
+
+
+def _anthropic_image_block_to_bedrock(block: dict[str, Any]) -> dict[str, Any]:
+    source = block.get("source") or {}
+    if source.get("type") != "base64":
+        raise ValueError(f"Unsupported Anthropic image source: {source!r}")
+    image_format = _IMAGE_MEDIA_TYPE_TO_BEDROCK_FORMAT.get(source.get("media_type"))
+    if not image_format:
+        raise ValueError(f"Unsupported Anthropic image media type: {source!r}")
+    data = source.get("data")
+    if not isinstance(data, str):
+        raise ValueError(f"Unsupported Anthropic image data: {source!r}")
+    return {
+        "image": {
+            "format": image_format,
+            "source": {"bytes": base64.b64decode(data, validate=True)},
+        }
+    }
+
+
+def _tool_result_content_blocks(content: Any) -> list[dict[str, Any]]:
     if content is None:
         return []
     if isinstance(content, str):
@@ -86,7 +125,11 @@ def _tool_result_content_blocks(content: Any) -> list[dict[str, str]]:
         if isinstance(block, str):
             blocks.append({"text": block})
             continue
-        if block.get("type") != "text":
+        block_type = block.get("type")
+        if block_type == "image":
+            blocks.append(_anthropic_image_block_to_bedrock(block))
+            continue
+        if block_type != "text":
             raise ValueError(f"Unsupported tool_result content block: {block!r}")
         blocks.append({"text": block["text"]})
     return blocks
@@ -100,6 +143,8 @@ def _anthropic_content_to_bedrock(content: Any) -> list[dict[str, Any]]:
         block_type = block.get("type")
         if block_type == "text":
             blocks.append({"text": block["text"]})
+        elif block_type == "image":
+            blocks.append(_anthropic_image_block_to_bedrock(block))
         elif block_type == "tool_use":
             blocks.append(
                 {
@@ -163,16 +208,35 @@ def _responses_content_to_bedrock(role: str, content: Any) -> list[dict[str, Any
     return blocks
 
 
+_MODELS_WITHOUT_BEDROCK_SAMPLING_PARAMS = {"anthropic.claude-opus-4-7"}
+
+
+def _bedrock_model_key(model: str | None) -> str:
+    """Return the foundation model key from a Bedrock model/profile id."""
+    if not model:
+        return ""
+    key = model.rsplit("/", 1)[-1].lower()
+    for prefix in ("us.", "global."):
+        if key.startswith(prefix):
+            return key[len(prefix) :]
+    return key
+
+
+def _supports_bedrock_sampling_params(model: str | None) -> bool:
+    return _bedrock_model_key(model) not in _MODELS_WITHOUT_BEDROCK_SAMPLING_PARAMS
+
+
 def _inference_config_from_request(
     body: dict[str, Any], *, max_tokens_key: str
 ) -> dict[str, Any]:
     config: dict[str, Any] = {}
     if body.get(max_tokens_key) is not None:
         config["maxTokens"] = body[max_tokens_key]
-    if body.get("temperature") is not None:
-        config["temperature"] = body["temperature"]
-    if body.get("top_p") is not None:
-        config["topP"] = body["top_p"]
+    if _supports_bedrock_sampling_params(body.get("model")):
+        if body.get("temperature") is not None:
+            config["temperature"] = body["temperature"]
+        if body.get("top_p") is not None:
+            config["topP"] = body["top_p"]
     stop = body.get("stop_sequences")
     if stop is None:
         stop = body.get("stop")

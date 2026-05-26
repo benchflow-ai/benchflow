@@ -77,6 +77,26 @@ def _install_python_script(container_path: str, source: str) -> str:
     )
 
 
+def _apt_install(*packages: str) -> str:
+    """POSIX shell snippet for apt installs with transient mirror recovery."""
+    package_args = " ".join(shlex.quote(package) for package in packages)
+    return (
+        "( attempt=1; "
+        'while [ "$attempt" -le 3 ]; do '
+        "rm -rf /var/lib/apt/lists/*; "
+        "apt-get clean; "
+        "if apt-get -o Acquire::Retries=3 update -qq && "
+        f"apt-get -o Acquire::Retries=3 install -y -qq {package_args}; then "
+        "exit 0; "
+        "fi; "
+        'case "$attempt" in 1) sleep 2; attempt=2 ;; '
+        "2) sleep 4; attempt=3 ;; "
+        "*) sleep 6; attempt=4 ;; esac; "
+        "done; "
+        "exit 1 )"
+    )
+
+
 # Isolated Node.js bootstrap for JavaScript-based ACP agents.
 #
 # Keep this out of system prefixes. Task images may need their own Node/npm
@@ -502,8 +522,7 @@ AGENTS: dict[str, AgentConfig] = {
             'export PATH="$HOME/.local/bin:$PATH" && '
             "( command -v curl >/dev/null 2>&1 && command -v git >/dev/null 2>&1 || "
             "  if command -v apt-get >/dev/null 2>&1; then "
-            "    apt-get update -qq && "
-            "    apt-get install -y -qq curl ca-certificates git >/dev/null 2>&1; "
+            f"    {_apt_install('curl', 'ca-certificates', 'git')}; "
             "  elif command -v dnf >/dev/null 2>&1; then "
             "    dnf -y install curl ca-certificates git >/dev/null 2>&1; "
             "  elif command -v apk >/dev/null 2>&1; then "
@@ -525,6 +544,7 @@ AGENTS: dict[str, AgentConfig] = {
             '    export PATH="$HOME/.local/bin:$PATH"; '
             "  fi && "
             "uv tool install --force --refresh "
+            "--with 'boto3>=1.40' "
             "--from 'git+https://github.com/OpenHands/OpenHands-CLI.git@main' "
             "openhands --python 3.12 && "
             "  uv tool list | grep -q '^openhands\\b' ) && "
