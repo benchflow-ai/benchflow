@@ -5,6 +5,7 @@ check_subscription_auth, and the no-model subscription auth path in
 resolve_agent_env.
 """
 
+import json
 from pathlib import Path
 
 import pytest
@@ -638,6 +639,18 @@ class TestResolveAgentEnvAzureFoundry:
             result["OPENAI_BASE_URL"]
             == "https://example-resource.openai.azure.com/openai/v1"
         )
+        assert result["MODEL_PROVIDER"] == "benchflow-azure-foundry-openai"
+        codex_config = json.loads(result["CODEX_CONFIG"])
+        assert codex_config["model"] == "gpt-5.5"
+        assert codex_config["model_provider"] == "benchflow-azure-foundry-openai"
+        provider = codex_config["model_providers"]["benchflow-azure-foundry-openai"]
+        assert provider == {
+            "name": "azure-foundry-openai",
+            "base_url": "https://example-resource.openai.azure.com/openai/v1",
+            "env_key": "OPENAI_API_KEY",
+            "wire_api": "responses",
+            "supports_websockets": False,
+        }
 
     def test_claude_uses_same_azure_key_on_anthropic_surface(self, monkeypatch):
         monkeypatch.setenv("AZURE_API_KEY", "az-test")

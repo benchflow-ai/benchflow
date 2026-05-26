@@ -64,6 +64,56 @@ _MODELSDEV_PROVIDER_HEURISTICS: list[tuple[str, str]] = [
 ]
 
 
+def _codex_model_name(model_id: str) -> str:
+    """Return the bare model name from a Codex ACP ``model[effort]`` ID."""
+    return model_id.split("[", 1)[0]
+
+
+def _codex_reasoning_effort(model_id: str) -> str:
+    """Return the reasoning effort suffix from a Codex ACP model ID."""
+    if "[" not in model_id or not model_id.endswith("]"):
+        return ""
+    return model_id.rsplit("[", 1)[1][:-1]
+
+
+def _codex_session_model_id(model: str, session: object | None) -> str:
+    """Map a bare Codex model to the exact ACP modelId returned by session/new.
+
+    ``@agentclientprotocol/codex-acp`` validates ``session/set_model`` against
+    model IDs shaped as ``model[reasoning-effort]``. BenchFlow's public model
+    IDs stay effort-free, so use the session's advertised model state to choose
+    the concrete Codex ACP ID.
+    """
+    state = getattr(session, "model_state", None)
+    if not isinstance(state, dict):
+        return model
+
+    requested_name = _codex_model_name(model)
+    current_model = state.get("currentModelId")
+    if isinstance(current_model, str) and _codex_model_name(current_model) == requested_name:
+        return current_model
+
+    available = state.get("availableModels")
+    if not isinstance(available, list):
+        return model
+    candidates = [
+        entry.get("modelId")
+        for entry in available
+        if isinstance(entry, dict)
+        and isinstance(entry.get("modelId"), str)
+        and _codex_model_name(entry["modelId"]) == requested_name
+    ]
+    if not candidates:
+        return model
+
+    preferred_efforts = ("medium", "high", "low", "minimal", "none")
+    for effort in preferred_efforts:
+        for candidate in candidates:
+            if _codex_reasoning_effort(candidate) == effort:
+                return candidate
+    return candidates[0]
+
+
 def _format_acp_model(model: str, agent: str) -> str:
     """Format a model ID for ACP session/set_model based on agent requirements.
 
@@ -102,6 +152,18 @@ def _format_acp_model(model: str, agent: str) -> str:
         "Cannot infer models.dev provider for %r — defaulting to anthropic/", bare
     )
     return f"anthropic/{bare}"
+
+
+def _select_acp_model_id(
+    model: str,
+    agent: str,
+    session: object | None,
+) -> str:
+    """Return the concrete modelId to send through ACP session/set_model."""
+    formatted = _format_acp_model(model, agent)
+    if agent == "codex-acp":
+        return _codex_session_model_id(formatted, session)
+    return formatted
 
 
 def _should_skip_acp_set_model(
@@ -266,7 +328,7 @@ async def connect_acp(
 
     if model and not _should_skip_acp_set_model(agent, model, agent_env):
         acp_model_input = _resolve_acp_model_input(agent, model, agent_env)
-        acp_model_id = _format_acp_model(acp_model_input, agent)
+        acp_model_id = _select_acp_model_id(acp_model_input, agent, session)
         try:
             await asyncio.wait_for(acp_client.set_model(acp_model_id), timeout=60)
             logger.info(f"Model set to: {acp_model_id} (from {acp_model_input})")

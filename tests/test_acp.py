@@ -738,6 +738,43 @@ class TestConnectAcpModelSelection:
         mock_acp.set_model.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_codex_uses_session_advertised_model_id(self, tmp_path):
+        """Guards commit 81ff286 against codex-acp rejecting bare set_model IDs."""
+        from benchflow.acp.runtime import connect_acp
+
+        mock_acp = self._make_mocks()
+        mock_acp.session_new.return_value.model_state = {
+            "availableModels": [
+                {"modelId": "gpt-5.5[low]"},
+                {"modelId": "gpt-5.5[medium]"},
+                {"modelId": "gpt-5.5[high]"},
+            ],
+            "currentModelId": "gpt-5[medium]",
+        }
+        mock_env = AsyncMock()
+        with (
+            patch(
+                "benchflow.acp.runtime.DockerProcess.from_sandbox_env",
+                return_value=MagicMock(),
+            ),
+            patch("benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()),
+            patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
+        ):
+            await connect_acp(
+                env=mock_env,
+                agent="codex-acp",
+                agent_launch="codex-acp",
+                agent_env={},
+                sandbox_user=None,
+                model="azure-foundry-openai/gpt-5.5",
+                rollout_dir=tmp_path,
+                environment="docker",
+                agent_cwd="/app",
+            )
+
+        mock_acp.set_model.assert_awaited_once_with("gpt-5.5[medium]")
+
+    @pytest.mark.asyncio
     async def test_claude_bedrock_sets_model_from_provider_mapping(self, tmp_path):
         from benchflow.acp.runtime import connect_acp
 
