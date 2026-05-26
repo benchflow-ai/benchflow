@@ -1,8 +1,16 @@
 """Tests for _capture_session_trajectory — ensures partial trajectory is saved on timeout."""
 
+import json
+from pathlib import Path
+
 from benchflow.acp.session import ACPSession
 from benchflow.acp.types import ToolCallStatus
-from benchflow.trajectories._capture import _capture_session_trajectory
+from benchflow.trajectories._capture import (
+    TrajectoryWriter,
+    _capture_session_trajectory,
+    _snapshot_session_trajectory,
+    make_trajectory_sink,
+)
 
 
 class TestCaptureSessionTrajectory:
@@ -733,3 +741,324 @@ class TestFlushArrivalOrder:
         ]
         assert result[1]["text"] == "before tool"
         assert result[3]["text"] == "after tool"
+
+
+def _read_jsonl(path: Path) -> list[dict]:
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+
+class TestSnapshotSessionTrajectory:
+    """Non-destructive snapshot preserves chunk streaming until prompt_end."""
+
+    def test_snapshot_does_not_flush_pending(self) -> None:
+        session = ACPSession("s1")
+        session.record_user_prompt("Solve")
+        session.handle_update(
+            {
+                "sessionUpdate": "agent_message_chunk",
+                "content": {"type": "text", "text": "Hel"},
+            }
+        )
+        session.handle_update(
+            {
+                "sessionUpdate": "agent_message_chunk",
+                "content": {"type": "text", "text": "lo"},
+            }
+        )
+
+        # Snapshotting must NOT collapse pending_text into committed events,
+        # otherwise the next chunk would become a separate event rather than
+        # being merged with its siblings at mark_prompt_end.
+        snapshot = _snapshot_session_trajectory(session)
+        assert len(session._pending_text) == 2
+        assert [e["type"] for e in snapshot] == ["user_message", "agent_message"]
+        assert snapshot[1]["text"] == "Hello"
+
+        # Final capture after prompt_end produces the same merged text.
+        session.mark_prompt_end()
+        final = _capture_session_trajectory(session)
+        assert [e["type"] for e in final] == ["user_message", "agent_message"]
+        assert final[1]["text"] == "Hello"
+
+    def test_snapshot_after_prompt_end_matches_capture(self) -> None:
+        session = ACPSession("s1")
+        session.record_user_prompt("Hi")
+        session.handle_update(
+            {
+                "sessionUpdate": "tool_call",
+                "toolCallId": "tc_1",
+                "title": "ls",
+                "kind": "bash",
+            }
+        )
+        session.handle_update(
+            {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "tc_1",
+                "status": "completed",
+            }
+        )
+        session.handle_update(
+            {
+                "sessionUpdate": "agent_message_chunk",
+                "content": {"type": "text", "text": "Done"},
+            }
+        )
+        session.mark_prompt_end()
+        assert _snapshot_session_trajectory(session) == _capture_session_trajectory(
+            session
+        )
+
+
+class TestTrajectoryWriter:
+    """Streams incremental snapshots to disk as the session evolves."""
+
+    def test_writer_flushes_after_each_update(self, tmp_path: Path) -> None:
+        traj_path = tmp_path / "trajectory" / "acp_trajectory.jsonl"
+        writer = TrajectoryWriter(traj_path)
+        session = ACPSession("s1")
+        session.on_change = writer
+
+        # File doesn't exist until the first event lands.
+        assert not traj_path.exists()
+
+        session.record_user_prompt("Solve the task")
+        assert traj_path.exists(), "file should appear on the first event"
+        snapshot1 = _read_jsonl(traj_path)
+        assert [e["type"] for e in snapshot1] == ["user_message"]
+        assert snapshot1[0]["text"] == "Solve the task"
+
+        # Tool call appears immediately at PENDING.
+        session.handle_update(
+            {
+                "sessionUpdate": "tool_call",
+                "toolCallId": "tc_1",
+                "title": "ls /app",
+                "kind": "bash",
+            }
+        )
+        snapshot2 = _read_jsonl(traj_path)
+        assert [e["type"] for e in snapshot2] == ["user_message", "tool_call"]
+        assert snapshot2[1]["status"] == ToolCallStatus.PENDING.value
+
+        # Status transitions are visible on the next snapshot, same ID.
+        session.handle_update(
+            {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "tc_1",
+                "status": "completed",
+            }
+        )
+        snapshot3 = _read_jsonl(traj_path)
+        assert len(snapshot3) == 2
+        assert snapshot3[1]["tool_call_id"] == "tc_1"
+        assert snapshot3[1]["status"] == ToolCallStatus.COMPLETED.value
+
+        # Streamed message chunks are visible mid-prompt as a merged event.
+        session.handle_update(
+            {
+                "sessionUpdate": "agent_message_chunk",
+                "content": {"type": "text", "text": "All "},
+            }
+        )
+        session.handle_update(
+            {
+                "sessionUpdate": "agent_message_chunk",
+                "content": {"type": "text", "text": "done."},
+            }
+        )
+        snapshot4 = _read_jsonl(traj_path)
+        assert [e["type"] for e in snapshot4] == [
+            "user_message",
+            "tool_call",
+            "agent_message",
+        ]
+        assert snapshot4[2]["text"] == "All done."
+
+        # mark_prompt_end is idempotent w.r.t. on-disk content.
+        session.mark_prompt_end()
+        final = _read_jsonl(traj_path)
+        assert final == _capture_session_trajectory(session)
+
+    def test_writer_swallows_callback_errors(self, tmp_path: Path) -> None:
+        """A broken sink must not propagate into ACP update handling."""
+        session = ACPSession("s1")
+
+        def boom(_session: ACPSession) -> None:
+            raise RuntimeError("nope")
+
+        session.on_change = boom
+        session.record_user_prompt("Solve")  # must not raise
+        session.handle_update(
+            {
+                "sessionUpdate": "tool_call",
+                "toolCallId": "tc_1",
+                "title": "ls",
+                "kind": "bash",
+            }
+        )
+
+    def test_writer_atomic_rewrite_creates_no_torn_lines(self, tmp_path: Path) -> None:
+        """Each snapshot is a complete JSONL document — no .tmp leftover."""
+        traj_path = tmp_path / "acp_trajectory.jsonl"
+        writer = TrajectoryWriter(traj_path)
+        session = ACPSession("s1")
+        session.on_change = writer
+        session.record_user_prompt("Solve")
+        session.handle_update(
+            {
+                "sessionUpdate": "tool_call",
+                "toolCallId": "tc_1",
+                "title": "ls",
+                "kind": "bash",
+            }
+        )
+        session.handle_update(
+            {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "tc_1",
+                "status": "completed",
+            }
+        )
+        # No .tmp sibling left behind, and every line parses as JSON.
+        assert not traj_path.with_suffix(traj_path.suffix + ".tmp").exists()
+        lines = traj_path.read_text().splitlines()
+        for line in lines:
+            json.loads(line)
+
+    def test_write_final_overwrites_streamed_file(self, tmp_path: Path) -> None:
+        traj_path = tmp_path / "acp_trajectory.jsonl"
+        writer = TrajectoryWriter(traj_path)
+        session = ACPSession("s1")
+        session.on_change = writer
+        session.record_user_prompt("Solve")
+        assert traj_path.exists()
+        writer.write_final(
+            [{"type": "oracle", "command": "solve.sh", "return_code": 0}]
+        )
+        snapshot = _read_jsonl(traj_path)
+        assert snapshot == [{"type": "oracle", "command": "solve.sh", "return_code": 0}]
+
+
+class TestMultiSceneCumulativeStreaming:
+    """The streaming writer must include events from prior scenes — not just
+    the current session — so multi-scene rollouts don't lose history on
+    disk between scene transitions.
+    """
+
+    def test_sink_includes_prior_trajectory(self, tmp_path: Path) -> None:
+        traj_path = tmp_path / "acp_trajectory.jsonl"
+        writer = TrajectoryWriter(traj_path)
+        prior = [
+            {"type": "user_message", "text": "scene 1 prompt"},
+            {
+                "type": "tool_call",
+                "tool_call_id": "tc_s1",
+                "kind": "bash",
+                "title": "ls",
+                "status": "completed",
+                "content": [],
+            },
+            {"type": "agent_message", "text": "scene 1 done"},
+        ]
+        session = ACPSession("s2")
+        session.on_change = make_trajectory_sink(writer, prior)
+
+        session.record_user_prompt("scene 2 prompt")
+        snapshot = _read_jsonl(traj_path)
+        # Scene 1's 3 events must be preserved; scene 2's user_message appended.
+        assert len(snapshot) == 4
+        assert snapshot[0]["text"] == "scene 1 prompt"
+        assert snapshot[1]["tool_call_id"] == "tc_s1"
+        assert snapshot[2]["text"] == "scene 1 done"
+        assert snapshot[3]["text"] == "scene 2 prompt"
+
+    def test_empty_new_session_does_not_wipe_prior(self, tmp_path: Path) -> None:
+        traj_path = tmp_path / "acp_trajectory.jsonl"
+        writer = TrajectoryWriter(traj_path)
+        prior = [{"type": "user_message", "text": "scene 1 only event"}]
+        # Seed the file with the prior content so we can detect overwrites.
+        writer.write_final(prior)
+        session = ACPSession("s2")
+        session.on_change = make_trajectory_sink(writer, prior)
+
+        # No mutations on this session at all — but the sink fires anyway
+        # (e.g. ACP sent an unknown sessionUpdate that mutated nothing).
+        session.on_change(session)
+        snapshot = _read_jsonl(traj_path)
+        assert snapshot == prior, "empty session must not wipe prior events"
+
+    def test_sink_isolates_prior_snapshot_from_caller_mutation(
+        self, tmp_path: Path
+    ) -> None:
+        """The prior list reference is captured at wire-up time; later
+        mutations by the caller (e.g. Rollout.execute extending its own
+        trajectory) must NOT cause double-counting of the current session.
+        """
+        traj_path = tmp_path / "acp_trajectory.jsonl"
+        writer = TrajectoryWriter(traj_path)
+        prior: list[dict] = [{"type": "user_message", "text": "prior"}]
+        session = ACPSession("s2")
+        session.on_change = make_trajectory_sink(writer, prior)
+
+        session.record_user_prompt("current")
+        # Caller appends current session events to its own cumulative list
+        # — simulates Rollout.execute extending self._trajectory after
+        # execute_prompts returns. The sink must keep using the prior
+        # slice from wire-up time and not double-count.
+        prior.append({"type": "user_message", "text": "current"})
+
+        # A subsequent on_change should still produce: ["prior", "current"],
+        # NOT ["prior", "current", "current"].
+        session.on_change(session)
+        snapshot = _read_jsonl(traj_path)
+        assert [e.get("text") for e in snapshot] == ["prior", "current"]
+
+
+class TestHandleUpdateUnknownType:
+    """Unknown sessionUpdate types should not trigger on_change — no state
+    mutated, no reason to re-snapshot.
+    """
+
+    def test_unknown_update_type_skips_notify(self) -> None:
+        session = ACPSession("s1")
+        calls: list[int] = []
+        session.on_change = lambda _s: calls.append(1)
+
+        session.handle_update({"sessionUpdate": "unknown_future_type"})
+        assert calls == [], "on_change must NOT fire for unrecognized update types"
+
+    def test_known_update_type_still_notifies(self) -> None:
+        session = ACPSession("s1")
+        calls: list[int] = []
+        session.on_change = lambda _s: calls.append(1)
+
+        session.handle_update(
+            {
+                "sessionUpdate": "tool_call",
+                "toolCallId": "tc_1",
+                "title": "ls",
+                "kind": "bash",
+            }
+        )
+        assert calls == [1], "on_change must fire for recognized update types"
+
+
+class TestTrajectoryWriterStaleTmpCleanup:
+    """Stale .tmp file left by a previous crashed run must be swept on
+    writer construction so a follow-up reader can't pick it up.
+    """
+
+    def test_init_unlinks_pre_existing_tmp(self, tmp_path: Path) -> None:
+        traj_path = tmp_path / "acp_trajectory.jsonl"
+        stale_tmp = traj_path.with_suffix(traj_path.suffix + ".tmp")
+        stale_tmp.parent.mkdir(parents=True, exist_ok=True)
+        stale_tmp.write_text('{"type":"user_message","text":"orphaned"}')
+        assert stale_tmp.exists()
+
+        TrajectoryWriter(traj_path)
+        assert not stale_tmp.exists(), "stale .tmp must be cleaned up on init"
+
+    def test_init_tolerates_no_pre_existing_tmp(self, tmp_path: Path) -> None:
+        # Clean construction must not raise when no stale tmp is present.
+        TrajectoryWriter(tmp_path / "acp_trajectory.jsonl")

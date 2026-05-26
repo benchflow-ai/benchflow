@@ -81,8 +81,10 @@ from benchflow.skill_policy import (
     task_bundled_skills_dir,
 )
 from benchflow.trajectories._capture import (
+    TrajectoryWriter,
     _capture_session_trajectory,
     _scrape_agent_trajectory,
+    make_trajectory_sink,
 )
 from benchflow.trajectories.metrics import count_skill_invocations
 from benchflow.trajectories.tree import RolloutNode, RolloutTree, Step
@@ -547,9 +549,10 @@ def _build_rollout_result(
     timing = {k: round(v, 1) for k, v in timing.items()}
     traj_dir = rollout_dir / "trajectory"
     traj_dir.mkdir(parents=True, exist_ok=True)
-    (traj_dir / "acp_trajectory.jsonl").write_text(
-        "\n".join(json.dumps(e, default=str) for e in trajectory)
-    )
+    # Final write — overwrites whatever the live streaming writer left
+    # in place. Identical content in the normal ACP path, but this is
+    # the only writer for oracle / scraped-fallback / no-session paths.
+    TrajectoryWriter(traj_dir / "acp_trajectory.jsonl").write_final(trajectory)
     rollout_dir.mkdir(parents=True, exist_ok=True)
     (rollout_dir / "result.json").write_text(
         json.dumps(
@@ -1525,11 +1528,29 @@ class Rollout:
             agent_cwd=self._agent_cwd,
         )
         self._reapply_ask_user_handler()
+        self._attach_trajectory_writer(rollout_dir)
 
         if "agent_setup" not in self._timing:
             self._timing["agent_setup"] = (datetime.now() - t0).total_seconds()
 
         self._phase = "connected"
+
+    def _attach_trajectory_writer(self, rollout_dir: Path) -> None:
+        """Wire the current session's ``on_change`` to stream cumulative
+        trajectory to ``rollout_dir/trajectory/acp_trajectory.jsonl``.
+
+        The sink prepends ``self._trajectory`` (events from prior scenes,
+        captured by value at wire-up time) so multi-scene rollouts don't
+        overwrite earlier scenes' events with the current session's
+        snapshot.
+        """
+        if self._session is None or rollout_dir is None:
+            return
+        prior: list[dict] = getattr(self, "_trajectory", []) or []
+        traj_path = rollout_dir / "trajectory" / "acp_trajectory.jsonl"
+        self._session.on_change = make_trajectory_sink(
+            TrajectoryWriter(traj_path), prior
+        )
 
     async def disconnect(self) -> None:
         """Close the ACP client and clean up agent process, keeping the environment alive."""
@@ -2437,6 +2458,7 @@ class Rollout:
             agent_cwd=self._agent_cwd,
         )
         self._reapply_ask_user_handler()
+        self._attach_trajectory_writer(rollout_dir)
         self._active_role = role
 
         if "agent_setup" not in self._timing:
