@@ -23,7 +23,7 @@ This guide covers how to run them — from a single task to a full evaluation sw
 | [SkillsBench](https://github.com/benchflow-ai/skillsbench) | 94+ | Unit tests | `benchmarks/skillsbench-*.yaml` |
 
 Each adapted benchmark includes:
-- **`benchflow.py`** — converter: raw benchmark → Harbor-format task directories for BenchFlow
+- **`benchflow.py`** — converter for the raw benchmark source
 - **`benchmark.yaml`** — metadata descriptor (task count, categories, verification method, parity results)
 - **`<name>-*.yaml`** — job configs for different agents/models
 - **`parity_test.py`** — parity validation suite
