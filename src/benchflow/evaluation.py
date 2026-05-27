@@ -198,6 +198,7 @@ class EvaluationConfig:
     model: str | None = None
     environment: str = "docker"
     concurrency: int = 4
+    build_concurrency: int | None = None
     prompts: list[str | None] | None = None
     agent_env: dict[str, str] = field(default_factory=dict)
     retry: RetryConfig = field(default_factory=RetryConfig)
@@ -499,6 +500,7 @@ class Evaluation:
             model=effective_model(agent_name, raw.get("model")),
             environment=raw.get("environment", "docker"),
             concurrency=raw.get("concurrency", 4),
+            build_concurrency=raw.get("build_concurrency"),
             prompts=prompts,
             agent_env=agent_env_raw,
             retry=RetryConfig(max_retries=raw.get("max_retries", 2)),
@@ -1217,6 +1219,12 @@ class Evaluation:
         self._prune_docker()
 
         cfg = self._config
+
+        if cfg.build_concurrency is not None and cfg.environment == "docker":
+            from benchflow.sandbox.docker import DockerSandbox
+
+            DockerSandbox.set_build_concurrency(cfg.build_concurrency)
+
         logger.info(
             f"Job: {len(task_dirs)} tasks, {len(completed)} done, "
             f"{len(remaining)} to run (concurrency={cfg.concurrency})"

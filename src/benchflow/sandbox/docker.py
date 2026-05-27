@@ -103,6 +103,12 @@ class DockerSandbox(BaseSandbox):
     _DOCKER_COMPOSE_NO_NETWORK_PATH = COMPOSE_NO_NETWORK_PATH
 
     _image_build_locks: ClassVar[dict[str, asyncio.Lock]] = {}
+    _build_semaphore: ClassVar[asyncio.Semaphore | None] = None
+
+    @classmethod
+    def set_build_concurrency(cls, n: int) -> None:
+        """Limit how many docker builds run in parallel (default: unlimited)."""
+        cls._build_semaphore = asyncio.Semaphore(n)
 
     @classmethod
     def preflight(cls) -> None:
@@ -356,11 +362,18 @@ class DockerSandbox(BaseSandbox):
         self._use_prebuilt = not force_build and bool(self.task_env_config.docker_image)
 
         if not self._use_prebuilt:
-            lock = self._image_build_locks.setdefault(
-                self.environment_name, asyncio.Lock()
-            )
-            async with lock:
-                await self._run_docker_compose_build()
+            build_sem = self._build_semaphore
+            if build_sem is not None:
+                await build_sem.acquire()
+            try:
+                lock = self._image_build_locks.setdefault(
+                    self.environment_name, asyncio.Lock()
+                )
+                async with lock:
+                    await self._run_docker_compose_build()
+            finally:
+                if build_sem is not None:
+                    build_sem.release()
 
         with contextlib.suppress(RuntimeError):
             await self._run_docker_compose_command(["down", "--remove-orphans"])
