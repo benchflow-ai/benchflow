@@ -178,6 +178,7 @@ class SDK:
         skill_creator_dir: str | Path | None = None,
         self_gen_no_internet: bool = False,
         source_provenance: dict[str, Any] | None = None,
+        usage_tracking: Any = None,
     ) -> RolloutResult:
         """Run a task — delegates to :func:`benchflow.run`."""
         from benchflow.rollout import RolloutConfig
@@ -206,5 +207,6 @@ class SDK:
             skill_creator_dir=skill_creator_dir,
             self_gen_no_internet=self_gen_no_internet,
             source_provenance=source_provenance,
+            usage_tracking=usage_tracking,
         )
         return await run(config)  # type: ignore[return-value]  # ty: ignore[invalid-return-type]

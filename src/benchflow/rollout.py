@@ -79,6 +79,7 @@ from benchflow.trajectories._capture import (
 )
 from benchflow.trajectories.metrics import count_skill_invocations
 from benchflow.trajectories.tree import RolloutNode, RolloutTree, Step
+from benchflow.usage_tracking import UsageTrackingConfig
 
 logger = logging.getLogger(__name__)
 
@@ -338,6 +339,7 @@ _SECRET_ENV_SUBSTRINGS: tuple[str, ...] = (
     "BEARER",
     "SESSION",
 )
+_SECRET_URL_PATH_MARKERS: tuple[str, ...] = ("/__benchflow/",)
 
 
 def _is_secret_env_key(name: str) -> bool:
@@ -349,6 +351,18 @@ def _is_secret_env_key(name: str) -> bool:
     """
     upper = name.upper()
     return any(s in upper for s in _SECRET_ENV_SUBSTRINGS)
+
+
+def _is_secret_env_value(name: str, value: str) -> bool:
+    """Return True if a normally public env value embeds a runtime secret."""
+    upper = name.upper()
+    if not upper.endswith("BASE_URL"):
+        return False
+    return any(marker in value for marker in _SECRET_URL_PATH_MARKERS)
+
+
+def _should_record_env_entry(name: str, value: str) -> bool:
+    return not _is_secret_env_key(name) and not _is_secret_env_value(name, value)
 
 
 def _write_config(
@@ -366,13 +380,16 @@ def _write_config(
     timeout: int,
     started_at: datetime,
     agent_env: dict[str, str],
+    usage_tracking: UsageTrackingConfig | None = None,
     concurrency: int | None = None,
     agent_idle_timeout: int | None = None,
     scenes: list[Scene] | None = None,
     source_provenance: dict[str, Any] | None = None,
 ) -> None:
     """Write config.json to rollout_dir with secrets filtered out."""
-    recorded_env = {k: v for k, v in agent_env.items() if not _is_secret_env_key(k)}
+    recorded_env = {
+        k: v for k, v in agent_env.items() if _should_record_env_entry(k, v)
+    }
     config_data = {
         "task_path": str(task_path),
         "agent": agent,
@@ -390,6 +407,8 @@ def _write_config(
         "agent_env": recorded_env,
         "scenes": _scene_metadata(scenes or []),
     }
+    if usage_tracking is not None:
+        config_data["usage_tracking"] = usage_tracking.to_config_artifact()
     if source_provenance is not None:
         config_data["source"] = source_provenance
     (rollout_dir / "config.json").write_text(json.dumps(config_data, indent=2))
@@ -451,6 +470,7 @@ def _build_rollout_result(
     cost_usd: float | None = None,
     usage_source: str = "unavailable",
     price_source: str | None = None,
+    usage_tracking: dict[str, Any] | None = None,
     evolved_skills: dict[str, str] | None = None,
     source_provenance: dict[str, Any] | None = None,
     diagnostics: RolloutDiagnostics | None = None,
@@ -537,6 +557,7 @@ def _build_rollout_result(
                     "usage_source": result.usage_source,
                     "price_source": result.price_source,
                 },
+                "usage_tracking": usage_tracking,
                 "error": result.error,
                 "error_category": result.error_category,
                 "verifier_error": result.verifier_error,
@@ -869,6 +890,7 @@ class RolloutConfig:
     # ``Runtime(RuntimeConfig(timeout=...))`` enforces a caller-supplied
     # budget without editing every task.toml (#378).
     timeout: int | None = None
+    usage_tracking: UsageTrackingConfig = field(default_factory=UsageTrackingConfig)
 
     # User-driven progressive-disclosure loop
     user: BaseUser | None = None
@@ -906,6 +928,7 @@ class RolloutConfig:
         self.agent = normalize_agent_name(self.agent)
         self.sandbox_user = normalize_sandbox_user(self.sandbox_user)
         self.agent_idle_timeout = normalize_agent_idle_timeout(self.agent_idle_timeout)
+        self.usage_tracking = UsageTrackingConfig.coerce(self.usage_tracking)
         for scene in self.scenes:
             for role in scene.roles:
                 role.agent = normalize_agent_name(role.agent)
@@ -1264,6 +1287,7 @@ class Rollout:
             timeout=self._timeout,
             started_at=self._started_at,
             agent_env=self._agent_env,
+            usage_tracking=cfg.usage_tracking.with_env_defaults(),
             concurrency=cfg.concurrency,
             agent_idle_timeout=cfg.agent_idle_timeout,
             scenes=cfg.effective_scenes,
@@ -1439,6 +1463,7 @@ class Rollout:
             runtime=getattr(self, "_usage_runtime", None),
             environment=cfg.environment,
             session_id=getattr(self, "_rollout_name", "") or "",
+            usage_tracking=cfg.usage_tracking,
         )
         (
             self._acp_client,
@@ -2291,6 +2316,7 @@ class Rollout:
             runtime=getattr(self, "_usage_runtime", None),
             environment=cfg.environment,
             session_id=getattr(self, "_rollout_name", "") or "",
+            usage_tracking=cfg.usage_tracking,
         )
 
         role_agent_differs = role.agent != cfg.primary_agent
@@ -2416,6 +2442,21 @@ class Rollout:
             trajectory.to_jsonl(redact_keys=True)
         )
 
+    def _usage_tracking_metadata(self) -> dict[str, Any]:
+        usage_cfg = self._config.usage_tracking.with_env_defaults()
+        usage_source = str(self._usage_metrics.get("usage_source", "unavailable"))
+        if usage_cfg.mode == "off":
+            status = "off"
+        elif usage_source == "provider_response":
+            status = "enabled"
+        else:
+            status = "unavailable"
+        return usage_cfg.to_result_metadata(
+            environment=self._config.environment,
+            status=status,
+            usage_source=usage_source,
+        )
+
     def _build_result(self) -> RolloutResult:
         rollout_dir = self._require_rollout_dir()
         # For Scene/multi-turn rollouts, each execute() call records the
@@ -2447,5 +2488,6 @@ class Rollout:
             evolved_skills=self._evolved_skills,
             source_provenance=self._config.source_provenance,
             diagnostics=self._diagnostics,
+            usage_tracking=self._usage_tracking_metadata(),
             **self._usage_metrics,
         )

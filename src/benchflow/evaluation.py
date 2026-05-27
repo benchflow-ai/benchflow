@@ -61,6 +61,7 @@ from benchflow.environment.manifest import EnvironmentManifest
 from benchflow.learner_store import LearnerState, LearnerStore
 from benchflow.models import RolloutResult
 from benchflow.trajectories.tree import RolloutNode
+from benchflow.usage_tracking import UsageTrackingConfig
 
 # Backward-compat alias
 RunResult = RolloutResult
@@ -213,6 +214,7 @@ class EvaluationConfig:
     self_gen_no_internet: bool = False
     job_mode: str = DEFAULT_JOB_MODE
     source_provenance: dict[str, Any] | None = None
+    usage_tracking: UsageTrackingConfig = field(default_factory=UsageTrackingConfig)
     # Environment-plane manifest applied to every rollout in the batch.
     # When set, each task's RolloutConfig.environment_manifest is populated
     # so the Environment plane (manifest-declared stateful environment,
@@ -231,6 +233,7 @@ class EvaluationConfig:
         self.agent = normalize_agent_name(self.agent)
         self.sandbox_user = normalize_sandbox_user(self.sandbox_user)
         self.agent_idle_timeout = normalize_agent_idle_timeout(self.agent_idle_timeout)
+        self.usage_tracking = UsageTrackingConfig.coerce(self.usage_tracking)
         if self.job_mode not in JOB_MODES:
             raise ValueError(
                 f"unknown job_mode {self.job_mode!r} — "
@@ -517,6 +520,7 @@ class Evaluation:
             self_gen_no_internet=bool(raw.get("self_gen_no_internet", False)),
             job_mode=raw.get("job_mode", DEFAULT_JOB_MODE),
             source_provenance=source_provenance,
+            usage_tracking=UsageTrackingConfig.from_mapping(raw),
             environment_manifest=env_manifest,
         )
         return cls(tasks_dir=tasks_dir, jobs_dir=jobs_dir, config=config, **kwargs)
@@ -602,6 +606,7 @@ class Evaluation:
                 else None
             ),
             self_gen_no_internet=bool(raw.get("self_gen_no_internet", False)),
+            usage_tracking=UsageTrackingConfig.from_mapping(raw),
         )
         return cls(tasks_dir=tasks_dir, jobs_dir=jobs_dir, config=config, **kwargs)
 
@@ -779,6 +784,7 @@ class Evaluation:
             self_gen_no_internet=cfg.self_gen_no_internet,
             export_generated_skills_to=export_to,
             source_provenance=task_source_provenance(cfg.source_provenance, task_dir),
+            usage_tracking=cfg.usage_tracking,
         )
         if cfg.skill_mode == "self-gen":
             from benchflow.self_gen import run_self_gen
@@ -819,6 +825,7 @@ class Evaluation:
             skill_creator_dir=cfg.skill_creator_dir,
             self_gen_no_internet=cfg.self_gen_no_internet,
             source_provenance=task_source_provenance(cfg.source_provenance, task_dir),
+            usage_tracking=cfg.usage_tracking,
         )
 
     async def _run_task(self, task_dir: Path) -> RunResult:
@@ -875,6 +882,27 @@ class Evaluation:
         logger.info(f"[{status}] {td.name} (tools={result.n_tool_calls}){err}")
         if self._on_result:
             self._on_result(td.name, result)
+
+    def _preflight_usage_tracking(self) -> None:
+        from benchflow.providers.runtime import validate_usage_proxy_preconditions
+
+        cfg = self._config
+        usage = cfg.usage_tracking.with_env_defaults()
+        usage.validate_parallelism(concurrency=cfg.concurrency)
+        failure = validate_usage_proxy_preconditions(
+            usage,
+            environment=cfg.environment,
+            model=cfg.model,
+        )
+        if failure is None:
+            return
+        if usage.mode == "required":
+            raise RuntimeError(failure.required_message)
+        logger.log(
+            failure.log_level,
+            "%s Results will report usage_source='unavailable'.",
+            failure.skip_message,
+        )
 
     async def _run_parallel_independent(
         self, remaining: list[Path]
@@ -1129,6 +1157,8 @@ class Evaluation:
             )
         completed = self._get_completed_tasks()
         remaining = [d for d in task_dirs if d.name not in completed]
+        if remaining:
+            self._preflight_usage_tracking()
 
         # A resumed sequential-shared job rebuilds the LearnerStore from the
         # per-job snapshot under ``<job>/learner_store.json``. If that file
@@ -1271,6 +1301,7 @@ class Evaluation:
             "environment": cfg.environment,
             "concurrency": cfg.concurrency,
             "agent_idle_timeout_sec": cfg.agent_idle_timeout,
+            "usage_tracking": cfg.usage_tracking.with_env_defaults().to_config_artifact(),
             "total": job_result.total,
             "passed": audit_counts["passed"],
             "failed": audit_counts["failed"],

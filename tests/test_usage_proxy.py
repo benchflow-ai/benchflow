@@ -176,8 +176,7 @@ def test_extract_usage_with_anthropic_exchanges():
 
     runtime = ProviderRuntime(
         kind="usage-proxy",
-        host="host.docker.internal",
-        port=12345,
+        agent_base_url="http://host.docker.internal:12345",
         backend_model="claude-haiku-4-5-20251001",
         server=_ProxyLike(
             _trajectory(
@@ -220,8 +219,7 @@ def test_extract_usage_with_openai_exchanges():
 
     runtime = ProviderRuntime(
         kind="usage-proxy",
-        host="host.docker.internal",
-        port=12345,
+        agent_base_url="http://host.docker.internal:12345",
         backend_model="gpt-4.1-mini",
         server=_ProxyLike(
             _trajectory(
@@ -265,8 +263,7 @@ def test_extract_usage_with_gemini_exchanges():
 
     runtime = ProviderRuntime(
         kind="usage-proxy",
-        host="host.docker.internal",
-        port=12345,
+        agent_base_url="http://host.docker.internal:12345",
         backend_model="gemini-2.5-flash",
         server=_ProxyLike(
             _trajectory(
@@ -343,7 +340,7 @@ async def test_start_proxy_rewrites_env(monkeypatch):
     assert runtime is not None
     assert runtime.server.target == "https://api.anthropic.com"
     assert runtime.server.started is True
-    assert runtime.host == "host.docker.internal"
+    assert runtime.base_url == "http://host.docker.internal:32124"
     assert updated["BENCHFLOW_PROVIDER_BASE_URL"] == "http://host.docker.internal:32124"
     assert updated["ANTHROPIC_BASE_URL"] == "http://host.docker.internal:32124"
 
@@ -599,7 +596,9 @@ async def test_daytona_runtime_retired_when_environment_unreachable(monkeypatch)
             stopped.append(True)
 
     stale = ProviderRuntime(
-        kind="usage-proxy", host="127.0.0.1", port=999, server=_StaleServer()
+        kind="usage-proxy",
+        agent_base_url="http://127.0.0.1:999",
+        server=_StaleServer(),
     )
 
     monkeypatch.setattr(
@@ -691,8 +690,7 @@ def test_total_tokens_is_sum_of_parts():
 
     runtime = ProviderRuntime(
         kind="usage-proxy",
-        host="host.docker.internal",
-        port=12345,
+        agent_base_url="http://host.docker.internal:12345",
         backend_model="unknown-model",
         server=_ProxyLike(
             _trajectory(
@@ -810,8 +808,7 @@ async def test_rollout_cleanup_extracts_usage_and_writes_llm_trajectory(tmp_path
     rollout._environment = None
     rollout._usage_runtime = ProviderRuntime(
         kind="usage-proxy",
-        host="host.docker.internal",
-        port=32124,
+        agent_base_url="http://host.docker.internal:32124",
         backend_model="claude-haiku-4-5-20251001",
         server=server,
     )
@@ -860,8 +857,7 @@ def test_extract_usage_prefers_captured_model_over_backend_model():
     # backend_model is stale (haiku) but the exchange reports gpt-4.1-mini.
     runtime = ProviderRuntime(
         kind="usage-proxy",
-        host="host.docker.internal",
-        port=12345,
+        agent_base_url="http://host.docker.internal:12345",
         backend_model="claude-haiku-4-5-20251001",
         server=_ProxyLike(
             _trajectory(

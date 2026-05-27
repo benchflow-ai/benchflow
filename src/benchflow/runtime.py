@@ -207,6 +207,7 @@ class RuntimeConfig:
     context_root: str | Path | None = None
     pre_agent_hooks: list | None = None
     sandbox_locked_paths: list[str] | None = None
+    usage_tracking: Any = None
 
 
 @dataclass
@@ -355,6 +356,7 @@ class Runtime:
             model=self.agent.model,
             agent_env=self.agent.env,
             skills_dir=config.skills_dir,
+            usage_tracking=config.usage_tracking,
         )
 
         rollout = await Rollout.create(trial_config)
@@ -451,6 +453,7 @@ async def run(
             skills_dir=rc.skills_dir,
             agent=subject,
             model=model,
+            usage_tracking=rc.usage_tracking,
         )
         rollout = await Rollout.create(rollout_config)
         return await rollout.run()

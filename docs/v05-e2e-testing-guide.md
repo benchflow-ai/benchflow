@@ -25,15 +25,18 @@ All commands below assume you are in the repo root.
 > The examples below use `weighted-gdp-calc` (fast, ~5 tool calls) as the
 > default lightweight task. Swap in any task name from `$TASKS/`.
 
-> **Usage telemetry caveat (Daytona / Modal):** For remote sandboxes
-> (`--sandbox daytona`, `--sandbox modal`) the agent runs on a remote host
-> that cannot reach the host-side usage proxy, so token/cost telemetry is
-> intentionally unavailable. You will see a log line that begins with
-> `Skipping host-side usage telemetry proxy:` and the resulting
-> `result.json` will report `agent_result.usage_source == "unavailable"`
-> with `null` token/cost fields. This is not an infra failure — confirm by
-> checking `summary.json.telemetry_coverage`. Local sandboxes (e.g.
-> `--sandbox docker`) do populate usage telemetry.
+> **Usage telemetry caveat (Daytona / Modal):** Remote sandboxes run the agent
+> on a host that cannot reach BenchFlow's host-bound usage proxy. Default
+> `--usage-tracking auto` therefore records `agent_result.usage_source ==
+> "unavailable"` unless you configure an external tunnel/ingress with
+> `--usage-proxy-url` and `--usage-proxy-port`. Official batch runs that need
+> token/cost telemetry should use `--usage-tracking required` so the run fails
+> before the agent starts if the external endpoint is missing or unhealthy. The
+> fixed-port tunnel mode supports one rollout per BenchFlow process; use
+> `--concurrency 1`, or run multiple jobs with separate ports/tunnels. This
+> constraint is specific to metered external-tunnel mode; Daytona batches that do
+> not require usage telemetry can still run with higher concurrency. Local
+> sandboxes (e.g. `--sandbox docker`) populate usage telemetry without a tunnel.
 
 ---
 
@@ -512,5 +515,3 @@ types, categories) that the §4–§7 live recipes only partially cover.
   via the source-side `TransportClosedDiagnostic` emission, but there is
   no live recipe for them. Add one via a fake transport fixture if you
   need true end-to-end coverage.
-
-
