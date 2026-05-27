@@ -1,10 +1,13 @@
 # Running Adapted Benchmarks
 
-How to run benchmarks that have been converted to BenchFlow format.
+How to run benchmarks that have been converted into Harbor-format tasks for BenchFlow.
 
 BenchFlow ships with adapted benchmarks under `benchmarks/<name>/`. Each benchmark
 includes a converter, parity tests, metadata, and one or more YAML job configs.
 This guide covers how to run them — from a single task to a full evaluation sweep.
+
+> [!NOTE]
+> BenchFlow is providing first-party support for PrimeIntellect Verifiers and OpenReward Standard.
 
 > **Working inside the benchflow repo?** Use `uv run bench` instead of `bench`
 > to run the CLI from your local editable install.
@@ -20,7 +23,7 @@ This guide covers how to run them — from a single task to a full evaluation sw
 | [SkillsBench](https://github.com/benchflow-ai/skillsbench) | 94+ | Unit tests | `--source-repo benchflow-ai/skillsbench --source-path tasks` |
 
 Each adapted benchmark includes:
-- **`benchflow.py`** — converter: raw benchmark → BenchFlow task format
+- **`benchflow.py`** — converter for the raw benchmark source
 - **`benchmark.yaml`** — metadata descriptor (task count, categories, verification method, parity results)
 - **`<name>-*.yaml`** — job configs for different agents/models
 - **`parity_test.py`** — parity validation suite
@@ -513,6 +516,6 @@ All fields from [CLI reference](./reference/cli.md#yaml-config-format) apply:
 ## Adding a new benchmark
 
 See the [Benchmark Conversion Guide](../benchmarks/CONVERT.md) for the 9-step
-process to convert a new benchmark into BenchFlow format. Harvey LAB
+process to convert a new benchmark into Harbor-format tasks for BenchFlow. Harvey LAB
 (`benchmarks/harvey-lab/`) and ProgramBench (`benchmarks/programbench/`) are
 reference implementations.

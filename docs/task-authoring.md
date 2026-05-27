@@ -5,6 +5,11 @@ A BenchFlow task packages an instruction, a sandboxed environment, and a verifie
 
 ## Directory layout
 
+> [!NOTE]
+> BenchFlow will provide first-party support for Kaggle, Verifiers, and OpenReward Standard.
+
+You can create [Harbor-format tasks](https://www.harborframework.com/docs/tasks) in BenchFlow with a `task.toml` config file, separate `instruction.md`, sandbox assets under `environment/`, verifier files under `tests/`, and an optional `solution/` oracle.
+
 ```
 my-task/
 ├── task.toml              # timeouts, resources, metadata
