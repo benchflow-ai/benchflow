@@ -1,7 +1,9 @@
 """Tests for ACP client ↔ mock agent — Step 10."""
 
 import asyncio
+import json
 import sys
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -950,6 +952,32 @@ class TestSandboxStartupDiagnostics:
         rj = __import__("json").loads((tmp_path / "result.json").read_text())
         assert rj["sandbox_startup_info"] is None
         assert result.rewards == {"reward": 1.0}
+
+    def test_cleanup_error_in_result_json(self, tmp_path: Path) -> None:
+        """Guards PR #569's cleanup telemetry so failed teardown cannot be
+        mistaken for a healthy reusable experiment slot."""
+        from benchflow.rollout import _build_rollout_result
+
+        _build_rollout_result(
+            tmp_path,
+            task_name="test-task",
+            rollout_name="run-1",
+            agent="oracle",
+            agent_name="oracle",
+            model=None,
+            n_tool_calls=0,
+            prompts=["solve"],
+            error=None,
+            verifier_error=None,
+            cleanup_error="sandbox delete failed",
+            trajectory=[],
+            partial_trajectory=False,
+            rewards={"reward": 1.0},
+            started_at=datetime.now(),
+            timing={"agent": 0.0},
+        )
+        rj = json.loads((tmp_path / "result.json").read_text())
+        assert rj["cleanup_error"] == "sandbox delete failed"
 
     def test_create_sandbox_retry_count_is_three(self) -> None:
         """Guards ENG-147: _create_sandbox retries 3 times, not 2.

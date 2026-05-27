@@ -457,6 +457,7 @@ def _build_rollout_result(
     trajectory: list[dict],
     partial_trajectory: bool,
     export_error: str | None = None,
+    cleanup_error: str | None = None,
     trajectory_source: TrajectorySource | None = None,
     rewards: dict | None,
     started_at: datetime,
@@ -563,6 +564,7 @@ def _build_rollout_result(
                 "verifier_error": result.verifier_error,
                 "verifier_error_category": result.verifier_error_category,
                 "export_error": result.export_error,
+                "cleanup_error": cleanup_error,
                 **diagnostics.to_result_fields(),
                 "partial_trajectory": result.partial_trajectory,
                 "trajectory_source": result.trajectory_source,
@@ -1099,6 +1101,7 @@ class Rollout:
         # an export-time infra failure ("connection lost") as the agent's own
         # infra_failure category in dashboards.
         self._export_error: str | None = None
+        self._cleanup_error: str | None = None
         # Single bag for the four parallel diagnostic fields the old code
         # carried as separate attrs (issue #503). Each callsite that used
         # to assign to one of those slots now calls ``self._diagnostics.set(...)``
@@ -1899,6 +1902,7 @@ class Rollout:
                 try:
                     await self._env.stop(delete=True)
                 except Exception as e:
+                    self._cleanup_error = str(e)
                     logger.warning(f"Cleanup failed: {e}")
 
         if hasattr(self, "_task_tmp") and self._task_tmp:
@@ -2478,6 +2482,7 @@ class Rollout:
             error=self._error,
             verifier_error=self._verifier_error,
             export_error=self._export_error,
+            cleanup_error=self._cleanup_error,
             trajectory=self._trajectory,
             partial_trajectory=self._partial_trajectory,
             trajectory_source=self._trajectory_source,
