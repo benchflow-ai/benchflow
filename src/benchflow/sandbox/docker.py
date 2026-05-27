@@ -396,8 +396,17 @@ class DockerSandbox(BaseSandbox):
         )
 
     async def stop(self, delete: bool) -> None:
+        # Bounded chown: a hung agent container will make `docker exec` block
+        # forever. We don't need the chown to succeed for correctness — it just
+        # makes host-side log reading nicer. Time out fast and continue to the
+        # actual teardown.
         try:
-            await self._chown_to_host_user(str(SandboxPaths.logs_dir), recursive=True)
+            await asyncio.wait_for(
+                self._chown_to_host_user(str(SandboxPaths.logs_dir), recursive=True),
+                timeout=30,
+            )
+        except (TimeoutError, asyncio.TimeoutError):
+            self.logger.warning("Chown logs directory timed out; continuing teardown.")
         except Exception as e:
             self.logger.warning(f"Failed to chown logs directory: {e}")
 
@@ -406,23 +415,84 @@ class DockerSandbox(BaseSandbox):
                 "Both `keep_containers` and `--delete` option are set. "
                 "keep_containers takes precedence."
             )
-        if self._keep_containers:
-            try:
-                await self._run_docker_compose_command(["stop"])
-            except Exception as e:
-                self.logger.warning(f"Docker compose stop failed: {e}")
-        elif delete:
-            try:
+        # Pass `-t 5` so unresponsive containers are SIGKILLed quickly rather
+        # than waiting the default 10s per container, and wrap each call in a
+        # hard 90s deadline. If the daemon is wedged we fall through to a
+        # force-kill by compose project label so the rollout's gather() can
+        # advance instead of stalling the entire batch.
+        try:
+            if self._keep_containers:
                 await self._run_docker_compose_command(
-                    ["down", "--rmi", "all", "--volumes", "--remove-orphans"]
+                    ["stop", "-t", "5"], timeout_sec=90
                 )
-            except Exception as e:
-                self.logger.warning(f"Docker compose down failed: {e}")
-        else:
-            try:
-                await self._run_docker_compose_command(["down"])
-            except Exception as e:
-                self.logger.warning(f"Docker compose down failed: {e}")
+            elif delete:
+                await self._run_docker_compose_command(
+                    [
+                        "down",
+                        "--rmi",
+                        "all",
+                        "--volumes",
+                        "--remove-orphans",
+                        "-t",
+                        "5",
+                    ],
+                    timeout_sec=120,
+                )
+            else:
+                await self._run_docker_compose_command(
+                    ["down", "-t", "5"], timeout_sec=90
+                )
+        except Exception as e:
+            self.logger.warning(
+                f"Docker compose down hung/failed ({e}); force-killing project."
+            )
+            await self._force_kill_project()
+
+    async def _force_kill_project(self) -> None:
+        """Last-resort cleanup when `compose down` hangs or fails.
+
+        Lists containers by ``com.docker.compose.project`` label and `docker
+        rm -f`s them, then prunes the matching network. We don't propagate
+        errors — by the time we're here, the batch just needs to move on.
+        """
+        project = _sanitize_docker_compose_project_name(self.session_id)
+        label = f"label=com.docker.compose.project={project}"
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "docker",
+                "ps",
+                "-aq",
+                "--filter",
+                label,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+            cids = stdout.decode().split()
+            for cid in cids:
+                rm_proc = await asyncio.create_subprocess_exec(
+                    "docker",
+                    "rm",
+                    "-f",
+                    "-v",
+                    cid,
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+                await asyncio.wait_for(rm_proc.wait(), timeout=10)
+            net_proc = await asyncio.create_subprocess_exec(
+                "docker",
+                "network",
+                "prune",
+                "-f",
+                "--filter",
+                label,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await asyncio.wait_for(net_proc.wait(), timeout=10)
+        except Exception as e:
+            self.logger.warning(f"Force-kill of compose project {project} failed: {e}")
 
     async def upload_file(self, source_path: Path | str, target_path: str) -> None:
         target_parent = str(Path(target_path).parent)
