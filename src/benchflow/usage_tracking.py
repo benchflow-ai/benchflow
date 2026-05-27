@@ -137,16 +137,12 @@ class UsageTrackingConfig:
         )
 
     def validate_parallelism(self, *, concurrency: int, worker_count: int = 1) -> None:
-        if (
-            self.mode != "off"
-            and self.uses_external_proxy
-            and max(concurrency, worker_count) > 1
-        ):
+        if self.mode != "off" and self.uses_external_proxy and worker_count > 1:
             raise ValueError(
-                "External usage proxy tracking currently supports only one "
-                "rollout per fixed local proxy port. Use --concurrency 1 and "
-                "one worker, or run separate jobs with separate "
-                f"{USAGE_PROXY_PORT_ENV} values/tunnels."
+                "External usage proxy tracking supports concurrent rollouts "
+                "within one BenchFlow process, but sharded workers cannot share "
+                "one fixed local proxy port. Use one worker, or run separate "
+                f"jobs with separate {USAGE_PROXY_PORT_ENV} values/tunnels."
             )
 
     @classmethod

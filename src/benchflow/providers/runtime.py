@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import secrets
@@ -46,6 +47,79 @@ class ProviderRuntime:
     @property
     def base_url(self) -> str:
         return self.agent_base_url
+
+
+@dataclass
+class _ExternalUsageProxyRoute:
+    """Per-rollout route registered on a shared external usage proxy listener."""
+
+    proxy: TrajectoryProxy
+    path_prefix: str
+    target: str
+    trajectory: Any
+    pool_key: tuple[str, int]
+    stopped: bool = False
+
+    @property
+    def port(self) -> int:
+        return self.proxy.port
+
+    async def stop(self) -> None:
+        lock = _external_usage_proxy_lock(self.pool_key)
+        async with lock:
+            if self.stopped:
+                return
+            self.proxy.unregister_route(self.path_prefix)
+            self.stopped = True
+            if not self.proxy.has_routes:
+                await self.proxy.stop()
+                _EXTERNAL_USAGE_PROXIES.pop(self.pool_key, None)
+
+
+_EXTERNAL_USAGE_PROXIES: dict[tuple[str, int], TrajectoryProxy] = {}
+_EXTERNAL_USAGE_PROXY_LOCKS: dict[tuple[str, int], asyncio.Lock] = {}
+
+
+def _external_usage_proxy_lock(pool_key: tuple[str, int]) -> asyncio.Lock:
+    lock = _EXTERNAL_USAGE_PROXY_LOCKS.get(pool_key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _EXTERNAL_USAGE_PROXY_LOCKS[pool_key] = lock
+    return lock
+
+
+async def _register_external_usage_proxy_route(
+    *,
+    target: str,
+    session_id: str,
+    agent: str,
+    bind_host: str,
+    bind_port: int,
+    prompt_cache_retention: str | None,
+    path_prefix: str,
+) -> _ExternalUsageProxyRoute:
+    pool_key = (bind_host, bind_port)
+    lock = _external_usage_proxy_lock(pool_key)
+    async with lock:
+        proxy = _EXTERNAL_USAGE_PROXIES.get(pool_key)
+        if proxy is None:
+            proxy = TrajectoryProxy(target=None, host=bind_host, port=bind_port)
+            await proxy.start()
+            _EXTERNAL_USAGE_PROXIES[pool_key] = proxy
+        trajectory = proxy.register_route(
+            target=target,
+            session_id=session_id,
+            agent_name=agent,
+            prompt_cache_retention=prompt_cache_retention,
+            path_prefix=path_prefix,
+        )
+    return _ExternalUsageProxyRoute(
+        proxy=proxy,
+        path_prefix=path_prefix,
+        target=target,
+        trajectory=trajectory,
+        pool_key=pool_key,
+    )
 
 
 def needs_provider_runtime(model: str | None) -> bool:
@@ -591,18 +665,26 @@ async def ensure_usage_proxy_runtime(
         path_prefix = (
             _usage_proxy_path_prefix() if usage_cfg.uses_external_proxy else ""
         )
-        proxy_kwargs: dict[str, Any] = {
-            "target": target,
-            "session_id": session_id,
-            "agent_name": agent,
-            "host": bind_host,
-            "port": bind_port,
-            "prompt_cache_retention": prompt_cache_retention,
-        }
-        if path_prefix:
-            proxy_kwargs["path_prefix"] = path_prefix
-        server = TrajectoryProxy(**proxy_kwargs)
-        await server.start()
+        if usage_cfg.uses_external_proxy:
+            server = await _register_external_usage_proxy_route(
+                target=target,
+                session_id=session_id,
+                agent=agent,
+                bind_host=bind_host,
+                bind_port=bind_port,
+                prompt_cache_retention=prompt_cache_retention,
+                path_prefix=path_prefix,
+            )
+        else:
+            server = TrajectoryProxy(
+                target=target,
+                session_id=session_id,
+                agent_name=agent,
+                host=bind_host,
+                port=bind_port,
+                prompt_cache_retention=prompt_cache_retention,
+            )
+            await server.start()
         agent_base_url = _agent_usage_proxy_base_url(
             environment=environment,
             port=server.port,

@@ -2,9 +2,37 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
+import socket
+
+import httpx
 import pytest
 
 from benchflow.trajectories.types import Trajectory
+
+
+def _unused_local_port() -> int:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+async def _read_http_request(
+    reader: asyncio.StreamReader,
+) -> tuple[str, str, bytes]:
+    request_line = (await reader.readline()).decode()
+    method, path, _version = request_line.strip().split(" ", 2)
+    headers: dict[str, str] = {}
+    while True:
+        line = await reader.readline()
+        if line in (b"\r\n", b"\n", b""):
+            break
+        key, _, value = line.decode().partition(":")
+        headers[key.lower().strip()] = value.strip()
+    content_length = int(headers.get("content-length", "0"))
+    body = await reader.readexactly(content_length) if content_length else b""
+    return method, path, body
 
 
 @pytest.mark.asyncio
@@ -32,13 +60,16 @@ async def test_daytona_required_usage_tracking_requires_external_endpoint():
 async def test_daytona_external_usage_proxy_advertises_tunnel_url(monkeypatch):
     """Guards PR #568: remote tracking must not inject local-only addresses."""
     from benchflow.providers import runtime as provider_runtime_mod
-    from benchflow.providers.runtime import ensure_usage_proxy_runtime
+    from benchflow.providers.runtime import (
+        ensure_usage_proxy_runtime,
+        stop_provider_runtime,
+    )
     from benchflow.usage_tracking import UsageTrackingConfig
 
     class FakeTrajectoryProxy:
         def __init__(
             self,
-            target,
+            target=None,
             session_id="",
             agent_name="",
             host="127.0.0.1",
@@ -54,6 +85,7 @@ async def test_daytona_external_usage_proxy_advertises_tunnel_url(monkeypatch):
             self.prompt_cache_retention = prompt_cache_retention
             self.path_prefix = path_prefix
             self.trajectory = Trajectory(session_id=session_id, agent_name=agent_name)
+            self.routes = {}
             self.started = False
 
         async def start(self):
@@ -61,6 +93,31 @@ async def test_daytona_external_usage_proxy_advertises_tunnel_url(monkeypatch):
 
         async def stop(self):
             return None
+
+        @property
+        def has_routes(self):
+            return bool(self.routes)
+
+        def register_route(
+            self,
+            *,
+            target,
+            session_id="",
+            agent_name="",
+            prompt_cache_retention=None,
+            path_prefix="",
+        ):
+            self.target = target
+            self.session_id = session_id
+            self.agent_name = agent_name
+            self.prompt_cache_retention = prompt_cache_retention
+            self.path_prefix = path_prefix
+            self.trajectory = Trajectory(session_id=session_id, agent_name=agent_name)
+            self.routes[path_prefix] = self.trajectory
+            return self.trajectory
+
+        def unregister_route(self, path_prefix):
+            self.routes.pop(path_prefix, None)
 
     async def reachable(_url):
         return True
@@ -88,13 +145,130 @@ async def test_daytona_external_usage_proxy_advertises_tunnel_url(monkeypatch):
     )
 
     assert runtime is not None
-    assert runtime.server.started is True
-    assert runtime.server.host == "127.0.0.1"
+    assert runtime.server.proxy.started is True
+    assert runtime.server.proxy.host == "127.0.0.1"
     assert runtime.server.port == 18081
     assert runtime.server.path_prefix.startswith("/__benchflow/")
     assert runtime.base_url.startswith("https://usage-proxy.example.test/__benchflow/")
     assert updated["LLM_BASE_URL"] == runtime.base_url
     assert updated["BENCHFLOW_PROVIDER_BASE_URL"] == runtime.base_url
+    await stop_provider_runtime(runtime)
+
+
+@pytest.mark.asyncio
+async def test_external_usage_proxy_multiplexes_concurrent_rollouts_on_one_port():
+    """Guards PR #568 follow-up: fixed-port Daytona tracking multiplexes rollouts."""
+    from benchflow.providers.runtime import (
+        ensure_usage_proxy_runtime,
+        stop_provider_runtime,
+    )
+    from benchflow.usage_tracking import UsageTrackingConfig
+
+    upstream_requests: list[tuple[str, str, bytes]] = []
+
+    async def upstream_handler(
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        method, path, body = await _read_http_request(reader)
+        upstream_requests.append((method, path, body))
+        response_body = json.dumps(
+            {
+                "id": f"chatcmpl-{len(upstream_requests)}",
+                "model": "gpt-4.1-mini",
+                "usage": {
+                    "prompt_tokens": 3,
+                    "completion_tokens": 5,
+                    "total_tokens": 8,
+                },
+            },
+            separators=(",", ":"),
+        ).encode()
+        writer.write(
+            b"HTTP/1.1 200 OK\r\n"
+            b"content-type: application/json\r\n"
+            + f"content-length: {len(response_body)}\r\n\r\n".encode()
+            + response_body
+        )
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+
+    upstream = await asyncio.start_server(upstream_handler, "127.0.0.1", 0)
+    upstream_port = upstream.sockets[0].getsockname()[1]
+    proxy_port = _unused_local_port()
+    usage_tracking = UsageTrackingConfig(
+        mode="required",
+        advertised_base_url=f"http://127.0.0.1:{proxy_port}",
+        port=proxy_port,
+    )
+    runtime1 = None
+    runtime2 = None
+
+    try:
+        _env1, runtime1 = await ensure_usage_proxy_runtime(
+            agent="openhands",
+            agent_env={
+                "LLM_BASE_URL": f"http://127.0.0.1:{upstream_port}",
+                "LLM_API_KEY": "sk-test",
+            },
+            model="gpt-4.1-mini",
+            runtime=None,
+            environment="daytona",
+            session_id="rollout-1",
+            usage_tracking=usage_tracking,
+        )
+        _env2, runtime2 = await ensure_usage_proxy_runtime(
+            agent="openhands",
+            agent_env={
+                "LLM_BASE_URL": f"http://127.0.0.1:{upstream_port}",
+                "LLM_API_KEY": "sk-test",
+            },
+            model="gpt-4.1-mini",
+            runtime=None,
+            environment="daytona",
+            session_id="rollout-2",
+            usage_tracking=usage_tracking,
+        )
+
+        assert runtime1 is not None
+        assert runtime2 is not None
+        assert runtime1.base_url != runtime2.base_url
+        assert runtime1.server.proxy is runtime2.server.proxy
+
+        async with httpx.AsyncClient() as client:
+            response1, response2 = await asyncio.gather(
+                client.post(
+                    f"{runtime1.base_url}/chat/completions",
+                    json={"model": "gpt-4.1-mini", "messages": []},
+                ),
+                client.post(
+                    f"{runtime2.base_url}/chat/completions",
+                    json={"model": "gpt-4.1-mini", "messages": []},
+                ),
+            )
+            assert response1.status_code == 200
+            assert response2.status_code == 200
+            assert len(runtime1.server.trajectory.exchanges) == 1
+            assert len(runtime2.server.trajectory.exchanges) == 1
+
+            await stop_provider_runtime(runtime1)
+            runtime1 = None
+
+            health = await client.get(f"{runtime2.base_url}/__benchflow_health")
+            assert health.status_code == 200
+
+        assert [request[1] for request in upstream_requests] == [
+            "/chat/completions",
+            "/chat/completions",
+        ]
+    finally:
+        if runtime1 is not None:
+            await stop_provider_runtime(runtime1)
+        if runtime2 is not None:
+            await stop_provider_runtime(runtime2)
+        upstream.close()
+        await upstream.wait_closed()
 
 
 def test_evaluation_yaml_loads_required_usage_tracking(tmp_path):
@@ -170,8 +344,8 @@ def test_evaluation_preflight_rejects_external_proxy_port_zero(tmp_path):
         evaluation._preflight_usage_tracking()
 
 
-def test_evaluation_preflight_rejects_external_proxy_concurrency(tmp_path):
-    """Guards PR #568: one fixed external proxy port cannot host concurrency."""
+def test_evaluation_preflight_allows_external_proxy_concurrency(tmp_path):
+    """Guards PR #568 follow-up: one fixed external proxy port hosts concurrent rollouts."""
     from benchflow.evaluation import Evaluation, EvaluationConfig
     from benchflow.usage_tracking import UsageTrackingConfig
 
@@ -179,7 +353,7 @@ def test_evaluation_preflight_rejects_external_proxy_concurrency(tmp_path):
         tasks_dir=tmp_path,
         jobs_dir=tmp_path / "jobs",
         config=EvaluationConfig(
-            concurrency=2,
+            concurrency=94,
             environment="daytona",
             usage_tracking=UsageTrackingConfig(
                 mode="required",
@@ -189,8 +363,7 @@ def test_evaluation_preflight_rejects_external_proxy_concurrency(tmp_path):
         ),
     )
 
-    with pytest.raises(ValueError, match="supports only one rollout"):
-        evaluation._preflight_usage_tracking()
+    evaluation._preflight_usage_tracking()
 
 
 def test_explicit_auto_usage_tracking_beats_env_default(monkeypatch):
@@ -293,7 +466,7 @@ def test_external_usage_tracking_rejects_multiple_shard_workers():
         port=18081,
     )
 
-    with pytest.raises(ValueError, match="supports only one rollout"):
+    with pytest.raises(ValueError, match="sharded workers cannot share"):
         config.validate_parallelism(concurrency=1, worker_count=2)
 
 

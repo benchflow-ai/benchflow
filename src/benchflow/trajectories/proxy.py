@@ -11,6 +11,7 @@ import json
 import logging
 import time
 import zlib
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -26,6 +27,13 @@ _RAW_REQ_TRUNCATE = 10000  # max chars for non-JSON request body capture
 _PROMPT_CACHE_RETENTION_VALUES = {"in_memory", "24h"}
 
 
+@dataclass
+class _ProxyRoute:
+    target: str
+    trajectory: Trajectory
+    prompt_cache_retention: str | None = None
+
+
 class TrajectoryProxy:
     """HTTP proxy that forwards LLM API requests and captures exchanges.
 
@@ -36,7 +44,7 @@ class TrajectoryProxy:
 
     def __init__(
         self,
-        target: str = "https://api.anthropic.com",
+        target: str | None = "https://api.anthropic.com",
         session_id: str = "",
         agent_name: str = "",
         host: str = "127.0.0.1",
@@ -44,25 +52,20 @@ class TrajectoryProxy:
         prompt_cache_retention: str | None = None,
         path_prefix: str = "",
     ):
-        if (
-            prompt_cache_retention is not None
-            and prompt_cache_retention not in _PROMPT_CACHE_RETENTION_VALUES
-        ):
-            raise ValueError(
-                "prompt_cache_retention must be one of: "
-                f"{', '.join(sorted(_PROMPT_CACHE_RETENTION_VALUES))}"
-            )
-        self._target = target.rstrip("/")
         self._host = host
         self._port = port
-        self._prompt_cache_retention = prompt_cache_retention
-        self._path_prefix = _normalize_path_prefix(path_prefix)
-        self._trajectory = Trajectory(
-            session_id=session_id,
-            agent_name=agent_name,
-        )
+        self._default_path_prefix = _normalize_path_prefix(path_prefix)
+        self._routes: dict[str, _ProxyRoute] = {}
         self._server: asyncio.Server | None = None
         self._client: httpx.AsyncClient | None = None
+        if target is not None:
+            self.register_route(
+                target=target,
+                session_id=session_id,
+                agent_name=agent_name,
+                prompt_cache_retention=prompt_cache_retention,
+                path_prefix=path_prefix,
+            )
 
     @property
     def port(self) -> int:
@@ -75,11 +78,58 @@ class TrajectoryProxy:
     @property
     def target(self) -> str:
         """Upstream URL this proxy forwards to (normalized, no trailing slash)."""
-        return self._target
+        route = self._routes.get(self._default_path_prefix)
+        if route is None:
+            raise RuntimeError("default proxy route is not registered")
+        return route.target
 
     @property
     def trajectory(self) -> Trajectory:
-        return self._trajectory
+        route = self._routes.get(self._default_path_prefix)
+        if route is None:
+            raise RuntimeError("default proxy route is not registered")
+        return route.trajectory
+
+    @property
+    def has_routes(self) -> bool:
+        return bool(self._routes)
+
+    def register_route(
+        self,
+        *,
+        target: str,
+        session_id: str = "",
+        agent_name: str = "",
+        prompt_cache_retention: str | None = None,
+        path_prefix: str = "",
+    ) -> Trajectory:
+        if (
+            prompt_cache_retention is not None
+            and prompt_cache_retention not in _PROMPT_CACHE_RETENTION_VALUES
+        ):
+            raise ValueError(
+                "prompt_cache_retention must be one of: "
+                f"{', '.join(sorted(_PROMPT_CACHE_RETENTION_VALUES))}"
+            )
+        normalized_prefix = _normalize_path_prefix(path_prefix)
+        if normalized_prefix in self._routes:
+            raise ValueError(f"proxy route already registered: {normalized_prefix!r}")
+        trajectory = Trajectory(
+            session_id=session_id,
+            agent_name=agent_name,
+        )
+        self._routes[normalized_prefix] = _ProxyRoute(
+            target=target.rstrip("/"),
+            trajectory=trajectory,
+            prompt_cache_retention=prompt_cache_retention,
+        )
+        return trajectory
+
+    def unregister_route(self, path_prefix: str) -> None:
+        normalized_prefix = _normalize_path_prefix(path_prefix)
+        route = self._routes.pop(normalized_prefix, None)
+        if route is not None:
+            route.trajectory.finished_at = datetime.now()
 
     async def start(self) -> None:
         logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -89,18 +139,20 @@ class TrajectoryProxy:
         )
         sock = self._server.sockets[0]
         self._port = sock.getsockname()[1]
-        logger.info(f"Trajectory proxy listening on {self.base_url} → {self._target}")
+        logger.info("Trajectory proxy listening on %s", self.base_url)
 
     async def stop(self) -> None:
-        self._trajectory.finished_at = datetime.now()
+        finished_at = datetime.now()
+        captured = 0
+        for route in self._routes.values():
+            route.trajectory.finished_at = finished_at
+            captured += len(route.trajectory.exchanges)
         if self._server:
             self._server.close()
             await self._server.wait_closed()
         if self._client:
             await self._client.aclose()
-        logger.info(
-            f"Proxy stopped. Captured {len(self._trajectory.exchanges)} exchanges."
-        )
+        logger.info("Proxy stopped. Captured %s exchanges.", captured)
 
     async def _handle_connection(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -133,7 +185,7 @@ class TrajectoryProxy:
                     body_bytes = await reader.readexactly(content_length)
 
                 try:
-                    path = _strip_path_prefix(path, self._path_prefix)
+                    route, path = self._route_for_path(path)
                 except ValueError:
                     await _write_json_response(
                         writer,
@@ -158,7 +210,7 @@ class TrajectoryProxy:
                     body_bytes=body_bytes,
                     headers=headers,
                     path=path,
-                    prompt_cache_retention=self._prompt_cache_retention,
+                    prompt_cache_retention=route.prompt_cache_retention,
                 )
 
                 req = LLMRequest(
@@ -171,7 +223,7 @@ class TrajectoryProxy:
                 is_streaming = body.get("stream", False) or _is_sse_request_path(path)
 
                 start_time = time.monotonic()
-                target_url = f"{self._target}{path}"
+                target_url = f"{route.target}{path}"
                 forward_headers = {
                     k: v
                     for k, v in headers.items()
@@ -181,6 +233,7 @@ class TrajectoryProxy:
                 try:
                     if is_streaming:
                         await self._handle_streaming(
+                            route,
                             req,
                             method,
                             target_url,
@@ -191,6 +244,7 @@ class TrajectoryProxy:
                         )
                     else:
                         await self._handle_regular(
+                            route,
                             req,
                             method,
                             target_url,
@@ -220,8 +274,25 @@ class TrajectoryProxy:
             except Exception:
                 logger.debug("Writer close failed during connection teardown")
 
+    def _route_for_path(self, path: str) -> tuple[_ProxyRoute, str]:
+        matches: list[tuple[str, _ProxyRoute]] = []
+        parsed = urlsplit(path)
+        request_path = parsed.path or "/"
+        for path_prefix, route in self._routes.items():
+            if (
+                not path_prefix
+                or request_path == path_prefix
+                or request_path.startswith(f"{path_prefix}/")
+            ):
+                matches.append((path_prefix, route))
+        if not matches:
+            raise ValueError("request path does not match any proxy route")
+        path_prefix, route = max(matches, key=lambda item: len(item[0]))
+        return route, _strip_path_prefix(path, path_prefix)
+
     async def _handle_regular(
         self,
+        route: _ProxyRoute,
         req: LLMRequest,
         method: str,
         url: str,
@@ -257,7 +328,7 @@ class TrajectoryProxy:
                 resp_body = {"raw": resp.text[:_RAW_RESP_TRUNCATE]}
 
         self._record_exchange(
-            req, resp.status_code, dict(resp.headers), resp_body, duration_ms
+            route, req, resp.status_code, dict(resp.headers), resp_body, duration_ms
         )
 
         resp_bytes = resp.content
@@ -272,6 +343,7 @@ class TrajectoryProxy:
 
     async def _handle_streaming(
         self,
+        route: _ProxyRoute,
         req: LLMRequest,
         method: str,
         url: str,
@@ -337,11 +409,12 @@ class TrajectoryProxy:
             logger.warning(f"SSE response reconstruction failed: {e}")
             resp_body = {}
         self._record_exchange(
-            req, resp.status_code, dict(resp.headers), resp_body, duration_ms
+            route, req, resp.status_code, dict(resp.headers), resp_body, duration_ms
         )
 
     def _record_exchange(
         self,
+        route: _ProxyRoute,
         req: LLMRequest,
         status_code: int,
         headers: dict,
@@ -354,7 +427,7 @@ class TrajectoryProxy:
             body=body,
         )
         exchange = LLMExchange(request=req, response=llm_resp, duration_ms=duration_ms)
-        self._trajectory.exchanges.append(exchange)
+        route.trajectory.exchanges.append(exchange)
         logger.debug(
             f"Captured: {req.method} {req.path} → {status_code} "
             f"({duration_ms:.0f}ms, stream={req.body.get('stream', False)})"

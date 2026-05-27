@@ -55,7 +55,7 @@ bench eval create \
   --usage-tracking required \
   --usage-proxy-url https://your-tunnel.example.com \
   --usage-proxy-port 18081 \
-  --concurrency 1 \
+  --concurrency 64 \
   --sandbox-setup-timeout 300
 
 # From local directory
@@ -122,11 +122,10 @@ When mounting skills, the recommended docs default is
 
 For official Daytona batch runs that must report provider token/cost telemetry,
 use `--usage-tracking required` with a tunnel or ingress URL pointing at the
-fixed `--usage-proxy-port`. The fixed-port tunnel mode supports one rollout per
-BenchFlow process; use `--concurrency 1`, or run multiple jobs with separate
-ports/tunnels. This limit applies only to metered external-tunnel mode; Daytona
-batch runs that do not require usage telemetry can still use higher concurrency.
-Without an external URL, Daytona runs continue in `auto` mode and record
+fixed `--usage-proxy-port`. A single BenchFlow process can multiplex concurrent
+rollouts over that fixed port using per-rollout path prefixes. Sharded worker
+processes still need separate ports/tunnels because each process owns its own
+listener. Without an external URL, Daytona runs continue in `auto` mode and record
 `usage_source=unavailable` because the remote sandbox cannot reach a host-bound
 proxy.
 

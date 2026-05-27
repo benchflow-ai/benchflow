@@ -32,10 +32,9 @@ All commands below assume you are in the repo root.
 > `--usage-proxy-url` and `--usage-proxy-port`. Official batch runs that need
 > token/cost telemetry should use `--usage-tracking required` so the run fails
 > before the agent starts if the external endpoint is missing or unhealthy. The
-> fixed-port tunnel mode supports one rollout per BenchFlow process; use
-> `--concurrency 1`, or run multiple jobs with separate ports/tunnels. This
-> constraint is specific to metered external-tunnel mode; Daytona batches that do
-> not require usage telemetry can still run with higher concurrency. Local
+> fixed-port tunnel mode supports concurrent rollouts in one BenchFlow process
+> by assigning each rollout a secret path prefix. Sharded worker processes still
+> need separate ports/tunnels because each process owns its own listener. Local
 > sandboxes (e.g. `--sandbox docker`) populate usage telemetry without a tunnel.
 
 ---
