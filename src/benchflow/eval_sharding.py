@@ -103,7 +103,7 @@ def _config_payload(
     shard: EvalShard,
     environment_manifest_path: Path | None,
 ) -> dict[str, Any]:
-    return {
+    payload = {
         "agent": config.agent,
         "model": config.model,
         "environment": config.environment,
@@ -128,6 +128,8 @@ def _config_payload(
             str(environment_manifest_path) if environment_manifest_path else None
         ),
     }
+    payload.update(config.usage_tracking.to_mapping())
+    return payload
 
 
 def _plan_payload(plan: EvalShardPlan) -> dict[str, Any]:
@@ -279,6 +281,10 @@ async def run_sharded_evaluation(
         task_names,
         total_concurrency=config.concurrency,
         worker_concurrency=worker_concurrency,
+    )
+    config.usage_tracking.with_env_defaults().validate_parallelism(
+        concurrency=plan.total_concurrency,
+        worker_count=plan.worker_count,
     )
     if not plan.shards:
         from benchflow.evaluation import EmptyTaskSelectionError

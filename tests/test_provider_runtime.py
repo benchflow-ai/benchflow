@@ -92,8 +92,7 @@ class TestBedrockProxyRuntime:
         )
 
         assert runtime is not None
-        assert runtime.host == "host.docker.internal"
-        assert runtime.port == 32123
+        assert runtime.base_url == "http://host.docker.internal:32123"
         assert runtime.backend_model == "openai.gpt-oss-20b-1:0"
         assert (
             updated["BENCHFLOW_PROVIDER_BASE_URL"]
@@ -200,7 +199,8 @@ class TestBedrockProxyRuntime:
     @pytest.mark.asyncio
     async def test_reuses_existing_runtime(self):
         runtime = ProviderRuntime(
-            kind="aws-bedrock", host="host.docker.internal", port=8099
+            kind="aws-bedrock",
+            agent_base_url="http://host.docker.internal:8099",
         )
         updated, returned = await ensure_bedrock_proxy_runtime(
             agent="codex-acp",
@@ -217,8 +217,7 @@ class TestBedrockProxyRuntime:
         server = AsyncMock()
         runtime = ProviderRuntime(
             kind="aws-bedrock",
-            host="host.docker.internal",
-            port=8099,
+            agent_base_url="http://host.docker.internal:8099",
             server=server,
         )
         await stop_provider_runtime(runtime)
@@ -279,8 +278,7 @@ class TestBedrockProxyRemoteSandbox:
         server = AsyncMock()
         runtime = ProviderRuntime(
             kind="aws-bedrock",
-            host="host.docker.internal",
-            port=8099,
+            agent_base_url="http://host.docker.internal:8099",
             server=server,
         )
         with pytest.raises(RuntimeError, match="not supported on the"):

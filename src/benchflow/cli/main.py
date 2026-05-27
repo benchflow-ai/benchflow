@@ -21,6 +21,7 @@ from benchflow._utils.config import (
 from benchflow.agents.registry import parse_agent_spec
 from benchflow.cli.trace_import import register_tasks_generate
 from benchflow.evaluation import DEFAULT_AGENT, effective_model
+from benchflow.usage_tracking import UsageTrackingConfig
 
 # Show progress messages (logger.info) from benchflow internals by default.
 logging.basicConfig(
@@ -1061,6 +1062,34 @@ def eval_create(
         str | None,
         typer.Option("--sandbox", help="Sandbox: docker, daytona, or modal"),
     ] = None,
+    usage_tracking: Annotated[
+        str | None,
+        typer.Option(
+            "--usage-tracking",
+            help="Token usage tracking policy: auto, required, or off",
+        ),
+    ] = None,
+    usage_proxy_url: Annotated[
+        str | None,
+        typer.Option(
+            "--usage-proxy-url",
+            help="Externally reachable base URL for remote sandbox usage tracking",
+        ),
+    ] = None,
+    usage_proxy_bind_host: Annotated[
+        str | None,
+        typer.Option(
+            "--usage-proxy-bind-host",
+            help="Local interface for the usage proxy to bind",
+        ),
+    ] = None,
+    usage_proxy_port: Annotated[
+        int | None,
+        typer.Option(
+            "--usage-proxy-port",
+            help="Fixed local port for externally tunneled usage tracking",
+        ),
+    ] = None,
     environment_manifest: Annotated[
         Path | None,
         typer.Option(
@@ -1209,6 +1238,25 @@ def eval_create(
     eval_environment = environment or "docker"
     sandbox_user = normalize_sandbox_user(sandbox_user)
     eval_concurrency = concurrency if concurrency is not None else 4
+    usage_tracking_overridden = any(
+        value is not None
+        for value in (
+            usage_tracking,
+            usage_proxy_url,
+            usage_proxy_bind_host,
+            usage_proxy_port,
+        )
+    )
+    try:
+        eval_usage_tracking = UsageTrackingConfig(
+            mode=usage_tracking,
+            advertised_base_url=usage_proxy_url,
+            bind_host=usage_proxy_bind_host,
+            port=usage_proxy_port,
+        )
+    except (TypeError, ValueError) as exc:
+        console.print(f"[red]Invalid usage tracking config: {exc}[/red]")
+        raise typer.Exit(1) from None
     try:
         eval_agent_idle_timeout = normalize_agent_idle_timeout(
             agent_idle_timeout
@@ -1302,6 +1350,10 @@ def eval_create(
             j._config.concurrency = concurrency
         if agent_idle_timeout is not None:
             j._config.agent_idle_timeout = eval_agent_idle_timeout
+        if usage_tracking_overridden:
+            j._config.usage_tracking = j._config.usage_tracking.overlay(
+                eval_usage_tracking
+            )
         if include_tasks:
             j._config.include_tasks = include_tasks
         if exclude_tasks:
@@ -1313,7 +1365,7 @@ def eval_create(
             j._config.environment_manifest = eval_env_manifest
         try:
             result = asyncio.run(j.run())
-        except EmptyTaskSelectionError as e:
+        except (EmptyTaskSelectionError, ValueError) as e:
             console.print(f"[red]{e}[/red]")
             raise typer.Exit(1) from None
         console.print(
@@ -1348,6 +1400,11 @@ def eval_create(
             console.print(
                 "[yellow]--environment-manifest is for benchflow Environment-plane rollouts; "
                 "the hosted Verifiers environment owns its own provisioning. Ignoring.[/yellow]"
+            )
+        if usage_tracking_overridden:
+            console.print(
+                "[yellow]--usage-tracking is for BenchFlow ACP rollouts; "
+                "source-env runs own their provider calls. Ignoring.[/yellow]"
             )
 
         try:
@@ -1414,6 +1471,7 @@ def eval_create(
                 source_provenance=resolved.provenance,
                 include_tasks=include_tasks,
                 exclude_tasks=exclude_tasks,
+                usage_tracking=eval_usage_tracking,
                 environment_manifest=eval_env_manifest,
             ),
         )
@@ -1443,6 +1501,7 @@ def eval_create(
                 self_gen_no_internet=self_gen_no_internet,
                 include_tasks=include_tasks,
                 exclude_tasks=exclude_tasks,
+                usage_tracking=eval_usage_tracking,
                 environment_manifest=eval_env_manifest,
             ),
         )

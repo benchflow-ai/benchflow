@@ -45,6 +45,7 @@ import yaml
 
 from benchflow._types import Role, Scene, Turn
 from benchflow.rollout import RolloutConfig
+from benchflow.usage_tracking import UsageTrackingConfig
 
 logger = logging.getLogger(__name__)
 
@@ -127,6 +128,7 @@ def rollout_config_from_dict(
         skill_mode=raw.get("skill_mode", "default"),
         skill_creator_dir=raw.get("skill_creator_dir"),
         self_gen_no_internet=bool(raw.get("self_gen_no_internet", False)),
+        usage_tracking=UsageTrackingConfig.from_mapping(raw),
     )
 
 

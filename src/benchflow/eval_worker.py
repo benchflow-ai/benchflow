@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from benchflow.evaluation import Evaluation, EvaluationConfig, RetryConfig
+from benchflow.usage_tracking import UsageTrackingConfig
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 
@@ -69,6 +70,7 @@ def _evaluation_config(raw: dict[str, Any]) -> EvaluationConfig:
         self_gen_no_internet=bool(raw.get("self_gen_no_internet", False)),
         job_mode=raw.get("job_mode") or "parallel-independent",
         source_provenance=raw.get("source_provenance"),
+        usage_tracking=UsageTrackingConfig.from_mapping(raw),
         environment_manifest=_environment_manifest(raw),
     )
 

@@ -4,21 +4,30 @@ from __future__ import annotations
 
 import logging
 import os
+import secrets
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
+
+import httpx
 
 from benchflow.agents.providers import find_provider, strip_provider_prefix
 from benchflow.agents.registry import AGENTS
 from benchflow.providers.bedrock_proxy import BedrockProxyServer
 from benchflow.trajectories.pricing import PRICING_USD_PER_MTOK, PricingEntry
 from benchflow.trajectories.proxy import TrajectoryProxy
+from benchflow.usage_tracking import (
+    DEFAULT_USAGE_PROXY_BIND_HOST,
+    USAGE_PROXY_ADVERTISED_BASE_URL_ENV,
+    USAGE_PROXY_PORT_ENV,
+    UsageTrackingConfig,
+)
 
 logger = logging.getLogger(__name__)
 
 BEDROCK_PROXY_BIND_HOST = "0.0.0.0"
 BEDROCK_PROXY_LOCAL_HOST = "127.0.0.1"
-USAGE_PROXY_BIND_HOST = "0.0.0.0"
+USAGE_PROXY_BIND_HOST = DEFAULT_USAGE_PROXY_BIND_HOST
 PROMPT_CACHE_RETENTION_ENV = "BENCHFLOW_PROVIDER_PROMPT_CACHE_RETENTION"
 DISABLE_USAGE_PROXY_ENV = "BENCHFLOW_DISABLE_USAGE_PROXY"
 _PROMPT_CACHE_RETENTION_VALUES = {"in_memory", "24h"}
@@ -29,15 +38,14 @@ class ProviderRuntime:
     """State for a lazily-started provider-side helper process."""
 
     kind: str
-    host: str
-    port: int
+    agent_base_url: str
     backend_model: str | None = None
     frontend_model: str | None = None
     server: Any | None = None
 
     @property
     def base_url(self) -> str:
-        return f"http://{self.host}:{self.port}"
+        return self.agent_base_url
 
 
 def needs_provider_runtime(model: str | None) -> bool:
@@ -302,6 +310,124 @@ def _resolve_usage_proxy_target(
     return _infer_default_provider_url(agent, model)
 
 
+def _external_usage_proxy_error(environment: str) -> str:
+    return (
+        f"Token usage tracking is required for sandbox={environment!r}, but "
+        "that sandbox runs the agent on a remote host and cannot reach a "
+        "host-bound usage proxy and no external usage proxy endpoint is "
+        "configured. Configure an external usage proxy endpoint with "
+        f"{USAGE_PROXY_ADVERTISED_BASE_URL_ENV} plus a fixed "
+        f"{USAGE_PROXY_PORT_ENV}, or rerun with --usage-tracking auto/off."
+    )
+
+
+@dataclass(frozen=True)
+class UsageProxyPreconditionFailure:
+    """Why the usage proxy cannot be wired for this rollout."""
+
+    required_message: str
+    skip_message: str
+    log_level: int = logging.WARNING
+
+
+def _usage_proxy_path_prefix() -> str:
+    return f"/__benchflow/{secrets.token_urlsafe(24)}"
+
+
+def _agent_usage_proxy_base_url(
+    *,
+    environment: str,
+    port: int,
+    usage_tracking: UsageTrackingConfig,
+    path_prefix: str,
+) -> str:
+    if usage_tracking.advertised_base_url:
+        return f"{usage_tracking.advertised_base_url}{path_prefix}"
+    return f"http://{_bedrock_proxy_command(environment=environment)}:{port}"
+
+
+def validate_usage_proxy_preconditions(
+    usage_cfg: UsageTrackingConfig,
+    *,
+    environment: str,
+    model: str | None,
+    disable_usage_proxy: bool | None = None,
+) -> UsageProxyPreconditionFailure | None:
+    """Return the first reason usage telemetry cannot be wired, if any."""
+    if usage_cfg.mode == "off":
+        return None
+
+    if disable_usage_proxy is None:
+        disable_usage_proxy = _env_flag_enabled(os.environ.get(DISABLE_USAGE_PROXY_ENV))
+    if disable_usage_proxy:
+        return UsageProxyPreconditionFailure(
+            required_message=(
+                f"Token usage tracking is required, but {DISABLE_USAGE_PROXY_ENV} "
+                "is enabled."
+            ),
+            skip_message=(
+                f"Skipping host-side usage telemetry proxy: {DISABLE_USAGE_PROXY_ENV} "
+                "is enabled."
+            ),
+            log_level=logging.INFO,
+        )
+
+    host_reachable = host_proxy_reachable_from_agent(environment)
+    if not host_reachable and not usage_cfg.uses_external_proxy:
+        return UsageProxyPreconditionFailure(
+            required_message=_external_usage_proxy_error(environment or "unknown"),
+            skip_message=(
+                "Skipping host-side usage telemetry proxy: the "
+                f"{environment or 'unknown'!r} sandbox runs the agent on a remote "
+                "host unreachable from the host proxy and no external usage proxy "
+                "endpoint is configured."
+            ),
+            log_level=logging.INFO,
+        )
+
+    if usage_cfg.uses_external_proxy and not usage_cfg.has_fixed_proxy_port:
+        message = (
+            "External usage proxy tracking requires a fixed positive local proxy port. "
+            f"Set {USAGE_PROXY_PORT_ENV} or pass --usage-proxy-port."
+        )
+        return UsageProxyPreconditionFailure(
+            required_message=message,
+            skip_message=message,
+            log_level=logging.WARNING,
+        )
+
+    if (
+        needs_provider_runtime(model)
+        and not host_reachable
+        and usage_cfg.uses_external_proxy
+    ):
+        message = (
+            "Remote Bedrock-direct runs cannot be metered by the generic usage "
+            "proxy because the agent calls AWS Bedrock natively instead of an "
+            "OpenAI/Anthropic-compatible HTTP endpoint. Use an OpenAI-compatible "
+            "provider proxy for this run, run with --sandbox docker, or leave "
+            "usage tracking as auto/off."
+        )
+        return UsageProxyPreconditionFailure(
+            required_message=message,
+            skip_message=message,
+            log_level=logging.WARNING,
+        )
+
+    return None
+
+
+async def _external_usage_proxy_reachable(base_url: str) -> bool:
+    health_url = f"{base_url.rstrip('/')}/__benchflow_health"
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(5.0)) as client:
+            response = await client.get(health_url)
+        return response.status_code == 200
+    except Exception as exc:
+        logger.debug("External usage proxy health check failed: %s", exc)
+        return False
+
+
 def _pricing_for_model(model: str | None) -> PricingEntry | None:
     if not model:
         return None
@@ -365,6 +491,25 @@ def _cache_tokens_are_input_breakdown(trajectory: Any) -> bool:
     return False
 
 
+async def _skip_or_block_usage_proxy(
+    *,
+    usage_cfg: UsageTrackingConfig,
+    failure: UsageProxyPreconditionFailure,
+    agent_env: dict[str, str],
+    runtime: ProviderRuntime | None,
+) -> tuple[dict[str, str], ProviderRuntime | None]:
+    if runtime is not None:
+        await stop_provider_runtime(runtime)
+    if usage_cfg.mode == "required":
+        raise RuntimeError(failure.required_message)
+    logger.log(
+        failure.log_level,
+        "%s Usage telemetry will be unavailable for this run.",
+        failure.skip_message,
+    )
+    return agent_env, None
+
+
 async def ensure_usage_proxy_runtime(
     *,
     agent: str,
@@ -373,45 +518,50 @@ async def ensure_usage_proxy_runtime(
     runtime: ProviderRuntime | None,
     environment: str,
     session_id: str = "",
+    usage_tracking: UsageTrackingConfig | dict[str, Any] | str | None = None,
 ) -> tuple[dict[str, str], ProviderRuntime | None]:
     """Start the host-side usage proxy and wire env vars to it.
 
-    For remote cloud sandboxes (e.g. Daytona) the host proxy is unreachable
-    from the agent — it runs on a different machine and there is no reverse
-    tunnel back to the host. In that case the proxy is skipped: the agent
-    talks to the provider directly with its real key and host-side usage
-    telemetry reports ``usage_source: "unavailable"``.
+    Remote cloud sandboxes (e.g. Daytona) can only use this proxy when the
+    operator supplies an externally reachable URL. The local bind endpoint and
+    the URL advertised to the agent are deliberately separate: Docker sees the
+    host bridge address, while Daytona sees the tunnel/ingress URL.
     """
+    usage_cfg = UsageTrackingConfig.coerce(usage_tracking).with_env_defaults()
     if agent == "oracle":
         return agent_env, runtime
-    if _env_flag_enabled(os.environ.get(DISABLE_USAGE_PROXY_ENV)):
+
+    if usage_cfg.mode == "off":
         if runtime is not None:
             await stop_provider_runtime(runtime)
-        logger.info(
-            "Skipping host-side usage telemetry proxy: %s is enabled. "
-            "The agent will call the provider directly and usage telemetry "
-            "will be unavailable for this run.",
-            DISABLE_USAGE_PROXY_ENV,
-        )
+        logger.info("Skipping host-side usage telemetry proxy: usage_tracking=off.")
         return agent_env, None
-    if not host_proxy_reachable_from_agent(environment):
-        if runtime is not None:
-            await stop_provider_runtime(runtime)
-        logger.info(
-            "Skipping host-side usage telemetry proxy: the '%s' sandbox runs "
-            "the agent on a remote host unreachable from the host proxy; the "
-            "agent will call the provider directly and usage telemetry will "
-            "be unavailable for this run.",
-            environment or "unknown",
+
+    host_reachable = host_proxy_reachable_from_agent(environment)
+    failure = validate_usage_proxy_preconditions(
+        usage_cfg,
+        environment=environment,
+        model=model,
+    )
+    if failure is not None:
+        return await _skip_or_block_usage_proxy(
+            usage_cfg=usage_cfg,
+            failure=failure,
+            agent_env=agent_env,
+            runtime=runtime,
         )
-        return agent_env, None
+
     target = _resolve_usage_proxy_target(agent, agent_env, model)
     if not target:
+        if usage_cfg.mode == "required":
+            raise RuntimeError(
+                "Token usage tracking is required, but BenchFlow could not "
+                "resolve a provider base URL for this agent/model."
+            )
         return agent_env, runtime
-    target = _host_side_proxy_target_url(
-        target.rstrip("/"),
-        environment=environment,
-    )
+    target = target.rstrip("/")
+    if host_reachable:
+        target = _host_side_proxy_target_url(target, environment=environment)
 
     # A multi-role scene can switch providers between connect_as() calls. The
     # running proxy forwards to a fixed upstream, so reusing it would route the
@@ -432,22 +582,55 @@ async def ensure_usage_proxy_runtime(
                 f"{', '.join(sorted(_PROMPT_CACHE_RETENTION_VALUES))}"
             )
         logger.info("Starting host-side usage telemetry proxy")
-        server = TrajectoryProxy(
-            target=target,
-            session_id=session_id,
-            agent_name=agent,
-            host=USAGE_PROXY_BIND_HOST,
-            port=0,
-            prompt_cache_retention=prompt_cache_retention,
+        bind_host = usage_cfg.bind_host
+        if bind_host is None:
+            bind_host = (
+                "127.0.0.1" if usage_cfg.uses_external_proxy else USAGE_PROXY_BIND_HOST
+            )
+        bind_port = usage_cfg.port if usage_cfg.port is not None else 0
+        path_prefix = (
+            _usage_proxy_path_prefix() if usage_cfg.uses_external_proxy else ""
         )
+        proxy_kwargs: dict[str, Any] = {
+            "target": target,
+            "session_id": session_id,
+            "agent_name": agent,
+            "host": bind_host,
+            "port": bind_port,
+            "prompt_cache_retention": prompt_cache_retention,
+        }
+        if path_prefix:
+            proxy_kwargs["path_prefix"] = path_prefix
+        server = TrajectoryProxy(**proxy_kwargs)
         await server.start()
+        agent_base_url = _agent_usage_proxy_base_url(
+            environment=environment,
+            port=server.port,
+            usage_tracking=usage_cfg,
+            path_prefix=path_prefix,
+        )
         runtime = ProviderRuntime(
             kind="usage-proxy",
-            host=_bedrock_proxy_command(environment=environment),
-            port=server.port,
+            agent_base_url=agent_base_url,
             backend_model=strip_provider_prefix(model) if model else None,
             server=server,
         )
+
+        if usage_cfg.uses_external_proxy:
+            reachable = await _external_usage_proxy_reachable(runtime.base_url)
+            if not reachable:
+                await stop_provider_runtime(runtime)
+                runtime = None
+                message = (
+                    "External usage proxy endpoint was configured but did not "
+                    f"respond to its health check: {usage_cfg.advertised_base_url}"
+                )
+                if usage_cfg.mode == "required":
+                    raise RuntimeError(message)
+                logger.warning(
+                    "%s. Usage telemetry will be unavailable for this run.", message
+                )
+                return agent_env, None
 
     updated = dict(agent_env)
     updated["BENCHFLOW_PROVIDER_BASE_URL"] = runtime.base_url
@@ -554,8 +737,9 @@ async def ensure_bedrock_proxy_runtime(
         await server.start()
         runtime = ProviderRuntime(
             kind="aws-bedrock",
-            host=_bedrock_proxy_command(environment=environment),
-            port=server.port,
+            agent_base_url=(
+                f"http://{_bedrock_proxy_command(environment=environment)}:{server.port}"
+            ),
             backend_model=backend_model,
             frontend_model=frontend_model,
             server=server,

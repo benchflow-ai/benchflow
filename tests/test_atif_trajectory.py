@@ -721,8 +721,7 @@ class TestTrajectoryProxy:
 
             runtime = ProviderRuntime(
                 kind="usage-proxy",
-                host="127.0.0.1",
-                port=proxy.port,
+                agent_base_url=proxy.base_url,
                 backend_model="gemini-2.5-flash",
                 server=proxy,
             )
