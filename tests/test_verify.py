@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from benchflow._utils.scoring import (
+    VERIFIER_DEP_INSTALL,
     VERIFIER_FAILED,
     VERIFIER_INFRA,
     VERIFIER_TIMEOUT,
@@ -34,6 +35,28 @@ from benchflow.models import RunResult
         ),
         ("verifier timed out after 900s", VERIFIER_TIMEOUT),
         ("verifier did something weird", "verifier_other"),
+        # dep_install markers surfaced via test-stdout.txt tail
+        (
+            "verifier crashed: verifier exited with rc=1; no reward file found\n"
+            "--- test-stdout.txt (last 30 lines) ---\n"
+            "× No solution found when resolving tool dependencies: torch==2.1.2+cpu",  # noqa: RUF001
+            VERIFIER_DEP_INSTALL,
+        ),
+        (
+            "verifier crashed: verifier exited with rc=1\n"
+            "Could not find a version that satisfies the requirement foo==9.9.9",
+            VERIFIER_DEP_INSTALL,
+        ),
+        (
+            "verifier crashed: verifier exited with rc=1\n"
+            "ERROR: dependency install failed",
+            VERIFIER_DEP_INSTALL,
+        ),
+        (
+            "verifier crashed: verifier exited with rc=1\n"
+            "resolution impossible for package bar",
+            VERIFIER_DEP_INSTALL,
+        ),
     ],
 )
 def test_classify_verifier_error(input_str, expected):
@@ -47,6 +70,72 @@ def test_classify_verifier_error_substring_order():
     """
     msg = "verifier crashed: verifier timed out inside"
     assert classify_verifier_error(msg) == VERIFIER_FAILED
+
+
+def test_dep_install_takes_precedence_over_generic_crash():
+    """dep_install wins over verifier_failure when both markers are present."""
+    msg = (
+        "verifier crashed: verifier exited with rc=1; no reward file found\n"
+        "--- test-stdout.txt (last 30 lines) ---\n"
+        "× No solution found when resolving tool dependencies: torch==2.1.2+cpu"  # noqa: RUF001
+    )
+    assert classify_verifier_error(msg) == VERIFIER_DEP_INSTALL
+
+
+class TestRewardFileNotFoundSurfacesStdout:
+    """Verify that RewardFileNotFoundError includes test-stdout.txt tail,
+    so classify_verifier_error can detect dep-install markers end-to-end.
+    """
+
+    def test_exception_includes_stdout_tail(self, tmp_path):
+        from benchflow.task.verifier import _tail_file
+
+        stdout = tmp_path / "test-stdout.txt"
+        stdout.write_text(
+            "Installing dependencies...\n"
+            "× No solution found when resolving tool dependencies: torch==2.1.2+cpu\n"  # noqa: RUF001
+        )
+        tail = _tail_file(stdout)
+        assert "no solution found" in tail.lower()
+
+    def test_exception_message_triggers_classifier(self, tmp_path):
+        """Simulate the exact exception message verifier.py now builds and
+        verify the classifier returns VERIFIER_DEP_INSTALL."""
+        stdout_content = (
+            "Collecting torch==2.1.2+cpu\n"
+            "× No solution found when resolving tool dependencies: torch==2.1.2+cpu\n"  # noqa: RUF001
+        )
+        (tmp_path / "test-stdout.txt").write_text(stdout_content)
+
+        from benchflow.task.verifier import _tail_file
+
+        tail = _tail_file(tmp_path / "test-stdout.txt")
+        verifier_error = (
+            f"verifier crashed: verifier exited with rc=1; no reward file "
+            f"found at {tmp_path}/reward.txt or {tmp_path}/reward.json"
+            f"\n--- test-stdout.txt (last 30 lines) ---\n{tail}"
+        )
+        assert classify_verifier_error(verifier_error) == VERIFIER_DEP_INSTALL
+
+    def test_missing_stdout_produces_no_tail(self, tmp_path):
+        from benchflow.task.verifier import _tail_file
+
+        tail = _tail_file(tmp_path / "nonexistent.txt")
+        assert tail == ""
+
+    def test_no_dep_markers_stays_verifier_failure(self, tmp_path):
+        """Without dep-install markers the classifier should return verifier_failure."""
+        (tmp_path / "test-stdout.txt").write_text("some random test output\nfail\n")
+
+        from benchflow.task.verifier import _tail_file
+
+        tail = _tail_file(tmp_path / "test-stdout.txt")
+        verifier_error = (
+            f"verifier crashed: verifier exited with rc=1; no reward file "
+            f"found at {tmp_path}/reward.txt\n"
+            f"--- test-stdout.txt (last 30 lines) ---\n{tail}"
+        )
+        assert classify_verifier_error(verifier_error) == VERIFIER_FAILED
 
 
 # ---------------------------------------------------------------------------

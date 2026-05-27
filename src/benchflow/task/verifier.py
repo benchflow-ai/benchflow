@@ -60,6 +60,18 @@ class RubricNotFoundError(Exception):
     """Raised when an llm-judge verifier cannot locate its rubric file."""
 
 
+_TAIL_LINES = 30
+
+
+def _tail_file(path: Path, n: int = _TAIL_LINES) -> str:
+    """Return the last *n* lines of *path*, or empty string if unreadable."""
+    try:
+        lines = path.read_text(errors="replace").splitlines()
+        return "\n".join(lines[-n:])
+    except OSError:
+        return ""
+
+
 class Verifier:
     """Runs the task's verifier and parses rewards.
 
@@ -289,16 +301,21 @@ class Verifier:
         elif self._rollout_paths.reward_json_path.exists():
             rewards = self._parse_reward_json()
         else:
+            stdout_tail = _tail_file(self._rollout_paths.test_stdout_path)
             if test_return_code != 0:
-                raise RewardFileNotFoundError(
+                msg = (
                     f"verifier exited with rc={test_return_code}; no reward file "
                     f"found at {self._rollout_paths.reward_text_path} or "
                     f"{self._rollout_paths.reward_json_path}"
                 )
-            raise RewardFileNotFoundError(
-                f"No reward file found at {self._rollout_paths.reward_text_path} or "
-                f"{self._rollout_paths.reward_json_path}"
-            )
+            else:
+                msg = (
+                    f"No reward file found at {self._rollout_paths.reward_text_path} or "
+                    f"{self._rollout_paths.reward_json_path}"
+                )
+            if stdout_tail:
+                msg += f"\n--- test-stdout.txt (last 30 lines) ---\n{stdout_tail}"
+            raise RewardFileNotFoundError(msg)
 
         return VerifierResult(rewards=rewards)
 
