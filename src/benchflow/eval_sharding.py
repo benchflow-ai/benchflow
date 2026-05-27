@@ -103,7 +103,7 @@ def _config_payload(
     shard: EvalShard,
     environment_manifest_path: Path | None,
 ) -> dict[str, Any]:
-    return {
+    payload = {
         "agent": config.agent,
         "model": config.model,
         "environment": config.environment,
@@ -124,11 +124,12 @@ def _config_payload(
         "self_gen_no_internet": config.self_gen_no_internet,
         "job_mode": config.job_mode,
         "source_provenance": config.source_provenance,
-        "usage_tracking": config.usage_tracking.to_mapping(),
         "environment_manifest_path": (
             str(environment_manifest_path) if environment_manifest_path else None
         ),
     }
+    payload.update(config.usage_tracking.to_mapping())
+    return payload
 
 
 def _plan_payload(plan: EvalShardPlan) -> dict[str, Any]:

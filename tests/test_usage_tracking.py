@@ -223,9 +223,45 @@ def test_usage_tracking_shard_payload_preserves_implicit_env_mode(monkeypatch):
     )
     worker_config = _evaluation_config(payload)
 
-    assert "usage_tracking" not in payload["usage_tracking"]
+    assert "usage_tracking" not in payload
     assert worker_config.usage_tracking.mode_is_explicit is False
     assert worker_config.usage_tracking.with_env_defaults().mode == "required"
+
+
+def test_usage_tracking_shard_payload_uses_flat_yaml_shape():
+    """Guards PR #568: worker payload must not nest usage_tracking twice."""
+    from benchflow.eval_sharding import EvalShard, _config_payload
+    from benchflow.eval_worker import _evaluation_config
+    from benchflow.evaluation import EvaluationConfig
+    from benchflow.usage_tracking import UsageTrackingConfig
+
+    parent_config = EvaluationConfig(
+        environment="daytona",
+        usage_tracking=UsageTrackingConfig(
+            mode="required",
+            advertised_base_url="https://usage-proxy.example.test",
+            port=18081,
+        ),
+    )
+
+    payload = _config_payload(
+        parent_config,
+        shard=EvalShard(index=0, task_names=("task-a",), concurrency=1),
+        environment_manifest_path=None,
+    )
+    worker_config = _evaluation_config(payload)
+
+    assert payload["usage_tracking"] == "required"
+    assert payload["usage_proxy"] == {
+        "advertised_base_url": "https://usage-proxy.example.test",
+        "port": 18081,
+    }
+    assert worker_config.usage_tracking.mode == "required"
+    assert (
+        worker_config.usage_tracking.advertised_base_url
+        == "https://usage-proxy.example.test"
+    )
+    assert worker_config.usage_tracking.port == 18081
 
 
 def test_usage_tracking_overlay_preserves_yaml_fields_for_partial_cli_override():

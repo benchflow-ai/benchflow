@@ -339,6 +339,7 @@ _SECRET_ENV_SUBSTRINGS: tuple[str, ...] = (
     "BEARER",
     "SESSION",
 )
+_SECRET_URL_PATH_MARKERS: tuple[str, ...] = ("/__benchflow/",)
 
 
 def _is_secret_env_key(name: str) -> bool:
@@ -350,6 +351,18 @@ def _is_secret_env_key(name: str) -> bool:
     """
     upper = name.upper()
     return any(s in upper for s in _SECRET_ENV_SUBSTRINGS)
+
+
+def _is_secret_env_value(name: str, value: str) -> bool:
+    """Return True if a normally public env value embeds a runtime secret."""
+    upper = name.upper()
+    if not upper.endswith("BASE_URL"):
+        return False
+    return any(marker in value for marker in _SECRET_URL_PATH_MARKERS)
+
+
+def _should_record_env_entry(name: str, value: str) -> bool:
+    return not _is_secret_env_key(name) and not _is_secret_env_value(name, value)
 
 
 def _write_config(
@@ -374,7 +387,9 @@ def _write_config(
     source_provenance: dict[str, Any] | None = None,
 ) -> None:
     """Write config.json to rollout_dir with secrets filtered out."""
-    recorded_env = {k: v for k, v in agent_env.items() if not _is_secret_env_key(k)}
+    recorded_env = {
+        k: v for k, v in agent_env.items() if _should_record_env_entry(k, v)
+    }
     config_data = {
         "task_path": str(task_path),
         "agent": agent,

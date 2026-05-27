@@ -35,7 +35,17 @@ accepts a single task directory.
 # From YAML config
 bench eval create --config benchmarks/harvey-lab/harvey-lab-gemini-flash-lite.yaml
 
-# From remote repo
+# From remote repo (fast Daytona batch; token usage may be unavailable)
+bench eval create \
+  --source-repo benchflow-ai/skillsbench \
+  --source-path tasks \
+  --agent gemini \
+  --model gemini-3.1-flash-lite-preview \
+  --sandbox daytona \
+  --concurrency 64 \
+  --sandbox-setup-timeout 300
+
+# From remote repo with required token usage telemetry through an external tunnel
 bench eval create \
   --source-repo benchflow-ai/skillsbench \
   --source-path tasks \
@@ -114,9 +124,11 @@ For official Daytona batch runs that must report provider token/cost telemetry,
 use `--usage-tracking required` with a tunnel or ingress URL pointing at the
 fixed `--usage-proxy-port`. The fixed-port tunnel mode supports one rollout per
 BenchFlow process; use `--concurrency 1`, or run multiple jobs with separate
-ports/tunnels. Without an external URL, Daytona runs continue in `auto` mode
-and record `usage_source=unavailable` because the remote sandbox cannot reach a
-host-bound proxy.
+ports/tunnels. This limit applies only to metered external-tunnel mode; Daytona
+batch runs that do not require usage telemetry can still use higher concurrency.
+Without an external URL, Daytona runs continue in `auto` mode and record
+`usage_source=unavailable` because the remote sandbox cannot reach a host-bound
+proxy.
 
 `--source-env` is for external hosted environment hubs. The first supported
 runner is PrimeIntellect / Verifiers: BenchFlow preserves the hosted identity

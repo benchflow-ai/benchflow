@@ -884,40 +884,25 @@ class Evaluation:
             self._on_result(td.name, result)
 
     def _preflight_usage_tracking(self) -> None:
-        from benchflow.providers.runtime import host_proxy_reachable_from_agent
-        from benchflow.usage_tracking import (
-            USAGE_PROXY_ADVERTISED_BASE_URL_ENV,
-            USAGE_PROXY_PORT_ENV,
-        )
+        from benchflow.providers.runtime import validate_usage_proxy_preconditions
 
         cfg = self._config
         usage = cfg.usage_tracking.with_env_defaults()
         usage.validate_parallelism(concurrency=cfg.concurrency)
-        if usage.mode == "off" or host_proxy_reachable_from_agent(cfg.environment):
+        failure = validate_usage_proxy_preconditions(
+            usage,
+            environment=cfg.environment,
+            model=cfg.model,
+        )
+        if failure is None:
             return
-        if not usage.uses_external_proxy:
-            message = (
-                f"Token usage tracking is {usage.mode} for sandbox={cfg.environment!r}, "
-                "but this sandbox runs on a remote host and no external usage "
-                f"proxy endpoint is configured. Set {USAGE_PROXY_ADVERTISED_BASE_URL_ENV} "
-                "or use --usage-proxy-url."
-            )
-            if usage.mode == "required":
-                raise RuntimeError(message)
-            logger.warning(
-                "%s Results will report usage_source='unavailable'.", message
-            )
-            return
-        if not usage.has_fixed_proxy_port:
-            message = (
-                "External usage proxy tracking needs a fixed positive local proxy port. "
-                f"Set {USAGE_PROXY_PORT_ENV} or use --usage-proxy-port."
-            )
-            if usage.mode == "required":
-                raise RuntimeError(message)
-            logger.warning(
-                "%s Results will report usage_source='unavailable'.", message
-            )
+        if usage.mode == "required":
+            raise RuntimeError(failure.required_message)
+        logger.log(
+            failure.log_level,
+            "%s Results will report usage_source='unavailable'.",
+            failure.skip_message,
+        )
 
     async def _run_parallel_independent(
         self, remaining: list[Path]

@@ -70,7 +70,7 @@ def _evaluation_config(raw: dict[str, Any]) -> EvaluationConfig:
         self_gen_no_internet=bool(raw.get("self_gen_no_internet", False)),
         job_mode=raw.get("job_mode") or "parallel-independent",
         source_provenance=raw.get("source_provenance"),
-        usage_tracking=UsageTrackingConfig.coerce(raw.get("usage_tracking")),
+        usage_tracking=UsageTrackingConfig.from_mapping(raw),
         environment_manifest=_environment_manifest(raw),
     )
 

@@ -148,6 +148,7 @@ class TrajectoryProxy:
                         status_code=200,
                         reason="OK",
                         payload={"status": "ok"},
+                        include_body=method.upper() != "HEAD",
                     )
                     break
 
@@ -438,7 +439,7 @@ def _strip_path_prefix(path: str, path_prefix: str) -> str:
 
 
 def _is_health_request(method: str, path: str) -> bool:
-    if method.upper() != "GET":
+    if method.upper() not in {"GET", "HEAD"}:
         return False
     return (path.split("?", 1)[0].rstrip("/") or "/") in {
         "/__benchflow_health",
@@ -452,8 +453,9 @@ async def _write_json_response(
     status_code: int,
     reason: str,
     payload: dict[str, Any],
+    include_body: bool = True,
 ) -> None:
-    body = json.dumps(payload, separators=(",", ":")).encode()
+    body = json.dumps(payload, separators=(",", ":")).encode() if include_body else b""
     writer.write(
         f"HTTP/1.1 {status_code} {reason}\r\n".encode()
         + b"content-type: application/json\r\n"

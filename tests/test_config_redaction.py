@@ -116,3 +116,35 @@ def test_write_config_drops_secret_env_vars(tmp_path: Path) -> None:
     # Non-secret entries are preserved unchanged.
     assert recorded["NORMAL_VAR"] == "keep-me"
     assert recorded["PATH"] == "/usr/bin:/bin"
+
+
+def test_write_config_drops_usage_proxy_secret_base_urls(tmp_path: Path) -> None:
+    """Guards PR #568: external usage proxy path prefixes are bearer secrets."""
+    secret_base = "https://usage.example.test/__benchflow/secret-prefix"
+    agent_env = {
+        "BENCHFLOW_PROVIDER_BASE_URL": secret_base,
+        "OPENAI_BASE_URL": secret_base,
+        "NORMAL_VAR": "keep-me",
+    }
+
+    _write_config(
+        tmp_path,
+        task_path=tmp_path / "task",
+        agent="codex-acp",
+        model="gpt-4.1-mini",
+        environment="daytona",
+        skills_dir=None,
+        sandbox_user=None,
+        context_root=None,
+        timeout=300,
+        started_at=datetime(2026, 1, 1),
+        agent_env=agent_env,
+    )
+
+    raw = (tmp_path / "config.json").read_text()
+    recorded = json.loads(raw)["agent_env"]
+
+    assert "BENCHFLOW_PROVIDER_BASE_URL" not in recorded
+    assert "OPENAI_BASE_URL" not in recorded
+    assert "__benchflow/secret-prefix" not in raw
+    assert recorded["NORMAL_VAR"] == "keep-me"

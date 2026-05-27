@@ -1248,7 +1248,7 @@ def eval_create(
         )
     )
     try:
-        eval_usage_tracking = UsageTrackingConfig.from_values(
+        eval_usage_tracking = UsageTrackingConfig(
             mode=usage_tracking,
             advertised_base_url=usage_proxy_url,
             bind_host=usage_proxy_bind_host,

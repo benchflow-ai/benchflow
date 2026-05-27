@@ -123,7 +123,7 @@ class UsageTrackingConfig:
 
     def overlay(self, override: UsageTrackingConfig) -> UsageTrackingConfig:
         """Return this config with explicitly supplied override fields applied."""
-        return UsageTrackingConfig.from_values(
+        return UsageTrackingConfig(
             mode=override._mode if override.mode_is_explicit else self._mode,
             advertised_base_url=(
                 override.advertised_base_url
@@ -150,29 +150,13 @@ class UsageTrackingConfig:
             )
 
     @classmethod
-    def from_values(
-        cls,
-        *,
-        mode: str | None = None,
-        advertised_base_url: str | None = None,
-        bind_host: str | None = None,
-        port: int | str | None = None,
-    ) -> UsageTrackingConfig:
-        return cls(
-            mode=mode,
-            advertised_base_url=advertised_base_url,
-            bind_host=bind_host,
-            port=port,
-        )
-
-    @classmethod
     def from_mapping(cls, raw: dict[str, Any]) -> UsageTrackingConfig:
         proxy = raw.get("usage_proxy")
         if proxy is None:
             proxy = {}
         elif not isinstance(proxy, dict):
             raise ValueError("usage_proxy must be a mapping")
-        return cls.from_values(
+        return cls(
             mode=raw.get("usage_tracking"),
             advertised_base_url=(
                 _first_present(
@@ -197,7 +181,7 @@ class UsageTrackingConfig:
         if isinstance(value, UsageTrackingConfig):
             return value
         if isinstance(value, str):
-            return cls.from_values(mode=value)
+            return cls(mode=value)
         if isinstance(value, dict):
             return cls.from_mapping(value)
         raise TypeError(f"invalid usage_tracking config: {type(value).__name__}")
@@ -224,7 +208,7 @@ class UsageTrackingConfig:
         if env_mode and not self.mode_is_explicit:
             mode = normalize_usage_tracking_mode(env_mode)
 
-        return UsageTrackingConfig.from_values(
+        return UsageTrackingConfig(
             mode=mode,
             advertised_base_url=(
                 self.advertised_base_url

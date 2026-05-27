@@ -33,7 +33,9 @@ All commands below assume you are in the repo root.
 > token/cost telemetry should use `--usage-tracking required` so the run fails
 > before the agent starts if the external endpoint is missing or unhealthy. The
 > fixed-port tunnel mode supports one rollout per BenchFlow process; use
-> `--concurrency 1`, or run multiple jobs with separate ports/tunnels. Local
+> `--concurrency 1`, or run multiple jobs with separate ports/tunnels. This
+> constraint is specific to metered external-tunnel mode; Daytona batches that do
+> not require usage telemetry can still run with higher concurrency. Local
 > sandboxes (e.g. `--sandbox docker`) populate usage telemetry without a tunnel.
 
 ---
