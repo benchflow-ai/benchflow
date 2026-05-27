@@ -107,7 +107,14 @@ class DockerSandbox(BaseSandbox):
 
     @classmethod
     def set_build_concurrency(cls, n: int) -> None:
-        """Limit how many docker builds run in parallel (default: unlimited)."""
+        """Limit how many sandboxes go through the docker startup phase
+        (build + compose down --remove-orphans + compose up --wait) in parallel.
+
+        Default is unlimited. Setting this is critical when --concurrency is
+        high (e.g. 60): otherwise N tasks all hammer the docker daemon at once,
+        causing build/network creation races and `docker container prune`
+        timeouts. Agent execution after the container is up is NOT gated.
+        """
         cls._build_semaphore = asyncio.Semaphore(n)
 
     @classmethod
@@ -361,24 +368,28 @@ class DockerSandbox(BaseSandbox):
 
         self._use_prebuilt = not force_build and bool(self.task_env_config.docker_image)
 
-        if not self._use_prebuilt:
-            build_sem = self._build_semaphore
-            if build_sem is not None:
-                await build_sem.acquire()
-            try:
+        # Gate the entire startup phase (build + down + up) — not just build.
+        # When images are cached, build is a no-op so a build-only semaphore
+        # has no effect, but the simultaneous `compose up` calls still flood
+        # the docker daemon (network creation races, prune timeouts).
+        build_sem = self._build_semaphore
+        if build_sem is not None:
+            await build_sem.acquire()
+        try:
+            if not self._use_prebuilt:
                 lock = self._image_build_locks.setdefault(
                     self.environment_name, asyncio.Lock()
                 )
                 async with lock:
                     await self._run_docker_compose_build()
-            finally:
-                if build_sem is not None:
-                    build_sem.release()
 
-        with contextlib.suppress(RuntimeError):
-            await self._run_docker_compose_command(["down", "--remove-orphans"])
+            with contextlib.suppress(RuntimeError):
+                await self._run_docker_compose_command(["down", "--remove-orphans"])
 
-        await self._run_docker_compose_command(["up", "--detach", "--wait"])
+            await self._run_docker_compose_command(["up", "--detach", "--wait"])
+        finally:
+            if build_sem is not None:
+                build_sem.release()
 
         await self.exec(
             f"chmod 777 {SandboxPaths.agent_dir} {SandboxPaths.verifier_dir}"
