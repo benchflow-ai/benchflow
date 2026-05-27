@@ -314,7 +314,7 @@ class Verifier:
                     f"{self._rollout_paths.reward_json_path}"
                 )
             if stdout_tail:
-                msg += f"\n--- test-stdout.txt (last 30 lines) ---\n{stdout_tail}"
+                msg += f"\n--- test-stdout.txt (last {_TAIL_LINES} lines) ---\n{stdout_tail}"
             raise RewardFileNotFoundError(msg)
 
         return VerifierResult(rewards=rewards)
