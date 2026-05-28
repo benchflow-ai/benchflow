@@ -55,6 +55,7 @@ ALL_AGENTS=(
   opencode
   harvey-lab-harness
   openhands
+  mini-swe
 )
 
 # ── Parse args ──────────────────────────────────────────────────────

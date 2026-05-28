@@ -21,41 +21,20 @@ Architecture:
   benchflow ACP client ←stdio→ this shim ←in-process→ minisweagent DefaultAgent
                                           ←subprocess→  bash in the task cwd
 
-stdout discipline: mini-swe (and litellm) print to stdout at import / runtime.
-stdout is the ACP JSON-RPC channel, so before importing anything we save the
-real stdout fd and redirect fd 1 to stderr — every stray print then lands on
-stderr and only ``send()`` writes framed JSON-RPC to the client.
+Import safety: the module top level has NO side effects and does NOT import
+``minisweagent`` — stdout redirection and the (banner-printing) minisweagent
+import happen inside ``main()``. This keeps the pure routing policy
+(``_litellm_prefix``) importable and unit-testable without minisweagent
+installed and without clobbering the importer's stdout.
 """
 
 import json
+import logging
 import os
 import sys
+from pathlib import Path
 
-# ── stdout isolation (must happen before importing minisweagent/litellm) ──────
-#
-# Duplicate the real stdout (the pipe the ACP client reads), then point fd 1 at
-# stderr so anything writing to sys.stdout/print/fd-1 is diverted away from the
-# JSON-RPC channel. ``_OUT`` is the only writer to the client.
-_real_stdout_fd = os.dup(1)
-os.dup2(2, 1)
-_OUT = os.fdopen(_real_stdout_fd, "w", buffering=1, encoding="utf-8")
-sys.stdout = sys.stderr
-
-# Silence mini-swe's import banner and make litellm cost-tracking failures
-# non-fatal (BenchFlow routes through a usage proxy where litellm often can't
-# price a model; without this the run dies in _calculate_cost).
-os.environ.setdefault("MSWEA_SILENT_STARTUP", "1")
-os.environ.setdefault("MSWEA_COST_TRACKING", "ignore_errors")
-os.environ.setdefault("LITELLM_LOG", "ERROR")
-
-import logging  # noqa: E402
-from pathlib import Path  # noqa: E402
-
-import yaml  # noqa: E402
-from minisweagent import package_dir  # noqa: E402
-from minisweagent.agents.default import AgentConfig, DefaultAgent  # noqa: E402
-from minisweagent.environments.local import LocalEnvironment  # noqa: E402
-from minisweagent.models.litellm_model import LitellmModel  # noqa: E402
+import yaml
 
 logging.basicConfig(level=logging.WARNING, stream=sys.stderr)
 
@@ -65,6 +44,12 @@ _DEFAULT_CWD = "/app"
 # Which mini-swe config to mirror. mini.yaml is the generic (non-SWE-bench)
 # tool-calling harness; swebench.yaml hardcodes /testbed + "don't touch tests".
 _CONFIG_NAME = os.environ.get("MINI_SWE_CONFIG", "mini.yaml")
+
+# Set in main() by _isolate_stdout(); the only writer to the ACP client.
+_OUT = sys.stdout
+
+
+# ── Provider routing policy (pure; unit-tested) ────────────────────────────────
 
 
 def _is_anthropic_model(model: str) -> bool:
@@ -93,6 +78,20 @@ def _litellm_prefix(protocol: str, model: str) -> str:
 
 
 # ── ACP stdio I/O ─────────────────────────────────────────────────────────────
+
+
+def _isolate_stdout() -> None:
+    """Reserve fd 1 (the ACP JSON-RPC channel) for framed output only.
+
+    mini-swe and litellm print to stdout at import and at runtime. Duplicate the
+    real stdout (the pipe the client reads) into ``_OUT``, then redirect fd 1 to
+    stderr so every stray print is diverted away from the JSON-RPC channel.
+    """
+    global _OUT
+    real_stdout_fd = os.dup(1)
+    os.dup2(2, 1)
+    _OUT = os.fdopen(real_stdout_fd, "w", buffering=1, encoding="utf-8")
+    sys.stdout = sys.stderr
 
 
 def send(msg: dict) -> None:
@@ -168,44 +167,69 @@ def _emit_tool_result(session_id: str, tool_call_id: str, output: str) -> None:
 # ── Trajectory-emitting agent ─────────────────────────────────────────────────
 
 
-class _ACPAgent(DefaultAgent):
-    """DefaultAgent that re-emits each step as ACP session updates.
+def _acp_agent_class():
+    """Build the trajectory-emitting DefaultAgent subclass.
 
-    ``query`` fires once per model turn (assistant text + the bash command);
-    ``execute_actions`` fires after the command runs (its output). The action's
-    ``tool_call_id`` (assigned by mini-swe's tool-call parser) is reused as the
-    ACP ``toolCallId`` so start/result pair up.
+    Defined behind a factory so the module stays importable without
+    ``minisweagent`` (only available inside the sandbox). ``main()`` calls this
+    once after the runtime is installed.
     """
+    from minisweagent.agents.default import DefaultAgent
+    from minisweagent.exceptions import Submitted
 
-    def __init__(self, *args, session_id: str, **kwargs):
-        self._session_id = session_id
-        super().__init__(*args, **kwargs)
+    class _ACPAgent(DefaultAgent):
+        """DefaultAgent that re-emits each step as ACP session updates.
 
-    def query(self) -> dict:
-        message = super().query()
-        text = (message.get("content") or "").strip()
-        if text:
-            _emit_text(self._session_id, text)
-        for action in message.get("extra", {}).get("actions", []):
-            _emit_tool_call(
-                self._session_id,
-                action.get("tool_call_id", ""),
-                action.get("command", ""),
-            )
-        return message
+        ``query`` fires once per model turn (assistant text + the bash command);
+        ``execute_actions`` fires after the command runs (its output). The
+        action's ``tool_call_id`` (assigned by mini-swe's tool-call parser) is
+        reused as the ACP ``toolCallId`` so start/result pair up.
+        """
 
-    def execute_actions(self, message: dict) -> list[dict]:
-        actions = message.get("extra", {}).get("actions", [])
-        # env.execute may raise Submitted (task complete) mid-list; emit results
-        # for whatever ran before re-raising so the trajectory isn't lost.
-        observations = super().execute_actions(message)
-        for action, obs in zip(actions, observations, strict=False):
-            _emit_tool_result(
-                self._session_id,
-                action.get("tool_call_id", ""),
-                obs.get("content", ""),
-            )
-        return observations
+        def __init__(self, *args, session_id: str, **kwargs):
+            self._session_id = session_id
+            super().__init__(*args, **kwargs)
+
+        def query(self) -> dict:
+            message = super().query()
+            text = (message.get("content") or "").strip()
+            if text:
+                _emit_text(self._session_id, text)
+            for action in message.get("extra", {}).get("actions", []):
+                _emit_tool_call(
+                    self._session_id,
+                    action.get("tool_call_id", ""),
+                    action.get("command", ""),
+                )
+            return message
+
+        def execute_actions(self, message: dict) -> list[dict]:
+            actions = message.get("extra", {}).get("actions", [])
+            try:
+                observations = super().execute_actions(message)
+            except Submitted as e:
+                # The submit command (`echo COMPLETE_TASK...`) makes env.execute
+                # raise before the parent emits observations, which would leave
+                # its tool_call dangling in_progress. Close it out so the ACP
+                # trajectory is complete, then re-raise (DefaultAgent.run handles
+                # Submitted via InterruptAgentFlow).
+                submission = e.messages[0].get("content", "") if e.messages else ""
+                for action in actions:
+                    _emit_tool_result(
+                        self._session_id,
+                        action.get("tool_call_id", ""),
+                        submission or "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT",
+                    )
+                raise
+            for action, obs in zip(actions, observations, strict=False):
+                _emit_tool_result(
+                    self._session_id,
+                    action.get("tool_call_id", ""),
+                    obs.get("content", ""),
+                )
+            return observations
+
+    return _ACPAgent
 
 
 # ── Model / config construction ───────────────────────────────────────────────
@@ -213,6 +237,9 @@ class _ACPAgent(DefaultAgent):
 
 def _load_config() -> dict:
     """Load mini-swe's bundled config, split into agent/model/environment dicts."""
+    from minisweagent import package_dir
+    from minisweagent.agents.default import AgentConfig
+
     cfg_path = Path(package_dir) / "config" / _CONFIG_NAME
     raw = yaml.safe_load(cfg_path.read_text()) if cfg_path.exists() else {}
     agent_cfg = dict(raw.get("agent", {}))
@@ -226,8 +253,10 @@ def _load_config() -> dict:
     }
 
 
-def _build_model(model_cfg: dict, model_override: str) -> LitellmModel:
+def _build_model(model_cfg: dict, model_override: str):
     """Build a LitellmModel wired to BenchFlow's resolved provider, if any."""
+    from minisweagent.models.litellm_model import LitellmModel
+
     bare = (
         model_override
         or os.environ.get("BENCHFLOW_PROVIDER_MODEL")
@@ -258,10 +287,22 @@ def _build_model(model_cfg: dict, model_override: str) -> LitellmModel:
 
 
 def main() -> None:
+    # Silence mini-swe's import banner and make litellm cost-tracking failures
+    # non-fatal (BenchFlow routes through a usage proxy where litellm often can't
+    # price a model; without this the run dies in _calculate_cost).
+    os.environ.setdefault("MSWEA_SILENT_STARTUP", "1")
+    os.environ.setdefault("MSWEA_COST_TRACKING", "ignore_errors")
+    os.environ.setdefault("LITELLM_LOG", "ERROR")
+    _isolate_stdout()
+
+    from minisweagent.environments.local import LocalEnvironment
+
+    config = _load_config()
+    acp_agent_class = _acp_agent_class()
+
     session_id = "mini-swe-shim"
     cwd = _DEFAULT_CWD
     model_override = ""
-    config = _load_config()
 
     while True:
         try:
@@ -308,7 +349,7 @@ def main() -> None:
             try:
                 model = _build_model(config["model"], model_override)
                 env = LocalEnvironment(cwd=cwd, **config["environment"])
-                agent = _ACPAgent(
+                agent = acp_agent_class(
                     model,
                     env,
                     session_id=session_id,
