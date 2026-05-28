@@ -66,14 +66,29 @@ _DEFAULT_CWD = "/app"
 # tool-calling harness; swebench.yaml hardcodes /testbed + "don't touch tests".
 _CONFIG_NAME = os.environ.get("MINI_SWE_CONFIG", "mini.yaml")
 
-# Map BenchFlow's resolved provider protocol → litellm provider prefix. litellm
-# infers the provider from the model name, so a bare name (the SDK strips the
-# prefix before set_model) needs one prepended when we know the protocol.
-_PROTOCOL_PREFIX = {
-    "anthropic-messages": "anthropic",
-    "openai-completions": "openai",
-    "openai-responses": "openai",
-}
+def _is_anthropic_model(model: str) -> bool:
+    m = model.lower()
+    return "claude" in m or "anthropic" in m
+
+
+def _litellm_prefix(protocol: str, model: str) -> str:
+    """Pick the litellm provider prefix for BenchFlow's resolved endpoint.
+
+    The SDK strips the provider prefix before handing the model to the agent, so
+    litellm can't infer the dialect from a bare name — we reconstruct it from the
+    resolved ``BENCHFLOW_PROVIDER_PROTOCOL``. mini-swe drives ``litellm.completion``,
+    which speaks chat-completions and anthropic-messages but NOT the OpenAI
+    Responses API; ``openai-responses`` only ever comes from aws-bedrock, whose
+    proxy also exposes an anthropic-messages surface, so Anthropic models route
+    there. Returns "" for unknown protocols (let litellm infer from the name).
+    """
+    if protocol == "anthropic-messages":
+        return "anthropic"
+    if protocol == "openai-completions":
+        return "openai"
+    if protocol == "openai-responses":
+        return "anthropic" if _is_anthropic_model(model) else "openai"
+    return ""
 
 
 # ── ACP stdio I/O ─────────────────────────────────────────────────────────────
@@ -223,8 +238,10 @@ def _build_model(model_cfg: dict, model_override: str) -> LitellmModel:
     api_key = os.environ.get("BENCHFLOW_PROVIDER_API_KEY")
 
     model_name = bare
-    if "/" not in bare and protocol in _PROTOCOL_PREFIX:
-        model_name = f"{_PROTOCOL_PREFIX[protocol]}/{bare}"
+    if "/" not in bare:
+        prefix = _litellm_prefix(protocol, bare)
+        if prefix:
+            model_name = f"{prefix}/{bare}"
 
     cfg = dict(model_cfg)
     model_kwargs = dict(cfg.pop("model_kwargs", {}) or {})
