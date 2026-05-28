@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import subprocess
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -72,6 +73,13 @@ logger = logging.getLogger(__name__)
 # Used to scope Docker prune calls so we only delete our own resources and never
 # touch unrelated containers/networks on shared developer or CI hosts.
 BENCHFLOW_OWNED_LABEL = "benchflow.owned=true"
+
+# Serialize docker prune across concurrent _run_task retries. When --concurrency
+# is high (e.g. 60) and tasks retry in lockstep, parallel `docker container
+# prune` calls each block on the daemon and time out at 30s, cascading into
+# false install_failure errors. Non-blocking acquire: if a prune is already in
+# flight, skip — there's nothing new to clean since the in-flight one started.
+_PRUNE_LOCK = threading.Lock()
 
 _SENTINEL: Any = object()  # default value for _sdk; tests replace with AsyncMock
 
@@ -198,6 +206,7 @@ class EvaluationConfig:
     model: str | None = None
     environment: str = "docker"
     concurrency: int = 4
+    build_concurrency: int | None = None
     prompts: list[str | None] | None = None
     agent_env: dict[str, str] = field(default_factory=dict)
     retry: RetryConfig = field(default_factory=RetryConfig)
@@ -499,6 +508,7 @@ class Evaluation:
             model=effective_model(agent_name, raw.get("model")),
             environment=raw.get("environment", "docker"),
             concurrency=raw.get("concurrency", 4),
+            build_concurrency=raw.get("build_concurrency"),
             prompts=prompts,
             agent_env=agent_env_raw,
             retry=RetryConfig(max_retries=raw.get("max_retries", 2)),
@@ -671,8 +681,15 @@ class Evaluation:
         containers/networks our own compose files created. Unrelated Docker
         workloads on the same host are left untouched. The label is applied in
         ``sandbox/_compose_files/docker-compose-base.yaml``.
+
+        Serialized via ``_PRUNE_LOCK``: parallel retries from high-concurrency
+        batches would otherwise each kick off a 30s-timeout docker CLI call,
+        all blocking on the same daemon. Non-blocking acquire — if another
+        prune is in flight we just skip, since it will catch the same garbage.
         """
         if self._config.environment != "docker":
+            return
+        if not _PRUNE_LOCK.acquire(blocking=False):
             return
         label_filter = f"label={BENCHFLOW_OWNED_LABEL}"
         try:
@@ -702,6 +719,8 @@ class Evaluation:
             )
         except Exception as e:
             logger.warning(f"Docker prune failed: {e}")
+        finally:
+            _PRUNE_LOCK.release()
 
     def _resolve_skills_dir(self, task_dir: Path, skills_dir: str | None) -> str | None:
         """Resolve skills_dir — 'auto' means per-task environment/skills/."""
@@ -913,13 +932,16 @@ class Evaluation:
 
         async def bounded(td: Path) -> tuple[str, RunResult]:
             async with sem:
-                # Jitter start to avoid SSH connection storms at high concurrency
+                # Jitter start to avoid SSH/docker-daemon storms at high
+                # concurrency. The window scales linearly with --concurrency so
+                # the average start rate stays around 2 tasks/sec; the previous
+                # 10s cap was too tight for c >= 30 (≈10 starts/sec flooded the
+                # daemon's compose-up handler).
                 import random
 
                 if cfg.concurrency > 16:
-                    await asyncio.sleep(
-                        random.uniform(0, min(cfg.concurrency / 10, 10))
-                    )
+                    jitter_max = max(cfg.concurrency / 2, 8.0)
+                    await asyncio.sleep(random.uniform(0, jitter_max))
                 result = await self._run_task(td)
                 self._log_and_report(td, result)
                 return td.name, result
@@ -1217,6 +1239,12 @@ class Evaluation:
         self._prune_docker()
 
         cfg = self._config
+
+        if cfg.build_concurrency is not None and cfg.environment == "docker":
+            from benchflow.sandbox.docker import DockerSandbox
+
+            DockerSandbox.set_build_concurrency(cfg.build_concurrency)
+
         logger.info(
             f"Job: {len(task_dirs)} tasks, {len(completed)} done, "
             f"{len(remaining)} to run (concurrency={cfg.concurrency})"
