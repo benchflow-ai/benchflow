@@ -66,6 +66,7 @@ _DEFAULT_CWD = "/app"
 # tool-calling harness; swebench.yaml hardcodes /testbed + "don't touch tests".
 _CONFIG_NAME = os.environ.get("MINI_SWE_CONFIG", "mini.yaml")
 
+
 def _is_anthropic_model(model: str) -> bool:
     m = model.lower()
     return "claude" in m or "anthropic" in m
