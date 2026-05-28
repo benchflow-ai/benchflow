@@ -1106,6 +1106,17 @@ def eval_create(
         int | None,
         typer.Option("--concurrency", help="Max concurrent tasks"),
     ] = None,
+    build_concurrency: Annotated[
+        int | None,
+        typer.Option(
+            "--build-concurrency",
+            help=(
+                "Max concurrent docker image builds. Defaults to --concurrency. "
+                "Set lower (e.g. 8) when --concurrency is high to avoid "
+                "overwhelming the docker daemon with parallel builds."
+            ),
+        ),
+    ] = None,
     worker_concurrency: Annotated[
         int | None,
         typer.Option(
@@ -1348,6 +1359,8 @@ def eval_create(
             j._jobs_dir = Path(jobs_dir)
         if concurrency is not None:
             j._config.concurrency = concurrency
+        if build_concurrency is not None:
+            j._config.build_concurrency = build_concurrency
         if agent_idle_timeout is not None:
             j._config.agent_idle_timeout = eval_agent_idle_timeout
         if usage_tracking_overridden:
@@ -1460,6 +1473,7 @@ def eval_create(
                 model=eff_model,
                 environment=eval_environment,
                 concurrency=eval_concurrency,
+                build_concurrency=build_concurrency,
                 agent_idle_timeout=eval_agent_idle_timeout,
                 agent_env=parsed_env,
                 sandbox_user=sandbox_user,
@@ -1489,6 +1503,7 @@ def eval_create(
                 model=eff_model,
                 environment=eval_environment,
                 concurrency=eval_concurrency,
+                build_concurrency=build_concurrency,
                 agent_idle_timeout=eval_agent_idle_timeout,
                 agent_env=parsed_env,
                 sandbox_user=sandbox_user,

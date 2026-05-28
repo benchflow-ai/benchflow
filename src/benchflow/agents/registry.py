@@ -524,7 +524,7 @@ AGENTS: dict[str, AgentConfig] = {
             "  if command -v apt-get >/dev/null 2>&1; then "
             f"    {_apt_install('curl', 'ca-certificates', 'git')}; "
             "  elif command -v dnf >/dev/null 2>&1; then "
-            "    dnf -y install curl ca-certificates git >/dev/null 2>&1; "
+            "    dnf -y --allowerasing install curl ca-certificates git >/dev/null 2>&1; "
             "  elif command -v apk >/dev/null 2>&1; then "
             "    apk add --no-cache curl ca-certificates git >/dev/null 2>&1; "
             "  else "
