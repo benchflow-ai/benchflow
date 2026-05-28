@@ -194,6 +194,13 @@ _PI_LAUNCHER = (Path(__file__).parent / "pi_acp_launcher.py").read_text()
 # Path to the Harvey LAB ACP shim (runs Harvey LAB harness as an ACP agent)
 _HARVEY_LAB_SHIM = (Path(__file__).parent / "harvey_lab_acp_shim.py").read_text()
 
+# Path to the mini-swe-agent ACP shim (runs mini-swe's DefaultAgent loop)
+_MINI_SWE_SHIM = (Path(__file__).parent / "mini_swe_acp_shim.py").read_text()
+
+# Isolated venv for the Python-based mini-swe-agent harness — kept out of the
+# task's own Python so benchmark images can pin whatever interpreter they need.
+_MINI_SWE_VENV = "/opt/benchflow/mini-swe-venv"
+
 
 def _json_settings_merge(path: str, mutator: str) -> str:
     """Idempotent JSON-settings merge as a one-line bash snippet."""
@@ -587,6 +594,39 @@ AGENTS: dict[str, AgentConfig] = {
         ),
         disallow_web_tools_owned_paths=["$HOME/.openhands"],
     ),
+    "mini-swe": AgentConfig(
+        name="mini-swe",
+        description="mini-swe-agent via ACP shim — minimal single-bash-tool "
+        "harness (multi-model via litellm)",
+        install_cmd=(
+            "export DEBIAN_FRONTEND=noninteractive && "
+            "( command -v python3 >/dev/null 2>&1 || "
+            f"  {_apt_install('python3', 'python3-venv', 'python3-pip')} ) && "
+            f"( [ -x {_MINI_SWE_VENV}/bin/python ] || "
+            f"  python3 -m venv {_MINI_SWE_VENV} || "
+            f"  ( {_apt_install('python3-venv')} && "
+            f"    python3 -m venv {_MINI_SWE_VENV} ) ) && "
+            f"{_MINI_SWE_VENV}/bin/python -m pip install -q --upgrade pip && "
+            f"{_MINI_SWE_VENV}/bin/python -m pip install -q mini-swe-agent && "
+            + _install_python_script(
+                f"{_BENCHFLOW_BIN_PREFIX}/mini-swe-acp-shim", _MINI_SWE_SHIM
+            )
+            + " && chmod -R a+rX /opt/benchflow && "
+            f"{_MINI_SWE_VENV}/bin/python -c 'import minisweagent'"
+        ),
+        launch_cmd=(
+            "MSWEA_SILENT_STARTUP=1 MSWEA_COST_TRACKING=ignore_errors "
+            f"{_MINI_SWE_VENV}/bin/python "
+            f"{_BENCHFLOW_BIN_PREFIX}/mini-swe-acp-shim"
+        ),
+        protocol="acp",
+        requires_env=[],  # inferred from --model at runtime (read from BENCHFLOW_PROVIDER_*)
+        # litellm infers the API protocol from the (provider-prefixed) model
+        # name; empty lets the provider determine routing for multi-endpoint
+        # providers. The shim reconstructs the provider prefix from
+        # BENCHFLOW_PROVIDER_PROTOCOL when the SDK strips it.
+        api_protocol="",
+    ),
 }
 
 
@@ -669,6 +709,9 @@ AGENT_ALIASES: dict[str, str] = {
     "openhands": "openhands",
     "oh": "openhands",
     "harvey-lab": "harvey-lab-harness",
+    "mini": "mini-swe",
+    "minisweagent": "mini-swe",
+    "mini-swe-agent": "mini-swe",
 }
 
 VALID_PROTOCOLS = {"acp", "acpx"}
