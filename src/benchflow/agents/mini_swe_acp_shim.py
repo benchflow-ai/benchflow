@@ -195,39 +195,46 @@ def _acp_agent_class():
             text = (message.get("content") or "").strip()
             if text:
                 _emit_text(self._session_id, text)
-            for action in message.get("extra", {}).get("actions", []):
-                _emit_tool_call(
-                    self._session_id,
-                    action.get("tool_call_id", ""),
-                    action.get("command", ""),
-                )
             return message
 
         def execute_actions(self, message: dict) -> list[dict]:
+            # Mirrors DefaultAgent.execute_actions, but drives the env loop
+            # per-action so the ACP tool-call lifecycle is modeled accurately:
+            # each action emits start→result around its own env.execute, and an
+            # action that never runs (e.g. anything after a submit) emits nothing
+            # rather than being falsely marked completed. mini-swe's instance
+            # template asks for submit alone, but a turn may carry several tool
+            # calls, so we don't assume one.
             actions = message.get("extra", {}).get("actions", [])
+            outputs: list[dict] = []
+            tool_call_id = ""
             try:
-                observations = super().execute_actions(message)
+                for action in actions:
+                    tool_call_id = action.get("tool_call_id", "")
+                    _emit_tool_call(
+                        self._session_id, tool_call_id, action.get("command", "")
+                    )
+                    output = self.env.execute(action)  # may raise Submitted
+                    outputs.append(output)
+                    _emit_tool_result(
+                        self._session_id, tool_call_id, output.get("output", "")
+                    )
             except Submitted as e:
-                # The submit command (`echo COMPLETE_TASK...`) makes env.execute
-                # raise before the parent emits observations, which would leave
-                # its tool_call dangling in_progress. Close it out so the ACP
-                # trajectory is complete, then re-raise (DefaultAgent.run handles
+                # The submit command makes env.execute raise before returning, so
+                # close out only that action (re-raise; DefaultAgent.run handles
                 # Submitted via InterruptAgentFlow).
                 submission = e.messages[0].get("content", "") if e.messages else ""
-                for action in actions:
-                    _emit_tool_result(
-                        self._session_id,
-                        action.get("tool_call_id", ""),
-                        submission or "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT",
-                    )
-                raise
-            for action, obs in zip(actions, observations, strict=False):
                 _emit_tool_result(
                     self._session_id,
-                    action.get("tool_call_id", ""),
-                    obs.get("content", ""),
+                    tool_call_id,
+                    submission or "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT",
                 )
-            return observations
+                raise
+            return self.add_messages(
+                *self.model.format_observation_messages(
+                    message, outputs, self.get_template_vars()
+                )
+            )
 
     return _ACPAgent
 
@@ -364,18 +371,27 @@ def main() -> None:
                     f"steps={agent.n_calls}]"
                     + (f"\n{submission}" if submission else ""),
                 )
+                send(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "result": {"stopReason": "end_turn"},
+                    }
+                )
             except Exception as e:
-                # Surface the error in the trajectory rather than crashing the
-                # shim — the ACP client still needs a prompt response.
+                # Unexpected failures here are auth/provider/protocol/runtime
+                # errors (the agent's own task failures return normally above
+                # with an exit_status). Return a JSON-RPC error so BenchFlow
+                # classifies it as an agent/infra error instead of masking it as
+                # a task failure (matches the openclaw shim).
                 _emit_text(session_id, f"[mini-swe-agent error: {e}]")
-
-            send(
-                {
-                    "jsonrpc": "2.0",
-                    "id": req_id,
-                    "result": {"stopReason": "end_turn"},
-                }
-            )
+                send(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "error": {"code": -32603, "message": str(e)},
+                    }
+                )
 
         elif method == "session/cancel":
             send({"jsonrpc": "2.0", "id": req_id, "result": {}})

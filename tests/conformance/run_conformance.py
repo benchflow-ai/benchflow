@@ -31,6 +31,7 @@ AGENT_MODELS = {
     "openclaw": "gemini-3.1-flash-lite-preview",
     "codex-acp": "gpt-5.4-mini",
     "gemini": "gemini-3.1-flash-lite-preview",
+    "mini-swe": "gemini-3.1-flash-lite-preview",
 }
 
 ENV_KEYS = {
@@ -39,6 +40,7 @@ ENV_KEYS = {
     "openclaw": [],
     "codex-acp": ["OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN"],
     "gemini": ["GOOGLE_API_KEY", "GEMINI_API_KEY"],
+    "mini-swe": ["GOOGLE_API_KEY", "GEMINI_API_KEY"],
 }
 
 
