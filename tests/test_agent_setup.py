@@ -332,6 +332,69 @@ async def test_deploy_skills_agent_with_empty_skill_paths_does_not_use_oracle_pa
 
 
 @pytest.mark.asyncio
+async def test_deploy_skills_oracle_autodiscovers_bundled_skills(tmp_path):
+    """Guards the fix from PR #558 for issue #557: oracle mode on Daytona
+    failed for tasks with bundled skills because deploy_skills never detected
+    the environment/skills/ directory that _start_env_and_upload already
+    uploaded to /app/skills.  Without auto-discovery, effective_skills stayed
+    None and the linking step was skipped, so /root/.claude/skills was never
+    populated."""
+    env = MagicMock()
+    env.exec = AsyncMock(return_value=MagicMock(return_code=0, stdout=""))
+    env.upload_dir = AsyncMock()
+
+    task_path = tmp_path / "task"
+    bundled = task_path / "environment" / "skills" / "mesh-analysis" / "scripts"
+    bundled.mkdir(parents=True)
+    (bundled / "mesh_tool.py").write_text("class MeshAnalyzer: pass\n")
+
+    await deploy_skills(
+        env=env,
+        task_path=task_path,
+        skills_dir=None,
+        agent_cfg=None,
+        sandbox_user=None,
+        agent_cwd="/app",
+        task=_make_task(None),
+    )
+
+    env.upload_dir.assert_not_called()
+    env.exec.assert_awaited_once()
+    link_cmd = env.exec.await_args.args[0]
+    assert "ln -sfn /app/skills /root/.claude/skills" in link_cmd
+
+
+@pytest.mark.asyncio
+async def test_deploy_skills_autodiscovery_skipped_when_include_task_skills_false(
+    tmp_path,
+):
+    """Guards the fix from PR #558: auto-discovery must respect
+    include_task_skills=False so self-gen trials start without skills."""
+    env = MagicMock()
+    env.exec = AsyncMock(return_value=MagicMock(return_code=0, stdout=""))
+    env.upload_dir = AsyncMock()
+
+    task_path = tmp_path / "task"
+    bundled = task_path / "environment" / "skills" / "some-skill"
+    bundled.mkdir(parents=True)
+    (bundled / "helper.py").write_text("pass\n")
+
+    await deploy_skills(
+        env=env,
+        task_path=task_path,
+        skills_dir=None,
+        agent_cfg=None,
+        sandbox_user=None,
+        agent_cwd="/app",
+        task=_make_task(None),
+        include_task_skills=False,
+    )
+
+    env.upload_dir.assert_not_called()
+    env.exec.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_deploy_skills_raises_when_skill_linking_fails(tmp_path):
     env = MagicMock()
     env.exec = AsyncMock(return_value=MagicMock(return_code=17, stdout="link failed"))
