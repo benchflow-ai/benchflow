@@ -20,6 +20,7 @@ from typing import Any
 
 from benchflow.environment.protocol import StateSnapshot
 from benchflow.rewards.events import RewardEvent
+from benchflow.rewards.node import verify_result_from_reward_map
 from benchflow.rewards.protocol import VerifyResult
 from benchflow.trajectories.tree import RolloutNode, RolloutTree, Step
 
@@ -101,7 +102,12 @@ def aggregate_verify_result(node: RolloutNode) -> VerifyResult:
     for child in node.children:
         vr = child.state.get(_VERIFY_RESULT_KEY)
         if not isinstance(vr, VerifyResult):
-            vr = VerifyResult(reward=float(child.state.get(_REWARD_KEY, 0.0)))
+            # One float->VerifyResult lift policy across the codebase (the same
+            # one branch()'s runner-normalisation uses), so a bare-float child
+            # composes identically however it was scored.
+            vr = verify_result_from_reward_map(
+                {"reward": float(child.state.get(_REWARD_KEY, 0.0))}
+            )
         results.append(vr)
     mean = sum(r.reward for r in results) / len(results)
     items: dict[str, float] = {}
