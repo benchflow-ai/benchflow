@@ -67,10 +67,19 @@ class HostedEnvRef:
         """Parse a hosted environment reference.
 
         Supported forms:
-        - ``primeintellect/general-agent``
+        - ``primeintellect/general-agent``                       (owner/name; provider defaults to primeintellect)
         - ``primeintellect/general-agent@0.1.1``
-        - ``primeintellect:general-agent@0.1.1``
-        - ``primeintellect:primeintellect/general-agent@0.1.1``
+        - ``primeintellect:general-agent@0.1.1``                 (provider:name)
+        - ``primeintellect:primeintellect/general-agent@0.1.1``  (provider:owner/name)
+        - ``openreward:GeneralReasoning/KellyBench``             (provider:owner/name)
+
+        OpenReward **requires the explicit ``provider:`` prefix**: the slash form
+        ``openreward/KellyBench`` parses ``openreward`` as the *owner* and falls
+        back to the default provider (primeintellect). A generic "owner is a
+        provider name" guard can't fix this without breaking the legitimate
+        ``primeintellect/...`` owner form. TODO(PR2): route ``--source-env`` by
+        provider at the CLI/dispatch layer so the slash form can't silently
+        mis-route once the openreward runner is wired.
         """
         provider = default_provider
         value = raw.strip()
@@ -130,6 +139,9 @@ class HostedEnvRef:
     def hub_url(self) -> str:
         """Canonical hosted hub URL."""
         if self.provider == "openreward":
+            # TODO(PR3): confirm the real openreward.ai env-page URL shape
+            # against the hub before the live gate — this is a best-effort
+            # display/provenance string, never used to drive an HTTP call.
             return (
                 f"{OPENREWARD_HUB_URL}/{self.owner}/{self.name}"
                 if self.owner
