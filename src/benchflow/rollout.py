@@ -66,12 +66,16 @@ from benchflow.agents.install import (
     install_agent,
 )
 from benchflow.agents.registry import AGENT_LAUNCH, AGENTS
+from benchflow.contracts import Environment, Sandbox
 from benchflow.diagnostics import (
     RolloutDiagnostics,
     VerifierTimeoutDiagnostic,
 )
 from benchflow.environment.manifest import EnvironmentManifest
-from benchflow.environment.manifest_env import ManifestEnvironment
+from benchflow.environment.registry import (
+    DEFAULT_ENVIRONMENT_KIND,
+    resolve_environment,
+)
 from benchflow.models import RolloutResult, TrajectorySource
 from benchflow.providers.runtime import (
     ensure_bedrock_proxy_runtime,
@@ -1026,12 +1030,12 @@ class Rollout:
         self._agent_env: dict[str, str] = {}
         self._resolved_prompts: list[str] = []
         self._agent_launch: str = ""
-        self._env: Any = None
+        self._env: Sandbox | None = None
         # When True, Rollout treats _env as caller-owned: setup() skips
         # creating a new sandbox and cleanup() skips stopping it. Set via
         # use_prebuilt_env() — see Runtime.execute() for the public path.
         self._env_externally_owned: bool = False
-        self._environment: ManifestEnvironment | None = None
+        self._environment: Environment | None = None
         self._timeout: int = 0
         self._timing: dict[str, float] = {}
         self._effective_locked: list[str] = []
@@ -1306,8 +1310,10 @@ class Rollout:
         # Environment plane: provision the manifest-declared stateful
         # environment and gate on its readiness before the agent runs.
         if self._config.environment_manifest is not None:
-            self._environment = ManifestEnvironment(
-                self._config.environment_manifest, sandbox=self._env
+            self._environment = resolve_environment(
+                DEFAULT_ENVIRONMENT_KIND,
+                self._config.environment_manifest,
+                sandbox=self._env,
             )
             await self._environment.provision(
                 ctx={"task_id": self._config.task_path.name}
@@ -1326,6 +1332,21 @@ class Rollout:
 
         self._phase = "started"
 
+    @property
+    def _sandbox(self) -> Sandbox:
+        """The active sandbox, narrowed non-None.
+
+        ``self._env`` is ``None`` only before ``setup()``/``start()`` build it.
+        The execute/verify/cleanup methods run strictly after that, so they
+        reach the sandbox through this accessor instead of repeating a None
+        guard at every call site — and it fails loudly if the invariant breaks.
+        """
+        if self._env is None:
+            raise RuntimeError(
+                "sandbox not started — setup() and start() must run first"
+            )
+        return self._env
+
     # ── Phase 3: INSTALL AGENT ──
 
     async def install_agent(self) -> None:
@@ -1338,7 +1359,7 @@ class Rollout:
         cfg = self._config
         rollout_dir = self._require_rollout_dir()
 
-        cwd_result = await self._env.exec("pwd", timeout_sec=10)
+        cwd_result = await self._sandbox.exec("pwd", timeout_sec=10)
         agent_cwd = (cwd_result.stdout or "").strip() or "/app"
         self._agent_cwd = agent_cwd
 
@@ -1483,7 +1504,7 @@ class Rollout:
         if self._env and self._agent_launch.strip():
             agent_cmd = self._agent_launch.split()[0].split("/")[-1]
             with contextlib.suppress(Exception):
-                await self._env.exec(f"pkill -f '{agent_cmd}' || true", timeout_sec=10)
+                await self._sandbox.exec(f"pkill -f '{agent_cmd}' || true", timeout_sec=10)
         self._active_role = None
         self._session_tool_count = 0
         self._session_traj_count = 0
@@ -1807,7 +1828,7 @@ class Rollout:
             )
             rewards = _ensure_canonical_rewards(verifier_result.rewards)
             # Capture raw verifier output for the user
-            cat = await self._env.exec(
+            cat = await self._sandbox.exec(
                 "cat /logs/verifier/*.log 2>/dev/null || "
                 "cat /logs/verifier/output.txt 2>/dev/null || true",
                 timeout_sec=10,
@@ -1881,7 +1902,7 @@ class Rollout:
             # via Rollout.__new__() working.
             if not getattr(self, "_env_externally_owned", False):
                 try:
-                    await self._env.stop(delete=True)
+                    await self._sandbox.stop(delete=True)
                 except Exception as e:
                     logger.warning(f"Cleanup failed: {e}")
 
@@ -1916,7 +1937,7 @@ class Rollout:
                 # git safe.directory needed for SWE-bench tasks with sandbox_user
                 import shlex
 
-                await self._env.exec(
+                await self._sandbox.exec(
                     f"git config --global --add safe.directory "
                     f"{shlex.quote(self._agent_cwd)} 2>/dev/null || true",
                     user="root",
@@ -1943,7 +1964,7 @@ class Rollout:
                         logger.error(self._error)
                 finally:
                     if cfg.oracle_access:
-                        await self._env.exec(
+                        await self._sandbox.exec(
                             "mv /solution_oracle_backup /solution 2>/dev/null || true",
                             user="root",
                             timeout_sec=10,
@@ -2014,7 +2035,7 @@ class Rollout:
         last_err: Exception | None = None
         for attempt in range(3):
             try:
-                await self._env.download_dir(self._config.generated_skills_root, target)
+                await self._sandbox.download_dir(self._config.generated_skills_root, target)
                 break
             except Exception as e:
                 last_err = e
@@ -2047,13 +2068,13 @@ class Rollout:
         if isinstance(source_value, os.PathLike) and local_source.is_dir():
             remote_source = f"/skills/{_safe_skill_name(scene.name)}"
             await _ensure_sandbox_dir(self._env, Path(remote_source).parent)
-            await self._env.upload_dir(local_source, remote_source)
+            await self._sandbox.upload_dir(local_source, remote_source)
         elif source.startswith("/"):
             remote_source = source
         elif local_source.is_dir():
             remote_source = f"/skills/{_safe_skill_name(scene.name)}"
             await _ensure_sandbox_dir(self._env, Path(remote_source).parent)
-            await self._env.upload_dir(local_source, remote_source)
+            await self._sandbox.upload_dir(local_source, remote_source)
         else:
             raise FileNotFoundError(f"Scene skills_dir not found: {scene.skills_dir}")
 
@@ -2176,7 +2197,7 @@ class Rollout:
                 if cfg.sandbox_user:
                     user = shlex.quote(cfg.sandbox_user)
                     setup_cmd += f" && chown {user}:{user} {self._OUTBOX_DIR}"
-                await self._env.exec(setup_cmd, timeout_sec=10)
+                await self._sandbox.exec(setup_cmd, timeout_sec=10)
 
             inbox: dict[str, list[str]] = {r.name: [] for r in scene.roles}
             turn_counter = 0
@@ -2247,7 +2268,7 @@ class Rollout:
 
     async def _read_scene_outbox(self, sender: str) -> list[tuple[str, str]]:
         """Read and clear outbox files left by *sender*. Returns [(recipient, content), ...]."""
-        result = await self._env.exec(
+        result = await self._sandbox.exec(
             f"ls {self._OUTBOX_DIR}/*.json 2>/dev/null || true",
             timeout_sec=10,
         )
@@ -2257,7 +2278,7 @@ class Rollout:
         messages: list[tuple[str, str]] = []
         for fpath in files:
             quoted = shlex.quote(fpath)
-            cat = await self._env.exec(f"cat {quoted}", timeout_sec=10)
+            cat = await self._sandbox.exec(f"cat {quoted}", timeout_sec=10)
             try:
                 data = json.loads(cat.stdout or "{}")
                 recipient = data.get("to", "")
@@ -2269,7 +2290,7 @@ class Rollout:
                     )
             except json.JSONDecodeError:
                 logger.warning(f"[Scene] invalid JSON in outbox: {fpath}")
-            await self._env.exec(f"rm -f {quoted}", timeout_sec=10)
+            await self._sandbox.exec(f"rm -f {quoted}", timeout_sec=10)
         return messages
 
     async def _run_user_loop(self) -> None:
@@ -2305,7 +2326,7 @@ class Rollout:
         # Oracle access: read /solution before the agent runs, then remove it
         solution: str | None = None
         if cfg.oracle_access:
-            cat = await self._env.exec(
+            cat = await self._sandbox.exec(
                 "cat /solution/solve.sh 2>/dev/null || true",
                 user="root",
                 timeout_sec=10,
@@ -2317,7 +2338,7 @@ class Rollout:
         # Hide oracle files from agent — move rather than delete so the
         # final verify() can still access /solution if the verifier needs it.
         if cfg.oracle_access:
-            await self._env.exec(
+            await self._sandbox.exec(
                 "mv /solution /solution_oracle_backup 2>/dev/null || true",
                 user="root",
                 timeout_sec=10,
@@ -2364,7 +2385,7 @@ class Rollout:
             # next round. Temporarily restore /solution so the verifier can
             # access it, then re-hide before the next agent round.
             if cfg.oracle_access:
-                await self._env.exec(
+                await self._sandbox.exec(
                     "mv /solution_oracle_backup /solution 2>/dev/null || true",
                     user="root",
                     timeout_sec=10,
@@ -2373,7 +2394,7 @@ class Rollout:
                 rewards, verifier_output, verifier_error = await self.soft_verify()
             finally:
                 if cfg.oracle_access:
-                    await self._env.exec(
+                    await self._sandbox.exec(
                         "mv /solution /solution_oracle_backup 2>/dev/null || true",
                         user="root",
                         timeout_sec=10,
