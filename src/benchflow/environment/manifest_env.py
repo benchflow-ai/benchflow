@@ -128,6 +128,14 @@ class ManifestEnvironment:
         For framework-started environments only the services that were
         actually started are probed; for entrypoint-owned environments the
         manifest's declared HTTP probes are used.
+
+        Framework-owned invariant (``docs/architecture.md``: "Readiness and
+        teardown are framework guarantees"): this gate is invoked by
+        ``Rollout.start()`` — never by benchmark code — whenever the rollout
+        has an ``environment_manifest``, and it runs *before* the agent does.
+        It branches only on ``owns_lifecycle`` (which probe URLs to poll),
+        never on ``[environment.state]`` / snapshot support — readiness is
+        independent of whether the environment can roll back.
         """
         m = self._manifest
         timeout = m.readiness.timeout_sec
