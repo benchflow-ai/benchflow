@@ -279,6 +279,14 @@ class AgentConfig:
     # Use for agents whose supported toggle is a launch/config override.
 
 
+# The oracle is a first-class *special* agent, not an ACP agent in ``AGENTS``:
+# it has its own rollout branch (``cfg.primary_agent == ORACLE_AGENT``) that
+# runs the task's ``solution/solve.sh`` instead of installing/connecting an
+# agent. It is deliberately absent from ``AGENTS`` (nothing to install), so
+# membership checks must use :func:`is_known_agent`, not ``name in AGENTS``.
+ORACLE_AGENT = "oracle"
+
+
 # Agent registry — all supported agents
 AGENTS: dict[str, AgentConfig] = {
     "claude-agent-acp": AgentConfig(
@@ -572,6 +580,17 @@ AGENTS: dict[str, AgentConfig] = {
 # Updated by register_agent() when new agents are added at runtime.
 AGENT_INSTALLERS: dict[str, str] = {name: a.install_cmd for name, a in AGENTS.items()}
 AGENT_LAUNCH: dict[str, str] = {name: a.launch_cmd for name, a in AGENTS.items()}
+
+
+def is_known_agent(name: str) -> bool:
+    """Whether ``name`` is a recognized agent — a registered ACP agent *or* the
+    oracle special mode.
+
+    Use this for "is this agent valid" checks instead of ``name in AGENTS``: the
+    oracle runs the task's reference solution and is intentionally not in
+    ``AGENTS``, so a bare membership test mis-flags it as unknown.
+    """
+    return name in AGENTS or name == ORACLE_AGENT
 
 
 def get_sandbox_home_dirs() -> set[str]:
