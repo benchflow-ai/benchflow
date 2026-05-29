@@ -87,7 +87,7 @@ def test_sqlite_backup_command_prefers_cli_falls_back_to_python():
     ClawsBench regression (smolclaws ships python3 but not the sqlite3 CLI)."""
     cmd = _sqlite_backup_command("/data/x.db", "/snap/x.db")
     assert "command -v sqlite3" in cmd
-    assert '.backup' in cmd  # the CLI branch
+    assert ".backup" in cmd  # the CLI branch
     assert "python3 -c" in cmd  # the fallback branch
     assert "sqlite3.connect" in cmd
 
