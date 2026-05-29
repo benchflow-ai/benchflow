@@ -34,6 +34,13 @@ logger = logging.getLogger(__name__)
 
 PRIME_SIMPLE_INDEX = "https://hub.primeintellect.ai/primeintellect/simple/"
 PRIME_HUB_ENV_URL = "https://app.primeintellect.ai/dashboard/environments"
+OPENREWARD_HUB_URL = "https://openreward.ai"
+
+# Hosted-env providers BenchFlow can run. PrimeIntellect runs locally via
+# vf-eval; OpenReward runs via the openreward client driving its managed
+# sandbox (see openreward_env.py). Keep this the single source of truth for
+# "is this hosted provider supported".
+_SUPPORTED_HOSTED_PROVIDERS = frozenset({"primeintellect", "openreward"})
 
 
 class HostedEnvError(RuntimeError):
@@ -60,10 +67,19 @@ class HostedEnvRef:
         """Parse a hosted environment reference.
 
         Supported forms:
-        - ``primeintellect/general-agent``
+        - ``primeintellect/general-agent``                       (owner/name; provider defaults to primeintellect)
         - ``primeintellect/general-agent@0.1.1``
-        - ``primeintellect:general-agent@0.1.1``
-        - ``primeintellect:primeintellect/general-agent@0.1.1``
+        - ``primeintellect:general-agent@0.1.1``                 (provider:name)
+        - ``primeintellect:primeintellect/general-agent@0.1.1``  (provider:owner/name)
+        - ``openreward:GeneralReasoning/KellyBench``             (provider:owner/name)
+
+        OpenReward **requires the explicit ``provider:`` prefix**: the slash form
+        ``openreward/KellyBench`` parses ``openreward`` as the *owner* and falls
+        back to the default provider (primeintellect). A generic "owner is a
+        provider name" guard can't fix this without breaking the legitimate
+        ``primeintellect/...`` owner form. TODO(PR2): route ``--source-env`` by
+        provider at the CLI/dispatch layer so the slash form can't silently
+        mis-route once the openreward runner is wired.
         """
         provider = default_provider
         value = raw.strip()
@@ -93,10 +109,11 @@ class HostedEnvRef:
             owner, name = None, value
 
         provider = provider.lower()
-        if provider != "primeintellect":
+        if provider not in _SUPPORTED_HOSTED_PROVIDERS:
+            supported = ", ".join(sorted(_SUPPORTED_HOSTED_PROVIDERS))
             raise HostedEnvError(
                 f"Unsupported hosted environment provider: {provider}. "
-                "Only primeintellect Verifiers environments are executable today."
+                f"Supported: {supported}."
             )
         if not name:
             raise HostedEnvError(f"Invalid hosted environment reference: {raw}")
@@ -121,6 +138,15 @@ class HostedEnvRef:
     @property
     def hub_url(self) -> str:
         """Canonical hosted hub URL."""
+        if self.provider == "openreward":
+            # TODO(PR3): confirm the real openreward.ai env-page URL shape
+            # against the hub before the live gate — this is a best-effort
+            # display/provenance string, never used to drive an HTTP call.
+            return (
+                f"{OPENREWARD_HUB_URL}/{self.owner}/{self.name}"
+                if self.owner
+                else OPENREWARD_HUB_URL
+            )
         if self.provider == "primeintellect" and self.owner:
             return f"{PRIME_HUB_ENV_URL}/{self.owner}/{self.name}"
         return PRIME_HUB_ENV_URL

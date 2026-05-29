@@ -306,3 +306,17 @@ class TestReexport:
         assert ORSAdapter.__module__ == "benchflow.adapters.ors"
         assert callable(to_inspect_task)
         assert callable(to_ors_reward)
+
+
+def test_ors_clamps_unbounded_reward_and_flags_invalid():
+    """Guards the KellyBench reward-clamp hazard: ORS clamps rewards to [0,1] and
+    flags out-of-range values invalid, so an unbounded log-wealth reward yields a
+    safe 0.0 trainer reward (the raw value is preserved in metadata, and the
+    canonical verify_result.json keeps the real number upstream)."""
+    from benchflow.adapters.ors import ORSAdapter
+    from benchflow.rewards.protocol import VerifyResult
+
+    out = ORSAdapter.verify_result_to_ors(VerifyResult(reward=42.0))
+    assert out["reward"] == 0.0
+    assert out["is_valid"] is False
+    assert out["metadata"]["raw_reward"] == repr(42.0)

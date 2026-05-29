@@ -268,3 +268,31 @@ def test_eval_create_source_env_routes_to_hosted_runner(tmp_path, monkeypatch):
     assert config.agent == "gemini"
     assert config.model == "gemini-3.1-flash-lite-preview"
     assert "not used by source-env runs" in result.output
+
+
+def test_hosted_env_ref_accepts_openreward_provider():
+    """v0.5 Track-2: the openreward provider is now executable (no longer the
+    hard-rejected 'only primeintellect' path)."""
+    ref = HostedEnvRef.parse("openreward:GeneralReasoning/KellyBench")
+    assert ref.provider == "openreward"
+    assert ref.owner == "GeneralReasoning"
+    assert ref.name == "KellyBench"
+    assert ref.env_id == "GeneralReasoning/KellyBench"
+    assert ref.env_uid == "openreward:GeneralReasoning/KellyBench@latest"
+
+
+def test_hosted_env_ref_openreward_hub_url():
+    ref = HostedEnvRef.parse("openreward:GeneralReasoning/KellyBench@abc-123")
+    assert ref.hub_url == "https://openreward.ai/GeneralReasoning/KellyBench"
+
+
+def test_hosted_env_ref_rejects_unknown_provider():
+    """A genuinely unknown hosted provider still raises — the allow-list only
+    grew by openreward, it didn't open up."""
+    try:
+        HostedEnvRef.parse("notaprovider:foo/bar")
+    except HostedEnvError as exc:
+        assert "Unsupported hosted environment provider" in str(exc)
+        assert "openreward" in str(exc)  # supported set is surfaced
+    else:
+        raise AssertionError("expected HostedEnvError")
