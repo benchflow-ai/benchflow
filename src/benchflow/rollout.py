@@ -44,7 +44,7 @@ import logging
 import os
 import shlex
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -83,6 +83,8 @@ from benchflow.providers.runtime import (
     extract_usage,
     stop_provider_runtime,
 )
+from benchflow.rewards.node import verify_result_from_reward_map
+from benchflow.rewards.protocol import VerifyResult
 from benchflow.rewards.validation import validate_reward_map
 from benchflow.rollout_branch import ChildRunner
 from benchflow.rollout_branch import branch as _branch_engine
@@ -258,6 +260,29 @@ async def _ensure_sandbox_dir(
 
 
 _DIAG_TRUNCATE = 2000
+
+
+def _write_verify_result_json(
+    rollout_dir: Path, verify_result: VerifyResult | None
+) -> None:
+    """Persist the canonical ``VerifyResult`` to ``verifier/verify_result.json``.
+
+    The Reward-plane source of truth (#v0.5 Phase 1): unlike ``result.json``
+    (which keeps the legacy reward *dict* for the ~10 existing consumers), this
+    file is the canonical ``{reward, items, events, error, space, granularity}``
+    structure — carrying the architecture's ``(space, granularity)`` tag and the
+    full event list — that the trainer export reads and branch aggregation will
+    read. Skipped when no result was produced (nothing scored).
+    """
+    if verify_result is None:
+        return
+    # Serialize via the dataclass itself — no hand-rolled second event schema to
+    # drift from VerifyResult/RewardEvent (the ORS ``timestamp`` rename is for
+    # the trainer wire format only; this internal artifact uses the dataclass'
+    # own ``ts``, matching rewards.jsonl).
+    out = rollout_dir / "verifier" / "verify_result.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(asdict(verify_result), indent=2, default=str))
 
 
 def _write_rewards_jsonl(
@@ -469,6 +494,7 @@ def _build_rollout_result(
     export_error: str | None = None,
     trajectory_source: TrajectorySource | None = None,
     rewards: dict | None,
+    verify_result: VerifyResult | None = None,
     started_at: datetime,
     timing: dict[str, float],
     scenes: list[Scene] | None = None,
@@ -492,6 +518,11 @@ def _build_rollout_result(
     """
     if diagnostics is None:
         diagnostics = RolloutDiagnostics()
+    # The canonical Reward-plane result. On the live path Rollout.verify()
+    # already built it; derive here only for callers that pass just the legacy
+    # dict, so every rollout still emits one sourced VerifyResult (#v0.5 Phase 1).
+    if verify_result is None:
+        verify_result = verify_result_from_reward_map(rewards, error=verifier_error)
     finished_at = datetime.now()
     result = RolloutResult(
         task_name=task_name,
@@ -577,6 +608,11 @@ def _build_rollout_result(
     )
     (rollout_dir / "timing.json").write_text(json.dumps(timing, indent=2))
     (rollout_dir / "prompts.json").write_text(json.dumps(prompts, indent=2))
+    _write_verify_result_json(rollout_dir, verify_result)
+    # rewards.jsonl stays dict-derived: it reads (space, granularity) from the
+    # same validated reward map the VerifyResult is built from, so its lines are
+    # identical to sourcing verify_result.events — and verify_result.json is the
+    # canonical structure trainers/branch read.
     _write_rewards_jsonl(rollout_dir, rewards, finished_at)
     _write_trainer_artifact(
         rollout_dir,
@@ -584,6 +620,7 @@ def _build_rollout_result(
         prompts=prompts,
         trajectory=trajectory,
         rewards=rewards,
+        verify_result=verify_result,
         model=model,
         verifier_error=verifier_error,
     )
@@ -597,6 +634,7 @@ def _write_trainer_artifact(
     prompts: list[str],
     trajectory: list[dict],
     rewards: dict | None,
+    verify_result: VerifyResult | None = None,
     model: str | None,
     verifier_error: str | None,
 ) -> None:
@@ -606,6 +644,10 @@ def _write_trainer_artifact(
     that reaches result-building should produce a trainer-ready Verifiers /
     ORS record so prime-rl / Verifiers can ingest the run directly. Failures
     here are logged but never block result writing.
+
+    Phase 1: the export READS the canonical ``verify_result`` (the source of
+    truth) instead of re-deriving the reward from the legacy dict; ``rewards``
+    is kept as a back-compat fallback for callers without a VerifyResult.
     """
     from benchflow.trajectories.export import write_rollout_verifiers_jsonl
 
@@ -616,6 +658,7 @@ def _write_trainer_artifact(
             prompts=prompts,
             trajectory=trajectory,
             rewards=rewards,
+            verify_result=verify_result,
             model=model,
             environment=task_name,
             error=verifier_error,
@@ -1097,6 +1140,11 @@ class Rollout:
 
         # Populated by verify()
         self._rewards: dict | None = None
+        # The canonical Reward-plane result — the source of truth that export
+        # and (later) branch aggregation READ, instead of re-deriving from the
+        # legacy dict above. The dict is kept as a derived projection for the
+        # ~10 existing consumers of RolloutResult.rewards (#v0.5 Phase 1).
+        self._verify_result: VerifyResult | None = None
         self._verifier_error: str | None = None
         self._error: str | None = None
         # Populated by _export_generated_skills() on failure (#389 follow-up).
@@ -1759,6 +1807,13 @@ class Rollout:
         )
         if verifier_timeout_diag is not None:
             self._diagnostics.set(verifier_timeout_diag)
+
+        # Build the canonical VerifyResult once, here, from the validated
+        # reward map — the source of truth downstream artifacts read (#v0.5
+        # Phase 1). verify() still returns the dict for backward compatibility.
+        self._verify_result = verify_result_from_reward_map(
+            self._rewards, error=self._verifier_error
+        )
 
         self._phase = "verified"
         return self._rewards
@@ -2621,6 +2676,7 @@ class Rollout:
             partial_trajectory=self._partial_trajectory,
             trajectory_source=self._trajectory_source,
             rewards=self._rewards,
+            verify_result=self._verify_result,
             started_at=self._require_started_at(),
             timing=self._timing,
             scenes=self._config.effective_scenes,

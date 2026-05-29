@@ -60,3 +60,20 @@ port    = 9004
 name    = "gdrive"
 command = "claw-gdrive --db /data/gdrive.db serve --host 0.0.0.0 --port 9005 --no-mcp"
 port    = 9005
+
+# Stateful roll-back over the per-task SQLite DBs — turns snapshot/restore from
+# stub-tested into real-benchmark coverage (Han: "Environment 总是要 roll out,
+# roll back"; docs/architecture.md "Environment lifecycle"). snapshot() runs a
+# real `sqlite3 .backup`; restore() copies it back over the live file.
+#
+# Scoped to /data/gmail.db ONLY: each per-task image installs+seeds just the
+# claw services it needs (archive-amazon-shipping seeds only gmail.db, via its
+# Dockerfile `claw-gmail --db /data/gmail.db seed`). Declaring an absent path
+# is unsound — `sqlite3 .backup` on a missing source under the writable /data
+# dir exits 0 and fabricates an empty DB, which baseline-capture would then
+# treat as real and restore would clobber a later-created service DB with.
+# TODO: widen to slack/gcal/gdoc/gdrive once tasks seed them (or once snapshot
+# skips absent paths) — see the env-state existence-guard follow-up.
+[environment.state]
+kind  = "sqlite"
+paths = ["/data/gmail.db"]

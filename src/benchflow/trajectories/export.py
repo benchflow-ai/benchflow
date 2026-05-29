@@ -28,7 +28,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 from benchflow._utils.json_safe import scrub_non_finite
 from benchflow.adapters.ors import ORSAdapter
@@ -189,43 +189,19 @@ def reward_map_to_verify_result(
     *,
     error: str | None = None,
 ) -> VerifyResult:
-    """Adapt a canonical verifier reward ``dict`` to :class:`VerifyResult`.
+    """Back-compat shim — lift a verifier reward ``dict`` to :class:`VerifyResult`.
 
-    ``Rollout.verify()`` produces a validated reward map with the shape
-    ``{"reward": float, "rubric": [...], ...other scalars...}``. The
-    Verifiers record helper expects a :class:`VerifyResult`, so we lift the
-    headline ``reward`` and any per-item scalars into ``VerifyResult.items``.
-
-    A ``None`` rewards map (verifier crashed/timed out) yields a 0.0 reward
-    with ``error`` populated so the exported record's ``reward_valid`` flag
-    is ``False``.
+    *The canonical conversion lives upstream* in
+    :func:`benchflow.rewards.node.verify_result_from_reward_map`, which Phase 1
+    runs once during scoring so the ``VerifyResult`` is the source of truth
+    (not re-derived at export time). This shim is retained only for exporting
+    **pre-existing** rollout dirs that carry the legacy reward ``dict`` but no
+    ``verify_result`` — see :func:`write_rollout_verifiers_jsonl`. It delegates
+    to the single conversion point so the two never diverge.
     """
-    if rewards is None:
-        return VerifyResult(reward=0.0, items={}, error=error or "no rewards")
+    from benchflow.rewards.node import verify_result_from_reward_map
 
-    reward = rewards.get("reward")
-    headline = float(reward) if isinstance(reward, (int, float)) else 0.0
-
-    items: dict[str, float] = {}
-    for key, value in rewards.items():
-        if key in ("reward", "rubric"):
-            continue
-        if isinstance(value, (int, float)) and not isinstance(value, bool):
-            items[str(key)] = float(value)
-
-    rubric = rewards.get("rubric")
-    if isinstance(rubric, list):
-        for i, item in enumerate(rubric):
-            if not isinstance(item, dict):
-                continue
-            rubric_item = cast(dict[str, Any], item)
-            score = rubric_item.get("score")
-            if not isinstance(score, (int, float)) or isinstance(score, bool):
-                continue
-            name = str(rubric_item.get("name") or f"rubric_{i}")
-            items[name] = float(score)
-
-    return VerifyResult(reward=headline, items=items, error=error)
+    return verify_result_from_reward_map(rewards, error=error)
 
 
 def write_rollout_verifiers_jsonl(
@@ -234,7 +210,8 @@ def write_rollout_verifiers_jsonl(
     task_id: str,
     prompts: list[str] | None,
     trajectory: list[dict[str, Any]],
-    rewards: dict[str, Any] | None,
+    rewards: dict[str, Any] | None = None,
+    verify_result: VerifyResult | None = None,
     model: str | None,
     environment: str,
     example_id: int = 0,
@@ -247,9 +224,17 @@ def write_rollout_verifiers_jsonl(
     Output path is ``rollout_dir/trainer/verifiers.jsonl`` — the
     architecture's trainer seam (issue #385). Returns the written record so
     callers can aggregate across a job.
+
+    Phase 1: when ``verify_result`` is supplied (the live path), the record is
+    built by **reading** that canonical :class:`VerifyResult` — the export no
+    longer re-derives the reward from the dict. ``rewards`` is the back-compat
+    fallback for old job dirs that only have the legacy reward map; it is
+    lifted via :func:`reward_map_to_verify_result` only when ``verify_result``
+    is ``None``.
     """
     messages = acp_events_to_messages(trajectory, prompts)
-    verify_result = reward_map_to_verify_result(rewards, error=error)
+    if verify_result is None:
+        verify_result = reward_map_to_verify_result(rewards, error=error)
     record = trajectory_to_verifiers_record(
         task_id=task_id,
         messages=messages,

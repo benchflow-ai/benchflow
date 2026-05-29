@@ -32,19 +32,23 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from benchflow.branch import aggregate as _aggregate_branch
+from benchflow.branch import aggregate_verify_result as _aggregate_vr
 from benchflow.branch import checkpoint as _checkpoint_branch
 from benchflow.branch import restore as _restore_branch
 from benchflow.models import TrajectorySource
+from benchflow.rewards.node import verify_result_from_reward_map
+from benchflow.rewards.protocol import VerifyResult
 from benchflow.trajectories.tree import RolloutNode
 
 if TYPE_CHECKING:
     from benchflow.rollout import Rollout
 
 # The per-child runner: given the child's branch node, run its continuation and
-# return the scalar return. No ``int`` index — a caller that needs per-child
-# prompts binds them into a closure (see ``run_child`` in :func:`branch`).
-ChildRunner = Callable[[RolloutNode], Awaitable[float]]
+# return its score — a canonical ``VerifyResult`` (the default runner) or a bare
+# ``float`` (custom runners / tests, which :func:`branch` lifts to a
+# ``VerifyResult``). No ``int`` index — a caller that needs per-child prompts
+# binds them into a closure (see ``run_child`` in :func:`branch`).
+ChildRunner = Callable[[RolloutNode], Awaitable["VerifyResult | float"]]
 
 
 @dataclass
@@ -66,6 +70,7 @@ class _LinearState:
     session_tool_count: int
     session_traj_count: int
     executed_prompts: list[str]
+    verify_result: VerifyResult | None
 
     @classmethod
     def capture(cls, rollout: Rollout) -> _LinearState:
@@ -81,6 +86,7 @@ class _LinearState:
             session_tool_count=getattr(rollout, "_session_tool_count", 0),
             session_traj_count=getattr(rollout, "_session_traj_count", 0),
             executed_prompts=list(rollout._executed_prompts),
+            verify_result=getattr(rollout, "_verify_result", None),
         )
 
     def restore_onto(self, rollout: Rollout) -> None:
@@ -95,6 +101,7 @@ class _LinearState:
         rollout._session_tool_count = self.session_tool_count
         rollout._session_traj_count = self.session_traj_count
         rollout._executed_prompts = list(self.executed_prompts)
+        rollout._verify_result = self.verify_result
 
 
 async def branch(
@@ -184,16 +191,24 @@ async def branch(
         rollout._cursor = child
 
         ret = await runner(child)
-        child.state["reward"] = float(ret)
+        # Normalise the runner's return to a canonical VerifyResult. The default
+        # runner returns one; custom runners / tests may return a bare float,
+        # which we lift. Keep state["reward"] as the float for legacy readers.
+        vr = ret if isinstance(ret, VerifyResult) else verify_result_from_reward_map(
+            {"reward": float(ret)}
+        )
+        child.state["verify_result"] = vr
+        child.state["reward"] = vr.reward
 
     # restore the parent's linear state — the tree grew, nothing else moved.
     saved.restore_onto(rollout)
 
-    # aggregate — per-child return -> V(parent).
-    value = _aggregate_branch(parent)
-    parent.state["value"] = value
+    # aggregate — per-child VerifyResult -> V(parent) as a node-scored VerifyResult.
+    result = _aggregate_vr(parent)
+    parent.state["verify_result"] = result
+    parent.state["value"] = result.reward  # back-compat scalar mirror
     rollout._phase = "branched"
-    return value
+    return result.reward
 
 
 def make_default_runner(rollout: Rollout) -> ChildRunner:
@@ -204,19 +219,23 @@ def make_default_runner(rollout: Rollout) -> ChildRunner:
     (``docs/architecture.md``, "The hard part"), so the agent restarts per
     child. Each child connects a fresh agent and disconnects it at the end, so
     no two children's agents overlap (the next child connects only after the
-    previous one disconnected). ``verify()`` returning ``None`` or an empty
-    dict falls back to a ``0.0`` return.
+    previous one disconnected). It returns the child's canonical
+    ``VerifyResult`` — ``rollout.verify()`` populates ``rollout._verify_result``
+    as a side effect (the Phase 1a source of truth), so the runner reads it
+    without changing ``verify()``'s dict return. A verifier that produced no
+    rewards yields a 0.0 ``VerifyResult``.
     """
 
-    async def _runner(child: RolloutNode) -> float:
+    async def _runner(child: RolloutNode) -> VerifyResult:
         await rollout.connect()
         # Fill the pending branch-child node in place — the continuation Step
         # lands on `child` itself, no content-free placeholder.
         await rollout.execute(node=child)
         rewards = await rollout.verify()
         await rollout.disconnect()
-        if not rewards:
-            return 0.0
-        return float(rewards.get("reward", 0.0))
+        vr = rollout._verify_result
+        if vr is None:
+            vr = verify_result_from_reward_map(rewards)
+        return vr
 
     return _runner
