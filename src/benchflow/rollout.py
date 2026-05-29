@@ -44,7 +44,7 @@ import logging
 import os
 import shlex
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -276,29 +276,13 @@ def _write_verify_result_json(
     """
     if verify_result is None:
         return
-    vr = verify_result
-    payload = {
-        "reward": vr.reward,
-        "items": vr.items,
-        "events": [
-            {
-                "type": e.type,
-                "source": e.source,
-                "reward": e.reward,
-                "step": e.step,
-                "space": e.space,
-                "granularity": e.granularity,
-                "ts": e.ts,
-            }
-            for e in vr.events
-        ],
-        "error": vr.error,
-        "space": vr.space,
-        "granularity": vr.granularity,
-    }
+    # Serialize via the dataclass itself — no hand-rolled second event schema to
+    # drift from VerifyResult/RewardEvent (the ORS ``timestamp`` rename is for
+    # the trainer wire format only; this internal artifact uses the dataclass'
+    # own ``ts``, matching rewards.jsonl).
     out = rollout_dir / "verifier" / "verify_result.json"
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(payload, indent=2, default=str))
+    out.write_text(json.dumps(asdict(verify_result), indent=2, default=str))
 
 
 def _write_rewards_jsonl(

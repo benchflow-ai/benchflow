@@ -34,6 +34,18 @@ from benchflow.trajectories.tree import RolloutNode
 _OUTPUT_SPACE: Final[Space] = "output"
 
 
+def _as_score(value: Any) -> float | None:
+    """Coerce a reward-map value to a float score, or ``None`` if it isn't one.
+
+    Centralises the "real number, not a bool" guard the reward map needs in
+    three places (headline, extra scalars, rubric scores) — ``bool`` is an
+    ``int`` subclass and must not slip through as ``1.0``/``0.0``.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
 def verify_result_from_reward_map(
     rewards: dict[str, Any] | None,
     *,
@@ -69,11 +81,7 @@ def verify_result_from_reward_map(
         )
 
     reward = rewards.get("reward")
-    headline = (
-        float(reward)
-        if isinstance(reward, (int, float)) and not isinstance(reward, bool)
-        else 0.0
-    )
+    headline = _as_score(reward) or 0.0
 
     items: dict[str, float] = {}
     events: list[RewardEvent] = []
@@ -92,8 +100,9 @@ def verify_result_from_reward_map(
     for key, value in rewards.items():
         if key in ("reward", "rubric", "space", "granularity"):
             continue
-        if isinstance(value, (int, float)) and not isinstance(value, bool):
-            items[str(key)] = float(value)
+        score = _as_score(value)
+        if score is not None:
+            items[str(key)] = score
 
     rubric = rewards.get("rubric")
     if isinstance(rubric, list):
@@ -101,15 +110,15 @@ def verify_result_from_reward_map(
             if not isinstance(item, dict):
                 continue
             rubric_item = cast(dict[str, Any], item)
-            score = rubric_item.get("score")
-            if not isinstance(score, (int, float)) or isinstance(score, bool):
+            score = _as_score(rubric_item.get("score"))
+            if score is None:
                 continue
             name = str(rubric_item.get("name") or f"rubric_{i}")
-            items[name] = float(score)
+            items[name] = score
             events.append(
                 RewardEvent(
                     type="process",
-                    reward=float(score),
+                    reward=score,
                     source=name,
                     step=i,
                     space=cast(Space, rubric_item.get("space", "output")),
