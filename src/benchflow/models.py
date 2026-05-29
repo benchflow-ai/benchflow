@@ -12,7 +12,9 @@ from typing import TYPE_CHECKING, Any, Literal
 if TYPE_CHECKING:
     from benchflow.rewards.events import RewardEvent
 
-TrajectorySource = Literal["acp", "scraped", "partial_acp", "hosted_env"]
+TrajectorySource = Literal[
+    "acp", "scraped", "partial_acp", "hosted_env", "openreward"
+]
 """Provenance label for a captured trajectory. See RunResult.trajectory_source.
 
 ``"hosted_env"`` marks UNTRUSTED imported evidence produced by an external
