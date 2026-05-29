@@ -220,7 +220,7 @@ class EvaluationConfig:
             normalize_agent_name,
             normalize_sandbox_user,
         )
-        from benchflow.agents.registry import AGENTS
+        from benchflow.agents.registry import AGENTS, is_known_agent
 
         self.agent = normalize_agent_name(self.agent)
         self.sandbox_user = normalize_sandbox_user(self.sandbox_user)
@@ -230,7 +230,9 @@ class EvaluationConfig:
                 f"unknown job_mode {self.job_mode!r} — "
                 f"expected one of {', '.join(JOB_MODES)}"
             )
-        if self.agent not in AGENTS:
+        # The oracle is a recognized special agent (it runs the task's reference
+        # solution), so it must not be reported as an unknown raw command.
+        if not is_known_agent(self.agent):
             available = ", ".join(sorted(AGENTS.keys()))
             logger.warning(
                 f"Unknown agent {self.agent!r} — not in registry. "
