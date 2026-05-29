@@ -25,13 +25,108 @@ contract as native ``NodeScorer``-based ones.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Final, Protocol, runtime_checkable
+from typing import Any, Final, Protocol, cast, runtime_checkable
 
-from benchflow.rewards.events import RewardEvent, Space
+from benchflow.rewards.events import Granularity, RewardEvent, Space
 from benchflow.rewards.protocol import RewardFunc, VerifyResult
 from benchflow.trajectories.tree import RolloutNode
 
 _OUTPUT_SPACE: Final[Space] = "output"
+
+
+def verify_result_from_reward_map(
+    rewards: dict[str, Any] | None,
+    *,
+    error: str | None = None,
+) -> VerifyResult:
+    """Lift a validated verifier reward ``dict`` into a canonical ``VerifyResult``.
+
+    This is the **single** dict→``VerifyResult`` conversion point. The legacy
+    ``Verifier`` produces ``{"reward": float, "rubric": [...], ...scalars...}``;
+    Phase 1 lifts it here, during scoring, so the ``VerifyResult`` is the live
+    source of truth — not something re-derived at export time. Unlike a bare
+    lift, it produces the full ``events`` list — one ``terminal`` Output event
+    for the headline reward plus one ``process`` event per rubric item carrying
+    that item's ``(space, granularity)`` — so ``rewards.jsonl`` /
+    ``verifiers.jsonl`` tags are *sourced* from the result, not defaulted at the
+    writer.
+
+    Note the asymmetry the architecture mandates (``docs/architecture.md``,
+    "Evaluation"): the headline reward is the Output/terminal outcome; rubric
+    items default to ``(output, step)`` — process signals along the path.
+
+    A ``None`` map (verifier crashed/timed out) yields ``reward=0.0`` with
+    ``error`` populated, so a downstream ``reward_valid`` flag reads ``False``.
+    """
+    if rewards is None:
+        return VerifyResult(
+            reward=0.0,
+            items={},
+            events=[],
+            error=error or "no rewards",
+            space=_OUTPUT_SPACE,
+            granularity="terminal",
+        )
+
+    reward = rewards.get("reward")
+    headline = (
+        float(reward)
+        if isinstance(reward, (int, float)) and not isinstance(reward, bool)
+        else 0.0
+    )
+
+    items: dict[str, float] = {}
+    events: list[RewardEvent] = []
+
+    if reward is not None:
+        events.append(
+            RewardEvent(
+                type="terminal",
+                reward=headline,
+                source="verifier",
+                space=_OUTPUT_SPACE,
+                granularity="terminal",
+            )
+        )
+
+    for key, value in rewards.items():
+        if key in ("reward", "rubric", "space", "granularity"):
+            continue
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            items[str(key)] = float(value)
+
+    rubric = rewards.get("rubric")
+    if isinstance(rubric, list):
+        for i, item in enumerate(rubric):
+            if not isinstance(item, dict):
+                continue
+            rubric_item = cast(dict[str, Any], item)
+            score = rubric_item.get("score")
+            if not isinstance(score, (int, float)) or isinstance(score, bool):
+                continue
+            name = str(rubric_item.get("name") or f"rubric_{i}")
+            items[name] = float(score)
+            events.append(
+                RewardEvent(
+                    type="process",
+                    reward=float(score),
+                    source=name,
+                    step=i,
+                    space=cast(Space, rubric_item.get("space", "output")),
+                    granularity=cast(
+                        Granularity, rubric_item.get("granularity", "step")
+                    ),
+                )
+            )
+
+    return VerifyResult(
+        reward=headline,
+        items=items,
+        events=events,
+        error=error,
+        space=_OUTPUT_SPACE,
+        granularity="terminal",
+    )
 
 #: ``node.state`` key under which a rollout's on-disk directory is recorded.
 #: :class:`PathReward` reads this to bridge node-scoped scoring to the legacy
