@@ -14,7 +14,6 @@ lane to exercise it.
 
 from __future__ import annotations
 
-import shutil
 import textwrap
 from pathlib import Path
 
@@ -24,11 +23,6 @@ from benchflow.environment.manifest import EnvironmentManifest
 from benchflow.environment.manifest_env import ManifestEnvironment
 from benchflow.sandbox.docker import DockerSandbox
 from benchflow.task import RolloutPaths, SandboxConfig
-
-pytestmark = pytest.mark.skipif(
-    shutil.which("docker") is None,
-    reason="Docker not available — real snapshot/restore round-trip is gated",
-)
 
 # Minimal stateful manifest: just [environment.state] over one sqlite file. We
 # drive snapshot()/restore() directly against a real container, so no services
@@ -63,22 +57,24 @@ async def _count_rows(sandbox: DockerSandbox) -> int:
     return int(result.stdout.strip())
 
 
+@pytest.mark.docker
 @pytest.mark.asyncio
-async def test_manifest_env_snapshot_restore_rolls_back_real_sqlite(tmp_path: Path):
+async def test_manifest_env_snapshot_restore_rolls_back_real_sqlite(
+    docker_daemon: None, tmp_path: Path
+):
     """Seed → snapshot → mutate → restore → assert the mutation rolled back."""
     env_dir = tmp_path / "environment"
     env_dir.mkdir()
     (env_dir / "Dockerfile").write_text(_DOCKERFILE)
 
-    rollout_dir = tmp_path / "rollout"
-    for sub in ("agent", "verifier", "artifacts", "trajectory"):
-        (rollout_dir / sub).mkdir(parents=True, exist_ok=True)
+    rollout_paths = RolloutPaths(rollout_dir=tmp_path / "rollout")
+    rollout_paths.mkdir()
 
     sandbox = DockerSandbox(
         environment_dir=env_dir,
         environment_name="snap-roundtrip-test",
         session_id="phase2-gate",
-        rollout_paths=RolloutPaths(rollout_dir=rollout_dir),
+        rollout_paths=rollout_paths,
         task_env_config=SandboxConfig(),
     )
     await sandbox.start(force_build=True)
