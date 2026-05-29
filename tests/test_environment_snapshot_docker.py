@@ -3,13 +3,18 @@
 The moat (Han: "Environment 总是要 roll out, roll back") was only stub-tested
 against ``FakeSandbox`` — `tests/environment/test_manifest_env.py` asserts the
 *commands* are issued, never that a real round-trip rolls state back. This is
-the integration gate: a real ``DockerSandbox`` runs the real
-``sqlite3 .backup`` / ``cp`` that ``ManifestEnvironment.snapshot``/``restore``
-issue, and we assert a mutation made after the snapshot is gone after restore.
+the integration gate: a real ``DockerSandbox`` runs the real backup/restore
+that ``ManifestEnvironment.snapshot``/``restore`` issue, and we assert a
+mutation made after the snapshot is gone after restore.
 
-Docker-gated: skipped when no Docker daemon is reachable, so the default unit
-suite stays fast and host-independent. Run locally / in a Docker-capable CI
-lane to exercise it.
+The image is ``python:3.12-slim`` *on purpose* — it has Python's ``sqlite3``
+module but **not** the ``sqlite3`` CLI, exactly like the real ClawsBench
+(smolclaws) image. The ClawsBench e2e run caught that the CLI is absent there
+(``sqlite3: not found``), so this test now exercises the python3 fallback path
+end-to-end — the real-benchmark regression, reproduced in CI.
+
+Docker-gated via the ``docker`` marker (excluded from the default suite) and the
+``docker_daemon`` fixture; run with ``pytest -m docker``.
 """
 
 from __future__ import annotations
@@ -20,7 +25,10 @@ from pathlib import Path
 import pytest
 
 from benchflow.environment.manifest import EnvironmentManifest
-from benchflow.environment.manifest_env import ManifestEnvironment
+from benchflow.environment.manifest_env import (
+    ManifestEnvironment,
+    _sqlite_backup_command,
+)
 from benchflow.sandbox.docker import DockerSandbox
 from benchflow.task import RolloutPaths, SandboxConfig
 
@@ -31,7 +39,7 @@ _MANIFEST = EnvironmentManifest.model_validate_toml(
     """
 [environment]
 name           = "snap-roundtrip-test"
-image          = "alpine:3.20"
+image          = "python:3.12-slim"
 owns_lifecycle = true
 
 [environment.state]
@@ -40,21 +48,48 @@ paths = ["/data/test.db"]
 """
 )
 
+# python:3.12-slim has the sqlite3 *module* but not the sqlite3 *CLI* — the same
+# shape as the smolclaws ClawsBench image that surfaced the regression.
 _DOCKERFILE = textwrap.dedent(
     """\
-    FROM alpine:3.20
-    RUN apk add --no-cache sqlite
+    FROM python:3.12-slim
     CMD ["sleep", "infinity"]
     """
 )
 
 
+def _py_sqlite(stmt: str) -> str:
+    """A shell command running one SQLite statement via python3 (no CLI)."""
+    return (
+        'python3 -c "'
+        "import sqlite3; "
+        "c = sqlite3.connect('/data/test.db'); "
+        f"c.execute('{stmt}'); "
+        "c.commit(); c.close()"
+        '"'
+    )
+
+
 async def _count_rows(sandbox: DockerSandbox) -> int:
     result = await sandbox.exec(
-        'sqlite3 /data/test.db "SELECT count(*) FROM t;"', timeout_sec=30
+        'python3 -c "'
+        "import sqlite3; "
+        "print(sqlite3.connect('/data/test.db').execute('SELECT count(*) FROM t').fetchone()[0])"
+        '"',
+        timeout_sec=30,
     )
     assert result.return_code == 0, result.stderr
     return int(result.stdout.strip())
+
+
+def test_sqlite_backup_command_prefers_cli_falls_back_to_python():
+    """The backup command tries the sqlite3 CLI, then python3 — guards the
+    ClawsBench regression (smolclaws ships python3 but not the sqlite3 CLI)."""
+    cmd = _sqlite_backup_command("/data/x.db", "/snap/x.db")
+    assert "command -v sqlite3" in cmd
+    assert '.backup' in cmd  # the CLI branch
+    assert "python3 -c" in cmd  # the fallback branch
+    assert "sqlite3.connect" in cmd
 
 
 @pytest.mark.docker
@@ -62,7 +97,8 @@ async def _count_rows(sandbox: DockerSandbox) -> int:
 async def test_manifest_env_snapshot_restore_rolls_back_real_sqlite(
     docker_daemon: None, tmp_path: Path
 ):
-    """Seed → snapshot → mutate → restore → assert the mutation rolled back."""
+    """Seed → snapshot → mutate → restore → assert rollback, on a python-only
+    image (no sqlite3 CLI) — the real ClawsBench scenario via the python3 path."""
     env_dir = tmp_path / "environment"
     env_dir.mkdir()
     (env_dir / "Dockerfile").write_text(_DOCKERFILE)
@@ -79,25 +115,31 @@ async def test_manifest_env_snapshot_restore_rolls_back_real_sqlite(
     )
     await sandbox.start(force_build=True)
     try:
-        # Seed a real DB with one row.
+        # Prove we are exercising the fallback: the image has no sqlite3 CLI.
+        cli = await sandbox.exec("command -v sqlite3", timeout_sec=10)
+        assert cli.return_code != 0, (
+            "test image must NOT ship the sqlite3 CLI — the point is to exercise "
+            "the python3 backup fallback (the real ClawsBench/smolclaws shape)"
+        )
+
+        # Seed a real DB with one row (via python3 — no CLI available).
         seed = await sandbox.exec(
-            'mkdir -p /data && sqlite3 /data/test.db '
-            '"CREATE TABLE t(x INTEGER); INSERT INTO t VALUES (1);"',
+            "mkdir -p /data && " + _py_sqlite("CREATE TABLE t(x INTEGER)"),
             timeout_sec=30,
         )
         assert seed.return_code == 0, seed.stderr
+        ins = await sandbox.exec(_py_sqlite("INSERT INTO t VALUES (1)"), timeout_sec=30)
+        assert ins.return_code == 0, ins.stderr
         assert await _count_rows(sandbox) == 1
 
         env = ManifestEnvironment(_MANIFEST, sandbox=sandbox)
 
-        # Real snapshot (sqlite3 .backup into an in-sandbox snapshot dir).
+        # Real snapshot (python3 sqlite3.backup into an in-sandbox snapshot dir).
         snap = await env.snapshot()
         assert snap.id and snap.path
 
         # Mutate after the snapshot.
-        mutate = await sandbox.exec(
-            'sqlite3 /data/test.db "INSERT INTO t VALUES (2);"', timeout_sec=30
-        )
+        mutate = await sandbox.exec(_py_sqlite("INSERT INTO t VALUES (2)"), timeout_sec=30)
         assert mutate.return_code == 0, mutate.stderr
         assert await _count_rows(sandbox) == 2  # mutation visible
 
