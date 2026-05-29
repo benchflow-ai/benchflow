@@ -33,6 +33,18 @@ def test_clawsbench_manifest_uses_image_task_selection():
     assert m.task_selection.mechanism == "image"
 
 
+def test_clawsbench_manifest_declares_sqlite_state_scoped_to_gmail():
+    """v0.5 Phase 2: ClawsBench is now stateful so snapshot/restore has real
+    coverage — scoped to /data/gmail.db only (the sole DB the one shipping task
+    seeds; declaring an absent path would make `sqlite3 .backup` fabricate an
+    empty DB). Guards the manifest against silently re-widening to unseeded DBs.
+    """
+    m = load_manifest(MANIFEST_PATH)
+    assert m.state is not None, "ClawsBench must declare [environment.state]"
+    assert m.state.kind == "sqlite"
+    assert m.state.paths == ["/data/gmail.db"]
+
+
 def test_clawsbench_manifest_service_commands_are_runnable():
     m = load_manifest(MANIFEST_PATH)
     for svc in m.services:

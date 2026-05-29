@@ -37,6 +37,9 @@ def _bare_rollout(tmp_path: Path, export_target: Path | None) -> Rollout:
     rollout._evolved_skills = None
     rollout._error = None
     rollout._export_error = None
+    # Mirror __init__: _build_result() reads the canonical VerifyResult (#v0.5
+    # Phase 1); a __new__-constructed skeleton must set it like the real ctor.
+    rollout._verify_result = None
     # Stub the bits cleanup() touches but we don't care about for this test.
     rollout.disconnect = AsyncMock()
     rollout._capture_partial_acp_trajectory = lambda: None

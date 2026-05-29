@@ -124,3 +124,39 @@ async def test_run_oracle_solution_env_resolves_host_vars(tmp_path, monkeypatch)
 
     solve_call = env.exec.call_args_list[0]
     assert solve_call.kwargs["env"]["TOKEN"] == "resolved_value"
+
+
+# ── oracle recognized as a special agent (log-clarity fix) ──────────────────
+
+
+def test_is_known_agent_recognizes_oracle():
+    from benchflow.agents.registry import is_known_agent
+
+    assert is_known_agent("oracle") is True
+    assert is_known_agent("claude-agent-acp") is True
+    assert is_known_agent("definitely-not-an-agent") is False
+
+
+def test_oracle_agent_does_not_log_unknown_agent_warning(caplog):
+    """Guards the log-clarity fix: oracle is a first-class special agent (it runs
+    solution/solve.sh), so EvaluationConfig must NOT warn 'Unknown agent ... use
+    as raw command' for it."""
+    import logging
+
+    from benchflow.evaluation import EvaluationConfig
+
+    with caplog.at_level(logging.WARNING):
+        EvaluationConfig(agent="oracle")
+    assert "Unknown agent" not in caplog.text
+
+
+def test_genuinely_unknown_agent_still_warns(caplog):
+    """The raw-command fallback warning still fires for a real unknown agent —
+    the fix must not silence the legitimate case."""
+    import logging
+
+    from benchflow.evaluation import EvaluationConfig
+
+    with caplog.at_level(logging.WARNING):
+        EvaluationConfig(agent="definitely-not-an-agent")
+    assert "Unknown agent" in caplog.text

@@ -14,6 +14,11 @@ from typing import Any, NoReturn, cast
 
 from benchflow._paths import ignore_symlinks, is_safe_regular_file
 from benchflow.agents.registry import AGENTS
+from benchflow.sandbox.registry import (
+    SandboxBuildContext,
+    register_sandbox,
+    resolve_sandbox,
+)
 from benchflow.task import RolloutPaths, Task
 
 logger = logging.getLogger(__name__)
@@ -612,6 +617,88 @@ def _patch_docker_dind() -> None:
     _DIND_PATCH_APPLIED = True
 
 
+# ── Built-in sandbox provider factories ────────────────────────────────────
+# Each factory does only its own provider-specific construction; the shared,
+# provider-independent preamble runs once in ``_create_sandbox_environment``
+# and is handed in via the ``SandboxBuildContext``. Registered into the
+# provider registry at import time (bottom of module) so the kernel resolves
+# sandboxes by name (``contracts``/registry seam) rather than via this if/elif.
+
+
+def _build_docker_sandbox(ctx: SandboxBuildContext) -> Any:
+    from benchflow.sandbox.docker import DockerSandbox
+
+    return DockerSandbox(
+        environment_dir=ctx.environment_dir,
+        environment_name=ctx.environment_name,
+        session_id=ctx.session_id,
+        rollout_paths=ctx.rollout_paths,
+        task_env_config=ctx.task_env_config,
+        persistent_env=ctx.persistent_env,
+    )
+
+
+def _build_daytona_sandbox(ctx: SandboxBuildContext) -> Any:
+    try:
+        from benchflow.sandbox._sdk_ops import apply as _apply_daytona_patches
+        from benchflow.sandbox.daytona import DaytonaSandbox
+    except ModuleNotFoundError as exc:
+        _raise_missing_optional_sandbox_dependency("daytona", exc)
+
+    _apply_daytona_patches()
+
+    env_config = ctx.task_env_config
+    if env_config.cpus > _DAYTONA_MAX_CPUS:
+        logger.warning(
+            "Clamping cpus %d -> %d for Daytona (override with BENCHFLOW_DAYTONA_MAX_CPUS)",
+            env_config.cpus,
+            _DAYTONA_MAX_CPUS,
+        )
+        env_config.cpus = _DAYTONA_MAX_CPUS
+    if env_config.memory_mb > _DAYTONA_MAX_MEMORY_MB:
+        logger.warning(
+            "Clamping memory_mb %d -> %d for Daytona (override with BENCHFLOW_DAYTONA_MAX_MEMORY_MB)",
+            env_config.memory_mb,
+            _DAYTONA_MAX_MEMORY_MB,
+        )
+        env_config.memory_mb = _DAYTONA_MAX_MEMORY_MB
+    if env_config.storage_mb > _DAYTONA_MAX_STORAGE_MB:
+        logger.warning(
+            "Clamping storage_mb %d -> %d for Daytona (override with BENCHFLOW_DAYTONA_MAX_STORAGE_MB)",
+            env_config.storage_mb,
+            _DAYTONA_MAX_STORAGE_MB,
+        )
+        env_config.storage_mb = _DAYTONA_MAX_STORAGE_MB
+
+    return DaytonaSandbox(
+        environment_dir=ctx.environment_dir,
+        environment_name=ctx.environment_name,
+        session_id=ctx.session_id,
+        rollout_paths=ctx.rollout_paths,
+        task_env_config=env_config,
+        auto_stop_interval_mins=1440,
+        auto_delete_interval_mins=1440,
+        persistent_env=ctx.persistent_env,
+    )
+
+
+def _build_modal_sandbox(ctx: SandboxBuildContext) -> Any:
+    try:
+        modal_environment_class = _create_benchflow_modal_environment_class()
+    except ModuleNotFoundError as exc:
+        _raise_missing_optional_sandbox_dependency("modal", exc)
+    modal_environment_class.preflight()
+
+    return modal_environment_class(
+        environment_dir=ctx.environment_dir,
+        environment_name=ctx.environment_name,
+        session_id=ctx.session_id,
+        rollout_paths=ctx.rollout_paths,
+        task_env_config=ctx.task_env_config,
+        persistent_env=ctx.persistent_env,
+    )
+
+
 def _create_sandbox_environment(
     sandbox_type: str,
     task: Task,
@@ -621,7 +708,11 @@ def _create_sandbox_environment(
     preserve_agent_network: bool = False,
     environment_manifest: Any = None,
 ) -> Any:
-    """Create a sandbox environment (Docker, Daytona, or Modal).
+    """Create a sandbox (Docker, Daytona, Modal, or any BYO provider).
+
+    Runs the shared, provider-independent preamble — network-policy
+    adjustment and manifest image/env resolution — then resolves the named
+    provider through :func:`benchflow.sandbox.registry.resolve_sandbox`.
 
     When ``environment_manifest`` is provided, its declared controls take
     effect at sandbox-construction time: the manifest's runnable ``image``
@@ -662,78 +753,21 @@ def _create_sandbox_environment(
             environment_manifest, task_id=task_path.name
         )
 
-    if sandbox_type == "docker":
-        from benchflow.sandbox.docker import DockerSandbox
+    ctx = SandboxBuildContext(
+        environment_dir=environment_dir,
+        environment_name=task_path.name,
+        session_id=rollout_name,
+        rollout_paths=rollout_paths,
+        task_env_config=env_config,
+        persistent_env=manifest_env or None,
+    )
+    return resolve_sandbox(sandbox_type, ctx)
 
-        return DockerSandbox(
-            environment_dir=environment_dir,
-            environment_name=task_path.name,
-            session_id=rollout_name,
-            rollout_paths=rollout_paths,
-            task_env_config=env_config,
-            persistent_env=manifest_env or None,
-        )
-    elif sandbox_type == "daytona":
-        try:
-            from benchflow.sandbox._sdk_ops import apply as _apply_daytona_patches
-            from benchflow.sandbox.daytona import DaytonaSandbox
-        except ModuleNotFoundError as exc:
-            _raise_missing_optional_sandbox_dependency("daytona", exc)
 
-        _apply_daytona_patches()
-
-        if env_config.cpus > _DAYTONA_MAX_CPUS:
-            logger.warning(
-                "Clamping cpus %d -> %d for Daytona (override with BENCHFLOW_DAYTONA_MAX_CPUS)",
-                env_config.cpus,
-                _DAYTONA_MAX_CPUS,
-            )
-            env_config.cpus = _DAYTONA_MAX_CPUS
-        if env_config.memory_mb > _DAYTONA_MAX_MEMORY_MB:
-            logger.warning(
-                "Clamping memory_mb %d -> %d for Daytona (override with BENCHFLOW_DAYTONA_MAX_MEMORY_MB)",
-                env_config.memory_mb,
-                _DAYTONA_MAX_MEMORY_MB,
-            )
-            env_config.memory_mb = _DAYTONA_MAX_MEMORY_MB
-        if env_config.storage_mb > _DAYTONA_MAX_STORAGE_MB:
-            logger.warning(
-                "Clamping storage_mb %d -> %d for Daytona (override with BENCHFLOW_DAYTONA_MAX_STORAGE_MB)",
-                env_config.storage_mb,
-                _DAYTONA_MAX_STORAGE_MB,
-            )
-            env_config.storage_mb = _DAYTONA_MAX_STORAGE_MB
-
-        return DaytonaSandbox(
-            environment_dir=environment_dir,
-            environment_name=task_path.name,
-            session_id=rollout_name,
-            rollout_paths=rollout_paths,
-            task_env_config=env_config,
-            auto_stop_interval_mins=1440,
-            auto_delete_interval_mins=1440,
-            persistent_env=manifest_env or None,
-        )
-    elif sandbox_type == "modal":
-        try:
-            modal_environment_class = _create_benchflow_modal_environment_class()
-        except ModuleNotFoundError as exc:
-            _raise_missing_optional_sandbox_dependency("modal", exc)
-        modal_environment_class.preflight()
-
-        return modal_environment_class(
-            environment_dir=environment_dir,
-            environment_name=task_path.name,
-            session_id=rollout_name,
-            rollout_paths=rollout_paths,
-            task_env_config=env_config,
-            persistent_env=manifest_env or None,
-        )
-    else:
-        raise ValueError(
-            f"Unknown sandbox_type: {sandbox_type!r} (use 'docker', 'daytona', or 'modal')"
-        )
-
+# Register the built-in providers so the kernel resolves them by name.
+register_sandbox("docker", _build_docker_sandbox)
+register_sandbox("daytona", _build_daytona_sandbox)
+register_sandbox("modal", _build_modal_sandbox)
 
 # Backward compatibility alias
 _create_environment = _create_sandbox_environment

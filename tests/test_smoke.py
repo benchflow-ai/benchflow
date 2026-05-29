@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import os
 import shutil
-import subprocess
 import uuid
 from collections.abc import Iterator
 from pathlib import Path
@@ -32,6 +31,7 @@ import pytest
 
 from benchflow import SDK
 from benchflow.sandbox.setup import _detect_dind_mount
+from tests.conftest import docker_daemon_unavailable_reason
 
 HELLO_TASK = Path(__file__).parent / "examples" / "hello-world-task"
 SMOKE_JOBS_BASE = Path(__file__).parent / ".smoke-jobs"
@@ -53,18 +53,9 @@ def _smoke_skip_reason() -> str | None:
     Deliberately does NOT call resolve_agent_env — the test exercises that code
     path; skipping when it raises would mask real regressions.
     """
-    if shutil.which("docker") is None:
-        return "docker CLI not installed"
-    try:
-        r = subprocess.run(
-            ["docker", "version", "--format", "{{.Server.Version}}"],
-            timeout=3,
-            capture_output=True,
-        )
-    except (subprocess.TimeoutExpired, OSError) as e:
-        return f"docker daemon unreachable: {e}"
-    if r.returncode != 0:
-        return "docker daemon unreachable"
+    docker_reason = docker_daemon_unavailable_reason()
+    if docker_reason:
+        return docker_reason
     has_key = bool(os.environ.get("ANTHROPIC_API_KEY"))
     has_login = Path("~/.claude/.credentials.json").expanduser().is_file()
     if not (has_key or has_login):

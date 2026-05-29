@@ -90,11 +90,12 @@ only-include = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-addopts = "-m 'not live and not integration and not openreward'"
+addopts = "-m 'not live and not integration and not docker and not openreward'"
 testpaths = ["tests"]
 markers = [
     "live: requires real Anthropic API and Docker daemon (run with -m live)",
     "integration: full integration tests — requires GEMINI_API_KEY + DAYTONA_API_KEY (run with -m integration)",
+    "docker: requires only a reachable Docker daemon — no API keys (run with -m docker)",
     "openreward: requires OPENREWARD_API_KEY + the openreward client; runs a real managed rollout (run with -m openreward)",
 ]
 

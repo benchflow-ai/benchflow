@@ -42,6 +42,33 @@ from benchflow.environment.protocol import (
 )
 
 
+def _sqlite_backup_command(src: str, dest: str) -> str:
+    """A portable consistent online backup of a SQLite DB file.
+
+    Prefers the ``sqlite3`` CLI's ``.backup`` (the canonical online backup) and
+    falls back to Python's ``sqlite3.backup`` when the CLI binary is absent.
+    Real stateful images ship a SQLite *service* (e.g. smolclaws' claw-gmail
+    runs on Python's ``sqlite3`` module) but not the ``sqlite3`` command — and
+    BenchFlow's zero-modification-adoption goal means we must not require them
+    to install it. Both paths take a *consistent* snapshot of a live DB; a raw
+    ``cp`` could capture a torn write, so we never use it for capture.
+    """
+    q_src, q_dest = shlex.quote(src), shlex.quote(dest)
+    py_backup = (
+        "python3 -c "
+        + shlex.quote(
+            "import sqlite3, sys; "
+            "src = sqlite3.connect(sys.argv[1]); dst = sqlite3.connect(sys.argv[2]); "
+            "src.backup(dst); dst.close(); src.close()"
+        )
+        + f" {q_src} {q_dest}"
+    )
+    return (
+        f"if command -v sqlite3 >/dev/null 2>&1; then "
+        f'sqlite3 {q_src} ".backup {q_dest}"; else {py_backup}; fi'
+    )
+
+
 class EnvironmentSnapshotError(RuntimeError):
     """Raised when a snapshot or restore sandbox command fails (issue #387).
 
@@ -128,6 +155,14 @@ class ManifestEnvironment:
         For framework-started environments only the services that were
         actually started are probed; for entrypoint-owned environments the
         manifest's declared HTTP probes are used.
+
+        Framework-owned invariant (``docs/architecture.md``: "Readiness and
+        teardown are framework guarantees"): this gate is invoked by
+        ``Rollout.start()`` — never by benchmark code — whenever the rollout
+        has an ``environment_manifest``, and it runs *before* the agent does.
+        It branches only on ``owns_lifecycle`` (which probe URLs to poll),
+        never on ``[environment.state]`` / snapshot support — readiness is
+        independent of whether the environment can roll back.
         """
         m = self._manifest
         timeout = m.readiness.timeout_sec
@@ -208,7 +243,7 @@ class ManifestEnvironment:
         cmds = [f"mkdir -p {shlex.quote(snap_dir)}"]
         for src in spec.paths:
             dest = f"{snap_dir}/{PurePosixPath(src).name}"
-            cmds.append(f'sqlite3 {shlex.quote(src)} ".backup {shlex.quote(dest)}"')
+            cmds.append(_sqlite_backup_command(src, dest))
         command = " && ".join(cmds)
         result = await self._sandbox.exec(command, timeout_sec=120)
         if result.return_code != 0:

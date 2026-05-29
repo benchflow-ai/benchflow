@@ -44,7 +44,7 @@ import logging
 import os
 import shlex
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -66,12 +66,16 @@ from benchflow.agents.install import (
     install_agent,
 )
 from benchflow.agents.registry import AGENT_LAUNCH, AGENTS
+from benchflow.contracts import Environment, Sandbox
 from benchflow.diagnostics import (
     RolloutDiagnostics,
     VerifierTimeoutDiagnostic,
 )
 from benchflow.environment.manifest import EnvironmentManifest
-from benchflow.environment.manifest_env import ManifestEnvironment
+from benchflow.environment.registry import (
+    DEFAULT_ENVIRONMENT_KIND,
+    resolve_environment,
+)
 from benchflow.models import RolloutResult, TrajectorySource
 from benchflow.providers.runtime import (
     ensure_bedrock_proxy_runtime,
@@ -79,6 +83,8 @@ from benchflow.providers.runtime import (
     extract_usage,
     stop_provider_runtime,
 )
+from benchflow.rewards.node import verify_result_from_reward_map
+from benchflow.rewards.protocol import VerifyResult
 from benchflow.rewards.validation import validate_reward_map
 from benchflow.rollout_branch import ChildRunner
 from benchflow.rollout_branch import branch as _branch_engine
@@ -254,6 +260,29 @@ async def _ensure_sandbox_dir(
 
 
 _DIAG_TRUNCATE = 2000
+
+
+def _write_verify_result_json(
+    rollout_dir: Path, verify_result: VerifyResult | None
+) -> None:
+    """Persist the canonical ``VerifyResult`` to ``verifier/verify_result.json``.
+
+    The Reward-plane source of truth (#v0.5 Phase 1): unlike ``result.json``
+    (which keeps the legacy reward *dict* for the ~10 existing consumers), this
+    file is the canonical ``{reward, items, events, error, space, granularity}``
+    structure — carrying the architecture's ``(space, granularity)`` tag and the
+    full event list — that the trainer export reads and branch aggregation will
+    read. Skipped when no result was produced (nothing scored).
+    """
+    if verify_result is None:
+        return
+    # Serialize via the dataclass itself — no hand-rolled second event schema to
+    # drift from VerifyResult/RewardEvent (the ORS ``timestamp`` rename is for
+    # the trainer wire format only; this internal artifact uses the dataclass'
+    # own ``ts``, matching rewards.jsonl).
+    out = rollout_dir / "verifier" / "verify_result.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(asdict(verify_result), indent=2, default=str))
 
 
 def _write_rewards_jsonl(
@@ -465,6 +494,7 @@ def _build_rollout_result(
     export_error: str | None = None,
     trajectory_source: TrajectorySource | None = None,
     rewards: dict | None,
+    verify_result: VerifyResult | None = None,
     started_at: datetime,
     timing: dict[str, float],
     scenes: list[Scene] | None = None,
@@ -488,6 +518,11 @@ def _build_rollout_result(
     """
     if diagnostics is None:
         diagnostics = RolloutDiagnostics()
+    # The canonical Reward-plane result. On the live path Rollout.verify()
+    # already built it; derive here only for callers that pass just the legacy
+    # dict, so every rollout still emits one sourced VerifyResult (#v0.5 Phase 1).
+    if verify_result is None:
+        verify_result = verify_result_from_reward_map(rewards, error=verifier_error)
     finished_at = datetime.now()
     result = RolloutResult(
         task_name=task_name,
@@ -573,6 +608,11 @@ def _build_rollout_result(
     )
     (rollout_dir / "timing.json").write_text(json.dumps(timing, indent=2))
     (rollout_dir / "prompts.json").write_text(json.dumps(prompts, indent=2))
+    _write_verify_result_json(rollout_dir, verify_result)
+    # rewards.jsonl stays dict-derived: it reads (space, granularity) from the
+    # same validated reward map the VerifyResult is built from, so its lines are
+    # identical to sourcing verify_result.events — and verify_result.json is the
+    # canonical structure trainers/branch read.
     _write_rewards_jsonl(rollout_dir, rewards, finished_at)
     _write_trainer_artifact(
         rollout_dir,
@@ -580,6 +620,7 @@ def _build_rollout_result(
         prompts=prompts,
         trajectory=trajectory,
         rewards=rewards,
+        verify_result=verify_result,
         model=model,
         verifier_error=verifier_error,
     )
@@ -593,6 +634,7 @@ def _write_trainer_artifact(
     prompts: list[str],
     trajectory: list[dict],
     rewards: dict | None,
+    verify_result: VerifyResult | None = None,
     model: str | None,
     verifier_error: str | None,
 ) -> None:
@@ -602,6 +644,10 @@ def _write_trainer_artifact(
     that reaches result-building should produce a trainer-ready Verifiers /
     ORS record so prime-rl / Verifiers can ingest the run directly. Failures
     here are logged but never block result writing.
+
+    Phase 1: the export READS the canonical ``verify_result`` (the source of
+    truth) instead of re-deriving the reward from the legacy dict; ``rewards``
+    is kept as a back-compat fallback for callers without a VerifyResult.
     """
     from benchflow.trajectories.export import write_rollout_verifiers_jsonl
 
@@ -612,6 +658,7 @@ def _write_trainer_artifact(
             prompts=prompts,
             trajectory=trajectory,
             rewards=rewards,
+            verify_result=verify_result,
             model=model,
             environment=task_name,
             error=verifier_error,
@@ -1026,12 +1073,12 @@ class Rollout:
         self._agent_env: dict[str, str] = {}
         self._resolved_prompts: list[str] = []
         self._agent_launch: str = ""
-        self._env: Any = None
+        self._env: Sandbox | None = None
         # When True, Rollout treats _env as caller-owned: setup() skips
         # creating a new sandbox and cleanup() skips stopping it. Set via
         # use_prebuilt_env() — see Runtime.execute() for the public path.
         self._env_externally_owned: bool = False
-        self._environment: ManifestEnvironment | None = None
+        self._environment: Environment | None = None
         self._timeout: int = 0
         self._timing: dict[str, float] = {}
         self._effective_locked: list[str] = []
@@ -1093,6 +1140,11 @@ class Rollout:
 
         # Populated by verify()
         self._rewards: dict | None = None
+        # The canonical Reward-plane result — the source of truth that export
+        # and (later) branch aggregation READ, instead of re-deriving from the
+        # legacy dict above. The dict is kept as a derived projection for the
+        # ~10 existing consumers of RolloutResult.rewards (#v0.5 Phase 1).
+        self._verify_result: VerifyResult | None = None
         self._verifier_error: str | None = None
         self._error: str | None = None
         # Populated by _export_generated_skills() on failure (#389 follow-up).
@@ -1306,8 +1358,10 @@ class Rollout:
         # Environment plane: provision the manifest-declared stateful
         # environment and gate on its readiness before the agent runs.
         if self._config.environment_manifest is not None:
-            self._environment = ManifestEnvironment(
-                self._config.environment_manifest, sandbox=self._env
+            self._environment = resolve_environment(
+                DEFAULT_ENVIRONMENT_KIND,
+                self._config.environment_manifest,
+                sandbox=self._env,
             )
             await self._environment.provision(
                 ctx={"task_id": self._config.task_path.name}
@@ -1326,6 +1380,21 @@ class Rollout:
 
         self._phase = "started"
 
+    @property
+    def _sandbox(self) -> Sandbox:
+        """The active sandbox, narrowed non-None.
+
+        ``self._env`` is ``None`` only before ``setup()``/``start()`` build it.
+        The execute/verify/cleanup methods run strictly after that, so they
+        reach the sandbox through this accessor instead of repeating a None
+        guard at every call site — and it fails loudly if the invariant breaks.
+        """
+        if self._env is None:
+            raise RuntimeError(
+                "sandbox not started — setup() and start() must run first"
+            )
+        return self._env
+
     # ── Phase 3: INSTALL AGENT ──
 
     async def install_agent(self) -> None:
@@ -1338,7 +1407,7 @@ class Rollout:
         cfg = self._config
         rollout_dir = self._require_rollout_dir()
 
-        cwd_result = await self._env.exec("pwd", timeout_sec=10)
+        cwd_result = await self._sandbox.exec("pwd", timeout_sec=10)
         agent_cwd = (cwd_result.stdout or "").strip() or "/app"
         self._agent_cwd = agent_cwd
 
@@ -1483,7 +1552,7 @@ class Rollout:
         if self._env and self._agent_launch.strip():
             agent_cmd = self._agent_launch.split()[0].split("/")[-1]
             with contextlib.suppress(Exception):
-                await self._env.exec(f"pkill -f '{agent_cmd}' || true", timeout_sec=10)
+                await self._sandbox.exec(f"pkill -f '{agent_cmd}' || true", timeout_sec=10)
         self._active_role = None
         self._session_tool_count = 0
         self._session_traj_count = 0
@@ -1739,6 +1808,13 @@ class Rollout:
         if verifier_timeout_diag is not None:
             self._diagnostics.set(verifier_timeout_diag)
 
+        # Build the canonical VerifyResult once, here, from the validated
+        # reward map — the source of truth downstream artifacts read (#v0.5
+        # Phase 1). verify() still returns the dict for backward compatibility.
+        self._verify_result = verify_result_from_reward_map(
+            self._rewards, error=self._verifier_error
+        )
+
         self._phase = "verified"
         return self._rewards
 
@@ -1807,7 +1883,7 @@ class Rollout:
             )
             rewards = _ensure_canonical_rewards(verifier_result.rewards)
             # Capture raw verifier output for the user
-            cat = await self._env.exec(
+            cat = await self._sandbox.exec(
                 "cat /logs/verifier/*.log 2>/dev/null || "
                 "cat /logs/verifier/output.txt 2>/dev/null || true",
                 timeout_sec=10,
@@ -1881,7 +1957,7 @@ class Rollout:
             # via Rollout.__new__() working.
             if not getattr(self, "_env_externally_owned", False):
                 try:
-                    await self._env.stop(delete=True)
+                    await self._sandbox.stop(delete=True)
                 except Exception as e:
                     logger.warning(f"Cleanup failed: {e}")
 
@@ -1916,7 +1992,7 @@ class Rollout:
                 # git safe.directory needed for SWE-bench tasks with sandbox_user
                 import shlex
 
-                await self._env.exec(
+                await self._sandbox.exec(
                     f"git config --global --add safe.directory "
                     f"{shlex.quote(self._agent_cwd)} 2>/dev/null || true",
                     user="root",
@@ -1943,7 +2019,7 @@ class Rollout:
                         logger.error(self._error)
                 finally:
                     if cfg.oracle_access:
-                        await self._env.exec(
+                        await self._sandbox.exec(
                             "mv /solution_oracle_backup /solution 2>/dev/null || true",
                             user="root",
                             timeout_sec=10,
@@ -2014,7 +2090,7 @@ class Rollout:
         last_err: Exception | None = None
         for attempt in range(3):
             try:
-                await self._env.download_dir(self._config.generated_skills_root, target)
+                await self._sandbox.download_dir(self._config.generated_skills_root, target)
                 break
             except Exception as e:
                 last_err = e
@@ -2047,13 +2123,13 @@ class Rollout:
         if isinstance(source_value, os.PathLike) and local_source.is_dir():
             remote_source = f"/skills/{_safe_skill_name(scene.name)}"
             await _ensure_sandbox_dir(self._env, Path(remote_source).parent)
-            await self._env.upload_dir(local_source, remote_source)
+            await self._sandbox.upload_dir(local_source, remote_source)
         elif source.startswith("/"):
             remote_source = source
         elif local_source.is_dir():
             remote_source = f"/skills/{_safe_skill_name(scene.name)}"
             await _ensure_sandbox_dir(self._env, Path(remote_source).parent)
-            await self._env.upload_dir(local_source, remote_source)
+            await self._sandbox.upload_dir(local_source, remote_source)
         else:
             raise FileNotFoundError(f"Scene skills_dir not found: {scene.skills_dir}")
 
@@ -2176,7 +2252,7 @@ class Rollout:
                 if cfg.sandbox_user:
                     user = shlex.quote(cfg.sandbox_user)
                     setup_cmd += f" && chown {user}:{user} {self._OUTBOX_DIR}"
-                await self._env.exec(setup_cmd, timeout_sec=10)
+                await self._sandbox.exec(setup_cmd, timeout_sec=10)
 
             inbox: dict[str, list[str]] = {r.name: [] for r in scene.roles}
             turn_counter = 0
@@ -2247,7 +2323,7 @@ class Rollout:
 
     async def _read_scene_outbox(self, sender: str) -> list[tuple[str, str]]:
         """Read and clear outbox files left by *sender*. Returns [(recipient, content), ...]."""
-        result = await self._env.exec(
+        result = await self._sandbox.exec(
             f"ls {self._OUTBOX_DIR}/*.json 2>/dev/null || true",
             timeout_sec=10,
         )
@@ -2257,7 +2333,7 @@ class Rollout:
         messages: list[tuple[str, str]] = []
         for fpath in files:
             quoted = shlex.quote(fpath)
-            cat = await self._env.exec(f"cat {quoted}", timeout_sec=10)
+            cat = await self._sandbox.exec(f"cat {quoted}", timeout_sec=10)
             try:
                 data = json.loads(cat.stdout or "{}")
                 recipient = data.get("to", "")
@@ -2269,7 +2345,7 @@ class Rollout:
                     )
             except json.JSONDecodeError:
                 logger.warning(f"[Scene] invalid JSON in outbox: {fpath}")
-            await self._env.exec(f"rm -f {quoted}", timeout_sec=10)
+            await self._sandbox.exec(f"rm -f {quoted}", timeout_sec=10)
         return messages
 
     async def _run_user_loop(self) -> None:
@@ -2305,7 +2381,7 @@ class Rollout:
         # Oracle access: read /solution before the agent runs, then remove it
         solution: str | None = None
         if cfg.oracle_access:
-            cat = await self._env.exec(
+            cat = await self._sandbox.exec(
                 "cat /solution/solve.sh 2>/dev/null || true",
                 user="root",
                 timeout_sec=10,
@@ -2317,7 +2393,7 @@ class Rollout:
         # Hide oracle files from agent — move rather than delete so the
         # final verify() can still access /solution if the verifier needs it.
         if cfg.oracle_access:
-            await self._env.exec(
+            await self._sandbox.exec(
                 "mv /solution /solution_oracle_backup 2>/dev/null || true",
                 user="root",
                 timeout_sec=10,
@@ -2364,7 +2440,7 @@ class Rollout:
             # next round. Temporarily restore /solution so the verifier can
             # access it, then re-hide before the next agent round.
             if cfg.oracle_access:
-                await self._env.exec(
+                await self._sandbox.exec(
                     "mv /solution_oracle_backup /solution 2>/dev/null || true",
                     user="root",
                     timeout_sec=10,
@@ -2373,7 +2449,7 @@ class Rollout:
                 rewards, verifier_output, verifier_error = await self.soft_verify()
             finally:
                 if cfg.oracle_access:
-                    await self._env.exec(
+                    await self._sandbox.exec(
                         "mv /solution /solution_oracle_backup 2>/dev/null || true",
                         user="root",
                         timeout_sec=10,
@@ -2600,6 +2676,7 @@ class Rollout:
             partial_trajectory=self._partial_trajectory,
             trajectory_source=self._trajectory_source,
             rewards=self._rewards,
+            verify_result=self._verify_result,
             started_at=self._require_started_at(),
             timing=self._timing,
             scenes=self._config.effective_scenes,
