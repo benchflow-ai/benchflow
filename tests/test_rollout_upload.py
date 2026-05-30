@@ -1,10 +1,16 @@
 """Tests for rollout startup uploads."""
 
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
-from benchflow.rollout import _publish_trajectory_for_verifier, _start_env_and_upload
+from benchflow.rollout import (
+    Rollout,
+    RolloutConfig,
+    _publish_trajectory_for_verifier,
+    _start_env_and_upload,
+)
 
 
 class FakeUploadEnv:
@@ -33,8 +39,10 @@ class FakeUploadEnv:
 
 
 @pytest.mark.asyncio
-async def test_start_env_uploads_task_environment_skills(tmp_path: Path) -> None:
-    """Guards ENG-88: remote oracle tasks can import bundled task skills."""
+async def test_start_env_does_not_upload_task_environment_skills(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #586 against the no-skills leak into /app/skills."""
     task = tmp_path / "task"
     (task / "environment" / "skills" / "jax-skills").mkdir(parents=True)
     (task / "solution").mkdir(parents=True)
@@ -48,7 +56,7 @@ async def test_start_env_uploads_task_environment_skills(tmp_path: Path) -> None
     task_skills = task / "environment" / "skills"
     assert env.started is True
     assert (task / "instruction.md", "/instruction.md") in env.uploaded_files
-    assert (task_skills, "/app/skills") in env.uploaded_dirs
+    assert (task_skills, "/app/skills") not in env.uploaded_dirs
     assert (task / "solution", "/solution") in env.uploaded_dirs
     assert "environment_setup" in timing
 
@@ -68,3 +76,78 @@ async def test_publish_trajectory_for_verifier_uploads_acp_jsonl() -> None:
             "/logs/agent/acp_trajectory.jsonl",
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_rollout_setup_strips_task_skills_from_no_skills_build_context(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #586 against Dockerfile COPY . leaking task skills."""
+    task = tmp_path / "task"
+    (task / "environment" / "skills" / "alpha").mkdir(parents=True)
+    (task / "environment" / "skills" / "alpha" / "SKILL.md").write_text("# Alpha\n")
+    (task / "environment" / "Dockerfile").write_text("FROM alpine:3.20\nCOPY . /app\n")
+    (task / "instruction.md").write_text("solve\n")
+    (task / "task.toml").write_text('version = "1.0"\n')
+
+    env = MagicMock()
+    planes = MagicMock()
+    planes.resolve_locked_paths.return_value = []
+    planes.resolve_agent_env.return_value = {}
+    planes.agent_launch.return_value = "claude-agent-acp"
+    planes.create_environment.return_value = env
+
+    rollout = Rollout(
+        RolloutConfig.from_legacy(
+            task_path=task,
+            agent="claude-agent-acp",
+            jobs_dir=tmp_path / "jobs",
+            planes=planes,
+        )
+    )
+    await rollout.setup()
+
+    assert (task / "environment" / "skills" / "alpha" / "SKILL.md").exists()
+    assert rollout._effective_task_path != task
+    assert not (rollout._effective_task_path / "environment" / "skills").exists()
+
+
+@pytest.mark.asyncio
+async def test_rollout_setup_includes_task_skills_without_declared_mount(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #586 so include_task_skills=True enables task bundles."""
+    task = tmp_path / "task"
+    (task / "environment" / "skills" / "alpha").mkdir(parents=True)
+    (task / "environment" / "skills" / "alpha" / "SKILL.md").write_text("# Alpha\n")
+    (task / "environment" / "Dockerfile").write_text("FROM alpine:3.20\n")
+    (task / "instruction.md").write_text("solve\n")
+    (task / "task.toml").write_text('version = "1.0"\n')
+
+    env = MagicMock()
+    planes = MagicMock()
+    planes.resolve_locked_paths.return_value = []
+    planes.resolve_agent_env.return_value = {}
+    planes.agent_launch.return_value = "claude-agent-acp"
+    planes.create_environment.return_value = env
+
+    rollout = Rollout(
+        RolloutConfig.from_legacy(
+            task_path=task,
+            agent="claude-agent-acp",
+            jobs_dir=tmp_path / "jobs",
+            include_task_skills=True,
+            planes=planes,
+        )
+    )
+    await rollout.setup()
+
+    assert rollout._effective_task_path != task
+    assert (
+        rollout._effective_task_path / "environment" / "skills" / "alpha" / "SKILL.md"
+    ).exists()
+    planes.inject_skills_into_dockerfile.assert_called_once_with(
+        rollout._effective_task_path,
+        rollout._effective_task_path / "environment" / "skills",
+        sandbox_dir="/skills",
+    )

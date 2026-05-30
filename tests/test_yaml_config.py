@@ -73,6 +73,7 @@ def test_from_native_yaml(native_yaml):
     assert cfg.retry.max_retries == 1
     assert cfg.sandbox_setup_timeout == 45
     assert cfg.prompts == [None, "Review your solution."]
+    assert cfg.include_task_skills is False
     assert job._tasks_dir == Path("tasks")
     assert job._jobs_dir == Path("output")
 
@@ -325,6 +326,23 @@ skills_dir: my-skills
 
     job = Evaluation.from_yaml(config)
     assert job._config.skills_dir == "my-skills"
+
+
+def test_native_yaml_with_include_task_skills(tmp_path):
+    """Guards PR #586 so native YAML can explicitly enable task skills."""
+    tasks = tmp_path / "tasks" / "task-a"
+    tasks.mkdir(parents=True)
+    (tasks / "task.toml").write_text('version = "1.0"')
+
+    config = tmp_path / "config.yaml"
+    config.write_text("""
+tasks_dir: tasks
+agent: claude-agent-acp
+include_task_skills: true
+""")
+
+    job = Evaluation.from_yaml(config)
+    assert job._config.include_task_skills is True
 
 
 def test_native_yaml_paths_are_cwd_relative(tmp_path):

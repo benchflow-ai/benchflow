@@ -112,6 +112,7 @@ def _config_payload(
         "agent_env": config.agent_env,
         "retry": _retry_payload(config),
         "skills_dir": config.skills_dir,
+        "include_task_skills": config.include_task_skills,
         "sandbox_user": config.sandbox_user,
         "sandbox_locked_paths": config.sandbox_locked_paths,
         "sandbox_setup_timeout": config.sandbox_setup_timeout,

@@ -211,6 +211,7 @@ class EvaluationConfig:
     agent_env: dict[str, str] = field(default_factory=dict)
     retry: RetryConfig = field(default_factory=RetryConfig)
     skills_dir: str | None = None
+    include_task_skills: bool = False
     sandbox_user: str | None = "agent"
     sandbox_locked_paths: list[str] | None = None
     sandbox_setup_timeout: int = 120
@@ -513,6 +514,7 @@ class Evaluation:
             agent_env=agent_env_raw,
             retry=RetryConfig(max_retries=raw.get("max_retries", 2)),
             skills_dir=str(Path(raw["skills_dir"])) if raw.get("skills_dir") else None,
+            include_task_skills=bool(raw.get("include_task_skills", False)),
             sandbox_user=sandbox_user,
             sandbox_locked_paths=sandbox_locked_paths,
             sandbox_setup_timeout=sandbox_setup_timeout,
@@ -601,6 +603,7 @@ class Evaluation:
             agent_env=agent_env,
             retry=RetryConfig(max_retries=max(0, max_retries)),
             skills_dir=skills_dir,
+            include_task_skills=bool(raw.get("include_task_skills", False)),
             sandbox_user=sandbox_user,
             sandbox_locked_paths=sandbox_locked_paths,
             sandbox_setup_timeout=sandbox_setup_timeout,
@@ -724,10 +727,10 @@ class Evaluation:
 
     def _resolve_skills_dir(self, task_dir: Path, skills_dir: str | None) -> str | None:
         """Resolve skills_dir — 'auto' means per-task environment/skills/."""
-        if skills_dir == "auto":
-            candidate = task_dir / "environment" / "skills"
-            return str(candidate) if candidate.is_dir() else None
-        return skills_dir
+        from benchflow.skill_policy import resolve_runtime_skills_dir
+
+        resolved = resolve_runtime_skills_dir(task_dir, skills_dir)
+        return str(resolved) if resolved is not None else None
 
     def _enrich_payload_with_persisted_timing(
         self, payload: dict, result: RolloutResult
@@ -793,6 +796,7 @@ class Evaluation:
             environment=cfg.environment,
             environment_manifest=cfg.environment_manifest,
             skills_dir=skills_dir,
+            include_task_skills=cfg.include_task_skills,
             sandbox_user=cfg.sandbox_user,
             sandbox_locked_paths=cfg.sandbox_locked_paths,
             sandbox_setup_timeout=cfg.sandbox_setup_timeout,

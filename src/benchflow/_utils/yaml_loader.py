@@ -125,6 +125,7 @@ def rollout_config_from_dict(
         model=raw.get("model"),
         agent_env=raw.get("agent_env"),
         skills_dir=raw.get("skills_dir"),
+        include_task_skills=bool(raw.get("include_task_skills", False)),
         skill_mode=raw.get("skill_mode", "default"),
         skill_creator_dir=raw.get("skill_creator_dir"),
         self_gen_no_internet=bool(raw.get("self_gen_no_internet", False)),

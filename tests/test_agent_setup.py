@@ -42,6 +42,7 @@ async def test_deploy_skills_symlinks_agent_skill_paths_instead_of_copying(tmp_p
         sandbox_user="agent",
         agent_cwd="/app",
         task=_make_task("/opt/benchflow/skills"),
+        include_task_skills=True,
     )
 
     env.upload_dir.assert_not_called()
@@ -105,6 +106,7 @@ async def test_deploy_skills_uploads_runtime_skills_and_links_shared_tree(tmp_pa
         sandbox_user="agent",
         agent_cwd="/workspace",
         task=_make_task("/opt/benchflow/skills"),
+        include_task_skills=True,
     )
 
     env.upload_dir.assert_awaited_once_with(skills_dir, "/skills")
@@ -117,6 +119,59 @@ async def test_deploy_skills_uploads_runtime_skills_and_links_shared_tree(tmp_pa
     assert "ln -sfn /skills /workspace/skills" in distributed_link_cmd
     assert "/root/.agents/skills" not in distributed_link_cmd
     assert "/app/skills" not in distributed_link_cmd
+
+
+@pytest.mark.asyncio
+async def test_deploy_skills_uses_policy_sandbox_dir(tmp_path):
+    """Guards PR #586 so task skills can mount outside the default /skills."""
+    env = MagicMock()
+    env.exec = AsyncMock(return_value=MagicMock(return_code=0, stdout=""))
+    env.upload_dir = AsyncMock()
+    agent_cfg = AgentConfig(
+        name="test-agent",
+        install_cmd="true",
+        launch_cmd="true",
+        skill_paths=["$HOME/.agents/skills"],
+    )
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+
+    await deploy_skills(
+        env=env,
+        task_path=tmp_path,
+        skills_dir=skills_dir,
+        agent_cfg=agent_cfg,
+        sandbox_user="agent",
+        agent_cwd="/workspace",
+        task=_make_task(None),
+        skills_sandbox_dir="/opt/benchflow/skill-eval",
+    )
+
+    env.upload_dir.assert_awaited_once_with(skills_dir, "/opt/benchflow/skill-eval")
+    link_cmd = env.exec.await_args.args[0]
+    assert "ln -sfn /opt/benchflow/skill-eval /home/agent/.agents/skills" in link_cmd
+
+
+@pytest.mark.asyncio
+async def test_deploy_skills_rejects_unsafe_policy_sandbox_dir(tmp_path):
+    """Guards PR #586 so runtime skill upload cannot consume unsafe mount paths."""
+    env = MagicMock()
+    env.exec = AsyncMock(return_value=MagicMock(return_code=0, stdout=""))
+    env.upload_dir = AsyncMock()
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+
+    with pytest.raises(ValueError, match="simple absolute container path"):
+        await deploy_skills(
+            env=env,
+            task_path=tmp_path,
+            skills_dir=skills_dir,
+            agent_cfg=None,
+            sandbox_user=None,
+            agent_cwd="/app",
+            task=_make_task(None),
+            skills_sandbox_dir="/opt/skills; touch /tmp/PWNED",
+        )
 
 
 @pytest.mark.asyncio
@@ -192,6 +247,7 @@ async def test_deploy_skills_chowns_full_dir_chain_for_pi_acp_layout(tmp_path):
         sandbox_user="agent",
         agent_cwd="/workspace",
         task=_make_task("/opt/benchflow/skills"),
+        include_task_skills=True,
     )
 
     cmd = env.exec.await_args.args[0]
@@ -229,6 +285,7 @@ async def test_deploy_skills_skips_chown_when_no_sandbox_user(tmp_path):
         sandbox_user=None,
         agent_cwd="/workspace",
         task=_make_task("/opt/benchflow/skills"),
+        include_task_skills=True,
     )
 
     cmd = env.exec.await_args.args[0]
@@ -256,6 +313,7 @@ async def test_deploy_skills_falls_back_when_local_skills_dir_is_missing(tmp_pat
         sandbox_user="agent",
         agent_cwd="/workspace",
         task=_make_task("/opt/benchflow/skills"),
+        include_task_skills=True,
     )
 
     env.upload_dir.assert_not_called()
@@ -332,6 +390,90 @@ async def test_deploy_skills_agent_with_empty_skill_paths_does_not_use_oracle_pa
 
 
 @pytest.mark.asyncio
+async def test_deploy_skills_does_not_autodiscover_bundled_skills(tmp_path):
+    """Guards PR #586 against no-skills runs linking task bundles from /app."""
+    env = MagicMock()
+    env.exec = AsyncMock(return_value=MagicMock(return_code=0, stdout=""))
+    env.upload_dir = AsyncMock()
+
+    task_path = tmp_path / "task"
+    bundled = task_path / "environment" / "skills" / "mesh-analysis" / "scripts"
+    bundled.mkdir(parents=True)
+    (bundled / "mesh_tool.py").write_text("class MeshAnalyzer: pass\n")
+
+    await deploy_skills(
+        env=env,
+        task_path=task_path,
+        skills_dir=None,
+        agent_cfg=None,
+        sandbox_user=None,
+        agent_cwd="/app",
+        task=_make_task(None),
+    )
+
+    env.upload_dir.assert_not_called()
+    env.exec.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_deploy_skills_links_declared_task_skills_when_enabled(tmp_path):
+    """Guards PR #586 so with-task-skills mode still links declared mounts."""
+    env = MagicMock()
+    env.exec = AsyncMock(return_value=MagicMock(return_code=0, stdout=""))
+    env.upload_dir = AsyncMock()
+
+    task_path = tmp_path / "task"
+    bundled = task_path / "environment" / "skills" / "mesh-analysis" / "scripts"
+    bundled.mkdir(parents=True)
+    (bundled / "mesh_tool.py").write_text("class MeshAnalyzer: pass\n")
+
+    await deploy_skills(
+        env=env,
+        task_path=task_path,
+        skills_dir=None,
+        agent_cfg=None,
+        sandbox_user=None,
+        agent_cwd="/app",
+        task=_make_task("/skills"),
+        include_task_skills=True,
+    )
+
+    env.upload_dir.assert_not_called()
+    env.exec.assert_awaited_once()
+    link_cmd = env.exec.await_args.args[0]
+    assert "ln -sfn /skills /root/.claude/skills" in link_cmd
+
+
+@pytest.mark.asyncio
+async def test_deploy_skills_autodiscovery_skipped_when_include_task_skills_false(
+    tmp_path,
+):
+    """Guards PR #586 so include_task_skills=False never links task bundles."""
+    env = MagicMock()
+    env.exec = AsyncMock(return_value=MagicMock(return_code=0, stdout=""))
+    env.upload_dir = AsyncMock()
+
+    task_path = tmp_path / "task"
+    bundled = task_path / "environment" / "skills" / "some-skill"
+    bundled.mkdir(parents=True)
+    (bundled / "helper.py").write_text("pass\n")
+
+    await deploy_skills(
+        env=env,
+        task_path=task_path,
+        skills_dir=None,
+        agent_cfg=None,
+        sandbox_user=None,
+        agent_cwd="/app",
+        task=_make_task(None),
+        include_task_skills=False,
+    )
+
+    env.upload_dir.assert_not_called()
+    env.exec.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_deploy_skills_raises_when_skill_linking_fails(tmp_path):
     env = MagicMock()
     env.exec = AsyncMock(return_value=MagicMock(return_code=17, stdout="link failed"))
@@ -352,6 +494,7 @@ async def test_deploy_skills_raises_when_skill_linking_fails(tmp_path):
             sandbox_user="agent",
             agent_cwd="/app",
             task=_make_task("/opt/benchflow/skills"),
+            include_task_skills=True,
         )
 
 

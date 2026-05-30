@@ -21,6 +21,7 @@ from typing import Any
 import tomli_w
 
 from benchflow._paths import assert_within, safe_path_segment
+from benchflow.skill_policy import validate_container_mount_path
 
 from .schema import DEFAULT_SKILL_MOUNT_DIR, validate_evals_json
 
@@ -33,20 +34,6 @@ JUDGE_API_ENV_KEYS = (
     "ANTHROPIC_API_KEY",
     "OPENAI_API_KEY",
 )
-
-
-def _validate_container_path(value: object, field: str) -> str:
-    """Validate a simple absolute path inside the sandbox container."""
-    if not isinstance(value, str):
-        raise ValueError(f"{field} must be a string")
-    if (
-        not value.startswith("/")
-        or value == "/"
-        or value != value.strip()
-        or any(ch in value for ch in ('"', "\n", "\r", "\0"))
-    ):
-        raise ValueError(f"{field} must be an absolute container path like /skills")
-    return value.rstrip("/")
 
 
 # ---------------------------------------------------------------------------
@@ -87,7 +74,7 @@ class EvalDataset:
 
     @property
     def skill_mount_dir(self) -> str:
-        return _validate_container_path(
+        return validate_container_mount_path(
             self.defaults.get("skill_mount_dir", DEFAULT_SKILL_MOUNT_DIR),
             "defaults.skill_mount_dir",
         )
@@ -637,6 +624,7 @@ class SkillEvaluator:
                 concurrency=concurrency,
                 retry=RetryConfig(max_retries=1),
                 agent_env=judge_env,
+                include_task_skills=with_skill,
             ),
         )
         await j.run()
