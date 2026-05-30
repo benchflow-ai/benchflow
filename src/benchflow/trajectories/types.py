@@ -1,5 +1,6 @@
 """Trajectory types — raw LLM API request/response pairs captured from providers."""
 
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -172,6 +173,51 @@ def _exchange_token_usage(exchange: "LLMExchange") -> TokenUsage:
     )
 
 
+_REDACTION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    # Anthropic: sk-ant-api03-...
+    (re.compile(r"(sk-ant-[a-zA-Z0-9_-]{10})[a-zA-Z0-9_-]+"), r"\1***REDACTED***"),
+    # OpenAI project key: sk-proj-...  (must come before generic sk- since the
+    # generic pattern's narrow [a-zA-Z0-9] class can't span the hyphen)
+    (re.compile(r"(sk-proj-[a-zA-Z0-9_-]{10})[a-zA-Z0-9_-]+"), r"\1***REDACTED***"),
+    # OpenAI / generic sk- (alphanumeric only — widening to include `-` would
+    # match common slugs like `task-sk-us-east-1-...`)
+    (re.compile(r"(sk-[a-zA-Z0-9]{10})[a-zA-Z0-9]+"), r"\1***REDACTED***"),
+    # Google AI / Gemini: AIzaSy... (39 chars total, alphanumeric + `_-`)
+    (re.compile(r"(AIzaSy[A-Za-z0-9_-]{4})[A-Za-z0-9_-]{20,}"), r"\1***REDACTED***"),
+    # AWS access keys: AKIA...(16) / ASIA...(16) — exact 20-char keys; the
+    # length anchor prevents matching English words like "ASIAPACIFIC".
+    (
+        re.compile(r"((?:AKIA|ASIA)[A-Z0-9]{4})[A-Z0-9]{12}(?![A-Z0-9])"),
+        r"\1***REDACTED***",
+    ),
+    # Daytona SDK tokens: dtn_... — require ≥16 chars of suffix entropy to
+    # avoid matching short identifiers like `dtn_v2_0`.
+    (re.compile(r"(dtn_[A-Za-z0-9_]{4})[A-Za-z0-9_]{16,}"), r"\1***REDACTED***"),
+    # Authorization: Bearer <token>
+    (
+        re.compile(r'("authorization"\s*:\s*"Bearer\s+)[^"]+(")', re.IGNORECASE),
+        r"\1***REDACTED***\2",
+    ),
+    # x-api-key header
+    (
+        re.compile(r'("x-api-key"\s*:\s*")[^"]+(")', re.IGNORECASE),
+        r"\1***REDACTED***\2",
+    ),
+    # api-key header (Azure)
+    (
+        re.compile(r'("api-key"\s*:\s*")[^"]+(")', re.IGNORECASE),
+        r"\1***REDACTED***\2",
+    ),
+]
+
+
+def redact_trajectory_text(text: str) -> str:
+    """Apply all secret-redaction patterns to *text*."""
+    for pattern, replacement in _REDACTION_PATTERNS:
+        text = pattern.sub(replacement, text)
+    return text
+
+
 class LLMRequest(BaseModel):
     """A single request to an LLM API, captured by the proxy."""
 
@@ -272,28 +318,12 @@ class Trajectory(BaseModel):
     def to_jsonl(self, *, redact_keys: bool = True) -> str:
         """Export as JSONL (one exchange per line)."""
         import json
-        import re
 
         lines = []
         for ex in self.exchanges:
             data = ex.model_dump(mode="json")
             raw = json.dumps(data, default=str)
             if redact_keys:
-                raw = re.sub(
-                    r"(sk-ant-[a-zA-Z0-9_-]{10})[a-zA-Z0-9_-]+",
-                    r"\1***REDACTED***",
-                    raw,
-                )
-                raw = re.sub(
-                    r"(sk-[a-zA-Z0-9]{10})[a-zA-Z0-9]+",
-                    r"\1***REDACTED***",
-                    raw,
-                )
-                raw = re.sub(
-                    r'("authorization"\s*:\s*"Bearer\s+)[^"]+(")',
-                    r"\1***REDACTED***\2",
-                    raw,
-                    flags=re.IGNORECASE,
-                )
+                raw = redact_trajectory_text(raw)
             lines.append(raw)
         return "\n".join(lines)
