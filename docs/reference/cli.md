@@ -107,7 +107,7 @@ bench eval create \
 | `--jobs-dir` | `jobs` | Output directory |
 | `--sandbox-user` | `agent` | Sandbox user (null for root) |
 | `--sandbox-setup-timeout` | `120` | Timeout in seconds for sandbox user setup |
-| `--skills-dir` | — | Skills directory to deploy into each task sandbox |
+| `--skills-dir` | — | Skills directory to deploy into each task sandbox; use `auto` for each task's `environment/skills` |
 | `--skill-mode` | `default` | Skill mode: `default` or `self-gen` |
 | `--skill-creator-dir` | — | Path to a `skill-creator` directory (or a skills root containing it); used when `--skill-mode self-gen` |
 | `--self-gen-no-internet` | `false` | Disable web tools for the self-generated skill run |

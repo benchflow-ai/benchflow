@@ -405,7 +405,7 @@ class DockerSandbox(BaseSandbox):
                 self._chown_to_host_user(str(SandboxPaths.logs_dir), recursive=True),
                 timeout=30,
             )
-        except (TimeoutError, asyncio.TimeoutError):
+        except TimeoutError:
             self.logger.warning("Chown logs directory timed out; continuing teardown.")
         except Exception as e:
             self.logger.warning(f"Failed to chown logs directory: {e}")

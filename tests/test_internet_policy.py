@@ -74,7 +74,8 @@ def test_skill_nudge_falls_back_to_host_env(monkeypatch):
     assert _skill_nudge({}) == "name"
 
 
-def test_host_skill_nudge_is_only_prompt_mutation(monkeypatch, tmp_path):
+def test_host_skill_nudge_does_not_read_task_skills_by_default(monkeypatch, tmp_path):
+    """Guards PR #586 against prompt-level no-skills leaks."""
     from benchflow.sdk import SDK
 
     monkeypatch.setenv("BENCHFLOW_SKILL_NUDGE", "name")
@@ -92,10 +93,37 @@ def test_host_skill_nudge_is_only_prompt_mutation(monkeypatch, tmp_path):
         agent="claude-agent-acp",
     )
 
-    assert prompts[0].startswith("Skills available at ~/.claude/skills: alpha.")
-    assert prompts[0].endswith("Do the thing.")
+    assert prompts == ["Do the thing."]
+    assert "alpha" not in prompts[0]
     assert "Internet access is disabled" not in prompts[0]
     assert "Do not browse" not in prompts[0]
+
+
+def test_host_skill_nudge_reads_task_skills_when_explicitly_enabled(
+    monkeypatch, tmp_path
+):
+    """Guards PR #586 so with-task-skills mode still gets skill nudges."""
+    from benchflow.sdk import SDK
+
+    monkeypatch.setenv("BENCHFLOW_SKILL_NUDGE", "name")
+    (tmp_path / "instruction.md").write_text("Do the thing.")
+    task_skills = tmp_path / "environment" / "skills"
+    skill_dir = task_skills / "alpha"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: alpha\ndescription: Alpha skill.\n---\n# Alpha\n"
+    )
+
+    prompts = SDK._resolve_prompts(
+        tmp_path,
+        prompts=None,
+        task_skills_dir=task_skills,
+        skill_nudge=_skill_nudge({}),
+        agent="claude-agent-acp",
+    )
+
+    assert prompts[0].startswith("Skills available at ~/.claude/skills: alpha.")
+    assert prompts[0].endswith("Do the thing.")
 
 
 def test_create_environment_preserves_agent_network_for_llm_runs(tmp_path):

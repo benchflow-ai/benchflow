@@ -69,6 +69,31 @@ class TestInjectSkillsIntoDockerfile:
         assert "ln -sf /skills" in content
         assert "mkdir -p" in content
 
+    def test_injects_to_custom_sandbox_dir(self, tmp_path):
+        """Guards PR #586 so policy-chosen task skill mounts are baked correctly."""
+        task_path = _make_task(tmp_path)
+        skills_dir = _make_skills_dir(tmp_path)
+
+        _inject_skills_into_dockerfile(
+            task_path, skills_dir, sandbox_dir="/opt/benchflow/skill-eval"
+        )
+
+        content = (task_path / "environment" / "Dockerfile").read_text()
+        assert "COPY _deps/skills /opt/benchflow/skill-eval/" in content
+        assert "ln -sf /opt/benchflow/skill-eval" in content
+
+    def test_rejects_unsafe_sandbox_dir(self, tmp_path):
+        """Guards PR #586 against Dockerfile injection from sandbox_dir."""
+        task_path = _make_task(tmp_path)
+        skills_dir = _make_skills_dir(tmp_path)
+
+        with pytest.raises(ValueError, match="simple absolute container path"):
+            _inject_skills_into_dockerfile(
+                task_path,
+                skills_dir,
+                sandbox_dir="/opt/skills; touch /tmp/PWNED",
+            )
+
     def test_preserves_original_dockerfile_content(self, tmp_path):
         original = "FROM python:3.12\nRUN pip install flask\n"
         task_path = _make_task(tmp_path, original)
