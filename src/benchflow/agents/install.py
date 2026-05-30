@@ -259,7 +259,7 @@ async def deploy_skills(
     sandbox_user: str | None,
     agent_cwd: str,
     task: "Task",
-    include_task_skills: bool = True,
+    include_task_skills: bool = False,
 ) -> None:
     """Deploy and distribute skills into sandbox."""
     task_skills_dir = (
@@ -286,13 +286,6 @@ async def deploy_skills(
         else:
             logger.info("Skills already injected via Dockerfile")
             effective_skills = "/skills"
-
-    # Auto-discover task-bundled skills already uploaded to /app/skills
-    # by _start_env_and_upload (from environment/skills/ in the task dir).
-    if not effective_skills and include_task_skills:
-        bundled = task_path / "environment" / "skills"
-        if bundled.is_dir():
-            effective_skills = "/app/skills"
 
     # Distribute to agent-specific discovery paths
     if agent_cfg is not None:

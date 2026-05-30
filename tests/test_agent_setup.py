@@ -42,6 +42,7 @@ async def test_deploy_skills_symlinks_agent_skill_paths_instead_of_copying(tmp_p
         sandbox_user="agent",
         agent_cwd="/app",
         task=_make_task("/opt/benchflow/skills"),
+        include_task_skills=True,
     )
 
     env.upload_dir.assert_not_called()
@@ -105,6 +106,7 @@ async def test_deploy_skills_uploads_runtime_skills_and_links_shared_tree(tmp_pa
         sandbox_user="agent",
         agent_cwd="/workspace",
         task=_make_task("/opt/benchflow/skills"),
+        include_task_skills=True,
     )
 
     env.upload_dir.assert_awaited_once_with(skills_dir, "/skills")
@@ -192,6 +194,7 @@ async def test_deploy_skills_chowns_full_dir_chain_for_pi_acp_layout(tmp_path):
         sandbox_user="agent",
         agent_cwd="/workspace",
         task=_make_task("/opt/benchflow/skills"),
+        include_task_skills=True,
     )
 
     cmd = env.exec.await_args.args[0]
@@ -229,6 +232,7 @@ async def test_deploy_skills_skips_chown_when_no_sandbox_user(tmp_path):
         sandbox_user=None,
         agent_cwd="/workspace",
         task=_make_task("/opt/benchflow/skills"),
+        include_task_skills=True,
     )
 
     cmd = env.exec.await_args.args[0]
@@ -256,6 +260,7 @@ async def test_deploy_skills_falls_back_when_local_skills_dir_is_missing(tmp_pat
         sandbox_user="agent",
         agent_cwd="/workspace",
         task=_make_task("/opt/benchflow/skills"),
+        include_task_skills=True,
     )
 
     env.upload_dir.assert_not_called()
@@ -332,13 +337,8 @@ async def test_deploy_skills_agent_with_empty_skill_paths_does_not_use_oracle_pa
 
 
 @pytest.mark.asyncio
-async def test_deploy_skills_oracle_autodiscovers_bundled_skills(tmp_path):
-    """Guards the fix from PR #558 for issue #557: oracle mode on Daytona
-    failed for tasks with bundled skills because deploy_skills never detected
-    the environment/skills/ directory that _start_env_and_upload already
-    uploaded to /app/skills.  Without auto-discovery, effective_skills stayed
-    None and the linking step was skipped, so /root/.claude/skills was never
-    populated."""
+async def test_deploy_skills_does_not_autodiscover_bundled_skills(tmp_path):
+    """Guards PR #860 against no-skills runs linking task bundles from /app."""
     env = MagicMock()
     env.exec = AsyncMock(return_value=MagicMock(return_code=0, stdout=""))
     env.upload_dir = AsyncMock()
@@ -359,17 +359,43 @@ async def test_deploy_skills_oracle_autodiscovers_bundled_skills(tmp_path):
     )
 
     env.upload_dir.assert_not_called()
+    env.exec.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_deploy_skills_links_declared_task_skills_when_enabled(tmp_path):
+    """Guards PR #860 so with-task-skills mode still links declared mounts."""
+    env = MagicMock()
+    env.exec = AsyncMock(return_value=MagicMock(return_code=0, stdout=""))
+    env.upload_dir = AsyncMock()
+
+    task_path = tmp_path / "task"
+    bundled = task_path / "environment" / "skills" / "mesh-analysis" / "scripts"
+    bundled.mkdir(parents=True)
+    (bundled / "mesh_tool.py").write_text("class MeshAnalyzer: pass\n")
+
+    await deploy_skills(
+        env=env,
+        task_path=task_path,
+        skills_dir=None,
+        agent_cfg=None,
+        sandbox_user=None,
+        agent_cwd="/app",
+        task=_make_task("/skills"),
+        include_task_skills=True,
+    )
+
+    env.upload_dir.assert_not_called()
     env.exec.assert_awaited_once()
     link_cmd = env.exec.await_args.args[0]
-    assert "ln -sfn /app/skills /root/.claude/skills" in link_cmd
+    assert "ln -sfn /skills /root/.claude/skills" in link_cmd
 
 
 @pytest.mark.asyncio
 async def test_deploy_skills_autodiscovery_skipped_when_include_task_skills_false(
     tmp_path,
 ):
-    """Guards the fix from PR #558: auto-discovery must respect
-    include_task_skills=False so self-gen trials start without skills."""
+    """Guards PR #860 so include_task_skills=False never links task bundles."""
     env = MagicMock()
     env.exec = AsyncMock(return_value=MagicMock(return_code=0, stdout=""))
     env.upload_dir = AsyncMock()
@@ -415,6 +441,7 @@ async def test_deploy_skills_raises_when_skill_linking_fails(tmp_path):
             sandbox_user="agent",
             agent_cwd="/app",
             task=_make_task("/opt/benchflow/skills"),
+            include_task_skills=True,
         )
 
 

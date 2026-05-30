@@ -637,6 +637,7 @@ class SkillEvaluator:
                 concurrency=concurrency,
                 retry=RetryConfig(max_retries=1),
                 agent_env=judge_env,
+                include_task_skills=with_skill,
             ),
         )
         await j.run()

@@ -211,6 +211,7 @@ class EvaluationConfig:
     agent_env: dict[str, str] = field(default_factory=dict)
     retry: RetryConfig = field(default_factory=RetryConfig)
     skills_dir: str | None = None
+    include_task_skills: bool = False
     sandbox_user: str | None = "agent"
     sandbox_locked_paths: list[str] | None = None
     sandbox_setup_timeout: int = 120
@@ -601,6 +602,7 @@ class Evaluation:
             agent_env=agent_env,
             retry=RetryConfig(max_retries=max(0, max_retries)),
             skills_dir=skills_dir,
+            include_task_skills=bool(raw.get("include_task_skills", False)),
             sandbox_user=sandbox_user,
             sandbox_locked_paths=sandbox_locked_paths,
             sandbox_setup_timeout=sandbox_setup_timeout,
@@ -793,6 +795,7 @@ class Evaluation:
             environment=cfg.environment,
             environment_manifest=cfg.environment_manifest,
             skills_dir=skills_dir,
+            include_task_skills=cfg.include_task_skills,
             sandbox_user=cfg.sandbox_user,
             sandbox_locked_paths=cfg.sandbox_locked_paths,
             sandbox_setup_timeout=cfg.sandbox_setup_timeout,

@@ -58,6 +58,7 @@ def _evaluation_config(raw: dict[str, Any]) -> EvaluationConfig:
         agent_env=dict(raw.get("agent_env") or {}),
         retry=_retry_config(raw),
         skills_dir=raw.get("skills_dir"),
+        include_task_skills=bool(raw.get("include_task_skills", False)),
         sandbox_user=raw.get("sandbox_user", "agent"),
         sandbox_locked_paths=raw.get("sandbox_locked_paths"),
         sandbox_setup_timeout=int(raw.get("sandbox_setup_timeout") or 120),

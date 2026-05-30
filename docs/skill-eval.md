@@ -136,10 +136,11 @@ will error instead of measuring skill lift.
 ### Existing task-embedded skills
 
 Skills embedded under a benchmark task, such as
-`tasks/<task>/environment/skills/<skill>/SKILL.md`, are task assets. To evaluate
-one directly with `bench skills eval`, add a sibling `evals/evals.json` inside
-that skill directory or copy the skill into a standalone skill directory with
-the same `evals/` contract.
+`tasks/<task>/environment/skills/<skill>/SKILL.md`, are task-local skill packs.
+They are not exposed to ordinary no-skills runs by default. To evaluate one
+directly with `bench skills eval`, add a sibling `evals/evals.json` inside that
+skill directory or copy the skill into a standalone skill directory with the
+same `evals/` contract.
 
 The repo includes a real standalone example at
 [`skills/citation-management/`](../skills/citation-management/), adapted

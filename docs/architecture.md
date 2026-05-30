@@ -115,12 +115,16 @@ A Rollout is checkpointable because three snapshot layers compose — container 
 
 ### Skill loading
 
-BenchFlow treats mounted skills as agent-native memory, not prompt text. A
-`--skills-dir` value, or a task-local `environment/skills` directory, is copied
-into the sandbox and registered through the selected agent's registry
-`skill_paths`. For Claude Code via `claude-agent-acp`, that means the skill packs
-land under the Claude Code skill root (for example `$HOME/.claude/skills`) and
-are discovered by Claude Code's native skill mechanism.
+BenchFlow treats mounted skills as agent-native memory, not prompt text. Skills
+are deployed only when the run explicitly asks for them with `--skills-dir` (or
+with-task-skills orchestration such as skill eval). A task-local
+`environment/skills` directory is not uploaded for a no-skills run; use
+`--skills-dir auto` or pass that directory explicitly when those task-local
+skills are meant to be agent-visible. Mounted skills are registered through the
+selected agent's registry `skill_paths`. For Claude Code via `claude-agent-acp`,
+that means the skill packs land under the Claude Code skill root (for example
+`$HOME/.claude/skills`) and are discovered by Claude Code's native skill
+mechanism.
 
 Claude Code reads each skill's frontmatter name and description for native
 discovery. The full `SKILL.md` body and bundled resources are loaded by the
