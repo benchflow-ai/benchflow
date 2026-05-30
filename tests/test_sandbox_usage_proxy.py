@@ -593,7 +593,14 @@ def test_node_proxy_forwards_and_imports_redacted_raw_captures(tmp_path):
         assert post("/v1/stream", {"stream": True})[0] == 200
         assert post("/v1/gzip", {"stream": False})[0] == 200
 
-        captures = [json.loads(line) for line in log_path.read_text().splitlines()]
+        capture_lines = []
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            capture_lines = log_path.read_text().splitlines()
+            if len(capture_lines) >= 4:
+                break
+            time.sleep(0.05)
+        captures = [json.loads(line) for line in capture_lines]
         exchanges = [exchange_from_raw_capture(record) for record in captures]
 
         assert len(exchanges) == 4
