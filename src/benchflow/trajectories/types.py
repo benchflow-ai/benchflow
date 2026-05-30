@@ -5,6 +5,39 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+_USAGE_KEYS = {
+    "input_tokens",
+    "output_tokens",
+    "prompt_tokens",
+    "completion_tokens",
+    "total_tokens",
+    "cache_read_input_tokens",
+    "cache_creation_input_tokens",
+}
+_USAGE_DETAIL_KEYS = {
+    "cached_tokens",
+}
+_USAGE_METADATA_KEYS = {
+    "promptTokenCount",
+    "candidatesTokenCount",
+    "totalTokenCount",
+    "cachedContentTokenCount",
+}
+
+
+def _has_non_null_key(payload: dict[str, Any], keys: set[str]) -> bool:
+    return any(key in payload and payload[key] is not None for key in keys)
+
+
+def _has_provider_usage(payload: dict[str, Any]) -> bool:
+    if _has_non_null_key(payload, _USAGE_KEYS):
+        return True
+    for key in ("prompt_tokens_details", "input_tokens_details"):
+        details = payload.get(key)
+        if isinstance(details, dict) and _has_non_null_key(details, _USAGE_DETAIL_KEYS):
+            return True
+    return False
+
 
 class LLMRequest(BaseModel):
     """A single request to an LLM API, captured by the proxy."""
@@ -42,6 +75,20 @@ class Trajectory(BaseModel):
     finished_at: datetime | None = None
     exchanges: list[LLMExchange] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @property
+    def has_provider_usage(self) -> bool:
+        """Whether any exchange contains provider-supplied usage fields."""
+        for ex in self.exchanges:
+            usage = ex.response.body.get("usage")
+            if isinstance(usage, dict) and _has_provider_usage(usage):
+                return True
+            usage_metadata = ex.response.body.get("usageMetadata")
+            if isinstance(usage_metadata, dict) and _has_non_null_key(
+                usage_metadata, _USAGE_METADATA_KEYS
+            ):
+                return True
+        return False
 
     @property
     def total_input_tokens(self) -> int:

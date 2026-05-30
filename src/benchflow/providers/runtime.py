@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 from dataclasses import dataclass
@@ -543,32 +544,51 @@ async def ensure_usage_proxy_runtime(
                 f"{PROMPT_CACHE_RETENTION_ENV} must be one of: "
                 f"{', '.join(sorted(_PROMPT_CACHE_RETENTION_VALUES))}"
             )
-        if host_reachable:
-            logger.info("Starting host-side usage telemetry proxy")
-            server = TrajectoryProxy(
-                target=target,
-                session_id=session_id,
-                agent_name=agent,
-                host=USAGE_PROXY_BIND_HOST,
-                port=0,
-                prompt_cache_retention=prompt_cache_retention,
+        server: Any | None = None
+        try:
+            if host_reachable:
+                logger.info("Starting host-side usage telemetry proxy")
+                host_server = TrajectoryProxy(
+                    target=target,
+                    session_id=session_id,
+                    agent_name=agent,
+                    host=USAGE_PROXY_BIND_HOST,
+                    port=0,
+                    prompt_cache_retention=prompt_cache_retention,
+                )
+                server = host_server
+                await host_server.start()
+                agent_base_url = _agent_usage_proxy_base_url(
+                    environment=environment,
+                    port=host_server.port,
+                )
+            else:
+                logger.info("Starting Daytona sandbox-local usage telemetry proxy")
+                sandbox_server = SandboxUsageProxy(
+                    sandbox=sandbox,
+                    target=target,
+                    session_id=session_id,
+                    agent_name=agent,
+                    prompt_cache_retention=prompt_cache_retention,
+                )
+                server = sandbox_server
+                await sandbox_server.start()
+                agent_base_url = sandbox_server.base_url
+        except Exception as exc:
+            if server is not None:
+                with contextlib.suppress(Exception):
+                    await server.stop()
+            if usage_cfg.mode == "required":
+                raise RuntimeError(
+                    "Token usage tracking is required, but the usage proxy "
+                    f"failed to start: {exc}"
+                ) from exc
+            logger.warning(
+                "Skipping usage telemetry proxy: failed to start usage proxy: %s",
+                exc,
             )
-            await server.start()
-            agent_base_url = _agent_usage_proxy_base_url(
-                environment=environment,
-                port=server.port,
-            )
-        else:
-            logger.info("Starting Daytona sandbox-local usage telemetry proxy")
-            server = SandboxUsageProxy(
-                sandbox=sandbox,
-                target=target,
-                session_id=session_id,
-                agent_name=agent,
-                prompt_cache_retention=prompt_cache_retention,
-            )
-            await server.start()
-            agent_base_url = server.base_url
+            return agent_env, None
+        assert server is not None
         runtime = ProviderRuntime(
             kind="usage-proxy",
             agent_base_url=agent_base_url,
@@ -594,6 +614,8 @@ def extract_usage(runtime: ProviderRuntime | None) -> dict[str, Any]:
         return _usage_unavailable()
     trajectory = getattr(runtime.server, "trajectory", None)
     if trajectory is None or not trajectory.exchanges:
+        return _usage_unavailable()
+    if not getattr(trajectory, "has_provider_usage", False):
         return _usage_unavailable()
 
     input_tokens = trajectory.total_input_tokens

@@ -71,6 +71,44 @@ function responseHeaders(headers) {
   return result;
 }
 
+const sensitiveHeaderNames = new Set([
+  "authorization",
+  "proxy-authorization",
+  "x-api-key",
+  "api-key",
+  "openai-api-key",
+  "anthropic-api-key",
+  "x-goog-api-key",
+  "cookie",
+  "set-cookie",
+]);
+const sensitiveQueryNames = new Set([
+  "key",
+  "api_key",
+  "apikey",
+  "access_token",
+]);
+
+function captureHeaders(headers) {
+  const result = { ...headers };
+  for (const key of Object.keys(result)) {
+    if (sensitiveHeaderNames.has(key.toLowerCase())) {
+      result[key] = "__BENCHFLOW_REDACTED__";
+    }
+  }
+  return result;
+}
+
+function capturePath(requestUrl) {
+  const parsed = new URL(requestUrl, "http://benchflow.local");
+  for (const key of Array.from(parsed.searchParams.keys())) {
+    if (sensitiveQueryNames.has(key.toLowerCase())) {
+      parsed.searchParams.set(key, "__BENCHFLOW_REDACTED__");
+    }
+  }
+  return `${parsed.pathname}${parsed.search}`;
+}
+
 function appendCapture(record) {
   fs.appendFileSync(logPath, JSON.stringify(record) + "\n", { encoding: "utf8" });
 }
@@ -170,13 +208,13 @@ const server = http.createServer((clientReq, clientRes) => {
           duration_ms: Date.now() - startedAt,
           request: {
             method: clientReq.method,
-            path: clientReq.url,
-            headers: clientReq.headers,
+            path: capturePath(clientReq.url),
+            headers: captureHeaders(clientReq.headers),
             body_b64: requestBody.toString("base64"),
           },
           response: {
             status_code: upstreamRes.statusCode || 0,
-            headers: upstreamRes.headers,
+            headers: captureHeaders(upstreamRes.headers),
             body_b64: bodyB64(responseChunks),
           },
         });
@@ -196,8 +234,8 @@ const server = http.createServer((clientReq, clientRes) => {
         duration_ms: Date.now() - startedAt,
         request: {
           method: clientReq.method,
-          path: clientReq.url,
-          headers: clientReq.headers,
+          path: capturePath(clientReq.url),
+          headers: captureHeaders(clientReq.headers),
           body_b64: requestBody.toString("base64"),
         },
         response: {
@@ -257,10 +295,11 @@ class SandboxUsageProxy:
         self.prompt_cache_retention = prompt_cache_retention
         self.trajectory = Trajectory(session_id=session_id, agent_name=agent_name)
         self._token = uuid4().hex[:16]
-        self._script_path = f"{_RUNTIME_ROOT}/{self._token}/proxy.js"
-        self._state_path = f"{_RUNTIME_ROOT}/{self._token}/state.json"
-        self._log_path = f"{_RUNTIME_ROOT}/{self._token}/captures.jsonl"
-        self._pid_path = f"{_RUNTIME_ROOT}/{self._token}/proxy.pid"
+        self._runtime_dir = f"{_RUNTIME_ROOT}/{self._token}"
+        self._script_path = f"{self._runtime_dir}/proxy.js"
+        self._state_path = f"{self._runtime_dir}/state.json"
+        self._log_path = f"{self._runtime_dir}/captures.jsonl"
+        self._pid_path = f"{self._runtime_dir}/proxy.pid"
         self._base_url: str | None = None
 
     @property
@@ -328,7 +367,15 @@ class SandboxUsageProxy:
         return result.return_code == 0 and (result.stdout or "").strip() == "yes"
 
     async def stop(self) -> None:
-        await self._load_captures()
+        try:
+            await self._load_captures()
+        except Exception as exc:
+            logger.warning("Could not import sandbox usage captures: %s", exc)
+        finally:
+            await self._terminate()
+            await self._cleanup_runtime_dir()
+
+    async def _terminate(self) -> None:
         kill_cmd = (
             f"if [ -s {shlex.quote(self._pid_path)} ]; then "
             f"kill -TERM $(cat {shlex.quote(self._pid_path)}) 2>/dev/null || true; "
@@ -336,6 +383,13 @@ class SandboxUsageProxy:
         )
         with contextlib.suppress(Exception):
             await self.sandbox.exec(kill_cmd, timeout_sec=10)
+
+    async def _cleanup_runtime_dir(self) -> None:
+        with contextlib.suppress(Exception):
+            await self.sandbox.exec(
+                f"rm -rf {shlex.quote(self._runtime_dir)}",
+                timeout_sec=10,
+            )
 
     async def _upload_proxy_script(self) -> None:
         parent = shlex.quote(str(Path(self._script_path).parent))

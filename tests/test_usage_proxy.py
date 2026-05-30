@@ -171,6 +171,33 @@ def test_extract_usage_none_proxy():
     }
 
 
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"id": "msg_123", "content": [{"type": "text", "text": "ok"}]},
+        {"error": {"message": "Budget has been exceeded"}},
+        {"usage": {"prompt_tokens_details": {}}},
+    ],
+)
+def test_extract_usage_requires_provider_usage_fields(body):
+    """Guards PR #587: captured HTTP without tokens is not usage telemetry."""
+    from benchflow.providers.runtime import ProviderRuntime, extract_usage
+
+    runtime = ProviderRuntime(
+        kind="usage-proxy",
+        agent_base_url="http://host.docker.internal:12345",
+        backend_model="claude-haiku-4-5-20251001",
+        server=_ProxyLike(_trajectory(body)),
+    )
+
+    usage = extract_usage(runtime)
+
+    assert usage["usage_source"] == "unavailable"
+    assert usage["n_input_tokens"] is None
+    assert usage["n_output_tokens"] is None
+    assert usage["total_tokens"] is None
+
+
 def test_extract_usage_with_anthropic_exchanges():
     from benchflow.providers.runtime import ProviderRuntime, extract_usage
 

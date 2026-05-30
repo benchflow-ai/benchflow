@@ -481,11 +481,7 @@ def _parse_response_body(
         body_bytes, headers.get("content-encoding", "identity")
     )
     content_type = headers.get("content-type", "").lower()
-    if (
-        "text/event-stream" in content_type
-        or request_body.get("stream", False)
-        or _is_sse_request_path(path)
-    ):
+    if "text/event-stream" in content_type:
         try:
             return _reconstruct_sse_response(decoded)
         except Exception as e:
@@ -495,6 +491,13 @@ def _parse_response_body(
     try:
         parsed = json.loads(decoded)
     except (json.JSONDecodeError, UnicodeDecodeError):
+        if not content_type and (
+            request_body.get("stream", False) or _is_sse_request_path(path)
+        ):
+            try:
+                return _reconstruct_sse_response(decoded)
+            except Exception as e:
+                logger.warning(f"SSE response reconstruction failed: {e}")
         return {"raw": decoded.decode(errors="replace")[:_RAW_RESP_TRUNCATE]}
     if isinstance(parsed, dict):
         return parsed
