@@ -153,6 +153,28 @@ async def test_deploy_skills_uses_policy_sandbox_dir(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_deploy_skills_rejects_unsafe_policy_sandbox_dir(tmp_path):
+    """Guards PR #586 so runtime skill upload cannot consume unsafe mount paths."""
+    env = MagicMock()
+    env.exec = AsyncMock(return_value=MagicMock(return_code=0, stdout=""))
+    env.upload_dir = AsyncMock()
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+
+    with pytest.raises(ValueError, match="simple absolute container path"):
+        await deploy_skills(
+            env=env,
+            task_path=tmp_path,
+            skills_dir=skills_dir,
+            agent_cfg=None,
+            sandbox_user=None,
+            agent_cwd="/app",
+            task=_make_task(None),
+            skills_sandbox_dir="/opt/skills; touch /tmp/PWNED",
+        )
+
+
+@pytest.mark.asyncio
 async def test_deploy_skills_skips_runtime_upload_when_dockerfile_already_injected(
     tmp_path,
 ):

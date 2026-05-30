@@ -214,10 +214,19 @@ class TestLoadEvalDataset:
 
         assert ds.skill_mount_dir == "/opt/benchflow/skill-eval"
 
-    def test_rejects_invalid_skill_mount_dir(self, skill_dir):
+    @pytest.mark.parametrize(
+        "mount_dir",
+        [
+            "relative/skills",
+            "/opt/skills; touch /tmp/PWNED",
+            "/opt/skills with spaces",
+            "/opt/../skills",
+        ],
+    )
+    def test_rejects_invalid_skill_mount_dir(self, skill_dir, mount_dir):
         evals_json = skill_dir / "evals" / "evals.json"
         data = json.loads(evals_json.read_text())
-        data["defaults"]["skill_mount_dir"] = "relative/skills"
+        data["defaults"]["skill_mount_dir"] = mount_dir
         evals_json.write_text(json.dumps(data))
 
         ds = load_eval_dataset(skill_dir)

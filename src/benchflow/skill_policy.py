@@ -8,9 +8,12 @@ must be stripped so a no-skills run cannot pick them up through ``COPY .``.
 
 from __future__ import annotations
 
+import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
+
+_CONTAINER_MOUNT_PATH_RE = re.compile(r"^/[A-Za-z0-9._/-]+$")
 
 
 @dataclass(frozen=True)
@@ -51,6 +54,22 @@ def resolve_runtime_skills_dir(
     return skills_dir if isinstance(skills_dir, Path) else Path(skills_dir)
 
 
+def validate_container_mount_path(value: object, field: str = "sandbox_dir") -> str:
+    """Validate a simple absolute POSIX path inside a sandbox container."""
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be a string")
+    if value != value.strip():
+        raise ValueError(f"{field} must be a simple absolute container path")
+
+    path = value.rstrip("/")
+    if path == "" or path == "/" or not _CONTAINER_MOUNT_PATH_RE.fullmatch(path):
+        raise ValueError(f"{field} must be a simple absolute container path")
+    parts = path.split("/")[1:]
+    if any(part in {"", ".", ".."} for part in parts):
+        raise ValueError(f"{field} must be a simple absolute container path")
+    return path
+
+
 def resolve_task_skill_policy(
     *,
     task_path: Path,
@@ -70,12 +89,15 @@ def resolve_task_skill_policy(
     if resolved_runtime is not None:
         enabled = True
         host_dir = resolved_runtime
-        sandbox_dir = "/skills"
+        sandbox_dir = validate_container_mount_path("/skills")
         strip_bundled = has_bundled and not _same_path(resolved_runtime, bundled)
     elif include_task_skills and has_bundled:
         enabled = True
         host_dir = bundled
-        sandbox_dir = declared_sandbox_skills_dir or "/skills"
+        sandbox_dir = validate_container_mount_path(
+            declared_sandbox_skills_dir or "/skills",
+            "environment.skills_dir",
+        )
         strip_bundled = False
 
     return TaskSkillPolicy(

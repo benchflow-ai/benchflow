@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 
 from benchflow.agents.registry import AGENT_INSTALLERS, AGENTS, AgentConfig
 from benchflow.models import AgentInstallError
+from benchflow.skill_policy import validate_container_mount_path
 
 if TYPE_CHECKING:
     from benchflow.task import Task
@@ -266,7 +267,7 @@ async def deploy_skills(
     task_skills_dir = (
         task.config.environment.skills_dir if include_task_skills else None
     )
-    target_skills_dir = skills_sandbox_dir or "/skills"
+    target_skills_dir = validate_container_mount_path(skills_sandbox_dir or "/skills")
     effective_skills = None if skills_sandbox_dir else task_skills_dir
 
     # Runtime upload (fallback if not baked into Dockerfile)

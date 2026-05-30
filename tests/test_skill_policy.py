@@ -1,9 +1,12 @@
 from pathlib import Path
 
+import pytest
+
 from benchflow.skill_policy import (
     resolve_runtime_skills_dir,
     resolve_task_skill_policy,
     strip_task_bundled_skills,
+    validate_container_mount_path,
 )
 
 
@@ -100,6 +103,50 @@ def test_include_task_skills_honors_declared_sandbox_path(tmp_path: Path) -> Non
     assert policy.host_dir == skills_root
     assert policy.sandbox_dir == "/opt/benchflow/skill-eval"
     assert policy.strip_bundled_dir_from_copy is False
+
+
+def test_include_task_skills_rejects_unsafe_sandbox_path(tmp_path: Path) -> None:
+    """Guards PR #586 against Dockerfile injection via task-declared skills_dir."""
+    task = tmp_path / "task"
+    _make_task_skills(task)
+
+    with pytest.raises(ValueError, match=r"environment\.skills_dir"):
+        resolve_task_skill_policy(
+            task_path=task,
+            runtime_skills_dir=None,
+            declared_sandbox_skills_dir="/opt/skills; touch /tmp/PWNED",
+            include_task_skills=True,
+        )
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/skills",
+        "/opt/benchflow/skill-eval",
+        "/a/b_c.d-1",
+    ],
+)
+def test_validate_container_mount_path_accepts_simple_absolute_paths(path: str) -> None:
+    """Guards PR #586 so valid sandbox skill mount paths still work."""
+    assert validate_container_mount_path(path) == path
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "relative/skills",
+        "/",
+        "/opt/skills with spaces",
+        "/opt/skills;touch",
+        "/opt/../skills",
+        "/opt//skills",
+    ],
+)
+def test_validate_container_mount_path_rejects_unsafe_paths(path: str) -> None:
+    """Guards PR #586 against shell metacharacters and ambiguous paths."""
+    with pytest.raises(ValueError, match="simple absolute container path"):
+        validate_container_mount_path(path)
 
 
 def test_skills_dir_auto_resolves_at_rollout_boundary(tmp_path: Path) -> None:

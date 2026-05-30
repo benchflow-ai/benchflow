@@ -14,6 +14,7 @@ from typing import Any, NoReturn, cast
 
 from benchflow._paths import ignore_symlinks, is_safe_regular_file
 from benchflow.agents.registry import AGENTS
+from benchflow.skill_policy import validate_container_mount_path
 from benchflow.task import RolloutPaths, Task
 
 logger = logging.getLogger(__name__)
@@ -505,6 +506,7 @@ def _inject_skills_into_dockerfile(
     skills are part of the image.
     """
     env_dir = task_path / "environment"
+    sandbox_dir = validate_container_mount_path(sandbox_dir)
     dockerfile_path = env_dir / "Dockerfile"
     if not dockerfile_path.exists() or not skills_dir.is_dir():
         return
