@@ -1464,6 +1464,7 @@ class Rollout:
             environment=cfg.environment,
             session_id=getattr(self, "_rollout_name", "") or "",
             usage_tracking=cfg.usage_tracking,
+            sandbox=self._env,
         )
         (
             self._acp_client,
@@ -2317,6 +2318,7 @@ class Rollout:
             environment=cfg.environment,
             session_id=getattr(self, "_rollout_name", "") or "",
             usage_tracking=cfg.usage_tracking,
+            sandbox=self._env,
         )
 
         role_agent_differs = role.agent != cfg.primary_agent
