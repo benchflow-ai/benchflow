@@ -342,7 +342,11 @@ class SandboxUsageProxy:
             )
             last_output = (result.stdout or "").strip()
             if last_output:
-                state = json.loads(last_output)
+                try:
+                    state = json.loads(last_output)
+                except (json.JSONDecodeError, ValueError):
+                    await asyncio.sleep(0.2)
+                    continue
                 if int(state.get("port") or 0) > 0:
                     return state
             await asyncio.sleep(0.2)

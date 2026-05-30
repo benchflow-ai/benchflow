@@ -935,6 +935,7 @@ async def test_sandbox_usage_proxy_imports_raw_captures():
         def __init__(self):
             self.uploads = []
             self.commands = []
+            self.state_reads = 0
 
         async def upload_file(self, source_path, target_path):
             assert any(command.startswith("mkdir -p ") for command in self.commands)
@@ -951,6 +952,9 @@ async def test_sandbox_usage_proxy_imports_raw_captures():
             if "nohup" in command:
                 return SimpleNamespace(return_code=0, stdout="", stderr="")
             if "state.json" in command and command.strip().startswith("cat "):
+                self.state_reads += 1
+                if self.state_reads == 1:
+                    return SimpleNamespace(return_code=0, stdout="{", stderr="")
                 return SimpleNamespace(
                     return_code=0,
                     stdout='{"port":49000,"pid":123}\n',
@@ -966,8 +970,9 @@ async def test_sandbox_usage_proxy_imports_raw_captures():
                 return SimpleNamespace(return_code=0, stdout="", stderr="")
             return SimpleNamespace(return_code=1, stdout="", stderr=command)
 
+    sandbox = FakeSandbox()
     proxy = SandboxUsageProxy(
-        sandbox=FakeSandbox(),
+        sandbox=sandbox,
         target="https://api.anthropic.com",
         session_id="rollout-1",
         agent_name="claude-agent-acp",
@@ -984,6 +989,7 @@ async def test_sandbox_usage_proxy_imports_raw_captures():
     usage = extract_usage(runtime)
 
     assert proxy.base_url == "http://127.0.0.1:49000"
+    assert sandbox.state_reads == 2
     assert usage["usage_source"] == "provider_response"
     assert usage["n_input_tokens"] == 13
     assert usage["n_output_tokens"] == 5
