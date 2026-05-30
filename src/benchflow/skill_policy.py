@@ -17,23 +17,38 @@ from pathlib import Path
 class TaskSkillPolicy:
     bundled_dir: Path
     has_bundled_dir: bool
-    use_bundled_dir: bool
+    enabled: bool
+    host_dir: Path | None
+    sandbox_dir: str | None
+    strip_bundled_dir_from_copy: bool
 
     @property
-    def prompt_bundled_dir(self) -> Path | None:
-        return self.bundled_dir if self.use_bundled_dir else None
+    def prompt_dir(self) -> Path | None:
+        return self.host_dir
 
     @property
     def needs_task_copy(self) -> bool:
-        return self.has_bundled_dir
+        return self.has_bundled_dir or self.host_dir is not None
 
     @property
-    def strip_bundled_dir_from_copy(self) -> bool:
-        return self.has_bundled_dir and not self.use_bundled_dir
+    def host_dir_is_bundled(self) -> bool:
+        return self.host_dir is not None and _same_path(self.host_dir, self.bundled_dir)
 
 
 def task_bundled_skills_dir(task_path: Path) -> Path:
     return task_path / "environment" / "skills"
+
+
+def resolve_runtime_skills_dir(
+    task_path: Path,
+    skills_dir: str | Path | None,
+) -> Path | None:
+    if skills_dir is None:
+        return None
+    if str(skills_dir) == "auto":
+        bundled = task_bundled_skills_dir(task_path)
+        return bundled if bundled.is_dir() else None
+    return skills_dir if isinstance(skills_dir, Path) else Path(skills_dir)
 
 
 def resolve_task_skill_policy(
@@ -45,14 +60,31 @@ def resolve_task_skill_policy(
 ) -> TaskSkillPolicy:
     bundled = task_bundled_skills_dir(task_path)
     has_bundled = bundled.is_dir()
-    use_bundled = has_bundled and (
-        _same_path(runtime_skills_dir, bundled)
-        or (include_task_skills and bool(declared_sandbox_skills_dir))
-    )
+    resolved_runtime = resolve_runtime_skills_dir(task_path, runtime_skills_dir)
+
+    enabled = False
+    host_dir: Path | None = None
+    sandbox_dir: str | None = None
+    strip_bundled = has_bundled
+
+    if resolved_runtime is not None:
+        enabled = True
+        host_dir = resolved_runtime
+        sandbox_dir = "/skills"
+        strip_bundled = has_bundled and not _same_path(resolved_runtime, bundled)
+    elif include_task_skills and has_bundled:
+        enabled = True
+        host_dir = bundled
+        sandbox_dir = declared_sandbox_skills_dir or "/skills"
+        strip_bundled = False
+
     return TaskSkillPolicy(
         bundled_dir=bundled,
         has_bundled_dir=has_bundled,
-        use_bundled_dir=use_bundled,
+        enabled=enabled,
+        host_dir=host_dir,
+        sandbox_dir=sandbox_dir,
+        strip_bundled_dir_from_copy=strip_bundled,
     )
 
 

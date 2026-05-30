@@ -329,7 +329,7 @@ skills_dir: my-skills
 
 
 def test_native_yaml_with_include_task_skills(tmp_path):
-    """Guards PR #860 so native YAML can explicitly enable task skills."""
+    """Guards PR #586 so native YAML can explicitly enable task skills."""
     tasks = tmp_path / "tasks" / "task-a"
     tasks.mkdir(parents=True)
     (tasks / "task.toml").write_text('version = "1.0"')

@@ -35,7 +35,7 @@ class RolloutPlanes(Protocol):
 
     def stage_dockerfile_deps(self, task_path: Path, context_root: Path) -> None: ...
     def inject_skills_into_dockerfile(
-        self, task_path: Path, skills_dir: Path
+        self, task_path: Path, skills_dir: Path, *, sandbox_dir: str = "/skills"
     ) -> None: ...
 
     def create_environment(

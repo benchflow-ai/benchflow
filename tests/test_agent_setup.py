@@ -122,6 +122,37 @@ async def test_deploy_skills_uploads_runtime_skills_and_links_shared_tree(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_deploy_skills_uses_policy_sandbox_dir(tmp_path):
+    """Guards PR #586 so task skills can mount outside the default /skills."""
+    env = MagicMock()
+    env.exec = AsyncMock(return_value=MagicMock(return_code=0, stdout=""))
+    env.upload_dir = AsyncMock()
+    agent_cfg = AgentConfig(
+        name="test-agent",
+        install_cmd="true",
+        launch_cmd="true",
+        skill_paths=["$HOME/.agents/skills"],
+    )
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+
+    await deploy_skills(
+        env=env,
+        task_path=tmp_path,
+        skills_dir=skills_dir,
+        agent_cfg=agent_cfg,
+        sandbox_user="agent",
+        agent_cwd="/workspace",
+        task=_make_task(None),
+        skills_sandbox_dir="/opt/benchflow/skill-eval",
+    )
+
+    env.upload_dir.assert_awaited_once_with(skills_dir, "/opt/benchflow/skill-eval")
+    link_cmd = env.exec.await_args.args[0]
+    assert "ln -sfn /opt/benchflow/skill-eval /home/agent/.agents/skills" in link_cmd
+
+
+@pytest.mark.asyncio
 async def test_deploy_skills_skips_runtime_upload_when_dockerfile_already_injected(
     tmp_path,
 ):
@@ -338,7 +369,7 @@ async def test_deploy_skills_agent_with_empty_skill_paths_does_not_use_oracle_pa
 
 @pytest.mark.asyncio
 async def test_deploy_skills_does_not_autodiscover_bundled_skills(tmp_path):
-    """Guards PR #860 against no-skills runs linking task bundles from /app."""
+    """Guards PR #586 against no-skills runs linking task bundles from /app."""
     env = MagicMock()
     env.exec = AsyncMock(return_value=MagicMock(return_code=0, stdout=""))
     env.upload_dir = AsyncMock()
@@ -364,7 +395,7 @@ async def test_deploy_skills_does_not_autodiscover_bundled_skills(tmp_path):
 
 @pytest.mark.asyncio
 async def test_deploy_skills_links_declared_task_skills_when_enabled(tmp_path):
-    """Guards PR #860 so with-task-skills mode still links declared mounts."""
+    """Guards PR #586 so with-task-skills mode still links declared mounts."""
     env = MagicMock()
     env.exec = AsyncMock(return_value=MagicMock(return_code=0, stdout=""))
     env.upload_dir = AsyncMock()
@@ -395,7 +426,7 @@ async def test_deploy_skills_links_declared_task_skills_when_enabled(tmp_path):
 async def test_deploy_skills_autodiscovery_skipped_when_include_task_skills_false(
     tmp_path,
 ):
-    """Guards PR #860 so include_task_skills=False never links task bundles."""
+    """Guards PR #586 so include_task_skills=False never links task bundles."""
     env = MagicMock()
     env.exec = AsyncMock(return_value=MagicMock(return_code=0, stdout=""))
     env.upload_dir = AsyncMock()

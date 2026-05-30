@@ -42,7 +42,7 @@ class FakeUploadEnv:
 async def test_start_env_does_not_upload_task_environment_skills(
     tmp_path: Path,
 ) -> None:
-    """Guards PR #860 against the no-skills leak into /app/skills."""
+    """Guards PR #586 against the no-skills leak into /app/skills."""
     task = tmp_path / "task"
     (task / "environment" / "skills" / "jax-skills").mkdir(parents=True)
     (task / "solution").mkdir(parents=True)
@@ -82,7 +82,7 @@ async def test_publish_trajectory_for_verifier_uploads_acp_jsonl() -> None:
 async def test_rollout_setup_strips_task_skills_from_no_skills_build_context(
     tmp_path: Path,
 ) -> None:
-    """Guards PR #860 against Dockerfile COPY . leaking task skills."""
+    """Guards PR #586 against Dockerfile COPY . leaking task skills."""
     task = tmp_path / "task"
     (task / "environment" / "skills" / "alpha").mkdir(parents=True)
     (task / "environment" / "skills" / "alpha" / "SKILL.md").write_text("# Alpha\n")
@@ -110,3 +110,44 @@ async def test_rollout_setup_strips_task_skills_from_no_skills_build_context(
     assert (task / "environment" / "skills" / "alpha" / "SKILL.md").exists()
     assert rollout._effective_task_path != task
     assert not (rollout._effective_task_path / "environment" / "skills").exists()
+
+
+@pytest.mark.asyncio
+async def test_rollout_setup_includes_task_skills_without_declared_mount(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #586 so include_task_skills=True enables task bundles."""
+    task = tmp_path / "task"
+    (task / "environment" / "skills" / "alpha").mkdir(parents=True)
+    (task / "environment" / "skills" / "alpha" / "SKILL.md").write_text("# Alpha\n")
+    (task / "environment" / "Dockerfile").write_text("FROM alpine:3.20\n")
+    (task / "instruction.md").write_text("solve\n")
+    (task / "task.toml").write_text('version = "1.0"\n')
+
+    env = MagicMock()
+    planes = MagicMock()
+    planes.resolve_locked_paths.return_value = []
+    planes.resolve_agent_env.return_value = {}
+    planes.agent_launch.return_value = "claude-agent-acp"
+    planes.create_environment.return_value = env
+
+    rollout = Rollout(
+        RolloutConfig.from_legacy(
+            task_path=task,
+            agent="claude-agent-acp",
+            jobs_dir=tmp_path / "jobs",
+            include_task_skills=True,
+            planes=planes,
+        )
+    )
+    await rollout.setup()
+
+    assert rollout._effective_task_path != task
+    assert (
+        rollout._effective_task_path / "environment" / "skills" / "alpha" / "SKILL.md"
+    ).exists()
+    planes.inject_skills_into_dockerfile.assert_called_once_with(
+        rollout._effective_task_path,
+        rollout._effective_task_path / "environment" / "skills",
+        sandbox_dir="/skills",
+    )

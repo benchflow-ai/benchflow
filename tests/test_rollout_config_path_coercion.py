@@ -74,3 +74,19 @@ def test_rollout_config_context_root_none_stays_none() -> None:
 
     assert cfg.context_root is None
     assert cfg.skills_dir is None
+
+
+def test_rollout_config_resolves_skills_dir_auto(tmp_path: Path) -> None:
+    """Guards PR #586 so SDK.run and bench run share eval's skills auto mode."""
+    task = tmp_path / "task"
+    skills = task / "environment" / "skills" / "alpha"
+    skills.mkdir(parents=True)
+    (skills / "SKILL.md").write_text("# Alpha\n")
+
+    cfg = RolloutConfig(
+        task_path=task,
+        scenes=[Scene.single(agent="claude-agent-acp")],
+        skills_dir="auto",
+    )
+
+    assert cfg.skills_dir == task / "environment" / "skills"

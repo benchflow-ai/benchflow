@@ -73,7 +73,12 @@ from benchflow.scenes import (
     scene_step_role,
     scene_step_skills_dir,
 )
-from benchflow.skill_policy import resolve_task_skill_policy, strip_task_bundled_skills
+from benchflow.skill_policy import (
+    resolve_runtime_skills_dir,
+    resolve_task_skill_policy,
+    strip_task_bundled_skills,
+    task_bundled_skills_dir,
+)
 from benchflow.trajectories._capture import (
     _capture_session_trajectory,
     _scrape_agent_trajectory,
@@ -921,8 +926,7 @@ class RolloutConfig:
             self.task_path = Path(self.task_path)
         if self.context_root is not None and not isinstance(self.context_root, Path):
             self.context_root = Path(self.context_root)
-        if self.skills_dir is not None and not isinstance(self.skills_dir, Path):
-            self.skills_dir = Path(self.skills_dir)
+        self.skills_dir = resolve_runtime_skills_dir(self.task_path, self.skills_dir)
         if not isinstance(self.jobs_dir, Path):
             self.jobs_dir = Path(self.jobs_dir)
 
@@ -1044,6 +1048,8 @@ class Rollout:
         self._timing: dict[str, float] = {}
         self._effective_locked: list[str] = []
         self._disallow_web_tools: bool = False
+        self._effective_skills_dir: Path | None = None
+        self._effective_skills_sandbox_dir: str | None = None
         self._usage_runtime: Any = None
         self._usage_metrics: dict[str, Any] = self._planes.extract_usage(None)
 
@@ -1226,8 +1232,7 @@ class Rollout:
         self._resolved_prompts = _resolve_prompts(
             cfg.task_path,
             cfg.prompts,
-            skills_dir=cfg.skills_dir,
-            task_skills_dir=task_skill_policy.prompt_bundled_dir,
+            skills_dir=task_skill_policy.prompt_dir,
             skill_nudge=_skill_nudge(cfg.agent_env),
             agent=cfg.primary_agent,
             planes=self._planes,
@@ -1241,7 +1246,7 @@ class Rollout:
         # (_inject_skills writes into environment/_deps/, stage_dockerfile
         # rewrites COPY paths — neither should modify the source tree)
         effective_task_path = cfg.task_path
-        if cfg.context_root or cfg.skills_dir or task_skill_policy.needs_task_copy:
+        if cfg.context_root or task_skill_policy.needs_task_copy:
             import shutil
             import tempfile
 
@@ -1256,12 +1261,23 @@ class Rollout:
             self._planes.stage_dockerfile_deps(
                 effective_task_path, Path(cfg.context_root)
             )
-        if cfg.skills_dir:
+        effective_skills_dir = task_skill_policy.host_dir
+        if (
+            effective_skills_dir is not None
+            and task_skill_policy.host_dir_is_bundled
+            and effective_task_path != cfg.task_path
+        ):
+            effective_skills_dir = task_bundled_skills_dir(effective_task_path)
+        if effective_skills_dir is not None:
             self._planes.inject_skills_into_dockerfile(
-                effective_task_path, Path(cfg.skills_dir)
+                effective_task_path,
+                effective_skills_dir,
+                sandbox_dir=task_skill_policy.sandbox_dir or "/skills",
             )
 
         self._effective_task_path = effective_task_path
+        self._effective_skills_dir = effective_skills_dir
+        self._effective_skills_sandbox_dir = task_skill_policy.sandbox_dir
 
         # Honour an externally-supplied sandbox (use_prebuilt_env, set by
         # Runtime.execute() when the caller passes a live Environment).
@@ -1379,12 +1395,13 @@ class Rollout:
             await self._planes.deploy_skills(
                 self._env,
                 getattr(self, "_effective_task_path", cfg.task_path),
-                cfg.skills_dir,
+                self._effective_skills_dir,
                 None,
                 cfg.sandbox_user,
                 self._agent_cwd,
                 self._task,
-                include_task_skills=cfg.include_task_skills,
+                include_task_skills=False,
+                skills_sandbox_dir=self._effective_skills_sandbox_dir,
             )
             if cfg.export_generated_skills_to:
                 await _ensure_sandbox_dir(
@@ -1433,12 +1450,13 @@ class Rollout:
         await self._planes.deploy_skills(
             self._env,
             getattr(self, "_effective_task_path", cfg.task_path),
-            cfg.skills_dir,
+            self._effective_skills_dir,
             self._agent_cfg,
             cfg.sandbox_user,
             self._agent_cwd,
             self._task,
-            include_task_skills=cfg.include_task_skills,
+            include_task_skills=False,
+            skills_sandbox_dir=self._effective_skills_sandbox_dir,
         )
         if cfg.export_generated_skills_to:
             await _ensure_sandbox_dir(

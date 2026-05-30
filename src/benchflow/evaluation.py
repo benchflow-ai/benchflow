@@ -727,10 +727,10 @@ class Evaluation:
 
     def _resolve_skills_dir(self, task_dir: Path, skills_dir: str | None) -> str | None:
         """Resolve skills_dir — 'auto' means per-task environment/skills/."""
-        if skills_dir == "auto":
-            candidate = task_dir / "environment" / "skills"
-            return str(candidate) if candidate.is_dir() else None
-        return skills_dir
+        from benchflow.skill_policy import resolve_runtime_skills_dir
+
+        resolved = resolve_runtime_skills_dir(task_dir, skills_dir)
+        return str(resolved) if resolved is not None else None
 
     def _enrich_payload_with_persisted_timing(
         self, payload: dict, result: RolloutResult

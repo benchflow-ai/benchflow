@@ -75,7 +75,7 @@ def test_skill_nudge_falls_back_to_host_env(monkeypatch):
 
 
 def test_host_skill_nudge_does_not_read_task_skills_by_default(monkeypatch, tmp_path):
-    """Guards PR #860 against prompt-level no-skills leaks."""
+    """Guards PR #586 against prompt-level no-skills leaks."""
     from benchflow.sdk import SDK
 
     monkeypatch.setenv("BENCHFLOW_SKILL_NUDGE", "name")
@@ -102,7 +102,7 @@ def test_host_skill_nudge_does_not_read_task_skills_by_default(monkeypatch, tmp_
 def test_host_skill_nudge_reads_task_skills_when_explicitly_enabled(
     monkeypatch, tmp_path
 ):
-    """Guards PR #860 so with-task-skills mode still gets skill nudges."""
+    """Guards PR #586 so with-task-skills mode still gets skill nudges."""
     from benchflow.sdk import SDK
 
     monkeypatch.setenv("BENCHFLOW_SKILL_NUDGE", "name")

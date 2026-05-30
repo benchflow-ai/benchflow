@@ -260,32 +260,34 @@ async def deploy_skills(
     agent_cwd: str,
     task: "Task",
     include_task_skills: bool = False,
+    skills_sandbox_dir: str | None = None,
 ) -> None:
     """Deploy and distribute skills into sandbox."""
     task_skills_dir = (
         task.config.environment.skills_dir if include_task_skills else None
     )
-    effective_skills = task_skills_dir
+    target_skills_dir = skills_sandbox_dir or "/skills"
+    effective_skills = None if skills_sandbox_dir else task_skills_dir
 
     # Runtime upload (fallback if not baked into Dockerfile)
     if skills_dir:
         dockerfile = task_path / "environment" / "Dockerfile"
+        injected_copy = f"COPY _deps/skills {target_skills_dir.rstrip('/')}/"
         already_injected = (
-            dockerfile.exists()
-            and "COPY _deps/skills /skills/" in dockerfile.read_text()
+            dockerfile.exists() and injected_copy in dockerfile.read_text()
         )
         if not already_injected:
             skills_path = Path(skills_dir)
             if skills_path.is_dir():
                 logger.info(f"Deploying skills via runtime upload from {skills_path}")
-                await env.upload_dir(skills_path, "/skills")
-                logger.info("Skills deployed to /skills")
-                effective_skills = "/skills"
+                await env.upload_dir(skills_path, target_skills_dir)
+                logger.info("Skills deployed to %s", target_skills_dir)
+                effective_skills = target_skills_dir
             else:
                 logger.warning(f"Skills dir not found: {skills_path}")
         else:
             logger.info("Skills already injected via Dockerfile")
-            effective_skills = "/skills"
+            effective_skills = target_skills_dir
 
     # Distribute to agent-specific discovery paths
     if agent_cfg is not None:

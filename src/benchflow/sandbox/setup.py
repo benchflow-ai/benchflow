@@ -491,7 +491,13 @@ def _rewrite_copy_line(line: str, env_dir: Path, context_root: Path) -> str | No
     return None
 
 
-def _inject_skills_into_dockerfile(task_path: Path, skills_dir: Path) -> None:
+def _docker_copy_dir(path: str) -> str:
+    return path.rstrip("/") + "/"
+
+
+def _inject_skills_into_dockerfile(
+    task_path: Path, skills_dir: Path, *, sandbox_dir: str = "/skills"
+) -> None:
     """Inject skills into the task's Dockerfile (baked into image).
 
     Copies skills_dir into environment/_deps/skills/ and appends COPY + symlink
@@ -517,11 +523,11 @@ def _inject_skills_into_dockerfile(task_path: Path, skills_dir: Path) -> None:
     lines = [
         "",
         "# Skills directory (injected by benchflow --skills-dir)",
-        "COPY _deps/skills /skills/",
+        f"COPY _deps/skills {_docker_copy_dir(sandbox_dir)}",
     ]
     for agent_path in _get_agent_skill_paths():
         parent = str(Path(agent_path).parent)
-        lines.append(f"RUN mkdir -p {parent} && ln -sf /skills {agent_path}")
+        lines.append(f"RUN mkdir -p {parent} && ln -sf {sandbox_dir} {agent_path}")
 
     content = dockerfile_path.read_text()
     dockerfile_path.write_text(content + "\n".join(lines) + "\n")

@@ -84,8 +84,10 @@ class DefaultRolloutPlanes:
     def stage_dockerfile_deps(self, task_path: Path, context_root: Path) -> None:
         stage_dockerfile_deps(task_path, context_root)
 
-    def inject_skills_into_dockerfile(self, task_path: Path, skills_dir: Path) -> None:
-        _inject_skills_into_dockerfile(task_path, skills_dir)
+    def inject_skills_into_dockerfile(
+        self, task_path: Path, skills_dir: Path, *, sandbox_dir: str = "/skills"
+    ) -> None:
+        _inject_skills_into_dockerfile(task_path, skills_dir, sandbox_dir=sandbox_dir)
 
     def create_environment(
         self,
