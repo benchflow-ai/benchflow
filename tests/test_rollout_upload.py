@@ -39,7 +39,9 @@ class FakeUploadEnv:
 
 
 @pytest.mark.asyncio
-async def test_start_env_does_not_upload_task_environment_skills(tmp_path: Path) -> None:
+async def test_start_env_does_not_upload_task_environment_skills(
+    tmp_path: Path,
+) -> None:
     """Guards PR #860 against the no-skills leak into /app/skills."""
     task = tmp_path / "task"
     (task / "environment" / "skills" / "jax-skills").mkdir(parents=True)

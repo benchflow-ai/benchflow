@@ -99,7 +99,9 @@ def test_host_skill_nudge_does_not_read_task_skills_by_default(monkeypatch, tmp_
     assert "Do not browse" not in prompts[0]
 
 
-def test_host_skill_nudge_reads_task_skills_when_explicitly_enabled(monkeypatch, tmp_path):
+def test_host_skill_nudge_reads_task_skills_when_explicitly_enabled(
+    monkeypatch, tmp_path
+):
     """Guards PR #860 so with-task-skills mode still gets skill nudges."""
     from benchflow.sdk import SDK
 
