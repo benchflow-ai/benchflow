@@ -570,9 +570,13 @@ async def test_daytona_uses_sandbox_local_proxy_not_host_proxy(monkeypatch):
     monkeypatch.setattr(
         provider_runtime_mod,
         "TrajectoryProxy",
-        lambda *a, **k: (_ for _ in ()).throw(AssertionError("host proxy must not start")),
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("host proxy must not start")
+        ),
     )
-    monkeypatch.setattr(provider_runtime_mod, "SandboxUsageProxy", FakeSandboxUsageProxy)
+    monkeypatch.setattr(
+        provider_runtime_mod, "SandboxUsageProxy", FakeSandboxUsageProxy
+    )
 
     env = {
         "ANTHROPIC_BASE_URL": "https://api.anthropic.com",
@@ -941,7 +945,9 @@ async def test_sandbox_usage_proxy_imports_raw_captures():
             if command.startswith("mkdir -p "):
                 return SimpleNamespace(return_code=0, stdout="", stderr="")
             if "command -v node" in command:
-                return SimpleNamespace(return_code=0, stdout="/usr/bin/node\n", stderr="")
+                return SimpleNamespace(
+                    return_code=0, stdout="/usr/bin/node\n", stderr=""
+                )
             if "nohup" in command:
                 return SimpleNamespace(return_code=0, stdout="", stderr="")
             if "state.json" in command and command.strip().startswith("cat "):

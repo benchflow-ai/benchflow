@@ -59,7 +59,9 @@ async def test_daytona_usage_tracking_starts_sandbox_local_proxy(monkeypatch):
         async def stop(self):
             return None
 
-    monkeypatch.setattr(provider_runtime_mod, "SandboxUsageProxy", FakeSandboxUsageProxy)
+    monkeypatch.setattr(
+        provider_runtime_mod, "SandboxUsageProxy", FakeSandboxUsageProxy
+    )
     sandbox = object()
 
     updated, runtime = await ensure_usage_proxy_runtime(
