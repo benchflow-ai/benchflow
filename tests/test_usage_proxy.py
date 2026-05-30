@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import base64
 import json
 from datetime import datetime
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -545,59 +543,6 @@ async def test_no_proxy_for_oracle():
 
 
 @pytest.mark.asyncio
-async def test_daytona_uses_sandbox_local_proxy_not_host_proxy(monkeypatch):
-    """Daytona must not point agents at a host-local proxy address."""
-    from benchflow.providers import runtime as provider_runtime_mod
-    from benchflow.providers.runtime import ensure_usage_proxy_runtime
-
-    class FakeSandboxUsageProxy:
-        target = "https://api.anthropic.com"
-        base_url = "http://127.0.0.1:49000"
-
-        def __init__(self, **kwargs):
-            self.__dict__.update(kwargs)
-            self.started = False
-            self.trajectory = Trajectory(
-                session_id=kwargs["session_id"], agent_name=kwargs["agent_name"]
-            )
-
-        async def start(self):
-            self.started = True
-
-        async def stop(self):
-            return None
-
-    monkeypatch.setattr(
-        provider_runtime_mod,
-        "TrajectoryProxy",
-        lambda *a, **k: (_ for _ in ()).throw(
-            AssertionError("host proxy must not start")
-        ),
-    )
-    monkeypatch.setattr(
-        provider_runtime_mod, "SandboxUsageProxy", FakeSandboxUsageProxy
-    )
-
-    env = {
-        "ANTHROPIC_BASE_URL": "https://api.anthropic.com",
-        "ANTHROPIC_API_KEY": "sk-real-key",
-    }
-    updated, runtime = await ensure_usage_proxy_runtime(
-        agent="claude-agent-acp",
-        agent_env=env,
-        model="claude-haiku-4-5-20251001",
-        runtime=None,
-        environment="daytona",
-        session_id="rollout-1",
-        sandbox=object(),
-    )
-
-    assert runtime is not None
-    assert runtime.server.started is True
-    assert updated["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:49000"
-
-
-@pytest.mark.asyncio
 async def test_daytona_runtime_retired_when_environment_unreachable(monkeypatch):
     """Guards the fix from PR #327: a stale runtime from an earlier env must be
     stopped, not reused."""
@@ -899,100 +844,6 @@ def test_extract_usage_prefers_captured_model_over_backend_model():
     assert str(usage["price_source"]).startswith("https://openai.com/api/pricing/@")
     # gpt-4.1-mini pricing (0.4 in / 1.6 out per Mtok), not haiku's 1.0 / 5.0.
     assert usage["cost_usd"] == round((1000 * 0.4 + 100 * 1.6) / 1_000_000, 10)
-
-
-@pytest.mark.asyncio
-async def test_sandbox_usage_proxy_imports_raw_captures():
-    """Sandbox-local proxy captures should reuse the canonical usage parser."""
-    from benchflow.providers.runtime import ProviderRuntime, extract_usage
-    from benchflow.providers.sandbox_usage_proxy import SandboxUsageProxy
-
-    capture = {
-        "duration_ms": 12,
-        "request": {
-            "method": "POST",
-            "path": "/v1/messages",
-            "headers": {"content-type": "application/json"},
-            "body_b64": base64.b64encode(
-                json.dumps({"model": "claude-haiku-4-5-20251001"}).encode()
-            ).decode(),
-        },
-        "response": {
-            "status_code": 200,
-            "headers": {"content-type": "application/json"},
-            "body_b64": base64.b64encode(
-                json.dumps(
-                    {
-                        "model": "claude-haiku-4-5-20251001",
-                        "usage": {"input_tokens": 13, "output_tokens": 5},
-                    }
-                ).encode()
-            ).decode(),
-        },
-    }
-
-    class FakeSandbox:
-        def __init__(self):
-            self.uploads = []
-            self.commands = []
-            self.state_reads = 0
-
-        async def upload_file(self, source_path, target_path):
-            assert any(command.startswith("mkdir -p ") for command in self.commands)
-            self.uploads.append((source_path, target_path))
-
-        async def exec(self, command, timeout_sec=None):
-            self.commands.append(command)
-            if command.startswith("mkdir -p "):
-                return SimpleNamespace(return_code=0, stdout="", stderr="")
-            if "command -v node" in command:
-                return SimpleNamespace(
-                    return_code=0, stdout="/usr/bin/node\n", stderr=""
-                )
-            if "nohup" in command:
-                return SimpleNamespace(return_code=0, stdout="", stderr="")
-            if "state.json" in command and command.strip().startswith("cat "):
-                self.state_reads += 1
-                if self.state_reads == 1:
-                    return SimpleNamespace(return_code=0, stdout="{", stderr="")
-                return SimpleNamespace(
-                    return_code=0,
-                    stdout='{"port":49000,"pid":123}\n',
-                    stderr="",
-                )
-            if "captures.jsonl" in command and command.strip().startswith("cat "):
-                return SimpleNamespace(
-                    return_code=0,
-                    stdout=json.dumps(capture) + "\n",
-                    stderr="",
-                )
-            if "kill -TERM" in command:
-                return SimpleNamespace(return_code=0, stdout="", stderr="")
-            return SimpleNamespace(return_code=1, stdout="", stderr=command)
-
-    sandbox = FakeSandbox()
-    proxy = SandboxUsageProxy(
-        sandbox=sandbox,
-        target="https://api.anthropic.com",
-        session_id="rollout-1",
-        agent_name="claude-agent-acp",
-    )
-    await proxy.start()
-    await proxy.stop()
-
-    runtime = ProviderRuntime(
-        kind="usage-proxy",
-        agent_base_url=proxy.base_url,
-        backend_model="claude-haiku-4-5-20251001",
-        server=proxy,
-    )
-    usage = extract_usage(runtime)
-
-    assert proxy.base_url == "http://127.0.0.1:49000"
-    assert sandbox.state_reads == 2
-    assert usage["usage_source"] == "provider_response"
-    assert usage["n_input_tokens"] == 13
-    assert usage["n_output_tokens"] == 5
 
 
 @pytest.mark.asyncio

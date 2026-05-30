@@ -346,6 +346,22 @@ def validate_usage_proxy_preconditions(
             log_level=logging.INFO,
         )
 
+    if needs_provider_runtime(model) and not host_proxy_reachable_from_agent(
+        environment
+    ):
+        message = (
+            "Remote Bedrock-direct runs cannot be metered by the generic usage "
+            "proxy because the agent calls AWS Bedrock natively instead of an "
+            "OpenAI/Anthropic-compatible HTTP endpoint. Use an OpenAI-compatible "
+            "provider proxy for this run, run with --sandbox docker, or leave "
+            "usage tracking as auto/off."
+        )
+        return UsageProxyPreconditionFailure(
+            required_message=message,
+            skip_message=message,
+            log_level=logging.WARNING,
+        )
+
     return None
 
 
@@ -504,6 +520,18 @@ async def ensure_usage_proxy_runtime(
     if runtime is not None and getattr(runtime.server, "target", None) != target:
         await stop_provider_runtime(runtime)
         runtime = None
+    elif runtime is not None:
+        is_running = getattr(runtime.server, "is_running", None)
+        if is_running is not None:
+            try:
+                alive = await is_running()
+            except Exception as exc:
+                logger.info("Usage telemetry proxy liveness check failed: %s", exc)
+                alive = False
+            if not alive:
+                logger.info("Retiring stale usage telemetry proxy runtime")
+                await stop_provider_runtime(runtime)
+                runtime = None
 
     if runtime is None:
         prompt_cache_retention = agent_env.get(PROMPT_CACHE_RETENTION_ENV)

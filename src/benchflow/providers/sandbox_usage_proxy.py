@@ -38,13 +38,17 @@ function getArg(name) {
   return arg ? arg.slice(prefix.length) : "";
 }
 
-const target = new URL(getArg("target").replace(/\/+$/, ""));
-const statePath = getArg("state");
-const logPath = getArg("log");
-const pidPath = getArg("pid");
-const sessionId = getArg("session-id");
-const agentName = getArg("agent-name");
-const promptCacheRetention = getArg("prompt-cache-retention");
+function getConfig(name, argName) {
+  return process.env[`BENCHFLOW_USAGE_PROXY_${name}`] || getArg(argName);
+}
+
+const target = new URL(getConfig("TARGET", "target").replace(/\/+$/, ""));
+const statePath = getConfig("STATE_PATH", "state");
+const logPath = getConfig("LOG_PATH", "log");
+const pidPath = getConfig("PID_PATH", "pid");
+const sessionId = getConfig("SESSION_ID", "session-id");
+const agentName = getConfig("AGENT_NAME", "agent-name");
+const promptCacheRetention = getConfig("PROMPT_CACHE_RETENTION", "prompt-cache-retention");
 
 function sanitizeHeaders(headers) {
   const result = { ...headers };
@@ -217,6 +221,22 @@ server.listen(0, "127.0.0.1", () => {
 process.on("SIGTERM", () => server.close(() => process.exit(0)));
 """
 
+_NODE_LAUNCHER_SOURCE = r"""
+const fs = require("fs");
+const { spawn } = require("child_process");
+
+const config = JSON.parse(process.env.BENCHFLOW_USAGE_PROXY_CONFIG || "{}");
+const stdout = fs.openSync(config.stdout, "a");
+const stderr = fs.openSync(config.stderr, "a");
+const child = spawn(config.node, [config.script], {
+  detached: true,
+  stdio: ["ignore", stdout, stderr],
+  env: { ...process.env, ...config.env },
+});
+child.unref();
+console.log(child.pid);
+"""
+
 
 class SandboxUsageProxy:
     """Long-lived proxy process running in the agent sandbox."""
@@ -252,6 +272,25 @@ class SandboxUsageProxy:
     async def start(self) -> None:
         await self._upload_proxy_script()
         node = await self._ensure_node()
+        stdout_path = f"{_RUNTIME_ROOT}/{self._token}/stdout.log"
+        stderr_path = f"{_RUNTIME_ROOT}/{self._token}/stderr.log"
+        launcher_config = {
+            "node": node,
+            "script": self._script_path,
+            "stdout": stdout_path,
+            "stderr": stderr_path,
+            "env": {
+                "BENCHFLOW_USAGE_PROXY_TARGET": self.target,
+                "BENCHFLOW_USAGE_PROXY_STATE_PATH": self._state_path,
+                "BENCHFLOW_USAGE_PROXY_LOG_PATH": self._log_path,
+                "BENCHFLOW_USAGE_PROXY_PID_PATH": self._pid_path,
+                "BENCHFLOW_USAGE_PROXY_SESSION_ID": self.session_id,
+                "BENCHFLOW_USAGE_PROXY_AGENT_NAME": self.agent_name,
+                "BENCHFLOW_USAGE_PROXY_PROMPT_CACHE_RETENTION": (
+                    self.prompt_cache_retention or ""
+                ),
+            },
+        }
         command = " ".join(
             [
                 "mkdir",
@@ -264,21 +303,10 @@ class SandboxUsageProxy:
                 shlex.quote(self._log_path),
                 shlex.quote(self._pid_path),
                 "&&",
-                "nohup",
+                f"BENCHFLOW_USAGE_PROXY_CONFIG={shlex.quote(json.dumps(launcher_config))}",
                 shlex.quote(node),
-                shlex.quote(self._script_path),
-                f"--target={shlex.quote(self.target)}",
-                f"--state={shlex.quote(self._state_path)}",
-                f"--log={shlex.quote(self._log_path)}",
-                f"--pid={shlex.quote(self._pid_path)}",
-                f"--session-id={shlex.quote(self.session_id)}",
-                f"--agent-name={shlex.quote(self.agent_name)}",
-                f"--prompt-cache-retention={shlex.quote(self.prompt_cache_retention or '')}",
-                ">",
-                shlex.quote(f"{_RUNTIME_ROOT}/{self._token}/stdout.log"),
-                "2>",
-                shlex.quote(f"{_RUNTIME_ROOT}/{self._token}/stderr.log"),
-                "&",
+                "-e",
+                shlex.quote(_NODE_LAUNCHER_SOURCE),
             ]
         )
         result = await self.sandbox.exec(command, timeout_sec=15)
@@ -287,6 +315,17 @@ class SandboxUsageProxy:
         state = await self._wait_for_state()
         self._base_url = f"http://127.0.0.1:{state['port']}"
         logger.info("Sandbox usage telemetry proxy listening on %s", self._base_url)
+
+    async def is_running(self) -> bool:
+        result = await self.sandbox.exec(
+            (
+                f"if [ -s {shlex.quote(self._pid_path)} ] && "
+                f"kill -0 $(cat {shlex.quote(self._pid_path)}) 2>/dev/null; "
+                "then echo yes; else echo no; fi"
+            ),
+            timeout_sec=5,
+        )
+        return result.return_code == 0 and (result.stdout or "").strip() == "yes"
 
     async def stop(self) -> None:
         await self._load_captures()
