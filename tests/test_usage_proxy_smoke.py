@@ -1,7 +1,10 @@
 """Optional real-provider smoke test for provider usage telemetry.
 
-Run explicitly with:
+Run explicitly with Docker:
     BENCHFLOW_RUN_TELEMETRY_SMOKE=1 uv run pytest tests/test_usage_proxy_smoke.py -q
+
+Run explicitly with Daytona:
+    BENCHFLOW_RUN_DAYTONA_TELEMETRY_SMOKE=1 uv run pytest tests/test_usage_proxy_smoke.py -q
 """
 
 from __future__ import annotations
@@ -94,12 +97,46 @@ async def test_real_acp_rollout_records_provider_usage(tmp_path):
         model=_smoke_model(agent),
         jobs_dir=tmp_path,
         job_name="telemetry-smoke",
-        trial_name="demo",
+        rollout_name="demo",
         environment=_smoke_setting("BENCHFLOW_TELEMETRY_SMOKE_ENV", "docker"),
         agent_env=_smoke_agent_env(),
+        usage_tracking="required",
     )
 
-    result_json = tmp_path / "telemetry-smoke" / "demo" / "result.json"
+    _assert_provider_usage_recorded(
+        tmp_path / "telemetry-smoke" / "demo" / "result.json", result
+    )
+
+
+@pytest.mark.asyncio
+async def test_real_daytona_acp_rollout_records_provider_usage(tmp_path):
+    if os.environ.get("BENCHFLOW_RUN_DAYTONA_TELEMETRY_SMOKE") != "1":
+        pytest.skip(
+            "set BENCHFLOW_RUN_DAYTONA_TELEMETRY_SMOKE=1 to run Daytona telemetry smoke"
+        )
+
+    from benchflow.sdk import SDK
+
+    agent = _smoke_agent()
+    result = await SDK().run(
+        task_path="src/benchflow/demo_task",
+        agent=agent,
+        model=_smoke_model(agent),
+        jobs_dir=tmp_path,
+        job_name="daytona-telemetry-smoke",
+        rollout_name="demo",
+        environment="daytona",
+        agent_env=_smoke_agent_env(),
+        usage_tracking="required",
+    )
+
+    _assert_provider_usage_recorded(
+        tmp_path / "daytona-telemetry-smoke" / "demo" / "result.json",
+        result,
+    )
+
+
+def _assert_provider_usage_recorded(result_json, result) -> None:
     data = json.loads(result_json.read_text())
     agent_result = data["agent_result"]
 

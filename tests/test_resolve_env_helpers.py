@@ -29,12 +29,16 @@ class TestAutoInheritEnv:
         ("env_name", "env_value"),
         [
             pytest.param("ANTHROPIC_API_KEY", "sk-host", id="anthropic"),
+            pytest.param("CODEX_AUTH_JSON", '{"tokens": {}}', id="codex-auth-json"),
             pytest.param("CODEX_ACCESS_TOKEN", "codex-access", id="codex-token"),
             pytest.param("CODEX_API_KEY", "codex-key", id="codex-api-key"),
+            pytest.param("CLAUDE_OAUTH_TOKEN", "claude-oauth", id="claude-oauth"),
             pytest.param("OPENAI_API_KEY", "sk-oai", id="openai"),
             pytest.param("AWS_BEARER_TOKEN_BEDROCK", "bedrock-token", id="bedrock"),
             pytest.param("AWS_REGION", "us-east-1", id="bedrock-region"),
             pytest.param("ZAI_API_KEY", "zk-host", id="provider"),
+            pytest.param("KIMI_API_KEY", "sk-kimi", id="kimi-api-key"),
+            pytest.param("KIMI_BASE_URL", "https://api.moonshot.ai/v1", id="kimi-url"),
             pytest.param("AZURE_API_KEY", "az-host", id="azure-api-key"),
             pytest.param(
                 "AZURE_API_ENDPOINT",
@@ -80,6 +84,12 @@ class TestAutoInheritEnv:
         env = {"AWS_REGION": "us-east-1"}
         auto_inherit_env(env)
         assert env["AWS_DEFAULT_REGION"] == "us-east-1"
+
+    def test_claude_oauth_alias_mirrored_to_claude_code_token(self):
+        """Guards PR #587: pasted Claude Code OAuth vars use both common names."""
+        env = {"CLAUDE_OAUTH_TOKEN": "oauth-token"}
+        auto_inherit_env(env)
+        assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "oauth-token"
 
     def test_inherits_openai_base_url(self, monkeypatch):
         """Guards fix from PR #255: OPENAI_BASE_URL must be inherited.
@@ -230,6 +240,23 @@ class TestResolveProviderEnv:
         assert "BENCHFLOW_PROVIDER_BASE_URL" in env
         assert "BENCHFLOW_PROVIDER_PROTOCOL" in env
         assert env["BENCHFLOW_PROVIDER_API_KEY"] == "zk-test"
+
+    def test_openai_compatible_provider_maps_to_openhands_env(self):
+        """Guards PR #587: direct provider envs reach OpenHands and usage proxy."""
+        env = {
+            "KIMI_API_KEY": "sk-kimi",
+            "KIMI_BASE_URL": "https://api.moonshot.ai/v1",
+        }
+
+        resolve_provider_env(env, "kimi/kimi-k2.6", "openhands")
+
+        assert env["BENCHFLOW_PROVIDER_NAME"] == "kimi"
+        assert env["BENCHFLOW_PROVIDER_MODEL"] == "kimi-k2.6"
+        assert env["BENCHFLOW_PROVIDER_BASE_URL"] == "https://api.moonshot.ai/v1"
+        assert env["BENCHFLOW_PROVIDER_API_KEY"] == "sk-kimi"
+        assert env["LLM_BASE_URL"] == "https://api.moonshot.ai/v1"
+        assert env["LLM_API_KEY"] == "sk-kimi"
+        assert env["LLM_MODEL"] == "openai/kimi-k2.6"
 
     def test_env_mapping_applied(self):
         """claude-agent-acp maps BENCHFLOW_PROVIDER_* → agent-native vars."""
@@ -771,6 +798,8 @@ class TestResolveAgentEnvHostProviderEndpoint:
             "OPENAI_API_KEY",
             "OPENAI_BASE_URL",
             "ZAI_API_KEY",
+            "KIMI_API_KEY",
+            "KIMI_BASE_URL",
         ):
             monkeypatch.delenv(k, raising=False)
         empty = tmp_path / "empty.env"
@@ -801,18 +830,43 @@ class TestResolveAgentEnvHostProviderEndpoint:
 
         assert result["BENCHFLOW_PROVIDER_BASE_URL"] == "http://explicit/v1"
 
-    def test_host_provider_base_url_overrides_resolved_provider_url(self, monkeypatch):
-        """For a provider with a real registry URL (zai), the host value wins.
+    def test_inherited_provider_base_url_does_not_shadow_registered_provider(
+        self, monkeypatch
+    ):
+        """A global .env provider proxy must not override direct provider prefixes.
 
-        vllm resolves to an empty base_url; zai resolves to a real endpoint, so
-        this proves the host override beats a *non-empty* resolved value.
+        Guards PR #587: a LiteLLM BENCHFLOW_PROVIDER_* default in .env broke
+        direct Kimi/GLM/etc. runs by replacing the provider's own key and URL.
         """
-        monkeypatch.setenv("ZAI_API_KEY", "zk-test")
+        monkeypatch.setenv("KIMI_API_KEY", "sk-kimi")
+        monkeypatch.setenv("KIMI_BASE_URL", "https://api.moonshot.ai/v1")
         monkeypatch.setenv("BENCHFLOW_PROVIDER_BASE_URL", "http://host-proxy:9000/v1")
+        monkeypatch.setenv("BENCHFLOW_PROVIDER_API_KEY", "sk-host-proxy")
 
-        result = resolve_agent_env("codex-acp", "zai/glm-5", {})
+        result = resolve_agent_env("openhands", "kimi/kimi-k2.6", {})
 
-        assert result["BENCHFLOW_PROVIDER_BASE_URL"] == "http://host-proxy:9000/v1"
+        assert result["BENCHFLOW_PROVIDER_BASE_URL"] == "https://api.moonshot.ai/v1"
+        assert result["BENCHFLOW_PROVIDER_API_KEY"] == "sk-kimi"
+        assert result["LLM_BASE_URL"] == "https://api.moonshot.ai/v1"
+        assert result["LLM_API_KEY"] == "sk-kimi"
+
+    def test_explicit_provider_base_url_can_override_registered_provider(self):
+        """An explicit --agent-env generic endpoint remains a valid override."""
+        result = resolve_agent_env(
+            "openhands",
+            "kimi/kimi-k2.6",
+            {
+                "KIMI_API_KEY": "sk-kimi",
+                "KIMI_BASE_URL": "https://api.moonshot.ai/v1",
+                "BENCHFLOW_PROVIDER_BASE_URL": "http://explicit-proxy:9000/v1",
+                "BENCHFLOW_PROVIDER_API_KEY": "sk-explicit-proxy",
+            },
+        )
+
+        assert result["BENCHFLOW_PROVIDER_BASE_URL"] == "http://explicit-proxy:9000/v1"
+        assert result["BENCHFLOW_PROVIDER_API_KEY"] == "sk-explicit-proxy"
+        assert result["LLM_BASE_URL"] == "http://explicit-proxy:9000/v1"
+        assert result["LLM_API_KEY"] == "sk-explicit-proxy"
 
     def test_no_host_override_keeps_resolved_provider_url(self, monkeypatch):
         """Sanity counterpart: without a host override zai's own endpoint is used."""

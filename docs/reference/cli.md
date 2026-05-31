@@ -45,7 +45,7 @@ bench eval create \
   --concurrency 64 \
   --sandbox-setup-timeout 300
 
-# From remote repo with required token usage telemetry through an external tunnel
+# From remote repo with required token usage telemetry
 bench eval create \
   --source-repo benchflow-ai/skillsbench \
   --source-path tasks \
@@ -53,9 +53,7 @@ bench eval create \
   --model gemini-3.1-flash-lite-preview \
   --sandbox daytona \
   --usage-tracking required \
-  --usage-proxy-url https://your-tunnel.example.com \
-  --usage-proxy-port 18081 \
-  --concurrency 1 \
+  --concurrency 16 \
   --sandbox-setup-timeout 300
 
 # From local directory
@@ -98,9 +96,6 @@ bench eval create \
 | `--model` | Agent default | Model ID |
 | `--sandbox` | `docker` | Sandbox: docker, daytona, or modal |
 | `--usage-tracking` | `auto` | Token usage telemetry policy: `auto`, `required`, or `off` |
-| `--usage-proxy-url` | — | Externally reachable usage-proxy base URL for remote sandboxes such as Daytona |
-| `--usage-proxy-bind-host` | auto | Local interface for the usage proxy; external proxy mode defaults to `127.0.0.1` |
-| `--usage-proxy-port` | random | Fixed local port for externally tunneled usage tracking |
 | `--environment-manifest` | — | Path to an Environment-plane manifest (`environment.toml`); applied to every rollout in the batch |
 | `--concurrency` | `4` | Max concurrent tasks (batch mode only) |
 | `--agent-idle-timeout` | (built-in default) | Abort ACP prompts after this many idle seconds; `0` disables idle detection |
@@ -120,15 +115,10 @@ When mounting skills, the recommended docs default is
 [Architecture: skill loading](../architecture.md#skill-loading) for how
 `--skills-dir` is registered with each agent and how the nudge modes differ.
 
-For official Daytona batch runs that must report provider token/cost telemetry,
-use `--usage-tracking required` with a tunnel or ingress URL pointing at the
-fixed `--usage-proxy-port`. The fixed-port tunnel mode supports one rollout per
-BenchFlow process; use `--concurrency 1`, or run multiple jobs with separate
-ports/tunnels. This limit applies only to metered external-tunnel mode; Daytona
-batch runs that do not require usage telemetry can still use higher concurrency.
-Without an external URL, Daytona runs continue in `auto` mode and record
-`usage_source=unavailable` because the remote sandbox cannot reach a host-bound
-proxy.
+Daytona batch runs collect provider token/cost telemetry by default with a
+sandbox-local proxy. Use `--usage-tracking required` when missing telemetry
+should fail the rollout, or `--usage-tracking off` for recovery runs that should
+leave provider traffic untouched.
 
 `--source-env` is for external hosted environment hubs. The first supported
 runner is PrimeIntellect / Verifiers: BenchFlow preserves the hosted identity

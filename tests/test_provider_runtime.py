@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from benchflow.providers import runtime as provider_runtime_mod
+from benchflow.providers import usage_proxy_runtime as usage_runtime_mod
 from benchflow.providers.runtime import (
     ProviderRuntime,
     _bedrock_frontend_model,
@@ -332,7 +333,7 @@ class TestUsageProxyRuntime:
             async def stop(self):
                 return None
 
-        monkeypatch.setattr(provider_runtime_mod, "TrajectoryProxy", FakeProxy)
+        monkeypatch.setattr(usage_runtime_mod, "TrajectoryProxy", FakeProxy)
 
         updated, runtime = await ensure_usage_proxy_runtime(
             agent="gemini",

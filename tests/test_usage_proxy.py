@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from benchflow.providers import usage_proxy_runtime as usage_runtime_mod
 from benchflow.trajectories.types import (
     LLMExchange,
     LLMRequest,
@@ -171,6 +172,33 @@ def test_extract_usage_none_proxy():
     }
 
 
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"id": "msg_123", "content": [{"type": "text", "text": "ok"}]},
+        {"error": {"message": "Budget has been exceeded"}},
+        {"usage": {"prompt_tokens_details": {}}},
+    ],
+)
+def test_extract_usage_requires_provider_usage_fields(body):
+    """Guards PR #587: captured HTTP without tokens is not usage telemetry."""
+    from benchflow.providers.runtime import ProviderRuntime, extract_usage
+
+    runtime = ProviderRuntime(
+        kind="usage-proxy",
+        agent_base_url="http://host.docker.internal:12345",
+        backend_model="claude-haiku-4-5-20251001",
+        server=_ProxyLike(_trajectory(body)),
+    )
+
+    usage = extract_usage(runtime)
+
+    assert usage["usage_source"] == "unavailable"
+    assert usage["n_input_tokens"] is None
+    assert usage["n_output_tokens"] is None
+    assert usage["total_tokens"] is None
+
+
 def test_extract_usage_with_anthropic_exchanges():
     from benchflow.providers.runtime import ProviderRuntime, extract_usage
 
@@ -323,7 +351,7 @@ async def test_start_proxy_rewrites_env(monkeypatch):
         async def stop(self):
             return None
 
-    monkeypatch.setattr(provider_runtime_mod, "TrajectoryProxy", FakeTrajectoryProxy)
+    monkeypatch.setattr(usage_runtime_mod, "TrajectoryProxy", FakeTrajectoryProxy)
 
     updated, runtime = await ensure_usage_proxy_runtime(
         agent="claude-agent-acp",
@@ -376,7 +404,7 @@ async def test_usage_proxy_dials_loopback_for_host_bound_provider_proxy(monkeypa
         async def stop(self):
             return None
 
-    monkeypatch.setattr(provider_runtime_mod, "TrajectoryProxy", FakeTrajectoryProxy)
+    monkeypatch.setattr(usage_runtime_mod, "TrajectoryProxy", FakeTrajectoryProxy)
 
     updated, runtime = await ensure_usage_proxy_runtime(
         agent="openhands",
@@ -398,14 +426,13 @@ async def test_usage_proxy_dials_loopback_for_host_bound_provider_proxy(monkeypa
 @pytest.mark.asyncio
 async def test_usage_proxy_can_be_disabled_for_operator_recovery(monkeypatch):
     """Guards v0.5-integration@e55219d recovery runs when telemetry proxying blocks rollouts."""
-    from benchflow.providers import runtime as provider_runtime_mod
     from benchflow.providers.runtime import ensure_usage_proxy_runtime
 
     def _fail_start(*_args, **_kwargs):
         raise AssertionError("TrajectoryProxy must not start when disabled")
 
     monkeypatch.setenv("BENCHFLOW_DISABLE_USAGE_PROXY", "1")
-    monkeypatch.setattr(provider_runtime_mod, "TrajectoryProxy", _fail_start)
+    monkeypatch.setattr(usage_runtime_mod, "TrajectoryProxy", _fail_start)
 
     env = {
         "BENCHFLOW_PROVIDER_BASE_URL": "http://host.docker.internal:32123",
@@ -457,7 +484,7 @@ async def test_start_proxy_uses_openai_v1_default_for_codex(monkeypatch):
         async def stop(self):
             return None
 
-    monkeypatch.setattr(provider_runtime_mod, "TrajectoryProxy", FakeTrajectoryProxy)
+    monkeypatch.setattr(usage_runtime_mod, "TrajectoryProxy", FakeTrajectoryProxy)
 
     updated, runtime = await ensure_usage_proxy_runtime(
         agent="codex-acp",
@@ -506,7 +533,7 @@ async def test_start_proxy_passes_prompt_cache_retention(monkeypatch):
         async def stop(self):
             return None
 
-    monkeypatch.setattr(provider_runtime_mod, "TrajectoryProxy", FakeTrajectoryProxy)
+    monkeypatch.setattr(usage_runtime_mod, "TrajectoryProxy", FakeTrajectoryProxy)
 
     _updated, runtime = await ensure_usage_proxy_runtime(
         agent="codex-acp",
@@ -543,45 +570,9 @@ async def test_no_proxy_for_oracle():
 
 
 @pytest.mark.asyncio
-async def test_no_proxy_for_daytona_remote_sandbox(monkeypatch):
-    """Daytona runs the agent on a remote host the host proxy cannot reach.
-
-    Guards the fix from PR #327: the usage proxy must be skipped so the agent
-    talks to the provider directly instead of being pointed at an unreachable
-    127.0.0.1 address (the regression that produced ACP ECONNREFUSED errors).
-    """
-    from benchflow.providers import runtime as provider_runtime_mod
-    from benchflow.providers.runtime import ensure_usage_proxy_runtime
-
-    def _fail_start(*_args, **_kwargs):
-        raise AssertionError("TrajectoryProxy must not start for daytona")
-
-    monkeypatch.setattr(provider_runtime_mod, "TrajectoryProxy", _fail_start)
-
-    env = {
-        "ANTHROPIC_BASE_URL": "https://api.anthropic.com",
-        "ANTHROPIC_API_KEY": "sk-real-key",
-    }
-    updated, runtime = await ensure_usage_proxy_runtime(
-        agent="claude-agent-acp",
-        agent_env=env,
-        model="claude-haiku-4-5-20251001",
-        runtime=None,
-        environment="daytona",
-        session_id="rollout-1",
-    )
-
-    # Proxy skipped: env left untouched (no loopback rewrite), no runtime.
-    assert runtime is None
-    assert updated == env
-    assert updated["ANTHROPIC_BASE_URL"] == "https://api.anthropic.com"
-
-
-@pytest.mark.asyncio
 async def test_daytona_runtime_retired_when_environment_unreachable(monkeypatch):
     """Guards the fix from PR #327: a stale runtime from an earlier env must be
     stopped, not reused."""
-    from benchflow.providers import runtime as provider_runtime_mod
     from benchflow.providers.runtime import (
         ProviderRuntime,
         ensure_usage_proxy_runtime,
@@ -602,7 +593,7 @@ async def test_daytona_runtime_retired_when_environment_unreachable(monkeypatch)
     )
 
     monkeypatch.setattr(
-        provider_runtime_mod,
+        usage_runtime_mod,
         "TrajectoryProxy",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not start")),
     )
@@ -918,7 +909,7 @@ async def test_usage_proxy_recreated_when_target_changes(monkeypatch):
         async def stop(self):
             stopped.append(self._target)
 
-    monkeypatch.setattr(provider_runtime_mod, "TrajectoryProxy", FakeTrajectoryProxy)
+    monkeypatch.setattr(usage_runtime_mod, "TrajectoryProxy", FakeTrajectoryProxy)
 
     _env1, runtime1 = await ensure_usage_proxy_runtime(
         agent="codex-acp",

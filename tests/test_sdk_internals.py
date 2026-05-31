@@ -40,6 +40,7 @@ class TestResolveAgentEnv:
             "ANTHROPIC_API_KEY",
             "ANTHROPIC_AUTH_TOKEN",
             "CLAUDE_CODE_OAUTH_TOKEN",
+            "CLAUDE_OAUTH_TOKEN",
         ):
             monkeypatch.delenv(key, raising=False)
         result = self._resolve(
@@ -114,6 +115,7 @@ class TestResolveAgentEnv:
             "ANTHROPIC_API_KEY",
             "ANTHROPIC_AUTH_TOKEN",
             "CLAUDE_CODE_OAUTH_TOKEN",
+            "CLAUDE_OAUTH_TOKEN",
             "GOOGLE_API_KEY",
             "GEMINI_API_KEY",
         ):
@@ -207,6 +209,7 @@ class TestResolveAgentEnv:
             "ANTHROPIC_API_KEY",
             "ANTHROPIC_AUTH_TOKEN",
             "CLAUDE_CODE_OAUTH_TOKEN",
+            "CLAUDE_OAUTH_TOKEN",
             "CODEX_ACCESS_TOKEN",
             "CODEX_API_KEY",
             "ZAI_API_KEY",

@@ -4,16 +4,17 @@ from __future__ import annotations
 
 import pytest
 
+from benchflow.providers import usage_proxy_runtime as usage_runtime_mod
 from benchflow.trajectories.types import Trajectory
 
 
 @pytest.mark.asyncio
-async def test_daytona_required_usage_tracking_requires_external_endpoint():
-    """Guards PR #568: required remote tracking must fail closed."""
+async def test_daytona_required_usage_tracking_requires_sandbox_handle():
+    """Guards the Daytona sandbox-local proxy path: required still fails closed."""
     from benchflow.providers.runtime import ensure_usage_proxy_runtime
     from benchflow.usage_tracking import UsageTrackingConfig
 
-    with pytest.raises(RuntimeError, match="Token usage tracking is required"):
+    with pytest.raises(RuntimeError, match="sandbox-local usage proxy"):
         await ensure_usage_proxy_runtime(
             agent="claude-agent-acp",
             agent_env={
@@ -29,32 +30,28 @@ async def test_daytona_required_usage_tracking_requires_external_endpoint():
 
 
 @pytest.mark.asyncio
-async def test_daytona_external_usage_proxy_advertises_tunnel_url(monkeypatch):
-    """Guards PR #568: remote tracking must not inject local-only addresses."""
-    from benchflow.providers import runtime as provider_runtime_mod
+async def test_daytona_usage_tracking_starts_sandbox_local_proxy(monkeypatch):
+    """Daytona auto telemetry should use a proxy inside the agent sandbox."""
     from benchflow.providers.runtime import ensure_usage_proxy_runtime
     from benchflow.usage_tracking import UsageTrackingConfig
 
-    class FakeTrajectoryProxy:
+    class FakeSandboxUsageProxy:
         def __init__(
             self,
+            sandbox,
             target,
-            session_id="",
-            agent_name="",
-            host="127.0.0.1",
-            port=0,
+            session_id,
+            agent_name,
             prompt_cache_retention=None,
-            path_prefix="",
         ):
+            self.sandbox = sandbox
             self.target = target
             self.session_id = session_id
             self.agent_name = agent_name
-            self.host = host
-            self.port = port
             self.prompt_cache_retention = prompt_cache_retention
-            self.path_prefix = path_prefix
             self.trajectory = Trajectory(session_id=session_id, agent_name=agent_name)
             self.started = False
+            self.base_url = "http://127.0.0.1:49152"
 
         async def start(self):
             self.started = True
@@ -62,13 +59,8 @@ async def test_daytona_external_usage_proxy_advertises_tunnel_url(monkeypatch):
         async def stop(self):
             return None
 
-    async def reachable(_url):
-        return True
-
-    monkeypatch.setattr(provider_runtime_mod, "TrajectoryProxy", FakeTrajectoryProxy)
-    monkeypatch.setattr(
-        provider_runtime_mod, "_external_usage_proxy_reachable", reachable
-    )
+    monkeypatch.setattr(usage_runtime_mod, "SandboxUsageProxy", FakeSandboxUsageProxy)
+    sandbox = object()
 
     updated, runtime = await ensure_usage_proxy_runtime(
         agent="openhands",
@@ -80,25 +72,21 @@ async def test_daytona_external_usage_proxy_advertises_tunnel_url(monkeypatch):
         runtime=None,
         environment="daytona",
         session_id="rollout-1",
-        usage_tracking=UsageTrackingConfig(
-            mode="required",
-            advertised_base_url="https://usage-proxy.example.test",
-            port=18081,
-        ),
+        usage_tracking=UsageTrackingConfig(mode="required"),
+        sandbox=sandbox,
     )
 
     assert runtime is not None
     assert runtime.server.started is True
-    assert runtime.server.host == "127.0.0.1"
-    assert runtime.server.port == 18081
-    assert runtime.server.path_prefix.startswith("/__benchflow/")
-    assert runtime.base_url.startswith("https://usage-proxy.example.test/__benchflow/")
+    assert runtime.server.sandbox is sandbox
+    assert runtime.server.target == "https://llm-proxy.example.test"
+    assert runtime.base_url == "http://127.0.0.1:49152"
     assert updated["LLM_BASE_URL"] == runtime.base_url
     assert updated["BENCHFLOW_PROVIDER_BASE_URL"] == runtime.base_url
 
 
 def test_evaluation_yaml_loads_required_usage_tracking(tmp_path):
-    """Guards PR #568: eval YAML should preserve required usage tracking."""
+    """Usage policy should round-trip through eval YAML."""
     from benchflow.evaluation import Evaluation
 
     tasks_dir = tmp_path / "tasks"
@@ -112,9 +100,6 @@ def test_evaluation_yaml_loads_required_usage_tracking(tmp_path):
                 "model: gpt-4.1-mini",
                 "environment: daytona",
                 "usage_tracking: required",
-                "usage_proxy:",
-                "  advertised_base_url: https://usage-proxy.example.test",
-                "  port: 18081",
             ]
         )
     )
@@ -122,15 +107,10 @@ def test_evaluation_yaml_loads_required_usage_tracking(tmp_path):
     evaluation = Evaluation.from_yaml(config)
 
     assert evaluation._config.usage_tracking.mode == "required"
-    assert (
-        evaluation._config.usage_tracking.advertised_base_url
-        == "https://usage-proxy.example.test"
-    )
-    assert evaluation._config.usage_tracking.port == 18081
 
 
-def test_evaluation_preflight_fails_required_daytona_without_endpoint(tmp_path):
-    """Guards PR #568: required Daytona tracking fails before agent launch."""
+def test_evaluation_preflight_allows_required_daytona(tmp_path):
+    """Daytona required tracking is checked when the sandbox proxy is started."""
     from benchflow.evaluation import Evaluation, EvaluationConfig
     from benchflow.usage_tracking import UsageTrackingConfig
 
@@ -143,54 +123,7 @@ def test_evaluation_preflight_fails_required_daytona_without_endpoint(tmp_path):
         ),
     )
 
-    with pytest.raises(RuntimeError, match="no external usage proxy endpoint"):
-        evaluation._preflight_usage_tracking()
-
-
-def test_evaluation_preflight_rejects_external_proxy_port_zero(tmp_path):
-    """Guards PR #568: external proxy tracking needs a stable local port."""
-    from benchflow.evaluation import Evaluation, EvaluationConfig
-    from benchflow.usage_tracking import UsageTrackingConfig
-
-    evaluation = Evaluation(
-        tasks_dir=tmp_path,
-        jobs_dir=tmp_path / "jobs",
-        config=EvaluationConfig(
-            concurrency=1,
-            environment="daytona",
-            usage_tracking=UsageTrackingConfig(
-                mode="required",
-                advertised_base_url="https://usage-proxy.example.test",
-                port=0,
-            ),
-        ),
-    )
-
-    with pytest.raises(RuntimeError, match="fixed positive local proxy port"):
-        evaluation._preflight_usage_tracking()
-
-
-def test_evaluation_preflight_rejects_external_proxy_concurrency(tmp_path):
-    """Guards PR #568: one fixed external proxy port cannot host concurrency."""
-    from benchflow.evaluation import Evaluation, EvaluationConfig
-    from benchflow.usage_tracking import UsageTrackingConfig
-
-    evaluation = Evaluation(
-        tasks_dir=tmp_path,
-        jobs_dir=tmp_path / "jobs",
-        config=EvaluationConfig(
-            concurrency=2,
-            environment="daytona",
-            usage_tracking=UsageTrackingConfig(
-                mode="required",
-                advertised_base_url="https://usage-proxy.example.test",
-                port=18081,
-            ),
-        ),
-    )
-
-    with pytest.raises(ValueError, match="supports only one rollout"):
-        evaluation._preflight_usage_tracking()
+    evaluation._preflight_usage_tracking()
 
 
 def test_explicit_auto_usage_tracking_beats_env_default(monkeypatch):
@@ -229,7 +162,7 @@ def test_usage_tracking_shard_payload_preserves_implicit_env_mode(monkeypatch):
 
 
 def test_usage_tracking_shard_payload_uses_flat_yaml_shape():
-    """Guards PR #568: worker payload must not nest usage_tracking twice."""
+    """Worker payload must preserve the flat usage_tracking policy shape."""
     from benchflow.eval_sharding import EvalShard, _config_payload
     from benchflow.eval_worker import _evaluation_config
     from benchflow.evaluation import EvaluationConfig
@@ -237,11 +170,7 @@ def test_usage_tracking_shard_payload_uses_flat_yaml_shape():
 
     parent_config = EvaluationConfig(
         environment="daytona",
-        usage_tracking=UsageTrackingConfig(
-            mode="required",
-            advertised_base_url="https://usage-proxy.example.test",
-            port=18081,
-        ),
+        usage_tracking=UsageTrackingConfig(mode="required"),
     )
 
     payload = _config_payload(
@@ -252,77 +181,44 @@ def test_usage_tracking_shard_payload_uses_flat_yaml_shape():
     worker_config = _evaluation_config(payload)
 
     assert payload["usage_tracking"] == "required"
-    assert payload["usage_proxy"] == {
-        "advertised_base_url": "https://usage-proxy.example.test",
-        "port": 18081,
-    }
     assert worker_config.usage_tracking.mode == "required"
-    assert (
-        worker_config.usage_tracking.advertised_base_url
-        == "https://usage-proxy.example.test"
-    )
-    assert worker_config.usage_tracking.port == 18081
 
 
-def test_usage_tracking_overlay_preserves_yaml_fields_for_partial_cli_override():
-    """Guards PR #568: partial CLI usage overrides must not erase YAML policy."""
+def test_usage_tracking_overlay_preserves_existing_mode_for_partial_cli_override():
+    """A partial CLI override should not erase YAML usage policy."""
     from benchflow.usage_tracking import UsageTrackingConfig
 
-    yaml_config = UsageTrackingConfig(
-        mode="required",
-        advertised_base_url="https://old-proxy.example.test",
-        port=18081,
-    )
-    cli_override = UsageTrackingConfig(
-        advertised_base_url="https://new-proxy.example.test",
-    )
+    yaml_config = UsageTrackingConfig(mode="required")
+    cli_override = UsageTrackingConfig()
 
     merged = yaml_config.overlay(cli_override)
 
     assert merged.mode == "required"
-    assert merged.advertised_base_url == "https://new-proxy.example.test"
-    assert merged.port == 18081
 
 
-def test_external_usage_tracking_rejects_multiple_shard_workers():
-    """Guards PR #568: sharded workers cannot share one fixed proxy port."""
+@pytest.mark.parametrize(
+    "legacy_key",
+    [
+        "usage_proxy",
+        "usage_proxy_advertised_base_url",
+        "usage_proxy_bind_host",
+        "usage_proxy_port",
+        "usage_proxy_url",
+    ],
+)
+def test_usage_tracking_mapping_rejects_legacy_usage_proxy_keys(legacy_key):
+    """Guards PR #587: legacy usage proxy keys fail instead of being ignored."""
     from benchflow.usage_tracking import UsageTrackingConfig
 
-    config = UsageTrackingConfig(
-        advertised_base_url="https://usage-proxy.example.test",
-        port=18081,
-    )
-
-    with pytest.raises(ValueError, match="supports only one rollout"):
-        config.validate_parallelism(concurrency=1, worker_count=2)
-
-
-def test_usage_proxy_advertised_base_url_rejects_path():
-    """Guards PR #568: advertised proxy URLs must be root base URLs."""
-    from benchflow.usage_tracking import UsageTrackingConfig
-
-    with pytest.raises(ValueError, match="must not include a path"):
-        UsageTrackingConfig(
-            advertised_base_url="https://usage-proxy.example.test/benchflow"
+    with pytest.raises(ValueError, match=f"{legacy_key} is no longer supported"):
+        UsageTrackingConfig.from_mapping(
+            {
+                "usage_tracking": "required",
+                legacy_key: {
+                    "ignored": "value",
+                },
+            }
         )
-
-
-def test_usage_tracking_mapping_preserves_zero_port():
-    """Guards PR #568: config sharding must preserve explicit port=0."""
-    from benchflow.usage_tracking import UsageTrackingConfig
-
-    config = UsageTrackingConfig.from_mapping(
-        {
-            "usage_tracking": "required",
-            "usage_proxy": {
-                "advertised_base_url": "https://usage-proxy.example.test",
-                "port": 0,
-            },
-        }
-    )
-
-    assert config.port == 0
-    assert config.has_fixed_proxy_port is False
 
 
 @pytest.mark.asyncio

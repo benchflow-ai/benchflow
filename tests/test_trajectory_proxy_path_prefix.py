@@ -1,4 +1,4 @@
-"""Regression tests for external usage-proxy path-prefix routing."""
+"""Regression tests for optional usage-proxy path-prefix routing."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ async def _read_request(
 
 @pytest.mark.asyncio
 async def test_path_prefix_gates_health_and_provider_requests():
-    """Guards PR #568: external tunnel traffic must match the secret path prefix."""
+    """Prefixed proxy traffic must match the configured secret path prefix."""
     upstream_requests: list[tuple[str, str, bytes]] = []
 
     async def upstream_handler(

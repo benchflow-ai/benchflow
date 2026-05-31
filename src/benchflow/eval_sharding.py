@@ -283,10 +283,6 @@ async def run_sharded_evaluation(
         total_concurrency=config.concurrency,
         worker_concurrency=worker_concurrency,
     )
-    config.usage_tracking.with_env_defaults().validate_parallelism(
-        concurrency=plan.total_concurrency,
-        worker_count=plan.worker_count,
-    )
     if not plan.shards:
         from benchflow.evaluation import EmptyTaskSelectionError
 
