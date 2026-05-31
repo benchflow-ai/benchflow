@@ -29,7 +29,14 @@ from benchflow.agents.registry import AGENTS
 logger = logging.getLogger(__name__)
 
 _AUTH_CONTEXT_GROUPS = (
-    frozenset({"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"}),
+    frozenset(
+        {
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_AUTH_TOKEN",
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            "CLAUDE_OAUTH_TOKEN",
+        }
+    ),
     frozenset({"GEMINI_API_KEY", "GOOGLE_API_KEY"}),
     frozenset({"OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN"}),
 )
@@ -38,8 +45,13 @@ _BEDROCK_PROXY_PLACEHOLDER_API_KEY = "bedrock-proxy"
 _CODEX_API_KEY_ENV = "CODEX_API_KEY"
 _CODEX_ACCESS_TOKEN_ENV = "CODEX_ACCESS_TOKEN"
 _CODEX_AUTH_JSON_ENV = "CODEX_AUTH_JSON"
+_CLAUDE_CODE_OAUTH_TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN"
+_CLAUDE_OAUTH_TOKEN_ENV = "CLAUDE_OAUTH_TOKEN"
 _CUSTOM_OPENAI_ENDPOINT_KEYS = frozenset(
     {"BENCHFLOW_PROVIDER_BASE_URL", "OPENAI_BASE_URL"}
+)
+_GENERIC_PROVIDER_OVERRIDE_KEYS = frozenset(
+    {"BENCHFLOW_PROVIDER_BASE_URL", "BENCHFLOW_PROVIDER_API_KEY"}
 )
 _AZURE_RESOURCE_ENV = "AZURE_RESOURCE"
 _AZURE_ENDPOINT_ENV = "AZURE_API_ENDPOINT"
@@ -120,7 +132,7 @@ def _normalize_openhands_model(model: str) -> str:
     OpenHands expects provider-qualified model names for some providers even
     when benchflow uses bare model IDs or its own provider prefixes.
     """
-    from benchflow.agents.providers import strip_provider_prefix
+    from benchflow.agents.providers import find_provider, strip_provider_prefix
     from benchflow.agents.registry import is_vertex_model
 
     if model.startswith(("gemini/", "vertex_ai/", "openhands/")):
@@ -137,6 +149,11 @@ def _normalize_openhands_model(model: str) -> str:
         return f"vertex_ai/{stripped}"
     if "gemini" in lower:
         return f"gemini/{stripped}"
+    provider = find_provider(model)
+    if provider is not None:
+        _, cfg = provider
+        if cfg.api_protocol == "openai-completions":
+            return f"openai/{stripped}"
     return stripped
 
 
@@ -157,7 +174,8 @@ def auto_inherit_env(
         "AWS_DEFAULT_REGION",
         "AWS_REGION",
         "AWS_REGION_NAME",
-        "CLAUDE_CODE_OAUTH_TOKEN",
+        _CLAUDE_CODE_OAUTH_TOKEN_ENV,
+        _CLAUDE_OAUTH_TOKEN_ENV,
         "CODEX_ACCESS_TOKEN",
         "CODEX_API_KEY",
         "CODEX_AUTH_JSON",
@@ -213,6 +231,11 @@ def auto_inherit_env(
         agent_env["AWS_DEFAULT_REGION"] = agent_env["AWS_REGION"]
     if "AWS_REGION" in agent_env and "AWS_REGION_NAME" not in agent_env:
         agent_env["AWS_REGION_NAME"] = agent_env["AWS_REGION"]
+    if (
+        _CLAUDE_OAUTH_TOKEN_ENV in agent_env
+        and _CLAUDE_CODE_OAUTH_TOKEN_ENV not in agent_env
+    ):
+        agent_env[_CLAUDE_CODE_OAUTH_TOKEN_ENV] = agent_env[_CLAUDE_OAUTH_TOKEN_ENV]
     _derive_azure_resource(agent_env)
     # CLAUDE_CODE_OAUTH_TOKEN is a separate auth path — Claude CLI reads it
     # directly. Don't map to ANTHROPIC_API_KEY (different auth mechanism).
@@ -488,6 +511,33 @@ def _configure_codex_custom_provider(
     )
 
 
+def _drop_inherited_generic_provider_overrides(
+    agent_env: dict[str, str],
+    *,
+    model: str | None,
+    explicit_agent_env_keys: set[str],
+) -> None:
+    """Let registered providers use their own endpoint/key over host defaults."""
+    if not model:
+        return
+
+    from benchflow.agents.providers import find_provider
+
+    provider = find_provider(model)
+    if provider is None:
+        return
+    _, provider_cfg = provider
+    # Providers with an empty base URL (for example vllm/) are explicitly
+    # user-supplied endpoints, so inherited BENCHFLOW_PROVIDER_* is the normal
+    # configuration path. Providers with a registered URL/auth env should not be
+    # shadowed by a global generic proxy from .env unless the caller explicitly
+    # passed that override for this run.
+    if not provider_cfg.base_url:
+        return
+    for key in _GENERIC_PROVIDER_OVERRIDE_KEYS - explicit_agent_env_keys:
+        agent_env.pop(key, None)
+
+
 def resolve_agent_env(
     agent: str,
     model: str | None,
@@ -507,6 +557,11 @@ def resolve_agent_env(
     # API-key validation are skipped even if a caller forwards a model.
     if model and agent != "oracle":
         inject_vertex_credentials(agent_env, model)
+        _drop_inherited_generic_provider_overrides(
+            agent_env,
+            model=model,
+            explicit_agent_env_keys=explicit_agent_env_keys,
+        )
         resolve_provider_env(agent_env, model, agent)
         from benchflow.agents.providers import find_provider
 
@@ -552,7 +607,11 @@ def resolve_agent_env(
             ]
         has_oauth = any(
             key in agent_env and _shares_auth_context(required_key, key)
-            for key in ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN")
+            for key in (
+                _CLAUDE_CODE_OAUTH_TOKEN_ENV,
+                _CLAUDE_OAUTH_TOKEN_ENV,
+                "ANTHROPIC_AUTH_TOKEN",
+            )
         )
         has_codex_access_token = _has_codex_access_token_auth(
             agent,

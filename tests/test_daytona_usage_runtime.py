@@ -11,6 +11,62 @@ from benchflow.trajectories.types import Trajectory
 
 
 @pytest.mark.asyncio
+async def test_registered_openai_compatible_provider_uses_sandbox_usage_proxy(
+    monkeypatch,
+):
+    """Guards PR #587: direct provider envs route through Daytona usage proxy."""
+    from benchflow.agents.env import resolve_agent_env
+    from benchflow.providers import runtime as provider_runtime_mod
+    from benchflow.providers.runtime import ensure_usage_proxy_runtime
+
+    started = []
+
+    class FakeSandboxUsageProxy:
+        base_url = "http://127.0.0.1:49001"
+
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+            self.trajectory = Trajectory(
+                session_id=kwargs["session_id"], agent_name=kwargs["agent_name"]
+            )
+
+        async def start(self):
+            started.append(self.target)
+
+        async def stop(self):
+            return None
+
+    monkeypatch.setattr(
+        provider_runtime_mod, "SandboxUsageProxy", FakeSandboxUsageProxy
+    )
+
+    env = resolve_agent_env(
+        "openhands",
+        "kimi/kimi-k2.6",
+        {
+            "KIMI_API_KEY": "sk-kimi",
+            "KIMI_BASE_URL": "https://api.moonshot.ai/v1",
+        },
+    )
+
+    updated, runtime = await ensure_usage_proxy_runtime(
+        agent="openhands",
+        agent_env=env,
+        model="kimi/kimi-k2.6",
+        runtime=None,
+        environment="daytona",
+        session_id="rollout-1",
+        sandbox=object(),
+    )
+
+    assert runtime is not None
+    assert started == ["https://api.moonshot.ai/v1"]
+    assert runtime.server.target == "https://api.moonshot.ai/v1"
+    assert updated["LLM_BASE_URL"] == "http://127.0.0.1:49001"
+    assert updated["BENCHFLOW_PROVIDER_BASE_URL"] == "http://127.0.0.1:49001"
+
+
+@pytest.mark.asyncio
 async def test_usage_runtime_reconnect_ignores_own_proxy_url(monkeypatch):
     """Guards PR #587: reconnects must not point a new proxy at the old proxy."""
     from benchflow.providers import runtime as provider_runtime_mod

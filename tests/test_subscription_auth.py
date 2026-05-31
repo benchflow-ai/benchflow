@@ -95,12 +95,23 @@ class TestResolveAgentEnvSubscription:
         )
         assert "_BENCHFLOW_SUBSCRIPTION_AUTH" not in result
 
+    def test_claude_oauth_alias_satisfies_anthropic_key_requirement(self):
+        """Guards PR #587: CLAUDE_OAUTH_TOKEN is accepted as a Claude Code alias."""
+        result = self._resolve(
+            model="claude-haiku-4-5-20251001",
+            agent_env={"CLAUDE_OAUTH_TOKEN": "oauth-test"},
+        )
+
+        assert result["CLAUDE_CODE_OAUTH_TOKEN"] == "oauth-test"
+        assert "ANTHROPIC_API_KEY" not in result
+
     def test_subscription_auth_detected(self, monkeypatch, tmp_path):
         """When host auth file exists and no API key, subscription auth is used."""
         for k in (
             "ANTHROPIC_API_KEY",
             "ANTHROPIC_AUTH_TOKEN",
             "CLAUDE_CODE_OAUTH_TOKEN",
+            "CLAUDE_OAUTH_TOKEN",
             "CODEX_AUTH_JSON",
             "CODEX_ACCESS_TOKEN",
             "CODEX_API_KEY",
@@ -126,6 +137,7 @@ class TestResolveAgentEnvSubscription:
             "ANTHROPIC_API_KEY",
             "ANTHROPIC_AUTH_TOKEN",
             "CLAUDE_CODE_OAUTH_TOKEN",
+            "CLAUDE_OAUTH_TOKEN",
             "CODEX_AUTH_JSON",
             "CODEX_ACCESS_TOKEN",
             "CODEX_API_KEY",

@@ -54,6 +54,42 @@ class TestFindProvider:
         assert cfg.api_protocol == expected_protocol
         assert cfg.auth_env == "AZURE_API_KEY"
 
+    @pytest.mark.parametrize(
+        ("model", "expected_name", "expected_auth_env"),
+        [
+            ("litellm/glm-5.1", "litellm", "LITELLM_API_KEY"),
+            ("kimi/kimi-k2.6", "kimi", "KIMI_API_KEY"),
+            ("minimax/MiniMax-M2.7", "minimax", "MINIMAX_API_KEY"),
+            (
+                "qwen-dashscope/qwen3.6-max-preview",
+                "qwen-dashscope",
+                "QWEN_API_KEY",
+            ),
+            ("glm/glm-5.1", "glm", "GLM_API_KEY"),
+            ("deepseek/deepseek-v4-pro", "deepseek", "DEEPSEEK_API_KEY"),
+            ("xiaomi/mimo-v2.5-pro", "xiaomi", "XIAOMI_API_KEY"),
+            (
+                "doubao-seed-2-lite/ep-test",
+                "doubao-seed-2-lite",
+                "DOUBAO_SEED_2_LITE_API_KEY",
+            ),
+            (
+                "doubao-seed-2-pro/ep-test",
+                "doubao-seed-2-pro",
+                "DOUBAO_SEED_2_PRO_API_KEY",
+            ),
+            ("hunyuan/hy3-preview", "hunyuan", "HUNYUAN_API_KEY"),
+        ],
+    )
+    def test_openai_compatible_provider_prefixes(
+        self, model, expected_name, expected_auth_env
+    ):
+        """Guards PR #587: direct provider keys resolve without generic vllm envs."""
+        name, cfg = find_provider(model)
+        assert name == expected_name
+        assert cfg.api_protocol == "openai-completions"
+        assert cfg.auth_env == expected_auth_env
+
 
 # ── resolve_base_url: template expansion ──
 
@@ -140,6 +176,12 @@ class TestResolveBaseUrl:
             == "https://example-resource.services.ai.azure.com/anthropic"
         )
 
+    def test_openai_compatible_provider_base_url_expansion(self):
+        p = PROVIDERS["kimi"]
+        env = {"KIMI_BASE_URL": "https://api.moonshot.ai/v1"}
+
+        assert resolve_base_url(p, env) == "https://api.moonshot.ai/v1"
+
 
 # ── resolve_auth_env: which env var does this provider need? ──
 
@@ -163,6 +205,13 @@ class TestResolveAuthEnv:
             resolve_auth_env("azure-foundry-anthropic/claude-opus-4-5")
             == "AZURE_API_KEY"
         )
+
+    def test_direct_openai_compatible_provider_keys(self):
+        assert resolve_auth_env("kimi/kimi-k2.6") == "KIMI_API_KEY"
+        assert (
+            resolve_auth_env("qwen-dashscope/qwen3.6-max-preview") == "QWEN_API_KEY"
+        )
+        assert resolve_auth_env("glm/glm-5.1") == "GLM_API_KEY"
 
 
 # ── Integration: backward compat with registry.py ──

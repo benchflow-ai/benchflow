@@ -64,7 +64,7 @@ class TestEnvMappingField:
             agent_env=env,
         )
 
-        assert env["LLM_MODEL"] == "glm-5"
+        assert env["LLM_MODEL"] == "openai/glm-5"
 
     def test_openhands_bedrock_anthropic_model_uses_litellm_provider_prefix(self):
         """Guards v0.5-integration@e55219d against OpenHands receiving a bare Bedrock profile id."""
