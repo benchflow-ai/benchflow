@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +40,35 @@ logger = logging.getLogger(__name__)
 # Canonical artifact locations (see issue #385).
 ROLLOUT_ARTIFACT_RELPATH = "trainer/verifiers.jsonl"
 JOB_ARTIFACT_FILENAME = "verifiers.jsonl"
+
+
+def write_verify_result_json(
+    rollout_dir: Path, verify_result: VerifyResult | None
+) -> None:
+    """Persist the canonical ``VerifyResult`` to ``verifier/verify_result.json``.
+
+    The Reward-plane source of truth (#v0.5 Phase 1): unlike ``result.json``
+    (which keeps the legacy reward *dict* for the ~10 existing consumers), this
+    file is the canonical ``{reward, items, events, error, space, granularity}``
+    structure — carrying the architecture's ``(space, granularity)`` tag and the
+    full event list — that the trainer export reads and branch aggregation will
+    read. Skipped when no result was produced (nothing scored).
+
+    Canonical owner: ``benchflow.rollout`` and ``benchflow.openreward_env`` both
+    import this. It lives here (rather than in ``rollout``) so the lightweight
+    openreward driver can reuse it without dragging in ``rollout``'s heavy
+    ACP/sandbox import graph.
+
+    Serialize via the dataclass itself — no hand-rolled second event schema to
+    drift from ``VerifyResult``/``RewardEvent`` (the ORS ``timestamp`` rename is
+    for the trainer wire format only; this internal artifact uses the dataclass'
+    own ``ts``, matching ``rewards.jsonl``).
+    """
+    if verify_result is None:
+        return
+    out = rollout_dir / "verifier" / "verify_result.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(asdict(verify_result), indent=2, default=str))
 
 
 def _split_prompt_completion(

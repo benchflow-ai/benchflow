@@ -296,3 +296,98 @@ def test_hosted_env_ref_rejects_unknown_provider():
         assert "openreward" in str(exc)  # supported set is surfaced
     else:
         raise AssertionError("expected HostedEnvError")
+
+
+def test_hosted_env_ref_rejects_provider_slash_form():
+    """The provider mis-route guard lives in ``HostedEnvRef.parse`` so it covers
+    every call site (env create/show/inspect + SDK), not just ``eval create``.
+    'openreward/x' (no provider: prefix) would parse 'openreward' as the owner
+    and fall back to primeintellect; parse rejects it with the explicit-form
+    hint instead."""
+    try:
+        HostedEnvRef.parse("openreward/KellyBench")
+    except HostedEnvError as exc:
+        assert "openreward:owner/name" in str(exc)
+        assert "provider, not an owner" in str(exc)
+    else:
+        raise AssertionError("expected HostedEnvError")
+
+
+def test_hosted_env_ref_allows_primeintellect_owner_slash_form():
+    """The default-provider owner form (primeintellect/owner/name) is legitimate
+    and must NOT trip the guard — only non-default known providers do."""
+    ref = HostedEnvRef.parse("primeintellect/some-owner/general-agent")
+    assert ref.provider == "primeintellect"
+    assert ref.owner == "primeintellect"
+    assert ref.name == "some-owner/general-agent"
+
+
+def test_eval_create_rejects_openreward_slash_form(tmp_path, monkeypatch):
+    """End-to-end: the parse-level routing guard surfaces through ``eval create``
+    — 'openreward/x' (no provider: prefix) exits non-zero with the explicit
+    'openreward:owner/name' hint instead of silently running primeintellect."""
+
+    def fail_if_called(config):  # pragma: no cover - must not run
+        raise AssertionError("run_hosted_env should not be called for slash form")
+
+    monkeypatch.setattr("benchflow.hosted_env.run_hosted_env", fail_if_called)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "eval",
+            "create",
+            "--source-env",
+            "openreward/KellyBench",
+            "--model",
+            "claude-haiku-4-5",
+            "--jobs-dir",
+            str(tmp_path),
+        ],
+    )
+    assert result.exit_code == 1
+    assert "openreward:owner/name" in result.output
+
+
+def test_eval_create_openreward_colon_form_routes_to_runner(tmp_path, monkeypatch):
+    """The explicit 'openreward:owner/name' form routes to run_hosted_env with
+    the openreward provider preserved (it then dispatches to the openreward
+    driver internally)."""
+    seen: dict[str, object] = {}
+
+    def fake_run_hosted_env(config: HostedEnvRunConfig) -> HostedEnvRunResult:
+        seen["config"] = config
+        return HostedEnvRunResult(
+            source_env=config.source_env,
+            run_dir=tmp_path / "run",
+            command=["openreward"],
+            returncode=0,
+            stdout="",
+            stderr="",
+            model=config.model,
+            normalized_model=normalize_verifiers_model(config.model),
+            reward=1.0,
+            total_tool_calls=1,
+        )
+
+    monkeypatch.setattr("benchflow.hosted_env.run_hosted_env", fake_run_hosted_env)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "eval",
+            "create",
+            "--source-env",
+            "openreward:GeneralReasoning/KellyBench",
+            "--model",
+            "claude-haiku-4-5",
+            "--jobs-dir",
+            str(tmp_path),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    config = seen["config"]
+    assert isinstance(config, HostedEnvRunConfig)
+    assert config.source_env.provider == "openreward"
+    assert config.source_env.owner == "GeneralReasoning"
+    assert config.source_env.name == "KellyBench"

@@ -1257,6 +1257,11 @@ def eval_create(
                 "the hosted Verifiers environment owns its own provisioning. Ignoring.[/yellow]"
             )
 
+        # The slash-form provider mis-route guard ("openreward/x" parsing
+        # "openreward" as the owner) now lives in ``HostedEnvRef.parse`` so it
+        # covers every call site (env create/info/inspect + SDK); the parse
+        # below raises ``HostedEnvError`` with the hint, caught just like any
+        # other invalid reference.
         try:
             ref = HostedEnvRef.parse(source_env, version=source_env_version)
             run_result = run_hosted_env(

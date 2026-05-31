@@ -73,13 +73,16 @@ class HostedEnvRef:
         - ``primeintellect:primeintellect/general-agent@0.1.1``  (provider:owner/name)
         - ``openreward:GeneralReasoning/KellyBench``             (provider:owner/name)
 
-        OpenReward **requires the explicit ``provider:`` prefix**: the slash form
-        ``openreward/KellyBench`` parses ``openreward`` as the *owner* and falls
-        back to the default provider (primeintellect). A generic "owner is a
-        provider name" guard can't fix this without breaking the legitimate
-        ``primeintellect/...`` owner form. TODO(PR2): route ``--source-env`` by
-        provider at the CLI/dispatch layer so the slash form can't silently
-        mis-route once the openreward runner is wired.
+        OpenReward (and any non-default provider) **requires the explicit
+        ``provider:`` prefix**: the slash form ``openreward/KellyBench`` would
+        otherwise parse ``openreward`` as the *owner* and fall back to the
+        default provider (primeintellect), silently mis-routing the env. We
+        can't auto-correct that without breaking the legitimate
+        ``primeintellect/owner/name`` owner form, so when the input has no
+        ``provider:`` prefix and its first slash-segment is a *known* provider
+        other than the default, we reject it with a hint to use
+        ``provider:owner/name``. This guard lives here (not in the CLI) so every
+        call site — ``env create``/``info``/``inspect`` and the SDK — is covered.
         """
         provider = default_provider
         value = raw.strip()
@@ -92,6 +95,21 @@ class HostedEnvRef:
                 raise HostedEnvError(f"Invalid hosted environment reference: {raw}")
             provider = prefix
             value = rest
+        else:
+            # No ``provider:`` prefix. If the first slash-segment names a known
+            # provider (other than the default, whose ``owner/name`` form is
+            # legitimate — e.g. ``primeintellect/owner/name``), the caller almost
+            # certainly meant it as the provider, not an owner. Reject with a
+            # hint rather than silently routing to the default provider.
+            head = value.split("/", 1)[0].lower()
+            if head != default_provider and head in _SUPPORTED_HOSTED_PROVIDERS:
+                raise HostedEnvError(
+                    f"Ambiguous hosted environment reference: {raw!r}. "
+                    f"{head!r} is a provider, not an owner — the slash form "
+                    f"parses it as the owner and falls back to "
+                    f"{default_provider!r}. Use the explicit form "
+                    f"{head}:owner/name (e.g. openreward:GeneralReasoning/KellyBench)."
+                )
 
         if "@" in value:
             value, embedded_version = value.rsplit("@", 1)
@@ -235,7 +253,19 @@ def normalize_verifiers_model(model: str) -> str:
 
 
 def run_hosted_env(config: HostedEnvRunConfig) -> HostedEnvRunResult:
-    """Run a hosted environment using a controlled local Verifiers install."""
+    """Run a hosted environment.
+
+    PrimeIntellect runs locally via a controlled ``vf-eval`` install
+    (``runner='verifiers'``). OpenReward runs through the ``openreward`` client
+    session loop (lazy-imported so its dependency only loads on the openreward
+    path); the PrimeIntellect ``vf-eval``/version requirements below stay
+    PrimeIntellect-only.
+    """
+    if config.source_env.provider == "openreward":
+        from benchflow.openreward_env import run_hosted_env_openreward
+
+        return run_hosted_env_openreward(config)
+
     if config.runner != "verifiers":
         raise HostedEnvError(
             "Only runner='verifiers' is implemented. Use Prime CLI directly for "
@@ -427,6 +457,122 @@ def _extract_verifiers_error(text: str) -> str | None:
     return None
 
 
+def build_hosted_result_payload(
+    result: HostedEnvRunResult,
+    config: HostedEnvRunConfig,
+    *,
+    rewards: dict[str, Any] | None,
+    prompts: list[str],
+    timing: dict[str, Any],
+    source_provenance: dict[str, Any],
+    started_at: datetime,
+    finished_at: datetime,
+    agent_name: str,
+    trajectory_source: str,
+    has_trajectory: bool,
+    error: str | None,
+    verifier_error: str | None,
+) -> dict[str, Any]:
+    """Build the canonical ``result.json`` payload for a hosted-env-style run.
+
+    Single owner of the ``result.json`` shape shared by the vf-eval path
+    (:func:`_write_run_artifacts`) and the OpenReward driver
+    (``benchflow.openreward_env``). The two paths differ only in a handful of
+    fields (``agent_name``, the ``error``/``verifier_error`` split, and the
+    ``trajectory_source`` lineage literal), which are passed in; everything else
+    — the ``agent_result`` token block, the ``RolloutDiagnostics`` slots, the
+    timing/source provenance — is produced identically so the schema never
+    drifts between the two drivers.
+    """
+    return {
+        "task_name": result.source_env.env_uid,
+        "rollout_name": result.run_dir.name,
+        "rewards": rewards,
+        "agent": config.agent or None,
+        "agent_name": agent_name,
+        "model": result.normalized_model or result.model or None,
+        "n_tool_calls": result.total_tool_calls or 0,
+        "n_prompts": len(prompts),
+        "agent_result": {
+            "n_tool_calls": result.total_tool_calls or 0,
+            "n_prompts": len(prompts),
+            "n_input_tokens": None,
+            "n_output_tokens": None,
+            "n_cache_read_tokens": None,
+            "n_cache_creation_tokens": None,
+            "total_tokens": None,
+            "cost_usd": None,
+            "usage_source": "unavailable",
+            "price_source": None,
+        },
+        "error": error,
+        "error_category": None,
+        "verifier_error": verifier_error,
+        "verifier_error_category": None,
+        # Empty diagnostic slots — keyed by the canonical registry so
+        # adding a new diagnostic doesn't require touching the hosted
+        # drivers (issue #503). Hosted/openreward runs don't produce these,
+        # so all fields serialize as ``None``.
+        **RolloutDiagnostics().to_result_fields(),
+        "partial_trajectory": False,
+        "trajectory_source": trajectory_source if has_trajectory else None,
+        "started_at": str(started_at),
+        "finished_at": str(finished_at),
+        "timing": timing,
+        "scenes": [],
+        "source": source_provenance,
+    }
+
+
+def build_hosted_config_payload(
+    result: HostedEnvRunResult,
+    config: HostedEnvRunConfig,
+    *,
+    source_provenance: dict[str, Any],
+    started_at: datetime,
+    environment: str,
+    runner: str,
+    extra_hosted_env: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build the canonical ``config.json`` payload for a hosted-env-style run.
+
+    Shared by the vf-eval path and the OpenReward driver. ``environment`` and
+    ``runner`` are the per-driver literals; ``extra_hosted_env`` lets a driver
+    add fields to the ``hosted_env`` block (the OpenReward driver adds
+    ``split``/``index``).
+    """
+    return {
+        "task_path": None,
+        "agent": config.agent or None,
+        "model": result.normalized_model or result.model or None,
+        "environment": environment,
+        "skills_dir": None,
+        "sandbox_user": None,
+        "sandbox_locked_paths": None,
+        "sandbox_setup_timeout": None,
+        "context_root": None,
+        "timeout_sec": None,
+        "concurrency": config.concurrency,
+        "agent_idle_timeout_sec": None,
+        "started_at": str(started_at),
+        "agent_env": {},
+        "scenes": [],
+        "source": source_provenance,
+        "hosted_env": {
+            "provider": result.source_env.provider,
+            "env_uid": result.source_env.env_uid,
+            "runner": runner,
+            **(extra_hosted_env or {}),
+            "num_examples": config.num_examples,
+            "rollouts_per_example": config.rollouts_per_example,
+            "max_tokens": config.max_tokens,
+            "temperature": config.temperature,
+            "sampling_args": config.sampling_args,
+            "env_args": config.env_args,
+        },
+    }
+
+
 def _write_run_artifacts(
     result: HostedEnvRunResult,
     config: HostedEnvRunConfig,
@@ -481,8 +627,6 @@ def _write_run_artifacts(
     rewards = _build_rewards_dict(result, output_dir)
     prompts = _collect_prompts(output_dir, config)
     timing = {"total": round((finished_at - started_at).total_seconds(), 1)}
-    task_name = result.source_env.env_uid
-    rollout_name = result.run_dir.name
     source_provenance = _hosted_source_provenance(
         result.source_env,
         runner=config.runner,
@@ -494,79 +638,38 @@ def _write_run_artifacts(
         + ("\n" if trajectory else "")
     )
 
-    result_payload: dict[str, Any] = {
-        "task_name": task_name,
-        "rollout_name": rollout_name,
-        "rewards": rewards,
-        "agent": config.agent or None,
-        "agent_name": "verifiers",
-        "model": result.normalized_model or result.model or None,
-        "n_tool_calls": result.total_tool_calls or 0,
-        "n_prompts": len(prompts),
-        "agent_result": {
-            "n_tool_calls": result.total_tool_calls or 0,
-            "n_prompts": len(prompts),
-            "n_input_tokens": None,
-            "n_output_tokens": None,
-            "n_cache_read_tokens": None,
-            "n_cache_creation_tokens": None,
-            "total_tokens": None,
-            "cost_usd": None,
-            "usage_source": "unavailable",
-            "price_source": None,
-        },
-        "error": result.error
+    result_payload = build_hosted_result_payload(
+        result,
+        config,
+        rewards=rewards,
+        prompts=prompts,
+        timing=timing,
+        source_provenance=source_provenance,
+        started_at=started_at,
+        finished_at=finished_at,
+        agent_name="verifiers",
+        trajectory_source="hosted_env",
+        has_trajectory=bool(trajectory),
+        # vf-eval distinguishes a process crash (returncode != 0) from a
+        # verifier-level error: a clean run that reported a verifier error
+        # leaves ``error`` None and surfaces it under ``verifier_error``.
+        error=result.error
         if result.returncode != 0 or not result.verifiers_error
         else None,
-        "error_category": None,
-        "verifier_error": result.verifiers_error,
-        "verifier_error_category": None,
-        # Empty diagnostic slots — keyed by the canonical registry so
-        # adding a new diagnostic doesn't require touching hosted_env
-        # (issue #503). Hosted runs don't produce these (the harness ran
-        # remote), so all fields serialize as ``None``.
-        **RolloutDiagnostics().to_result_fields(),
-        "partial_trajectory": False,
-        "trajectory_source": "hosted_env" if trajectory else None,
-        "started_at": str(started_at),
-        "finished_at": str(finished_at),
-        "timing": timing,
-        "scenes": [],
-        "source": source_provenance,
-    }
+        verifier_error=result.verifiers_error,
+    )
     (result.run_dir / "result.json").write_text(json.dumps(result_payload, indent=2))
     (result.run_dir / "timing.json").write_text(json.dumps(timing, indent=2))
     (result.run_dir / "prompts.json").write_text(json.dumps(prompts, indent=2))
 
-    config_payload: dict[str, Any] = {
-        "task_path": None,
-        "agent": config.agent or None,
-        "model": result.normalized_model or result.model or None,
-        "environment": "hosted_env",
-        "skills_dir": None,
-        "sandbox_user": None,
-        "sandbox_locked_paths": None,
-        "sandbox_setup_timeout": None,
-        "context_root": None,
-        "timeout_sec": None,
-        "concurrency": config.concurrency,
-        "agent_idle_timeout_sec": None,
-        "started_at": str(started_at),
-        "agent_env": {},
-        "scenes": [],
-        "source": source_provenance,
-        "hosted_env": {
-            "provider": result.source_env.provider,
-            "env_uid": result.source_env.env_uid,
-            "runner": config.runner,
-            "num_examples": config.num_examples,
-            "rollouts_per_example": config.rollouts_per_example,
-            "max_tokens": config.max_tokens,
-            "temperature": config.temperature,
-            "sampling_args": config.sampling_args,
-            "env_args": config.env_args,
-        },
-    }
+    config_payload = build_hosted_config_payload(
+        result,
+        config,
+        source_provenance=source_provenance,
+        started_at=started_at,
+        environment="hosted_env",
+        runner=config.runner,
+    )
     (result.run_dir / "config.json").write_text(json.dumps(config_payload, indent=2))
 
     if rewards:
