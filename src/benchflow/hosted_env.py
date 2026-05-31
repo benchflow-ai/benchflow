@@ -235,7 +235,19 @@ def normalize_verifiers_model(model: str) -> str:
 
 
 def run_hosted_env(config: HostedEnvRunConfig) -> HostedEnvRunResult:
-    """Run a hosted environment using a controlled local Verifiers install."""
+    """Run a hosted environment.
+
+    PrimeIntellect runs locally via a controlled ``vf-eval`` install
+    (``runner='verifiers'``). OpenReward runs through the ``openreward`` client
+    session loop (lazy-imported so its dependency only loads on the openreward
+    path); the PrimeIntellect ``vf-eval``/version requirements below stay
+    PrimeIntellect-only.
+    """
+    if config.source_env.provider == "openreward":
+        from benchflow.openreward_env import run_hosted_env_openreward
+
+        return run_hosted_env_openreward(config)
+
     if config.runner != "verifiers":
         raise HostedEnvError(
             "Only runner='verifiers' is implemented. Use Prime CLI directly for "
