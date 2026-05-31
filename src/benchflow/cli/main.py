@@ -1257,24 +1257,11 @@ def eval_create(
                 "the hosted Verifiers environment owns its own provisioning. Ignoring.[/yellow]"
             )
 
-        # Provider routing guard (PR2): the slash form ``openreward/x`` has no
-        # ``provider:`` prefix, so ``HostedEnvRef.parse`` would read
-        # ``openreward`` as the *owner* and silently fall back to the default
-        # provider (primeintellect). A generic "owner is a provider name" guard
-        # can't fix this without breaking the legitimate ``primeintellect/...``
-        # owner form, so we special-case it here at dispatch and tell the user
-        # to use the explicit ``openreward:owner/name`` form. The legitimate
-        # ``primeintellect/owner/name`` form is untouched.
-        _src = source_env.strip()
-        if ":" not in _src and _src.split("/", 1)[0].lower() == "openreward":
-            console.print(
-                "[red]Ambiguous --source-env: 'openreward/...' parses "
-                "'openreward' as the owner, not the provider. Use the explicit "
-                "form 'openreward:owner/name' (e.g. "
-                "openreward:GeneralReasoning/KellyBench).[/red]"
-            )
-            raise typer.Exit(1)
-
+        # The slash-form provider mis-route guard ("openreward/x" parsing
+        # "openreward" as the owner) now lives in ``HostedEnvRef.parse`` so it
+        # covers every call site (env create/info/inspect + SDK); the parse
+        # below raises ``HostedEnvError`` with the hint, caught just like any
+        # other invalid reference.
         try:
             ref = HostedEnvRef.parse(source_env, version=source_env_version)
             run_result = run_hosted_env(

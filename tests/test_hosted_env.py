@@ -298,11 +298,34 @@ def test_hosted_env_ref_rejects_unknown_provider():
         raise AssertionError("expected HostedEnvError")
 
 
+def test_hosted_env_ref_rejects_provider_slash_form():
+    """The provider mis-route guard lives in ``HostedEnvRef.parse`` so it covers
+    every call site (env create/show/inspect + SDK), not just ``eval create``.
+    'openreward/x' (no provider: prefix) would parse 'openreward' as the owner
+    and fall back to primeintellect; parse rejects it with the explicit-form
+    hint instead."""
+    try:
+        HostedEnvRef.parse("openreward/KellyBench")
+    except HostedEnvError as exc:
+        assert "openreward:owner/name" in str(exc)
+        assert "provider, not an owner" in str(exc)
+    else:
+        raise AssertionError("expected HostedEnvError")
+
+
+def test_hosted_env_ref_allows_primeintellect_owner_slash_form():
+    """The default-provider owner form (primeintellect/owner/name) is legitimate
+    and must NOT trip the guard — only non-default known providers do."""
+    ref = HostedEnvRef.parse("primeintellect/some-owner/general-agent")
+    assert ref.provider == "primeintellect"
+    assert ref.owner == "primeintellect"
+    assert ref.name == "some-owner/general-agent"
+
+
 def test_eval_create_rejects_openreward_slash_form(tmp_path, monkeypatch):
-    """PR2 routing guard: 'openreward/x' (no provider: prefix) would parse
-    'openreward' as the owner and mis-route to primeintellect. The CLI now
-    catches this at dispatch and points at the explicit 'openreward:owner/name'
-    form instead of silently running the wrong provider."""
+    """End-to-end: the parse-level routing guard surfaces through ``eval create``
+    — 'openreward/x' (no provider: prefix) exits non-zero with the explicit
+    'openreward:owner/name' hint instead of silently running primeintellect."""
 
     def fail_if_called(config):  # pragma: no cover - must not run
         raise AssertionError("run_hosted_env should not be called for slash form")

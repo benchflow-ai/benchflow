@@ -44,7 +44,7 @@ import logging
 import os
 import shlex
 import tempfile
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -106,6 +106,7 @@ from benchflow.trajectories._capture import (
     _capture_session_trajectory,
     _scrape_agent_trajectory,
 )
+from benchflow.trajectories.export import write_verify_result_json
 from benchflow.trajectories.tree import RolloutNode, RolloutTree, Step
 
 logger = logging.getLogger(__name__)
@@ -260,29 +261,6 @@ async def _ensure_sandbox_dir(
 
 
 _DIAG_TRUNCATE = 2000
-
-
-def _write_verify_result_json(
-    rollout_dir: Path, verify_result: VerifyResult | None
-) -> None:
-    """Persist the canonical ``VerifyResult`` to ``verifier/verify_result.json``.
-
-    The Reward-plane source of truth (#v0.5 Phase 1): unlike ``result.json``
-    (which keeps the legacy reward *dict* for the ~10 existing consumers), this
-    file is the canonical ``{reward, items, events, error, space, granularity}``
-    structure — carrying the architecture's ``(space, granularity)`` tag and the
-    full event list — that the trainer export reads and branch aggregation will
-    read. Skipped when no result was produced (nothing scored).
-    """
-    if verify_result is None:
-        return
-    # Serialize via the dataclass itself — no hand-rolled second event schema to
-    # drift from VerifyResult/RewardEvent (the ORS ``timestamp`` rename is for
-    # the trainer wire format only; this internal artifact uses the dataclass'
-    # own ``ts``, matching rewards.jsonl).
-    out = rollout_dir / "verifier" / "verify_result.json"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(asdict(verify_result), indent=2, default=str))
 
 
 def _write_rewards_jsonl(
@@ -608,7 +586,7 @@ def _build_rollout_result(
     )
     (rollout_dir / "timing.json").write_text(json.dumps(timing, indent=2))
     (rollout_dir / "prompts.json").write_text(json.dumps(prompts, indent=2))
-    _write_verify_result_json(rollout_dir, verify_result)
+    write_verify_result_json(rollout_dir, verify_result)
     # rewards.jsonl stays dict-derived: it reads (space, granularity) from the
     # same validated reward map the VerifyResult is built from, so its lines are
     # identical to sourcing verify_result.events — and verify_result.json is the

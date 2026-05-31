@@ -42,19 +42,19 @@ import json
 import logging
 import os
 import re
-from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 from uuid import uuid4
 
-from benchflow.diagnostics import RolloutDiagnostics
 from benchflow.hosted_env import (
     HostedEnvError,
     HostedEnvRunConfig,
     HostedEnvRunResult,
     _hosted_source_provenance,
     _write_hosted_rewards_jsonl,
+    build_hosted_config_payload,
+    build_hosted_result_payload,
     normalize_verifiers_model,
 )
 
@@ -433,6 +433,39 @@ class _OpenRewardSessionCtx:
                     logger.debug("openreward client close() failed", exc_info=True)
 
 
+def _build_verify_result(
+    rewards: dict[str, Any] | None, *, error: str | None
+) -> VerifyResult:
+    """Lift the run outcome to a canonical ``VerifyResult``.
+
+    Defers to the single dict→``VerifyResult`` conversion point
+    (:func:`benchflow.rewards.node.verify_result_from_reward_map`) for the
+    scored case and the genuine-failure case (a ``None`` map *with* an ``error``
+    is a crash — that function stamps the error and yields ``reward=0.0``).
+
+    The one case it handles directly is a **clean finish that produced no
+    reward**: ``rewards`` is ``None`` but ``error`` is ``None`` too. Routing that
+    through ``verify_result_from_reward_map`` would default ``error`` to the
+    sentinel ``"no rewards"``, conflating "unscored" with "verifier crashed"
+    (``result.json.error`` is ``None`` yet ``verify_result.json.error`` would be
+    truthy). Instead we emit an explicit unscored result — ``reward=0.0`` with
+    **no** error — so the two states stay distinguishable downstream.
+    """
+    from benchflow.rewards.node import verify_result_from_reward_map
+    from benchflow.rewards.protocol import VerifyResult
+
+    if rewards is None and error is None:
+        return VerifyResult(
+            reward=0.0,
+            items={},
+            events=[],
+            error=None,
+            space="output",
+            granularity="terminal",
+        )
+    return verify_result_from_reward_map(rewards, error=error)
+
+
 def _write_openreward_artifacts(
     result: HostedEnvRunResult,
     config: HostedEnvRunConfig,
@@ -454,14 +487,12 @@ def _write_openreward_artifacts(
     ``trainer/verifiers.jsonl``) by reusing the shared writers. Lineage is
     stamped ``trajectory_source="openreward"``.
     """
-    from benchflow.rewards.node import verify_result_from_reward_map
-
     run_dir = result.run_dir
     for sub in ("trajectory", "agent", "verifier", "artifacts"):
         (run_dir / sub).mkdir(parents=True, exist_ok=True)
 
     rewards = {"reward": float(result.reward)} if result.reward is not None else None
-    verify_result = verify_result_from_reward_map(rewards, error=error)
+    verify_result = _build_verify_result(rewards, error=error)
 
     # trajectory/acp_trajectory.jsonl
     (run_dir / "trajectory" / "acp_trajectory.jsonl").write_text(
@@ -481,75 +512,37 @@ def _write_openreward_artifacts(
     source_provenance["split"] = split
     source_provenance["index"] = index
 
-    result_payload: dict[str, Any] = {
-        "task_name": result.source_env.env_uid,
-        "rollout_name": run_dir.name,
-        "rewards": rewards,
-        "agent": config.agent or None,
-        "agent_name": "openreward",
-        "model": result.normalized_model or result.model or None,
-        "n_tool_calls": result.total_tool_calls or 0,
-        "n_prompts": len(prompts),
-        "agent_result": {
-            "n_tool_calls": result.total_tool_calls or 0,
-            "n_prompts": len(prompts),
-            "n_input_tokens": None,
-            "n_output_tokens": None,
-            "n_cache_read_tokens": None,
-            "n_cache_creation_tokens": None,
-            "total_tokens": None,
-            "cost_usd": None,
-            "usage_source": "unavailable",
-            "price_source": None,
-        },
-        "error": result.error,
-        "error_category": None,
-        "verifier_error": None,
-        "verifier_error_category": None,
-        **RolloutDiagnostics().to_result_fields(),
-        "partial_trajectory": False,
-        "trajectory_source": "openreward" if trajectory else None,
-        "started_at": str(started_at),
-        "finished_at": str(finished_at),
-        "timing": timing,
-        "scenes": [],
-        "source": source_provenance,
-    }
+    result_payload = build_hosted_result_payload(
+        result,
+        config,
+        rewards=rewards,
+        prompts=prompts,
+        timing=timing,
+        source_provenance=source_provenance,
+        started_at=started_at,
+        finished_at=finished_at,
+        agent_name="openreward",
+        trajectory_source="openreward",
+        has_trajectory=bool(trajectory),
+        # The driver already collapses any failure into ``result.error`` (see
+        # the loop's ``verifiers_error`` plumbing); there is no separate
+        # verifier-error channel, so this stays ``None``.
+        error=result.error,
+        verifier_error=None,
+    )
     (run_dir / "result.json").write_text(json.dumps(result_payload, indent=2))
     (run_dir / "timing.json").write_text(json.dumps(timing, indent=2))
     (run_dir / "prompts.json").write_text(json.dumps(prompts, indent=2))
 
-    config_payload: dict[str, Any] = {
-        "task_path": None,
-        "agent": config.agent or None,
-        "model": result.normalized_model or result.model or None,
-        "environment": "openreward",
-        "skills_dir": None,
-        "sandbox_user": None,
-        "sandbox_locked_paths": None,
-        "sandbox_setup_timeout": None,
-        "context_root": None,
-        "timeout_sec": None,
-        "concurrency": config.concurrency,
-        "agent_idle_timeout_sec": None,
-        "started_at": str(started_at),
-        "agent_env": {},
-        "scenes": [],
-        "source": source_provenance,
-        "hosted_env": {
-            "provider": result.source_env.provider,
-            "env_uid": result.source_env.env_uid,
-            "runner": "openreward",
-            "split": split,
-            "index": index,
-            "num_examples": config.num_examples,
-            "rollouts_per_example": config.rollouts_per_example,
-            "max_tokens": config.max_tokens,
-            "temperature": config.temperature,
-            "sampling_args": config.sampling_args,
-            "env_args": config.env_args,
-        },
-    }
+    config_payload = build_hosted_config_payload(
+        result,
+        config,
+        source_provenance=source_provenance,
+        started_at=started_at,
+        environment="openreward",
+        runner="openreward",
+        extra_hosted_env={"split": split, "index": index},
+    )
     (run_dir / "config.json").write_text(json.dumps(config_payload, indent=2))
 
     if rewards:
@@ -557,7 +550,9 @@ def _write_openreward_artifacts(
 
     # Canonical Reward-plane artifacts — reuse the shared writers so the schema
     # never drifts from native rollouts.
-    _write_verify_result_json(run_dir, verify_result)
+    from benchflow.trajectories.export import write_verify_result_json
+
+    write_verify_result_json(run_dir, verify_result)
     _write_verifiers_jsonl(
         run_dir,
         task_id=result.source_env.env_uid,
@@ -567,23 +562,6 @@ def _write_openreward_artifacts(
         model=result.normalized_model or result.model or None,
         is_completed=error is None,
     )
-
-
-def _write_verify_result_json(
-    run_dir: Path, verify_result: VerifyResult | None
-) -> None:
-    """Persist the canonical VerifyResult to ``verifier/verify_result.json``.
-
-    Mirrors ``benchflow.rollout._write_verify_result_json`` (serialize the
-    dataclass via ``asdict``) without importing it — ``benchflow.rollout``
-    pulls heavy ACP/sandbox deps at import time, which this lightweight driver
-    must not drag in.
-    """
-    if verify_result is None:
-        return
-    out = run_dir / "verifier" / "verify_result.json"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(asdict(verify_result), indent=2, default=str))
 
 
 def _write_verifiers_jsonl(

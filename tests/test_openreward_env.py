@@ -254,8 +254,11 @@ def test_max_steps_error_when_policy_keeps_acting(tmp_path):
 
 
 def test_no_reward_yields_reward_none_and_valid_artifacts(tmp_path):
-    # Env finishes but reports no reward -> result.reward None, verify_result
-    # falls back to reward 0.0 with an error (the "nobody scored" path).
+    # Env finishes cleanly but reports no reward ("unscored"): result.reward is
+    # None, and the VerifyResult is reward 0.0 with NO error. A clean,
+    # unscored finish must not be conflated with a verifier crash — both
+    # result.json.error and verify_result.json.error stay None so downstream
+    # readers can tell "nobody scored" apart from "the verifier blew up".
     session = FakeSession(
         tools=[FakeToolSpec(name="submit")],
         outputs=[FakeToolOutput(blocks=[FakeBlock("ok")], reward=None, finished=True)],
@@ -269,10 +272,11 @@ def test_no_reward_yields_reward_none_and_valid_artifacts(tmp_path):
     rd = result.run_dir
     result_json = json.loads((rd / "result.json").read_text())
     assert result_json["rewards"] is None
-    # verify_result still written, reward 0.0 + error populated.
+    assert result_json["error"] is None
+    # verify_result still written, reward 0.0, and NO phantom error.
     verify_result = json.loads((rd / "verifier" / "verify_result.json").read_text())
     assert verify_result["reward"] == 0.0
-    assert verify_result["error"]
+    assert verify_result["error"] is None
 
 
 def test_prompt_to_text_handles_blocks_and_images():
