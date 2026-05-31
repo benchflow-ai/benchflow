@@ -208,9 +208,7 @@ class TestResolveAuthEnv:
 
     def test_direct_openai_compatible_provider_keys(self):
         assert resolve_auth_env("kimi/kimi-k2.6") == "KIMI_API_KEY"
-        assert (
-            resolve_auth_env("qwen-dashscope/qwen3.6-max-preview") == "QWEN_API_KEY"
-        )
+        assert resolve_auth_env("qwen-dashscope/qwen3.6-max-preview") == "QWEN_API_KEY"
         assert resolve_auth_env("glm/glm-5.1") == "GLM_API_KEY"
 
 

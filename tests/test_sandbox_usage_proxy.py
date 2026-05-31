@@ -66,9 +66,7 @@ async def test_daytona_uses_sandbox_local_proxy_not_host_proxy(monkeypatch):
             AssertionError("host proxy must not start")
         ),
     )
-    monkeypatch.setattr(
-        usage_runtime_mod, "SandboxUsageProxy", FakeSandboxUsageProxy
-    )
+    monkeypatch.setattr(usage_runtime_mod, "SandboxUsageProxy", FakeSandboxUsageProxy)
 
     env = {
         "ANTHROPIC_BASE_URL": "https://api.anthropic.com",
@@ -325,9 +323,7 @@ async def test_daytona_auto_usage_proxy_start_failure_leaves_env_untouched(monke
         async def stop(self):
             stopped.append(True)
 
-    monkeypatch.setattr(
-        usage_runtime_mod, "SandboxUsageProxy", BrokenSandboxUsageProxy
-    )
+    monkeypatch.setattr(usage_runtime_mod, "SandboxUsageProxy", BrokenSandboxUsageProxy)
 
     env = {"ANTHROPIC_BASE_URL": "https://api.anthropic.com"}
     updated, runtime = await ensure_usage_proxy_runtime(
@@ -364,9 +360,7 @@ async def test_daytona_required_usage_proxy_start_failure_raises(monkeypatch):
         async def stop(self):
             return None
 
-    monkeypatch.setattr(
-        usage_runtime_mod, "SandboxUsageProxy", BrokenSandboxUsageProxy
-    )
+    monkeypatch.setattr(usage_runtime_mod, "SandboxUsageProxy", BrokenSandboxUsageProxy)
 
     with pytest.raises(RuntimeError, match=r"required.*failed to start"):
         await ensure_usage_proxy_runtime(
@@ -414,9 +408,7 @@ async def test_usage_runtime_recreated_when_sandbox_proxy_is_dead(monkeypatch):
         async def stop(self):
             stopped.append("new")
 
-    monkeypatch.setattr(
-        usage_runtime_mod, "SandboxUsageProxy", FakeSandboxUsageProxy
-    )
+    monkeypatch.setattr(usage_runtime_mod, "SandboxUsageProxy", FakeSandboxUsageProxy)
 
     stale_runtime = ProviderRuntime(
         kind="usage-proxy",

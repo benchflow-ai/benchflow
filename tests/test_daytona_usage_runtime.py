@@ -36,9 +36,7 @@ async def test_registered_openai_compatible_provider_uses_sandbox_usage_proxy(
         async def stop(self):
             return None
 
-    monkeypatch.setattr(
-        usage_runtime_mod, "SandboxUsageProxy", FakeSandboxUsageProxy
-    )
+    monkeypatch.setattr(usage_runtime_mod, "SandboxUsageProxy", FakeSandboxUsageProxy)
 
     env = resolve_agent_env(
         "openhands",
@@ -92,9 +90,7 @@ async def test_usage_runtime_reconnect_ignores_own_proxy_url(monkeypatch):
         async def stop(self):
             stopped.append(self.target)
 
-    monkeypatch.setattr(
-        usage_runtime_mod, "SandboxUsageProxy", FakeSandboxUsageProxy
-    )
+    monkeypatch.setattr(usage_runtime_mod, "SandboxUsageProxy", FakeSandboxUsageProxy)
 
     env = {
         "ANTHROPIC_BASE_URL": "https://api.anthropic.com",
@@ -159,9 +155,7 @@ async def test_dead_usage_runtime_reconnect_uses_original_upstream(monkeypatch):
         async def stop(self):
             stopped.append("new")
 
-    monkeypatch.setattr(
-        usage_runtime_mod, "SandboxUsageProxy", FakeSandboxUsageProxy
-    )
+    monkeypatch.setattr(usage_runtime_mod, "SandboxUsageProxy", FakeSandboxUsageProxy)
 
     stale_runtime = ProviderRuntime(
         kind="usage-proxy",
@@ -213,9 +207,7 @@ async def test_codex_provider_config_is_repointed_at_usage_proxy(monkeypatch):
         async def stop(self):
             return None
 
-    monkeypatch.setattr(
-        usage_runtime_mod, "SandboxUsageProxy", FakeSandboxUsageProxy
-    )
+    monkeypatch.setattr(usage_runtime_mod, "SandboxUsageProxy", FakeSandboxUsageProxy)
 
     env = {
         "BENCHFLOW_PROVIDER_BASE_URL": (
@@ -282,9 +274,7 @@ async def test_codex_native_openai_gets_usage_proxy_provider_config(monkeypatch)
         async def stop(self):
             return None
 
-    monkeypatch.setattr(
-        usage_runtime_mod, "SandboxUsageProxy", FakeSandboxUsageProxy
-    )
+    monkeypatch.setattr(usage_runtime_mod, "SandboxUsageProxy", FakeSandboxUsageProxy)
 
     updated, runtime = await ensure_usage_proxy_runtime(
         agent="codex-acp",
@@ -339,9 +329,7 @@ async def test_daytona_openhands_bedrock_usage_proxy_sets_aws_endpoint(monkeypat
         async def stop(self):
             return None
 
-    monkeypatch.setattr(
-        usage_runtime_mod, "SandboxUsageProxy", FakeSandboxUsageProxy
-    )
+    monkeypatch.setattr(usage_runtime_mod, "SandboxUsageProxy", FakeSandboxUsageProxy)
 
     agent_env = {
         "AWS_BEARER_TOKEN_BEDROCK": "bedrock-token",
@@ -373,8 +361,7 @@ async def test_daytona_openhands_bedrock_usage_proxy_sets_aws_endpoint(monkeypat
 
     assert usage_runtime is not None
     assert (
-        usage_runtime.server.target
-        == "https://bedrock-runtime.us-west-2.amazonaws.com"
+        usage_runtime.server.target == "https://bedrock-runtime.us-west-2.amazonaws.com"
     )
     assert usage_env["LLM_BASE_URL"] == usage_runtime.base_url
     assert "BENCHFLOW_PROVIDER_BASE_URL" not in usage_env

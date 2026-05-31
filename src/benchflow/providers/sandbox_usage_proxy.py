@@ -29,9 +29,7 @@ _RUNTIME_ROOT = "/tmp/benchflow-usage-proxy"
 
 
 def _read_node_proxy_source() -> str:
-    return (
-        Path(__file__).with_name("assets") / "sandbox_usage_proxy.js"
-    ).read_text()
+    return (Path(__file__).with_name("assets") / "sandbox_usage_proxy.js").read_text()
 
 
 _NODE_PROXY_SOURCE = _read_node_proxy_source()
