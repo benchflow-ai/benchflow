@@ -53,6 +53,7 @@ from typing import Any
 from benchflow._types import Role, Scene, Turn
 from benchflow._utils.config import normalize_agent_name, normalize_sandbox_user
 from benchflow._utils.scoring import classify_error, classify_verifier_error
+from benchflow.acp.types import McpServerSpec
 from benchflow.contracts import (
     AgentProtocolError,
     BaseUser,
@@ -100,6 +101,40 @@ def _task_disallows_internet(task: Any) -> bool:
     """Return True when task.toml requests no internet for the agent task."""
     env_config = getattr(getattr(task, "config", None), "environment", None)
     return getattr(env_config, "allow_internet", True) is False
+
+
+# task.toml ``transport`` names → ACP ``session/new`` server ``type``. The MCP
+# ecosystem calls it "streamable-http"; ACP calls it "http". stdio/sse match.
+_MCP_TRANSPORT_TO_ACP_TYPE = {
+    "stdio": "stdio",
+    "sse": "sse",
+    "streamable-http": "http",
+}
+
+
+def _task_mcp_specs(task: Any) -> list[McpServerSpec]:
+    """Map the task's ``[[environment.mcp_servers]]`` entries to ACP specs.
+
+    This is the composition seam between the task-config layer
+    (``MCPServerConfig``) and the ACP protocol layer (``McpServerSpec``) — kept
+    here, in the rollout, so ``acp/`` stays free of any task-config dependency.
+    The resulting specs are attached to every ACP session the rollout opens
+    (``session/new``), making task-declared MCP servers — e.g. a Playwright MCP
+    — reachable by the agent. Returns ``[]`` when the task declares none,
+    preserving the historical default of attaching no MCP servers.
+    """
+    env_config = getattr(getattr(task, "config", None), "environment", None)
+    configs = getattr(env_config, "mcp_servers", None) or []
+    return [
+        McpServerSpec(
+            name=config.name,
+            type=_MCP_TRANSPORT_TO_ACP_TYPE.get(config.transport, config.transport),
+            command=config.command,
+            args=list(config.args),
+            url=config.url,
+        )
+        for config in configs
+    ]
 
 
 def _apply_web_policy(agent_env: dict[str, str], *, disallow: bool) -> dict[str, str]:
@@ -1523,6 +1558,7 @@ class Rollout:
             rollout_dir=rollout_dir,
             environment=cfg.environment,
             agent_cwd=self._agent_cwd,
+            mcp_servers=_task_mcp_specs(getattr(self, "_task", None)),
         )
         self._reapply_ask_user_handler()
 
@@ -2430,6 +2466,7 @@ class Rollout:
             rollout_dir=rollout_dir,
             environment=cfg.environment,
             agent_cwd=self._agent_cwd,
+            mcp_servers=_task_mcp_specs(getattr(self, "_task", None)),
         )
         self._reapply_ask_user_handler()
         self._active_role = role

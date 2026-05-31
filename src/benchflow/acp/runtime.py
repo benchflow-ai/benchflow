@@ -25,6 +25,7 @@ from pathlib import Path
 
 from benchflow.acp.client import ACPClient
 from benchflow.acp.container_transport import ContainerTransport
+from benchflow.acp.types import McpServerSpec
 from benchflow.agents.protocol import ACPSessionAdapter
 from benchflow.agents.providers import find_provider, strip_provider_prefix
 from benchflow.agents.registry import AGENTS
@@ -233,6 +234,7 @@ async def connect_acp(
     rollout_dir: Path,
     environment: str,
     agent_cwd: str,
+    mcp_servers: list[McpServerSpec] | None = None,
 ) -> tuple[ACPClient, object, ACPSessionAdapter, str]:
     """Create ACP transport, connect, init session, set model.
 
@@ -244,6 +246,10 @@ async def connect_acp(
     reaches the live ``session/request_permission`` path on the wire. Without
     instantiating the adapter here, every handler the kernel registers stayed
     dormant and the auto-approve policy ran unconditionally (#382 follow-up).
+
+    ``mcp_servers`` are the task's configured MCP servers (mapped from
+    ``[[environment.mcp_servers]]``); they are attached to the ACP session at
+    ``session/new`` so the agent can reach them. ``None`` attaches none.
 
     Retries with exponential backoff on ConnectionError (Daytona SSH storms).
     """
@@ -305,7 +311,8 @@ async def connect_acp(
             logger.info(f"ACP agent: {agent_name}")
 
             session = await asyncio.wait_for(
-                acp_client.session_new(cwd=agent_cwd), timeout=60
+                acp_client.session_new(cwd=agent_cwd, mcp_servers=mcp_servers),
+                timeout=60,
             )
             logger.info(f"Session: {session.session_id}")
             break

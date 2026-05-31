@@ -136,14 +136,41 @@ class McpServerSpec(BaseModel):
 
     Vendored: BenchFlow uses a single flat shape across stdio/SSE/HTTP, while
     the SDK splits these into separate ``McpServerStdio`` / ``SseMcpServer`` /
-    ``HttpMcpServer`` models.
+    ``HttpMcpServer`` models. :meth:`to_new_session_param` projects this flat
+    shape onto the exact per-transport dict ``session/new`` expects: every
+    variant carries ``name``; stdio adds ``command``/``args``/``env`` and omits
+    the ``type`` discriminator (the SDK's ``McpServerStdio`` has none); sse/http
+    add ``url``/``headers`` and keep ``type``.
     """
 
+    name: str  # required on every ACP variant; the rest are transport-dependent
     type: str = "stdio"
     command: str | None = None
     args: list[str] = Field(default_factory=list)
     env: list[dict[str, str]] = Field(default_factory=list)
     url: str | None = None
+    headers: list[dict[str, str]] = Field(default_factory=list)
+
+    def to_new_session_param(self) -> dict[str, Any]:
+        """Project onto the per-transport ``session/new`` server dict.
+
+        stdio servers carry ``command``/``args``/``env`` and no ``type``; sse and
+        http servers carry ``url``/``headers`` and the ``type`` discriminator.
+        The result is shaped for the SDK's discriminated ``mcp_servers`` union.
+        """
+        if self.type == "stdio":
+            return {
+                "name": self.name,
+                "command": self.command,
+                "args": list(self.args),
+                "env": list(self.env),
+            }
+        return {
+            "type": self.type,
+            "name": self.name,
+            "url": self.url,
+            "headers": list(self.headers),
+        }
 
 
 class CancelParams(BaseModel):
