@@ -101,6 +101,7 @@ class TestResolveAgentEnvSubscription:
             "ANTHROPIC_API_KEY",
             "ANTHROPIC_AUTH_TOKEN",
             "CLAUDE_CODE_OAUTH_TOKEN",
+            "CODEX_AUTH_JSON",
             "CODEX_ACCESS_TOKEN",
             "CODEX_API_KEY",
             "OPENAI_API_KEY",
@@ -125,6 +126,7 @@ class TestResolveAgentEnvSubscription:
             "ANTHROPIC_API_KEY",
             "ANTHROPIC_AUTH_TOKEN",
             "CLAUDE_CODE_OAUTH_TOKEN",
+            "CODEX_AUTH_JSON",
             "CODEX_ACCESS_TOKEN",
             "CODEX_API_KEY",
             "OPENAI_API_KEY",
@@ -158,6 +160,7 @@ class TestResolveAgentEnvSubscription:
         """Codex subscription auth works with host ~/.codex/auth.json."""
         for k in (
             "CODEX_ACCESS_TOKEN",
+            "CODEX_AUTH_JSON",
             "CODEX_API_KEY",
             "OPENAI_API_KEY",
             "ANTHROPIC_API_KEY",
@@ -174,6 +177,24 @@ class TestResolveAgentEnvSubscription:
             agent_env={},
         )
         assert result["_BENCHFLOW_SUBSCRIPTION_AUTH"] == "1"
+
+    def test_codex_auth_json_auth(self, monkeypatch, tmp_path):
+        """Guards PR #587: inline Codex auth.json can auth native Codex runs."""
+        for k in ("CODEX_ACCESS_TOKEN", "CODEX_API_KEY", "OPENAI_API_KEY"):
+            monkeypatch.delenv(k, raising=False)
+        _patch_expanduser(monkeypatch, tmp_path)
+
+        result = self._resolve(
+            agent="codex-acp",
+            model="gpt-4o",
+            agent_env={
+                "CODEX_AUTH_JSON": '{"tokens": {"access_token": "access-token"}}'
+            },
+        )
+
+        assert result["CODEX_AUTH_JSON"].startswith("{")
+        assert "OPENAI_API_KEY" not in result
+        assert "_BENCHFLOW_SUBSCRIPTION_AUTH" not in result
 
     def test_codex_access_token_auth(self, monkeypatch, tmp_path):
         """Guards PR #296: Blocks-style Codex auth via CODEX_ACCESS_TOKEN."""
@@ -214,6 +235,7 @@ class TestResolveAgentEnvSubscription:
         """Guards PR #296: access tokens are not proxy API keys."""
         for k in (
             "CODEX_ACCESS_TOKEN",
+            "CODEX_AUTH_JSON",
             "CODEX_API_KEY",
             "OPENAI_API_KEY",
             "ANTHROPIC_API_KEY",
@@ -238,6 +260,7 @@ class TestResolveAgentEnvSubscription:
         """Guards PR #296: subscription auth is not custom endpoint API-key auth."""
         for k in (
             "CODEX_API_KEY",
+            "CODEX_AUTH_JSON",
             "OPENAI_API_KEY",
             "ANTHROPIC_API_KEY",
         ):
@@ -254,6 +277,16 @@ class TestResolveAgentEnvSubscription:
                 },
             )
 
+        with pytest.raises(ValueError, match="OPENAI_API_KEY required"):
+            self._resolve(
+                agent="codex-acp",
+                model="gpt-4o",
+                agent_env={
+                    "CODEX_AUTH_JSON": '{"tokens": {"access_token": "access-token"}}',
+                    base_url_key: "http://localhost:8765/v1",
+                },
+            )
+
     @pytest.mark.parametrize(
         "base_url_key",
         ["BENCHFLOW_PROVIDER_BASE_URL", "OPENAI_BASE_URL"],
@@ -264,6 +297,7 @@ class TestResolveAgentEnvSubscription:
         """Guards PR #296: host login is not custom endpoint API-key auth."""
         for k in (
             "CODEX_ACCESS_TOKEN",
+            "CODEX_AUTH_JSON",
             "CODEX_API_KEY",
             "OPENAI_API_KEY",
             "ANTHROPIC_API_KEY",
@@ -312,6 +346,49 @@ class _FakeEnv:
 
 
 class TestUploadSubscriptionAuth:
+    @pytest.mark.asyncio
+    async def test_codex_auth_json_writes_auth_file(self):
+        """Guards PR #587: inline Codex auth.json is uploaded for Daytona."""
+        from benchflow.agents.credentials import write_credential_files
+
+        env = _FakeEnv()
+        await write_credential_files(
+            env,
+            "codex-acp",
+            {"CODEX_AUTH_JSON": '{"tokens": {"access_token": "test"}}'},
+            AGENTS["codex-acp"],
+            "gpt-4o",
+            "/home/agent",
+        )
+
+        assert len(env.uploads) == 1
+        assert env.uploads[0][1:] == (
+            "/home/agent/.codex/auth.json",
+            '{"tokens": {"access_token": "test"}}',
+        )
+
+    @pytest.mark.asyncio
+    async def test_openai_key_wins_over_codex_auth_json_file_write(self):
+        """Guards PR #587: API-key auth keeps the existing Codex file shape."""
+        from benchflow.agents.credentials import write_credential_files
+
+        env = _FakeEnv()
+        await write_credential_files(
+            env,
+            "codex-acp",
+            {
+                "OPENAI_API_KEY": "sk-test",
+                "CODEX_AUTH_JSON": '{"tokens": {"access_token": "test"}}',
+            },
+            AGENTS["codex-acp"],
+            "gpt-4o",
+            "/home/agent",
+        )
+
+        assert len(env.uploads) == 1
+        assert env.uploads[0][1] == "/home/agent/.codex/auth.json"
+        assert env.uploads[0][2] == '{"OPENAI_API_KEY": "sk-test"}'
+
     @pytest.mark.asyncio
     async def test_subscription_auth_chowns_uploaded_home_file(
         self, monkeypatch, tmp_path

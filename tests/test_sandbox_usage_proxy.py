@@ -13,6 +13,7 @@ import signal
 import subprocess
 import threading
 import time
+from pathlib import Path
 from types import SimpleNamespace
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -184,6 +185,77 @@ async def test_sandbox_usage_proxy_imports_raw_captures():
     assert usage["usage_source"] == "provider_response"
     assert usage["n_input_tokens"] == 13
     assert usage["n_output_tokens"] == 5
+
+
+@pytest.mark.asyncio
+async def test_sandbox_usage_proxy_downloads_capture_log(tmp_path):
+    """Guards PR #587: large sandbox capture logs avoid exec stdout limits."""
+    from benchflow.providers.runtime import ProviderRuntime, extract_usage
+    from benchflow.providers.sandbox_usage_proxy import SandboxUsageProxy
+
+    capture = {
+        "duration_ms": 12,
+        "request": {
+            "method": "POST",
+            "path": "/responses",
+            "headers": {"content-type": "application/json"},
+            "body_b64": base64.b64encode(
+                json.dumps({"model": "gpt-5.5"}).encode()
+            ).decode(),
+        },
+        "response": {
+            "status_code": 200,
+            "headers": {"content-type": "application/json"},
+            "body_b64": base64.b64encode(
+                json.dumps(
+                    {
+                        "model": "gpt-5.5",
+                        "usage": {
+                            "input_tokens": 21,
+                            "output_tokens": 8,
+                            "total_tokens": 29,
+                        },
+                    }
+                ).encode()
+            ).decode(),
+        },
+    }
+
+    class FakeSandbox:
+        def __init__(self):
+            self.exec_commands = []
+            self.downloads = []
+
+        async def download_file(self, source_path, target_path):
+            self.downloads.append((source_path, target_path))
+            Path(target_path).write_text(json.dumps(capture) + "\n")
+
+        async def exec(self, command, timeout_sec=None):
+            self.exec_commands.append(command)
+            return SimpleNamespace(return_code=0, stdout="", stderr="")
+
+    sandbox = FakeSandbox()
+    proxy = SandboxUsageProxy(
+        sandbox=sandbox,
+        target="https://api.openai.com/v1",
+        session_id="rollout-1",
+        agent_name="codex-acp",
+    )
+    await proxy._load_captures()
+
+    runtime = ProviderRuntime(
+        kind="usage-proxy",
+        agent_base_url="http://127.0.0.1:49000",
+        backend_model="gpt-5.5",
+        server=proxy,
+    )
+    usage = extract_usage(runtime)
+
+    assert [source for source, _target in sandbox.downloads] == [proxy._log_path]
+    assert not any("captures.jsonl" in command for command in sandbox.exec_commands)
+    assert usage["usage_source"] == "provider_response"
+    assert usage["n_input_tokens"] == 21
+    assert usage["n_output_tokens"] == 8
 
 
 @pytest.mark.asyncio
@@ -371,68 +443,6 @@ async def test_usage_runtime_recreated_when_sandbox_proxy_is_dead(monkeypatch):
     assert runtime is not None
     assert runtime is not stale_runtime
     assert updated["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:49001"
-
-
-@pytest.mark.asyncio
-async def test_daytona_openhands_bedrock_usage_proxy_skips_direct_bedrock(monkeypatch):
-    """Guards PR #587: remote Bedrock-direct OpenHands skips generic proxying."""
-    from benchflow.providers import runtime as provider_runtime_mod
-    from benchflow.providers.runtime import (
-        ensure_bedrock_proxy_runtime,
-        ensure_usage_proxy_runtime,
-    )
-    from benchflow.usage_tracking import UsageTrackingConfig
-
-    monkeypatch.setattr(
-        provider_runtime_mod,
-        "SandboxUsageProxy",
-        lambda *a, **k: (_ for _ in ()).throw(
-            AssertionError("native Bedrock calls cannot use generic usage proxy")
-        ),
-    )
-
-    agent_env = {
-        "AWS_BEARER_TOKEN_BEDROCK": "bedrock-token",
-        "AWS_REGION": "us-west-2",
-        "LLM_BASE_URL": "",
-        "LLM_MODEL": "anthropic/us.anthropic.claude-opus-4-7",
-    }
-    bedrock_env, bedrock_runtime = await ensure_bedrock_proxy_runtime(
-        agent="openhands",
-        agent_env=agent_env,
-        model="aws-bedrock/us.anthropic.claude-opus-4-7",
-        runtime=None,
-        environment="daytona",
-    )
-
-    assert bedrock_runtime is None
-    assert "LLM_BASE_URL" not in bedrock_env
-    assert bedrock_env["LLM_MODEL"] == "bedrock/us.anthropic.claude-opus-4-7"
-
-    usage_env, usage_runtime = await ensure_usage_proxy_runtime(
-        agent="openhands",
-        agent_env=bedrock_env,
-        model="aws-bedrock/us.anthropic.claude-opus-4-7",
-        runtime=None,
-        environment="daytona",
-        usage_tracking=UsageTrackingConfig(mode="auto"),
-        sandbox=object(),
-    )
-
-    assert usage_runtime is None
-    assert usage_env == bedrock_env
-    assert "LLM_BASE_URL" not in usage_env
-
-    with pytest.raises(RuntimeError, match="Remote Bedrock-direct"):
-        await ensure_usage_proxy_runtime(
-            agent="openhands",
-            agent_env=bedrock_env,
-            model="aws-bedrock/us.anthropic.claude-opus-4-7",
-            runtime=None,
-            environment="daytona",
-            usage_tracking=UsageTrackingConfig(mode="required"),
-            sandbox=object(),
-        )
 
 
 def test_raw_capture_json_error_beats_stream_request_hint():

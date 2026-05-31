@@ -1,5 +1,6 @@
 """Trajectory types — raw LLM API request/response pairs captured by proxy."""
 
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
@@ -13,6 +14,13 @@ _USAGE_KEYS = {
     "total_tokens",
     "cache_read_input_tokens",
     "cache_creation_input_tokens",
+    "inputTokens",
+    "outputTokens",
+    "totalTokens",
+    "cacheReadInputTokenCount",
+    "cacheReadInputTokens",
+    "cacheWriteInputTokenCount",
+    "cacheWriteInputTokens",
 }
 _USAGE_DETAIL_KEYS = {
     "cached_tokens",
@@ -37,6 +45,95 @@ def _has_provider_usage(payload: dict[str, Any]) -> bool:
         if isinstance(details, dict) and _has_non_null_key(details, _USAGE_DETAIL_KEYS):
             return True
     return False
+
+
+def _first_int(*values: Any) -> int:
+    """Return the first non-null usage value as an integer."""
+    for value in values:
+        if value is None:
+            continue
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            continue
+    return 0
+
+
+def _first_optional_int(*values: Any) -> int | None:
+    for value in values:
+        if value is None:
+            continue
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+@dataclass(frozen=True)
+class TokenUsage:
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_creation_tokens: int = 0
+    provider_total_tokens: int | None = None
+
+    @property
+    def total_tokens(self) -> int:
+        if self.provider_total_tokens is not None:
+            return self.provider_total_tokens
+        return (
+            self.input_tokens
+            + self.output_tokens
+            + self.cache_read_tokens
+            + self.cache_creation_tokens
+        )
+
+
+def _exchange_token_usage(exchange: "LLMExchange") -> TokenUsage:
+    usage = exchange.response.body.get("usage")
+    usage = usage if isinstance(usage, dict) else {}
+    usage_metadata = exchange.response.body.get("usageMetadata")
+    usage_metadata = usage_metadata if isinstance(usage_metadata, dict) else {}
+    # OpenAI may return these keys with an explicit null value, so
+    # `or {}` is required — `.get(key, {})` would still yield None.
+    prompt_details = usage.get("prompt_tokens_details") or {}
+    prompt_details = prompt_details if isinstance(prompt_details, dict) else {}
+    input_details = usage.get("input_tokens_details") or {}
+    input_details = input_details if isinstance(input_details, dict) else {}
+
+    return TokenUsage(
+        input_tokens=_first_int(
+            usage.get("input_tokens"),
+            usage.get("prompt_tokens"),
+            usage.get("inputTokens"),
+            usage_metadata.get("promptTokenCount"),
+        ),
+        output_tokens=_first_int(
+            usage.get("output_tokens"),
+            usage.get("completion_tokens"),
+            usage.get("outputTokens"),
+            usage_metadata.get("candidatesTokenCount"),
+        ),
+        cache_read_tokens=_first_int(
+            usage.get("cache_read_input_tokens"),
+            usage.get("cacheReadInputTokens"),
+            usage.get("cacheReadInputTokenCount"),
+            prompt_details.get("cached_tokens"),
+            input_details.get("cached_tokens"),
+            usage_metadata.get("cachedContentTokenCount"),
+        ),
+        cache_creation_tokens=_first_int(
+            usage.get("cache_creation_input_tokens"),
+            usage.get("cacheWriteInputTokens"),
+            usage.get("cacheWriteInputTokenCount"),
+        ),
+        provider_total_tokens=_first_optional_int(
+            usage.get("total_tokens"),
+            usage_metadata.get("totalTokenCount"),
+            usage.get("totalTokens"),
+        ),
+    )
 
 
 class LLMRequest(BaseModel):
@@ -92,85 +189,25 @@ class Trajectory(BaseModel):
 
     @property
     def total_input_tokens(self) -> int:
-        total = 0
-        for ex in self.exchanges:
-            usage = ex.response.body.get("usage", {})
-            usage_metadata = ex.response.body.get("usageMetadata", {})
-            total += (
-                usage.get("input_tokens", 0)
-                or usage.get("prompt_tokens", 0)
-                or usage_metadata.get("promptTokenCount", 0)
-            )
-        return total
+        return sum(_exchange_token_usage(ex).input_tokens for ex in self.exchanges)
 
     @property
     def total_output_tokens(self) -> int:
-        total = 0
-        for ex in self.exchanges:
-            usage = ex.response.body.get("usage", {})
-            usage_metadata = ex.response.body.get("usageMetadata", {})
-            total += (
-                usage.get("output_tokens", 0)
-                or usage.get("completion_tokens", 0)
-                or usage_metadata.get("candidatesTokenCount", 0)
-            )
-        return total
+        return sum(_exchange_token_usage(ex).output_tokens for ex in self.exchanges)
 
     @property
     def total_cache_read_tokens(self) -> int:
-        total = 0
-        for ex in self.exchanges:
-            usage = ex.response.body.get("usage", {})
-            usage_metadata = ex.response.body.get("usageMetadata", {})
-            # OpenAI may return these keys with an explicit null value, so
-            # `or {}` is required — `.get(key, {})` would still yield None.
-            prompt_details = usage.get("prompt_tokens_details") or {}
-            input_details = usage.get("input_tokens_details") or {}
-            total += (
-                usage.get("cache_read_input_tokens", 0)
-                or prompt_details.get("cached_tokens", 0)
-                or input_details.get("cached_tokens", 0)
-                or usage_metadata.get("cachedContentTokenCount", 0)
-                or 0
-            )
-        return total
+        return sum(_exchange_token_usage(ex).cache_read_tokens for ex in self.exchanges)
 
     @property
     def total_cache_creation_tokens(self) -> int:
-        total = 0
-        for ex in self.exchanges:
-            usage = ex.response.body.get("usage", {})
-            total += usage.get("cache_creation_input_tokens", 0) or 0
-        return total
+        return sum(
+            _exchange_token_usage(ex).cache_creation_tokens for ex in self.exchanges
+        )
 
     @property
     def total_provider_tokens(self) -> int:
-        total = 0
-        for ex in self.exchanges:
-            usage = ex.response.body.get("usage", {})
-            usage_metadata = ex.response.body.get("usageMetadata", {})
-            provider_total = usage.get("total_tokens") or usage_metadata.get(
-                "totalTokenCount"
-            )
-            if provider_total is not None:
-                total += provider_total
-                continue
-            input_tokens = (
-                usage.get("input_tokens", 0)
-                or usage.get("prompt_tokens", 0)
-                or usage_metadata.get("promptTokenCount", 0)
-            )
-            output_tokens = (
-                usage.get("output_tokens", 0)
-                or usage.get("completion_tokens", 0)
-                or usage_metadata.get("candidatesTokenCount", 0)
-            )
-            cache_read_tokens = usage.get("cache_read_input_tokens", 0) or 0
-            cache_creation_tokens = usage.get("cache_creation_input_tokens", 0) or 0
-            total += (
-                input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens
-            )
-        return total
+        return sum(_exchange_token_usage(ex).total_tokens for ex in self.exchanges)
 
     @property
     def total_cost_usd(self) -> float | None:

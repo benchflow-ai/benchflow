@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
+from benchflow.agents.codex_config import apply_codex_provider_config
 from benchflow.agents.providers import find_provider, strip_provider_prefix
 from benchflow.agents.registry import AGENTS
 from benchflow.providers.bedrock_proxy import BedrockProxyServer
@@ -25,6 +26,10 @@ USAGE_PROXY_BIND_HOST = "0.0.0.0"
 PROMPT_CACHE_RETENTION_ENV = "BENCHFLOW_PROVIDER_PROMPT_CACHE_RETENTION"
 DISABLE_USAGE_PROXY_ENV = "BENCHFLOW_DISABLE_USAGE_PROXY"
 _PROMPT_CACHE_RETENTION_VALUES = {"in_memory", "24h"}
+_BEDROCK_RUNTIME_ENDPOINT_ENVS = (
+    "AWS_ENDPOINT_URL_BEDROCK_RUNTIME",
+    "AWS_ENDPOINT_URL_BEDROCK",
+)
 
 
 @dataclass
@@ -128,6 +133,8 @@ def _apply_direct_bedrock_agent_mapping(
             agent=agent,
             backend_model=backend_model,
         )
+        if updated.get("AWS_REGION") and not updated.get("AWS_REGION_NAME"):
+            updated["AWS_REGION_NAME"] = updated["AWS_REGION"]
         if updated.get("AWS_BEARER_TOKEN_BEDROCK"):
             updated["LLM_API_KEY"] = updated["AWS_BEARER_TOKEN_BEDROCK"]
     return updated
@@ -274,6 +281,22 @@ def _agent_base_url_envs(agent: str) -> list[str]:
     return [e for e in envs if not (e in seen or seen.add(e))]
 
 
+def _apply_codex_config_base_url(
+    agent: str,
+    agent_env: dict[str, str],
+    base_url: str,
+) -> None:
+    """Keep Codex's provider config pointed at the active usage proxy."""
+    if agent != "codex-acp":
+        return
+    apply_codex_provider_config(
+        agent_env,
+        base_url=base_url,
+        model=agent_env.get("BENCHFLOW_PROVIDER_MODEL"),
+        provider_name=agent_env.get("BENCHFLOW_PROVIDER_NAME") or "openai",
+    )
+
+
 def _infer_default_provider_url(agent: str, model: str | None) -> str | None:
     bare = strip_provider_prefix(model) if model else ""
     m = bare.lower()
@@ -302,6 +325,80 @@ def _resolve_usage_proxy_target(
         if agent_env.get(env_name):
             return agent_env[env_name]
     return _infer_default_provider_url(agent, model)
+
+
+def _bedrock_runtime_target(agent_env: dict[str, str]) -> str | None:
+    if agent_env.get("ANTHROPIC_BEDROCK_BASE_URL"):
+        return agent_env["ANTHROPIC_BEDROCK_BASE_URL"].rstrip("/")
+    region = agent_env.get("AWS_REGION") or agent_env.get("AWS_DEFAULT_REGION")
+    if not region:
+        return None
+    return f"https://bedrock-runtime.{region}.amazonaws.com"
+
+
+def _is_remote_direct_bedrock_usage(
+    *,
+    model: str | None,
+    environment: str,
+) -> bool:
+    return needs_provider_runtime(model) and not host_proxy_reachable_from_agent(
+        environment
+    )
+
+
+def _usage_runtime_target(runtime: ProviderRuntime | None) -> str | None:
+    """Return the unproxied upstream target for a running usage proxy."""
+    if runtime is None or runtime.kind != "usage-proxy":
+        return None
+    target = getattr(getattr(runtime, "server", None), "target", None)
+    if isinstance(target, str) and target.strip():
+        return target.rstrip("/")
+    return None
+
+
+def _unproxied_usage_target(
+    target: str,
+    runtime: ProviderRuntime | None,
+) -> str:
+    """Recover the provider URL when reconnect env already points at our proxy."""
+    runtime_target = _usage_runtime_target(runtime)
+    if (
+        runtime is not None
+        and runtime_target
+        and target.rstrip("/") == runtime.base_url.rstrip("/")
+    ):
+        return runtime_target
+    return target.rstrip("/")
+
+
+@dataclass(frozen=True)
+class UsageProxyRouting:
+    """Provider-specific usage proxy routing resolved before proxy lifecycle."""
+
+    target: str | None
+    missing_target_detail: str
+    remote_direct_bedrock: bool = False
+
+
+def _usage_proxy_routing(
+    *,
+    agent: str,
+    agent_env: dict[str, str],
+    model: str | None,
+    environment: str,
+) -> UsageProxyRouting:
+    if _is_remote_direct_bedrock_usage(model=model, environment=environment):
+        return UsageProxyRouting(
+            target=_bedrock_runtime_target(agent_env),
+            missing_target_detail=(
+                "resolve AWS_REGION or AWS_DEFAULT_REGION for Bedrock Runtime."
+            ),
+            remote_direct_bedrock=True,
+        )
+    return UsageProxyRouting(
+        target=_resolve_usage_proxy_target(agent, agent_env, model),
+        missing_target_detail="resolve a provider base URL for this agent/model.",
+    )
 
 
 @dataclass(frozen=True)
@@ -345,22 +442,6 @@ def validate_usage_proxy_preconditions(
                 "is enabled."
             ),
             log_level=logging.INFO,
-        )
-
-    if needs_provider_runtime(model) and not host_proxy_reachable_from_agent(
-        environment
-    ):
-        message = (
-            "Remote Bedrock-direct runs cannot be metered by the generic usage "
-            "proxy because the agent calls AWS Bedrock natively instead of an "
-            "OpenAI/Anthropic-compatible HTTP endpoint. Use an OpenAI-compatible "
-            "provider proxy for this run, run with --sandbox docker, or leave "
-            "usage tracking as auto/off."
-        )
-        return UsageProxyPreconditionFailure(
-            required_message=message,
-            skip_message=message,
-            log_level=logging.WARNING,
         )
 
     return None
@@ -448,6 +529,39 @@ async def _skip_or_block_usage_proxy(
     return agent_env, None
 
 
+def _apply_usage_proxy_env(
+    *,
+    agent: str,
+    agent_env: dict[str, str],
+    runtime: ProviderRuntime,
+    routing: UsageProxyRouting,
+) -> dict[str, str]:
+    updated = dict(agent_env)
+    if routing.remote_direct_bedrock:
+        for env_name in _BEDROCK_RUNTIME_ENDPOINT_ENVS:
+            updated[env_name] = runtime.base_url
+        agent_cfg = AGENTS.get(agent)
+        mapped_base = (
+            agent_cfg.env_mapping.get("BENCHFLOW_PROVIDER_BASE_URL")
+            if agent_cfg
+            else None
+        )
+        if mapped_base:
+            updated[mapped_base] = runtime.base_url
+        return updated
+
+    updated["BENCHFLOW_PROVIDER_BASE_URL"] = runtime.base_url
+    agent_cfg = AGENTS.get(agent)
+    mapped_base = (
+        agent_cfg.env_mapping.get("BENCHFLOW_PROVIDER_BASE_URL") if agent_cfg else None
+    )
+    for env_name in _agent_base_url_envs(agent):
+        if env_name in updated or env_name == mapped_base:
+            updated[env_name] = runtime.base_url
+    _apply_codex_config_base_url(agent, updated, runtime.base_url)
+    return updated
+
+
 async def ensure_usage_proxy_runtime(
     *,
     agent: str,
@@ -483,15 +597,21 @@ async def ensure_usage_proxy_runtime(
             runtime=runtime,
         )
 
-    target = _resolve_usage_proxy_target(agent, agent_env, model)
+    routing = _usage_proxy_routing(
+        agent=agent,
+        agent_env=agent_env,
+        model=model,
+        environment=environment,
+    )
+    target = routing.target
     if not target:
         if usage_cfg.mode == "required":
             raise RuntimeError(
                 "Token usage tracking is required, but BenchFlow could not "
-                "resolve a provider base URL for this agent/model."
+                f"{routing.missing_target_detail}"
             )
         return agent_env, runtime
-    target = target.rstrip("/")
+    target = _unproxied_usage_target(target, runtime)
     host_reachable = host_proxy_reachable_from_agent(environment)
     if host_reachable:
         target = _host_side_proxy_target_url(target, environment=environment)
@@ -596,16 +716,15 @@ async def ensure_usage_proxy_runtime(
             server=server,
         )
 
-    updated = dict(agent_env)
-    updated["BENCHFLOW_PROVIDER_BASE_URL"] = runtime.base_url
-    agent_cfg = AGENTS.get(agent)
-    mapped_base = (
-        agent_cfg.env_mapping.get("BENCHFLOW_PROVIDER_BASE_URL") if agent_cfg else None
+    return (
+        _apply_usage_proxy_env(
+            agent=agent,
+            agent_env=agent_env,
+            runtime=runtime,
+            routing=routing,
+        ),
+        runtime,
     )
-    for env_name in _agent_base_url_envs(agent):
-        if env_name in updated or env_name == mapped_base:
-            updated[env_name] = runtime.base_url
-    return updated, runtime
 
 
 def extract_usage(runtime: ProviderRuntime | None) -> dict[str, Any]:

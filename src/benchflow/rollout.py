@@ -1892,6 +1892,7 @@ class Rollout:
                 logger.warning(f"LLM trajectory write failed: {e}")
             finally:
                 self._usage_runtime = None
+            self._enforce_required_usage_tracking()
 
         if self._environment is not None:
             with contextlib.suppress(Exception):
@@ -1922,6 +1923,20 @@ class Rollout:
             shutil.rmtree(self._task_tmp, ignore_errors=True)
 
         self._phase = "cleaned"
+
+    def _enforce_required_usage_tracking(self) -> None:
+        usage_cfg = self._config.usage_tracking.with_env_defaults()
+        if usage_cfg.mode != "required" or self._config.primary_agent == "oracle":
+            return
+        if self._usage_metrics.get("usage_source") == "provider_response":
+            return
+        if self._error is not None:
+            return
+        self._error = (
+            "Token usage tracking is required, but no provider token usage was "
+            "captured."
+        )
+        logger.error(self._error)
 
     # ── Full run ──
 

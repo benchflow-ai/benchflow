@@ -23,6 +23,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from benchflow._dotenv import load_dotenv_env
+from benchflow.agents.codex_config import apply_codex_provider_config
 from benchflow.agents.registry import AGENTS
 
 logger = logging.getLogger(__name__)
@@ -36,15 +37,13 @@ _EXPLICIT_AGENT_NATIVE_BRIDGE_KEYS = frozenset({"LLM_API_KEY"})
 _BEDROCK_PROXY_PLACEHOLDER_API_KEY = "bedrock-proxy"
 _CODEX_API_KEY_ENV = "CODEX_API_KEY"
 _CODEX_ACCESS_TOKEN_ENV = "CODEX_ACCESS_TOKEN"
+_CODEX_AUTH_JSON_ENV = "CODEX_AUTH_JSON"
 _CUSTOM_OPENAI_ENDPOINT_KEYS = frozenset(
     {"BENCHFLOW_PROVIDER_BASE_URL", "OPENAI_BASE_URL"}
 )
 _AZURE_RESOURCE_ENV = "AZURE_RESOURCE"
 _AZURE_ENDPOINT_ENV = "AZURE_API_ENDPOINT"
 _AZURE_HOST_SUFFIXES = (".openai.azure.com", ".services.ai.azure.com")
-_CODEX_CONFIG_ENV = "CODEX_CONFIG"
-_CODEX_MODEL_PROVIDER_ENV = "MODEL_PROVIDER"
-_CODEX_PROVIDER_ID_PREFIX = "benchflow-"
 
 
 def _derive_azure_resource(agent_env: dict[str, str]) -> None:
@@ -157,9 +156,11 @@ def auto_inherit_env(
         "AWS_BEARER_TOKEN_BEDROCK",
         "AWS_DEFAULT_REGION",
         "AWS_REGION",
+        "AWS_REGION_NAME",
         "CLAUDE_CODE_OAUTH_TOKEN",
         "CODEX_ACCESS_TOKEN",
         "CODEX_API_KEY",
+        "CODEX_AUTH_JSON",
         "OPENAI_API_KEY",
         "OPENAI_BASE_URL",
         "GOOGLE_API_KEY",
@@ -210,6 +211,8 @@ def auto_inherit_env(
         "AWS_REGION" in explicit_keys and "AWS_DEFAULT_REGION" not in explicit_keys
     ) or ("AWS_REGION" in agent_env and "AWS_DEFAULT_REGION" not in agent_env):
         agent_env["AWS_DEFAULT_REGION"] = agent_env["AWS_REGION"]
+    if "AWS_REGION" in agent_env and "AWS_REGION_NAME" not in agent_env:
+        agent_env["AWS_REGION_NAME"] = agent_env["AWS_REGION"]
     _derive_azure_resource(agent_env)
     # CLAUDE_CODE_OAUTH_TOKEN is a separate auth path — Claude CLI reads it
     # directly. Don't map to ANTHROPIC_API_KEY (different auth mechanism).
@@ -298,6 +301,21 @@ def _has_codex_access_token_auth(
         required_key,
         agent_env,
     ) and bool(agent_env.get(_CODEX_ACCESS_TOKEN_ENV))
+
+
+def _has_codex_auth_json_auth(
+    agent: str,
+    model: str | None,
+    required_key: str | None,
+    agent_env: dict[str, str],
+) -> bool:
+    """Return True when inline Codex auth.json can satisfy native OpenAI auth."""
+    return _can_use_codex_subscription_auth(
+        agent,
+        model,
+        required_key,
+        agent_env,
+    ) and bool(agent_env.get(_CODEX_AUTH_JSON_ENV))
 
 
 def inject_vertex_credentials(agent_env: dict[str, str], model: str) -> None:
@@ -445,28 +463,6 @@ def _shares_auth_context(required_key: str | None, candidate_key: str | None) ->
     )
 
 
-def _codex_provider_id(agent_env: dict[str, str]) -> str:
-    provider_name = agent_env.get("BENCHFLOW_PROVIDER_NAME", "openai-compatible")
-    safe_name = "".join(
-        char if char.isalnum() or char in {"-", "_"} else "-"
-        for char in provider_name.lower()
-    ).strip("-")
-    return f"{_CODEX_PROVIDER_ID_PREFIX}{safe_name or 'provider'}"
-
-
-def _load_codex_config(agent_env: dict[str, str]) -> dict:
-    raw_config = agent_env.get(_CODEX_CONFIG_ENV)
-    if not raw_config:
-        return {}
-    try:
-        config = json.loads(raw_config)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"{_CODEX_CONFIG_ENV} must be valid JSON") from exc
-    if not isinstance(config, dict):
-        raise ValueError(f"{_CODEX_CONFIG_ENV} must decode to a JSON object")
-    return config
-
-
 def _configure_codex_custom_provider(
     agent: str,
     model: str | None,
@@ -483,24 +479,13 @@ def _configure_codex_custom_provider(
     if not base_url or not provider_model:
         return
 
-    provider_id = _codex_provider_id(agent_env)
-    config = _load_codex_config(agent_env)
-    providers = config.get("model_providers")
-    providers = {} if not isinstance(providers, dict) else dict(providers)
-
-    providers[provider_id] = {
-        "name": agent_env.get("BENCHFLOW_PROVIDER_NAME", "BenchFlow provider"),
-        "base_url": base_url,
-        "env_key": "OPENAI_API_KEY",
-        "wire_api": "responses",
-        "supports_websockets": False,
-    }
-    config["model_providers"] = providers
-    config["model_provider"] = provider_id
-    config["model"] = provider_model
-
-    agent_env[_CODEX_MODEL_PROVIDER_ENV] = provider_id
-    agent_env[_CODEX_CONFIG_ENV] = json.dumps(config, separators=(",", ":"))
+    apply_codex_provider_config(
+        agent_env,
+        base_url=base_url,
+        model=provider_model,
+        provider_name=agent_env.get("BENCHFLOW_PROVIDER_NAME", "openai-compatible"),
+        strict=True,
+    )
 
 
 def resolve_agent_env(
@@ -575,12 +560,19 @@ def resolve_agent_env(
             required_key,
             agent_env,
         )
+        has_codex_auth_json = _has_codex_auth_json_auth(
+            agent,
+            model,
+            required_key,
+            agent_env,
+        )
         if (
             required_key
             and required_key not in agent_env
             and not has_oauth
             and not has_agent_native_bridge_key
             and not has_codex_access_token
+            and not has_codex_auth_json
         ):
             if _can_use_subscription_auth(
                 agent,
@@ -607,6 +599,12 @@ def resolve_agent_env(
                 if (
                     req_key not in agent_env
                     and not _has_codex_access_token_auth(
+                        agent,
+                        model,
+                        req_key,
+                        agent_env,
+                    )
+                    and not _has_codex_auth_json_auth(
                         agent,
                         model,
                         req_key,

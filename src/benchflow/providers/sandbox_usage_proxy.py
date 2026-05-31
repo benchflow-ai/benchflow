@@ -454,15 +454,9 @@ class SandboxUsageProxy:
         )
 
     async def _load_captures(self) -> None:
-        result = await self.sandbox.exec(
-            f"cat {shlex.quote(self._log_path)} 2>/dev/null || true",
-            timeout_sec=15,
-        )
-        if result.return_code != 0:
-            logger.warning("Could not read sandbox usage captures: %s", result.stderr)
-            return
+        capture_text = await self._read_capture_log()
         trajectory = Trajectory(session_id=self.session_id, agent_name=self.agent_name)
-        for line in (result.stdout or "").splitlines():
+        for line in capture_text.splitlines():
             if not line.strip():
                 continue
             try:
@@ -470,6 +464,28 @@ class SandboxUsageProxy:
             except Exception as exc:
                 logger.warning("Skipping malformed sandbox usage capture: %s", exc)
         self.trajectory = trajectory
+
+    async def _read_capture_log(self) -> str:
+        download_file = getattr(self.sandbox, "download_file", None)
+        if download_file is not None:
+            with tempfile.NamedTemporaryFile("r", delete=False) as tmp:
+                tmp_path = Path(tmp.name)
+            try:
+                await download_file(self._log_path, tmp_path)
+                return tmp_path.read_text()
+            except Exception as exc:
+                logger.debug("Sandbox usage capture download failed: %s", exc)
+            finally:
+                tmp_path.unlink(missing_ok=True)
+
+        result = await self.sandbox.exec(
+            f"cat {shlex.quote(self._log_path)} 2>/dev/null || true",
+            timeout_sec=15,
+        )
+        if result.return_code != 0:
+            logger.warning("Could not read sandbox usage captures: %s", result.stderr)
+            return ""
+        return result.stdout or ""
 
 
 def _exec_details(label: str, result: Any) -> str:

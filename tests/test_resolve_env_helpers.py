@@ -29,6 +29,7 @@ class TestAutoInheritEnv:
         ("env_name", "env_value"),
         [
             pytest.param("ANTHROPIC_API_KEY", "sk-host", id="anthropic"),
+            pytest.param("CODEX_AUTH_JSON", '{"tokens": {}}', id="codex-auth-json"),
             pytest.param("CODEX_ACCESS_TOKEN", "codex-access", id="codex-token"),
             pytest.param("CODEX_API_KEY", "codex-key", id="codex-api-key"),
             pytest.param("OPENAI_API_KEY", "sk-oai", id="openai"),

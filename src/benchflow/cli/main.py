@@ -1267,6 +1267,8 @@ def eval_create(
         resolved_tasks_dir: Path,
         eval_config: EvaluationConfig,
     ):
+        from benchflow.eval_sharding import ShardWorkerError
+
         try:
             if worker_concurrency is None:
                 result = asyncio.run(
@@ -1277,10 +1279,7 @@ def eval_create(
                     ).run()
                 )
             else:
-                from benchflow.eval_sharding import (
-                    ShardWorkerError,
-                    run_sharded_evaluation,
-                )
+                from benchflow.eval_sharding import run_sharded_evaluation
 
                 result = asyncio.run(
                     run_sharded_evaluation(
@@ -1296,7 +1295,7 @@ def eval_create(
         except EmptyTaskSelectionError as e:
             console.print(f"[red]{e}[/red]")
             raise typer.Exit(1) from None
-        except (ValueError, ShardWorkerError) as e:
+        except (ValueError, RuntimeError, ShardWorkerError) as e:
             console.print(f"[red]{e}[/red]")
             raise typer.Exit(1) from None
 
