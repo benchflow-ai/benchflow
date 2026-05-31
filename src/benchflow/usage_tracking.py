@@ -11,6 +11,15 @@ UsageTrackingMode = Literal["auto", "required", "off"]
 USAGE_TRACKING_ENV = "BENCHFLOW_USAGE_TRACKING"
 
 _MODES: set[str] = {"auto", "required", "off"}
+_LEGACY_USAGE_PROXY_KEYS: frozenset[str] = frozenset(
+    {
+        "usage_proxy",
+        "usage_proxy_advertised_base_url",
+        "usage_proxy_bind_host",
+        "usage_proxy_port",
+        "usage_proxy_url",
+    }
+)
 
 
 def normalize_usage_tracking_mode(value: str) -> UsageTrackingMode:
@@ -61,9 +70,10 @@ class UsageTrackingConfig:
 
     @classmethod
     def from_mapping(cls, raw: dict[str, Any]) -> UsageTrackingConfig:
-        if "usage_proxy" in raw:
+        legacy_keys = sorted(set(raw) & _LEGACY_USAGE_PROXY_KEYS)
+        if legacy_keys:
             raise ValueError(
-                "usage_proxy is no longer supported; use usage_tracking="
+                f"{', '.join(legacy_keys)} is no longer supported; use usage_tracking="
                 "auto|required|off instead."
             )
         return cls(mode=raw.get("usage_tracking"))

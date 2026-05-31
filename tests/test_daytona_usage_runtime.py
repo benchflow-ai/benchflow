@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from benchflow.providers import usage_proxy_runtime as usage_runtime_mod
 from benchflow.trajectories.types import Trajectory
 
 
@@ -16,7 +17,6 @@ async def test_registered_openai_compatible_provider_uses_sandbox_usage_proxy(
 ):
     """Guards PR #587: direct provider envs route through Daytona usage proxy."""
     from benchflow.agents.env import resolve_agent_env
-    from benchflow.providers import runtime as provider_runtime_mod
     from benchflow.providers.runtime import ensure_usage_proxy_runtime
 
     started = []
@@ -37,7 +37,7 @@ async def test_registered_openai_compatible_provider_uses_sandbox_usage_proxy(
             return None
 
     monkeypatch.setattr(
-        provider_runtime_mod, "SandboxUsageProxy", FakeSandboxUsageProxy
+        usage_runtime_mod, "SandboxUsageProxy", FakeSandboxUsageProxy
     )
 
     env = resolve_agent_env(
@@ -69,7 +69,6 @@ async def test_registered_openai_compatible_provider_uses_sandbox_usage_proxy(
 @pytest.mark.asyncio
 async def test_usage_runtime_reconnect_ignores_own_proxy_url(monkeypatch):
     """Guards PR #587: reconnects must not point a new proxy at the old proxy."""
-    from benchflow.providers import runtime as provider_runtime_mod
     from benchflow.providers.runtime import ensure_usage_proxy_runtime
 
     started = []
@@ -94,7 +93,7 @@ async def test_usage_runtime_reconnect_ignores_own_proxy_url(monkeypatch):
             stopped.append(self.target)
 
     monkeypatch.setattr(
-        provider_runtime_mod, "SandboxUsageProxy", FakeSandboxUsageProxy
+        usage_runtime_mod, "SandboxUsageProxy", FakeSandboxUsageProxy
     )
 
     env = {
@@ -131,7 +130,6 @@ async def test_usage_runtime_reconnect_ignores_own_proxy_url(monkeypatch):
 @pytest.mark.asyncio
 async def test_dead_usage_runtime_reconnect_uses_original_upstream(monkeypatch):
     """Guards PR #587: stale-proxy replacement must dial the provider, not itself."""
-    from benchflow.providers import runtime as provider_runtime_mod
     from benchflow.providers.runtime import ProviderRuntime, ensure_usage_proxy_runtime
 
     stopped = []
@@ -162,7 +160,7 @@ async def test_dead_usage_runtime_reconnect_uses_original_upstream(monkeypatch):
             stopped.append("new")
 
     monkeypatch.setattr(
-        provider_runtime_mod, "SandboxUsageProxy", FakeSandboxUsageProxy
+        usage_runtime_mod, "SandboxUsageProxy", FakeSandboxUsageProxy
     )
 
     stale_runtime = ProviderRuntime(
@@ -197,7 +195,6 @@ async def test_dead_usage_runtime_reconnect_uses_original_upstream(monkeypatch):
 @pytest.mark.asyncio
 async def test_codex_provider_config_is_repointed_at_usage_proxy(monkeypatch):
     """Guards PR #587: Codex custom providers must not bypass telemetry proxy."""
-    from benchflow.providers import runtime as provider_runtime_mod
     from benchflow.providers.runtime import ensure_usage_proxy_runtime
 
     class FakeSandboxUsageProxy:
@@ -217,7 +214,7 @@ async def test_codex_provider_config_is_repointed_at_usage_proxy(monkeypatch):
             return None
 
     monkeypatch.setattr(
-        provider_runtime_mod, "SandboxUsageProxy", FakeSandboxUsageProxy
+        usage_runtime_mod, "SandboxUsageProxy", FakeSandboxUsageProxy
     )
 
     env = {
@@ -267,7 +264,6 @@ async def test_codex_provider_config_is_repointed_at_usage_proxy(monkeypatch):
 @pytest.mark.asyncio
 async def test_codex_native_openai_gets_usage_proxy_provider_config(monkeypatch):
     """Guards PR #587: native Codex OpenAI runs must not bypass telemetry."""
-    from benchflow.providers import runtime as provider_runtime_mod
     from benchflow.providers.runtime import ensure_usage_proxy_runtime
 
     class FakeSandboxUsageProxy:
@@ -287,7 +283,7 @@ async def test_codex_native_openai_gets_usage_proxy_provider_config(monkeypatch)
             return None
 
     monkeypatch.setattr(
-        provider_runtime_mod, "SandboxUsageProxy", FakeSandboxUsageProxy
+        usage_runtime_mod, "SandboxUsageProxy", FakeSandboxUsageProxy
     )
 
     updated, runtime = await ensure_usage_proxy_runtime(
@@ -322,7 +318,6 @@ async def test_codex_native_openai_gets_usage_proxy_provider_config(monkeypatch)
 @pytest.mark.asyncio
 async def test_daytona_openhands_bedrock_usage_proxy_sets_aws_endpoint(monkeypatch):
     """Guards PR #587: remote Bedrock-direct OpenHands is metered in-sandbox."""
-    from benchflow.providers import runtime as provider_runtime_mod
     from benchflow.providers.runtime import (
         ensure_bedrock_proxy_runtime,
         ensure_usage_proxy_runtime,
@@ -345,7 +340,7 @@ async def test_daytona_openhands_bedrock_usage_proxy_sets_aws_endpoint(monkeypat
             return None
 
     monkeypatch.setattr(
-        provider_runtime_mod, "SandboxUsageProxy", FakeSandboxUsageProxy
+        usage_runtime_mod, "SandboxUsageProxy", FakeSandboxUsageProxy
     )
 
     agent_env = {

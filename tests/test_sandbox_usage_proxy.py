@@ -20,6 +20,7 @@ from urllib.request import Request, urlopen
 
 import pytest
 
+from benchflow.providers import usage_proxy_runtime as usage_runtime_mod
 from benchflow.trajectories.types import Trajectory
 
 
@@ -39,7 +40,6 @@ def test_agent_kill_pattern_excludes_usage_proxy_agent_name_argument():
 @pytest.mark.asyncio
 async def test_daytona_uses_sandbox_local_proxy_not_host_proxy(monkeypatch):
     """Guards PR #587: Daytona agents must not use host-local proxy URLs."""
-    from benchflow.providers import runtime as provider_runtime_mod
     from benchflow.providers.runtime import ensure_usage_proxy_runtime
 
     class FakeSandboxUsageProxy:
@@ -60,14 +60,14 @@ async def test_daytona_uses_sandbox_local_proxy_not_host_proxy(monkeypatch):
             return None
 
     monkeypatch.setattr(
-        provider_runtime_mod,
+        usage_runtime_mod,
         "TrajectoryProxy",
         lambda *a, **k: (_ for _ in ()).throw(
             AssertionError("host proxy must not start")
         ),
     )
     monkeypatch.setattr(
-        provider_runtime_mod, "SandboxUsageProxy", FakeSandboxUsageProxy
+        usage_runtime_mod, "SandboxUsageProxy", FakeSandboxUsageProxy
     )
 
     env = {
@@ -308,7 +308,6 @@ async def test_sandbox_usage_proxy_stop_kills_and_cleans_when_capture_read_fails
 @pytest.mark.asyncio
 async def test_daytona_auto_usage_proxy_start_failure_leaves_env_untouched(monkeypatch):
     """Guards PR #587: auto mode degrades instead of failing Daytona runs."""
-    from benchflow.providers import runtime as provider_runtime_mod
     from benchflow.providers.runtime import ensure_usage_proxy_runtime
     from benchflow.usage_tracking import UsageTrackingConfig
 
@@ -327,7 +326,7 @@ async def test_daytona_auto_usage_proxy_start_failure_leaves_env_untouched(monke
             stopped.append(True)
 
     monkeypatch.setattr(
-        provider_runtime_mod, "SandboxUsageProxy", BrokenSandboxUsageProxy
+        usage_runtime_mod, "SandboxUsageProxy", BrokenSandboxUsageProxy
     )
 
     env = {"ANTHROPIC_BASE_URL": "https://api.anthropic.com"}
@@ -350,7 +349,6 @@ async def test_daytona_auto_usage_proxy_start_failure_leaves_env_untouched(monke
 @pytest.mark.asyncio
 async def test_daytona_required_usage_proxy_start_failure_raises(monkeypatch):
     """Guards PR #587: required mode still fails fast on proxy startup errors."""
-    from benchflow.providers import runtime as provider_runtime_mod
     from benchflow.providers.runtime import ensure_usage_proxy_runtime
     from benchflow.usage_tracking import UsageTrackingConfig
 
@@ -367,7 +365,7 @@ async def test_daytona_required_usage_proxy_start_failure_raises(monkeypatch):
             return None
 
     monkeypatch.setattr(
-        provider_runtime_mod, "SandboxUsageProxy", BrokenSandboxUsageProxy
+        usage_runtime_mod, "SandboxUsageProxy", BrokenSandboxUsageProxy
     )
 
     with pytest.raises(RuntimeError, match=r"required.*failed to start"):
@@ -386,7 +384,6 @@ async def test_daytona_required_usage_proxy_start_failure_raises(monkeypatch):
 @pytest.mark.asyncio
 async def test_usage_runtime_recreated_when_sandbox_proxy_is_dead(monkeypatch):
     """Guards PR #587: dead sandbox proxies are not reused across reconnects."""
-    from benchflow.providers import runtime as provider_runtime_mod
     from benchflow.providers.runtime import ProviderRuntime, ensure_usage_proxy_runtime
 
     stopped = []
@@ -418,7 +415,7 @@ async def test_usage_runtime_recreated_when_sandbox_proxy_is_dead(monkeypatch):
             stopped.append("new")
 
     monkeypatch.setattr(
-        provider_runtime_mod, "SandboxUsageProxy", FakeSandboxUsageProxy
+        usage_runtime_mod, "SandboxUsageProxy", FakeSandboxUsageProxy
     )
 
     stale_runtime = ProviderRuntime(

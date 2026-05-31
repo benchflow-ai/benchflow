@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from benchflow.providers import usage_proxy_runtime as usage_runtime_mod
 from benchflow.trajectories.types import (
     LLMExchange,
     LLMRequest,
@@ -350,7 +351,7 @@ async def test_start_proxy_rewrites_env(monkeypatch):
         async def stop(self):
             return None
 
-    monkeypatch.setattr(provider_runtime_mod, "TrajectoryProxy", FakeTrajectoryProxy)
+    monkeypatch.setattr(usage_runtime_mod, "TrajectoryProxy", FakeTrajectoryProxy)
 
     updated, runtime = await ensure_usage_proxy_runtime(
         agent="claude-agent-acp",
@@ -403,7 +404,7 @@ async def test_usage_proxy_dials_loopback_for_host_bound_provider_proxy(monkeypa
         async def stop(self):
             return None
 
-    monkeypatch.setattr(provider_runtime_mod, "TrajectoryProxy", FakeTrajectoryProxy)
+    monkeypatch.setattr(usage_runtime_mod, "TrajectoryProxy", FakeTrajectoryProxy)
 
     updated, runtime = await ensure_usage_proxy_runtime(
         agent="openhands",
@@ -425,14 +426,13 @@ async def test_usage_proxy_dials_loopback_for_host_bound_provider_proxy(monkeypa
 @pytest.mark.asyncio
 async def test_usage_proxy_can_be_disabled_for_operator_recovery(monkeypatch):
     """Guards v0.5-integration@e55219d recovery runs when telemetry proxying blocks rollouts."""
-    from benchflow.providers import runtime as provider_runtime_mod
     from benchflow.providers.runtime import ensure_usage_proxy_runtime
 
     def _fail_start(*_args, **_kwargs):
         raise AssertionError("TrajectoryProxy must not start when disabled")
 
     monkeypatch.setenv("BENCHFLOW_DISABLE_USAGE_PROXY", "1")
-    monkeypatch.setattr(provider_runtime_mod, "TrajectoryProxy", _fail_start)
+    monkeypatch.setattr(usage_runtime_mod, "TrajectoryProxy", _fail_start)
 
     env = {
         "BENCHFLOW_PROVIDER_BASE_URL": "http://host.docker.internal:32123",
@@ -484,7 +484,7 @@ async def test_start_proxy_uses_openai_v1_default_for_codex(monkeypatch):
         async def stop(self):
             return None
 
-    monkeypatch.setattr(provider_runtime_mod, "TrajectoryProxy", FakeTrajectoryProxy)
+    monkeypatch.setattr(usage_runtime_mod, "TrajectoryProxy", FakeTrajectoryProxy)
 
     updated, runtime = await ensure_usage_proxy_runtime(
         agent="codex-acp",
@@ -533,7 +533,7 @@ async def test_start_proxy_passes_prompt_cache_retention(monkeypatch):
         async def stop(self):
             return None
 
-    monkeypatch.setattr(provider_runtime_mod, "TrajectoryProxy", FakeTrajectoryProxy)
+    monkeypatch.setattr(usage_runtime_mod, "TrajectoryProxy", FakeTrajectoryProxy)
 
     _updated, runtime = await ensure_usage_proxy_runtime(
         agent="codex-acp",
@@ -573,7 +573,6 @@ async def test_no_proxy_for_oracle():
 async def test_daytona_runtime_retired_when_environment_unreachable(monkeypatch):
     """Guards the fix from PR #327: a stale runtime from an earlier env must be
     stopped, not reused."""
-    from benchflow.providers import runtime as provider_runtime_mod
     from benchflow.providers.runtime import (
         ProviderRuntime,
         ensure_usage_proxy_runtime,
@@ -594,7 +593,7 @@ async def test_daytona_runtime_retired_when_environment_unreachable(monkeypatch)
     )
 
     monkeypatch.setattr(
-        provider_runtime_mod,
+        usage_runtime_mod,
         "TrajectoryProxy",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not start")),
     )
@@ -910,7 +909,7 @@ async def test_usage_proxy_recreated_when_target_changes(monkeypatch):
         async def stop(self):
             stopped.append(self._target)
 
-    monkeypatch.setattr(provider_runtime_mod, "TrajectoryProxy", FakeTrajectoryProxy)
+    monkeypatch.setattr(usage_runtime_mod, "TrajectoryProxy", FakeTrajectoryProxy)
 
     _env1, runtime1 = await ensure_usage_proxy_runtime(
         agent="codex-acp",

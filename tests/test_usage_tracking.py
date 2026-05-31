@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from benchflow.providers import usage_proxy_runtime as usage_runtime_mod
 from benchflow.trajectories.types import Trajectory
 
 
@@ -31,7 +32,6 @@ async def test_daytona_required_usage_tracking_requires_sandbox_handle():
 @pytest.mark.asyncio
 async def test_daytona_usage_tracking_starts_sandbox_local_proxy(monkeypatch):
     """Daytona auto telemetry should use a proxy inside the agent sandbox."""
-    from benchflow.providers import runtime as provider_runtime_mod
     from benchflow.providers.runtime import ensure_usage_proxy_runtime
     from benchflow.usage_tracking import UsageTrackingConfig
 
@@ -60,7 +60,7 @@ async def test_daytona_usage_tracking_starts_sandbox_local_proxy(monkeypatch):
             return None
 
     monkeypatch.setattr(
-        provider_runtime_mod, "SandboxUsageProxy", FakeSandboxUsageProxy
+        usage_runtime_mod, "SandboxUsageProxy", FakeSandboxUsageProxy
     )
     sandbox = object()
 
@@ -198,15 +198,25 @@ def test_usage_tracking_overlay_preserves_existing_mode_for_partial_cli_override
     assert merged.mode == "required"
 
 
-def test_usage_tracking_mapping_rejects_legacy_usage_proxy_section():
-    """Guards PR #587: legacy usage_proxy sections fail instead of being ignored."""
+@pytest.mark.parametrize(
+    "legacy_key",
+    [
+        "usage_proxy",
+        "usage_proxy_advertised_base_url",
+        "usage_proxy_bind_host",
+        "usage_proxy_port",
+        "usage_proxy_url",
+    ],
+)
+def test_usage_tracking_mapping_rejects_legacy_usage_proxy_keys(legacy_key):
+    """Guards PR #587: legacy usage proxy keys fail instead of being ignored."""
     from benchflow.usage_tracking import UsageTrackingConfig
 
-    with pytest.raises(ValueError, match="usage_proxy is no longer supported"):
+    with pytest.raises(ValueError, match=f"{legacy_key} is no longer supported"):
         UsageTrackingConfig.from_mapping(
             {
                 "usage_tracking": "required",
-                "usage_proxy": {
+                legacy_key: {
                     "ignored": "value",
                 },
             }
