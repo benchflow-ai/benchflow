@@ -907,7 +907,6 @@ class Evaluation:
 
         cfg = self._config
         usage = cfg.usage_tracking.with_env_defaults()
-        usage.validate_parallelism(concurrency=cfg.concurrency)
         failure = validate_usage_proxy_preconditions(
             usage,
             environment=cfg.environment,

@@ -529,6 +529,260 @@ async def _skip_or_block_usage_proxy(
     return agent_env, None
 
 
+@dataclass(frozen=True)
+class UsageProxyEndpoint:
+    """Resolved upstream and runner for one usage proxy lifecycle."""
+
+    target: str
+    routing: UsageProxyRouting
+    runner: UsageProxyRunner
+
+
+class UsageProxyRunner:
+    """Strategy for starting a usage proxy reachable by the agent."""
+
+    async def start(
+        self,
+        *,
+        target: str,
+        session_id: str,
+        agent: str,
+        model: str | None,
+        prompt_cache_retention: str | None,
+    ) -> ProviderRuntime:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class HostUsageProxyRunner(UsageProxyRunner):
+    """Start a host-side proxy for same-host sandboxes."""
+
+    environment: str
+
+    async def start(
+        self,
+        *,
+        target: str,
+        session_id: str,
+        agent: str,
+        model: str | None,
+        prompt_cache_retention: str | None,
+    ) -> ProviderRuntime:
+        logger.info("Starting host-side usage telemetry proxy")
+        server: Any | None = None
+        try:
+            host_server = TrajectoryProxy(
+                target=target,
+                session_id=session_id,
+                agent_name=agent,
+                host=USAGE_PROXY_BIND_HOST,
+                port=0,
+                prompt_cache_retention=prompt_cache_retention,
+            )
+            server = host_server
+            await host_server.start()
+            agent_base_url = _agent_usage_proxy_base_url(
+                environment=self.environment,
+                port=host_server.port,
+            )
+            return ProviderRuntime(
+                kind="usage-proxy",
+                agent_base_url=agent_base_url,
+                backend_model=strip_provider_prefix(model) if model else None,
+                server=host_server,
+            )
+        except Exception:
+            if server is not None:
+                with contextlib.suppress(Exception):
+                    await server.stop()
+            raise
+
+
+@dataclass(frozen=True)
+class SandboxUsageProxyRunner(UsageProxyRunner):
+    """Start a sandbox-local proxy for remote sandboxes such as Daytona."""
+
+    sandbox: Any
+
+    async def start(
+        self,
+        *,
+        target: str,
+        session_id: str,
+        agent: str,
+        model: str | None,
+        prompt_cache_retention: str | None,
+    ) -> ProviderRuntime:
+        logger.info("Starting Daytona sandbox-local usage telemetry proxy")
+        server: Any | None = None
+        try:
+            sandbox_server = SandboxUsageProxy(
+                sandbox=self.sandbox,
+                target=target,
+                session_id=session_id,
+                agent_name=agent,
+                prompt_cache_retention=prompt_cache_retention,
+            )
+            server = sandbox_server
+            await sandbox_server.start()
+            return ProviderRuntime(
+                kind="usage-proxy",
+                agent_base_url=sandbox_server.base_url,
+                backend_model=strip_provider_prefix(model) if model else None,
+                server=sandbox_server,
+            )
+        except Exception:
+            if server is not None:
+                with contextlib.suppress(Exception):
+                    await server.stop()
+            raise
+
+
+def _usage_proxy_runner(
+    *,
+    environment: str,
+    sandbox: Any | None,
+) -> UsageProxyRunner | UsageProxyPreconditionFailure:
+    if host_proxy_reachable_from_agent(environment):
+        return HostUsageProxyRunner(environment=environment)
+    if environment == "daytona" and sandbox is not None:
+        return SandboxUsageProxyRunner(sandbox=sandbox)
+    return UsageProxyPreconditionFailure(
+        required_message=(
+            "Token usage tracking is required, but BenchFlow could not "
+            f"start a sandbox-local usage proxy for sandbox={environment!r}."
+        ),
+        skip_message=(
+            "Skipping usage telemetry proxy: BenchFlow could not start a "
+            f"sandbox-local usage proxy for sandbox={environment!r}."
+        ),
+        log_level=logging.INFO,
+    )
+
+
+def _validate_prompt_cache_retention(agent_env: dict[str, str]) -> str | None:
+    prompt_cache_retention = agent_env.get(PROMPT_CACHE_RETENTION_ENV)
+    if (
+        prompt_cache_retention is not None
+        and prompt_cache_retention not in _PROMPT_CACHE_RETENTION_VALUES
+    ):
+        raise ValueError(
+            f"{PROMPT_CACHE_RETENTION_ENV} must be one of: "
+            f"{', '.join(sorted(_PROMPT_CACHE_RETENTION_VALUES))}"
+        )
+    return prompt_cache_retention
+
+
+def _resolve_usage_proxy_endpoint(
+    *,
+    agent: str,
+    agent_env: dict[str, str],
+    model: str | None,
+    environment: str,
+    runtime: ProviderRuntime | None,
+    sandbox: Any | None,
+    usage_cfg: UsageTrackingConfig,
+) -> UsageProxyEndpoint | UsageProxyPreconditionFailure | None:
+    routing = _usage_proxy_routing(
+        agent=agent,
+        agent_env=agent_env,
+        model=model,
+        environment=environment,
+    )
+    target = routing.target
+    if not target:
+        if usage_cfg.mode == "required":
+            return UsageProxyPreconditionFailure(
+                required_message=(
+                    "Token usage tracking is required, but BenchFlow could not "
+                    f"{routing.missing_target_detail}"
+                ),
+                skip_message=(
+                    "Skipping usage telemetry proxy: BenchFlow could not "
+                    f"{routing.missing_target_detail}"
+                ),
+            )
+        return None
+
+    target = _unproxied_usage_target(target, runtime)
+    if host_proxy_reachable_from_agent(environment):
+        target = _host_side_proxy_target_url(target, environment=environment)
+    runner = _usage_proxy_runner(environment=environment, sandbox=sandbox)
+    if isinstance(runner, UsageProxyPreconditionFailure):
+        return runner
+    return UsageProxyEndpoint(target=target, routing=routing, runner=runner)
+
+
+async def _retire_unusable_usage_proxy_runtime(
+    runtime: ProviderRuntime | None,
+    *,
+    target: str,
+) -> ProviderRuntime | None:
+    # A multi-role scene can switch providers between connect_as() calls. The
+    # running proxy forwards to a fixed upstream, so reusing it would route the
+    # new role's traffic to the wrong endpoint — retire it and start a fresh
+    # one for the new target.
+    if runtime is not None and getattr(runtime.server, "target", None) != target:
+        await stop_provider_runtime(runtime)
+        return None
+    if runtime is None:
+        return None
+
+    is_running = getattr(runtime.server, "is_running", None)
+    if is_running is None:
+        return runtime
+    try:
+        alive = await is_running()
+    except Exception as exc:
+        logger.info("Usage telemetry proxy liveness check failed: %s", exc)
+        alive = False
+    if alive:
+        return runtime
+
+    logger.info("Retiring stale usage telemetry proxy runtime")
+    await stop_provider_runtime(runtime)
+    return None
+
+
+async def _ensure_started_usage_proxy_runtime(
+    *,
+    endpoint: UsageProxyEndpoint,
+    runtime: ProviderRuntime | None,
+    agent_env: dict[str, str],
+    session_id: str,
+    agent: str,
+    model: str | None,
+    usage_cfg: UsageTrackingConfig,
+) -> ProviderRuntime | None:
+    runtime = await _retire_unusable_usage_proxy_runtime(
+        runtime,
+        target=endpoint.target,
+    )
+    if runtime is not None:
+        return runtime
+
+    prompt_cache_retention = _validate_prompt_cache_retention(agent_env)
+    try:
+        return await endpoint.runner.start(
+            target=endpoint.target,
+            session_id=session_id,
+            agent=agent,
+            model=model,
+            prompt_cache_retention=prompt_cache_retention,
+        )
+    except Exception as exc:
+        if usage_cfg.mode == "required":
+            raise RuntimeError(
+                "Token usage tracking is required, but the usage proxy "
+                f"failed to start: {exc}"
+            ) from exc
+        logger.warning(
+            "Skipping usage telemetry proxy: failed to start usage proxy: %s",
+            exc,
+        )
+        return None
+
+
 def _apply_usage_proxy_env(
     *,
     agent: str,
@@ -577,13 +831,11 @@ async def ensure_usage_proxy_runtime(
     usage_cfg = UsageTrackingConfig.coerce(usage_tracking).with_env_defaults()
     if agent == "oracle":
         return agent_env, runtime
-
     if usage_cfg.mode == "off":
         if runtime is not None:
             await stop_provider_runtime(runtime)
         logger.info("Skipping host-side usage telemetry proxy: usage_tracking=off.")
         return agent_env, None
-
     failure = validate_usage_proxy_preconditions(
         usage_cfg,
         environment=environment,
@@ -597,131 +849,43 @@ async def ensure_usage_proxy_runtime(
             runtime=runtime,
         )
 
-    routing = _usage_proxy_routing(
+    endpoint = _resolve_usage_proxy_endpoint(
         agent=agent,
         agent_env=agent_env,
         model=model,
         environment=environment,
+        runtime=runtime,
+        sandbox=sandbox,
+        usage_cfg=usage_cfg,
     )
-    target = routing.target
-    if not target:
-        if usage_cfg.mode == "required":
-            raise RuntimeError(
-                "Token usage tracking is required, but BenchFlow could not "
-                f"{routing.missing_target_detail}"
-            )
+    if endpoint is None:
         return agent_env, runtime
-    target = _unproxied_usage_target(target, runtime)
-    host_reachable = host_proxy_reachable_from_agent(environment)
-    if host_reachable:
-        target = _host_side_proxy_target_url(target, environment=environment)
-    elif environment != "daytona" or sandbox is None:
-        failure = UsageProxyPreconditionFailure(
-            required_message=(
-                "Token usage tracking is required, but BenchFlow could not "
-                f"start a sandbox-local usage proxy for sandbox={environment!r}."
-            ),
-            skip_message=(
-                "Skipping usage telemetry proxy: BenchFlow could not start a "
-                f"sandbox-local usage proxy for sandbox={environment!r}."
-            ),
-            log_level=logging.INFO,
-        )
+    if isinstance(endpoint, UsageProxyPreconditionFailure):
         return await _skip_or_block_usage_proxy(
             usage_cfg=usage_cfg,
-            failure=failure,
+            failure=endpoint,
             agent_env=agent_env,
             runtime=runtime,
         )
 
-    # A multi-role scene can switch providers between connect_as() calls. The
-    # running proxy forwards to a fixed upstream, so reusing it would route the
-    # new role's traffic to the wrong endpoint — retire it and start a fresh
-    # one for the new target.
-    if runtime is not None and getattr(runtime.server, "target", None) != target:
-        await stop_provider_runtime(runtime)
-        runtime = None
-    elif runtime is not None:
-        is_running = getattr(runtime.server, "is_running", None)
-        if is_running is not None:
-            try:
-                alive = await is_running()
-            except Exception as exc:
-                logger.info("Usage telemetry proxy liveness check failed: %s", exc)
-                alive = False
-            if not alive:
-                logger.info("Retiring stale usage telemetry proxy runtime")
-                await stop_provider_runtime(runtime)
-                runtime = None
-
+    runtime = await _ensure_started_usage_proxy_runtime(
+        endpoint=endpoint,
+        runtime=runtime,
+        agent_env=agent_env,
+        session_id=session_id,
+        agent=agent,
+        model=model,
+        usage_cfg=usage_cfg,
+    )
     if runtime is None:
-        prompt_cache_retention = agent_env.get(PROMPT_CACHE_RETENTION_ENV)
-        if (
-            prompt_cache_retention is not None
-            and prompt_cache_retention not in _PROMPT_CACHE_RETENTION_VALUES
-        ):
-            raise ValueError(
-                f"{PROMPT_CACHE_RETENTION_ENV} must be one of: "
-                f"{', '.join(sorted(_PROMPT_CACHE_RETENTION_VALUES))}"
-            )
-        server: Any | None = None
-        try:
-            if host_reachable:
-                logger.info("Starting host-side usage telemetry proxy")
-                host_server = TrajectoryProxy(
-                    target=target,
-                    session_id=session_id,
-                    agent_name=agent,
-                    host=USAGE_PROXY_BIND_HOST,
-                    port=0,
-                    prompt_cache_retention=prompt_cache_retention,
-                )
-                server = host_server
-                await host_server.start()
-                agent_base_url = _agent_usage_proxy_base_url(
-                    environment=environment,
-                    port=host_server.port,
-                )
-            else:
-                logger.info("Starting Daytona sandbox-local usage telemetry proxy")
-                sandbox_server = SandboxUsageProxy(
-                    sandbox=sandbox,
-                    target=target,
-                    session_id=session_id,
-                    agent_name=agent,
-                    prompt_cache_retention=prompt_cache_retention,
-                )
-                server = sandbox_server
-                await sandbox_server.start()
-                agent_base_url = sandbox_server.base_url
-        except Exception as exc:
-            if server is not None:
-                with contextlib.suppress(Exception):
-                    await server.stop()
-            if usage_cfg.mode == "required":
-                raise RuntimeError(
-                    "Token usage tracking is required, but the usage proxy "
-                    f"failed to start: {exc}"
-                ) from exc
-            logger.warning(
-                "Skipping usage telemetry proxy: failed to start usage proxy: %s",
-                exc,
-            )
-            return agent_env, None
-        assert server is not None
-        runtime = ProviderRuntime(
-            kind="usage-proxy",
-            agent_base_url=agent_base_url,
-            backend_model=strip_provider_prefix(model) if model else None,
-            server=server,
-        )
+        return agent_env, None
 
     return (
         _apply_usage_proxy_env(
             agent=agent,
             agent_env=agent_env,
             runtime=runtime,
-            routing=routing,
+            routing=endpoint.routing,
         ),
         runtime,
     )

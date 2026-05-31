@@ -59,14 +59,13 @@ class UsageTrackingConfig:
             mode=override._mode if override.mode_is_explicit else self._mode,
         )
 
-    def validate_parallelism(self, *, concurrency: int, worker_count: int = 1) -> None:
-        return None
-
     @classmethod
     def from_mapping(cls, raw: dict[str, Any]) -> UsageTrackingConfig:
-        proxy = raw.get("usage_proxy")
-        if proxy is not None and not isinstance(proxy, dict):
-            raise ValueError("usage_proxy must be a mapping")
+        if "usage_proxy" in raw:
+            raise ValueError(
+                "usage_proxy is no longer supported; use usage_tracking="
+                "auto|required|off instead."
+            )
         return cls(mode=raw.get("usage_tracking"))
 
     @classmethod

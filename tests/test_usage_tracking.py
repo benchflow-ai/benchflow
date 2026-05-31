@@ -198,29 +198,19 @@ def test_usage_tracking_overlay_preserves_existing_mode_for_partial_cli_override
     assert merged.mode == "required"
 
 
-def test_sandbox_local_usage_tracking_allows_multiple_shard_workers():
-    """Per-sandbox proxies should not impose a global fixed-port worker limit."""
+def test_usage_tracking_mapping_rejects_legacy_usage_proxy_section():
+    """Guards PR #587: legacy usage_proxy sections fail instead of being ignored."""
     from benchflow.usage_tracking import UsageTrackingConfig
 
-    config = UsageTrackingConfig()
-
-    config.validate_parallelism(concurrency=1, worker_count=2)
-
-
-def test_usage_tracking_mapping_ignores_legacy_usage_proxy_section():
-    """Legacy usage_proxy sections should not affect the default policy."""
-    from benchflow.usage_tracking import UsageTrackingConfig
-
-    config = UsageTrackingConfig.from_mapping(
-        {
-            "usage_tracking": "required",
-            "usage_proxy": {
-                "ignored": "value",
-            },
-        }
-    )
-
-    assert config.mode == "required"
+    with pytest.raises(ValueError, match="usage_proxy is no longer supported"):
+        UsageTrackingConfig.from_mapping(
+            {
+                "usage_tracking": "required",
+                "usage_proxy": {
+                    "ignored": "value",
+                },
+            }
+        )
 
 
 @pytest.mark.asyncio
