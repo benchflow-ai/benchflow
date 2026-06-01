@@ -2128,19 +2128,24 @@ class Rollout:
 
         scene_name = str(step.data.get("scene") or "scene")
         role = scene_step_role(step)
-        source_value = skills_dir
-        source = str(source_value)
+        source = str(skills_dir)
         local_source = Path(source).expanduser()
-        if isinstance(source_value, os.PathLike) and local_source.is_dir():
+        # Upload whenever skills_dir resolves to a real directory on the
+        # orchestrator host, regardless of whether it arrived as a str or a
+        # PathLike. The SkillsBench entrypoint passes an absolute *str* host
+        # path (EvaluationConfig.skills_dir is typed str), so gating the upload
+        # on isinstance(..., os.PathLike) silently skipped it: the path then
+        # fell through to the "already inside the sandbox" branch below and
+        # _link_skill_paths produced a dangling symlink, so deployed task skills
+        # never reached the agent. An absolute path that does NOT exist on the
+        # host is a sandbox path produced by an earlier scene and is linked
+        # as-is.
+        if local_source.is_dir():
             remote_source = f"/skills/{_safe_skill_name(scene_name)}"
             await _ensure_sandbox_dir(self._env, Path(remote_source).parent)
             await self._env.upload_dir(local_source, remote_source)
         elif source.startswith("/"):
             remote_source = source
-        elif local_source.is_dir():
-            remote_source = f"/skills/{_safe_skill_name(scene_name)}"
-            await _ensure_sandbox_dir(self._env, Path(remote_source).parent)
-            await self._env.upload_dir(local_source, remote_source)
         else:
             raise FileNotFoundError(f"Scene skills_dir not found: {skills_dir}")
 
