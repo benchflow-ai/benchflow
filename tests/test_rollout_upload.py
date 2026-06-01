@@ -348,3 +348,62 @@ def test_result_json_sandbox_id_null_for_docker(tmp_path: Path) -> None:
 
     data = json.loads((tmp_path / "result.json").read_text())
     assert data["sandbox_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_on_started_persists_before_upload(tmp_path: Path) -> None:
+    """Guards the fix from PR #563 for issue #554: the on_started callback must
+    fire after the sandbox starts but before any upload, so a sandbox id is
+    persisted even when an upload later fails."""
+    order: list[str] = []
+
+    class RecordingEnv(FakeUploadEnv):
+        async def start(self, force_build: bool) -> None:
+            await super().start(force_build)
+            order.append("start")
+
+        async def upload_file(self, source: Path | str, target: str) -> None:
+            order.append("upload_file")
+            await super().upload_file(source, target)
+
+    task = tmp_path / "task"
+    task.mkdir()
+    (task / "instruction.md").write_text("solve\n")
+    env = RecordingEnv()
+
+    await _start_env_and_upload(
+        env, task, {}, on_started=lambda: order.append("on_started")
+    )
+
+    assert order == ["start", "on_started", "upload_file"]
+
+
+@pytest.mark.asyncio
+async def test_sandbox_json_survives_upload_failure(tmp_path: Path) -> None:
+    """Guards the fix from PR #563 for issue #554: a sandbox.json must exist
+    even when an upload fails after the sandbox was created — otherwise an
+    interrupted run leaks a live Daytona sandbox with no audit/cleanup record."""
+    rollout_dir = tmp_path / "rollout"
+    rollout_dir.mkdir()
+    task = tmp_path / "task"
+    task.mkdir()
+    (task / "instruction.md").write_text("solve\n")
+
+    class FailingUploadEnv(FakeUploadEnv):
+        sandbox_id = "sb-failwindow"
+
+        async def upload_file(self, source: Path | str, target: str) -> None:
+            raise RuntimeError("upload boom")
+
+    env = FailingUploadEnv()
+
+    with pytest.raises(RuntimeError, match="upload boom"):
+        await _start_env_and_upload(
+            env,
+            task,
+            {},
+            on_started=lambda: _persist_sandbox_info(env, rollout_dir),
+        )
+
+    info = json.loads((rollout_dir / "sandbox.json").read_text())
+    assert info["sandbox_id"] == "sb-failwindow"

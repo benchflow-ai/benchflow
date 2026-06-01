@@ -45,6 +45,7 @@ import os
 import re
 import shlex
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
@@ -764,7 +765,12 @@ def _resolve_prompts(
 
 
 async def _start_env_and_upload(
-    env: Any, task_path: Path, timing: dict, *, skip_start: bool = False
+    env: Any,
+    task_path: Path,
+    timing: dict,
+    *,
+    skip_start: bool = False,
+    on_started: Callable[[], None] | None = None,
 ) -> None:
     """Start environment and upload task files.
 
@@ -772,6 +778,12 @@ async def _start_env_and_upload(
     by the caller (Runtime with a live Environment, #388) — we still
     upload task files but must not re-run ``start()`` since most sandbox
     backends (e.g. daytona) are not idempotent.
+
+    ``on_started`` runs once the sandbox exists but *before* any upload
+    (#554/#563). Persisting the sandbox id here — not after upload —
+    closes the failure window where an upload error or interrupt after
+    Daytona creation would otherwise leave no ``sandbox.json`` to audit
+    or clean up.
     """
     if skip_start:
         logger.info(f"Reusing caller-owned environment: {task_path.name}")
@@ -781,6 +793,8 @@ async def _start_env_and_upload(
         t0 = datetime.now()
         await env.start(force_build=False)
         timing["environment_setup"] = (datetime.now() - t0).total_seconds()
+    if on_started is not None:
+        on_started()
     if (task_path / "instruction.md").exists():
         await env.upload_file(task_path / "instruction.md", "/instruction.md")
     if (task_path / "solution").is_dir():
@@ -1445,16 +1459,23 @@ class Rollout:
 
     async def start(self) -> None:
         """Start the environment and upload task files."""
+
+        def _capture_and_persist_sandbox() -> None:
+            # Persist the sandbox id the moment the sandbox exists, before any
+            # upload that could fail or be interrupted (#554/#563). Otherwise a
+            # mid-upload failure leaves a live Daytona sandbox with no
+            # sandbox.json to audit or clean up.
+            sid = getattr(self._env, "sandbox_id", None)
+            self._sandbox_id = sid if isinstance(sid, str) else None
+            _persist_sandbox_info(self._env, self._rollout_dir)
+
         await _start_env_and_upload(
             self._env,
             self._config.task_path,
             self._timing,
             skip_start=self._env_externally_owned,
+            on_started=_capture_and_persist_sandbox,
         )
-
-        sid = getattr(self._env, "sandbox_id", None)
-        self._sandbox_id = sid if isinstance(sid, str) else None
-        _persist_sandbox_info(self._env, self._rollout_dir)
 
         for hook in self._config.pre_agent_hooks or []:
             await hook(self._env)
