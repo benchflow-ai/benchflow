@@ -38,7 +38,7 @@ class TestRetryConfig:
         should not be retried — they waste Daytona sandbox quota."""
         cfg = RetryConfig()
         assert not cfg.should_retry(
-            'ACP error 403: PERMISSION_DENIED: Your API key was reported as leaked.'
+            "ACP error 403: PERMISSION_DENIED: Your API key was reported as leaked."
         )
 
     def test_should_not_retry_provider_auth_claude_401(self):

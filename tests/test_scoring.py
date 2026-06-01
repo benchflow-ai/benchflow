@@ -88,7 +88,7 @@ class TestClassifyError:
         should be classified as provider_auth, not acp_error."""
         assert (
             classify_error(
-                'ACP error 403: PERMISSION_DENIED: Your API key was reported as leaked.'
+                "ACP error 403: PERMISSION_DENIED: Your API key was reported as leaked."
             )
             == "provider_auth"
         )
