@@ -155,6 +155,18 @@ PROVIDERS: dict[str, ProviderConfig] = {
         auth_env="AZURE_API_KEY",
         url_params={"resource": "AZURE_RESOURCE"},
     ),
+    # ── OpenAI first-party API ──
+    "openai": ProviderConfig(
+        name="openai",
+        base_url="https://api.openai.com/v1",
+        api_protocol="openai-completions",
+        auth_type="api_key",
+        auth_env="OPENAI_API_KEY",
+        endpoints={
+            "openai-completions": "https://api.openai.com/v1",
+            "openai-responses": "https://api.openai.com/v1",
+        },
+    ),
     # ── OpenAI-compatible inference servers (user-supplied base_url) ──
     "vllm": ProviderConfig(
         name="vllm",

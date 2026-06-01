@@ -41,6 +41,16 @@ class TestFindProvider:
         assert name == "aws-bedrock"
         assert cfg.auth_type == "aws"
 
+    def test_openai_prefix(self):
+        """Guards the PR #158 follow-up fix for openai/... provider routing."""
+        name, cfg = find_provider("openai/gpt-5.4-mini")
+
+        assert name == "openai"
+        assert cfg.api_protocol == "openai-completions"
+        assert cfg.auth_env == "OPENAI_API_KEY"
+        assert resolve_auth_env("openai/gpt-5.4-mini") == "OPENAI_API_KEY"
+        assert strip_provider_prefix("openai/gpt-5.4-mini") == "gpt-5.4-mini"
+
     @pytest.mark.parametrize(
         ("model", "expected_protocol"),
         [
@@ -106,6 +116,20 @@ class TestResolveBaseUrl:
             auth_env="ZAI_API_KEY",
         )
         assert resolve_base_url(p, {}) == "https://api.z.ai/api/paas/v4"
+
+    def test_openai_endpoints(self):
+        """Guards the PR #158 follow-up fix for first-party OpenAI endpoints."""
+        p = PROVIDERS["openai"]
+
+        assert resolve_base_url(p, {}) == "https://api.openai.com/v1"
+        assert (
+            resolve_base_url(p, {}, protocol="openai-completions")
+            == "https://api.openai.com/v1"
+        )
+        assert (
+            resolve_base_url(p, {}, protocol="openai-responses")
+            == "https://api.openai.com/v1"
+        )
 
     def test_project_id_expansion(self):
         p = ProviderConfig(

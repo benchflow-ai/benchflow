@@ -282,6 +282,32 @@ class TestResolveProviderEnv:
         assert env["BENCHFLOW_PROVIDER_PROTOCOL"] == "openai-responses"
         assert env["OPENAI_BASE_URL"] == "https://api.z.ai/api/paas/v4"
 
+    def test_openai_provider_sets_pi_openai_completions_env(self):
+        """Guards PR #158 follow-up: pi-acp must not fallback to Anthropic for openai/...."""
+        env = {"OPENAI_API_KEY": "sk-test"}
+
+        resolve_provider_env(env, "openai/gpt-5.4-mini", "pi-acp")
+
+        assert env["BENCHFLOW_PROVIDER_NAME"] == "openai"
+        assert env["BENCHFLOW_PROVIDER_MODEL"] == "gpt-5.4-mini"
+        assert env["BENCHFLOW_PROVIDER_PROTOCOL"] == "openai-completions"
+        assert env["BENCHFLOW_PROVIDER_BASE_URL"] == "https://api.openai.com/v1"
+        assert env["BENCHFLOW_PROVIDER_API_KEY"] == "sk-test"
+
+    def test_openai_provider_sets_codex_responses_env(self):
+        """Guards PR #158 follow-up: codex-acp must use Responses for openai/... models."""
+        env = {"OPENAI_API_KEY": "sk-test"}
+
+        resolve_provider_env(env, "openai/gpt-5.4-mini", "codex-acp")
+
+        assert env["BENCHFLOW_PROVIDER_NAME"] == "openai"
+        assert env["BENCHFLOW_PROVIDER_MODEL"] == "gpt-5.4-mini"
+        assert env["BENCHFLOW_PROVIDER_PROTOCOL"] == "openai-responses"
+        assert env["BENCHFLOW_PROVIDER_BASE_URL"] == "https://api.openai.com/v1"
+        assert env["BENCHFLOW_PROVIDER_API_KEY"] == "sk-test"
+        assert env["OPENAI_BASE_URL"] == "https://api.openai.com/v1"
+        assert env["OPENAI_API_KEY"] == "sk-test"
+
     def test_azure_foundry_openai_maps_to_codex_env(self):
         env = {
             "AZURE_API_KEY": "az-test",
