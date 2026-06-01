@@ -110,7 +110,10 @@ class TestRedactSecrets:
     @pytest.mark.parametrize(
         "raw,leaked",
         [
-            ("key=AIzaSyFAKEKEYFORTESTSONLYxxxxxxxxxxxxxxx", "FORTESTSONLYxxxxxxxxxxxxxxx"),
+            (
+                "key=AIzaSyFAKEKEYFORTESTSONLYxxxxxxxxxxxxxxx",
+                "FORTESTSONLYxxxxxxxxxxxxxxx",
+            ),
             ("key=sk-ant-api03-FAKEFAKEFAKEdeadbeefcafe1234", "deadbeefcafe1234"),
             ("key=AKIAFAKEFAKEFAKE1234", "FAKEFAKE1234"),
             ("key=dtn_FAKEFAKEFAKEFAKEFAKE12345678", "FAKEFAKE12345678"),
