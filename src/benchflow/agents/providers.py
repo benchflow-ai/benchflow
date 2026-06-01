@@ -167,6 +167,19 @@ PROVIDERS: dict[str, ProviderConfig] = {
             "openai-responses": "https://api.openai.com/v1",
         },
     ),
+    # OpenAI US data-residency endpoint. Same key, regional URL.
+    "us-openai": ProviderConfig(
+        name="us-openai",
+        base_url="https://us.api.openai.com/v1",
+        api_protocol="openai-completions",
+        auth_type="api_key",
+        auth_env="OPENAI_API_KEY",
+        endpoints={
+            "openai-completions": "https://us.api.openai.com/v1",
+            "openai-responses": "https://us.api.openai.com/v1",
+        },
+    ),
+    # TODO: add eu-openai (https://eu.api.openai.com/v1) when needed.
     # ── OpenAI-compatible inference servers (user-supplied base_url) ──
     "vllm": ProviderConfig(
         name="vllm",
