@@ -42,6 +42,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 import shlex
 import tempfile
 from dataclasses import dataclass, field
@@ -115,6 +116,16 @@ def _agent_launch_with_web_policy(
     return (planes or default_rollout_planes()).agent_launch(
         agent, disallow_web_tools=disallow
     )
+
+
+def _agent_process_kill_pattern(agent_launch: str) -> str | None:
+    """Return a pkill -f pattern for the launched agent binary."""
+    if not agent_launch.strip():
+        return None
+    agent_cmd = agent_launch.split()[0].split("/")[-1]
+    if not agent_cmd:
+        return None
+    return rf"(^|[ /]){re.escape(agent_cmd)}( |$)"
 
 
 def _skill_nudge(agent_env: dict[str, str] | None) -> str:
@@ -1495,6 +1506,7 @@ class Rollout:
             environment=cfg.environment,
             session_id=getattr(self, "_rollout_name", "") or "",
             usage_tracking=cfg.usage_tracking,
+            sandbox=self._env,
         )
         (
             self._acp_client,
@@ -1531,10 +1543,13 @@ class Rollout:
             self._session = None
             self._session_adapter = None
         # Kill any lingering agent processes to prevent context bleed between scenes
-        if self._env and self._agent_launch.strip():
-            agent_cmd = self._agent_launch.split()[0].split("/")[-1]
+        agent_pattern = _agent_process_kill_pattern(self._agent_launch)
+        if self._env and agent_pattern:
             with contextlib.suppress(Exception):
-                await self._env.exec(f"pkill -f '{agent_cmd}' || true", timeout_sec=10)
+                await self._env.exec(
+                    f"pkill -f {shlex.quote(agent_pattern)} || true",
+                    timeout_sec=10,
+                )
         self._active_role = None
         self._session_tool_count = 0
         self._session_traj_count = 0
@@ -1908,6 +1923,7 @@ class Rollout:
                 logger.warning(f"LLM trajectory write failed: {e}")
             finally:
                 self._usage_runtime = None
+            self._enforce_required_usage_tracking()
 
         if self._environment is not None:
             with contextlib.suppress(Exception):
@@ -1938,6 +1954,20 @@ class Rollout:
             shutil.rmtree(self._task_tmp, ignore_errors=True)
 
         self._phase = "cleaned"
+
+    def _enforce_required_usage_tracking(self) -> None:
+        usage_cfg = self._config.usage_tracking.with_env_defaults()
+        if usage_cfg.mode != "required" or self._config.primary_agent == "oracle":
+            return
+        if self._usage_metrics.get("usage_source") == "provider_response":
+            return
+        if self._error is not None:
+            return
+        self._error = (
+            "Token usage tracking is required, but no provider token usage was "
+            "captured."
+        )
+        logger.error(self._error)
 
     # ── Full run ──
 
@@ -2348,6 +2378,7 @@ class Rollout:
             environment=cfg.environment,
             session_id=getattr(self, "_rollout_name", "") or "",
             usage_tracking=cfg.usage_tracking,
+            sandbox=self._env,
         )
 
         role_agent_differs = role.agent != cfg.primary_agent

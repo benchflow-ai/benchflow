@@ -401,6 +401,9 @@ def test_provider_models_and_credentials(name, cfg):
         ("aws-bedrock/openai.gpt-oss-20b-1:0", "aws-bedrock"),
         ("zai/glm-5", "zai"),
         ("vllm/local-model", "vllm"),
+        ("kimi/kimi-k2.6", "kimi"),
+        ("qwen-dashscope/qwen3.6-max-preview", "qwen-dashscope"),
+        ("doubao-seed-2-pro/ep-test", "doubao-seed-2-pro"),
     ],
 )
 def test_find_provider_resolves_known_prefixes(model, expected):

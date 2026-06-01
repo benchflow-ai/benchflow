@@ -120,3 +120,40 @@ def test_benchflow_eval_list_surfaces_root_summary_memory_score(tmp_path):
     assert "1/2" in result.output
     assert "50.0%" in result.output
     assert "75.0%" in result.output
+
+
+def test_eval_create_reports_runtime_config_errors_without_traceback(
+    tmp_path, monkeypatch
+):
+    """Guards PR #587: required usage preflight failures stay user-facing."""
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+
+    class FakeEvaluation:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def run(self):
+            raise RuntimeError("Token usage tracking is required")
+
+    monkeypatch.setattr("benchflow.evaluation.Evaluation", FakeEvaluation)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "eval",
+            "create",
+            "--tasks-dir",
+            str(tasks_dir),
+            "--agent",
+            "openhands",
+            "--model",
+            "aws-bedrock/example-model",
+            "--usage-tracking",
+            "required",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "Token usage tracking is required" in result.output
+    assert "Traceback" not in result.output

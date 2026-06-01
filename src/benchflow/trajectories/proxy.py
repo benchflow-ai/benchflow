@@ -4,6 +4,7 @@ Supports both non-streaming and streaming (SSE) responses.
 """
 
 import asyncio
+import base64
 import gzip
 import importlib
 import io
@@ -414,6 +415,90 @@ def _parse_request_body(body_bytes: bytes, headers: dict[str, str]) -> dict[str,
     except (json.JSONDecodeError, UnicodeDecodeError):
         return {"raw": decoded.decode(errors="replace")[:_RAW_REQ_TRUNCATE]}
 
+    if isinstance(parsed, dict):
+        return parsed
+    return {"raw": parsed}
+
+
+def exchange_from_raw_capture(record: dict[str, Any]) -> LLMExchange:
+    """Build a canonical LLM exchange from a raw proxy capture record.
+
+    Sandbox-local proxies intentionally stay dumb: they forward bytes and log
+    raw request/response bodies. The host process owns provider-specific JSON,
+    SSE, and usage parsing so Docker and Daytona share one interpretation path.
+    """
+    request = record.get("request") or {}
+    response = record.get("response") or {}
+    request_headers = _lower_headers(request.get("headers") or {})
+    response_headers = _lower_headers(response.get("headers") or {})
+    request_body_bytes = _decode_b64(request.get("body_b64"))
+    response_body_bytes = _decode_b64(response.get("body_b64"))
+    path = str(request.get("path") or "")
+    request_body = _parse_request_body(request_body_bytes, request_headers)
+    response_body = _parse_response_body(
+        response_body_bytes,
+        response_headers,
+        path=path,
+        request_body=request_body,
+    )
+    return LLMExchange(
+        request=LLMRequest(
+            method=str(request.get("method") or "POST"),
+            path=path,
+            headers=request_headers,
+            body=request_body,
+        ),
+        response=LLMResponse(
+            status_code=int(response.get("status_code") or 0),
+            headers=response_headers,
+            body=response_body,
+        ),
+        duration_ms=float(record.get("duration_ms") or 0.0),
+    )
+
+
+def _lower_headers(headers: dict[str, Any]) -> dict[str, str]:
+    return {str(k).lower(): str(v) for k, v in headers.items()}
+
+
+def _decode_b64(value: Any) -> bytes:
+    if not value:
+        return b""
+    return base64.b64decode(str(value).encode())
+
+
+def _parse_response_body(
+    body_bytes: bytes,
+    headers: dict[str, str],
+    *,
+    path: str,
+    request_body: dict[str, Any],
+) -> dict[str, Any]:
+    if not body_bytes:
+        return {}
+
+    decoded = _decode_request_body(
+        body_bytes, headers.get("content-encoding", "identity")
+    )
+    content_type = headers.get("content-type", "").lower()
+    if "text/event-stream" in content_type:
+        try:
+            return _reconstruct_sse_response(decoded)
+        except Exception as e:
+            logger.warning(f"SSE response reconstruction failed: {e}")
+            return {"raw": decoded.decode(errors="replace")[:_RAW_RESP_TRUNCATE]}
+
+    try:
+        parsed = json.loads(decoded)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        if not content_type and (
+            request_body.get("stream", False) or _is_sse_request_path(path)
+        ):
+            try:
+                return _reconstruct_sse_response(decoded)
+            except Exception as e:
+                logger.warning(f"SSE response reconstruction failed: {e}")
+        return {"raw": decoded.decode(errors="replace")[:_RAW_RESP_TRUNCATE]}
     if isinstance(parsed, dict):
         return parsed
     return {"raw": parsed}

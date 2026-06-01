@@ -25,18 +25,12 @@ All commands below assume you are in the repo root.
 > The examples below use `weighted-gdp-calc` (fast, ~5 tool calls) as the
 > default lightweight task. Swap in any task name from `$TASKS/`.
 
-> **Usage telemetry caveat (Daytona / Modal):** Remote sandboxes run the agent
-> on a host that cannot reach BenchFlow's host-bound usage proxy. Default
-> `--usage-tracking auto` therefore records `agent_result.usage_source ==
-> "unavailable"` unless you configure an external tunnel/ingress with
-> `--usage-proxy-url` and `--usage-proxy-port`. Official batch runs that need
-> token/cost telemetry should use `--usage-tracking required` so the run fails
-> before the agent starts if the external endpoint is missing or unhealthy. The
-> fixed-port tunnel mode supports one rollout per BenchFlow process; use
-> `--concurrency 1`, or run multiple jobs with separate ports/tunnels. This
-> constraint is specific to metered external-tunnel mode; Daytona batches that do
-> not require usage telemetry can still run with higher concurrency. Local
-> sandboxes (e.g. `--sandbox docker`) populate usage telemetry without a tunnel.
+> **Usage telemetry:** Docker uses a host-side provider proxy; Daytona uses a
+> sandbox-local provider proxy because the agent runs on a remote host. Default
+> `--usage-tracking auto` records provider token/cost telemetry when the proxy can
+> be started. Use `--usage-tracking required` when missing telemetry should fail
+> the rollout, or `--usage-tracking off` for recovery runs that should leave
+> provider traffic untouched.
 
 ---
 

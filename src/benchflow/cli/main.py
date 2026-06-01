@@ -1069,27 +1069,6 @@ def eval_create(
             help="Token usage tracking policy: auto, required, or off",
         ),
     ] = None,
-    usage_proxy_url: Annotated[
-        str | None,
-        typer.Option(
-            "--usage-proxy-url",
-            help="Externally reachable base URL for remote sandbox usage tracking",
-        ),
-    ] = None,
-    usage_proxy_bind_host: Annotated[
-        str | None,
-        typer.Option(
-            "--usage-proxy-bind-host",
-            help="Local interface for the usage proxy to bind",
-        ),
-    ] = None,
-    usage_proxy_port: Annotated[
-        int | None,
-        typer.Option(
-            "--usage-proxy-port",
-            help="Fixed local port for externally tunneled usage tracking",
-        ),
-    ] = None,
     environment_manifest: Annotated[
         Path | None,
         typer.Option(
@@ -1249,22 +1228,9 @@ def eval_create(
     eval_environment = environment or "docker"
     sandbox_user = normalize_sandbox_user(sandbox_user)
     eval_concurrency = concurrency if concurrency is not None else 4
-    usage_tracking_overridden = any(
-        value is not None
-        for value in (
-            usage_tracking,
-            usage_proxy_url,
-            usage_proxy_bind_host,
-            usage_proxy_port,
-        )
-    )
+    usage_tracking_overridden = usage_tracking is not None
     try:
-        eval_usage_tracking = UsageTrackingConfig(
-            mode=usage_tracking,
-            advertised_base_url=usage_proxy_url,
-            bind_host=usage_proxy_bind_host,
-            port=usage_proxy_port,
-        )
+        eval_usage_tracking = UsageTrackingConfig(mode=usage_tracking)
     except (TypeError, ValueError) as exc:
         console.print(f"[red]Invalid usage tracking config: {exc}[/red]")
         raise typer.Exit(1) from None
@@ -1301,6 +1267,8 @@ def eval_create(
         resolved_tasks_dir: Path,
         eval_config: EvaluationConfig,
     ):
+        from benchflow.eval_sharding import ShardWorkerError
+
         try:
             if worker_concurrency is None:
                 result = asyncio.run(
@@ -1311,10 +1279,7 @@ def eval_create(
                     ).run()
                 )
             else:
-                from benchflow.eval_sharding import (
-                    ShardWorkerError,
-                    run_sharded_evaluation,
-                )
+                from benchflow.eval_sharding import run_sharded_evaluation
 
                 result = asyncio.run(
                     run_sharded_evaluation(
@@ -1330,7 +1295,7 @@ def eval_create(
         except EmptyTaskSelectionError as e:
             console.print(f"[red]{e}[/red]")
             raise typer.Exit(1) from None
-        except (ValueError, ShardWorkerError) as e:
+        except (ValueError, RuntimeError, ShardWorkerError) as e:
             console.print(f"[red]{e}[/red]")
             raise typer.Exit(1) from None
 

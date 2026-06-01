@@ -102,6 +102,16 @@ async def write_credential_files(
     await write_gemini_vertex_settings(env, agent, model, cred_home)
 
     # Agent credential files (e.g. codex auth.json)
+    if (
+        agent == "codex-acp"
+        and "OPENAI_API_KEY" not in agent_env
+        and agent_env.get("CODEX_AUTH_JSON")
+    ):
+        path = f"{cred_home}/.codex/auth.json"
+        await upload_credential(env, path, agent_env["CODEX_AUTH_JSON"], owner=owner)
+        logger.info("Agent credential file written: %s", path)
+        return
+
     if agent_cfg and agent_cfg.credential_files:
         for cf in agent_cfg.credential_files:
             value = agent_env.get(cf.env_source)
