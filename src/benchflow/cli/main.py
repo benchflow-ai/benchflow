@@ -12,6 +12,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from benchflow import __version__
 from benchflow._dotenv import load_dotenv_env
 from benchflow._utils.config import (
     DEFAULT_AGENT_IDLE_TIMEOUT_SEC,
@@ -36,6 +37,27 @@ app = typer.Typer(
     help="ACP-native agent benchmarking framework.",
     no_args_is_help=True,
 )
+
+
+def _version_callback(value: bool) -> None:
+    if value:
+        typer.echo(f"benchflow {__version__}")
+        raise typer.Exit()
+
+
+@app.callback()
+def _cli_main(
+    version: Annotated[
+        bool | None,
+        typer.Option(
+            "--version",
+            callback=_version_callback,
+            is_eager=True,
+            help="Show the version and exit.",
+        ),
+    ] = None,
+) -> None:
+    """ACP-native agent benchmarking framework."""
 
 
 _PROVIDER_AUTH_MESSAGE = (

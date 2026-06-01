@@ -8,6 +8,14 @@ from benchflow.cli.main import app
 from benchflow.models import RunResult
 
 
+def test_benchflow_version_flag() -> None:
+    from benchflow import __version__
+
+    result = CliRunner().invoke(app, ["--version"])
+    assert result.exit_code == 0
+    assert result.output.strip() == f"benchflow {__version__}"
+
+
 def test_benchflow_run_exits_nonzero_when_verifier_errors(tmp_path, monkeypatch):
     """Guards the v0.5 reward-output regression at the CLI boundary."""
     task_dir = tmp_path / "task"
