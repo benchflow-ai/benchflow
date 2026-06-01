@@ -13,14 +13,21 @@ SANDBOX_SETUP = "sandbox_setup"
 PROVIDER_AUTH = "provider_auth"
 TIMED_OUT = "timeout"
 
+# Matched case-insensitively against the error string. Covers the
+# human-authored markers plus the sanitized "provider auth failed (HTTP 401)"
+# marker injected at the rollout/provider boundary (#546/#564), where the real
+# 401/403 is visible only in the proxy trajectory, not the top-level ACP error.
 _PROVIDER_AUTH_MARKERS = (
-    "PERMISSION_DENIED",
+    "permission_denied",
     "leaked",
-    "Failed to authenticate",
-    "Invalid bearer token",
-    "Invalid API key",
+    "failed to authenticate",
+    "invalid bearer token",
+    "invalid api key",
     "was rejected as invalid",
-    "Unauthorized",
+    "unauthorized",
+    "provider auth failed",
+    "http 401",
+    "http 403",
 )
 
 # Verifier error category constants
@@ -53,7 +60,7 @@ def classify_error(error: str | None) -> str | None:
     if "closed stdout" in lower:
         return PIPE_CLOSED
     if "ACP error" in error or "was rejected as invalid" in error:
-        if any(m in error for m in _PROVIDER_AUTH_MARKERS):
+        if any(m in lower for m in _PROVIDER_AUTH_MARKERS):
             return PROVIDER_AUTH
         return ACP_ERROR
     if "sandbox startup" in lower or "sandbox creation" in lower:

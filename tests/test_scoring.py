@@ -105,7 +105,25 @@ class TestClassifyError:
         )
 
     def test_provider_auth_invalid_api_key(self):
+        """Guards the fix from PR #564 for issue #546: invalid-API-key errors
+        classify as provider_auth, not acp_error."""
         assert classify_error("ACP error -32001: Invalid API key") == "provider_auth"
+
+    def test_provider_auth_lowercase_and_status_forms(self):
+        """Guards PR #564: reviewer-reported auth shapes the original top-level
+        string match missed must classify as provider_auth, not acp_error."""
+        for err in (
+            "ACP error 401: unauthorized",
+            "ACP error -32001: invalid api key",
+            "ACP error -32603: failed to authenticate",
+            "ACP error -32603: Internal error | provider auth failed (HTTP 401)",
+        ):
+            assert classify_error(err) == "provider_auth", err
+
+    def test_generic_acp_internal_error_still_retryable(self):
+        """Guards PR #564: a bare ACP internal error with no auth signal stays
+        acp_error — only a real surfaced 401/403 should flip it to provider_auth."""
+        assert classify_error("ACP error -32603: Internal error") == "acp_error"
 
     def test_provider_auth_rejected_as_invalid(self):
         """The message from _classify_acp_error when subscription auth exists."""

@@ -2585,7 +2585,31 @@ class Rollout:
                     f"Subscription auth credentials exist — unset the env var "
                     f"to use them: env -u {key} <command>"
                 )
+        # A real invalid-key failure often surfaces only as a generic
+        # "ACP error -32603: Internal error" at this layer — the provider's
+        # actual 401/403 is visible only in the proxy-captured trajectory
+        # (#546/#564). Surface a sanitized auth marker (status code only — never
+        # the response body or headers) so RetryConfig.should_retry classifies
+        # it as provider_auth and fails fast instead of burning retries.
+        auth_status = self._provider_auth_status()
+        if auth_status is not None:
+            return f"{e} | provider auth failed (HTTP {auth_status})"
         return str(e)
+
+    def _provider_auth_status(self) -> int | None:
+        """Return a provider 401/403 status from the proxy trajectory, if any.
+
+        Only the integer status code is read — never the response body or
+        headers — so no credential material can leak into ``result.error``.
+        """
+        server = getattr(getattr(self, "_usage_runtime", None), "server", None)
+        trajectory = getattr(server, "trajectory", None)
+        exchanges = getattr(trajectory, "exchanges", None) or []
+        for exchange in reversed(exchanges):
+            status = getattr(getattr(exchange, "response", None), "status_code", None)
+            if status in (401, 403):
+                return status
+        return None
 
     def _write_llm_trajectory(self, usage_runtime: Any) -> None:
         """Persist captured provider HTTP exchanges as JSONL."""
