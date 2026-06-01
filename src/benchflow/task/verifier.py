@@ -13,8 +13,10 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import shlex
 import shutil
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -62,14 +64,57 @@ class RubricNotFoundError(Exception):
 
 _TAIL_LINES = 30
 
+# Secret patterns redacted from verifier stdout before it is surfaced in an
+# exception message (and from there into ``verifier_error`` / summaries /
+# dashboards). ``test-stdout.txt`` is untrusted subprocess output that can
+# contain env dumps, install URLs, or tokens — see PR #572 review. Mirrors the
+# trajectory redaction set (#537); kept local so this module has no dependency
+# on the trajectories package.
+_SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"(sk-ant-[a-zA-Z0-9_-]{10})[a-zA-Z0-9_-]+"), r"\1***REDACTED***"),
+    (re.compile(r"(sk-proj-[a-zA-Z0-9_-]{10})[a-zA-Z0-9_-]+"), r"\1***REDACTED***"),
+    (re.compile(r"(sk-[a-zA-Z0-9]{10})[a-zA-Z0-9]+"), r"\1***REDACTED***"),
+    (re.compile(r"(AIzaSy[A-Za-z0-9_-]{4})[A-Za-z0-9_-]{20,}"), r"\1***REDACTED***"),
+    (
+        re.compile(r"((?:AKIA|ASIA)[A-Z0-9]{4})[A-Z0-9]{12}(?![A-Z0-9])"),
+        r"\1***REDACTED***",
+    ),
+    (re.compile(r"(dtn_[A-Za-z0-9_]{4})[A-Za-z0-9_]{16,}"), r"\1***REDACTED***"),
+    (
+        re.compile(r'("authorization"\s*:\s*"Bearer\s+)[^"]+(")', re.IGNORECASE),
+        r"\1***REDACTED***\2",
+    ),
+    (
+        re.compile(r"(Bearer\s+)[A-Za-z0-9._-]{12,}", re.IGNORECASE),
+        r"\1***REDACTED***",
+    ),
+    (
+        re.compile(r"((?:x-api-key|api-key)\s*[:=]\s*)\S+", re.IGNORECASE),
+        r"\1***REDACTED***",
+    ),
+)
+
+
+def _redact_secrets(text: str) -> str:
+    """Strip well-known credential patterns from untrusted subprocess output."""
+    for pattern, replacement in _SECRET_PATTERNS:
+        text = pattern.sub(replacement, text)
+    return text
+
 
 def _tail_file(path: Path, n: int = _TAIL_LINES) -> str:
-    """Return the last *n* lines of *path*, or empty string if unreadable."""
+    """Return the last *n* lines of *path*, redacted, or "" if unreadable.
+
+    Streams the file with a bounded ``deque`` so a large ``test-stdout.txt``
+    is never fully materialized. Output is redacted because it is untrusted
+    subprocess output surfaced into ``verifier_error`` (PR #572 review).
+    """
     try:
-        lines = path.read_text(errors="replace").splitlines()
-        return "\n".join(lines[-n:])
+        with path.open(errors="replace") as f:
+            lines = deque(f, maxlen=n)
     except OSError:
         return ""
+    return _redact_secrets("".join(lines).rstrip("\n"))
 
 
 class Verifier:
