@@ -1,6 +1,10 @@
 # CLI reference
 BenchFlow uses a resource-verb pattern: `bench <resource> <verb>`.
 
+```bash
+bench --version
+```
+
 ---
 
 ## bench agent
