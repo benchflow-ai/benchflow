@@ -47,117 +47,115 @@ class TestAutoInheritEnv:
             ),
         ],
     )
-    def test_inherits_key(self, monkeypatch, env_name, env_value):
-        monkeypatch.setenv(env_name, env_value)
+    def test_inherits_key(self, env_name, env_value):
         env = {}
-        auto_inherit_env(env)
+        auto_inherit_env(env, source_env={env_name: env_value})
         assert env[env_name] == env_value
 
-    def test_does_not_overwrite_explicit(self, monkeypatch):
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-host")
+    def test_does_not_overwrite_explicit(self):
         env = {"ANTHROPIC_API_KEY": "sk-explicit"}
-        auto_inherit_env(env)
+        auto_inherit_env(env, source_env={"ANTHROPIC_API_KEY": "sk-host"})
         assert env["ANTHROPIC_API_KEY"] == "sk-explicit"
 
     def test_gemini_mirrored_to_google(self):
         env = {"GEMINI_API_KEY": "gk-test"}
-        auto_inherit_env(env)
+        auto_inherit_env(env, source_env={})
         assert env["GOOGLE_API_KEY"] == "gk-test"
 
     def test_gemini_mirror_no_overwrite(self):
         env = {"GEMINI_API_KEY": "gk-test", "GOOGLE_API_KEY": "gk-explicit"}
-        auto_inherit_env(env)
+        auto_inherit_env(env, source_env={})
         assert env["GOOGLE_API_KEY"] == "gk-explicit"
 
-    def test_missing_host_key_not_added(self, monkeypatch):
-        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    def test_missing_host_key_not_added(self):
         env = {}
-        auto_inherit_env(env)
+        auto_inherit_env(env, source_env={})
         assert "ANTHROPIC_API_KEY" not in env
 
     def test_aws_default_region_mirrored_to_aws_region(self):
         env = {"AWS_DEFAULT_REGION": "us-east-1"}
-        auto_inherit_env(env)
+        auto_inherit_env(env, source_env={})
         assert env["AWS_REGION"] == "us-east-1"
 
     def test_aws_region_mirrored_to_aws_default_region(self):
         env = {"AWS_REGION": "us-east-1"}
-        auto_inherit_env(env)
+        auto_inherit_env(env, source_env={})
         assert env["AWS_DEFAULT_REGION"] == "us-east-1"
 
     def test_claude_oauth_alias_mirrored_to_claude_code_token(self):
         """Guards PR #587: pasted Claude Code OAuth vars use both common names."""
         env = {"CLAUDE_OAUTH_TOKEN": "oauth-token"}
-        auto_inherit_env(env)
+        auto_inherit_env(env, source_env={})
         assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "oauth-token"
 
-    def test_inherits_openai_base_url(self, monkeypatch):
+    def test_inherits_openai_base_url(self):
         """Guards fix from PR #255: OPENAI_BASE_URL must be inherited.
 
         codex-acp and opencode map BENCHFLOW_PROVIDER_BASE_URL → OPENAI_BASE_URL,
         but OPENAI_BASE_URL was missing from auto_inherit_env's key set, so
         users setting OPENAI_BASE_URL on the host had it silently dropped.
         """
-        monkeypatch.setenv("OPENAI_BASE_URL", "https://custom.openai.example/v1")
         env: dict[str, str] = {}
-        auto_inherit_env(env)
+        auto_inherit_env(
+            env, source_env={"OPENAI_BASE_URL": "https://custom.openai.example/v1"}
+        )
         assert env["OPENAI_BASE_URL"] == "https://custom.openai.example/v1"
 
-    def test_inherits_benchflow_provider_api_key(self, monkeypatch):
+    def test_inherits_benchflow_provider_api_key(self):
         """Guards issue #817: host BENCHFLOW_PROVIDER_API_KEY must be inherited.
 
         Users on self-hosted / proxy endpoints export BENCHFLOW_PROVIDER_API_KEY
         directly; without it on the allowlist the host value is silently dropped.
         """
-        monkeypatch.setenv("BENCHFLOW_PROVIDER_API_KEY", "sk-provider-host")
         env: dict[str, str] = {}
-        auto_inherit_env(env)
+        auto_inherit_env(
+            env, source_env={"BENCHFLOW_PROVIDER_API_KEY": "sk-provider-host"}
+        )
         assert env["BENCHFLOW_PROVIDER_API_KEY"] == "sk-provider-host"
 
-    def test_inherits_benchflow_provider_base_url(self, monkeypatch):
+    def test_inherits_benchflow_provider_base_url(self):
         """Guards issue #817: host BENCHFLOW_PROVIDER_BASE_URL must be inherited."""
-        monkeypatch.setenv("BENCHFLOW_PROVIDER_BASE_URL", "http://my-vllm-host:8000/v1")
         env: dict[str, str] = {}
-        auto_inherit_env(env)
+        auto_inherit_env(
+            env,
+            source_env={"BENCHFLOW_PROVIDER_BASE_URL": "http://my-vllm-host:8000/v1"},
+        )
         assert env["BENCHFLOW_PROVIDER_BASE_URL"] == "http://my-vllm-host:8000/v1"
 
-    def test_empty_string_host_value_not_inherited(self, monkeypatch):
+    def test_empty_string_host_value_not_inherited(self):
         """An exported-but-empty host var ('export X=') must not be inherited.
 
         Copying '' would shadow a real value resolved downstream — an empty
         BENCHFLOW_PROVIDER_BASE_URL would block resolve_provider_env's
         setdefault from filling the provider's real endpoint.
         """
-        monkeypatch.setenv("BENCHFLOW_PROVIDER_BASE_URL", "")
         env: dict[str, str] = {}
-        auto_inherit_env(env)
+        auto_inherit_env(env, source_env={"BENCHFLOW_PROVIDER_BASE_URL": ""})
         assert "BENCHFLOW_PROVIDER_BASE_URL" not in env
 
-    def test_whitespace_only_host_value_not_inherited(self, monkeypatch):
+    def test_whitespace_only_host_value_not_inherited(self):
         """A whitespace-only host var ('export X=" "') is also effectively unset.
 
         '   ' is truthy, so a bare `if value:` guard would still copy it and
         shadow downstream resolution exactly like an empty string does.
         """
-        monkeypatch.setenv("BENCHFLOW_PROVIDER_BASE_URL", "   ")
         env: dict[str, str] = {}
-        auto_inherit_env(env)
+        auto_inherit_env(env, source_env={"BENCHFLOW_PROVIDER_BASE_URL": "   "})
         assert "BENCHFLOW_PROVIDER_BASE_URL" not in env
 
-    def test_empty_openai_base_url_not_inherited(self, monkeypatch):
+    def test_empty_openai_base_url_not_inherited(self):
         """Empty-skip applies to every allowlisted key, not just the #817 keys.
 
         OPENAI_BASE_URL has always been on the allowlist, so this pins the
         empty-skip guard itself — independent of the #817 allowlist additions.
         """
-        monkeypatch.setenv("OPENAI_BASE_URL", "")
         env: dict[str, str] = {}
-        auto_inherit_env(env)
+        auto_inherit_env(env, source_env={"OPENAI_BASE_URL": ""})
         assert "OPENAI_BASE_URL" not in env
 
     def test_azure_endpoint_derives_resource(self):
         env = {"AZURE_API_ENDPOINT": "https://example-resource.openai.azure.com/"}
-        auto_inherit_env(env)
+        auto_inherit_env(env, source_env={})
         assert env["AZURE_RESOURCE"] == "example-resource"
 
     def test_azure_resource_takes_precedence_over_endpoint(self):
@@ -165,13 +163,13 @@ class TestAutoInheritEnv:
             "AZURE_RESOURCE": "explicit-resource",
             "AZURE_API_ENDPOINT": "https://endpoint-resource.openai.azure.com/",
         }
-        auto_inherit_env(env)
+        auto_inherit_env(env, source_env={})
         assert env["AZURE_RESOURCE"] == "explicit-resource"
 
     def test_azure_anthropic_endpoint_alias_derives_resource(self):
         """AZURE_API_ENDPOINT also derives resource from the Anthropic-surface host."""
         env = {"AZURE_API_ENDPOINT": "https://example-resource.services.ai.azure.com/"}
-        auto_inherit_env(env)
+        auto_inherit_env(env, source_env={})
         assert env["AZURE_RESOURCE"] == "example-resource"
 
 
