@@ -185,3 +185,4 @@ tests/.smoke-jobs/
 context/
 tutorials/
 .playwright-mcp/
+/.claude/handoffs
