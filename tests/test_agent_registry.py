@@ -98,11 +98,21 @@ class TestOpenHandsConfig:
         assert (
             "uv tool install --force --refresh "
             "--with 'boto3>=1.40' "
+            "--with 'litellm==1.88.0rc1' "
             "--from 'git+https://github.com/OpenHands/OpenHands-CLI.git@main' "
             "openhands --python 3.12" in cfg.install_cmd
         )
         assert "command -v git" in cfg.install_cmd
         assert "install.openhands.dev/install.sh" not in cfg.install_cmd
+
+    def test_openhands_install_cmd_deploys_bedrock_opus_shim(self):
+        """Opus 4.8+ Bedrock adaptive-thinking shim ships into the sandbox litellm."""
+        cfg = AGENTS["openhands"]
+        # litellm pinned to a version with the adaptive-thinking `max` + output_config path
+        assert "--with 'litellm==1.88.0rc1'" in cfg.install_cmd
+        # the regex-gated shim file + its .pth autoloader are written into site-packages
+        assert "oh_bedrock_opus_patch.py" in cfg.install_cmd
+        assert "zz_oh_bedrock_opus_patch.pth" in cfg.install_cmd
 
     def test_openhands_apt_bootstrap_retries_transient_mirror_failures(self):
         """Guards the local fix on v0.5-integration@e55219d against Ubuntu mirror signature flakiness."""

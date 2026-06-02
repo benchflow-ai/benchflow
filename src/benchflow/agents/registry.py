@@ -194,6 +194,12 @@ _PI_LAUNCHER = (Path(__file__).parent / "pi_acp_launcher.py").read_text()
 # Path to the Harvey LAB ACP shim (runs Harvey LAB harness as an ACP agent)
 _HARVEY_LAB_SHIM = (Path(__file__).parent / "harvey_lab_acp_shim.py").read_text()
 
+# Bedrock Opus 4.8+ adaptive-thinking shim, base64-shipped into the openhands sandbox's
+# litellm (source: oh_bedrock_opus_patch.py). Regex-gated => a no-op for every other model.
+_OH_BEDROCK_OPUS_SHIM_B64 = base64.b64encode(
+    (Path(__file__).parent / "oh_bedrock_opus_patch.py").read_text().encode()
+).decode()
+
 
 def _json_settings_merge(path: str, mutator: str) -> str:
     """Idempotent JSON-settings merge as a one-line bash snippet."""
@@ -545,6 +551,9 @@ AGENTS: dict[str, AgentConfig] = {
             "  fi && "
             "uv tool install --force --refresh "
             "--with 'boto3>=1.40' "
+            # Bedrock Opus 4.8+ needs litellm's adaptive-thinking `max` effort + output_config
+            # path (absent from stable 1.86.x). Inert for other models. See oh_bedrock_opus_patch.py.
+            "--with 'litellm==1.88.0rc1' "
             "--from 'git+https://github.com/OpenHands/OpenHands-CLI.git@main' "
             "openhands --python 3.12 && "
             "  uv tool list | grep -q '^openhands\\b' ) && "
@@ -555,6 +564,18 @@ AGENTS: dict[str, AgentConfig] = {
             "mkdir -p ~/.openhands && "
             'echo \'{"llm":{"model":"placeholder","api_key":"placeholder"}}\' '
             "> ~/.openhands/agent_settings.json && "
+            # Deploy the Bedrock Opus 4.8+ adaptive-thinking shim into the sandbox litellm.
+            # Best-effort (the trailing `true` keeps it from ever failing the install); the
+            # shim is regex-gated internally => a strict no-op for every non-4.8 model.
+            "( SP=\"$(ls -d \"$(uv tool dir)\"/openhands/lib/python*/site-packages "
+            "2>/dev/null | head -1)\"; "
+            "[ -n \"$SP\" ] && "
+            f"echo '{_OH_BEDROCK_OPUS_SHIM_B64}' | base64 -d "
+            "> \"$SP/oh_bedrock_opus_patch.py\" && "
+            "printf 'import oh_bedrock_opus_patch\\n' "
+            "> \"$SP/zz_oh_bedrock_opus_patch.pth\" "
+            "|| echo 'benchflow: opus-4.8 bedrock thinking shim NOT deployed' >&2; "
+            "true ) && "
             "command -v openhands >/dev/null 2>&1"
         ),
         launch_cmd=(

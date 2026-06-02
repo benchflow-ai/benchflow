@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import time
 from typing import Any
 
@@ -300,6 +301,28 @@ def _tools_to_bedrock_tool_config(
     return config
 
 
+# Bedrock Claude Opus/Sonnet/Haiku 4.8+ require the adaptive-thinking contract
+# (thinking.type=adaptive + output_config.effort) and reject the legacy enabled form.
+_BEDROCK_ADAPTIVE_THINKING_RE = re.compile(r"claude-(opus|sonnet|haiku)-4-(8|9|1\d)")
+
+
+def _force_bedrock_adaptive_thinking_for_opus_4_8(payload: dict[str, Any]) -> None:
+    """Force Bedrock Claude 4.8+ to adaptive thinking at MAX effort.
+
+    On Docker, openhands→litellm reaches Bedrock through this host proxy via the
+    Anthropic-Messages / OpenAI-Responses path, which otherwise drops the incoming
+    thinking block (=> 0 extended thinking) — and Bedrock 4.8 rejects the legacy
+    ``thinking.type=enabled`` regardless. Regex-gated on the resolved model id, so
+    every other model's payload is byte-identical to before.
+    """
+    model = str(payload.get("modelId", "")).lower()
+    if not _BEDROCK_ADAPTIVE_THINKING_RE.search(model):
+        return
+    fields = payload.setdefault("additionalModelRequestFields", {})
+    fields["thinking"] = {"type": "adaptive"}
+    fields["output_config"] = {"effort": "max"}
+
+
 def anthropic_request_to_bedrock_converse(body: dict[str, Any]) -> dict[str, Any]:
     """Translate an Anthropic Messages request to Converse kwargs."""
     payload: dict[str, Any] = {
@@ -325,6 +348,7 @@ def anthropic_request_to_bedrock_converse(body: dict[str, Any]) -> dict[str, Any
     )
     if tool_config:
         payload["toolConfig"] = tool_config
+    _force_bedrock_adaptive_thinking_for_opus_4_8(payload)
     return payload
 
 
@@ -421,6 +445,7 @@ def openai_responses_request_to_bedrock_converse(
     )
     if tool_config:
         payload["toolConfig"] = tool_config
+    _force_bedrock_adaptive_thinking_for_opus_4_8(payload)
     return payload
 
 
