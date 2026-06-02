@@ -56,6 +56,34 @@ def _merge_pending_text(pending: list[dict]) -> list[dict]:
     return merged
 
 
+def _events_to_trajectory(events: list[dict]) -> list[dict]:
+    """Convert ``ACPSession.events`` records into the JSONL event format.
+
+    Single canonical conversion used by both the destructive
+    end-of-run :func:`_capture_session_trajectory` and the non-destructive
+    live :func:`_snapshot_session_trajectory`, so streaming-format =
+    final-format is a structural invariant rather than a copy/paste
+    discipline (PR #566 review finding #3).
+    """
+    out: list[dict] = []
+    for event in events:
+        if event["type"] == "tool_call":
+            tc = event["record"]
+            out.append(
+                {
+                    "type": "tool_call",
+                    "tool_call_id": tc.tool_call_id,
+                    "kind": tc.kind,
+                    "title": tc.title,
+                    "status": tc.status.value,
+                    "content": tc.content,
+                }
+            )
+        elif event["type"] in ("user_message", "agent_message", "agent_thought"):
+            out.append({"type": event["type"], "text": event["text"]})
+    return out
+
+
 def _snapshot_session_trajectory(session: ACPSession | None) -> list[dict]:
     """Non-destructive trajectory snapshot — safe to call mid-prompt.
 
@@ -67,30 +95,13 @@ def _snapshot_session_trajectory(session: ACPSession | None) -> list[dict]:
     """
     if session is None:
         return []
-
     if not session._events_active:
         # Legacy path — no event log, fall back to flat capture which has
         # no pending-text bookkeeping anyway.
         return _capture_session_trajectory(session)
-
-    trajectory: list[dict] = []
-    for event in session.events:
-        if event["type"] == "tool_call":
-            tc = event["record"]
-            trajectory.append(
-                {
-                    "type": "tool_call",
-                    "tool_call_id": tc.tool_call_id,
-                    "kind": tc.kind,
-                    "title": tc.title,
-                    "status": tc.status.value,
-                    "content": tc.content,
-                }
-            )
-        elif event["type"] in ("user_message", "agent_message", "agent_thought"):
-            trajectory.append({"type": event["type"], "text": event["text"]})
-    trajectory.extend(_merge_pending_text(session._pending_text))
-    return trajectory
+    return _events_to_trajectory(session.events) + _merge_pending_text(
+        session._pending_text
+    )
 
 
 class TrajectoryWriter:
@@ -167,23 +178,7 @@ def _capture_session_trajectory(session: ACPSession | None) -> list[dict]:
     if session._events_active:
         # Flush any trailing agent text that hasn't been recorded yet.
         session._flush_agent_text()
-        trajectory: list[dict] = []
-        for event in session.events:
-            if event["type"] == "tool_call":
-                tc = event["record"]
-                trajectory.append(
-                    {
-                        "type": "tool_call",
-                        "tool_call_id": tc.tool_call_id,
-                        "kind": tc.kind,
-                        "title": tc.title,
-                        "status": tc.status.value,
-                        "content": tc.content,
-                    }
-                )
-            elif event["type"] in ("user_message", "agent_message", "agent_thought"):
-                trajectory.append({"type": event["type"], "text": event["text"]})
-        return trajectory
+        return _events_to_trajectory(session.events)
 
     # Legacy fallback: session has no event log (e.g. older agent shims
     # that manipulate session.tool_calls directly without going through

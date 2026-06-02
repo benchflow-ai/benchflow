@@ -1619,17 +1619,36 @@ class Rollout:
         adapter.on_ask_user(handler)
 
     def _capture_partial_acp_trajectory(self) -> None:
-        if self._trajectory or not self._acp_client or not self._acp_client.session:
+        """Append the live session's uncaptured tail to ``self._trajectory``.
+
+        Runs on the disconnect / cleanup path when ``execute_prompts`` may
+        have raised before the normal extend in :meth:`execute`. Uses
+        ``_session_traj_count`` as the pointer to events already extended
+        from this session so a partial scene's events are preserved on top
+        of any prior scenes' (already-captured) events — see PR #566 review.
+        """
+        # Defensive lookup tolerates bare ``object()`` stubs used by older
+        # rollout tests that pre-date the live-session partial-capture path.
+        session = (
+            getattr(self._acp_client, "session", None) if self._acp_client else None
+        )
+        if session is None:
             return
         try:
-            captured = _capture_session_trajectory(self._acp_client.session)
-            if captured:
-                self._trajectory = captured
-                self._partial_trajectory = True
-                self._trajectory_source = "partial_acp"
-                self._n_tool_calls = len(self._acp_client.session.tool_calls)
+            captured = _capture_session_trajectory(session)
         except Exception as e:
             logger.warning(f"Partial trajectory capture failed: {e}")
+            return
+        delta = captured[getattr(self, "_session_traj_count", 0) :]
+        if not delta:
+            return
+        self._trajectory.extend(delta)
+        self._partial_trajectory = True
+        self._trajectory_source = "partial_acp"
+        prior_session_tools = getattr(self, "_session_tool_count", 0)
+        new_tools = len(session.tool_calls) - prior_session_tools
+        if new_tools > 0:
+            self._n_tool_calls += new_tools
 
     # ── Phase 3c: EXECUTE ──
 
