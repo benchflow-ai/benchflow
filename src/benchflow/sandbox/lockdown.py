@@ -876,10 +876,20 @@ async def harden_before_verify(
     # caches (uv/pip/apt) are cleared — never the workspace, agent outputs,
     # installed tools, or task assets — and a failure here never blocks the
     # verifier. Runs on `main` only, consistent with the hardening policy above.
+    #
+    # Workspace-aware: a task can legitimately use /root or /home/<user> as its
+    # workspace (so "$u/.cache" would be workspace state the verifier must see
+    # untouched). Skip any per-user cache that overlaps the active workspace in
+    # either direction — this matters because restore_workspace defaults to False,
+    # so the later full restore does NOT run to undo a stray deletion.
+    workspace_guard = shlex.quote(workspace) if workspace else "/nonexistent"
     try:
         await env.exec(
+            f"WS={workspace_guard}; "
             "for u in /root /home/*; do "
-            'rm -rf "$u/.cache/uv" "$u/.cache/pip" "$u/.cache/uv_build" 2>/dev/null; '
+            '  case "$WS" in "$u" | "$u"/*) continue ;; esac; '
+            '  case "$u" in "$WS"/*) continue ;; esac; '
+            '  rm -rf "$u/.cache/uv" "$u/.cache/pip" "$u/.cache/uv_build" 2>/dev/null; '
             "done; "
             "rm -rf /tmp/uv-* /tmp/.uv-* /var/cache/apt/archives/*.deb 2>/dev/null; "
             "true",

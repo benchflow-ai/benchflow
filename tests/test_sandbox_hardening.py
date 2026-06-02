@@ -302,6 +302,64 @@ class TestVerifierDirWipe:
         # runs as root so it can clear every user's cache
         assert reclaim.kwargs.get("user") == "root"
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("workspace", ["/root", "/home/agent"])
+    async def test_reclaim_skips_caches_inside_the_workspace(self, workspace):
+        """When a task uses /root or /home/<user> as its workspace, the reclaim
+        must NOT delete "$workspace/.cache" — that is workspace state the verifier
+        must see untouched. restore_workspace defaults False, so nothing would
+        restore a stray deletion. Guards the workspace-fidelity review blocker."""
+        import shlex
+        import subprocess
+
+        from benchflow.sandbox.lockdown import harden_before_verify
+
+        env = _make_env()
+        await harden_before_verify(
+            env, _make_task(), sandbox_user=None, workspace=workspace
+        )
+
+        reclaim = next(
+            (c for c in env.exec.call_args_list if ".cache/uv" in c.args[0]), None
+        )
+        assert reclaim is not None
+        cmd = reclaim.args[0]
+        # the active workspace is plumbed into the guard ...
+        assert f"WS={shlex.quote(workspace)}" in cmd
+        # ... and overlap is guarded in both directions
+        assert 'case "$WS" in "$u" | "$u"/*) continue' in cmd
+        assert 'case "$u" in "$WS"/*) continue' in cmd
+
+        # behaviorally: the guard skips the workspace dir itself (hermetic check)
+        decide = subprocess.run(
+            [
+                "sh",
+                "-c",
+                f"WS={shlex.quote(workspace)}; u={shlex.quote(workspace)}; "
+                'case "$WS" in "$u" | "$u"/*) echo skip; exit ;; esac; '
+                'case "$u" in "$WS"/*) echo skip; exit ;; esac; echo clear',
+            ],
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        assert decide == "skip", f"workspace {workspace} should be skipped, got {decide}"
+
+    @pytest.mark.asyncio
+    async def test_reclaim_still_clears_caches_outside_the_workspace(self):
+        """A workspace like /app (not under /root or /home) leaves the per-user
+        cache reclaim fully active."""
+        from benchflow.sandbox.lockdown import harden_before_verify
+
+        env = _make_env()
+        await harden_before_verify(
+            env, _make_task(), sandbox_user=None, workspace="/app"
+        )
+        reclaim = next(
+            (c for c in env.exec.call_args_list if ".cache/uv" in c.args[0]), None
+        )
+        assert reclaim is not None
+        assert "WS=/app" in reclaim.args[0]
+
 
 # ── TestBuildConfigSnapshot ───────────────────────────────────────────────────
 
