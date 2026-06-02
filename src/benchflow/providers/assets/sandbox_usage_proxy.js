@@ -97,6 +97,9 @@ function bodyB64(chunks) {
   return Buffer.concat(chunks).toString("base64");
 }
 
+// Keep in sync with the Python source of truth:
+// benchflow/trajectories/gemini_paths.py:normalize_gemini_upstream_path
+// (tests/test_gemini_path_normalization.py pins parity across both runtimes).
 function normalizeGeminiUpstreamPath(pathWithQuery) {
   const qIdx = pathWithQuery.indexOf("?");
   let path = qIdx === -1 ? pathWithQuery : pathWithQuery.slice(0, qIdx);

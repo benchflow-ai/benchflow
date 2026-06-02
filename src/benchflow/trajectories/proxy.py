@@ -18,6 +18,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
+from .gemini_paths import is_gemini_target, normalize_gemini_upstream_path
 from .types import LLMExchange, LLMRequest, LLMResponse, Trajectory
 
 logger = logging.getLogger(__name__)
@@ -54,6 +55,9 @@ class TrajectoryProxy:
                 f"{', '.join(sorted(_PROMPT_CACHE_RETENTION_VALUES))}"
             )
         self._target = target.rstrip("/")
+        # litellm emits a malformed Gemini cache path through a custom api_base;
+        # the same-host proxy must rewrite it just like the Daytona sandbox proxy.
+        self._is_gemini_target = is_gemini_target(self._target)
         self._host = host
         self._port = port
         self._prompt_cache_retention = prompt_cache_retention
@@ -81,6 +85,14 @@ class TrajectoryProxy:
     @property
     def trajectory(self) -> Trajectory:
         return self._trajectory
+
+    def _upstream_url(self, path: str) -> str:
+        """Build the forwarded upstream URL, rewriting litellm's malformed Gemini
+        cache path when the target is the Gemini API (no-op for every other
+        host)."""
+        if self._is_gemini_target:
+            path = normalize_gemini_upstream_path(path)
+        return f"{self._target}{path}"
 
     async def start(self) -> None:
         logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -172,7 +184,7 @@ class TrajectoryProxy:
                 is_streaming = body.get("stream", False) or _is_sse_request_path(path)
 
                 start_time = time.monotonic()
-                target_url = f"{self._target}{path}"
+                target_url = self._upstream_url(path)
                 forward_headers = {
                     k: v
                     for k, v in headers.items()
