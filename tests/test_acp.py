@@ -212,6 +212,36 @@ class TestACPSession:
         )
         assert session.tool_calls[0].status == ToolCallStatus.COMPLETED
 
+    def test_handle_openhands_invoke_skill_update_marks_kind_skill(self):
+        """Guards issue #507: OpenHands invoke_skill ACP calls are canonicalized."""
+        session = ACPSession("test-session")
+        session.handle_update(
+            {
+                "sessionUpdate": "tool_call",
+                "toolCallId": "tc_1",
+                "title": "Load PDF skill for processing",
+                "kind": "other",
+            }
+        )
+        session.handle_update(
+            {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "tc_1",
+                "status": "completed",
+                "content": [
+                    {
+                        "content": {
+                            "type": "text",
+                            "text": "Tool: invoke_skill\nResult:\n[skill: pdf]",
+                        },
+                        "type": "content",
+                    }
+                ],
+            }
+        )
+
+        assert session.tool_calls[0].kind == "skill"
+
     def test_handle_invalid_tool_call_status(self):
         """Invalid status should fall back to IN_PROGRESS, not crash."""
         session = ACPSession("test-session")

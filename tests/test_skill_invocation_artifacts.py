@@ -12,8 +12,8 @@ from benchflow.rollout import _build_rollout_result
 from benchflow.trajectories.metrics import count_skill_invocations
 
 
-def test_skill_invocation_count_uses_structured_kind_only() -> None:
-    """Guards issue #507: skill counts must not come from display-text matching."""
+def test_skill_invocation_count_uses_structured_tool_calls_only() -> None:
+    """Guards issue #507: skill counts must not come from agent display text."""
     trajectory = [
         {
             "type": "tool_call",
@@ -25,6 +25,55 @@ def test_skill_invocation_count_uses_structured_kind_only() -> None:
     ]
 
     assert count_skill_invocations(trajectory) == 1
+
+
+def test_skill_invocation_count_accepts_openhands_invoke_skill_content() -> None:
+    """Guards issue #507: OpenHands invoke_skill ACP calls count as skills."""
+    trajectory = [
+        {
+            "type": "tool_call",
+            "kind": "other",
+            "title": "Load PDF skill for processing",
+            "status": "completed",
+            "content": [
+                {
+                    "content": {
+                        "type": "text",
+                        "text": "Tool: invoke_skill\nResult:\n[skill: pdf]\n# PDF Guide",
+                    },
+                    "type": "content",
+                }
+            ],
+        }
+    ]
+
+    assert count_skill_invocations(trajectory) == 1
+
+
+def test_skill_invocation_count_ignores_non_skill_tool_output_mentions() -> None:
+    """Guards issue #507: ordinary tool output is not a skill invocation."""
+    trajectory = [
+        {
+            "type": "tool_call",
+            "kind": "bash",
+            "title": "cat log.txt",
+            "content": [
+                {
+                    "content": {
+                        "type": "text",
+                        "text": "Tool: invoke_skill\nResult:\n[skill: pdf]",
+                    },
+                    "type": "content",
+                }
+            ],
+        },
+        {
+            "type": "agent_message",
+            "text": "Tool: invoke_skill\nResult:\n[skill: marker]",
+        },
+    ]
+
+    assert count_skill_invocations(trajectory) == 0
 
 
 def test_build_rollout_result_writes_skill_invocation_metric(tmp_path) -> None:

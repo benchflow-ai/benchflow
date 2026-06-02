@@ -3,6 +3,8 @@
 import logging
 from datetime import datetime
 
+from benchflow.trajectories.metrics import content_contains_skill_invocation_tool
+
 from .types import (
     AgentCapabilities,
     AgentInfo,
@@ -11,6 +13,19 @@ from .types import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _canonical_tool_kind(kind: object, title: object = "") -> str:
+    raw_kind = kind if isinstance(kind, str) and kind else "other"
+    normalized_kind = raw_kind.strip().lower().replace("-", "_")
+    normalized_title = (
+        title.strip().lower().replace("-", "_") if isinstance(title, str) else ""
+    )
+    if normalized_kind in {"skill", "invoke_skill", "activate_skill"}:
+        return "skill"
+    if normalized_title in {"invoke_skill", "activate_skill"}:
+        return "skill"
+    return raw_kind
 
 
 class ToolCallRecord:
@@ -105,7 +120,9 @@ class ACPSession:
             record = ToolCallRecord(
                 tool_call_id=update.get("toolCallId", ""),
                 title=update.get("title", ""),
-                kind=update.get("kind", "other"),
+                kind=_canonical_tool_kind(
+                    update.get("kind", "other"), update.get("title", "")
+                ),
             )
             self.tool_calls.append(record)
             self._tool_call_map[record.tool_call_id] = record
@@ -119,7 +136,9 @@ class ACPSession:
                 record = ToolCallRecord(
                     tool_call_id=tc_id,
                     title=update.get("title", ""),
-                    kind=update.get("kind", "tool"),
+                    kind=_canonical_tool_kind(
+                        update.get("kind", "tool"), update.get("title", "")
+                    ),
                 )
                 self.tool_calls.append(record)
                 self._tool_call_map[tc_id] = record
@@ -129,7 +148,10 @@ class ACPSession:
             except ValueError:
                 logger.warning(f"Unknown tool call status: {update.get('status')}")
                 status = ToolCallStatus.IN_PROGRESS
-            record.update_status(status, update.get("content"))
+            content = update.get("content")
+            record.update_status(status, content)
+            if content_contains_skill_invocation_tool(content):
+                record.kind = "skill"
 
         elif update_type == "agent_message_chunk":
             content = update.get("content", {})
