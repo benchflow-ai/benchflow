@@ -551,8 +551,14 @@ AGENTS: dict[str, AgentConfig] = {
             "  fi && "
             "uv tool install --force --refresh "
             "--with 'boto3>=1.40' "
-            # Bedrock Opus 4.8+ needs litellm's adaptive-thinking `max` effort + output_config
-            # path (absent from stable 1.86.x). Inert for other models. See oh_bedrock_opus_patch.py.
+            # Pin litellm to the prerelease carrying the Bedrock adaptive-thinking
+            # effort + output_config path (absent from stable 1.86.x), required for
+            # Claude Opus 4.8+. NOTE: this is a DELIBERATE, OpenHands-wide litellm
+            # bump — it changes the litellm version for every provider/model this
+            # OpenHands install talks to, not just Bedrock 4.8. The bundled shim is
+            # regex-gated and inert elsewhere, but the version itself is global.
+            # Revisit/drop once the fix ships in a stable litellm. See
+            # oh_bedrock_opus_patch.py.
             "--with 'litellm==1.88.0rc1' "
             "--from 'git+https://github.com/OpenHands/OpenHands-CLI.git@main' "
             "openhands --python 3.12 && "
@@ -564,17 +570,32 @@ AGENTS: dict[str, AgentConfig] = {
             "mkdir -p ~/.openhands && "
             'echo \'{"llm":{"model":"placeholder","api_key":"placeholder"}}\' '
             "> ~/.openhands/agent_settings.json && "
-            # Deploy the Bedrock Opus 4.8+ adaptive-thinking shim into the sandbox litellm.
-            # Best-effort (the trailing `true` keeps it from ever failing the install); the
-            # shim is regex-gated internally => a strict no-op for every non-4.8 model.
-            "( SP=\"$(ls -d \"$(uv tool dir)\"/openhands/lib/python*/site-packages "
-            "2>/dev/null | head -1)\"; "
-            "[ -n \"$SP\" ] && "
+            # Deploy the Bedrock Opus 4.8+ adaptive-thinking shim into the sandbox
+            # litellm, then BEHAVIORALLY self-test it. On Daytona (direct Bedrock,
+            # no host proxy) this shim is the ONLY mechanism, so a silent deploy
+            # failure would regress Claude 4.8 thinking to the rejected legacy
+            # shape. The install stays non-fatal (other providers must still
+            # install) but emits a distinct ACTIVE / NOT-active marker so a failure
+            # is visible instead of swallowed. Regex-gated => a no-op for non-4.8.
+            '( SP="$(ls -d "$(uv tool dir)"/openhands/lib/python*/site-packages '
+            '2>/dev/null | head -1)"; '
+            '[ -n "$SP" ] && '
             f"echo '{_OH_BEDROCK_OPUS_SHIM_B64}' | base64 -d "
-            "> \"$SP/oh_bedrock_opus_patch.py\" && "
+            '> "$SP/oh_bedrock_opus_patch.py" && '
             "printf 'import oh_bedrock_opus_patch\\n' "
-            "> \"$SP/zz_oh_bedrock_opus_patch.pth\" "
+            '> "$SP/zz_oh_bedrock_opus_patch.pth" '
             "|| echo 'benchflow: opus-4.8 bedrock thinking shim NOT deployed' >&2; "
+            # The .pth auto-imports the shim at interpreter startup, so the venv
+            # python must now classify a regional 4.8 id as adaptive-thinking.
+            'PY="$(uv tool dir)/openhands/bin/python"; '
+            '[ -x "$PY" ] && "$PY" -c '
+            "'import sys; from litellm.llms.anthropic.chat.transformation "
+            "import AnthropicConfig as C; "
+            "sys.exit(0 if C._is_adaptive_thinking_model"
+            '("us.anthropic.claude-opus-4-8") else 1)\' 2>/dev/null '
+            "&& echo 'benchflow: opus-4.8 bedrock thinking shim ACTIVE' >&2 "
+            "|| echo 'benchflow: opus-4.8 bedrock thinking shim NOT active"
+            " (Daytona Bedrock 4.8 thinking will regress)' >&2; "
             "true ) && "
             "command -v openhands >/dev/null 2>&1"
         ),

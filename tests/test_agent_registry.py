@@ -114,6 +114,17 @@ class TestOpenHandsConfig:
         assert "oh_bedrock_opus_patch.py" in cfg.install_cmd
         assert "zz_oh_bedrock_opus_patch.pth" in cfg.install_cmd
 
+    def test_openhands_install_cmd_self_tests_the_shim(self):
+        """The shim is the sole Daytona mechanism, so a deploy failure must be
+        loud, not swallowed: the install behaviorally verifies it patched litellm
+        and emits a distinct ACTIVE / NOT-active marker."""
+        cfg = AGENTS["openhands"]
+        # behavioral check runs the venv python against the patched classifier
+        assert "_is_adaptive_thinking_model" in cfg.install_cmd
+        assert "us.anthropic.claude-opus-4-8" in cfg.install_cmd
+        assert "shim ACTIVE" in cfg.install_cmd
+        assert "shim NOT active" in cfg.install_cmd
+
     def test_openhands_apt_bootstrap_retries_transient_mirror_failures(self):
         """Guards the local fix on v0.5-integration@e55219d against Ubuntu mirror signature flakiness."""
         cfg = AGENTS["openhands"]
