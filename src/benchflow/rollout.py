@@ -2703,6 +2703,8 @@ class Rollout:
                 runtime_skills_dir=self._config.skills_dir,
                 declared_sandbox_skills_dir=None,
             ),
-            sandbox_id=self._sandbox_id,
+            # getattr guard: cleanup/export paths build a Rollout skeleton via
+            # __new__ (no __init__), so _sandbox_id may be unset there (#563).
+            sandbox_id=getattr(self, "_sandbox_id", None),
             **self._usage_metrics,
         )
