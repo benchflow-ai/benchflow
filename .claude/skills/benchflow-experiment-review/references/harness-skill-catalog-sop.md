@@ -46,6 +46,7 @@ startup request bodies are absent, and prints JSON:
   "harness": "openhands",
   "catalog_format": "...",
   "skill_count": 42,
+  "task_skills_loading": 1,
   "skills": [{"name": "code-simplifier", "description": "..."}]
 }
 ```
@@ -54,6 +55,20 @@ If it prints `unknown`, `skill_count: 0`, or `manual_review_required: true`,
 continue with the manual procedure below. If it prints `pi-acp` with
 `skill_count: 0`, that means no startup skill catalog was serialized, not that
 pi has no skill concept at all.
+
+`task_skills_loading` is a separate 0/1 signal for task-specific skills:
+
+- `1`: every expected task-specific skill was recovered in the startup skill
+  catalog.
+- `0`: the task-specific skill set was absent, incomplete, or intentionally not
+  loaded.
+
+For with-skills runs, expect `task_skills_loading: 1`. For without-skills runs,
+expect `task_skills_loading: 0`. The script looks for expected task skill names
+in nearby metadata such as `run_config.json` / `config.json` keys named
+`task_skills`, `expected_task_skills`, `task_skill_names`, or
+`required_task_skills`; use repeated `--task-skill <name>` or `--task-path
+<task-dir>` when that metadata is unavailable.
 
 ## General manual procedure
 
@@ -322,8 +337,10 @@ For each trajectory:
 3. Startup prompt field(s) recorded.
 4. Skill catalog anchor found or explicitly marked absent.
 5. Skill names extracted with count.
-6. SHA-256 of extracted catalog/startup prompt saved.
-7. For no-skill trials, scan full trajectory for:
+6. `task_skills_loading` checked against run mode: `1` for with-skills, `0`
+   for without-skills.
+7. SHA-256 of extracted catalog/startup prompt saved.
+8. For no-skill trials, scan full trajectory for:
 
 ```text
 SKILL.md
@@ -335,4 +352,4 @@ activate_skill
 ToolSearch select:
 ```
 
-8. If any of the above appears in a no-skill trajectory, inspect manually before marking healthy.
+9. If any of the above appears in a no-skill trajectory, inspect manually before marking healthy.

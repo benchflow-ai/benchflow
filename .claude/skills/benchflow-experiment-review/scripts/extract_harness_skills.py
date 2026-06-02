@@ -8,6 +8,17 @@ import re
 from pathlib import Path
 from typing import Any
 
+TASK_SKILL_KEYS = {
+    "expected_task_skill_names",
+    "expected_task_skills",
+    "required_task_skills",
+    "task_bundled_skills",
+    "task_skill_names",
+    "task_skills",
+}
+
+TASK_PATH_KEYS = {"task_dir", "task_path", "tasks_dir"}
+
 
 def textify(value: Any) -> str:
     if value is None:
@@ -60,6 +71,223 @@ def read_jsonl(path: Path, limit: int | None = None) -> list[dict[str, Any]]:
         except json.JSONDecodeError:
             continue
     return rows
+
+
+def normalize_skill_name(name: str) -> str:
+    return name.strip().lower().replace("_", "-")
+
+
+def unique_sorted(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        clean = value.strip()
+        key = normalize_skill_name(clean)
+        if clean and key not in seen:
+            seen.add(key)
+            result.append(clean)
+    return sorted(result, key=normalize_skill_name)
+
+
+def values_to_skill_names(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [part.strip() for part in re.split(r"[,;\n]", value) if part.strip()]
+    if isinstance(value, list):
+        names: list[str] = []
+        for item in value:
+            names.extend(values_to_skill_names(item))
+        return names
+    if isinstance(value, dict):
+        for key in ("name", "skill", "id"):
+            candidate = value.get(key)
+            if isinstance(candidate, str):
+                return [candidate]
+    return []
+
+
+def walk_dicts(value: Any) -> list[dict[str, Any]]:
+    dicts: list[dict[str, Any]] = []
+    if isinstance(value, dict):
+        dicts.append(value)
+        for item in value.values():
+            dicts.extend(walk_dicts(item))
+    elif isinstance(value, list):
+        for item in value:
+            dicts.extend(walk_dicts(item))
+    return dicts
+
+
+def infer_skill_mode(value: Any) -> str:
+    text = str(value or "").strip().lower().replace("-", "_")
+    if text in {"with_skill", "with_skills", "with_task_skills", "task_skills", "skills"}:
+        return "with_skills"
+    if text in {"without_skill", "without_skills", "no_skill", "no_skills", "baseline"}:
+        return "without_skills"
+    return "unknown"
+
+
+def discover_task_skills_dir(task_path: Path) -> list[str]:
+    skills_root = task_path / "environment" / "skills"
+    if not skills_root.is_dir():
+        return []
+    return [
+        child.name
+        for child in sorted(skills_root.iterdir())
+        if child.is_dir() and (child / "SKILL.md").exists()
+    ]
+
+
+def load_json_file(path: Path) -> Any | None:
+    try:
+        return json.loads(path.read_text(errors="replace"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def metadata_search_roots(trajectory: Path) -> list[Path]:
+    roots: list[Path] = []
+    for candidate in [
+        trajectory.parent,
+        trajectory.parent.parent,
+        trajectory.parent.parent.parent,
+        trajectory.parent.parent.parent.parent,
+    ]:
+        if candidate not in roots:
+            roots.append(candidate)
+    return [root for root in roots if root.exists()]
+
+
+def metadata_files(trajectory: Path) -> list[Path]:
+    names = (
+        "run_config.json",
+        "config.json",
+        "metadata.json",
+        "result.json",
+        "results.json",
+        "rollout_config.json",
+        "task_config.json",
+    )
+    files: list[Path] = []
+    for root in metadata_search_roots(trajectory):
+        for name in names:
+            path = root / name
+            if path.is_file() and path not in files:
+                files.append(path)
+    return files
+
+
+def infer_task_skill_context(
+    trajectory: Path,
+    cli_task_skills: list[str],
+    cli_task_path: Path | None,
+) -> dict[str, Any]:
+    expected_names: list[str] = list(cli_task_skills)
+    mode = "unknown"
+    evidence: list[str] = []
+    metadata_paths: list[str] = []
+    task_paths: list[Path] = []
+
+    if cli_task_skills:
+        evidence.append("cli:--task-skill")
+    if cli_task_path is not None:
+        task_paths.append(cli_task_path)
+        evidence.append("cli:--task-path")
+
+    for path in metadata_files(trajectory):
+        metadata = load_json_file(path)
+        if metadata is None:
+            continue
+        metadata_paths.append(str(path))
+        for item in walk_dicts(metadata):
+            for key, value in item.items():
+                if key in TASK_SKILL_KEYS:
+                    names = values_to_skill_names(value)
+                    if names:
+                        expected_names.extend(names)
+                        evidence.append(f"{path.name}:{key}")
+                elif key == "skill_mode":
+                    inferred = infer_skill_mode(value)
+                    if inferred != "unknown":
+                        mode = inferred
+                elif key == "include_task_skills":
+                    if value is True:
+                        mode = "with_skills"
+                    elif value is False and mode == "unknown":
+                        mode = "without_skills"
+                elif key in TASK_PATH_KEYS and isinstance(value, str):
+                    candidate = Path(value).expanduser()
+                    if candidate.exists():
+                        task_paths.append(candidate)
+
+    for task_path in task_paths:
+        names = discover_task_skills_dir(task_path)
+        if names:
+            expected_names.extend(names)
+            evidence.append(f"{task_path}:environment/skills")
+
+    return {
+        "task_skill_mode": mode,
+        "expected_task_skills": unique_sorted(expected_names),
+        "task_skill_evidence": unique_sorted(evidence),
+        "metadata_files": unique_sorted(metadata_paths),
+    }
+
+
+def catalog_skill_names(skills: list[dict[str, Any]]) -> list[str]:
+    names: list[str] = []
+    for skill in skills:
+        name = skill.get("name")
+        if isinstance(name, str):
+            names.append(name)
+    return unique_sorted(names)
+
+
+def task_skill_loading_fields(
+    extracted: dict[str, Any],
+    task_skill_context: dict[str, Any],
+) -> dict[str, Any]:
+    expected = task_skill_context.get("expected_task_skills", [])
+    expected_norm = {normalize_skill_name(name) for name in expected}
+    catalog_names = catalog_skill_names(extracted.get("skills", []))
+    catalog_norm_to_name = {normalize_skill_name(name): name for name in catalog_names}
+
+    loaded = [catalog_norm_to_name[name] for name in sorted(expected_norm) if name in catalog_norm_to_name]
+    missing = [name for name in expected if normalize_skill_name(name) not in catalog_norm_to_name]
+    mode = task_skill_context.get("task_skill_mode", "unknown")
+
+    if expected and mode == "without_skills":
+        loading = 1 if not missing else 0
+        if loading:
+            status = "unexpected_complete_task_skills_loaded_without_skills"
+        elif loaded:
+            status = "partial_unexpected_task_skills_loaded_without_skills"
+        else:
+            status = "not_loaded_without_skills"
+    elif expected:
+        loading = 1 if not missing else 0
+        status = "complete" if loading else "missing_expected_task_skills"
+    elif mode == "without_skills":
+        loading = 0
+        status = "not_expected_without_skills"
+    elif mode == "with_skills":
+        loading = 0
+        status = "expected_with_skills_but_no_task_skill_manifest"
+    else:
+        loading = 0
+        status = "unknown_expected_task_skills"
+
+    return {
+        "task_skills_loading": loading,
+        "task_skills_loading_status": status,
+        "task_skill_mode": mode,
+        "expected_task_skills": expected,
+        "loaded_task_skills": unique_sorted(loaded),
+        "missing_task_skills": unique_sorted(missing),
+        "task_skill_evidence": task_skill_context.get("task_skill_evidence", []),
+        "metadata_files": task_skill_context.get("metadata_files", []),
+    }
 
 
 def request_bodies(events: list[dict[str, Any]]) -> list[tuple[int, str, dict[str, Any]]]:
@@ -303,9 +531,11 @@ def finalize_result(
     request_path: str,
     catalog_source: str,
     checked_files: list[str],
+    task_skill_context: dict[str, Any],
 ) -> dict[str, Any]:
     source_text = extracted.pop("_source_text", "")
     skill_count = len(extracted.get("skills", []))
+    task_loading = task_skill_loading_fields(extracted, task_skill_context)
     extracted.update(
         {
             "trajectory": str(path),
@@ -316,8 +546,18 @@ def finalize_result(
             "catalog_sha256": sha256_text(source_text) if source_text else None,
             "catalog_text_chars": len(source_text),
             "skill_count": skill_count,
-            "manual_review_required": skill_count == 0,
             "checked_files": checked_files,
+        }
+    )
+    extracted.update(task_loading)
+    extracted["manual_review_required"] = (
+        skill_count == 0
+        or task_loading["task_skills_loading_status"]
+        in {
+            "expected_with_skills_but_no_task_skill_manifest",
+            "missing_expected_task_skills",
+            "partial_unexpected_task_skills_loaded_without_skills",
+            "unexpected_complete_task_skills_loaded_without_skills",
         }
     )
     return extracted
@@ -327,6 +567,7 @@ def extract_from_events(
     path: Path,
     events: list[dict[str, Any]],
     checked_files: list[str],
+    task_skill_context: dict[str, Any],
 ) -> dict[str, Any] | None:
     for line_index, request_path, body in request_bodies(events):
         extracted = extract_from_body(body)
@@ -338,6 +579,7 @@ def extract_from_events(
                 request_path,
                 "request.body",
                 checked_files,
+                task_skill_context,
             )
 
     for line_index, text in system_prompt_candidates(events):
@@ -351,11 +593,17 @@ def extract_from_events(
                     "",
                     "agent_thought_system_prompt",
                     checked_files,
+                    task_skill_context,
                 )
     return None
 
 
-def unknown_result(trajectory: Path, checked_files: list[str]) -> dict[str, Any]:
+def unknown_result(
+    trajectory: Path,
+    checked_files: list[str],
+    task_skill_context: dict[str, Any],
+) -> dict[str, Any]:
+    task_loading = task_skill_loading_fields({"skills": []}, task_skill_context)
     return {
         "trajectory": str(trajectory),
         "harness": "unknown",
@@ -365,6 +613,7 @@ def unknown_result(trajectory: Path, checked_files: list[str]) -> dict[str, Any]
         "skill_count": 0,
         "manual_review_required": True,
         "checked_files": checked_files,
+        **task_loading,
     }
 
 
@@ -384,23 +633,47 @@ def main() -> None:
         default=512,
         help="Maximum JSONL lines to scan per trajectory; use 0 to scan all lines.",
     )
+    parser.add_argument(
+        "--task-skill",
+        action="append",
+        default=[],
+        help="Expected task-specific skill name. Repeat for multiple skills.",
+    )
+    parser.add_argument(
+        "--task-path",
+        type=Path,
+        default=None,
+        help="Optional task directory; environment/skills/*/SKILL.md names are treated as expected task skills.",
+    )
     args = parser.parse_args()
 
     limit = None if args.max_lines == 0 else args.max_lines
     checked_files = [str(args.trajectory)]
+    task_skill_context = infer_task_skill_context(
+        args.trajectory,
+        args.task_skill,
+        args.task_path,
+    )
     events = read_jsonl(args.trajectory, limit=limit)
-    extracted = extract_from_events(args.trajectory, events, checked_files)
+    extracted = extract_from_events(args.trajectory, events, checked_files, task_skill_context)
 
     if extracted is None:
         fallback = sibling_acp_path(args.trajectory)
         if fallback is not None:
             checked_files.append(str(fallback))
             acp_events = read_jsonl(fallback, limit=limit)
-            extracted = extract_from_events(fallback, acp_events, checked_files)
+            extracted = extract_from_events(
+                fallback,
+                acp_events,
+                checked_files,
+                task_skill_context,
+            )
 
     print(
         json.dumps(
-            extracted if extracted is not None else unknown_result(args.trajectory, checked_files),
+            extracted
+            if extracted is not None
+            else unknown_result(args.trajectory, checked_files, task_skill_context),
             indent=2,
             ensure_ascii=False,
         )

@@ -65,6 +65,10 @@ Review the trajectory for meaning, not just existence:
   Treat the script as a fast path: if it returns `unknown`, `skill_count: 0`,
   or `manual_review_required: true`, fall back to the SOP's manual procedure
   before concluding that no skills were available.
+- Check `task_skills_loading`: with-skill trials should report `1`, meaning
+  every expected task-specific skill was recovered in the startup skill catalog;
+  without-skill trials should report `0`, meaning task-specific skills were not
+  injected into the agent's startup catalog.
 - Timeout trials show real progress or attempts before timeout and still have
   complete timing, token, trajectory, and verifier result metadata.
 - The final answer/result and verifier score refer to the same task workspace
@@ -191,6 +195,11 @@ Skill loading mismatch:
 - Use `scripts/extract_harness_skills.py` for a first pass; it scans the LLM
   trajectory and falls back to sibling ACP system-prompt traces, but manual SOP
   review remains authoritative when the output requests review.
+- Interpret `task_skills_loading` separately from `skill_count`.
+  `skill_count` is the full recovered startup catalog size, while
+  `task_skills_loading` is only whether the task's own expected skills were
+  fully loaded. For with-skills runs expect `task_skills_loading: 1`; for
+  without-skills runs expect `task_skills_loading: 0`.
 - Do not infer a catalog when the harness does not serialize one. For example,
   current `pi-acp` trajectories may expose no startup skill catalog; mark this
   as `catalog_not_serialized` and rely on tool/file trace evidence.
