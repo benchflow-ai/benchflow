@@ -297,16 +297,6 @@ def _model_from_trajectory(runtime: ProviderRuntime) -> str | None:
     return runtime.backend_model
 
 
-def _cache_tokens_are_input_breakdown(trajectory: Any) -> bool:
-    for exchange in trajectory.exchanges:
-        usage = exchange.response.body.get("usage", {})
-        if (usage.get("prompt_tokens_details") or {}).get("cached_tokens") is not None:
-            return True
-        if (usage.get("input_tokens_details") or {}).get("cached_tokens") is not None:
-            return True
-    return False
-
-
 async def _skip_or_block_usage_proxy(
     *,
     usage_cfg: UsageTrackingConfig,
@@ -711,7 +701,11 @@ def extract_usage(runtime: ProviderRuntime | None) -> dict[str, Any]:
         output_tokens=output_tokens,
         cache_read_tokens=cache_read_tokens,
         cache_creation_tokens=cache_creation_tokens,
-        cache_tokens_included_in_input=_cache_tokens_are_input_breakdown(trajectory),
+        # ``input_tokens`` is normalized to include cache (see TokenUsage), so the
+        # full-rate input is always input minus the cache breakdown. This also
+        # fixes the prior Gemini double-charge (its cache was billed at both the
+        # full input rate and the cache-read rate).
+        cache_tokens_included_in_input=True,
     )
     return {
         "n_input_tokens": input_tokens,
