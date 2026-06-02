@@ -1,6 +1,6 @@
 # SOP: recover startup skill catalogs from SkillsBench harness trajectories
 
-Scope: current SkillsBench leaderboard PR4 / v1.1 trajectories. The primary source of truth is `trajectory/llm_trajectory.jsonl`; use sibling `trajectory/acp_trajectory.jsonl` only as a fallback for the few usage-only LLM logs.
+The primary source of truth is `trajectory/llm_trajectory.jsonl`; use sibling `trajectory/acp_trajectory.jsonl` as a fallback for the few usage-only LLM logs.
 
 The field paths and sample skill counts below are point-in-time observations from the audited dataset. Verify them against the current dataset before treating any count or marker as authoritative.
 
