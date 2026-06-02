@@ -1046,9 +1046,7 @@ class TestResolveAgentEnvCodexOpenAIPrefix:
 
         assert result["_BENCHFLOW_SUBSCRIPTION_AUTH"] == "1"
 
-    def test_us_openai_prefix_still_requires_explicit_key(
-        self, monkeypatch, tmp_path
-    ):
+    def test_us_openai_prefix_still_requires_explicit_key(self, monkeypatch, tmp_path):
         """Regional endpoint is not the canonical api.openai.com — host auth must not apply."""
         codex_dir = tmp_path / ".codex"
         codex_dir.mkdir()
