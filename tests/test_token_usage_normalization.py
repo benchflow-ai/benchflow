@@ -116,6 +116,24 @@ _CASES = [
         0,
         67365,  # output = 695 + 62 thoughts; cache is subset
     ),
+    (
+        "gemini_tool_use_prompt_folded_into_input",
+        {
+            "usageMetadata": {
+                "promptTokenCount": 1000,
+                "candidatesTokenCount": 50,
+                "cachedContentTokenCount": 200,
+                "thoughtsTokenCount": 10,
+                "toolUsePromptTokenCount": 300,
+                "totalTokenCount": 1360,
+            }
+        },
+        1300,  # input = 1000 promptTokenCount + 300 toolUsePromptTokenCount (additive)
+        60,  # output = 50 candidates + 10 thoughts
+        200,  # cache_read is a subset of the prompt
+        0,
+        1360,  # provider total == input + output (1300 + 60)
+    ),
 ]
 
 

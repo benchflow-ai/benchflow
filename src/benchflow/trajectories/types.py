@@ -30,6 +30,7 @@ _USAGE_METADATA_KEYS = {
     "candidatesTokenCount",
     "totalTokenCount",
     "cachedContentTokenCount",
+    "toolUsePromptTokenCount",
 }
 
 
@@ -136,7 +137,17 @@ def _exchange_token_usage(exchange: "LLMExchange") -> TokenUsage:
         usage.get("inputTokens"),
         usage_metadata.get("promptTokenCount"),
     )
-    input_tokens = raw_input + additive_cache_read + additive_cache_creation
+    # Gemini reports tool-use prompt tokens (`toolUsePromptTokenCount`) separately
+    # from `promptTokenCount` — it is additive input, NOT a subset — so fold it in
+    # too, or tool-heavy Gemini runs underreport input/cost (and totalTokenCount
+    # would exceed input + output). Absent for every other provider.
+    additive_tool_use_prompt = _first_int(usage_metadata.get("toolUsePromptTokenCount"))
+    input_tokens = (
+        raw_input
+        + additive_cache_read
+        + additive_cache_creation
+        + additive_tool_use_prompt
+    )
 
     # Reasoning/thinking tokens are billed as output. Anthropic/OpenAI already
     # fold them into output_tokens/completion_tokens; Gemini reports them
