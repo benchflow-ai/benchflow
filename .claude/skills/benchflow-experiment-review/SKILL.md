@@ -1,6 +1,6 @@
 ---
 name: benchflow-experiment-review
-description: Review completed Benchflow experiment trials and integration-test Benchflow code changes. Use when auditing trajectory health, metadata completeness, Daytona-vs-Docker parity, skill injection, path/root handling, verifier scoring isolation, coverage gaps, Docker/Daytona failures, or release-readiness of benchmark runs.
+description: Review Benchflow or SkillsBench task-run trajectories and integration-test Benchflow code changes. Use this skill whenever the user asks to audit traj health, failed or timed-out runs, healthy pass/fail/timeout status, no-skill leakage, skill loading, reward hacking, verifier isolation, metadata completeness, token usage, timing, Daytona-vs-Docker parity, path/root handling, coverage gaps, Docker/Daytona failures, or release-readiness of benchmark data.
 ---
 
 # Benchflow Experiment Review
@@ -9,6 +9,16 @@ Use this skill to decide whether a Benchflow run trial is clean enough to
 publish or whether a Benchflow code change is safe to use for new experiments.
 The standard is: a clean sandbox with only task-needed resources, every agent
 behavior logged, no verifier leakage, and a final score or healthy failure.
+
+## Portability
+
+This skill is intentionally harness-portable. Install or copy the entire
+`benchflow-experiment-review/` directory into the active harness's skill root,
+keeping `SKILL.md`, `scripts/`, `references/`, `evals/`, and optional
+`agents/` metadata together. Use the same review procedure regardless of
+whether the harness loads skills from `.claude/skills`, `.codex/skills`,
+OpenHands/Gemini/pi-agent skill roots, or another compatible `SKILL.md`
+directory.
 
 ## Operating Rule
 
@@ -52,6 +62,9 @@ Review the trajectory for meaning, not just existence:
 - For harness-specific skill catalog recovery, load
   `references/harness-skill-catalog-sop.md` or run
   `scripts/extract_harness_skills.py` against `trajectory/llm_trajectory.jsonl`.
+  Treat the script as a fast path: if it returns `unknown`, `skill_count: 0`,
+  or `manual_review_required: true`, fall back to the SOP's manual procedure
+  before concluding that no skills were available.
 - Timeout trials show real progress or attempts before timeout and still have
   complete timing, token, trajectory, and verifier result metadata.
 - The final answer/result and verifier score refer to the same task workspace
@@ -175,6 +188,9 @@ Skill loading mismatch:
 - Recover and record the startup catalog source field, line index, skill names,
   skill count, and SHA-256 of the exact recovered prompt/catalog text when
   possible.
+- Use `scripts/extract_harness_skills.py` for a first pass; it scans the LLM
+  trajectory and falls back to sibling ACP system-prompt traces, but manual SOP
+  review remains authoritative when the output requests review.
 - Do not infer a catalog when the harness does not serialize one. For example,
   current `pi-acp` trajectories may expose no startup skill catalog; mark this
   as `catalog_not_serialized` and rely on tool/file trace evidence.

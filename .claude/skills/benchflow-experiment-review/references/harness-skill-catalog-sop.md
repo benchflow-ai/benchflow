@@ -2,6 +2,22 @@
 
 Scope: current SkillsBench leaderboard PR4 / v1.1 trajectories. The primary source of truth is `trajectory/llm_trajectory.jsonl`; use sibling `trajectory/acp_trajectory.jsonl` only as a fallback for the few usage-only LLM logs.
 
+The field paths and sample skill counts below are point-in-time observations from the audited dataset. Verify them against the current dataset before treating any count or marker as authoritative.
+
+## Table of contents
+
+- [Executive summary](#executive-summary)
+- [Fast path](#fast-path)
+- [General manual procedure](#general-manual-procedure)
+- [Harness rules](#harness-rules)
+  - [Claude Code](#claude-code)
+  - [Codex](#codex)
+  - [OpenHands](#openhands)
+  - [Gemini CLI](#gemini-cli)
+  - [Pi Agent / `pi-acp`](#pi-agent--pi-acp)
+- [Old PR caveat](#old-pr-caveat)
+- [Audit checklist](#audit-checklist)
+
 ## Executive summary
 
 | Harness | Where startup prompt lives | Where task prompt lives | Skill catalog format | Current PR4 result |
@@ -22,7 +38,8 @@ Use the helper script from this skill package:
 scripts/extract_harness_skills.py /path/to/trajectory/llm_trajectory.jsonl
 ```
 
-It prints JSON:
+It scans the LLM trajectory, falls back to sibling `acp_trajectory.jsonl` when
+startup request bodies are absent, and prints JSON:
 
 ```json
 {
@@ -33,7 +50,10 @@ It prints JSON:
 }
 ```
 
-If it prints `pi-acp` with `skill_count: 0`, that means no startup skill catalog was serialized, not that pi has no skill concept at all.
+If it prints `unknown`, `skill_count: 0`, or `manual_review_required: true`,
+continue with the manual procedure below. If it prints `pi-acp` with
+`skill_count: 0`, that means no startup skill catalog was serialized, not that
+pi has no skill concept at all.
 
 ## General manual procedure
 

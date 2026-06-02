@@ -1,0 +1,3 @@
+{"phase":"agent","type":"tool_call","tool":"read","args":{"path":"/home/agent/.codex/skills/task-helper/SKILL.md"}}
+{"phase":"agent","type":"tool_call","tool":"invoke_skill","args":{"name":"task-helper"}}
+{"phase":"verifier","type":"score","reward":0.0}

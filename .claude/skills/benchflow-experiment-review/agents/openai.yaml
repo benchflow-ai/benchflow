@@ -1,4 +1,4 @@
 interface:
   display_name: "Benchflow Experiment Review"
-  short_description: "Audit Benchflow trials and integration runs."
-  default_prompt: "Use $benchflow-experiment-review to audit a completed Benchflow trial or integration-test Benchflow code changes."
+  short_description: "Audit Benchflow traj health across harnesses."
+  default_prompt: "Use $benchflow-experiment-review to audit a completed Benchflow trajectory or integration-test Benchflow code changes."
