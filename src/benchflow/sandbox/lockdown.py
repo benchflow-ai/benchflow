@@ -867,6 +867,27 @@ async def harden_before_verify(
         "Verifier hardening failed: preparing /app",
         user="root",
     )
+    # Reclaim re-downloadable cache space before the verifier installs its own
+    # dependencies. Heavy SkillsBench tasks (playwright + marker-pdf + HF model
+    # snapshots) can saturate disk-constrained sandboxes — notably Daytona's hard
+    # 10GB/sandbox cap — so the verifier's own `uv`/`pip` install then fails with
+    # ENOSPC ("No space left on device") and the run is lost to infra instead of a
+    # real score. Best-effort and result-neutral: only re-downloadable download
+    # caches (uv/pip/apt) are cleared — never the workspace, agent outputs,
+    # installed tools, or task assets — and a failure here never blocks the
+    # verifier. Runs on `main` only, consistent with the hardening policy above.
+    try:
+        await env.exec(
+            "for u in /root /home/*; do "
+            'rm -rf "$u/.cache/uv" "$u/.cache/pip" "$u/.cache/uv_build" 2>/dev/null; '
+            "done; "
+            "rm -rf /tmp/uv-* /tmp/.uv-* /var/cache/apt/archives/*.deb 2>/dev/null; "
+            "true",
+            user="root",
+            timeout_sec=30,
+        )
+    except Exception:
+        logger.debug("pre-verifier disk reclaim skipped", exc_info=True)
     if workspace and restore_workspace:
         await _restore_build_config(env, workspace)
         await _refresh_verifier_workspace(env, workspace)

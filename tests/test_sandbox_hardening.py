@@ -276,6 +276,32 @@ class TestVerifierDirWipe:
         assert cleanup is not None
         assert cleanup.kwargs.get("user") == "root"
 
+    @pytest.mark.asyncio
+    async def test_reclaims_redownloadable_caches_before_verify(self):
+        """Frees uv/pip/apt download caches so the verifier's own deps fit on
+        disk-constrained sandboxes (e.g. Daytona's 10GB cap), without ever
+        touching the workspace, agent outputs, installed tools, or task assets."""
+        from benchflow.sandbox.lockdown import harden_before_verify
+
+        env = _make_env()
+        await harden_before_verify(env, _make_task(), sandbox_user=None)
+
+        reclaim = next(
+            (c for c in env.exec.call_args_list if ".cache/uv" in c.args[0]),
+            None,
+        )
+        assert reclaim is not None, "expected a pre-verifier disk reclaim exec"
+        cmd = reclaim.args[0]
+        # clears only re-downloadable caches ...
+        assert ".cache/pip" in cmd and "apt/archives" in cmd
+        # ... and never the workspace, agent outputs, installed tools, or assets
+        for forbidden in ("/app", "/workspace", "/tests", "site-packages", ".venv"):
+            assert forbidden not in cmd, f"reclaim must not touch {forbidden}"
+        # best-effort: swallows errors and never aborts hardening
+        assert "2>/dev/null" in cmd and cmd.rstrip().endswith("true")
+        # runs as root so it can clear every user's cache
+        assert reclaim.kwargs.get("user") == "root"
+
 
 # ── TestBuildConfigSnapshot ───────────────────────────────────────────────────
 
