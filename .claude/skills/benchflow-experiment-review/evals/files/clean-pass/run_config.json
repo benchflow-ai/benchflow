@@ -1,0 +1,11 @@
+{
+  "task_id": "example-clean-pass",
+  "harness": "openhands",
+  "model": "sample-model",
+  "skill_mode": "with_skills",
+  "trial_id": 1,
+  "sandbox": "daytona",
+  "source_ref": "eval-fixture",
+  "timeout_seconds": 900,
+  "task_skills": ["data-cleaning"]
+}

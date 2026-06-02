@@ -1,0 +1,12 @@
+{
+  "task_id": "example-infra-timeout",
+  "harness": "openhands",
+  "model": "sample-model",
+  "skill_mode": "with_skills",
+  "trial_id": 1,
+  "sandbox": "daytona",
+  "source_ref": "eval-fixture",
+  "timeout_seconds": 900,
+  "required_env": ["REQUIRED_TASK_API_KEY"],
+  "task_skills": ["api-client"]
+}

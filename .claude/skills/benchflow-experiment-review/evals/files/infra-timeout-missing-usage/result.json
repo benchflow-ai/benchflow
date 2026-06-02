@@ -1,0 +1,14 @@
+{
+  "status": "timeout",
+  "reward": null,
+  "verifier_started_after_agent": false,
+  "timing": {
+    "started_at": "2026-06-01T00:00:00Z",
+    "ended_at": null,
+    "duration_seconds": 900
+  },
+  "tool_usage": {
+    "bash": 1
+  },
+  "error": "Missing REQUIRED_TASK_API_KEY prevented task execution; token_usage was not recorded."
+}

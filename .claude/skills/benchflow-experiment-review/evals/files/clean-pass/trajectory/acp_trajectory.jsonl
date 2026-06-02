@@ -1,0 +1,3 @@
+{"phase":"agent","type":"tool_call","tool":"bash","args":{"cmd":"python solve.py"}}
+{"phase":"agent","type":"final","content":"Answer submitted."}
+{"phase":"verifier","type":"score","reward":1.0}
