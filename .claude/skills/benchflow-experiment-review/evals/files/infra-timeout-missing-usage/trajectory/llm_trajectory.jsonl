@@ -1,0 +1,2 @@
+{"request":{"path":"/chat/completions","body":{"messages":[{"role":"system","content":"You are OpenHands.\n<SKILLS><available_skills><skill><name>api-client</name><description>Use the task API.</description></skill></available_skills></SKILLS>"},{"role":"user","content":"Solve example-infra-timeout."}],"tools":[{"function":{"name":"bash"}}]}}}
+{"error":{"type":"provider_error","message":"request timed out before token usage could be recorded"}}

@@ -1,0 +1,18 @@
+{
+  "status": "fail",
+  "reward": 0.0,
+  "verifier_started_after_agent": true,
+  "timing": {
+    "started_at": "2026-06-01T00:00:00Z",
+    "ended_at": "2026-06-01T00:04:00Z",
+    "duration_seconds": 240
+  },
+  "token_usage": {
+    "input_tokens": 1400,
+    "output_tokens": 300
+  },
+  "tool_usage": {
+    "read": 2,
+    "bash": 1
+  }
+}
