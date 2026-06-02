@@ -966,3 +966,104 @@ class TestResolveAgentEnvHostProviderEndpoint:
 
         assert result["BENCHFLOW_PROVIDER_API_KEY"] == "zk-test"
         assert result["OPENAI_API_KEY"] == "zk-test"
+
+
+class TestResolveAgentEnvCodexOpenAIPrefix:
+    """Registering the first-party ``openai`` provider must not regress Codex auth.
+
+    Codex-acp historically accepts four auth modes against api.openai.com:
+    OPENAI_API_KEY / CODEX_API_KEY (alias) / CODEX_ACCESS_TOKEN /
+    host ``~/.codex/auth.json`` subscription auth. The first three are also
+    valid for bare ``gpt-*`` model IDs. After registering ``openai`` as a
+    provider, ``find_provider("openai/...")`` returns a match and the native-
+    OpenAI gate must still treat the canonical endpoint as native — otherwise
+    the alias/access-token/subscription paths silently break for users who
+    switch from ``gpt-5.4-mini`` to ``openai/gpt-5.4-mini``.
+
+    Custom proxies (``vllm/``, ``us-openai/``, etc.) must keep requiring an
+    explicit OPENAI_API_KEY — subscription/access-token auth does not apply.
+    """
+
+    def _patch_expanduser(self, monkeypatch, tmp_path):
+        orig = Path.expanduser
+
+        def fake(self):
+            s = str(self)
+            if s.startswith("~"):
+                return tmp_path / s[2:]
+            return orig(self)
+
+        monkeypatch.setattr(Path, "expanduser", fake)
+
+    @pytest.fixture(autouse=True)
+    def _clean_env(self, monkeypatch):
+        for k in (
+            "OPENAI_API_KEY",
+            "CODEX_API_KEY",
+            "CODEX_ACCESS_TOKEN",
+            "CODEX_AUTH_JSON",
+            "ANTHROPIC_API_KEY",
+        ):
+            monkeypatch.delenv(k, raising=False)
+
+    def test_codex_api_key_alias_works_for_openai_prefix(self, monkeypatch, tmp_path):
+        self._patch_expanduser(monkeypatch, tmp_path)
+        result = resolve_agent_env(
+            "codex-acp",
+            "openai/gpt-5.4-mini",
+            {"CODEX_API_KEY": "codex-key"},
+        )
+        assert result["CODEX_API_KEY"] == "codex-key"
+        assert result["OPENAI_API_KEY"] == "codex-key"
+
+    def test_codex_access_token_works_for_openai_prefix(self, monkeypatch, tmp_path):
+        self._patch_expanduser(monkeypatch, tmp_path)
+        result = resolve_agent_env(
+            "codex-acp",
+            "openai/gpt-5.4-mini",
+            {"CODEX_ACCESS_TOKEN": "access-token"},
+        )
+        assert result["CODEX_ACCESS_TOKEN"] == "access-token"
+
+    def test_codex_auth_json_works_for_openai_prefix(self, monkeypatch, tmp_path):
+        self._patch_expanduser(monkeypatch, tmp_path)
+        result = resolve_agent_env(
+            "codex-acp",
+            "openai/gpt-5.4-mini",
+            {"CODEX_AUTH_JSON": '{"tokens": {}}'},
+        )
+        assert result["CODEX_AUTH_JSON"] == '{"tokens": {}}'
+
+    def test_codex_host_subscription_auth_works_for_openai_prefix(
+        self, monkeypatch, tmp_path
+    ):
+        codex_dir = tmp_path / ".codex"
+        codex_dir.mkdir()
+        (codex_dir / "auth.json").write_text("{}")
+        self._patch_expanduser(monkeypatch, tmp_path)
+
+        result = resolve_agent_env("codex-acp", "openai/gpt-5.4-mini", {})
+
+        assert result["_BENCHFLOW_SUBSCRIPTION_AUTH"] == "1"
+
+    def test_us_openai_prefix_still_requires_explicit_key(
+        self, monkeypatch, tmp_path
+    ):
+        """Regional endpoint is not the canonical api.openai.com — host auth must not apply."""
+        codex_dir = tmp_path / ".codex"
+        codex_dir.mkdir()
+        (codex_dir / "auth.json").write_text("{}")
+        self._patch_expanduser(monkeypatch, tmp_path)
+
+        with pytest.raises(ValueError, match="OPENAI_API_KEY"):
+            resolve_agent_env("codex-acp", "us-openai/gpt-5.4-mini", {})
+
+    def test_vllm_prefix_still_requires_explicit_key(self, monkeypatch, tmp_path):
+        """Custom OpenAI-compatible endpoints keep rejecting subscription auth."""
+        codex_dir = tmp_path / ".codex"
+        codex_dir.mkdir()
+        (codex_dir / "auth.json").write_text("{}")
+        self._patch_expanduser(monkeypatch, tmp_path)
+
+        with pytest.raises(ValueError, match="OPENAI_API_KEY"):
+            resolve_agent_env("codex-acp", "vllm/Qwen-test", {})

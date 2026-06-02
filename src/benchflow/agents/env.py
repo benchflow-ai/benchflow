@@ -50,6 +50,7 @@ _CLAUDE_OAUTH_TOKEN_ENV = "CLAUDE_OAUTH_TOKEN"
 _CUSTOM_OPENAI_ENDPOINT_KEYS = frozenset(
     {"BENCHFLOW_PROVIDER_BASE_URL", "OPENAI_BASE_URL"}
 )
+_CANONICAL_OPENAI_URL = "https://api.openai.com/v1"
 _GENERIC_PROVIDER_OVERRIDE_KEYS = frozenset(
     {"BENCHFLOW_PROVIDER_BASE_URL", "BENCHFLOW_PROVIDER_API_KEY"}
 )
@@ -246,7 +247,14 @@ def _is_codex_native_openai_context(
     model: str | None,
     required_key: str | None,
 ) -> bool:
-    """True when Codex can use its own OpenAI auth mechanisms directly."""
+    """True when Codex can use its own OpenAI auth mechanisms directly.
+
+    Native auth covers bare model IDs (``gpt-*``) and the first-party
+    ``openai/`` provider prefix pointing at ``api.openai.com``. Custom or
+    proxy providers (``vllm/``, ``us-openai/``, etc.) must supply
+    ``OPENAI_API_KEY`` explicitly — subscription/access-token auth does not
+    apply to them.
+    """
     if agent != "codex-acp" or required_key != "OPENAI_API_KEY":
         return False
     if model is None:
@@ -254,12 +262,25 @@ def _is_codex_native_openai_context(
 
     from benchflow.agents.providers import find_provider
 
-    return find_provider(model) is None
+    result = find_provider(model)
+    if result is None:
+        return True
+    name, cfg = result
+    return name == "openai" and cfg.base_url == _CANONICAL_OPENAI_URL
 
 
 def _has_custom_openai_endpoint(agent_env: dict[str, str]) -> bool:
-    """True when Codex is being pointed at an OpenAI-compatible non-OpenAI URL."""
-    return any(agent_env.get(key) for key in _CUSTOM_OPENAI_ENDPOINT_KEYS)
+    """True when Codex is being pointed at an OpenAI-compatible non-OpenAI URL.
+
+    The first-party ``openai/`` provider populates these keys with the
+    canonical ``api.openai.com`` URL — that is the native endpoint, not a
+    custom proxy, so it must not disqualify subscription/access-token auth.
+    """
+    for key in _CUSTOM_OPENAI_ENDPOINT_KEYS:
+        value = agent_env.get(key)
+        if value and value.rstrip("/") != _CANONICAL_OPENAI_URL:
+            return True
+    return False
 
 
 def _can_use_codex_subscription_auth(
