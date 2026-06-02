@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from typing import Any
 
 from benchflow.agents.providers import find_provider, strip_provider_prefix
 from benchflow.agents.registry import AGENTS
 from benchflow.providers.bedrock_proxy import BedrockProxyServer
+from benchflow.providers.bedrock_runtime import BEDROCK_THINKING_EFFORT_ENV
 from benchflow.usage_tracking import UsageTrackingConfig
 
 logger = logging.getLogger(__name__)
@@ -122,6 +124,14 @@ def _apply_direct_bedrock_agent_mapping(
             updated["AWS_REGION_NAME"] = updated["AWS_REGION"]
         if updated.get("AWS_BEARER_TOKEN_BEDROCK"):
             updated["LLM_API_KEY"] = updated["AWS_BEARER_TOKEN_BEDROCK"]
+        # Propagate the explicit Claude 4.8+ thinking-effort override (e.g. MAX
+        # mode) into the remote sandbox so the Daytona litellm shim honors it. On
+        # Docker the host proxy reads it directly, but the sandbox has its own
+        # environment, so forward it here when set on the host and not already
+        # provided by the run config.
+        effort_override = os.environ.get(BEDROCK_THINKING_EFFORT_ENV)
+        if effort_override and BEDROCK_THINKING_EFFORT_ENV not in updated:
+            updated[BEDROCK_THINKING_EFFORT_ENV] = effort_override
     return updated
 
 
