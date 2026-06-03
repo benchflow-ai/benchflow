@@ -63,6 +63,7 @@ def test_eval_create_help_lists_all_documented_flags() -> None:
         "--model",
         "--sandbox",
         "--environment-manifest",
+        "--prompt",
         "--concurrency",
         "--agent-idle-timeout",
         "--jobs-dir",

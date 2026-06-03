@@ -101,6 +101,7 @@ bench eval create \
 | `--sandbox` | `docker` | Sandbox: docker, daytona, or modal |
 | `--usage-tracking` | `auto` | Token usage telemetry policy: `auto`, `required`, or `off` |
 | `--environment-manifest` | — | Path to an Environment-plane manifest (`environment.toml`); applied to every rollout in the batch |
+| `--prompt` | `instruction.md` | Prompt to send to the agent; repeatable for multi-prompt runs |
 | `--concurrency` | `4` | Max concurrent tasks (batch mode only) |
 | `--agent-idle-timeout` | (built-in default) | Abort ACP prompts after this many idle seconds; `0` disables idle detection |
 | `--jobs-dir` | `jobs` | Output directory |

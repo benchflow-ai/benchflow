@@ -287,6 +287,41 @@ def test_eval_create_single_task_applies_concurrency_override(monkeypatch, tmp_p
     assert captured["concurrency"] == 64
 
 
+def test_eval_create_single_task_passes_cli_prompts(monkeypatch, tmp_path):
+    """Guards PR #608 so eval create keeps custom prompts after bench run cleanup."""
+    task_dir = tmp_path / "task-a"
+    task_dir.mkdir()
+    (task_dir / "task.toml").write_text("[task]\n")
+    captured = {}
+
+    async def fake_eval_run(self):
+        captured["prompts"] = self._config.prompts
+        return SimpleNamespace(
+            passed=1, total=1, score=1.0, errored=0, verifier_errored=0
+        )
+
+    monkeypatch.setattr("benchflow.evaluation.Evaluation.run", fake_eval_run)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "eval",
+            "create",
+            "--tasks-dir",
+            str(task_dir),
+            "--agent",
+            "oracle",
+            "--prompt",
+            "first instruction",
+            "--prompt",
+            "second instruction",
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert captured["prompts"] == ["first instruction", "second instruction"]
+
+
 def test_eval_create_single_task_applies_agent_idle_timeout(monkeypatch, tmp_path):
     """Guards v0.5-integration@219906c against unbounded active-dev ACP hangs."""
     task_dir = tmp_path / "task-a"
@@ -350,6 +385,45 @@ def test_eval_create_config_allows_literal_jobs_dir_override(monkeypatch, tmp_pa
 
     assert result.exit_code == 0, result.stdout
     assert captured["jobs_dir"] == Path("jobs")
+
+
+def test_eval_create_config_prompt_overrides_yaml(monkeypatch, tmp_path):
+    """Guards PR #608 so bench eval create --prompt overrides YAML prompts."""
+    tasks_root = tmp_path / "tasks"
+    tasks_root.mkdir()
+    config = tmp_path / "eval.yaml"
+    config.write_text(
+        "\n".join(
+            [
+                f"tasks_dir: {tasks_root}",
+                "agent: oracle",
+                "prompts:",
+                "  - yaml instruction",
+            ]
+        )
+    )
+    captured = {}
+
+    async def fake_eval_run(self):
+        captured["prompts"] = self._config.prompts
+        return SimpleNamespace(passed=0, total=0, score=0.0, errored=0)
+
+    monkeypatch.setattr("benchflow.evaluation.Evaluation.run", fake_eval_run)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "eval",
+            "create",
+            "--config",
+            str(config),
+            "--prompt",
+            "cli instruction",
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert captured["prompts"] == ["cli instruction"]
 
 
 def test_eval_create_config_applies_identity_overrides(monkeypatch, tmp_path):
