@@ -29,11 +29,11 @@ Arguments passed: `$ARGUMENTS`
 4. Show recent job results if any exist in `jobs/`
 5. Point to next action based on state
 
-### `run <task-path>` — run a single task
+### `eval create --tasks-dir <task-path>` — run a task
 
 ```bash
 source .env
-benchflow run --tasks-dir <task-path> --agent claude-agent-acp --sandbox daytona --model claude-haiku-4-5-20251001
+bench eval create --tasks-dir <task-path> --agent claude-agent-acp --sandbox daytona --model claude-haiku-4-5-20251001
 ```
 
 Or via SDK:
