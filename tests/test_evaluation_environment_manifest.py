@@ -6,8 +6,7 @@ rollouts:
 * ``EvaluationConfig`` had no ``environment_manifest`` field;
 * ``Evaluation._run_single_task`` built ``RolloutConfig.from_legacy`` without
   one, so the manifest seam disappeared at the Job layer;
-* ``bench eval create`` exposed no ``--environment-manifest`` option even
-  though ``bench run`` did.
+* ``bench eval create`` exposed no ``--environment-manifest`` option.
 
 These tests assert the full path: dataclass → CLI flag → YAML loader →
 ``RolloutConfig.environment_manifest``.

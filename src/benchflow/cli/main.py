@@ -95,17 +95,6 @@ def _apply_dotenv_to_process_env() -> None:
         os.environ.setdefault(key, value)
 
 
-def _exit_if_run_result_failed(run_result: object) -> None:
-    error = getattr(run_result, "error", None)
-    verifier_error = getattr(run_result, "verifier_error", None)
-    if error:
-        console.print(f"[red]Error:[/red] {error}")
-    if verifier_error:
-        console.print(f"[red]Verifier error:[/red] {verifier_error}")
-    if error or verifier_error:
-        raise typer.Exit(1)
-
-
 def _exit_if_evaluation_had_errors(result: object) -> None:
     errored = int(getattr(result, "errored", 0) or 0)
     verifier_errored = int(getattr(result, "verifier_errored", 0) or 0)
@@ -209,161 +198,6 @@ def _cleanup_daytona_sandboxes(dry_run: bool, max_age_minutes: int) -> None:
         console.print(
             f"\n[bold green]{total_deleted} sandboxes deleted[/bold green] ({total_skipped} skipped, younger than {max_age_minutes}m)"
         )
-
-
-@app.command(hidden=True, deprecated=True)
-def run(
-    task_dir: Annotated[
-        Path | None,
-        typer.Argument(help="Local task directory (must contain task.toml)"),
-    ] = None,
-    source_repo: Annotated[
-        str | None,
-        typer.Option(
-            "--source-repo",
-            help="Remote repo as org/repo (e.g. benchflow-ai/skillsbench)",
-        ),
-    ] = None,
-    source_path: Annotated[
-        str | None,
-        typer.Option(
-            "--source-path", help="Subpath within the repo (e.g. tasks/edit-pdf)"
-        ),
-    ] = None,
-    source_ref: Annotated[
-        str | None,
-        typer.Option("--source-ref", help="Branch or tag to clone (e.g. main)"),
-    ] = None,
-    agent: Annotated[
-        str,
-        typer.Option("--agent", help="Agent name from registry"),
-    ] = DEFAULT_AGENT,
-    model: Annotated[
-        str | None,
-        typer.Option("--model", help="Model to use"),
-    ] = None,
-    environment: Annotated[
-        str,
-        typer.Option("--sandbox", help="Sandbox: docker, daytona, or modal"),
-    ] = "docker",
-    environment_manifest: Annotated[
-        Path | None,
-        typer.Option(
-            "--environment-manifest",
-            help="Path to an Environment-plane manifest (environment.toml). "
-            "Runs the rollout against the declared stateful environment.",
-        ),
-    ] = None,
-    prompt: Annotated[
-        list[str] | None,
-        typer.Option("--prompt", help="Prompt(s) to send (default: instruction.md)"),
-    ] = None,
-    jobs_dir: Annotated[
-        str,
-        typer.Option("--jobs-dir", help="Output directory for results"),
-    ] = "jobs",
-    agent_env: Annotated[
-        list[str] | None,
-        typer.Option("--agent-env", help="Agent env var (KEY=VALUE)"),
-    ] = None,
-    skills_dir: Annotated[
-        Path | None,
-        typer.Option("--skills-dir", help="Skills directory to deploy into sandbox"),
-    ] = None,
-    skill_mode: Annotated[
-        str,
-        typer.Option(
-            "--skill-mode",
-            help="Skill mode: default or self-gen",
-        ),
-    ] = "default",
-    skill_creator_dir: Annotated[
-        Path | None,
-        typer.Option(
-            "--skill-creator-dir",
-            help="Path to skill-creator or a skills root containing it",
-        ),
-    ] = None,
-    self_gen_no_internet: Annotated[
-        bool,
-        typer.Option(
-            "--self-gen-no-internet",
-            help="Disable web tools for the self-generated run",
-        ),
-    ] = False,
-    sandbox_user: Annotated[
-        str | None,
-        typer.Option(
-            "--sandbox-user",
-            help="Run agent as non-root user (default: 'agent'). Pass 'none' for root.",
-        ),
-    ] = "agent",
-) -> None:
-    """Run a single task with an ACP agent.
-
-    Examples:
-        bench run --source-repo benchflow-ai/skillsbench --source-path tasks/edit-pdf
-        bench run tasks/edit-pdf --agent gemini --model gemini-3.1-flash-lite-preview
-    """
-    from benchflow.sdk import SDK
-
-    if source_repo:
-        from benchflow._utils.benchmark_repos import (
-            resolve_source_with_metadata,
-            task_source_provenance,
-        )
-
-        resolved = resolve_source_with_metadata(
-            source_repo, path=source_path, ref=source_ref
-        )
-        resolved_task_dir = resolved.path
-        source_provenance = task_source_provenance(
-            resolved.provenance, resolved_task_dir
-        )
-    elif task_dir:
-        resolved_task_dir = task_dir
-        source_provenance = None
-    else:
-        console.print("[red]Provide a task directory or --source-repo[/red]")
-        raise typer.Exit(1)
-
-    parsed_env = _parse_agent_env(agent_env)
-    agent = _normalize_eval_agent_or_exit(agent)
-    sandbox_user = normalize_sandbox_user(sandbox_user)
-
-    env_manifest = None
-    if environment_manifest is not None:
-        from benchflow.environment.manifest import load_manifest
-
-        env_manifest = load_manifest(environment_manifest)
-
-    sdk = SDK()
-    # CLI only ever passes plain strings; cast to widen for the SDK's
-    # `list[str | None] | None` API (None entries mean "use default").
-    result = asyncio.run(
-        sdk.run(
-            task_path=resolved_task_dir,
-            agent=agent,
-            model=model,
-            prompts=cast("list[str | None] | None", prompt),
-            agent_env=parsed_env,
-            jobs_dir=jobs_dir,
-            environment=environment,
-            environment_manifest=env_manifest,
-            skills_dir=str(skills_dir) if skills_dir else None,
-            sandbox_user=sandbox_user,
-            skill_mode=skill_mode,
-            skill_creator_dir=str(skill_creator_dir) if skill_creator_dir else None,
-            self_gen_no_internet=self_gen_no_internet,
-            source_provenance=source_provenance,
-        )
-    )
-
-    console.print(f"[green]Task:[/green] {result.task_name}")
-    console.print(f"[green]Agent:[/green] {result.agent_name}")
-    console.print(f"[green]Rewards:[/green] {result.rewards}")
-    console.print(f"[green]Tool calls:[/green] {result.n_tool_calls}")
-    _exit_if_run_result_failed(result)
 
 
 @app.command(hidden=True, deprecated=True)
@@ -1094,7 +928,7 @@ def eval_create(
                 "Path to an Environment-plane manifest (environment.toml). "
                 "Applied to every rollout in the batch so the manifest-declared "
                 "stateful environment is provisioned, gated on readiness, and "
-                "torn down — same seam as `bench run --environment-manifest`."
+                "torn down."
             ),
         ),
     ] = None,
@@ -1271,8 +1105,6 @@ def eval_create(
 
     # Resolve the optional Environment-plane manifest once and reuse across
     # every source branch (config / source_repo / tasks_dir / source_env).
-    # Bench eval create's batch surface mirrors `bench run` so manifest-backed
-    # rollouts can be driven through the Job pipeline (#398).
     eval_env_manifest = None
     if environment_manifest is not None:
         from benchflow.environment.manifest import load_manifest

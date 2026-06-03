@@ -94,7 +94,7 @@ A User is a `BaseUser` subclass (or `FunctionUser` wrapping a function) with two
 - `setup(instruction, solution)` — once, before round 0
 - `run(round, instruction, round_result) → str | None` — per round; return `None` to stop the loop
 
-Between rounds, benchflow runs `soft_verify()` (verifier without the destructive parts of full hardening), gives the user the round's `RoundResult` (trajectory, rewards, verifier output, tool count), and lets the user decide round N+1's prompt.
+Between rounds, BenchFlow executes `soft_verify()` (verifier without the destructive parts of full hardening), gives the user the round's `RoundResult` (trajectory, rewards, verifier output, tool count), and lets the user decide round N+1's prompt.
 
 Use `BaseUser` when the loop logic is rule-based (compress instruction → show test failures as hints → stop on pass). See [`progressive-disclosure.md`](./progressive-disclosure.md) for the full guide.
 
