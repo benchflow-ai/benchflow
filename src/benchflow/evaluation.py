@@ -30,6 +30,7 @@ from benchflow._utils.evaluation_results import (
     rollout_result_payload,
     skill_invocation_summary,
     tool_call_summary,
+    trajectory_step_summary,
     usage_summary,
 )
 from benchflow._utils.learner_memory import (
@@ -1353,6 +1354,7 @@ class Evaluation:
             **skill_invocation_summary(all_results),
             **usage_summary(all_results),
             **tool_call_summary(all_results),
+            **trajectory_step_summary(all_results),
             **phase_timing_summary(all_results),
             **summary_source_fields(cfg.source_provenance, all_results),
         }

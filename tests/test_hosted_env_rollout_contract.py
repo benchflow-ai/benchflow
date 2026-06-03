@@ -81,6 +81,8 @@ def test_hosted_env_writes_contract_result_json(tmp_path, monkeypatch):
         "n_tool_calls",
         "n_prompts",
         "agent_result",
+        "final_metrics",
+        "trajectory_summary",
         "error",
         "verifier_error",
         "partial_trajectory",
@@ -104,6 +106,14 @@ def test_hosted_env_writes_contract_result_json(tmp_path, monkeypatch):
         "price_source",
     ):
         assert key in agent_result, f"missing agent_result key: {key}"
+    assert set(payload["final_metrics"]) == {
+        "total_prompt_tokens",
+        "total_completion_tokens",
+        "total_cached_tokens",
+        "total_cost_usd",
+    }
+    assert payload["trajectory_summary"]["steps"] >= 0
+    assert payload["trajectory_summary"]["tool_call_steps"] >= 0
 
 
 def test_hosted_env_writes_rewards_jsonl(tmp_path, monkeypatch):
