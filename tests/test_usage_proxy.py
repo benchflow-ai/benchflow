@@ -232,7 +232,11 @@ def test_extract_usage_with_anthropic_exchanges():
 
     usage = extract_usage(runtime)
 
-    assert usage["n_input_tokens"] == 150
+    # Anthropic reports input_tokens as the UNCACHED delta; benchflow normalizes
+    # n_input_tokens to the total input incl. cache => 150 + 9 cache_read + 4
+    # cache_creation = 163 (apples-to-apples with OpenAI/Gemini, which already
+    # report the cache-inclusive total). total stays input + output = 163 + 30.
+    assert usage["n_input_tokens"] == 163
     assert usage["n_output_tokens"] == 30
     assert usage["n_cache_read_tokens"] == 9
     assert usage["n_cache_creation_tokens"] == 4

@@ -15,6 +15,14 @@ function getConfig(name, argName) {
 }
 
 const target = new URL(getConfig("TARGET", "target").replace(/\/+$/, ""));
+// Google AI Studio (Gemini) needs upstream path normalization. With a custom api_base
+// (this proxy), litellm builds gemini URLs as `{api_base}/models/{model}:{action}` — it
+// omits the required `/v1beta` version prefix, and for context caching it emits the bogus
+// `:cachedContents` model-action instead of Google's real top-level `/v1beta/cachedContents`
+// collection (litellm vertex_llm_base._check_custom_proxy, still present in 1.88.x). Without
+// this rewrite every gemini call — especially the prompt-cache probe — 404s through the proxy.
+// Gated on the gemini host, so all other providers (openai/anthropic/bedrock) are untouched.
+const isGeminiTarget = /(^|\.)generativelanguage\.googleapis\.com$/i.test(target.hostname);
 const statePath = getConfig("STATE_PATH", "state");
 const logPath = getConfig("LOG_PATH", "log");
 const pidPath = getConfig("PID_PATH", "pid");
@@ -89,10 +97,29 @@ function bodyB64(chunks) {
   return Buffer.concat(chunks).toString("base64");
 }
 
+// Keep in sync with the Python source of truth:
+// benchflow/trajectories/gemini_paths.py:normalize_gemini_upstream_path
+// (tests/test_gemini_path_normalization.py pins parity across both runtimes).
+function normalizeGeminiUpstreamPath(pathWithQuery) {
+  const qIdx = pathWithQuery.indexOf("?");
+  let path = qIdx === -1 ? pathWithQuery : pathWithQuery.slice(0, qIdx);
+  const query = qIdx === -1 ? "" : pathWithQuery.slice(qIdx);
+  // already version-prefixed -> leave as-is
+  if (path.startsWith("/v1beta/") || path.startsWith("/v1/")) return pathWithQuery;
+  // litellm's bogus per-model cache action -> Google's real top-level collection
+  path = path.replace(/^\/models\/[^/]+:cachedContents\b/, "/cachedContents");
+  // all Google AI Studio resources live under /v1beta
+  if (!path.startsWith("/v1beta/")) path = `/v1beta${path}`;
+  return `${path}${query}`;
+}
+
 function upstreamPath(requestUrl) {
+  const requestPath = isGeminiTarget
+    ? normalizeGeminiUpstreamPath(requestUrl)
+    : requestUrl;
   const basePath = target.pathname.replace(/\/+$/, "");
-  if (!basePath) return requestUrl;
-  return `${basePath}${requestUrl.startsWith("/") ? requestUrl : `/${requestUrl}`}`;
+  if (!basePath) return requestPath;
+  return `${basePath}${requestPath.startsWith("/") ? requestPath : `/${requestPath}`}`;
 }
 
 function maybeApplyPromptCacheRetention(requestUrl, headers, body) {

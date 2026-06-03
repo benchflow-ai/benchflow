@@ -407,7 +407,10 @@ def test_extract_usage_accepts_bedrock_converse_usage_shape():
     usage = extract_usage(runtime)
 
     assert usage["usage_source"] == "provider_response"
-    assert usage["n_input_tokens"] == 34
+    # Bedrock reports inputTokens as the UNCACHED delta; n_input_tokens is
+    # normalized to the total input incl. cache = 34 + 100 cache_read + 200
+    # cache_creation = 334. total stays input + output = 334 + 13 = 347.
+    assert usage["n_input_tokens"] == 334
     assert usage["n_output_tokens"] == 13
     assert usage["n_cache_read_tokens"] == 100
     assert usage["n_cache_creation_tokens"] == 200
