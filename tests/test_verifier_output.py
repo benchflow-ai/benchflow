@@ -1,11 +1,18 @@
-"""Tests for verifier dependency-install classification and stdout surfacing.
+"""Tests for verifier dependency-install classification (PR #540 / #572).
 
-Covers the ENG-151 / PR #540 path where a missing reward file surfaces a
-redacted tail of ``test-stdout.txt`` through ``RewardFileNotFoundError`` so
-``classify_verifier_error`` can detect dependency-install failures, plus the
-PR #572 review fix that redacts secrets from that untrusted subprocess output
-before it lands in ``verifier_error`` / summaries / dashboards.
+PR #540 made dep-install failures classifiable: a missing reward file whose
+``test-stdout.txt`` shows a resolver failure surfaces a diagnostic through
+``RewardFileNotFoundError`` so ``classify_verifier_error`` returns
+``VERIFIER_DEP_INSTALL``.
+
+PR #572 review hardened this: the raw stdout is NEVER persisted into
+``verifier_error`` (it can carry env dumps / tokens / credentialed install
+URLs). Instead the verifier scans stdout for dep-install markers and, on a
+hit, appends only a FIXED secret-free diagnostic. The raw resolver output
+stays in the downloaded ``verifier/test-stdout.txt`` artifact.
 """
+
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -14,150 +21,154 @@ from benchflow._utils.scoring import (
     VERIFIER_FAILED,
     classify_verifier_error,
 )
-from benchflow.task.verifier import _redact_secrets, _tail_file
-
-# ---------------------------------------------------------------------------
-# dep_install classification (PR #540) — markers reach the classifier only
-# because verifier.py tails test-stdout.txt into the exception message.
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "input_str,expected",
-    [
-        (
-            "verifier crashed: verifier exited with rc=1; no reward file found\n"
-            "--- test-stdout.txt (last 30 lines) ---\n"
-            "x No solution found when resolving tool dependencies: torch==2.1.2+cpu",
-            VERIFIER_DEP_INSTALL,
-        ),
-        (
-            "verifier crashed: verifier exited with rc=1\n"
-            "Could not find a version that satisfies the requirement foo==9.9.9",
-            VERIFIER_DEP_INSTALL,
-        ),
-        (
-            "verifier crashed: verifier exited with rc=1\nERROR: dependency install failed",
-            VERIFIER_DEP_INSTALL,
-        ),
-        (
-            "verifier crashed: verifier exited with rc=1\nresolution impossible for bar",
-            VERIFIER_DEP_INSTALL,
-        ),
-    ],
+from benchflow.task.verifier import (
+    _DEP_INSTALL_DIAGNOSTIC,
+    RewardFileNotFoundError,
+    Verifier,
+    _has_dep_install_failure,
 )
-def test_classify_dep_install_from_stdout_tail(input_str, expected):
-    """PR #540: dep-install markers in the surfaced stdout tail classify."""
-    assert classify_verifier_error(input_str) == expected
-
-
-def test_dep_install_takes_precedence_over_generic_crash():
-    """PR #540: dep_install wins over verifier_failure when both markers present."""
-    msg = (
-        "verifier crashed: verifier exited with rc=1; no reward file found\n"
-        "--- test-stdout.txt (last 30 lines) ---\n"
-        "x No solution found when resolving tool dependencies: torch==2.1.2+cpu"
-    )
-    assert classify_verifier_error(msg) == VERIFIER_DEP_INSTALL
-
 
 # ---------------------------------------------------------------------------
-# _tail_file: bounded streaming read + secret redaction (PR #572 review)
+# Classifier recognises the fixed diagnostic (PR #540 / #572)
 # ---------------------------------------------------------------------------
 
 
-class TestTailFile:
-    def test_returns_redacted_tail(self, tmp_path):
-        """PR #540: tail surfaces the dep-install marker for the classifier."""
-        stdout = tmp_path / "test-stdout.txt"
-        stdout.write_text(
-            "Installing dependencies...\n"
-            "x No solution found when resolving tool dependencies: torch==2.1.2+cpu\n"
-        )
-        assert "no solution found" in _tail_file(stdout).lower()
-
-    def test_missing_file_returns_empty(self, tmp_path):
-        assert _tail_file(tmp_path / "nope.txt") == ""
-
-    def test_only_keeps_last_n_lines(self, tmp_path):
-        stdout = tmp_path / "test-stdout.txt"
-        stdout.write_text("".join(f"line{i}\n" for i in range(100)))
-        tail = _tail_file(stdout, n=5)
-        assert tail.splitlines() == [f"line{i}" for i in range(95, 100)]
-
-    def test_redacts_secrets_in_tail(self, tmp_path):
-        """PR #572: untrusted stdout (env dumps, tokens) must be redacted.
-
-        An obviously-fake key is used as the fixture (never a real one).
-        """
-        stdout = tmp_path / "test-stdout.txt"
-        stdout.write_text(
-            "GEMINI_API_KEY=AIzaSyFAKEKEYFORTESTSONLYxxxxxxxxxxxxxxx\n"
-            "Authorization: Bearer fake-token-aaaaaaaaaaaaaaaa\n"
-        )
-        tail = _tail_file(stdout)
-        assert "AIzaSyFAKEKEYFORTESTSONLYxxxxxxxxxxxxxxx" not in tail
-        assert "fake-token-aaaaaaaaaaaaaaaa" not in tail
-        assert "***REDACTED***" in tail
-
-
-class TestRedactSecrets:
-    """PR #572: redaction patterns mirror the trajectory set (#537).
-
-    All fixtures use obviously-fake credential values, never real ones.
-    """
-
-    @pytest.mark.parametrize(
-        "raw,leaked",
-        [
-            (
-                "key=AIzaSyFAKEKEYFORTESTSONLYxxxxxxxxxxxxxxx",
-                "FORTESTSONLYxxxxxxxxxxxxxxx",
-            ),
-            ("key=sk-ant-api03-FAKEFAKEFAKEdeadbeefcafe1234", "deadbeefcafe1234"),
-            ("key=AKIAFAKEFAKEFAKE1234", "FAKEFAKE1234"),
-            ("key=dtn_FAKEFAKEFAKEFAKEFAKE12345678", "FAKEFAKE12345678"),
-            ("x-api-key: abc123secretvalue456", "abc123secretvalue456"),
-        ],
-    )
-    def test_redacts_pattern(self, raw, leaked):
-        out = _redact_secrets(raw)
-        assert leaked not in out
-        assert "***REDACTED***" in out
-
-    @pytest.mark.parametrize(
-        "raw",
-        [
-            "region=ASIAPACIFIC",  # English word, not an AWS key
-            "queue=task-sk-us-east-1-foo-bar",  # slug containing sk-
-            "label=dtn_v2_0",  # short identifier
-            "just normal verifier output, nothing secret here",
-        ],
-    )
-    def test_preserves_non_secret(self, raw):
-        assert _redact_secrets(raw) == raw
-
-    def test_classifier_still_fires_after_redaction(self, tmp_path):
-        """Redaction must not eat the dep-install marker the classifier needs."""
-        stdout = tmp_path / "test-stdout.txt"
-        stdout.write_text(
-            "GEMINI_API_KEY=AIzaSyFAKEKEYFORTESTSONLYxxxxxxxxxxxxxxx\n"
-            "x No solution found when resolving tool dependencies: torch==2.1.2+cpu\n"
-        )
-        verifier_error = (
-            "verifier crashed: verifier exited with rc=1\n"
-            f"--- test-stdout.txt (last 30 lines) ---\n{_tail_file(stdout)}"
-        )
-        assert classify_verifier_error(verifier_error) == VERIFIER_DEP_INSTALL
-        assert "AIzaSyFAKEKEYFORTESTSONLYxxxxxxxxxxxxxxx" not in verifier_error
-
-
-def test_no_dep_markers_stays_verifier_failure(tmp_path):
-    """PR #540: without dep-install markers the classifier returns verifier_failure."""
-    stdout = tmp_path / "test-stdout.txt"
-    stdout.write_text("some random test output\nassertion failed\n")
+def test_fixed_diagnostic_classifies_as_dep_install():
+    """PR #572: the fixed diagnostic the verifier appends must classify as
+    dep_install once rollout wraps it with 'verifier crashed:'."""
     verifier_error = (
-        "verifier crashed: verifier exited with rc=1\n"
-        f"--- test-stdout.txt (last 30 lines) ---\n{_tail_file(stdout)}"
+        f"verifier crashed: ...no reward file...\n{_DEP_INSTALL_DIAGNOSTIC}"
     )
-    assert classify_verifier_error(verifier_error) == VERIFIER_FAILED
+    assert classify_verifier_error(verifier_error) == VERIFIER_DEP_INSTALL
+
+
+def test_diagnostic_carries_no_stdout():
+    """PR #572: the fixed diagnostic must not contain raw resolver output —
+    only a marker the classifier needs and a pointer to the log artifact."""
+    assert "dependency install failed" in _DEP_INSTALL_DIAGNOSTIC
+    assert "test-stdout.txt" in _DEP_INSTALL_DIAGNOSTIC
+
+
+# ---------------------------------------------------------------------------
+# _has_dep_install_failure: boolean verdict only, never returns stdout
+# ---------------------------------------------------------------------------
+
+
+class TestHasDepInstallFailure:
+    @pytest.mark.parametrize(
+        "stdout",
+        [
+            "Installing...\nx No solution found when resolving torch==2.1.2+cpu\n",
+            "Could not find a version that satisfies the requirement foo==9.9\n",
+            "ERROR: dependency install failed\n",
+            "resolution impossible for package bar\n",
+            "NO SOLUTION FOUND\n",  # case-insensitive
+        ],
+    )
+    def test_detects_marker(self, tmp_path, stdout):
+        p = tmp_path / "test-stdout.txt"
+        p.write_text(stdout)
+        assert _has_dep_install_failure(p) is True
+
+    def test_no_marker_is_false(self, tmp_path):
+        p = tmp_path / "test-stdout.txt"
+        p.write_text("running tests...\nassertion failed: 2 != 3\n")
+        assert _has_dep_install_failure(p) is False
+
+    def test_missing_file_is_false(self, tmp_path):
+        assert _has_dep_install_failure(tmp_path / "nope.txt") is False
+
+    def test_single_huge_line_is_bounded(self, tmp_path):
+        """PR #572 finding 3: a single huge line must not blow up — we read a
+        bounded window and still detect the marker if present."""
+        p = tmp_path / "test-stdout.txt"
+        p.write_text("x" * (256 * 1024) + " no solution found\n")
+        assert _has_dep_install_failure(p) is True
+
+
+# ---------------------------------------------------------------------------
+# Production wiring: _verify_test_script raises a redacted, classifiable error
+# (PR #572 finding 2 — exercise the real verifier, not synthesized strings)
+# ---------------------------------------------------------------------------
+
+
+def _make_verifier(tmp_path, *, stdout_text):
+    """Build a Verifier over a fake mounted sandbox whose test.sh writes the
+    given stdout and produces NO reward file."""
+    verifier_dir = tmp_path / "verifier"
+    verifier_dir.mkdir(parents=True, exist_ok=True)
+
+    rollout_paths = MagicMock()
+    rollout_paths.verifier_dir = verifier_dir
+    rollout_paths.test_stdout_path = verifier_dir / "test-stdout.txt"
+    rollout_paths.reward_text_path = verifier_dir / "reward.txt"
+    rollout_paths.reward_json_path = verifier_dir / "reward.json"
+
+    task = MagicMock()
+    task.config.verifier.type = "test-script"
+    task.config.verifier.service = "main"
+    task.config.verifier.user = "root"
+    task.config.verifier.env = None
+    task.config.verifier.timeout_sec = 60
+    task.paths.tests_dir = tmp_path / "tests"
+    (tmp_path / "tests").mkdir(exist_ok=True)
+    task.paths.test_path = tmp_path / "tests" / "test.sh"
+
+    sandbox = MagicMock()
+    sandbox.is_mounted = True
+    sandbox.upload_dir = AsyncMock()
+
+    def _cmd(args, kwargs):
+        return args[0] if args else kwargs.get("command", "")
+
+    async def fake_exec(*args, **kwargs):
+        cmd = _cmd(args, kwargs)
+        # Setup commands (chmod/mkdir) succeed; the test.sh run writes stdout,
+        # produces no reward file, and exits nonzero.
+        if "chmod" in cmd or cmd.startswith("mkdir"):
+            return MagicMock(exit_code=0, returncode=0)
+        rollout_paths.test_stdout_path.write_text(stdout_text)
+        return MagicMock(exit_code=1, returncode=1)
+
+    sandbox.exec = AsyncMock(side_effect=fake_exec)
+    return Verifier(task=task, rollout_paths=rollout_paths, sandbox=sandbox)
+
+
+@pytest.mark.asyncio
+async def test_verify_test_script_surfaces_classifiable_dep_install(tmp_path):
+    """PR #572 finding 2: the REAL verifier path must raise an error that, once
+    wrapped as 'verifier crashed: {e}', classifies as VERIFIER_DEP_INSTALL."""
+    verifier = _make_verifier(
+        tmp_path,
+        stdout_text=(
+            "GEMINI_API_KEY=AIzaSyFAKEKEYFORTESTSONLYxxxxxxxxxxxxxxx\n"
+            "PIP_INDEX_URL=https://user:p4ssw0rd@pypi.example/simple\n"
+            "x No solution found when resolving torch==2.1.2+cpu\n"
+        ),
+    )
+    with pytest.raises(RewardFileNotFoundError) as exc:
+        await verifier._verify_test_script()
+
+    msg = str(exc.value)
+    wrapped = f"verifier crashed: {msg}"  # how rollout.py builds verifier_error
+    assert classify_verifier_error(wrapped) == VERIFIER_DEP_INSTALL
+    # Finding 1: no raw stdout / secrets leaked into the surfaced error.
+    assert "AIzaSyFAKEKEYFORTESTSONLYxxxxxxxxxxxxxxx" not in msg
+    assert "p4ssw0rd" not in msg
+    assert "PIP_INDEX_URL" not in msg
+
+
+@pytest.mark.asyncio
+async def test_verify_test_script_non_dep_failure_is_not_dep_install(tmp_path):
+    """A missing reward file with no dep-install marker must NOT be misclassified
+    as dep_install (stays a generic verifier failure)."""
+    verifier = _make_verifier(
+        tmp_path,
+        stdout_text="running pytest...\n3 failed, 0 passed\nassertion error\n",
+    )
+    with pytest.raises(RewardFileNotFoundError) as exc:
+        await verifier._verify_test_script()
+
+    wrapped = f"verifier crashed: {exc.value}"
+    assert classify_verifier_error(wrapped) == VERIFIER_FAILED
+    assert _DEP_INSTALL_DIAGNOSTIC not in str(exc.value)

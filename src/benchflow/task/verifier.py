@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import shlex
 import shutil
 from collections import deque
@@ -64,57 +63,48 @@ class RubricNotFoundError(Exception):
 
 _TAIL_LINES = 30
 
-# Secret patterns redacted from verifier stdout before it is surfaced in an
-# exception message (and from there into ``verifier_error`` / summaries /
-# dashboards). ``test-stdout.txt`` is untrusted subprocess output that can
-# contain env dumps, install URLs, or tokens — see PR #572 review. Mirrors the
-# trajectory redaction set (#537); kept local so this module has no dependency
-# on the trajectories package.
-_SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"(sk-ant-[a-zA-Z0-9_-]{10})[a-zA-Z0-9_-]+"), r"\1***REDACTED***"),
-    (re.compile(r"(sk-proj-[a-zA-Z0-9_-]{10})[a-zA-Z0-9_-]+"), r"\1***REDACTED***"),
-    (re.compile(r"(sk-[a-zA-Z0-9]{10})[a-zA-Z0-9]+"), r"\1***REDACTED***"),
-    (re.compile(r"(AIzaSy[A-Za-z0-9_-]{4})[A-Za-z0-9_-]{20,}"), r"\1***REDACTED***"),
-    (
-        re.compile(r"((?:AKIA|ASIA)[A-Z0-9]{4})[A-Z0-9]{12}(?![A-Z0-9])"),
-        r"\1***REDACTED***",
-    ),
-    (re.compile(r"(dtn_[A-Za-z0-9_]{4})[A-Za-z0-9_]{16,}"), r"\1***REDACTED***"),
-    (
-        re.compile(r'("authorization"\s*:\s*"Bearer\s+)[^"]+(")', re.IGNORECASE),
-        r"\1***REDACTED***\2",
-    ),
-    (
-        re.compile(r"(Bearer\s+)[A-Za-z0-9._-]{12,}", re.IGNORECASE),
-        r"\1***REDACTED***",
-    ),
-    (
-        re.compile(r"((?:x-api-key|api-key)\s*[:=]\s*)\S+", re.IGNORECASE),
-        r"\1***REDACTED***",
-    ),
+# Lines that mark a dependency-install failure in ``test-stdout.txt`` (the uv/
+# pip resolver output). When one is present we surface a FIXED, secret-free
+# diagnostic — never the raw stdout — so ``classify_verifier_error`` can return
+# ``VERIFIER_DEP_INSTALL`` without persisting untrusted subprocess output (env
+# dumps, install URLs, tokens) into ``verifier_error`` / summaries / dashboards
+# (PR #572 review). The raw stdout stays in the verifier log artifact, not in
+# result metadata. These must stay in sync with
+# ``scoring._looks_like_verifier_dep_install_error``.
+_DEP_INSTALL_MARKERS: tuple[str, ...] = (
+    "no solution found",
+    "could not find a version",
+    "resolution impossible",
+    "dependency install failed",
 )
 
+# The safe, fixed diagnostic surfaced into ``verifier_error`` on a detected
+# dep-install failure. Contains a marker the classifier recognises; carries no
+# stdout content. Points operators at the (private) log artifact for detail.
+_DEP_INSTALL_DIAGNOSTIC = (
+    "dependency install failed (see verifier/test-stdout.txt in the run "
+    "artifacts for resolver output)"
+)
 
-def _redact_secrets(text: str) -> str:
-    """Strip well-known credential patterns from untrusted subprocess output."""
-    for pattern, replacement in _SECRET_PATTERNS:
-        text = pattern.sub(replacement, text)
-    return text
+# Bytes of stdout scanned for markers. Streaming-bounded so a verifier emitting
+# a single huge line can't bloat memory; we never persist any of it.
+_SCAN_MAX_BYTES = 64 * 1024
 
 
-def _tail_file(path: Path, n: int = _TAIL_LINES) -> str:
-    """Return the last *n* lines of *path*, redacted, or "" if unreadable.
+def _has_dep_install_failure(path: Path) -> bool:
+    """True if *path* (test-stdout.txt) shows a dependency-install failure.
 
-    Streams the file with a bounded ``deque`` so a large ``test-stdout.txt``
-    is never fully materialized. Output is redacted because it is untrusted
-    subprocess output surfaced into ``verifier_error`` (PR #572 review).
+    Only the boolean verdict leaves this function — the scanned text is never
+    returned or persisted, so no secret-bearing stdout can reach result
+    metadata (PR #572). Reads at most ``_SCAN_MAX_BYTES`` from the file tail.
     """
     try:
         with path.open(errors="replace") as f:
-            lines = deque(f, maxlen=n)
+            chunk = deque(f, maxlen=_TAIL_LINES)
     except OSError:
-        return ""
-    return _redact_secrets("".join(lines).rstrip("\n"))
+        return False
+    text = "".join(chunk)[-_SCAN_MAX_BYTES:].lower()
+    return any(marker in text for marker in _DEP_INSTALL_MARKERS)
 
 
 class Verifier:
@@ -346,7 +336,6 @@ class Verifier:
         elif self._rollout_paths.reward_json_path.exists():
             rewards = self._parse_reward_json()
         else:
-            stdout_tail = _tail_file(self._rollout_paths.test_stdout_path)
             if test_return_code != 0:
                 msg = (
                     f"verifier exited with rc={test_return_code}; no reward file "
@@ -358,8 +347,13 @@ class Verifier:
                     f"No reward file found at {self._rollout_paths.reward_text_path} or "
                     f"{self._rollout_paths.reward_json_path}"
                 )
-            if stdout_tail:
-                msg += f"\n--- test-stdout.txt (last {_TAIL_LINES} lines) ---\n{stdout_tail}"
+            # Surface ONLY a fixed, secret-free dep-install diagnostic (never
+            # the raw stdout tail) so classify_verifier_error can return
+            # VERIFIER_DEP_INSTALL without leaking untrusted subprocess output
+            # into result metadata (#572). Raw resolver output remains in the
+            # downloaded verifier/test-stdout.txt artifact.
+            if _has_dep_install_failure(self._rollout_paths.test_stdout_path):
+                msg += f"\n{_DEP_INSTALL_DIAGNOSTIC}"
             raise RewardFileNotFoundError(msg)
 
         return VerifierResult(rewards=rewards)
