@@ -1098,6 +1098,10 @@ def eval_create(
             ),
         ),
     ] = None,
+    prompt: Annotated[
+        list[str] | None,
+        typer.Option("--prompt", help="Prompt(s) to send (default: instruction.md)"),
+    ] = None,
     concurrency: Annotated[
         int | None,
         typer.Option("--concurrency", help="Max concurrent tasks"),
@@ -1243,6 +1247,7 @@ def eval_create(
         _normalize_eval_agent_or_exit(agent) if agent is not None else DEFAULT_AGENT
     )
     eval_environment = environment or "docker"
+    eval_prompts = cast("list[str | None] | None", prompt)
     sandbox_user = normalize_sandbox_user(sandbox_user)
     eval_concurrency = concurrency if concurrency is not None else 4
     usage_tracking_overridden = usage_tracking is not None
@@ -1343,6 +1348,8 @@ def eval_create(
             j._config.concurrency = concurrency
         if build_concurrency is not None:
             j._config.build_concurrency = build_concurrency
+        if prompt is not None:
+            j._config.prompts = eval_prompts
         if agent_idle_timeout is not None:
             j._config.agent_idle_timeout = eval_agent_idle_timeout
         if usage_tracking_overridden:
@@ -1401,6 +1408,11 @@ def eval_create(
                 "[yellow]--usage-tracking is for BenchFlow ACP rollouts; "
                 "source-env runs own their provider calls. Ignoring.[/yellow]"
             )
+        if prompt is not None:
+            console.print(
+                "[yellow]--prompt is for BenchFlow ACP rollouts; "
+                "source-env runs own their prompts. Ignoring.[/yellow]"
+            )
 
         try:
             ref = HostedEnvRef.parse(source_env, version=source_env_version)
@@ -1456,6 +1468,7 @@ def eval_create(
                 environment=eval_environment,
                 concurrency=eval_concurrency,
                 build_concurrency=build_concurrency,
+                prompts=eval_prompts,
                 agent_idle_timeout=eval_agent_idle_timeout,
                 agent_env=parsed_env,
                 sandbox_user=sandbox_user,
@@ -1486,6 +1499,7 @@ def eval_create(
                 environment=eval_environment,
                 concurrency=eval_concurrency,
                 build_concurrency=build_concurrency,
+                prompts=eval_prompts,
                 agent_idle_timeout=eval_agent_idle_timeout,
                 agent_env=parsed_env,
                 sandbox_user=sandbox_user,
