@@ -24,20 +24,11 @@ logging.basicConfig(level=logging.INFO, format="%(message)s")
 
 
 def _retry_config(raw: dict[str, Any]) -> RetryConfig:
-    retry = raw.get("retry") or {}
-    return RetryConfig(
-        max_retries=int(retry.get("max_retries", 2)),
-        retry_on_install=bool(retry.get("retry_on_install", True)),
-        retry_on_pipe=bool(retry.get("retry_on_pipe", True)),
-        retry_on_acp=bool(retry.get("retry_on_acp", True)),
-        retry_on_idle_timeout=bool(retry.get("retry_on_idle_timeout", True)),
-        retry_on_infra=bool(retry.get("retry_on_infra", True)),
-        retry_on_verifier_infra=bool(retry.get("retry_on_verifier_infra", True)),
-        wait_multiplier=float(retry.get("wait_multiplier", 2.0)),
-        min_wait_sec=float(retry.get("min_wait_sec", 1.0)),
-        max_wait_sec=float(retry.get("max_wait_sec", 30.0)),
-        exclude_categories=set(retry.get("exclude_categories", ["timeout"])),
-    )
+    # Centralized parsing: omitted fields fall back to RetryConfig's own
+    # defaults (which exclude provider_auth), not hard-coded literals, so a
+    # partial worker payload can't silently revert to retrying auth failures
+    # (#564 finding 2).
+    return RetryConfig.from_mapping(raw.get("retry"))
 
 
 def _environment_manifest(raw: dict[str, Any]):

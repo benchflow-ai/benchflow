@@ -108,6 +108,24 @@ _DISALLOW_WEB_TOOLS_ENV = "BENCHFLOW_DISALLOW_WEB_TOOLS"
 GENERATED_SKILLS_ROOT = "/app/generated-skills"
 
 
+def _provider_auth_status_from_runtime(runtime: Any) -> int | None:
+    """Return a provider 401/403 status from a usage runtime's trajectory.
+
+    Scans the captured provider HTTP exchanges for an auth-failure status.
+    Only the integer status code is read — never response bodies or headers —
+    so no credential material can leak into ``result.error`` (#546/#564).
+    Returns ``None`` when there is no runtime, no trajectory, or no 401/403.
+    """
+    server = getattr(runtime, "server", None)
+    trajectory = getattr(server, "trajectory", None)
+    exchanges = getattr(trajectory, "exchanges", None) or []
+    for exchange in reversed(exchanges):
+        status = getattr(getattr(exchange, "response", None), "status_code", None)
+        if status in (401, 403):
+            return status
+    return None
+
+
 def _task_disallows_internet(task: Any) -> bool:
     """Return True when task.toml requests no internet for the agent task."""
     env_config = getattr(getattr(task, "config", None), "environment", None)
@@ -1140,6 +1158,11 @@ class Rollout:
         self._task_skill_policy: TaskSkillPolicy | None = None
         self._usage_runtime: Any = None
         self._usage_metrics: dict[str, Any] = self._planes.extract_usage(None)
+        # Provider 401/403 status snapshotted during cleanup, after the usage
+        # proxy imports its captures (Daytona's SandboxUsageProxy only fills
+        # trajectory on stop()). Read by _provider_auth_status() so ACP-error
+        # classification can fail fast on auth failures (#546/#564).
+        self._provider_auth_status_cached: int | None = None
 
         # Populated by install_agent()
         self._agent_cfg: Any = None
@@ -2024,6 +2047,14 @@ class Rollout:
             except Exception as e:
                 logger.warning(f"Usage telemetry runtime stop failed: {e}")
                 self._usage_metrics = self._planes.extract_usage(None)
+            # Snapshot any provider 401/403 now that captures are imported
+            # (stop() populated the trajectory). This must happen before we drop
+            # the runtime reference below, and is read later by ACP-error
+            # classification — for Daytona the trajectory is empty until here
+            # (#546/#564).
+            self._provider_auth_status_cached = _provider_auth_status_from_runtime(
+                usage_runtime
+            )
             try:
                 self._write_llm_trajectory(usage_runtime)
             except Exception as e:
@@ -2078,6 +2109,7 @@ class Rollout:
         """
         cfg = self._config
         agent_timed_out = False
+        pending_acp_error: AgentProtocolError | None = None
         if cfg.skill_mode == SKILL_MODE_SELF_GEN:
             raise ValueError(
                 "self-gen requires the runtime orchestrator. Use bf.run(), "
@@ -2162,13 +2194,23 @@ class Rollout:
             self._diagnostics.set(e.diagnostic)
             logger.error(self._error)
         except AgentProtocolError as e:
-            self._error = self._classify_acp_error(e)
-            logger.error(self._error)
+            # Defer classification until after cleanup(): the provider 401/403
+            # that distinguishes provider_auth from a generic retryable ACP
+            # error lives in the usage-proxy trajectory, which Daytona's
+            # SandboxUsageProxy only imports on stop() (#546/#564).
+            pending_acp_error = e
+            logger.error(str(e))
         except Exception as e:
             self._error = str(e)
             logger.error("Run failed", exc_info=True)
         finally:
             await self.cleanup()
+
+        # cleanup() has now imported usage-proxy captures and snapshotted any
+        # provider auth status, so classification can see the real 401/403.
+        if pending_acp_error is not None:
+            self._error = self._classify_acp_error(pending_acp_error)
+            logger.error(self._error)
 
         if self._rollout_dir is None:
             return RolloutResult(
@@ -2597,18 +2639,16 @@ class Rollout:
         return str(e)
 
     def _provider_auth_status(self) -> int | None:
-        """Return a provider 401/403 status from the proxy trajectory, if any.
+        """Return the provider 401/403 status snapshotted during cleanup.
 
-        Only the integer status code is read — never the response body or
-        headers — so no credential material can leak into ``result.error``.
+        The snapshot is taken in :meth:`cleanup` after the usage proxy imports
+        its captures, so this is valid for both the host proxy (trajectory
+        filled as requests complete) and Daytona's SandboxUsageProxy (filled
+        only on ``stop()``). Only the integer status code is ever read — never
+        response bodies or headers — so no credential material reaches
+        ``result.error`` (#546/#564).
         """
-        server = getattr(getattr(self, "_usage_runtime", None), "server", None)
-        trajectory = getattr(server, "trajectory", None)
-        exchanges = getattr(trajectory, "exchanges", None) or []
-        for exchange in reversed(exchanges):
-            status = getattr(getattr(exchange, "response", None), "status_code", None)
-            if status in (401, 403):
-                return status
+        return self._provider_auth_status_cached
         return None
 
     def _write_llm_trajectory(self, usage_runtime: Any) -> None:
