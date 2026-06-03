@@ -819,6 +819,10 @@ class TestResolveAgentEnvHostProviderEndpoint:
         for k in (
             "BENCHFLOW_PROVIDER_BASE_URL",
             "BENCHFLOW_PROVIDER_API_KEY",
+            "GEMINI_API_KEY",
+            "GOOGLE_API_KEY",
+            "LLM_API_KEY",
+            "LLM_BASE_URL",
             "OPENAI_API_KEY",
             "OPENAI_BASE_URL",
             "ZAI_API_KEY",
@@ -873,6 +877,26 @@ class TestResolveAgentEnvHostProviderEndpoint:
         assert result["BENCHFLOW_PROVIDER_API_KEY"] == "sk-kimi"
         assert result["LLM_BASE_URL"] == "https://api.moonshot.ai/v1"
         assert result["LLM_API_KEY"] == "sk-kimi"
+
+    def test_inherited_provider_proxy_does_not_shadow_bare_gemini_model(
+        self, monkeypatch
+    ):
+        """Guards this PR: a global LiteLLM proxy must not hijack Gemini direct runs."""
+        monkeypatch.setenv("GEMINI_API_KEY", "test-gemini-key")
+        monkeypatch.setenv(
+            "BENCHFLOW_PROVIDER_BASE_URL", "https://llm-proxy.example.test"
+        )
+        monkeypatch.setenv("BENCHFLOW_PROVIDER_API_KEY", "sk-proxy")
+        monkeypatch.setenv("LLM_BASE_URL", "https://llm-proxy.example.test")
+        monkeypatch.setenv("LLM_API_KEY", "sk-proxy")
+
+        result = resolve_agent_env("openhands", "gemini-3.5-flash", {})
+
+        assert "BENCHFLOW_PROVIDER_BASE_URL" not in result
+        assert "LLM_BASE_URL" not in result
+        assert result["BENCHFLOW_PROVIDER_API_KEY"] == "test-gemini-key"
+        assert result["LLM_API_KEY"] == "test-gemini-key"
+        assert result["LLM_MODEL"] == "gemini/gemini-3.5-flash"
 
     def test_explicit_provider_base_url_can_override_registered_provider(self):
         """An explicit --agent-env generic endpoint remains a valid override."""

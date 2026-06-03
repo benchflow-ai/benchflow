@@ -247,11 +247,21 @@ def validate_usage_proxy_preconditions(
 def _pricing_for_model(model: str | None) -> PricingEntry | None:
     if not model:
         return None
-    bare = strip_provider_prefix(model).lower()
+    bare = _pricing_model_key(model)
     for prefix, pricing in PRICING_USD_PER_MTOK.items():
         if bare.startswith(prefix):
             return pricing
     return None
+
+
+def _pricing_model_key(model: str) -> str:
+    """Normalize provider-specific model IDs to pricing-table prefixes."""
+    bare = strip_provider_prefix(model).lower()
+    bare = bare.removeprefix("models/")
+    marker = "anthropic."
+    if marker in bare:
+        bare = bare.split(marker, 1)[1]
+    return bare
 
 
 def _estimate_cost_usd(
@@ -288,11 +298,13 @@ def _model_from_trajectory(runtime: ProviderRuntime) -> str | None:
     trajectory = getattr(runtime.server, "trajectory", None)
     if trajectory:
         for exchange in trajectory.exchanges:
-            response_model = exchange.response.body.get("model")
-            if response_model:
+            response_model = exchange.response.body.get(
+                "model"
+            ) or exchange.response.body.get("modelVersion")
+            if isinstance(response_model, str) and response_model:
                 return response_model
             request_model = exchange.request.body.get("model")
-            if request_model:
+            if isinstance(request_model, str) and request_model:
                 return request_model
     return runtime.backend_model
 

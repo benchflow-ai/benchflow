@@ -41,6 +41,15 @@ PRICING_USD_PER_MTOK: dict[str, PricingEntry] = {
         retrieved_at="2026-05-18",
         source_hash="e7518460f64c8b3f9f2bb816fdb7c060c500d20d7f5da88b9dbfde5e08e8338e",
     ),
+    "claude-opus-4-8": PricingEntry(
+        input=5.0,
+        output=25.0,
+        cache_read=0.5,
+        cache_creation=6.25,
+        source_url="https://www.anthropic.com/pricing",
+        retrieved_at="2026-06-03",
+        source_hash="3aef8590157ce26a14d9bab6d8c82a030dc80af341507655a3d63e93b66ab05e",
+    ),
     "gpt-4.1-mini": PricingEntry(
         input=0.4,
         output=1.6,
@@ -49,6 +58,15 @@ PRICING_USD_PER_MTOK: dict[str, PricingEntry] = {
         source_url="https://openai.com/api/pricing/",
         retrieved_at="2026-05-18",
         source_hash="081d1608413e6a8984cf85721f637cf300c1511903aac34d28da8b821598a33d",
+    ),
+    "gemini-3.5-flash": PricingEntry(
+        input=1.5,
+        output=9.0,
+        cache_read=0.15,
+        cache_creation=1.5,
+        source_url="https://ai.google.dev/gemini-api/docs/pricing",
+        retrieved_at="2026-06-03",
+        source_hash="1d557a83661069a226161cac2ca50e8f462b66feb07d1f87e30f54728726edc1",
     ),
     "gemini-2.5-flash": PricingEntry(
         input=0.3,

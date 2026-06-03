@@ -52,7 +52,12 @@ _CUSTOM_OPENAI_ENDPOINT_KEYS = frozenset(
 )
 _CANONICAL_OPENAI_URL = "https://api.openai.com/v1"
 _GENERIC_PROVIDER_OVERRIDE_KEYS = frozenset(
-    {"BENCHFLOW_PROVIDER_BASE_URL", "BENCHFLOW_PROVIDER_API_KEY"}
+    {
+        "BENCHFLOW_PROVIDER_BASE_URL",
+        "BENCHFLOW_PROVIDER_API_KEY",
+        "LLM_BASE_URL",
+        "LLM_API_KEY",
+    }
 )
 _AZURE_RESOURCE_ENV = "AZURE_RESOURCE"
 _AZURE_ENDPOINT_ENV = "AZURE_API_ENDPOINT"
@@ -543,18 +548,21 @@ def _drop_inherited_generic_provider_overrides(
         return
 
     from benchflow.agents.providers import find_provider
+    from benchflow.agents.registry import infer_env_key_for_model
 
     provider = find_provider(model)
     if provider is None:
-        return
-    _, provider_cfg = provider
-    # Providers with an empty base URL (for example vllm/) are explicitly
-    # user-supplied endpoints, so inherited BENCHFLOW_PROVIDER_* is the normal
-    # configuration path. Providers with a registered URL/auth env should not be
-    # shadowed by a global generic proxy from .env unless the caller explicitly
-    # passed that override for this run.
-    if not provider_cfg.base_url:
-        return
+        if infer_env_key_for_model(model) is None:
+            return
+    else:
+        _, provider_cfg = provider
+        # Providers with an empty base URL (for example vllm/) are explicitly
+        # user-supplied endpoints, so inherited BENCHFLOW_PROVIDER_* is the normal
+        # configuration path. Providers with a registered URL/auth env should not be
+        # shadowed by a global generic proxy from .env unless the caller explicitly
+        # passed that override for this run.
+        if not provider_cfg.base_url:
+            return
     for key in _GENERIC_PROVIDER_OVERRIDE_KEYS - explicit_agent_env_keys:
         agent_env.pop(key, None)
 

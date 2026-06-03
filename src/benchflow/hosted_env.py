@@ -28,6 +28,10 @@ from pathlib import Path
 from typing import Any, cast
 from uuid import uuid4
 
+from benchflow._utils.result_metadata import (
+    final_metrics_from_agent_result,
+    trajectory_summary_from_events,
+)
 from benchflow.diagnostics import RolloutDiagnostics
 
 logger = logging.getLogger(__name__)
@@ -462,6 +466,18 @@ def _write_run_artifacts(
         runner=config.runner,
         env_args=config.env_args,
     )
+    agent_result = {
+        "n_tool_calls": result.total_tool_calls or 0,
+        "n_prompts": len(prompts),
+        "n_input_tokens": None,
+        "n_output_tokens": None,
+        "n_cache_read_tokens": None,
+        "n_cache_creation_tokens": None,
+        "total_tokens": None,
+        "cost_usd": None,
+        "usage_source": "unavailable",
+        "price_source": None,
+    }
 
     (result.run_dir / "trajectory" / "acp_trajectory.jsonl").write_text(
         "\n".join(json.dumps(e, default=str) for e in trajectory)
@@ -477,18 +493,13 @@ def _write_run_artifacts(
         "model": result.normalized_model or result.model or None,
         "n_tool_calls": result.total_tool_calls or 0,
         "n_prompts": len(prompts),
-        "agent_result": {
-            "n_tool_calls": result.total_tool_calls or 0,
-            "n_prompts": len(prompts),
-            "n_input_tokens": None,
-            "n_output_tokens": None,
-            "n_cache_read_tokens": None,
-            "n_cache_creation_tokens": None,
-            "total_tokens": None,
-            "cost_usd": None,
-            "usage_source": "unavailable",
-            "price_source": None,
-        },
+        "agent_result": agent_result,
+        "final_metrics": final_metrics_from_agent_result(agent_result),
+        "trajectory_summary": trajectory_summary_from_events(
+            trajectory,
+            partial_trajectory=False,
+            trajectory_source="hosted_env" if trajectory else None,
+        ),
         "error": result.error
         if result.returncode != 0 or not result.verifiers_error
         else None,

@@ -52,6 +52,10 @@ from typing import Any
 
 from benchflow._types import Role, Scene, Turn
 from benchflow._utils.config import normalize_agent_name, normalize_sandbox_user
+from benchflow._utils.result_metadata import (
+    final_metrics_from_agent_result,
+    trajectory_summary_from_events,
+)
 from benchflow._utils.scoring import classify_error, classify_verifier_error
 from benchflow.contracts import (
     AgentProtocolError,
@@ -545,6 +549,25 @@ def _build_rollout_result(
     )
     timing["total"] = (finished_at - started_at).total_seconds()
     timing = {k: round(v, 1) for k, v in timing.items()}
+    agent_result = {
+        "n_tool_calls": result.n_tool_calls,
+        "n_skill_invocations": result.n_skill_invocations,
+        "n_prompts": result.n_prompts,
+        "n_input_tokens": result.n_input_tokens,
+        "n_output_tokens": result.n_output_tokens,
+        "n_cache_read_tokens": result.n_cache_read_tokens,
+        "n_cache_creation_tokens": result.n_cache_creation_tokens,
+        "total_tokens": result.total_tokens,
+        "cost_usd": result.cost_usd,
+        "usage_source": result.usage_source,
+        "price_source": result.price_source,
+    }
+    final_metrics = final_metrics_from_agent_result(agent_result)
+    trajectory_summary = trajectory_summary_from_events(
+        trajectory,
+        partial_trajectory=partial_trajectory,
+        trajectory_source=trajectory_source,
+    )
     traj_dir = rollout_dir / "trajectory"
     traj_dir.mkdir(parents=True, exist_ok=True)
     (traj_dir / "acp_trajectory.jsonl").write_text(
@@ -563,19 +586,9 @@ def _build_rollout_result(
                 "n_tool_calls": result.n_tool_calls,
                 "n_skill_invocations": result.n_skill_invocations,
                 "n_prompts": result.n_prompts,
-                "agent_result": {
-                    "n_tool_calls": result.n_tool_calls,
-                    "n_skill_invocations": result.n_skill_invocations,
-                    "n_prompts": result.n_prompts,
-                    "n_input_tokens": result.n_input_tokens,
-                    "n_output_tokens": result.n_output_tokens,
-                    "n_cache_read_tokens": result.n_cache_read_tokens,
-                    "n_cache_creation_tokens": result.n_cache_creation_tokens,
-                    "total_tokens": result.total_tokens,
-                    "cost_usd": result.cost_usd,
-                    "usage_source": result.usage_source,
-                    "price_source": result.price_source,
-                },
+                "agent_result": agent_result,
+                "final_metrics": final_metrics,
+                "trajectory_summary": trajectory_summary,
                 "usage_tracking": usage_tracking,
                 "error": result.error,
                 "error_category": result.error_category,
