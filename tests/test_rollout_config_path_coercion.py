@@ -77,7 +77,7 @@ def test_rollout_config_context_root_none_stays_none() -> None:
 
 
 def test_rollout_config_resolves_skills_dir_auto(tmp_path: Path) -> None:
-    """Guards PR #586 so SDK.run and bench run share eval's skills auto mode."""
+    """Guards PR #586 so SDK.run and eval create share skills auto mode."""
     task = tmp_path / "task"
     skills = task / "environment" / "skills" / "alpha"
     skills.mkdir(parents=True)

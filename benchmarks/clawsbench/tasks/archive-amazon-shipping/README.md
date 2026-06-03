@@ -25,7 +25,7 @@ build-time message id is baked in.
 ## Run it
 
 ```bash
-bench run benchmarks/clawsbench/tasks/archive-amazon-shipping \
+bench eval create --tasks-dir benchmarks/clawsbench/tasks/archive-amazon-shipping \
   --environment-manifest benchmarks/clawsbench/environment.toml \
   --agent gemini --model gemini-3.1-flash-lite-preview \
   --sandbox daytona

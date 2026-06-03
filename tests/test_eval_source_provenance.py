@@ -288,7 +288,7 @@ def test_eval_create_single_task_applies_concurrency_override(monkeypatch, tmp_p
 
 
 def test_eval_create_single_task_passes_cli_prompts(monkeypatch, tmp_path):
-    """Guards PR #608 so eval create keeps custom prompts after bench run cleanup."""
+    """Guards PR #608 so eval create keeps custom CLI prompts."""
     task_dir = tmp_path / "task-a"
     task_dir.mkdir()
     (task_dir / "task.toml").write_text("[task]\n")
