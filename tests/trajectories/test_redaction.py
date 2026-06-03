@@ -1,8 +1,28 @@
-"""Tests for trajectory secret redaction patterns."""
+"""Tests for trajectory secret redaction patterns.
+
+Guards PR #585 (extends #537): redaction must cover raw-text header/kv forms
+(agents print env, curl -v, request logs into trajectories), and audit-sensitive
+token families (Google/Daytona/AWS) must be redacted whole — prefix included —
+so the v0.5 secret-leak audit grep sees no live-key shape.
+"""
 
 import pytest
 
-from benchflow.trajectories.types import redact_trajectory_text
+from benchflow.trajectories.types import (
+    LLMExchange,
+    LLMRequest,
+    LLMResponse,
+    Trajectory,
+    redact_trajectory_text,
+)
+
+
+def _jsonl_for_request_body(body: dict) -> str:
+    traj = Trajectory(
+        session_id="t",
+        exchanges=[LLMExchange(request=LLMRequest(body=body), response=LLMResponse())],
+    )
+    return traj.to_jsonl(redact_keys=True)
 
 
 @pytest.mark.parametrize(
@@ -159,3 +179,97 @@ def test_to_jsonl_no_redaction_preserves_keys():
     )
     jsonl = trajectory.to_jsonl(redact_keys=False)
     assert "AIzaSyFAKEKEYFORTESTSONLYxxxxxxxxxxxxxxx" in jsonl
+
+
+# ---------------------------------------------------------------------------
+# PR #585 finding 1: raw-text header / key-value forms (not only JSON keys)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "raw,leaked",
+    [
+        ("x-api-key: abc123secret456value", "abc123secret456value"),
+        ("api-key=abc123secret456value", "abc123secret456value"),
+        ("api_key: abc123secret456value", "abc123secret456value"),
+        (
+            "x-goog-api-key: AIzaSyFAKEKEYFORTESTSONLYxxxxxxxxxxxxxxx",
+            "FORTESTSONLYxxxxxxxxxxxxxxx",
+        ),
+        ("authorization: Token abc123secret456value", "abc123secret456value"),
+        ("authorization: Basic dXNlcjpwYXNzd29yZGZ4eA==", "dXNlcjpwYXNz"),
+        ("Authorization: bare-token-value-aaaa", "bare-token-value-aaaa"),
+    ],
+)
+def test_redacts_raw_text_header_forms(raw, leaked):
+    """PR #585 finding 1: raw header/kv text (env dumps, curl -v) must redact,
+    not only JSON-shaped ``"x-api-key": "..."`` keys."""
+    result = redact_trajectory_text(raw)
+    assert "***REDACTED***" in result
+    assert leaked not in result
+
+
+def test_to_jsonl_redacts_raw_env_dump_in_message():
+    """PR #585: a shell env dump pasted into trajectory content must redact."""
+    body = {
+        "messages": [
+            {
+                "role": "user",
+                "content": (
+                    "GEMINI_API_KEY=AIzaSyFAKEKEYFORTESTSONLYxxxxxxxxxxxxxxx\n"
+                    "DAYTONA_API_KEY=dtn_FAKEFAKEFAKEFAKEFAKE12345678\n"
+                    "x-api-key: abc123secret456value"
+                ),
+            }
+        ]
+    }
+    jsonl = _jsonl_for_request_body(body)
+    # The live-key *values* must be gone; variable names may remain.
+    assert "AIzaSyFAKEKEYFORTESTSONLYxxxxxxxxxxxxxxx" not in jsonl
+    assert "dtn_FAKEFAKEFAKEFAKEFAKE12345678" not in jsonl
+    assert "abc123secret456value" not in jsonl
+
+
+# ---------------------------------------------------------------------------
+# PR #585 finding 2: audit-sensitive tokens redacted whole (no live prefix)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "prefix_token,prefix",
+    [
+        ("AIzaSyFAKEKEYFORTESTSONLYxxxxxxxxxxxxxxx", "AIzaSy"),
+        ("dtn_FAKEFAKEFAKEFAKEFAKE12345678", "dtn_"),
+        ("AKIAIOSFODNN7EXAMPLE", "AKIA"),
+    ],
+)
+def test_audit_prefix_not_preserved(prefix_token, prefix):
+    """PR #585 finding 2: the v0.5 leak audit greps for raw prefixes like
+    ``AIzaSy``/``dtn_``; a kept prefix (``AIzaSy***``) would still trip it, so
+    the whole token — prefix included — must be redacted."""
+    out = redact_trajectory_text(f'{{"k": "{prefix_token}"}}')
+    assert prefix not in out
+    assert "***REDACTED***" in out
+
+
+def test_leak_audit_intent_passes_end_to_end():
+    """PR #585 finding 2: reproduce the §14 audit — a trajectory body with
+    GEMINI/DAYTONA env keys, written to JSONL, must leave no live-key shape
+    (the audit greps AIzaSy/dtn_ key *values*, not variable names)."""
+    import re
+
+    body = {
+        "messages": [
+            {
+                "role": "user",
+                "content": (
+                    "export GEMINI_API_KEY=AIzaSyFAKEKEYFORTESTSONLYxxxxxxxxxxxxxxx\n"
+                    "export DAYTONA_API_KEY=dtn_FAKEFAKEFAKEFAKEFAKE12345678"
+                ),
+            }
+        ]
+    }
+    jsonl = _jsonl_for_request_body(body)
+    # No live AIzaSy.../dtn_... token shape survives (bare prefixes excluded).
+    residual = [m for m in re.findall(r"AIzaSy[A-Za-z0-9_-]+|dtn_[A-Za-z0-9_]+", jsonl)]
+    assert residual == [], f"live key shapes survived: {residual}"

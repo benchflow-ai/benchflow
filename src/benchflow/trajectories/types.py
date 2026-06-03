@@ -173,46 +173,86 @@ def _exchange_token_usage(exchange: "LLMExchange") -> TokenUsage:
     )
 
 
+# Token families are redacted *whole* — prefix included — so the v0.5
+# secret-leak audit (which greps for raw prefixes like ``AIzaSy``/``dtn_``)
+# sees no live-key shape (#537/#585). Keeping the prefix (``AIzaSy***``) would
+# still trip that grep, so the entire matched token becomes ``***REDACTED***``.
 _REDACTION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     # Anthropic: sk-ant-api03-...
-    (re.compile(r"(sk-ant-[a-zA-Z0-9_-]{10})[a-zA-Z0-9_-]+"), r"\1***REDACTED***"),
-    # OpenAI project key: sk-proj-...  (must come before generic sk- since the
-    # generic pattern's narrow [a-zA-Z0-9] class can't span the hyphen)
-    (re.compile(r"(sk-proj-[a-zA-Z0-9_-]{10})[a-zA-Z0-9_-]+"), r"\1***REDACTED***"),
+    (re.compile(r"sk-ant-[a-zA-Z0-9_-]{12,}"), "***REDACTED***"),
+    # OpenAI project key: sk-proj-...  (before generic sk- so it wins)
+    (re.compile(r"sk-proj-[a-zA-Z0-9_-]{12,}"), "***REDACTED***"),
     # OpenAI / generic sk- (alphanumeric only — widening to include `-` would
     # match common slugs like `task-sk-us-east-1-...`)
-    (re.compile(r"(sk-[a-zA-Z0-9]{10})[a-zA-Z0-9]+"), r"\1***REDACTED***"),
-    # Google AI / Gemini: AIzaSy... (39 chars total, alphanumeric + `_-`)
-    (re.compile(r"(AIzaSy[A-Za-z0-9_-]{4})[A-Za-z0-9_-]{20,}"), r"\1***REDACTED***"),
-    # AWS access keys: AKIA...(16) / ASIA...(16) — exact 20-char keys; the
-    # length anchor prevents matching English words like "ASIAPACIFIC".
+    (re.compile(r"sk-[a-zA-Z0-9]{12,}"), "***REDACTED***"),
+    # Google AI / Gemini: AIzaSy... (≥20 char suffix avoids matching `AIzaSy`
+    # alone). Prefix is redacted too so the audit grep for `AIzaSy` is clean.
+    (re.compile(r"AIzaSy[A-Za-z0-9_-]{20,}"), "***REDACTED***"),
+    # AWS access keys: AKIA/ASIA + exactly 16 chars; length anchor avoids
+    # matching English words like "ASIAPACIFIC".
+    (re.compile(r"(?:AKIA|ASIA)[A-Z0-9]{16}(?![A-Z0-9])"), "***REDACTED***"),
+    # Daytona SDK tokens: dtn_... — ≥16 char suffix avoids short ids (`dtn_v2`).
+    (re.compile(r"dtn_[A-Za-z0-9_]{16,}"), "***REDACTED***"),
+    # Header / key-value secret carriers, in BOTH JSON and raw-text forms
+    # (agents print env, curl -v, request logs into trajectories — #585).
+    # Matches: `"x-api-key": "v"`, `x-api-key: v`, `api-key=v`,
+    # `authorization: <scheme> v`, etc. The name is kept; the value is dropped.
+    # Hyphenated header names (x-api-key / api-key / x-goog-api-key). No leading
+    # boundary needed — the hyphen makes them safe from matching inside
+    # underscore variable names. Value excludes backslash so a literal
+    # JSON-escaped `\n` after one secret can't swallow the next header, and
+    # excludes `*` so an already-redacted value isn't re-matched.
     (
-        re.compile(r"((?:AKIA|ASIA)[A-Z0-9]{4})[A-Z0-9]{12}(?![A-Z0-9])"),
+        re.compile(
+            r'((?:"?(?:x-api-key|x-goog-api-key|api-key)"?)\s*[:=]\s*"?)'
+            r'[^"\s,}\\*]+',
+            re.IGNORECASE,
+        ),
         r"\1***REDACTED***",
     ),
-    # Daytona SDK tokens: dtn_... — require ≥16 chars of suffix entropy to
-    # avoid matching short identifiers like `dtn_v2_0`.
-    (re.compile(r"(dtn_[A-Za-z0-9_]{4})[A-Za-z0-9_]{16,}"), r"\1***REDACTED***"),
-    # Authorization: Bearer <token>
+    # Underscore form `api_key` needs a leading boundary so it does not match
+    # the tail of a longer name like `GEMINI_API_KEY`.
     (
-        re.compile(r'("authorization"\s*:\s*"Bearer\s+)[^"]+(")', re.IGNORECASE),
-        r"\1***REDACTED***\2",
+        re.compile(
+            r'(?<![A-Za-z0-9_])("?api_key"?\s*[:=]\s*"?)[^"\s,}\\*]+',
+            re.IGNORECASE,
+        ),
+        r"\1***REDACTED***",
     ),
-    # x-api-key header
+    # authorization header WITH a scheme (Bearer/Token/Basic/…): keep scheme.
     (
-        re.compile(r'("x-api-key"\s*:\s*")[^"]+(")', re.IGNORECASE),
-        r"\1***REDACTED***\2",
+        re.compile(
+            r"(?<![A-Za-z0-9_-])"
+            r'("?authorization"?\s*[:=]\s*"?(?:Bearer|Token|Basic|ApiKey)\s+)'
+            r'[^"\s,}\\*]+',
+            re.IGNORECASE,
+        ),
+        r"\1***REDACTED***",
     ),
-    # api-key header (Azure)
+    # authorization header with a bare value (no recognized scheme). The
+    # negative lookahead skips scheme-prefixed values already handled above,
+    # so `Bearer <tok>` isn't double-redacted into `***REDACTED*** ***...`.
     (
-        re.compile(r'("api-key"\s*:\s*")[^"]+(")', re.IGNORECASE),
-        r"\1***REDACTED***\2",
+        re.compile(
+            r"(?<![A-Za-z0-9_-])"
+            r'("?authorization"?\s*[:=]\s*"?)'
+            r"(?!(?:Bearer|Token|Basic|ApiKey)\b)"
+            r'[^"\s,}\\*]+',
+            re.IGNORECASE,
+        ),
+        r"\1***REDACTED***",
     ),
 ]
 
 
 def redact_trajectory_text(text: str) -> str:
-    """Apply all secret-redaction patterns to *text*."""
+    """Apply all secret-redaction patterns to *text*.
+
+    Token families (Anthropic/OpenAI/Google/AWS/Daytona) are redacted whole,
+    prefix included, so the secret-leak audit greps see no live-key shape.
+    Header/key-value carriers keep the field name but drop the value, in both
+    JSON (``"x-api-key": "v"``) and raw-text (``x-api-key: v``) forms.
+    """
     for pattern, replacement in _REDACTION_PATTERNS:
         text = pattern.sub(replacement, text)
     return text
