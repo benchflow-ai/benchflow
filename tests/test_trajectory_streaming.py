@@ -418,6 +418,28 @@ class TestMultiScenePartialCaptureFix:
         assert r._partial_trajectory is True
         assert r._trajectory_source == "partial_acp"
 
+    def test_partial_capture_is_idempotent_across_cleanup_disconnect(self) -> None:
+        """Guards PR #566 against duplicating partial events when cleanup and
+        disconnect both attempt late-session capture.
+        """
+        scene1 = ACPSession("s1")
+        scene1.record_user_prompt("solve")
+        scene1.handle_update(
+            {
+                "sessionUpdate": "tool_call",
+                "toolCallId": "tc_s1",
+                "title": "ls",
+                "kind": "bash",
+            }
+        )
+        r = _build_rollout(
+            prior_trajectory=[], active_session=scene1, session_traj_count=0
+        )
+        r._capture_partial_acp_trajectory()
+        r._capture_partial_acp_trajectory()
+        assert [e["type"] for e in r._trajectory] == ["user_message", "tool_call"]
+        assert r._n_tool_calls == 1
+
     def test_partial_capture_with_no_live_session_is_noop(self) -> None:
         prior = [{"type": "user_message", "text": "x"}]
         r = _build_rollout(

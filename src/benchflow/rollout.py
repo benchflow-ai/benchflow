@@ -1643,12 +1643,14 @@ class Rollout:
         if not delta:
             return
         self._trajectory.extend(delta)
+        self._session_traj_count = len(captured)
         self._partial_trajectory = True
         self._trajectory_source = "partial_acp"
         prior_session_tools = getattr(self, "_session_tool_count", 0)
         new_tools = len(session.tool_calls) - prior_session_tools
         if new_tools > 0:
             self._n_tool_calls += new_tools
+        self._session_tool_count = len(session.tool_calls)
 
     # ── Phase 3c: EXECUTE ──
 
