@@ -2649,7 +2649,6 @@ class Rollout:
         ``result.error`` (#546/#564).
         """
         return self._provider_auth_status_cached
-        return None
 
     def _write_llm_trajectory(self, usage_runtime: Any) -> None:
         """Persist captured provider HTTP exchanges as JSONL."""
