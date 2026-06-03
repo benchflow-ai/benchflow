@@ -311,6 +311,77 @@ bench eval create \
   --agent gemini --model gemini-3.1-flash-lite-preview --sandbox daytona --concurrency 64
 ```
 
+> **Daytona has a 10 GB-per-sandbox hard cap.** Tasks with heavy images (large
+> HuggingFace model snapshots, Playwright, LaTeX/marker — e.g.
+> `latex-formula-extraction`) overflow during bootstrap (`No space left on
+> device`) or hang at "Sandbox user agent ready" with no trajectory. Run those on
+> `--sandbox docker` (host disk, no cap); keep Daytona for lighter tasks.
+
+---
+
+## SkillsBench skill-toggle matrix (Opus-4.8 Bedrock + Gemini) on Daytona
+
+A self-contained, verified recipe for the four-cell matrix of
+**{Opus-4.8 MAX via Bedrock, Gemini-3.5-flash} × {with-skills, without-skills}**,
+agent `openhands`, sandbox `daytona`. Each cell produces a complete trajectory
+(`trajectory/{acp,llm}_trajectory.jsonl`) and a verifier reward.
+
+**Prereqs**
+
+- A **local** skillsbench clone, so `--skills-dir` can point at a task's bundled
+  skills (the with/without-skills toggle):
+  `git clone https://github.com/benchflow-ai/skillsbench && export SKILLSBENCH=$PWD/skillsbench`
+- A **light** task (Daytona's 10 GB cap — see the note above). `citation-check` is
+  a good default; heavy tasks need `--sandbox docker`.
+- Credentials, each **verified live first** (a dead key shows up only as
+  `openhands ACP error -32603` on the first model call):
+  - Bedrock: `AWS_BEARER_TOKEN_BEDROCK` + `AWS_REGION=us-west-2`
+  - Gemini: a working `GEMINI_API_KEY`
+- Strip any LLM-proxy vars from your shell first, or they hijack routing:
+  `unset LLM_BASE_URL LLM_API_KEY OPENAI_BASE_URL BENCHFLOW_PROVIDER_BASE_URL BENCHFLOW_PROVIDER_API_KEY LITELLM_BASE_URL LITELLM_API_KEY`
+
+```bash
+TASK=citation-check
+SK="$SKILLSBENCH/tasks/$TASK/environment/skills"
+COMMON="--tasks-dir $SKILLSBENCH/tasks --include $TASK --agent openhands \
+  --sandbox daytona --concurrency 1 --usage-tracking required --agent-idle-timeout none"
+
+# (1) Opus-4.8 MAX — with skills
+AWS_REGION=us-west-2 bench eval create $COMMON \
+  --model aws-bedrock/us.anthropic.claude-opus-4-8 \
+  --skills-dir "$SK" --skill-mode default --jobs-dir jobs/opus-skill
+
+# (2) Opus-4.8 MAX — without skills
+AWS_REGION=us-west-2 bench eval create $COMMON \
+  --model aws-bedrock/us.anthropic.claude-opus-4-8 \
+  --jobs-dir jobs/opus-noskill
+
+# (3) Gemini-3.5-flash — with skills
+bench eval create $COMMON \
+  --model gemini-3.5-flash --agent-env LLM_CACHING_PROMPT=false \
+  --skills-dir "$SK" --skill-mode default --jobs-dir jobs/gemini-skill
+
+# (4) Gemini-3.5-flash — without skills
+bench eval create $COMMON \
+  --model gemini-3.5-flash --agent-env LLM_CACHING_PROMPT=false \
+  --jobs-dir jobs/gemini-noskill
+```
+
+| Model (`--model`) | Skills | Cell-specific flags |
+|-------------------|--------|---------------------|
+| `aws-bedrock/us.anthropic.claude-opus-4-8` | with | `--skills-dir $SK --skill-mode default` |
+| `aws-bedrock/us.anthropic.claude-opus-4-8` | without | — |
+| `gemini-3.5-flash` | with | `--agent-env LLM_CACHING_PROMPT=false --skills-dir $SK --skill-mode default` |
+| `gemini-3.5-flash` | without | `--agent-env LLM_CACHING_PROMPT=false` |
+
+Notes:
+- `--usage-tracking required` records provider-reported token usage into each trajectory.
+- `--agent-idle-timeout none` disables the idle watchdog (the task wall-clock still applies).
+- Opus-4.8 on Bedrock needs the adaptive-thinking shim, which ships in the
+  `openhands` install on current main (install log prints
+  `opus-4.8 bedrock thinking shim ACTIVE`); see the Experiment-guidance notes in `AGENTS.md`.
+- For heavy tasks, replace `--sandbox daytona` with `--sandbox docker` — same flags otherwise.
+
 ---
 
 ## Running a benchmark with an Environment manifest
