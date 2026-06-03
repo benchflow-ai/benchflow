@@ -24,6 +24,10 @@ from urllib.parse import urlparse
 
 from benchflow._dotenv import load_dotenv_env
 from benchflow.agents.codex_config import apply_codex_provider_config
+from benchflow.agents.provider_route import (
+    drop_inherited_cross_provider_overrides,
+    mark_explicit_provider_base_url_envs,
+)
 from benchflow.agents.registry import AGENTS
 
 logger = logging.getLogger(__name__)
@@ -51,9 +55,6 @@ _CUSTOM_OPENAI_ENDPOINT_KEYS = frozenset(
     {"BENCHFLOW_PROVIDER_BASE_URL", "OPENAI_BASE_URL"}
 )
 _CANONICAL_OPENAI_URL = "https://api.openai.com/v1"
-_GENERIC_PROVIDER_OVERRIDE_KEYS = frozenset(
-    {"BENCHFLOW_PROVIDER_BASE_URL", "BENCHFLOW_PROVIDER_API_KEY"}
-)
 _AZURE_RESOURCE_ENV = "AZURE_RESOURCE"
 _AZURE_ENDPOINT_ENV = "AZURE_API_ENDPOINT"
 _AZURE_HOST_SUFFIXES = (".openai.azure.com", ".services.ai.azure.com")
@@ -184,6 +185,8 @@ def auto_inherit_env(
         "OPENAI_BASE_URL",
         "GOOGLE_API_KEY",
         "GEMINI_API_KEY",
+        "GEMINI_API_BASE_URL",
+        "GOOGLE_GEMINI_BASE_URL",
         "GOOGLE_GENERATIVE_AI_API_KEY",
         "GOOGLE_CLOUD_PROJECT",
         "GOOGLE_CLOUD_LOCATION",
@@ -532,33 +535,6 @@ def _configure_codex_custom_provider(
     )
 
 
-def _drop_inherited_generic_provider_overrides(
-    agent_env: dict[str, str],
-    *,
-    model: str | None,
-    explicit_agent_env_keys: set[str],
-) -> None:
-    """Let registered providers use their own endpoint/key over host defaults."""
-    if not model:
-        return
-
-    from benchflow.agents.providers import find_provider
-
-    provider = find_provider(model)
-    if provider is None:
-        return
-    _, provider_cfg = provider
-    # Providers with an empty base URL (for example vllm/) are explicitly
-    # user-supplied endpoints, so inherited BENCHFLOW_PROVIDER_* is the normal
-    # configuration path. Providers with a registered URL/auth env should not be
-    # shadowed by a global generic proxy from .env unless the caller explicitly
-    # passed that override for this run.
-    if not provider_cfg.base_url:
-        return
-    for key in _GENERIC_PROVIDER_OVERRIDE_KEYS - explicit_agent_env_keys:
-        agent_env.pop(key, None)
-
-
 def resolve_agent_env(
     agent: str,
     model: str | None,
@@ -571,6 +547,7 @@ def resolve_agent_env(
     # Both sources use setdefault so explicit agent_env keys take priority.
     auto_inherit_env(agent_env, source_env=load_dotenv_env())
     auto_inherit_env(agent_env)
+    mark_explicit_provider_base_url_envs(agent_env, explicit_agent_env_keys)
     _normalize_codex_auth_env(agent, model, agent_env)
     pre_provider_env = dict(agent_env)
     agent_cfg = AGENTS.get(agent)
@@ -578,7 +555,7 @@ def resolve_agent_env(
     # API-key validation are skipped even if a caller forwards a model.
     if model and agent != "oracle":
         inject_vertex_credentials(agent_env, model)
-        _drop_inherited_generic_provider_overrides(
+        drop_inherited_cross_provider_overrides(
             agent_env,
             model=model,
             explicit_agent_env_keys=explicit_agent_env_keys,

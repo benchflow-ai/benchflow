@@ -10,6 +10,7 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 from benchflow.agents.codex_config import apply_codex_provider_config
+from benchflow.agents.provider_route import resolve_native_usage_proxy_target
 from benchflow.agents.providers import strip_provider_prefix
 from benchflow.agents.registry import AGENTS
 from benchflow.providers.runtime import (
@@ -116,6 +117,9 @@ def _resolve_usage_proxy_target(
     agent_env: dict[str, str],
     model: str | None,
 ) -> str | None:
+    native_target = resolve_native_usage_proxy_target(agent_env, model)
+    if native_target:
+        return native_target
     if agent_env.get("BENCHFLOW_PROVIDER_BASE_URL"):
         return agent_env["BENCHFLOW_PROVIDER_BASE_URL"]
     for env_name in _agent_base_url_envs(agent):

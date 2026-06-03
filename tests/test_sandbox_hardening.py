@@ -342,7 +342,9 @@ class TestVerifierDirWipe:
             capture_output=True,
             text=True,
         ).stdout.strip()
-        assert decide == "skip", f"workspace {workspace} should be skipped, got {decide}"
+        assert decide == "skip", (
+            f"workspace {workspace} should be skipped, got {decide}"
+        )
 
     @pytest.mark.asyncio
     async def test_reclaim_still_clears_caches_outside_the_workspace(self):

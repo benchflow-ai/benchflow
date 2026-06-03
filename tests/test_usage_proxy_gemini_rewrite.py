@@ -26,14 +26,29 @@ from benchflow.providers.sandbox_usage_proxy import _NODE_PROXY_SOURCE
 # (litellm-emitted incoming path, expected normalized upstream path)
 _GEMINI_REWRITE_CASES = [
     # prompt-cache probe: bogus per-model action -> Google's real top-level collection
-    ("/models/gemini-3.5-flash:cachedContents?key=secret", "/v1beta/cachedContents?key=secret"),
+    (
+        "/models/gemini-3.5-flash:cachedContents?key=secret",
+        "/v1beta/cachedContents?key=secret",
+    ),
     # main completion call: missing /v1beta restored
-    ("/models/gemini-3.5-flash:generateContent", "/v1beta/models/gemini-3.5-flash:generateContent"),
-    ("/models/gemini-3.5-flash:streamGenerateContent?alt=sse", "/v1beta/models/gemini-3.5-flash:streamGenerateContent?alt=sse"),
-    ("/models/gemini-3.5-flash:countTokens", "/v1beta/models/gemini-3.5-flash:countTokens"),
+    (
+        "/models/gemini-3.5-flash:generateContent",
+        "/v1beta/models/gemini-3.5-flash:generateContent",
+    ),
+    (
+        "/models/gemini-3.5-flash:streamGenerateContent?alt=sse",
+        "/v1beta/models/gemini-3.5-flash:streamGenerateContent?alt=sse",
+    ),
+    (
+        "/models/gemini-3.5-flash:countTokens",
+        "/v1beta/models/gemini-3.5-flash:countTokens",
+    ),
     # already-correct paths are left untouched (idempotent)
     ("/v1beta/cachedContents", "/v1beta/cachedContents"),
-    ("/v1beta/models/gemini-3.5-flash:generateContent", "/v1beta/models/gemini-3.5-flash:generateContent"),
+    (
+        "/v1beta/models/gemini-3.5-flash:generateContent",
+        "/v1beta/models/gemini-3.5-flash:generateContent",
+    ),
     ("/v1/models/x:generateContent", "/v1/models/x:generateContent"),
 ]
 
