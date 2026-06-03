@@ -117,9 +117,14 @@ shape and sandbox behavior.
 6. Verify skill loading. With-skill runs must show the harness-specific native
    skill metadata or prompt injection pattern; no-skill runs must not expose
    skill files or descriptions.
-7. Verify verifier isolation. The verifier starts only after agent exit or
-   timeout, cannot leak solution data into the agent phase, and records score
-   provenance against the completed trajectory.
+7. Verify verifier isolation and environment hardening. The verifier starts
+   only after agent exit or timeout, cannot leak solution data into the agent
+   phase, and records score provenance against the completed trajectory. Confirm
+   the anti-reward-hacking invariants in
+   `references/verifier-hardening-checklist.md`: network off by default (proxied
+   and allowlisted when needed), git history scrubbed past the base commit, no
+   answer/hidden-test/scorer files in agent-readable paths, empty patch fails
+   while golden patch passes, and agent test edits are reset before grading.
 8. Scale only after the canary passes. Increase concurrency gradually and keep
    each VM below the Docker/container pressure that makes the daemon unstable.
 
@@ -184,6 +189,9 @@ Verifier leakage or reward hacking:
 - When the trajectory looks suspicious, load
   `references/reward-hacking-patterns.md` and classify the evidence against the
   solution-contamination, grader-gaming, and alignment-risk patterns there.
+- To remediate and prevent recurrence, apply
+  `references/verifier-hardening-checklist.md`, which maps each pattern to the
+  environment/grader fix that closes it at the source.
 
 Skill loading mismatch:
 
