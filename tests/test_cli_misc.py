@@ -16,7 +16,7 @@ def test_benchflow_version_flag() -> None:
 
 
 def test_benchflow_run_command_is_removed():
-    """Guards the removal PR so the deprecated top-level run command stays gone."""
+    """Guards PR #610 so the deprecated top-level run command stays gone."""
     result = CliRunner().invoke(app, ["run", "--help"])
 
     assert result.exit_code != 0
