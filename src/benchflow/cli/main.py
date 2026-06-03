@@ -170,41 +170,36 @@ def _cleanup_daytona_sandboxes(dry_run: bool, max_age_minutes: int) -> None:
 
     d = _daytona_client_or_exit()
     now = datetime.now(UTC)
-    page = 1
     total_deleted = 0
     total_found = 0
     total_skipped = 0
 
-    while True:
-        result = d.list(page=page, limit=100)
-        if not result.items:
-            break
-        total_found += len(result.items)
-        for sb in result.items:
-            if not sb.created_at:
-                continue
-            created_at = datetime.fromisoformat(sb.created_at.replace("Z", "+00:00"))
-            age_minutes = (now - created_at).total_seconds() / 60
-            if age_minutes < max_age_minutes:
-                total_skipped += 1
-                if dry_run:
-                    console.print(
-                        f"  [dim]{sb.id}[/dim] state={sb.state} age={age_minutes:.0f}m [green](skip)[/green]"
-                    )
-                continue
+    # daytona SDK >=0.18 replaced the paged ``list(page=, limit=)`` API (which
+    # returned a page object with ``.items``) with ``list()`` -> an
+    # auto-paginating ``Iterator[Sandbox]``. Iterate it directly.
+    for sb in d.list():
+        total_found += 1
+        if not sb.created_at:
+            continue
+        created_at = datetime.fromisoformat(sb.created_at.replace("Z", "+00:00"))
+        age_minutes = (now - created_at).total_seconds() / 60
+        if age_minutes < max_age_minutes:
+            total_skipped += 1
             if dry_run:
                 console.print(
-                    f"  [dim]{sb.id}[/dim] state={sb.state} age={age_minutes:.0f}m [red](delete)[/red]"
+                    f"  [dim]{sb.id}[/dim] state={sb.state} age={age_minutes:.0f}m [green](skip)[/green]"
                 )
-            else:
-                try:
-                    d.delete(sb)
-                    total_deleted += 1
-                except Exception as e:
-                    console.print(f"  [yellow]Failed to delete {sb.id}: {e}[/yellow]")
-        if len(result.items) < 100:
-            break
-        page += 1
+            continue
+        if dry_run:
+            console.print(
+                f"  [dim]{sb.id}[/dim] state={sb.state} age={age_minutes:.0f}m [red](delete)[/red]"
+            )
+        else:
+            try:
+                d.delete(sb)
+                total_deleted += 1
+            except Exception as e:
+                console.print(f"  [yellow]Failed to delete {sb.id}: {e}[/yellow]")
 
     if dry_run:
         console.print(
@@ -1667,25 +1662,19 @@ def environment_list(
     table.add_column("Age")
     table.add_column("Target")
 
-    page = 1
     now = datetime.now(UTC)
     total = 0
-    while True:
-        result = d.list(page=page, limit=50)
-        if not result.items:
-            break
-        for sb in result.items:
-            total += 1
-            age = ""
-            if sb.created_at:
-                created = datetime.fromisoformat(sb.created_at.replace("Z", "+00:00"))
-                mins = (now - created).total_seconds() / 60
-                age = f"{mins:.0f}m"
-            target = getattr(sb, "target", "") or ""
-            table.add_row(sb.id[:12] + "…", str(sb.state), age, str(target)[:40])
-        if len(result.items) < 50:
-            break
-        page += 1
+    # daytona SDK >=0.18: ``list()`` yields an auto-paginating Iterator[Sandbox]
+    # (was a paged ``list(page=, limit=)`` -> page object with ``.items``).
+    for sb in d.list():
+        total += 1
+        age = ""
+        if sb.created_at:
+            created = datetime.fromisoformat(sb.created_at.replace("Z", "+00:00"))
+            mins = (now - created).total_seconds() / 60
+            age = f"{mins:.0f}m"
+        target = getattr(sb, "target", "") or ""
+        table.add_row(sb.id[:12] + "…", str(sb.state), age, str(target)[:40])
 
     console.print(table)
     console.print(f"\n[bold]{total} sandbox(es)[/bold]")

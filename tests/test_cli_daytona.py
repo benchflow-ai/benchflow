@@ -16,9 +16,11 @@ def _install_fake_daytona(monkeypatch, sandboxes):
             self.deleted = []
             self.__class__.instances.append(self)
 
-        def list(self, page=None, limit=None, labels=None):
-            _ = (limit, labels)
-            return SimpleNamespace(items=sandboxes if page == 1 else [])
+        def list(self, query=None):
+            # Mirror daytona SDK >=0.18: list() returns an auto-paginating
+            # Iterator[Sandbox], not a page object with `.items`.
+            _ = query
+            return iter(sandboxes)
 
         def delete(self, sandbox, timeout=60):
             _ = timeout

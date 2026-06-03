@@ -44,7 +44,10 @@ dev = [
     "ty>=0.0.1a1",
 ]
 sandbox-daytona = [
-    "daytona>=0.153.0",
+    # >=0.183: list() returns an auto-paginating Iterator[Sandbox] (the older
+    # paged list(page=, limit=) -> .items API was removed), and 0.176's broken
+    # top-level `Daytona` export is fixed.
+    "daytona>=0.183.0",
     "tenacity>=8.0",
 ]
 sandbox-modal = [
