@@ -5,6 +5,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  merge_group:
 
 # Least-privilege defaults — elevate per-job only when a step needs more.
 permissions:
