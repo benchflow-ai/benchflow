@@ -114,3 +114,14 @@ For every suspected reward hack, report:
 
 If evidence is suspicious but not conclusive, keep the trial out of published
 healthy data until a clean rerun or manual review resolves the ambiguity.
+
+## Prevention
+
+Detection above is necessary but not sufficient. For the environment- and
+grader-side fixes that close each pattern at the source, load
+`references/verifier-hardening-checklist.md`. Those invariants come from
+Microsoft AI's MAI-Thinking-1 report, which confirmed the A-online, A-git, and
+B-tampering patterns via LLM-monitor plus human review of RL rollouts. Note its
+caveat: monkey-patching the test framework and overriding equality (`__eq__`)
+are not fully closed by test-reset or hidden tests, so keep the B monkey-patch
+and operator-overload checks active even on a hardened environment.

@@ -1,4 +1,8 @@
-"""Tests for _capture_session_trajectory — ensures partial trajectory is saved on timeout."""
+"""Tests for _capture_session_trajectory — ensures partial trajectory is saved on timeout.
+
+Writer / streaming / multi-scene / partial-capture-fix tests live in
+``tests/test_trajectory_streaming.py``.
+"""
 
 from benchflow.acp.session import ACPSession
 from benchflow.acp.types import ToolCallStatus

@@ -113,7 +113,7 @@ Multi-scene / multi-role configs are not compatible with `User` — the loop ass
 
 ## Soft-verify and full-verify: two different verifiers
 
-Between rounds, benchflow needs to score the agent's progress so the user can react. But the final, end-of-rollout verifier does destructive things (kills the agent, restores the workspace, chowns to root) that would prevent the next round from running. So benchflow runs **two** verifier passes:
+Between rounds, BenchFlow needs to score the agent's progress so the user can react. But the final, end-of-rollout verifier does destructive things (kills the agent, restores the workspace, chowns to root) that would prevent the next round from running. So BenchFlow executes **two** verifier passes:
 
 | | Soft-verify (between rounds) | Full-verify (end of rollout) |
 |---|---|---|

@@ -5,7 +5,6 @@ import json
 from typer.testing import CliRunner
 
 from benchflow.cli.main import app
-from benchflow.models import RunResult
 
 
 def test_benchflow_version_flag() -> None:
@@ -16,27 +15,39 @@ def test_benchflow_version_flag() -> None:
     assert result.output.strip() == f"benchflow {__version__}"
 
 
-def test_benchflow_run_exits_nonzero_when_verifier_errors(tmp_path, monkeypatch):
-    """Guards the v0.5 reward-output regression at the CLI boundary."""
+def test_benchflow_run_command_is_removed():
+    """Guards PR #610 so the deprecated top-level run command stays gone."""
+    result = CliRunner().invoke(app, ["run", "--help"])
+
+    assert result.exit_code != 0
+    assert "No such command" in result.output
+
+
+def test_eval_create_exits_nonzero_when_verifier_errors(tmp_path, monkeypatch):
+    """Guards the v0.5 reward-output regression at the eval CLI boundary."""
     task_dir = tmp_path / "task"
     task_dir.mkdir()
     (task_dir / "task.toml").write_text('version = "1.0"\n[verifier]\n')
 
-    class FakeSDK:
-        async def run(self, **_kwargs):
-            return RunResult(
-                task_name="task",
-                agent_name="oracle",
-                rewards=None,
-                verifier_error="verifier crashed: No reward file found",
-            )
+    async def fake_eval_run(self):
+        from types import SimpleNamespace
 
-    monkeypatch.setattr("benchflow.sdk.SDK", FakeSDK)
+        return SimpleNamespace(
+            passed=0,
+            total=1,
+            score=0.0,
+            errored=0,
+            verifier_errored=1,
+        )
+
+    monkeypatch.setattr("benchflow.evaluation.Evaluation.run", fake_eval_run)
 
     result = CliRunner().invoke(
         app,
         [
-            "run",
+            "eval",
+            "create",
+            "--tasks-dir",
             str(task_dir),
             "--agent",
             "oracle",
@@ -48,9 +59,7 @@ def test_benchflow_run_exits_nonzero_when_verifier_errors(tmp_path, monkeypatch)
     )
 
     assert result.exit_code == 1
-    assert "Rewards:" in result.output
-    assert "Verifier error:" in result.output
-    assert "No reward file found" in result.output
+    assert "Score: 0/1" in result.output
 
 
 def test_benchflow_metrics_pretty_prints_memory_score(tmp_path):

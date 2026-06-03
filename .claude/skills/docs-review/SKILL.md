@@ -82,7 +82,7 @@ task/agent IDs. For each hit, verify it resolves in the current tree:
 - Function / class / decorator names (`register_agent`, `SDK`,
   `RunResult`, `detect_services_from_dockerfile`, …) → `Grep` in
   `src/benchflow/` and the `__init__.py` re-exports.
-- CLI commands (`benchflow run`, `benchflow ls`, `benchflow view`, …) →
+- CLI commands (`bench eval create`, `bench eval list`, `bench skills list`, …) →
   check the Typer app in `src/benchflow/cli/`.
 - Task IDs referenced in examples → check `examples/` and
   `fixtures/`.

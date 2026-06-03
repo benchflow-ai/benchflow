@@ -62,6 +62,24 @@ def test_result_json_contains_unavailable_usage_defaults(tmp_path):
         "usage_source": "unavailable",
         "price_source": None,
     }
+    assert data["final_metrics"] == {
+        "total_prompt_tokens": None,
+        "total_completion_tokens": None,
+        "total_cached_tokens": None,
+        "total_cost_usd": None,
+    }
+    assert data["trajectory_summary"] == {
+        "steps": 0,
+        "tool_call_steps": 0,
+        "user_message_steps": 0,
+        "agent_message_steps": 0,
+        "agent_thought_steps": 0,
+        "other_steps": 0,
+        "event_type_counts": {},
+        "tool_call_status_counts": {},
+        "partial_trajectory": False,
+        "trajectory_source": None,
+    }
 
 
 def test_usage_source_never_absent(tmp_path):
@@ -98,6 +116,61 @@ def test_result_json_contains_provider_usage_when_supplied(tmp_path):
     assert data["agent_result"]["cost_usd"] == 0.0012
     assert data["agent_result"]["usage_source"] == "provider_response"
     assert data["agent_result"]["price_source"] == "pricing_table_2026-05"
+    assert data["final_metrics"] == {
+        "total_prompt_tokens": 100,
+        "total_completion_tokens": 20,
+        "total_cached_tokens": 7,
+        "total_cost_usd": 0.0012,
+    }
+
+
+def test_result_json_includes_harbor_style_trajectory_summary(tmp_path):
+    _build_result(
+        tmp_path,
+        trajectory=[
+            {"type": "user_message", "text": "solve"},
+            {"type": "agent_thought", "text": "thinking"},
+            {
+                "type": "tool_call",
+                "tool_call_id": "tc_1",
+                "kind": "bash",
+                "title": "ls",
+                "status": "completed",
+                "content": "",
+            },
+            {"type": "agent_message", "text": "done"},
+            {
+                "type": "tool_call",
+                "tool_call_id": "tc_2",
+                "kind": "bash",
+                "title": "false",
+                "status": "failed",
+                "content": "",
+            },
+            {"type": "tool_result", "text": "legacy"},
+        ],
+        partial_trajectory=True,
+        trajectory_source="partial_acp",
+    )
+
+    summary = _result_json(tmp_path)["trajectory_summary"]
+
+    assert summary["steps"] == 6
+    assert summary["tool_call_steps"] == 2
+    assert summary["user_message_steps"] == 1
+    assert summary["agent_message_steps"] == 1
+    assert summary["agent_thought_steps"] == 1
+    assert summary["other_steps"] == 1
+    assert summary["event_type_counts"] == {
+        "user_message": 1,
+        "agent_thought": 1,
+        "tool_call": 2,
+        "agent_message": 1,
+        "tool_result": 1,
+    }
+    assert summary["tool_call_status_counts"] == {"completed": 1, "failed": 1}
+    assert summary["partial_trajectory"] is True
+    assert summary["trajectory_source"] == "partial_acp"
 
 
 def test_telemetry_not_silently_dropped(tmp_path):
@@ -232,7 +305,11 @@ def test_extract_usage_with_anthropic_exchanges():
 
     usage = extract_usage(runtime)
 
-    assert usage["n_input_tokens"] == 150
+    # Anthropic reports input_tokens as the UNCACHED delta; benchflow normalizes
+    # n_input_tokens to the total input incl. cache => 150 + 9 cache_read + 4
+    # cache_creation = 163 (apples-to-apples with OpenAI/Gemini, which already
+    # report the cache-inclusive total). total stays input + output = 163 + 30.
+    assert usage["n_input_tokens"] == 163
     assert usage["n_output_tokens"] == 30
     assert usage["n_cache_read_tokens"] == 9
     assert usage["n_cache_creation_tokens"] == 4
@@ -315,6 +392,76 @@ def test_extract_usage_with_gemini_exchanges():
     assert usage["n_cache_creation_tokens"] == 0
     assert usage["total_tokens"] == 15
     assert usage["usage_source"] == "provider_response"
+
+
+def test_extract_usage_estimates_cost_for_gemini_3_5_flash():
+    from benchflow.providers.runtime import ProviderRuntime, extract_usage
+
+    traj = Trajectory(session_id="s1", agent_name="agent")
+    traj.exchanges.append(
+        LLMExchange(
+            request=LLMRequest(body={"contents": []}),
+            response=LLMResponse(
+                body={
+                    "modelVersion": "models/gemini-3.5-flash",
+                    "usageMetadata": {
+                        "promptTokenCount": 2_380_559,
+                        "candidatesTokenCount": 40_363,
+                        "cachedContentTokenCount": 2_069_040,
+                    },
+                }
+            ),
+        )
+    )
+    runtime = ProviderRuntime(
+        kind="usage-proxy",
+        agent_base_url="http://host.docker.internal:12345",
+        backend_model="gemini-3.5-flash",
+        server=_ProxyLike(traj),
+    )
+
+    usage = extract_usage(runtime)
+
+    assert usage["n_input_tokens"] == 2_380_559
+    assert usage["n_output_tokens"] == 40_363
+    assert usage["n_cache_read_tokens"] == 2_069_040
+    assert usage["cost_usd"] == 1.1409015
+    assert str(usage["price_source"]).startswith(
+        "https://ai.google.dev/gemini-api/docs/pricing@"
+    )
+
+
+def test_extract_usage_estimates_cost_for_bedrock_opus_4_8():
+    from benchflow.providers.runtime import ProviderRuntime, extract_usage
+
+    runtime = ProviderRuntime(
+        kind="usage-proxy",
+        agent_base_url="http://host.docker.internal:12345",
+        backend_model="aws-bedrock/us.anthropic.claude-opus-4-8",
+        server=_ProxyLike(
+            _trajectory(
+                {
+                    "model": "us.anthropic.claude-opus-4-8",
+                    "usage": {
+                        "input_tokens": 10_000,
+                        "output_tokens": 1_000,
+                        "cache_read_input_tokens": 2_000,
+                        "cache_creation_input_tokens": 500,
+                    },
+                },
+                model="aws-bedrock/us.anthropic.claude-opus-4-8",
+            )
+        ),
+    )
+
+    usage = extract_usage(runtime)
+
+    assert usage["n_input_tokens"] == 12_500
+    assert usage["n_output_tokens"] == 1_000
+    assert usage["n_cache_read_tokens"] == 2_000
+    assert usage["n_cache_creation_tokens"] == 500
+    assert usage["cost_usd"] == 0.079125
+    assert str(usage["price_source"]).startswith("https://www.anthropic.com/pricing@")
 
 
 @pytest.mark.asyncio

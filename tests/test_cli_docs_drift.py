@@ -30,7 +30,7 @@ def test_top_level_help_lists_public_groups() -> None:
     out = _help([])
     for group in ("eval", "skills", "tasks", "compat", "agent", "environment"):
         assert group in out, f"missing public group {group!r} in: {out}"
-    # Deprecated/hidden commands must not show up in the public help.
+    # Deprecated, hidden, and removed commands must not show up in public help.
     for hidden in ("run", "job", "agents", "metrics", "view", "eval-batch"):
         assert hidden not in out.split("Commands")[-1].split("─")[0], (
             f"hidden command {hidden!r} unexpectedly shown: {out}"
@@ -63,6 +63,7 @@ def test_eval_create_help_lists_all_documented_flags() -> None:
         "--model",
         "--sandbox",
         "--environment-manifest",
+        "--prompt",
         "--concurrency",
         "--agent-idle-timeout",
         "--jobs-dir",
@@ -84,8 +85,8 @@ def test_eval_create_help_lists_all_documented_flags() -> None:
 
 def test_eval_create_accepts_environment_manifest() -> None:
     """`bench eval create --environment-manifest` is the batch seam for
-    Environment-plane rollouts — same flag as `bench run` (#398). Guard
-    against silent removal so the docs and CLI stay in sync."""
+    Environment-plane rollouts (#398). Guard against silent removal so the
+    docs and CLI stay in sync."""
     out = _help(["eval", "create"])
     assert "--environment-manifest" in out
 

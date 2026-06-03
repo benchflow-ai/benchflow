@@ -311,24 +311,142 @@ bench eval create \
   --agent gemini --model gemini-3.1-flash-lite-preview --sandbox daytona --concurrency 64
 ```
 
+> **Daytona has a 10 GB-per-sandbox hard cap.** Tasks with heavy images (large
+> HuggingFace model snapshots, Playwright, LaTeX/marker — e.g.
+> `latex-formula-extraction`) overflow during bootstrap (`No space left on
+> device`) or hang at "Sandbox user agent ready" with no trajectory. Run those on
+> `--sandbox docker` (host disk, no cap); keep Daytona for lighter tasks.
+
+---
+
+## SkillsBench skill-toggle matrix (Opus-4.8 + Gemini) on Daytona
+
+A self-contained recipe for the four-cell matrix of
+**{Opus-4.8 via Bedrock, Gemini-3.5-flash} × {with-skills, without-skills}**,
+agent `openhands`, sandbox `daytona`. Each cell produces a complete trajectory
+(`trajectory/{acp,llm}_trajectory.jsonl`) plus a verifier reward — but treat a
+cell as done only after the audit in [Verifying the batch](#verifying-the-batch)
+passes.
+
+### Setup (once per shell)
+
+```bash
+# 1. Run the CLI from a benchflow checkout that contains the Bedrock thinking shim
+#    (src/benchflow/agents/oh_bedrock_opus_patch.py). Inside the repo, use `uv run bench`.
+cd /path/to/benchflow
+
+# 2. A local skillsbench clone, so --skills-dir can point at a task's bundled skills
+git clone https://github.com/benchflow-ai/skillsbench
+export SKILLSBENCH=$PWD/skillsbench
+
+# 3. Credentials — verify each LIVE first. A dead key shows up only as
+#    `openhands ACP error -32603` on the first model call, never a clean auth error:
+#      Bedrock: a `converse` call with `Authorization: Bearer $AWS_BEARER_TOKEN_BEDROCK` -> 200
+#      Gemini:  `.../v1beta/models/<model>:generateContent?key=$GEMINI_API_KEY`           -> 200
+export AWS_BEARER_TOKEN_BEDROCK=...
+export AWS_REGION=us-west-2 AWS_DEFAULT_REGION=us-west-2
+export GEMINI_API_KEY=...
+
+# 4. MAX thinking for Opus-4.8 (opt-in). WITHOUT this the run uses the agent's
+#    default effort = adaptive-thinking `high`, NOT max. Honored on BOTH backends:
+#    Daytona forwards it into the sandbox; Docker reads it in the host Bedrock proxy.
+export BENCHFLOW_BEDROCK_THINKING_EFFORT=max
+
+# 5. Strip any LLM-proxy vars or they hijack non-Bedrock routing:
+unset LLM_BASE_URL LLM_API_KEY OPENAI_BASE_URL BENCHFLOW_PROVIDER_BASE_URL \
+      BENCHFLOW_PROVIDER_API_KEY LITELLM_BASE_URL LITELLM_API_KEY
+```
+
+> Pick a **light** task — Daytona caps each sandbox at 10 GB (see the note above).
+> `citation-check` is a good default; heavy tasks need `--sandbox docker`. Note that
+> MAX effort makes each Opus turn much slower (deep server-side reasoning — a
+> `citation-check` cell took ~10–15 min at `max` vs ~3 min at the default effort).
+
+### Run the four cells
+
+```bash
+TASK=citation-check
+SK="$SKILLSBENCH/tasks/$TASK/environment/skills"
+COMMON="--tasks-dir $SKILLSBENCH/tasks --include $TASK --agent openhands \
+  --sandbox daytona --concurrency 1 --usage-tracking required --agent-idle-timeout none"
+
+# (1) Opus-4.8 (MAX) — with skills
+bench eval create $COMMON --model aws-bedrock/us.anthropic.claude-opus-4-8 \
+  --skills-dir "$SK" --skill-mode default --jobs-dir jobs/opus-skill
+
+# (2) Opus-4.8 (MAX) — without skills
+bench eval create $COMMON --model aws-bedrock/us.anthropic.claude-opus-4-8 \
+  --jobs-dir jobs/opus-noskill
+
+# (3) Gemini-3.5-flash — with skills
+bench eval create $COMMON --model gemini-3.5-flash --agent-env LLM_CACHING_PROMPT=false \
+  --skills-dir "$SK" --skill-mode default --jobs-dir jobs/gemini-skill
+
+# (4) Gemini-3.5-flash — without skills
+bench eval create $COMMON --model gemini-3.5-flash --agent-env LLM_CACHING_PROMPT=false \
+  --jobs-dir jobs/gemini-noskill
+```
+
+`BENCHFLOW_BEDROCK_THINKING_EFFORT=max` is what makes the two Opus cells actually
+run at MAX — the live request then carries `"output_config": {"effort": "max"}`
+(confirm it in `trajectory/llm_trajectory.jsonl`; unset, you'd see `"high"`).
+
+| Model (`--model`) | Skills | Cell-specific flags |
+|-------------------|--------|---------------------|
+| `aws-bedrock/us.anthropic.claude-opus-4-8` | with | `--skills-dir $SK --skill-mode default` |
+| `aws-bedrock/us.anthropic.claude-opus-4-8` | without | — |
+| `gemini-3.5-flash` | with | `--agent-env LLM_CACHING_PROMPT=false --skills-dir $SK --skill-mode default` |
+| `gemini-3.5-flash` | without | `--agent-env LLM_CACHING_PROMPT=false` |
+
+### Verifying the batch
+
+A finished command is **not** a healthy trial. After each batch, audit the
+trajectories with the **`benchflow-experiment-review`** skill (repo copy at
+`.claude/skills/benchflow-experiment-review`; see the Experiment-guidance notes in
+`AGENTS.md`). A trial counts as healthy only when **every** check passes: complete
+trajectory + metadata (timing, token usage, tool usage), correct
+pass/fail/timeout status, verifier isolation (verifier starts after the agent
+exits), no reward hacking, and the right skill posture — with-skills cells must
+show the task skill loaded (`task_skills_loading: 1`), without-skills cells must
+not (`task_skills_loading: 0`, and the task skill absent from the trajectory;
+generic openhands built-ins such as `.agents/skills` / `invoke_skill` appear in
+*every* run and are **not** leakage).
+
+Quick smoke checks before the full audit (per jobs-dir):
+
+```bash
+J=jobs/opus-skill
+find $J -name rewards.jsonl -exec tail -1 {} \;                                  # reward
+grep -ho '"usage_source": "[a-z_]*"' $(find $J -name result.json)                # expect provider_response
+grep -ho '"effort": "[a-z]*"' $(find $J -name llm_trajectory.jsonl) | sort -u    # Opus MAX -> "max"
+python3 .claude/skills/benchflow-experiment-review/scripts/extract_harness_skills.py \
+  "$(find $J -name llm_trajectory.jsonl | head -1)" --task-skill <task-skill-name>
+```
+
+Notes:
+- `--usage-tracking required` records provider-reported token usage into each trajectory.
+- `--agent-idle-timeout none` disables the idle watchdog (the task wall-clock still applies).
+- Opus-4.8 on Bedrock needs the adaptive-thinking shim (`opus-4.8 bedrock thinking shim ACTIVE` in the install log); see `AGENTS.md`.
+- For heavy tasks, replace `--sandbox daytona` with `--sandbox docker` — same flags otherwise.
+
 ---
 
 ## Running a benchmark with an Environment manifest
 
 A **stateful** benchmark — one with mock services, databases, or accounts the
 agent acts on — declares its world in an `environment.toml` manifest and runs
-on the [Environment plane](./environment-plane.md). The `--environment-manifest`
-flag is available on both the single-task `bench run` command and on
-`bench eval create` (batch / Job API), so manifest-backed evaluations can be
-driven through the same pipeline as regular benchmark sweeps.
+on the [Environment plane](./environment-plane.md). Use
+`bench eval create --tasks-dir ...` for both single-task and batch
+manifest-backed evaluations; `--environment-manifest` applies the manifest to
+every rollout in the Job pipeline.
 
 ```bash
 # single task
-bench run benchmarks/clawsbench/tasks/<task> \
+bench eval create --tasks-dir benchmarks/clawsbench/tasks/<task> \
   --environment-manifest benchmarks/clawsbench/environment.toml \
   --agent claude-agent-acp --model claude-haiku-4-5
 
-bench run benchmarks/chi-bench/tasks/<task> \
+bench eval create --tasks-dir benchmarks/chi-bench/tasks/<task> \
   --environment-manifest benchmarks/chi-bench/environment.toml \
   --agent claude-agent-acp --model claude-haiku-4-5
 

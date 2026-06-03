@@ -1,6 +1,7 @@
 """ACP session lifecycle management."""
 
 import logging
+from collections.abc import Callable
 from datetime import datetime
 
 from .types import (
@@ -70,16 +71,32 @@ class ACPSession:
         self.events: list[dict] = []
         self._pending_text: list[dict] = []
         self._events_active: bool = False
+        # Optional sink invoked after every public state mutation so callers
+        # can stream a trajectory snapshot to disk without polling.
+        self.on_change: Callable[[ACPSession], None] | None = None
+
+    def _notify_change(self) -> None:
+        if self.on_change is None:
+            return
+        try:
+            self.on_change(self)
+        except Exception as e:
+            # error (not warning): a failing callback means trajectory
+            # streaming is silently degraded for the rest of the run,
+            # which is otherwise easy to miss in a 64-concurrency log.
+            logger.error(f"ACPSession on_change callback failed: {e}")
 
     def record_user_prompt(self, text: str) -> None:
         """Record a user prompt. Call before sending each ACP prompt."""
         self._events_active = True
         self._flush_agent_text()
         self.events.append({"type": "user_message", "text": text})
+        self._notify_change()
 
     def mark_prompt_end(self) -> None:
         """Flush pending agent text after a prompt completes."""
         self._flush_agent_text()
+        self._notify_change()
 
     def _flush_agent_text(self) -> None:
         """Flush pending text events, merging consecutive same-type chunks."""
@@ -95,10 +112,28 @@ class ACPSession:
         self.events.append(current)
         self._pending_text.clear()
 
+    _RECOGNIZED_UPDATE_TYPES = frozenset(
+        {
+            "tool_call",
+            "tool_call_update",
+            "agent_message_chunk",
+            "text_update",
+            "agent_thought",
+            "agent_thought_chunk",
+        }
+    )
+
     def handle_update(self, update: dict) -> None:
         """Process a session/update notification."""
         self._events_active = True
         update_type = update.get("sessionUpdate")
+        # Unknown update types (future ACP versions, agent-specific
+        # extensions) mutate no state and must not trigger a no-op
+        # snapshot. Mark events_active so the snapshot path stays on
+        # the modern branch, but skip _notify_change for unrecognized
+        # types.
+        if update_type not in self._RECOGNIZED_UPDATE_TYPES:
+            return
 
         if update_type == "tool_call":
             self._flush_agent_text()
@@ -158,6 +193,8 @@ class ACPSession:
                 text = content.get("text", "")
                 self.thought_chunks.append(text)
                 self._pending_text.append({"type": "agent_thought", "text": text})
+
+        self._notify_change()
 
     @property
     def full_message(self) -> str:

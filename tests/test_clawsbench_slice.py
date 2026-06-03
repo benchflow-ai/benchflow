@@ -1,10 +1,10 @@
 """End-to-end vertical slice: ClawsBench manifest → scored trajectory →
-Verifiers/ORS export, plus the `bench run --environment-manifest` wiring.
+Verifiers/ORS export.
 
 The data-path test proves the thread with no Docker. A full live rollout is
 run manually:
 
-    bench run benchmarks/clawsbench/tasks/<task> \\
+    bench eval create --tasks-dir benchmarks/clawsbench/tasks/<task> \\
       --environment-manifest benchmarks/clawsbench/environment.toml \\
       --agent claude-agent-acp --model claude-haiku-4-5
 """
@@ -12,9 +12,6 @@ run manually:
 import json
 from pathlib import Path
 
-from typer.testing import CliRunner
-
-from benchflow.cli.main import app
 from benchflow.environment.manifest import load_manifest
 from benchflow.rewards.protocol import VerifyResult
 from benchflow.trajectories.export import (
@@ -53,13 +50,3 @@ def test_manifest_drives_a_scored_exportable_record(tmp_path):
     assert parsed["info"]["environment"] == "clawsbench"
     assert parsed["prompt"] and parsed["completion"]
     assert parsed["metrics"] == {"exact_match": 1.0}
-
-
-def test_cli_run_exposes_environment_manifest_flag():
-    """`bench run` advertises the --environment-manifest flag."""
-    import re
-
-    result = CliRunner().invoke(app, ["run", "--help"])
-    assert result.exit_code == 0
-    plain = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
-    assert "--environment-manifest" in plain

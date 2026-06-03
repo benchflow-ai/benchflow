@@ -30,6 +30,7 @@ _USAGE_METADATA_KEYS = {
     "candidatesTokenCount",
     "totalTokenCount",
     "cachedContentTokenCount",
+    "toolUsePromptTokenCount",
 }
 
 
@@ -82,12 +83,10 @@ class TokenUsage:
     def total_tokens(self) -> int:
         if self.provider_total_tokens is not None:
             return self.provider_total_tokens
-        return (
-            self.input_tokens
-            + self.output_tokens
-            + self.cache_read_tokens
-            + self.cache_creation_tokens
-        )
+        # ``input_tokens`` is normalized to already include cache reads/writes
+        # (see ``_exchange_token_usage``), so the total is just input + output;
+        # re-adding the cache breakdown here would double-count it.
+        return self.input_tokens + self.output_tokens
 
 
 def _exchange_token_usage(exchange: "LLMExchange") -> TokenUsage:
@@ -102,32 +101,69 @@ def _exchange_token_usage(exchange: "LLMExchange") -> TokenUsage:
     input_details = usage.get("input_tokens_details") or {}
     input_details = input_details if isinstance(input_details, dict) else {}
 
+    # Cache reported as a SEPARATE additive component — Anthropic Messages
+    # (`cache_read_input_tokens`) and Bedrock Converse (`cacheReadInputToken*`) —
+    # is NOT included in that provider's `input_tokens`/`inputTokens` count.
+    additive_cache_read = _first_int(
+        usage.get("cache_read_input_tokens"),
+        usage.get("cacheReadInputTokens"),
+        usage.get("cacheReadInputTokenCount"),
+    )
+    additive_cache_creation = _first_int(
+        usage.get("cache_creation_input_tokens"),
+        usage.get("cacheWriteInputTokens"),
+        usage.get("cacheWriteInputTokenCount"),
+    )
+    # Cache reported as a SUBSET already inside the input count — OpenAI
+    # (`*_tokens_details.cached_tokens`) and Gemini (`cachedContentTokenCount`).
+    inclusive_cache_read = _first_int(
+        prompt_details.get("cached_tokens"),
+        input_details.get("cached_tokens"),
+        usage_metadata.get("cachedContentTokenCount"),
+    )
+    cache_read_tokens = additive_cache_read or inclusive_cache_read
+    cache_creation_tokens = additive_cache_creation
+
+    # Normalize `input_tokens` to mean the same thing across providers: the total
+    # input the model processed, cache included. Anthropic/Bedrock report the
+    # UNCACHED delta with cache as a separate additive component, so fold the
+    # additive cache in; OpenAI/Gemini already report the cache-inclusive total
+    # (their cache is a subset of it). This makes cross-provider usage and cost
+    # apples-to-apples; cache_read/cache_creation stay broken out as subsets of
+    # the input for pricing.
+    raw_input = _first_int(
+        usage.get("input_tokens"),
+        usage.get("prompt_tokens"),
+        usage.get("inputTokens"),
+        usage_metadata.get("promptTokenCount"),
+    )
+    # Gemini reports tool-use prompt tokens (`toolUsePromptTokenCount`) separately
+    # from `promptTokenCount` — it is additive input, NOT a subset — so fold it in
+    # too, or tool-heavy Gemini runs underreport input/cost (and totalTokenCount
+    # would exceed input + output). Absent for every other provider.
+    additive_tool_use_prompt = _first_int(usage_metadata.get("toolUsePromptTokenCount"))
+    input_tokens = (
+        raw_input
+        + additive_cache_read
+        + additive_cache_creation
+        + additive_tool_use_prompt
+    )
+
+    # Reasoning/thinking tokens are billed as output. Anthropic/OpenAI already
+    # fold them into output_tokens/completion_tokens; Gemini reports them
+    # separately as `thoughtsTokenCount`, so add them in for output parity.
+    output_tokens = _first_int(
+        usage.get("output_tokens"),
+        usage.get("completion_tokens"),
+        usage.get("outputTokens"),
+        usage_metadata.get("candidatesTokenCount"),
+    ) + _first_int(usage_metadata.get("thoughtsTokenCount"))
+
     return TokenUsage(
-        input_tokens=_first_int(
-            usage.get("input_tokens"),
-            usage.get("prompt_tokens"),
-            usage.get("inputTokens"),
-            usage_metadata.get("promptTokenCount"),
-        ),
-        output_tokens=_first_int(
-            usage.get("output_tokens"),
-            usage.get("completion_tokens"),
-            usage.get("outputTokens"),
-            usage_metadata.get("candidatesTokenCount"),
-        ),
-        cache_read_tokens=_first_int(
-            usage.get("cache_read_input_tokens"),
-            usage.get("cacheReadInputTokens"),
-            usage.get("cacheReadInputTokenCount"),
-            prompt_details.get("cached_tokens"),
-            input_details.get("cached_tokens"),
-            usage_metadata.get("cachedContentTokenCount"),
-        ),
-        cache_creation_tokens=_first_int(
-            usage.get("cache_creation_input_tokens"),
-            usage.get("cacheWriteInputTokens"),
-            usage.get("cacheWriteInputTokenCount"),
-        ),
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_read_tokens=cache_read_tokens,
+        cache_creation_tokens=cache_creation_tokens,
         provider_total_tokens=_first_optional_int(
             usage.get("total_tokens"),
             usage_metadata.get("totalTokenCount"),

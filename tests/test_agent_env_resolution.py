@@ -45,11 +45,18 @@ def _clear_keys(monkeypatch):
 
 
 class TestAutoInheritEnvBidirectionalMirror:
-    """auto_inherit_env mirrors GEMINI_API_KEY ↔ GOOGLE_API_KEY both ways."""
+    """auto_inherit_env mirrors GEMINI_API_KEY ↔ GOOGLE_API_KEY both ways.
+
+    Pure mirror tests pass ``source_env={}`` to cut off host-env inheritance
+    entirely. Depending on (or partially clearing) the real process env would
+    let a host ``GEMINI_API_KEY``/``GOOGLE_API_KEY`` bleed into the assertion —
+    and a failing assert would print that real credential. ``source_env={}``
+    makes the test hermetic by construction.
+    """
 
     def test_gemini_only_mirrors_to_google(self):
         env = {"GEMINI_API_KEY": "gk-test"}
-        auto_inherit_env(env)
+        auto_inherit_env(env, source_env={})
         assert env["GEMINI_API_KEY"] == "gk-test"
         assert env["GOOGLE_API_KEY"] == "gk-test"
 
@@ -57,13 +64,13 @@ class TestAutoInheritEnvBidirectionalMirror:
         """Issue #342: setting GOOGLE_API_KEY alone must populate GEMINI_API_KEY
         so the in-sandbox Gemini CLI can authenticate."""
         env = {"GOOGLE_API_KEY": "gk-test"}
-        auto_inherit_env(env)
+        auto_inherit_env(env, source_env={})
         assert env["GOOGLE_API_KEY"] == "gk-test"
         assert env["GEMINI_API_KEY"] == "gk-test"
 
     def test_both_set_preserves_explicit_values(self):
         env = {"GEMINI_API_KEY": "gemini-val", "GOOGLE_API_KEY": "google-val"}
-        auto_inherit_env(env)
+        auto_inherit_env(env, source_env={})
         assert env["GEMINI_API_KEY"] == "gemini-val"
         assert env["GOOGLE_API_KEY"] == "google-val"
 

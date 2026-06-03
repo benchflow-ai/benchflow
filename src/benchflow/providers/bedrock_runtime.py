@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import base64
 import json
+import os
+import re
 import time
 from typing import Any
 
@@ -300,6 +302,69 @@ def _tools_to_bedrock_tool_config(
     return config
 
 
+# Bedrock Claude Opus/Sonnet/Haiku 4.8+ require the adaptive-thinking contract
+# (thinking.type=adaptive + output_config.effort) and reject the legacy enabled form.
+# Canonical matcher — keep in sync with agents/oh_bedrock_opus_patch.py (the Daytona
+# sandbox shim, which cannot import benchflow); tests/test_bedrock_thinking.py pins
+# parity. The trailing ``(?!\d)`` anchors the minor version so ``claude-opus-4-80``
+# (a different model) does not match ``4-8``.
+BEDROCK_ADAPTIVE_THINKING_RE = re.compile(
+    r"claude-(?:opus|sonnet|haiku)-4-(?:8|9|1\d)(?!\d)"
+)
+_BEDROCK_ADAPTIVE_THINKING_RE = BEDROCK_ADAPTIVE_THINKING_RE  # backwards-compat alias
+
+# Explicit BenchFlow override for the adaptive-thinking effort level. Unset =>
+# honor the caller's requested effort (never silently force MAX). Set this (e.g.
+# to ``max``) to run Claude 4.8+ at a fixed effort regardless of the agent's cap.
+BEDROCK_THINKING_EFFORT_ENV = "BENCHFLOW_BEDROCK_THINKING_EFFORT"
+_VALID_BEDROCK_EFFORTS = {"minimal", "low", "medium", "high", "xhigh", "max"}
+_DEFAULT_BEDROCK_EFFORT = "high"
+
+
+def _resolve_bedrock_thinking_effort(requested_effort: str | None) -> str:
+    """Effort precedence: explicit BenchFlow override > caller request > default.
+
+    Crucially this does NOT default to ``max`` — forcing MAX on every 4.8+ request
+    was the over-broad behavior; MAX is now opt-in via the override env (which the
+    MAX-mode run config sets) or an explicit caller request.
+    """
+    override = os.environ.get(BEDROCK_THINKING_EFFORT_ENV, "").strip().lower()
+    if override in _VALID_BEDROCK_EFFORTS:
+        return override
+    if requested_effort and requested_effort.strip().lower() in _VALID_BEDROCK_EFFORTS:
+        return requested_effort.strip().lower()
+    return _DEFAULT_BEDROCK_EFFORT
+
+
+def _normalize_bedrock_thinking_for_opus_4_8(
+    payload: dict[str, Any],
+    *,
+    thinking_requested: bool,
+    requested_effort: str | None,
+) -> None:
+    """Convert Bedrock Claude 4.8+ thinking to the adaptive contract it requires.
+
+    On Docker, openhands→litellm reaches Bedrock through this host proxy via the
+    Anthropic-Messages / OpenAI-Responses path. Bedrock 4.8+ rejects the legacy
+    ``thinking.type=enabled`` shape, so when the caller actually requests thinking
+    we rewrite it to ``thinking.type=adaptive`` + ``output_config.effort``. The
+    effort is resolved from the request / BenchFlow override — NOT hardcoded to
+    ``max`` — so a non-MAX 4.8 caller is not silently upgraded. No-op when thinking
+    was not requested or the model is not 4.8+; regex-gated => byte-identical
+    otherwise.
+    """
+    model = str(payload.get("modelId", "")).lower()
+    if not BEDROCK_ADAPTIVE_THINKING_RE.search(model):
+        return
+    if not thinking_requested:
+        return
+    fields = payload.setdefault("additionalModelRequestFields", {})
+    fields["thinking"] = {"type": "adaptive"}
+    fields["output_config"] = {
+        "effort": _resolve_bedrock_thinking_effort(requested_effort)
+    }
+
+
 def anthropic_request_to_bedrock_converse(body: dict[str, Any]) -> dict[str, Any]:
     """Translate an Anthropic Messages request to Converse kwargs."""
     payload: dict[str, Any] = {
@@ -325,6 +390,14 @@ def anthropic_request_to_bedrock_converse(body: dict[str, Any]) -> dict[str, Any
     )
     if tool_config:
         payload["toolConfig"] = tool_config
+    # Anthropic Messages carries thinking as ``thinking={type,budget_tokens}`` (no
+    # effort field), so effort comes from a top-level ``reasoning_effort`` if
+    # litellm forwarded one, else the BenchFlow override / default.
+    _normalize_bedrock_thinking_for_opus_4_8(
+        payload,
+        thinking_requested=bool(body.get("thinking")),
+        requested_effort=body.get("reasoning_effort"),
+    )
     return payload
 
 
@@ -421,6 +494,16 @@ def openai_responses_request_to_bedrock_converse(
     )
     if tool_config:
         payload["toolConfig"] = tool_config
+    # OpenAI Responses carries thinking as ``reasoning={effort}`` — honor that
+    # effort (or a top-level ``reasoning_effort``) unless the BenchFlow override
+    # is set.
+    reasoning = body.get("reasoning")
+    reasoning = reasoning if isinstance(reasoning, dict) else {}
+    _normalize_bedrock_thinking_for_opus_4_8(
+        payload,
+        thinking_requested=bool(body.get("reasoning")),
+        requested_effort=reasoning.get("effort") or body.get("reasoning_effort"),
+    )
     return payload
 
 
