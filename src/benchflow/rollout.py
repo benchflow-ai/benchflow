@@ -103,7 +103,12 @@ from benchflow.trajectories._capture import (
 from benchflow.trajectories.metrics import count_skill_invocations
 from benchflow.trajectories.tree import RolloutNode, RolloutTree, Step
 from benchflow.trajectories.types import redact_acp_trajectory_jsonl
-from benchflow.usage_tracking import UsageTrackingConfig
+from benchflow.usage_tracking import (
+    USAGE_SOURCE_AGENT_NATIVE_ACP,
+    USAGE_SOURCE_PROVIDER_RESPONSE,
+    UsageTrackingConfig,
+    is_token_usage_available,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -127,6 +132,90 @@ def _provider_auth_status_from_runtime(runtime: Any) -> int | None:
         if status in (401, 403):
             return status
     return None
+
+
+_NATIVE_ACP_USAGE_RESULT_FIELDS = (
+    "n_input_tokens",
+    "n_output_tokens",
+    "n_cache_read_tokens",
+    "n_cache_creation_tokens",
+    "total_tokens",
+)
+_NATIVE_ACP_USAGE_SNAPSHOT_TO_RESULT = {
+    "input_tokens": "n_input_tokens",
+    "output_tokens": "n_output_tokens",
+    "cached_read_tokens": "n_cache_read_tokens",
+    "cached_write_tokens": "n_cache_creation_tokens",
+    "total_tokens": "total_tokens",
+}
+
+
+def _zero_native_acp_usage_metrics() -> dict[str, Any]:
+    return {
+        "n_input_tokens": 0,
+        "n_output_tokens": 0,
+        "n_cache_read_tokens": 0,
+        "n_cache_creation_tokens": 0,
+        "total_tokens": 0,
+        "cost_usd": None,
+        "usage_source": "unavailable",
+        "price_source": None,
+        "usage_details": {"thought_tokens": 0},
+    }
+
+
+def _as_nonnegative_int(value: object) -> int:
+    if value is None:
+        return 0
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return max(value, 0)
+    if isinstance(value, float | str | bytes | bytearray):
+        try:
+            return max(int(value), 0)
+        except ValueError:
+            return 0
+    try:
+        return max(int(str(value)), 0)
+    except ValueError:
+        return 0
+
+
+def _native_acp_usage_delta(
+    previous: dict[str, int | None] | None,
+    current: dict[str, int | None],
+) -> dict[str, int]:
+    delta: dict[str, int] = {}
+    for usage_field in (
+        "input_tokens",
+        "output_tokens",
+        "cached_read_tokens",
+        "cached_write_tokens",
+        "thought_tokens",
+    ):
+        current_value = _as_nonnegative_int(current.get(usage_field))
+        previous_value = _as_nonnegative_int(previous.get(usage_field)) if previous else 0
+        delta[usage_field] = max(current_value - previous_value, 0)
+
+    current_total = current.get("total_tokens")
+    if current_total is not None:
+        current_value = _as_nonnegative_int(current_total)
+        previous_value = (
+            _as_nonnegative_int(previous.get("total_tokens"))
+            if previous and previous.get("total_tokens") is not None
+            else 0
+        )
+        delta["total_tokens"] = max(current_value - previous_value, 0)
+    else:
+        delta["total_tokens"] = (
+            delta["input_tokens"]
+            + delta["output_tokens"]
+            + delta["cached_read_tokens"]
+            + delta["cached_write_tokens"]
+            + delta["thought_tokens"]
+        )
+    return delta
 
 
 def _task_disallows_internet(task: Any) -> bool:
@@ -537,6 +626,7 @@ def _build_rollout_result(
     cost_usd: float | None = None,
     usage_source: str = "unavailable",
     price_source: str | None = None,
+    usage_details: dict[str, Any] | None = None,
     usage_tracking: dict[str, Any] | None = None,
     evolved_skills: dict[str, str] | None = None,
     source_provenance: dict[str, Any] | None = None,
@@ -588,6 +678,7 @@ def _build_rollout_result(
         cost_usd=cost_usd,
         usage_source=usage_source,
         price_source=price_source,
+        usage_details=usage_details,
         error=error,
         error_category=error_category,
         verifier_error=verifier_error,
@@ -615,6 +706,8 @@ def _build_rollout_result(
         "usage_source": result.usage_source,
         "price_source": result.price_source,
     }
+    if result.usage_details is not None:
+        agent_result["usage_details"] = result.usage_details
     final_metrics = final_metrics_from_agent_result(agent_result)
     trajectory_summary = trajectory_summary_from_events(
         trajectory,
@@ -1178,6 +1271,8 @@ class Rollout:
         self._task_skill_policy: TaskSkillPolicy | None = None
         self._usage_runtime: Any = None
         self._usage_metrics: dict[str, Any] = self._planes.extract_usage(None)
+        self._native_usage_metrics: dict[str, Any] = _zero_native_acp_usage_metrics()
+        self._native_usage_checkpoint: dict[str, int | None] | None = None
         # Provider 401/403 status snapshotted during cleanup, after the usage
         # proxy imports its captures (Daytona's SandboxUsageProxy only fills
         # trajectory on stop()). Read by _provider_auth_status() so ACP-error
@@ -1649,6 +1744,7 @@ class Rollout:
             agent_cwd=self._agent_cwd,
             reasoning_effort=cfg.primary_reasoning_effort,
         )
+        self._native_usage_checkpoint = None
         self._reapply_ask_user_handler()
         self._attach_trajectory_writer(rollout_dir)
 
@@ -1827,6 +1923,7 @@ class Rollout:
         self._n_tool_calls += new_tools
         self._executed_prompts.extend(effective_prompts)
         self._trajectory_source = "acp"
+        self._collect_native_acp_usage()
 
         # Grow the tree at Step-level granularity — one Step per ACP event
         # (tool_call, agent_message, agent_thought, user_message). A single
@@ -1858,6 +1955,43 @@ class Rollout:
 
         self._phase = "executed"
         return trajectory, n_tool_calls
+
+    def _collect_native_acp_usage(self) -> None:
+        """Accumulate ACP PromptResponse.usage deltas for native subscription runs."""
+        session = getattr(self, "_session", None)
+        latest_fn = getattr(session, "latest_usage_totals", None)
+        if not callable(latest_fn):
+            return
+        latest = latest_fn()
+        if not latest:
+            return
+        previous = getattr(self, "_native_usage_checkpoint", None)
+        delta = _native_acp_usage_delta(previous, latest)
+        self._native_usage_checkpoint = dict(latest)
+        if not any(delta.values()):
+            return
+
+        metrics = dict(
+            getattr(self, "_native_usage_metrics", _zero_native_acp_usage_metrics())
+        )
+        for snapshot_field, result_field in _NATIVE_ACP_USAGE_SNAPSHOT_TO_RESULT.items():
+            if result_field == "total_tokens":
+                continue
+            metrics[result_field] = _as_nonnegative_int(metrics.get(result_field)) + (
+                delta.get(snapshot_field) or 0
+            )
+        metrics["total_tokens"] = _as_nonnegative_int(metrics.get("total_tokens")) + (
+            delta.get("total_tokens") or 0
+        )
+        details = dict(metrics.get("usage_details") or {})
+        details["thought_tokens"] = _as_nonnegative_int(
+            details.get("thought_tokens")
+        ) + (delta.get("thought_tokens") or 0)
+        metrics["usage_details"] = details
+        metrics["usage_source"] = USAGE_SOURCE_AGENT_NATIVE_ACP
+        metrics["cost_usd"] = None
+        metrics["price_source"] = None
+        self._native_usage_metrics = metrics
 
     def _build_step_batch(self, new_events: list[dict], new_tools: int) -> list[Step]:
         """Build one Step per ACP event from the events appended this execute.
@@ -2102,7 +2236,9 @@ class Rollout:
                 logger.warning(f"LLM trajectory write failed: {e}")
             finally:
                 self._usage_runtime = None
-            self._enforce_required_usage_tracking()
+
+        self._finalize_usage_metrics()
+        self._enforce_required_usage_tracking()
 
         if self._environment is not None:
             with contextlib.suppress(Exception):
@@ -2126,11 +2262,20 @@ class Rollout:
 
         self._phase = "cleaned"
 
+    def _finalize_usage_metrics(self) -> None:
+        """Prefer LiteLLM usage, otherwise use trusted native ACP usage."""
+        current_metrics = getattr(self, "_usage_metrics", {"usage_source": "unavailable"})
+        if current_metrics.get("usage_source") == USAGE_SOURCE_PROVIDER_RESPONSE:
+            return
+        native_metrics = getattr(self, "_native_usage_metrics", None)
+        if isinstance(native_metrics, dict) and is_token_usage_available(native_metrics):
+            self._usage_metrics = native_metrics
+
     def _enforce_required_usage_tracking(self) -> None:
         usage_cfg = self._config.usage_tracking.with_env_defaults()
         if usage_cfg.mode != "required" or self._config.primary_agent == "oracle":
             return
-        if self._usage_metrics.get("usage_source") == "provider_response":
+        if is_token_usage_available(getattr(self, "_usage_metrics", None)):
             return
         if self._error is not None:
             return
@@ -2721,7 +2866,7 @@ class Rollout:
         usage_source = str(self._usage_metrics.get("usage_source", "unavailable"))
         if usage_cfg.mode == "off":
             status = "off"
-        elif usage_source == "provider_response":
+        elif is_token_usage_available(self._usage_metrics):
             status = "enabled"
         else:
             status = "unavailable"

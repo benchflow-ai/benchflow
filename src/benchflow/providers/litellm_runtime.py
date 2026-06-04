@@ -25,6 +25,10 @@ import httpx
 import yaml
 
 from benchflow.agents.codex_config import apply_codex_provider_config
+from benchflow.agents.env import (
+    agent_supports_native_acp_usage,
+    uses_native_subscription_auth,
+)
 from benchflow.agents.registry import AGENTS
 from benchflow.providers.litellm_config import (
     LITELLM_MASTER_KEY_ENV,
@@ -959,6 +963,22 @@ async def ensure_litellm_runtime(
             agent_env,
             runtime,
             reason="usage_tracking=off leaves provider traffic untouched",
+        )
+
+    if uses_native_subscription_auth(agent, model, agent_env):
+        if usage_cfg.mode == "required" and not agent_supports_native_acp_usage(agent):
+            raise RuntimeError(
+                "Token usage tracking is required, but agent "
+                f"{agent!r} cannot report native ACP usage."
+            )
+        return await _skip_litellm_runtime(
+            agent_env,
+            runtime,
+            reason=(
+                "native subscription auth will use agent ACP usage telemetry"
+                if agent_supports_native_acp_usage(agent)
+                else "native subscription auth bypasses LiteLLM"
+            ),
         )
 
     if not needs_litellm_runtime(agent, model):

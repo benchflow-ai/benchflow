@@ -166,6 +166,52 @@ async def test_required_usage_fails_when_litellm_lacks_provider_key():
 
 
 @pytest.mark.asyncio
+async def test_required_usage_skips_litellm_for_codex_subscription(monkeypatch):
+    """Guards PR #613 follow-up: Codex subscription usage comes from ACP."""
+
+    async def fail_start(**_kwargs):
+        raise AssertionError("LiteLLM should not start for Codex subscription auth")
+
+    monkeypatch.setattr(runtime_mod, "_start_host_litellm", fail_start)
+    env = {"CODEX_AUTH_JSON": '{"tokens": {"access_token": "access-token"}}'}
+
+    updated, provider_runtime = await ensure_litellm_runtime(
+        agent="codex-acp",
+        agent_env=env,
+        model="openai/gpt-4.1-mini",
+        runtime=None,
+        environment="docker",
+        usage_tracking="required",
+    )
+
+    assert updated == env
+    assert provider_runtime is None
+
+
+@pytest.mark.asyncio
+async def test_required_usage_skips_litellm_for_claude_subscription(monkeypatch):
+    """Guards PR #613 follow-up: Claude Code subscription usage comes from ACP."""
+
+    async def fail_start(**_kwargs):
+        raise AssertionError("LiteLLM should not start for Claude subscription auth")
+
+    monkeypatch.setattr(runtime_mod, "_start_host_litellm", fail_start)
+    env = {"CLAUDE_CODE_OAUTH_TOKEN": "oauth-token"}
+
+    updated, provider_runtime = await ensure_litellm_runtime(
+        agent="claude-agent-acp",
+        agent_env=env,
+        model="claude-sonnet-4-6",
+        runtime=None,
+        environment="docker",
+        usage_tracking="required",
+    )
+
+    assert updated == env
+    assert provider_runtime is None
+
+
+@pytest.mark.asyncio
 async def test_usage_tracking_off_leaves_provider_env_untouched(monkeypatch):
     """Guards the follow-up to PR #613: off must not proxy provider traffic."""
 
