@@ -1,18 +1,24 @@
-"""Gated guard: pinned ACP agents resolve to the protocol our registry targets.
+"""Gated live guard: the pinned claude-agent-acp advertises the config option
+ids the registry wires up.
 
-Skipped by default. Run with ``RUN_ACP_DEP_GUARD=1`` (needs ``npm`` + network):
+Skipped by default. Run with ``RUN_ACP_DEP_GUARD=1`` (needs ``npm`` + ``node`` +
+network):
 
     RUN_ACP_DEP_GUARD=1 uv run --extra dev python -m pytest \
         tests/test_acp_pinned_protocol_guard.py -q
 
-This codifies the manual check behind the ``claude-agent-acp@0.40.0`` pin in
-``benchflow.agents.registry``: its ACP SDK exposes ``session/set_config_option``
-(the model/effort path the registry wires up) and no longer exposes
-``session/set_model``. Re-run this when bumping an ``@agentclientprotocol`` pin —
-if it fails, the registry's config-option wiring is stale for the new version.
+It installs the pinned ``claude-agent-acp@0.40.0``, starts it over ACP stdio,
+runs ``initialize`` + ``session/new``, and asserts the advertised config option
+ids include ``{"model", "effort"}`` — the ids ``benchflow.agents.registry``
+hard-codes for model and reasoning-effort selection. If a future pin keeps
+``session/set_config_option`` but renames an id, this fails (a plain SDK method
+grep would not). ``session/new`` advertises the options without auth, so no
+credentials are needed. Re-run when bumping the ``@agentclientprotocol`` pin.
 """
 
-import json
+import asyncio
+import contextlib
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -20,60 +26,68 @@ from pathlib import Path
 import pytest
 
 pytestmark = pytest.mark.skipif(
-    __import__("os").environ.get("RUN_ACP_DEP_GUARD") != "1",
-    reason="ACP dependency guard is gated; set RUN_ACP_DEP_GUARD=1 (needs npm + network)",
+    os.environ.get("RUN_ACP_DEP_GUARD") != "1",
+    reason="gated live ACP guard; set RUN_ACP_DEP_GUARD=1 (needs npm + node + network)",
 )
 
-
-def _npm() -> str:
-    npm = shutil.which("npm")
-    if not npm:
-        pytest.skip("npm not available")
-    return npm
+PINNED_CLAUDE = "@agentclientprotocol/claude-agent-acp@0.40.0"
+EXPECTED_OPTION_IDS = {"model", "effort"}
 
 
-def _pack_and_extract(npm: str, spec: str, workdir: Path) -> Path:
-    """``npm pack`` ``spec`` into ``workdir`` and return the extracted package dir."""
+def _tool_or_skip(name: str) -> str:
+    path = shutil.which(name)
+    if not path:
+        pytest.skip(f"{name} not available")
+    return path
+
+
+async def _advertised_option_ids(entry: Path) -> set[str]:
+    from benchflow.acp.client import ACPClient
+    from benchflow.acp.transport import StdioTransport
+
+    client = ACPClient(StdioTransport("node", [str(entry)], env={}, cwd="/tmp"))
+    try:
+        await client.connect()
+        await asyncio.wait_for(client.initialize(), timeout=60)
+        await asyncio.wait_for(client.session_new(cwd="/tmp"), timeout=90)
+        opts = client.session.config_options or []
+        return {
+            o["id"]
+            for o in opts
+            if isinstance(o, dict) and isinstance(o.get("id"), str)
+        }
+    finally:
+        with contextlib.suppress(Exception):
+            await client.close()
+
+
+def test_pinned_claude_acp_advertises_model_and_effort_options(tmp_path):
+    npm = _tool_or_skip("npm")
+    _tool_or_skip("node")
+    prefix = tmp_path / "claude"
+    prefix.mkdir()
     subprocess.run(
-        [npm, "pack", spec],
-        cwd=workdir,
+        [npm, "install", "--prefix", str(prefix), PINNED_CLAUDE],
         check=True,
         capture_output=True,
         text=True,
         timeout=300,
     )
-    tgz = next(workdir.glob("*.tgz"))
-    subprocess.run(["tar", "xzf", tgz.name], cwd=workdir, check=True, timeout=120)
-    return workdir / "package"
-
-
-def _source_blob(pkg_dir: Path) -> str:
-    return "\n".join(
-        p.read_text(errors="ignore")
-        for p in pkg_dir.rglob("*")
-        if p.suffix in {".js", ".cjs", ".mjs", ".ts"}
+    entry = (
+        prefix
+        / "node_modules"
+        / "@agentclientprotocol"
+        / "claude-agent-acp"
+        / "dist"
+        / "index.js"
     )
+    assert entry.is_file(), f"pinned agent entry not found: {entry}"
 
-
-def test_pinned_claude_acp_uses_config_option_protocol(tmp_path):
-    npm = _npm()
-    agent_pkg = _pack_and_extract(
-        npm, "@agentclientprotocol/claude-agent-acp@0.40.0", tmp_path
-    )
-    sdk_spec = json.loads((agent_pkg / "package.json").read_text())["dependencies"][
-        "@agentclientprotocol/sdk"
-    ]
-
-    sdk_dir = tmp_path / "sdk"
-    sdk_dir.mkdir()
-    sdk_pkg = _pack_and_extract(npm, f"@agentclientprotocol/sdk@{sdk_spec}", sdk_dir)
-    blob = _source_blob(sdk_pkg)
-
-    assert "session/set_config_option" in blob, (
-        "pinned claude-agent-acp ACP SDK no longer exposes session/set_config_option "
-        "— the registry's acp_model_config_id/acp_effort_config_id wiring is stale"
-    )
-    assert "session/set_model" not in blob, (
-        "pinned claude-agent-acp ACP SDK still exposes session/set_model — the pin "
-        "may be honoring a pre-migration version the registry wiring does not target"
+    ids = asyncio.run(_advertised_option_ids(entry))
+    missing = EXPECTED_OPTION_IDS - ids
+    assert not missing, (
+        f"pinned {PINNED_CLAUDE} no longer advertises config option(s) "
+        f"{sorted(missing)!r} (advertised: {sorted(ids)!r}); the registry "
+        f"model/effort wiring is stale — re-verify acp_model_config_id / "
+        f"acp_effort_config_id"
     )

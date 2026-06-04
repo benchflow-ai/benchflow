@@ -23,7 +23,7 @@ import logging
 from datetime import UTC, datetime
 from pathlib import Path
 
-from benchflow.acp.client import ACPClient, ACPError
+from benchflow.acp.client import ACPClient
 from benchflow.acp.container_transport import ContainerTransport
 from benchflow.agents.protocol import ACPSessionAdapter
 from benchflow.agents.providers import find_provider, strip_provider_prefix
@@ -222,7 +222,9 @@ def _resolve_acp_model_input(agent: str, model: str, agent_env: dict[str, str]) 
 
 
 def _session_config_option_ids(session: object | None) -> set[str]:
-    options = getattr(session, "config_options", None) or []
+    options = getattr(session, "config_options", None)
+    if not isinstance(options, (list, tuple)):
+        return set()
     ids: set[str] = set()
     for option in options:
         if isinstance(option, dict) and isinstance(option.get("id"), str):
@@ -230,41 +232,28 @@ def _session_config_option_ids(session: object | None) -> set[str]:
     return ids
 
 
-def _advertised_model_option_id(
-    session: object | None, agent_cfg: object | None
+def _resolve_acp_model_option_id(
+    agent_cfg: object | None, session: object | None
 ) -> str | None:
-    """Config option id to drive model selection, discovered from the session.
+    """Config option id to drive model selection — capability-first.
 
-    Prefers the registry-declared ``acp_model_config_id``; otherwise falls back
-    to the conventional ``"model"`` id when the running agent advertises it.
-    This is what lets the ``@agentclientprotocol`` family keep working when an
-    agent version drops ``session/set_model`` in favor of the model config
-    option — no registry change required.
+    The running agent's advertised ``session/new`` config options are the source
+    of truth; the registry's ``acp_model_config_id`` is an override/hint. Returns
+    ``None`` when no model config option applies, in which case the caller falls
+    back to ``session/set_model``.
+
+    This is what lets the ``@agentclientprotocol`` family migrate from
+    ``session/set_model`` to a ``"model"`` config option with no registry
+    change: a member that advertises a model option is configured through it
+    automatically, while a member that does not (e.g. current ``codex-acp``,
+    which advertises only ``fast-mode``) keeps using ``session/set_model``.
     """
-    advertised = _session_config_option_ids(session)
     declared = getattr(agent_cfg, "acp_model_config_id", "") or ""
-    if declared and declared in advertised:
+    if declared:
         return declared
-    if "model" in advertised:
+    if "model" in _session_config_option_ids(session):
         return "model"
     return None
-
-
-def _is_acp_method_not_found(exc: BaseException | None) -> bool:
-    """True when ``exc`` or any of its causes is a JSON-RPC -32601.
-
-    ``-32601`` ("Method not found") is how an ACP agent reports that it does not
-    implement a method. ``_set_acp_model`` wraps the raw :class:`ACPError` in a
-    ``RuntimeError``, so walk the ``__cause__`` chain rather than only the top
-    frame. The ``seen`` guard avoids looping on a self-referential cause.
-    """
-    seen: set[int] = set()
-    while exc is not None and id(exc) not in seen:
-        seen.add(id(exc))
-        if isinstance(exc, ACPError) and exc.code == -32601:
-            return True
-        exc = exc.__cause__
-    return False
 
 
 async def _set_acp_model(
@@ -332,57 +321,36 @@ async def _configure_acp_session(
     reasoning_effort: str | None,
 ) -> None:
     agent_cfg = AGENTS.get(agent)
-    model_owned_by_env = _model_selection_owned_by_env(agent, model, agent_env)
 
-    if model and model_owned_by_env:
+    if model and _model_selection_owned_by_env(agent, model, agent_env):
         logger.info(
             f"Skipping ACP model configuration for {agent} — launch/env config owns model selection"
         )
-    elif model and agent_cfg and agent_cfg.acp_model_config_id:
+    elif model:
         acp_model_input = _resolve_acp_model_input(agent, model, agent_env)
         acp_model_id = _select_acp_model_id(acp_model_input, agent, session)
-        await _set_acp_config_option(
-            acp_client,
-            session,
-            agent=agent,
-            config_id=agent_cfg.acp_model_config_id,
-            value=acp_model_id,
-            label="model",
-        )
-    elif model and (not agent_cfg or agent_cfg.supports_acp_set_model):
-        acp_model_input = _resolve_acp_model_input(agent, model, agent_env)
-        acp_model_id = _select_acp_model_id(acp_model_input, agent, session)
-        try:
-            await _set_acp_model(acp_client, agent=agent, model_id=acp_model_id)
-        except RuntimeError as exc:
-            # Capability fallback: if the running agent version has dropped
-            # session/set_model (JSON-RPC -32601) — as the @agentclientprotocol
-            # family is doing in favor of config options — recover by routing
-            # the model through the advertised model config option instead of
-            # failing the rollout. This defuses the same break that hit
-            # claude-agent-acp for codex-acp and any future family member with
-            # no registry change. Any other failure still fails closed.
-            fallback_id = _advertised_model_option_id(session, agent_cfg)
-            if not (_is_acp_method_not_found(exc) and fallback_id):
-                raise
-            logger.warning(
-                "ACP agent %r does not implement session/set_model (-32601); "
-                "falling back to the %r config option",
-                agent,
-                fallback_id,
-            )
+        model_option_id = _resolve_acp_model_option_id(agent_cfg, session)
+        if model_option_id:
+            # Capability-first: the agent advertises a model config option (or
+            # the registry declares one), so configure the model through it —
+            # this is how the @agentclientprotocol family is replacing
+            # session/set_model, and it needs no per-agent registry change.
             await _set_acp_config_option(
                 acp_client,
                 session,
                 agent=agent,
-                config_id=fallback_id,
+                config_id=model_option_id,
                 value=acp_model_id,
                 label="model",
             )
-    elif model:
-        logger.info(
-            f"Skipping ACP model configuration for {agent} — launch/env config owns model selection"
-        )
+        elif not agent_cfg or agent_cfg.supports_acp_set_model:
+            # No model config option advertised/declared — use the legacy
+            # session/set_model path. Fails closed if the agent rejects it.
+            await _set_acp_model(acp_client, agent=agent, model_id=acp_model_id)
+        else:
+            logger.info(
+                f"Skipping ACP model configuration for {agent} — launch/env config owns model selection"
+            )
 
     if not reasoning_effort:
         return
