@@ -1,4 +1,4 @@
-"""Trajectory types — raw LLM API request/response pairs captured by proxy."""
+"""Trajectory types — raw LLM API request/response pairs captured from providers."""
 
 from dataclasses import dataclass
 from datetime import datetime
@@ -200,7 +200,7 @@ class LLMExchange(BaseModel):
 
 
 class Trajectory(BaseModel):
-    """Raw trajectory: ordered list of LLM API exchanges captured by proxy."""
+    """Raw trajectory: ordered list of captured LLM API exchanges."""
 
     session_id: str
     agent_name: str = ""

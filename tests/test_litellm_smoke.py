@@ -1,10 +1,10 @@
 """Optional real-provider smoke test for provider usage telemetry.
 
 Run explicitly with Docker:
-    BENCHFLOW_RUN_TELEMETRY_SMOKE=1 uv run pytest tests/test_usage_proxy_smoke.py -q
+    BENCHFLOW_RUN_TELEMETRY_SMOKE=1 uv run pytest tests/test_litellm_smoke.py -q
 
 Run explicitly with Daytona:
-    BENCHFLOW_RUN_DAYTONA_TELEMETRY_SMOKE=1 uv run pytest tests/test_usage_proxy_smoke.py -q
+    BENCHFLOW_RUN_DAYTONA_TELEMETRY_SMOKE=1 uv run pytest tests/test_litellm_smoke.py -q
 """
 
 from __future__ import annotations
@@ -53,7 +53,6 @@ def _smoke_agent_env() -> dict[str, str]:
         "GEMINI_API_KEY",
         "GOOGLE_API_KEY",
         "BENCHFLOW_PROVIDER_BASE_URL",
-        "BENCHFLOW_PROVIDER_PROMPT_CACHE_RETENTION",
     )
     dotenv = _smoke_dotenv()
     return {

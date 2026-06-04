@@ -21,7 +21,11 @@ from typing import Any
 import tomli_w
 
 from benchflow._paths import assert_within, safe_path_segment
-from benchflow.skill_policy import validate_container_mount_path
+from benchflow.skill_policy import (
+    SKILL_MODE_NO_SKILL,
+    SKILL_MODE_WITH_SKILL,
+    validate_container_mount_path,
+)
 
 from .schema import DEFAULT_SKILL_MOUNT_DIR, validate_evals_json
 
@@ -624,7 +628,7 @@ class SkillEvaluator:
                 concurrency=concurrency,
                 retry=RetryConfig(max_retries=1),
                 agent_env=judge_env,
-                include_task_skills=with_skill,
+                skill_mode=SKILL_MODE_WITH_SKILL if with_skill else SKILL_MODE_NO_SKILL,
             ),
         )
         await j.run()

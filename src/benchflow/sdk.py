@@ -26,6 +26,7 @@ from benchflow.rollout import (
     _write_config,
     _write_rewards_jsonl,
 )
+from benchflow.skill_policy import SKILL_MODE_NO_SKILL
 
 logger = logging.getLogger(__name__)
 
@@ -162,6 +163,7 @@ class SDK:
         prompts: list[str | None] | None = None,
         *,
         model: str | None = None,
+        reasoning_effort: str | None = None,
         agent_env: dict[str, str] | None = None,
         job_name: str | None = None,
         rollout_name: str | None = None,
@@ -176,7 +178,7 @@ class SDK:
         sandbox_setup_timeout: int = 120,
         pre_agent_hooks: list | None = None,
         context_root: str | Path | None = None,
-        skill_mode: str = "default",
+        skill_mode: str = SKILL_MODE_NO_SKILL,
         skill_creator_dir: str | Path | None = None,
         self_gen_no_internet: bool = False,
         source_provenance: dict[str, Any] | None = None,
@@ -191,6 +193,7 @@ class SDK:
             agent=agent,
             prompts=prompts,
             model=model,
+            reasoning_effort=reasoning_effort,
             agent_env=agent_env,
             job_name=job_name,
             rollout_name=rollout_name,

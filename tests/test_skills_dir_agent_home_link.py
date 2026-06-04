@@ -14,7 +14,6 @@ container but no symlink linked it into the agent home (e.g.
 the skills.
 """
 
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -22,12 +21,6 @@ import pytest
 from benchflow.agents.install import deploy_skills
 from benchflow.agents.registry import AGENTS, AgentConfig
 from benchflow.sandbox.setup import _inject_skills_into_dockerfile
-
-
-def _make_task(skills_dir: str | None):
-    return SimpleNamespace(
-        config=SimpleNamespace(environment=SimpleNamespace(skills_dir=skills_dir))
-    )
 
 
 def _mock_env():
@@ -73,7 +66,6 @@ async def test_dockerfile_baked_skills_link_into_codex_agent_home(tmp_path):
         agent_cfg=AGENTS["codex-acp"],
         sandbox_user="agent",
         agent_cwd="/workspace",
-        task=_make_task(None),
     )
 
     # Runtime upload must be skipped (skills are already in the image),
@@ -116,7 +108,6 @@ async def test_dockerfile_baked_skills_link_for_arbitrary_agent_home(tmp_path):
         agent_cfg=agent_cfg,
         sandbox_user="agent",
         agent_cwd="/workspace",
-        task=_make_task(None),
     )
 
     env.upload_dir.assert_not_called()
@@ -148,7 +139,6 @@ async def test_dockerfile_baked_skills_link_when_task_declares_no_skills(tmp_pat
         agent_cfg=AGENTS["codex-acp"],
         sandbox_user="agent",
         agent_cwd="/workspace",
-        task=_make_task(None),  # task.toml declares no skills_dir
     )
 
     env.exec.assert_awaited_once()

@@ -74,8 +74,8 @@ Provider-prefixed models can use credentials that differ from the agent's
 native default auth. For Azure Foundry, use models such as
 `azure-foundry-openai/gpt-5.5` or
 `azure-foundry-anthropic/claude-opus-4-5`; benchflow derives the Azure resource
-from `AZURE_API_ENDPOINT` and maps `AZURE_API_KEY` onto the selected agent's
-native auth env inside the sandbox.
+from `AZURE_API_ENDPOINT` and routes the selected agent through a generated
+LiteLLM gateway config.
 
 ### Precedence
 
@@ -103,6 +103,7 @@ GEMINI_API_KEY=... bench eval create \
   --agent gemini \
   --model gemini-3.1-pro-preview \
   --sandbox daytona \
+  --skill-mode with-skill \
   --skills-dir tasks/edit-pdf/environment/skills \
   --agent-env BENCHFLOW_SKILL_NUDGE=name
 

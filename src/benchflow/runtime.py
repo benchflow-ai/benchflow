@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from benchflow.agents.registry import AgentConfig, resolve_agent
+from benchflow.skill_policy import SKILL_MODE_NO_SKILL
 
 if TYPE_CHECKING:
     from benchflow.models import RolloutResult as RunResult
@@ -204,6 +205,7 @@ class RuntimeConfig:
     jobs_dir: str | Path = "jobs"
     rollout_name: str | None = None
     skills_dir: str | Path | None = None
+    skill_mode: str = SKILL_MODE_NO_SKILL
     context_root: str | Path | None = None
     pre_agent_hooks: list | None = None
     sandbox_locked_paths: list[str] | None = None
@@ -340,7 +342,6 @@ class Runtime:
                 Scene.single(
                     agent=self.agent.name,
                     model=self.agent.model,
-                    skills_dir=config.skills_dir,
                 )
             ],
             environment=self.env.sandbox,
@@ -356,6 +357,7 @@ class Runtime:
             model=self.agent.model,
             agent_env=self.agent.env,
             skills_dir=config.skills_dir,
+            skill_mode=config.skill_mode,
             usage_tracking=config.usage_tracking,
         )
 
@@ -417,10 +419,10 @@ async def run(
         result = await bf.run("gemini", task_path="tasks/X")
     """
     from benchflow._types import Scene
-    from benchflow.rollout import Rollout, RolloutConfig
+    from benchflow.rollout import SKILL_MODE_SELF_GEN, Rollout, RolloutConfig
 
     if isinstance(subject, RolloutConfig):
-        if subject.skill_mode == "self-gen":
+        if subject.skill_mode == SKILL_MODE_SELF_GEN:
             from benchflow.self_gen import run_self_gen
 
             return await run_self_gen(subject)
@@ -451,6 +453,7 @@ async def run(
             context_root=rc.context_root,
             pre_agent_hooks=rc.pre_agent_hooks,
             skills_dir=rc.skills_dir,
+            skill_mode=rc.skill_mode,
             agent=subject,
             model=model,
             usage_tracking=rc.usage_tracking,

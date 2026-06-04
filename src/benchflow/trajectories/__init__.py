@@ -1,30 +1,22 @@
-"""Trajectory capture — intercept and record agent ↔ LLM traffic.
+"""Trajectory capture and exchange schemas.
 
-Three capture strategies (pick one per run):
-  - TrajectoryProxy: HTTP reverse-proxy, records request/response pairs.
-  - OTelCollector: OpenTelemetry OTLP receiver, captures LLM call spans.
-  - ACP-native: session updates from the ACP client (no extra infra).
-
-The SDK currently uses the ACP-native path; the proxy and OTel paths
-exist for agents that don't speak ACP or for cross-tool comparison.
+BenchFlow persists ACP-native trajectories plus LiteLLM callback-derived LLM
+request/response exchanges. ``OTelCollector`` remains available for external
+OpenTelemetry captures.
 
 Files
 -----
-- ``proxy.py``        ``TrajectoryProxy`` — async HTTP reverse-proxy that
-                      records request/response pairs (streaming + non-
-                      streaming). Used when the agent talks plain HTTP.
 - ``otel.py``         ``OTelCollector`` — minimal OTLP receiver that
                       decodes LLM-call spans into ``LLMExchange``.
 - ``types.py``        ``LLMRequest`` / ``LLMResponse`` / ``LLMExchange`` /
                       ``Trajectory`` pydantic models — the shared schema
-                      both proxy and otel write into.
+                      LiteLLM callbacks and OTel write into.
 ACP-native capture itself lives in ``benchflow/_trajectory.py`` (sibling
 module, not in this package), since it consumes ACP session updates
 rather than HTTP / OTLP traffic.
 """
 
 from .otel import OTelCollector
-from .proxy import TrajectoryProxy
 from .tree import RolloutNode, RolloutTree, Step, branch_points, trajectory
 from .types import LLMExchange, LLMRequest, LLMResponse, Trajectory
 
@@ -35,7 +27,6 @@ __all__ = [
     "LLMResponse",
     "OTelCollector",
     "Trajectory",
-    "TrajectoryProxy",
     # tree-native Rollout data model
     "RolloutNode",
     "RolloutTree",

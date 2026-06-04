@@ -62,6 +62,12 @@ from benchflow.diagnostics import DIAGNOSTIC_REGISTRY, summary_warning
 from benchflow.environment.manifest import EnvironmentManifest
 from benchflow.learner_store import LearnerState, LearnerStore
 from benchflow.models import RolloutResult
+from benchflow.skill_policy import (
+    SKILL_MODE_NO_SKILL,
+    SKILL_MODE_SELF_GEN,
+    SKILL_MODE_WITH_SKILL,
+    normalize_skill_mode,
+)
 from benchflow.trajectories.tree import RolloutNode
 from benchflow.usage_tracking import UsageTrackingConfig
 
@@ -205,6 +211,7 @@ class EvaluationConfig:
 
     agent: str = DEFAULT_AGENT
     model: str | None = None
+    reasoning_effort: str | None = None
     environment: str = "docker"
     concurrency: int = 4
     build_concurrency: int | None = None
@@ -212,7 +219,6 @@ class EvaluationConfig:
     agent_env: dict[str, str] = field(default_factory=dict)
     retry: RetryConfig = field(default_factory=RetryConfig)
     skills_dir: str | None = None
-    include_task_skills: bool = False
     sandbox_user: str | None = "agent"
     sandbox_locked_paths: list[str] | None = None
     sandbox_setup_timeout: int = 120
@@ -220,7 +226,7 @@ class EvaluationConfig:
     context_root: str | None = None
     exclude_tasks: set[str] = field(default_factory=set)
     include_tasks: set[str] = field(default_factory=set)
-    skill_mode: str = "default"
+    skill_mode: str = SKILL_MODE_NO_SKILL
     skill_creator_dir: str | None = None
     self_gen_no_internet: bool = False
     job_mode: str = DEFAULT_JOB_MODE
@@ -237,14 +243,19 @@ class EvaluationConfig:
         from benchflow._utils.config import (
             normalize_agent_idle_timeout,
             normalize_agent_name,
+            normalize_reasoning_effort,
             normalize_sandbox_user,
         )
         from benchflow.agents.registry import AGENTS
 
         self.agent = normalize_agent_name(self.agent)
+        self.reasoning_effort = normalize_reasoning_effort(self.reasoning_effort)
         self.sandbox_user = normalize_sandbox_user(self.sandbox_user)
         self.agent_idle_timeout = normalize_agent_idle_timeout(self.agent_idle_timeout)
         self.usage_tracking = UsageTrackingConfig.coerce(self.usage_tracking)
+        self.skill_mode = normalize_skill_mode(self.skill_mode)
+        if self.skills_dir is not None and self.skill_mode != SKILL_MODE_WITH_SKILL:
+            raise ValueError("skills_dir requires skill_mode='with-skill'")
         if self.job_mode not in JOB_MODES:
             raise ValueError(
                 f"unknown job_mode {self.job_mode!r} — "
@@ -508,6 +519,7 @@ class Evaluation:
         config = EvaluationConfig(
             agent=agent_name,
             model=effective_model(agent_name, raw.get("model")),
+            reasoning_effort=raw.get("reasoning_effort"),
             environment=raw.get("environment", "docker"),
             concurrency=raw.get("concurrency", 4),
             build_concurrency=raw.get("build_concurrency"),
@@ -515,7 +527,6 @@ class Evaluation:
             agent_env=agent_env_raw,
             retry=RetryConfig(max_retries=raw.get("max_retries", 2)),
             skills_dir=str(Path(raw["skills_dir"])) if raw.get("skills_dir") else None,
-            include_task_skills=bool(raw.get("include_task_skills", False)),
             sandbox_user=sandbox_user,
             sandbox_locked_paths=sandbox_locked_paths,
             sandbox_setup_timeout=sandbox_setup_timeout,
@@ -524,7 +535,7 @@ class Evaluation:
             ),
             exclude_tasks=exclude,
             include_tasks=include,
-            skill_mode=raw.get("skill_mode", "default"),
+            skill_mode=raw.get("skill_mode", SKILL_MODE_NO_SKILL),
             skill_creator_dir=(
                 str(Path(raw["skill_creator_dir"]))
                 if raw.get("skill_creator_dir")
@@ -599,12 +610,14 @@ class Evaluation:
         config = EvaluationConfig(
             agent=agent_name,
             model=model,
+            reasoning_effort=agent_cfg.get(
+                "reasoning_effort", raw.get("reasoning_effort")
+            ),
             environment=environment,
             concurrency=concurrency,
             agent_env=agent_env,
             retry=RetryConfig(max_retries=max(0, max_retries)),
             skills_dir=skills_dir,
-            include_task_skills=bool(raw.get("include_task_skills", False)),
             sandbox_user=sandbox_user,
             sandbox_locked_paths=sandbox_locked_paths,
             sandbox_setup_timeout=sandbox_setup_timeout,
@@ -613,7 +626,7 @@ class Evaluation:
             ),
             include_tasks=include,
             exclude_tasks=exclude,
-            skill_mode=raw.get("skill_mode", "default"),
+            skill_mode=raw.get("skill_mode", SKILL_MODE_NO_SKILL),
             skill_creator_dir=(
                 str(Path(raw["skill_creator_dir"]))
                 if raw.get("skill_creator_dir")
@@ -726,13 +739,6 @@ class Evaluation:
         finally:
             _PRUNE_LOCK.release()
 
-    def _resolve_skills_dir(self, task_dir: Path, skills_dir: str | None) -> str | None:
-        """Resolve skills_dir — 'auto' means per-task environment/skills/."""
-        from benchflow.skill_policy import resolve_runtime_skills_dir
-
-        resolved = resolve_runtime_skills_dir(task_dir, skills_dir)
-        return str(resolved) if resolved is not None else None
-
     def _enrich_payload_with_persisted_timing(
         self, payload: dict, result: RolloutResult
     ) -> None:
@@ -778,7 +784,12 @@ class Evaluation:
         skills_dir = (
             str(self._learner_skills_dir)
             if self._learner_skills_dir is not None
-            else self._resolve_skills_dir(task_dir, cfg.skills_dir)
+            else cfg.skills_dir
+        )
+        skill_mode = (
+            SKILL_MODE_WITH_SKILL
+            if self._learner_skills_dir is not None
+            else cfg.skill_mode
         )
         export_to = (
             str(self._learner_export_dir)
@@ -789,6 +800,7 @@ class Evaluation:
             task_path=task_dir,
             agent=cfg.agent,
             model=cfg.model,
+            reasoning_effort=cfg.reasoning_effort,
             prompts=cfg.prompts,
             agent_env=cfg.agent_env,
             job_name=self._job_name,
@@ -797,20 +809,19 @@ class Evaluation:
             environment=cfg.environment,
             environment_manifest=cfg.environment_manifest,
             skills_dir=skills_dir,
-            include_task_skills=cfg.include_task_skills,
             sandbox_user=cfg.sandbox_user,
             sandbox_locked_paths=cfg.sandbox_locked_paths,
             sandbox_setup_timeout=cfg.sandbox_setup_timeout,
             agent_idle_timeout=cfg.agent_idle_timeout,
             context_root=cfg.context_root,
-            skill_mode=cfg.skill_mode,
+            skill_mode=skill_mode,
             skill_creator_dir=cfg.skill_creator_dir,
             self_gen_no_internet=cfg.self_gen_no_internet,
             export_generated_skills_to=export_to,
             source_provenance=task_source_provenance(cfg.source_provenance, task_dir),
             usage_tracking=cfg.usage_tracking,
         )
-        if cfg.skill_mode == "self-gen":
+        if skill_mode == SKILL_MODE_SELF_GEN:
             from benchflow.self_gen import run_self_gen
 
             return await run_self_gen(rollout_config)
@@ -833,13 +844,14 @@ class Evaluation:
             task_path=task_dir,
             agent=cfg.agent,
             model=cfg.model,
+            reasoning_effort=cfg.reasoning_effort,
             prompts=cfg.prompts,
             agent_env=cfg.agent_env,
             job_name=self._job_name,
             jobs_dir=str(self._jobs_dir),
             concurrency=cfg.concurrency,
             environment=cfg.environment,
-            skills_dir=self._resolve_skills_dir(task_dir, cfg.skills_dir),
+            skills_dir=cfg.skills_dir,
             sandbox_user=cfg.sandbox_user,
             sandbox_locked_paths=cfg.sandbox_locked_paths,
             sandbox_setup_timeout=cfg.sandbox_setup_timeout,
@@ -906,26 +918,6 @@ class Evaluation:
         logger.info(f"[{status}] {td.name} (tools={result.n_tool_calls}){err}")
         if self._on_result:
             self._on_result(td.name, result)
-
-    def _preflight_usage_tracking(self) -> None:
-        from benchflow.providers.runtime import validate_usage_proxy_preconditions
-
-        cfg = self._config
-        usage = cfg.usage_tracking.with_env_defaults()
-        failure = validate_usage_proxy_preconditions(
-            usage,
-            environment=cfg.environment,
-            model=cfg.model,
-        )
-        if failure is None:
-            return
-        if usage.mode == "required":
-            raise RuntimeError(failure.required_message)
-        logger.log(
-            failure.log_level,
-            "%s Results will report usage_source='unavailable'.",
-            failure.skip_message,
-        )
 
     async def _run_parallel_independent(
         self, remaining: list[Path]
@@ -1183,8 +1175,6 @@ class Evaluation:
             )
         completed = self._get_completed_tasks()
         remaining = [d for d in task_dirs if d.name not in completed]
-        if remaining:
-            self._preflight_usage_tracking()
 
         # A resumed sequential-shared job rebuilds the LearnerStore from the
         # per-job snapshot under ``<job>/learner_store.json``. If that file

@@ -11,6 +11,7 @@ from benchflow.sandbox.lockdown import (
     lockdown_paths,
 )
 from benchflow.sdk import SDK
+from benchflow.skill_policy import SKILL_MODE_NO_SKILL, resolve_task_skill_policy
 
 # ---------------------------------------------------------------------------
 # _validate_locked_path
@@ -225,7 +226,12 @@ class TestWriteConfigRecordsPaths:
             agent="test",
             model=None,
             environment="docker",
-            skills_dir=None,
+            skill_policy=resolve_task_skill_policy(
+                task_path=tmp_path / "task",
+                skill_mode=SKILL_MODE_NO_SKILL,
+                runtime_skills_dir=None,
+                declared_sandbox_skills_dir=None,
+            ),
             sandbox_user="agent",
             context_root=None,
             sandbox_locked_paths=["/solution", "/tests"],

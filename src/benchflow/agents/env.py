@@ -41,7 +41,7 @@ _AUTH_CONTEXT_GROUPS = (
     frozenset({"OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN"}),
 )
 _EXPLICIT_AGENT_NATIVE_BRIDGE_KEYS = frozenset({"LLM_API_KEY"})
-_BEDROCK_PROXY_PLACEHOLDER_API_KEY = "bedrock-proxy"
+_BEDROCK_PROVIDER_PLACEHOLDER_API_KEY = "benchflow-litellm"
 _CODEX_API_KEY_ENV = "CODEX_API_KEY"
 _CODEX_ACCESS_TOKEN_ENV = "CODEX_ACCESS_TOKEN"
 _CODEX_AUTH_JSON_ENV = "CODEX_AUTH_JSON"
@@ -196,12 +196,13 @@ def auto_inherit_env(
         "LLM_BASE_URL",
         "BENCHFLOW_PROVIDER_BASE_URL",
         "BENCHFLOW_PROVIDER_API_KEY",
-        "BENCHFLOW_PROVIDER_PROMPT_CACHE_RETENTION",
+        "BENCHFLOW_BEDROCK_THINKING_EFFORT",
         # AZURE_API_KEY / AZURE_RESOURCE are picked up automatically below via
         # cfg.auth_env / cfg.url_params; only AZURE_API_ENDPOINT is listed
         # explicitly because it is a user-facing convenience input, not a
         # provider-config field.
         _AZURE_ENDPOINT_ENV,
+        "AZURE_API_VERSION",
     }
     for cfg in PROVIDERS.values():
         if cfg.auth_env:
@@ -451,7 +452,7 @@ def resolve_provider_env(
         elif _prov_cfg.auth_type == "aws":
             agent_env.setdefault(
                 "BENCHFLOW_PROVIDER_API_KEY",
-                _BEDROCK_PROXY_PLACEHOLDER_API_KEY,
+                _BEDROCK_PROVIDER_PLACEHOLDER_API_KEY,
             )
     else:
         # No registered provider prefix — bridge the model's well-known API key
@@ -558,10 +559,9 @@ def _drop_inherited_generic_provider_overrides(
         _, provider_cfg = provider
         # Providers with an empty base URL (for example vllm/) are explicitly
         # user-supplied endpoints, so inherited BENCHFLOW_PROVIDER_* is the normal
-        # configuration path. Providers with a registered URL/auth env should not be
-        # shadowed by a global generic proxy from .env unless the caller explicitly
-        # passed that override for this run.
-        if not provider_cfg.base_url:
+        # configuration path. Bedrock is the exception: LiteLLM supplies its
+        # runtime URL later, so stale generic provider vars must not shadow it.
+        if not provider_cfg.base_url and provider_cfg.auth_type != "aws":
             return
     for key in _GENERIC_PROVIDER_OVERRIDE_KEYS - explicit_agent_env_keys:
         agent_env.pop(key, None)

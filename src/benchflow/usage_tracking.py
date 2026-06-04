@@ -41,7 +41,7 @@ class UsageTrackingConfig:
     """User-facing token/cost telemetry policy.
 
     ``mode`` is the operator contract:
-    - ``auto`` records usage when the sandbox can reach a proxy.
+    - ``auto`` records usage when the LiteLLM gateway can be started.
     - ``required`` fails before the agent runs when telemetry cannot be wired.
     - ``off`` leaves provider traffic untouched.
     """

@@ -151,6 +151,9 @@ def _write_config(
     agent: str = "agentA",
     model: str = "test-model",
     idle_timeout: object = 600,
+    skills_dir: object = "/tmp/skills",
+    include_task_skills: bool = False,
+    skill_mode: object = None,
 ) -> None:
     config = {
         "task_path": "/tmp/tasks/task-a",
@@ -159,8 +162,12 @@ def _write_config(
         "environment": "daytona",
         "concurrency": 64,
         "agent_idle_timeout_sec": idle_timeout,
+        "skills_dir": skills_dir,
+        "include_task_skills": include_task_skills,
         "source": source or _source(),
     }
+    if skill_mode is not None:
+        config["skill_mode"] = skill_mode
     (path / "config.json").write_text(json.dumps(config))
 
 
@@ -269,6 +276,239 @@ def test_check_results_flags_skill_invocation_mismatch(tmp_path: Path) -> None:
     assert any(
         "n_skill_invocations=0 but trajectory implies 1" in issue
         for issue in findings["issues"]
+    )
+
+
+def test_check_results_flags_openhands_legacy_skill_invocation_mismatch(
+    tmp_path: Path,
+) -> None:
+    """Guards issue #507: OpenHands invoke_skill artifacts are rescannable."""
+    agent_dir = tmp_path / "agentA"
+    run_dir = agent_dir / "2026-05-24__00-00-00" / "task-a"
+    run_dir.mkdir(parents=True)
+    (run_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "task-a",
+                "agent": "openhands",
+                "model": "test-model",
+                "rewards": {"reward": 0.0},
+                "error": None,
+                "verifier_error": None,
+                "n_skill_invocations": 0,
+                "agent_result": {"n_skill_invocations": 0},
+                "source": _source(),
+            }
+        )
+    )
+    traj_dir = run_dir / "trajectory"
+    traj_dir.mkdir()
+    (traj_dir / "acp_trajectory.jsonl").write_text(
+        json.dumps(
+            {
+                "type": "tool_call",
+                "kind": "other",
+                "title": "Load PDF skill for processing",
+                "content": [
+                    {
+                        "content": {
+                            "type": "text",
+                            "text": "Tool: invoke_skill\nResult:\n[skill: pdf]",
+                        },
+                        "type": "content",
+                    }
+                ],
+            }
+        )
+        + "\n"
+    )
+    _write_config(run_dir)
+    (agent_dir / "summary.json").write_text(
+        json.dumps(
+            {
+                "agent": "openhands",
+                "model": "test-model",
+                "environment": "daytona",
+                "concurrency": 64,
+                "agent_idle_timeout_sec": 600,
+                "total": 1,
+                "passed": 0,
+                "failed": 1,
+                "errored": 0,
+                "verifier_errored": 0,
+                "score": "0.0%",
+                "total_skill_invocations": 0,
+                "avg_skill_invocations": 0.0,
+                "source": _source(),
+            }
+        )
+    )
+
+    findings = check_agent(agent_dir)
+
+    assert findings["ok"] is False
+    assert any(
+        "n_skill_invocations=0 but trajectory implies 1" in issue
+        for issue in findings["issues"]
+    )
+
+
+def _write_skill_summary(agent_dir: Path, *, agent: str, total: int) -> None:
+    (agent_dir / "summary.json").write_text(
+        json.dumps(
+            {
+                "agent": agent,
+                "model": "test-model",
+                "environment": "daytona",
+                "concurrency": 64,
+                "agent_idle_timeout_sec": 600,
+                "total": 1,
+                "passed": 1,
+                "failed": 0,
+                "errored": 0,
+                "verifier_errored": 0,
+                "score": "100.0%",
+                "total_skill_invocations": total,
+                "avg_skill_invocations": float(total),
+                "source": _source(),
+            }
+        )
+    )
+
+
+def test_check_results_flags_no_skill_trial_with_skill_invocation(
+    tmp_path: Path,
+) -> None:
+    """Guards #507: a trial provisioning no skills must not invoke skills."""
+    agent_dir = tmp_path / "agentA"
+    run_dir = agent_dir / "2026-05-24__00-00-00" / "task-a"
+    run_dir.mkdir(parents=True)
+    (run_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "task-a",
+                "agent": "agentA",
+                "model": "test-model",
+                "rewards": {"reward": 1.0},
+                "error": None,
+                "verifier_error": None,
+                "n_skill_invocations": 1,
+                "agent_result": {"n_skill_invocations": 1},
+                "source": _source(),
+            }
+        )
+    )
+    traj_dir = run_dir / "trajectory"
+    traj_dir.mkdir()
+    (traj_dir / "acp_trajectory.jsonl").write_text(
+        json.dumps({"type": "tool_call", "kind": "skill", "title": "pdf"}) + "\n"
+    )
+    # No-skill trial: no skills_dir, no task-bundled skills.
+    _write_config(run_dir, skills_dir=None, include_task_skills=False)
+    _write_skill_summary(agent_dir, agent="agentA", total=1)
+
+    findings = check_agent(agent_dir)
+
+    assert findings["ok"] is False
+    assert any("config provisions no skills" in issue for issue in findings["issues"])
+
+
+def test_check_results_allows_skill_invocation_when_skills_provisioned(
+    tmp_path: Path,
+) -> None:
+    """Guards #507: the no-skill invariant must not flag with-skill trials."""
+    agent_dir = tmp_path / "agentA"
+    run_dir = agent_dir / "2026-05-24__00-00-00" / "task-a"
+    run_dir.mkdir(parents=True)
+    (run_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "task-a",
+                "agent": "agentA",
+                "model": "test-model",
+                "rewards": {"reward": 1.0},
+                "error": None,
+                "verifier_error": None,
+                "n_skill_invocations": 1,
+                "agent_result": {"n_skill_invocations": 1},
+                "source": _source(),
+            }
+        )
+    )
+    traj_dir = run_dir / "trajectory"
+    traj_dir.mkdir()
+    (traj_dir / "acp_trajectory.jsonl").write_text(
+        json.dumps({"type": "tool_call", "kind": "skill", "title": "pdf"}) + "\n"
+    )
+    # With-skill trial: task-bundled skills were mounted.
+    _write_config(run_dir, skills_dir=None, include_task_skills=True)
+    _write_skill_summary(agent_dir, agent="agentA", total=1)
+
+    findings = check_agent(agent_dir)
+
+    assert findings["ok"] is True
+    assert not any(
+        "config provisions no skills" in issue for issue in findings["issues"]
+    )
+
+
+def _write_skill_trial(
+    tmp_path: Path, *, skill_mode: str, n_skill_invocations: int = 1
+) -> Path:
+    agent_dir = tmp_path / "agentA"
+    run_dir = agent_dir / "2026-05-24__00-00-00" / "task-a"
+    run_dir.mkdir(parents=True)
+    (run_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "task-a",
+                "agent": "agentA",
+                "model": "test-model",
+                "rewards": {"reward": 1.0},
+                "error": None,
+                "verifier_error": None,
+                "n_skill_invocations": n_skill_invocations,
+                "agent_result": {"n_skill_invocations": n_skill_invocations},
+                "source": _source(),
+            }
+        )
+    )
+    traj_dir = run_dir / "trajectory"
+    traj_dir.mkdir()
+    traj = "".join(
+        json.dumps({"type": "tool_call", "kind": "skill", "title": "pdf"}) + "\n"
+        for _ in range(n_skill_invocations)
+    )
+    (traj_dir / "acp_trajectory.jsonl").write_text(traj)
+    # Canonical skill_mode field with no legacy skills_dir/include_task_skills.
+    _write_config(
+        run_dir, skills_dir=None, include_task_skills=False, skill_mode=skill_mode
+    )
+    _write_skill_summary(agent_dir, agent="agentA", total=n_skill_invocations)
+    return agent_dir
+
+
+def test_check_results_skill_mode_no_skill_flags_invocation(tmp_path: Path) -> None:
+    """Guards #507: skill_mode=no-skill is a no-skill trial; invocations flag."""
+    agent_dir = _write_skill_trial(tmp_path, skill_mode="no-skill")
+
+    findings = check_agent(agent_dir)
+
+    assert findings["ok"] is False
+    assert any("config provisions no skills" in issue for issue in findings["issues"])
+
+
+def test_check_results_skill_mode_with_skill_allows_invocation(
+    tmp_path: Path,
+) -> None:
+    """Guards #507: skill_mode=with-skill provisions skills; no false flag."""
+    agent_dir = _write_skill_trial(tmp_path, skill_mode="with-skill")
+
+    findings = check_agent(agent_dir)
+
+    assert findings["ok"] is True
+    assert not any(
+        "config provisions no skills" in issue for issue in findings["issues"]
     )
 
 

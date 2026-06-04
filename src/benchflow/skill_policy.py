@@ -15,12 +15,31 @@ from pathlib import Path
 
 _CONTAINER_MOUNT_PATH_RE = re.compile(r"^/[A-Za-z0-9._/-]+$")
 
+SKILL_MODE_NO_SKILL = "no-skill"
+SKILL_MODE_WITH_SKILL = "with-skill"
+SKILL_MODE_SELF_GEN = "self-gen"
+SKILL_MODES = frozenset(
+    {
+        SKILL_MODE_NO_SKILL,
+        SKILL_MODE_WITH_SKILL,
+        SKILL_MODE_SELF_GEN,
+    }
+)
+
+SKILL_SOURCE_NONE = "none"
+SKILL_SOURCE_TASK_BUNDLED = "task_bundled"
+SKILL_SOURCE_CUSTOM_RUNTIME = "custom_runtime"
+SKILL_SOURCE_SELF_GENERATED = "self_generated"
+
 
 @dataclass(frozen=True)
 class TaskSkillPolicy:
+    mode: str
+    source: str
     bundled_dir: Path
     has_bundled_dir: bool
     enabled: bool
+    requested_dir: str | None
     host_dir: Path | None
     sandbox_dir: str | None
     strip_bundled_dir_from_copy: bool
@@ -37,20 +56,38 @@ class TaskSkillPolicy:
     def host_dir_is_bundled(self) -> bool:
         return self.host_dir is not None and _same_path(self.host_dir, self.bundled_dir)
 
+    @property
+    def include_task_skills(self) -> bool:
+        return self.source == SKILL_SOURCE_TASK_BUNDLED and self.enabled
+
+    def config_metadata(self) -> dict[str, str | bool | None]:
+        return {
+            "skill_mode": self.mode,
+            "skill_source": self.source,
+            "requested_skills_dir": self.requested_dir,
+            "effective_skills_dir": str(self.host_dir) if self.host_dir else None,
+            "skills_sandbox_dir": self.sandbox_dir,
+            "include_task_skills": self.include_task_skills,
+        }
+
 
 def task_bundled_skills_dir(task_path: Path) -> Path:
     return task_path / "environment" / "skills"
 
 
-def resolve_runtime_skills_dir(
-    task_path: Path,
-    skills_dir: str | Path | None,
-) -> Path | None:
+def normalize_skill_mode(value: str | None) -> str:
+    if value is None:
+        return SKILL_MODE_NO_SKILL
+    text = value.strip()
+    if text in SKILL_MODES:
+        return text
+    expected = ", ".join(sorted(SKILL_MODES))
+    raise ValueError(f"skill_mode must be one of: {expected}")
+
+
+def resolve_runtime_skills_dir(skills_dir: str | Path | None) -> Path | None:
     if skills_dir is None:
         return None
-    if str(skills_dir) == "auto":
-        bundled = task_bundled_skills_dir(task_path)
-        return bundled if bundled.is_dir() else None
     return skills_dir if isinstance(skills_dir, Path) else Path(skills_dir)
 
 
@@ -73,26 +110,52 @@ def validate_container_mount_path(value: object, field: str = "sandbox_dir") -> 
 def resolve_task_skill_policy(
     *,
     task_path: Path,
+    skill_mode: str,
     runtime_skills_dir: str | Path | None,
     declared_sandbox_skills_dir: str | None,
-    include_task_skills: bool,
 ) -> TaskSkillPolicy:
+    mode = normalize_skill_mode(skill_mode)
     bundled = task_bundled_skills_dir(task_path)
     has_bundled = bundled.is_dir()
-    resolved_runtime = resolve_runtime_skills_dir(task_path, runtime_skills_dir)
+    resolved_runtime = resolve_runtime_skills_dir(runtime_skills_dir)
+    requested = str(runtime_skills_dir) if runtime_skills_dir is not None else None
 
     enabled = False
+    source = SKILL_SOURCE_NONE
     host_dir: Path | None = None
     sandbox_dir: str | None = None
     strip_bundled = has_bundled
 
-    if resolved_runtime is not None:
+    if mode == SKILL_MODE_NO_SKILL:
+        if runtime_skills_dir is not None:
+            raise ValueError("no-skill mode cannot be combined with skills_dir")
+    elif mode == SKILL_MODE_SELF_GEN:
+        if runtime_skills_dir is not None:
+            raise ValueError("self-gen mode cannot be combined with skills_dir")
+        source = SKILL_SOURCE_SELF_GENERATED
+    elif resolved_runtime is not None:
+        if not resolved_runtime.is_dir():
+            raise FileNotFoundError(f"skills_dir not found: {resolved_runtime}")
         enabled = True
+        source = (
+            SKILL_SOURCE_TASK_BUNDLED
+            if _same_path(resolved_runtime, bundled)
+            else SKILL_SOURCE_CUSTOM_RUNTIME
+        )
         host_dir = resolved_runtime
-        sandbox_dir = validate_container_mount_path("/skills")
+        if source == SKILL_SOURCE_TASK_BUNDLED:
+            sandbox_dir = validate_container_mount_path(
+                declared_sandbox_skills_dir or "/skills",
+                "environment.skills_dir",
+            )
+        else:
+            sandbox_dir = validate_container_mount_path("/skills")
         strip_bundled = has_bundled and not _same_path(resolved_runtime, bundled)
-    elif include_task_skills and has_bundled:
+    elif mode == SKILL_MODE_WITH_SKILL:
+        if not has_bundled:
+            raise FileNotFoundError(f"task has no bundled skills: {bundled}")
         enabled = True
+        source = SKILL_SOURCE_TASK_BUNDLED
         host_dir = bundled
         sandbox_dir = validate_container_mount_path(
             declared_sandbox_skills_dir or "/skills",
@@ -101,9 +164,12 @@ def resolve_task_skill_policy(
         strip_bundled = False
 
     return TaskSkillPolicy(
+        mode=mode,
+        source=source,
         bundled_dir=bundled,
         has_bundled_dir=has_bundled,
         enabled=enabled,
+        requested_dir=requested,
         host_dir=host_dir,
         sandbox_dir=sandbox_dir,
         strip_bundled_dir_from_copy=strip_bundled,

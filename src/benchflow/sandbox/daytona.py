@@ -160,6 +160,26 @@ def _load_daytona_sdk() -> None:
     _DAYTONA_SDK_LOADED = True
 
 
+def build_sync_client(api_key: str | None = None) -> Any:
+    """Return a synchronous ``daytona.Daytona`` client with anyio compat applied.
+
+    Canonical entry point for the *sync* SDK client (the async strategy classes
+    use :func:`_load_daytona_sdk`). Applies :func:`_ensure_daytona_anyio_compat`
+    first — the SDK's sync client imports ``anyio.AsyncContextManagerMixin`` at
+    import time, which the pinned anyio may not expose — then builds the client
+    with an explicit key (no ``os.environ`` mutation) when one is given,
+    otherwise letting the SDK read ``DAYTONA_API_KEY`` itself.
+    """
+    _ensure_daytona_anyio_compat()
+    from daytona import Daytona
+
+    if not api_key:
+        return Daytona()
+    from daytona import DaytonaConfig
+
+    return Daytona(DaytonaConfig(api_key=api_key))
+
+
 logger = logging.getLogger("benchflow")
 
 # ``_SandboxParams`` was previously a top-level union of two SDK types. The

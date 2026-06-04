@@ -190,7 +190,10 @@ None for the 14-bug set. The verifier paths, sandbox permissions, datagen, and D
 Tangential observations (not regressions of the 14 bugs, not filed as new issues):
 
 - gemini-2.5-flash hit the 600s agent budget on pddl-tpp-planning. This is an agent-capability outcome, not infra — `error_category` is correctly `"timeout"`. Other agents or larger budgets are expected to solve this.
-- Both runs report `"usage_source": "unavailable"` because the host-side usage telemetry proxy can't reach Daytona sandboxes. The log explicitly flags this ("Skipping host-side usage telemetry proxy …") and it is independent of the 14-bug set.
+- Historical note: at the time of this validation, Daytona telemetry was unavailable
+  when only the old host-side telemetry path existed. Current BenchFlow starts
+  LiteLLM inside Daytona sandboxes, so new Daytona runs should record provider
+  usage when credentials are available.
 
 ## Status
 

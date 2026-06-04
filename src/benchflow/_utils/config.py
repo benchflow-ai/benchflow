@@ -27,6 +27,16 @@ def normalize_sandbox_user(sandbox_user: str | None) -> str | None:
     return sandbox_user
 
 
+def normalize_reasoning_effort(effort: object) -> str | None:
+    """Normalize model reasoning/thinking effort at config boundaries."""
+    if effort is None:
+        return None
+    if not isinstance(effort, str):
+        raise ValueError("reasoning_effort must be a string")
+    normalized = effort.strip().lower()
+    return normalized or None
+
+
 DEFAULT_AGENT_IDLE_TIMEOUT_SEC = 600
 
 

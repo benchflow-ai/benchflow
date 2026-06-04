@@ -3,7 +3,7 @@
 import asyncio
 import sys
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
@@ -129,6 +129,18 @@ class TestACPClient:
             await client.close()
 
     @pytest.mark.asyncio
+    async def test_set_config_option(self) -> None:
+        client = ACPClient(StdioTransport(sys.executable, [MOCK_AGENT]))
+        try:
+            await client.connect()
+            await client.initialize()
+            await client.session_new()
+            with pytest.raises(ACPError):
+                await client.set_config_option("model", "some-model")
+        finally:
+            await client.close()
+
+    @pytest.mark.asyncio
     async def test_initialize_advertises_auth_methods(self) -> None:
         """initialize() surfaces the agent's advertised ACP auth methods."""
         client = ACPClient(StdioTransport(sys.executable, [MOCK_AGENT]))
@@ -211,6 +223,98 @@ class TestACPSession:
             }
         )
         assert session.tool_calls[0].status == ToolCallStatus.COMPLETED
+
+    def test_handle_openhands_invoke_skill_update_marks_kind_skill(self):
+        """Guards issue #507: OpenHands invoke_skill ACP calls are canonicalized."""
+        session = ACPSession("test-session")
+        session.handle_update(
+            {
+                "sessionUpdate": "tool_call",
+                "toolCallId": "tc_1",
+                "title": "Load PDF skill for processing",
+                "kind": "other",
+            }
+        )
+        session.handle_update(
+            {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "tc_1",
+                "status": "completed",
+                "content": [
+                    {
+                        "content": {
+                            "type": "text",
+                            "text": "Tool: invoke_skill\nResult:\n[skill: pdf]",
+                        },
+                        "type": "content",
+                    }
+                ],
+            }
+        )
+
+        assert session.tool_calls[0].kind == "skill"
+
+    def test_handle_tool_output_quoting_skill_marker_keeps_kind(self):
+        """Guards #507: a real tool whose output quotes an invoke_skill
+        envelope is not reclassified as a skill (live-capture false positive)."""
+        session = ACPSession("test-session")
+        session.handle_update(
+            {
+                "sessionUpdate": "tool_call",
+                "toolCallId": "tc_1",
+                "title": "cat prior_trajectory.txt",
+                "kind": "execute",
+            }
+        )
+        session.handle_update(
+            {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "tc_1",
+                "status": "completed",
+                "content": [
+                    {
+                        "content": {
+                            "type": "text",
+                            "text": "Tool: invoke_skill\nResult:\n[skill: pdf]",
+                        },
+                        "type": "content",
+                    }
+                ],
+            }
+        )
+
+        assert session.tool_calls[0].kind == "execute"
+
+    def test_handle_other_kind_mid_output_skill_marker_keeps_kind(self):
+        """Guards #507: an unclassified tool whose output merely mentions the
+        marker mid-stream (not as the result header) stays unclassified."""
+        session = ACPSession("test-session")
+        session.handle_update(
+            {
+                "sessionUpdate": "tool_call",
+                "toolCallId": "tc_1",
+                "title": "grep -n invoke_skill logs/",
+                "kind": "other",
+            }
+        )
+        session.handle_update(
+            {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "tc_1",
+                "status": "completed",
+                "content": [
+                    {
+                        "content": {
+                            "type": "text",
+                            "text": "logs/run.txt:42:Tool: invoke_skill\n[skill: pdf]",
+                        },
+                        "type": "content",
+                    }
+                ],
+            }
+        )
+
+        assert session.tool_calls[0].kind == "other"
 
     def test_handle_invalid_tool_call_status(self):
         """Invalid status should fall back to IN_PROGRESS, not crash."""
@@ -603,6 +707,7 @@ class TestConnectAcpModelSelection:
         mock_acp.initialize = AsyncMock(return_value=mock_init)
         mock_acp.session_new = AsyncMock(return_value=mock_session)
         mock_acp.set_model = AsyncMock()
+        mock_acp.set_config_option = AsyncMock()
         mock_acp.close = AsyncMock()
         return mock_acp
 
@@ -775,10 +880,49 @@ class TestConnectAcpModelSelection:
         mock_acp.set_model.assert_awaited_once_with("gpt-5.5[medium]")
 
     @pytest.mark.asyncio
-    async def test_claude_bedrock_sets_model_from_provider_mapping(self, tmp_path):
+    async def test_claude_uses_config_options_for_model_and_effort(self, tmp_path):
+        """Guards PR #825 repro: latest claude-agent-acp removed session/set_model."""
         from benchflow.acp.runtime import connect_acp
 
         mock_acp = self._make_mocks()
+        mock_acp.session_new.return_value.config_options = [
+            {"id": "model"},
+            {"id": "effort"},
+        ]
+        mock_env = AsyncMock()
+        with (
+            patch(
+                "benchflow.acp.runtime.DockerProcess.from_sandbox_env",
+                return_value=MagicMock(),
+            ),
+            patch("benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()),
+            patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
+        ):
+            await connect_acp(
+                env=mock_env,
+                agent="claude-agent-acp",
+                agent_launch="claude-agent-acp",
+                agent_env={},
+                sandbox_user=None,
+                model="claude-opus-4-8",
+                rollout_dir=tmp_path,
+                environment="docker",
+                agent_cwd="/app",
+                reasoning_effort="max",
+            )
+
+        mock_acp.set_model.assert_not_awaited()
+        assert mock_acp.set_config_option.await_args_list == [
+            call("model", "claude-opus-4-8"),
+            call("effort", "max"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_claude_litellm_env_owns_model_selection(self, tmp_path):
+        from benchflow.acp.runtime import connect_acp
+
+        mock_acp = self._make_mocks()
+        mock_acp.session_new.return_value.config_options = [{"id": "model"}]
         mock_env = AsyncMock()
         with (
             patch(
@@ -793,8 +937,9 @@ class TestConnectAcpModelSelection:
                 agent="claude-agent-acp",
                 agent_launch="claude-agent-acp",
                 agent_env={
-                    "CLAUDE_CODE_USE_BEDROCK": "1",
-                    "ANTHROPIC_MODEL": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+                    "BENCHFLOW_LITELLM_MODEL_ALIAS": "benchflow-bedrock-sonnet",
+                    "BENCHFLOW_LITELLM_MODEL_VIA_ENV": "1",
+                    "ANTHROPIC_MODEL": "benchflow-bedrock-sonnet",
                 },
                 sandbox_user=None,
                 model="aws-bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0",
@@ -803,9 +948,9 @@ class TestConnectAcpModelSelection:
                 agent_cwd="/app",
             )
 
-        mock_acp.set_model.assert_awaited_once_with(
-            "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
-        )
+        mock_acp.set_model.assert_not_awaited()
+        # LiteLLM VIA_ENV owns model selection -> no ACP set_model or config option.
+        mock_acp.set_config_option.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_daytona_dind_uses_pty_transport(self, tmp_path):

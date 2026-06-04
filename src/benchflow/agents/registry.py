@@ -194,12 +194,6 @@ _PI_LAUNCHER = (Path(__file__).parent / "pi_acp_launcher.py").read_text()
 # Path to the Harvey LAB ACP shim (runs Harvey LAB harness as an ACP agent)
 _HARVEY_LAB_SHIM = (Path(__file__).parent / "harvey_lab_acp_shim.py").read_text()
 
-# Bedrock Opus 4.8+ adaptive-thinking shim, base64-shipped into the openhands sandbox's
-# litellm (source: oh_bedrock_opus_patch.py). Regex-gated => a no-op for every other model.
-_OH_BEDROCK_OPUS_SHIM_B64 = base64.b64encode(
-    (Path(__file__).parent / "oh_bedrock_opus_patch.py").read_text().encode()
-).decode()
-
 
 def _json_settings_merge(path: str, mutator: str) -> str:
     """Idempotent JSON-settings merge as a one-line bash snippet."""
@@ -278,9 +272,9 @@ class AgentConfig:
     # Extra dot-dirs under $HOME to copy to sandbox user (for dirs not
     # derivable from skill_paths or credential_files, e.g. ".openclaw").
     acp_model_format: str = "bare"
-    # How the agent expects the modelId in session/set_model:
+    # How the agent expects ACP model IDs in session/set_model or config options:
     # "bare"           — just the model name (e.g. "claude-sonnet-4-6").
-    #                    Default; works for claude-agent-acp, codex-acp.
+    #                    Default; works for codex-acp and Claude config options.
     # "provider/model" — models.dev convention (e.g. "google/gemini-3.1-pro-preview").
     #                    Required by opencode, which uses Provider.parseModel()
     #                    to split on "/" and treats the first segment as provider ID.
@@ -293,6 +287,11 @@ class AgentConfig:
     supports_acp_set_model: bool = True
     # Some ACP agents configure the model through env/config at launch time and
     # do not implement session/set_model (e.g. OpenHands CLI ACP).
+    acp_model_config_id: str = ""
+    # ACP session config option id used for model selection when an agent
+    # exposes model as a session option instead of implementing set_model.
+    acp_effort_config_id: str = ""
+    # ACP session config option id used for reasoning/thinking effort.
     disallow_web_tools_setup_cmd: str = ""
     # Shell snippet run after credentials/subscription auth are written when
     # BenchFlow's no-web policy is active. Uses BENCHFLOW_AGENT_HOME for the
@@ -311,8 +310,13 @@ AGENTS: dict[str, AgentConfig] = {
         name="claude-agent-acp",
         description="Claude Code via ACP (Anthropic's Agent Client Protocol)",
         skill_paths=["$HOME/.claude/skills"],
+        # Pinned to 0.40.0: the config-option wiring below (set_config_option +
+        # the "model"/"effort" ids) targets this version's ACP protocol (sdk
+        # 0.24, which dropped session/set_model). The option ids are coupled to
+        # this pin — re-verify them when bumping. runtime.py uses
+        # capability-first dispatch for the rest of the family.
         install_cmd=_js_agent_install(
-            "claude-agent-acp", "@agentclientprotocol/claude-agent-acp"
+            "claude-agent-acp", "@agentclientprotocol/claude-agent-acp@0.40.0"
         ),
         launch_cmd=_js_agent_launch("claude-agent-acp"),
         protocol="acp",
@@ -339,6 +343,9 @@ AGENTS: dict[str, AgentConfig] = {
             'if t not in d["permissions"]["deny"]]',
         ),
         disallow_web_tools_owned_paths=["$HOME/.claude"],
+        supports_acp_set_model=False,
+        acp_model_config_id="model",
+        acp_effort_config_id="effort",
     ),
     "pi-acp": AgentConfig(
         name="pi-acp",
@@ -388,7 +395,17 @@ AGENTS: dict[str, AgentConfig] = {
         name="codex-acp",
         description="OpenAI Codex agent via ACP",
         skill_paths=["$HOME/.agents/skills"],
-        install_cmd=_js_agent_install("codex-acp", "@agentclientprotocol/codex-acp"),
+        # Pinned for reproducibility: an unpinned @agentclientprotocol install
+        # floats to latest and can silently break agent activation when the ACP
+        # protocol changes (claude-agent-acp above hit exactly this — sdk 0.24
+        # dropped session/set_model). 0.0.45 ships sdk 0.22.x, which still
+        # implements session/set_model. If a future bump advertises a model
+        # config option instead, runtime.py's capability-first dispatch routes
+        # the model through that option — but re-verify model selection when
+        # bumping this pin.
+        install_cmd=_js_agent_install(
+            "codex-acp", "@agentclientprotocol/codex-acp@0.0.45"
+        ),
         launch_cmd=_js_agent_launch(
             "codex-acp", "${OPENAI_BASE_URL:+-c openai_base_url=$OPENAI_BASE_URL}"
         ),
@@ -550,16 +567,6 @@ AGENTS: dict[str, AgentConfig] = {
             '    export PATH="$HOME/.local/bin:$PATH"; '
             "  fi && "
             "uv tool install --force --refresh "
-            "--with 'boto3>=1.40' "
-            # Pin litellm to the prerelease carrying the Bedrock adaptive-thinking
-            # effort + output_config path (absent from stable 1.86.x), required for
-            # Claude Opus 4.8+. NOTE: this is a DELIBERATE, OpenHands-wide litellm
-            # bump — it changes the litellm version for every provider/model this
-            # OpenHands install talks to, not just Bedrock 4.8. The bundled shim is
-            # regex-gated and inert elsewhere, but the version itself is global.
-            # Revisit/drop once the fix ships in a stable litellm. See
-            # oh_bedrock_opus_patch.py.
-            "--with 'litellm==1.88.0rc1' "
             "--from 'git+https://github.com/OpenHands/OpenHands-CLI.git@main' "
             "openhands --python 3.12 && "
             "  uv tool list | grep -q '^openhands\\b' ) && "
@@ -570,40 +577,13 @@ AGENTS: dict[str, AgentConfig] = {
             "mkdir -p ~/.openhands && "
             'echo \'{"llm":{"model":"placeholder","api_key":"placeholder"}}\' '
             "> ~/.openhands/agent_settings.json && "
-            # Deploy the Bedrock Opus 4.8+ adaptive-thinking shim into the sandbox
-            # litellm, then BEHAVIORALLY self-test it. On Daytona (direct Bedrock,
-            # no host proxy) this shim is the ONLY mechanism, so a silent deploy
-            # failure would regress Claude 4.8 thinking to the rejected legacy
-            # shape. The install stays non-fatal (other providers must still
-            # install) but emits a distinct ACTIVE / NOT-active marker so a failure
-            # is visible instead of swallowed. Regex-gated => a no-op for non-4.8.
-            '( SP="$(ls -d "$(uv tool dir)"/openhands/lib/python*/site-packages '
-            '2>/dev/null | head -1)"; '
-            '[ -n "$SP" ] && '
-            f"echo '{_OH_BEDROCK_OPUS_SHIM_B64}' | base64 -d "
-            '> "$SP/oh_bedrock_opus_patch.py" && '
-            "printf 'import oh_bedrock_opus_patch\\n' "
-            '> "$SP/zz_oh_bedrock_opus_patch.pth" '
-            "|| echo 'benchflow: opus-4.8 bedrock thinking shim NOT deployed' >&2; "
-            # The .pth auto-imports the shim at interpreter startup, so the venv
-            # python must now classify a regional 4.8 id as adaptive-thinking.
-            'PY="$(uv tool dir)/openhands/bin/python"; '
-            '[ -x "$PY" ] && "$PY" -c '
-            "'import sys; from litellm.llms.anthropic.chat.transformation "
-            "import AnthropicConfig as C; "
-            "sys.exit(0 if C._is_adaptive_thinking_model"
-            '("us.anthropic.claude-opus-4-8") else 1)\' 2>/dev/null '
-            "&& echo 'benchflow: opus-4.8 bedrock thinking shim ACTIVE' >&2 "
-            "|| echo 'benchflow: opus-4.8 bedrock thinking shim NOT active"
-            " (Daytona Bedrock 4.8 thinking will regress)' >&2; "
-            "true ) && "
             "command -v openhands >/dev/null 2>&1"
         ),
         launch_cmd=(
             'export PATH="$HOME/.local/bin:$PATH" && '
             "mkdir -p ~/.openhands && "
-            # Write llm settings including base_url so the BenchFlow usage
-            # proxy (LLM_BASE_URL) is honored. OpenHands' --override-with-envs
+            # Write llm settings including base_url so the BenchFlow LiteLLM
+            # gateway (LLM_BASE_URL) is honored. OpenHands' --override-with-envs
             # does not reliably apply base_url; it is omitted when unset.
             '{ printf \'{"llm":{"model":"%s","api_key":"%s"\' '
             '"$LLM_MODEL" "$LLM_API_KEY"; '
@@ -813,6 +793,8 @@ def _acpx_wrap(config: AgentConfig) -> AgentConfig:
         acp_model_format=config.acp_model_format,
         subscription_auth=config.subscription_auth,
         supports_acp_set_model=config.supports_acp_set_model,
+        acp_model_config_id=config.acp_model_config_id,
+        acp_effort_config_id=config.acp_effort_config_id,
         disallow_web_tools_setup_cmd=config.disallow_web_tools_setup_cmd,
         disallow_web_tools_owned_paths=config.disallow_web_tools_owned_paths,
         disallow_web_tools_launch_suffix=config.disallow_web_tools_launch_suffix,
@@ -917,6 +899,8 @@ def register_agent(
     subscription_auth: SubscriptionAuth | None = None,
     acp_model_format: str = "bare",
     supports_acp_set_model: bool = True,
+    acp_model_config_id: str = "",
+    acp_effort_config_id: str = "",
     disallow_web_tools_setup_cmd: str = "",
     disallow_web_tools_owned_paths: list[str] | None = None,
     disallow_web_tools_launch_suffix: str = "",
@@ -953,6 +937,8 @@ def register_agent(
         subscription_auth=subscription_auth,
         acp_model_format=acp_model_format,
         supports_acp_set_model=supports_acp_set_model,
+        acp_model_config_id=acp_model_config_id,
+        acp_effort_config_id=acp_effort_config_id,
         disallow_web_tools_setup_cmd=disallow_web_tools_setup_cmd,
         disallow_web_tools_owned_paths=disallow_web_tools_owned_paths or [],
         disallow_web_tools_launch_suffix=disallow_web_tools_launch_suffix,

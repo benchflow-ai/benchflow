@@ -17,11 +17,13 @@ from benchflow._dotenv import load_dotenv_env
 from benchflow._utils.config import (
     DEFAULT_AGENT_IDLE_TIMEOUT_SEC,
     normalize_agent_idle_timeout,
+    normalize_reasoning_effort,
     normalize_sandbox_user,
 )
 from benchflow.agents.registry import parse_agent_spec
 from benchflow.cli.trace_import import register_tasks_generate
 from benchflow.evaluation import DEFAULT_AGENT, effective_model
+from benchflow.skill_policy import SKILL_MODE_NO_SKILL
 from benchflow.usage_tracking import UsageTrackingConfig
 
 # Show progress messages (logger.info) from benchflow internals by default.
@@ -112,32 +114,13 @@ def _normalize_eval_agent_or_exit(agent_spec: str) -> str:
     return canonical_agent
 
 
-def _ensure_daytona_anyio_compat() -> None:
-    """Patch the anyio symbol that Daytona 0.176 imports on newer anyio."""
-    try:
-        import anyio
-    except ImportError:
-        return
-
-    if hasattr(anyio, "AsyncContextManagerMixin"):
-        return
-
-    class _AsyncContextManagerMixin:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *args: object) -> None:
-            aclose = getattr(self, "aclose", None)
-            if aclose is not None:
-                await aclose()
-
-    vars(anyio)["AsyncContextManagerMixin"] = _AsyncContextManagerMixin
-
-
 def _daytona_client_or_exit():
-    _ensure_daytona_anyio_compat()
+    # Canonical sync-client bootstrap (anyio compat + client build) lives in
+    # benchflow.sandbox.daytona; reuse it instead of re-deriving it here.
+    from benchflow.sandbox.daytona import build_sync_client
+
     try:
-        from daytona import Daytona
+        return build_sync_client()
     except ModuleNotFoundError as exc:
         if exc.name == "daytona":
             console.print(
@@ -150,7 +133,6 @@ def _daytona_client_or_exit():
     except Exception as exc:
         console.print(f"[red]daytona SDK import failed: {exc}[/red]")
         raise typer.Exit(1) from None
-    return Daytona()
 
 
 def _cleanup_daytona_sandboxes(dry_run: bool, max_age_minutes: int) -> None:
@@ -238,6 +220,12 @@ def job(
         Path | None,
         typer.Option("--skills-dir", help="Skills directory to deploy into sandbox"),
     ] = None,
+    skill_mode: Annotated[
+        str,
+        typer.Option(
+            "--skill-mode", help="Skill mode: no-skill, with-skill, or self-gen"
+        ),
+    ] = SKILL_MODE_NO_SKILL,
 ) -> None:
     """Run all tasks in a directory with concurrency and retries.
 
@@ -258,6 +246,7 @@ def job(
                 concurrency=concurrency,
                 retry=RetryConfig(max_retries=max_retries),
                 skills_dir=str(skills_dir) if skills_dir else None,
+                skill_mode=skill_mode,
             ),
         )
     else:
@@ -408,6 +397,12 @@ def eval(
         str,
         typer.Option("--jobs-dir", help="Output directory"),
     ] = "jobs",
+    skill_mode: Annotated[
+        str,
+        typer.Option(
+            "--skill-mode", help="Skill mode: no-skill, with-skill, or self-gen"
+        ),
+    ] = SKILL_MODE_NO_SKILL,
 ) -> None:
     """Evaluate a skill against multiple tasks.
 
@@ -434,6 +429,7 @@ def eval(
             environment=environment,
             concurrency=concurrency,
             skills_dir=effective_skills,
+            skill_mode=skill_mode,
         ),
     )
 
@@ -909,6 +905,13 @@ def eval_create(
         str | None,
         typer.Option("--model", help="Model"),
     ] = None,
+    reasoning_effort: Annotated[
+        str | None,
+        typer.Option(
+            "--reasoning-effort",
+            help="Agent reasoning/thinking effort when the agent exposes one (e.g. max)",
+        ),
+    ] = None,
     environment: Annotated[
         str | None,
         typer.Option("--sandbox", help="Sandbox: docker, daytona, or modal"),
@@ -1010,9 +1013,9 @@ def eval_create(
         str,
         typer.Option(
             "--skill-mode",
-            help="Skill mode: default or self-gen",
+            help="Skill mode: no-skill, with-skill, or self-gen",
         ),
-    ] = "default",
+    ] = SKILL_MODE_NO_SKILL,
     skill_creator_dir: Annotated[
         Path | None,
         typer.Option(
@@ -1101,6 +1104,13 @@ def eval_create(
             f"[red]Invalid --agent-idle-timeout {agent_idle_timeout!r}: {exc}[/red]"
         )
         raise typer.Exit(1) from None
+    try:
+        eval_reasoning_effort = normalize_reasoning_effort(reasoning_effort)
+    except ValueError as exc:
+        console.print(
+            f"[red]Invalid --reasoning-effort {reasoning_effort!r}: {exc}[/red]"
+        )
+        raise typer.Exit(1) from None
     output_jobs_dir = jobs_dir or "jobs"
 
     # Resolve the optional Environment-plane manifest once and reuse across
@@ -1170,6 +1180,8 @@ def eval_create(
             j._config.model = effective_model(j._config.agent, model)
         else:
             j._config.model = effective_model(j._config.agent, j._config.model)
+        if reasoning_effort is not None:
+            j._config.reasoning_effort = eval_reasoning_effort
         if environment is not None:
             j._config.environment = eval_environment
         j._config.agent_env = {**j._config.agent_env, **parsed_env}
@@ -1297,6 +1309,7 @@ def eval_create(
             EvaluationConfig(
                 agent=eval_agent,
                 model=eff_model,
+                reasoning_effort=eval_reasoning_effort,
                 environment=eval_environment,
                 concurrency=eval_concurrency,
                 build_concurrency=build_concurrency,
@@ -1328,6 +1341,7 @@ def eval_create(
             EvaluationConfig(
                 agent=eval_agent,
                 model=eff_model,
+                reasoning_effort=eval_reasoning_effort,
                 environment=eval_environment,
                 concurrency=eval_concurrency,
                 build_concurrency=build_concurrency,

@@ -12,6 +12,7 @@ dependencies = [
     "pydantic>=2.7",
     "pyyaml>=6.0",
     "rich>=13.0",
+    "litellm[proxy]==1.88.0rc1",
     "tomli-w>=1.0",
     "typer>=0.9",
 ]
@@ -45,9 +46,11 @@ dev = [
 ]
 sandbox-daytona = [
     # >=0.183: list() returns an auto-paginating Iterator[Sandbox] (the older
-    # paged list(page=, limit=) -> .items API was removed), and 0.176's broken
-    # top-level `Daytona` export is fixed.
-    "daytona>=0.183.0",
+    # paged list(page=, limit=) -> .items API was removed).
+    # >=0.184: the top-level sync `Daytona` export is present (0.176-0.183 only
+    # shipped `AsyncDaytona`); the dashboard's daytona_status.snapshot() uses the
+    # sync client, so this floor is required for that panel to import.
+    "daytona>=0.184.0",
     "tenacity>=8.0",
 ]
 sandbox-modal = [
@@ -157,6 +160,5 @@ exclude = [
     "src/benchflow/rewards/llm.py",
     "src/benchflow/rewards/file_readers.py",
     "src/benchflow/rewards/rubric_config.py",
-    "src/benchflow/providers/bedrock_runtime.py",
     "src/benchflow/experimental/mcp/reviewer_server.py",
 ]

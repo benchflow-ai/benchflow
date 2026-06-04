@@ -300,6 +300,7 @@ class ACPClient:
         session_id = result.get("sessionId", "default")
         self._session = ACPSession(session_id)
         self._session.model_state = result.get("models")
+        self._session.config_options = result.get("configOptions") or []
         if self._initialize_result:
             self._session.agent_info = self._initialize_result.agent_info
             self._session.agent_capabilities = (
@@ -316,6 +317,7 @@ class ACPClient:
         loaded_id = result.get("sessionId", session_id)
         self._session = ACPSession(loaded_id)
         self._session.model_state = result.get("models")
+        self._session.config_options = result.get("configOptions") or []
         if self._initialize_result:
             self._session.agent_info = self._initialize_result.agent_info
             self._session.agent_capabilities = (
@@ -347,6 +349,20 @@ class ACPClient:
             "modelId": model_id,
         }
         return await self._send_request("session/set_model", params)
+
+    async def set_config_option(self, config_id: str, value: str) -> dict:
+        """Set a session configuration option."""
+        if not self._session:
+            raise RuntimeError("No active session — call session_new() first")
+        params = {
+            "sessionId": self._session.session_id,
+            "configId": config_id,
+            "value": value,
+        }
+        result = await self._send_request("session/set_config_option", params)
+        if "configOptions" in result:
+            self._session.config_options = result.get("configOptions") or []
+        return result
 
     async def prompt(self, text: str) -> PromptResult:
         """Send a prompt to the agent and wait for completion."""
