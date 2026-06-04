@@ -908,11 +908,11 @@ class Evaluation:
             self._on_result(td.name, result)
 
     def _preflight_usage_tracking(self) -> None:
-        from benchflow.providers.runtime import validate_usage_proxy_preconditions
+        from benchflow.providers.runtime import validate_litellm_preconditions
 
         cfg = self._config
         usage = cfg.usage_tracking.with_env_defaults()
-        failure = validate_usage_proxy_preconditions(
+        failure = validate_litellm_preconditions(
             usage,
             environment=cfg.environment,
             model=cfg.model,

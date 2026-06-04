@@ -1,10 +1,10 @@
 """Optional real-provider smoke test for provider usage telemetry.
 
 Run explicitly with Docker:
-    BENCHFLOW_RUN_TELEMETRY_SMOKE=1 uv run pytest tests/test_usage_proxy_smoke.py -q
+    BENCHFLOW_RUN_TELEMETRY_SMOKE=1 uv run pytest tests/test_litellm_smoke.py -q
 
 Run explicitly with Daytona:
-    BENCHFLOW_RUN_DAYTONA_TELEMETRY_SMOKE=1 uv run pytest tests/test_usage_proxy_smoke.py -q
+    BENCHFLOW_RUN_DAYTONA_TELEMETRY_SMOKE=1 uv run pytest tests/test_litellm_smoke.py -q
 """
 
 from __future__ import annotations

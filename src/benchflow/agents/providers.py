@@ -198,7 +198,7 @@ PROVIDERS: dict[str, ProviderConfig] = {
     ),
     "aws-bedrock": ProviderConfig(
         name="aws-bedrock",
-        base_url="",  # local Bedrock proxy supplies the runtime URL later
+        base_url="",  # LiteLLM supplies the runtime URL later
         api_protocol="openai-responses",
         auth_type="aws",
         endpoints={

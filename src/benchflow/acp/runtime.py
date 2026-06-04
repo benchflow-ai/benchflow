@@ -189,13 +189,15 @@ def _should_skip_acp_set_model(
         return False
     if not agent_cfg.supports_acp_set_model:
         return True
+    if agent_env.get("BENCHFLOW_LITELLM_MODEL_VIA_ENV") in {"1", "true", "True"}:
+        return True
+    if agent_env.get("BENCHFLOW_LITELLM_MODEL_ALIAS"):
+        return False
     provider = find_provider(model)
     if provider is None:
         return False
     _provider_name, provider_cfg = provider
     if provider_cfg.auth_type != "aws":
-        return False
-    if agent_env.get("CLAUDE_CODE_USE_BEDROCK") in {"1", "true", "True"}:
         return False
     mapped_model_env = agent_cfg.env_mapping.get("BENCHFLOW_PROVIDER_MODEL")
     if not mapped_model_env:
@@ -208,6 +210,9 @@ def _should_skip_acp_set_model(
 
 def _resolve_acp_model_input(agent: str, model: str, agent_env: dict[str, str]) -> str:
     """Pick the model string that should be sent through ACP set_model."""
+    litellm_alias = agent_env.get("BENCHFLOW_LITELLM_MODEL_ALIAS")
+    if litellm_alias:
+        return litellm_alias
     agent_cfg = AGENTS.get(agent)
     if not agent_cfg:
         return model

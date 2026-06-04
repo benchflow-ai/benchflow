@@ -1503,18 +1503,8 @@ class Rollout:
 
         (
             self._agent_env,
-            self._provider_runtime,
-        ) = await self._planes.ensure_bedrock_proxy_runtime(
-            agent=cfg.primary_agent,
-            agent_env=self._agent_env,
-            model=cfg.primary_model,
-            runtime=getattr(self, "_provider_runtime", None),
-            environment=cfg.environment,
-        )
-        (
-            self._agent_env,
             self._usage_runtime,
-        ) = await self._planes.ensure_usage_proxy_runtime(
+        ) = await self._planes.ensure_litellm_runtime(
             agent=cfg.primary_agent,
             agent_env=self._agent_env,
             model=cfg.primary_model,
@@ -1985,23 +1975,15 @@ class Rollout:
                 await self._environment.teardown()
             self._environment = None
 
-        if self._env:
-            try:
-                await self._planes.stop_provider_runtime(
-                    getattr(self, "_provider_runtime", None)
-                )
-                self._provider_runtime = None
-            except Exception as e:
-                logger.warning(f"Provider runtime stop failed: {e}")
+        if self._env and not getattr(self, "_env_externally_owned", False):
             # An externally-owned sandbox (use_prebuilt_env) belongs to the
             # caller — leave it running so they can reuse it or stop it
             # themselves. #388. getattr() keeps tests that bypass __init__
             # via Rollout.__new__() working.
-            if not getattr(self, "_env_externally_owned", False):
-                try:
-                    await self._env.stop(delete=True)
-                except Exception as e:
-                    logger.warning(f"Cleanup failed: {e}")
+            try:
+                await self._env.stop(delete=True)
+            except Exception as e:
+                logger.warning(f"Cleanup failed: {e}")
 
         if hasattr(self, "_task_tmp") and self._task_tmp:
             import shutil
@@ -2420,17 +2402,7 @@ class Rollout:
             ),
             disallow=disallow_web_tools,
         )
-        (
-            agent_env,
-            self._provider_runtime,
-        ) = await self._planes.ensure_bedrock_proxy_runtime(
-            agent=role.agent,
-            agent_env=agent_env,
-            model=role.model,
-            runtime=getattr(self, "_provider_runtime", None),
-            environment=cfg.environment,
-        )
-        agent_env, self._usage_runtime = await self._planes.ensure_usage_proxy_runtime(
+        agent_env, self._usage_runtime = await self._planes.ensure_litellm_runtime(
             agent=role.agent,
             agent_env=agent_env,
             model=role.model,

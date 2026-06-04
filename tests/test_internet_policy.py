@@ -23,10 +23,7 @@ def _wire_fake_planes(trial: Rollout) -> MagicMock:
         f"{agent} --no-web" if disallow_web_tools else agent
     )
     planes.resolve_agent_env.side_effect = lambda _agent, _model, env: env or {}
-    planes.ensure_bedrock_proxy_runtime = AsyncMock(
-        side_effect=lambda **kwargs: (kwargs["agent_env"], None)
-    )
-    planes.ensure_usage_proxy_runtime = AsyncMock(
+    planes.ensure_litellm_runtime = AsyncMock(
         side_effect=lambda **kwargs: (kwargs["agent_env"], None)
     )
     planes.install_agent = AsyncMock(return_value=MagicMock())

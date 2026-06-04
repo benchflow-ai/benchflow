@@ -121,7 +121,7 @@ When mounting skills, the recommended docs default is
 `--skills-dir` is registered with each agent and how the nudge modes differ.
 
 Daytona batch runs collect provider token/cost telemetry by default with a
-sandbox-local proxy. Use `--usage-tracking required` when missing telemetry
+sandbox-local LiteLLM gateway. Use `--usage-tracking required` when missing telemetry
 should fail the rollout, or `--usage-tracking off` for recovery runs that should
 leave provider traffic untouched.
 

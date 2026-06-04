@@ -1,0 +1,891 @@
+"""LiteLLM proxy runtime orchestration for host and sandbox runs."""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import json
+import logging
+import os
+import secrets
+import shlex
+import shutil
+import socket
+import subprocess
+import sys
+import tempfile
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+from uuid import uuid4
+
+import httpx
+import yaml
+
+from benchflow.agents.codex_config import apply_codex_provider_config
+from benchflow.agents.registry import AGENTS
+from benchflow.providers.litellm_config import (
+    LITELLM_MASTER_KEY_ENV,
+    LITELLM_MODEL_ALIAS_ENV,
+    LITELLM_MODEL_VIA_ENV,
+    LiteLLMRoute,
+    litellm_proxy_config,
+    resolve_litellm_route,
+)
+from benchflow.providers.litellm_logging import (
+    callback_module_source,
+    extract_usage_from_trajectory,
+    trajectory_from_litellm_callback_log,
+    usage_unavailable,
+)
+from benchflow.trajectories.types import Trajectory
+from benchflow.usage_tracking import UsageTrackingConfig
+
+logger = logging.getLogger(__name__)
+
+LITELLM_VERSION_SPEC = "litellm[proxy]==1.88.0rc1"
+LITELLM_SANDBOX_ROOT = "/tmp/benchflow-litellm"
+_CALLBACK_MODULE = "benchflow_litellm_callback"
+_PATCH_MODULE = "benchflow_litellm_bedrock_patch"
+
+
+@dataclass(frozen=True)
+class LiteLLMEndpoint:
+    """Endpoint visible to the agent plus host-local endpoint for health checks."""
+
+    agent_base_url: str
+    local_base_url: str
+
+
+class LiteLLMProcess:
+    """Common interface for a running LiteLLM proxy."""
+
+    route: LiteLLMRoute
+    trajectory: Trajectory | None
+
+    @property
+    def base_url(self) -> str:
+        raise NotImplementedError
+
+    async def stop(self) -> None:
+        raise NotImplementedError
+
+    async def is_running(self) -> bool:
+        raise NotImplementedError
+
+
+class HostLiteLLMProcess(LiteLLMProcess):
+    def __init__(
+        self,
+        *,
+        route: LiteLLMRoute,
+        process: subprocess.Popen[bytes],
+        runtime_dir: Path,
+        endpoint: LiteLLMEndpoint,
+        log_path: Path,
+        stdout_path: Path,
+        stderr_path: Path,
+        session_id: str,
+        agent_name: str,
+    ) -> None:
+        self.route = route
+        self.process = process
+        self.runtime_dir = runtime_dir
+        self.endpoint = endpoint
+        self.log_path = log_path
+        self.stdout_path = stdout_path
+        self.stderr_path = stderr_path
+        self.session_id = session_id
+        self.agent_name = agent_name
+        self.trajectory: Trajectory | None = None
+
+    @property
+    def base_url(self) -> str:
+        return self.endpoint.agent_base_url
+
+    async def is_running(self) -> bool:
+        return self.process.poll() is None
+
+    async def stop(self) -> None:
+        await _wait_for_callback_flush()
+        self._load_callback_log()
+        if self.process.poll() is None:
+            self.process.terminate()
+            try:
+                await asyncio.to_thread(self.process.wait, 10)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                await asyncio.to_thread(self.process.wait, 10)
+        self._load_callback_log()
+        with contextlib.suppress(Exception):
+            import shutil
+
+            shutil.rmtree(self.runtime_dir, ignore_errors=True)
+
+    def _load_callback_log(self) -> None:
+        if not self.log_path.exists():
+            self.trajectory = Trajectory(
+                session_id=self.session_id,
+                agent_name=self.agent_name,
+            )
+            return
+        self.trajectory = trajectory_from_litellm_callback_log(
+            self.log_path.read_text(),
+            session_id=self.session_id,
+            agent_name=self.agent_name,
+        )
+
+    def log_tail(self) -> str:
+        chunks: list[str] = []
+        for label, path in (("stdout", self.stdout_path), ("stderr", self.stderr_path)):
+            with contextlib.suppress(Exception):
+                text = path.read_text()[-4000:]
+                if text.strip():
+                    chunks.append(f"{label}: {text.strip()}")
+        return "\n".join(chunks)
+
+
+class SandboxLiteLLMProcess(LiteLLMProcess):
+    def __init__(
+        self,
+        *,
+        sandbox: Any,
+        route: LiteLLMRoute,
+        runtime_dir: str,
+        endpoint: LiteLLMEndpoint,
+        log_path: str,
+        pid_path: str,
+        stdout_path: str,
+        stderr_path: str,
+        session_id: str,
+        agent_name: str,
+    ) -> None:
+        self.sandbox = sandbox
+        self.route = route
+        self.runtime_dir = runtime_dir
+        self.endpoint = endpoint
+        self.log_path = log_path
+        self.pid_path = pid_path
+        self.stdout_path = stdout_path
+        self.stderr_path = stderr_path
+        self.session_id = session_id
+        self.agent_name = agent_name
+        self.trajectory: Trajectory | None = None
+
+    @property
+    def base_url(self) -> str:
+        return self.endpoint.agent_base_url
+
+    async def is_running(self) -> bool:
+        result = await self.sandbox.exec(
+            (
+                f"if [ -s {shlex.quote(self.pid_path)} ] && "
+                f"kill -0 $(cat {shlex.quote(self.pid_path)}) 2>/dev/null; "
+                "then echo yes; else echo no; fi"
+            ),
+            timeout_sec=5,
+        )
+        return result.return_code == 0 and (result.stdout or "").strip() == "yes"
+
+    async def stop(self) -> None:
+        await _wait_for_callback_flush()
+        await self._load_callback_log()
+        with contextlib.suppress(Exception):
+            await self.sandbox.exec(
+                (
+                    f"if [ -s {shlex.quote(self.pid_path)} ]; then "
+                    f"kill -TERM $(cat {shlex.quote(self.pid_path)}) 2>/dev/null || true; "
+                    "fi"
+                ),
+                timeout_sec=10,
+            )
+        await self._load_callback_log()
+        with contextlib.suppress(Exception):
+            await self.sandbox.exec(f"rm -rf {shlex.quote(self.runtime_dir)}", timeout_sec=10)
+
+    async def _load_callback_log(self) -> None:
+        text = ""
+        download_file = getattr(self.sandbox, "download_file", None)
+        if download_file is not None:
+            with tempfile.NamedTemporaryFile("r", delete=False) as tmp:
+                tmp_path = Path(tmp.name)
+            try:
+                await download_file(self.log_path, tmp_path)
+                text = tmp_path.read_text()
+            except Exception as exc:
+                logger.debug("LiteLLM callback download failed: %s", exc)
+            finally:
+                tmp_path.unlink(missing_ok=True)
+        if not text:
+            result = await self.sandbox.exec(
+                f"cat {shlex.quote(self.log_path)} 2>/dev/null || true",
+                timeout_sec=15,
+            )
+            if result.return_code == 0:
+                text = result.stdout or ""
+        self.trajectory = trajectory_from_litellm_callback_log(
+            text,
+            session_id=self.session_id,
+            agent_name=self.agent_name,
+        )
+
+    async def log_tail(self) -> str:
+        chunks: list[str] = []
+        for label, path in (("stdout", self.stdout_path), ("stderr", self.stderr_path)):
+            with contextlib.suppress(Exception):
+                result = await self.sandbox.exec(
+                    f"tail -c 4000 {shlex.quote(path)} 2>/dev/null || true",
+                    timeout_sec=5,
+                )
+                text = (result.stdout or "").strip()
+                if text:
+                    chunks.append(f"{label}: {text}")
+        return "\n".join(chunks)
+
+
+def needs_litellm_runtime(agent: str, model: str | None) -> bool:
+    """True when an agent/model pair should be routed through LiteLLM."""
+    return bool(model and agent != "oracle")
+
+
+def _find_free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+async def _wait_for_callback_flush() -> None:
+    # LiteLLM invokes CustomLogger hooks asynchronously after returning the
+    # provider response. Give the event loop a small window to append the JSONL
+    # record before BenchFlow imports and tears down the proxy process.
+    await asyncio.sleep(1.0)
+
+
+def _host_litellm_executable() -> str:
+    sibling = Path(sys.executable).with_name("litellm")
+    if sibling.exists():
+        return str(sibling)
+    found = shutil.which("litellm")
+    if found:
+        return found
+    raise RuntimeError(
+        f"LiteLLM CLI is not installed. Install {LITELLM_VERSION_SPEC} in this environment."
+    )
+
+
+def _docker_host_address() -> str:
+    import platform
+
+    if platform.system().lower() != "linux":
+        return "host.docker.internal"
+    try:
+        out = subprocess.check_output(
+            [
+                "docker",
+                "network",
+                "inspect",
+                "bridge",
+                "--format",
+                "{{range .IPAM.Config}}{{.Gateway}}{{end}}",
+            ],
+            text=True,
+            timeout=10,
+        ).strip()
+        if out:
+            return out
+    except Exception:
+        logger.debug("Could not detect Docker bridge gateway", exc_info=True)
+    return "host.docker.internal"
+
+
+def _agent_endpoint_for_environment(port: int, environment: str) -> LiteLLMEndpoint:
+    local = f"http://127.0.0.1:{port}"
+    if environment == "docker":
+        agent = f"http://{_docker_host_address()}:{port}"
+    else:
+        agent = local
+    return LiteLLMEndpoint(agent_base_url=agent, local_base_url=local)
+
+
+def _write_runtime_files(
+    runtime_dir: Path,
+    *,
+    config: dict[str, object],
+) -> tuple[Path, Path, Path]:
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    callback_path = runtime_dir / f"{_CALLBACK_MODULE}.py"
+    patch_path = runtime_dir / f"{_PATCH_MODULE}.py"
+    sitecustomize_path = runtime_dir / "sitecustomize.py"
+    config_path = runtime_dir / "config.yaml"
+    callback_path.write_text(callback_module_source())
+    patch_source = (
+        Path(__file__).with_name("litellm_bedrock_patch.py").read_text()
+    )
+    patch_path.write_text(patch_source)
+    sitecustomize_path.write_text(f"import {_PATCH_MODULE}\n")
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+    return config_path, callback_path, patch_path
+
+
+async def _poll_host_health(process: HostLiteLLMProcess) -> None:
+    last_error = ""
+    for _ in range(120):
+        if process.process.poll() is not None:
+            raise RuntimeError(
+                "LiteLLM exited before becoming healthy.\n" + process.log_tail()
+            )
+        try:
+            async with httpx.AsyncClient(timeout=2.0) as client:
+                for path in ("/health/liveliness", "/health"):
+                    response = await client.get(process.endpoint.local_base_url + path)
+                    if response.status_code < 500:
+                        return
+        except Exception as exc:
+            last_error = str(exc)
+        await asyncio.sleep(0.25)
+    raise RuntimeError(
+        f"LiteLLM did not become healthy: {last_error}\n{process.log_tail()}"
+    )
+
+
+async def _start_host_litellm(
+    *,
+    route: LiteLLMRoute,
+    master_key: str,
+    agent_env: dict[str, str],
+    environment: str,
+    session_id: str,
+    agent_name: str,
+) -> HostLiteLLMProcess:
+    runtime_dir = Path(tempfile.mkdtemp(prefix="benchflow-litellm-"))
+    log_path = runtime_dir / "callback.jsonl"
+    stdout_path = runtime_dir / "stdout.log"
+    stderr_path = runtime_dir / "stderr.log"
+    port = _find_free_port()
+    config = litellm_proxy_config(route, master_key=master_key)
+    config_path, _, _ = _write_runtime_files(runtime_dir, config=config)
+    env = dict(os.environ)
+    env.update(agent_env)
+    env.update(
+        {
+            "PYTHONPATH": f"{runtime_dir}{os.pathsep}{env.get('PYTHONPATH', '')}",
+            "LITELLM_MASTER_KEY": master_key,
+            "BENCHFLOW_LITELLM_LOG_PATH": str(log_path),
+        }
+    )
+    stdout = stdout_path.open("ab")
+    stderr = stderr_path.open("ab")
+    try:
+        process = subprocess.Popen(
+            [
+                _host_litellm_executable(),
+                "--config",
+                str(config_path),
+                "--host",
+                "0.0.0.0",
+                "--port",
+                str(port),
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=stdout,
+            stderr=stderr,
+            env=env,
+        )
+    finally:
+        stdout.close()
+        stderr.close()
+    runner = HostLiteLLMProcess(
+        route=route,
+        process=process,
+        runtime_dir=runtime_dir,
+        endpoint=_agent_endpoint_for_environment(port, environment),
+        log_path=log_path,
+        stdout_path=stdout_path,
+        stderr_path=stderr_path,
+        session_id=session_id,
+        agent_name=agent_name,
+    )
+    await _poll_host_health(runner)
+    logger.info("LiteLLM proxy listening on %s", runner.base_url)
+    return runner
+
+
+def _sandbox_launcher_source() -> str:
+    return r'''
+from __future__ import annotations
+
+import json
+import os
+import socket
+import subprocess
+import sys
+
+cfg = json.loads(os.environ["BENCHFLOW_LITELLM_LAUNCH_CONFIG"])
+with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+    sock.bind(("127.0.0.1", 0))
+    port = int(sock.getsockname()[1])
+
+env = os.environ.copy()
+env.update(cfg["env"])
+stdout = open(cfg["stdout"], "ab")
+stderr = open(cfg["stderr"], "ab")
+cmd = [
+    cfg["litellm"],
+    "--config",
+    cfg["config"],
+    "--host",
+    "127.0.0.1",
+    "--port",
+    str(port),
+]
+proc = subprocess.Popen(
+    cmd,
+    stdin=subprocess.DEVNULL,
+    stdout=stdout,
+    stderr=stderr,
+    env=env,
+    start_new_session=True,
+)
+with open(cfg["pid"], "w", encoding="utf-8") as handle:
+    handle.write(str(proc.pid))
+with open(cfg["state"], "w", encoding="utf-8") as handle:
+    json.dump({"pid": proc.pid, "port": port}, handle)
+print(json.dumps({"pid": proc.pid, "port": port}))
+'''
+
+
+async def _upload_text(sandbox: Any, text: str, target_path: str, suffix: str) -> None:
+    with tempfile.NamedTemporaryFile("w", suffix=suffix, delete=False) as tmp:
+        tmp.write(text)
+        tmp_path = Path(tmp.name)
+    try:
+        await sandbox.upload_file(tmp_path, target_path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+async def _upload_runtime_files_to_sandbox(
+    sandbox: Any,
+    *,
+    runtime_dir: str,
+    config: dict[str, object],
+) -> dict[str, str]:
+    paths = {
+        "config": f"{runtime_dir}/config.yaml",
+        "callback": f"{runtime_dir}/{_CALLBACK_MODULE}.py",
+        "patch": f"{runtime_dir}/{_PATCH_MODULE}.py",
+        "sitecustomize": f"{runtime_dir}/sitecustomize.py",
+        "launcher": f"{runtime_dir}/launcher.py",
+        "stdout": f"{runtime_dir}/stdout.log",
+        "stderr": f"{runtime_dir}/stderr.log",
+        "log": f"{runtime_dir}/callback.jsonl",
+        "pid": f"{runtime_dir}/litellm.pid",
+        "state": f"{runtime_dir}/state.json",
+        "venv": f"{runtime_dir}/venv",
+    }
+    result = await sandbox.exec(f"mkdir -p {shlex.quote(runtime_dir)}", timeout_sec=20)
+    if result.return_code != 0:
+        raise RuntimeError(_exec_details("prepare LiteLLM runtime directory", result))
+    await _upload_text(sandbox, yaml.safe_dump(config, sort_keys=False), paths["config"], ".yaml")
+    await _upload_text(sandbox, callback_module_source(), paths["callback"], ".py")
+    await _upload_text(
+        sandbox,
+        Path(__file__).with_name("litellm_bedrock_patch.py").read_text(),
+        paths["patch"],
+        ".py",
+    )
+    await _upload_text(sandbox, f"import {_PATCH_MODULE}\n", paths["sitecustomize"], ".py")
+    await _upload_text(sandbox, _sandbox_launcher_source(), paths["launcher"], ".py")
+    return paths
+
+
+async def _ensure_sandbox_litellm(sandbox: Any, *, venv_dir: str) -> str:
+    command = f"""
+set -eu
+PY="$(command -v python3 || command -v python)"
+if [ ! -x {shlex.quote(venv_dir)}/bin/python ]; then
+  "$PY" -m venv {shlex.quote(venv_dir)} 2>/dev/null || (
+    "$PY" -m pip install --user -q virtualenv &&
+    "$PY" -m virtualenv {shlex.quote(venv_dir)}
+  )
+fi
+{shlex.quote(venv_dir)}/bin/python -m pip install -q --upgrade pip
+{shlex.quote(venv_dir)}/bin/python -m pip install -q '{LITELLM_VERSION_SPEC}' 'boto3>=1.40'
+{shlex.quote(venv_dir)}/bin/python - <<'PY'
+import litellm
+print(litellm.__version__ if hasattr(litellm, "__version__") else "ok")
+PY
+"""
+    result = await sandbox.exec(command, timeout_sec=600)
+    if result.return_code != 0:
+        raise RuntimeError(_exec_details("install LiteLLM in sandbox", result))
+    return f"{venv_dir}/bin/python"
+
+
+async def _wait_for_sandbox_state(
+    sandbox: Any,
+    *,
+    state_path: str,
+    stderr_path: str,
+) -> dict[str, Any]:
+    last_output = ""
+    for _ in range(120):
+        result = await sandbox.exec(
+            f"cat {shlex.quote(state_path)} 2>/dev/null || true",
+            timeout_sec=5,
+        )
+        last_output = (result.stdout or "").strip()
+        if last_output:
+            try:
+                state = json.loads(last_output)
+                if int(state.get("port") or 0) > 0:
+                    return state
+            except (TypeError, ValueError, json.JSONDecodeError):
+                pass
+        await asyncio.sleep(0.25)
+    stderr = await sandbox.exec(
+        f"tail -c 4000 {shlex.quote(stderr_path)} 2>/dev/null || true",
+        timeout_sec=5,
+    )
+    raise RuntimeError(
+        "sandbox LiteLLM did not publish its state: "
+        f"{last_output or (stderr.stdout or '').strip()}"
+    )
+
+
+async def _poll_sandbox_health(sandbox: Any, *, python: str, port: int, stderr_path: str) -> None:
+    probe = (
+        f"{shlex.quote(python)} - <<'PY'\n"
+        "import sys, urllib.request\n"
+        f"url='http://127.0.0.1:{port}/health/liveliness'\n"
+        "try:\n"
+        "    urllib.request.urlopen(url, timeout=2).read()\n"
+        "except Exception:\n"
+        "    urllib.request.urlopen(url.replace('/health/liveliness','/health'), timeout=2).read()\n"
+        "PY"
+    )
+    for _ in range(120):
+        result = await sandbox.exec(probe, timeout_sec=5)
+        if result.return_code == 0:
+            return
+        await asyncio.sleep(0.25)
+    stderr = await sandbox.exec(
+        f"tail -c 4000 {shlex.quote(stderr_path)} 2>/dev/null || true",
+        timeout_sec=5,
+    )
+    raise RuntimeError(f"sandbox LiteLLM did not become healthy: {stderr.stdout or ''}")
+
+
+async def _start_sandbox_litellm(
+    *,
+    sandbox: Any,
+    route: LiteLLMRoute,
+    master_key: str,
+    agent_env: dict[str, str],
+    session_id: str,
+    agent_name: str,
+) -> SandboxLiteLLMProcess:
+    token = uuid4().hex[:16]
+    runtime_dir = f"{LITELLM_SANDBOX_ROOT}/{token}"
+    config = litellm_proxy_config(route, master_key=master_key)
+    paths = await _upload_runtime_files_to_sandbox(
+        sandbox,
+        runtime_dir=runtime_dir,
+        config=config,
+    )
+    python = await _ensure_sandbox_litellm(sandbox, venv_dir=paths["venv"])
+    env = dict(agent_env)
+    env.update(
+        {
+            "PYTHONPATH": f"{runtime_dir}:{env.get('PYTHONPATH', '')}",
+            "LITELLM_MASTER_KEY": master_key,
+            "BENCHFLOW_LITELLM_LOG_PATH": paths["log"],
+        }
+    )
+    launch_config = {
+        "python": python,
+        "litellm": f"{paths['venv']}/bin/litellm",
+        "config": paths["config"],
+        "stdout": paths["stdout"],
+        "stderr": paths["stderr"],
+        "pid": paths["pid"],
+        "state": paths["state"],
+        "env": env,
+    }
+    command = (
+        f"rm -f {shlex.quote(paths['state'])} {shlex.quote(paths['pid'])} "
+        f"{shlex.quote(paths['log'])} && "
+        f"BENCHFLOW_LITELLM_LAUNCH_CONFIG={shlex.quote(json.dumps(launch_config))} "
+        f"{shlex.quote(python)} {shlex.quote(paths['launcher'])}"
+    )
+    result = await sandbox.exec(command, timeout_sec=20)
+    if result.return_code != 0:
+        raise RuntimeError(_exec_details("start sandbox LiteLLM", result))
+    state = await _wait_for_sandbox_state(
+        sandbox,
+        state_path=paths["state"],
+        stderr_path=paths["stderr"],
+    )
+    port = int(state["port"])
+    await _poll_sandbox_health(
+        sandbox,
+        python=python,
+        port=port,
+        stderr_path=paths["stderr"],
+    )
+    endpoint = LiteLLMEndpoint(
+        agent_base_url=f"http://127.0.0.1:{port}",
+        local_base_url=f"http://127.0.0.1:{port}",
+    )
+    logger.info("Sandbox LiteLLM proxy listening on %s", endpoint.agent_base_url)
+    return SandboxLiteLLMProcess(
+        sandbox=sandbox,
+        route=route,
+        runtime_dir=runtime_dir,
+        endpoint=endpoint,
+        log_path=paths["log"],
+        pid_path=paths["pid"],
+        stdout_path=paths["stdout"],
+        stderr_path=paths["stderr"],
+        session_id=session_id,
+        agent_name=agent_name,
+    )
+
+
+def _exec_details(label: str, result: Any) -> str:
+    stdout = (getattr(result, "stdout", "") or "").strip()
+    stderr = (getattr(result, "stderr", "") or "").strip()
+    details = [f"{label} failed with exit code {getattr(result, 'return_code', '?')}"]
+    if stdout:
+        details.append(f"stdout: {stdout[:2000]}")
+    if stderr:
+        details.append(f"stderr: {stderr[:2000]}")
+    return "; ".join(details)
+
+
+def _missing_required_env(route: LiteLLMRoute, env: dict[str, str]) -> list[str]:
+    missing: list[str] = []
+    for key in route.required_env:
+        if key == "AWS_REGION" and (env.get("AWS_REGION") or env.get("AWS_DEFAULT_REGION")):
+            continue
+        if not env.get(key):
+            missing.append(key)
+    return missing
+
+
+def _apply_litellm_agent_env(
+    *,
+    agent: str,
+    agent_env: dict[str, str],
+    route: LiteLLMRoute,
+    base_url: str,
+    master_key: str,
+) -> dict[str, str]:
+    updated = dict(agent_env)
+    openai_base_url = f"{base_url.rstrip('/')}/v1"
+    updated.update(
+        {
+            "BENCHFLOW_PROVIDER_NAME": "litellm",
+            "BENCHFLOW_PROVIDER_BASE_URL": openai_base_url,
+            "BENCHFLOW_PROVIDER_API_KEY": master_key,
+            "BENCHFLOW_PROVIDER_MODEL": route.model_alias,
+            "BENCHFLOW_PROVIDER_PROTOCOL": "openai-completions",
+            LITELLM_MODEL_ALIAS_ENV: route.model_alias,
+            LITELLM_MASTER_KEY_ENV: master_key,
+        }
+    )
+    if agent == "codex-acp":
+        updated["OPENAI_BASE_URL"] = openai_base_url
+        updated["OPENAI_API_KEY"] = master_key
+        updated[LITELLM_MODEL_VIA_ENV] = "1"
+        apply_codex_provider_config(
+            updated,
+            base_url=openai_base_url,
+            model=route.model_alias,
+            provider_name="litellm",
+            strict=True,
+        )
+        return updated
+    if agent == "opencode":
+        updated["OPENAI_BASE_URL"] = openai_base_url
+        updated["OPENAI_API_KEY"] = master_key
+        return updated
+    if agent == "openhands":
+        updated["LLM_BASE_URL"] = openai_base_url
+        updated["LLM_API_KEY"] = master_key
+        updated["LLM_MODEL"] = f"openai/{route.model_alias}"
+        updated[LITELLM_MODEL_VIA_ENV] = "1"
+        return updated
+    if agent == "claude-agent-acp":
+        updated["ANTHROPIC_BASE_URL"] = base_url.rstrip("/")
+        updated["ANTHROPIC_AUTH_TOKEN"] = master_key
+        updated["ANTHROPIC_MODEL"] = route.model_alias
+        updated[LITELLM_MODEL_VIA_ENV] = "1"
+        for key in (
+            "CLAUDE_CODE_USE_BEDROCK",
+            "CLAUDE_CODE_SKIP_BEDROCK_AUTH",
+            "ANTHROPIC_BEDROCK_BASE_URL",
+        ):
+            updated.pop(key, None)
+        return updated
+    if agent == "pi-acp":
+        updated["BENCHFLOW_PROVIDER_PROTOCOL"] = "openai-completions"
+        updated["BENCHFLOW_PROVIDER_BASE_URL"] = openai_base_url
+        updated["BENCHFLOW_PROVIDER_API_KEY"] = master_key
+        updated["BENCHFLOW_PROVIDER_MODEL"] = route.model_alias
+        updated["BENCHFLOW_PROVIDER_NAME"] = "litellm"
+        return updated
+
+    agent_cfg = AGENTS.get(agent)
+    if agent_cfg and agent_cfg.env_mapping:
+        for src, dst in agent_cfg.env_mapping.items():
+            if src in updated:
+                updated[dst] = updated[src]
+    return updated
+
+
+async def ensure_litellm_runtime(
+    *,
+    agent: str,
+    agent_env: dict[str, str],
+    model: str | None,
+    runtime: Any | None,
+    environment: str,
+    session_id: str = "",
+    usage_tracking: UsageTrackingConfig | dict[str, Any] | str | None = None,
+    sandbox: Any | None = None,
+) -> tuple[dict[str, str], Any | None]:
+    """Start/reuse LiteLLM and rewrite the agent env to talk to it."""
+    if not needs_litellm_runtime(agent, model):
+        if runtime is not None:
+            await stop_litellm_runtime(runtime)
+        return agent_env, None
+    assert model is not None
+
+    usage_cfg = UsageTrackingConfig.coerce(usage_tracking).with_env_defaults()
+    route = resolve_litellm_route(model, agent_env)
+    missing = _missing_required_env(route, agent_env)
+    if missing:
+        if agent_env.get("_BENCHFLOW_SUBSCRIPTION_AUTH") and usage_cfg.mode != "required":
+            logger.info(
+                "Skipping LiteLLM for subscription-auth-only run; missing provider keys: %s",
+                ", ".join(missing),
+            )
+            return agent_env, None
+        raise RuntimeError(
+            f"LiteLLM route for model {model!r} requires {', '.join(missing)}. "
+            "Pass provider credentials via --agent-env/agent_env or define them in .env."
+        )
+
+    master_key = agent_env.get(LITELLM_MASTER_KEY_ENV) or f"sk-benchflow-{secrets.token_urlsafe(24)}"
+    config_key = f"{environment}:{route.config_key}:{agent}:{session_id}"
+    if runtime is not None and getattr(runtime, "kind", None) == "litellm":
+        server = getattr(runtime, "server", None)
+        if getattr(runtime, "config_key", None) == config_key and server is not None:
+            is_running = await server.is_running()
+            if is_running:
+                return (
+                    _apply_litellm_agent_env(
+                        agent=agent,
+                        agent_env=agent_env,
+                        route=route,
+                        base_url=runtime.base_url,
+                        master_key=getattr(runtime, "master_key", master_key),
+                    ),
+                    runtime,
+                )
+        await stop_litellm_runtime(runtime)
+
+    try:
+        if environment in {"daytona", "modal"}:
+            if sandbox is None:
+                raise RuntimeError("sandbox-local LiteLLM requires a sandbox handle")
+            server = await _start_sandbox_litellm(
+                sandbox=sandbox,
+                route=route,
+                master_key=master_key,
+                agent_env=agent_env,
+                session_id=session_id,
+                agent_name=agent,
+            )
+        else:
+            server = await _start_host_litellm(
+                route=route,
+                master_key=master_key,
+                agent_env=agent_env,
+                environment=environment,
+                session_id=session_id,
+                agent_name=agent,
+            )
+    except Exception:
+        if usage_cfg.mode == "required":
+            raise
+        raise
+
+    from benchflow.providers.runtime import ProviderRuntime
+
+    new_runtime = ProviderRuntime(
+        kind="litellm",
+        agent_base_url=server.base_url,
+        backend_model=route.upstream_model,
+        frontend_model=route.model_alias,
+        server=server,
+        config_key=config_key,
+        master_key=master_key,
+    )
+    return (
+        _apply_litellm_agent_env(
+            agent=agent,
+            agent_env=agent_env,
+            route=route,
+            base_url=new_runtime.base_url,
+            master_key=master_key,
+        ),
+        new_runtime,
+    )
+
+
+async def stop_litellm_runtime(runtime: Any | None) -> None:
+    if runtime is None:
+        return
+    server = getattr(runtime, "server", None)
+    if getattr(runtime, "kind", None) == "litellm" and server is not None:
+        await server.stop()
+
+
+def extract_usage(runtime: Any | None) -> dict[str, Any]:
+    if runtime is None or getattr(runtime, "kind", None) != "litellm":
+        return usage_unavailable()
+    server = getattr(runtime, "server", None)
+    trajectory = getattr(server, "trajectory", None)
+    return extract_usage_from_trajectory(
+        trajectory,
+        fallback_model=getattr(runtime, "backend_model", None),
+    )
+
+
+def validate_litellm_preconditions(
+    usage_cfg: UsageTrackingConfig,
+    *,
+    environment: str,
+    model: str | None,
+    disable_litellm: bool | None = None,
+) -> Any:
+    """Compatibility preflight hook used by evaluation-level usage checks."""
+    del environment
+    if disable_litellm:
+        return _PreconditionFailure(
+            skip_message="LiteLLM routing was disabled.",
+            required_message="usage_tracking='required' cannot run with LiteLLM disabled.",
+            log_level=logging.WARNING,
+        )
+    if usage_cfg.mode == "off" or not model:
+        return None
+    return None
+
+
+@dataclass(frozen=True)
+class _PreconditionFailure:
+    skip_message: str
+    required_message: str
+    log_level: int

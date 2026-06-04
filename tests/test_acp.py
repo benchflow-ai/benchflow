@@ -775,7 +775,7 @@ class TestConnectAcpModelSelection:
         mock_acp.set_model.assert_awaited_once_with("gpt-5.5[medium]")
 
     @pytest.mark.asyncio
-    async def test_claude_bedrock_sets_model_from_provider_mapping(self, tmp_path):
+    async def test_claude_litellm_env_owns_model_selection(self, tmp_path):
         from benchflow.acp.runtime import connect_acp
 
         mock_acp = self._make_mocks()
@@ -793,8 +793,9 @@ class TestConnectAcpModelSelection:
                 agent="claude-agent-acp",
                 agent_launch="claude-agent-acp",
                 agent_env={
-                    "CLAUDE_CODE_USE_BEDROCK": "1",
-                    "ANTHROPIC_MODEL": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+                    "BENCHFLOW_LITELLM_MODEL_ALIAS": "benchflow-bedrock-sonnet",
+                    "BENCHFLOW_LITELLM_MODEL_VIA_ENV": "1",
+                    "ANTHROPIC_MODEL": "benchflow-bedrock-sonnet",
                 },
                 sandbox_user=None,
                 model="aws-bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0",
@@ -803,9 +804,7 @@ class TestConnectAcpModelSelection:
                 agent_cwd="/app",
             )
 
-        mock_acp.set_model.assert_awaited_once_with(
-            "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
-        )
+        mock_acp.set_model.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_daytona_dind_uses_pty_transport(self, tmp_path):

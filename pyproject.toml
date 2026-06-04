@@ -12,6 +12,7 @@ dependencies = [
     "pydantic>=2.7",
     "pyyaml>=6.0",
     "rich>=13.0",
+    "litellm[proxy]==1.88.0rc1",
     "tomli-w>=1.0",
     "typer>=0.9",
 ]
@@ -157,6 +158,5 @@ exclude = [
     "src/benchflow/rewards/llm.py",
     "src/benchflow/rewards/file_readers.py",
     "src/benchflow/rewards/rubric_config.py",
-    "src/benchflow/providers/bedrock_runtime.py",
     "src/benchflow/experimental/mcp/reviewer_server.py",
 ]
