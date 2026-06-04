@@ -2052,6 +2052,13 @@ class Rollout:
             # the runtime reference below, and is read later by ACP-error
             # classification — for Daytona the trajectory is empty until here
             # (#546/#564).
+            #
+            # Coverage gap: only `self._usage_runtime` is scanned here. Bedrock
+            # auth failures flow through `self._provider_runtime`, whose server
+            # (BedrockProxyServer) exposes no `.trajectory`/`.exchanges`, so a
+            # fallback scan of it would always return None — useless, so it's
+            # not implemented. The direct-AWS-Bedrock case (remote sandbox,
+            # runtime=None) bypasses both proxies entirely and is out of scope.
             self._provider_auth_status_cached = _provider_auth_status_from_runtime(
                 usage_runtime
             )
@@ -2199,6 +2206,14 @@ class Rollout:
             # error lives in the usage-proxy trajectory, which Daytona's
             # SandboxUsageProxy only imports on stop() (#546/#564).
             pending_acp_error = e
+            # Set a provisional error so cleanup()'s
+            # _enforce_required_usage_tracking guard early-returns instead of
+            # logging a misleading "no provider token usage was captured"
+            # message — the agent failed with an ACP error, not a usage gap.
+            # The post-cleanup block below still unconditionally refines
+            # self._error to the provider_auth marker, so this is only a
+            # placeholder during cleanup.
+            self._error = str(e)
             logger.error(str(e))
         except Exception as e:
             self._error = str(e)
@@ -2612,7 +2627,11 @@ class Rollout:
             diag.sandbox_probe_traceback = traceback.format_exc()[-2000:]
 
     def _classify_acp_error(self, e: AgentProtocolError) -> str:
-        if "Invalid API key" in e.message:
+        # The base AgentProtocolError only annotates `message: str` without
+        # assigning it, so a base instance has no `.message` (AttributeError
+        # risk); ACPError subclasses do set it. Fall back to str(e) defensively.
+        message = getattr(e, "message", str(e))
+        if "Invalid API key" in message:
             from benchflow.agents.env import check_subscription_auth
             from benchflow.agents.registry import infer_env_key_for_model
 

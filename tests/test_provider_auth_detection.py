@@ -14,6 +14,9 @@ snapshot taken once captures are imported.
 """
 
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
 
 from benchflow.rollout import _provider_auth_status_from_runtime
 
@@ -83,3 +86,145 @@ def test_snapshot_after_late_capture_import():
     proxy.stop()
     # After import (what cleanup() now does before snapshotting): 401 visible.
     assert _provider_auth_status_from_runtime(proxy) == 401
+
+
+# ── Rollout-level run()/cleanup() ordering (PR #564 deeper review) ──
+
+
+def _auth_rollout(tmp_path, *, usage_source="unavailable"):
+    """Build a minimal real Rollout whose usage proxy carries a 401 but reports
+    no provider token usage — the exact shape of a provider-auth failure under
+    ``usage_tracking.mode == "required"`` (PR #564 / issue #546).
+
+    The FakeServer's proxy trajectory holds a single 401 exchange, so
+    cleanup()'s ``_provider_auth_status_from_runtime`` snapshot returns 401,
+    while ``extract_usage`` yields ``usage_source`` (default ``"unavailable"``)
+    so the required-usage enforcement path is reachable.
+    """
+    from benchflow.providers.runtime import ProviderRuntime
+    from benchflow.rollout import Rollout, RolloutConfig
+    from benchflow.usage_tracking import UsageTrackingConfig
+
+    class FakeServer:
+        trajectory = SimpleNamespace(
+            exchanges=[SimpleNamespace(response=SimpleNamespace(status_code=401))]
+        )
+
+        async def stop(self):
+            return None
+
+    rollout = Rollout.__new__(Rollout)
+    rollout._config = RolloutConfig(
+        task_path=tmp_path / "task",
+        usage_tracking=UsageTrackingConfig(mode="required"),
+    )
+    rollout._error = None
+    rollout._trajectory = []
+    rollout._acp_client = None
+    rollout._agent_launch = ""
+    rollout._env = SimpleNamespace(stop=AsyncMock())
+    rollout._environment = None
+    rollout._provider_runtime = None
+    rollout._provider_auth_status_cached = None
+    rollout._usage_runtime = ProviderRuntime(
+        kind="usage-proxy",
+        agent_base_url="http://host.docker.internal:32124",
+        backend_model="gpt-5.5",
+        server=FakeServer(),
+    )
+    rollout._planes = SimpleNamespace(
+        stop_provider_runtime=lambda runtime: runtime.server.stop(),
+        extract_usage=lambda runtime: {"usage_source": usage_source},
+    )
+    rollout._rollout_dir = tmp_path
+    return rollout
+
+
+def test_classify_acp_error_handles_base_error_without_message(tmp_path):
+    """Guards PR #564 / issue #546: a base ``AgentProtocolError`` (which only
+    annotates ``message: str`` and never assigns it) must not AttributeError in
+    ``_classify_acp_error``; the sanitized ``provider auth failed (HTTP 401)``
+    marker is still appended when a 401 snapshot is present.
+
+    FAILS if FIX 2 is reverted to reading ``e.message`` directly.
+    """
+    from benchflow.agents.errors import AgentProtocolError
+
+    rollout = _auth_rollout(tmp_path)
+    rollout._provider_auth_status_cached = 401
+
+    err = AgentProtocolError("ACP error -32603: Internal error")
+    assert not hasattr(err, "message")
+
+    classified = rollout._classify_acp_error(err)
+    assert classified == (
+        "ACP error -32603: Internal error | provider auth failed (HTTP 401)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_auth_failure_sets_provisional_error_before_cleanup(
+    tmp_path, monkeypatch
+):
+    """KEY guarding test for FIX 1 (PR #564 / issue #546).
+
+    Drives the real ``Rollout.run()`` ordering: install_agent raises an ACPError,
+    cleanup() runs ``_enforce_required_usage_tracking`` (usage mode required, no
+    provider usage captured), then the post-cleanup block refines self._error to
+    the provider_auth marker.
+
+    A spy wraps the real ``_classify_acp_error`` and records ``self._error`` at
+    the seam — after cleanup's enforcement, before refinement. With FIX 1 the
+    recorded value is the provisional ACP-error string (enforcement skipped);
+    without it the recorded value becomes the spurious "Token usage tracking is
+    required..." message, so this test FAILS if FIX 1 is reverted.
+    """
+    from benchflow.acp.client import ACPError
+
+    rollout = _auth_rollout(tmp_path, usage_source="unavailable")
+    # Lightweight RolloutResult path (no trial dir / _build_result needed).
+    rollout._rollout_dir = None
+
+    monkeypatch.setattr(rollout, "setup", AsyncMock())
+    monkeypatch.setattr(rollout, "start", AsyncMock())
+    monkeypatch.setattr(
+        rollout,
+        "install_agent",
+        AsyncMock(side_effect=ACPError(-32603, "Internal error")),
+    )
+
+    recorded = {}
+    real_classify = rollout._classify_acp_error
+
+    def spy_classify(e):
+        recorded["error_at_seam"] = rollout._error
+        return real_classify(e)
+
+    monkeypatch.setattr(rollout, "_classify_acp_error", spy_classify)
+
+    result = await rollout.run()
+
+    # Enforcement was skipped because run() set a provisional self._error — the
+    # seam value is the ACP-error string, NOT the spurious usage message.
+    assert recorded["error_at_seam"] == "ACP error -32603: Internal error"
+    assert result.error == (
+        "ACP error -32603: Internal error | provider auth failed (HTTP 401)"
+    )
+    assert rollout._provider_auth_status_cached == 401
+
+
+def test_enforcement_still_fires_when_no_error_and_usage_missing(tmp_path):
+    """Negative control for FIX 1 (PR #564 / issue #546): on a clean run with no
+    ACP error and no captured provider usage, the legitimate required-usage
+    enforcement message must STILL fire — the provisional-error guard only
+    suppresses it when an error is already set.
+    """
+    rollout = _auth_rollout(tmp_path, usage_source="unavailable")
+    rollout._usage_metrics = {"usage_source": "unavailable"}
+    rollout._error = None
+
+    rollout._enforce_required_usage_tracking()
+
+    assert rollout._error == (
+        "Token usage tracking is required, but no provider token usage was captured."
+    )
