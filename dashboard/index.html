@@ -1678,7 +1678,7 @@ function renderDaytona() {
   keyRow.innerHTML =
     `<label>Daytona API key&nbsp;<input id="dy-key" type="password" placeholder="dtn_…" value="${esc(k)}" style="width:340px;padding:4px 8px"></label>` +
     `<button id="dy-save" style="padding:4px 12px;cursor:pointer">Save</button>` +
-    `<span id="dy-keyhint" class="muted">${k ? "key set for this session (in memory)" : "blank → uses server DAYTONA_API_KEY"}</span>`;
+    `<span id="dy-keyhint" class="muted">${k ? "key set for this session (in memory)" : "blank → uses the saved key or server DAYTONA_API_KEY"}</span>`;
   wrap.appendChild(keyRow);
   const status = el("div"); status.id = "dy-status"; status.textContent = "loading…";
   status.style.cssText = "margin:8px 0 12px";
@@ -1692,9 +1692,15 @@ function renderDaytona() {
     const btn = document.getElementById("dy-save");
     if (btn) btn.onclick = () => {
       const v = document.getElementById("dy-key").value.trim();
-      DAYTONA_KEY = v;  // memory only — cleared on reload, never persisted
-      document.getElementById("dy-keyhint").textContent =
-        v ? "key set (memory only, cleared on reload)" : "cleared";
+      DAYTONA_KEY = v;
+      const hint = document.getElementById("dy-keyhint");
+      // Persist server-side (gitignored dashboard/.daytona_key) so the key
+      // survives reloads + server restarts — no localStorage (avoids exfil via
+      // rendered job/artifact content). Blank clears the persisted key.
+      fetch("/daytona/key", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key: v }) })
+        .then(r => r.json())
+        .then(() => { hint.textContent = v ? "key saved — persisted on the server (survives reload)" : "cleared (server key removed)"; })
+        .catch(() => { hint.textContent = v ? "key set for this session" : "cleared"; });
       pollDaytona();
     };
     pollDaytona();

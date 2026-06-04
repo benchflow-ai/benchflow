@@ -44,6 +44,30 @@ except ModuleNotFoundError:  # pragma: no cover - used when run as dashboard/ser
 DASH = Path(__file__).resolve().parent
 ROOT = DASH.parent
 
+# Optional persisted Daytona key: written by the panel's Save button (POST
+# /daytona/key) to a gitignored, local, mode-600 file and read back on every
+# /daytona.json request. Lets the key survive reloads and server restarts
+# without living in browser localStorage (where rendered job/artifact content
+# could exfiltrate it). A do_GET dotfile guard ensures it is never served.
+_DAYTONA_KEY_FILE = DASH / ".daytona_key"
+
+
+def _read_daytona_key() -> str | None:
+    try:
+        return (_DAYTONA_KEY_FILE.read_text().strip() or None)
+    except FileNotFoundError:
+        return None
+
+
+def _write_daytona_key(key: str) -> None:
+    if key:
+        _DAYTONA_KEY_FILE.write_text(key)
+        with contextlib.suppress(Exception):
+            _DAYTONA_KEY_FILE.chmod(0o600)
+    else:
+        with contextlib.suppress(Exception):
+            _DAYTONA_KEY_FILE.unlink()
+
 
 def _git_bytes(args: list[str]) -> bytes:
     return subprocess.check_output(["git", *args], cwd=ROOT)
@@ -110,17 +134,37 @@ class SyncingDashboardHandler(http.server.SimpleHTTPRequestHandler):
 
     def do_GET(self) -> None:
         path = urllib.parse.urlparse(self.path).path
+        # Never serve dotfiles (e.g. the persisted .daytona_key) as static content.
+        if any(seg.startswith(".") for seg in path.split("/") if seg):
+            self.send_error(404)
+            return
         # Capability probe: present only on the live server, so the static
         # (Vercel) build 404s here and the frontend hides the Daytona tab.
         if path == "/daytona/available":
             self._serve_json({"available": True})
             return
         if path == "/daytona.json":
-            self._serve_json(daytona_snapshot(self.headers.get("X-Daytona-Key")))
+            key = self.headers.get("X-Daytona-Key") or _read_daytona_key()
+            self._serve_json(daytona_snapshot(key))
             return
         if path == "/data.json" and not self._sync_data_json():
             return
         super().do_GET()
+
+    def do_POST(self) -> None:
+        path = urllib.parse.urlparse(self.path).path
+        # Persist (or clear) the Daytona key from the panel's Save button.
+        if path == "/daytona/key":
+            n = int(self.headers.get("Content-Length") or 0)
+            raw = self.rfile.read(n).decode() if n else ""
+            try:
+                key = (json.loads(raw).get("key") or "").strip()
+            except Exception:
+                key = raw.strip()
+            _write_daytona_key(key)
+            self._serve_json({"ok": True, "persisted": bool(key)})
+            return
+        self.send_error(404)
 
     def log_message(self, *args: object) -> None:  # quiet; keeps any key out of logs
         pass
