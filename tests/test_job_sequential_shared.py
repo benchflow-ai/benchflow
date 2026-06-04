@@ -276,6 +276,55 @@ async def test_sequential_shared_injects_evolved_skills_into_next_rollout(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_sequential_shared_learner_skills_use_with_skill_policy(tmp_path):
+    """LearnerStore materialized skills are explicit custom runtime skills."""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from benchflow.models import RolloutResult
+    from benchflow.skill_policy import SKILL_MODE_WITH_SKILL
+
+    job = _make_job(tmp_path, n_tasks=1, job_mode="sequential-shared")
+    task_dir = job._tasks_dir / "task-0"
+    learner_skills = tmp_path / "learner-skills"
+    learner_skills.mkdir()
+    job._learner_skills_dir = learner_skills
+
+    captured = {}
+
+    async def fake_create(cls_cfg):
+        captured["skills_dir"] = cls_cfg.skills_dir
+        captured["skill_mode"] = cls_cfg.skill_mode
+
+        async def fake_run():
+            return RolloutResult(
+                task_name=task_dir.name,
+                rollout_name="rt",
+                rewards={"reward": 1.0},
+                trajectory=[],
+                agent="",
+                agent_name="",
+                model=None,
+                n_tool_calls=0,
+                n_prompts=0,
+                error=None,
+                verifier_error=None,
+                partial_trajectory=False,
+                trajectory_source=None,
+                started_at=None,
+                finished_at=None,
+            )
+
+        return SimpleNamespace(run=fake_run)
+
+    with patch("benchflow.rollout.Rollout.create", new=fake_create):
+        await job._run_single_task(task_dir, job._config)
+
+    assert captured["skills_dir"] == learner_skills
+    assert captured["skill_mode"] == SKILL_MODE_WITH_SKILL
+
+
+@pytest.mark.asyncio
 async def test_sequential_shared_records_memory_delta_on_a_node(tmp_path):
     """Each rollout records before/after skills on a tree node, so the
     Memory-space scorer has its writer."""

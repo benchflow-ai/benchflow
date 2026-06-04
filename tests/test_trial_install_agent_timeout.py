@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from benchflow.rollout import Rollout, RolloutConfig
+from benchflow.skill_policy import SKILL_MODE_WITH_SKILL
 
 
 def _make_trial(tmp_path, *, agent: str, sandbox_setup_timeout: int) -> Rollout:
@@ -114,6 +115,7 @@ async def test_install_agent_passes_effective_task_path_to_deploy_skills(
         prompts=[None],
         sandbox_user="agent",
         sandbox_setup_timeout=41,
+        skill_mode=SKILL_MODE_WITH_SKILL,
         skills_dir=tmp_path / "skills",
     )
     effective_task_path = tmp_path / "benchflow-task-tmp" / "task"

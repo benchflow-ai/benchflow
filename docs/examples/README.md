@@ -29,6 +29,7 @@ bench eval create \
   --agent gemini \
   --model gemini-3.1-flash-lite-preview \
   --sandbox daytona \
+  --skill-mode with-skill \
   --skills-dir tasks/my-task/environment/skills \
   --agent-env BENCHFLOW_SKILL_NUDGE=name
 ```

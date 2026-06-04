@@ -19,14 +19,10 @@ Does not own:
 import logging
 import shlex
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from benchflow.agents.registry import AGENT_INSTALLERS, AGENTS, AgentConfig
 from benchflow.models import AgentInstallError
 from benchflow.skill_policy import validate_container_mount_path
-
-if TYPE_CHECKING:
-    from benchflow.task import Task
 
 logger = logging.getLogger(__name__)
 
@@ -259,19 +255,19 @@ async def deploy_skills(
     agent_cfg,
     sandbox_user: str | None,
     agent_cwd: str,
-    task: "Task",
-    include_task_skills: bool = False,
     skills_sandbox_dir: str | None = None,
 ) -> None:
     """Deploy and distribute skills into sandbox."""
-    task_skills_dir = (
-        task.config.environment.skills_dir if include_task_skills else None
+    target_skills_dir = (
+        validate_container_mount_path(skills_sandbox_dir or "/skills")
+        if skills_dir or skills_sandbox_dir
+        else None
     )
-    target_skills_dir = validate_container_mount_path(skills_sandbox_dir or "/skills")
-    effective_skills = None if skills_sandbox_dir else task_skills_dir
+    effective_skills = target_skills_dir if skills_sandbox_dir else None
 
     # Runtime upload (fallback if not baked into Dockerfile)
     if skills_dir:
+        assert target_skills_dir is not None
         dockerfile = task_path / "environment" / "Dockerfile"
         injected_copy = f"COPY _deps/skills {target_skills_dir.rstrip('/')}/"
         already_injected = (

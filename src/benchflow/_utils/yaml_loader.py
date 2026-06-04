@@ -45,6 +45,7 @@ import yaml
 
 from benchflow._types import Role, Scene, Turn
 from benchflow.rollout import RolloutConfig
+from benchflow.skill_policy import SKILL_MODE_NO_SKILL
 from benchflow.usage_tracking import UsageTrackingConfig
 
 logger = logging.getLogger(__name__)
@@ -101,7 +102,6 @@ def rollout_config_from_dict(
                 model=raw.get("model"),
                 reasoning_effort=raw.get("reasoning_effort"),
                 prompts=prompts,
-                skills_dir=raw.get("skills_dir"),
             )
         ]
     else:
@@ -127,8 +127,7 @@ def rollout_config_from_dict(
         reasoning_effort=raw.get("reasoning_effort"),
         agent_env=raw.get("agent_env"),
         skills_dir=raw.get("skills_dir"),
-        include_task_skills=bool(raw.get("include_task_skills", False)),
-        skill_mode=raw.get("skill_mode", "default"),
+        skill_mode=raw.get("skill_mode", SKILL_MODE_NO_SKILL),
         skill_creator_dir=raw.get("skill_creator_dir"),
         self_gen_no_internet=bool(raw.get("self_gen_no_internet", False)),
         usage_tracking=UsageTrackingConfig.from_mapping(raw),

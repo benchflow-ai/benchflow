@@ -253,7 +253,7 @@ bench eval create \
   --tasks-dir tasks/my-task/ \
   --agent gemini \
   --sandbox daytona \
-  --skills-dir tasks/my-task/environment/skills \
+  --skill-mode with-skill \
   --agent-env BENCHFLOW_SKILL_NUDGE=name
 ```
 

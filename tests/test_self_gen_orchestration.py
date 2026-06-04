@@ -9,7 +9,13 @@ import pytest
 
 from benchflow.evaluation import Evaluation, EvaluationConfig, RetryConfig
 from benchflow.models import RunResult
-from benchflow.rollout import Rollout, RolloutConfig
+from benchflow.rollout import (
+    SKILL_MODE_NO_SKILL,
+    SKILL_MODE_SELF_GEN,
+    Rollout,
+    RolloutConfig,
+    _safe_skill_name,
+)
 from benchflow.runtime import run as runtime_run
 from benchflow.sdk import SDK
 
@@ -40,6 +46,13 @@ def _make_skill_creator_root(tmp_path: Path) -> Path:
 
 def _skill_dir_names(root: Path) -> set[str]:
     return {child.name for child in root.iterdir() if child.is_dir()}
+
+
+def test_self_gen_suggested_skill_name_is_agentskills_compatible() -> None:
+    """Guards PR #586 follow-up: self-gen suggestions must load in OpenHands."""
+    assert _safe_skill_name("acp_smoke") == "acp-smoke"
+    assert _safe_skill_name("3D__Scan Calc!") == "3d-scan-calc"
+    assert _safe_skill_name("___") == "generated-task"
 
 
 @pytest.mark.asyncio
@@ -89,7 +102,6 @@ async def test_sdk_self_gen_runs_creator_then_solver_in_one_trial_with_isolated_
         rollout_name="trial-1",
         jobs_dir=tmp_path / "jobs",
         environment="daytona",
-        skills_dir=original_skills,
         sandbox_user="worker",
         sandbox_locked_paths=["/solution"],
         sandbox_setup_timeout=321,
@@ -114,9 +126,9 @@ async def test_sdk_self_gen_runs_creator_then_solver_in_one_trial_with_isolated_
     assert trial_cfg.sandbox_setup_timeout == 321
     assert trial_cfg.context_root == tmp_path
     assert trial_cfg.rollout_name == "trial-1"
-    assert trial_cfg.skill_mode == "default"
+    assert trial_cfg.skill_mode == SKILL_MODE_NO_SKILL
+    assert trial_cfg.artifact_skill_mode == SKILL_MODE_SELF_GEN
     assert trial_cfg.skill_creator_dir is None
-    assert trial_cfg.include_task_skills is False
     assert trial_cfg.skills_dir is None
     assert trial_cfg.prompts is None
     assert trial_cfg.self_gen_no_internet is True
@@ -267,7 +279,8 @@ async def test_job_self_gen_uses_strict_orchestration(
     assert len(seen_configs) == 1
     assert run_configs == seen_configs
     assert seen_configs[0].skip_verify is False
-    assert seen_configs[0].include_task_skills is False
+    assert seen_configs[0].skill_mode == SKILL_MODE_NO_SKILL
+    assert seen_configs[0].artifact_skill_mode == SKILL_MODE_SELF_GEN
     assert seen_configs[0].skills_dir is None
     assert len(seen_configs[0].pre_agent_hooks or []) == 1
     assert [scene.name for scene in seen_configs[0].scenes] == [

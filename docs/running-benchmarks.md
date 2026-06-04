@@ -366,25 +366,24 @@ unset LLM_BASE_URL LLM_API_KEY OPENAI_BASE_URL BENCHFLOW_PROVIDER_BASE_URL \
 
 ```bash
 TASK=citation-check
-SK="$SKILLSBENCH/tasks/$TASK/environment/skills"
 COMMON="--tasks-dir $SKILLSBENCH/tasks --include $TASK --agent openhands \
   --sandbox daytona --concurrency 1 --usage-tracking required --agent-idle-timeout none"
 
 # (1) Opus-4.8 (MAX) — with skills
 bench eval create $COMMON --model aws-bedrock/us.anthropic.claude-opus-4-8 \
-  --skills-dir "$SK" --skill-mode default --jobs-dir jobs/opus-skill
+  --skill-mode with-skill --jobs-dir jobs/opus-skill
 
 # (2) Opus-4.8 (MAX) — without skills
 bench eval create $COMMON --model aws-bedrock/us.anthropic.claude-opus-4-8 \
-  --jobs-dir jobs/opus-noskill
+  --skill-mode no-skill --jobs-dir jobs/opus-noskill
 
 # (3) Gemini-3.5-flash — with skills
 bench eval create $COMMON --model gemini-3.5-flash --agent-env LLM_CACHING_PROMPT=false \
-  --skills-dir "$SK" --skill-mode default --jobs-dir jobs/gemini-skill
+  --skill-mode with-skill --jobs-dir jobs/gemini-skill
 
 # (4) Gemini-3.5-flash — without skills
 bench eval create $COMMON --model gemini-3.5-flash --agent-env LLM_CACHING_PROMPT=false \
-  --jobs-dir jobs/gemini-noskill
+  --skill-mode no-skill --jobs-dir jobs/gemini-noskill
 ```
 
 `BENCHFLOW_BEDROCK_THINKING_EFFORT=max` is what makes the two Opus cells actually
@@ -393,10 +392,10 @@ run at MAX. LiteLLM writes the provider call metadata to
 
 | Model (`--model`) | Skills | Cell-specific flags |
 |-------------------|--------|---------------------|
-| `aws-bedrock/us.anthropic.claude-opus-4-8` | with | `--skills-dir $SK --skill-mode default` |
-| `aws-bedrock/us.anthropic.claude-opus-4-8` | without | — |
-| `gemini-3.5-flash` | with | `--agent-env LLM_CACHING_PROMPT=false --skills-dir $SK --skill-mode default` |
-| `gemini-3.5-flash` | without | `--agent-env LLM_CACHING_PROMPT=false` |
+| `aws-bedrock/us.anthropic.claude-opus-4-8` | with | `--skill-mode with-skill` |
+| `aws-bedrock/us.anthropic.claude-opus-4-8` | without | `--skill-mode no-skill` |
+| `gemini-3.5-flash` | with | `--agent-env LLM_CACHING_PROMPT=false --skill-mode with-skill` |
+| `gemini-3.5-flash` | without | `--agent-env LLM_CACHING_PROMPT=false --skill-mode no-skill` |
 
 ### Verifying the batch
 

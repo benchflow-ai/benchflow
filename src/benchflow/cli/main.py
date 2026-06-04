@@ -23,6 +23,7 @@ from benchflow._utils.config import (
 from benchflow.agents.registry import parse_agent_spec
 from benchflow.cli.trace_import import register_tasks_generate
 from benchflow.evaluation import DEFAULT_AGENT, effective_model
+from benchflow.skill_policy import SKILL_MODE_NO_SKILL
 from benchflow.usage_tracking import UsageTrackingConfig
 
 # Show progress messages (logger.info) from benchflow internals by default.
@@ -219,6 +220,10 @@ def job(
         Path | None,
         typer.Option("--skills-dir", help="Skills directory to deploy into sandbox"),
     ] = None,
+    skill_mode: Annotated[
+        str,
+        typer.Option("--skill-mode", help="Skill mode: no-skill, with-skill, or self-gen"),
+    ] = SKILL_MODE_NO_SKILL,
 ) -> None:
     """Run all tasks in a directory with concurrency and retries.
 
@@ -239,6 +244,7 @@ def job(
                 concurrency=concurrency,
                 retry=RetryConfig(max_retries=max_retries),
                 skills_dir=str(skills_dir) if skills_dir else None,
+                skill_mode=skill_mode,
             ),
         )
     else:
@@ -389,6 +395,10 @@ def eval(
         str,
         typer.Option("--jobs-dir", help="Output directory"),
     ] = "jobs",
+    skill_mode: Annotated[
+        str,
+        typer.Option("--skill-mode", help="Skill mode: no-skill, with-skill, or self-gen"),
+    ] = SKILL_MODE_NO_SKILL,
 ) -> None:
     """Evaluate a skill against multiple tasks.
 
@@ -415,6 +425,7 @@ def eval(
             environment=environment,
             concurrency=concurrency,
             skills_dir=effective_skills,
+            skill_mode=skill_mode,
         ),
     )
 
@@ -998,9 +1009,9 @@ def eval_create(
         str,
         typer.Option(
             "--skill-mode",
-            help="Skill mode: default or self-gen",
+            help="Skill mode: no-skill, with-skill, or self-gen",
         ),
-    ] = "default",
+    ] = SKILL_MODE_NO_SKILL,
     skill_creator_dir: Annotated[
         Path | None,
         typer.Option(
