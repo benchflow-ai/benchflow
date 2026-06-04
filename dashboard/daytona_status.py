@@ -9,7 +9,7 @@ failure inline rather than 500.
 from __future__ import annotations
 
 import contextlib
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 # Sandbox attribute names vary across daytona SDK versions; probe in order.
 _CREATED_FIELDS = ("created_at", "createdAt", "created", "start_time", "started_at")
@@ -39,18 +39,18 @@ def _parse_dt(v: object) -> datetime | None:
     if v is None:
         return None
     if isinstance(v, datetime):
-        return v if v.tzinfo else v.replace(tzinfo=timezone.utc)
+        return v if v.tzinfo else v.replace(tzinfo=UTC)
     s = str(v).strip().replace("Z", "+00:00")
     with contextlib.suppress(Exception):
         dt = datetime.fromisoformat(s)
-        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+        return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
     return None
 
 
 def _age(dt: datetime | None) -> str:
     if dt is None:
         return "?"
-    secs = int((datetime.now(timezone.utc) - dt).total_seconds())
+    secs = int((datetime.now(UTC) - dt).total_seconds())
     h, rem = divmod(secs, 3600)
     m, s = divmod(rem, 60)
     return f"{h}h{m:02d}m{s:02d}s" if h else f"{m}m{s:02d}s"
@@ -75,15 +75,15 @@ def snapshot(api_key: str | None) -> dict:
     blank. Returns ``{count, by_state, rows, as_of, error?}``.
     """
     empty = {"count": 0, "by_state": {}, "rows": [], "as_of": ""}
+    # Reuse benchflow's canonical sync-client bootstrap (anyio compat + explicit
+    # key, no env mutation). Imported lazily so the dashboard stays importable
+    # without the sandbox-daytona extra; the panel renders the error instead.
     try:
-        from daytona import Daytona, DaytonaConfig
-    except Exception as e:  # SDK absent in this venv
-        return {**empty, "error": f"daytona SDK not importable: {e}"}
-
-    key = (api_key or "").strip()
+        from benchflow.sandbox.daytona import build_sync_client
+    except Exception as e:
+        return {**empty, "error": f"daytona support unavailable: {e}"}
     try:
-        client = Daytona(DaytonaConfig(api_key=key)) if key else Daytona()
-        items = list(client.list())
+        items = list(build_sync_client((api_key or "").strip() or None).list())
     except Exception as e:
         return {**empty, "error": f"Daytona list() failed: {e}"}
 
@@ -95,5 +95,5 @@ def snapshot(api_key: str | None) -> dict:
         "count": len(rows),
         "by_state": by_state,
         "rows": rows,
-        "as_of": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "as_of": datetime.now(UTC).isoformat(timespec="seconds"),
     }

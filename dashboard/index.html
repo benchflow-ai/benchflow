@@ -548,7 +548,7 @@
 <script>
 const TABS = ["Overview", "Concept map", "Architecture", "Tickets", "Tests", "Jobs", "Daytona", "Advisories", "Timeline"];
 let DATA = null, CURRENT = null, SELECTED_TICKET_ID = null, DATA_SIGNATURE = null, SYNC_ERROR = null;
-let DAYTONA_TIMER = null;
+let DAYTONA_TIMER = null, DAYTONA_AVAILABLE = false, DAYTONA_KEY = "";
 
 function el(t, c, h) { const e = document.createElement(t); if (c) e.className = c; if (h !== undefined) e.innerHTML = h; return e; }
 function esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;" }[c])); }
@@ -714,6 +714,7 @@ function dataSignature(d) {
 
 function tabFromLocation() {
   const want = decodeURIComponent(location.hash.slice(1));
+  if (want === "Daytona" && !DAYTONA_AVAILABLE) return "Overview";
   return want === "Roadmap" || want === "Tickets" || TABS.includes(want)
     ? want
     : "Overview";
@@ -1648,7 +1649,10 @@ function renderTimeline() {
 }
 
 // ---- Daytona (live cloud sandboxes) ---------------------------------------
-function daytonaKey() { return localStorage.getItem("daytona_key") || ""; }
+// Session-only key (in-memory, never persisted): a cloud credential should not
+// live in localStorage next to rendered job/artifact content. Blank => the
+// server's DAYTONA_API_KEY is used (the normal path).
+function daytonaKey() { return DAYTONA_KEY; }
 async function pollDaytona() {
   const statusEl = document.getElementById("dy-status");
   const rowsEl = document.getElementById("dy-rows");
@@ -1674,7 +1678,7 @@ function renderDaytona() {
   keyRow.innerHTML =
     `<label>Daytona API key&nbsp;<input id="dy-key" type="password" placeholder="dtn_…" value="${esc(k)}" style="width:340px;padding:4px 8px"></label>` +
     `<button id="dy-save" style="padding:4px 12px;cursor:pointer">Save</button>` +
-    `<span id="dy-keyhint" class="muted">${k ? "key stored in this browser" : "blank → uses server DAYTONA_API_KEY"}</span>`;
+    `<span id="dy-keyhint" class="muted">${k ? "key set for this session (in memory)" : "blank → uses server DAYTONA_API_KEY"}</span>`;
   wrap.appendChild(keyRow);
   const status = el("div"); status.id = "dy-status"; status.textContent = "loading…";
   status.style.cssText = "margin:8px 0 12px";
@@ -1688,8 +1692,9 @@ function renderDaytona() {
     const btn = document.getElementById("dy-save");
     if (btn) btn.onclick = () => {
       const v = document.getElementById("dy-key").value.trim();
-      if (v) localStorage.setItem("daytona_key", v); else localStorage.removeItem("daytona_key");
-      document.getElementById("dy-keyhint").textContent = v ? "key saved" : "cleared";
+      DAYTONA_KEY = v;  // memory only — cleared on reload, never persisted
+      document.getElementById("dy-keyhint").textContent =
+        v ? "key set (memory only, cleared on reload)" : "cleared";
       pollDaytona();
     };
     pollDaytona();
@@ -1728,6 +1733,7 @@ function buildNav() {
   const nav = document.getElementById("nav");
   nav.innerHTML = "";
   TABS.forEach(t => {
+    if (t === "Daytona" && !DAYTONA_AVAILABLE) return;  // live-server-only feature
     const a = el("a", null, t);
     a.dataset.tab = t;
     a.onclick = () => show(t);
@@ -1818,6 +1824,15 @@ function loadData(initial) {
 
 loadData(true);
 setInterval(() => loadData(false), 5000);
+// Probe the live-server-only capability endpoint; static deploys 404 here, so
+// the Daytona tab only appears when an endpoint actually backs it. Only over
+// http(s) — under file:// or non-browser script eval there is no live endpoint.
+if (location.protocol === "http:" || location.protocol === "https:") {
+  fetch("daytona/available")
+    .then(r => { DAYTONA_AVAILABLE = r.ok; })
+    .catch(() => { DAYTONA_AVAILABLE = false; })
+    .finally(() => { if (DATA) buildNav(); });
+}
 if (window.addEventListener) {
   window.addEventListener("hashchange", () => {
     if (!DATA) return;

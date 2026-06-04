@@ -35,11 +35,11 @@ from pathlib import Path
 from typing import ClassVar
 
 try:
-    from dashboard.generate import resolve_dashboard_jobs_root
     from dashboard.daytona_status import snapshot as daytona_snapshot
+    from dashboard.generate import resolve_dashboard_jobs_root
 except ModuleNotFoundError:  # pragma: no cover - used when run as dashboard/serve.py
-    from generate import resolve_dashboard_jobs_root  # type: ignore[no-redef]
     from daytona_status import snapshot as daytona_snapshot  # type: ignore[no-redef]
+    from generate import resolve_dashboard_jobs_root  # type: ignore[no-redef]
 
 DASH = Path(__file__).resolve().parent
 ROOT = DASH.parent
@@ -110,6 +110,11 @@ class SyncingDashboardHandler(http.server.SimpleHTTPRequestHandler):
 
     def do_GET(self) -> None:
         path = urllib.parse.urlparse(self.path).path
+        # Capability probe: present only on the live server, so the static
+        # (Vercel) build 404s here and the frontend hides the Daytona tab.
+        if path == "/daytona/available":
+            self._serve_json({"available": True})
+            return
         if path == "/daytona.json":
             self._serve_json(daytona_snapshot(self.headers.get("X-Daytona-Key")))
             return

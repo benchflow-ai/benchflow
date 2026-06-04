@@ -112,32 +112,13 @@ def _normalize_eval_agent_or_exit(agent_spec: str) -> str:
     return canonical_agent
 
 
-def _ensure_daytona_anyio_compat() -> None:
-    """Patch the anyio symbol that Daytona 0.176 imports on newer anyio."""
-    try:
-        import anyio
-    except ImportError:
-        return
-
-    if hasattr(anyio, "AsyncContextManagerMixin"):
-        return
-
-    class _AsyncContextManagerMixin:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *args: object) -> None:
-            aclose = getattr(self, "aclose", None)
-            if aclose is not None:
-                await aclose()
-
-    vars(anyio)["AsyncContextManagerMixin"] = _AsyncContextManagerMixin
-
-
 def _daytona_client_or_exit():
-    _ensure_daytona_anyio_compat()
+    # Canonical sync-client bootstrap (anyio compat + client build) lives in
+    # benchflow.sandbox.daytona; reuse it instead of re-deriving it here.
+    from benchflow.sandbox.daytona import build_sync_client
+
     try:
-        from daytona import Daytona
+        return build_sync_client()
     except ModuleNotFoundError as exc:
         if exc.name == "daytona":
             console.print(
@@ -150,7 +131,6 @@ def _daytona_client_or_exit():
     except Exception as exc:
         console.print(f"[red]daytona SDK import failed: {exc}[/red]")
         raise typer.Exit(1) from None
-    return Daytona()
 
 
 def _cleanup_daytona_sandboxes(dry_run: bool, max_age_minutes: int) -> None:
