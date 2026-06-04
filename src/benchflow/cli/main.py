@@ -17,6 +17,7 @@ from benchflow._dotenv import load_dotenv_env
 from benchflow._utils.config import (
     DEFAULT_AGENT_IDLE_TIMEOUT_SEC,
     normalize_agent_idle_timeout,
+    normalize_reasoning_effort,
     normalize_sandbox_user,
 )
 from benchflow.agents.registry import parse_agent_spec
@@ -889,6 +890,13 @@ def eval_create(
         str | None,
         typer.Option("--model", help="Model"),
     ] = None,
+    reasoning_effort: Annotated[
+        str | None,
+        typer.Option(
+            "--reasoning-effort",
+            help="Agent reasoning/thinking effort when the agent exposes one (e.g. max)",
+        ),
+    ] = None,
     environment: Annotated[
         str | None,
         typer.Option("--sandbox", help="Sandbox: docker, daytona, or modal"),
@@ -1081,6 +1089,13 @@ def eval_create(
             f"[red]Invalid --agent-idle-timeout {agent_idle_timeout!r}: {exc}[/red]"
         )
         raise typer.Exit(1) from None
+    try:
+        eval_reasoning_effort = normalize_reasoning_effort(reasoning_effort)
+    except ValueError as exc:
+        console.print(
+            f"[red]Invalid --reasoning-effort {reasoning_effort!r}: {exc}[/red]"
+        )
+        raise typer.Exit(1) from None
     output_jobs_dir = jobs_dir or "jobs"
 
     # Resolve the optional Environment-plane manifest once and reuse across
@@ -1150,6 +1165,8 @@ def eval_create(
             j._config.model = effective_model(j._config.agent, model)
         else:
             j._config.model = effective_model(j._config.agent, j._config.model)
+        if reasoning_effort is not None:
+            j._config.reasoning_effort = eval_reasoning_effort
         if environment is not None:
             j._config.environment = eval_environment
         j._config.agent_env = {**j._config.agent_env, **parsed_env}
@@ -1277,6 +1294,7 @@ def eval_create(
             EvaluationConfig(
                 agent=eval_agent,
                 model=eff_model,
+                reasoning_effort=eval_reasoning_effort,
                 environment=eval_environment,
                 concurrency=eval_concurrency,
                 build_concurrency=build_concurrency,
@@ -1308,6 +1326,7 @@ def eval_create(
             EvaluationConfig(
                 agent=eval_agent,
                 model=eff_model,
+                reasoning_effort=eval_reasoning_effort,
                 environment=eval_environment,
                 concurrency=eval_concurrency,
                 build_concurrency=build_concurrency,

@@ -62,6 +62,7 @@ class ACPSession:
         self.agent_info: AgentInfo | None = None
         self.agent_capabilities: AgentCapabilities | None = None
         self.model_state: dict | None = None
+        self.config_options: list[dict] = []
         self.message_chunks: list[str] = []
         self.thought_chunks: list[str] = []
         self.tool_calls: list[ToolCallRecord] = []

@@ -96,6 +96,8 @@ class TestResolveAgent:
         assert wrapped.acp_model_format == underlying.acp_model_format
         assert wrapped.subscription_auth == underlying.subscription_auth
         assert wrapped.supports_acp_set_model == underlying.supports_acp_set_model
+        assert wrapped.acp_model_config_id == underlying.acp_model_config_id
+        assert wrapped.acp_effort_config_id == underlying.acp_effort_config_id
         assert wrapped.install_timeout == underlying.install_timeout
         assert (
             wrapped.disallow_web_tools_setup_cmd

@@ -71,6 +71,8 @@ def test_agent_field_shapes(name, cfg):
     )
     assert isinstance(cfg.install_timeout, int) and cfg.install_timeout > 0
     assert isinstance(cfg.supports_acp_set_model, bool)
+    assert isinstance(cfg.acp_model_config_id, str)
+    assert isinstance(cfg.acp_effort_config_id, str)
 
 
 @pytest.mark.parametrize("name,cfg", AGENTS.items(), ids=list(AGENTS.keys()))
