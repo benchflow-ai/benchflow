@@ -13,6 +13,7 @@ from benchflow.trajectories.types import (
     LLMRequest,
     LLMResponse,
     Trajectory,
+    redact_acp_trajectory_jsonl,
     redact_trajectory_text,
 )
 
@@ -273,3 +274,84 @@ def test_leak_audit_intent_passes_end_to_end():
     # No live AIzaSy.../dtn_... token shape survives (bare prefixes excluded).
     residual = [m for m in re.findall(r"AIzaSy[A-Za-z0-9_-]+|dtn_[A-Za-z0-9_]+", jsonl)]
     assert residual == [], f"live key shapes survived: {residual}"
+
+
+# ---------------------------------------------------------------------------
+# PR #585 bug 1: acp_trajectory.jsonl (the file the PR claims to protect) was
+# written with raw json.dumps and no redaction. rollout.py and hosted_env.py
+# now serialize ACP events through redact_acp_trajectory_jsonl.
+# ---------------------------------------------------------------------------
+
+
+def test_acp_trajectory_jsonl_redacts_event_content(tmp_path):
+    """PR #585 (issue #537): an ACP trajectory event whose content carries a
+    secret (an AIzaSy... live key plus a GEMINI_API_KEY=... env dump) must not
+    appear raw in the written ``acp_trajectory.jsonl`` file."""
+    import re
+
+    trajectory = [
+        {
+            "type": "agent_message",
+            "content": (
+                "Here is the environment:\n"
+                "GEMINI_API_KEY=AIzaSyFAKEKEYFORTESTSONLYxxxxxxxxxxxxxxx\n"
+                "export DAYTONA_API_KEY=dtn_FAKEFAKEFAKEFAKEFAKE12345678"
+            ),
+        },
+        {"type": "tool_call", "command": "env | grep API"},
+    ]
+
+    traj_dir = tmp_path / "trajectory"
+    traj_dir.mkdir()
+    out = traj_dir / "acp_trajectory.jsonl"
+    out.write_text(redact_acp_trajectory_jsonl(trajectory))
+
+    written = out.read_text()
+    assert "***REDACTED***" in written
+    # The live-key *values* and any AIzaSy/dtn_ token shape must be gone.
+    assert "AIzaSyFAKEKEYFORTESTSONLYxxxxxxxxxxxxxxx" not in written
+    assert "dtn_FAKEFAKEFAKEFAKEFAKE12345678" not in written
+    residual = re.findall(r"AIzaSy[A-Za-z0-9_-]+|dtn_[A-Za-z0-9_]+", written)
+    assert residual == [], f"live key shapes survived: {residual}"
+    # Non-secret event structure is preserved (one line per event).
+    assert len(written.splitlines()) == 2
+    assert "env | grep API" in written
+
+
+# ---------------------------------------------------------------------------
+# PR #585 bug 2: namespaced *_API_KEY=value env vars were not redacted because
+# the underscore api_key rule had a (?<![A-Za-z0-9_]) lookbehind that the `_`
+# in GEMINI_API_KEY tripped. The lookbehind was removed; the \1 capture keeps
+# the key name so no over-redaction is introduced.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "raw,leaked,kept_name",
+    [
+        (
+            "GEMINI_API_KEY=plainSecretNoPrefix123",
+            "plainSecretNoPrefix123",
+            "GEMINI_API_KEY=",
+        ),
+        (
+            '{"openai_api_key": "plainSecretNoPrefix123"}',
+            "plainSecretNoPrefix123",
+            "openai_api_key",
+        ),
+        (
+            "AZURE_OPENAI_API_KEY=anotherPlainSecret456",
+            "anotherPlainSecret456",
+            "AZURE_OPENAI_API_KEY=",
+        ),
+    ],
+)
+def test_redacts_namespaced_api_key_env_vars(raw, leaked, kept_name):
+    """PR #585 (issue #537): namespaced ``*_API_KEY=value`` env dumps and
+    ``"*_api_key"`` JSON keys must redact their values even when the secret has
+    no recognizable token prefix; the key name is preserved by the \\1 capture."""
+    result = redact_trajectory_text(raw)
+    assert "***REDACTED***" in result
+    assert leaked not in result
+    # The key name itself must survive (over-redaction guard).
+    assert kept_name in result

@@ -210,11 +210,14 @@ _REDACTION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
         ),
         r"\1***REDACTED***",
     ),
-    # Underscore form `api_key` needs a leading boundary so it does not match
-    # the tail of a longer name like `GEMINI_API_KEY`.
+    # Underscore form `api_key`. No leading boundary: namespaced env dumps like
+    # `GEMINI_API_KEY=secret` / `AZURE_OPENAI_API_KEY=...` and JSON keys such as
+    # `"openai_api_key"` must redact too (#585). The `\1` capture preserves the
+    # whole matched name+separator, so the key name (e.g. `GEMINI_API_KEY=`) is
+    # kept and only the value is dropped — no over-redaction of the name.
     (
         re.compile(
-            r'(?<![A-Za-z0-9_])("?api_key"?\s*[:=]\s*"?)[^"\s,}\\*]+',
+            r'("?api_key"?\s*[:=]\s*"?)[^"\s,}\\*]+',
             re.IGNORECASE,
         ),
         r"\1***REDACTED***",
@@ -256,6 +259,22 @@ def redact_trajectory_text(text: str) -> str:
     for pattern, replacement in _REDACTION_PATTERNS:
         text = pattern.sub(replacement, text)
     return text
+
+
+def redact_acp_trajectory_jsonl(trajectory: list[dict[str, Any]]) -> str:
+    """Serialize an ACP trajectory list to redacted JSONL.
+
+    Each event is JSON-encoded and then run through ``redact_trajectory_text``
+    so secrets the agent echoed into ``acp_trajectory.jsonl`` (env dumps, curl
+    -v output, header logs) are stripped before the file is written or uploaded
+    (#537/#585). Returns the joined lines without a trailing newline; callers
+    that need one (e.g. uploaded copies) append it themselves.
+    """
+    import json
+
+    return "\n".join(
+        redact_trajectory_text(json.dumps(event, default=str)) for event in trajectory
+    )
 
 
 class LLMRequest(BaseModel):
