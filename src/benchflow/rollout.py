@@ -179,7 +179,9 @@ def _native_acp_usage_delta(
         "thought_tokens",
     ):
         current_value = _as_nonnegative_int(current.get(usage_field))
-        previous_value = _as_nonnegative_int(previous.get(usage_field)) if previous else 0
+        previous_value = (
+            _as_nonnegative_int(previous.get(usage_field)) if previous else 0
+        )
         delta[usage_field] = max(current_value - previous_value, 0)
 
     current_total = current.get("total_tokens")
@@ -1958,7 +1960,10 @@ class Rollout:
         metrics = dict(
             getattr(self, "_native_usage_metrics", _zero_native_acp_usage_metrics())
         )
-        for snapshot_field, result_field in _NATIVE_ACP_USAGE_SNAPSHOT_TO_RESULT.items():
+        for (
+            snapshot_field,
+            result_field,
+        ) in _NATIVE_ACP_USAGE_SNAPSHOT_TO_RESULT.items():
             if result_field == "total_tokens":
                 continue
             metrics[result_field] = _as_nonnegative_int(metrics.get(result_field)) + (
@@ -2248,11 +2253,15 @@ class Rollout:
 
     def _finalize_usage_metrics(self) -> None:
         """Prefer LiteLLM usage, otherwise use trusted native ACP usage."""
-        current_metrics = getattr(self, "_usage_metrics", {"usage_source": "unavailable"})
+        current_metrics = getattr(
+            self, "_usage_metrics", {"usage_source": "unavailable"}
+        )
         if current_metrics.get("usage_source") == USAGE_SOURCE_PROVIDER_RESPONSE:
             return
         native_metrics = getattr(self, "_native_usage_metrics", None)
-        if isinstance(native_metrics, dict) and is_token_usage_available(native_metrics):
+        if isinstance(native_metrics, dict) and is_token_usage_available(
+            native_metrics
+        ):
             self._usage_metrics = native_metrics
 
     def _enforce_required_usage_tracking(self) -> None:
