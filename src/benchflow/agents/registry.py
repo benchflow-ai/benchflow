@@ -316,6 +316,11 @@ AGENTS: dict[str, AgentConfig] = {
         name="claude-agent-acp",
         description="Claude Code via ACP (Anthropic's Agent Client Protocol)",
         skill_paths=["$HOME/.claude/skills"],
+        # Pinned to 0.40.0: the config-option wiring below (set_config_option +
+        # the "model"/"effort" ids) targets this version's ACP protocol (sdk
+        # 0.24, which dropped session/set_model). The option ids are coupled to
+        # this pin — re-verify them when bumping. runtime.py uses
+        # capability-first dispatch for the rest of the family.
         install_cmd=_js_agent_install(
             "claude-agent-acp", "@agentclientprotocol/claude-agent-acp@0.40.0"
         ),
@@ -396,7 +401,17 @@ AGENTS: dict[str, AgentConfig] = {
         name="codex-acp",
         description="OpenAI Codex agent via ACP",
         skill_paths=["$HOME/.agents/skills"],
-        install_cmd=_js_agent_install("codex-acp", "@agentclientprotocol/codex-acp"),
+        # Pinned for reproducibility: an unpinned @agentclientprotocol install
+        # floats to latest and can silently break agent activation when the ACP
+        # protocol changes (claude-agent-acp above hit exactly this — sdk 0.24
+        # dropped session/set_model). 0.0.45 ships sdk 0.22.x, which still
+        # implements session/set_model. If a future bump advertises a model
+        # config option instead, runtime.py's capability-first dispatch routes
+        # the model through that option — but re-verify model selection when
+        # bumping this pin.
+        install_cmd=_js_agent_install(
+            "codex-acp", "@agentclientprotocol/codex-acp@0.0.45"
+        ),
         launch_cmd=_js_agent_launch(
             "codex-acp", "${OPENAI_BASE_URL:+-c openai_base_url=$OPENAI_BASE_URL}"
         ),
