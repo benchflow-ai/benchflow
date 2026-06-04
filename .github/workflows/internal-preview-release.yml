@@ -1,0 +1,87 @@
+name: internal-preview-release
+
+on:
+  workflow_run:
+    workflows: ["test"]
+    types: [completed]
+
+# PyPI Trusted Publishing uses OIDC, so no PyPI token is stored in GitHub.
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    name: Publish internal preview to PyPI
+    if: >-
+      ${{
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_branch == 'main'
+      }}
+    runs-on: ubuntu-latest
+    environment: pypi-internal-preview
+
+    steps:
+      - name: Check out tested commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39  # v3.2.4
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Compute internal preview version
+        id: version
+        env:
+          TEST_RUN_NUMBER: ${{ github.event.workflow_run.run_number }}
+        run: uv run --with packaging --no-project python tools/release_version.py internal-preview
+
+      - name: Apply internal preview version
+        if: steps.version.outputs.publish == 'true'
+        run: uv version "${{ steps.version.outputs.version }}" --frozen
+
+      - name: Build distributions
+        if: steps.version.outputs.publish == 'true'
+        run: uv build --no-sources
+
+      - name: Check distributions
+        if: steps.version.outputs.publish == 'true'
+        run: uv run --with twine --no-project twine check dist/*
+
+      - name: Publish internal preview
+        if: steps.version.outputs.publish == 'true'
+        run: uv publish
+
+      - name: Summarize release
+        if: steps.version.outputs.publish == 'true'
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          ## Internal preview published
+
+          Published \`benchflow==${{ steps.version.outputs.version }}\` from tested commit:
+
+          \`${{ github.event.workflow_run.head_sha }}\`
+
+          Internal users can install it with:
+
+          \`\`\`bash
+          pip install --pre --upgrade benchflow
+          \`\`\`
+          EOF
+
+      - name: Summarize skipped final-version commit
+        if: steps.version.outputs.publish != 'true'
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          ## Internal preview skipped
+
+          This commit uses a final public version in \`pyproject.toml\`.
+          It is handled by the tag-driven public release workflow instead of
+          the internal preview channel.
+          EOF

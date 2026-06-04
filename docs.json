@@ -31,6 +31,7 @@
         "pages": [
           "docs/reference/cli",
           "docs/reference/python-api",
+          "docs/release",
           "docs/integration-tests"
         ]
       }

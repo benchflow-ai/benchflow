@@ -29,10 +29,10 @@ jobs:
         run: uv sync --extra dev --extra sandbox-daytona --extra sandbox-modal --locked
 
       - name: Lint
-        run: uv run ruff check src tests
+        run: uv run ruff check src tests tools
 
       - name: Format check
-        run: uv run ruff format --check src tests
+        run: uv run ruff format --check src tests tools
 
       - name: Type check
         run: uv run ty check
