@@ -137,6 +137,24 @@ agent_idle_timeout: 0
     assert job._config.agent_idle_timeout is None
 
 
+def test_native_yaml_reasoning_effort_normalizes(tmp_path):
+    """Guards SkillsBench PR #825 so Claude ACP effort survives YAML config loading."""
+    tasks = tmp_path / "tasks" / "task-a"
+    tasks.mkdir(parents=True)
+    (tasks / "task.toml").write_text('version = "1.0"')
+
+    config = tmp_path / "config.yaml"
+    config.write_text("""
+tasks_dir: tasks
+agent: claude-agent-acp
+reasoning_effort: MAX
+""")
+
+    job = Evaluation.from_yaml(config)
+
+    assert job._config.reasoning_effort == "max"
+
+
 def test_legacy_yaml_zero_agent_idle_timeout_disables_watchdog(tmp_path):
     """Guards v0.5-idle-timeout@219906c against legacy config semantic drift."""
     tasks = tmp_path / "tasks" / "task-a"
@@ -163,6 +181,32 @@ datasets:
     assert job._config.agent_idle_timeout is None
 
 
+def test_legacy_yaml_agent_reasoning_effort_normalizes(tmp_path):
+    """Guards SkillsBench PR #825 so legacy agent configs can request Claude effort."""
+    tasks = tmp_path / "tasks" / "task-a"
+    tasks.mkdir(parents=True)
+    (tasks / "task.toml").write_text('version = "1.0"')
+
+    config = tmp_path / "config.yaml"
+    config.write_text("""
+n_attempts: 1
+orchestrator:
+  n_concurrent_trials: 1
+environment:
+  type: docker
+agents:
+  - name: claude-agent-acp
+    model_name: claude-opus-4-8
+    reasoning_effort: MAX
+datasets:
+  - path: tasks
+""")
+
+    job = Evaluation.from_yaml(config)
+
+    assert job._config.reasoning_effort == "max"
+
+
 def test_rollout_yaml_zero_agent_idle_timeout_disables_watchdog():
     """Guards v0.5-idle-timeout@219906c for direct RolloutConfig YAML loading."""
     from benchflow._utils.yaml_loader import rollout_config_from_dict
@@ -176,6 +220,23 @@ def test_rollout_yaml_zero_agent_idle_timeout_disables_watchdog():
     )
 
     assert cfg.agent_idle_timeout is None
+
+
+def test_rollout_yaml_reasoning_effort_reaches_primary_role():
+    """Guards SkillsBench PR #825 so direct rollout YAML can request Claude effort."""
+    from benchflow._utils.yaml_loader import rollout_config_from_dict
+
+    cfg = rollout_config_from_dict(
+        {
+            "task_dir": "tests/examples/hello-world-task",
+            "agent": "claude-agent-acp",
+            "model": "claude-opus-4-8",
+            "reasoning_effort": "MAX",
+        }
+    )
+
+    assert cfg.reasoning_effort == "max"
+    assert cfg.primary_reasoning_effort == "max"
 
 
 def test_native_yaml_rejects_bool_agent_idle_timeout(tmp_path):

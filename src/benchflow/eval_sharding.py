@@ -106,6 +106,7 @@ def _config_payload(
     payload = {
         "agent": config.agent,
         "model": config.model,
+        "reasoning_effort": config.reasoning_effort,
         "environment": config.environment,
         "concurrency": shard.concurrency,
         "prompts": config.prompts,

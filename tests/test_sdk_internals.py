@@ -483,6 +483,7 @@ class TestWriteConfig:
                         "name": "coder",
                         "agent": "gemini",
                         "model": "flash",
+                        "reasoning_effort": None,
                         "timeout_sec": 12,
                         "idle_timeout_sec": 3,
                         "skills_dir": "/role-skills",
@@ -576,6 +577,25 @@ class TestWriteConfig:
 
         data = json.loads((tmp_path / "config.json").read_text())
         assert data["agent_idle_timeout_sec"] == 45
+
+    def test_config_json_records_reasoning_effort(self, tmp_path):
+        """Guards SkillsBench PR #825 against unaudited Claude ACP effort selection."""
+        self._write(
+            tmp_path,
+            task_path=Path("/tasks/foo"),
+            agent="claude-agent-acp",
+            model="claude-opus-4-8",
+            environment="daytona",
+            sandbox_user="agent",
+            context_root=None,
+            timeout=3600,
+            started_at=datetime(2026, 4, 8),
+            agent_env={},
+            reasoning_effort="max",
+        )
+
+        data = json.loads((tmp_path / "config.json").read_text())
+        assert data["reasoning_effort"] == "max"
 
 
 def test_rollout_result_json_preserves_null_model(tmp_path):

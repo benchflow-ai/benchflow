@@ -59,6 +59,42 @@ def test_eval_create_integer_idle_timeout_lands_in_config(tmp_path: Path):
     assert captured["config"].agent_idle_timeout == 300
 
 
+def test_eval_create_reasoning_effort_lands_in_config(tmp_path: Path):
+    """Guards SkillsBench PR #825 Claude ACP runs so --reasoning-effort reaches rollout config."""
+    tasks = _make_tasks_dir(tmp_path)
+    captured: dict = {}
+
+    with _stub_evaluation_run(captured):
+        eval_create(
+            tasks_dir=tasks,
+            reasoning_effort="MAX",
+            jobs_dir=str(tmp_path / "jobs"),
+        )
+
+    assert captured["config"].reasoning_effort == "max"
+
+
+def test_eval_create_reasoning_effort_overrides_yaml_config(tmp_path: Path):
+    """Guards SkillsBench PR #825 so CLI effort overrides YAML defaults."""
+    tasks = _make_tasks_dir(tmp_path)
+    yaml_path = tmp_path / "config.yaml"
+    yaml_path.write_text(
+        "tasks_dir: " + str(tasks) + "\n"
+        "agent: claude-agent-acp\n"
+        "reasoning_effort: low\n"
+    )
+    captured: dict = {}
+
+    with _stub_evaluation_run(captured):
+        eval_create(
+            config_file=yaml_path,
+            reasoning_effort="MAX",
+            jobs_dir=str(tmp_path / "jobs"),
+        )
+
+    assert captured["config"].reasoning_effort == "max"
+
+
 def test_eval_create_none_string_disables_idle_watchdog(tmp_path: Path):
     """`--agent-idle-timeout none` maps to None so the watchdog is disabled."""
     tasks = _make_tasks_dir(tmp_path)
