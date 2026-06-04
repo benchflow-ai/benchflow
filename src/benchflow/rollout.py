@@ -45,6 +45,7 @@ import os
 import re
 import shlex
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
@@ -76,6 +77,7 @@ from benchflow.models import RolloutResult, TrajectorySource
 from benchflow.rewards.validation import validate_reward_map
 from benchflow.rollout_branch import ChildRunner
 from benchflow.rollout_branch import branch as _branch_engine
+from benchflow.sandbox.metadata import persist_sandbox_info
 from benchflow.scenes import (
     compile_scenes_to_steps,
     scene_step_prompt,
@@ -540,6 +542,7 @@ def _build_rollout_result(
     source_provenance: dict[str, Any] | None = None,
     diagnostics: RolloutDiagnostics | None = None,
     skill_policy: TaskSkillPolicy | None = None,
+    sandbox_id: str | None = None,
 ) -> RolloutResult:
     """Build RolloutResult and write result.json, timing.json, prompts.json, trajectory.
 
@@ -661,6 +664,7 @@ def _build_rollout_result(
                     if source_provenance is not None
                     else {}
                 ),
+                "sandbox_id": sandbox_id,
             },
             indent=2,
         )
@@ -783,7 +787,12 @@ def _resolve_prompts(
 
 
 async def _start_env_and_upload(
-    env: Any, task_path: Path, timing: dict, *, skip_start: bool = False
+    env: Any,
+    task_path: Path,
+    timing: dict,
+    *,
+    skip_start: bool = False,
+    on_started: Callable[[], None] | None = None,
 ) -> None:
     """Start environment and upload task files.
 
@@ -791,6 +800,12 @@ async def _start_env_and_upload(
     by the caller (Runtime with a live Environment, #388) — we still
     upload task files but must not re-run ``start()`` since most sandbox
     backends (e.g. daytona) are not idempotent.
+
+    ``on_started`` runs once the sandbox exists but *before* any upload
+    (#554/#563). Persisting the sandbox id here — not after upload —
+    closes the failure window where an upload error or interrupt after
+    Daytona creation would otherwise leave no ``sandbox.json`` to audit
+    or clean up.
     """
     if skip_start:
         logger.info(f"Reusing caller-owned environment: {task_path.name}")
@@ -800,6 +815,8 @@ async def _start_env_and_upload(
         t0 = datetime.now()
         await env.start(force_build=False)
         timing["environment_setup"] = (datetime.now() - t0).total_seconds()
+    if on_started is not None:
+        on_started()
     if (task_path / "instruction.md").exists():
         await env.upload_file(task_path / "instruction.md", "/instruction.md")
     if (task_path / "solution").is_dir():
@@ -1167,6 +1184,9 @@ class Rollout:
         # classification can fail fast on auth failures (#546/#564).
         self._provider_auth_status_cached: int | None = None
 
+        # Populated by start()
+        self._sandbox_id: str | None = None
+
         # Populated by install_agent()
         self._agent_cfg: Any = None
         self._agent_cwd: str = "/app"
@@ -1447,11 +1467,22 @@ class Rollout:
 
     async def start(self) -> None:
         """Start the environment and upload task files."""
+
+        def _capture_and_persist_sandbox() -> None:
+            # Persist the sandbox id the moment the sandbox exists, before any
+            # upload that could fail or be interrupted (#554/#563). Otherwise a
+            # mid-upload failure leaves a live Daytona sandbox with no
+            # sandbox.json to audit or clean up.
+            sid = getattr(self._env, "sandbox_id", None)
+            self._sandbox_id = sid if isinstance(sid, str) else None
+            persist_sandbox_info(self._env, self._rollout_dir)
+
         await _start_env_and_upload(
             self._env,
             self._config.task_path,
             self._timing,
             skip_start=self._env_externally_owned,
+            on_started=_capture_and_persist_sandbox,
         )
 
         for hook in self._config.pre_agent_hooks or []:
@@ -2700,6 +2731,13 @@ class Rollout:
             usage_source=usage_source,
         )
 
+    def _current_sandbox_id(self) -> str | None:
+        sandbox_id = getattr(self, "_sandbox_id", None)
+        if isinstance(sandbox_id, str):
+            return sandbox_id
+        env_sandbox_id = getattr(getattr(self, "_env", None), "sandbox_id", None)
+        return env_sandbox_id if isinstance(env_sandbox_id, str) else None
+
     def _build_result(self) -> RolloutResult:
         rollout_dir = self._require_rollout_dir()
         # For Scene/multi-turn rollouts, each execute() call records the
@@ -2739,5 +2777,6 @@ class Rollout:
                 runtime_skills_dir=self._config.skills_dir,
                 declared_sandbox_skills_dir=None,
             ),
+            sandbox_id=self._current_sandbox_id(),
             **self._usage_metrics,
         )
