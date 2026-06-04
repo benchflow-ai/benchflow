@@ -1208,6 +1208,32 @@ class DaytonaSandbox(BaseSandbox):
 
     # ── Shared helpers used by both strategies ──────────────────────────
 
+    def _on_sandbox_created(self) -> None:
+        """Persist sandbox.json the instant the Daytona sandbox id is known.
+
+        Called from ``_create_sandbox`` the moment ``self._sandbox`` is assigned
+        — before ``start()`` does its remaining (and, for DinD, long) work:
+        launching dockerd, polling ``_wait_for_docker_daemon`` for tens of
+        seconds, mkdir/chmod, compose build/up. If the run is interrupted
+        (CancelledError/SIGINT/timeout) anywhere in that stretch, the Daytona
+        sandbox already exists server-side; persisting here means there is still
+        a ``sandbox.json`` to audit and clean up (#554/#563).
+
+        Best-effort and self-contained: a missing ``rollout_paths`` (e.g. a
+        snapshot/branch sandbox built outside a rollout dir) is a no-op, and the
+        underlying write swallows-and-logs its own failures. The rollout-layer
+        ``on_started`` callback still runs after ``start()`` returns as an
+        idempotent fallback.
+        """
+        if self.rollout_paths is None:
+            return
+        # Lazy import: ``benchflow.rollout`` is a high-level module; importing it
+        # at call time (not module import) keeps the sandbox layer free of a
+        # rollout dependency and avoids any import-time cycle.
+        from benchflow.rollout import _persist_sandbox_info
+
+        _persist_sandbox_info(self, self.rollout_paths.rollout_dir)
+
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=2, min=2, max=30),
@@ -1246,6 +1272,10 @@ class DaytonaSandbox(BaseSandbox):
             self._sandbox = await asyncio.wait_for(
                 asyncio.shield(create_task), timeout=hard_timeout
             )
+            # Persist the id the moment the sandbox exists — before start()'s
+            # remaining (DinD: long) work — so an interrupt mid-start() still
+            # leaves a sandbox.json to audit/clean up (#554/#563).
+            self._on_sandbox_created()
         except TimeoutError:
             self.logger.error(
                 f"Sandbox creation timed out after {hard_timeout}s "
@@ -1256,6 +1286,9 @@ class DaytonaSandbox(BaseSandbox):
         except asyncio.CancelledError:
             try:
                 self._sandbox = await asyncio.wait_for(create_task, timeout=30)
+                # Sandbox came back even though we were cancelled — persist its
+                # id before re-raising so it is not orphaned (#554/#563).
+                self._on_sandbox_created()
             except (TimeoutError, asyncio.CancelledError, Exception):
                 create_task.cancel()
             raise

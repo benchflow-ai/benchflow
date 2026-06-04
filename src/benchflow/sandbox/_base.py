@@ -171,9 +171,11 @@ class BaseSandbox(ABC):
     def sandbox_id(self) -> str | None:
         """Provider-side identifier for this sandbox instance.
 
-        Backends that allocate a remote resource (Daytona, Modal) override
-        this to return the provider's ID once the sandbox has been created.
-        Used for post-mortem cleanup and audit.
+        Backends that allocate a remote resource override this to return the
+        provider's ID once the sandbox has been created. Today only Daytona
+        does (Modal does not expose one); Docker and process backends have no
+        provider-side id and keep this ``None``. Used for post-mortem cleanup
+        and audit.
         """
         return None
 

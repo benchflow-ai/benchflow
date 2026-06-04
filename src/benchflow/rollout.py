@@ -805,7 +805,16 @@ def _persist_sandbox_info(env: Any, rollout_dir: Path | None) -> None:
     """Write sandbox.json with provider-side sandbox ID immediately after creation.
 
     This ensures the sandbox ID is persisted even if the run is interrupted
-    before result.json is written.
+    before result.json is written. Daytona also calls this at the moment its
+    sandbox is created (inside ``start()``), not only after ``start()`` returns
+    — closing the in-``start()`` interrupt window for DinD's long daemon-wait
+    (#554/#563).
+
+    The ``sandbox.json`` write is best-effort: a failure to write it (disk full,
+    read-only dir) must not abort an otherwise-healthy run, so it is wrapped and
+    logged rather than raised. The id-capture itself is load-bearing and lives in
+    the caller (``Rollout.start``); this helper only does the best-effort file
+    write.
     """
     sandbox_id = getattr(env, "sandbox_id", None)
     if not isinstance(sandbox_id, str) or not rollout_dir:
@@ -816,7 +825,11 @@ def _persist_sandbox_info(env: Any, rollout_dir: Path | None) -> None:
         "provider": provider,
         "created_at": str(datetime.now()),
     }
-    (rollout_dir / "sandbox.json").write_text(json.dumps(info, indent=2))
+    try:
+        (rollout_dir / "sandbox.json").write_text(json.dumps(info, indent=2))
+    except Exception as e:  # best-effort: never fail start() over an audit file
+        logger.warning(f"Failed to persist sandbox.json for {sandbox_id}: {e}")
+        return
     logger.info(f"Sandbox {sandbox_id} ({provider})")
 
 

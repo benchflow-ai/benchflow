@@ -1,5 +1,6 @@
 """Tests for rollout startup uploads and sandbox info persistence."""
 
+import asyncio
 import json
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -407,3 +408,163 @@ async def test_sandbox_json_survives_upload_failure(tmp_path: Path) -> None:
 
     info = json.loads((rollout_dir / "sandbox.json").read_text())
     assert info["sandbox_id"] == "sb-failwindow"
+
+
+@pytest.mark.asyncio
+async def test_sandbox_json_survives_interrupt_inside_start(tmp_path: Path) -> None:
+    """Guards the fix from PR #563 for issue #554: the in-``start()`` interrupt
+    window. A Daytona sandbox id becomes available mid-``start()`` (right after
+    the provider create call), but ``start()`` then does substantial work — DinD
+    launches dockerd and polls for the daemon for tens of seconds — before it
+    returns. The rollout-layer ``on_started`` callback only fires after
+    ``start()`` returns, so an interrupt (CancelledError/SIGINT/timeout) in that
+    stretch would leave a live server-side sandbox with no ``sandbox.json``.
+
+    Daytona now persists the id the instant ``self._sandbox`` is assigned
+    (``_create_sandbox`` calls ``_persist_sandbox_info`` before the daemon-wait).
+    This models that: a fake env whose ``start()`` persists the id and then is
+    cancelled before returning must still leave a ``sandbox.json`` behind."""
+    rollout_dir = tmp_path / "rollout"
+    rollout_dir.mkdir()
+    task = tmp_path / "task"
+    task.mkdir()
+    (task / "instruction.md").write_text("solve\n")
+
+    class InterruptedInStartEnv(FakeUploadEnv):
+        sandbox_id = "sb-instart"
+
+        async def start(self, force_build: bool) -> None:
+            # Provider create returned: the sandbox id is now known. Persist it
+            # immediately (this is what DaytonaSandbox._create_sandbox does on
+            # assignment, before the DinD daemon-wait) ...
+            _persist_sandbox_info(self, rollout_dir)
+            # ... then get cancelled during the long daemon-wait, before start()
+            # could return and before on_started would have fired.
+            raise asyncio.CancelledError
+
+    env = InterruptedInStartEnv()
+
+    captured: list[str] = []
+
+    with pytest.raises(asyncio.CancelledError):
+        await _start_env_and_upload(
+            env,
+            task,
+            {},
+            on_started=lambda: captured.append("on_started"),
+        )
+
+    # on_started never ran (start() never returned) — proving the window is real.
+    assert captured == []
+    # ... yet sandbox.json is present, written from inside start().
+    info = json.loads((rollout_dir / "sandbox.json").read_text())
+    assert info["sandbox_id"] == "sb-instart"
+
+
+def _make_daytona_sandbox(rollout_dir: Path, create_impl):
+    """Build a bare ``DaytonaSandbox`` wired for ``_create_sandbox`` (#554/#563).
+
+    ``__init__`` materializes the daytona SDK and picks a strategy, neither of
+    which ``_create_sandbox``/``_on_sandbox_created`` need. We construct via
+    ``__new__`` and set only the attributes those two methods touch:
+    ``_client_manager`` (whose ``get_client()`` returns a fake daytona whose
+    ``create()`` runs ``create_impl``), ``task_env_config`` (for
+    ``build_timeout_sec``), ``rollout_paths`` (a real ``RolloutPaths`` at
+    ``rollout_dir``), a no-op ``logger`` and ``_sandbox=None``.
+    """
+    from benchflow.sandbox.daytona import DaytonaSandbox
+    from benchflow.task import RolloutPaths
+
+    env = DaytonaSandbox.__new__(DaytonaSandbox)
+
+    class _FakeDaytona:
+        async def create(self, params, timeout):
+            return await create_impl(params, timeout)
+
+    class _FakeClientManager:
+        async def get_client(self):
+            return _FakeDaytona()
+
+    env._client_manager = _FakeClientManager()
+    env._sandbox = None
+    env.task_env_config = MagicMock(build_timeout_sec=10)
+    env.rollout_paths = RolloutPaths(rollout_dir)
+    env.logger = MagicMock()
+    return env
+
+
+@pytest.mark.asyncio
+async def test_create_sandbox_persists_sandbox_json_normal_path(tmp_path: Path) -> None:
+    """Guards the fix from PR #563 for issue #554 at the real call site: the
+    normal ``asyncio.wait_for`` success branch of
+    ``DaytonaSandbox._create_sandbox`` must persist ``sandbox.json`` the instant
+    ``self._sandbox`` is assigned — via ``_on_sandbox_created`` — not only after
+    ``start()`` returns. Unlike ``test_sandbox_json_survives_interrupt_inside_start``
+    (which hand-calls ``_persist_sandbox_info`` from a fake ``start()``), this
+    drives the production ``_create_sandbox``/``_on_sandbox_created`` wiring, so
+    deleting the ``_on_sandbox_created()`` call in ``daytona.py`` fails it."""
+    rollout_dir = tmp_path / "rollout"
+    rollout_dir.mkdir()
+
+    class _FakeCreatedSandbox:
+        id = "sb-normal-123"
+
+    async def create_impl(params, timeout):
+        return _FakeCreatedSandbox()
+
+    env = _make_daytona_sandbox(rollout_dir, create_impl)
+
+    await env._create_sandbox(params=MagicMock())
+
+    assert env.sandbox_id == "sb-normal-123"
+    info = json.loads((rollout_dir / "sandbox.json").read_text())
+    assert info["sandbox_id"] == "sb-normal-123"
+    assert info["provider"] == "DaytonaSandbox"
+
+
+@pytest.mark.asyncio
+async def test_create_sandbox_persists_sandbox_json_on_cancelled_recovery(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Guards the fix from PR #563 for issue #554 on the
+    ``except asyncio.CancelledError`` recovery branch of
+    ``DaytonaSandbox._create_sandbox``. If the shielded first wait is cancelled
+    but the underlying ``create()`` task still yields a sandbox, the recovery
+    block awaits it, persists ``sandbox.json`` via ``_on_sandbox_created``, then
+    re-raises — so the live server-side sandbox is never orphaned without an
+    audit file. We make the first ``asyncio.wait_for`` raise ``CancelledError``
+    and let the second await the (completed) create task."""
+    import asyncio as _asyncio
+
+    rollout_dir = tmp_path / "rollout"
+    rollout_dir.mkdir()
+
+    class _FakeCreatedSandbox:
+        id = "sb-cancelled-456"
+
+    async def create_impl(params, timeout):
+        return _FakeCreatedSandbox()
+
+    env = _make_daytona_sandbox(rollout_dir, create_impl)
+
+    real_wait_for = _asyncio.wait_for
+    calls = {"n": 0}
+
+    async def fake_wait_for(awaitable, timeout):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # First (shielded) wait is interrupted — but the create task keeps
+            # running and completes, exactly as in a mid-create SIGINT/cancel.
+            raise asyncio.CancelledError
+        return await real_wait_for(awaitable, timeout)
+
+    monkeypatch.setattr("benchflow.sandbox.daytona.asyncio.wait_for", fake_wait_for)
+
+    with pytest.raises(asyncio.CancelledError):
+        await env._create_sandbox(params=MagicMock())
+
+    assert calls["n"] == 2  # both the shielded wait and the recovery wait ran
+    assert env.sandbox_id == "sb-cancelled-456"
+    info = json.loads((rollout_dir / "sandbox.json").read_text())
+    assert info["sandbox_id"] == "sb-cancelled-456"
+    assert info["provider"] == "DaytonaSandbox"
