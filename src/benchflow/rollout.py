@@ -100,6 +100,7 @@ from benchflow.trajectories._capture import (
 )
 from benchflow.trajectories.metrics import count_skill_invocations
 from benchflow.trajectories.tree import RolloutNode, RolloutTree, Step
+from benchflow.trajectories.types import redact_acp_trajectory_jsonl
 from benchflow.usage_tracking import UsageTrackingConfig
 
 logger = logging.getLogger(__name__)
@@ -604,6 +605,8 @@ def _build_rollout_result(
     # Final write — overwrites whatever the live streaming writer left
     # in place. Identical content in the normal ACP path, but this is
     # the only writer for oracle / scraped-fallback / no-session paths.
+    # Redaction is applied inside TrajectoryWriter so every write path
+    # (streaming + final) is scrubbed (#537/#585).
     TrajectoryWriter(traj_dir / "acp_trajectory.jsonl").write_final(trajectory)
     rollout_dir.mkdir(parents=True, exist_ok=True)
     (rollout_dir / "result.json").write_text(
@@ -834,7 +837,7 @@ async def _publish_trajectory_for_verifier(env, trajectory: list[dict]) -> None:
         return
     await env.exec("mkdir -p /logs/agent", user="root", timeout_sec=10)
     with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
-        f.write("\n".join(json.dumps(e, default=str) for e in trajectory))
+        f.write(redact_acp_trajectory_jsonl(trajectory))
         f.write("\n")
         tmp_path = f.name
     try:

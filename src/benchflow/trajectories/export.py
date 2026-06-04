@@ -33,6 +33,7 @@ from typing import Any, cast
 from benchflow._utils.json_safe import scrub_non_finite
 from benchflow.adapters.ors import ORSAdapter
 from benchflow.rewards.protocol import VerifyResult
+from benchflow.trajectories.types import redact_trajectory_text
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +93,16 @@ def trajectory_to_verifiers_record(
     }
 
 
+def _record_to_redacted_json_line(record: dict[str, Any]) -> str:
+    clean = scrub_non_finite(record)
+    raw = json.dumps(clean, default=str, allow_nan=False)
+    return redact_trajectory_text(raw)
+
+
+def _redact_verifiers_record(record: dict[str, Any]) -> dict[str, Any]:
+    return cast(dict[str, Any], json.loads(_record_to_redacted_json_line(record)))
+
+
 def export_trajectories_to_jsonl(
     records: list[dict[str, Any]], path: str | Path
 ) -> None:
@@ -107,8 +118,7 @@ def export_trajectories_to_jsonl(
     out.parent.mkdir(parents=True, exist_ok=True)
     with out.open("w") as f:
         for rec in records:
-            clean = scrub_non_finite(rec)
-            f.write(json.dumps(clean, default=str, allow_nan=False) + "\n")
+            f.write(_record_to_redacted_json_line(rec) + "\n")
 
 
 def _tool_call_to_content(event: dict[str, Any]) -> str:
@@ -261,8 +271,9 @@ def write_rollout_verifiers_jsonl(
         is_truncated=is_truncated,
     )
     out = Path(rollout_dir) / ROLLOUT_ARTIFACT_RELPATH
-    export_trajectories_to_jsonl([record], out)
-    return record
+    redacted_record = _redact_verifiers_record(record)
+    export_trajectories_to_jsonl([redacted_record], out)
+    return redacted_record
 
 
 def write_job_verifiers_jsonl(job_dir: str | Path) -> Path | None:
@@ -289,5 +300,5 @@ def write_job_verifiers_jsonl(job_dir: str | Path) -> Path | None:
                 continue
             if not text.endswith("\n"):
                 text = text + "\n"
-            fout.write(text)
+            fout.write(redact_trajectory_text(text))
     return out

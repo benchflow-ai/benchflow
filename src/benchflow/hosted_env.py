@@ -33,6 +33,7 @@ from benchflow._utils.result_metadata import (
     trajectory_summary_from_events,
 )
 from benchflow.diagnostics import RolloutDiagnostics
+from benchflow.trajectories.types import redact_acp_trajectory_jsonl
 
 logger = logging.getLogger(__name__)
 
@@ -480,8 +481,7 @@ def _write_run_artifacts(
     }
 
     (result.run_dir / "trajectory" / "acp_trajectory.jsonl").write_text(
-        "\n".join(json.dumps(e, default=str) for e in trajectory)
-        + ("\n" if trajectory else "")
+        redact_acp_trajectory_jsonl(trajectory) + ("\n" if trajectory else "")
     )
 
     result_payload: dict[str, Any] = {

@@ -1,5 +1,6 @@
 """Trajectory types — raw LLM API request/response pairs captured from providers."""
 
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -172,6 +173,110 @@ def _exchange_token_usage(exchange: "LLMExchange") -> TokenUsage:
     )
 
 
+# Token families are redacted *whole* — prefix included — so the v0.5
+# secret-leak audit (which greps for raw prefixes like ``AIzaSy``/``dtn_``)
+# sees no live-key shape (#537/#585). Keeping the prefix (``AIzaSy***``) would
+# still trip that grep, so the entire matched token becomes ``***REDACTED***``.
+_REDACTION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    # Anthropic: sk-ant-api03-...
+    (re.compile(r"sk-ant-[a-zA-Z0-9_-]{12,}"), "***REDACTED***"),
+    # OpenAI project key: sk-proj-...  (before generic sk- so it wins)
+    (re.compile(r"sk-proj-[a-zA-Z0-9_-]{12,}"), "***REDACTED***"),
+    # OpenAI / generic sk- (alphanumeric only — widening to include `-` would
+    # match common slugs like `task-sk-us-east-1-...`)
+    (re.compile(r"sk-[a-zA-Z0-9]{12,}"), "***REDACTED***"),
+    # Google AI / Gemini: AIzaSy... (≥20 char suffix avoids matching `AIzaSy`
+    # alone). Prefix is redacted too so the audit grep for `AIzaSy` is clean.
+    (re.compile(r"AIzaSy[A-Za-z0-9_-]{20,}"), "***REDACTED***"),
+    # AWS access keys: AKIA/ASIA + exactly 16 chars; length anchor avoids
+    # matching English words like "ASIAPACIFIC".
+    (re.compile(r"(?:AKIA|ASIA)[A-Z0-9]{16}(?![A-Z0-9])"), "***REDACTED***"),
+    # Daytona SDK tokens: dtn_... — ≥16 char suffix avoids short ids (`dtn_v2`).
+    (re.compile(r"dtn_[A-Za-z0-9_]{16,}"), "***REDACTED***"),
+    # Header / key-value secret carriers, in BOTH JSON and raw-text forms
+    # (agents print env, curl -v, request logs into trajectories — #585).
+    # Matches: `"x-api-key": "v"`, `x-api-key: v`, `api-key=v`,
+    # `authorization: <scheme> v`, etc. The name is kept; the value is dropped.
+    # Hyphenated header names (x-api-key / api-key / x-goog-api-key). No leading
+    # boundary needed — the hyphen makes them safe from matching inside
+    # underscore variable names. Value excludes backslash so a literal
+    # JSON-escaped `\n` after one secret can't swallow the next header, and
+    # excludes `*` so an already-redacted value isn't re-matched.
+    (
+        re.compile(
+            r'((?:"?(?:x-api-key|x-goog-api-key|api-key)"?)\s*[:=]\s*"?)'
+            r'[^"\s,}\\*]+',
+            re.IGNORECASE,
+        ),
+        r"\1***REDACTED***",
+    ),
+    # Underscore form `api_key`. No leading boundary: namespaced env dumps like
+    # `GEMINI_API_KEY=secret` / `AZURE_OPENAI_API_KEY=...` and JSON keys such as
+    # `"openai_api_key"` must redact too (#585). The `\1` capture preserves the
+    # whole matched name+separator, so the key name (e.g. `GEMINI_API_KEY=`) is
+    # kept and only the value is dropped — no over-redaction of the name.
+    (
+        re.compile(
+            r'("?api_key"?\s*[:=]\s*"?)[^"\s,}\\*]+',
+            re.IGNORECASE,
+        ),
+        r"\1***REDACTED***",
+    ),
+    # authorization header WITH a scheme (Bearer/Token/Basic/…): keep scheme.
+    (
+        re.compile(
+            r"(?<![A-Za-z0-9_-])"
+            r'("?authorization"?\s*[:=]\s*"?(?:Bearer|Token|Basic|ApiKey)\s+)'
+            r'[^"\s,}\\*]+',
+            re.IGNORECASE,
+        ),
+        r"\1***REDACTED***",
+    ),
+    # authorization header with a bare value (no recognized scheme). The
+    # negative lookahead skips scheme-prefixed values already handled above,
+    # so `Bearer <tok>` isn't double-redacted into `***REDACTED*** ***...`.
+    (
+        re.compile(
+            r"(?<![A-Za-z0-9_-])"
+            r'("?authorization"?\s*[:=]\s*"?)'
+            r"(?!(?:Bearer|Token|Basic|ApiKey)\b)"
+            r'[^"\s,}\\*]+',
+            re.IGNORECASE,
+        ),
+        r"\1***REDACTED***",
+    ),
+]
+
+
+def redact_trajectory_text(text: str) -> str:
+    """Apply all secret-redaction patterns to *text*.
+
+    Token families (Anthropic/OpenAI/Google/AWS/Daytona) are redacted whole,
+    prefix included, so the secret-leak audit greps see no live-key shape.
+    Header/key-value carriers keep the field name but drop the value, in both
+    JSON (``"x-api-key": "v"``) and raw-text (``x-api-key: v``) forms.
+    """
+    for pattern, replacement in _REDACTION_PATTERNS:
+        text = pattern.sub(replacement, text)
+    return text
+
+
+def redact_acp_trajectory_jsonl(trajectory: list[dict[str, Any]]) -> str:
+    """Serialize an ACP trajectory list to redacted JSONL.
+
+    Each event is JSON-encoded and then run through ``redact_trajectory_text``
+    so secrets the agent echoed into ``acp_trajectory.jsonl`` (env dumps, curl
+    -v output, header logs) are stripped before the file is written or uploaded
+    (#537/#585). Returns the joined lines without a trailing newline; callers
+    that need one (e.g. uploaded copies) append it themselves.
+    """
+    import json
+
+    return "\n".join(
+        redact_trajectory_text(json.dumps(event, default=str)) for event in trajectory
+    )
+
+
 class LLMRequest(BaseModel):
     """A single request to an LLM API, captured by the proxy."""
 
@@ -272,28 +377,12 @@ class Trajectory(BaseModel):
     def to_jsonl(self, *, redact_keys: bool = True) -> str:
         """Export as JSONL (one exchange per line)."""
         import json
-        import re
 
         lines = []
         for ex in self.exchanges:
             data = ex.model_dump(mode="json")
             raw = json.dumps(data, default=str)
             if redact_keys:
-                raw = re.sub(
-                    r"(sk-ant-[a-zA-Z0-9_-]{10})[a-zA-Z0-9_-]+",
-                    r"\1***REDACTED***",
-                    raw,
-                )
-                raw = re.sub(
-                    r"(sk-[a-zA-Z0-9]{10})[a-zA-Z0-9]+",
-                    r"\1***REDACTED***",
-                    raw,
-                )
-                raw = re.sub(
-                    r'("authorization"\s*:\s*"Bearer\s+)[^"]+(")',
-                    r"\1***REDACTED***\2",
-                    raw,
-                    flags=re.IGNORECASE,
-                )
+                raw = redact_trajectory_text(raw)
             lines.append(raw)
         return "\n".join(lines)
