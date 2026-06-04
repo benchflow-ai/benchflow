@@ -103,6 +103,7 @@ GEMINI_API_KEY=... bench eval create \
   --agent gemini \
   --model gemini-3.1-pro-preview \
   --sandbox daytona \
+  --skill-mode with-skill \
   --skills-dir tasks/edit-pdf/environment/skills \
   --agent-env BENCHFLOW_SKILL_NUDGE=name
 

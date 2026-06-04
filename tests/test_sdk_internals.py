@@ -11,6 +11,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from benchflow.skill_policy import SKILL_MODE_NO_SKILL, resolve_task_skill_policy
+
 # ── _resolve_agent_env ──
 
 
@@ -375,6 +377,15 @@ class TestWriteConfig:
     def _write(self, rollout_dir, **kwargs):
         from benchflow.sdk import SDK
 
+        kwargs.setdefault(
+            "skill_policy",
+            resolve_task_skill_policy(
+                task_path=kwargs["task_path"],
+                skill_mode=SKILL_MODE_NO_SKILL,
+                runtime_skills_dir=None,
+                declared_sandbox_skills_dir=None,
+            ),
+        )
         return SDK._write_config(rollout_dir, **kwargs)
 
     def test_config_json_written(self, tmp_path):
@@ -384,7 +395,6 @@ class TestWriteConfig:
             agent="claude-agent-acp",
             model="claude-haiku-4-5-20251001",
             environment="docker",
-            skills_dir=None,
             sandbox_user=None,
             context_root=None,
             sandbox_setup_timeout=33,
@@ -398,7 +408,12 @@ class TestWriteConfig:
             "agent",
             "model",
             "environment",
-            "skills_dir",
+            "skill_mode",
+            "skill_source",
+            "requested_skills_dir",
+            "effective_skills_dir",
+            "skills_sandbox_dir",
+            "include_task_skills",
             "sandbox_user",
             "sandbox_locked_paths",
             "sandbox_setup_timeout",
@@ -414,6 +429,9 @@ class TestWriteConfig:
         assert data["agent"] == "claude-agent-acp"
         assert data["model"] == "claude-haiku-4-5-20251001"
         assert data["environment"] == "docker"
+        assert data["skill_mode"] == "no-skill"
+        assert data["include_task_skills"] is False
+        assert data["effective_skills_dir"] is None
         assert data["sandbox_setup_timeout"] == 33
         assert data["timeout_sec"] == 300
         assert data["scenes"] == []
@@ -445,7 +463,6 @@ class TestWriteConfig:
             agent="gemini",
             model="flash",
             environment="docker",
-            skills_dir=None,
             sandbox_user="agent",
             context_root=None,
             timeout=300,
@@ -486,7 +503,6 @@ class TestWriteConfig:
             agent="test",
             model=None,
             environment="docker",
-            skills_dir=None,
             sandbox_user=None,
             context_root=None,
             timeout=300,
@@ -531,7 +547,6 @@ class TestWriteConfig:
             agent="gemini",
             model="gemini-3.1-flash-lite-preview",
             environment="daytona",
-            skills_dir=None,
             sandbox_user="agent",
             context_root=None,
             timeout=300,
@@ -551,7 +566,6 @@ class TestWriteConfig:
             agent="gemini",
             model="gemini-3.1-flash-lite-preview",
             environment="daytona",
-            skills_dir=None,
             sandbox_user="agent",
             context_root=None,
             timeout=3600,

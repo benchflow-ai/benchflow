@@ -24,8 +24,6 @@ def test_eval_create_single_task_self_gen_passes_trial_config(tmp_path: Path):
     (skill_creator / "SKILL.md").write_text(
         "---\nname: skill-creator\ndescription: Create skills\n---\n# Skill Creator\n"
     )
-    provided_skills = tmp_path / "provided-skills"
-    provided_skills.mkdir()
     captured = {}
 
     async def fake_run_self_gen(config):
@@ -48,7 +46,7 @@ def test_eval_create_single_task_self_gen_passes_trial_config(tmp_path: Path):
             jobs_dir=str(tmp_path / "jobs"),
             sandbox_user="agent",
             sandbox_setup_timeout=120,
-            skills_dir=provided_skills,
+            skills_dir=None,
             skill_mode="self-gen",
             skill_creator_dir=skill_creator,
             self_gen_no_internet=True,
@@ -56,7 +54,6 @@ def test_eval_create_single_task_self_gen_passes_trial_config(tmp_path: Path):
 
     cfg = captured["config"]
     assert cfg.skill_mode == "self-gen"
-    # RolloutConfig.__post_init__ coerces str path inputs to Path (ENG-166).
-    assert cfg.skills_dir == provided_skills
+    assert cfg.skills_dir is None
     assert cfg.skill_creator_dir == str(skill_creator)
     assert cfg.self_gen_no_internet is True

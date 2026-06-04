@@ -77,7 +77,7 @@ bench eval create \
   --agent gemini \
   --model gemini-3.1-flash-lite-preview \
   --sandbox daytona \
-  --skills-dir tasks/pdf-fix/environment/skills \
+  --skill-mode with-skill \
   --agent-env BENCHFLOW_SKILL_NUDGE=name
 ```
 
@@ -107,8 +107,8 @@ bench eval create \
 | `--jobs-dir` | `jobs` | Output directory |
 | `--sandbox-user` | `agent` | Sandbox user (null for root) |
 | `--sandbox-setup-timeout` | `120` | Timeout in seconds for sandbox user setup |
-| `--skills-dir` | — | Skills directory to deploy into each task sandbox; use `auto` for each task's `environment/skills` |
-| `--skill-mode` | `default` | Skill mode: `default` or `self-gen` |
+| `--skills-dir` | — | Advanced custom skills directory; valid only with `--skill-mode with-skill`. Omit it to use each task's `environment/skills`. |
+| `--skill-mode` | `no-skill` | Skill mode: `no-skill`, `with-skill`, or `self-gen` |
 | `--skill-creator-dir` | — | Path to a `skill-creator` directory (or a skills root containing it); used when `--skill-mode self-gen` |
 | `--self-gen-no-internet` | `false` | Disable web tools for the self-generated skill run |
 | `--agent-env` | — | Agent environment variable as `KEY=VALUE`; repeatable |
@@ -118,7 +118,7 @@ bench eval create \
 When mounting skills, the recommended docs default is
 `--agent-env BENCHFLOW_SKILL_NUDGE=name`. See
 [Architecture: skill loading](../architecture.md#skill-loading) for how
-`--skills-dir` is registered with each agent and how the nudge modes differ.
+`with-skill` mode is registered with each agent and how the nudge modes differ.
 
 Daytona batch runs collect provider token/cost telemetry by default with a
 sandbox-local proxy. Use `--usage-tracking required` when missing telemetry
@@ -307,6 +307,7 @@ concurrency: 64
 sandbox_setup_timeout: 300
 agent: gemini
 model: gemini-3.1-flash-lite-preview
+skill_mode: with-skill
 skills_dir: shared-skills/
 agent_env:
   BENCHFLOW_SKILL_NUDGE: name

@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from benchflow.evaluation import Evaluation, EvaluationConfig, RetryConfig
+from benchflow.skill_policy import SKILL_MODE_NO_SKILL
 from benchflow.usage_tracking import UsageTrackingConfig
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -58,7 +59,6 @@ def _evaluation_config(raw: dict[str, Any]) -> EvaluationConfig:
         agent_env=dict(raw.get("agent_env") or {}),
         retry=_retry_config(raw),
         skills_dir=raw.get("skills_dir"),
-        include_task_skills=bool(raw.get("include_task_skills", False)),
         sandbox_user=raw.get("sandbox_user", "agent"),
         sandbox_locked_paths=raw.get("sandbox_locked_paths"),
         sandbox_setup_timeout=int(raw.get("sandbox_setup_timeout") or 120),
@@ -66,7 +66,7 @@ def _evaluation_config(raw: dict[str, Any]) -> EvaluationConfig:
         context_root=raw.get("context_root"),
         exclude_tasks=set(raw.get("exclude_tasks") or []),
         include_tasks=set(raw.get("include_tasks") or []),
-        skill_mode=raw.get("skill_mode") or "default",
+        skill_mode=raw.get("skill_mode") or SKILL_MODE_NO_SKILL,
         skill_creator_dir=raw.get("skill_creator_dir"),
         self_gen_no_internet=bool(raw.get("self_gen_no_internet", False)),
         job_mode=raw.get("job_mode") or "parallel-independent",

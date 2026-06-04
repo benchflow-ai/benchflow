@@ -5,6 +5,11 @@ from pathlib import Path
 import pytest
 
 from benchflow.evaluation import Evaluation
+from benchflow.skill_policy import (
+    SKILL_MODE_NO_SKILL,
+    SKILL_MODE_SELF_GEN,
+    SKILL_MODE_WITH_SKILL,
+)
 
 
 @pytest.fixture
@@ -73,7 +78,7 @@ def test_from_native_yaml(native_yaml):
     assert cfg.retry.max_retries == 1
     assert cfg.sandbox_setup_timeout == 45
     assert cfg.prompts == [None, "Review your solution."]
-    assert cfg.include_task_skills is False
+    assert cfg.skill_mode == SKILL_MODE_NO_SKILL
     assert job._tasks_dir == Path("tasks")
     assert job._jobs_dir == Path("output")
 
@@ -321,14 +326,16 @@ def test_native_yaml_with_skills_dir(tmp_path):
     config.write_text("""
 tasks_dir: tasks
 agent: claude-agent-acp
+skill_mode: with-skill
 skills_dir: my-skills
 """)
 
     job = Evaluation.from_yaml(config)
+    assert job._config.skill_mode == SKILL_MODE_WITH_SKILL
     assert job._config.skills_dir == "my-skills"
 
 
-def test_native_yaml_with_include_task_skills(tmp_path):
+def test_native_yaml_with_task_skill_mode(tmp_path):
     """Guards PR #586 so native YAML can explicitly enable task skills."""
     tasks = tmp_path / "tasks" / "task-a"
     tasks.mkdir(parents=True)
@@ -338,11 +345,11 @@ def test_native_yaml_with_include_task_skills(tmp_path):
     config.write_text("""
 tasks_dir: tasks
 agent: claude-agent-acp
-include_task_skills: true
+skill_mode: with-skill
 """)
 
     job = Evaluation.from_yaml(config)
-    assert job._config.include_task_skills is True
+    assert job._config.skill_mode == SKILL_MODE_WITH_SKILL
 
 
 def test_native_yaml_paths_are_cwd_relative(tmp_path):
@@ -353,12 +360,14 @@ def test_native_yaml_paths_are_cwd_relative(tmp_path):
     config.write_text("""
 tasks_dir: tasks
 jobs_dir: jobs/my-run
+skill_mode: with-skill
 skills_dir: skills
 """)
 
     job = Evaluation.from_yaml(config)
     assert job._tasks_dir == Path("tasks")
     assert job._jobs_dir == Path("jobs/my-run")
+    assert job._config.skill_mode == SKILL_MODE_WITH_SKILL
     assert job._config.skills_dir == "skills"
 
 
@@ -369,6 +378,7 @@ def test_legacy_yaml_paths_are_cwd_relative(tmp_path):
     config = config_dir / "config.yaml"
     config.write_text("""
 jobs_dir: jobs/my-run
+skill_mode: with-skill
 skills_dir: skills
 agents:
   - name: pi-acp
@@ -380,6 +390,7 @@ datasets:
     job = Evaluation.from_yaml(config)
     assert job._tasks_dir == Path("tasks")
     assert job._jobs_dir == Path("jobs/my-run")
+    assert job._config.skill_mode == SKILL_MODE_WITH_SKILL
     assert job._config.skills_dir == "skills"
 
 
@@ -387,6 +398,7 @@ def test_native_yaml_without_skills_dir(native_yaml):
     """Test that skills_dir defaults to None."""
     job = Evaluation.from_yaml(native_yaml)
     assert job._config.skills_dir is None
+    assert job._config.skill_mode == SKILL_MODE_NO_SKILL
 
 
 def test_native_yaml_with_self_gen_skill_mode(tmp_path):
@@ -407,7 +419,7 @@ self_gen_no_internet: true
 """)
 
     job = Evaluation.from_yaml(config)
-    assert job._config.skill_mode == "self-gen"
+    assert job._config.skill_mode == SKILL_MODE_SELF_GEN
     assert job._config.skill_creator_dir == "skills"
     assert job._config.self_gen_no_internet is True
 

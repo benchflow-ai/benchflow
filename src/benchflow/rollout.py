@@ -45,7 +45,7 @@ import os
 import re
 import shlex
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -79,7 +79,11 @@ from benchflow.scenes import (
     scene_step_skills_dir,
 )
 from benchflow.skill_policy import (
-    resolve_runtime_skills_dir,
+    SKILL_MODE_NO_SKILL,
+    SKILL_MODE_SELF_GEN,
+    SKILL_MODE_WITH_SKILL,
+    TaskSkillPolicy,
+    normalize_skill_mode,
     resolve_task_skill_policy,
     strip_task_bundled_skills,
     task_bundled_skills_dir,
@@ -97,8 +101,6 @@ from benchflow.usage_tracking import UsageTrackingConfig
 logger = logging.getLogger(__name__)
 
 _DISALLOW_WEB_TOOLS_ENV = "BENCHFLOW_DISALLOW_WEB_TOOLS"
-SKILL_MODE_DEFAULT = "default"
-SKILL_MODE_SELF_GEN = "self-gen"
 GENERATED_SKILLS_ROOT = "/app/generated-skills"
 
 
@@ -106,6 +108,19 @@ def _task_disallows_internet(task: Any) -> bool:
     """Return True when task.toml requests no internet for the agent task."""
     env_config = getattr(getattr(task, "config", None), "environment", None)
     return getattr(env_config, "allow_internet", True) is False
+
+
+def _environment_uses_prebuilt_image(
+    env_config: object | None, environment_manifest: EnvironmentManifest | None
+) -> bool:
+    """Return True when sandbox startup will skip the task Dockerfile build."""
+    if env_config is not None and getattr(env_config, "docker_image", None):
+        return True
+    if environment_manifest is None:
+        return False
+    from benchflow.environment.manifest import resolve_manifest_image
+
+    return bool(resolve_manifest_image(environment_manifest))
 
 
 def _apply_web_policy(agent_env: dict[str, str], *, disallow: bool) -> dict[str, str]:
@@ -142,10 +157,11 @@ def _skill_nudge(agent_env: dict[str, str] | None) -> str:
 
 
 def _safe_skill_name(value: str) -> str:
-    """Return a filesystem-safe generated skill directory name."""
+    """Return an AgentSkills-compatible generated skill directory name."""
     import re
 
-    name = re.sub(r"[^A-Za-z0-9_.-]+", "-", value.strip().lower()).strip("-")
+    name = re.sub(r"[^a-z0-9]+", "-", value.strip().lower())
+    name = re.sub(r"-+", "-", name).strip("-")
     return name or "generated-task"
 
 
@@ -395,7 +411,7 @@ def _write_config(
     agent: str,
     model: str | None,
     environment: str,
-    skills_dir: str | Path | None,
+    skill_policy: TaskSkillPolicy,
     sandbox_user: str | None,
     context_root: str | Path | None,
     sandbox_locked_paths: list[str] | None = None,
@@ -408,7 +424,6 @@ def _write_config(
     agent_idle_timeout: int | None = None,
     scenes: list[Scene] | None = None,
     source_provenance: dict[str, Any] | None = None,
-    include_task_skills: bool = False,
 ) -> None:
     """Write config.json to rollout_dir with secrets filtered out."""
     recorded_env = {
@@ -419,8 +434,7 @@ def _write_config(
         "agent": agent,
         "model": model,
         "environment": environment,
-        "skills_dir": str(skills_dir) if skills_dir else None,
-        "include_task_skills": include_task_skills,
+        **skill_policy.config_metadata(),
         "sandbox_user": sandbox_user,
         "sandbox_locked_paths": sandbox_locked_paths,
         "sandbox_setup_timeout": sandbox_setup_timeout,
@@ -499,6 +513,7 @@ def _build_rollout_result(
     evolved_skills: dict[str, str] | None = None,
     source_provenance: dict[str, Any] | None = None,
     diagnostics: RolloutDiagnostics | None = None,
+    skill_policy: TaskSkillPolicy | None = None,
 ) -> RolloutResult:
     """Build RolloutResult and write result.json, timing.json, prompts.json, trajectory.
 
@@ -508,6 +523,13 @@ def _build_rollout_result(
     """
     if diagnostics is None:
         diagnostics = RolloutDiagnostics()
+    if skill_policy is None:
+        skill_policy = resolve_task_skill_policy(
+            task_path=Path(task_name),
+            skill_mode=SKILL_MODE_NO_SKILL,
+            runtime_skills_dir=None,
+            declared_sandbox_skills_dir=None,
+        )
     finished_at = datetime.now()
     n_skill_invocations = count_skill_invocations(trajectory)
     error_category = (
@@ -586,6 +608,7 @@ def _build_rollout_result(
                 "agent": result.agent,
                 "agent_name": result.agent_name,
                 "model": result.model,
+                **skill_policy.config_metadata(),
                 "n_tool_calls": result.n_tool_calls,
                 "n_skill_invocations": result.n_skill_invocations,
                 "n_prompts": result.n_prompts,
@@ -936,11 +959,11 @@ class RolloutConfig:
     model: str | None = None
     agent_env: dict[str, str] | None = None
     skills_dir: str | Path | None = None
-    skill_mode: str = SKILL_MODE_DEFAULT
+    skill_mode: str = SKILL_MODE_NO_SKILL
+    artifact_skill_mode: str | None = None
     skill_creator_dir: str | Path | None = None
     generated_skills_root: str = GENERATED_SKILLS_ROOT
     self_gen_no_internet: bool = False
-    include_task_skills: bool = False
     skip_verify: bool = False
     export_generated_skills_to: str | Path | None = None
     source_provenance: dict[str, Any] | None = None
@@ -953,7 +976,13 @@ class RolloutConfig:
             self.task_path = Path(self.task_path)
         if self.context_root is not None and not isinstance(self.context_root, Path):
             self.context_root = Path(self.context_root)
-        self.skills_dir = resolve_runtime_skills_dir(self.task_path, self.skills_dir)
+        if self.skills_dir is not None and not isinstance(self.skills_dir, Path):
+            self.skills_dir = Path(self.skills_dir)
+        self.skill_mode = normalize_skill_mode(self.skill_mode)
+        if self.artifact_skill_mode is not None:
+            self.artifact_skill_mode = normalize_skill_mode(self.artifact_skill_mode)
+        if self.skills_dir is not None and self.skill_mode != SKILL_MODE_WITH_SKILL:
+            raise ValueError("skills_dir requires skill_mode='with-skill'")
         if not isinstance(self.jobs_dir, Path):
             self.jobs_dir = Path(self.jobs_dir)
 
@@ -974,22 +1003,17 @@ class RolloutConfig:
         model: str | None = None,
         prompts: list[str | None] | None = None,
         skills_dir: str | Path | None = None,
-        skill_mode: str = SKILL_MODE_DEFAULT,
+        skill_mode: str = SKILL_MODE_NO_SKILL,
         skill_creator_dir: str | Path | None = None,
         generated_skills_root: str = GENERATED_SKILLS_ROOT,
         self_gen_no_internet: bool = False,
         **kwargs,
     ) -> RolloutConfig:
         """Construct from flat SDK.run()-style args."""
-        scenes = []
-        if skill_mode not in {SKILL_MODE_DEFAULT, SKILL_MODE_SELF_GEN}:
-            raise ValueError(f"Unknown skill_mode: {skill_mode}")
-        if skill_mode == SKILL_MODE_DEFAULT:
-            scenes = [
-                Scene.single(
-                    agent=agent, model=model, prompts=prompts, skills_dir=skills_dir
-                )
-            ]
+        mode = normalize_skill_mode(skill_mode)
+        scenes = [] if mode == SKILL_MODE_SELF_GEN else [
+            Scene.single(agent=agent, model=model, prompts=prompts)
+        ]
         return cls(
             task_path=task_path,
             scenes=scenes,
@@ -997,7 +1021,8 @@ class RolloutConfig:
             model=model,
             prompts=prompts,
             skills_dir=skills_dir,
-            skill_mode=skill_mode,
+            skill_mode=mode,
+            artifact_skill_mode=mode,
             skill_creator_dir=skill_creator_dir,
             generated_skills_root=generated_skills_root,
             self_gen_no_internet=self_gen_no_internet,
@@ -1007,23 +1032,26 @@ class RolloutConfig:
     @property
     def effective_scenes(self) -> list[Scene]:
         """Scenes to execute — falls back to legacy fields if scenes is empty."""
+        if self.scenes:
+            return self.scenes
         if self.skill_mode == SKILL_MODE_SELF_GEN:
             raise ValueError(
                 "self-gen requires the runtime orchestrator. Use bf.run(), "
                 "Evaluation.run(), or bf.run(RolloutConfig(...)) instead of Rollout scenes."
             )
-        if self.scenes:
-            return self.scenes
-        if self.skill_mode != SKILL_MODE_DEFAULT:
+        if self.skill_mode not in {SKILL_MODE_NO_SKILL, SKILL_MODE_WITH_SKILL}:
             raise ValueError(f"Unknown skill_mode: {self.skill_mode}")
         return [
             Scene.single(
                 agent=self.agent,
                 model=self.model,
                 prompts=self.prompts,
-                skills_dir=self.skills_dir,
             )
         ]
+
+    @property
+    def recorded_skill_mode(self) -> str:
+        return self.artifact_skill_mode or self.skill_mode
 
     @property
     def primary_agent(self) -> str:
@@ -1077,6 +1105,7 @@ class Rollout:
         self._disallow_web_tools: bool = False
         self._effective_skills_dir: Path | None = None
         self._effective_skills_sandbox_dir: str | None = None
+        self._task_skill_policy: TaskSkillPolicy | None = None
         self._usage_runtime: Any = None
         self._usage_metrics: dict[str, Any] = self._planes.extract_usage(None)
 
@@ -1251,9 +1280,9 @@ class Rollout:
         env_config = getattr(getattr(self._task, "config", None), "environment", None)
         task_skill_policy = resolve_task_skill_policy(
             task_path=cfg.task_path,
+            skill_mode=cfg.recorded_skill_mode,
             runtime_skills_dir=cfg.skills_dir,
             declared_sandbox_skills_dir=getattr(env_config, "skills_dir", None),
-            include_task_skills=cfg.include_task_skills,
         )
         self._task_skill_policy = task_skill_policy
         self._resolved_prompts = _resolve_prompts(
@@ -1295,13 +1324,17 @@ class Rollout:
             and effective_task_path != cfg.task_path
         ):
             effective_skills_dir = task_bundled_skills_dir(effective_task_path)
-        if effective_skills_dir is not None:
+        if effective_skills_dir is not None and not _environment_uses_prebuilt_image(
+            env_config, cfg.environment_manifest
+        ):
             self._planes.inject_skills_into_dockerfile(
                 effective_task_path,
                 effective_skills_dir,
                 sandbox_dir=task_skill_policy.sandbox_dir or "/skills",
             )
 
+        task_skill_policy = replace(task_skill_policy, host_dir=effective_skills_dir)
+        self._task_skill_policy = task_skill_policy
         self._effective_task_path = effective_task_path
         self._effective_skills_dir = effective_skills_dir
         self._effective_skills_sandbox_dir = task_skill_policy.sandbox_dir
@@ -1334,8 +1367,7 @@ class Rollout:
             agent=cfg.primary_agent,
             model=cfg.primary_model,
             environment=cfg.environment,
-            skills_dir=cfg.skills_dir,
-            include_task_skills=cfg.include_task_skills,
+            skill_policy=task_skill_policy,
             sandbox_user=cfg.sandbox_user,
             context_root=cfg.context_root,
             sandbox_locked_paths=self._effective_locked,
@@ -1426,8 +1458,6 @@ class Rollout:
                 None,
                 cfg.sandbox_user,
                 self._agent_cwd,
-                self._task,
-                include_task_skills=False,
                 skills_sandbox_dir=self._effective_skills_sandbox_dir,
             )
             if cfg.export_generated_skills_to:
@@ -1481,8 +1511,6 @@ class Rollout:
             self._agent_cfg,
             cfg.sandbox_user,
             self._agent_cwd,
-            self._task,
-            include_task_skills=False,
             skills_sandbox_dir=self._effective_skills_sandbox_dir,
         )
         if cfg.export_generated_skills_to:
@@ -2612,5 +2640,12 @@ class Rollout:
             source_provenance=self._config.source_provenance,
             diagnostics=self._diagnostics,
             usage_tracking=self._usage_tracking_metadata(),
+            skill_policy=getattr(self, "_task_skill_policy", None)
+            or resolve_task_skill_policy(
+                task_path=self._config.task_path,
+                skill_mode=self._config.recorded_skill_mode,
+                runtime_skills_dir=self._config.skills_dir,
+                declared_sandbox_skills_dir=None,
+            ),
             **self._usage_metrics,
         )
