@@ -85,6 +85,30 @@ class TestHasDepInstallFailure:
         p.write_text("x" * (256 * 1024) + " no solution found\n")
         assert _has_dep_install_failure(p) is True
 
+    def test_early_marker_with_long_trailing_output(self, tmp_path):
+        """PR #572 / issue #540: dep-install runs at the START of test.sh, so a
+        resolver-failure marker on an EARLY line can be followed by far more than
+        the old 30-line tail window. Scanning the whole file must still detect
+        it (a tail-only scan silently misclassified it as a generic failure)."""
+        p = tmp_path / "test-stdout.txt"
+        early = "Resolving dependencies...\nx No solution found resolving torch\n"
+        trailing = "".join(f"falling back / cleanup line {i}\n" for i in range(500))
+        p.write_text(early + trailing)
+        assert _has_dep_install_failure(p) is True
+
+    def test_marker_spanning_chunk_boundary(self, tmp_path):
+        """PR #572: a marker straddling a fixed-chunk read boundary must still be
+        caught (the chunked scan carries a small overlap across reads)."""
+        from benchflow.task.verifier import _SCAN_CHUNK_BYTES
+
+        p = tmp_path / "test-stdout.txt"
+        marker = "no solution found"
+        # Place the marker so it begins a few bytes before a chunk boundary and
+        # ends after it, then bury it under lots of trailing output.
+        prefix = "a" * (_SCAN_CHUNK_BYTES - 5)
+        p.write_text(prefix + marker + "\n" + "trailing\n" * 1000)
+        assert _has_dep_install_failure(p) is True
+
 
 # ---------------------------------------------------------------------------
 # Production wiring: _verify_test_script raises a redacted, classifiable error

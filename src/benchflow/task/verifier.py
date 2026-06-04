@@ -15,7 +15,6 @@ import json
 import logging
 import shlex
 import shutil
-from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -61,8 +60,6 @@ class RubricNotFoundError(Exception):
     """Raised when an llm-judge verifier cannot locate its rubric file."""
 
 
-_TAIL_LINES = 30
-
 # Lines that mark a dependency-install failure in ``test-stdout.txt`` (the uv/
 # pip resolver output). When one is present we surface a FIXED, secret-free
 # diagnostic — never the raw stdout — so ``classify_verifier_error`` can return
@@ -86,9 +83,12 @@ _DEP_INSTALL_DIAGNOSTIC = (
     "artifacts for resolver output)"
 )
 
-# Bytes of stdout scanned for markers. Streaming-bounded so a verifier emitting
-# a single huge line can't bloat memory; we never persist any of it.
-_SCAN_MAX_BYTES = 64 * 1024
+# Size of each fixed chunk streamed off disk while scanning for markers. The
+# whole file is scanned (dep-install runs at the START of test.sh, so the marker
+# can be buried under arbitrarily many trailing lines — see PR #572), but only
+# one bounded chunk is ever held in memory at a time, so a verifier emitting a
+# single huge line can't bloat memory. We never persist any of the scanned text.
+_SCAN_CHUNK_BYTES = 64 * 1024
 
 
 def _has_dep_install_failure(path: Path) -> bool:
@@ -96,15 +96,34 @@ def _has_dep_install_failure(path: Path) -> bool:
 
     Only the boolean verdict leaves this function — the scanned text is never
     returned or persisted, so no secret-bearing stdout can reach result
-    metadata (PR #572). Reads at most ``_SCAN_MAX_BYTES`` from the file tail.
+    metadata (PR #572).
+
+    The ENTIRE file is scanned from the start in fixed ``_SCAN_CHUNK_BYTES``
+    chunks (with a small overlap so a marker straddling a chunk boundary is
+    still caught), short-circuiting on the first marker. uv/pip install runs at
+    the START of ``test.sh``, so its failure marker may be followed by many
+    lines of trailing output (fallback attempts, cleanup, partial tests); a
+    tail-only scan would silently drop it (PR #572). Memory stays bounded — at
+    most one chunk plus the overlap is held at a time, regardless of file size.
     """
+    # Longest marker minus one byte: enough overlap to catch a marker split
+    # across two reads without rescanning whole chunks.
+    overlap = max(len(m) for m in _DEP_INSTALL_MARKERS) - 1
     try:
         with path.open(errors="replace") as f:
-            chunk = deque(f, maxlen=_TAIL_LINES)
+            carry = ""
+            while True:
+                chunk = f.read(_SCAN_CHUNK_BYTES)
+                if not chunk:
+                    return False
+                window = (carry + chunk).lower()
+                if any(marker in window for marker in _DEP_INSTALL_MARKERS):
+                    return True
+                # Keep the tail of this chunk so a boundary-spanning marker is
+                # found on the next read; bound it to the overlap size.
+                carry = chunk[-overlap:] if overlap else ""
     except OSError:
         return False
-    text = "".join(chunk)[-_SCAN_MAX_BYTES:].lower()
-    return any(marker in text for marker in _DEP_INSTALL_MARKERS)
 
 
 class Verifier:
@@ -348,7 +367,7 @@ class Verifier:
                     f"{self._rollout_paths.reward_json_path}"
                 )
             # Surface ONLY a fixed, secret-free dep-install diagnostic (never
-            # the raw stdout tail) so classify_verifier_error can return
+            # any scanned stdout) so classify_verifier_error can return
             # VERIFIER_DEP_INSTALL without leaking untrusted subprocess output
             # into result metadata (#572). Raw resolver output remains in the
             # downloaded verifier/test-stdout.txt artifact.
