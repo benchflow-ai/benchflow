@@ -471,9 +471,25 @@ class TestACPIdleWatchdog:
     async def test_idle_watchdog_returns_even_when_prompt_cancel_drain_stalls(
         self,
     ) -> None:
-        """Guards the 2026-05-22 Daytona/Gemini blocker fix against stuck cancel drain."""
-        from benchflow.acp.runtime import execute_prompts
+        """Guards the 2026-05-22 Daytona/Gemini blocker fix against stuck cancel drain.
 
+        When the idle watchdog fires it cancels the prompt task and drains it.
+        A non-cooperative agent — here one that swallows the cancellation and
+        blocks on an event that never arrives — must not be able to wedge the
+        watchdog: it bounds the drain and raises ``IdleTimeoutError`` anyway.
+
+        Determinism: this asserts the *behaviour* (idle error raised; the stuck
+        prompt task abandoned while still pending) rather than a wall-clock upper
+        bound, so it cannot be squeezed into a spurious failure when the full
+        suite loads the event loop. The outer ``wait_for`` is only a hang guard;
+        its timeout is deliberately loose (far above the real ~1.25s runtime), so
+        load can never trip it, while a regression to an unbounded drain hangs
+        past it and fails.
+        """
+        from benchflow.acp.runtime import IdleTimeoutError, execute_prompts
+
+        # release is never set while the watchdog runs, so the prompt task stays
+        # wedged in its cancellation handler — exactly the stuck-drain scenario.
         class StubbornPromptClient:
             def __init__(self) -> None:
                 self.release = asyncio.Event()
@@ -490,9 +506,12 @@ class TestACPIdleWatchdog:
         client = StubbornPromptClient()
         session = ACPSession("idle-session")
 
+        # Loose hang guard: ~4x the real runtime (1s idle detect + 0.25s bounded
+        # drain). Not a tight assertion — it only catches a true hang/regression.
+        hang_guard_sec = 5.0
+
         try:
-            started = asyncio.get_running_loop().time()
-            with pytest.raises(TimeoutError, match="Agent idle for 1s"):
+            with pytest.raises(IdleTimeoutError, match="Agent idle for 1s"):
                 await asyncio.wait_for(
                     execute_prompts(
                         client,  # type: ignore[arg-type]
@@ -501,10 +520,13 @@ class TestACPIdleWatchdog:
                         timeout=30,
                         idle_timeout=1,
                     ),
-                    timeout=1.8,
+                    timeout=hang_guard_sec,
                 )
-            elapsed = asyncio.get_running_loop().time() - started
-            assert elapsed < 1.35
+            # The watchdog returned while the stuck prompt task is still wedged on
+            # release.wait(): proves it bounded the drain instead of waiting for a
+            # cancellation that never completes. Load-independent — no clock math.
+            assert client.task is not None
+            assert not client.task.done()
         finally:
             client.release.set()
             if client.task is not None:
