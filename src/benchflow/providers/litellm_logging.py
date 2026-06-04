@@ -6,8 +6,6 @@ import json
 from datetime import datetime
 from typing import Any
 
-from benchflow.agents.providers import strip_provider_prefix
-from benchflow.trajectories.pricing import PRICING_USD_PER_MTOK, PricingEntry
 from benchflow.trajectories.types import (
     LLMExchange,
     LLMRequest,
@@ -120,11 +118,20 @@ class BenchFlowLiteLLMLogger(CustomLogger):
     async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
         record = self._base_record(kwargs, start_time, end_time)
         response = _jsonable(response_obj)
+        # Cost comes from LiteLLM. Prefer the value the proxy already computed
+        # (it honors per-deployment input_cost_per_token for custom models);
+        # fall back to recomputing from litellm.model_cost.
         cost = None
         try:
-            cost = litellm.completion_cost(completion_response=response_obj)
+            hidden = getattr(response_obj, "_hidden_params", None) or {}
+            cost = hidden.get("response_cost")
         except Exception:
             cost = None
+        if cost is None:
+            try:
+                cost = litellm.completion_cost(completion_response=response_obj)
+            except Exception:
+                cost = None
         record.update(
             {
                 "event": "success",
@@ -252,94 +259,32 @@ def usage_unavailable() -> dict[str, Any]:
     }
 
 
-def _pricing_model_key(model: str) -> str:
-    bare = strip_provider_prefix(model).lower()
-    bare = bare.removeprefix("models/")
-    marker = "anthropic."
-    if marker in bare:
-        bare = bare.split(marker, 1)[1]
-    for prefix in ("bedrock/", "anthropic/", "openai/", "gemini/", "azure/", "azure_ai/"):
-        bare = bare.removeprefix(prefix)
-    return bare
-
-
-def _pricing_for_model(model: str | None) -> PricingEntry | None:
-    if not model:
-        return None
-    bare = _pricing_model_key(model)
-    for prefix, pricing in PRICING_USD_PER_MTOK.items():
-        if bare.startswith(prefix):
-            return pricing
-    return None
-
-
-def _estimate_cost_usd(
-    *,
-    model: str | None,
-    input_tokens: int,
-    output_tokens: int,
-    cache_read_tokens: int,
-    cache_creation_tokens: int,
-) -> float | None:
-    pricing = _pricing_for_model(model)
-    if pricing is None:
-        return None
-    priced_input_tokens = max(
-        input_tokens - cache_read_tokens - cache_creation_tokens,
-        0,
-    )
-    cost = (
-        priced_input_tokens * pricing.input
-        + output_tokens * pricing.output
-        + cache_read_tokens * pricing.cache_read
-        + cache_creation_tokens * pricing.cache_creation
-    ) / 1_000_000
-    return round(cost, 10)
-
-
-def _model_from_trajectory(trajectory: Trajectory, fallback: str | None) -> str | None:
-    for exchange in trajectory.exchanges:
-        for payload in (exchange.response.body, exchange.request.body):
-            model = payload.get("model") if isinstance(payload, dict) else None
-            if isinstance(model, str) and model:
-                return model
-    return fallback
-
-
 def extract_usage_from_trajectory(
     trajectory: Trajectory | None,
     *,
-    fallback_model: str | None,
+    fallback_model: str | None = None,
 ) -> dict[str, Any]:
-    """Return aggregate usage metrics from a LiteLLM-imported trajectory."""
+    """Return aggregate usage metrics from a LiteLLM-imported trajectory.
+
+    Token counts come from the provider response; cost is whatever LiteLLM
+    computed (``litellm.completion_cost`` / per-deployment ``input_cost_per_token``
+    for custom models), summed by the callback importer. BenchFlow performs no
+    cost calculation of its own — LiteLLM is the single source of truth.
+    """
+    del fallback_model  # no longer needed; kept for call-site compatibility
     if trajectory is None or not trajectory.exchanges:
         return usage_unavailable()
     if not trajectory.has_provider_usage:
         return usage_unavailable()
 
-    input_tokens = trajectory.total_input_tokens
-    output_tokens = trajectory.total_output_tokens
-    cache_read_tokens = trajectory.total_cache_read_tokens
-    cache_creation_tokens = trajectory.total_cache_creation_tokens
-    total_tokens = trajectory.total_provider_tokens
-    model = _model_from_trajectory(trajectory, fallback_model)
-    pricing = _pricing_for_model(model)
     cost_usd = trajectory.total_cost_usd
-    if cost_usd is None:
-        cost_usd = _estimate_cost_usd(
-            model=model,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            cache_read_tokens=cache_read_tokens,
-            cache_creation_tokens=cache_creation_tokens,
-        )
     return {
-        "n_input_tokens": input_tokens,
-        "n_output_tokens": output_tokens,
-        "n_cache_read_tokens": cache_read_tokens,
-        "n_cache_creation_tokens": cache_creation_tokens,
-        "total_tokens": total_tokens,
+        "n_input_tokens": trajectory.total_input_tokens,
+        "n_output_tokens": trajectory.total_output_tokens,
+        "n_cache_read_tokens": trajectory.total_cache_read_tokens,
+        "n_cache_creation_tokens": trajectory.total_cache_creation_tokens,
+        "total_tokens": trajectory.total_provider_tokens,
         "cost_usd": cost_usd,
         "usage_source": "provider_response",
-        "price_source": pricing.price_source if cost_usd is not None and pricing else None,
+        "price_source": "litellm" if cost_usd is not None else None,
     }

@@ -481,3 +481,89 @@ def test_to_jsonl_redacts_provider_secrets():
     assert "***REDACTED***" in redacted
     # Disabling redaction keeps the raw content (guards against over-redaction).
     assert anthropic_key in trajectory.to_jsonl(redact_keys=False)
+
+
+# --------------------------------------------------------------------------- #
+# Cost: LiteLLM is the single source; custom prices injected per-route          #
+# --------------------------------------------------------------------------- #
+
+
+def test_custom_cost_per_token_substring_match(monkeypatch):
+    from benchflow.providers import litellm_config
+
+    monkeypatch.setattr(
+        litellm_config, "MODEL_COST_PER_TOKEN", {"minimax-m3": (3e-7, 1.2e-6)}
+    )
+    assert litellm_config.custom_cost_per_token("openai/MiniMax-M3") == (3e-7, 1.2e-6)
+    assert litellm_config.custom_cost_per_token("gemini/gemini-3.5-flash") is None
+
+
+def test_litellm_config_injects_custom_cost_into_route(monkeypatch):
+    from benchflow.providers import litellm_config
+    from benchflow.providers.litellm_config import (
+        litellm_proxy_config,
+        resolve_litellm_route,
+    )
+
+    monkeypatch.setattr(
+        litellm_config, "MODEL_COST_PER_TOKEN", {"minimax-m3": (3e-7, 1.2e-6)}
+    )
+    route = resolve_litellm_route(
+        "minimax/MiniMax-M3",
+        {"MINIMAX_API_KEY": "k", "MINIMAX_BASE_URL": "https://api.minimax.io/v1"},
+    )
+    config = litellm_proxy_config(route, master_key="sk-master")
+    for entry in config["model_list"]:
+        params = entry["litellm_params"]
+        assert params["input_cost_per_token"] == 3e-7
+        assert params["output_cost_per_token"] == 1.2e-6
+
+
+def test_litellm_config_no_cost_injection_for_litellm_priced_model():
+    # gemini is priced by litellm.model_cost; benchflow must not inject anything.
+    from benchflow.providers.litellm_config import (
+        litellm_proxy_config,
+        resolve_litellm_route,
+    )
+
+    route = resolve_litellm_route("gemini/gemini-3.5-flash", {"GEMINI_API_KEY": "k"})
+    config = litellm_proxy_config(route, master_key="sk-master")
+    for entry in config["model_list"]:
+        assert "input_cost_per_token" not in entry["litellm_params"]
+
+
+@pytest.mark.asyncio
+async def test_callback_prefers_proxy_computed_response_cost(tmp_path, monkeypatch):
+    # The injected logger captures the proxy's already-computed response_cost
+    # (which honors per-deployment input_cost_per_token for custom models).
+    from types import SimpleNamespace
+
+    namespace: dict[str, object] = {}
+    exec(callback_module_source(), namespace)
+    logger = namespace["proxy_handler_instance"]
+    log_path = tmp_path / "callback.jsonl"
+    monkeypatch.setenv("BENCHFLOW_LITELLM_LOG_PATH", str(log_path))
+
+    response = SimpleNamespace(
+        model="openai/MiniMax-M3",
+        usage={"prompt_tokens": 1000, "completion_tokens": 500, "total_tokens": 1500},
+        _hidden_params={"response_cost": 0.00075},
+    )
+    response.model_dump = lambda mode=None: {  # type: ignore[attr-defined]
+        "model": "openai/MiniMax-M3",
+        "usage": {"prompt_tokens": 1000, "completion_tokens": 500, "total_tokens": 1500},
+    }
+    kwargs = {
+        "model": "benchflow-minimax-MiniMax-M3",
+        "messages": [{"role": "user", "content": "hi"}],
+        "litellm_params": {"model": "openai/MiniMax-M3"},
+        "optional_params": {},
+        "call_type": "acompletion",
+    }
+    start = datetime(2026, 6, 4, 10, 0, 0)
+    end = datetime(2026, 6, 4, 10, 0, 1)
+
+    await logger.async_log_success_event(kwargs, response, start, end)
+
+    record = json.loads(log_path.read_text().splitlines()[0])
+    assert record["response_cost"] == 0.00075

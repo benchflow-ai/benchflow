@@ -213,25 +213,42 @@ def test_extract_usage_with_openai_and_gemini_shapes():
     assert gemini["total_tokens"] == 16
 
 
-def test_extract_usage_estimates_cost_for_bedrock_opus_4_8():
-    usage = extract_usage_from_trajectory(
-        _trajectory(
-            {
-                "model": "bedrock/us.anthropic.claude-opus-4-8",
-                "usage": {
-                    "inputTokens": 1000,
-                    "outputTokens": 200,
-                    "cacheReadInputTokens": 500,
-                    "cacheWriteInputTokens": 100,
-                },
-            }
-        ),
-        fallback_model="bedrock/us.anthropic.claude-opus-4-8",
+def test_extract_usage_uses_litellm_computed_cost():
+    # Cost is whatever LiteLLM computed (summed into metadata by the importer);
+    # BenchFlow no longer estimates from tokens.
+    trajectory = _trajectory(
+        {
+            "model": "bedrock/us.anthropic.claude-opus-4-8",
+            "usage": {
+                "inputTokens": 1000,
+                "outputTokens": 200,
+                "cacheReadInputTokens": 500,
+            },
+        }
     )
+    trajectory.metadata["cost_usd"] = 0.0123
+    usage = extract_usage_from_trajectory(trajectory, fallback_model=None)
 
     assert usage["usage_source"] == "provider_response"
-    assert usage["cost_usd"] is not None
-    assert usage["price_source"] is not None
+    assert usage["cost_usd"] == 0.0123
+    assert usage["price_source"] == "litellm"
+
+
+def test_extract_usage_cost_none_when_litellm_did_not_price():
+    # Custom/unpriced model with no per-route override: tokens still recorded,
+    # cost is honestly None (no hand-rolled estimate).
+    trajectory = _trajectory(
+        {
+            "model": "openai/some-unpriced-model",
+            "usage": {"prompt_tokens": 10, "completion_tokens": 2},
+        }
+    )
+    usage = extract_usage_from_trajectory(trajectory, fallback_model=None)
+
+    assert usage["usage_source"] == "provider_response"
+    assert usage["n_input_tokens"] == 10
+    assert usage["cost_usd"] is None
+    assert usage["price_source"] is None
 
 
 def test_extract_usage_reads_litellm_runtime_trajectory():

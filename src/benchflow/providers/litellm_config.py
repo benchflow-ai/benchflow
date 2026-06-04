@@ -21,6 +21,32 @@ BEDROCK_THINKING_EFFORT_ENV = "BENCHFLOW_BEDROCK_THINKING_EFFORT"
 LITELLM_MODEL_ALIAS_ENV = "BENCHFLOW_LITELLM_MODEL_ALIAS"
 LITELLM_MODEL_VIA_ENV = "BENCHFLOW_LITELLM_MODEL_VIA_ENV"
 LITELLM_MASTER_KEY_ENV = "BENCHFLOW_LITELLM_MASTER_KEY"
+
+# Per-token USD prices for models LiteLLM's built-in ``model_cost`` does not
+# already know (custom OpenAI-compatible endpoints such as private vLLM servers
+# or niche hosted models). When a route's upstream model matches a key here, the
+# price is injected into the LiteLLM deployment as ``input_cost_per_token`` /
+# ``output_cost_per_token`` so LiteLLM computes ``response_cost`` itself —
+# BenchFlow keeps no cost-calculation logic, only this price *data*. Mainstream
+# models (OpenAI, Anthropic, Gemini, Bedrock, Azure, …) are already priced by
+# LiteLLM and must NOT be listed here.
+#
+# Keys are matched as a lowercase substring of the bare model id. Values are USD
+# *per token* (i.e. price-per-million-tokens / 1e6). Add entries for the custom
+# models you run and VERIFY the numbers against the provider's current pricing.
+#
+# Example:
+#   "minimax-m3": (0.30e-6, 1.20e-6),   # $0.30 / $1.20 per 1M in/out — VERIFY
+MODEL_COST_PER_TOKEN: dict[str, tuple[float, float]] = {}
+
+
+def custom_cost_per_token(model: str) -> tuple[float, float] | None:
+    """Return (input, output) USD-per-token for a custom model, or None."""
+    lowered = model.lower()
+    for key, price in MODEL_COST_PER_TOKEN.items():
+        if key in lowered:
+            return price
+    return None
 _BEDROCK_ADAPTIVE_THINKING_RE = re.compile(
     r"claude-(?:opus|sonnet|haiku)-4-(?:8|9|1\d)(?!\d)", re.IGNORECASE
 )
@@ -286,19 +312,16 @@ def litellm_proxy_config(
     callback_module: str = "benchflow_litellm_callback",
 ) -> dict[str, object]:
     """Build the LiteLLM ``config.yaml`` payload for one route."""
-    model_list: list[dict[str, object]] = [
-        {
-            "model_name": route.model_alias,
-            "litellm_params": dict(route.litellm_params),
-        }
-    ]
+    params = dict(route.litellm_params)
+    cost = custom_cost_per_token(route.upstream_model)
+    if cost is not None:
+        params.setdefault("input_cost_per_token", cost[0])
+        params.setdefault("output_cost_per_token", cost[1])
     openai_alias = f"openai/{route.model_alias}"
-    model_list.append(
-        {
-            "model_name": openai_alias,
-            "litellm_params": dict(route.litellm_params),
-        }
-    )
+    model_list: list[dict[str, object]] = [
+        {"model_name": route.model_alias, "litellm_params": dict(params)},
+        {"model_name": openai_alias, "litellm_params": dict(params)},
+    ]
     return {
         "model_list": model_list,
         "general_settings": {"master_key": master_key},
