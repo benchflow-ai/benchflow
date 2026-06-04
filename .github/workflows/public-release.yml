@@ -48,34 +48,7 @@ jobs:
         id: version
         env:
           TAG_NAME: ${{ github.ref_name }}
-        run: |
-          version="$(
-            uv run --with packaging --no-project python - <<'PY'
-          import os
-          import tomllib
-          from pathlib import Path
-
-          from packaging.version import Version
-
-          tag = os.environ["TAG_NAME"]
-          project = tomllib.loads(Path("pyproject.toml").read_text())["project"]
-          version_text = project["version"]
-          version = Version(version_text)
-
-          if tag != f"v{version_text}":
-              raise SystemExit(
-                  f"Tag {tag!r} does not match pyproject.toml version "
-                  f"'v{version_text}'."
-              )
-          if version.is_prerelease or version.is_devrelease or version.local is not None:
-              raise SystemExit(
-                  f"Public releases must use a final PEP 440 version, got {version_text!r}."
-              )
-
-          print(version_text)
-          PY
-          )"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
+        run: uv run --with packaging --no-project python tools/release_version.py public-release
 
       - name: Build distributions
         run: uv build --no-sources

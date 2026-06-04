@@ -38,6 +38,7 @@ classifiers = [
 
 [project.optional-dependencies]
 dev = [
+    "packaging>=24",
     "pre-commit>=3.7",
     "pytest>=9.0.3",
     "pytest-asyncio>=0.24.0",

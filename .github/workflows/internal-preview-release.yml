@@ -40,43 +40,11 @@ jobs:
         id: version
         env:
           TEST_RUN_NUMBER: ${{ github.event.workflow_run.run_number }}
-        run: |
-          version="$(
-            uv run --with packaging --no-project python - <<'PY'
-          import os
-          import tomllib
-          from pathlib import Path
+        run: uv run --with packaging --no-project python tools/release_version.py internal-preview
 
-          from packaging.version import Version
-
-          pyproject = tomllib.loads(Path("pyproject.toml").read_text())
-          current = Version(pyproject["project"]["version"])
-
-          if not current.is_devrelease:
-              if current.is_prerelease or current.local is not None:
-                  raise SystemExit(
-                      "Internal preview releases must be based on a plain .dev "
-                      f"version or a final public-release staging version, got {current}."
-                  )
-              print("SKIP_FINAL_VERSION")
-              raise SystemExit(0)
-          if current.pre is not None or current.local is not None:
-              raise SystemExit(
-                  "Internal preview releases must be based on a plain .dev "
-                  f"version, got {current}."
-              )
-
-          print(f"{current.base_version}.dev{os.environ['TEST_RUN_NUMBER']}")
-          PY
-          )"
-          if [ "$version" = "SKIP_FINAL_VERSION" ]; then
-            echo "publish=false" >> "$GITHUB_OUTPUT"
-            echo "version=" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          uv version "$version" --frozen
-          echo "publish=true" >> "$GITHUB_OUTPUT"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Apply internal preview version
+        if: steps.version.outputs.publish == 'true'
+        run: uv version "${{ steps.version.outputs.version }}" --frozen
 
       - name: Build distributions
         if: steps.version.outputs.publish == 'true'
