@@ -1,0 +1,99 @@
+name: public-release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+# PyPI Trusted Publishing uses OIDC, and GitHub Releases need contents: write.
+permissions:
+  contents: write
+  id-token: write
+
+concurrency:
+  group: public-release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish public release
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    environment: pypi-public
+
+    steps:
+      - name: Check out tag
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39  # v3.2.4
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Validate release tag
+        id: version
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          version="$(
+            uv run --with packaging --no-project python - <<'PY'
+          import os
+          import tomllib
+          from pathlib import Path
+
+          from packaging.version import Version
+
+          tag = os.environ["TAG_NAME"]
+          project = tomllib.loads(Path("pyproject.toml").read_text())["project"]
+          version_text = project["version"]
+          version = Version(version_text)
+
+          if tag != f"v{version_text}":
+              raise SystemExit(
+                  f"Tag {tag!r} does not match pyproject.toml version "
+                  f"'v{version_text}'."
+              )
+          if version.is_prerelease or version.is_devrelease or version.local is not None:
+              raise SystemExit(
+                  f"Public releases must use a final PEP 440 version, got {version_text!r}."
+              )
+
+          print(version_text)
+          PY
+          )"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Build distributions
+        run: uv build --no-sources
+
+      - name: Check distributions
+        run: uv run --with twine --no-project twine check dist/*
+
+      - name: Publish public release
+        run: uv publish
+
+      - name: Create or update GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ github.ref_name }}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" dist/* --clobber
+          else
+            gh release create "$tag" dist/* \
+              --title "benchflow ${{ steps.version.outputs.version }}" \
+              --generate-notes \
+              --verify-tag
+          fi
+
+      - name: Summarize release
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          ## Public release published
+
+          Published \`benchflow==${{ steps.version.outputs.version }}\` to PyPI
+          and created GitHub release \`${{ github.ref_name }}\`.
+          EOF

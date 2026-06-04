@@ -39,6 +39,7 @@ Start with [Getting started](./docs/getting-started.md), then [Concepts](./docs/
 | Multi-round single-agent (progressive disclosure, oracle access) | [Progressive disclosure](./docs/progressive-disclosure.md) |
 | Skill evaluation (when the artifact is a skill, not a workspace) | [Skill eval](./docs/skill-eval.md) |
 | Understand the security model | [Sandbox hardening](./docs/sandbox-hardening.md) |
+| Use public vs internal preview SDK releases | [Release channels](./docs/release.md) |
 | CLI flags + commands | [CLI reference](./docs/reference/cli.md) |
 | Python API surface | [Python API reference](./docs/reference/python-api.md) |
 
@@ -99,7 +100,9 @@ Two runnable labs validate the security story:
 
 PRs welcome. Open against `main`. CI runs ruff + tests on every PR; please run `ruff check .` and `pytest tests/` locally first.
 
-For a release: bump `pyproject.toml` to the next stable version, tag `v<version>` on main, push the tag — CI publishes to PyPI. Then bump main to the next `.dev0`.
+Release channels are documented in [Release channels](./docs/release.md). In
+short: merges to `main` publish an internal preview after CI passes, while a
+matching `v<version>` tag publishes the public release.
 
 ## License
 
