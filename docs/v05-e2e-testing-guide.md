@@ -438,13 +438,15 @@ uv run python tests/integration/check_results.py "$JOB_DIR" \
 
 ## 14. Secret leak audit
 
-After any eval run, check that no API key **values** leaked into trajectories.
-Redaction (`Trajectory.to_jsonl(redact_keys=True)`, #537/#585) replaces secret
-*values* whole — prefix included — so grep for the live-key shapes, not the
-variable names (a bare `GEMINI_API_KEY=` with a redacted value is not a leak):
+After any eval run, check that no API key **values** leaked into trajectories
+or trainer JSONL artifacts. Redaction (`Trajectory.to_jsonl(redact_keys=True)`
+and Verifiers JSONL export, #537/#585) replaces secret *values* whole — prefix
+included — so grep for the live-key shapes, not the variable names (a bare
+`GEMINI_API_KEY=` with a redacted value is not a leak):
 
 ```bash
-grep -rn "AIzaSy[A-Za-z0-9_-]\{20,\}\|dtn_[A-Za-z0-9_]\{16,\}\|sk-ant-[a-zA-Z0-9_-]\{12,\}" /tmp/test-include/
+SECRET_SHAPES='AIzaSy[A-Za-z0-9_-]{20,}|dtn_[A-Za-z0-9_]{16,}|sk-ant-[A-Za-z0-9_-]{12,}|sk-proj-[A-Za-z0-9_-]{12,}|sk-[A-Za-z0-9]{12,}|(AKIA|ASIA)[A-Z0-9]{16}([^A-Z0-9]|$)|(authorization|x-api-key|x-goog-api-key|api-key|api_key)[[:space:]]*[:=][[:space:]]*"?[^"[:space:],}*]+'
+grep -rnE "$SECRET_SHAPES" /tmp/test-include/
 ```
 
 **Verify:** No matches. (Redacted placeholders read `***REDACTED***`; the

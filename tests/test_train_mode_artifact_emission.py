@@ -14,6 +14,7 @@ architecture says they should.
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 
 from benchflow.rollout import _build_rollout_result
@@ -24,6 +25,9 @@ from benchflow.trajectories.export import (
     write_job_verifiers_jsonl,
     write_rollout_verifiers_jsonl,
 )
+
+_FAKE_GEMINI_KEY = "AIzaSyFAKEKEYFORTESTSONLYxxxxxxxxxxxxxxx"
+_FAKE_HEADER_SECRET = "plainSecretNoPrefix123"
 
 
 def _acp_trajectory() -> list[dict]:
@@ -41,6 +45,43 @@ def _acp_trajectory() -> list[dict]:
         },
         {"type": "agent_message", "text": "Archived 1 email."},
     ]
+
+
+def _secret_bearing_acp_trajectory() -> list[dict]:
+    """A trajectory with secrets in user, assistant, and tool-call content."""
+    return [
+        {
+            "type": "user_message",
+            "text": f"User pasted GEMINI_API_KEY={_FAKE_GEMINI_KEY}",
+        },
+        {
+            "type": "agent_message",
+            "text": f"Trying request with x-api-key: {_FAKE_HEADER_SECRET}",
+        },
+        {
+            "type": "tool_call",
+            "tool_call_id": "tc-secret",
+            "kind": "bash",
+            "title": "curl service",
+            "status": "completed",
+            "content": [
+                {
+                    "text": (
+                        f"x-goog-api-key: {_FAKE_GEMINI_KEY}\n"
+                        f"api_key={_FAKE_HEADER_SECRET}"
+                    )
+                }
+            ],
+        },
+    ]
+
+
+def _assert_no_trainer_secret_leak(text: str) -> None:
+    assert "***REDACTED***" in text
+    assert _FAKE_GEMINI_KEY not in text
+    assert _FAKE_HEADER_SECRET not in text
+    residual = re.findall(r"AIzaSy[A-Za-z0-9_-]+", text)
+    assert residual == [], f"live Gemini key shapes survived: {residual}"
 
 
 # ── unit-level helpers ────────────────────────────────────────────────
@@ -151,6 +192,27 @@ def test_write_rollout_verifiers_jsonl_marks_invalid_when_no_rewards(tmp_path):
     assert parsed["info"]["reward_valid"] is False
 
 
+def test_write_rollout_verifiers_jsonl_redacts_trajectory_secrets(tmp_path):
+    """Guards the fix from PR #585 against trainer/verifiers.jsonl leaks."""
+    rollout_dir = tmp_path / "rollout-secret"
+    rollout_dir.mkdir()
+    record = write_rollout_verifiers_jsonl(
+        rollout_dir,
+        task_id="t-secret",
+        prompts=[f"Prompt includes {_FAKE_GEMINI_KEY}"],
+        trajectory=_secret_bearing_acp_trajectory(),
+        rewards={"reward": 1.0},
+        model="m",
+        environment="bench",
+    )
+
+    artifact = rollout_dir / ROLLOUT_ARTIFACT_RELPATH
+    text = artifact.read_text()
+    _assert_no_trainer_secret_leak(text)
+    _assert_no_trainer_secret_leak(json.dumps(record))
+    json.loads(text)
+
+
 # ── job-level aggregation ─────────────────────────────────────────────
 
 
@@ -182,6 +244,48 @@ def test_write_job_verifiers_jsonl_returns_none_when_no_rollouts(tmp_path):
     empty_job.mkdir()
     assert write_job_verifiers_jsonl(empty_job) is None
     assert not (empty_job / "verifiers.jsonl").exists()
+
+
+def test_write_job_verifiers_jsonl_redacts_aggregated_records(tmp_path):
+    """Guards the fix from PR #585 against job verifiers.jsonl leaks."""
+    job_dir = tmp_path / "job-secret"
+    rollout_dir = job_dir / "rollout-secret"
+    rollout_dir.mkdir(parents=True)
+    write_rollout_verifiers_jsonl(
+        rollout_dir,
+        task_id="t-secret",
+        prompts=[f"Prompt includes {_FAKE_GEMINI_KEY}"],
+        trajectory=_secret_bearing_acp_trajectory(),
+        rewards={"reward": 1.0},
+        model="m",
+        environment="bench",
+    )
+    # Simulate a legacy/raw per-rollout artifact so the job aggregation boundary
+    # proves it redacts too, instead of merely concatenating already-redacted
+    # rollout output.
+    raw_record = {
+        "example_id": 0,
+        "prompt": [{"role": "user", "content": f"Prompt includes {_FAKE_GEMINI_KEY}"}],
+        "completion": [
+            {
+                "role": "assistant",
+                "content": f"Trying request with x-api-key: {_FAKE_HEADER_SECRET}",
+            }
+        ],
+        "reward": 1.0,
+        "metrics": {},
+        "is_completed": True,
+        "is_truncated": False,
+        "info": {"task_id": "t-secret", "environment": "bench", "model": "m"},
+    }
+    (rollout_dir / ROLLOUT_ARTIFACT_RELPATH).write_text(json.dumps(raw_record) + "\n")
+
+    artifact = write_job_verifiers_jsonl(job_dir)
+    assert artifact == job_dir / "verifiers.jsonl"
+    text = artifact.read_text()
+    _assert_no_trainer_secret_leak(text)
+    assert len(text.splitlines()) == 1
+    json.loads(text)
 
 
 # ── end-to-end: _build_rollout_result wires the seam ─────────────────
