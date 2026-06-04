@@ -73,10 +73,9 @@ bench eval create \
 
 Repos are cloned and cached locally under `.cache/datasets/` on first use.
 
-SkillsBench itself sources BenchFlow from GitHub `main` in its
-[`pyproject.toml`](https://github.com/benchflow-ai/skillsbench/blob/main/pyproject.toml).
-After a BenchFlow change lands, run `uv lock --upgrade-package benchflow` in
-SkillsBench when you need its lockfile to point at the newest BenchFlow commit.
+Downstream projects should depend on the public PyPI release by default. For
+internal validation before the next public release, install or lock the internal
+preview channel with prereleases enabled; see [Release channels](./docs/release.md).
 
 ## Featured
 

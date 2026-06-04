@@ -14,10 +14,30 @@ Regular users install public releases with:
 pip install --upgrade benchflow
 ```
 
-Internal users install the latest preview with:
+For the CLI, install the public tool with:
+
+```bash
+uv tool install benchflow
+```
+
+Internal users install the latest preview package with:
 
 ```bash
 pip install --pre --upgrade benchflow
+```
+
+For the CLI, install or upgrade the preview tool with:
+
+```bash
+uv tool install --prerelease allow --upgrade benchflow
+uv tool upgrade --prerelease allow benchflow
+```
+
+For downstream projects that use `uv`, lock the preview dependency with:
+
+```bash
+uv add --prerelease allow benchflow
+uv lock --upgrade-package benchflow --prerelease allow
 ```
 
 ## Version Model

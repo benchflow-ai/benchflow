@@ -179,6 +179,10 @@ internal `0.4.0` refactor cut.
 
 Release sequence after merge approval:
 
+> Historical note: this dated gate predates the public/internal preview
+> publishing split. Current release-channel mechanics live in
+> [`docs/release.md`](./release.md).
+
 1. Merge PRs #279, #280, #283, #290, #291, and #292.
 2. Bump `pyproject.toml` on `main` to `1.0.0`.
 3. Tag `v1.0.0` on `main`.
