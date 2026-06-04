@@ -149,7 +149,7 @@ python-version = "3.12"
 unresolved-import = "ignore"
 
 [tool.ty.src]
-include = ["src"]
+include = ["src", "tools"]
 # Modules that heavily use optional-dep types (daytona, modal, openai, boto3, …)
 # produce cascading type errors when those packages aren't installed.
 exclude = [
