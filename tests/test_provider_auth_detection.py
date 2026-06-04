@@ -137,9 +137,9 @@ def test_litellm_non_auth_failure_import_remains_generic_500():
     )
 
     assert trajectory.exchanges[0].response.status_code == 500
-    assert _provider_auth_status_from_runtime(
-        _runtime_with_trajectory(trajectory)
-    ) is None
+    assert (
+        _provider_auth_status_from_runtime(_runtime_with_trajectory(trajectory)) is None
+    )
 
 
 def test_snapshot_after_late_capture_import():
