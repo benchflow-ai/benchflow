@@ -18,8 +18,10 @@ import pytest
 
 from benchflow._utils.scoring import (
     VERIFIER_DEP_INSTALL,
+    VERIFIER_DEP_INSTALL_MARKERS,
     VERIFIER_FAILED,
     classify_verifier_error,
+    contains_verifier_dep_install_marker,
 )
 from benchflow.task.verifier import (
     _DEP_INSTALL_DIAGNOSTIC,
@@ -45,8 +47,22 @@ def test_fixed_diagnostic_classifies_as_dep_install():
 def test_diagnostic_carries_no_stdout():
     """PR #572: the fixed diagnostic must not contain raw resolver output —
     only a marker the classifier needs and a pointer to the log artifact."""
-    assert "dependency install failed" in _DEP_INSTALL_DIAGNOSTIC
+    assert contains_verifier_dep_install_marker(_DEP_INSTALL_DIAGNOSTIC)
     assert "test-stdout.txt" in _DEP_INSTALL_DIAGNOSTIC
+
+
+def test_canonical_markers_drive_classifier_and_stdout_scan(tmp_path):
+    """Guards PR #572 against marker drift between verifier stdout scanning and
+    verifier-error classification."""
+    p = tmp_path / "test-stdout.txt"
+    for marker in VERIFIER_DEP_INSTALL_MARKERS:
+        assert (
+            classify_verifier_error(f"verifier crashed: {marker}")
+            == VERIFIER_DEP_INSTALL
+        )
+
+        p.write_text(f"running setup...\n{marker.upper()}\n")
+        assert _has_dep_install_failure(p) is True
 
 
 # ---------------------------------------------------------------------------

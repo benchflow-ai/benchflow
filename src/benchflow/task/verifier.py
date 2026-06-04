@@ -20,6 +20,10 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from benchflow._utils.scoring import (
+    VERIFIER_DEP_INSTALL_MARKERS,
+    contains_verifier_dep_install_marker,
+)
 from benchflow.rewards.validation import is_valid_reward_number, validate_reward_map
 from benchflow.sandbox.lockdown import _exec_return_code, clear_verifier_output_dir
 from benchflow.task.env import resolve_env_vars
@@ -60,21 +64,6 @@ class RubricNotFoundError(Exception):
     """Raised when an llm-judge verifier cannot locate its rubric file."""
 
 
-# Lines that mark a dependency-install failure in ``test-stdout.txt`` (the uv/
-# pip resolver output). When one is present we surface a FIXED, secret-free
-# diagnostic — never the raw stdout — so ``classify_verifier_error`` can return
-# ``VERIFIER_DEP_INSTALL`` without persisting untrusted subprocess output (env
-# dumps, install URLs, tokens) into ``verifier_error`` / summaries / dashboards
-# (PR #572 review). The raw stdout stays in the verifier log artifact, not in
-# result metadata. These must stay in sync with
-# ``scoring._looks_like_verifier_dep_install_error``.
-_DEP_INSTALL_MARKERS: tuple[str, ...] = (
-    "no solution found",
-    "could not find a version",
-    "resolution impossible",
-    "dependency install failed",
-)
-
 # The safe, fixed diagnostic surfaced into ``verifier_error`` on a detected
 # dep-install failure. Contains a marker the classifier recognises; carries no
 # stdout content. Points operators at the (private) log artifact for detail.
@@ -108,7 +97,7 @@ def _has_dep_install_failure(path: Path) -> bool:
     """
     # Longest marker minus one byte: enough overlap to catch a marker split
     # across two reads without rescanning whole chunks.
-    overlap = max(len(m) for m in _DEP_INSTALL_MARKERS) - 1
+    overlap = max(len(m) for m in VERIFIER_DEP_INSTALL_MARKERS) - 1
     try:
         with path.open(errors="replace") as f:
             carry = ""
@@ -116,8 +105,8 @@ def _has_dep_install_failure(path: Path) -> bool:
                 chunk = f.read(_SCAN_CHUNK_BYTES)
                 if not chunk:
                     return False
-                window = (carry + chunk).lower()
-                if any(marker in window for marker in _DEP_INSTALL_MARKERS):
+                window = carry + chunk
+                if contains_verifier_dep_install_marker(window):
                     return True
                 # Keep the tail of this chunk so a boundary-spanning marker is
                 # found on the next read; bound it to the overlap size.
