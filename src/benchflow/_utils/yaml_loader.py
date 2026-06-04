@@ -99,6 +99,7 @@ def rollout_config_from_dict(
             Scene.single(
                 agent=raw["agent"],
                 model=raw.get("model"),
+                reasoning_effort=raw.get("reasoning_effort"),
                 prompts=prompts,
                 skills_dir=raw.get("skills_dir"),
             )
@@ -123,6 +124,7 @@ def rollout_config_from_dict(
         context_root=raw.get("context_root"),
         agent=raw.get("agent", "claude-agent-acp"),
         model=raw.get("model"),
+        reasoning_effort=raw.get("reasoning_effort"),
         agent_env=raw.get("agent_env"),
         skills_dir=raw.get("skills_dir"),
         include_task_skills=bool(raw.get("include_task_skills", False)),
@@ -156,6 +158,7 @@ def _parse_role(raw: dict) -> Role:
         name=raw["name"],
         agent=raw["agent"],
         model=raw.get("model"),
+        reasoning_effort=raw.get("reasoning_effort"),
         env=raw.get("env", {}),
     )
 

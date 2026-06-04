@@ -50,6 +50,7 @@ class Role:
     name: str
     agent: str
     model: str | None = None
+    reasoning_effort: str | None = None
     env: dict[str, str] = field(default_factory=dict)
     timeout_sec: int | None = None  # None = inherit from task.toml
     idle_timeout_sec: int | None = None
@@ -80,6 +81,7 @@ class Scene:
         *,
         agent: str,
         model: str | None = None,
+        reasoning_effort: str | None = None,
         prompts: list[str | None] | None = None,
         role_name: str = "agent",
         skills_dir: str | Path | None = None,
@@ -87,7 +89,14 @@ class Scene:
         """Shortcut for single-agent, single-role scene."""
         prompts = prompts or [None]
         return cls(
-            roles=[Role(name=role_name, agent=agent, model=model)],
+            roles=[
+                Role(
+                    name=role_name,
+                    agent=agent,
+                    model=model,
+                    reasoning_effort=reasoning_effort,
+                )
+            ],
             turns=[Turn(role=role_name, prompt=p) for p in prompts],
             skills_dir=skills_dir,
         )

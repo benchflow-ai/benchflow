@@ -51,7 +51,11 @@ from pathlib import Path
 from typing import Any
 
 from benchflow._types import Role, Scene, Turn
-from benchflow._utils.config import normalize_agent_name, normalize_sandbox_user
+from benchflow._utils.config import (
+    normalize_agent_name,
+    normalize_reasoning_effort,
+    normalize_sandbox_user,
+)
 from benchflow._utils.result_metadata import (
     final_metrics_from_agent_result,
     trajectory_summary_from_events,
@@ -403,6 +407,7 @@ def _write_config(
     timeout: int,
     started_at: datetime,
     agent_env: dict[str, str],
+    reasoning_effort: str | None = None,
     usage_tracking: UsageTrackingConfig | None = None,
     concurrency: int | None = None,
     agent_idle_timeout: int | None = None,
@@ -418,6 +423,7 @@ def _write_config(
         "task_path": str(task_path),
         "agent": agent,
         "model": model,
+        "reasoning_effort": reasoning_effort,
         "environment": environment,
         "skills_dir": str(skills_dir) if skills_dir else None,
         "include_task_skills": include_task_skills,
@@ -444,6 +450,7 @@ def _role_metadata(role: Role) -> dict[str, Any]:
         "name": role.name,
         "agent": role.agent,
         "model": role.model,
+        "reasoning_effort": role.reasoning_effort,
         "timeout_sec": role.timeout_sec,
         "idle_timeout_sec": role.idle_timeout_sec,
         "skills_dir": str(role.skills_dir) if role.skills_dir else None,
@@ -934,6 +941,7 @@ class RolloutConfig:
     agent: str = "claude-agent-acp"
     prompts: list[str | None] | None = None
     model: str | None = None
+    reasoning_effort: str | None = None
     agent_env: dict[str, str] | None = None
     skills_dir: str | Path | None = None
     skill_mode: str = SKILL_MODE_DEFAULT
@@ -959,11 +967,15 @@ class RolloutConfig:
 
         self.agent = normalize_agent_name(self.agent)
         self.sandbox_user = normalize_sandbox_user(self.sandbox_user)
+        self.reasoning_effort = normalize_reasoning_effort(self.reasoning_effort)
         self.agent_idle_timeout = normalize_agent_idle_timeout(self.agent_idle_timeout)
         self.usage_tracking = UsageTrackingConfig.coerce(self.usage_tracking)
         for scene in self.scenes:
             for role in scene.roles:
                 role.agent = normalize_agent_name(role.agent)
+                role.reasoning_effort = normalize_reasoning_effort(
+                    role.reasoning_effort
+                )
 
     @classmethod
     def from_legacy(
@@ -972,6 +984,7 @@ class RolloutConfig:
         task_path: Path,
         agent: str = "claude-agent-acp",
         model: str | None = None,
+        reasoning_effort: str | None = None,
         prompts: list[str | None] | None = None,
         skills_dir: str | Path | None = None,
         skill_mode: str = SKILL_MODE_DEFAULT,
@@ -987,7 +1000,11 @@ class RolloutConfig:
         if skill_mode == SKILL_MODE_DEFAULT:
             scenes = [
                 Scene.single(
-                    agent=agent, model=model, prompts=prompts, skills_dir=skills_dir
+                    agent=agent,
+                    model=model,
+                    reasoning_effort=reasoning_effort,
+                    prompts=prompts,
+                    skills_dir=skills_dir,
                 )
             ]
         return cls(
@@ -995,6 +1012,7 @@ class RolloutConfig:
             scenes=scenes,
             agent=agent,
             model=model,
+            reasoning_effort=reasoning_effort,
             prompts=prompts,
             skills_dir=skills_dir,
             skill_mode=skill_mode,
@@ -1020,6 +1038,7 @@ class RolloutConfig:
             Scene.single(
                 agent=self.agent,
                 model=self.model,
+                reasoning_effort=self.reasoning_effort,
                 prompts=self.prompts,
                 skills_dir=self.skills_dir,
             )
@@ -1040,6 +1059,14 @@ class RolloutConfig:
         if scenes and scenes[0].roles:
             return scenes[0].roles[0].model
         return self.model
+
+    @property
+    def primary_reasoning_effort(self) -> str | None:
+        """Reasoning effort for the first role of the first scene."""
+        scenes = self.effective_scenes
+        if scenes and scenes[0].roles:
+            return scenes[0].roles[0].reasoning_effort
+        return self.reasoning_effort
 
 
 class Rollout:
@@ -1333,6 +1360,7 @@ class Rollout:
             task_path=cfg.task_path,
             agent=cfg.primary_agent,
             model=cfg.primary_model,
+            reasoning_effort=cfg.primary_reasoning_effort,
             environment=cfg.environment,
             skills_dir=cfg.skills_dir,
             include_task_skills=cfg.include_task_skills,
@@ -1529,6 +1557,7 @@ class Rollout:
             rollout_dir=rollout_dir,
             environment=cfg.environment,
             agent_cwd=self._agent_cwd,
+            reasoning_effort=cfg.primary_reasoning_effort,
         )
         self._reapply_ask_user_handler()
         self._attach_trajectory_writer(rollout_dir)
@@ -2462,6 +2491,7 @@ class Rollout:
             rollout_dir=rollout_dir,
             environment=cfg.environment,
             agent_cwd=self._agent_cwd,
+            reasoning_effort=role.reasoning_effort,
         )
         self._reapply_ask_user_handler()
         self._attach_trajectory_writer(rollout_dir)

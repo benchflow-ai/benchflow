@@ -3,7 +3,7 @@
 import asyncio
 import sys
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
@@ -125,6 +125,18 @@ class TestACPClient:
             # should raise ACPError for the unknown method response
             with pytest.raises(ACPError):
                 await client.set_model("some-model")
+        finally:
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_set_config_option(self) -> None:
+        client = ACPClient(StdioTransport(sys.executable, [MOCK_AGENT]))
+        try:
+            await client.connect()
+            await client.initialize()
+            await client.session_new()
+            with pytest.raises(ACPError):
+                await client.set_config_option("model", "some-model")
         finally:
             await client.close()
 
@@ -603,6 +615,7 @@ class TestConnectAcpModelSelection:
         mock_acp.initialize = AsyncMock(return_value=mock_init)
         mock_acp.session_new = AsyncMock(return_value=mock_session)
         mock_acp.set_model = AsyncMock()
+        mock_acp.set_config_option = AsyncMock()
         mock_acp.close = AsyncMock()
         return mock_acp
 
@@ -775,10 +788,49 @@ class TestConnectAcpModelSelection:
         mock_acp.set_model.assert_awaited_once_with("gpt-5.5[medium]")
 
     @pytest.mark.asyncio
+    async def test_claude_uses_config_options_for_model_and_effort(self, tmp_path):
+        """Guards PR #825 repro: latest claude-agent-acp removed session/set_model."""
+        from benchflow.acp.runtime import connect_acp
+
+        mock_acp = self._make_mocks()
+        mock_acp.session_new.return_value.config_options = [
+            {"id": "model"},
+            {"id": "effort"},
+        ]
+        mock_env = AsyncMock()
+        with (
+            patch(
+                "benchflow.acp.runtime.DockerProcess.from_sandbox_env",
+                return_value=MagicMock(),
+            ),
+            patch("benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()),
+            patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
+        ):
+            await connect_acp(
+                env=mock_env,
+                agent="claude-agent-acp",
+                agent_launch="claude-agent-acp",
+                agent_env={},
+                sandbox_user=None,
+                model="claude-opus-4-8",
+                rollout_dir=tmp_path,
+                environment="docker",
+                agent_cwd="/app",
+                reasoning_effort="max",
+            )
+
+        mock_acp.set_model.assert_not_awaited()
+        assert mock_acp.set_config_option.await_args_list == [
+            call("model", "claude-opus-4-8"),
+            call("effort", "max"),
+        ]
+
+    @pytest.mark.asyncio
     async def test_claude_litellm_env_owns_model_selection(self, tmp_path):
         from benchflow.acp.runtime import connect_acp
 
         mock_acp = self._make_mocks()
+        mock_acp.session_new.return_value.config_options = [{"id": "model"}]
         mock_env = AsyncMock()
         with (
             patch(
@@ -805,6 +857,8 @@ class TestConnectAcpModelSelection:
             )
 
         mock_acp.set_model.assert_not_awaited()
+        # LiteLLM VIA_ENV owns model selection -> no ACP set_model or config option.
+        mock_acp.set_config_option.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_daytona_dind_uses_pty_transport(self, tmp_path):

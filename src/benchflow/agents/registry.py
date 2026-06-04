@@ -271,9 +271,9 @@ class AgentConfig:
     # Extra dot-dirs under $HOME to copy to sandbox user (for dirs not
     # derivable from skill_paths or credential_files, e.g. ".openclaw").
     acp_model_format: str = "bare"
-    # How the agent expects the modelId in session/set_model:
+    # How the agent expects ACP model IDs in session/set_model or config options:
     # "bare"           — just the model name (e.g. "claude-sonnet-4-6").
-    #                    Default; works for claude-agent-acp, codex-acp.
+    #                    Default; works for codex-acp and Claude config options.
     # "provider/model" — models.dev convention (e.g. "google/gemini-3.1-pro-preview").
     #                    Required by opencode, which uses Provider.parseModel()
     #                    to split on "/" and treats the first segment as provider ID.
@@ -286,6 +286,11 @@ class AgentConfig:
     supports_acp_set_model: bool = True
     # Some ACP agents configure the model through env/config at launch time and
     # do not implement session/set_model (e.g. OpenHands CLI ACP).
+    acp_model_config_id: str = ""
+    # ACP session config option id used for model selection when an agent
+    # exposes model as a session option instead of implementing set_model.
+    acp_effort_config_id: str = ""
+    # ACP session config option id used for reasoning/thinking effort.
     disallow_web_tools_setup_cmd: str = ""
     # Shell snippet run after credentials/subscription auth are written when
     # BenchFlow's no-web policy is active. Uses BENCHFLOW_AGENT_HOME for the
@@ -305,7 +310,7 @@ AGENTS: dict[str, AgentConfig] = {
         description="Claude Code via ACP (Anthropic's Agent Client Protocol)",
         skill_paths=["$HOME/.claude/skills"],
         install_cmd=_js_agent_install(
-            "claude-agent-acp", "@agentclientprotocol/claude-agent-acp"
+            "claude-agent-acp", "@agentclientprotocol/claude-agent-acp@0.40.0"
         ),
         launch_cmd=_js_agent_launch("claude-agent-acp"),
         protocol="acp",
@@ -332,6 +337,9 @@ AGENTS: dict[str, AgentConfig] = {
             'if t not in d["permissions"]["deny"]]',
         ),
         disallow_web_tools_owned_paths=["$HOME/.claude"],
+        supports_acp_set_model=False,
+        acp_model_config_id="model",
+        acp_effort_config_id="effort",
     ),
     "pi-acp": AgentConfig(
         name="pi-acp",
@@ -769,6 +777,8 @@ def _acpx_wrap(config: AgentConfig) -> AgentConfig:
         acp_model_format=config.acp_model_format,
         subscription_auth=config.subscription_auth,
         supports_acp_set_model=config.supports_acp_set_model,
+        acp_model_config_id=config.acp_model_config_id,
+        acp_effort_config_id=config.acp_effort_config_id,
         disallow_web_tools_setup_cmd=config.disallow_web_tools_setup_cmd,
         disallow_web_tools_owned_paths=config.disallow_web_tools_owned_paths,
         disallow_web_tools_launch_suffix=config.disallow_web_tools_launch_suffix,
@@ -873,6 +883,8 @@ def register_agent(
     subscription_auth: SubscriptionAuth | None = None,
     acp_model_format: str = "bare",
     supports_acp_set_model: bool = True,
+    acp_model_config_id: str = "",
+    acp_effort_config_id: str = "",
     disallow_web_tools_setup_cmd: str = "",
     disallow_web_tools_owned_paths: list[str] | None = None,
     disallow_web_tools_launch_suffix: str = "",
@@ -909,6 +921,8 @@ def register_agent(
         subscription_auth=subscription_auth,
         acp_model_format=acp_model_format,
         supports_acp_set_model=supports_acp_set_model,
+        acp_model_config_id=acp_model_config_id,
+        acp_effort_config_id=acp_effort_config_id,
         disallow_web_tools_setup_cmd=disallow_web_tools_setup_cmd,
         disallow_web_tools_owned_paths=disallow_web_tools_owned_paths or [],
         disallow_web_tools_launch_suffix=disallow_web_tools_launch_suffix,
