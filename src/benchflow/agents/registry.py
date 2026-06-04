@@ -319,8 +319,8 @@ AGENTS: dict[str, AgentConfig] = {
         # Pinned to 0.40.0: the config-option wiring below (set_config_option +
         # the "model"/"effort" ids) targets this version's ACP protocol (sdk
         # 0.24, which dropped session/set_model). The option ids are coupled to
-        # this pin — re-verify them when bumping. runtime.py also auto-falls back
-        # set_model -> config option on -32601 for the rest of the family.
+        # this pin — re-verify them when bumping. runtime.py uses
+        # capability-first dispatch for the rest of the family.
         install_cmd=_js_agent_install(
             "claude-agent-acp", "@agentclientprotocol/claude-agent-acp@0.40.0"
         ),
@@ -405,9 +405,10 @@ AGENTS: dict[str, AgentConfig] = {
         # floats to latest and can silently break agent activation when the ACP
         # protocol changes (claude-agent-acp above hit exactly this — sdk 0.24
         # dropped session/set_model). 0.0.45 ships sdk 0.22.x, which still
-        # implements session/set_model. If a future bump drops it, runtime.py's
-        # capability fallback routes the model through the config option — but
-        # re-verify model selection when bumping this pin.
+        # implements session/set_model. If a future bump advertises a model
+        # config option instead, runtime.py's capability-first dispatch routes
+        # the model through that option — but re-verify model selection when
+        # bumping this pin.
         install_cmd=_js_agent_install(
             "codex-acp", "@agentclientprotocol/codex-acp@0.0.45"
         ),
