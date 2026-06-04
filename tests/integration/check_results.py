@@ -233,6 +233,53 @@ def _load_config(result_file: Path) -> tuple[Path, dict | None, str | None]:
         return config_path, None, "config.json: invalid JSON"
 
 
+# Skill modes that make skills available to the agent (canonical ``skill_mode``
+# field). Only an explicit no-skill sentinel means no skills; any other mode
+# (with-skill, self-gen, or a future/unknown mode) is treated as provisioned so
+# the no-skill invariant never false-flags a legitimate with-skill trial.
+_NO_SKILL_MODES = frozenset({"no-skill", "no-skills", "none", "without-skill"})
+
+
+def _config_provisions_skills(config: dict[str, Any] | None) -> bool:
+    """Return whether a rollout config made any skills available to the agent.
+
+    A "no-skill" trial has no single-agent ``skills_dir``, no task-bundled
+    skills, no scene/role ``skills_dir``, and no skill-providing ``skill_mode``.
+    Any of those present means skills were provisioned. Used to enforce the
+    experiment-health invariant that no-skill trials must not record skill
+    invocations.
+
+    Handles both the current config schema (``skills_dir`` /
+    ``include_task_skills``) and the canonical ``skill_mode`` field
+    (``no-skill`` / ``with-skill`` / ``self-gen``) so the invariant stays
+    correct as skill provisioning is recorded by mode.
+    """
+    if not isinstance(config, dict):
+        return False
+    if config.get("skills_dir"):
+        return True
+    if config.get("include_task_skills"):
+        return True
+    skill_mode = config.get("skill_mode")
+    if isinstance(skill_mode, str):
+        normalized = skill_mode.strip().lower().replace("_", "-")
+        if normalized and normalized not in _NO_SKILL_MODES:
+            return True
+    scenes = config.get("scenes")
+    if isinstance(scenes, list):
+        for scene in scenes:
+            if not isinstance(scene, dict):
+                continue
+            if scene.get("skills_dir"):
+                return True
+            roles = scene.get("roles")
+            if isinstance(roles, list):
+                for role in roles:
+                    if isinstance(role, dict) and role.get("skills_dir"):
+                        return True
+    return False
+
+
 def _source_hash_truth_issues(source: object, label: str) -> list[str]:
     if not isinstance(source, dict):
         return []
@@ -434,6 +481,10 @@ def check_agent(agent_dir: Path) -> dict:
         skill_count = r.get("n_skill_invocations")
         agent_result = r.get("agent_result") or {}
         agent_skill_count = agent_result.get("n_skill_invocations")
+        trajectory = _load_acp_trajectory(result_file)
+        trajectory_skill_count = (
+            count_skill_invocations(trajectory) if trajectory is not None else None
+        )
         if skill_count is not None:
             issue = _nonnegative_int_issue(
                 skill_count, f"{r.get('task_name', '?')}: n_skill_invocations"
@@ -447,15 +498,21 @@ def check_agent(agent_dir: Path) -> dict:
                     "does not match result.json n_skill_invocations"
                 )
                 findings["ok"] = False
-            trajectory = _load_acp_trajectory(result_file)
-            if trajectory is not None:
-                expected_skill_count = count_skill_invocations(trajectory)
-                if skill_count != expected_skill_count:
-                    findings["issues"].append(
-                        f"{r.get('task_name', '?')}: n_skill_invocations={skill_count} "
-                        f"but trajectory implies {expected_skill_count}"
-                    )
-                    findings["ok"] = False
+            if (
+                trajectory_skill_count is not None
+                and skill_count != trajectory_skill_count
+            ):
+                findings["issues"].append(
+                    f"{r.get('task_name', '?')}: n_skill_invocations={skill_count} "
+                    f"but trajectory implies {trajectory_skill_count}"
+                )
+                findings["ok"] = False
+        # Effective count for the no-skill invariant: prefer the recorded value,
+        # fall back to the trajectory so artifacts that omit the field are still
+        # held to the invariant.
+        effective_skill_count = (
+            skill_count if skill_count is not None else trajectory_skill_count
+        )
         if agent_skill_count is not None:
             issue = _nonnegative_int_issue(
                 agent_skill_count,
@@ -484,6 +541,24 @@ def check_agent(agent_dir: Path) -> dict:
             findings["ok"] = False
         else:
             assert config is not None
+            # Experiment-health invariant: a trial that provisioned no skills
+            # must not record skill invocations. A positive count here is a
+            # detector false-positive, agent-native skill leakage, or an
+            # experiment-fidelity failure — quarantine it for human review.
+            if (
+                isinstance(effective_skill_count, int)
+                and not isinstance(effective_skill_count, bool)
+                and effective_skill_count > 0
+                and not _config_provisions_skills(config)
+            ):
+                findings["issues"].append(
+                    f"{r.get('task_name', '?')}: n_skill_invocations="
+                    f"{effective_skill_count} but config provisions no skills "
+                    "(no-skill trial must not invoke skills — quarantine: detector "
+                    "false-positive, agent-native skill leakage, or experiment "
+                    "fidelity failure)"
+                )
+                findings["ok"] = False
             expected_model = _expected(agent, "model")
             expected_environment = _expected(agent, "environment")
             expected_concurrency = _expected(agent, "concurrency")

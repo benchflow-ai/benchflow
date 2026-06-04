@@ -4,6 +4,8 @@ import logging
 from collections.abc import Callable
 from datetime import datetime
 
+from benchflow.trajectories.metrics import is_skill_invocation_event
+
 from .types import (
     AgentCapabilities,
     AgentInfo,
@@ -12,6 +14,29 @@ from .types import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _is_skill_tool_call(
+    kind: object, title: object = "", content: object = None
+) -> bool:
+    """Classify a live ACP tool call via the shared trajectory classifier.
+
+    Builds a synthetic trajectory event so live capture and historical rescans
+    apply one identical definition of "skill invocation". Crucially, the tool's
+    own ``kind`` gates content sniffing, so a ``read`` / ``execute`` / ``search``
+    tool whose output quotes a legacy ``invoke_skill`` envelope is not
+    reclassified as a skill.
+    """
+    return is_skill_invocation_event(
+        {"type": "tool_call", "kind": kind, "title": title, "content": content}
+    )
+
+
+def _canonical_tool_kind(kind: object, title: object = "") -> str:
+    raw_kind = kind if isinstance(kind, str) and kind else "other"
+    if _is_skill_tool_call(kind, title):
+        return "skill"
+    return raw_kind
 
 
 class ToolCallRecord:
@@ -141,7 +166,9 @@ class ACPSession:
             record = ToolCallRecord(
                 tool_call_id=update.get("toolCallId", ""),
                 title=update.get("title", ""),
-                kind=update.get("kind", "other"),
+                kind=_canonical_tool_kind(
+                    update.get("kind", "other"), update.get("title", "")
+                ),
             )
             self.tool_calls.append(record)
             self._tool_call_map[record.tool_call_id] = record
@@ -155,7 +182,9 @@ class ACPSession:
                 record = ToolCallRecord(
                     tool_call_id=tc_id,
                     title=update.get("title", ""),
-                    kind=update.get("kind", "tool"),
+                    kind=_canonical_tool_kind(
+                        update.get("kind", "tool"), update.get("title", "")
+                    ),
                 )
                 self.tool_calls.append(record)
                 self._tool_call_map[tc_id] = record
@@ -165,7 +194,16 @@ class ACPSession:
             except ValueError:
                 logger.warning(f"Unknown tool call status: {update.get('status')}")
                 status = ToolCallStatus.IN_PROGRESS
-            record.update_status(status, update.get("content"))
+            content = update.get("content")
+            record.update_status(status, content)
+            # Canonicalize legacy OpenHands invoke_skill calls using the same
+            # classifier the rescan path uses. Only upgrade to "skill"; never
+            # downgrade, and never reclassify a tool that already has a real
+            # ACP kind (its output may merely quote a skill envelope).
+            if record.kind != "skill" and _is_skill_tool_call(
+                record.kind, record.title, record.content
+            ):
+                record.kind = "skill"
 
         elif update_type == "agent_message_chunk":
             content = update.get("content", {})

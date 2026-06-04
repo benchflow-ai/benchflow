@@ -224,6 +224,98 @@ class TestACPSession:
         )
         assert session.tool_calls[0].status == ToolCallStatus.COMPLETED
 
+    def test_handle_openhands_invoke_skill_update_marks_kind_skill(self):
+        """Guards issue #507: OpenHands invoke_skill ACP calls are canonicalized."""
+        session = ACPSession("test-session")
+        session.handle_update(
+            {
+                "sessionUpdate": "tool_call",
+                "toolCallId": "tc_1",
+                "title": "Load PDF skill for processing",
+                "kind": "other",
+            }
+        )
+        session.handle_update(
+            {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "tc_1",
+                "status": "completed",
+                "content": [
+                    {
+                        "content": {
+                            "type": "text",
+                            "text": "Tool: invoke_skill\nResult:\n[skill: pdf]",
+                        },
+                        "type": "content",
+                    }
+                ],
+            }
+        )
+
+        assert session.tool_calls[0].kind == "skill"
+
+    def test_handle_tool_output_quoting_skill_marker_keeps_kind(self):
+        """Guards #507: a real tool whose output quotes an invoke_skill
+        envelope is not reclassified as a skill (live-capture false positive)."""
+        session = ACPSession("test-session")
+        session.handle_update(
+            {
+                "sessionUpdate": "tool_call",
+                "toolCallId": "tc_1",
+                "title": "cat prior_trajectory.txt",
+                "kind": "execute",
+            }
+        )
+        session.handle_update(
+            {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "tc_1",
+                "status": "completed",
+                "content": [
+                    {
+                        "content": {
+                            "type": "text",
+                            "text": "Tool: invoke_skill\nResult:\n[skill: pdf]",
+                        },
+                        "type": "content",
+                    }
+                ],
+            }
+        )
+
+        assert session.tool_calls[0].kind == "execute"
+
+    def test_handle_other_kind_mid_output_skill_marker_keeps_kind(self):
+        """Guards #507: an unclassified tool whose output merely mentions the
+        marker mid-stream (not as the result header) stays unclassified."""
+        session = ACPSession("test-session")
+        session.handle_update(
+            {
+                "sessionUpdate": "tool_call",
+                "toolCallId": "tc_1",
+                "title": "grep -n invoke_skill logs/",
+                "kind": "other",
+            }
+        )
+        session.handle_update(
+            {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "tc_1",
+                "status": "completed",
+                "content": [
+                    {
+                        "content": {
+                            "type": "text",
+                            "text": "logs/run.txt:42:Tool: invoke_skill\n[skill: pdf]",
+                        },
+                        "type": "content",
+                    }
+                ],
+            }
+        )
+
+        assert session.tool_calls[0].kind == "other"
+
     def test_handle_invalid_tool_call_status(self):
         """Invalid status should fall back to IN_PROGRESS, not crash."""
         session = ACPSession("test-session")

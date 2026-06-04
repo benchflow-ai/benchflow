@@ -12,8 +12,8 @@ from benchflow.rollout import _build_rollout_result
 from benchflow.trajectories.metrics import count_skill_invocations
 
 
-def test_skill_invocation_count_uses_structured_kind_only() -> None:
-    """Guards issue #507: skill counts must not come from display-text matching."""
+def test_skill_invocation_count_uses_structured_tool_calls_only() -> None:
+    """Guards issue #507: skill counts must not come from agent display text."""
     trajectory = [
         {
             "type": "tool_call",
@@ -25,6 +25,109 @@ def test_skill_invocation_count_uses_structured_kind_only() -> None:
     ]
 
     assert count_skill_invocations(trajectory) == 1
+
+
+def test_skill_invocation_count_accepts_openhands_invoke_skill_content() -> None:
+    """Guards issue #507: OpenHands invoke_skill ACP calls count as skills."""
+    trajectory = [
+        {
+            "type": "tool_call",
+            "kind": "other",
+            "title": "Load PDF skill for processing",
+            "status": "completed",
+            "content": [
+                {
+                    "content": {
+                        "type": "text",
+                        "text": "Tool: invoke_skill\nResult:\n[skill: pdf]\n# PDF Guide",
+                    },
+                    "type": "content",
+                }
+            ],
+        }
+    ]
+
+    assert count_skill_invocations(trajectory) == 1
+
+
+def test_skill_invocation_count_ignores_non_skill_tool_output_mentions() -> None:
+    """Guards issue #507: ordinary tool output is not a skill invocation."""
+    trajectory = [
+        {
+            "type": "tool_call",
+            "kind": "bash",
+            "title": "cat log.txt",
+            "content": [
+                {
+                    "content": {
+                        "type": "text",
+                        "text": "Tool: invoke_skill\nResult:\n[skill: pdf]",
+                    },
+                    "type": "content",
+                }
+            ],
+        },
+        {
+            "type": "agent_message",
+            "text": "Tool: invoke_skill\nResult:\n[skill: marker]",
+        },
+    ]
+
+    assert count_skill_invocations(trajectory) == 0
+
+
+def test_skill_invocation_count_ignores_mid_output_skill_marker() -> None:
+    """Guards #507: an unclassified tool whose output merely mentions the
+    invoke_skill marker mid-stream is not counted; only a result whose text
+    *begins* with the tool header is a legacy skill invocation."""
+    trajectory = [
+        {
+            "type": "tool_call",
+            "kind": "other",
+            "title": "grep invoke_skill logs/",
+            "content": [
+                {
+                    "content": {
+                        "type": "text",
+                        "text": "logs/run.txt:42:Tool: invoke_skill\n[skill: pdf]",
+                    },
+                    "type": "content",
+                }
+            ],
+        }
+    ]
+
+    assert count_skill_invocations(trajectory) == 0
+
+
+def test_skill_invocation_count_ignores_marker_in_nested_metadata() -> None:
+    """Guards #507: marker text buried in non-text tool-call metadata (diffs,
+    locations, raw inputs) is ignored — only structured text result blocks
+    are inspected."""
+    trajectory = [
+        {
+            "type": "tool_call",
+            "kind": "other",
+            "title": "edit notes.md",
+            "content": [
+                {
+                    "type": "diff",
+                    "path": "notes.md",
+                    "oldText": "",
+                    "newText": "Tool: invoke_skill\nResult:\n[skill: pdf]",
+                },
+                {
+                    "type": "content",
+                    "content": {
+                        "type": "text",
+                        "text": "Applied edit to notes.md",
+                    },
+                },
+            ],
+        }
+    ]
+
+    assert count_skill_invocations(trajectory) == 0
 
 
 def test_build_rollout_result_writes_skill_invocation_metric(tmp_path) -> None:
