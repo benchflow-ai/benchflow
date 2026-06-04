@@ -60,7 +60,8 @@ Public release:
 2. Merge the release PR to `main`.
 3. Push a matching tag, for example `v0.5.1`.
 4. `.github/workflows/public-release.yml` validates the tag, publishes to PyPI,
-   and creates a GitHub Release.
+   and creates a GitHub Release. The workflow refuses tags whose commits are
+   not contained in `origin/main`.
 5. Bump `main` to the next `.dev0`, for example `0.5.2.dev0`.
 
 ## One-Time PyPI Setup

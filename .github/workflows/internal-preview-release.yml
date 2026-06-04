@@ -10,10 +10,6 @@ permissions:
   contents: read
   id-token: write
 
-concurrency:
-  group: internal-preview-release
-  cancel-in-progress: false
-
 jobs:
   publish:
     name: Publish internal preview to PyPI
