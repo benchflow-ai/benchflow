@@ -6,7 +6,11 @@ import pytest
 
 from benchflow.providers import litellm_runtime as runtime_mod
 from benchflow.providers.litellm_config import LITELLM_MODEL_ALIAS_ENV
-from benchflow.providers.runtime import ensure_litellm_runtime, stop_provider_runtime
+from benchflow.providers.runtime import (
+    ProviderRuntime,
+    ensure_litellm_runtime,
+    stop_provider_runtime,
+)
 
 
 class FakeLiteLLMServer:
@@ -155,6 +159,135 @@ async def test_required_usage_fails_when_litellm_lacks_provider_key():
             agent="codex-acp",
             agent_env={},
             model="openai/gpt-4.1-mini",
+            runtime=None,
+            environment="docker",
+            usage_tracking="required",
+        )
+
+
+@pytest.mark.asyncio
+async def test_usage_tracking_off_leaves_provider_env_untouched(monkeypatch):
+    """Guards the follow-up to PR #613: off must not proxy provider traffic."""
+
+    async def fail_start(**_kwargs):
+        raise AssertionError("LiteLLM should not start when usage tracking is off")
+
+    monkeypatch.setattr(runtime_mod, "_start_host_litellm", fail_start)
+    env = {"OPENAI_API_KEY": "sk-openai"}
+
+    updated, provider_runtime = await ensure_litellm_runtime(
+        agent="codex-acp",
+        agent_env=env,
+        model="openai/gpt-4.1-mini",
+        runtime=None,
+        environment="docker",
+        usage_tracking="off",
+    )
+
+    assert updated == env
+    assert provider_runtime is None
+
+
+@pytest.mark.asyncio
+async def test_usage_tracking_off_stops_existing_litellm_runtime():
+    """Guards the follow-up to PR #613: off must clear stale LiteLLM routing."""
+
+    server = FakeLiteLLMServer("http://127.0.0.1:4000", route=None)
+    existing = ProviderRuntime(
+        kind="litellm",
+        agent_base_url=server.base_url,
+        server=server,
+        config_key="old",
+    )
+
+    updated, provider_runtime = await ensure_litellm_runtime(
+        agent="codex-acp",
+        agent_env={"OPENAI_API_KEY": "sk-openai"},
+        model="openai/gpt-4.1-mini",
+        runtime=existing,
+        environment="docker",
+        usage_tracking="off",
+    )
+
+    assert updated == {"OPENAI_API_KEY": "sk-openai"}
+    assert provider_runtime is None
+    assert server.stopped is True
+
+
+@pytest.mark.asyncio
+async def test_auto_usage_falls_back_when_litellm_lacks_provider_key(monkeypatch):
+    """Guards the follow-up to PR #613: auto should not fail just to track usage."""
+
+    async def fail_start(**_kwargs):
+        raise AssertionError("LiteLLM should not start without provider credentials")
+
+    monkeypatch.setattr(runtime_mod, "_start_host_litellm", fail_start)
+
+    updated, provider_runtime = await ensure_litellm_runtime(
+        agent="codex-acp",
+        agent_env={},
+        model="openai/gpt-4.1-mini",
+        runtime=None,
+        environment="docker",
+        usage_tracking="auto",
+    )
+
+    assert updated == {}
+    assert provider_runtime is None
+
+
+@pytest.mark.asyncio
+async def test_auto_usage_falls_back_when_litellm_start_fails(monkeypatch):
+    """Guards the follow-up to PR #613: auto should survive proxy startup errors."""
+
+    async def fail_start(**_kwargs):
+        raise RuntimeError("proxy unavailable")
+
+    monkeypatch.setattr(runtime_mod, "_start_host_litellm", fail_start)
+    env = {"OPENAI_API_KEY": "sk-openai"}
+
+    updated, provider_runtime = await ensure_litellm_runtime(
+        agent="codex-acp",
+        agent_env=env,
+        model="openai/gpt-4.1-mini",
+        runtime=None,
+        environment="docker",
+        usage_tracking="auto",
+    )
+
+    assert updated == env
+    assert provider_runtime is None
+
+
+@pytest.mark.asyncio
+async def test_required_usage_propagates_litellm_start_failure(monkeypatch):
+    """Guards the follow-up to PR #613: required must still fail closed."""
+
+    async def fail_start(**_kwargs):
+        raise RuntimeError("proxy unavailable")
+
+    monkeypatch.setattr(runtime_mod, "_start_host_litellm", fail_start)
+
+    with pytest.raises(RuntimeError, match="Token usage tracking is required"):
+        await ensure_litellm_runtime(
+            agent="codex-acp",
+            agent_env={"OPENAI_API_KEY": "sk-openai"},
+            model="openai/gpt-4.1-mini",
+            runtime=None,
+            environment="docker",
+            usage_tracking="required",
+        )
+
+
+@pytest.mark.asyncio
+async def test_required_usage_fails_for_native_agent_without_litellm_route():
+    """Guards the follow-up to PR #613: required cannot silently go unavailable."""
+
+    with pytest.raises(RuntimeError, match="cannot be routed through LiteLLM"):
+        await ensure_litellm_runtime(
+            agent="gemini",
+            agent_env={"GEMINI_API_KEY": "gemini-key"},
+            model="gemini-2.5-flash",
             runtime=None,
             environment="docker",
             usage_tracking="required",
