@@ -813,10 +813,7 @@ class TestScrapedTrajectoryTrust:
         planes.apply_web_tool_policy = AsyncMock()
         planes.deploy_skills = AsyncMock()
         planes.lockdown_paths = AsyncMock()
-        planes.ensure_bedrock_proxy_runtime = AsyncMock(
-            side_effect=lambda **kwargs: (kwargs["agent_env"], None)
-        )
-        planes.ensure_usage_proxy_runtime = AsyncMock(
+        planes.ensure_litellm_runtime = AsyncMock(
             side_effect=lambda **kwargs: (kwargs["agent_env"], None)
         )
         planes.connect_acp = AsyncMock()

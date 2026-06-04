@@ -240,7 +240,7 @@ class TestResolveProviderEnv:
         assert env["BENCHFLOW_PROVIDER_API_KEY"] == "zk-test"
 
     def test_openai_compatible_provider_maps_to_openhands_env(self):
-        """Guards PR #587: direct provider envs reach OpenHands and usage proxy."""
+        """Guards PR #587: direct provider envs reach OpenHands before LiteLLM rewrite."""
         env = {
             "KIMI_API_KEY": "sk-kimi",
             "KIMI_BASE_URL": "https://api.moonshot.ai/v1",
@@ -357,8 +357,8 @@ class TestResolveProviderEnv:
         assert env["BENCHFLOW_PROVIDER_NAME"] == "aws-bedrock"
         assert env["BENCHFLOW_PROVIDER_MODEL"] == "openai.gpt-oss-20b-1:0"
         assert env["BENCHFLOW_PROVIDER_PROTOCOL"] == "openai-responses"
-        assert env["BENCHFLOW_PROVIDER_API_KEY"] == "bedrock-proxy"
-        assert env["OPENAI_API_KEY"] == "bedrock-proxy"
+        assert env["BENCHFLOW_PROVIDER_API_KEY"] == "benchflow-litellm"
+        assert env["OPENAI_API_KEY"] == "benchflow-litellm"
 
     def test_aws_bedrock_sets_placeholder_provider_key_for_claude(self):
         env = {
@@ -371,7 +371,7 @@ class TestResolveProviderEnv:
             "claude-agent-acp",
         )
         assert env["BENCHFLOW_PROVIDER_PROTOCOL"] == "anthropic-messages"
-        assert env["ANTHROPIC_AUTH_TOKEN"] == "bedrock-proxy"
+        assert env["ANTHROPIC_AUTH_TOKEN"] == "benchflow-litellm"
 
     def test_explicit_base_url_not_overwritten(self):
         """User-supplied ANTHROPIC_BASE_URL must win over derived value."""

@@ -918,7 +918,7 @@ class TestConnectAcpModelSelection:
         ]
 
     @pytest.mark.asyncio
-    async def test_claude_bedrock_sets_model_from_provider_mapping(self, tmp_path):
+    async def test_claude_litellm_env_owns_model_selection(self, tmp_path):
         from benchflow.acp.runtime import connect_acp
 
         mock_acp = self._make_mocks()
@@ -937,8 +937,9 @@ class TestConnectAcpModelSelection:
                 agent="claude-agent-acp",
                 agent_launch="claude-agent-acp",
                 agent_env={
-                    "CLAUDE_CODE_USE_BEDROCK": "1",
-                    "ANTHROPIC_MODEL": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+                    "BENCHFLOW_LITELLM_MODEL_ALIAS": "benchflow-bedrock-sonnet",
+                    "BENCHFLOW_LITELLM_MODEL_VIA_ENV": "1",
+                    "ANTHROPIC_MODEL": "benchflow-bedrock-sonnet",
                 },
                 sandbox_user=None,
                 model="aws-bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0",
@@ -948,9 +949,8 @@ class TestConnectAcpModelSelection:
             )
 
         mock_acp.set_model.assert_not_awaited()
-        mock_acp.set_config_option.assert_awaited_once_with(
-            "model", "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
-        )
+        # LiteLLM VIA_ENV owns model selection -> no ACP set_model or config option.
+        mock_acp.set_config_option.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_daytona_dind_uses_pty_transport(self, tmp_path):

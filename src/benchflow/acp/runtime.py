@@ -146,6 +146,12 @@ def _format_acp_model(model: str, agent: str) -> str:
     # Already has a slash — assume it's provider/model already
     if "/" in bare:
         return bare
+    # BenchFlow's LiteLLM proxy registers every model under "openai/<alias>"
+    # (aliases are always "benchflow-…"). Send that so provider/model agents
+    # (e.g. opencode) hit a registered route instead of a guessed provider that
+    # the proxy never serves (the heuristic would default to anthropic/).
+    if bare.startswith("benchflow-"):
+        return f"openai/{bare}"
     # Infer the models.dev provider from the bare model name
     m = bare.lower()
     for substring, provider in _MODELSDEV_PROVIDER_HEURISTICS:
@@ -187,6 +193,15 @@ def _model_selection_owned_by_env(
     agent_cfg = AGENTS.get(agent)
     if not agent_cfg:
         return False
+    # LiteLLM routing: when the model is delivered purely through env
+    # (LLM_MODEL/ANTHROPIC_MODEL + BENCHFLOW_LITELLM_MODEL_VIA_ENV) the agent
+    # must not also receive ACP model config. An alias present WITHOUT VIA_ENV
+    # (e.g. opencode) means ACP model config still runs — _format_acp_model maps
+    # it to the proxy's registered openai/<alias> route.
+    if agent_env.get("BENCHFLOW_LITELLM_MODEL_VIA_ENV") in {"1", "true", "True"}:
+        return True
+    if agent_env.get("BENCHFLOW_LITELLM_MODEL_ALIAS"):
+        return False
     provider = find_provider(model)
     if provider is None:
         return False
@@ -206,6 +221,9 @@ def _model_selection_owned_by_env(
 
 def _resolve_acp_model_input(agent: str, model: str, agent_env: dict[str, str]) -> str:
     """Pick the model string that should be sent through ACP model config."""
+    litellm_alias = agent_env.get("BENCHFLOW_LITELLM_MODEL_ALIAS")
+    if litellm_alias:
+        return litellm_alias
     agent_cfg = AGENTS.get(agent)
     if not agent_cfg:
         return model

@@ -3,7 +3,7 @@
 Public API surface:
 - Sandbox protocol for isolated execution environments
 - ACP client for multi-turn agent communication
-- Trajectory capture (HTTP proxy, OTel collector, ACP native)
+- Trajectory capture (LiteLLM callbacks, OTel collector, ACP native)
 - Rollout lifecycle for single-task execution
 - Evaluation orchestration with retries and concurrency
 - Rewards protocol (composable Rubric + RewardFunc)
@@ -124,7 +124,6 @@ from benchflow.task import (
     VerifierResult,
 )
 from benchflow.trajectories.otel import OTelCollector
-from benchflow.trajectories.proxy import TrajectoryProxy
 from benchflow.trajectories.types import Trajectory
 
 # Public API surface. Anything not in this list is implementation detail and
@@ -235,7 +234,6 @@ __all__ = [
     "parse_skill",
     # Trajectories
     "OTelCollector",
-    "TrajectoryProxy",
     "Trajectory",
     # External adapters
     "InspectAdapter",

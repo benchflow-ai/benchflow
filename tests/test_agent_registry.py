@@ -76,8 +76,8 @@ class TestEnvMappingField:
 
         assert env["LLM_MODEL"] == "openai/glm-5"
 
-    def test_openhands_bedrock_anthropic_model_uses_litellm_provider_prefix(self):
-        """Guards v0.5-integration@e55219d against OpenHands receiving a bare Bedrock profile id."""
+    def test_openhands_bedrock_initial_env_marks_registered_provider(self):
+        """Guards the LiteLLM runtime refactor: Bedrock is detected before runtime rewrite."""
         env = {
             "AWS_BEARER_TOKEN_BEDROCK": "bedrock-token",
             "AWS_REGION": "us-west-2",
@@ -89,7 +89,8 @@ class TestEnvMappingField:
             agent_env=env,
         )
 
-        assert env["LLM_MODEL"] == "anthropic/us.anthropic.claude-opus-4-7"
+        assert env["BENCHFLOW_PROVIDER_NAME"] == "aws-bedrock"
+        assert env["BENCHFLOW_PROVIDER_MODEL"] == "us.anthropic.claude-opus-4-7"
 
 
 class TestOpenHandsConfig:
@@ -104,36 +105,27 @@ class TestOpenHandsConfig:
             "apt-get -o Acquire::Retries=3 install -y -qq curl ca-certificates git"
             in cfg.install_cmd
         )
-        assert "--with 'boto3>=1.40'" in cfg.install_cmd
         assert (
             "uv tool install --force --refresh "
-            "--with 'boto3>=1.40' "
-            "--with 'litellm==1.88.0rc1' "
             "--from 'git+https://github.com/OpenHands/OpenHands-CLI.git@main' "
             "openhands --python 3.12" in cfg.install_cmd
         )
         assert "command -v git" in cfg.install_cmd
         assert "install.openhands.dev/install.sh" not in cfg.install_cmd
 
-    def test_openhands_install_cmd_deploys_bedrock_opus_shim(self):
-        """Opus 4.8+ Bedrock adaptive-thinking shim ships into the sandbox litellm."""
+    def test_openhands_install_cmd_does_not_deploy_bedrock_shim(self):
+        """Guards the LiteLLM runtime refactor: Bedrock patches live with LiteLLM."""
         cfg = AGENTS["openhands"]
-        # litellm pinned to a version with the adaptive-thinking `max` + output_config path
-        assert "--with 'litellm==1.88.0rc1'" in cfg.install_cmd
-        # the regex-gated shim file + its .pth autoloader are written into site-packages
-        assert "oh_bedrock_opus_patch.py" in cfg.install_cmd
-        assert "zz_oh_bedrock_opus_patch.pth" in cfg.install_cmd
+        assert "oh_bedrock_opus_patch.py" not in cfg.install_cmd
+        assert "zz_oh_bedrock_opus_patch.pth" not in cfg.install_cmd
 
-    def test_openhands_install_cmd_self_tests_the_shim(self):
-        """The shim is the sole Daytona mechanism, so a deploy failure must be
-        loud, not swallowed: the install behaviorally verifies it patched litellm
-        and emits a distinct ACTIVE / NOT-active marker."""
+    def test_openhands_install_cmd_does_not_self_test_provider_shim(self):
+        """Provider patch self-tests belong to the LiteLLM runtime, not OpenHands."""
         cfg = AGENTS["openhands"]
-        # behavioral check runs the venv python against the patched classifier
-        assert "_is_adaptive_thinking_model" in cfg.install_cmd
-        assert "us.anthropic.claude-opus-4-8" in cfg.install_cmd
-        assert "shim ACTIVE" in cfg.install_cmd
-        assert "shim NOT active" in cfg.install_cmd
+        assert "_is_adaptive_thinking_model" not in cfg.install_cmd
+        assert "us.anthropic.claude-opus-4-8" not in cfg.install_cmd
+        assert "shim ACTIVE" not in cfg.install_cmd
+        assert "shim NOT active" not in cfg.install_cmd
 
     def test_openhands_apt_bootstrap_retries_transient_mirror_failures(self):
         """Guards the local fix on v0.5-integration@e55219d against Ubuntu mirror signature flakiness."""
@@ -145,11 +137,11 @@ class TestOpenHandsConfig:
         assert 'while [ "$attempt" -le 3 ]' in cfg.install_cmd
         assert 'case "$attempt"' in cfg.install_cmd
 
-    def test_openhands_installs_boto3_for_bedrock_provider(self):
-        """Guards v0.5-integration@e55219d against OpenHands Bedrock runs missing boto3."""
+    def test_openhands_no_longer_installs_boto3_for_bedrock_provider(self):
+        """LiteLLM owns Bedrock provider dependencies, so OpenHands stays provider-neutral."""
         cfg = AGENTS["openhands"]
 
-        assert "--with 'boto3>=1.40'" in cfg.install_cmd
+        assert "--with 'boto3>=1.40'" not in cfg.install_cmd
 
     def test_openhands_skips_acp_set_model(self):
         cfg = AGENTS["openhands"]

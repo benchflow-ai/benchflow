@@ -118,9 +118,9 @@ def test_write_config_drops_secret_env_vars(tmp_path: Path) -> None:
     assert recorded["PATH"] == "/usr/bin:/bin"
 
 
-def test_write_config_drops_usage_proxy_secret_base_urls(tmp_path: Path) -> None:
-    """Provider proxy URLs with BenchFlow secret path segments must be redacted."""
-    secret_base = "https://usage.example.test/__benchflow/secret-prefix"
+def test_write_config_drops_litellm_secret_base_urls(tmp_path: Path) -> None:
+    """LiteLLM URLs with BenchFlow secret path segments must be redacted."""
+    secret_base = "https://litellm.example.test/__benchflow/secret-prefix"
     agent_env = {
         "BENCHFLOW_PROVIDER_BASE_URL": secret_base,
         "OPENAI_BASE_URL": secret_base,

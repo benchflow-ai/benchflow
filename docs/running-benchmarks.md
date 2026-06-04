@@ -331,8 +331,8 @@ passes.
 ### Setup (once per shell)
 
 ```bash
-# 1. Run the CLI from a benchflow checkout that contains the Bedrock thinking shim
-#    (src/benchflow/agents/oh_bedrock_opus_patch.py). Inside the repo, use `uv run bench`.
+# 1. Run the CLI from a benchflow checkout. BenchFlow starts LiteLLM as the
+#    provider gateway for Bedrock/Gemini/Azure/etc. Inside the repo, use `uv run bench`.
 cd /path/to/benchflow
 
 # 2. A local skillsbench clone, so --skills-dir can point at a task's bundled skills
@@ -348,11 +348,11 @@ export AWS_REGION=us-west-2 AWS_DEFAULT_REGION=us-west-2
 export GEMINI_API_KEY=...
 
 # 4. MAX thinking for Opus-4.8 (opt-in). WITHOUT this the run uses the agent's
-#    default effort = adaptive-thinking `high`, NOT max. Honored on BOTH backends:
-#    Daytona forwards it into the sandbox; Docker reads it in the host Bedrock proxy.
+#    default effort = adaptive-thinking `high`, NOT max. LiteLLM receives this
+#    env var on both Daytona and Docker.
 export BENCHFLOW_BEDROCK_THINKING_EFFORT=max
 
-# 5. Strip any LLM-proxy vars or they hijack non-Bedrock routing:
+# 5. Strip stale external gateway vars; BenchFlow will generate its own LiteLLM config:
 unset LLM_BASE_URL LLM_API_KEY OPENAI_BASE_URL BENCHFLOW_PROVIDER_BASE_URL \
       BENCHFLOW_PROVIDER_API_KEY LITELLM_BASE_URL LITELLM_API_KEY
 ```
@@ -388,8 +388,8 @@ bench eval create $COMMON --model gemini-3.5-flash --agent-env LLM_CACHING_PROMP
 ```
 
 `BENCHFLOW_BEDROCK_THINKING_EFFORT=max` is what makes the two Opus cells actually
-run at MAX — the live request then carries `"output_config": {"effort": "max"}`
-(confirm it in `trajectory/llm_trajectory.jsonl`; unset, you'd see `"high"`).
+run at MAX. LiteLLM writes the provider call metadata to
+`trajectory/llm_trajectory.jsonl`; confirm the adaptive thinking effort there.
 
 | Model (`--model`) | Skills | Cell-specific flags |
 |-------------------|--------|---------------------|

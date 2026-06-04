@@ -51,10 +51,7 @@ class TestConnectAsEnvMerge:
         planes = MagicMock()
         planes.agent_launch.return_value = "claude-agent-acp"
         planes.resolve_agent_env.side_effect = lambda _agent, _model, env: env or {}
-        planes.ensure_bedrock_proxy_runtime = AsyncMock(
-            side_effect=lambda **kwargs: (kwargs["agent_env"], None)
-        )
-        planes.ensure_usage_proxy_runtime = AsyncMock(
+        planes.ensure_litellm_runtime = AsyncMock(
             side_effect=lambda **kwargs: (kwargs["agent_env"], None)
         )
         planes.install_agent = AsyncMock()
@@ -157,7 +154,7 @@ class TestConnectAsEnvMerge:
         _mock_trial._planes.resolve_agent_env.return_value = {
             "ANTHROPIC_API_KEY": "from-config"
         }
-        _mock_trial._planes.ensure_bedrock_proxy_runtime.return_value = (
+        _mock_trial._planes.ensure_litellm_runtime.return_value = (
             {"ANTHROPIC_API_KEY": "from-config"},
             None,
         )

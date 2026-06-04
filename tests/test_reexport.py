@@ -21,11 +21,11 @@ def test_benchflow_additions():
     """benchflow's own additions should be importable."""
     from benchflow import (
         ACPClient,
-        TrajectoryProxy,
+        Trajectory,
     )
 
     assert ACPClient.__module__.startswith("benchflow")
-    assert TrajectoryProxy.__module__.startswith("benchflow")
+    assert Trajectory.__module__.startswith("benchflow")
 
 
 def test_sdk_importable():

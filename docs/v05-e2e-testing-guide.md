@@ -25,9 +25,10 @@ All commands below assume you are in the repo root.
 > The examples below use `weighted-gdp-calc` (fast, ~5 tool calls) as the
 > default lightweight task. Swap in any task name from `$TASKS/`.
 
-> **Usage telemetry:** Docker uses a host-side provider proxy; Daytona uses a
-> sandbox-local provider proxy because the agent runs on a remote host. Default
-> `--usage-tracking auto` records provider token/cost telemetry when the proxy can
+> **Usage telemetry:** Docker and Daytona both route LLM traffic through
+> LiteLLM. Docker starts a host-side LiteLLM gateway; Daytona starts LiteLLM
+> inside the sandbox because the agent runs on a remote host. Default
+> `--usage-tracking auto` records provider token/cost telemetry when LiteLLM can
 > be started. Use `--usage-tracking required` when missing telemetry should fail
 > the rollout, or `--usage-tracking off` for recovery runs that should leave
 > provider traffic untouched.
