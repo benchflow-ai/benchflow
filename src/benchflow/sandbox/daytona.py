@@ -63,6 +63,7 @@ from benchflow.sandbox._compose import (
     compose_mkdir_p_command,
     compose_parent_mkdir_p_command,
 )
+from benchflow.sandbox.metadata import persist_sandbox_info
 from benchflow.sandbox.protocol import (
     SandboxImage,
     SandboxSnapshotNotSupported,
@@ -1227,12 +1228,7 @@ class DaytonaSandbox(BaseSandbox):
         """
         if self.rollout_paths is None:
             return
-        # Lazy import: ``benchflow.rollout`` is a high-level module; importing it
-        # at call time (not module import) keeps the sandbox layer free of a
-        # rollout dependency and avoids any import-time cycle.
-        from benchflow.rollout import _persist_sandbox_info
-
-        _persist_sandbox_info(self, self.rollout_paths.rollout_dir)
+        persist_sandbox_info(self, self.rollout_paths.rollout_dir)
 
     @retry(
         stop=stop_after_attempt(3),

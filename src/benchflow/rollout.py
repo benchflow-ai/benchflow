@@ -77,6 +77,7 @@ from benchflow.models import RolloutResult, TrajectorySource
 from benchflow.rewards.validation import validate_reward_map
 from benchflow.rollout_branch import ChildRunner
 from benchflow.rollout_branch import branch as _branch_engine
+from benchflow.sandbox.metadata import persist_sandbox_info
 from benchflow.scenes import (
     compile_scenes_to_steps,
     scene_step_prompt,
@@ -801,38 +802,6 @@ async def _start_env_and_upload(
         await env.upload_dir(task_path / "solution", "/solution")
 
 
-def _persist_sandbox_info(env: Any, rollout_dir: Path | None) -> None:
-    """Write sandbox.json with provider-side sandbox ID immediately after creation.
-
-    This ensures the sandbox ID is persisted even if the run is interrupted
-    before result.json is written. Daytona also calls this at the moment its
-    sandbox is created (inside ``start()``), not only after ``start()`` returns
-    — closing the in-``start()`` interrupt window for DinD's long daemon-wait
-    (#554/#563).
-
-    The ``sandbox.json`` write is best-effort: a failure to write it (disk full,
-    read-only dir) must not abort an otherwise-healthy run, so it is wrapped and
-    logged rather than raised. The id-capture itself is load-bearing and lives in
-    the caller (``Rollout.start``); this helper only does the best-effort file
-    write.
-    """
-    sandbox_id = getattr(env, "sandbox_id", None)
-    if not isinstance(sandbox_id, str) or not rollout_dir:
-        return
-    provider = type(env).__name__
-    info = {
-        "sandbox_id": sandbox_id,
-        "provider": provider,
-        "created_at": str(datetime.now()),
-    }
-    try:
-        (rollout_dir / "sandbox.json").write_text(json.dumps(info, indent=2))
-    except Exception as e:  # best-effort: never fail start() over an audit file
-        logger.warning(f"Failed to persist sandbox.json for {sandbox_id}: {e}")
-        return
-    logger.info(f"Sandbox {sandbox_id} ({provider})")
-
-
 async def _run_oracle(
     env: Any, task_path: Path, timeout: int, sandbox_user: str | None = None
 ) -> tuple[list[dict], str]:
@@ -1480,7 +1449,7 @@ class Rollout:
             # sandbox.json to audit or clean up.
             sid = getattr(self._env, "sandbox_id", None)
             self._sandbox_id = sid if isinstance(sid, str) else None
-            _persist_sandbox_info(self._env, self._rollout_dir)
+            persist_sandbox_info(self._env, self._rollout_dir)
 
         await _start_env_and_upload(
             self._env,
@@ -2677,6 +2646,13 @@ class Rollout:
             usage_source=usage_source,
         )
 
+    def _current_sandbox_id(self) -> str | None:
+        sandbox_id = getattr(self, "_sandbox_id", None)
+        if isinstance(sandbox_id, str):
+            return sandbox_id
+        env_sandbox_id = getattr(getattr(self, "_env", None), "sandbox_id", None)
+        return env_sandbox_id if isinstance(env_sandbox_id, str) else None
+
     def _build_result(self) -> RolloutResult:
         rollout_dir = self._require_rollout_dir()
         # For Scene/multi-turn rollouts, each execute() call records the
@@ -2716,8 +2692,6 @@ class Rollout:
                 runtime_skills_dir=self._config.skills_dir,
                 declared_sandbox_skills_dir=None,
             ),
-            # getattr guard: cleanup/export paths build a Rollout skeleton via
-            # __new__ (no __init__), so _sandbox_id may be unset there (#563).
-            sandbox_id=getattr(self, "_sandbox_id", None),
+            sandbox_id=self._current_sandbox_id(),
             **self._usage_metrics,
         )

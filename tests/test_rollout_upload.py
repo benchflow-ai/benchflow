@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from benchflow.diagnostics import RolloutDiagnostics
 from benchflow.rollout import (
     SKILL_MODE_NO_SKILL,
     SKILL_MODE_SELF_GEN,
@@ -15,10 +16,10 @@ from benchflow.rollout import (
     RolloutConfig,
     Scene,
     _build_rollout_result,
-    _persist_sandbox_info,
     _publish_trajectory_for_verifier,
     _start_env_and_upload,
 )
+from benchflow.sandbox.metadata import persist_sandbox_info
 
 
 class FakeUploadEnv:
@@ -269,7 +270,7 @@ def test_persist_sandbox_info_writes_sandbox_json(tmp_path: Path) -> None:
     class FakeDaytonaSandbox:
         sandbox_id = "sb-abc123"
 
-    _persist_sandbox_info(FakeDaytonaSandbox(), tmp_path)
+    persist_sandbox_info(FakeDaytonaSandbox(), tmp_path)
 
     info = json.loads((tmp_path / "sandbox.json").read_text())
     assert info["sandbox_id"] == "sb-abc123"
@@ -283,7 +284,7 @@ def test_persist_sandbox_info_skips_when_no_sandbox_id(tmp_path: Path) -> None:
     class FakeDockerSandbox:
         sandbox_id = None
 
-    _persist_sandbox_info(FakeDockerSandbox(), tmp_path)
+    persist_sandbox_info(FakeDockerSandbox(), tmp_path)
     assert not (tmp_path / "sandbox.json").exists()
 
 
@@ -293,7 +294,7 @@ def test_persist_sandbox_info_skips_when_no_rollout_dir() -> None:
     class FakeSandbox:
         sandbox_id = "sb-xyz"
 
-    _persist_sandbox_info(FakeSandbox(), None)
+    persist_sandbox_info(FakeSandbox(), None)
 
 
 def test_result_json_includes_sandbox_id(tmp_path: Path) -> None:
@@ -323,6 +324,68 @@ def test_result_json_includes_sandbox_id(tmp_path: Path) -> None:
 
     data = json.loads((tmp_path / "result.json").read_text())
     assert data["sandbox_id"] == "sb-daytona-123"
+
+
+@pytest.mark.asyncio
+async def test_rollout_result_falls_back_to_env_sandbox_id_after_start_failure(
+    tmp_path: Path,
+) -> None:
+    """Guards the fix from PR #563 for issue #554: if Daytona creates the
+    provider sandbox and then fails later in start(), result.json still records
+    env.sandbox_id even though the rollout on_started callback never ran."""
+    from datetime import datetime
+
+    rollout_dir = tmp_path / "rollout"
+    rollout_dir.mkdir()
+    task = tmp_path / "task"
+    task.mkdir()
+
+    class CreatedThenFailingEnv(FakeUploadEnv):
+        sandbox_id = "sb-post-create-fail"
+
+        async def start(self, force_build: bool) -> None:
+            persist_sandbox_info(self, rollout_dir)
+            raise RuntimeError("post-create startup failed")
+
+    rollout = Rollout.__new__(Rollout)
+    rollout._config = RolloutConfig(
+        task_path=task,
+        scenes=[Scene.single(agent="oracle")],
+        jobs_dir=tmp_path / "jobs",
+    )
+    rollout._rollout_dir = rollout_dir
+    rollout._started_at = datetime(2026, 5, 25, 12, 0)
+    rollout._rollout_name = "my-rollout"
+    rollout._agent_name = "oracle"
+    rollout._env = CreatedThenFailingEnv()
+    rollout._env_externally_owned = False
+    rollout._timing = {}
+    rollout._executed_prompts = []
+    rollout._resolved_prompts = []
+    rollout._n_tool_calls = 0
+    rollout._error = "post-create startup failed"
+    rollout._verifier_error = None
+    rollout._export_error = None
+    rollout._trajectory = []
+    rollout._partial_trajectory = False
+    rollout._trajectory_source = None
+    rollout._rewards = None
+    rollout._evolved_skills = None
+    rollout._diagnostics = RolloutDiagnostics()
+    rollout._usage_metrics = {}
+    rollout._task_skill_policy = None
+    rollout._sandbox_id = None
+
+    with pytest.raises(RuntimeError, match="post-create startup failed"):
+        await rollout.start()
+
+    assert rollout._sandbox_id is None
+    rollout._build_result()
+
+    sandbox_info = json.loads((rollout_dir / "sandbox.json").read_text())
+    result = json.loads((rollout_dir / "result.json").read_text())
+    assert sandbox_info["sandbox_id"] == "sb-post-create-fail"
+    assert result["sandbox_id"] == "sb-post-create-fail"
 
 
 def test_result_json_sandbox_id_null_for_docker(tmp_path: Path) -> None:
@@ -403,7 +466,7 @@ async def test_sandbox_json_survives_upload_failure(tmp_path: Path) -> None:
             env,
             task,
             {},
-            on_started=lambda: _persist_sandbox_info(env, rollout_dir),
+            on_started=lambda: persist_sandbox_info(env, rollout_dir),
         )
 
     info = json.loads((rollout_dir / "sandbox.json").read_text())
@@ -421,7 +484,7 @@ async def test_sandbox_json_survives_interrupt_inside_start(tmp_path: Path) -> N
     stretch would leave a live server-side sandbox with no ``sandbox.json``.
 
     Daytona now persists the id the instant ``self._sandbox`` is assigned
-    (``_create_sandbox`` calls ``_persist_sandbox_info`` before the daemon-wait).
+    (``_create_sandbox`` calls ``persist_sandbox_info`` before the daemon-wait).
     This models that: a fake env whose ``start()`` persists the id and then is
     cancelled before returning must still leave a ``sandbox.json`` behind."""
     rollout_dir = tmp_path / "rollout"
@@ -437,7 +500,7 @@ async def test_sandbox_json_survives_interrupt_inside_start(tmp_path: Path) -> N
             # Provider create returned: the sandbox id is now known. Persist it
             # immediately (this is what DaytonaSandbox._create_sandbox does on
             # assignment, before the DinD daemon-wait) ...
-            _persist_sandbox_info(self, rollout_dir)
+            persist_sandbox_info(self, rollout_dir)
             # ... then get cancelled during the long daemon-wait, before start()
             # could return and before on_started would have fired.
             raise asyncio.CancelledError
@@ -500,7 +563,7 @@ async def test_create_sandbox_persists_sandbox_json_normal_path(tmp_path: Path) 
     ``DaytonaSandbox._create_sandbox`` must persist ``sandbox.json`` the instant
     ``self._sandbox`` is assigned — via ``_on_sandbox_created`` — not only after
     ``start()`` returns. Unlike ``test_sandbox_json_survives_interrupt_inside_start``
-    (which hand-calls ``_persist_sandbox_info`` from a fake ``start()``), this
+    (which hand-calls ``persist_sandbox_info`` from a fake ``start()``), this
     drives the production ``_create_sandbox``/``_on_sandbox_created`` wiring, so
     deleting the ``_on_sandbox_created()`` call in ``daytona.py`` fails it."""
     rollout_dir = tmp_path / "rollout"
