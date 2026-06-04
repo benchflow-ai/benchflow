@@ -36,9 +36,11 @@ from typing import ClassVar
 
 try:
     from dashboard.daytona_status import snapshot as daytona_snapshot
+    from dashboard.experiments_status import snapshot as experiments_snapshot
     from dashboard.generate import resolve_dashboard_jobs_root
 except ModuleNotFoundError:  # pragma: no cover - used when run as dashboard/serve.py
     from daytona_status import snapshot as daytona_snapshot  # type: ignore[no-redef]
+    from experiments_status import snapshot as experiments_snapshot  # type: ignore[no-redef]
     from generate import resolve_dashboard_jobs_root  # type: ignore[no-redef]
 
 DASH = Path(__file__).resolve().parent
@@ -117,6 +119,13 @@ class SyncingDashboardHandler(http.server.SimpleHTTPRequestHandler):
             return
         if path == "/daytona.json":
             self._serve_json(daytona_snapshot(self.headers.get("X-Daytona-Key")))
+            return
+        # SkillsBench experiment-fill monitor (same live-only capability pattern).
+        if path == "/experiments/available":
+            self._serve_json({"available": True})
+            return
+        if path == "/experiments.json":
+            self._serve_json(experiments_snapshot())
             return
         if path == "/data.json" and not self._sync_data_json():
             return
