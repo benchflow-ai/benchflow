@@ -237,6 +237,33 @@ async def test_auto_usage_falls_back_when_litellm_lacks_provider_key(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_auto_usage_falls_back_when_route_resolution_fails(monkeypatch):
+    """Guards the follow-up to PR #620: auto falls back on route failures."""
+
+    def fail_route(*_args, **_kwargs):
+        raise ValueError("missing AZURE_RESOURCE")
+
+    async def fail_start(**_kwargs):
+        raise AssertionError("LiteLLM should not start without a resolved route")
+
+    monkeypatch.setattr(runtime_mod, "resolve_litellm_route", fail_route)
+    monkeypatch.setattr(runtime_mod, "_start_host_litellm", fail_start)
+    env = {"AZURE_API_KEY": "azure-key"}
+
+    updated, provider_runtime = await ensure_litellm_runtime(
+        agent="codex-acp",
+        agent_env=env,
+        model="azure-foundry-openai/gpt-4.1-mini",
+        runtime=None,
+        environment="docker",
+        usage_tracking="auto",
+    )
+
+    assert updated == env
+    assert provider_runtime is None
+
+
+@pytest.mark.asyncio
 async def test_auto_usage_falls_back_when_litellm_start_fails(monkeypatch):
     """Guards the follow-up to PR #613: auto should survive proxy startup errors."""
 
@@ -257,6 +284,48 @@ async def test_auto_usage_falls_back_when_litellm_start_fails(monkeypatch):
 
     assert updated == env
     assert provider_runtime is None
+
+
+@pytest.mark.asyncio
+async def test_auto_usage_requires_sandbox_handle_for_sandbox_local_litellm():
+    """Guards the follow-up to PR #620: auto must not hide wiring bugs."""
+
+    with pytest.raises(RuntimeError, match="sandbox-local LiteLLM"):
+        await ensure_litellm_runtime(
+            agent="openhands",
+            agent_env={"OPENAI_API_KEY": "sk-openai"},
+            model="openai/gpt-4.1-mini",
+            runtime=None,
+            environment="daytona",
+            usage_tracking="auto",
+            sandbox=None,
+        )
+
+
+@pytest.mark.asyncio
+async def test_auto_usage_checks_sandbox_handle_before_route_fallback(monkeypatch):
+    """Guards the follow-up to PR #620: sandbox wiring wins over route fallback."""
+
+    route_calls = []
+
+    def fail_route(*_args, **_kwargs):
+        route_calls.append(True)
+        raise ValueError("missing AZURE_RESOURCE")
+
+    monkeypatch.setattr(runtime_mod, "resolve_litellm_route", fail_route)
+
+    with pytest.raises(RuntimeError, match="sandbox-local LiteLLM"):
+        await ensure_litellm_runtime(
+            agent="openhands",
+            agent_env={},
+            model="azure-foundry-openai/gpt-4.1-mini",
+            runtime=None,
+            environment="daytona",
+            usage_tracking="auto",
+            sandbox=None,
+        )
+
+    assert route_calls == []
 
 
 @pytest.mark.asyncio

@@ -56,6 +56,7 @@ _PATCH_MODULE = "benchflow_litellm_bedrock_patch"
 # GenerateContent format), so they talk to their provider directly and report
 # usage_source='unavailable'. ``oracle`` has no model at all.
 _NATIVE_PROTOCOL_AGENTS = frozenset({"oracle", "gemini"})
+_SANDBOX_LOCAL_ENVIRONMENTS = frozenset({"daytona", "modal"})
 
 
 @dataclass(frozen=True)
@@ -948,10 +949,11 @@ async def ensure_litellm_runtime(
                 "Token usage tracking is required, but agent "
                 f"{agent!r} cannot be routed through LiteLLM."
             )
-        if runtime is not None:
-            return await _skip_litellm_runtime(agent_env, runtime)
-        return agent_env, None
+        return await _skip_litellm_runtime(agent_env, runtime)
     assert model is not None
+
+    if environment in _SANDBOX_LOCAL_ENVIRONMENTS and sandbox is None:
+        raise RuntimeError("sandbox-local LiteLLM requires a sandbox handle")
 
     try:
         route = resolve_litellm_route(model, agent_env)
@@ -1009,9 +1011,7 @@ async def ensure_litellm_runtime(
         await stop_litellm_runtime(runtime)
 
     try:
-        if environment in {"daytona", "modal"}:
-            if sandbox is None:
-                raise RuntimeError("sandbox-local LiteLLM requires a sandbox handle")
+        if environment in _SANDBOX_LOCAL_ENVIRONMENTS:
             server = await _start_sandbox_litellm(
                 sandbox=sandbox,
                 route=route,
