@@ -76,6 +76,60 @@ def test_skill_invocation_count_ignores_non_skill_tool_output_mentions() -> None
     assert count_skill_invocations(trajectory) == 0
 
 
+def test_skill_invocation_count_ignores_mid_output_skill_marker() -> None:
+    """Guards #507: an unclassified tool whose output merely mentions the
+    invoke_skill marker mid-stream is not counted; only a result whose text
+    *begins* with the tool header is a legacy skill invocation."""
+    trajectory = [
+        {
+            "type": "tool_call",
+            "kind": "other",
+            "title": "grep invoke_skill logs/",
+            "content": [
+                {
+                    "content": {
+                        "type": "text",
+                        "text": "logs/run.txt:42:Tool: invoke_skill\n[skill: pdf]",
+                    },
+                    "type": "content",
+                }
+            ],
+        }
+    ]
+
+    assert count_skill_invocations(trajectory) == 0
+
+
+def test_skill_invocation_count_ignores_marker_in_nested_metadata() -> None:
+    """Guards #507: marker text buried in non-text tool-call metadata (diffs,
+    locations, raw inputs) is ignored — only structured text result blocks
+    are inspected."""
+    trajectory = [
+        {
+            "type": "tool_call",
+            "kind": "other",
+            "title": "edit notes.md",
+            "content": [
+                {
+                    "type": "diff",
+                    "path": "notes.md",
+                    "oldText": "",
+                    "newText": "Tool: invoke_skill\nResult:\n[skill: pdf]",
+                },
+                {
+                    "type": "content",
+                    "content": {
+                        "type": "text",
+                        "text": "Applied edit to notes.md",
+                    },
+                },
+            ],
+        }
+    ]
+
+    assert count_skill_invocations(trajectory) == 0
+
+
 def test_build_rollout_result_writes_skill_invocation_metric(tmp_path) -> None:
     """Guards issue #507: result.json exposes structured skill invocation counts."""
     trajectory = [

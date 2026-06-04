@@ -3,7 +3,7 @@
 import logging
 from datetime import datetime
 
-from benchflow.trajectories.metrics import content_contains_skill_invocation_tool
+from benchflow.trajectories.metrics import is_skill_invocation_event
 
 from .types import (
     AgentCapabilities,
@@ -15,15 +15,25 @@ from .types import (
 logger = logging.getLogger(__name__)
 
 
+def _is_skill_tool_call(
+    kind: object, title: object = "", content: object = None
+) -> bool:
+    """Classify a live ACP tool call via the shared trajectory classifier.
+
+    Builds a synthetic trajectory event so live capture and historical rescans
+    apply one identical definition of "skill invocation". Crucially, the tool's
+    own ``kind`` gates content sniffing, so a ``read`` / ``execute`` / ``search``
+    tool whose output quotes a legacy ``invoke_skill`` envelope is not
+    reclassified as a skill.
+    """
+    return is_skill_invocation_event(
+        {"type": "tool_call", "kind": kind, "title": title, "content": content}
+    )
+
+
 def _canonical_tool_kind(kind: object, title: object = "") -> str:
     raw_kind = kind if isinstance(kind, str) and kind else "other"
-    normalized_kind = raw_kind.strip().lower().replace("-", "_")
-    normalized_title = (
-        title.strip().lower().replace("-", "_") if isinstance(title, str) else ""
-    )
-    if normalized_kind in {"skill", "invoke_skill", "activate_skill"}:
-        return "skill"
-    if normalized_title in {"invoke_skill", "activate_skill"}:
+    if _is_skill_tool_call(kind, title):
         return "skill"
     return raw_kind
 
@@ -150,7 +160,13 @@ class ACPSession:
                 status = ToolCallStatus.IN_PROGRESS
             content = update.get("content")
             record.update_status(status, content)
-            if content_contains_skill_invocation_tool(content):
+            # Canonicalize legacy OpenHands invoke_skill calls using the same
+            # classifier the rescan path uses. Only upgrade to "skill"; never
+            # downgrade, and never reclassify a tool that already has a real
+            # ACP kind (its output may merely quote a skill envelope).
+            if record.kind != "skill" and _is_skill_tool_call(
+                record.kind, record.title, record.content
+            ):
                 record.kind = "skill"
 
         elif update_type == "agent_message_chunk":
