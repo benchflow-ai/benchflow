@@ -567,3 +567,49 @@ async def test_callback_prefers_proxy_computed_response_cost(tmp_path, monkeypat
 
     record = json.loads(log_path.read_text().splitlines()[0])
     assert record["response_cost"] == 0.00075
+
+
+@pytest.mark.asyncio
+async def test_callback_records_unpriced_cost_as_null(tmp_path, monkeypatch):
+    # The proxy reports response_cost=0.0 for models it cannot price; that must
+    # be recorded as null (unknown), not a misleading $0.00, so downstream
+    # cost_usd ends up None rather than 0.0.
+    from types import SimpleNamespace
+
+    namespace: dict[str, object] = {}
+    exec(callback_module_source(), namespace)
+    logger = namespace["proxy_handler_instance"]
+    log_path = tmp_path / "callback.jsonl"
+    monkeypatch.setenv("BENCHFLOW_LITELLM_LOG_PATH", str(log_path))
+
+    response = SimpleNamespace(
+        model="openai/SomeUnpricedModel",
+        usage={"prompt_tokens": 1000, "completion_tokens": 500, "total_tokens": 1500},
+        _hidden_params={"response_cost": 0.0},
+    )
+    response.model_dump = lambda mode=None: {  # type: ignore[attr-defined]
+        "model": "openai/SomeUnpricedModel",
+        "usage": {"prompt_tokens": 1000, "completion_tokens": 500, "total_tokens": 1500},
+    }
+    kwargs = {
+        "model": "benchflow-some-unpriced",
+        "messages": [{"role": "user", "content": "hi"}],
+        "litellm_params": {"model": "openai/SomeUnpricedModel"},
+        "optional_params": {},
+        "call_type": "acompletion",
+    }
+    start = datetime(2026, 6, 4, 10, 0, 0)
+    end = datetime(2026, 6, 4, 10, 0, 1)
+
+    await logger.async_log_success_event(kwargs, response, start, end)
+
+    text = log_path.read_text()
+    record = json.loads(text.splitlines()[0])
+    assert record["response_cost"] is None
+
+    trajectory = trajectory_from_litellm_callback_log(text, session_id="s", agent_name="openhands")
+    usage = extract_usage_from_trajectory(trajectory)
+    assert usage["usage_source"] == "provider_response"
+    assert usage["n_input_tokens"] == 1000
+    assert usage["cost_usd"] is None
+    assert usage["price_source"] is None

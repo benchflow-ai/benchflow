@@ -120,16 +120,22 @@ class BenchFlowLiteLLMLogger(CustomLogger):
         response = _jsonable(response_obj)
         # Cost comes from LiteLLM. Prefer the value the proxy already computed
         # (it honors per-deployment input_cost_per_token for custom models);
-        # fall back to recomputing from litellm.model_cost.
+        # fall back to recomputing from litellm.model_cost. The proxy reports
+        # 0.0 for models it cannot price, so a falsy value means "unknown"
+        # (recorded as null) rather than a misleading $0.00.
         cost = None
         try:
             hidden = getattr(response_obj, "_hidden_params", None) or {}
-            cost = hidden.get("response_cost")
+            hidden_cost = hidden.get("response_cost")
+            if hidden_cost:
+                cost = hidden_cost
         except Exception:
             cost = None
         if cost is None:
             try:
-                cost = litellm.completion_cost(completion_response=response_obj)
+                fallback = litellm.completion_cost(completion_response=response_obj)
+                if fallback:
+                    cost = fallback
             except Exception:
                 cost = None
         record.update(
