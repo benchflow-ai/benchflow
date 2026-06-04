@@ -34,6 +34,8 @@ from benchflow.models import RunResult
         ),
         ("verifier timed out after 900s", VERIFIER_TIMEOUT),
         ("verifier did something weird", "verifier_other"),
+        # dep_install classification + stdout surfacing live in
+        # tests/test_verifier_output.py (PR #540 / #572).
     ],
 )
 def test_classify_verifier_error(input_str, expected):

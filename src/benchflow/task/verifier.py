@@ -20,6 +20,10 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from benchflow._utils.scoring import (
+    VERIFIER_DEP_INSTALL_MARKERS,
+    contains_verifier_dep_install_marker,
+)
 from benchflow.rewards.validation import is_valid_reward_number, validate_reward_map
 from benchflow.sandbox.lockdown import _exec_return_code, clear_verifier_output_dir
 from benchflow.task.env import resolve_env_vars
@@ -58,6 +62,57 @@ class DownloadVerifierDirError(Exception):
 
 class RubricNotFoundError(Exception):
     """Raised when an llm-judge verifier cannot locate its rubric file."""
+
+
+# The safe, fixed diagnostic surfaced into ``verifier_error`` on a detected
+# dep-install failure. Contains a marker the classifier recognises; carries no
+# stdout content. Points operators at the (private) log artifact for detail.
+_DEP_INSTALL_DIAGNOSTIC = (
+    "dependency install failed (see verifier/test-stdout.txt in the run "
+    "artifacts for resolver output)"
+)
+
+# Size of each fixed chunk streamed off disk while scanning for markers. The
+# whole file is scanned (dep-install runs at the START of test.sh, so the marker
+# can be buried under arbitrarily many trailing lines — see PR #572), but only
+# one bounded chunk is ever held in memory at a time, so a verifier emitting a
+# single huge line can't bloat memory. We never persist any of the scanned text.
+_SCAN_CHUNK_BYTES = 64 * 1024
+
+
+def _has_dep_install_failure(path: Path) -> bool:
+    """True if *path* (test-stdout.txt) shows a dependency-install failure.
+
+    Only the boolean verdict leaves this function — the scanned text is never
+    returned or persisted, so no secret-bearing stdout can reach result
+    metadata (PR #572).
+
+    The ENTIRE file is scanned from the start in fixed ``_SCAN_CHUNK_BYTES``
+    chunks (with a small overlap so a marker straddling a chunk boundary is
+    still caught), short-circuiting on the first marker. uv/pip install runs at
+    the START of ``test.sh``, so its failure marker may be followed by many
+    lines of trailing output (fallback attempts, cleanup, partial tests); a
+    tail-only scan would silently drop it (PR #572). Memory stays bounded — at
+    most one chunk plus the overlap is held at a time, regardless of file size.
+    """
+    # Longest marker minus one byte: enough overlap to catch a marker split
+    # across two reads without rescanning whole chunks.
+    overlap = max(len(m) for m in VERIFIER_DEP_INSTALL_MARKERS) - 1
+    try:
+        with path.open(errors="replace") as f:
+            carry = ""
+            while True:
+                chunk = f.read(_SCAN_CHUNK_BYTES)
+                if not chunk:
+                    return False
+                window = carry + chunk
+                if contains_verifier_dep_install_marker(window):
+                    return True
+                # Keep the tail of this chunk so a boundary-spanning marker is
+                # found on the next read; bound it to the overlap size.
+                carry = chunk[-overlap:] if overlap else ""
+    except OSError:
+        return False
 
 
 class Verifier:
@@ -290,15 +345,24 @@ class Verifier:
             rewards = self._parse_reward_json()
         else:
             if test_return_code != 0:
-                raise RewardFileNotFoundError(
+                msg = (
                     f"verifier exited with rc={test_return_code}; no reward file "
                     f"found at {self._rollout_paths.reward_text_path} or "
                     f"{self._rollout_paths.reward_json_path}"
                 )
-            raise RewardFileNotFoundError(
-                f"No reward file found at {self._rollout_paths.reward_text_path} or "
-                f"{self._rollout_paths.reward_json_path}"
-            )
+            else:
+                msg = (
+                    f"No reward file found at {self._rollout_paths.reward_text_path} or "
+                    f"{self._rollout_paths.reward_json_path}"
+                )
+            # Surface ONLY a fixed, secret-free dep-install diagnostic (never
+            # any scanned stdout) so classify_verifier_error can return
+            # VERIFIER_DEP_INSTALL without leaking untrusted subprocess output
+            # into result metadata (#572). Raw resolver output remains in the
+            # downloaded verifier/test-stdout.txt artifact.
+            if _has_dep_install_failure(self._rollout_paths.test_stdout_path):
+                msg += f"\n{_DEP_INSTALL_DIAGNOSTIC}"
+            raise RewardFileNotFoundError(msg)
 
         return VerifierResult(rewards=rewards)
 

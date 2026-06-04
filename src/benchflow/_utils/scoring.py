@@ -18,6 +18,16 @@ VERIFIER_INFRA = "verifier_infra"
 VERIFIER_TIMEOUT = "verifier_timeout"
 VERIFIER_DEP_INSTALL = "verifier_dep_install"
 
+# Canonical dependency-install markers shared by verifier stdout scanning and
+# verifier-error classification. Keep these lower-case; the helper below
+# performs case-insensitive matching.
+VERIFIER_DEP_INSTALL_MARKERS: tuple[str, ...] = (
+    "dependency install failed",
+    "no solution found",
+    "could not find a version",
+    "resolution impossible",
+)
+
 ScoreOutcome = Literal["passed", "failed", "errored", "verifier_errored"]
 ResultOutcome = Literal["passed", "failed", "errored", "verifier_errored", "unscored"]
 
@@ -77,7 +87,7 @@ def classify_verifier_error(verifier_error: str | None) -> str | None:
         return None
     lower = verifier_error.lower()
     if "verifier crashed" in verifier_error:
-        if _looks_like_verifier_dep_install_error(lower):
+        if contains_verifier_dep_install_marker(lower):
             return VERIFIER_DEP_INSTALL
         if _looks_like_verifier_infra_error(lower):
             return VERIFIER_INFRA
@@ -87,15 +97,15 @@ def classify_verifier_error(verifier_error: str | None) -> str | None:
     return "verifier_other"
 
 
-def _looks_like_verifier_dep_install_error(error: str) -> bool:
+def contains_verifier_dep_install_marker(text: str) -> bool:
     """Detect verifier dependency installation failures (ENG-151)."""
-    markers = (
-        "dependency install failed",
-        "no solution found",
-        "could not find a version",
-        "resolution impossible",
-    )
-    return any(marker in error for marker in markers)
+    lower = text.lower()
+    return any(marker in lower for marker in VERIFIER_DEP_INSTALL_MARKERS)
+
+
+def _looks_like_verifier_dep_install_error(error: str) -> bool:
+    """Backward-compatible internal alias for dep-install marker matching."""
+    return contains_verifier_dep_install_marker(error)
 
 
 def _looks_like_verifier_infra_error(error: str) -> bool:
