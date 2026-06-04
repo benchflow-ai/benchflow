@@ -425,7 +425,7 @@ python3 .claude/skills/benchflow-experiment-review/scripts/extract_harness_skill
 Notes:
 - `--usage-tracking required` records provider-reported token usage into each trajectory.
 - `--agent-idle-timeout none` disables the idle watchdog (the task wall-clock still applies).
-- Opus-4.8 on Bedrock needs the adaptive-thinking shim (`opus-4.8 bedrock thinking shim ACTIVE` in the install log); see `AGENTS.md`.
+- Opus-4.8 on Bedrock needs the adaptive-thinking patch, which LiteLLM loads into its proxy process (`src/benchflow/providers/litellm_bedrock_patch.py`); see `AGENTS.md`.
 - For heavy tasks, replace `--sandbox daytona` with `--sandbox docker` — same flags otherwise.
 
 ---

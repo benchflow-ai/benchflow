@@ -17,16 +17,20 @@ Then open <http://localhost:8777>.
 
 ## Layout
 
-A left **sidebar** with seven sections; under **Jobs** the sidebar nests the
-`jobs/` folder groups so the navigation mirrors the folder on disk.
+A left **sidebar** with the sections below; under **Jobs** the sidebar nests the
+`jobs/` folder groups so the navigation mirrors the folder on disk. The
+**Daytona** section is live-server-only — it is hidden on the static (Vercel)
+build, which lacks the `/daytona/available` probe.
 
 | Section | What it shows |
 |---|---|
 | **Overview** | Headline stats — tests, capabilities, roadmap, artifacts, experiments. |
 | **Concept map** | The architecture — kernel, four planes, the tree-native execution model, the eight capabilities. |
+| **Architecture** | The full architecture write-up (`architecture.md`) rendered inline, with a section outline. |
 | **Tickets** | A read-only, two-column mirror of the Linear v0.5 project: ticket list on the left, selected issue detail on the right. |
 | **Tests** | The live pytest suite, suite by suite. |
 | **Jobs** | Every rollout under `jobs/` as a tree: **group → run → task → artifacts**. Each artifact expands to show its **actual file contents** (JSON pretty-printed, JSONL line-by-line, CSV as a table). Each group links to the agent advisories that correspond to it. |
+| **Daytona** | Live cloud sandboxes — count, state breakdown, and per-sandbox age — polled from the running server (auto-refresh every 15s). |
 | **Advisories** | The agents' review advisories — each cross-linked to a capability and a job group (the jobs ↔ agent-advisor correspondence). |
 | **Timeline** | The v0.5 experiments — scanned from `experiments/` and `labs/`, newest first; each experiment expands to its files, every file viewable inline. |
 
@@ -80,8 +84,10 @@ repo status summary. Deploy only behind the intended access controls.
 
 | File | Role |
 |---|---|
-| `index.html` | The whole UI — sidebar + seven views, inline CSS + vanilla JS. |
+| `index.html` | The whole UI — sidebar + views, inline CSS + vanilla JS. |
 | `generate.py` | Collects the sources into `data.json`. |
 | `roadmap.py` | Fetches and normalizes live Linear data. |
+| `jobs_visibility.py` | Run-visibility policy for the `jobs/` tree (which runs surface, and their target/signal labels). |
+| `daytona_status.py` | Live Daytona sandbox snapshot for the Daytona panel; `serve.py` imports `snapshot`. |
 | `serve.py` | Refreshes `data.json`, then serves `dashboard/`. |
 | `data.json` / `junit.xml` | Generated — git-ignored. |

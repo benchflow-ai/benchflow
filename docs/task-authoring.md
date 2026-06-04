@@ -38,7 +38,7 @@ category    = "programming"
 tags        = ["bash", "files"]
 
 [agent]
-timeout_sec = 300            # REQUIRED — seconds before agent is killed
+timeout_sec = 300            # optional — seconds before agent is killed (unset = no wall-clock cap)
 # user = "agent"             # optional — run agent as this user/UID
 
 [verifier]
@@ -263,7 +263,7 @@ canonical loading semantics and nudge modes.
 
 `bench tasks generate` converts agent traces (Claude Code sessions, opentraces records, or HuggingFace datasets) into task directories with `task.toml`, `instruction.md`, and a file-existence `test.sh`. Use `--dry-run` to preview traces before generating. See [CLI reference](./reference/cli.md#bench-tasks-generate) for all flags.
 
-`bench tasks check` validates that `task.toml`, `instruction.md` (non-empty), `environment/Dockerfile`, and `tests/` (non-empty) all exist, and that `[agent].timeout_sec` is set. Exits with code 1 on failure (CI-friendly).
+`bench tasks check` validates that `task.toml` (parses), `instruction.md` (non-empty), `environment/Dockerfile`, and `tests/` (non-empty) all exist. `[agent].timeout_sec` is optional and is not required by the check. Exits with code 1 on failure (CI-friendly).
 
 ---
 

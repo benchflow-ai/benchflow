@@ -144,7 +144,7 @@ Every agent action is captured as an event in the **trajectory** — tool calls,
 
 `rewards` is a dict produced by the task's verifier. Convention: `{"reward": float}` where 1.0 = pass, 0.0 = fail. Tasks may add additional metrics (e.g. `exact_match`, `partial_credit`).
 
-Trajectories are written to `<evaluations_dir>/<evaluation_name>/<rollout_name>/trajectory/acp_trajectory.jsonl`. Use them for replay, debugging, or training data.
+Trajectories are written to `<jobs_dir>/<job_name>/<rollout_name>/trajectory/acp_trajectory.jsonl` (the `--jobs-dir` directory, default `jobs/`). Use them for replay, debugging, or training data.
 
 ---
 
