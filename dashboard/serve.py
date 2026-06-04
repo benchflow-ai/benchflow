@@ -35,8 +35,10 @@ from pathlib import Path
 from typing import ClassVar
 
 try:
+    from dashboard.daytona_status import snapshot as daytona_snapshot
     from dashboard.generate import resolve_dashboard_jobs_root
 except ModuleNotFoundError:  # pragma: no cover - used when run as dashboard/serve.py
+    from daytona_status import snapshot as daytona_snapshot  # type: ignore[no-redef]
     from generate import resolve_dashboard_jobs_root  # type: ignore[no-redef]
 
 DASH = Path(__file__).resolve().parent
@@ -108,9 +110,28 @@ class SyncingDashboardHandler(http.server.SimpleHTTPRequestHandler):
 
     def do_GET(self) -> None:
         path = urllib.parse.urlparse(self.path).path
+        # Capability probe: present only on the live server, so the static
+        # (Vercel) build 404s here and the frontend hides the Daytona tab.
+        if path == "/daytona/available":
+            self._serve_json({"available": True})
+            return
+        if path == "/daytona.json":
+            self._serve_json(daytona_snapshot(self.headers.get("X-Daytona-Key")))
+            return
         if path == "/data.json" and not self._sync_data_json():
             return
         super().do_GET()
+
+    def log_message(self, *args: object) -> None:  # quiet; keeps any key out of logs
+        pass
+
+    def _serve_json(self, payload: dict) -> None:
+        body = json.dumps(payload).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def _sync_data_json(self) -> bool:
         if self._in_failure_backoff():
@@ -185,6 +206,8 @@ def main() -> int:
         gen.append("--run-tests")
     if "--allow-missing-linear" in argv:
         gen.append("--allow-missing-linear")
+    if "--allow-stale-evidence" in argv:
+        gen.append("--allow-stale-evidence")
     print("refreshing data.json ...", flush=True)
     result = subprocess.run(gen, check=False)
     if result.returncode != 0:
