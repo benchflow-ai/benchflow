@@ -47,6 +47,7 @@ from benchflow._utils.scoring import (
     INFRA_ERROR,
     INSTALL_FAILED,
     PIPE_CLOSED,
+    PROVIDER_AUTH,
     VERIFIER_DEP_INSTALL,
     VERIFIER_INFRA,
     VERIFIER_TIMEOUT,
@@ -119,7 +120,42 @@ class RetryConfig:
     wait_multiplier: float = 2.0
     min_wait_sec: float = 1.0
     max_wait_sec: float = 30.0
-    exclude_categories: set[str] = field(default_factory=lambda: {"timeout"})
+    exclude_categories: set[str] = field(
+        default_factory=lambda: {"timeout", PROVIDER_AUTH}
+    )
+
+    @classmethod
+    def from_mapping(cls, raw: dict | None) -> RetryConfig:
+        """Build from a serialized ``retry`` payload (e.g. a worker config).
+
+        Any omitted field falls back to this dataclass's own default — never a
+        hard-coded literal — so a partial/older payload that drops, say,
+        ``exclude_categories`` still excludes ``provider_auth`` (#564 finding 2).
+        """
+        raw = raw or {}
+        defaults = cls()
+        exclude = raw.get("exclude_categories")
+        return cls(
+            max_retries=int(raw.get("max_retries", defaults.max_retries)),
+            retry_on_install=bool(
+                raw.get("retry_on_install", defaults.retry_on_install)
+            ),
+            retry_on_pipe=bool(raw.get("retry_on_pipe", defaults.retry_on_pipe)),
+            retry_on_acp=bool(raw.get("retry_on_acp", defaults.retry_on_acp)),
+            retry_on_idle_timeout=bool(
+                raw.get("retry_on_idle_timeout", defaults.retry_on_idle_timeout)
+            ),
+            retry_on_infra=bool(raw.get("retry_on_infra", defaults.retry_on_infra)),
+            retry_on_verifier_infra=bool(
+                raw.get("retry_on_verifier_infra", defaults.retry_on_verifier_infra)
+            ),
+            wait_multiplier=float(raw.get("wait_multiplier", defaults.wait_multiplier)),
+            min_wait_sec=float(raw.get("min_wait_sec", defaults.min_wait_sec)),
+            max_wait_sec=float(raw.get("max_wait_sec", defaults.max_wait_sec)),
+            exclude_categories=(
+                set(exclude) if exclude is not None else defaults.exclude_categories
+            ),
+        )
 
     def should_retry(
         self,
