@@ -546,8 +546,9 @@
 <main id="main"></main>
 
 <script>
-const TABS = ["Overview", "Concept map", "Architecture", "Tickets", "Tests", "Jobs", "Advisories", "Timeline"];
+const TABS = ["Overview", "Concept map", "Architecture", "Tickets", "Tests", "Jobs", "Daytona", "Advisories", "Timeline"];
 let DATA = null, CURRENT = null, SELECTED_TICKET_ID = null, DATA_SIGNATURE = null, SYNC_ERROR = null;
+let DAYTONA_TIMER = null;
 
 function el(t, c, h) { const e = document.createElement(t); if (c) e.className = c; if (h !== undefined) e.innerHTML = h; return e; }
 function esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;" }[c])); }
@@ -1646,15 +1647,68 @@ function renderTimeline() {
   return wrap;
 }
 
+// ---- Daytona (live cloud sandboxes) ---------------------------------------
+function daytonaKey() { return localStorage.getItem("daytona_key") || ""; }
+async function pollDaytona() {
+  const statusEl = document.getElementById("dy-status");
+  const rowsEl = document.getElementById("dy-rows");
+  if (!rowsEl || !statusEl) { if (DAYTONA_TIMER) { clearInterval(DAYTONA_TIMER); DAYTONA_TIMER = null; } return; }
+  const key = daytonaKey();
+  try {
+    const r = await fetch("/daytona.json", { headers: key ? { "X-Daytona-Key": key } : {} });
+    const d = await r.json();
+    if (d.error) { statusEl.innerHTML = `<span class="bad">${esc(d.error)}</span>`; rowsEl.innerHTML = ""; return; }
+    const states = Object.entries(d.by_state || {}).map(([k, v]) => `<span class="chip">${esc(k)}: ${v}</span>`).join(" ");
+    statusEl.innerHTML = `<b style="font-size:20px">${d.count}</b> active sandboxes &nbsp; ${states} <span class="muted">· as of ${esc(d.as_of)} · auto-refresh 15s</span>`;
+    rowsEl.innerHTML = (d.rows || []).map(x =>
+      `<tr><td class="mono">${esc(x.id)}</td><td>${esc(x.state)}</td><td class="mono">${esc(x.created)}</td><td>${esc(x.age)}</td><td>${esc(x.target)}</td></tr>`).join("");
+  } catch (e) { statusEl.innerHTML = `<span class="bad">fetch error: ${esc(e)}</span>`; }
+}
+function renderDaytona() {
+  if (DAYTONA_TIMER) { clearInterval(DAYTONA_TIMER); DAYTONA_TIMER = null; }
+  const wrap = el("div", "wrap");
+  wrap.appendChild(el("h1", "page", "Daytona"));
+  const k = daytonaKey();
+  const keyRow = el("div", "card");
+  keyRow.style.cssText = "display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:12px;margin-bottom:12px";
+  keyRow.innerHTML =
+    `<label>Daytona API key&nbsp;<input id="dy-key" type="password" placeholder="dtn_…" value="${esc(k)}" style="width:340px;padding:4px 8px"></label>` +
+    `<button id="dy-save" style="padding:4px 12px;cursor:pointer">Save</button>` +
+    `<span id="dy-keyhint" class="muted">${k ? "key stored in this browser" : "blank → uses server DAYTONA_API_KEY"}</span>`;
+  wrap.appendChild(keyRow);
+  const status = el("div"); status.id = "dy-status"; status.textContent = "loading…";
+  status.style.cssText = "margin:8px 0 12px";
+  wrap.appendChild(status);
+  const tbl = el("div", "fv-table-wrap");
+  tbl.innerHTML =
+    `<table class="fv-table"><thead><tr><th>sandbox id</th><th>state</th><th>created (UTC)</th><th>age</th><th>target</th></tr></thead>` +
+    `<tbody id="dy-rows"></tbody></table>`;
+  wrap.appendChild(tbl);
+  setTimeout(() => {
+    const btn = document.getElementById("dy-save");
+    if (btn) btn.onclick = () => {
+      const v = document.getElementById("dy-key").value.trim();
+      if (v) localStorage.setItem("daytona_key", v); else localStorage.removeItem("daytona_key");
+      document.getElementById("dy-keyhint").textContent = v ? "key saved" : "cleared";
+      pollDaytona();
+    };
+    pollDaytona();
+    DAYTONA_TIMER = setInterval(pollDaytona, 15000);
+  }, 20);
+  return wrap;
+}
+
 const RENDER = {
   "Overview": renderOverview, "Concept map": renderConcept, "Architecture": renderArchitecture,
   "Tickets": renderRoadmap,
-  "Tests": renderTests, "Jobs": renderJobs, "Advisories": renderAdvisories, "Timeline": renderTimeline,
+  "Tests": renderTests, "Jobs": renderJobs, "Daytona": renderDaytona,
+  "Advisories": renderAdvisories, "Timeline": renderTimeline,
 };
 
 // `opts` may carry { jobGroup } to focus a group folder in the Jobs tree.
 function show(tab, arg, opts) {
   opts = opts || {};
+  if (DAYTONA_TIMER && tab !== "Daytona") { clearInterval(DAYTONA_TIMER); DAYTONA_TIMER = null; }
   if (tab === "Roadmap") tab = "Tickets";
   CURRENT = tab;
   document.querySelectorAll("nav a").forEach(a =>
