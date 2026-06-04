@@ -205,6 +205,7 @@ class EvaluationConfig:
 
     agent: str = DEFAULT_AGENT
     model: str | None = None
+    reasoning_effort: str | None = None
     environment: str = "docker"
     concurrency: int = 4
     build_concurrency: int | None = None
@@ -237,11 +238,13 @@ class EvaluationConfig:
         from benchflow._utils.config import (
             normalize_agent_idle_timeout,
             normalize_agent_name,
+            normalize_reasoning_effort,
             normalize_sandbox_user,
         )
         from benchflow.agents.registry import AGENTS
 
         self.agent = normalize_agent_name(self.agent)
+        self.reasoning_effort = normalize_reasoning_effort(self.reasoning_effort)
         self.sandbox_user = normalize_sandbox_user(self.sandbox_user)
         self.agent_idle_timeout = normalize_agent_idle_timeout(self.agent_idle_timeout)
         self.usage_tracking = UsageTrackingConfig.coerce(self.usage_tracking)
@@ -508,6 +511,7 @@ class Evaluation:
         config = EvaluationConfig(
             agent=agent_name,
             model=effective_model(agent_name, raw.get("model")),
+            reasoning_effort=raw.get("reasoning_effort"),
             environment=raw.get("environment", "docker"),
             concurrency=raw.get("concurrency", 4),
             build_concurrency=raw.get("build_concurrency"),
@@ -599,6 +603,9 @@ class Evaluation:
         config = EvaluationConfig(
             agent=agent_name,
             model=model,
+            reasoning_effort=agent_cfg.get(
+                "reasoning_effort", raw.get("reasoning_effort")
+            ),
             environment=environment,
             concurrency=concurrency,
             agent_env=agent_env,
@@ -789,6 +796,7 @@ class Evaluation:
             task_path=task_dir,
             agent=cfg.agent,
             model=cfg.model,
+            reasoning_effort=cfg.reasoning_effort,
             prompts=cfg.prompts,
             agent_env=cfg.agent_env,
             job_name=self._job_name,
@@ -833,6 +841,7 @@ class Evaluation:
             task_path=task_dir,
             agent=cfg.agent,
             model=cfg.model,
+            reasoning_effort=cfg.reasoning_effort,
             prompts=cfg.prompts,
             agent_env=cfg.agent_env,
             job_name=self._job_name,

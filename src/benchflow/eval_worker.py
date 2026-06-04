@@ -52,6 +52,7 @@ def _evaluation_config(raw: dict[str, Any]) -> EvaluationConfig:
     return EvaluationConfig(
         agent=raw.get("agent") or "claude-agent-acp",
         model=raw.get("model"),
+        reasoning_effort=raw.get("reasoning_effort"),
         environment=raw.get("environment") or "docker",
         concurrency=int(raw.get("concurrency") or 1),
         prompts=raw.get("prompts"),

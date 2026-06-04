@@ -20,7 +20,7 @@ from benchflow.acp.client import ACPClient
 
 
 def _stock_acp_mock() -> AsyncMock:
-    """An ACPClient mock whose handshake succeeds — only ``set_model`` varies."""
+    """An ACPClient mock whose handshake succeeds — only model config varies."""
     mock_session = MagicMock()
     mock_session.session_id = "s1"
     mock_init = MagicMock()
@@ -30,6 +30,7 @@ def _stock_acp_mock() -> AsyncMock:
     mock_acp.connect = AsyncMock()
     mock_acp.initialize = AsyncMock(return_value=mock_init)
     mock_acp.session_new = AsyncMock(return_value=mock_session)
+    mock_acp.set_config_option = AsyncMock()
     mock_acp.close = AsyncMock()
     return mock_acp
 
@@ -67,6 +68,39 @@ async def test_set_model_failure_aborts_rollout(tmp_path) -> None:
 
     # The half-built client must be closed so the agent subprocess does not
     # leak when the rollout aborts.
+    mock_acp.close.assert_awaited()
+
+
+async def test_config_option_failure_aborts_rollout(tmp_path) -> None:
+    """Claude ACP config-option failures must fail closed like set_model."""
+    from benchflow.acp.runtime import connect_acp
+
+    mock_acp = _stock_acp_mock()
+    mock_acp.session_new.return_value.config_options = [{"id": "model"}]
+    mock_acp.set_config_option = AsyncMock(side_effect=RuntimeError("bad option"))
+    mock_env = AsyncMock()
+
+    with (
+        patch(
+            "benchflow.acp.runtime.DockerProcess.from_sandbox_env",
+            return_value=MagicMock(),
+        ),
+        patch("benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()),
+        patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
+        pytest.raises(RuntimeError, match="Failed to set ACP model config option"),
+    ):
+        await connect_acp(
+            env=mock_env,
+            agent="claude-agent-acp",
+            agent_launch="claude-agent-acp",
+            agent_env={},
+            sandbox_user=None,
+            model="claude-opus-4-8",
+            rollout_dir=tmp_path,
+            environment="docker",
+            agent_cwd="/app",
+        )
+
     mock_acp.close.assert_awaited()
 
 
