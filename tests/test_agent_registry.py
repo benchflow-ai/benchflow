@@ -43,6 +43,12 @@ class TestEnvMappingField:
         assert cfg.env_mapping["BENCHFLOW_PROVIDER_API_KEY"] == "OPENAI_API_KEY"
         assert "openai_base_url=$OPENAI_BASE_URL" in cfg.launch_cmd
 
+    def test_codex_acp_install_is_version_pinned(self):
+        """Same @agentclientprotocol family as claude — pin so a floating latest
+        can't silently break activation when upstream drops session/set_model."""
+        cfg = AGENTS["codex-acp"]
+        assert "@agentclientprotocol/codex-acp@0.0.45" in cfg.install_cmd
+
     def test_gemini_has_mapping(self):
         cfg = AGENTS["gemini"]
         assert (

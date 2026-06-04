@@ -861,6 +861,154 @@ class TestConnectAcpModelSelection:
         )
 
     @pytest.mark.asyncio
+    async def test_set_model_minus32601_falls_back_to_config_option(self, tmp_path):
+        """Root fix: when a set_model agent's running version has dropped
+        session/set_model (JSON-RPC -32601) but advertises a model config
+        option, connect_acp recovers via set_config_option instead of failing
+        the rollout — defusing for codex-acp (and any future @agentclientprotocol
+        member) the exact break that hit claude-agent-acp, with no registry
+        change."""
+        from benchflow.acp.runtime import connect_acp
+
+        mock_acp = self._make_mocks()
+        mock_acp.session_new.return_value.config_options = [{"id": "model"}]
+        mock_acp.set_model = AsyncMock(
+            side_effect=ACPError(-32601, "Method not found: session/set_model")
+        )
+        mock_env = AsyncMock()
+        with (
+            patch(
+                "benchflow.acp.runtime.DockerProcess.from_sandbox_env",
+                return_value=MagicMock(),
+            ),
+            patch("benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()),
+            patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
+        ):
+            await connect_acp(
+                env=mock_env,
+                agent="codex-acp",
+                agent_launch="codex-acp",
+                agent_env={},
+                sandbox_user=None,
+                model="gpt-5.5",
+                rollout_dir=tmp_path,
+                environment="docker",
+                agent_cwd="/app",
+            )
+
+        mock_acp.set_model.assert_awaited_once_with("gpt-5.5")
+        mock_acp.set_config_option.assert_awaited_once_with("model", "gpt-5.5")
+        # Successful recovery — the rollout proceeds, client stays open.
+        mock_acp.close.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_set_model_minus32601_without_model_option_fails_closed(
+        self, tmp_path
+    ):
+        """A -32601 with no advertised model config option still fails closed:
+        there is no safe way to honor the requested model, so do not silently
+        run on the agent's default."""
+        from benchflow.acp.runtime import connect_acp
+
+        mock_acp = self._make_mocks()
+        mock_acp.session_new.return_value.config_options = [{"id": "effort"}]
+        mock_acp.set_model = AsyncMock(
+            side_effect=ACPError(-32601, "Method not found: session/set_model")
+        )
+        mock_env = AsyncMock()
+        with (
+            patch(
+                "benchflow.acp.runtime.DockerProcess.from_sandbox_env",
+                return_value=MagicMock(),
+            ),
+            patch("benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()),
+            patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
+            pytest.raises(RuntimeError, match="Failed to set model"),
+        ):
+            await connect_acp(
+                env=mock_env,
+                agent="test-agent",
+                agent_launch="test-agent",
+                agent_env={},
+                sandbox_user=None,
+                model="claude-sonnet-4-6",
+                rollout_dir=tmp_path,
+                environment="docker",
+                agent_cwd="/app",
+            )
+
+        mock_acp.set_config_option.assert_not_awaited()
+        mock_acp.close.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_set_model_non_method_error_does_not_fall_back(self, tmp_path):
+        """Only -32601 triggers the config-option fallback; any other set_model
+        failure still fails closed without a fallback attempt."""
+        from benchflow.acp.runtime import connect_acp
+
+        mock_acp = self._make_mocks()
+        mock_acp.session_new.return_value.config_options = [{"id": "model"}]
+        mock_acp.set_model = AsyncMock(
+            side_effect=ACPError(-32000, "Server error: model rejected")
+        )
+        mock_env = AsyncMock()
+        with (
+            patch(
+                "benchflow.acp.runtime.DockerProcess.from_sandbox_env",
+                return_value=MagicMock(),
+            ),
+            patch("benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()),
+            patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
+            pytest.raises(RuntimeError, match="Failed to set model"),
+        ):
+            await connect_acp(
+                env=mock_env,
+                agent="test-agent",
+                agent_launch="test-agent",
+                agent_env={},
+                sandbox_user=None,
+                model="claude-sonnet-4-6",
+                rollout_dir=tmp_path,
+                environment="docker",
+                agent_cwd="/app",
+            )
+
+        mock_acp.set_config_option.assert_not_awaited()
+        mock_acp.close.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_effort_without_effort_config_id_fails_closed(self, tmp_path):
+        """reasoning_effort requested for an agent that declares no effort config
+        option must fail closed rather than silently drop the effort."""
+        from benchflow.acp.runtime import connect_acp
+
+        mock_acp = self._make_mocks()
+        mock_env = AsyncMock()
+        with (
+            patch(
+                "benchflow.acp.runtime.DockerProcess.from_sandbox_env",
+                return_value=MagicMock(),
+            ),
+            patch("benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()),
+            patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
+            pytest.raises(RuntimeError, match="does not declare an ACP effort"),
+        ):
+            await connect_acp(
+                env=mock_env,
+                agent="test-agent",
+                agent_launch="test-agent",
+                agent_env={},
+                sandbox_user=None,
+                model=None,
+                rollout_dir=tmp_path,
+                environment="docker",
+                agent_cwd="/app",
+                reasoning_effort="max",
+            )
+
+        mock_acp.close.assert_awaited()
+
+    @pytest.mark.asyncio
     async def test_daytona_dind_uses_pty_transport(self, tmp_path):
         """Daytona compose tasks use PTY transport to avoid SSH pipe-closed failures."""
         from benchflow.acp.runtime import connect_acp
