@@ -20,7 +20,6 @@ class ProviderRuntime:
     kind: str
     agent_base_url: str
     backend_model: str | None = None
-    frontend_model: str | None = None
     server: Any | None = None
     config_key: str | None = None
     master_key: str | None = None
@@ -28,13 +27,6 @@ class ProviderRuntime:
     @property
     def base_url(self) -> str:
         return self.agent_base_url
-
-
-def needs_provider_runtime(model: str | None, *, agent: str = "") -> bool:
-    """Backward-compatible name for the LiteLLM runtime selector."""
-    from benchflow.providers.litellm_runtime import needs_litellm_runtime
-
-    return needs_litellm_runtime(agent or "agent", model)
 
 
 async def ensure_litellm_runtime(
@@ -76,22 +68,3 @@ async def stop_provider_runtime(runtime: ProviderRuntime | None) -> None:
     )
 
     await _stop_litellm_runtime(runtime)
-
-
-def validate_litellm_preconditions(
-    usage_cfg: UsageTrackingConfig,
-    *,
-    environment: str,
-    model: str | None,
-    disable_litellm: bool | None = None,
-) -> Any:
-    from benchflow.providers.litellm_runtime import (
-        validate_litellm_preconditions as _validate_litellm_preconditions,
-    )
-
-    return _validate_litellm_preconditions(
-        usage_cfg,
-        environment=environment,
-        model=model,
-        disable_litellm=disable_litellm,
-    )

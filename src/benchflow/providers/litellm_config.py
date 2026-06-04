@@ -21,8 +21,6 @@ BEDROCK_THINKING_EFFORT_ENV = "BENCHFLOW_BEDROCK_THINKING_EFFORT"
 LITELLM_MODEL_ALIAS_ENV = "BENCHFLOW_LITELLM_MODEL_ALIAS"
 LITELLM_MODEL_VIA_ENV = "BENCHFLOW_LITELLM_MODEL_VIA_ENV"
 LITELLM_MASTER_KEY_ENV = "BENCHFLOW_LITELLM_MASTER_KEY"
-LITELLM_LOG_PATH_ENV = "BENCHFLOW_LITELLM_LOG_PATH"
-LITELLM_PROVIDER_NAME = "litellm"
 _BEDROCK_ADAPTIVE_THINKING_RE = re.compile(
     r"claude-(?:opus|sonnet|haiku)-4-(?:8|9|1\d)(?!\d)", re.IGNORECASE
 )
@@ -39,7 +37,6 @@ class LiteLLMRoute:
     provider_name: str
     litellm_params: dict[str, str | int | float | bool]
     required_env: tuple[str, ...] = ()
-    extra_env: dict[str, str] | None = None
 
     @property
     def config_key(self) -> str:
@@ -205,6 +202,12 @@ def _route_registered_provider(
         raise ValueError(
             f"Provider {provider_name!r} for model {model!r} requires {missing}."
         ) from exc
+
+    # User-supplied-base_url providers (e.g. vllm) carry an empty config base_url
+    # and resolve to "". Honor the runtime-supplied BENCHFLOW_PROVIDER_BASE_URL
+    # so traffic reaches the user's endpoint instead of defaulting to api.openai.com.
+    if not api_base:
+        api_base = (env.get("BENCHFLOW_PROVIDER_BASE_URL") or "").strip()
 
     if protocol == "anthropic-messages":
         upstream = f"anthropic/{bare}"

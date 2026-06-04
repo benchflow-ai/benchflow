@@ -33,12 +33,30 @@ def test_provider_patch_matcher_rejects_older_or_non_claude_models(model):
     assert BEDROCK_ADAPTIVE_THINKING_RE.search(model) is None
 
 
-def test_bedrock_thinking_effort_env_is_forwarded_into_litellm_env(monkeypatch):
-    monkeypatch.setenv(BEDROCK_THINKING_EFFORT_ENV, "max")
+def test_bedrock_thinking_effort_is_threaded_into_route_params():
     route = resolve_litellm_route(
         "aws-bedrock/us.anthropic.claude-opus-4-8",
-        {"AWS_BEARER_TOKEN_BEDROCK": "token", "AWS_REGION": "us-west-2"},
+        {
+            "AWS_BEARER_TOKEN_BEDROCK": "token",
+            "AWS_REGION": "us-west-2",
+            BEDROCK_THINKING_EFFORT_ENV: "max",
+        },
     )
 
     assert route.upstream_model == "bedrock/us.anthropic.claude-opus-4-8"
-    assert BEDROCK_THINKING_EFFORT_ENV == "BENCHFLOW_BEDROCK_THINKING_EFFORT"
+    assert route.litellm_params["reasoning_effort"] == "max"
+
+
+def test_bedrock_thinking_effort_defaults_to_high_and_rejects_garbage():
+    base_env = {"AWS_BEARER_TOKEN_BEDROCK": "token", "AWS_REGION": "us-west-2"}
+
+    default_route = resolve_litellm_route(
+        "aws-bedrock/us.anthropic.claude-opus-4-8", base_env
+    )
+    assert default_route.litellm_params["reasoning_effort"] == "high"
+
+    garbage_route = resolve_litellm_route(
+        "aws-bedrock/us.anthropic.claude-opus-4-8",
+        {**base_env, BEDROCK_THINKING_EFFORT_ENV: "turbo"},
+    )
+    assert garbage_route.litellm_params["reasoning_effort"] == "high"

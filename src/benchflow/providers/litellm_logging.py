@@ -25,7 +25,7 @@ import json
 import os
 import time
 import traceback
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 import litellm
@@ -72,7 +72,7 @@ class BenchFlowLiteLLMLogger(CustomLogger):
         path = os.environ.get("BENCHFLOW_LITELLM_LOG_PATH")
         if not path:
             return
-        payload["logged_at"] = datetime.utcnow().isoformat()
+        payload["logged_at"] = datetime.now(timezone.utc).isoformat()
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "a", encoding="utf-8") as handle:
             handle.write(json.dumps(_jsonable(payload), separators=(",", ":")) + "\n")
@@ -169,7 +169,17 @@ def _record_response_body(record: dict[str, Any]) -> dict[str, Any]:
     body = response if isinstance(response, dict) else {"raw": response}
     usage = record.get("usage")
     if isinstance(usage, dict) and "usage" not in body and "usageMetadata" not in body:
-        body["usage"] = usage
+        # Gemini reports a usageMetadata block (promptTokenCount, …); other
+        # providers report an OpenAI/Anthropic-style usage block. Place each
+        # where Trajectory.has_provider_usage looks for it so a successful call
+        # never silently degrades to usage_source='unavailable'.
+        if any(
+            key in usage
+            for key in ("promptTokenCount", "candidatesTokenCount", "totalTokenCount")
+        ):
+            body["usageMetadata"] = usage
+        else:
+            body["usage"] = usage
     if "model" not in body:
         for key in ("provider_model", "request_model", "model_group"):
             model = record.get(key)

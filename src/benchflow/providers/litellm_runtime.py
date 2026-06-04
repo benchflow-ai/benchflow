@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import json
 import logging
 import os
@@ -14,9 +15,10 @@ import socket
 import subprocess
 import sys
 import tempfile
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 import httpx
@@ -47,6 +49,13 @@ LITELLM_VERSION_SPEC = "litellm[proxy]==1.88.0rc1"
 LITELLM_SANDBOX_ROOT = "/tmp/benchflow-litellm"
 _CALLBACK_MODULE = "benchflow_litellm_callback"
 _PATCH_MODULE = "benchflow_litellm_bedrock_patch"
+
+# Agents that speak a provider-native wire protocol the LiteLLM proxy does not
+# expose on its OpenAI/Anthropic surfaces. Routing them through the proxy would
+# silently mis-wire the agent (e.g. the Gemini CLI speaks Google's
+# GenerateContent format), so they talk to their provider directly and report
+# usage_source='unavailable'. ``oracle`` has no model at all.
+_NATIVE_PROTOCOL_AGENTS = frozenset({"oracle", "gemini"})
 
 
 @dataclass(frozen=True)
@@ -107,8 +116,7 @@ class HostLiteLLMProcess(LiteLLMProcess):
         return self.process.poll() is None
 
     async def stop(self) -> None:
-        await _wait_for_callback_flush()
-        self._load_callback_log()
+        await _await_log_stable(self._log_size)
         if self.process.poll() is None:
             self.process.terminate()
             try:
@@ -118,9 +126,13 @@ class HostLiteLLMProcess(LiteLLMProcess):
                 await asyncio.to_thread(self.process.wait, 10)
         self._load_callback_log()
         with contextlib.suppress(Exception):
-            import shutil
-
             shutil.rmtree(self.runtime_dir, ignore_errors=True)
+
+    def _log_size(self) -> int:
+        try:
+            return self.log_path.stat().st_size
+        except OSError:
+            return -1
 
     def _load_callback_log(self) -> None:
         if not self.log_path.exists():
@@ -188,8 +200,7 @@ class SandboxLiteLLMProcess(LiteLLMProcess):
         return result.return_code == 0 and (result.stdout or "").strip() == "yes"
 
     async def stop(self) -> None:
-        await _wait_for_callback_flush()
-        await self._load_callback_log()
+        await _await_log_stable(self._remote_log_size)
         with contextlib.suppress(Exception):
             await self.sandbox.exec(
                 (
@@ -202,6 +213,15 @@ class SandboxLiteLLMProcess(LiteLLMProcess):
         await self._load_callback_log()
         with contextlib.suppress(Exception):
             await self.sandbox.exec(f"rm -rf {shlex.quote(self.runtime_dir)}", timeout_sec=10)
+
+    async def _remote_log_size(self) -> int:
+        with contextlib.suppress(Exception):
+            result = await self.sandbox.exec(
+                f"stat -c %s {shlex.quote(self.log_path)} 2>/dev/null || echo -1",
+                timeout_sec=5,
+            )
+            return int((result.stdout or "-1").strip() or -1)
+        return -1
 
     async def _load_callback_log(self) -> None:
         text = ""
@@ -245,7 +265,7 @@ class SandboxLiteLLMProcess(LiteLLMProcess):
 
 def needs_litellm_runtime(agent: str, model: str | None) -> bool:
     """True when an agent/model pair should be routed through LiteLLM."""
-    return bool(model and agent != "oracle")
+    return bool(model) and agent not in _NATIVE_PROTOCOL_AGENTS
 
 
 def _find_free_port() -> int:
@@ -254,11 +274,39 @@ def _find_free_port() -> int:
         return int(sock.getsockname()[1])
 
 
-async def _wait_for_callback_flush() -> None:
-    # LiteLLM invokes CustomLogger hooks asynchronously after returning the
-    # provider response. Give the event loop a small window to append the JSONL
-    # record before BenchFlow imports and tears down the proxy process.
-    await asyncio.sleep(1.0)
+async def _await_log_stable(
+    get_size: Callable[[], int | Awaitable[int]],
+    *,
+    deadline_s: float = 12.0,
+    quiet_s: float = 0.5,
+) -> None:
+    """Wait until the callback JSONL stops growing.
+
+    LiteLLM invokes its CustomLogger hooks fire-and-forget (``asyncio.create_task``)
+    *after* returning the provider response, so the final — often largest —
+    exchange may still be mid-append when BenchFlow tears the proxy down. A fixed
+    sleep either truncates that record (undercounting usage while silently passing
+    the ``required`` gate) or wastes time. Poll the log size until it has been
+    stable for ``quiet_s`` (the final record landed) or ``deadline_s`` elapses.
+    """
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    last_size = -2
+    stable_since: float | None = None
+    while loop.time() - start < deadline_s:
+        raw: Any = get_size()
+        if inspect.isawaitable(raw):
+            raw = await raw
+        size = cast(int, raw)
+        if size > 0 and size == last_size:
+            if stable_since is None:
+                stable_since = loop.time()
+            elif loop.time() - stable_since >= quiet_s:
+                return
+        else:
+            stable_since = None
+        last_size = size
+        await asyncio.sleep(0.2)
 
 
 def _host_litellm_executable() -> str:
@@ -298,13 +346,37 @@ def _docker_host_address() -> str:
     return "host.docker.internal"
 
 
-def _agent_endpoint_for_environment(port: int, environment: str) -> LiteLLMEndpoint:
-    local = f"http://127.0.0.1:{port}"
+def _host_bind_address(environment: str) -> str:
+    """Interface the host LiteLLM proxy binds to.
+
+    Local runs need no off-box reachability -> loopback only. Docker runs must be
+    reachable from the agent container, so bind the concrete bridge-gateway IP
+    (Linux) — reachable from containers but not the public network — falling back
+    to 0.0.0.0 only when the gateway resolves to a hostname (e.g.
+    host.docker.internal on macOS) that cannot be bound directly.
+    """
+    if environment != "docker":
+        return "127.0.0.1"
+    address = _docker_host_address()
+    try:
+        socket.inet_aton(address)
+    except OSError:
+        return "0.0.0.0"
+    return address
+
+
+def _agent_endpoint_for_environment(
+    port: int, environment: str, bind: str
+) -> LiteLLMEndpoint:
     if environment == "docker":
-        agent = f"http://{_docker_host_address()}:{port}"
+        agent_host = bind if bind != "0.0.0.0" else _docker_host_address()
+        health_host = "127.0.0.1" if bind == "0.0.0.0" else bind
     else:
-        agent = local
-    return LiteLLMEndpoint(agent_base_url=agent, local_base_url=local)
+        agent_host = health_host = "127.0.0.1"
+    return LiteLLMEndpoint(
+        agent_base_url=f"http://{agent_host}:{port}",
+        local_base_url=f"http://{health_host}:{port}",
+    )
 
 
 def _write_runtime_files(
@@ -362,6 +434,7 @@ async def _start_host_litellm(
     stdout_path = runtime_dir / "stdout.log"
     stderr_path = runtime_dir / "stderr.log"
     port = _find_free_port()
+    bind = _host_bind_address(environment)
     config = litellm_proxy_config(route, master_key=master_key)
     config_path, _, _ = _write_runtime_files(runtime_dir, config=config)
     env = dict(os.environ)
@@ -382,7 +455,7 @@ async def _start_host_litellm(
                 "--config",
                 str(config_path),
                 "--host",
-                "0.0.0.0",
+                bind,
                 "--port",
                 str(port),
             ],
@@ -398,14 +471,28 @@ async def _start_host_litellm(
         route=route,
         process=process,
         runtime_dir=runtime_dir,
-        endpoint=_agent_endpoint_for_environment(port, environment),
+        endpoint=_agent_endpoint_for_environment(port, environment, bind),
         log_path=log_path,
         stdout_path=stdout_path,
         stderr_path=stderr_path,
         session_id=session_id,
         agent_name=agent_name,
     )
-    await _poll_host_health(runner)
+    try:
+        await _poll_host_health(runner)
+    except BaseException:
+        # A proxy that never became healthy still holds provider credentials and
+        # an on-disk config with the master key — tear it down, don't leak it.
+        with contextlib.suppress(Exception):
+            if process.poll() is None:
+                process.terminate()
+                with contextlib.suppress(subprocess.TimeoutExpired):
+                    await asyncio.to_thread(process.wait, 5)
+                if process.poll() is None:
+                    process.kill()
+        with contextlib.suppress(Exception):
+            shutil.rmtree(runtime_dir, ignore_errors=True)
+        raise
     logger.info("LiteLLM proxy listening on %s", runner.base_url)
     return runner
 
@@ -420,7 +507,9 @@ import socket
 import subprocess
 import sys
 
-cfg = json.loads(os.environ["BENCHFLOW_LITELLM_LAUNCH_CONFIG"])
+# Read launch config from a file (argv[1]), never the command line: provider
+# keys live in cfg["env"], and a shared sandbox exposes exec argv via /proc.
+cfg = json.loads(open(sys.argv[1], encoding="utf-8").read())
 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
     sock.bind(("127.0.0.1", 0))
     port = int(sock.getsockname()[1])
@@ -482,6 +571,7 @@ async def _upload_runtime_files_to_sandbox(
         "pid": f"{runtime_dir}/litellm.pid",
         "state": f"{runtime_dir}/state.json",
         "venv": f"{runtime_dir}/venv",
+        "launch_config": f"{runtime_dir}/launch_config.json",
     }
     result = await sandbox.exec(f"mkdir -p {shlex.quote(runtime_dir)}", timeout_sec=20)
     if result.return_code != 0:
@@ -576,6 +666,19 @@ async def _poll_sandbox_health(sandbox: Any, *, python: str, port: int, stderr_p
     raise RuntimeError(f"sandbox LiteLLM did not become healthy: {stderr.stdout or ''}")
 
 
+async def _terminate_sandbox_litellm(
+    sandbox: Any, *, pid_path: str, runtime_dir: str
+) -> None:
+    with contextlib.suppress(Exception):
+        await sandbox.exec(
+            f"if [ -s {shlex.quote(pid_path)} ]; then "
+            f"kill -TERM $(cat {shlex.quote(pid_path)}) 2>/dev/null || true; fi",
+            timeout_sec=10,
+        )
+    with contextlib.suppress(Exception):
+        await sandbox.exec(f"rm -rf {shlex.quote(runtime_dir)}", timeout_sec=10)
+
+
 async def _start_sandbox_litellm(
     *,
     sandbox: Any,
@@ -612,27 +715,37 @@ async def _start_sandbox_litellm(
         "state": paths["state"],
         "env": env,
     }
+    await _upload_text(
+        sandbox, json.dumps(launch_config), paths["launch_config"], ".json"
+    )
     command = (
         f"rm -f {shlex.quote(paths['state'])} {shlex.quote(paths['pid'])} "
         f"{shlex.quote(paths['log'])} && "
-        f"BENCHFLOW_LITELLM_LAUNCH_CONFIG={shlex.quote(json.dumps(launch_config))} "
-        f"{shlex.quote(python)} {shlex.quote(paths['launcher'])}"
+        f"{shlex.quote(python)} {shlex.quote(paths['launcher'])} "
+        f"{shlex.quote(paths['launch_config'])}"
     )
-    result = await sandbox.exec(command, timeout_sec=20)
-    if result.return_code != 0:
-        raise RuntimeError(_exec_details("start sandbox LiteLLM", result))
-    state = await _wait_for_sandbox_state(
-        sandbox,
-        state_path=paths["state"],
-        stderr_path=paths["stderr"],
-    )
-    port = int(state["port"])
-    await _poll_sandbox_health(
-        sandbox,
-        python=python,
-        port=port,
-        stderr_path=paths["stderr"],
-    )
+    try:
+        result = await sandbox.exec(command, timeout_sec=20)
+        if result.return_code != 0:
+            raise RuntimeError(_exec_details("start sandbox LiteLLM", result))
+        state = await _wait_for_sandbox_state(
+            sandbox,
+            state_path=paths["state"],
+            stderr_path=paths["stderr"],
+        )
+        port = int(state["port"])
+        await _poll_sandbox_health(
+            sandbox,
+            python=python,
+            port=port,
+            stderr_path=paths["stderr"],
+        )
+    except BaseException:
+        # Never leak a half-started proxy (provider keys + master_key on disk).
+        await _terminate_sandbox_litellm(
+            sandbox, pid_path=paths["pid"], runtime_dir=runtime_dir
+        )
+        raise
     endpoint = LiteLLMEndpoint(
         agent_base_url=f"http://127.0.0.1:{port}",
         local_base_url=f"http://127.0.0.1:{port}",
@@ -673,6 +786,26 @@ def _missing_required_env(route: LiteLLMRoute, env: dict[str, str]) -> list[str]
     return missing
 
 
+def _provider_secret_env_names() -> set[str]:
+    """Upstream provider credentials the proxy owns and the agent must not see."""
+    from benchflow.agents.providers import PROVIDERS
+
+    names = {
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "OPENAI_API_KEY",
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+        "GOOGLE_GENERATIVE_AI_API_KEY",
+        "AWS_BEARER_TOKEN_BEDROCK",
+        "AZURE_API_KEY",
+    }
+    for cfg in PROVIDERS.values():
+        if cfg.auth_env:
+            names.add(cfg.auth_env)
+    return names
+
+
 def _apply_litellm_agent_env(
     *,
     agent: str,
@@ -682,6 +815,13 @@ def _apply_litellm_agent_env(
     master_key: str,
 ) -> dict[str, str]:
     updated = dict(agent_env)
+    # Isolation: the agent must reach providers only through the proxy. Drop raw
+    # upstream provider secrets so a compromised or curious agent cannot bypass
+    # the gateway (and its usage metering) or read live keys. The proxy process
+    # holds them via its own env. (In sandbox-local mode the proxy shares the
+    # agent's sandbox, so this reduces — but cannot fully remove — key visibility.)
+    for secret_key in _provider_secret_env_names():
+        updated.pop(secret_key, None)
     openai_base_url = f"{base_url.rstrip('/')}/v1"
     updated.update(
         {
@@ -796,31 +936,26 @@ async def ensure_litellm_runtime(
                 )
         await stop_litellm_runtime(runtime)
 
-    try:
-        if environment in {"daytona", "modal"}:
-            if sandbox is None:
-                raise RuntimeError("sandbox-local LiteLLM requires a sandbox handle")
-            server = await _start_sandbox_litellm(
-                sandbox=sandbox,
-                route=route,
-                master_key=master_key,
-                agent_env=agent_env,
-                session_id=session_id,
-                agent_name=agent,
-            )
-        else:
-            server = await _start_host_litellm(
-                route=route,
-                master_key=master_key,
-                agent_env=agent_env,
-                environment=environment,
-                session_id=session_id,
-                agent_name=agent,
-            )
-    except Exception:
-        if usage_cfg.mode == "required":
-            raise
-        raise
+    if environment in {"daytona", "modal"}:
+        if sandbox is None:
+            raise RuntimeError("sandbox-local LiteLLM requires a sandbox handle")
+        server = await _start_sandbox_litellm(
+            sandbox=sandbox,
+            route=route,
+            master_key=master_key,
+            agent_env=agent_env,
+            session_id=session_id,
+            agent_name=agent,
+        )
+    else:
+        server = await _start_host_litellm(
+            route=route,
+            master_key=master_key,
+            agent_env=agent_env,
+            environment=environment,
+            session_id=session_id,
+            agent_name=agent,
+        )
 
     from benchflow.providers.runtime import ProviderRuntime
 
@@ -828,7 +963,6 @@ async def ensure_litellm_runtime(
         kind="litellm",
         agent_base_url=server.base_url,
         backend_model=route.upstream_model,
-        frontend_model=route.model_alias,
         server=server,
         config_key=config_key,
         master_key=master_key,
@@ -862,30 +996,3 @@ def extract_usage(runtime: Any | None) -> dict[str, Any]:
         trajectory,
         fallback_model=getattr(runtime, "backend_model", None),
     )
-
-
-def validate_litellm_preconditions(
-    usage_cfg: UsageTrackingConfig,
-    *,
-    environment: str,
-    model: str | None,
-    disable_litellm: bool | None = None,
-) -> Any:
-    """Compatibility preflight hook used by evaluation-level usage checks."""
-    del environment
-    if disable_litellm:
-        return _PreconditionFailure(
-            skip_message="LiteLLM routing was disabled.",
-            required_message="usage_tracking='required' cannot run with LiteLLM disabled.",
-            log_level=logging.WARNING,
-        )
-    if usage_cfg.mode == "off" or not model:
-        return None
-    return None
-
-
-@dataclass(frozen=True)
-class _PreconditionFailure:
-    skip_message: str
-    required_message: str
-    log_level: int

@@ -196,7 +196,6 @@ def auto_inherit_env(
         "LLM_BASE_URL",
         "BENCHFLOW_PROVIDER_BASE_URL",
         "BENCHFLOW_PROVIDER_API_KEY",
-        "BENCHFLOW_PROVIDER_PROMPT_CACHE_RETENTION",
         "BENCHFLOW_BEDROCK_THINKING_EFFORT",
         # AZURE_API_KEY / AZURE_RESOURCE are picked up automatically below via
         # cfg.auth_env / cfg.url_params; only AZURE_API_ENDPOINT is listed

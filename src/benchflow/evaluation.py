@@ -907,26 +907,6 @@ class Evaluation:
         if self._on_result:
             self._on_result(td.name, result)
 
-    def _preflight_usage_tracking(self) -> None:
-        from benchflow.providers.runtime import validate_litellm_preconditions
-
-        cfg = self._config
-        usage = cfg.usage_tracking.with_env_defaults()
-        failure = validate_litellm_preconditions(
-            usage,
-            environment=cfg.environment,
-            model=cfg.model,
-        )
-        if failure is None:
-            return
-        if usage.mode == "required":
-            raise RuntimeError(failure.required_message)
-        logger.log(
-            failure.log_level,
-            "%s Results will report usage_source='unavailable'.",
-            failure.skip_message,
-        )
-
     async def _run_parallel_independent(
         self, remaining: list[Path]
     ) -> list[tuple[str, RunResult]]:
@@ -1183,8 +1163,6 @@ class Evaluation:
             )
         completed = self._get_completed_tasks()
         remaining = [d for d in task_dirs if d.name not in completed]
-        if remaining:
-            self._preflight_usage_tracking()
 
         # A resumed sequential-shared job rebuilds the LearnerStore from the
         # per-job snapshot under ``<job>/learner_store.json``. If that file

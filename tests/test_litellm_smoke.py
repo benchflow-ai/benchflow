@@ -53,7 +53,6 @@ def _smoke_agent_env() -> dict[str, str]:
         "GEMINI_API_KEY",
         "GOOGLE_API_KEY",
         "BENCHFLOW_PROVIDER_BASE_URL",
-        "BENCHFLOW_PROVIDER_PROMPT_CACHE_RETENTION",
     )
     dotenv = _smoke_dotenv()
     return {

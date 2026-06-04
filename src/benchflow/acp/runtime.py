@@ -146,6 +146,12 @@ def _format_acp_model(model: str, agent: str) -> str:
     # Already has a slash — assume it's provider/model already
     if "/" in bare:
         return bare
+    # BenchFlow's LiteLLM proxy registers every model under "openai/<alias>"
+    # (aliases are always "benchflow-…"). Send that so provider/model agents
+    # (e.g. opencode) hit a registered route instead of a guessed provider that
+    # the proxy never serves (the heuristic would default to anthropic/).
+    if bare.startswith("benchflow-"):
+        return f"openai/{bare}"
     # Infer the models.dev provider from the bare model name
     m = bare.lower()
     for substring, provider in _MODELSDEV_PROVIDER_HEURISTICS:

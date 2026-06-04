@@ -92,23 +92,6 @@ def test_evaluation_yaml_loads_required_usage_tracking(tmp_path):
     assert evaluation._config.usage_tracking.mode == "required"
 
 
-def test_evaluation_preflight_allows_required_daytona(tmp_path):
-    """Daytona required tracking is checked when LiteLLM starts in the sandbox."""
-    from benchflow.evaluation import Evaluation, EvaluationConfig
-    from benchflow.usage_tracking import UsageTrackingConfig
-
-    evaluation = Evaluation(
-        tasks_dir=tmp_path,
-        jobs_dir=tmp_path / "jobs",
-        config=EvaluationConfig(
-            environment="daytona",
-            usage_tracking=UsageTrackingConfig(mode="required"),
-        ),
-    )
-
-    evaluation._preflight_usage_tracking()
-
-
 def test_explicit_auto_usage_tracking_beats_env_default(monkeypatch):
     """Guards PR #568: explicit auto should override env-level required."""
     from benchflow.usage_tracking import USAGE_TRACKING_ENV, UsageTrackingConfig
@@ -221,14 +204,10 @@ async def test_completed_eval_resume_skips_usage_preflight(tmp_path, monkeypatch
         ),
     )
 
-    def fail_preflight():
-        raise AssertionError("usage preflight should not run for completed jobs")
-
     async def no_fresh_runs(remaining):
         assert remaining == []
         return []
 
-    monkeypatch.setattr(evaluation, "_preflight_usage_tracking", fail_preflight)
     monkeypatch.setattr(evaluation, "_prune_docker", lambda: None)
     monkeypatch.setattr(evaluation, "_get_task_dirs", lambda: [task_dir])
     monkeypatch.setattr(
