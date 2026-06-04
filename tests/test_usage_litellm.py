@@ -313,4 +313,3 @@ async def test_rollout_cleanup_extracts_usage_and_writes_llm_trajectory(tmp_path
 
     assert rollout._usage_metrics["usage_source"] == "provider_response"
     assert (tmp_path / "trajectory" / "llm_trajectory.jsonl").exists()
-

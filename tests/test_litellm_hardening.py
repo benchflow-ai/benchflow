@@ -72,7 +72,10 @@ def test_opencode_litellm_alias_formats_to_registered_openai_route():
 def test_format_acp_model_passes_through_existing_provider_prefix():
     from benchflow.acp.runtime import _format_acp_model
 
-    assert _format_acp_model("google/gemini-3.1-pro", "opencode") == "google/gemini-3.1-pro"
+    assert (
+        _format_acp_model("google/gemini-3.1-pro", "opencode")
+        == "google/gemini-3.1-pro"
+    )
 
 
 def test_vllm_route_honors_runtime_supplied_base_url():
@@ -140,12 +143,16 @@ def test_host_bind_address_docker_uses_bridge_ip(monkeypatch):
 
 
 def test_host_bind_address_docker_hostname_falls_back_to_all_ifaces(monkeypatch):
-    monkeypatch.setattr(runtime_mod, "_docker_host_address", lambda: "host.docker.internal")
+    monkeypatch.setattr(
+        runtime_mod, "_docker_host_address", lambda: "host.docker.internal"
+    )
     assert runtime_mod._host_bind_address("docker") == "0.0.0.0"
 
 
 def test_agent_endpoint_docker_health_uses_loopback_when_all_ifaces(monkeypatch):
-    monkeypatch.setattr(runtime_mod, "_docker_host_address", lambda: "host.docker.internal")
+    monkeypatch.setattr(
+        runtime_mod, "_docker_host_address", lambda: "host.docker.internal"
+    )
     endpoint = runtime_mod._agent_endpoint_for_environment(4000, "docker", "0.0.0.0")
     assert endpoint.agent_base_url == "http://host.docker.internal:4000"
     assert endpoint.local_base_url == "http://127.0.0.1:4000"
@@ -215,7 +222,10 @@ _SUCCESS_LOG = json.dumps(
         "request": {
             "method": "POST",
             "path": "/v1/chat/completions",
-            "body": {"model": "MiniMax-M3", "messages": [{"role": "user", "content": "hi"}]},
+            "body": {
+                "model": "MiniMax-M3",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
         },
         "response": {
             "model": "openai/MiniMax-M3",
@@ -281,7 +291,10 @@ async def test_sandbox_litellm_launch_keeps_secrets_off_command_line():
         sandbox=sandbox,
         route=route,
         master_key="sk-master",
-        agent_env={"MINIMAX_API_KEY": secret, "MINIMAX_BASE_URL": "https://api.minimax.io/v1"},
+        agent_env={
+            "MINIMAX_API_KEY": secret,
+            "MINIMAX_BASE_URL": "https://api.minimax.io/v1",
+        },
         session_id="s",
         agent_name="openhands",
     )
@@ -311,7 +324,10 @@ async def test_sandbox_litellm_stop_imports_usage_and_cleans_up():
         sandbox=sandbox,
         route=route,
         master_key="sk-master",
-        agent_env={"MINIMAX_API_KEY": "k", "MINIMAX_BASE_URL": "https://api.minimax.io/v1"},
+        agent_env={
+            "MINIMAX_API_KEY": "k",
+            "MINIMAX_BASE_URL": "https://api.minimax.io/v1",
+        },
         session_id="s",
         agent_name="openhands",
     )
@@ -319,7 +335,9 @@ async def test_sandbox_litellm_stop_imports_usage_and_cleans_up():
     await proc.stop()
 
     assert proc.trajectory is not None
-    usage = extract_usage_from_trajectory(proc.trajectory, fallback_model="openai/MiniMax-M3")
+    usage = extract_usage_from_trajectory(
+        proc.trajectory, fallback_model="openai/MiniMax-M3"
+    )
     assert usage["usage_source"] == "provider_response"
     assert usage["n_input_tokens"] == 11
     assert any(call.strip().startswith("rm -rf") for call in sandbox.exec_calls)
@@ -338,7 +356,10 @@ async def test_sandbox_litellm_startup_failure_tears_down():
             sandbox=sandbox,
             route=route,
             master_key="sk-master",
-            agent_env={"MINIMAX_API_KEY": "k", "MINIMAX_BASE_URL": "https://api.minimax.io/v1"},
+            agent_env={
+                "MINIMAX_API_KEY": "k",
+                "MINIMAX_BASE_URL": "https://api.minimax.io/v1",
+            },
             session_id="s",
             agent_name="openhands",
         )
@@ -364,7 +385,10 @@ def test_bedrock_patch_recognizes_bedrock_opus_48_as_adaptive_thinking():
     # which stock litellm does NOT recognize, is gated ON. (litellm already
     # recognizes 4-6/4-7 natively, so the patch must not regress those — it
     # delegates to the original — and must not over-trigger on plain models.)
-    assert AnthropicConfig._is_adaptive_thinking_model("us.anthropic.claude-opus-4-8") is True
+    assert (
+        AnthropicConfig._is_adaptive_thinking_model("us.anthropic.claude-opus-4-8")
+        is True
+    )
     assert AnthropicConfig._is_adaptive_thinking_model("gpt-4o") is False
 
 
@@ -392,7 +416,9 @@ def test_bedrock_patch_flags_cost_map_when_entry_present():
 
 
 @pytest.mark.asyncio
-async def test_embedded_callback_logger_round_trips_to_provider_usage(tmp_path, monkeypatch):
+async def test_embedded_callback_logger_round_trips_to_provider_usage(
+    tmp_path, monkeypatch
+):
     namespace: dict[str, object] = {}
     exec(callback_module_source(), namespace)
     logger = namespace["proxy_handler_instance"]
@@ -423,7 +449,9 @@ async def test_embedded_callback_logger_round_trips_to_provider_usage(tmp_path, 
     trajectory = trajectory_from_litellm_callback_log(
         text, session_id="s", agent_name="codex-acp"
     )
-    usage = extract_usage_from_trajectory(trajectory, fallback_model="openai/gpt-4.1-mini")
+    usage = extract_usage_from_trajectory(
+        trajectory, fallback_model="openai/gpt-4.1-mini"
+    )
     assert usage["usage_source"] == "provider_response"
     assert usage["n_input_tokens"] == 12
     assert usage["n_output_tokens"] == 4
@@ -436,14 +464,20 @@ def test_gemini_usage_metadata_is_detected_as_provider_usage():
         "event": "success",
         "request": {"method": "POST", "path": "/v1/chat/completions", "body": {}},
         "response": {"model": "gemini/gemini-3.5-flash"},
-        "usage": {"promptTokenCount": 20, "candidatesTokenCount": 7, "totalTokenCount": 27},
+        "usage": {
+            "promptTokenCount": 20,
+            "candidatesTokenCount": 7,
+            "totalTokenCount": 27,
+        },
         "start_time": "2026-06-04T10:00:00",
         "end_time": "2026-06-04T10:00:01",
     }
     trajectory = trajectory_from_litellm_callback_log(
         json.dumps(record), session_id="s", agent_name="openhands"
     )
-    usage = extract_usage_from_trajectory(trajectory, fallback_model="gemini/gemini-3.5-flash")
+    usage = extract_usage_from_trajectory(
+        trajectory, fallback_model="gemini/gemini-3.5-flash"
+    )
     assert usage["usage_source"] == "provider_response"
 
 
@@ -551,7 +585,11 @@ async def test_callback_prefers_proxy_computed_response_cost(tmp_path, monkeypat
     )
     response.model_dump = lambda mode=None: {  # type: ignore[attr-defined]
         "model": "openai/MiniMax-M3",
-        "usage": {"prompt_tokens": 1000, "completion_tokens": 500, "total_tokens": 1500},
+        "usage": {
+            "prompt_tokens": 1000,
+            "completion_tokens": 500,
+            "total_tokens": 1500,
+        },
     }
     kwargs = {
         "model": "benchflow-minimax-MiniMax-M3",
@@ -589,7 +627,11 @@ async def test_callback_records_unpriced_cost_as_null(tmp_path, monkeypatch):
     )
     response.model_dump = lambda mode=None: {  # type: ignore[attr-defined]
         "model": "openai/SomeUnpricedModel",
-        "usage": {"prompt_tokens": 1000, "completion_tokens": 500, "total_tokens": 1500},
+        "usage": {
+            "prompt_tokens": 1000,
+            "completion_tokens": 500,
+            "total_tokens": 1500,
+        },
     }
     kwargs = {
         "model": "benchflow-some-unpriced",
@@ -607,7 +649,9 @@ async def test_callback_records_unpriced_cost_as_null(tmp_path, monkeypatch):
     record = json.loads(text.splitlines()[0])
     assert record["response_cost"] is None
 
-    trajectory = trajectory_from_litellm_callback_log(text, session_id="s", agent_name="openhands")
+    trajectory = trajectory_from_litellm_callback_log(
+        text, session_id="s", agent_name="openhands"
+    )
     usage = extract_usage_from_trajectory(trajectory)
     assert usage["usage_source"] == "provider_response"
     assert usage["n_input_tokens"] == 1000

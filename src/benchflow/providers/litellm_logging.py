@@ -16,7 +16,7 @@ from benchflow.trajectories.types import (
 
 def callback_module_source() -> str:
     """Return the Python module written next to LiteLLM config.yaml."""
-    return r'''
+    return r"""
 from __future__ import annotations
 
 import json
@@ -165,7 +165,7 @@ class BenchFlowLiteLLMLogger(CustomLogger):
 
 
 proxy_handler_instance = BenchFlowLiteLLMLogger()
-'''
+"""
 
 
 def _parse_time(value: Any) -> datetime:
@@ -221,7 +221,9 @@ def trajectory_from_litellm_callback_log(
             record = json.loads(line)
         except json.JSONDecodeError:
             continue
-        request = record.get("request") if isinstance(record.get("request"), dict) else {}
+        request = (
+            record.get("request") if isinstance(record.get("request"), dict) else {}
+        )
         request_body = request.get("body")
         request_body = request_body if isinstance(request_body, dict) else {}
         response_body = _record_response_body(record)

@@ -55,9 +55,10 @@ async def test_host_litellm_rewrites_codex_env(monkeypatch):
     assert updated[LITELLM_MODEL_ALIAS_ENV] == (
         "benchflow-aws-bedrock-us.anthropic.claude-opus-4-8"
     )
-    assert '"model":"benchflow-aws-bedrock-us.anthropic.claude-opus-4-8"' in updated[
-        "CODEX_CONFIG"
-    ]
+    assert (
+        '"model":"benchflow-aws-bedrock-us.anthropic.claude-opus-4-8"'
+        in updated["CODEX_CONFIG"]
+    )
 
 
 @pytest.mark.asyncio
@@ -178,4 +179,3 @@ async def test_oracle_does_not_start_litellm(monkeypatch):
 
     assert updated == env
     assert provider_runtime is None
-

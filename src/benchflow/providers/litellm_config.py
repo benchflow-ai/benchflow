@@ -47,6 +47,8 @@ def custom_cost_per_token(model: str) -> tuple[float, float] | None:
         if key in lowered:
             return price
     return None
+
+
 _BEDROCK_ADAPTIVE_THINKING_RE = re.compile(
     r"claude-(?:opus|sonnet|haiku)-4-(?:8|9|1\d)(?!\d)", re.IGNORECASE
 )

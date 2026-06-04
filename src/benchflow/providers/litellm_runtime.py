@@ -212,7 +212,9 @@ class SandboxLiteLLMProcess(LiteLLMProcess):
             )
         await self._load_callback_log()
         with contextlib.suppress(Exception):
-            await self.sandbox.exec(f"rm -rf {shlex.quote(self.runtime_dir)}", timeout_sec=10)
+            await self.sandbox.exec(
+                f"rm -rf {shlex.quote(self.runtime_dir)}", timeout_sec=10
+            )
 
     async def _remote_log_size(self) -> int:
         with contextlib.suppress(Exception):
@@ -390,9 +392,7 @@ def _write_runtime_files(
     sitecustomize_path = runtime_dir / "sitecustomize.py"
     config_path = runtime_dir / "config.yaml"
     callback_path.write_text(callback_module_source())
-    patch_source = (
-        Path(__file__).with_name("litellm_bedrock_patch.py").read_text()
-    )
+    patch_source = Path(__file__).with_name("litellm_bedrock_patch.py").read_text()
     patch_path.write_text(patch_source)
     sitecustomize_path.write_text(f"import {_PATCH_MODULE}\n")
     config_path.write_text(yaml.safe_dump(config, sort_keys=False))
@@ -498,7 +498,7 @@ async def _start_host_litellm(
 
 
 def _sandbox_launcher_source() -> str:
-    return r'''
+    return r"""
 from __future__ import annotations
 
 import json
@@ -540,7 +540,7 @@ with open(cfg["pid"], "w", encoding="utf-8") as handle:
 with open(cfg["state"], "w", encoding="utf-8") as handle:
     json.dump({"pid": proc.pid, "port": port}, handle)
 print(json.dumps({"pid": proc.pid, "port": port}))
-'''
+"""
 
 
 async def _upload_text(sandbox: Any, text: str, target_path: str, suffix: str) -> None:
@@ -576,7 +576,9 @@ async def _upload_runtime_files_to_sandbox(
     result = await sandbox.exec(f"mkdir -p {shlex.quote(runtime_dir)}", timeout_sec=20)
     if result.return_code != 0:
         raise RuntimeError(_exec_details("prepare LiteLLM runtime directory", result))
-    await _upload_text(sandbox, yaml.safe_dump(config, sort_keys=False), paths["config"], ".yaml")
+    await _upload_text(
+        sandbox, yaml.safe_dump(config, sort_keys=False), paths["config"], ".yaml"
+    )
     await _upload_text(sandbox, callback_module_source(), paths["callback"], ".py")
     await _upload_text(
         sandbox,
@@ -584,7 +586,9 @@ async def _upload_runtime_files_to_sandbox(
         paths["patch"],
         ".py",
     )
-    await _upload_text(sandbox, f"import {_PATCH_MODULE}\n", paths["sitecustomize"], ".py")
+    await _upload_text(
+        sandbox, f"import {_PATCH_MODULE}\n", paths["sitecustomize"], ".py"
+    )
     await _upload_text(sandbox, _sandbox_launcher_source(), paths["launcher"], ".py")
     return paths
 
@@ -643,7 +647,9 @@ async def _wait_for_sandbox_state(
     )
 
 
-async def _poll_sandbox_health(sandbox: Any, *, python: str, port: int, stderr_path: str) -> None:
+async def _poll_sandbox_health(
+    sandbox: Any, *, python: str, port: int, stderr_path: str
+) -> None:
     probe = (
         f"{shlex.quote(python)} - <<'PY'\n"
         "import sys, urllib.request\n"
@@ -779,7 +785,9 @@ def _exec_details(label: str, result: Any) -> str:
 def _missing_required_env(route: LiteLLMRoute, env: dict[str, str]) -> list[str]:
     missing: list[str] = []
     for key in route.required_env:
-        if key == "AWS_REGION" and (env.get("AWS_REGION") or env.get("AWS_DEFAULT_REGION")):
+        if key == "AWS_REGION" and (
+            env.get("AWS_REGION") or env.get("AWS_DEFAULT_REGION")
+        ):
             continue
         if not env.get(key):
             missing.append(key)
@@ -906,7 +914,10 @@ async def ensure_litellm_runtime(
     route = resolve_litellm_route(model, agent_env)
     missing = _missing_required_env(route, agent_env)
     if missing:
-        if agent_env.get("_BENCHFLOW_SUBSCRIPTION_AUTH") and usage_cfg.mode != "required":
+        if (
+            agent_env.get("_BENCHFLOW_SUBSCRIPTION_AUTH")
+            and usage_cfg.mode != "required"
+        ):
             logger.info(
                 "Skipping LiteLLM for subscription-auth-only run; missing provider keys: %s",
                 ", ".join(missing),
@@ -917,7 +928,10 @@ async def ensure_litellm_runtime(
             "Pass provider credentials via --agent-env/agent_env or define them in .env."
         )
 
-    master_key = agent_env.get(LITELLM_MASTER_KEY_ENV) or f"sk-benchflow-{secrets.token_urlsafe(24)}"
+    master_key = (
+        agent_env.get(LITELLM_MASTER_KEY_ENV)
+        or f"sk-benchflow-{secrets.token_urlsafe(24)}"
+    )
     config_key = f"{environment}:{route.config_key}:{agent}:{session_id}"
     if runtime is not None and getattr(runtime, "kind", None) == "litellm":
         server = getattr(runtime, "server", None)
