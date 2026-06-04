@@ -594,18 +594,36 @@ async def _upload_runtime_files_to_sandbox(
 
 
 async def _ensure_sandbox_litellm(sandbox: Any, *, venv_dir: str) -> str:
+    vq = shlex.quote(venv_dir)
+    # Prefer uv to bootstrap the venv: many sandbox base images ship a python3
+    # without ensurepip and marked externally-managed (PEP 668), where both
+    # `python -m venv` and `pip install` fail. uv needs neither (it is the same
+    # mechanism the openhands agent install already uses in-sandbox), with a
+    # stdlib-venv fallback for images that have a working venv and lack uv.
     command = f"""
 set -eu
-PY="$(command -v python3 || command -v python)"
-if [ ! -x {shlex.quote(venv_dir)}/bin/python ]; then
-  "$PY" -m venv {shlex.quote(venv_dir)} 2>/dev/null || (
-    "$PY" -m pip install --user -q virtualenv &&
-    "$PY" -m virtualenv {shlex.quote(venv_dir)}
-  )
+export PATH="$HOME/.local/bin:$PATH"
+UV="$(command -v uv || true)"
+if [ -z "$UV" ]; then
+  curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null 2>&1 || true
+  export PATH="$HOME/.local/bin:$PATH"
+  UV="$(command -v uv || true)"
 fi
-{shlex.quote(venv_dir)}/bin/python -m pip install -q --upgrade pip
-{shlex.quote(venv_dir)}/bin/python -m pip install -q '{LITELLM_VERSION_SPEC}' 'boto3>=1.40'
-{shlex.quote(venv_dir)}/bin/python - <<'PY'
+if [ -n "$UV" ]; then
+  [ -x {vq}/bin/python ] || "$UV" venv {vq} >/dev/null 2>&1
+  "$UV" pip install --python {vq}/bin/python -q '{LITELLM_VERSION_SPEC}' 'boto3>=1.40'
+else
+  PY="$(command -v python3 || command -v python)"
+  if [ ! -x {vq}/bin/python ]; then
+    "$PY" -m venv {vq} 2>/dev/null || (
+      "$PY" -m pip install --user -q virtualenv &&
+      "$PY" -m virtualenv {vq}
+    )
+  fi
+  {vq}/bin/python -m pip install -q --upgrade pip
+  {vq}/bin/python -m pip install -q '{LITELLM_VERSION_SPEC}' 'boto3>=1.40'
+fi
+{vq}/bin/python - <<'PY'
 import litellm
 print(litellm.__version__ if hasattr(litellm, "__version__") else "ok")
 PY
