@@ -55,6 +55,20 @@ def is_token_usage_available(metrics: dict[str, Any] | None) -> bool:
     return is_trusted_usage_source(metrics.get("usage_source"))
 
 
+def usage_unavailable() -> dict[str, Any]:
+    """Return the canonical empty token-usage metrics payload."""
+    return {
+        "n_input_tokens": 0,
+        "n_output_tokens": 0,
+        "n_cache_read_tokens": 0,
+        "n_cache_creation_tokens": 0,
+        "total_tokens": 0,
+        "cost_usd": None,
+        "usage_source": USAGE_SOURCE_UNAVAILABLE,
+        "price_source": None,
+    }
+
+
 @dataclass(frozen=True, init=False)
 class UsageTrackingConfig:
     """User-facing token/cost telemetry policy.

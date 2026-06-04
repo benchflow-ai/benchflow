@@ -51,7 +51,6 @@ _SUBSCRIPTION_AUTH_MARKER = "_BENCHFLOW_SUBSCRIPTION_AUTH"
 _CUSTOM_OPENAI_ENDPOINT_KEYS = frozenset(
     {"BENCHFLOW_PROVIDER_BASE_URL", "OPENAI_BASE_URL"}
 )
-_NATIVE_ACP_USAGE_AGENTS = frozenset({"codex-acp", "claude-agent-acp"})
 _LITELLM_RUNTIME_MARKER_KEYS = frozenset(
     {
         "BENCHFLOW_LITELLM_MASTER_KEY",
@@ -375,11 +374,6 @@ def _has_codex_auth_json_auth(
         required_key,
         agent_env,
     ) and bool(agent_env.get(_CODEX_AUTH_JSON_ENV))
-
-
-def agent_supports_native_acp_usage(agent: str) -> bool:
-    """Return True when native ACP PromptResponse.usage is trusted for the agent."""
-    return agent in _NATIVE_ACP_USAGE_AGENTS
 
 
 def uses_native_subscription_auth(

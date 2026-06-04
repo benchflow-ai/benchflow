@@ -108,6 +108,7 @@ from benchflow.usage_tracking import (
     USAGE_SOURCE_PROVIDER_RESPONSE,
     UsageTrackingConfig,
     is_token_usage_available,
+    usage_unavailable,
 )
 
 logger = logging.getLogger(__name__)
@@ -134,13 +135,6 @@ def _provider_auth_status_from_runtime(runtime: Any) -> int | None:
     return None
 
 
-_NATIVE_ACP_USAGE_RESULT_FIELDS = (
-    "n_input_tokens",
-    "n_output_tokens",
-    "n_cache_read_tokens",
-    "n_cache_creation_tokens",
-    "total_tokens",
-)
 _NATIVE_ACP_USAGE_SNAPSHOT_TO_RESULT = {
     "input_tokens": "n_input_tokens",
     "output_tokens": "n_output_tokens",
@@ -151,17 +145,7 @@ _NATIVE_ACP_USAGE_SNAPSHOT_TO_RESULT = {
 
 
 def _zero_native_acp_usage_metrics() -> dict[str, Any]:
-    return {
-        "n_input_tokens": 0,
-        "n_output_tokens": 0,
-        "n_cache_read_tokens": 0,
-        "n_cache_creation_tokens": 0,
-        "total_tokens": 0,
-        "cost_usd": None,
-        "usage_source": "unavailable",
-        "price_source": None,
-        "usage_details": {"thought_tokens": 0},
-    }
+    return {**usage_unavailable(), "usage_details": {"thought_tokens": 0}}
 
 
 def _as_nonnegative_int(value: object) -> int:

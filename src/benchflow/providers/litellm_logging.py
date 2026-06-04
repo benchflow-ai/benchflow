@@ -13,6 +13,7 @@ from benchflow.trajectories.types import (
     LLMResponse,
     Trajectory,
 )
+from benchflow.usage_tracking import usage_unavailable
 
 _PROVIDER_AUTH_STATUS_CODES = (401, 403)
 _STATUS_KEYS = {
@@ -351,19 +352,6 @@ def trajectory_from_litellm_callback_log(
     if saw_cost:
         trajectory.metadata["cost_usd"] = round(total_cost, 10)
     return trajectory
-
-
-def usage_unavailable() -> dict[str, Any]:
-    return {
-        "n_input_tokens": 0,
-        "n_output_tokens": 0,
-        "n_cache_read_tokens": 0,
-        "n_cache_creation_tokens": 0,
-        "total_tokens": 0,
-        "cost_usd": None,
-        "usage_source": "unavailable",
-        "price_source": None,
-    }
 
 
 def extract_usage_from_trajectory(
