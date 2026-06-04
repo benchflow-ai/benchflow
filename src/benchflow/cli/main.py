@@ -222,7 +222,9 @@ def job(
     ] = None,
     skill_mode: Annotated[
         str,
-        typer.Option("--skill-mode", help="Skill mode: no-skill, with-skill, or self-gen"),
+        typer.Option(
+            "--skill-mode", help="Skill mode: no-skill, with-skill, or self-gen"
+        ),
     ] = SKILL_MODE_NO_SKILL,
 ) -> None:
     """Run all tasks in a directory with concurrency and retries.
@@ -397,7 +399,9 @@ def eval(
     ] = "jobs",
     skill_mode: Annotated[
         str,
-        typer.Option("--skill-mode", help="Skill mode: no-skill, with-skill, or self-gen"),
+        typer.Option(
+            "--skill-mode", help="Skill mode: no-skill, with-skill, or self-gen"
+        ),
     ] = SKILL_MODE_NO_SKILL,
 ) -> None:
     """Evaluate a skill against multiple tasks.

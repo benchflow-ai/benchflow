@@ -1024,14 +1024,18 @@ class RolloutConfig:
     ) -> RolloutConfig:
         """Construct from flat SDK.run()-style args."""
         mode = normalize_skill_mode(skill_mode)
-        scenes = [] if mode == SKILL_MODE_SELF_GEN else [
-            Scene.single(
-                agent=agent,
-                model=model,
-                reasoning_effort=reasoning_effort,
-                prompts=prompts,
-            )
-        ]
+        scenes = (
+            []
+            if mode == SKILL_MODE_SELF_GEN
+            else [
+                Scene.single(
+                    agent=agent,
+                    model=model,
+                    reasoning_effort=reasoning_effort,
+                    prompts=prompts,
+                )
+            ]
+        )
         return cls(
             task_path=task_path,
             scenes=scenes,

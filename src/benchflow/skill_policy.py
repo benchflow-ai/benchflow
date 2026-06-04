@@ -31,6 +31,7 @@ SKILL_SOURCE_TASK_BUNDLED = "task_bundled"
 SKILL_SOURCE_CUSTOM_RUNTIME = "custom_runtime"
 SKILL_SOURCE_SELF_GENERATED = "self_generated"
 
+
 @dataclass(frozen=True)
 class TaskSkillPolicy:
     mode: str
