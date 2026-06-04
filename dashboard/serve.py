@@ -40,7 +40,9 @@ try:
     from dashboard.generate import resolve_dashboard_jobs_root
 except ModuleNotFoundError:  # pragma: no cover - used when run as dashboard/serve.py
     from daytona_status import snapshot as daytona_snapshot  # type: ignore[no-redef]
-    from experiments_status import snapshot as experiments_snapshot  # type: ignore[no-redef]
+    from experiments_status import (
+        snapshot as experiments_snapshot,  # type: ignore[no-redef]
+    )
     from generate import resolve_dashboard_jobs_root  # type: ignore[no-redef]
 
 DASH = Path(__file__).resolve().parent

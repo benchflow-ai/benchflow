@@ -1708,25 +1708,34 @@ function renderDaytona() {
 // Reads /experiments.json (the fill orchestrator's ledger). Four progressive,
 // non-overlapping panels: queue → running → completed (awaiting/failed review)
 // → reviewed & passed (with results). Live-server-only, like the Daytona tab.
-const EXP_BUCKET = {
-  queued: "queue", running: "running",
-  completed: "completed", run_failed: "completed", review_fail: "completed", quarantined: "completed",
-  review_pass: "reviewed", published: "reviewed",
-};
 function expReward(r) {
   if (r.reward == null) return "—";
   const v = Number(r.reward);
   return `<span class="${v >= 1 ? "good" : (v > 0 ? "warn" : "muted")}">${esc(r.reward)}</span>`;
 }
+function expFlag(v) {
+  if (v === true || v === 1) return true;
+  if (Array.isArray(v)) return v.length > 0;
+  const s = String(v == null ? "" : v).toLowerCase();
+  return ["1", "true", "yes", "ok", "pass", "passed"].includes(s);
+}
 function expSkills(r) {
-  if (r.skill_mode === "with")
-    return r.task_skills_loading === 1 ? `<span class="good">✓ loaded</span>` : `<span class="bad">✗ missing</span>`;
+  const mode = String(r.skill_mode || "").toLowerCase();
+  if (["with", "with-skills", "skills", "skill"].includes(mode))
+    return expFlag(r.task_skills_loading) ? `<span class="good">✓ loaded</span>` : `<span class="bad">✗ missing</span>`;
   // without-skills: 1 means leakage (bad); 0 is the healthy no-skill case
-  return r.task_skills_loading ? `<span class="bad">✗ leaked</span>` : `<span class="muted">n/a</span>`;
+  return expFlag(r.task_skills_loading) ? `<span class="bad">✗ leaked</span>` : `<span class="muted">n/a</span>`;
 }
 function expTokens(r) {
-  const t = r.tokens && (r.tokens.total != null ? r.tokens.total : r.tokens.input);
+  const t = r.tokens && (
+    r.tokens.total != null ? r.tokens.total :
+    (r.tokens.total_tokens != null ? r.tokens.total_tokens : r.tokens.input)
+  );
   return t != null ? esc(Number(t).toLocaleString()) : "—";
+}
+function expTime(r) {
+  const t = r.timing_total_s == null ? r.duration_s : r.timing_total_s;
+  return t == null ? "—" : esc(t) + "s";
 }
 function expHF(r) {
   if (!r.hf_path) return "—";
@@ -1750,17 +1759,20 @@ async function pollExperiments() {
     const d = await resp.json();
     if (d.error) { statusEl.innerHTML = `<span class="bad">${esc(d.error)}</span>`; return; }
     const bs = (d.summary && d.summary.by_state) || {}, bb = (d.summary && d.summary.by_bucket) || {};
-    const done = (bs.review_pass || 0) + (bs.published || 0), failed = (bs.review_fail || 0) + (bs.quarantined || 0);
+    const done = bb.reviewed || 0, failed = (bs.run_failed || 0) + (bs.review_fail || 0) + (bs.quarantined || 0);
+    const missing = (d.summary && d.summary.missing) || 0;
     const pct = d.target ? Math.round(100 * done / d.target) : 0;
     statusEl.innerHTML =
       `<b style="font-size:20px">${done}/${d.target}</b> reviewed-healthy (${pct}%) &nbsp;` +
       `<span class="chip">queued ${bb.queue || 0}</span> <span class="chip">running ${bb.running || 0}</span> ` +
       `<span class="chip">completed ${bb.completed || 0}</span> ` +
       `<span class="chip good">passed ${done}</span> ` +
-      `<span class="chip ${failed ? "bad" : "muted"}">failed ${failed}</span>` +
+      `<span class="chip ${failed ? "bad" : "muted"}">failed ${failed}</span> ` +
+      `<span class="chip ${missing ? "warn" : "muted"}">missing ${missing}</span>` +
       ` <span class="muted">· as of ${esc(d.as_of)} · auto-refresh 15s</span>`;
-    const rows = d.rows || [], inBucket = b => rows.filter(x => EXP_BUCKET[x.status] === b);
+    const rows = d.rows || [], inBucket = b => rows.filter(x => x.dashboard_bucket === b);
     const tslot = r => "t" + (r.trial_slot == null ? "" : r.trial_slot);
+    const notes = r => (r.review_health_notes && r.review_health_notes.length) ? r.review_health_notes.join("; ") : (r.note || "");
     expFill("exp-queue", inBucket("queue"), r =>
       [esc(r.model), esc(r.skill_mode), esc(r.task), esc(tslot(r)), esc(r.sandbox || "daytona")], 5);
     expFill("exp-running", inBucket("running"), r =>
@@ -1768,11 +1780,11 @@ async function pollExperiments() {
        `<span class="mono">${esc(r.sandbox_id || "")}</span>`, esc(r.started_at || r.updated_at || "")], 7);
     expFill("exp-completed", inBucket("completed"), r =>
       [esc(r.model), esc(r.skill_mode), esc(r.task), esc(tslot(r)),
-       `<span class="${r.status === "completed" ? "warn" : "bad"}">${esc(r.status)}</span>`, expReward(r), esc(r.note || "")], 7);
+       `<span class="${r.status === "completed" ? "warn" : "bad"}">${esc(r.status)}</span>`, expReward(r), esc(notes(r))], 7);
     expFill("exp-reviewed", inBucket("reviewed"), r =>
       [esc(r.task), esc(r.model), esc(r.skill_mode), expReward(r),
        `<span class="${r.health === "healthy" ? "good" : "bad"}">${esc(r.health || "?")}</span>`,
-       expSkills(r), expTokens(r), (r.timing_total_s == null ? "—" : esc(r.timing_total_s) + "s"), expHF(r)], 9);
+       expSkills(r), expTokens(r), expTime(r), expHF(r)], 9);
   } catch (e) { statusEl.innerHTML = `<span class="bad">fetch error: ${esc(e)}</span>`; }
 }
 function renderExperiments() {
