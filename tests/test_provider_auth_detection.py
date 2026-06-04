@@ -13,11 +13,13 @@ the ACP error. Classification now happens after cleanup, reading a status
 snapshot taken once captures are imported.
 """
 
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
+from benchflow.providers.litellm_logging import trajectory_from_litellm_callback_log
 from benchflow.rollout import _provider_auth_status_from_runtime
 
 
@@ -26,6 +28,10 @@ def _runtime_with_statuses(statuses):
         SimpleNamespace(response=SimpleNamespace(status_code=s)) for s in statuses
     ]
     trajectory = SimpleNamespace(exchanges=exchanges)
+    return SimpleNamespace(server=SimpleNamespace(trajectory=trajectory))
+
+
+def _runtime_with_trajectory(trajectory):
     return SimpleNamespace(server=SimpleNamespace(trajectory=trajectory))
 
 
@@ -62,6 +68,78 @@ def test_missing_runtime_is_safe():
 
 def test_empty_trajectory_is_safe():
     assert _provider_auth_status_from_runtime(_runtime_with_statuses([])) is None
+
+
+def test_litellm_auth_failure_import_drives_sanitized_provider_marker(tmp_path):
+    """Guards PR #564: LiteLLM callback auth failures that only expose ``401
+    Invalid bearer token`` inside the failure payload must still surface as
+    provider_auth without leaking the payload into ``result.error``."""
+    from benchflow.agents.errors import AgentProtocolError
+
+    record = {
+        "event": "failure",
+        "request_model": "benchflow-claude",
+        "provider_model": "anthropic/claude-opus-4-8",
+        "request": {"method": "POST", "path": "/v1/messages", "body": {}},
+        "response": {},
+        "error": {
+            "type": "AuthenticationError",
+            "message": (
+                "litellm.AuthenticationError: AnthropicException - "
+                "API Error: 401 Invalid bearer token"
+            ),
+        },
+        "start_time": "2026-06-04T10:00:00",
+        "end_time": "2026-06-04T10:00:00",
+    }
+
+    trajectory = trajectory_from_litellm_callback_log(
+        json.dumps(record),
+        session_id="session",
+        agent_name="openhands",
+    )
+    status = _provider_auth_status_from_runtime(_runtime_with_trajectory(trajectory))
+
+    assert trajectory.exchanges[0].response.status_code == 401
+    assert status == 401
+
+    rollout = _auth_rollout(tmp_path)
+    rollout._provider_auth_status_cached = status
+
+    classified = rollout._classify_acp_error(
+        AgentProtocolError("ACP error -32603: Internal error")
+    )
+
+    assert classified == (
+        "ACP error -32603: Internal error | provider auth failed (HTTP 401)"
+    )
+    assert "Invalid bearer token" not in classified
+
+
+def test_litellm_non_auth_failure_import_remains_generic_500():
+    """Guards PR #564: non-auth LiteLLM failures stay 500/None."""
+    record = {
+        "event": "failure",
+        "request_model": "benchflow-gpt",
+        "request": {"method": "POST", "path": "/v1/chat/completions", "body": {}},
+        "error": {
+            "type": "APIConnectionError",
+            "message": "upstream connection reset while reading response",
+        },
+        "start_time": "2026-06-04T10:00:00",
+        "end_time": "2026-06-04T10:00:00",
+    }
+
+    trajectory = trajectory_from_litellm_callback_log(
+        json.dumps(record),
+        session_id="session",
+        agent_name="codex-acp",
+    )
+
+    assert trajectory.exchanges[0].response.status_code == 500
+    assert _provider_auth_status_from_runtime(
+        _runtime_with_trajectory(trajectory)
+    ) is None
 
 
 def test_snapshot_after_late_capture_import():

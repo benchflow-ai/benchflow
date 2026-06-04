@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 from typing import Any
 
@@ -11,6 +12,33 @@ from benchflow.trajectories.types import (
     LLMRequest,
     LLMResponse,
     Trajectory,
+)
+
+_PROVIDER_AUTH_STATUS_CODES = (401, 403)
+_STATUS_KEYS = {
+    "httpstatus",
+    "httpstatuscode",
+    "status",
+    "statuscode",
+    "status_code",
+    "http_status",
+    "http_status_code",
+    "response_code",
+    "response_status",
+    "response_status_code",
+}
+_PROVIDER_AUTH_STATUS_RE = re.compile(r"\b(401|403)\b")
+_PROVIDER_AUTH_HINT_RE = re.compile(
+    r"\b("
+    r"auth(?:entication|orization)?|"
+    r"unauthori[sz]ed|"
+    r"permission_denied|"
+    r"forbidden|"
+    r"bearer|"
+    r"api[-_ ]?key|"
+    r"credentials?"
+    r")\b",
+    re.IGNORECASE,
 )
 
 
@@ -204,6 +232,74 @@ def _record_response_body(record: dict[str, Any]) -> dict[str, Any]:
     return body
 
 
+def _coerce_auth_status(value: Any) -> int | None:
+    if isinstance(value, int) and value in _PROVIDER_AUTH_STATUS_CODES:
+        return value
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.isdigit():
+            status = int(stripped)
+            if status in _PROVIDER_AUTH_STATUS_CODES:
+                return status
+    return None
+
+
+def _explicit_auth_status(value: Any) -> int | None:
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            if str(key).lower() in _STATUS_KEYS:
+                status = _coerce_auth_status(nested)
+                if status is not None:
+                    return status
+        for nested in value.values():
+            status = _explicit_auth_status(nested)
+            if status is not None:
+                return status
+    elif isinstance(value, list | tuple):
+        for nested in value:
+            status = _explicit_auth_status(nested)
+            if status is not None:
+                return status
+    return None
+
+
+def _flatten_failure_text(value: Any) -> str:
+    if isinstance(value, dict):
+        return " ".join(
+            part
+            for item in value.items()
+            if str(item[0]).lower() not in {"stack", "stacktrace", "traceback"}
+            for part in (str(item[0]), _flatten_failure_text(item[1]))
+            if part
+        )
+    if isinstance(value, list | tuple):
+        return " ".join(_flatten_failure_text(item) for item in value)
+    if value is None:
+        return ""
+    return str(value)
+
+
+def _provider_auth_status_from_failure_record(record: dict[str, Any]) -> int | None:
+    """Return a sanitized provider auth status from a LiteLLM failure record."""
+    if record.get("event") != "failure":
+        return None
+    failure_payload = {
+        "error": record.get("error"),
+        "response": record.get("response"),
+    }
+    status = _explicit_auth_status(failure_payload)
+    if status is not None:
+        return status
+
+    text = _flatten_failure_text(failure_payload)
+    if not _PROVIDER_AUTH_HINT_RE.search(text):
+        return None
+    match = _PROVIDER_AUTH_STATUS_RE.search(text)
+    if match is None:
+        return None
+    return int(match.group(1))
+
+
 def trajectory_from_litellm_callback_log(
     text: str,
     *,
@@ -227,7 +323,10 @@ def trajectory_from_litellm_callback_log(
         request_body = request.get("body")
         request_body = request_body if isinstance(request_body, dict) else {}
         response_body = _record_response_body(record)
-        status = 200 if record.get("event") == "success" else 500
+        if record.get("event") == "success":
+            status = 200
+        else:
+            status = _provider_auth_status_from_failure_record(record) or 500
         trajectory.exchanges.append(
             LLMExchange(
                 request=LLMRequest(
