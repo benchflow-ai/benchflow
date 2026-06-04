@@ -1,0 +1,72 @@
+name: release
+
+# Public release track. Publishes to PyPI and creates a GitHub Release when a
+# `v*` tag is pushed. This is intentionally separate from the internal
+# prerelease track (.github/workflows/prerelease.yml): only deliberate, tagged
+# versions reach users running a plain `pip install benchflow`.
+#
+# The tag must match the version in pyproject.toml. Cut a release by bumping
+# `pyproject.toml` on `main`, then pushing `vX.Y.Z`.
+#
+# Setup (one-time, by a maintainer): register a PyPI trusted publisher for the
+# `benchflow` project with owner `benchflow-ai`, repo `benchflow`, workflow
+# `release.yml`, and environment `pypi`. For a project that does not exist on
+# PyPI yet, add a "pending" trusted publisher instead.
+on:
+  push:
+    tags:
+      - "v*"
+
+# Least-privilege defaults — elevate per-job only when a step needs more.
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      contents: write  # create the GitHub Release
+      id-token: write  # OIDC token for PyPI trusted publishing
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39  # v3.2.4
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Verify tag matches pyproject version
+        id: version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version="$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")"
+          if [ "$tag" != "$version" ]; then
+            echo "::error::tag v$tag does not match pyproject version $version — bump pyproject.toml before tagging"
+            exit 1
+          fi
+          # PEP 440: a final release is digits-and-dots only; anything else is a prerelease.
+          if echo "$tag" | grep -Eq '^[0-9]+(\.[0-9]+)*$'; then
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          fi
+          echo "::notice::releasing $version"
+
+      - name: Build
+        run: uv build
+
+      - name: Publish to PyPI (trusted publishing)
+        run: uv publish
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRERELEASE: ${{ steps.version.outputs.prerelease }}
+        run: |
+          flags=(--title "$GITHUB_REF_NAME" --generate-notes --verify-tag)
+          [ "$PRERELEASE" = "true" ] && flags+=(--prerelease)
+          gh release create "$GITHUB_REF_NAME" dist/* "${flags[@]}"

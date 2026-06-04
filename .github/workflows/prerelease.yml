@@ -1,0 +1,77 @@
+name: prerelease
+
+# Internal prerelease track. Publishes a PEP 440 dev release to PyPI on every
+# green push to `main`, so teammates can `pip install --pre benchflow` to get
+# the latest merged code. This is intentionally separate from the public
+# release track (.github/workflows/release.yml): dev versions are ignored by a
+# plain `pip install`, so they never reach users who want a stable version.
+#
+# Triggered by the `test` workflow completing successfully, so only code that
+# already passed lint/type/tests gets published.
+#
+# Version: <base>.dev<run_number> (e.g. 0.5.0.dev42). The run number is
+# monotonic per workflow, giving each merge a strictly increasing dev version.
+#
+# Setup (one-time, by a maintainer): register a PyPI trusted publisher for the
+# `benchflow` project with owner `benchflow-ai`, repo `benchflow`, workflow
+# `prerelease.yml`, and environment `pypi-prerelease`. For a project that does
+# not exist on PyPI yet, add a "pending" trusted publisher instead.
+on:
+  workflow_run:
+    workflows: [test]
+    types: [completed]
+    branches: [main]
+
+# Least-privilege defaults — elevate per-job only when a step needs more.
+permissions:
+  contents: read
+
+jobs:
+  prerelease:
+    # Only publish code that passed `test` on a direct push to `main`.
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main'
+    runs-on: ubuntu-latest
+    environment: pypi-prerelease
+    permissions:
+      contents: read
+      id-token: write  # OIDC token for PyPI trusted publishing
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39  # v3.2.4
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Stamp dev version
+        env:
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          python3 - <<'PY'
+          import os, re, pathlib
+
+          run = os.environ["RUN_NUMBER"]
+          path = pathlib.Path("pyproject.toml")
+          text = path.read_text()
+          current = re.search(r'^version = "([^"]+)"', text, re.M).group(1)
+          base = re.match(r"\d+\.\d+\.\d+", current).group(0)
+          version = f"{base}.dev{run}"
+          path.write_text(
+              re.sub(r'^version = "[^"]+"', f'version = "{version}"', text, count=1, flags=re.M)
+          )
+          print(f"::notice::publishing prerelease {version}")
+          PY
+
+      - name: Build
+        run: uv build
+
+      - name: Publish to PyPI (trusted publishing)
+        run: uv publish
