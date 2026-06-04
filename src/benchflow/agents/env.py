@@ -47,8 +47,16 @@ _CODEX_ACCESS_TOKEN_ENV = "CODEX_ACCESS_TOKEN"
 _CODEX_AUTH_JSON_ENV = "CODEX_AUTH_JSON"
 _CLAUDE_CODE_OAUTH_TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN"
 _CLAUDE_OAUTH_TOKEN_ENV = "CLAUDE_OAUTH_TOKEN"
+_SUBSCRIPTION_AUTH_MARKER = "_BENCHFLOW_SUBSCRIPTION_AUTH"
 _CUSTOM_OPENAI_ENDPOINT_KEYS = frozenset(
     {"BENCHFLOW_PROVIDER_BASE_URL", "OPENAI_BASE_URL"}
+)
+_LITELLM_RUNTIME_MARKER_KEYS = frozenset(
+    {
+        "BENCHFLOW_LITELLM_MASTER_KEY",
+        "BENCHFLOW_LITELLM_MODEL_ALIAS",
+        "BENCHFLOW_LITELLM_MODEL_VIA_ENV",
+    }
 )
 _CANONICAL_OPENAI_URL = "https://api.openai.com/v1"
 _GENERIC_PROVIDER_OVERRIDE_KEYS = frozenset(
@@ -368,6 +376,59 @@ def _has_codex_auth_json_auth(
     ) and bool(agent_env.get(_CODEX_AUTH_JSON_ENV))
 
 
+def uses_native_subscription_auth(
+    agent: str,
+    model: str | None,
+    agent_env: dict[str, str],
+) -> bool:
+    """Return True when an agent should use CLI/subscription auth directly.
+
+    This is the Harbor-style split point: API-key runs can be routed through
+    LiteLLM, while subscription-auth runs stay on the native Codex/Claude ACP
+    path and report usage from the agent protocol response.
+    """
+    if agent_env.get("BENCHFLOW_PROVIDER_NAME") == "litellm" or any(
+        agent_env.get(key) for key in _LITELLM_RUNTIME_MARKER_KEYS
+    ):
+        return False
+
+    if agent == "codex-acp":
+        if agent_env.get("OPENAI_API_KEY"):
+            return False
+        required_key = "OPENAI_API_KEY"
+        if not _can_use_codex_subscription_auth(
+            agent,
+            model,
+            required_key,
+            agent_env,
+        ):
+            return False
+        return (
+            bool(agent_env.get(_CODEX_ACCESS_TOKEN_ENV))
+            or bool(agent_env.get(_CODEX_AUTH_JSON_ENV))
+            or agent_env.get(_SUBSCRIPTION_AUTH_MARKER) == "1"
+            or check_subscription_auth(agent, required_key)
+        )
+
+    if agent == "claude-agent-acp":
+        if agent_env.get("ANTHROPIC_API_KEY"):
+            return False
+        if model is not None:
+            from benchflow.agents.registry import infer_env_key_for_model
+
+            if infer_env_key_for_model(model) != "ANTHROPIC_API_KEY":
+                return False
+        return (
+            bool(agent_env.get(_CLAUDE_CODE_OAUTH_TOKEN_ENV))
+            or bool(agent_env.get(_CLAUDE_OAUTH_TOKEN_ENV))
+            or bool(agent_env.get("ANTHROPIC_AUTH_TOKEN"))
+            or agent_env.get(_SUBSCRIPTION_AUTH_MARKER) == "1"
+            or check_subscription_auth(agent, "ANTHROPIC_API_KEY")
+        )
+
+    return False
+
+
 def inject_vertex_credentials(agent_env: dict[str, str], model: str) -> None:
     """Inject ADC credentials and defaults for Vertex AI models."""
     from benchflow.agents.registry import is_vertex_model
@@ -668,7 +729,7 @@ def resolve_agent_env(
                 required_key,
                 agent_env,
             ) and check_subscription_auth(agent, required_key):
-                agent_env["_BENCHFLOW_SUBSCRIPTION_AUTH"] = "1"
+                agent_env[_SUBSCRIPTION_AUTH_MARKER] = "1"
                 logger.info(
                     "Using host subscription auth (no %s set)",
                     required_key,
@@ -701,7 +762,7 @@ def resolve_agent_env(
                     and _can_use_subscription_auth(agent, model, req_key, agent_env)
                     and check_subscription_auth(agent, req_key)
                 ):
-                    agent_env["_BENCHFLOW_SUBSCRIPTION_AUTH"] = "1"
+                    agent_env[_SUBSCRIPTION_AUTH_MARKER] = "1"
                     logger.info(
                         "Using host subscription auth (no %s set)",
                         req_key,

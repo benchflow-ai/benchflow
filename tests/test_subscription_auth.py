@@ -208,6 +208,42 @@ class TestResolveAgentEnvSubscription:
         assert "OPENAI_API_KEY" not in result
         assert "_BENCHFLOW_SUBSCRIPTION_AUTH" not in result
 
+    def test_codex_auth_json_marks_native_subscription_usage_path(self):
+        """Guards PR #613 follow-up: Codex subscription runs bypass LiteLLM."""
+        from benchflow.agents.env import uses_native_subscription_auth
+
+        assert uses_native_subscription_auth(
+            "codex-acp",
+            "gpt-4o",
+            {"CODEX_AUTH_JSON": '{"tokens": {"access_token": "access-token"}}'},
+        )
+
+    def test_codex_api_key_prefers_litellm_usage_path(self):
+        """Guards PR #613 follow-up: API-key Codex runs stay on LiteLLM."""
+        from benchflow.agents.env import uses_native_subscription_auth
+
+        assert not uses_native_subscription_auth(
+            "codex-acp",
+            "gpt-4o",
+            {
+                "CODEX_AUTH_JSON": '{"tokens": {"access_token": "access-token"}}',
+                "OPENAI_API_KEY": "sk-openai",
+            },
+        )
+
+    def test_codex_custom_base_url_not_native_subscription_usage_path(self):
+        """Guards PR #613 follow-up: subscription auth is not proxy auth."""
+        from benchflow.agents.env import uses_native_subscription_auth
+
+        assert not uses_native_subscription_auth(
+            "codex-acp",
+            "gpt-4o",
+            {
+                "CODEX_AUTH_JSON": '{"tokens": {"access_token": "access-token"}}',
+                "OPENAI_BASE_URL": "http://localhost:8765/v1",
+            },
+        )
+
     def test_codex_access_token_auth(self, monkeypatch, tmp_path):
         """Guards PR #296: Blocks-style Codex auth via CODEX_ACCESS_TOKEN."""
         for k in ("CODEX_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
@@ -223,6 +259,43 @@ class TestResolveAgentEnvSubscription:
         assert result["CODEX_ACCESS_TOKEN"] == "access-token"
         assert "OPENAI_API_KEY" not in result
         assert "_BENCHFLOW_SUBSCRIPTION_AUTH" not in result
+
+    def test_claude_oauth_marks_native_subscription_usage_path(self):
+        """Guards PR #613 follow-up: Claude Code OAuth bypasses LiteLLM."""
+        from benchflow.agents.env import uses_native_subscription_auth
+
+        assert uses_native_subscription_auth(
+            "claude-agent-acp",
+            "claude-haiku-4-5-20251001",
+            {"CLAUDE_CODE_OAUTH_TOKEN": "oauth-token"},
+        )
+
+    def test_claude_api_key_prefers_litellm_usage_path(self):
+        """Guards PR #613 follow-up: Claude API-key runs stay on LiteLLM."""
+        from benchflow.agents.env import uses_native_subscription_auth
+
+        assert not uses_native_subscription_auth(
+            "claude-agent-acp",
+            "claude-haiku-4-5-20251001",
+            {
+                "CLAUDE_CODE_OAUTH_TOKEN": "oauth-token",
+                "ANTHROPIC_API_KEY": "sk-ant",
+            },
+        )
+
+    def test_claude_litellm_auth_token_is_not_subscription_usage_path(self):
+        """Guards PR #613 follow-up: LiteLLM rewrites must not look like OAuth."""
+        from benchflow.agents.env import uses_native_subscription_auth
+
+        assert not uses_native_subscription_auth(
+            "claude-agent-acp",
+            "claude-haiku-4-5-20251001",
+            {
+                "ANTHROPIC_AUTH_TOKEN": "sk-benchflow-master",
+                "BENCHFLOW_PROVIDER_NAME": "litellm",
+                "BENCHFLOW_LITELLM_MODEL_VIA_ENV": "1",
+            },
+        )
 
     def test_codex_api_key_auth_alias(self, monkeypatch, tmp_path):
         """Guards PR #296: CODEX_API_KEY works for native Codex auth."""

@@ -380,6 +380,7 @@ class ACPClient:
         # vendored ``StopReason`` enum so consumers keep ``.value`` / member
         # comparisons working.
         self._session.stop_reason = StopReason(prompt_result.stop_reason)
+        self._session.record_prompt_usage(getattr(prompt_result, "usage", None))
         return prompt_result
 
     async def cancel(self) -> None:

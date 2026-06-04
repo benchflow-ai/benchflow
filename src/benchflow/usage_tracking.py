@@ -7,8 +7,15 @@ from dataclasses import dataclass
 from typing import Any, Literal, cast
 
 UsageTrackingMode = Literal["auto", "required", "off"]
+UsageSource = Literal["provider_response", "agent_native_acp", "unavailable"]
 
 USAGE_TRACKING_ENV = "BENCHFLOW_USAGE_TRACKING"
+USAGE_SOURCE_PROVIDER_RESPONSE = "provider_response"
+USAGE_SOURCE_AGENT_NATIVE_ACP = "agent_native_acp"
+USAGE_SOURCE_UNAVAILABLE = "unavailable"
+TRUSTED_USAGE_SOURCES: frozenset[str] = frozenset(
+    {USAGE_SOURCE_PROVIDER_RESPONSE, USAGE_SOURCE_AGENT_NATIVE_ACP}
+)
 
 _MODES: set[str] = {"auto", "required", "off"}
 _LEGACY_USAGE_PROXY_KEYS: frozenset[str] = frozenset(
@@ -36,13 +43,39 @@ def _optional_mode(value: Any) -> UsageTrackingMode | None:
     return normalize_usage_tracking_mode(str(value))
 
 
+def is_trusted_usage_source(value: object) -> bool:
+    """Return True for usage telemetry sources that satisfy required tracking."""
+    return str(value) in TRUSTED_USAGE_SOURCES
+
+
+def is_token_usage_available(metrics: dict[str, Any] | None) -> bool:
+    """Return True when a usage metrics payload has trusted token telemetry."""
+    if not metrics:
+        return False
+    return is_trusted_usage_source(metrics.get("usage_source"))
+
+
+def usage_unavailable() -> dict[str, Any]:
+    """Return the canonical empty token-usage metrics payload."""
+    return {
+        "n_input_tokens": 0,
+        "n_output_tokens": 0,
+        "n_cache_read_tokens": 0,
+        "n_cache_creation_tokens": 0,
+        "total_tokens": 0,
+        "cost_usd": None,
+        "usage_source": USAGE_SOURCE_UNAVAILABLE,
+        "price_source": None,
+    }
+
+
 @dataclass(frozen=True, init=False)
 class UsageTrackingConfig:
     """User-facing token/cost telemetry policy.
 
     ``mode`` is the operator contract:
-    - ``auto`` records usage when the LiteLLM gateway can be started.
-    - ``required`` fails before the agent runs when telemetry cannot be wired.
+    - ``auto`` records usage when LiteLLM or native ACP telemetry can be used.
+    - ``required`` fails when no trusted token telemetry can be captured.
     - ``off`` leaves provider traffic untouched.
     """
 
@@ -119,6 +152,8 @@ class UsageTrackingConfig:
         endpoint_kind = "sandbox" if environment == "daytona" else "host"
         if self.mode == "off":
             endpoint_kind = "none"
+        elif usage_source == USAGE_SOURCE_AGENT_NATIVE_ACP:
+            endpoint_kind = "agent_native"
         return {
             "requested": self.mode,
             "status": status,
