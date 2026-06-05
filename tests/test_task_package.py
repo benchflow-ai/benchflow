@@ -7,8 +7,13 @@ from pathlib import Path
 import pytest
 
 from benchflow.rollout import _read_task_instruction
+from benchflow.skill_policy import SKILL_MODE_SELF_GEN
 from benchflow.task import Task, TaskPackage, TaskRuntimeView
 from benchflow.task.paths import TaskPaths
+
+PROMPT_USER_SEMANTICS = Path(
+    "docs/examples/task-standard/benchflow-wanted-features/prompt-user-semantics"
+)
 
 DOGFOOD_TASK_DIR = Path(
     "docs/examples/task-standard/benchflow-wanted-features/"
@@ -222,6 +227,144 @@ def test_runtime_view_includes_verifier_document() -> None:
 
     loaded = Task(DOGFOOD_TASK_DIR)
     assert loaded.runtime_view.verifier_document == view.verifier_document
+
+
+def test_runtime_view_compose_turn_prompt_uses_append_composition(
+    tmp_path: Path,
+) -> None:
+    """Guards TaskRuntimeView.compose_turn_prompt for benchflow.prompt append."""
+    task = tmp_path / "append"
+    _write_task_md(
+        task,
+        prompt="Base prompt.",
+        scenes_yaml="""scenes:
+  - name: solve
+    turns:
+      - role: solver
+""",
+        benchflow_yaml="""benchflow:
+  prompt:
+    composition: append
+    order: [base, role, scene, turn]
+""",
+    )
+    (task / "task.md").write_text(
+        (task / "task.md").read_text()
+        + "\n## role:solver\n\nRole guardrails.\n\n## scene:solve\n\nScene context.\n"
+    )
+
+    view = TaskRuntimeView.from_task_dir(task)
+
+    assert view.compose_turn_prompt("solve", "solver") == (
+        "Base prompt.\n\nRole guardrails.\n\nScene context."
+    )
+
+    replace_task = tmp_path / "replace"
+    _write_task_md(
+        replace_task,
+        prompt="Base prompt.",
+        scenes_yaml="""scenes:
+  - name: solve
+    turns:
+      - role: solver
+""",
+        benchflow_yaml="""benchflow:
+  prompt:
+    composition: replace
+""",
+    )
+    (replace_task / "task.md").write_text(
+        (replace_task / "task.md").read_text()
+        + "\n## role:solver\n\nRole guardrails.\n\n## scene:solve\n\nScene context.\n"
+    )
+    replace_view = TaskRuntimeView.from_task_dir(replace_task)
+
+    assert replace_view.compose_turn_prompt(
+        "solve",
+        "solver",
+        "Turn override.",
+        explicit_turn=True,
+    ) == "Turn override."
+
+
+def test_runtime_view_to_rollout_scenes_centralizes_adoption(tmp_path: Path) -> None:
+    """Guards TaskRuntimeView.to_rollout_scenes rollout adoption rules."""
+    task = tmp_path / "native"
+    _write_task_md(
+        task,
+        scenes_yaml="""scenes:
+  - name: solve
+    turns:
+      - role: solver
+""",
+    )
+    view = TaskRuntimeView.from_task_dir(task)
+
+    assert [scene.name for scene in view.to_rollout_scenes()] == ["solve"]
+    assert view.to_rollout_scenes(prompts=["Manual prompt."]) == []
+    assert view.to_rollout_scenes(skill_mode=SKILL_MODE_SELF_GEN) == []
+
+    legacy = tmp_path / "legacy"
+    _write_legacy_task(legacy)
+    legacy_view = TaskRuntimeView.from_task_dir(legacy)
+    assert legacy_view.to_rollout_scenes() == []
+
+
+def test_runtime_view_document_runtime_summary(tmp_path: Path) -> None:
+    """Guards TaskRuntimeView.document_runtime_summary for logging/debug."""
+    task = tmp_path / "summary"
+    _write_task_md(
+        task,
+        prompt="Summary prompt.",
+        scenes_yaml="""scenes:
+  - name: solve
+    turns:
+      - role: solver
+""",
+        benchflow_yaml="""benchflow:
+  document_version: "0.3"
+  prompt:
+    composition: append
+    order: [base, role, scene, turn]
+""",
+    )
+
+    view = TaskRuntimeView.from_task_dir(task)
+    summary = view.document_runtime_summary()
+
+    assert summary["entrypoint"] == "task-md"
+    assert summary["instruction_chars"] == len("Summary prompt.")
+    assert summary["scene_names"] == ["solve"]
+    assert summary["verifier_dir_kind"] == "native"
+    assert summary["prompt_composition"] == "append"
+    assert summary["prompt_order"] == ["base", "role", "scene", "turn"]
+    assert summary["benchflow_keys"] == ["document_version", "prompt"]
+    assert summary["role_names"] == ["solver"]
+    assert summary["alias_collisions"] == []
+
+
+def test_runtime_view_compose_turn_prompt_matches_dogfood_scenes() -> None:
+    """Guards compose_turn_prompt parity with parsed prompt-user-semantics scenes."""
+    view = TaskRuntimeView.from_task_dir(PROMPT_USER_SEMANTICS)
+    document = view.document
+    assert document is not None
+
+    scenes = {scene.name: scene for scene in view.scenes}
+    prompt_composition_scene = scenes["prompt-composition"]
+    user_loop_scene = scenes["user-loop"]
+
+    assert view.compose_turn_prompt(
+        "prompt-composition",
+        "scene_engineer",
+    ) == prompt_composition_scene.turns[0].prompt
+    assert view.compose_turn_prompt(
+        "user-loop",
+        "scene_engineer",
+    ) == user_loop_scene.turns[0].prompt
+    assert view.compose_turn_prompt(
+        "user-loop",
+        "ux_reviewer",
+    ) == user_loop_scene.turns[1].prompt
 
 
 def test_runtime_view_detects_legacy_files_alongside_task_md(tmp_path: Path) -> None:

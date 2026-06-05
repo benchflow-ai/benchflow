@@ -495,6 +495,30 @@ def _scene_metadata(scenes: list[Scene]) -> list[dict[str, Any]]:
     ]
 
 
+def _reward_details_metadata(rollout_dir: Path) -> dict[str, Any] | None:
+    """Summarize verifier ``reward-details.json`` for persisted rollout metadata."""
+    path = rollout_dir / "verifier" / "reward-details.json"
+    if not path.is_file():
+        return None
+
+    raw = path.read_text(encoding="utf-8", errors="replace")
+    summary: dict[str, Any] = {
+        "path": "verifier/reward-details.json",
+        "size_bytes": path.stat().st_size,
+    }
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict):
+            summary["top_level_keys"] = sorted(str(key) for key in parsed)
+    except json.JSONDecodeError:
+        pass
+    if raw:
+        summary["content_preview"] = raw[:_DIAG_TRUNCATE]
+        if len(raw) > _DIAG_TRUNCATE:
+            summary["content_truncated"] = True
+    return summary
+
+
 def _build_rollout_result(
     rollout_dir: Path,
     *,
@@ -606,6 +630,7 @@ def _build_rollout_result(
         partial_trajectory=partial_trajectory,
         trajectory_source=trajectory_source,
     )
+    reward_details = _reward_details_metadata(rollout_dir)
     traj_dir = rollout_dir / "trajectory"
     traj_dir.mkdir(parents=True, exist_ok=True)
     # Final write — overwrites whatever the live streaming writer left
@@ -645,6 +670,11 @@ def _build_rollout_result(
                 **(
                     {"source": source_provenance}
                     if source_provenance is not None
+                    else {}
+                ),
+                **(
+                    {"reward_details": reward_details}
+                    if reward_details is not None
                     else {}
                 ),
             },
@@ -965,16 +995,13 @@ def _task_document_scenes(
     prompts: list[str | None] | None,
     skill_mode: str,
 ) -> list[Scene]:
-    """Load scene declarations from ``task.md`` when it is the task entrypoint."""
-    if prompts is not None or skill_mode == SKILL_MODE_SELF_GEN:
-        return []
-    document_path = task_path / "task.md"
-    if not document_path.exists():
-        return []
+    """Load scene declarations through ``TaskRuntimeView`` when applicable."""
+    from benchflow.task.package import TaskRuntimeView
 
-    from benchflow.task.document import TaskDocument
-
-    return list(TaskDocument.from_path(document_path).scenes)
+    return TaskRuntimeView.from_task_dir(task_path).to_rollout_scenes(
+        prompts=prompts,
+        skill_mode=skill_mode,
+    )
 
 
 __all__ = [

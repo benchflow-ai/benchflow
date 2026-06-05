@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 from benchflow._types import Scene
+from benchflow.skill_policy import SKILL_MODE_SELF_GEN
 from benchflow.task.aliases import alias_dir_collision_issues, normalized_tree_map
 from benchflow.task.config import TaskConfig
 from benchflow.task.document import TaskDocument
@@ -217,6 +218,73 @@ class TaskRuntimeView:
             composition=settings.composition,
             order=settings.order,
         )
+
+    def compose_turn_prompt(
+        self,
+        scene_name: str,
+        role_name: str,
+        turn_prompt: str | None = None,
+        *,
+        explicit_turn: bool = False,
+    ) -> str:
+        """Compose one scene turn prompt using ``benchflow.prompt`` settings."""
+        settings = prompt_composition_settings(self.benchflow)
+        role_prompt = (
+            self.document.role_prompts.get(role_name) if self.document else None
+        )
+        scene_prompt = (
+            self.document.scene_prompts.get(scene_name) if self.document else None
+        )
+        return compose_task_prompt(
+            self.instruction_text,
+            role_prompt,
+            scene_prompt,
+            turn_prompt,
+            composition=settings.composition,
+            order=settings.order,
+            explicit_turn=explicit_turn,
+        )
+
+    def to_rollout_scenes(
+        self,
+        *,
+        prompts: list[str | None] | None = None,
+        skill_mode: str = "no-skill",
+    ) -> list[Scene]:
+        """Return document scenes for rollout when no explicit override applies."""
+        if prompts is not None or skill_mode == SKILL_MODE_SELF_GEN:
+            return []
+        return list(self.scenes)
+
+    def document_runtime_summary(self) -> dict[str, Any]:
+        """Return a compact runtime summary for logging and debug."""
+        settings = prompt_composition_settings(self.benchflow)
+        summary: dict[str, Any] = {
+            "task_dir": str(self.task_dir),
+            "entrypoint": self.entrypoint,
+            "instruction_chars": len(self.instruction_text),
+            "scene_names": list(self.scene_names),
+            "verifier_dir": str(self.verifier_dir),
+            "verifier_dir_kind": self.verifier_dir_kind,
+            "oracle_dir": str(self.oracle_dir),
+            "oracle_dir_kind": self.oracle_dir_kind,
+            "has_legacy_split_files": self.has_legacy_split_files,
+            "alias_collisions": list(self.alias_collisions.issues),
+            "prompt_composition": settings.composition,
+            "prompt_order": list(settings.order),
+        }
+        if self.document is not None:
+            summary["role_names"] = sorted(self.document.roles)
+            summary["role_prompt_sections"] = sorted(self.document.role_prompts)
+            summary["scene_prompt_sections"] = sorted(self.document.scene_prompts)
+        if self.benchflow:
+            summary["benchflow_keys"] = sorted(self.benchflow)
+        if self.verifier_document is not None:
+            summary["verifier_document"] = {
+                "name": self.verifier_document.name,
+                "default_strategy": self.verifier_document.default_strategy,
+            }
+        return summary
 
     def selected_verifier_tree_map(self) -> dict[str, bytes]:
         """Normalized file map for the selected verifier directory."""
