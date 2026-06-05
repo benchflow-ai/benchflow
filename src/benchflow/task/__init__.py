@@ -38,6 +38,18 @@ from benchflow.task.document import (
     render_task_md_from_legacy,
 )
 from benchflow.task.env import resolve_env_vars
+from benchflow.task.export import (
+    ExportLoss,
+    ExportMode,
+    ExportResult,
+    ExportTarget,
+    export_task_package,
+)
+from benchflow.task.package import (
+    AliasCollisionStatus,
+    TaskPackage,
+    TaskRuntimeView,
+)
 from benchflow.task.paths import (
     RolloutPaths,
     SandboxPaths,
@@ -54,6 +66,15 @@ from benchflow.task.verifier import (
     VerifierOutputParseError,
     VerifierResult,
 )
+from benchflow.task.verifier_document import (
+    VERIFIER_DOCUMENT_FILENAME,
+    VerifierDocument,
+    VerifierDocumentParseError,
+    VerifierOutputs,
+    VerifierRubricFiles,
+    resolve_verifier_spec_path,
+    verifier_document_issues,
+)
 
 __all__ = [
     # Task ($T$)
@@ -63,6 +84,16 @@ __all__ = [
     "TASK_DOCUMENT_FILENAME",
     "TaskDocument",
     "TaskDocumentParseError",
+    "TaskPackage",
+    "TaskRuntimeView",
+    "AliasCollisionStatus",
+    "VERIFIER_DOCUMENT_FILENAME",
+    "VerifierDocument",
+    "VerifierDocumentParseError",
+    "VerifierOutputs",
+    "VerifierRubricFiles",
+    "resolve_verifier_spec_path",
+    "verifier_document_issues",
     # Configuration ($C$)
     "SandboxConfig",
     "VerifierConfig",
@@ -98,4 +129,10 @@ __all__ = [
     # Utilities
     "resolve_env_vars",
     "render_task_md_from_legacy",
+    # Export
+    "ExportLoss",
+    "ExportMode",
+    "ExportResult",
+    "ExportTarget",
+    "export_task_package",
 ]
