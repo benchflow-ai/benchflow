@@ -14,36 +14,58 @@ Current release state:
 - After the public tag is cut, `main` should move to `0.5.3.dev0`, which
   publishes internal preview builds as `0.5.3.dev<N>` after CI passes.
 
-Regular users install public releases with:
+## Install and Upgrade Commands
+
+Use the public channel by default. Opt into internal preview only when you want
+the newest build from `main` before the next public tag.
+
+Public Python package users:
 
 ```bash
 pip install --upgrade benchflow
 ```
 
-For a `uv`-managed CLI install of the current public release:
+Public `uv`-managed CLI users:
 
 ```bash
-uv tool install --prerelease allow 'benchflow==0.5.2'
+uv tool install --prerelease allow --upgrade 'benchflow==0.5.2'
 ```
 
 The exact `benchflow==0.5.2` pin keeps `uv` on the public release while
 `--prerelease allow` permits the release-candidate LiteLLM dependency used by
 this package line.
 
-Internal users install the latest preview package with:
+Internal preview Python package users:
 
 ```bash
 pip install --pre --upgrade benchflow
 ```
 
-For the CLI, install or upgrade the preview tool with:
+Internal preview `uv`-managed CLI users:
 
 ```bash
 uv tool install --prerelease allow --upgrade benchflow
-uv tool upgrade --prerelease allow benchflow
 ```
 
-For downstream projects that use `uv`, lock the preview dependency with:
+The preview CLI command intentionally omits the exact public pin, so `uv`
+selects the latest `0.5.3.dev<N>` package. If a machine was previously
+installed with `pip install --user` or another non-`uv tool` method, the command
+can fail with `Executables already exist: bench, benchflow`. In that case,
+rerun the same command with `--force`:
+
+```bash
+uv tool install --prerelease allow --upgrade --force benchflow
+```
+
+For downstream projects that use `uv`, keep public dependencies pinned unless
+the project intentionally tracks preview builds:
+
+```bash
+uv add --prerelease allow 'benchflow==0.5.2'
+uv lock --upgrade-package benchflow --prerelease allow
+```
+
+To lock the latest internal preview instead:
 
 ```bash
 uv add --prerelease allow benchflow

@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Document the public vs internal preview install/upgrade command matrix,
+  including `uv tool` exact pins, internal preview upgrades, and the
+  `--force` path for replacing stale entrypoint scripts.
+
 ## 0.5.2 — 2026-06-05
 
 ### Changed
