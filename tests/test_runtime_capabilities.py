@@ -14,6 +14,10 @@ from benchflow.task.runtime_capabilities import (
     validate_task_runtime_support,
 )
 
+PROMPT_USER_SEMANTICS_TASK = Path(
+    "docs/examples/task-standard/benchflow-wanted-features/prompt-user-semantics"
+)
+
 
 def _write_minimal_task(task_dir: Path, toml: str) -> Path:
     task_dir.mkdir(parents=True, exist_ok=True)
@@ -391,6 +395,71 @@ workdir = "/repo"
 
     with pytest.raises(UnsupportedTaskRuntimeError, match=r"environment\.workdir"):
         asyncio.run(rollout.setup())
+
+
+@pytest.mark.parametrize("sandbox_type", ["docker", "daytona"])
+class TestPromptUserSemanticsDogfood:
+    """Guards fail-closed user/nudge validation for prompt-user-semantics dogfood."""
+
+    def test_user_and_nudges_fail_closed(self, sandbox_type: str) -> None:
+        """Guards prompt-user-semantics dogfood user/nudge semantics on gated sandboxes."""
+        task = Task(PROMPT_USER_SEMANTICS_TASK)
+        issues = validate_task_runtime_support(
+            task, sandbox_type, PROMPT_USER_SEMANTICS_TASK
+        )
+        paths = {issue.path for issue in issues}
+        assert "user" in paths
+        assert "benchflow.nudges" in paths
+        assert "prompt.user-persona" in paths
+        assert all(issue.sandbox_type == sandbox_type for issue in issues)
+
+    def test_metadata_only_user_runtime_skips_user_semantics_issues(
+        self, tmp_path: Path, sandbox_type: str
+    ) -> None:
+        task_dir = _write_minimal_task(
+            tmp_path / "metadata-only-user-task",
+            """\
+version = "1.0"
+
+[agent]
+timeout_sec = 300
+
+[verifier]
+timeout_sec = 120
+""",
+        )
+        (task_dir / "task.md").write_text(
+            """\
+---
+schema_version: "1.3"
+agent:
+  timeout_sec: 300
+verifier:
+  timeout_sec: 120
+user:
+  model: claude-haiku
+  stop_rule: satisfied-or-5-rounds
+benchflow:
+  user_runtime: metadata-only
+  nudges:
+    mode: simulated-user
+---
+
+## prompt
+
+Do the thing.
+
+## user-persona
+
+You reveal private facts only when asked.
+"""
+        )
+        task = _load_task(task_dir)
+        issues = validate_task_runtime_support(task, sandbox_type, task_dir)
+        paths = {issue.path for issue in issues}
+        assert "user" not in paths
+        assert "benchflow.nudges" not in paths
+        assert "prompt.user-persona" not in paths
 
 
 def test_validator_accepts_task_like_object(tmp_path: Path) -> None:

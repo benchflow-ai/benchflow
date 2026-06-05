@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from benchflow.task.config import (
     NetworkMode,
@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from benchflow.task.task import Task
 
 _GATED_SANDBOX_TYPES = frozenset({"docker", "daytona"})
+_METADATA_ONLY_RUNTIME_VALUES = frozenset({"metadata-only", "metadata_only"})
 
 
 @dataclass(frozen=True)
@@ -57,6 +58,80 @@ class UnsupportedTaskRuntimeError(ValueError):
 
 def _task_has_compose(task_path: Path) -> bool:
     return (task_path / "environment" / "docker-compose.yaml").exists()
+
+
+def _benchflow_section_runtime_mode(
+    benchflow: dict[str, Any],
+    section: str,
+) -> str | None:
+    value = benchflow.get(section)
+    if not isinstance(value, dict):
+        return None
+    runtime = value.get("runtime")
+    return runtime if isinstance(runtime, str) else None
+
+
+def _is_metadata_only_runtime(benchflow: dict[str, Any], section: str) -> bool:
+    """Return whether *section* user/nudge semantics are explicitly metadata-only."""
+    umbrella = benchflow.get("user_runtime")
+    if isinstance(umbrella, str) and umbrella in _METADATA_ONLY_RUNTIME_VALUES:
+        return True
+    mode = _benchflow_section_runtime_mode(benchflow, section)
+    return mode in _METADATA_ONLY_RUNTIME_VALUES if mode is not None else False
+
+
+def _append_user_semantics_issues(
+    issues: list[UnsupportedTaskFeature],
+    *,
+    task: Task,
+    sandbox_type: str,
+) -> None:
+    document = getattr(task, "document", None)
+    if document is None:
+        return
+
+    benchflow = document.benchflow
+    if document.user and not _is_metadata_only_runtime(benchflow, "user"):
+        issues.append(
+            UnsupportedTaskFeature(
+                path="user",
+                reason=(
+                    "document-declared simulated-user frontmatter is parsed but "
+                    "not compiled into a rollout user loop yet"
+                ),
+                sandbox_type=sandbox_type,
+            )
+        )
+
+    if (
+        isinstance(benchflow.get("nudges"), dict)
+        and not _is_metadata_only_runtime(benchflow, "nudges")
+    ):
+        issues.append(
+            UnsupportedTaskFeature(
+                path="benchflow.nudges",
+                reason=(
+                    "document-declared nudge policy is parsed but not executed "
+                    "by the selected sandbox yet"
+                ),
+                sandbox_type=sandbox_type,
+            )
+        )
+
+    if (
+        document.user_persona
+        and not _is_metadata_only_runtime(benchflow, "user_persona")
+    ):
+        issues.append(
+            UnsupportedTaskFeature(
+                path="prompt.user-persona",
+                reason=(
+                    "document-declared user persona is parsed but not compiled "
+                    "into a rollout user loop yet"
+                ),
+                sandbox_type=sandbox_type,
+            )
+        )
 
 
 def _append_allowlist_issue(
@@ -249,6 +324,8 @@ def validate_task_runtime_support(
                 sandbox_type=sandbox_type,
             )
         )
+
+    _append_user_semantics_issues(issues, task=task, sandbox_type=sandbox_type)
 
     return issues
 
