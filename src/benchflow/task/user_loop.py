@@ -43,6 +43,19 @@ def parse_stop_rule_max_rounds(stop_rule: str) -> int | None:
     return int(match.group(1))
 
 
+def _nudge_budget_max_rounds(nudges: Any) -> int | None:
+    if not isinstance(nudges, dict):
+        return None
+    budget = nudges.get("nudge_budget")
+    if isinstance(budget, bool) or budget is None:
+        return None
+    try:
+        max_rounds = int(budget)
+    except (TypeError, ValueError):
+        return None
+    return max_rounds if max_rounds >= 1 else None
+
+
 def _normalize_private_facts(raw: Any) -> dict[str, str] | None:
     if raw is None:
         return {}
@@ -157,15 +170,23 @@ def _compile_from_document(
     *,
     user_block: dict[str, Any],
     user_persona: str | None,
+    nudges: Any = None,
 ) -> CompiledUserLoop | None:
     if not user_block:
         return None
 
     stop_rule = user_block.get("stop_rule")
-    if not isinstance(stop_rule, str) or not stop_rule.strip():
-        return None
+    max_rounds: int | None = None
+    if isinstance(stop_rule, str) and stop_rule.strip():
+        max_rounds = parse_stop_rule_max_rounds(stop_rule)
+    else:
+        stop_rule = ""
 
-    max_rounds = parse_stop_rule_max_rounds(stop_rule)
+    if max_rounds is None:
+        max_rounds = _nudge_budget_max_rounds(nudges)
+        if max_rounds is not None and not stop_rule:
+            stop_rule = f"nudge-budget-{max_rounds}-rounds"
+
     if max_rounds is None or max_rounds < 1:
         return None
 
@@ -191,9 +212,11 @@ def compile_document_user_loop(task: Task) -> CompiledUserLoop | None:
     document = task.document
     if document is None:
         return None
+    benchflow = document.benchflow if isinstance(document.benchflow, dict) else {}
     return _compile_from_document(
         user_block=document.user,
         user_persona=document.user_persona,
+        nudges=benchflow.get("nudges"),
     )
 
 

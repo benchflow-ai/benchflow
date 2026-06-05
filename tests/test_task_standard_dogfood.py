@@ -99,19 +99,17 @@ def test_prompt_user_semantics_append_composes_scene_turn_prompts() -> None:
     assert user_loop_scene.turns[1].prompt == user_loop_reviewer
 
 
-def test_prompt_user_semantics_fails_sandbox_check_on_docker_for_user_and_nudges() -> None:
-    """Guards prompt-user-semantics fail-closed user/nudge validation on docker."""
+def test_prompt_user_semantics_sandbox_check_supports_executable_nudges() -> None:
+    """Guards prompt-user-semantics simulated-user nudge execution on docker."""
     task = Task(PROMPT_USER_SEMANTICS_TASK)
     issues = validate_task_runtime_support(
         task, "docker", PROMPT_USER_SEMANTICS_TASK
     )
 
-    assert issues
     paths = {issue.path for issue in issues}
-    assert "user" in paths
-    assert "benchflow.nudges" in paths
-    assert "prompt.user-persona" in paths
-    assert all(issue.sandbox_type == "docker" for issue in issues)
+    assert "benchflow.nudges" not in paths
+    assert "user" not in paths
+    assert "prompt.user-persona" not in paths
 
 
 def test_verifier_reward_contract_loads_deterministic_default_strategy() -> None:

@@ -114,9 +114,16 @@ def _append_user_semantics_issues(
             )
         )
 
+    nudges = benchflow.get("nudges")
+    nudges_supported = (
+        isinstance(nudges, dict)
+        and nudges.get("mode") == "simulated-user"
+        and user_loop_executable
+    )
     if (
-        isinstance(benchflow.get("nudges"), dict)
+        isinstance(nudges, dict)
         and not _is_metadata_only_runtime(benchflow, "nudges")
+        and not nudges_supported
     ):
         issues.append(
             UnsupportedTaskFeature(

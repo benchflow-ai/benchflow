@@ -401,19 +401,57 @@ workdir = "/repo"
 class TestPromptUserSemanticsDogfood:
     """Guards fail-closed user/nudge validation for prompt-user-semantics dogfood."""
 
-    def test_nudges_still_fail_closed_after_user_loop_compilation(
+    def test_simulated_user_nudges_supported_when_user_loop_executable(
         self, sandbox_type: str
     ) -> None:
-        """Guards prompt-user-semantics dogfood nudge semantics on gated sandboxes."""
+        """Guards simulated-user nudge execution when document user loop compiles."""
         task = Task(PROMPT_USER_SEMANTICS_TASK)
         issues = validate_task_runtime_support(
             task, sandbox_type, PROMPT_USER_SEMANTICS_TASK
         )
         paths = {issue.path for issue in issues}
         assert "user" not in paths
-        assert "benchflow.nudges" in paths
+        assert "benchflow.nudges" not in paths
         assert "prompt.user-persona" not in paths
-        assert all(issue.sandbox_type == sandbox_type for issue in issues)
+
+    def test_nudges_fail_closed_without_executable_user_loop(
+        self, tmp_path: Path, sandbox_type: str
+    ) -> None:
+        task_dir = _write_minimal_task(
+            tmp_path / "nudges-without-user-loop",
+            """\
+version = "1.0"
+
+[agent]
+timeout_sec = 300
+
+[verifier]
+timeout_sec = 120
+""",
+        )
+        (task_dir / "task.md").write_text(
+            """\
+---
+schema_version: "1.3"
+agent:
+  timeout_sec: 300
+verifier:
+  timeout_sec: 120
+benchflow:
+  nudges:
+    mode: simulated-user
+    nudge_budget: 4
+---
+
+## prompt
+
+Do the thing.
+"""
+        )
+        task = _load_task(task_dir)
+        issues = validate_task_runtime_support(task, sandbox_type, task_dir)
+        paths = {issue.path for issue in issues}
+        assert "benchflow.nudges" in paths
 
     def test_metadata_only_user_runtime_skips_user_semantics_issues(
         self, tmp_path: Path, sandbox_type: str

@@ -49,6 +49,45 @@ class TestCompileDocumentUserLoop:
         assert compiled.user.user_persona is not None
         assert "targeted clarification" in compiled.user.user_persona
 
+    def test_nudge_budget_sets_max_rounds_when_stop_rule_absent(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "task.md").write_text(
+            """---
+agent:
+  timeout_sec: 300
+verifier:
+  timeout_sec: 120
+user:
+  private_facts:
+    hidden_need: "Reveal only when asked."
+benchflow:
+  nudges:
+    mode: simulated-user
+    nudge_budget: 6
+---
+## prompt
+
+Solve it.
+"""
+        )
+        (tmp_path / "task.toml").write_text(
+            'version = "1.0"\n[agent]\ntimeout_sec = 300\n[verifier]\ntimeout_sec = 120\n'
+        )
+        (tmp_path / "instruction.md").write_text("Solve it.\n")
+        env = tmp_path / "environment"
+        env.mkdir()
+        (env / "Dockerfile").write_text("FROM ubuntu:24.04\n")
+        tests = tmp_path / "tests"
+        tests.mkdir()
+        (tests / "test.sh").write_text("#!/bin/bash\nexit 0\n")
+
+        compiled = compile_document_user_loop(Task(tmp_path))
+
+        assert compiled is not None
+        assert compiled.max_user_rounds == 6
+        assert isinstance(compiled.user, DocumentSimulatedUser)
+
     def test_missing_user_block_returns_none(self, tmp_path: Path) -> None:
         (tmp_path / "task.md").write_text(
             """---
@@ -119,6 +158,20 @@ class TestDocumentSimulatedUser:
         assert "hidden_need" in prompt
         assert "Document user loops must be executable." in prompt
         assert "Persona stays verifier-scoped." not in prompt
+
+    @pytest.mark.asyncio
+    async def test_stops_after_nudge_budget_round_cap(self) -> None:
+        user = DocumentSimulatedUser(
+            user_persona=None,
+            private_facts={},
+            stop_rule="nudge-budget-3-rounds",
+            max_rounds=3,
+        )
+        working = RoundResult(round=0, trajectory=[{"content": "Still working."}])
+        assert await user.run(1, "Solve the task.", working) == (
+            "Please continue working on the task."
+        )
+        assert await user.run(2, "Solve the task.", working) is None
 
     @pytest.mark.asyncio
     async def test_private_facts_stay_hidden_without_clarification(self) -> None:
