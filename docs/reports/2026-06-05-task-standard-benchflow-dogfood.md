@@ -130,8 +130,9 @@ The wanted-feature dogfood packages now have partial runtime backing on
 | `TaskPackage` / `TaskRuntimeView` | `src/benchflow/task/package.py`, rollout upload uses runtime view | Prompt composition, user/nudge compilation, source-hash provenance |
 | Runtime capability gates | `src/benchflow/task/runtime_capabilities.py`, wired in rollout + sandbox setup; `bench tasks check --sandbox docker\|daytona` | Modal/K8s matrices, GPU/private-mount gates, narrow gates as features land |
 | `VerifierDocument` | `src/benchflow/task/verifier_document.py`, `check_task` + `Task()` validation | Strategy execution, Reward Kit runtime, agent-judge orchestration |
-| Export + loss reports | `src/benchflow/task/export.py`, `bench tasks export` | Round-trip parity, on-disk `export-report.json`, Pier-specific losses |
-| Reward contract | JSON-first precedence, scalar agreement, `reward-details.json` copy-through | Multi-metric maps without top-level `reward`, aggregate policy |
+| Export + loss reports | `src/benchflow/task/export.py`, `bench tasks export/import` | Pier-specific losses; full foreign import preservation |
+| Reward contract | JSON-first precedence, multi-metric maps, `reward-details.json` in `result.json` | Reward Kit execution, aggregate policy from verifier metadata |
+| Prompt/user semantics | `prompt_composition.py`, `user_loop.py`, `DocumentSimulatedUser` | Multi-scene user-loop auto-wiring, branchable nudges |
 
 Regression guard: `tests/test_task_standard_dogfood.py` exercises all four
 wanted-feature packages through structural check, `Task()` load,

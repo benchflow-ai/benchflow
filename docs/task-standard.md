@@ -670,9 +670,11 @@ Current implementation status:
 | `task.md` prompt | yes | yes | keep |
 | native `verifier/` | yes | yes | keep |
 | native `oracle/` | yes | yes | keep |
-| `agents.roles` | yes | partial | move scene adoption into `TaskRuntimeView` |
-| `scenes` | yes | partial | define prompt composition and handoff policy |
-| `user` / `## user-persona` | yes | no | compile to a concrete simulated-user loop or mark metadata-only |
+| `agents.roles` | yes | partial | adopted via `TaskRuntimeView.to_rollout_scenes()` |
+| `scenes` | yes | partial | document scenes load into `RolloutConfig`; handoff policy still open |
+| `benchflow.prompt` composition | yes | partial | append/replace on scene turns; rollout default prompt still base-only |
+| `user` / `## user-persona` | yes | partial | `DocumentSimulatedUser` + `compile_document_user_loop`; multi-scene wiring manual |
+| `benchflow.nudges` | yes | partial | simulated-user mode with `nudge_budget`; branchable policy still open |
 | `benchflow:` | raw | no | typed document schema after v0.3 stabilizes |
 | Harbor `steps` | yes | no/partial | fail closed per sandbox until implemented |
 | root/step artifacts | yes | no/partial | implement collection or fail closed |
@@ -683,8 +685,8 @@ Current implementation status:
 | `reward.json` precedence | yes | yes | keep scalar agreement checks; multi-metric maps synthesize mean or honor JSON `aggregate_policy.field` |
 | `reward-details.json` preservation | yes | yes | copy through verifier rollout download; no parsing yet |
 | `TaskPackage` / `TaskRuntimeView` | yes | partial | entrypoint, dirs, scenes, alias collisions, `verifier_document`; prompt composition and sandbox gates still partial |
-| runtime capability gates (docker/daytona) | yes | partial | `validate_task_runtime_support` wired before sandbox creation; more backends and `bench tasks check --sandbox` pending |
-| Harbor/Pier export | yes | partial | native `task.md` export with loss reports; round-trip equivalence and alias parity pending |
+| runtime capability gates (docker/daytona) | yes | partial | `validate_task_runtime_support` + `bench tasks check --sandbox`; more backends pending |
+| Harbor/Pier export | yes | partial | `bench tasks export` + `compatibility/export-report.json`; `bench tasks import --native` round-trip |
 | native `/task.md` upload | yes | yes | keep `/instruction.md` compatibility contract |
 | alias dir collision checks | yes | partial | `bench tasks check` and `Task()` load fail closed; export parity pending |
 
