@@ -670,6 +670,13 @@ def tasks_init(
 @tasks_app.command("check")
 def tasks_check(
     task_dir: Annotated[Path, typer.Argument(help="Path to task directory")],
+    sandbox: Annotated[
+        Literal["docker", "daytona"] | None,
+        typer.Option(
+            "--sandbox",
+            help="Also validate parsed fields against this sandbox backend",
+        ),
+    ] = None,
 ) -> None:
     """Validate a task directory structure."""
     from rich.markup import escape
@@ -686,6 +693,84 @@ def tasks_check(
             # render verbatim instead of being parsed as styling (#379).
             console.print(f"  [yellow]→[/yellow] {escape(issue)}")
         raise typer.Exit(1)
+
+    if sandbox is None:
+        return
+
+    from benchflow.task import Task
+    from benchflow.task.runtime_capabilities import validate_task_runtime_support
+
+    try:
+        task = Task(task_dir)
+    except ValueError as exc:
+        console.print(f"[red]Cannot load task for runtime check:[/red] {exc}")
+        raise typer.Exit(1) from None
+
+    runtime_issues = validate_task_runtime_support(task, sandbox, task_dir)
+    if runtime_issues:
+        console.print(
+            f"[red]✗[/red] {task_dir.name} — "
+            f"{len(runtime_issues)} unsupported feature(s) on {sandbox}:"
+        )
+        for issue in runtime_issues:
+            console.print(
+                f"  [yellow]→[/yellow] {escape(issue.path)}: {escape(issue.reason)}"
+            )
+        raise typer.Exit(1)
+
+    console.print(
+        f"[green]✓[/green] {task_dir.name} — runtime supported on {sandbox}"
+    )
+
+
+@tasks_app.command("export")
+def tasks_export(
+    task_dir: Annotated[Path, typer.Argument(help="Path to native task.md directory")],
+    target: Annotated[
+        Literal["harbor", "pier"],
+        typer.Option("--target", help="Export target layout"),
+    ] = "harbor",
+    output: Annotated[
+        Path | None,
+        typer.Option("--output", help="Directory to write exported files"),
+    ] = None,
+) -> None:
+    """Export a native task.md package to Harbor/Pier split layout."""
+    from benchflow.task.export import export_task_package
+
+    output_dir = output or (Path.cwd() / f"{task_dir.name}-export")
+    try:
+        result = export_task_package(task_dir, target=target)
+    except FileNotFoundError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from None
+    except Exception as exc:
+        console.print(f"[red]Export failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    for rel_path, content in result.files.items():
+        dest = output_dir / rel_path
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(content)
+
+    console.print(
+        f"[bold]Export[/bold] {result.target} ({result.mode}) "
+        f"— {len(result.files)} file(s) → {output_dir}"
+    )
+    console.print(
+        f"  Definition: {result.selected_definition} → "
+        f"{result.exported_oracle_dir}, {result.exported_verifier_dir}"
+    )
+    if result.ignored_aliases:
+        console.print(f"  [dim]Ignored aliases:[/dim] {', '.join(result.ignored_aliases)}")
+
+    if result.losses:
+        console.print(f"[yellow]Losses ({len(result.losses)}):[/yellow]")
+        for loss in result.losses:
+            console.print(f"  [yellow]→[/yellow] {loss.concept}: {loss.reason}")
+    else:
+        console.print("[green]No export losses[/green]")
 
 
 @tasks_app.command("migrate")
