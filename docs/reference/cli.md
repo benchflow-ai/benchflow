@@ -184,11 +184,35 @@ bench tasks init my-legacy-task --format legacy
 ### bench tasks check
 
 Validate a task directory (`task.md` or legacy `task.toml` + `instruction.md`,
-Dockerfile, `verifier/` or legacy `tests/`).
+Dockerfile, `verifier/` or legacy `tests/`). With `--sandbox`, also check that
+parsed task fields are supported on the chosen backend (`docker` or `daytona`).
 
 ```bash
 bench tasks check tasks/my-task
+bench tasks check tasks/my-task --sandbox docker
+bench tasks check tasks/my-task --sandbox daytona
 ```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--sandbox` | — | Also validate runtime support on `docker` or `daytona` |
+
+### bench tasks export
+
+Export a native `task.md` package to a Harbor or Pier split layout. Writes
+exported files and `compatibility/export-report.json` under `--output`
+(default: `./<task-name>-export`).
+
+```bash
+bench tasks export tasks/my-task
+bench tasks export tasks/my-task --target pier
+bench tasks export tasks/my-task --target harbor --output /tmp/my-task-harbor
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--target` | `harbor` | Export target layout: `harbor` or `pier` |
+| `--output` | `./<task-name>-export` | Directory to write exported files |
 
 ### bench tasks migrate
 
