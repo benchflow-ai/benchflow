@@ -39,16 +39,19 @@ from benchflow.task.document import (
 )
 from benchflow.task.env import resolve_env_vars
 from benchflow.task.export import (
+    EXPORT_REPORT_REL_PATH,
     ExportLoss,
     ExportMode,
     ExportResult,
     ExportTarget,
     ImportResult,
     NativeComparison,
+    export_report_json,
     export_task_package,
     import_split_task_package,
     materialize_export_result,
     validate_export_round_trip,
+    write_export_report,
 )
 from benchflow.task.package import (
     AliasCollisionStatus,
@@ -66,13 +69,13 @@ from benchflow.task.runtime_capabilities import (
     ensure_task_runtime_support,
     validate_task_runtime_support,
 )
+from benchflow.task.task import Task
 from benchflow.task.user_loop import (
     CompiledUserLoop,
     DocumentSimulatedUser,
     compile_document_user_loop,
     parse_stop_rule_max_rounds,
 )
-from benchflow.task.task import Task
 from benchflow.task.verifier import (
     AddTestsDirError,
     DownloadVerifierDirError,
@@ -163,14 +166,17 @@ __all__ = [
     "resolve_env_vars",
     "render_task_md_from_legacy",
     # Export / import
+    "EXPORT_REPORT_REL_PATH",
     "ExportLoss",
     "ExportMode",
     "ExportResult",
     "ExportTarget",
     "ImportResult",
     "NativeComparison",
+    "export_report_json",
     "export_task_package",
     "import_split_task_package",
     "materialize_export_result",
     "validate_export_round_trip",
+    "write_export_report",
 ]

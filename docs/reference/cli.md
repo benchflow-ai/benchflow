@@ -214,6 +214,28 @@ bench tasks export tasks/my-task --target harbor --output /tmp/my-task-harbor
 | `--target` | `harbor` | Export target layout: `harbor` or `pier` |
 | `--output` | `./<task-name>-export` | Directory to write exported files |
 
+### bench tasks import
+
+Import a Harbor or Pier split-layout package (`task.toml`, `instruction.md`,
+`solution/` or `tests/`). When the directory also contains a native `task.md`,
+the command reports whether the split layout matches that co-located document.
+Use `--native` to validate round-trip parity against a separate native package
+(for example, the source directory used with `bench tasks export`).
+
+```bash
+bench tasks import /tmp/my-task-export
+bench tasks import /tmp/my-task-export --native tasks/my-task
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--native` | — | Native `task.md` directory for export→import round-trip validation |
+
+Round-trip validation checks Harbor-compatible fields: canonical `TaskConfig`,
+normalized instruction text, and content hashes for oracle (`solution/`),
+verifier (`tests/`), and `environment/` trees. Mismatches print as issues and
+exit with code 1.
+
 ### bench tasks migrate
 
 Convert a legacy task directory into the unified `task.md` format.
