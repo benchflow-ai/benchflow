@@ -736,7 +736,13 @@ def tasks_export(
     ] = None,
 ) -> None:
     """Export a native task.md package to Harbor/Pier split layout."""
-    from benchflow.task.export import export_task_package
+    import json
+
+    from benchflow.task.export import (
+        EXPORT_REPORT_REL_PATH,
+        export_report_json,
+        export_task_package,
+    )
 
     output_dir = output or (Path.cwd() / f"{task_dir.name}-export")
     try:
@@ -753,6 +759,13 @@ def tasks_export(
         dest = output_dir / rel_path
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_text(content)
+
+    report_path = output_dir / EXPORT_REPORT_REL_PATH
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(
+        json.dumps(export_report_json(result), indent=2) + "\n",
+        encoding="utf-8",
+    )
 
     console.print(
         f"[bold]Export[/bold] {result.target} ({result.mode}) "

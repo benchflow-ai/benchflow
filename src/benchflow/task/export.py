@@ -267,10 +267,35 @@ def _sha256_text(content: str) -> str:
     return _sha256_bytes(content.encode("utf-8"))
 
 
+def export_report_json(result: ExportResult) -> dict[str, object]:
+    """Serialize an export result to the compatibility export-report schema."""
+    return {
+        "target": result.target,
+        "mode": result.mode,
+        "losses": [
+            {"concept": loss.concept, "reason": loss.reason}
+            for loss in result.losses
+        ],
+        "input_hashes": dict(result.input_hashes),
+        "output_hashes": dict(result.output_hashes),
+        "selected_definition": result.selected_definition,
+        "selected_oracle_dir": result.selected_oracle_dir,
+        "selected_verifier_dir": result.selected_verifier_dir,
+        "exported_oracle_dir": result.exported_oracle_dir,
+        "exported_verifier_dir": result.exported_verifier_dir,
+        "ignored_aliases": list(result.ignored_aliases),
+    }
+
+
+EXPORT_REPORT_REL_PATH = "compatibility/export-report.json"
+
+
 __all__ = [
+    "EXPORT_REPORT_REL_PATH",
     "ExportLoss",
     "ExportMode",
     "ExportResult",
     "ExportTarget",
+    "export_report_json",
     "export_task_package",
 ]
