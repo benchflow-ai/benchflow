@@ -8,17 +8,27 @@ BenchFlow uses two PyPI release channels with the same package name:
   `0.5.1.dev123`. They are created automatically after the `test` workflow
   passes for a push to `main`.
 
+Current release state:
+
+- Public: `0.5.0` / tag `v0.5.0`.
+- `main`: `0.5.1.dev0`, which publishes internal preview builds as
+  `0.5.1.dev<N>` after CI passes.
+
 Regular users install public releases with:
 
 ```bash
 pip install --upgrade benchflow
 ```
 
-For the CLI, install the public tool with:
+For a `uv`-managed CLI install of the current public release:
 
 ```bash
-uv tool install benchflow
+uv tool install --prerelease allow 'benchflow==0.5.0'
 ```
+
+The exact `benchflow==0.5.0` pin keeps `uv` on the public release while
+`--prerelease allow` permits the release-candidate LiteLLM dependency used by
+this package line.
 
 Internal users install the latest preview package with:
 

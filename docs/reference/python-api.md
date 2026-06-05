@@ -4,7 +4,7 @@ The Rollout/Scene API is the primary way to run agent benchmarks programmaticall
 ## Install
 
 ```bash
-uv tool install benchflow
+uv tool install --prerelease allow 'benchflow==0.5.0'
 ```
 
 ## Quick Start
@@ -304,7 +304,7 @@ config = EvaluationConfig(
 
 ---
 
-## v0.4 Types
+## v0.5 Sandbox and Reward Types
 
 ### Sandbox Protocol
 
