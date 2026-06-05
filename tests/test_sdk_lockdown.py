@@ -23,10 +23,12 @@ class TestValidateLockedPath:
 
     @pytest.mark.parametrize(
         "p",
-        [
-            "/solution",
-            "/tests",
-            "/logs/verifier",
+            [
+                "/oracle",
+                "/solution",
+                "/verifier",
+                "/tests",
+                "/logs/verifier",
             "/app-foo",
             "/data",
             "/app-*",
@@ -77,15 +79,15 @@ class TestResolveLockedPaths:
 
     def test_defaults_with_sandbox_user(self):
         result = _resolve_locked_paths("agent", None)
-        assert result == ["/solution", "/tests"]
+        assert result == ["/oracle", "/solution", "/verifier", "/tests"]
 
     def test_union_with_caller_paths(self):
         result = _resolve_locked_paths("agent", ["/data"])
-        assert result == ["/solution", "/tests", "/data"]
+        assert result == ["/oracle", "/solution", "/verifier", "/tests", "/data"]
 
     def test_dedup_preserves_order(self):
         result = _resolve_locked_paths("agent", ["/solution", "/data"])
-        assert result == ["/solution", "/tests", "/data"]
+        assert result == ["/oracle", "/solution", "/verifier", "/tests", "/data"]
 
     def test_explicit_opt_out(self):
         result = _resolve_locked_paths("agent", [])

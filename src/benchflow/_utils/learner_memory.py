@@ -18,6 +18,7 @@ from benchflow.learner_store import LearnerState
 from benchflow.models import RolloutResult
 from benchflow.rewards.memory_scorer import MEMORY_STATE_KEY, MemoryScorer
 from benchflow.task.config import TaskConfig
+from benchflow.task.document import TaskDocument
 from benchflow.trajectories.tree import RolloutNode
 
 logger = logging.getLogger(__name__)
@@ -25,6 +26,9 @@ logger = logging.getLogger(__name__)
 
 def expected_skills_for_task(task_dir: Path) -> list[str] | None:
     """Read the task-authored Memory-space answer key, if any."""
+    task_md = task_dir / "task.md"
+    if task_md.exists():
+        return TaskDocument.from_path(task_md).config.expected_skills
     config_path = task_dir / "task.toml"
     return TaskConfig.model_validate_toml(config_path.read_text()).expected_skills
 

@@ -5,7 +5,15 @@ from pathlib import Path
 
 import pytest
 
-from benchflow._utils.task_authoring import _check_ctrf_path, check_task, init_task
+from benchflow._utils.task_authoring import (
+    _check_ctrf_path,
+    check_task,
+    init_task,
+    migrate_task_to_task_md,
+)
+from benchflow.cli.main import app
+from benchflow.task import TaskConfig, TaskDocument
+from benchflow.task.paths import TaskPaths
 
 
 class TestCheckTask:
@@ -65,7 +73,8 @@ class TestCheckTask:
         shutil.rmtree(task / "tests")
         issues = check_task(task)
         assert (
-            "Missing tests/ directory (verifier needs test.sh or evaluate.py)" in issues
+            "Missing verifier/ directory (or legacy tests/; verifier needs "
+            "test.sh or evaluate.py)" in issues
         )
 
     def test_empty_tests_dir(self, tmp_path):
@@ -120,11 +129,56 @@ class TestCheckTask:
         assert "Missing required directory: environment/" in issues
 
 
+class TestTaskPathAliases:
+    def test_native_dirs_are_preferred_over_legacy_aliases(self, tmp_path):
+        """Guards oracle/verifier as native names with legacy aliases intact."""
+        task = tmp_path / "task"
+        (task / "oracle").mkdir(parents=True)
+        (task / "solution").mkdir()
+        (task / "verifier").mkdir()
+        (task / "tests").mkdir()
+
+        paths = TaskPaths(task)
+
+        assert paths.solution_dir == task / "oracle"
+        assert paths.tests_dir == task / "verifier"
+        assert paths.uses_native_oracle_dir is True
+        assert paths.uses_native_verifier_dir is True
+
+    def test_legacy_dirs_remain_supported(self, tmp_path):
+        """Guards compatibility for existing tests/ and solution/ packages."""
+        task = tmp_path / "task"
+        (task / "solution").mkdir(parents=True)
+        (task / "tests").mkdir()
+
+        paths = TaskPaths(task)
+
+        assert paths.solution_dir == task / "solution"
+        assert paths.tests_dir == task / "tests"
+        assert paths.uses_native_oracle_dir is False
+        assert paths.uses_native_verifier_dir is False
+
+
 class TestInitTask:
     """init_task(name, ...) -> Path"""
 
-    def test_creates_complete_structure(self, tmp_path):
+    def test_default_creates_task_md_structure(self, tmp_path):
+        """Guards commit 67378ddd's task.md default authoring standard."""
         task = init_task("my-task", parent_dir=tmp_path)
+
+        assert task == tmp_path / "my-task"
+        assert (task / "task.md").exists()
+        assert not (task / "task.toml").exists()
+        assert not (task / "instruction.md").exists()
+        assert (task / "environment" / "Dockerfile").exists()
+        assert (task / "verifier" / "test.sh").exists()
+        assert (task / "verifier" / "test_outputs.py").exists()
+        assert (task / "oracle" / "solve.sh").exists()
+        assert not (task / "tests").exists()
+        assert not (task / "solution").exists()
+
+    def test_creates_legacy_structure_when_requested(self, tmp_path):
+        task = init_task("my-task", parent_dir=tmp_path, task_format="legacy")
         assert task == tmp_path / "my-task"
         assert (task / "task.toml").exists()
         assert (task / "instruction.md").exists()
@@ -133,6 +187,69 @@ class TestInitTask:
         assert (task / "tests" / "test_outputs.py").exists()
         assert (task / "solution" / "solve.sh").exists()
 
+    def test_tasks_init_cli_defaults_to_task_md(self, tmp_path):
+        """Guards the CLI default for the task.md standard."""
+        from typer.testing import CliRunner
+
+        result = CliRunner().invoke(
+            app,
+            ["tasks", "init", "cli-default", "--dir", str(tmp_path)],
+        )
+
+        task = tmp_path / "cli-default"
+        assert result.exit_code == 0, result.output
+        assert (task / "task.md").exists()
+        assert (task / "verifier" / "test.sh").exists()
+        assert (task / "oracle" / "solve.sh").exists()
+        assert not (task / "task.toml").exists()
+        assert not (task / "instruction.md").exists()
+
+    def test_creates_task_md_structure(self, tmp_path):
+        """Guards commit 67378ddd's 2026-06-04 task.md scaffold entrypoint."""
+        task = init_task(
+            "my-task-md",
+            parent_dir=tmp_path,
+            task_format="task-md",
+        )
+
+        assert (task / "task.md").exists()
+        assert not (task / "task.toml").exists()
+        assert not (task / "instruction.md").exists()
+        assert (task / "environment" / "Dockerfile").exists()
+        assert (task / "verifier" / "test.sh").exists()
+
+    def test_check_task_accepts_authored_task_md(self, tmp_path):
+        """Guards commit 67378ddd's 2026-06-04 task.md check path."""
+        task = init_task(
+            "authored-task-md",
+            parent_dir=tmp_path,
+            no_pytest=True,
+            no_oracle=True,
+            task_format="task-md",
+        )
+        (task / "task.md").write_text(
+            """---
+version: "1.0"
+metadata:
+  category: capability
+agent:
+  timeout_sec: 300
+verifier:
+  timeout_sec: 120
+environment:
+  cpus: 1
+---
+## prompt
+
+Create hello.txt.
+"""
+        )
+        (task / "verifier" / "test.sh").write_text(
+            '#!/bin/bash\necho "1.0" > /logs/verifier/reward.txt\n'
+        )
+
+        assert check_task(task) == []
+
     def test_scaffold_fails_check_until_placeholders_replaced(self, tmp_path):
         """Freshly scaffolded task must FAIL `bench tasks check` (#360).
 
@@ -140,7 +257,7 @@ class TestInitTask:
         and get a green ✓ on a task that auto-passes with reward 1.0 —
         silent false positives in eval sets.
         """
-        task = init_task("scaffolded", parent_dir=tmp_path)
+        task = init_task("scaffolded", parent_dir=tmp_path, task_format="legacy")
         issues = check_task(task)
         assert issues, "scaffold must not pass check_task before editing"
         # instruction.md, tests/test.sh and solution/solve.sh all carry the
@@ -153,7 +270,7 @@ class TestInitTask:
 
     def test_scaffold_passes_check_after_placeholders_replaced(self, tmp_path):
         """Once the author replaces every [REPLACE: ...] marker, check passes."""
-        task = init_task("editable", parent_dir=tmp_path)
+        task = init_task("editable", parent_dir=tmp_path, task_format="legacy")
         (task / "instruction.md").write_text("# editable\n\nDo the thing.\n")
         (task / "tests" / "test.sh").write_text(
             '#!/bin/bash\necho "1.0" > /logs/verifier/reward.txt\n'
@@ -169,7 +286,7 @@ class TestInitTask:
         Fail-closed default means even if check_task were skipped, the task
         cannot give a passing reward without explicit author edits.
         """
-        task = init_task("fail-closed", parent_dir=tmp_path)
+        task = init_task("fail-closed", parent_dir=tmp_path, task_format="legacy")
         test_sh = (task / "tests" / "test.sh").read_text()
         assert 'echo "0.0"' in test_sh
         assert 'echo "1.0"' not in test_sh
@@ -182,7 +299,7 @@ class TestInitTask:
         We simulate by reading both files and checking that solve.sh exits
         nonzero (it does not produce side effects) while test.sh writes 0.0.
         """
-        task = init_task("collision", parent_dir=tmp_path)
+        task = init_task("collision", parent_dir=tmp_path, task_format="legacy")
         solve = (task / "solution" / "solve.sh").read_text()
         test_sh = (task / "tests" / "test.sh").read_text()
         # Solve.sh must not write a passing reward itself (no echo of 1.0
@@ -196,28 +313,46 @@ class TestInitTask:
 
     def test_scaffold_pytest_template_fails(self, tmp_path):
         """The pytest verifier template fails until edited (#360)."""
-        task = init_task("py-fail", parent_dir=tmp_path)
+        task = init_task("py-fail", parent_dir=tmp_path, task_format="legacy")
         text = (task / "tests" / "test_outputs.py").read_text()
         assert "pytest.fail" in text
         assert "assert True" not in text
 
     def test_no_pytest_skips_test_outputs(self, tmp_path):
-        task = init_task("no-pytest", parent_dir=tmp_path, no_pytest=True)
+        task = init_task(
+            "no-pytest",
+            parent_dir=tmp_path,
+            no_pytest=True,
+            task_format="legacy",
+        )
         assert not (task / "tests" / "test_outputs.py").exists()
         assert (task / "tests" / "test.sh").exists()
 
-    def test_no_solution_skips_solution_dir(self, tmp_path):
-        task = init_task("no-sol", parent_dir=tmp_path, no_solution=True)
+    def test_no_oracle_skips_native_oracle_dir(self, tmp_path):
+        task = init_task(
+            "no-oracle",
+            parent_dir=tmp_path,
+            no_oracle=True,
+        )
+        assert not (task / "oracle").exists()
+
+    def test_no_solution_remains_legacy_compat_alias(self, tmp_path):
+        task = init_task(
+            "no-sol",
+            parent_dir=tmp_path,
+            no_solution=True,
+            task_format="legacy",
+        )
         assert not (task / "solution").exists()
 
     def test_test_sh_is_executable(self, tmp_path):
-        task = init_task("exec-test", parent_dir=tmp_path)
+        task = init_task("exec-test", parent_dir=tmp_path, task_format="legacy")
         import os
 
         assert os.access(task / "tests" / "test.sh", os.X_OK)
 
     def test_solve_sh_is_executable(self, tmp_path):
-        task = init_task("exec-sol", parent_dir=tmp_path)
+        task = init_task("exec-sol", parent_dir=tmp_path, task_format="legacy")
         import os
 
         assert os.access(task / "solution" / "solve.sh", os.X_OK)
@@ -230,6 +365,100 @@ class TestInitTask:
     def test_creates_parent_dirs(self, tmp_path):
         task = init_task("deep", parent_dir=tmp_path / "nested" / "tasks")
         assert task.exists()
+
+
+class TestMigrateTask:
+    """migrate_task_to_task_md(task_dir) -> TaskMigrationResult"""
+
+    def _make_legacy_task(self, tmp_path: Path) -> Path:
+        task = tmp_path / "legacy-task"
+        task.mkdir()
+        (task / "task.toml").write_text(
+            """schema_version = "1.3"
+artifacts = [{ source = "/logs/artifacts", destination = "artifacts" }]
+
+[metadata]
+category = "migration"
+
+[agent]
+timeout_sec = 300
+
+[verifier]
+timeout_sec = 120
+
+[verifier.hardening]
+cleanup_conftests = false
+
+[environment]
+network_mode = "no-network"
+cpus = 2
+memory_mb = 4096
+
+[solution.env]
+MODE = "legacy-oracle"
+"""
+        )
+        (task / "instruction.md").write_text("# Legacy prompt\n\nCreate hello.txt.\n")
+        (task / "environment").mkdir()
+        (task / "environment" / "Dockerfile").write_text("FROM ubuntu:24.04\n")
+        (task / "tests").mkdir()
+        (task / "tests" / "test.sh").write_text("#!/bin/bash\nexit 0\n")
+        return task
+
+    def test_migrate_preserves_config_and_prompt_without_deleting_legacy(
+        self, tmp_path
+    ):
+        """Guards commit 67378ddd's 2026-06-04 task.md migration."""
+        task = self._make_legacy_task(tmp_path)
+        legacy_config = TaskConfig.model_validate_toml(
+            (task / "task.toml").read_text()
+        )
+
+        result = migrate_task_to_task_md(task)
+        document = TaskDocument.from_path(result.task_md)
+
+        assert result.removed_legacy is False
+        assert (task / "task.toml").exists()
+        assert (task / "instruction.md").exists()
+        assert document.config.model_dump() == legacy_config.model_dump()
+        assert document.instruction == "# Legacy prompt\n\nCreate hello.txt."
+        assert document.frontmatter["oracle"]["env"] == {"MODE": "legacy-oracle"}
+        assert "solution" not in document.frontmatter
+        assert check_task(task) == []
+
+    def test_migrate_can_remove_legacy_pair_after_verified_roundtrip(
+        self, tmp_path
+    ):
+        """Guards explicit cleanup when adopting task.md as the canonical file."""
+        task = self._make_legacy_task(tmp_path)
+
+        result = migrate_task_to_task_md(task, remove_legacy=True)
+
+        assert result.removed_legacy is True
+        assert (task / "task.md").exists()
+        assert not (task / "task.toml").exists()
+        assert not (task / "instruction.md").exists()
+        assert check_task(task) == []
+
+    def test_migrate_refuses_to_overwrite_existing_task_md(self, tmp_path):
+        """Guards commit 67378ddd's migration against task.md replacement."""
+        task = self._make_legacy_task(tmp_path)
+        (task / "task.md").write_text("---\n---\n\nExisting document.\n")
+
+        with pytest.raises(FileExistsError):
+            migrate_task_to_task_md(task)
+
+    def test_tasks_migrate_cli_writes_task_md(self, tmp_path):
+        """Guards the CLI adoption path for legacy task authors."""
+        from typer.testing import CliRunner
+
+        task = self._make_legacy_task(tmp_path)
+
+        result = CliRunner().invoke(app, ["tasks", "migrate", str(task)])
+
+        assert result.exit_code == 0, result.output
+        assert (task / "task.md").exists()
+        assert "kept task.toml and instruction.md" in result.output
 
 
 class TestCtrfPathLint:

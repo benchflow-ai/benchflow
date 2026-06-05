@@ -8,6 +8,9 @@ from pathlib import Path
 
 import pytest
 
+from benchflow.task import Task
+from benchflow.task.document import TaskDocument
+from benchflow.task.paths import TaskPaths
 from benchflow.traces.models import GitContext, ParsedTrace, ToolCall, TraceStep
 from benchflow.traces.task_gen import (
     _github_clone_url,
@@ -89,13 +92,18 @@ def no_prompt_trace() -> ParsedTrace:
 
 def _run_generated_verifier(task_dir: Path, work_dir: Path, logs_dir: Path) -> str:
     logs_dir.mkdir(parents=True, exist_ok=True)
-    script = (
-        (task_dir / "tests" / "test.sh")
-        .read_text()
-        .replace("/logs/verifier", str(logs_dir))
+    script = TaskPaths(task_dir).test_path.read_text().replace(
+        "/logs/verifier", str(logs_dir)
     )
     subprocess.run(["bash"], input=script, text=True, cwd=work_dir, check=True)
     return (logs_dir / "reward.txt").read_text().strip()
+
+
+def _instruction_text(task_dir: Path) -> str:
+    task_md = task_dir / "task.md"
+    if task_md.exists():
+        return TaskDocument.from_path(task_md).instruction
+    return (task_dir / "instruction.md").read_text()
 
 
 # ---------------------------------------------------------------------------
@@ -110,34 +118,42 @@ class TestGenerateTask:
         task_dir = generate_task(simple_trace, tmp_path)
 
         assert task_dir.exists()
+        assert (task_dir / "task.md").exists()
+        assert not (task_dir / "task.toml").exists()
+        assert not (task_dir / "instruction.md").exists()
+        assert (task_dir / "environment" / "Dockerfile").exists()
+        assert (task_dir / "verifier" / "test.sh").exists()
+        assert (task_dir / "oracle" / "solve.sh").exists()
+
+    def test_legacy_output_format_creates_split_structure(
+        self, simple_trace: ParsedTrace, tmp_path: Path
+    ) -> None:
+        task_dir = generate_task(simple_trace, tmp_path, output_format="legacy")
+
         assert (task_dir / "task.toml").exists()
         assert (task_dir / "instruction.md").exists()
-        assert (task_dir / "environment" / "Dockerfile").exists()
         assert (task_dir / "tests" / "test.sh").exists()
         assert (task_dir / "solution" / "solve.sh").exists()
+        assert not (task_dir / "task.md").exists()
 
-    def test_task_toml_content(self, simple_trace: ParsedTrace, tmp_path: Path) -> None:
+    def test_task_config_content(self, simple_trace: ParsedTrace, tmp_path: Path) -> None:
         task_dir = generate_task(simple_trace, tmp_path)
-        toml_text = (task_dir / "task.toml").read_text()
+        task = Task(task_dir)
 
-        assert 'version = "1.0"' in toml_text
-        assert "[task]" in toml_text
-        assert 'name = "trace-import/' in toml_text
-        assert "[metadata]" in toml_text
-        assert 'difficulty = "easy"' in toml_text
-        assert '"from-trace"' in toml_text
-        assert 'source_trace_id = "test-trace-001"' in toml_text
-        assert "[agent]" in toml_text
-        assert "[verifier]" in toml_text
-        assert "[environment]" in toml_text
-        assert "build_timeout_sec = 600" in toml_text
-        assert "storage_mb = 10240" in toml_text
+        assert task.config.task.name.startswith("trace-import/")
+        assert task.config.metadata["difficulty"] == "easy"
+        assert "from-trace" in task.config.metadata["tags"]
+        assert task.config.metadata["source_trace_id"] == "test-trace-001"
+        assert task.config.agent.timeout_sec == 300
+        assert task.config.verifier.timeout_sec == 60
+        assert task.config.environment.build_timeout_sec == 600
+        assert task.config.environment.storage_mb == 10240
 
-    def test_instruction_md_content(
+    def test_task_md_prompt_content(
         self, simple_trace: ParsedTrace, tmp_path: Path
     ) -> None:
         task_dir = generate_task(simple_trace, tmp_path)
-        instruction = (task_dir / "instruction.md").read_text()
+        instruction = _instruction_text(task_dir)
 
         assert "Create a hello.txt file" in instruction
 
@@ -145,14 +161,14 @@ class TestGenerateTask:
         self, simple_trace: ParsedTrace, tmp_path: Path
     ) -> None:
         task_dir = generate_task(simple_trace, tmp_path)
-        instruction = (task_dir / "instruction.md").read_text()
+        instruction = _instruction_text(task_dir)
 
         assert "`hello.txt`" in instruction
 
     def test_generates_test_sh(self, simple_trace: ParsedTrace, tmp_path: Path) -> None:
         task_dir = generate_task(simple_trace, tmp_path)
 
-        test_sh = task_dir / "tests" / "test.sh"
+        test_sh = TaskPaths(task_dir).test_path
         assert test_sh.exists()
         content = test_sh.read_text()
         assert "#!/bin/bash" in content
@@ -222,7 +238,7 @@ class TestGenerateTask:
         self, simple_trace: ParsedTrace, tmp_path: Path
     ) -> None:
         task_dir = generate_task(simple_trace, tmp_path)
-        test_sh = task_dir / "tests" / "test.sh"
+        test_sh = TaskPaths(task_dir).test_path
 
         import stat
 
@@ -234,7 +250,7 @@ class TestGenerateTask:
     ) -> None:
         """Guards ENG-93 trace-generated tasks include oracle evidence."""
         task_dir = generate_task(simple_trace, tmp_path)
-        solve_sh = task_dir / "solution" / "solve.sh"
+        solve_sh = TaskPaths(task_dir).solution_dir / "solve.sh"
 
         assert solve_sh.exists()
         content = solve_sh.read_text()
@@ -272,7 +288,7 @@ class TestGenerateTask:
         )
 
         task_dir = generate_task(trace, tmp_path)
-        solve_sh = (task_dir / "solution" / "solve.sh").read_text()
+        solve_sh = (TaskPaths(task_dir).solution_dir / "solve.sh").read_text()
 
         assert "No replayable file writes" in solve_sh
         assert "path.write_bytes" not in solve_sh
@@ -338,7 +354,7 @@ class TestGenerateTask:
             ],
         )
         task_dir = generate_task(trace, tmp_path)
-        test_sh = task_dir / "tests" / "test.sh"
+        test_sh = TaskPaths(task_dir).test_path
         assert test_sh.exists()
         content = test_sh.read_text()
         assert "/logs/verifier/reward.txt" in content
@@ -349,12 +365,10 @@ class TestGenerateTask:
 
     def test_hard_difficulty(self, complex_trace: ParsedTrace, tmp_path: Path) -> None:
         task_dir = generate_task(complex_trace, tmp_path)
-        toml_text = (task_dir / "task.toml").read_text()
+        difficulty = Task(task_dir).config.metadata["difficulty"]
 
         # 25 tool calls + 25 files → weighted score should be hard or expert
-        assert (
-            'difficulty = "hard"' in toml_text or 'difficulty = "expert"' in toml_text
-        )
+        assert difficulty in {"hard", "expert"}
 
     def test_timeout_scales_with_difficulty(
         self, simple_trace: ParsedTrace, complex_trace: ParsedTrace, tmp_path: Path
@@ -363,14 +377,8 @@ class TestGenerateTask:
         easy_dir = generate_task(simple_trace, tmp_path / "easy", timeout_sec=0)
         hard_dir = generate_task(complex_trace, tmp_path / "hard", timeout_sec=0)
 
-        easy_toml = (easy_dir / "task.toml").read_text()
-        hard_toml = (hard_dir / "task.toml").read_text()
-
-        # Extract timeout values
-        import re
-
-        easy_timeout = int(re.search(r"timeout_sec = (\d+)", easy_toml).group(1))
-        hard_timeout = int(re.search(r"timeout_sec = (\d+)", hard_toml).group(1))
+        easy_timeout = Task(easy_dir).config.agent.timeout_sec
+        hard_timeout = Task(hard_dir).config.agent.timeout_sec
         assert hard_timeout > easy_timeout
 
     def test_skip_existing_without_overwrite(
@@ -394,14 +402,14 @@ class TestGenerateTask:
 
         # Overwrite should regenerate
         task_dir = generate_task(simple_trace, tmp_path, overwrite=True)
-        assert (task_dir / "task.toml").exists()
+        assert (task_dir / "task.md").exists()
 
     def test_overwrite_removes_stale_files(
         self, simple_trace: ParsedTrace, tmp_path: Path
     ) -> None:
         """Guards PR #487's fix for #359: overwrite replaces stale artifacts."""
         task_dir = generate_task(simple_trace, tmp_path)
-        (task_dir / "tests" / "stale.sh").write_text("#!/bin/bash\n")
+        (task_dir / "verifier" / "stale.sh").write_text("#!/bin/bash\n")
         stale_asset = task_dir / "assets" / "old.txt"
         stale_asset.parent.mkdir()
         stale_asset.write_text("old")
@@ -409,7 +417,7 @@ class TestGenerateTask:
         regenerated = generate_task(simple_trace, tmp_path, overwrite=True)
 
         assert regenerated == task_dir
-        assert not (task_dir / "tests" / "stale.sh").exists()
+        assert not (task_dir / "verifier" / "stale.sh").exists()
         assert not stale_asset.exists()
 
     def test_unsafe_git_commit_rejected_before_overwrite(
@@ -478,23 +486,23 @@ class TestGenerateTask:
 
     def test_custom_author(self, simple_trace: ParsedTrace, tmp_path: Path) -> None:
         task_dir = generate_task(simple_trace, tmp_path, author="my-team")
-        toml_text = (task_dir / "task.toml").read_text()
 
-        assert 'author_name = "my-team"' in toml_text
+        assert Task(task_dir).config.metadata["author_name"] == "my-team"
 
     def test_category_from_repo(
         self, simple_trace: ParsedTrace, tmp_path: Path
     ) -> None:
         task_dir = generate_task(simple_trace, tmp_path)
-        toml_text = (task_dir / "task.toml").read_text()
 
-        assert 'category = "my-project"' in toml_text
+        assert Task(task_dir).config.metadata["category"] == "my-project"
 
-    def test_model_in_toml(self, simple_trace: ParsedTrace, tmp_path: Path) -> None:
+    def test_model_in_config(self, simple_trace: ParsedTrace, tmp_path: Path) -> None:
         task_dir = generate_task(simple_trace, tmp_path)
-        toml_text = (task_dir / "task.toml").read_text()
 
-        assert "claude-sonnet-4-20250514" in toml_text
+        assert (
+            Task(task_dir).config.metadata["source_model"]
+            == "claude-sonnet-4-20250514"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -677,7 +685,7 @@ class TestVerifierGlobPatterns:
             outcome="success",
         )
         task_dir = generate_task(trace, tmp_path)
-        test_sh = (task_dir / "tests" / "test.sh").read_text()
+        test_sh = TaskPaths(task_dir).test_path.read_text()
         assert "*_create_invoices/up.sql" in test_sh
 
     def test_test_sh_uses_content_verifier_for_static_paths(
@@ -702,7 +710,7 @@ class TestVerifierGlobPatterns:
             outcome="success",
         )
         task_dir = generate_task(trace, tmp_path)
-        test_sh = (task_dir / "tests" / "test.sh").read_text()
+        test_sh = TaskPaths(task_dir).test_path.read_text()
         assert "src/main.py" in test_sh
         assert "Content mismatch" in test_sh
 

@@ -177,14 +177,25 @@ class Verifier:
             except RuntimeError as e:
                 raise VerifierOutputParseError(str(e)) from e
 
+        sandbox_paths = SandboxPaths()
+        uses_native_verifier_dir = (
+            getattr(self._task.paths, "uses_native_verifier_dir", False) is True
+        )
+        verifier_code_dir = (
+            sandbox_paths.verifier_code_dir
+            if uses_native_verifier_dir
+            else sandbox_paths.tests_dir
+        )
         try:
             await self._sandbox.upload_dir(
                 source_dir=self._task.paths.tests_dir,
-                target_dir="/tests",
+                target_dir=str(verifier_code_dir),
                 service=service,
             )
         except Exception as e:
-            raise AddTestsDirError("Failed to add tests directory to sandbox.") from e
+            raise AddTestsDirError(
+                "Failed to add verifier directory to sandbox."
+            ) from e
 
         self._rollout_paths.test_stdout_path.touch()
 
@@ -199,10 +210,9 @@ class Verifier:
                     )
             env = resolve_env_vars(self._task.config.verifier.env)
 
-        sandbox_paths = SandboxPaths()
         test_script_path = shlex.quote(
             str(
-                sandbox_paths.tests_dir
+                verifier_code_dir
                 / self._task.paths.test_path.relative_to(
                     self._task.paths.tests_dir
                 ).as_posix()

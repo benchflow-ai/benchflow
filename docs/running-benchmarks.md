@@ -480,11 +480,16 @@ BenchFlow-native shape; the rollout then runs natively. Two adapters ship:
 
 `benchflow.adapters.inbound.detect_adapter()` sniffs a task directory and
 picks the adapter whose format it matches (`task.toml` is checked first, so a
-directory carrying both is treated as Harbor — the native superset). Each
+directory carrying both is treated as Harbor for inbound compatibility). Each
 adapter is a pure `Path -> InboundTask` translation: it reads a directory and
 returns an in-memory native task, building no sandboxes and running nothing.
 Terminal-Bench tasks are backward-compatible this way — old terminal-style
 tasks keep running on BenchFlow unchanged.
+
+For new BenchFlow-native task authoring, prefer the experimental unified
+`task.md` entrypoint. Its YAML frontmatter carries the same task config surface
+as Harbor-style `task.toml`, while the markdown body carries prompts, roles,
+scenes, and simulated-user context.
 
 ---
 

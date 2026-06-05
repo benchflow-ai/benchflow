@@ -11,6 +11,7 @@ import pytest
 
 from benchflow._utils import benchmark_repos as task_download
 from benchflow._utils.benchmark_repos import task_file_hashes
+from benchflow._utils.source_provenance import source_issues
 from tests.integration import check_results as result_checker
 from tests.integration.check_results import check_agent
 
@@ -626,7 +627,7 @@ def test_check_results_rejects_bad_file_hash_digest(tmp_path: Path) -> None:
     assert any("invalid source.file_hashes" in issue for issue in findings["issues"])
 
 
-def test_check_results_requires_task_toml_source_hash(tmp_path: Path) -> None:
+def test_check_results_requires_task_source_hash(tmp_path: Path) -> None:
     """Guards v0.5-integration@cb8759e against incomplete task hash evidence."""
     bad_source = _source()
     bad_source["file_hashes"] = {"instruction.md": "sha256:" + "0" * 64}
@@ -655,7 +656,22 @@ def test_check_results_requires_task_toml_source_hash(tmp_path: Path) -> None:
     findings = check_agent(agent_dir)
 
     assert findings["ok"] is False
-    assert any("task.toml" in issue for issue in findings["issues"])
+    assert any("task.toml or task.md" in issue for issue in findings["issues"])
+
+
+def test_check_results_accepts_task_md_source_hash() -> None:
+    """Guards commit 67378ddd's 2026-06-04 task.md provenance acceptance."""
+    good_source = _source()
+    good_source["file_hashes"] = {"task.md": "sha256:" + "0" * 64}
+
+    issues = source_issues(
+        good_source,
+        "result.json",
+        require_file_hashes=True,
+        require_clean=True,
+    )
+
+    assert not any("task.toml or task.md" in issue for issue in issues)
 
 
 def test_check_results_recomputes_source_hashes_when_local_path_exists(

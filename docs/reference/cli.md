@@ -177,14 +177,26 @@ Scaffold a new benchmark task.
 ```bash
 bench tasks init my-new-task
 bench tasks init my-new-task --dir tasks/
+bench tasks init my-new-task --no-oracle
+bench tasks init my-legacy-task --format legacy
 ```
 
 ### bench tasks check
 
-Validate a task directory (Dockerfile, instruction.md, tests/).
+Validate a task directory (`task.md` or legacy `task.toml` + `instruction.md`,
+Dockerfile, `verifier/` or legacy `tests/`).
 
 ```bash
 bench tasks check tasks/my-task
+```
+
+### bench tasks migrate
+
+Convert a legacy task directory into the unified `task.md` format.
+
+```bash
+bench tasks migrate tasks/my-task
+bench tasks migrate tasks/my-task --remove-legacy
 ```
 
 ### bench tasks generate
@@ -195,6 +207,7 @@ Generate benchmark task directories from real agent traces.
 bench tasks generate --from-local --project my-repo --limit 5
 bench tasks generate --from-file session.jsonl --dry-run
 bench tasks generate --from-hf opentraces-test --limit 50
+bench tasks generate --from-local --task-format legacy
 ```
 
 | Flag | Default | Description |
@@ -212,6 +225,7 @@ bench tasks generate --from-hf opentraces-test --limit 50
 | `--min-steps` | `2` | Minimum steps per trace |
 | `--outcome` | — | Filter by outcome: success, failure, unknown |
 | `--author` | `benchflow-traces` | Author name for generated task metadata |
+| `--task-format` | `task-md` | Generated task package format: `task-md` or `legacy` |
 | `--dry-run` | `false` | Preview traces without generating tasks |
 
 ### bench tasks list-sources

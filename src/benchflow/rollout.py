@@ -109,9 +109,23 @@ GENERATED_SKILLS_ROOT = "/app/generated-skills"
 
 
 def _task_disallows_internet(task: Any) -> bool:
-    """Return True when task.toml requests no internet for the agent task."""
+    """Return True when task config requests no internet for the agent task."""
     env_config = getattr(getattr(task, "config", None), "environment", None)
     return getattr(env_config, "allow_internet", True) is False
+
+
+def _read_task_instruction(task_path: Path) -> str:
+    """Read the agent-facing instruction from legacy files or ``task.md``."""
+    document_path = task_path / "task.md"
+    if document_path.exists():
+        from benchflow.task.document import TaskDocument
+
+        return TaskDocument.from_path(document_path).instruction.strip()
+
+    instruction_path = task_path / "instruction.md"
+    if instruction_path.exists():
+        return instruction_path.read_text().strip()
+    raise FileNotFoundError(f"Task missing instruction.md or task.md: {task_path}")
 
 
 def _environment_uses_prebuilt_image(
@@ -702,11 +716,8 @@ def _resolve_prompts(
     agent: str | None = None,
     planes: RolloutPlanes | None = None,
 ) -> list[str]:
-    """Read instruction.md and resolve prompt list."""
-    instruction_path = task_path / "instruction.md"
-    if not instruction_path.exists():
-        raise FileNotFoundError(f"Task missing instruction.md: {task_path}")
-    instruction = instruction_path.read_text().strip()
+    """Read the task instruction and resolve prompt list."""
+    instruction = _read_task_instruction(task_path)
 
     if skill_nudge:
         skill_display_path = "~/.claude/skills"
@@ -779,30 +790,65 @@ async def _start_env_and_upload(
         t0 = datetime.now()
         await env.start(force_build=False)
         timing["environment_setup"] = (datetime.now() - t0).total_seconds()
-    if (task_path / "instruction.md").exists():
-        await env.upload_file(task_path / "instruction.md", "/instruction.md")
-    if (task_path / "solution").is_dir():
-        await env.upload_dir(task_path / "solution", "/solution")
+    instruction_path = task_path / "instruction.md"
+    if instruction_path.exists() and not (task_path / "task.md").exists():
+        await env.upload_file(instruction_path, "/instruction.md")
+    else:
+        instruction = _read_task_instruction(task_path)
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as f:
+            f.write(instruction)
+            f.write("\n")
+            temp_instruction = Path(f.name)
+        try:
+            await env.upload_file(temp_instruction, "/instruction.md")
+        finally:
+            temp_instruction.unlink(missing_ok=True)
+    from benchflow.task.paths import SandboxPaths, TaskPaths
+
+    paths = TaskPaths(task_path)
+    if paths.solution_dir.is_dir():
+        sandbox_paths = SandboxPaths()
+        target_dir = (
+            sandbox_paths.oracle_dir
+            if paths.uses_native_oracle_dir
+            else sandbox_paths.solution_dir
+        )
+        await env.upload_dir(paths.solution_dir, str(target_dir))
 
 
 async def _run_oracle(
     env: Any, task_path: Path, timeout: int, sandbox_user: str | None = None
 ) -> tuple[list[dict], str]:
-    """Run oracle mode (solution/solve.sh), return (trajectory, agent_name)."""
+    """Run oracle mode (oracle/solve.sh or legacy solution/solve.sh)."""
     from benchflow.task import Task, resolve_env_vars
+    from benchflow.task.paths import SandboxPaths
 
-    logger.info("Oracle mode: running solution/solve.sh")
-    if not (task_path / "solution" / "solve.sh").exists():
-        raise FileNotFoundError(f"Oracle requires solution/solve.sh: {task_path}")
+    logger.info("Oracle mode: running oracle solve.sh")
+    task = Task(task_path)
+    if not task.paths.solve_path.exists():
+        raise FileNotFoundError(
+            f"Oracle requires oracle/solve.sh or legacy solution/solve.sh: {task_path}"
+        )
+    sandbox_paths = SandboxPaths()
+    oracle_dir = (
+        sandbox_paths.oracle_dir
+        if task.paths.uses_native_oracle_dir
+        else sandbox_paths.solution_dir
+    )
+    oracle_command_label = (
+        "oracle/solve.sh"
+        if task.paths.uses_native_oracle_dir
+        else "solution/solve.sh"
+    )
+    oracle_script = shlex.quote(str(oracle_dir / "solve.sh"))
     if sandbox_user:
-        oracle_cmd = "DEBIAN_FRONTEND=noninteractive bash /solution/solve.sh"
+        oracle_cmd = f"DEBIAN_FRONTEND=noninteractive bash {oracle_script}"
         cmd = (
             f"su -s /bin/bash {shlex.quote(sandbox_user)} -c {shlex.quote(oracle_cmd)}"
         )
     else:
-        cmd = "bash /solution/solve.sh"
+        cmd = f"bash {oracle_script}"
     oracle_env: dict[str, str] = {"DEBIAN_FRONTEND": "noninteractive"}
-    task = Task(task_path)
     if task.config.solution.env:
         oracle_env.update(resolve_env_vars(task.config.solution.env))
     result = await env.exec(
@@ -820,7 +866,7 @@ async def _run_oracle(
     trajectory = [
         {
             "type": "oracle",
-            "command": "solution/solve.sh",
+            "command": oracle_command_label,
             "return_code": result.return_code,
             "stdout": (preview.stdout or "")[:_DIAG_TRUNCATE],
         }
@@ -908,6 +954,24 @@ def _install_docker_compat(planes: RolloutPlanes | None = None) -> None:
     (planes or default_rollout_planes()).install_docker_compat()
 
 
+def _task_document_scenes(
+    task_path: Path,
+    *,
+    prompts: list[str | None] | None,
+    skill_mode: str,
+) -> list[Scene]:
+    """Load scene declarations from ``task.md`` when it is the task entrypoint."""
+    if prompts is not None or skill_mode == SKILL_MODE_SELF_GEN:
+        return []
+    document_path = task_path / "task.md"
+    if not document_path.exists():
+        return []
+
+    from benchflow.task.document import TaskDocument
+
+    return list(TaskDocument.from_path(document_path).scenes)
+
+
 __all__ = [
     "Role",
     "Scene",
@@ -944,14 +1008,13 @@ class RolloutConfig:
     environment_manifest: EnvironmentManifest | None = None
     # Abort the prompt if no tool call arrives for this many seconds.
     # Catches agents that hung silently while the local process is alive
-    # (e.g. gemini-cli not responding). None disables idle detection and
-    # falls back to the agent's wall-clock timeout (task.toml [agent]).
+    # (e.g. gemini-cli not responding). None disables idle detection.
     agent_idle_timeout: int | None = 600
     # Hard wall-clock budget for the agent prompt, in seconds. When set,
-    # overrides the per-task default (``task.toml [agent] timeout_sec``).
+    # overrides the per-task default (task config [agent] timeout_sec).
     # ``None`` keeps the task's own default — this is the seam through which
     # ``Runtime(RuntimeConfig(timeout=...))`` enforces a caller-supplied
-    # budget without editing every task.toml (#378).
+    # budget without editing every task definition (#378).
     timeout: int | None = None
     usage_tracking: UsageTrackingConfig = field(default_factory=UsageTrackingConfig)
 
@@ -989,6 +1052,12 @@ class RolloutConfig:
         self.skill_mode = normalize_skill_mode(self.skill_mode)
         if self.artifact_skill_mode is not None:
             self.artifact_skill_mode = normalize_skill_mode(self.artifact_skill_mode)
+        if not self.scenes:
+            self.scenes = _task_document_scenes(
+                self.task_path,
+                prompts=self.prompts,
+                skill_mode=self.skill_mode,
+            )
         if self.skills_dir is not None and self.skill_mode != SKILL_MODE_WITH_SKILL:
             raise ValueError("skills_dir requires skill_mode='with-skill'")
         if not isinstance(self.jobs_dir, Path):
@@ -1024,10 +1093,17 @@ class RolloutConfig:
     ) -> RolloutConfig:
         """Construct from flat SDK.run()-style args."""
         mode = normalize_skill_mode(skill_mode)
-        scenes = (
-            []
-            if mode == SKILL_MODE_SELF_GEN
-            else [
+        document_scenes = _task_document_scenes(
+            Path(task_path),
+            prompts=prompts,
+            skill_mode=mode,
+        )
+        if mode == SKILL_MODE_SELF_GEN:
+            scenes = []
+        elif document_scenes:
+            scenes = document_scenes
+        else:
+            scenes = [
                 Scene.single(
                     agent=agent,
                     model=model,
@@ -1035,7 +1111,6 @@ class RolloutConfig:
                     prompts=prompts,
                 )
             ]
-        )
         return cls(
             task_path=task_path,
             scenes=scenes,
@@ -1283,7 +1358,7 @@ class Rollout:
             )
         if cfg.oracle_access and cfg.user is None:
             logger.warning(
-                "oracle_access=True without a User — /solution stays visible "
+                "oracle_access=True without a User — oracle files stay visible "
                 "to the agent for the entire trial."
             )
 
@@ -1946,7 +2021,7 @@ class Rollout:
             )
             # Purge agent-injected conftest/sitecustomize/.pth without
             # killing processes or restoring workspace.
-            # Honor per-task [verifier.hardening] opt-outs from task.toml.
+            # Honor per-task [verifier.hardening] opt-outs from task config.
             await self._planes.cleanup_verifier_python_hooks(
                 self._env,
                 getattr(self._task, "task_dir", None),
@@ -2129,6 +2204,7 @@ class Rollout:
                 finally:
                     if cfg.oracle_access:
                         await self._env.exec(
+                            "mv /oracle_backup /oracle 2>/dev/null || true; "
                             "mv /solution_oracle_backup /solution 2>/dev/null || true",
                             user="root",
                             timeout_sec=10,
@@ -2272,9 +2348,11 @@ class Rollout:
             for step in steps:
                 role = scene_step_role(step)
                 role_key = (
+                    step.data.get("scene_index"),
                     role.name,
                     role.agent,
                     role.model,
+                    role.reasoning_effort,
                     role.timeout_sec,
                     role.idle_timeout_sec,
                     tuple(sorted(role.env.items())),
@@ -2330,7 +2408,7 @@ class Rollout:
         solution: str | None = None
         if cfg.oracle_access:
             cat = await self._env.exec(
-                "cat /solution/solve.sh 2>/dev/null || true",
+                "cat /oracle/solve.sh 2>/dev/null || cat /solution/solve.sh 2>/dev/null || true",
                 user="root",
                 timeout_sec=10,
             )
@@ -2339,9 +2417,10 @@ class Rollout:
         await user.setup(instruction, solution)
 
         # Hide oracle files from agent — move rather than delete so the
-        # final verify() can still access /solution if the verifier needs it.
+        # final verify() can still access them if the verifier needs them.
         if cfg.oracle_access:
             await self._env.exec(
+                "mv /oracle /oracle_backup 2>/dev/null || true; "
                 "mv /solution /solution_oracle_backup 2>/dev/null || true",
                 user="root",
                 timeout_sec=10,
@@ -2389,6 +2468,7 @@ class Rollout:
             # access it, then re-hide before the next agent round.
             if cfg.oracle_access:
                 await self._env.exec(
+                    "mv /oracle_backup /oracle 2>/dev/null || true; "
                     "mv /solution_oracle_backup /solution 2>/dev/null || true",
                     user="root",
                     timeout_sec=10,
@@ -2398,6 +2478,7 @@ class Rollout:
             finally:
                 if cfg.oracle_access:
                     await self._env.exec(
+                        "mv /oracle /oracle_backup 2>/dev/null || true; "
                         "mv /solution /solution_oracle_backup 2>/dev/null || true",
                         user="root",
                         timeout_sec=10,

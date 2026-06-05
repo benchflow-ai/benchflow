@@ -6,7 +6,7 @@ import logging
 import os
 from datetime import UTC
 from pathlib import Path
-from typing import Annotated, cast
+from typing import Annotated, Literal, cast
 
 import typer
 from rich.console import Console
@@ -627,24 +627,42 @@ def tasks_init(
     no_pytest: Annotated[
         bool, typer.Option("--no-pytest", help="Skip pytest template")
     ] = False,
-    no_solution: Annotated[
-        bool, typer.Option("--no-solution", help="Skip solution template")
+    no_oracle: Annotated[
+        bool,
+        typer.Option(
+            "--no-oracle",
+            "--no-solution",
+            help="Skip oracle template",
+        ),
     ] = False,
+    task_format: Annotated[
+        str, typer.Option("--format", help="Task format: legacy or task-md")
+    ] = "task-md",
 ) -> None:
     """Scaffold a new benchmark task."""
     from benchflow._utils.task_authoring import init_task
 
     try:
         task_dir = init_task(
-            name, parent_dir=parent_dir, no_pytest=no_pytest, no_solution=no_solution
+            name,
+            parent_dir=parent_dir,
+            no_pytest=no_pytest,
+            no_oracle=no_oracle,
+            task_format=cast(Literal["legacy", "task-md"], task_format),
         )
         console.print(f"[green]Created:[/green] {task_dir}/")
-        console.print(
-            "  task.toml, instruction.md, environment/Dockerfile, tests/test.sh"
-        )
-        if not no_solution:
-            console.print("  solution/solve.sh")
-    except FileExistsError as e:
+        if task_format == "task-md":
+            console.print("  task.md, environment/Dockerfile, verifier/test.sh")
+        else:
+            console.print(
+                "  task.toml, instruction.md, environment/Dockerfile, tests/test.sh"
+            )
+        if not no_oracle:
+            oracle_path = (
+                "solution/solve.sh" if task_format == "legacy" else "oracle/solve.sh"
+            )
+            console.print(f"  {oracle_path}")
+    except (FileExistsError, ValueError) as e:
         console.print(f"[red]{e}[/red]")
         raise typer.Exit(1) from None
 
@@ -668,6 +686,41 @@ def tasks_check(
             # render verbatim instead of being parsed as styling (#379).
             console.print(f"  [yellow]→[/yellow] {escape(issue)}")
         raise typer.Exit(1)
+
+
+@tasks_app.command("migrate")
+def tasks_migrate(
+    task_dir: Annotated[Path, typer.Argument(help="Legacy task directory")],
+    overwrite: Annotated[
+        bool,
+        typer.Option("--overwrite", help="Replace an existing task.md"),
+    ] = False,
+    remove_legacy: Annotated[
+        bool,
+        typer.Option(
+            "--remove-legacy",
+            help="Delete task.toml and instruction.md after task.md is verified",
+        ),
+    ] = False,
+) -> None:
+    """Convert task.toml + instruction.md into the unified task.md format."""
+    from benchflow._utils.task_authoring import migrate_task_to_task_md
+
+    try:
+        result = migrate_task_to_task_md(
+            task_dir,
+            overwrite=overwrite,
+            remove_legacy=remove_legacy,
+        )
+    except (FileExistsError, FileNotFoundError, NotADirectoryError, ValueError) as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+
+    console.print(f"[green]Created:[/green] {result.task_md}")
+    if result.removed_legacy:
+        console.print("  removed task.toml and instruction.md")
+    else:
+        console.print("  kept task.toml and instruction.md")
 
 
 compat_app = typer.Typer(help="Third-party framework compatibility checks.")
@@ -1430,7 +1483,7 @@ app.add_typer(env_app, name="environment")
 def environment_create(
     task_dir: Annotated[
         Path,
-        typer.Argument(help="Task directory with task.toml + environment/Dockerfile"),
+        typer.Argument(help="Task directory with task.md or task.toml + Dockerfile"),
     ],
     sandbox: Annotated[
         str,

@@ -27,6 +27,7 @@ from benchflow.skill_eval import (
     generate_tasks,
     load_eval_dataset,
 )
+from benchflow.task.paths import TaskPaths
 
 
 @pytest.fixture
@@ -122,7 +123,9 @@ class TestDryRunPipeline:
             assert (skill_dst / "SKILL.md").exists()
             assert not (skill_dst / "evals").exists()
 
-            case_data = json.loads((task_dir / "tests" / "case.json").read_text())
+            case_data = json.loads(
+                (TaskPaths(task_dir).tests_dir / "case.json").read_text()
+            )
             assert case_data["expected_skill"] == "code-specialist"
             assert case_data["expected_behavior"]
 
@@ -136,12 +139,11 @@ class TestDryRunPipeline:
 
         for task_dir in tasks:
             # Every generated task must be a valid BenchFlow task
-            assert (task_dir / "task.toml").exists()
-            assert (task_dir / "instruction.md").exists()
+            assert (task_dir / "task.md").exists()
             assert (task_dir / "environment" / "Dockerfile").exists()
-            assert (task_dir / "tests" / "test.sh").exists()
-            assert (task_dir / "tests" / "judge.py").exists()
-            assert (task_dir / "tests" / "case.json").exists()
+            assert (task_dir / "verifier" / "test.sh").exists()
+            assert (task_dir / "verifier" / "judge.py").exists()
+            assert (task_dir / "verifier" / "case.json").exists()
 
             # Dockerfile should be buildable (no syntax errors in FROM/RUN)
             dockerfile = (task_dir / "environment" / "Dockerfile").read_text()
@@ -149,7 +151,7 @@ class TestDryRunPipeline:
             assert "RUN " in dockerfile
 
             # judge.py should be importable Python
-            judge = (task_dir / "tests" / "judge.py").read_text()
+            judge = (TaskPaths(task_dir).tests_dir / "judge.py").read_text()
             assert "def main():" in judge
             assert "reward.txt" in judge
 

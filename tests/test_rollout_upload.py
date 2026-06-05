@@ -67,6 +67,60 @@ async def test_start_env_does_not_upload_task_environment_skills(
 
 
 @pytest.mark.asyncio
+async def test_start_env_uploads_native_oracle_dir(
+    tmp_path: Path,
+) -> None:
+    """Guards commit 67378ddd's task.md standard oracle mount path."""
+    task = tmp_path / "task"
+    (task / "environment").mkdir(parents=True)
+    (task / "oracle").mkdir(parents=True)
+    (task / "task.md").write_text(
+        """---
+version: "1.0"
+---
+## prompt
+
+solve
+"""
+    )
+    (task / "oracle" / "solve.sh").write_text("echo ok\n")
+    env = FakeUploadEnv()
+    timing: dict[str, float] = {}
+
+    await _start_env_and_upload(env, task, timing)
+
+    assert (task / "oracle", "/oracle") in env.uploaded_dirs
+    assert (task / "oracle", "/solution") not in env.uploaded_dirs
+
+
+@pytest.mark.asyncio
+async def test_start_env_uploads_task_md_prompt_as_instruction(
+    tmp_path: Path,
+) -> None:
+    """Guards commit 67378ddd's 2026-06-04 task.md runtime prompt."""
+    task = tmp_path / "task-md"
+    task.mkdir()
+    (task / "task.md").write_text(
+        """---
+version: "1.0"
+---
+## prompt
+
+Solve from the unified document.
+"""
+    )
+    env = FakeUploadEnv()
+    timing: dict[str, float] = {}
+
+    await _start_env_and_upload(env, task, timing)
+
+    assert env.started is True
+    assert env.uploaded_file_contents == [
+        ("Solve from the unified document.\n", "/instruction.md")
+    ]
+
+
+@pytest.mark.asyncio
 async def test_publish_trajectory_for_verifier_uploads_acp_jsonl() -> None:
     """Guards the skill-eval LLM judge dogfood failure from 2026-05-19."""
     env = FakeUploadEnv()

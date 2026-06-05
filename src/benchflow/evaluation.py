@@ -91,6 +91,10 @@ _PRUNE_LOCK = threading.Lock()
 _SENTINEL: Any = object()  # default value for _sdk; tests replace with AsyncMock
 
 
+def _is_task_dir(path: Path) -> bool:
+    return (path / "task.toml").exists() or (path / "task.md").exists()
+
+
 class EmptyTaskSelectionError(ValueError):
     """Raised when task discovery + include/exclude filters resolve to zero tasks.
 
@@ -261,7 +265,7 @@ class EvaluationConfig:
                 f"unknown job_mode {self.job_mode!r} — "
                 f"expected one of {', '.join(JOB_MODES)}"
             )
-        if self.agent not in AGENTS:
+        if self.agent != "oracle" and self.agent not in AGENTS:
             available = ", ".join(sorted(AGENTS.keys()))
             logger.warning(
                 f"Unknown agent {self.agent!r} — not in registry. "
@@ -639,7 +643,7 @@ class Evaluation:
 
     def _get_task_dirs(self) -> list[Path]:
         """Get all valid task directories."""
-        if (self._tasks_dir / "task.toml").exists():
+        if _is_task_dir(self._tasks_dir):
             if self._tasks_dir.name in self._config.exclude_tasks:
                 return []
             if (
@@ -652,7 +656,7 @@ class Evaluation:
             d
             for d in self._tasks_dir.iterdir()
             if d.is_dir()
-            and (d / "task.toml").exists()
+            and _is_task_dir(d)
             and d.name not in self._config.exclude_tasks
             and (not self._config.include_tasks or d.name in self._config.include_tasks)
         )

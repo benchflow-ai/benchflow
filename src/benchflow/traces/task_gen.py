@@ -1,8 +1,8 @@
 """Generate BenchFlow tasks from parsed agent traces.
 
-Converts a :class:`~benchflow.traces.models.ParsedTrace` into a task
-directory containing ``task.toml`` and ``instruction.md``, optionally
-with a ``test.sh`` verifier derived from the trace outcome.
+Converts a :class:`~benchflow.traces.models.ParsedTrace` into a native
+``task.md`` package with ``verifier/`` and ``oracle/`` directories. Pass
+``output_format="legacy"`` for split ``task.toml`` / ``instruction.md`` tasks.
 """
 
 from __future__ import annotations
@@ -16,9 +16,13 @@ import re
 import shlex
 import shutil
 import textwrap
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlparse
+
+import yaml
 
 from benchflow.traces.models import ParsedTrace
 
@@ -58,6 +62,7 @@ _WHOLE_FILE_WRITE_TOOLS = {"Write", "write_to_file"}
 _AMBIGUOUS_EDIT_TOOLS = {"Edit", "MultiEdit", "edit_file"}
 _GITHUB_REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _GIT_COMMIT_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
+TaskOutputFormat = Literal["task-md", "legacy"]
 
 
 @dataclass(frozen=True)
@@ -393,6 +398,22 @@ def _build_task_toml(
     return "\n".join(toml_lines) + "\n"
 
 
+def _build_task_md(toml_content: str, instruction: str) -> str:
+    raw_config = tomllib.loads(toml_content)
+    if "solution" in raw_config and "oracle" not in raw_config:
+        raw_config["oracle"] = raw_config.pop("solution")
+    frontmatter = yaml.safe_dump(raw_config, sort_keys=False)
+    return f"---\n{frontmatter}---\n\n## prompt\n\n{instruction.strip()}\n"
+
+
+def _validate_output_format(output_format: str) -> TaskOutputFormat:
+    if output_format == "task-md":
+        return "task-md"
+    if output_format == "legacy":
+        return "legacy"
+    raise ValueError("output_format must be 'task-md' or 'legacy'")
+
+
 def _build_test_sh(trace: ParsedTrace) -> str:
     """Generate a test.sh verifier from the trace.
 
@@ -685,13 +706,17 @@ def generate_task(
     author: str = "benchflow-traces",
     timeout_sec: int = 300,
     overwrite: bool = False,
+    output_format: TaskOutputFormat = "task-md",
 ) -> Path:
     """Generate a complete BenchFlow task directory from a parsed trace.
 
     Creates:
-        ``<output_dir>/<task-slug>/task.toml``
-        ``<output_dir>/<task-slug>/instruction.md``
-        ``<output_dir>/<task-slug>/test.sh`` (if verifiable)
+        ``<output_dir>/<task-slug>/task.md``
+        ``<output_dir>/<task-slug>/verifier/test.sh``
+        ``<output_dir>/<task-slug>/oracle/solve.sh``
+
+        Pass ``output_format="legacy"`` for the split ``task.toml`` +
+        ``instruction.md`` + ``tests/`` + ``solution/`` layout.
 
     Args:
         trace: Parsed trace to convert.
@@ -699,10 +724,13 @@ def generate_task(
         author: Author name for task.toml metadata.
         timeout_sec: Agent timeout in seconds (0 = auto-scale by difficulty).
         overwrite: If True, overwrite existing task directories.
+        output_format: ``"task-md"`` for native tasks or ``"legacy"`` for
+            split-format compatibility.
 
     Returns:
         Path to the created task directory.
     """
+    output_format = _validate_output_format(output_format)
     output_dir = Path(output_dir)
     task_id = _task_id_from_trace(trace)
     task_dir = output_dir / task_id
@@ -735,27 +763,26 @@ def generate_task(
 
     task_dir.mkdir(parents=True, exist_ok=True)
 
-    (task_dir / "task.toml").write_text(toml_content)
-
-    # Write instruction.md
-    (task_dir / "instruction.md").write_text(instruction)
+    if output_format == "task-md":
+        (task_dir / "task.md").write_text(_build_task_md(toml_content, instruction))
+    else:
+        (task_dir / "task.toml").write_text(toml_content)
+        (task_dir / "instruction.md").write_text(instruction)
 
     # Write environment/Dockerfile
     env_dir = task_dir / "environment"
     env_dir.mkdir(exist_ok=True)
     (env_dir / "Dockerfile").write_text(dockerfile)
 
-    # Write tests/test.sh
-    tests_dir = task_dir / "tests"
-    tests_dir.mkdir(exist_ok=True)
-    test_path = tests_dir / "test.sh"
+    verifier_dir = task_dir / ("verifier" if output_format == "task-md" else "tests")
+    verifier_dir.mkdir(exist_ok=True)
+    test_path = verifier_dir / "test.sh"
     test_path.write_text(test_sh)
     test_path.chmod(0o755)
 
-    # Write solution/solve.sh for deterministic oracle evidence.
-    solution_dir = task_dir / "solution"
-    solution_dir.mkdir(exist_ok=True)
-    solution_path = solution_dir / "solve.sh"
+    oracle_dir = task_dir / ("oracle" if output_format == "task-md" else "solution")
+    oracle_dir.mkdir(exist_ok=True)
+    solution_path = oracle_dir / "solve.sh"
     solution_path.write_text(solution_sh)
     solution_path.chmod(0o755)
 
@@ -779,6 +806,7 @@ def generate_tasks_from_traces(
     overwrite: bool = False,
     min_steps: int = 2,
     outcome_filter: str | None = None,
+    output_format: TaskOutputFormat = "task-md",
 ) -> list[Path]:
     """Batch-generate tasks from multiple traces with filtering.
 
@@ -790,11 +818,14 @@ def generate_tasks_from_traces(
         overwrite: If ``True``, overwrite existing task directories.
         min_steps: Minimum number of steps to include a trace.
         outcome_filter: If set, only include traces with this outcome.
+        output_format: ``"task-md"`` for native tasks or ``"legacy"`` for
+            split-format compatibility.
 
     Returns:
         List of paths to created task directories.
     """
     results: list[Path] = []
+    output_format = _validate_output_format(output_format)
     eligible_traces, skipped = filter_traces_for_generation(
         traces,
         min_steps=min_steps,
@@ -808,6 +839,7 @@ def generate_tasks_from_traces(
             author=author,
             timeout_sec=timeout_sec,
             overwrite=overwrite,
+            output_format=output_format,
         )
         results.append(task_dir)
 

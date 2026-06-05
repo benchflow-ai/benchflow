@@ -118,10 +118,14 @@ from benchflow.scenes import compile_scenes_to_steps
 from benchflow.sdk import SDK
 from benchflow.skills import SkillInfo, discover_skills, install_skill, parse_skill
 from benchflow.task import (
+    TASK_DOCUMENT_FILENAME,
     Task,
     TaskConfig,
+    TaskDocument,
+    TaskDocumentParseError,
     Verifier,
     VerifierResult,
+    render_task_md_from_legacy,
 )
 from benchflow.trajectories.otel import OTelCollector
 from benchflow.trajectories.types import Trajectory
@@ -159,6 +163,10 @@ __all__ = [
     "ExecResult",
     "Task",
     "TaskConfig",
+    "TASK_DOCUMENT_FILENAME",
+    "TaskDocument",
+    "TaskDocumentParseError",
+    "render_task_md_from_legacy",
     "Verifier",
     "VerifierResult",
     # ACP

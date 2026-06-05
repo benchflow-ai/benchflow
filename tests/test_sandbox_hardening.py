@@ -7,6 +7,7 @@ Covers three tiers of reward-forge mitigations:
 """
 
 import json
+import logging
 import shlex
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -152,6 +153,7 @@ class TestHardenSequence:
         assert any(c == "mkdir -p /app" for c in cmds)
         cleanup_cmd = next(c for c in cmds if "conftest.py" in c)
         assert "sitecustomize.py" in cleanup_cmd and ".pth" in cleanup_cmd
+        assert "-not -path '/verifier/*'" in cleanup_cmd
         assert "-not -path '/tests/*'" in cleanup_cmd
         injected = task.config.verifier.env
         assert "--rootdir=/testbed" in injected["PYTEST_ADDOPTS"]
@@ -818,6 +820,39 @@ class TestVerifierEnv:
         )
 
     @pytest.mark.asyncio
+    async def test_pythonless_image_hardening_fallbacks_are_quiet(self, caplog):
+        """Guards commit 67378ddd's 2026-06-04 task.md warning cleanup."""
+        from benchflow.sandbox.lockdown import harden_before_verify
+
+        def side_effect(cmd, **kwargs):
+            text = str(cmd)
+            if text == "printenv PATH":
+                return MagicMock(
+                    stdout="/usr/local/bin:/usr/bin:/bin\n",
+                    stderr="",
+                    exit_code=0,
+                )
+            if "python3 -c" in text:
+                return MagicMock(
+                    stdout="",
+                    stderr="/bin/sh: python3: not found",
+                    exit_code=127,
+                )
+            return MagicMock(stdout="", stderr="", exit_code=0)
+
+        env = _make_env(side_effect=side_effect)
+        task = _make_task()
+
+        caplog.set_level(logging.WARNING)
+        await harden_before_verify(env, task, sandbox_user=None, workspace=None)
+
+        messages = [record.message for record in caplog.records]
+        assert not any("task.toml fallback" in message for message in messages)
+        assert not any(
+            "trusted verifier PATH extras" in message for message in messages
+        )
+
+    @pytest.mark.asyncio
     async def test_distro_pip_env_ubuntu(self):
         """Ubuntu must NOT get PIP_PREFIX (their downstream pip already prefixes)."""
         from benchflow.sandbox.lockdown import _distro_pip_env
@@ -1431,7 +1466,7 @@ class TestVerifierEnv:
 
 
 class TestHardeningOptOuts:
-    """Per-task [verifier.hardening] opt-outs from task.toml."""
+    """Per-task [verifier.hardening] opt-outs from task config."""
 
     def test_defaults_when_no_task_dir(self):
         from benchflow.sandbox.lockdown import (
@@ -1457,6 +1492,51 @@ class TestHardeningOptOuts:
             "[verifier.hardening]\ncleanup_conftests = false\n"
         )
         cfg = _read_hardening_config(tmp_path)
+        assert cfg["cleanup_conftests"] is False
+
+    def test_opt_out_cleanup_conftests_from_task_md(self, tmp_path):
+        """Guards commit 67378ddd's 2026-06-04 task.md hardening config."""
+        from benchflow.sandbox.lockdown import _read_hardening_config
+
+        (tmp_path / "task.md").write_text(
+            """---
+version: "1.0"
+verifier:
+  hardening:
+    cleanup_conftests: false
+---
+## prompt
+
+Solve it.
+"""
+        )
+
+        cfg = _read_hardening_config(tmp_path)
+
+        assert cfg["cleanup_conftests"] is False
+
+    def test_task_md_hardening_wins_when_legacy_pair_present(self, tmp_path):
+        """Guards commit 67378ddd's 2026-06-04 task.md mixed-format drift."""
+        from benchflow.sandbox.lockdown import _read_hardening_config
+
+        (tmp_path / "task.toml").write_text(
+            "[verifier.hardening]\ncleanup_conftests = true\n"
+        )
+        (tmp_path / "task.md").write_text(
+            """---
+version: "1.0"
+verifier:
+  hardening:
+    cleanup_conftests: false
+---
+## prompt
+
+Use task.md as the canonical task entrypoint.
+"""
+        )
+
+        cfg = _read_hardening_config(tmp_path)
+
         assert cfg["cleanup_conftests"] is False
 
     def test_unknown_key_logged_not_applied(self, tmp_path, caplog):

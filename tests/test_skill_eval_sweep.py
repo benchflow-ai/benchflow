@@ -24,6 +24,8 @@ from benchflow.skill_eval import (
     generate_tasks,
     load_eval_dataset,
 )
+from benchflow.task import Task
+from benchflow.task.paths import TaskPaths
 
 
 def _make_skill(
@@ -61,7 +63,7 @@ def _make_skill(
 class TestCaseEnvironmentOverrides:
     """Guards PR #485 / #392: cases[].environment reaches generated artifacts."""
 
-    def test_case_environment_lands_in_task_toml(self, tmp_path):
+    def test_case_environment_lands_in_task_config(self, tmp_path):
         skill = _make_skill(
             tmp_path,
             cases=[
@@ -78,14 +80,8 @@ class TestCaseEnvironmentOverrides:
         ds = load_eval_dataset(skill)
         task = generate_tasks(ds, tmp_path / "out", with_skill=False)[0]
 
-        toml_text = (task / "task.toml").read_text()
-        assert "CASE_ONLY" in toml_text
-        assert "expected-value" in toml_text
-        assert "ANOTHER" in toml_text
-
-        parsed = tomllib.loads(toml_text)
         # The override must be exposed as sandbox env so the runner forwards it.
-        env_block = parsed["environment"]["env"]
+        env_block = Task(task).config.environment.env
         assert env_block == {"CASE_ONLY": "expected-value", "ANOTHER": "x y"}
 
     def test_case_environment_lands_in_case_json(self, tmp_path):
@@ -102,16 +98,15 @@ class TestCaseEnvironmentOverrides:
         ds = load_eval_dataset(skill)
         task = generate_tasks(ds, tmp_path / "out", with_skill=False)[0]
 
-        case_data = json.loads((task / "tests" / "case.json").read_text())
+        case_data = json.loads((TaskPaths(task).tests_dir / "case.json").read_text())
         assert case_data["environment"] == {"CASE_ONLY": "expected-value"}
 
     def test_no_environment_block_when_case_has_none(self, tmp_path):
         skill = _make_skill(tmp_path)
         ds = load_eval_dataset(skill)
         task = generate_tasks(ds, tmp_path / "out", with_skill=False)[0]
-        parsed = tomllib.loads((task / "task.toml").read_text())
         # No spurious [environment.env] section when there's nothing to forward.
-        assert "env" not in parsed["environment"]
+        assert Task(task).config.environment.env == {}
 
 
 # ---------------------------------------------------------------------------
@@ -144,7 +139,12 @@ class TestTomlEscape:
         )
 
         ds = load_eval_dataset(skill)
-        task = generate_tasks(ds, tmp_path / "out", with_skill=False)[0]
+        task = generate_tasks(
+            ds,
+            tmp_path / "out",
+            with_skill=False,
+            output_format="legacy",
+        )[0]
         text = (task / "task.toml").read_text()
 
         # Must parse cleanly — no duplicate-section TOMLDecodeError.
@@ -167,12 +167,12 @@ class TestJudgeResultCopy:
         skill = _make_skill(tmp_path)
         ds = load_eval_dataset(skill)
         task = generate_tasks(ds, tmp_path / "out", with_skill=False)[0]
-        test_sh = (task / "tests" / "test.sh").read_text()
+        test_sh = TaskPaths(task).test_path.read_text()
 
         # The collector reads /logs/verifier/judge_result.json (see
-        # SkillEvaluator._run_job); the judge writes /tests/judge_result.json.
+        # SkillEvaluator._run_job); the judge writes judge_result beside itself.
         # Without an explicit copy step the rubric details are silently lost.
-        assert "/tests/judge_result.json" in test_sh
+        assert "$VERIFIER_DIR/judge_result.json" in test_sh
         assert "/logs/verifier/judge_result.json" in test_sh
 
 
@@ -468,5 +468,4 @@ class TestGenerateTasksDefenseInDepth:
             ],
         )
         task = generate_tasks(ds, tmp_path / "out", with_skill=False)[0]
-        parsed = tomllib.loads((task / "task.toml").read_text())
-        assert parsed["environment"]["env"] == {"FOO": "bar"}
+        assert Task(task).config.environment.env == {"FOO": "bar"}

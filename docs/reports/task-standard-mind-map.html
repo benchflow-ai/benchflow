@@ -1,0 +1,765 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BenchFlow Task Standard Mind Map</title>
+  <style>
+    :root {
+      --bg: #ffffff;
+      --ink: #222222;
+      --muted: #666666;
+      --line: #cccccc;
+      --panel: #f7f7f7;
+      --node: #ffffff;
+      --root: #222222;
+      --task: #2b6f6b;
+      --verifier: #2f6690;
+      --runtime: #8a650f;
+      --adapter: #5d6470;
+      --risk: #9a403a;
+      --evidence: #4f7a3a;
+      --font: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      --node-w: 168px;
+      --node-h: 72px;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      padding: 14px;
+      font: 13px/1.35 var(--font);
+      color: var(--ink);
+      background: var(--bg);
+    }
+
+    main {
+      max-width: 1280px;
+      margin: 0 auto;
+    }
+
+    h1 {
+      margin: 0 0 6px;
+      font-size: 22px;
+      line-height: 1.15;
+    }
+
+    p {
+      margin: 0 0 8px;
+      max-width: 900px;
+    }
+
+    code {
+      font-family: var(--mono);
+      background: #f0f0f0;
+      padding: 1px 4px;
+      border-radius: 3px;
+    }
+
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      align-items: center;
+      margin: 10px 0;
+      padding: 8px;
+      border: 1px solid var(--line);
+      background: var(--panel);
+    }
+
+    button,
+    select {
+      font: inherit;
+      border: 1px solid #999999;
+      background: #ffffff;
+      color: var(--ink);
+      padding: 4px 8px;
+      min-height: 28px;
+      cursor: pointer;
+    }
+
+    button:focus-visible,
+    select:focus-visible,
+    [contenteditable="true"]:focus-visible {
+      outline: 3px solid #b8d7ff;
+      outline-offset: 1px;
+    }
+
+    #submit {
+      background: #222222;
+      color: #ffffff;
+      border-color: #222222;
+      margin-left: auto;
+    }
+
+    .canvas-wrap {
+      position: relative;
+      overflow: auto;
+      border: 1px solid var(--line);
+      min-height: 520px;
+      background: #ffffff;
+    }
+
+    #canvas {
+      position: relative;
+      min-width: 920px;
+      min-height: 620px;
+    }
+
+    #edges {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+    }
+
+    .node {
+      position: absolute;
+      width: var(--node-w);
+      height: var(--node-h);
+      padding: 5px;
+      border: 2px solid var(--node-color);
+      background: var(--node);
+      user-select: none;
+      touch-action: none;
+    }
+
+    .node.selected {
+      outline: 3px solid #b8d7ff;
+      outline-offset: 2px;
+    }
+
+    .node-title {
+      font-size: 12px;
+      font-weight: 700;
+      line-height: 1.15;
+      min-height: 14px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .node-detail {
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: 10px;
+      line-height: 1.15;
+      height: 23px;
+      overflow: hidden;
+    }
+
+    .node-actions {
+      display: flex;
+      gap: 4px;
+      margin-top: 3px;
+    }
+
+    .node-actions button {
+      min-height: 18px;
+      padding: 1px 5px;
+      font-size: 10px;
+    }
+
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px 12px;
+      margin: 8px 0;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .legend span {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .swatch {
+      width: 12px;
+      height: 12px;
+      border: 1px solid #777777;
+      background: var(--swatch);
+    }
+
+    .export {
+      margin-top: 12px;
+    }
+
+    .export h2 {
+      margin: 0 0 6px;
+      font-size: 16px;
+    }
+
+    textarea {
+      width: 100%;
+      min-height: 180px;
+      padding: 8px;
+      border: 1px solid var(--line);
+      font: 12px/1.4 var(--mono);
+      resize: vertical;
+    }
+
+    footer {
+      margin-top: 14px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    @media (max-width: 760px) {
+      body {
+        padding: 14px;
+      }
+
+      #submit {
+        margin-left: 0;
+      }
+
+      .canvas-wrap {
+        min-height: 500px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>BenchFlow Task Standard Mind Map</h1>
+    <p>
+      This is a real <code>html-mind-map</code> artifact: nodes are draggable,
+      addable, editable, connected, exportable, and submittable. It uses plain
+      HTML and plain CSS so the map stays readable.
+    </p>
+
+    <div class="toolbar">
+      <button type="button" id="addRoot">Add root branch</button>
+      <button type="button" id="autoLayout">Auto layout</button>
+      <button type="button" id="reset">Reset</button>
+      <label>
+        Export
+        <select id="exportFormat">
+          <option value="outline">Outline</option>
+          <option value="json">JSON</option>
+        </select>
+      </label>
+      <button type="button" id="updateExport">Update export preview</button>
+      <button type="button" id="submit">Submit to Claude</button>
+    </div>
+
+    <div class="legend" id="legend" aria-label="Node color legend"></div>
+
+    <section class="canvas-wrap" aria-label="Editable mind map canvas">
+      <div id="canvas">
+        <svg id="edges" aria-hidden="true"></svg>
+      </div>
+    </section>
+
+    <section class="export">
+      <h2>Export preview</h2>
+      <p>
+        Submit sends the JSON tree using the standard
+        <code>html-mind-map</code> envelope. If server submit is unavailable,
+        the JSON is copied for paste-back.
+      </p>
+      <textarea id="exportText" readonly spellcheck="false"></textarea>
+    </section>
+
+    <footer>
+      Last updated 2026-06-05. Source: BenchFlow task standard and dogfood
+      report.
+    </footer>
+  </main>
+
+  <script>
+    window.__CLAUDE_SUBMIT_URL__ = 'http://127.0.0.1:63048/';
+  </script>
+  <script>
+(function () {
+  async function submitToClaude(payload, opts) {
+    opts = opts || {};
+    const json = JSON.stringify(payload, null, 2);
+    const url = opts.url || window.__CLAUDE_SUBMIT_URL__;
+    if (url) {
+      try {
+        const r = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: json,
+        });
+        if (r.ok) {
+          notify(opts, opts.serverMessage || 'Submitted to Claude.');
+          return 'server';
+        }
+      } catch (e) {
+      }
+    }
+    return copyToClipboard(json, {
+      ...opts,
+      message: opts.clipboardMessage || 'Copied to clipboard. Paste it back into Claude.',
+      returnTag: 'clipboard',
+    });
+  }
+
+  async function copyToClipboard(text, opts) {
+    opts = opts || {};
+    const msg = opts.message || 'Copied to clipboard.';
+    try {
+      await navigator.clipboard.writeText(text);
+      notify(opts, msg);
+      return opts.returnTag || 'copied';
+    } catch (e) {
+    }
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    Object.assign(ta.style, {
+      position: 'fixed',
+      top: '0',
+      left: '0',
+      width: '1px',
+      height: '1px',
+      opacity: '0',
+    });
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    let ok = false;
+    try {
+      ok = document.execCommand('copy');
+    } catch (e) {
+    }
+    ta.remove();
+    if (ok) {
+      notify(opts, msg);
+      return opts.returnTag || 'copied';
+    }
+    showInlineFallback(text);
+    return 'manual';
+  }
+
+  function notify(opts, msg) {
+    if (typeof opts.onResult === 'function') {
+      opts.onResult(msg);
+      return;
+    }
+    const el = document.createElement('div');
+    el.textContent = msg;
+    el.setAttribute('role', 'status');
+    Object.assign(el.style, {
+      position: 'fixed',
+      bottom: '14px',
+      left: '50%',
+      transform: 'translateX(-50%)',
+      background: '#222',
+      color: '#fff',
+      padding: '9px 12px',
+      zIndex: '9999',
+      font: '14px system-ui',
+    });
+    document.body.appendChild(el);
+    setTimeout(() => el.remove(), 3200);
+  }
+
+  function showInlineFallback(json) {
+    const wrap = document.createElement('div');
+    Object.assign(wrap.style, {
+      position: 'fixed',
+      left: '16px',
+      right: '16px',
+      bottom: '16px',
+      background: '#222',
+      color: '#fff',
+      padding: '12px',
+      zIndex: '9999',
+    });
+    const msg = document.createElement('p');
+    msg.textContent = 'Auto-copy failed. Select the JSON below, copy it, and paste it back into Claude.';
+    const ta = document.createElement('textarea');
+    ta.value = json;
+    ta.readOnly = true;
+    Object.assign(ta.style, {
+      width: '100%',
+      minHeight: '90px',
+      color: '#111',
+      background: '#fff',
+      font: '12px ui-monospace, monospace',
+    });
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.textContent = 'Dismiss';
+    close.addEventListener('click', () => wrap.remove());
+    wrap.append(msg, ta, close);
+    document.body.appendChild(wrap);
+    ta.focus();
+    ta.select();
+  }
+
+  window.submitToClaude = submitToClaude;
+  window.copyToClipboard = copyToClipboard;
+})();
+  </script>
+  <script>
+    const colors = {
+      root: '#222222',
+      task: '#2b6f6b',
+      verifier: '#2f6690',
+      runtime: '#8a650f',
+      adapter: '#5d6470',
+      risk: '#9a403a',
+      evidence: '#4f7a3a',
+    };
+
+    const colorLabels = {
+      root: 'Core',
+      task: 'Task authoring',
+      verifier: 'Verifier',
+      runtime: 'Runtime',
+      adapter: 'Compatibility',
+      risk: 'Gap',
+      evidence: 'Evidence',
+    };
+
+    const startingNodes = [
+      node('root', null, 'BenchFlow Task Standard', 'Task asks, verifier judges, oracle proves, runtime decides.', 'root'),
+      node('task-md', 'root', 'task.md', 'Native authoring entrypoint: config, prompt, roles, scenes, user intent.', 'task'),
+      node('benchflow-ns', 'task-md', 'benchflow:', 'Draft semantics stay under one namespace instead of root-key creep.', 'task'),
+      node('verifier', 'root', 'verifier/', 'Peer evaluator package: verifier.md, rubric, Reward Kit, judges, test.sh.', 'verifier'),
+      node('reward', 'verifier', 'Reward contract', 'reward.json authoritative; reward.txt scalar compatibility; preserve multi-metric maps.', 'verifier'),
+      node('judge', 'verifier', 'Agent-as-judge', 'Verifier-scoped assessor, not a solver scene.', 'verifier'),
+      node('oracle', 'root', 'oracle/', 'Held-out reference behavior and solvability proof.', 'evidence'),
+      node('runtime', 'root', 'TaskRuntimeView', 'Selected executable interpretation for a specific backend.', 'runtime'),
+      node('thin', 'runtime', 'Thin spot: validation', 'bench tasks check validates shape but ignores verifier package semantics today.', 'risk'),
+      node('next', 'runtime', 'Next slice', 'Implement TaskRuntimeView plus VerifierDocument before adding more syntax.', 'risk'),
+      node('compat', 'root', 'Compatibility', 'Harbor/Pier split layout remains import/export target.', 'adapter'),
+      node('aliases', 'compat', 'Aliases', 'solution -> oracle, tests -> verifier, task.toml plus instruction.md -> task.md.', 'adapter'),
+      node('dogfood', 'root', 'Dogfood tasks', 'Four real BenchFlow wanted features packaged with the standard.', 'evidence'),
+      node('cap-gate', 'dogfood', 'runtime-capability-gate', 'Fail closed for parsed unsupported sandbox semantics.', 'runtime'),
+      node('verifier-contract', 'dogfood', 'verifier-package-reward-contract', 'VerifierDocument, rich reward JSON, reward-details.', 'verifier'),
+      node('export-loss', 'dogfood', 'compat-export-loss-reports', 'Native-to-Harbor/Pier export with explicit loss reports.', 'adapter'),
+      node('prompt-user', 'dogfood', 'prompt-user-semantics', 'Append/replace prompt composition plus user/nudge runtime semantics.', 'task'),
+    ];
+
+    let nodes = startingNodes.map((item) => ({ ...item }));
+    let selectedId = 'root';
+    let dragging = null;
+    const NODE_W = 168;
+    const NODE_H = 72;
+    const COL_GAP = 74;
+    const ROW_GAP = 14;
+    const START_X = 18;
+    const START_Y = 18;
+
+    const canvas = document.getElementById('canvas');
+    const edges = document.getElementById('edges');
+    const exportText = document.getElementById('exportText');
+
+    function node(id, parent, title, detail, color) {
+      return { id, parent, title, detail, color, x: 0, y: 0, manual: false };
+    }
+
+    function getNode(id) {
+      return nodes.find((item) => item.id === id);
+    }
+
+    function childrenOf(id) {
+      return nodes.filter((item) => item.parent === id);
+    }
+
+    function layout() {
+      const subtreeRows = new Map();
+
+      function countRows(id) {
+        const kids = childrenOf(id);
+        if (!kids.length) {
+          subtreeRows.set(id, 1);
+          return 1;
+        }
+        const total = kids.reduce((sum, child) => sum + countRows(child.id), 0);
+        subtreeRows.set(id, Math.max(1, total));
+        return subtreeRows.get(id);
+      }
+
+      countRows('root');
+
+      let maxLevel = 0;
+      function place(id, level, topRow) {
+        const item = getNode(id);
+        if (!item) return;
+        maxLevel = Math.max(maxLevel, level);
+        const rowCount = subtreeRows.get(id) || 1;
+        if (!item.manual) {
+          const rowMid = id === 'root' ? 0 : topRow + (rowCount - 1) / 2;
+          item.x = START_X + level * (NODE_W + COL_GAP);
+          item.y = START_Y + rowMid * (NODE_H + ROW_GAP);
+        }
+
+        let cursor = topRow;
+        childrenOf(id).forEach((child) => {
+          place(child.id, level + 1, cursor);
+          cursor += subtreeRows.get(child.id) || 1;
+        });
+      }
+
+      place('root', 0, 0);
+
+      const totalRows = subtreeRows.get('root') || 1;
+      canvas.style.minWidth = `${Math.max(820, START_X * 2 + (maxLevel + 1) * NODE_W + maxLevel * COL_GAP)}px`;
+      canvas.style.minHeight = `${Math.max(560, START_Y * 2 + totalRows * NODE_H + Math.max(0, totalRows - 1) * ROW_GAP)}px`;
+    }
+
+    function render() {
+      layout();
+      Array.from(canvas.querySelectorAll('.node')).forEach((el) => el.remove());
+      renderEdges();
+      nodes.forEach(renderNode);
+      updateExport();
+    }
+
+    function renderEdges() {
+      while (edges.firstChild) edges.removeChild(edges.firstChild);
+      const width = canvas.scrollWidth || canvas.clientWidth;
+      const height = canvas.scrollHeight || canvas.clientHeight;
+      edges.setAttribute('viewBox', `0 0 ${width} ${height}`);
+      nodes.forEach((item) => {
+        if (!item.parent) return;
+        const parent = getNode(item.parent);
+        if (!parent) return;
+        const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        const startX = parent.x + NODE_W;
+        const startY = parent.y + NODE_H / 2;
+        const endX = item.x;
+        const endY = item.y + NODE_H / 2;
+        const midX = (startX + endX) / 2;
+        path.setAttribute('d', `M ${startX} ${startY} C ${midX} ${startY}, ${midX} ${endY}, ${endX} ${endY}`);
+        path.setAttribute('fill', 'none');
+        path.setAttribute('stroke', colors[item.color] || '#777');
+        path.setAttribute('stroke-width', '2');
+        edges.appendChild(path);
+      });
+    }
+
+    function renderNode(item) {
+      const article = document.createElement('article');
+      article.className = 'node';
+      if (item.id === selectedId) article.classList.add('selected');
+      article.dataset.id = item.id;
+      article.style.left = `${item.x}px`;
+      article.style.top = `${item.y}px`;
+      article.style.setProperty('--node-color', colors[item.color] || '#777');
+      article.tabIndex = 0;
+
+      const title = document.createElement('div');
+      title.className = 'node-title';
+      title.contentEditable = 'true';
+      title.spellcheck = false;
+      title.textContent = item.title;
+      title.addEventListener('input', () => {
+        item.title = title.textContent.trim() || 'Untitled';
+        updateExport();
+      });
+
+      const detail = document.createElement('div');
+      detail.className = 'node-detail';
+      detail.contentEditable = 'true';
+      detail.spellcheck = false;
+      detail.textContent = item.detail;
+      detail.addEventListener('input', () => {
+        item.detail = detail.textContent.trim();
+        updateExport();
+      });
+
+      const actions = document.createElement('div');
+      actions.className = 'node-actions';
+      const add = document.createElement('button');
+      add.type = 'button';
+      add.textContent = '+ child';
+      add.addEventListener('click', (event) => {
+        event.stopPropagation();
+        addChild(item.id);
+      });
+      actions.appendChild(add);
+
+      if (item.id !== 'root') {
+        const del = document.createElement('button');
+        del.type = 'button';
+        del.textContent = 'delete';
+        del.addEventListener('click', (event) => {
+          event.stopPropagation();
+          deleteBranch(item.id);
+        });
+        actions.appendChild(del);
+      }
+
+      article.append(title, detail, actions);
+      article.addEventListener('click', () => {
+        selectedId = item.id;
+        render();
+      });
+      article.addEventListener('pointerdown', startDrag);
+      canvas.appendChild(article);
+    }
+
+    function startDrag(event) {
+      if (event.target.isContentEditable || event.target.tagName === 'BUTTON') return;
+      const item = getNode(event.currentTarget.dataset.id);
+      if (!item) return;
+      selectedId = item.id;
+      const rect = canvas.getBoundingClientRect();
+      dragging = {
+        id: item.id,
+        dx: event.clientX - rect.left + canvas.scrollLeft - item.x,
+        dy: event.clientY - rect.top + canvas.scrollTop - item.y,
+      };
+      document.addEventListener('pointermove', drag);
+      document.addEventListener('pointerup', stopDrag, { once: true });
+    }
+
+    function drag(event) {
+      if (!dragging) return;
+      const item = getNode(dragging.id);
+      if (!item) return;
+      const rect = canvas.getBoundingClientRect();
+      item.x = Math.max(10, event.clientX - rect.left + canvas.scrollLeft - dragging.dx);
+      item.y = Math.max(10, event.clientY - rect.top + canvas.scrollTop - dragging.dy);
+      item.manual = true;
+      render();
+    }
+
+    function stopDrag() {
+      dragging = null;
+      document.removeEventListener('pointermove', drag);
+    }
+
+    function addChild(parentId) {
+      const parent = getNode(parentId);
+      if (!parent) return;
+      const child = node(`node-${Date.now()}`, parentId, 'New idea', 'Edit this node.', parent.color === 'root' ? 'task' : parent.color);
+      nodes.push(child);
+      selectedId = child.id;
+      render();
+    }
+
+    function addRootBranch() {
+      addChild('root');
+    }
+
+    function deleteBranch(id) {
+      const remove = new Set([id]);
+      let changed = true;
+      while (changed) {
+        changed = false;
+        nodes.forEach((item) => {
+          if (item.parent && remove.has(item.parent) && !remove.has(item.id)) {
+            remove.add(item.id);
+            changed = true;
+          }
+        });
+      }
+      nodes = nodes.filter((item) => !remove.has(item.id));
+      selectedId = 'root';
+      render();
+    }
+
+    function autoLayout() {
+      nodes.forEach((item) => {
+        item.manual = false;
+      });
+      render();
+    }
+
+    function reset() {
+      nodes = startingNodes.map((item) => ({ ...item }));
+      selectedId = 'root';
+      render();
+    }
+
+    function toTree(id) {
+      const item = getNode(id);
+      if (!item) return null;
+      return {
+        id: item.id,
+        title: item.title,
+        detail: item.detail,
+        color: item.color,
+        position: { x: Math.round(item.x), y: Math.round(item.y) },
+        children: childrenOf(id).map((child) => toTree(child.id)).filter(Boolean),
+      };
+    }
+
+    function outline(id, depth) {
+      const item = getNode(id);
+      if (!item) return '';
+      const line = `${'  '.repeat(depth)}- ${item.title}${item.detail ? `: ${item.detail}` : ''}`;
+      const childLines = childrenOf(id).map((child) => outline(child.id, depth + 1));
+      return [line, ...childLines].join('\n');
+    }
+
+    function collectState() {
+      return {
+        root: toTree('root'),
+        nodes: nodes.map((item) => ({
+          id: item.id,
+          parent: item.parent,
+          title: item.title,
+          detail: item.detail,
+          color: item.color,
+          x: Math.round(item.x),
+          y: Math.round(item.y),
+        })),
+        nextImplementationSlice: [
+          'TaskRuntimeView',
+          'runtime_capabilities.py',
+          'VerifierDocument',
+          'reward.json precedence',
+          'export loss reports',
+        ],
+      };
+    }
+
+    function updateExport() {
+      if (document.getElementById('exportFormat').value === 'json') {
+        exportText.value = JSON.stringify(collectState(), null, 2);
+      } else {
+        exportText.value = outline('root', 0);
+      }
+    }
+
+    async function submitMap() {
+      updateExport();
+      await submitToClaude({
+        skill: 'html-mind-map',
+        kind: 'mind-map-tree',
+        data: collectState(),
+        version: 1,
+      });
+    }
+
+    function buildLegend() {
+      const legend = document.getElementById('legend');
+      Object.keys(colorLabels).forEach((key) => {
+        const item = document.createElement('span');
+        const swatch = document.createElement('span');
+        swatch.className = 'swatch';
+        swatch.style.setProperty('--swatch', colors[key]);
+        const label = document.createElement('span');
+        label.textContent = colorLabels[key];
+        item.append(swatch, label);
+        legend.appendChild(item);
+      });
+    }
+
+    document.getElementById('addRoot').addEventListener('click', addRootBranch);
+    document.getElementById('autoLayout').addEventListener('click', autoLayout);
+    document.getElementById('reset').addEventListener('click', reset);
+    document.getElementById('updateExport').addEventListener('click', updateExport);
+    document.getElementById('exportFormat').addEventListener('change', updateExport);
+    document.getElementById('submit').addEventListener('click', submitMap);
+
+    buildLegend();
+    render();
+  </script>
+</body>
+</html>

@@ -7,10 +7,10 @@ The mental model for benchflow. Read once, then refer back from the how-tos.
 
 | Primitive | What it is |
 |-----------|------------|
-| **Task** | A directory on disk: `instruction.md` for the agent + `tests/` for the verifier + (optional) `solution/solve.sh` for oracle runs + `environment/Dockerfile` for the sandbox. Authored once, evaluated many times. |
+| **Task** | A directory on disk: `task.md` for config, prompt, roles, scenes, and simulated-user notes + `verifier/` for scoring + optional `oracle/solve.sh` for oracle runs + `environment/Dockerfile` for the sandbox. Legacy `instruction.md`, `task.toml`, `tests/`, and `solution/` tasks still load. Authored once, evaluated many times. |
 | **Agent** | A registered ACP-speaking program (Claude Code, Gemini CLI, OpenCode, etc.). Identified by name (`"gemini"`, `"opencode"`) plus an optional model ID. Use the `acpx/` prefix (e.g. `acpx/gemini`) to route through [ACPX](https://acpx.sh/), a headless ACP client with persistent sessions and crash recovery. |
 | **Environment** | The sandbox where the agent runs and the verifier checks the result. Docker locally, Daytona for cloud, Modal for serverless/GPU. Abstracted behind the `Sandbox` protocol — bring your own sandbox backend. |
-| **Verifier** | The test runner that scores the rollout. By default `pytest /tests/...` against the workspace the agent left behind. For subjective tasks, use an [LLM-as-judge](./llm-judge.md) verifier with a `rubric.toml`. Outputs `rewards: {reward: float}`. |
+| **Verifier** | The test runner that scores the rollout. Native tasks mount `verifier/` at `/verifier/`; legacy tasks mount `tests/` at `/tests/`. For subjective tasks, use an [LLM-as-judge](./llm-judge.md) verifier with a `rubric.toml`. Outputs `rewards: {reward: float}`. |
 | **Rollout** | One agent run on one task. Holds the lifecycle (setup → start → install → execute → verify → cleanup). All higher-level primitives below are built on Rollouts. |
 
 ---
@@ -102,7 +102,7 @@ Use `BaseUser` when the loop logic is rule-based (compress instruction → show 
 
 ## Verifier, sandbox, hardening
 
-Once the agent stops, the verifier runs. By default that's `pytest -c /dev/null --confcutdir=/tests --rootdir=/app -p no:cacheprovider /tests/test.sh` (or whatever the task's `tests/test.sh` does), against the workspace the agent left behind.
+Once the agent stops, the verifier runs against the workspace the agent left behind. Native tasks run `/verifier/test.sh` from the mounted `verifier/` directory; legacy tasks run `/tests/test.sh` from `tests/`.
 
 Between agent and verifier, benchflow **hardens** the sandbox to prevent the agent from gaming the score:
 - Kill any lingering agent processes
@@ -151,7 +151,7 @@ Trajectories are written to `<evaluations_dir>/<evaluation_name>/<rollout_name>/
 ## Where to go next
 
 - [Getting started](./getting-started.md) — install, run your first eval.
-- [Task authoring](./task-authoring.md) — write a task with `task.toml` + `tests/` + `solution/`.
+- [Task authoring](./task-authoring.md) — write a `task.md` task with `verifier/` and optional `oracle/`.
 - [LLM-as-judge](./llm-judge.md) — use an LLM to score subjective tasks with `rubric.toml`.
 - [Progressive disclosure](./progressive-disclosure.md) — the User abstraction; SWE-bench Pro case study.
 - [Use cases](./use-cases.md) — multi-agent patterns (coder/reviewer, simulated user, BYOS, stateful environments).

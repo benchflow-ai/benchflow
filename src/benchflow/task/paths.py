@@ -18,20 +18,28 @@ class TaskPaths:
     ::
 
         task_dir/
-        ├── instruction.md
-        ├── task.toml
+        ├── task.md              # native unified format, or:
+        ├── instruction.md        # legacy split format
+        ├── task.toml             # legacy split format
         ├── environment/
         │   ├── Dockerfile
         │   └── ...
-        ├── solution/
+        ├── oracle/              # native reference/oracle files, or:
+        ├── solution/            # legacy oracle files
         │   ├── solve.sh
         │   └── ...
-        └── tests/
+        └── verifier/            # native verifier files, or:
+        └── tests/               # legacy verifier files
             ├── test.sh
             └── ...
     """
 
     CONFIG_FILENAME = "task.toml"
+    DOCUMENT_FILENAME = "task.md"
+    NATIVE_ORACLE_DIRNAME = "oracle"
+    LEGACY_SOLUTION_DIRNAME = "solution"
+    NATIVE_VERIFIER_DIRNAME = "verifier"
+    LEGACY_TESTS_DIRNAME = "tests"
 
     def __init__(self, task_dir: Path | str) -> None:
         self.task_dir = Path(task_dir).resolve()
@@ -39,6 +47,10 @@ class TaskPaths:
     @property
     def instruction_path(self) -> Path:
         return self.task_dir / "instruction.md"
+
+    @property
+    def task_document_path(self) -> Path:
+        return self.task_dir / self.DOCUMENT_FILENAME
 
     @property
     def readme_path(self) -> Path:
@@ -57,26 +69,57 @@ class TaskPaths:
         return self.task_dir / "environment"
 
     @property
+    def oracle_dir(self) -> Path:
+        return self.task_dir / self.NATIVE_ORACLE_DIRNAME
+
+    @property
+    def legacy_solution_dir(self) -> Path:
+        return self.task_dir / self.LEGACY_SOLUTION_DIRNAME
+
+    @property
     def solution_dir(self) -> Path:
-        return self.task_dir / "solution"
+        if self.oracle_dir.exists():
+            return self.oracle_dir
+        return self.legacy_solution_dir
+
+    @property
+    def uses_native_oracle_dir(self) -> bool:
+        return self.oracle_dir.exists()
 
     @property
     def solve_path(self) -> Path:
         return self.solution_dir / "solve.sh"
 
     @property
+    def verifier_source_dir(self) -> Path:
+        return self.task_dir / self.NATIVE_VERIFIER_DIRNAME
+
+    @property
+    def legacy_tests_dir(self) -> Path:
+        return self.task_dir / self.LEGACY_TESTS_DIRNAME
+
+    @property
     def tests_dir(self) -> Path:
-        return self.task_dir / "tests"
+        if self.verifier_source_dir.exists():
+            return self.verifier_source_dir
+        return self.legacy_tests_dir
+
+    @property
+    def uses_native_verifier_dir(self) -> bool:
+        return self.verifier_source_dir.exists()
 
     @property
     def test_path(self) -> Path:
         return self.tests_dir / "test.sh"
 
     def is_valid(self, disable_verification: bool = False) -> bool:
+        has_legacy_definition = (
+            self.config_path.exists() and self.instruction_path.exists()
+        )
+        has_document_definition = self.task_document_path.exists()
         return (
-            self.config_path.exists()
+            (has_legacy_definition or has_document_definition)
             and self.environment_dir.exists()
-            and self.instruction_path.exists()
             and (disable_verification or self.test_path.exists())
         )
 
@@ -165,7 +208,9 @@ class SandboxPaths:
     agent_dir: PurePosixPath = logs_dir / "agent"
     verifier_dir: PurePosixPath = logs_dir / "verifier"
     artifacts_dir: PurePosixPath = logs_dir / "artifacts"
+    verifier_code_dir: PurePosixPath = PurePosixPath("/verifier")  # noqa: RUF009
     tests_dir: PurePosixPath = PurePosixPath("/tests")  # noqa: RUF009
+    oracle_dir: PurePosixPath = PurePosixPath("/oracle")  # noqa: RUF009
     solution_dir: PurePosixPath = PurePosixPath("/solution")  # noqa: RUF009
     reward_text_path: PurePosixPath = verifier_dir / "reward.txt"
     reward_json_path: PurePosixPath = verifier_dir / "reward.json"

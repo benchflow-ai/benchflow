@@ -1,0 +1,680 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BenchFlow Task Standard Explainer</title>
+  <style>
+    :root {
+      --bg: #f6f8f3;
+      --paper: #ffffff;
+      --ink: #1f2a2e;
+      --muted: #5f6d70;
+      --line: #d8dfd7;
+      --teal: #0f766e;
+      --teal-soft: #dff3ef;
+      --blue: #2f6fa3;
+      --blue-soft: #e4eff7;
+      --gold: #ad7b13;
+      --gold-soft: #fff2cc;
+      --red: #b4473f;
+      --red-soft: #f9e2df;
+      --green: #3b7b45;
+      --green-soft: #e3f2dd;
+      --code: #152026;
+      --shadow: 0 12px 30px rgba(31, 42, 46, 0.08);
+      --radius: 8px;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      --sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --serif: Georgia, "Times New Roman", serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: var(--sans);
+      line-height: 1.55;
+    }
+
+    a { color: var(--teal); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+    code, pre { font-family: var(--mono); }
+
+    .shell {
+      display: grid;
+      grid-template-columns: 260px minmax(0, 1fr);
+      min-height: 100vh;
+    }
+
+    nav {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      padding: 28px 22px;
+      border-right: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.78);
+      backdrop-filter: blur(10px);
+      overflow: auto;
+    }
+
+    nav .eyebrow {
+      margin: 0 0 10px;
+      color: var(--gold);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    nav h2 {
+      margin: 0 0 22px;
+      font-family: var(--serif);
+      font-size: 24px;
+      line-height: 1.05;
+      font-weight: 700;
+    }
+
+    nav a {
+      display: block;
+      padding: 9px 10px;
+      margin: 3px 0;
+      border-radius: 6px;
+      color: var(--ink);
+      text-decoration: none;
+      font-size: 14px;
+    }
+
+    nav a:hover,
+    nav a:focus-visible {
+      outline: none;
+      background: var(--teal-soft);
+      color: #063b37;
+    }
+
+    main {
+      padding: 44px clamp(22px, 5vw, 72px) 80px;
+      max-width: 1180px;
+    }
+
+    header {
+      margin-bottom: 34px;
+      border-bottom: 1px solid var(--line);
+      padding-bottom: 28px;
+    }
+
+    h1 {
+      max-width: 900px;
+      margin: 0;
+      font-family: var(--serif);
+      font-size: clamp(34px, 5vw, 64px);
+      line-height: 1.02;
+      letter-spacing: 0;
+    }
+
+    .lead {
+      max-width: 780px;
+      margin: 20px 0 0;
+      color: var(--muted);
+      font-size: 19px;
+    }
+
+    .badges {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 22px;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      min-height: 30px;
+      padding: 5px 10px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: var(--paper);
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    section {
+      margin: 44px 0;
+    }
+
+    h2 {
+      margin: 0 0 14px;
+      font-family: var(--serif);
+      font-size: 32px;
+      line-height: 1.1;
+    }
+
+    h3 {
+      margin: 0 0 10px;
+      font-size: 18px;
+      line-height: 1.25;
+    }
+
+    p { margin: 0 0 14px; }
+
+    .grid {
+      display: grid;
+      gap: 16px;
+    }
+
+    .two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .four { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+
+    .panel {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--paper);
+      box-shadow: var(--shadow);
+      padding: 18px;
+    }
+
+    .panel strong { color: var(--ink); }
+
+    .note {
+      border-left: 4px solid var(--teal);
+      background: var(--teal-soft);
+      padding: 14px 16px;
+      border-radius: 0 var(--radius) var(--radius) 0;
+      color: #153f3b;
+    }
+
+    .warning {
+      border-left-color: var(--gold);
+      background: var(--gold-soft);
+      color: #563900;
+    }
+
+    .risk {
+      border-left-color: var(--red);
+      background: var(--red-soft);
+      color: #57201c;
+    }
+
+    .pill-title {
+      display: inline-block;
+      margin-bottom: 12px;
+      padding: 3px 9px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      background: var(--blue-soft);
+      color: #17486d;
+    }
+
+    .architecture {
+      width: 100%;
+      min-height: 470px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--paper);
+      box-shadow: var(--shadow);
+    }
+
+    .svg-label {
+      font: 600 14px var(--sans);
+      color: var(--ink);
+      line-height: 1.25;
+      padding: 10px;
+    }
+
+    .svg-label small {
+      display: block;
+      margin-top: 4px;
+      color: var(--muted);
+      font-weight: 500;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      overflow: hidden;
+      background: var(--paper);
+      box-shadow: var(--shadow);
+    }
+
+    th,
+    td {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+      font-size: 14px;
+    }
+
+    th {
+      background: #eef3ed;
+      color: #263336;
+      font-size: 12px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    tr:last-child td { border-bottom: 0; }
+
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      white-space: nowrap;
+      font-weight: 700;
+    }
+
+    .dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: var(--green);
+    }
+
+    .dot.partial { background: var(--gold); }
+
+    pre {
+      overflow: auto;
+      margin: 0;
+      border-radius: var(--radius);
+      padding: 16px;
+      background: var(--code);
+      color: #e8f1ef;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .callout-list {
+      display: grid;
+      gap: 12px;
+      margin: 16px 0 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .callout-list li {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--paper);
+      padding: 14px;
+    }
+
+    .source-list li {
+      margin: 8px 0;
+    }
+
+    footer {
+      margin-top: 60px;
+      padding-top: 24px;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    @media (max-width: 900px) {
+      .shell { grid-template-columns: 1fr; }
+      nav {
+        position: relative;
+        height: auto;
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+      }
+      nav a { display: inline-block; }
+      main { padding-top: 30px; }
+      .two, .three, .four { grid-template-columns: 1fr; }
+      .architecture { min-height: 620px; }
+    }
+
+    @media print {
+      body { background: white; }
+      .shell { display: block; }
+      nav { display: none; }
+      main { max-width: none; padding: 0; }
+      .panel, table, .architecture { box-shadow: none; break-inside: avoid; }
+      a { color: black; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <nav aria-label="Report sections">
+      <p class="eyebrow">BenchFlow</p>
+      <h2>Task Standard Explainer</h2>
+      <a href="#tl-dr">TL;DR</a>
+      <a href="#mental-model">Mental Model</a>
+      <a href="#architecture">Package Architecture</a>
+      <a href="#dogfood">Dogfood Tasks</a>
+      <a href="#what-it-proved">What It Proved</a>
+      <a href="#thin-spots">Thin Spots</a>
+      <a href="#next">Next Slice</a>
+      <a href="#sources">Sources</a>
+    </nav>
+
+    <main>
+      <header>
+        <h1>Understanding the BenchFlow task standard after dogfooding it</h1>
+        <p class="lead">
+          The new standard is best understood as a package contract: the task
+          asks, the verifier judges, the oracle proves solvability, and the
+          runtime view decides what can safely execute on a chosen backend.
+        </p>
+        <div class="badges" aria-label="Key outcomes">
+          <span class="badge">4 real BenchFlow feature tasks</span>
+          <span class="badge">All task.md files parse</span>
+          <span class="badge">All pass structural check</span>
+          <span class="badge">Verifier package is the next gap</span>
+        </div>
+      </header>
+
+      <section id="tl-dr">
+        <h2>TL;DR</h2>
+        <div class="grid three">
+          <div class="panel">
+            <span class="pill-title">What changed</span>
+            <h3>`task.md` is not the whole product</h3>
+            <p>
+              It is the native authoring entrypoint. The product surface is the
+              full package: `task.md`, `verifier/`, `oracle/`, environment, and
+              evidence.
+            </p>
+          </div>
+          <div class="panel">
+            <span class="pill-title">Big insight</span>
+            <h3>`verifier/` is a peer package</h3>
+            <p>
+              `verifier/test.sh` remains the minimum script path, but
+              `verifier/verifier.md` should own rubrics, Reward Kit criteria,
+              judge agents, reward details, hidden inputs, and calibration.
+            </p>
+          </div>
+          <div class="panel">
+            <span class="pill-title">Next work</span>
+            <h3>Build the runtime view first</h3>
+            <p>
+              `TaskRuntimeView` and `VerifierDocument` are the next slice.
+              Without them, today’s checker validates shape but ignores the
+              verifier package semantics.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section id="mental-model">
+        <h2>Mental Model</h2>
+        <p>
+          The old way to think about task packages was “instruction plus tests.”
+          That breaks down for Harbor forks, Pier/DeepSWE, FrontierSWE,
+          AgentBeats-style assessors, Reward Kit, and ORS-style reward streams.
+          The standard that survived dogfooding is more like this:
+        </p>
+        <div class="grid two">
+          <div class="note">
+            <strong>Task asks.</strong> The root package describes what the
+            solver sees: config, prompt, roles, scenes, user loop intent, and
+            compatibility metadata.
+          </div>
+          <div class="note warning">
+            <strong>Verifier judges.</strong> The verifier package describes
+            hidden inputs, rubrics, reward strategies, judge agents, output
+            contracts, and anti-cheat/calibration evidence.
+          </div>
+        </div>
+      </section>
+
+      <section id="architecture">
+        <h2>Package Architecture</h2>
+        <svg class="architecture" viewBox="0 0 1040 500" role="img" aria-labelledby="arch-title arch-desc">
+          <title id="arch-title">BenchFlow task package architecture</title>
+          <desc id="arch-desc">Diagram showing authoring, runtime, verifier, oracle, evidence, and adapter planes.</desc>
+
+          <defs>
+            <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L0,6 L9,3 z" fill="#5f6d70"></path>
+            </marker>
+          </defs>
+
+          <rect x="30" y="32" width="260" height="118" rx="8" fill="#dff3ef" stroke="#0f766e"></rect>
+          <foreignObject x="44" y="46" width="232" height="90">
+            <div xmlns="http://www.w3.org/1999/xhtml" class="svg-label">
+              Authoring document
+              <small>`task.md`: config, prompt, roles, scenes, user intent</small>
+            </div>
+          </foreignObject>
+
+          <rect x="30" y="190" width="260" height="118" rx="8" fill="#e4eff7" stroke="#2f6fa3"></rect>
+          <foreignObject x="44" y="204" width="232" height="90">
+            <div xmlns="http://www.w3.org/1999/xhtml" class="svg-label">
+              Verifier package
+              <small>`verifier/verifier.md`, rubric, Reward Kit, judge roles, `test.sh`</small>
+            </div>
+          </foreignObject>
+
+          <rect x="30" y="348" width="260" height="96" rx="8" fill="#fff2cc" stroke="#ad7b13"></rect>
+          <foreignObject x="44" y="362" width="232" height="68">
+            <div xmlns="http://www.w3.org/1999/xhtml" class="svg-label">
+              Oracle package
+              <small>Reference behavior, solvability proof, oracle-only env</small>
+            </div>
+          </foreignObject>
+
+          <rect x="390" y="82" width="270" height="150" rx="8" fill="#ffffff" stroke="#5f6d70" stroke-width="1.5"></rect>
+          <foreignObject x="404" y="100" width="242" height="112">
+            <div xmlns="http://www.w3.org/1999/xhtml" class="svg-label">
+              TaskRuntimeView
+              <small>Selected executable interpretation for a sandbox: paths, prompts, capabilities, source hashes</small>
+            </div>
+          </foreignObject>
+
+          <rect x="390" y="282" width="270" height="118" rx="8" fill="#f9e2df" stroke="#b4473f"></rect>
+          <foreignObject x="404" y="298" width="242" height="84">
+            <div xmlns="http://www.w3.org/1999/xhtml" class="svg-label">
+              Capability gate
+              <small>Reject parsed-but-unsupported fields before launch</small>
+            </div>
+          </foreignObject>
+
+          <rect x="750" y="52" width="240" height="118" rx="8" fill="#e3f2dd" stroke="#3b7b45"></rect>
+          <foreignObject x="764" y="68" width="212" height="84">
+            <div xmlns="http://www.w3.org/1999/xhtml" class="svg-label">
+              Rollout runtime
+              <small>Agent, sandbox, interaction loop, verifier execution</small>
+            </div>
+          </foreignObject>
+
+          <rect x="750" y="218" width="240" height="96" rx="8" fill="#ffffff" stroke="#5f6d70"></rect>
+          <foreignObject x="764" y="232" width="212" height="68">
+            <div xmlns="http://www.w3.org/1999/xhtml" class="svg-label">
+              Evidence output
+              <small>Rewards, details, trajectories, artifacts, calibration</small>
+            </div>
+          </foreignObject>
+
+          <rect x="750" y="362" width="240" height="96" rx="8" fill="#eef3ed" stroke="#5f6d70"></rect>
+          <foreignObject x="764" y="376" width="212" height="68">
+            <div xmlns="http://www.w3.org/1999/xhtml" class="svg-label">
+              Adapter exports
+              <small>Harbor/Pier, SWE-bench, Terminal-Bench, ORS, AgentBeats</small>
+            </div>
+          </foreignObject>
+
+          <path d="M290 92 C340 92 342 128 390 140" fill="none" stroke="#5f6d70" stroke-width="2" marker-end="url(#arrow)"></path>
+          <path d="M290 250 C345 250 345 190 390 170" fill="none" stroke="#5f6d70" stroke-width="2" marker-end="url(#arrow)"></path>
+          <path d="M290 396 C345 396 346 356 390 340" fill="none" stroke="#5f6d70" stroke-width="2" marker-end="url(#arrow)"></path>
+          <path d="M525 232 L525 282" fill="none" stroke="#b4473f" stroke-width="2" marker-end="url(#arrow)"></path>
+          <path d="M660 150 C710 150 708 112 750 108" fill="none" stroke="#5f6d70" stroke-width="2" marker-end="url(#arrow)"></path>
+          <path d="M660 340 C710 340 710 276 750 266" fill="none" stroke="#5f6d70" stroke-width="2" marker-end="url(#arrow)"></path>
+          <path d="M870 314 L870 362" fill="none" stroke="#5f6d70" stroke-width="2" marker-end="url(#arrow)"></path>
+        </svg>
+      </section>
+
+      <section id="dogfood">
+        <h2>Dogfood Tasks</h2>
+        <p>
+          Four real BenchFlow feature tasks were packaged using the standard.
+          Each one has `task.md`, `verifier/verifier.md`, `verifier/test.sh`,
+          a rubric, `oracle/solve.md`, and an environment Dockerfile.
+        </p>
+        <table>
+          <thead>
+            <tr>
+              <th>Task Package</th>
+              <th>Feature It Represents</th>
+              <th>What It Exercises</th>
+              <th>Current Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><a href="../examples/task-standard/benchflow-wanted-features/runtime-capability-gate/task.md">runtime-capability-gate</a></td>
+              <td>`TaskPackage` / `TaskRuntimeView` and fail-closed capability checks</td>
+              <td>Runtime view, alias drift, sandbox-aware validation, multi-scene implementation workflow</td>
+              <td><span class="status"><span class="dot"></span> parses + structural check passes</span></td>
+            </tr>
+            <tr>
+              <td><a href="../examples/task-standard/benchflow-wanted-features/verifier-package-reward-contract/task.md">verifier-package-reward-contract</a></td>
+              <td>`VerifierDocument`, Reward Kit, agent judge, rich rewards</td>
+              <td>`verifier/verifier.md`, rubric, strategies, `reward.json`, `reward-details.json`</td>
+              <td><span class="status"><span class="dot"></span> parses + structural check passes</span></td>
+            </tr>
+            <tr>
+              <td><a href="../examples/task-standard/benchflow-wanted-features/compat-export-loss-reports/task.md">compat-export-loss-reports</a></td>
+              <td>Harbor/Pier split export and degraded export reports</td>
+              <td>Compatibility maps, selected file hashes, foreign extension preservation</td>
+              <td><span class="status"><span class="dot"></span> parses + structural check passes</span></td>
+            </tr>
+            <tr>
+              <td><a href="../examples/task-standard/benchflow-wanted-features/prompt-user-semantics/task.md">prompt-user-semantics</a></td>
+              <td>Prompt composition and document-declared user/nudge loops</td>
+              <td>`benchflow.prompt`, `user`, `## user-persona`, private facts, nudge policy</td>
+              <td><span class="status"><span class="dot"></span> parses + structural check passes</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="what-it-proved">
+        <h2>What It Proved</h2>
+        <div class="grid two">
+          <div class="panel">
+            <h3>The naming held up</h3>
+            <p>
+              `solution -> oracle` and `tests -> verifier` made the packages
+              easier to reason about. Oracle reads as reference behavior;
+              verifier reads as the whole judgment contract.
+            </p>
+          </div>
+          <div class="panel">
+            <h3>`benchflow:` is doing useful containment</h3>
+            <p>
+              Draft semantics like nudges, verifier package metadata, reward
+              strategy, and compatibility losses did not need to become root
+              task keys.
+            </p>
+          </div>
+          <div class="panel">
+            <h3>Real tasks need verifier intent</h3>
+            <p>
+              Bare `test.sh` is not enough for features involving Reward Kit,
+              rich reward details, judge agents, export losses, or calibration
+              evidence.
+            </p>
+          </div>
+          <div class="panel">
+            <h3>Structural validity is not runtime validity</h3>
+            <p>
+              All four packages pass today’s `bench tasks check`, even though
+              their verifier package semantics are future-facing. That is the
+              useful discomfort.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section id="thin-spots">
+        <h2>Thin Spots</h2>
+        <ul class="callout-list">
+          <li>
+            <strong>`VerifierDocument` is missing.</strong> Current code parses
+            root `task.md`, but it does not parse or enforce
+            `verifier/verifier.md`.
+          </li>
+          <li>
+            <strong>Capability checks need a second validation level.</strong>
+            Structural validation passes too much by design. We need
+            sandbox-aware validation for parsed-but-unsupported semantics.
+          </li>
+          <li>
+            <strong>Future acceptance scripts need a status convention.</strong>
+            The dogfood verifier scripts represent desired acceptance tests,
+            not currently runnable task verification.
+          </li>
+          <li>
+            <strong>Compatibility exports need a typed loss report.</strong>
+            The standard can describe losses, but the implementation should
+            emit a concrete JSON artifact.
+          </li>
+        </ul>
+      </section>
+
+      <section id="next">
+        <h2>Next Slice</h2>
+        <div class="note risk">
+          <strong>Implement `TaskRuntimeView` and `VerifierDocument` before
+          expanding more syntax.</strong> The dogfood pass shows the standard is
+          expressive enough; the risk now is parsing attractive metadata that
+          the runtime silently ignores.
+        </div>
+        <div class="grid two" style="margin-top:16px;">
+          <div>
+            <h3>Implementation order</h3>
+            <pre><code>1. TaskRuntimeView / TaskPackage
+2. runtime_capabilities.py
+3. VerifierDocument
+4. reward.json + reward-details preservation
+5. Harbor/Pier export loss reports
+6. prompt/user runtime compilation</code></pre>
+          </div>
+          <div>
+            <h3>Validation levels to add</h3>
+            <pre><code>structural
+  task.md parses and directory shape is valid
+
+runtime-capability
+  selected sandbox can honor declared semantics
+
+acceptance
+  verifier/test.sh passes for this feature task
+
+publication-grade
+  calibration, anti-cheat, flake, evidence complete</code></pre>
+          </div>
+        </div>
+      </section>
+
+      <section id="sources">
+        <h2>Sources</h2>
+        <ul class="source-list">
+          <li><a href="./2026-06-05-task-standard-benchflow-dogfood.md">Task Standard Dogfood Report</a></li>
+          <li><a href="./2026-06-05-harbor-forks-task-standard-research.md">Harbor Forks And Task Standard Research</a></li>
+          <li><a href="../task-standard.md">BenchFlow Task Package Standard</a></li>
+          <li><a href="../examples/task-standard/benchflow-wanted-features/README.md">BenchFlow Wanted Feature Dogfood Tasks</a></li>
+          <li><a href="../examples/task-standard/real-task-drafts.md">Real Task Standard Drafts</a></li>
+          <li><code>src/benchflow/task/document.py</code> and <code>tests/test_task_document.py</code></li>
+        </ul>
+      </section>
+
+      <footer>
+        Last updated: 2026-06-05. Generated as a self-contained HTML explainer
+        after installing `f-labs-io/agent-html-skills`.
+      </footer>
+    </main>
+  </div>
+</body>
+</html>

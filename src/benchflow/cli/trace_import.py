@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal, cast
 
 import typer
 from rich.console import Console
@@ -104,6 +104,13 @@ def register_tasks_generate(tasks_app: typer.Typer) -> None:
             str,
             typer.Option("--author", help="Author name for task.toml"),
         ] = "benchflow-traces",
+        task_format: Annotated[
+            str,
+            typer.Option(
+                "--task-format",
+                help="Generated task package format: task-md or legacy",
+            ),
+        ] = "task-md",
         dry_run: Annotated[
             bool,
             typer.Option("--dry-run", help="Preview traces without generating tasks"),
@@ -170,6 +177,9 @@ def register_tasks_generate(tasks_app: typer.Typer) -> None:
             return
 
         from benchflow.traces.task_gen import generate_tasks_from_traces
+        if task_format not in ("task-md", "legacy"):
+            console.print("[red]--task-format must be task-md or legacy[/red]")
+            raise typer.Exit(1)
 
         results = generate_tasks_from_traces(
             traces,
@@ -177,6 +187,7 @@ def register_tasks_generate(tasks_app: typer.Typer) -> None:
             author=author,
             min_steps=min_steps,
             outcome_filter=outcome,
+            output_format=cast(Literal["task-md", "legacy"], task_format),
         )
 
         console.print(f"\n[green]Generated {len(results)} tasks[/green] → {output_dir}")

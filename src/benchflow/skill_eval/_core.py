@@ -16,9 +16,10 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from string import Template
-from typing import Any
+from typing import Any, Literal
 
 import tomli_w
+import yaml
 
 from benchflow._paths import assert_within, safe_path_segment
 from benchflow.skill_policy import (
@@ -38,6 +39,7 @@ JUDGE_API_ENV_KEYS = (
     "ANTHROPIC_API_KEY",
     "OPENAI_API_KEY",
 )
+TaskOutputFormat = Literal["task-md", "legacy"]
 
 
 # ---------------------------------------------------------------------------
@@ -298,10 +300,29 @@ def _build_task_toml(dataset: EvalDataset, case: EvalCase, with_skill: bool) -> 
     return tomli_w.dumps(doc)
 
 
+def _build_task_md(task_toml: str, instruction: str) -> str:
+    import tomllib
+
+    raw_config = tomllib.loads(task_toml)
+    if "solution" in raw_config and "oracle" not in raw_config:
+        raw_config["oracle"] = raw_config.pop("solution")
+    frontmatter = yaml.safe_dump(raw_config, sort_keys=False)
+    return f"---\n{frontmatter}---\n\n## prompt\n\n{instruction.strip()}\n"
+
+
+def _validate_output_format(output_format: str) -> TaskOutputFormat:
+    if output_format == "task-md":
+        return "task-md"
+    if output_format == "legacy":
+        return "legacy"
+    raise ValueError("output_format must be 'task-md' or 'legacy'")
+
+
 def generate_tasks(
     dataset: EvalDataset,
     output_dir: Path,
     with_skill: bool = True,
+    output_format: TaskOutputFormat = "task-md",
 ) -> list[Path]:
     """Generate BenchFlow-format tasks from an EvalDataset.
 
@@ -309,10 +330,13 @@ def generate_tasks(
         dataset: Parsed eval dataset.
         output_dir: Where to write generated tasks.
         with_skill: If True, install the skill in the container.
+        output_format: ``"task-md"`` for native task packages or ``"legacy"``
+            for split-format compatibility.
 
     Returns:
         List of generated task directory paths.
     """
+    output_format = _validate_output_format(output_format)
     output_dir.mkdir(parents=True, exist_ok=True)
     task_dirs = []
 
@@ -331,12 +355,15 @@ def generate_tasks(
         assert_within(task_dir, output_dir)
         task_dir.mkdir(parents=True, exist_ok=True)
 
-        # instruction.md
-        (task_dir / "instruction.md").write_text(case.question + "\n")
-
-        # task.toml — built via ``tomli_w.dumps`` so every value is
-        # escaped by the canonical TOML writer (#393).
-        (task_dir / "task.toml").write_text(_build_task_toml(dataset, case, with_skill))
+        instruction = case.question + "\n"
+        task_toml = _build_task_toml(dataset, case, with_skill)
+        if output_format == "task-md":
+            (task_dir / "task.md").write_text(_build_task_md(task_toml, instruction))
+        else:
+            (task_dir / "instruction.md").write_text(instruction)
+            # task.toml — built via ``tomli_w.dumps`` so every value is
+            # escaped by the canonical TOML writer (#393).
+            (task_dir / "task.toml").write_text(task_toml)
 
         # environment/
         env_dir = task_dir / "environment"
@@ -374,14 +401,13 @@ def generate_tasks(
         if eval_reqs.exists():
             shutil.copy2(eval_reqs, env_dir / "requirements.txt")
 
-        # tests/
-        tests_dir = task_dir / "tests"
-        tests_dir.mkdir(exist_ok=True)
+        verifier_dir = task_dir / ("verifier" if output_format == "task-md" else "tests")
+        verifier_dir.mkdir(exist_ok=True)
 
         # case.json — injected data for the judge. ``environment`` is
         # included so the judge (and downstream review tooling) can see
         # which per-case env overrides were in effect (#392).
-        (tests_dir / "case.json").write_text(
+        (verifier_dir / "case.json").write_text(
             json.dumps(
                 {
                     "id": case.id,
@@ -400,17 +426,21 @@ def generate_tasks(
         judge_content = Template(judge_template).safe_substitute(
             judge_model=dataset.judge_model,
         )
-        (tests_dir / "judge.py").write_text(judge_content)
+        (verifier_dir / "judge.py").write_text(judge_content)
 
         # test.sh
-        (tests_dir / "test.sh").write_text(test_sh_template)
-        (tests_dir / "test.sh").chmod(0o755)
+        (verifier_dir / "test.sh").write_text(test_sh_template)
+        (verifier_dir / "test.sh").chmod(0o755)
 
         task_dirs.append(task_dir)
 
     logger.info(
-        f"Generated {len(task_dirs)} tasks in {output_dir} (with_skill={with_skill})"
-    )
+            "Generated %d tasks in %s (with_skill=%s, output_format=%s)",
+            len(task_dirs),
+            output_dir,
+            with_skill,
+            output_format,
+        )
     return task_dirs
 
 
@@ -426,7 +456,7 @@ def _default_dockerfile(dataset: EvalDataset, with_skill: bool) -> str:
         "RUN pip install -q anthropic openai google-genai",
         "",
         "# Log directories",
-        "RUN mkdir -p /logs/verifier /logs/agent /logs/artifacts /app /tests",
+        "RUN mkdir -p /logs/verifier /logs/agent /logs/artifacts /app /verifier /tests",
         "",
     ]
 

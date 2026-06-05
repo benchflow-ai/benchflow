@@ -281,7 +281,7 @@ def _source_provenance(
         "local_path": str(local_path),
         "dirty": bool(status),
         "file_hashes": task_file_hashes(local_path)
-        if (local_path / "task.toml").is_file()
+        if (local_path / "task.toml").is_file() or (local_path / "task.md").is_file()
         else {},
     }
     return provenance
