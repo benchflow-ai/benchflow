@@ -651,6 +651,10 @@ def _create_sandbox_environment(
         env_config = env_config.model_copy(deep=True)
         env_config.allow_internet = True
 
+    from benchflow.task.runtime_capabilities import ensure_task_runtime_support
+
+    ensure_task_runtime_support(task, sandbox_type, task_path)
+
     manifest_env: dict[str, str] = {}
     if environment_manifest is not None:
         from benchflow.environment.manifest import (

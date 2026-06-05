@@ -1,0 +1,264 @@
+"""Fail-closed runtime capability validation for parsed task fields.
+
+Parsed Harbor-compatible fields that the selected sandbox backend cannot honor
+must be rejected before sandbox construction. See ``docs/task-standard.md``
+Runtime Capability Matrix (P1).
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+from benchflow.task.config import NetworkMode, TaskOS, VerifierEnvironmentMode
+
+if TYPE_CHECKING:
+    from benchflow.task.task import Task
+
+_GATED_SANDBOX_TYPES = frozenset({"docker", "daytona"})
+
+
+@dataclass(frozen=True)
+class UnsupportedTaskFeature:
+    """One parsed task field the selected sandbox cannot execute."""
+
+    path: str
+    reason: str
+    sandbox_type: str
+
+
+class UnsupportedTaskRuntimeError(ValueError):
+    """Raised when a task uses parsed fields unsupported on the selected sandbox."""
+
+    def __init__(
+        self,
+        issues: list[UnsupportedTaskFeature],
+        *,
+        task_path: Path | str,
+    ) -> None:
+        self.issues = issues
+        self.task_path = Path(task_path)
+        lines = [
+            f"{issue.path}: {issue.reason} (sandbox={issue.sandbox_type})"
+            for issue in issues
+        ]
+        message = (
+            f"Task {self.task_path} uses runtime fields unsupported on "
+            f"{issues[0].sandbox_type!r}: " + "; ".join(lines)
+        )
+        super().__init__(message)
+
+
+def _task_has_compose(task_path: Path) -> bool:
+    return (task_path / "environment" / "docker-compose.yaml").exists()
+
+
+def _append_allowlist_issue(
+    issues: list[UnsupportedTaskFeature],
+    *,
+    sandbox_type: str,
+    prefix: str,
+    network_mode: NetworkMode | None,
+    allowed_hosts: list[str] | None,
+) -> None:
+    if network_mode == NetworkMode.ALLOWLIST:
+        issues.append(
+            UnsupportedTaskFeature(
+                path=f"{prefix}.network_mode",
+                reason=(
+                    "network_mode='allowlist' is parsed but egress allowlists "
+                    "are not enforced by the selected sandbox yet"
+                ),
+                sandbox_type=sandbox_type,
+            )
+        )
+    elif allowed_hosts:
+        issues.append(
+            UnsupportedTaskFeature(
+                path=f"{prefix}.allowed_hosts",
+                reason=(
+                    "allowed_hosts is parsed but egress allowlists are not "
+                    "enforced by the selected sandbox yet"
+                ),
+                sandbox_type=sandbox_type,
+            )
+        )
+
+
+def validate_task_runtime_support(
+    task: Task,
+    sandbox_type: str,
+    task_path: Path | str,
+) -> list[UnsupportedTaskFeature]:
+    """Return unsupported parsed fields for *sandbox_type* (empty when supported)."""
+    if sandbox_type not in _GATED_SANDBOX_TYPES:
+        return []
+
+    root = Path(task_path).resolve()
+    config = task.config
+    env = config.environment
+    issues: list[UnsupportedTaskFeature] = []
+
+    if config.steps:
+        issues.append(
+            UnsupportedTaskFeature(
+                path="steps",
+                reason=(
+                    "Harbor multi-step tasks are parsed but step execution is "
+                    "not implemented for this sandbox yet"
+                ),
+                sandbox_type=sandbox_type,
+            )
+        )
+        for step in config.steps:
+            if step.artifacts:
+                issues.append(
+                    UnsupportedTaskFeature(
+                        path=f"steps[{step.name!r}].artifacts",
+                        reason=(
+                            "step-level artifact collection is parsed but not "
+                            "implemented for this sandbox yet"
+                        ),
+                        sandbox_type=sandbox_type,
+                    )
+                )
+            if step.healthcheck is not None:
+                issues.append(
+                    UnsupportedTaskFeature(
+                        path=f"steps[{step.name!r}].healthcheck",
+                        reason=(
+                            "step-level healthchecks are parsed but not "
+                            "implemented for this sandbox yet"
+                        ),
+                        sandbox_type=sandbox_type,
+                    )
+                )
+
+    if config.artifacts:
+        issues.append(
+            UnsupportedTaskFeature(
+                path="artifacts",
+                reason=(
+                    "root-level artifact collection is parsed but not "
+                    "implemented for this sandbox yet"
+                ),
+                sandbox_type=sandbox_type,
+            )
+        )
+
+    _append_allowlist_issue(
+        issues,
+        sandbox_type=sandbox_type,
+        prefix="environment",
+        network_mode=env.network_mode,
+        allowed_hosts=env.allowed_hosts,
+    )
+    _append_allowlist_issue(
+        issues,
+        sandbox_type=sandbox_type,
+        prefix="agent",
+        network_mode=config.agent.network_mode,
+        allowed_hosts=config.agent.allowed_hosts,
+    )
+    _append_allowlist_issue(
+        issues,
+        sandbox_type=sandbox_type,
+        prefix="verifier",
+        network_mode=config.verifier.network_mode,
+        allowed_hosts=config.verifier.allowed_hosts,
+    )
+
+    verifier = config.verifier
+    if (
+        verifier.environment_mode == VerifierEnvironmentMode.SEPARATE
+        or verifier.environment is not None
+    ):
+        issues.append(
+            UnsupportedTaskFeature(
+                path="verifier.environment"
+                if verifier.environment is not None
+                else "verifier.environment_mode",
+                reason=(
+                    "separate verifier environments are parsed but not "
+                    "materialized for this sandbox yet"
+                ),
+                sandbox_type=sandbox_type,
+            )
+        )
+
+    if env.os == TaskOS.WINDOWS:
+        issues.append(
+            UnsupportedTaskFeature(
+                path="environment.os",
+                reason="Windows task containers are parsed but not runnable yet",
+                sandbox_type=sandbox_type,
+            )
+        )
+
+    if env.tpu is not None:
+        issues.append(
+            UnsupportedTaskFeature(
+                path="environment.tpu",
+                reason="TPU resource requests are parsed but not runnable yet",
+                sandbox_type=sandbox_type,
+            )
+        )
+
+    if env.healthcheck is not None:
+        issues.append(
+            UnsupportedTaskFeature(
+                path="environment.healthcheck",
+                reason=(
+                    "environment healthchecks are parsed but not executed "
+                    "during sandbox startup yet"
+                ),
+                sandbox_type=sandbox_type,
+            )
+        )
+
+    if env.workdir is not None:
+        issues.append(
+            UnsupportedTaskFeature(
+                path="environment.workdir",
+                reason=(
+                    "environment.workdir is parsed but default working "
+                    "directories are not applied by the materializer yet"
+                ),
+                sandbox_type=sandbox_type,
+            )
+        )
+
+    if verifier.service != "main" and not _task_has_compose(root):
+        issues.append(
+            UnsupportedTaskFeature(
+                path="verifier.service",
+                reason=(
+                    f"verifier.service={verifier.service!r} requires a "
+                    "multi-container docker-compose.yaml task, which is not "
+                    "present under environment/"
+                ),
+                sandbox_type=sandbox_type,
+            )
+        )
+
+    return issues
+
+
+def ensure_task_runtime_support(
+    task: Task,
+    sandbox_type: str,
+    task_path: Path | str,
+) -> None:
+    """Raise :class:`UnsupportedTaskRuntimeError` when validation finds blockers."""
+    issues = validate_task_runtime_support(task, sandbox_type, task_path)
+    if issues:
+        raise UnsupportedTaskRuntimeError(issues, task_path=task_path)
+
+
+__all__ = [
+    "UnsupportedTaskFeature",
+    "UnsupportedTaskRuntimeError",
+    "ensure_task_runtime_support",
+    "validate_task_runtime_support",
+]
