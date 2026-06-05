@@ -9,7 +9,7 @@ authors:
 repository-code: "https://github.com/benchflow-ai/benchflow"
 url: "https://github.com/benchflow-ai/benchflow"
 license: Apache-2.0
-version: 0.5.1
+version: 0.5.2
 date-released: 2026-06-05
 keywords:
   - benchmark

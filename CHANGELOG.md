@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## 0.5.2 — 2026-06-05
+
+### Changed
+
+- **PyPI project README badge** — replace the dynamic PyPI version badge with
+  a stable package badge so the rendered project description cannot show a
+  stale external version image after a public release.
+- **Release documentation refresh** — update public install snippets,
+  release-channel docs, examples, and citation metadata to `0.5.2`.
+
 ## 0.5.1 — 2026-06-05
 
 ### Added
