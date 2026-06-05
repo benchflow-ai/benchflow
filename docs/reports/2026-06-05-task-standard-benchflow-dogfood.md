@@ -127,12 +127,12 @@ The wanted-feature dogfood packages now have partial runtime backing on
 
 | Wanted feature | Landed | Still open |
 |---|---|---|
-| `TaskPackage` / `TaskRuntimeView` | `src/benchflow/task/package.py`, rollout upload uses runtime view | Prompt composition, user/nudge compilation, source-hash provenance |
+| `TaskPackage` / `TaskRuntimeView` | `src/benchflow/task/package.py`, rollout upload + runtime summary logging | Source-hash provenance, full prompt composition on base `/instruction.md` |
 | Runtime capability gates | `src/benchflow/task/runtime_capabilities.py`, wired in rollout + sandbox setup; `bench tasks check --sandbox docker\|daytona` | Modal/K8s matrices, GPU/private-mount gates, narrow gates as features land |
 | `VerifierDocument` | `src/benchflow/task/verifier_document.py`, `check_task` + `Task()` validation | Strategy execution, Reward Kit runtime, agent-judge orchestration |
-| Export + loss reports | `src/benchflow/task/export.py`, `bench tasks export/import` | Pier-specific losses; full foreign import preservation |
+| Export + loss reports | `src/benchflow/task/export.py`, `bench tasks export/import/round-trip` | Pier-specific losses; full foreign import preservation |
 | Reward contract | JSON-first precedence, multi-metric maps, `reward-details.json` in `result.json` | Reward Kit execution, aggregate policy from verifier metadata |
-| Prompt/user semantics | `prompt_composition.py`, `user_loop.py`, `DocumentSimulatedUser` | Multi-scene user-loop auto-wiring, branchable nudges |
+| Prompt/user semantics | `prompt_composition.py`, `user_loop.py`, multi-scene `user-loop` auto-wiring | Branchable nudges, scene-level user-loop metadata |
 
 Regression guard: `tests/test_task_standard_dogfood.py` exercises all four
 wanted-feature packages through structural check, `Task()` load,
@@ -143,6 +143,6 @@ wanted-feature packages through structural check, `Task()` load,
 
 The standard is useful for real BenchFlow work. The core missing product
 surface — runtime view plus verifier package parser — now exists in draft form.
-Remaining work is execution depth (strategies, prompt/user runtime, export
-round-trip), not another authoring-format spike.
+Remaining work is execution depth (reward-kit/agent-judge strategies,
+branchable nudges, Modal/K8s capability matrices), not another authoring-format spike.
 

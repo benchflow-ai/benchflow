@@ -673,7 +673,7 @@ Current implementation status:
 | `agents.roles` | yes | partial | adopted via `TaskRuntimeView.to_rollout_scenes()` |
 | `scenes` | yes | partial | document scenes load into `RolloutConfig`; handoff policy still open |
 | `benchflow.prompt` composition | yes | partial | append/replace on scene turns; rollout default prompt still base-only |
-| `user` / `## user-persona` | yes | partial | `DocumentSimulatedUser` + `compile_document_user_loop`; multi-scene wiring manual |
+| `user` / `## user-persona` | yes | partial | `DocumentSimulatedUser` + `compile_document_user_loop`; multi-scene `user-loop` scenes auto-wire |
 | `benchflow.nudges` | yes | partial | simulated-user mode with `nudge_budget`; branchable policy still open |
 | `benchflow:` | raw | no | typed document schema after v0.3 stabilizes |
 | Harbor `steps` | yes | no/partial | fail closed per sandbox until implemented |
@@ -686,7 +686,7 @@ Current implementation status:
 | `reward-details.json` preservation | yes | yes | copy through verifier rollout download; no parsing yet |
 | `TaskPackage` / `TaskRuntimeView` | yes | partial | entrypoint, dirs, scenes, alias collisions, `verifier_document`; prompt composition and sandbox gates still partial |
 | runtime capability gates (docker/daytona) | yes | partial | `validate_task_runtime_support` + `bench tasks check --sandbox`; more backends pending |
-| Harbor/Pier export | yes | partial | `bench tasks export` + `compatibility/export-report.json`; `bench tasks import --native` round-trip |
+| Harbor/Pier export | yes | partial | `bench tasks export` + `compatibility/export-report.json`; `bench tasks round-trip` / `import --native` parity checks |
 | native `/task.md` upload | yes | yes | keep `/instruction.md` compatibility contract |
 | alias dir collision checks | yes | partial | `bench tasks check` and `Task()` load fail closed; export parity pending |
 

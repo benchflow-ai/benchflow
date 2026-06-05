@@ -14,10 +14,11 @@ exists on the task-standard branch (see the dogfood report follow-up section):
   JSON-first rewards, multi-metric maps, strategy routing (script only);
   Reward Kit / agent-judge execution still open.
 - `compat-export-loss-reports`: **mostly landed** — `bench tasks export` with
-  `compatibility/export-report.json`; round-trip parity still open.
+  `compatibility/export-report.json`; `bench tasks round-trip` validates
+  Harbor-compatible field parity (native-only concepts still reported as losses).
 - `prompt-user-semantics`: **mostly landed** — append/replace composition,
   `DocumentSimulatedUser` + `compile_document_user_loop`, simulated-user
-  nudges via `nudge_budget`; multi-scene user-loop wiring still manual.
+  nudges via `nudge_budget`, multi-scene user-loop auto-wiring on `user-loop` scenes.
 
 See the dogfood report:
 [2026-06-05-task-standard-benchflow-dogfood.md](../../../reports/2026-06-05-task-standard-benchflow-dogfood.md).
