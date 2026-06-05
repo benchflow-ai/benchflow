@@ -282,7 +282,7 @@ class TestSdkVerify:
                 new_callable=AsyncMock,
             ),
         ):
-            parsed_rewards, verifier_error, vti = await sdk._verify(
+            parsed_rewards, verifier_error, _vti = await sdk._verify(
                 env, task, tp, timing
             )
         assert verifier_error is None
