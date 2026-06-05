@@ -50,6 +50,12 @@ from benchflow.task.package import (
     TaskPackage,
     TaskRuntimeView,
 )
+from benchflow.task.runtime_capabilities import (
+    UnsupportedTaskFeature,
+    UnsupportedTaskRuntimeError,
+    ensure_task_runtime_support,
+    validate_task_runtime_support,
+)
 from benchflow.task.paths import (
     RolloutPaths,
     SandboxPaths,
@@ -87,6 +93,10 @@ __all__ = [
     "TaskPackage",
     "TaskRuntimeView",
     "AliasCollisionStatus",
+    "UnsupportedTaskFeature",
+    "UnsupportedTaskRuntimeError",
+    "ensure_task_runtime_support",
+    "validate_task_runtime_support",
     "VERIFIER_DOCUMENT_FILENAME",
     "VerifierDocument",
     "VerifierDocumentParseError",

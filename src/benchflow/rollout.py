@@ -115,17 +115,10 @@ def _task_disallows_internet(task: Any) -> bool:
 
 
 def _read_task_instruction(task_path: Path) -> str:
-    """Read the agent-facing instruction from legacy files or ``task.md``."""
-    document_path = task_path / "task.md"
-    if document_path.exists():
-        from benchflow.task.document import TaskDocument
+    """Read the agent-facing instruction from the selected task entrypoint."""
+    from benchflow.task.package import TaskRuntimeView
 
-        return TaskDocument.from_path(document_path).instruction.strip()
-
-    instruction_path = task_path / "instruction.md"
-    if instruction_path.exists():
-        return instruction_path.read_text().strip()
-    raise FileNotFoundError(f"Task missing instruction.md or task.md: {task_path}")
+    return TaskRuntimeView.from_task_dir(task_path).materialize_instruction_md()
 
 
 def _environment_uses_prebuilt_image(
@@ -790,16 +783,21 @@ async def _start_env_and_upload(
         t0 = datetime.now()
         await env.start(force_build=False)
         timing["environment_setup"] = (datetime.now() - t0).total_seconds()
-    from benchflow.task.paths import SandboxPaths, TaskPaths
+    from benchflow.task.package import TaskRuntimeView
+    from benchflow.task.paths import SandboxPaths
 
     sandbox_paths = SandboxPaths()
-    paths = TaskPaths(task_path)
-    task_document_path = paths.task_document_path
-    instruction_path = task_path / "instruction.md"
-    if instruction_path.exists() and not task_document_path.exists():
-        await env.upload_file(instruction_path, str(sandbox_paths.instruction_path))
+    runtime_view = TaskRuntimeView.from_task_dir(task_path)
+    paths = runtime_view.paths
+    if (
+        runtime_view.entrypoint == "legacy-split"
+        and paths.instruction_path.exists()
+    ):
+        await env.upload_file(
+            paths.instruction_path, str(sandbox_paths.instruction_path)
+        )
     else:
-        instruction = _read_task_instruction(task_path)
+        instruction = runtime_view.materialize_instruction_md()
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as f:
             f.write(instruction)
             f.write("\n")
@@ -810,17 +808,17 @@ async def _start_env_and_upload(
             )
         finally:
             temp_instruction.unlink(missing_ok=True)
-    if task_document_path.exists():
+    if paths.task_document_path.exists():
         await env.upload_file(
-            task_document_path, str(sandbox_paths.task_document_path)
+            paths.task_document_path, str(sandbox_paths.task_document_path)
         )
-    if paths.solution_dir.is_dir():
+    if runtime_view.oracle_dir.is_dir():
         target_dir = (
             sandbox_paths.oracle_dir
-            if paths.uses_native_oracle_dir
+            if runtime_view.uses_native_oracle_dir
             else sandbox_paths.solution_dir
         )
-        await env.upload_dir(paths.solution_dir, str(target_dir))
+        await env.upload_dir(runtime_view.oracle_dir, str(target_dir))
 
 
 async def _run_oracle(
@@ -1381,6 +1379,10 @@ class Rollout:
             self._job_name,
             self._rollout_name,
         ) = _init_rollout(cfg.task_path, cfg.job_name, cfg.rollout_name, cfg.jobs_dir)
+
+        from benchflow.task.runtime_capabilities import ensure_task_runtime_support
+
+        ensure_task_runtime_support(self._task, cfg.environment, cfg.task_path)
 
         self._disallow_web_tools = (
             _task_disallows_internet(self._task) or cfg.self_gen_no_internet
