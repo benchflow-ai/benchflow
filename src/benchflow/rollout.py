@@ -790,9 +790,14 @@ async def _start_env_and_upload(
         t0 = datetime.now()
         await env.start(force_build=False)
         timing["environment_setup"] = (datetime.now() - t0).total_seconds()
+    from benchflow.task.paths import SandboxPaths, TaskPaths
+
+    sandbox_paths = SandboxPaths()
+    paths = TaskPaths(task_path)
+    task_document_path = paths.task_document_path
     instruction_path = task_path / "instruction.md"
-    if instruction_path.exists() and not (task_path / "task.md").exists():
-        await env.upload_file(instruction_path, "/instruction.md")
+    if instruction_path.exists() and not task_document_path.exists():
+        await env.upload_file(instruction_path, str(sandbox_paths.instruction_path))
     else:
         instruction = _read_task_instruction(task_path)
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as f:
@@ -800,14 +805,16 @@ async def _start_env_and_upload(
             f.write("\n")
             temp_instruction = Path(f.name)
         try:
-            await env.upload_file(temp_instruction, "/instruction.md")
+            await env.upload_file(
+                temp_instruction, str(sandbox_paths.instruction_path)
+            )
         finally:
             temp_instruction.unlink(missing_ok=True)
-    from benchflow.task.paths import SandboxPaths, TaskPaths
-
-    paths = TaskPaths(task_path)
+    if task_document_path.exists():
+        await env.upload_file(
+            task_document_path, str(sandbox_paths.task_document_path)
+        )
     if paths.solution_dir.is_dir():
-        sandbox_paths = SandboxPaths()
         target_dir = (
             sandbox_paths.oracle_dir
             if paths.uses_native_oracle_dir

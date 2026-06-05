@@ -212,5 +212,7 @@ class SandboxPaths:
     tests_dir: PurePosixPath = PurePosixPath("/tests")  # noqa: RUF009
     oracle_dir: PurePosixPath = PurePosixPath("/oracle")  # noqa: RUF009
     solution_dir: PurePosixPath = PurePosixPath("/solution")  # noqa: RUF009
+    instruction_path: PurePosixPath = PurePosixPath("/instruction.md")  # noqa: RUF009
+    task_document_path: PurePosixPath = PurePosixPath("/task.md")  # noqa: RUF009
     reward_text_path: PurePosixPath = verifier_dir / "reward.txt"
     reward_json_path: PurePosixPath = verifier_dir / "reward.json"

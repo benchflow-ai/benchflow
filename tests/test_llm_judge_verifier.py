@@ -732,3 +732,68 @@ class TestTestScriptStillDefault:
 
         with pytest.raises(VerifierOutputParseError, match=match):
             await Verifier(task, rollout_paths, sandbox).verify()
+
+    @pytest.mark.asyncio
+    async def test_reward_json_takes_precedence_over_reward_txt(
+        self, tmp_path: Path
+    ) -> None:
+        """Guards task-standard reward.json precedence over reward.txt."""
+        task = _make_task(tmp_path, 'version = "1.0"\n[verifier]\n')
+        task.paths.tests_dir = task.task_dir / "tests"
+        task.paths.test_path = task.task_dir / "tests" / "test.sh"
+
+        sandbox = MagicMock()
+        sandbox.upload_dir = AsyncMock()
+        sandbox.is_mounted = True
+
+        rollout_paths = RolloutPaths(tmp_path / "rollout")
+        rollout_paths.mkdir()
+        payload = {
+            "reward": 0.75,
+            "rubric": [{"name": "quality", "score": 0.75, "weight": 1.0}],
+        }
+
+        async def exec_both_rewards(*_args: object, **_kwargs: object) -> MagicMock:
+            if sandbox.exec.await_count == 1:
+                return MagicMock(return_code=0, stdout="")
+            rollout_paths.reward_text_path.write_text("0.25")
+            rollout_paths.reward_json_path.write_text(json.dumps(payload))
+            return MagicMock(return_code=0, stdout="")
+
+        sandbox.exec = AsyncMock(side_effect=exec_both_rewards)
+
+        with pytest.raises(VerifierOutputParseError, match=r"disagrees with reward\.txt"):
+            await Verifier(task, rollout_paths, sandbox).verify()
+
+    @pytest.mark.asyncio
+    async def test_reward_json_and_reward_txt_must_agree_when_both_present(
+        self, tmp_path: Path
+    ) -> None:
+        """Guards task-standard scalar agreement when both reward files exist."""
+        task = _make_task(tmp_path, 'version = "1.0"\n[verifier]\n')
+        task.paths.tests_dir = task.task_dir / "tests"
+        task.paths.test_path = task.task_dir / "tests" / "test.sh"
+
+        sandbox = MagicMock()
+        sandbox.upload_dir = AsyncMock()
+        sandbox.is_mounted = True
+
+        rollout_paths = RolloutPaths(tmp_path / "rollout")
+        rollout_paths.mkdir()
+        payload = {
+            "reward": 0.75,
+            "rubric": [{"name": "quality", "score": 0.75, "weight": 1.0}],
+        }
+
+        async def exec_matching_rewards(*_args: object, **_kwargs: object) -> MagicMock:
+            if sandbox.exec.await_count == 1:
+                return MagicMock(return_code=0, stdout="")
+            rollout_paths.reward_text_path.write_text("0.75")
+            rollout_paths.reward_json_path.write_text(json.dumps(payload))
+            return MagicMock(return_code=0, stdout="")
+
+        sandbox.exec = AsyncMock(side_effect=exec_matching_rewards)
+
+        result = await Verifier(task, rollout_paths, sandbox).verify()
+
+        assert result.rewards == payload

@@ -88,6 +88,7 @@ def check_task(task_dir: Path) -> list[str]:
         issues.append("Missing environment/Dockerfile")
 
     paths = TaskPaths(task_dir)
+    issues.extend(_check_alias_dir_collisions(paths))
 
     # Check verifier code. Native tasks use verifier/; tests/ remains the
     # legacy alias for existing Harbor-style task packages.
@@ -146,6 +147,46 @@ def _check_ctrf_path(test_sh: Path) -> list[str]:
             f"(expected '{_CTRF_STANDARD_PATH}')"
         ]
     return []
+
+
+def _normalized_tree_map(root: Path) -> dict[str, bytes]:
+    """Map relative POSIX paths to file bytes for every file under *root*."""
+    if not root.is_dir():
+        return {}
+    files: dict[str, bytes] = {}
+    for path in sorted(root.rglob("*")):
+        if path.is_file():
+            files[path.relative_to(root).as_posix()] = path.read_bytes()
+    return files
+
+
+def _check_alias_dir_collisions(paths: TaskPaths) -> list[str]:
+    """Fail closed when native and legacy alias trees disagree."""
+    issues: list[str] = []
+    pairs = (
+        (
+            paths.oracle_dir,
+            paths.legacy_solution_dir,
+            TaskPaths.NATIVE_ORACLE_DIRNAME,
+            TaskPaths.LEGACY_SOLUTION_DIRNAME,
+        ),
+        (
+            paths.verifier_source_dir,
+            paths.legacy_tests_dir,
+            TaskPaths.NATIVE_VERIFIER_DIRNAME,
+            TaskPaths.LEGACY_TESTS_DIRNAME,
+        ),
+    )
+    for native_dir, legacy_dir, native_name, legacy_name in pairs:
+        if not native_dir.is_dir() or not legacy_dir.is_dir():
+            continue
+        if _normalized_tree_map(native_dir) == _normalized_tree_map(legacy_dir):
+            continue
+        issues.append(
+            f"Alias collision: {native_name}/ and {legacy_name}/ both exist "
+            "but are not byte-identical"
+        )
+    return issues
 
 
 def _logical_dir_label(paths: TaskPaths, *, kind: Literal["verifier", "oracle"]) -> str:

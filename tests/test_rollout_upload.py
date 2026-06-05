@@ -116,7 +116,17 @@ Solve from the unified document.
 
     assert env.started is True
     assert env.uploaded_file_contents == [
-        ("Solve from the unified document.\n", "/instruction.md")
+        ("Solve from the unified document.\n", "/instruction.md"),
+        (
+            """---
+version: "1.0"
+---
+## prompt
+
+Solve from the unified document.
+""",
+            "/task.md",
+        ),
     ]
 
 

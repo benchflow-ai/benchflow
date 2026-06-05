@@ -158,6 +158,61 @@ class TestTaskPathAliases:
         assert paths.uses_native_oracle_dir is False
         assert paths.uses_native_verifier_dir is False
 
+    def test_check_task_rejects_oracle_solution_alias_collision(self, tmp_path):
+        """Guards task-standard alias drift when both native and legacy dirs exist."""
+        task = tmp_path / "task"
+        task.mkdir()
+        (task / "task.toml").write_text('version = "1.0"\n[verifier]\n')
+        (task / "instruction.md").write_text("Do something\n")
+        (task / "environment").mkdir()
+        (task / "environment" / "Dockerfile").write_text("FROM ubuntu:24.04\n")
+        (task / "oracle").mkdir()
+        (task / "oracle" / "solve.sh").write_text("#!/bin/bash\necho native\n")
+        (task / "solution").mkdir()
+        (task / "solution" / "solve.sh").write_text("#!/bin/bash\necho legacy\n")
+        (task / "verifier").mkdir()
+        (task / "verifier" / "test.sh").write_text("#!/bin/bash\nexit 0\n")
+
+        issues = check_task(task)
+
+        assert any("oracle/" in issue and "solution/" in issue for issue in issues)
+
+    def test_check_task_rejects_verifier_tests_alias_collision(self, tmp_path):
+        """Guards task-standard alias drift when both native and legacy dirs exist."""
+        task = tmp_path / "task"
+        task.mkdir()
+        (task / "task.toml").write_text('version = "1.0"\n[verifier]\n')
+        (task / "instruction.md").write_text("Do something\n")
+        (task / "environment").mkdir()
+        (task / "environment" / "Dockerfile").write_text("FROM ubuntu:24.04\n")
+        (task / "verifier").mkdir()
+        (task / "verifier" / "test.sh").write_text("#!/bin/bash\necho native\n")
+        (task / "tests").mkdir()
+        (task / "tests" / "test.sh").write_text("#!/bin/bash\necho legacy\n")
+
+        issues = check_task(task)
+
+        assert any("verifier/" in issue and "tests/" in issue for issue in issues)
+
+    def test_check_task_accepts_byte_identical_alias_trees(self, tmp_path):
+        """Equivalent native and legacy alias trees should still pass check."""
+        task = tmp_path / "task"
+        task.mkdir()
+        (task / "task.toml").write_text('version = "1.0"\n[verifier]\n')
+        (task / "instruction.md").write_text("Do something\n")
+        (task / "environment").mkdir()
+        (task / "environment" / "Dockerfile").write_text("FROM ubuntu:24.04\n")
+        (task / "oracle").mkdir()
+        (task / "oracle" / "solve.sh").write_text("#!/bin/bash\necho ok\n")
+        (task / "solution").mkdir()
+        (task / "solution" / "solve.sh").write_text("#!/bin/bash\necho ok\n")
+        (task / "verifier").mkdir()
+        (task / "verifier" / "test.sh").write_text("#!/bin/bash\nexit 0\n")
+        (task / "tests").mkdir()
+        (task / "tests" / "test.sh").write_text("#!/bin/bash\nexit 0\n")
+
+        assert check_task(task) == []
+
 
 class TestInitTask:
     """init_task(name, ...) -> Path"""

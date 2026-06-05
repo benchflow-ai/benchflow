@@ -4,7 +4,7 @@ Internalized from Harbor's Verifier class. Supports two verification methods,
 selected by ``[verifier].type`` in ``task.toml``:
 
 - ``"test-script"`` (default): run ``tests/test.sh`` inside the sandbox and
-  parse ``reward.txt`` / ``reward.json``.
+  parse ``reward.json`` / ``reward.txt`` (JSON is authoritative when present).
 - ``"llm-judge"``: download the agent's deliverables and grade them against a
   human-authored rubric using an LLM judge (see #270).
 """
@@ -67,7 +67,7 @@ class Verifier:
 
     1. ``test-script`` — uploads the task's ``tests/`` directory into the
        sandbox at ``/tests``, runs ``test.sh`` with configured env vars/user,
-       and parses the reward from ``reward.txt`` or ``reward.json``.
+       and parses the reward from ``reward.json`` or ``reward.txt``.
     2. ``llm-judge`` — downloads the agent's deliverables from the sandbox and
        grades them against a rubric using an LLM judge, writing the aggregate
        reward to ``reward.json``.
@@ -134,6 +134,39 @@ class Verifier:
             raise VerifierOutputParseError(
                 f"Reward JSON file {self._rollout_paths.reward_json_path} {e}"
             ) from e
+
+    def _parse_rewards(self, *, test_return_code: int) -> dict[str, Any]:
+        """Parse verifier reward outputs with JSON-first precedence."""
+        has_json = self._rollout_paths.reward_json_path.exists()
+        has_text = self._rollout_paths.reward_text_path.exists()
+
+        if has_json and has_text:
+            json_rewards = self._parse_reward_json()
+            text_rewards = self._parse_reward_text()
+            json_scalar = float(json_rewards["reward"])
+            text_scalar = float(text_rewards["reward"])
+            if json_scalar != text_scalar:
+                raise VerifierOutputParseError(
+                    "reward.json aggregate "
+                    f"{json_scalar} disagrees with reward.txt scalar {text_scalar}"
+                )
+            return json_rewards
+
+        if has_json:
+            return self._parse_reward_json()
+        if has_text:
+            return self._parse_reward_text()
+
+        if test_return_code != 0:
+            raise RewardFileNotFoundError(
+                f"verifier exited with rc={test_return_code}; no reward file "
+                f"found at {self._rollout_paths.reward_text_path} or "
+                f"{self._rollout_paths.reward_json_path}"
+            )
+        raise RewardFileNotFoundError(
+            f"No reward file found at {self._rollout_paths.reward_text_path} or "
+            f"{self._rollout_paths.reward_json_path}"
+        )
 
     def _clear_reward_outputs(self) -> None:
         for path in (
@@ -294,22 +327,7 @@ class Verifier:
                 test_return_code,
             )
 
-        if self._rollout_paths.reward_text_path.exists():
-            rewards = self._parse_reward_text()
-        elif self._rollout_paths.reward_json_path.exists():
-            rewards = self._parse_reward_json()
-        else:
-            if test_return_code != 0:
-                raise RewardFileNotFoundError(
-                    f"verifier exited with rc={test_return_code}; no reward file "
-                    f"found at {self._rollout_paths.reward_text_path} or "
-                    f"{self._rollout_paths.reward_json_path}"
-                )
-            raise RewardFileNotFoundError(
-                f"No reward file found at {self._rollout_paths.reward_text_path} or "
-                f"{self._rollout_paths.reward_json_path}"
-            )
-
+        rewards = self._parse_rewards(test_return_code=test_return_code)
         return VerifierResult(rewards=rewards)
 
     # ------------------------------------------------------------------
