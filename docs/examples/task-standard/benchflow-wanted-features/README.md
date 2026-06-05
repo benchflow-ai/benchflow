@@ -8,15 +8,15 @@ parse as metadata today but are not fully executable runtime features yet.
 Each package dogfoods a wanted BenchFlow feature. Partial runtime backing now
 exists on the task-standard branch (see the dogfood report follow-up section):
 
-- `runtime-capability-gate`: **partial** — `TaskPackage` / `TaskRuntimeView`,
+- `runtime-capability-gate`: **mostly landed** — `TaskPackage` / `TaskRuntimeView`,
   docker/daytona capability gates, `bench tasks check --sandbox`.
-- `verifier-package-reward-contract`: **partial** — `VerifierDocument` parser,
-  `reward.json` precedence, `reward-details.json` copy-through; strategy
-  execution still open.
-- `compat-export-loss-reports`: **partial** — `bench tasks export` with typed
-  loss list; round-trip parity still open.
-- `prompt-user-semantics`: **authoring only** — prompt composition and
-  user/nudge runtime semantics not executable yet.
+- `verifier-package-reward-contract`: **mostly landed** — `VerifierDocument`,
+  JSON-first rewards, multi-metric maps, strategy routing (script only);
+  Reward Kit / agent-judge execution still open.
+- `compat-export-loss-reports`: **mostly landed** — `bench tasks export` with
+  `compatibility/export-report.json`; round-trip parity still open.
+- `prompt-user-semantics`: **partial** — append/replace composition on scene
+  turns; user/nudge loops fail-closed on docker/daytona until executable.
 
 See the dogfood report:
 [2026-06-05-task-standard-benchflow-dogfood.md](../../../reports/2026-06-05-task-standard-benchflow-dogfood.md).

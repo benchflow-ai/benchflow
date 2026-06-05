@@ -424,7 +424,10 @@ class TestSoftVerify:
 
         assert rewards is None
         assert "soft verifier crashed" in error
-        assert "without numeric 'reward'" in error
+        assert (
+            "missing numeric 'reward'" in error
+            or "invalid reward value" in error
+        )
 
     @pytest.mark.asyncio
     async def test_soft_verify_runs_cleanup_cmd(self):

@@ -229,7 +229,6 @@ class TestSdkVerify:
         "rewards",
         [
             {},
-            {"score": 1.0},
             {"reward": float("nan")},
             {"reward": float("inf")},
             {"reward": True},
@@ -257,9 +256,37 @@ class TestSdkVerify:
                 env, task, tp, timing
             )
         assert parsed_rewards is None
-        assert "without numeric 'reward'" in verifier_error
+        assert verifier_error is not None
+        assert (
+            "missing numeric 'reward'" in verifier_error
+            or "invalid reward value" in verifier_error
+        )
         assert "verifier" in timing
         assert vti is None
+
+    @pytest.mark.asyncio
+    async def test_verifier_accepts_multi_metric_score_only_reward(
+        self, verify_harness
+    ):
+        """Guards Harbor Reward Kit multi-metric maps that synthesize canonical reward."""
+        sdk, env, task, tp = verify_harness
+        mock_result = MagicMock()
+        mock_result.rewards = {"score": 1.0}
+        mock_v = MagicMock()
+        mock_v.verify = AsyncMock(return_value=mock_result)
+        timing = {}
+        with (
+            patch("benchflow.task.Verifier", return_value=mock_v),
+            patch(
+                "benchflow.sandbox.lockdown.harden_before_verify",
+                new_callable=AsyncMock,
+            ),
+        ):
+            parsed_rewards, verifier_error, vti = await sdk._verify(
+                env, task, tp, timing
+            )
+        assert verifier_error is None
+        assert parsed_rewards == {"reward": 1.0, "score": 1.0}
 
     @patch("benchflow.rewards.llm.call_judge", new_callable=AsyncMock)
     @pytest.mark.asyncio
