@@ -15,6 +15,10 @@ from benchflow.task.aliases import alias_dir_collision_issues, normalized_tree_m
 from benchflow.task.config import TaskConfig
 from benchflow.task.document import TaskDocument
 from benchflow.task.paths import TaskPaths
+from benchflow.task.prompt_composition import (
+    compose_task_prompt,
+    prompt_composition_settings,
+)
 from benchflow.task.verifier_document import (
     VerifierDocument,
     load_verifier_document,
@@ -204,7 +208,15 @@ class TaskRuntimeView:
 
     def materialize_instruction_md(self) -> str:
         """Return prompt text for the ``/instruction.md`` compatibility upload."""
-        return self.instruction_text
+        settings = prompt_composition_settings(self.benchflow)
+        return compose_task_prompt(
+            self.instruction_text,
+            None,
+            None,
+            None,
+            composition=settings.composition,
+            order=settings.order,
+        )
 
     def selected_verifier_tree_map(self) -> dict[str, bytes]:
         """Normalized file map for the selected verifier directory."""

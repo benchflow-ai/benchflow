@@ -17,6 +17,11 @@ import yaml
 
 from benchflow._types import Role, Scene, Turn
 from benchflow.task.config import TaskConfig
+from benchflow.task.prompt_composition import (
+    PromptCompositionSettings,
+    compose_task_prompt,
+    prompt_composition_settings,
+)
 
 TASK_DOCUMENT_FILENAME = "task.md"
 
@@ -65,15 +70,17 @@ class TaskDocument:
         prompt_sections = _extract_prompt_sections(body)
         config = _config_from_frontmatter(frontmatter)
         roles = _parse_roles(frontmatter)
+        user = _mapping(frontmatter.get("user"), "user", default={})
+        benchflow = _mapping(frontmatter.get("benchflow"), "benchflow", default={})
+        prompt_settings = _prompt_composition_settings(benchflow)
         scenes = _parse_scenes(
             frontmatter,
             roles=roles,
             instruction=prompt_sections.instruction,
             role_prompts=prompt_sections.role_prompts,
             scene_prompts=prompt_sections.scene_prompts,
+            prompt_settings=prompt_settings,
         )
-        user = _mapping(frontmatter.get("user"), "user", default={})
-        benchflow = _mapping(frontmatter.get("benchflow"), "benchflow", default={})
         return cls(
             frontmatter=frontmatter,
             body=body,
@@ -225,6 +232,7 @@ def _parse_scenes(
     instruction: str,
     role_prompts: dict[str, str],
     scene_prompts: dict[str, str],
+    prompt_settings: PromptCompositionSettings,
 ) -> list[Scene]:
     raw_scenes = frontmatter.get("scenes")
     if raw_scenes is None:
@@ -244,18 +252,27 @@ def _parse_scenes(
         turns = _parse_turns(
             scene_data.get("turns"),
             scene_name=name,
+            base_prompt=instruction,
             roles=roles,
             scene_role_names=scene_role_names,
             role_prompts=role_prompts,
             scene_prompts=scene_prompts,
+            prompt_settings=prompt_settings,
         )
         if not turns and scene_roles:
             turns = [
                 Turn(
                     role=role.name,
-                    prompt=scene_prompts.get(name)
-                    or role_prompts.get(role.name)
-                    or instruction,
+                    prompt=_compose_scene_turn_prompt(
+                        base_prompt=instruction,
+                        role_name=role.name,
+                        scene_name=name,
+                        role_prompts=role_prompts,
+                        scene_prompts=scene_prompts,
+                        turn_prompt=None,
+                        explicit_turn=False,
+                        prompt_settings=prompt_settings,
+                    ),
                 )
                 for role in scene_roles
             ]
@@ -294,14 +311,45 @@ def _scene_role_names(scene_data: dict[str, Any], roles: dict[str, Role]) -> lis
     return [name for name in raw_names if isinstance(name, str)]
 
 
+def _prompt_composition_settings(benchflow: dict[str, Any]) -> PromptCompositionSettings:
+    try:
+        return prompt_composition_settings(benchflow)
+    except ValueError as exc:
+        raise TaskDocumentParseError(str(exc)) from exc
+
+
+def _compose_scene_turn_prompt(
+    *,
+    base_prompt: str,
+    role_name: str,
+    scene_name: str,
+    role_prompts: dict[str, str],
+    scene_prompts: dict[str, str],
+    turn_prompt: str | None,
+    explicit_turn: bool,
+    prompt_settings: PromptCompositionSettings,
+) -> str:
+    return compose_task_prompt(
+        base_prompt,
+        role_prompts.get(role_name),
+        scene_prompts.get(scene_name),
+        turn_prompt,
+        composition=prompt_settings.composition,
+        order=prompt_settings.order,
+        explicit_turn=explicit_turn,
+    )
+
+
 def _parse_turns(
     raw_turns: Any,
     *,
     scene_name: str,
+    base_prompt: str,
     roles: dict[str, Role],
     scene_role_names: list[str],
     role_prompts: dict[str, str],
     scene_prompts: dict[str, str],
+    prompt_settings: PromptCompositionSettings,
 ) -> list[Turn]:
     if raw_turns is None:
         return []
@@ -312,13 +360,17 @@ def _parse_turns(
     for index, raw_turn in enumerate(raw_turns):
         if isinstance(raw_turn, str):
             role_name = raw_turn
-            prompt = None
+            turn_prompt = None
+            explicit_turn = False
         else:
             turn_data = _mapping(raw_turn, f"turns[{index}]", default={})
             role_name = turn_data.get("role")
             if not isinstance(role_name, str):
                 raise TaskDocumentParseError(f"turns[{index}].role is required")
-            prompt = _optional_str(turn_data.get("prompt"))
+            explicit_turn = "prompt" in turn_data
+            turn_prompt = (
+                _optional_str(turn_data.get("prompt")) if explicit_turn else None
+            )
         _lookup_role(roles, role_name, f"turns[{index}].role")
         if role_name not in scene_role_names:
             raise TaskDocumentParseError(
@@ -327,9 +379,16 @@ def _parse_turns(
         turns.append(
             Turn(
                 role=role_name,
-                prompt=prompt
-                or scene_prompts.get(scene_name)
-                or role_prompts.get(role_name),
+                prompt=_compose_scene_turn_prompt(
+                    base_prompt=base_prompt,
+                    role_name=role_name,
+                    scene_name=scene_name,
+                    role_prompts=role_prompts,
+                    scene_prompts=scene_prompts,
+                    turn_prompt=turn_prompt,
+                    explicit_turn=explicit_turn,
+                    prompt_settings=prompt_settings,
+                ),
             )
         )
     return turns
