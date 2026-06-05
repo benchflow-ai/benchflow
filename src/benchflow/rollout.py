@@ -998,10 +998,15 @@ def _task_document_scenes(
     """Load scene declarations through ``TaskRuntimeView`` when applicable."""
     from benchflow.task.package import TaskRuntimeView
 
-    return TaskRuntimeView.from_task_dir(task_path).to_rollout_scenes(
-        prompts=prompts,
-        skill_mode=skill_mode,
-    )
+    if not (task_path / "task.md").is_file():
+        return []
+    try:
+        return TaskRuntimeView.from_task_dir(task_path).to_rollout_scenes(
+            prompts=prompts,
+            skill_mode=skill_mode,
+        )
+    except (FileNotFoundError, ValueError):
+        return []
 
 
 __all__ = [

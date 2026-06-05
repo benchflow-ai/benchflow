@@ -15,8 +15,9 @@ exists on the task-standard branch (see the dogfood report follow-up section):
   Reward Kit / agent-judge execution still open.
 - `compat-export-loss-reports`: **mostly landed** — `bench tasks export` with
   `compatibility/export-report.json`; round-trip parity still open.
-- `prompt-user-semantics`: **partial** — append/replace composition on scene
-  turns; user/nudge loops fail-closed on docker/daytona until executable.
+- `prompt-user-semantics`: **mostly landed** — append/replace composition,
+  `DocumentSimulatedUser` + `compile_document_user_loop`, simulated-user
+  nudges via `nudge_budget`; multi-scene user-loop wiring still manual.
 
 See the dogfood report:
 [2026-06-05-task-standard-benchflow-dogfood.md](../../../reports/2026-06-05-task-standard-benchflow-dogfood.md).
