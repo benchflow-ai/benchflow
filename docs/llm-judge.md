@@ -35,7 +35,7 @@ provider's SDK for the model you use, but the extra ships all three):
 uv sync --extra judge
 
 # or as an installed tool
-uv tool install --prerelease allow 'benchflow[judge]==0.5.0'
+uv tool install --prerelease allow 'benchflow[judge]==0.5.1'
 
 # or with pip
 pip install 'benchflow[judge]'

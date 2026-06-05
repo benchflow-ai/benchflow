@@ -5,7 +5,7 @@ Date: 2026-05-24
 ## Summary
 
 All 14 urgent release blockers (ENG-147 through ENG-161) were resolved for the
-BenchFlow `0.5.0` public release. The evidence was gathered on the
+BenchFlow `0.5.1` public release line. The evidence was gathered on the
 `v0.5-integration` branch across PRs #347–#372 before the release was cut.
 
 Test suite: 1910 passed, 9 skipped, 0 failed. ruff + ty clean.

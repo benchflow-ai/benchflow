@@ -20,7 +20,7 @@ BenchFlow runs AI agents against benchmark tasks in sandboxed environments. Sing
 
 ## Install
 
-BenchFlow's current public release is `0.5.0`:
+BenchFlow's current public release is `0.5.1`:
 
 ```bash
 pip install --upgrade benchflow
@@ -29,7 +29,7 @@ pip install --upgrade benchflow
 For a `uv`-managed CLI install of the public release:
 
 ```bash
-uv tool install --prerelease allow 'benchflow==0.5.0'
+uv tool install --prerelease allow 'benchflow==0.5.1'
 ```
 
 Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/). Set `DAYTONA_API_KEY` for Daytona runs or configure Modal auth for Modal runs; export the relevant agent API key (`GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, etc.) or run `claude login` / `codex --login` for subscription auth. Provider-prefixed models may use provider-specific credentials; Azure Foundry models use `AZURE_API_KEY` plus `AZURE_API_ENDPOINT`.
