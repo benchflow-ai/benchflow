@@ -83,7 +83,12 @@ def snapshot(api_key: str | None) -> dict:
     except Exception as e:
         return {**empty, "error": f"daytona support unavailable: {e}"}
     try:
-        items = list(build_sync_client((api_key or "").strip() or None).list())
+        # client.list() returns a PaginatedSandboxes; the real Sandbox objects are
+        # under .items. Iterating the paginator directly yields its internal fields
+        # (which is why count looked like 5 and every row was "?"). Fall back to the
+        # raw result for SDK versions that return a plain list.
+        paginated = build_sync_client((api_key or "").strip() or None).list()
+        items = list(getattr(paginated, "items", None) or paginated)
     except Exception as e:
         return {**empty, "error": f"Daytona list() failed: {e}"}
 
