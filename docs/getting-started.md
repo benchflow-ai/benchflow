@@ -17,7 +17,7 @@ pip install --upgrade benchflow
 For a `uv`-managed CLI install of the current public release:
 
 ```bash
-uv tool install --prerelease allow 'benchflow==0.5.1'
+uv tool install --prerelease allow 'benchflow==0.5.2'
 ```
 
 This gives you the `benchflow` (alias `bench`) CLI plus the Python SDK. To install for editable development:
