@@ -27,6 +27,11 @@ from benchflow.rewards.validation import (
 from benchflow.sandbox.lockdown import _exec_return_code, clear_verifier_output_dir
 from benchflow.task.env import resolve_env_vars
 from benchflow.task.paths import RolloutPaths, SandboxPaths
+from benchflow.task.verifier_document import (
+    VerifierDocument,
+    is_executable_script_strategy,
+    resolve_default_strategy,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +66,28 @@ class DownloadVerifierDirError(Exception):
 
 class RubricNotFoundError(Exception):
     """Raised when an llm-judge verifier cannot locate its rubric file."""
+
+
+class UnsupportedVerifierStrategyError(ValueError):
+    """Raised when a verifier document selects a strategy the runtime cannot execute."""
+
+    def __init__(
+        self,
+        *,
+        strategy_name: str,
+        strategy_type: str | None,
+        task_path: Path | str | None = None,
+    ) -> None:
+        self.strategy_name = strategy_name
+        self.strategy_type = strategy_type
+        self.task_path = Path(task_path) if task_path is not None else None
+        type_label = strategy_type or "<missing>"
+        location = f" at {self.task_path}" if self.task_path is not None else ""
+        message = (
+            f"Verifier strategy {strategy_name!r} (type={type_label!r}){location} "
+            "is parsed but not executable by the runtime yet"
+        )
+        super().__init__(message)
 
 
 class Verifier:
@@ -116,9 +143,39 @@ class Verifier:
         ):
             path.unlink(missing_ok=True)
 
+    def _route_verifier_document_strategy(self) -> str | None:
+        """Log and validate the selected ``verifier/verifier.md`` strategy.
+
+        Returns ``"test-script"`` when the document routes to ``test.sh``,
+        or ``None`` when no document strategy is selected.
+        """
+        document = getattr(self._task, "verifier_document", None)
+        if not isinstance(document, VerifierDocument) or not document.default_strategy:
+            return None
+
+        strategy_name, strategy = resolve_default_strategy(document)
+        strategy_type = strategy.get("type")
+        self._logger.info(
+            "Selected verifier document strategy %r (type=%r)",
+            strategy_name,
+            strategy_type,
+        )
+        if is_executable_script_strategy(strategy):
+            return "test-script"
+
+        task_path = getattr(self._task, "task_dir", None)
+        raise UnsupportedVerifierStrategyError(
+            strategy_name=strategy_name,
+            strategy_type=strategy_type if isinstance(strategy_type, str) else None,
+            task_path=task_path,
+        )
+
     async def verify(self) -> VerifierResult:
         """Run the configured verifier and return the reward result."""
         self._clear_reward_outputs()
+        document_route = self._route_verifier_document_strategy()
+        if document_route == "test-script":
+            return await self._verify_test_script()
         if self._task.config.verifier.type == "llm-judge":
             return await self._verify_llm_judge()
         return await self._verify_test_script()

@@ -68,6 +68,7 @@ from benchflow.task.verifier import (
     RewardFileEmptyError,
     RewardFileNotFoundError,
     RubricNotFoundError,
+    UnsupportedVerifierStrategyError,
     Verifier,
     VerifierOutputParseError,
     VerifierResult,
@@ -78,8 +79,11 @@ from benchflow.task.verifier_document import (
     VerifierDocumentParseError,
     VerifierOutputs,
     VerifierRubricFiles,
+    is_executable_script_strategy,
+    resolve_default_strategy,
     resolve_verifier_spec_path,
     verifier_document_issues,
+    verifier_strategy_type,
 )
 
 __all__ = [
@@ -103,6 +107,9 @@ __all__ = [
     "VerifierOutputs",
     "VerifierRubricFiles",
     "resolve_verifier_spec_path",
+    "resolve_default_strategy",
+    "verifier_strategy_type",
+    "is_executable_script_strategy",
     "verifier_document_issues",
     # Configuration ($C$)
     "SandboxConfig",
@@ -133,6 +140,7 @@ __all__ = [
     "RewardFileEmptyError",
     "RewardFileNotFoundError",
     "RubricNotFoundError",
+    "UnsupportedVerifierStrategyError",
     "VerifierOutputParseError",
     "AddTestsDirError",
     "DownloadVerifierDirError",

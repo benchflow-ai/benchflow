@@ -330,13 +330,55 @@ def _optional_str(value: Any) -> str | None:
     return value
 
 
+_SCRIPT_STRATEGY_TYPES = frozenset({"script", "deterministic"})
+
+
+def resolve_default_strategy(
+    document: VerifierDocument,
+) -> tuple[str, dict[str, Any]]:
+    """Return the selected default strategy name and config."""
+
+    strategy_name = document.default_strategy
+    if not strategy_name:
+        raise ValueError("verifier document has no default_strategy")
+    strategy = document.strategies.get(strategy_name)
+    if strategy is None:
+        raise ValueError(
+            f"verifier default_strategy {strategy_name!r} is not declared in "
+            "verifier.strategies"
+        )
+    return strategy_name, strategy
+
+
+def verifier_strategy_type(strategy: dict[str, Any]) -> str | None:
+    """Return the declared strategy ``type`` when present."""
+
+    raw_type = strategy.get("type")
+    if raw_type is None:
+        return None
+    if not isinstance(raw_type, str):
+        raise VerifierDocumentParseError(
+            f"verifier strategy type must be a string, got {type(raw_type).__name__}"
+        )
+    return raw_type
+
+
+def is_executable_script_strategy(strategy: dict[str, Any]) -> bool:
+    """Return whether the runtime can execute the strategy via ``test.sh``."""
+
+    return verifier_strategy_type(strategy) in _SCRIPT_STRATEGY_TYPES
+
+
 __all__ = [
     "VERIFIER_DOCUMENT_FILENAME",
     "VerifierDocument",
     "VerifierDocumentParseError",
     "VerifierOutputs",
     "VerifierRubricFiles",
+    "is_executable_script_strategy",
     "load_verifier_document",
+    "resolve_default_strategy",
     "resolve_verifier_spec_path",
     "verifier_document_issues",
+    "verifier_strategy_type",
 ]

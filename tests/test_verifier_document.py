@@ -2,16 +2,24 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from benchflow._utils.task_authoring import check_task
 from benchflow.task import (
+    RolloutPaths,
     Task,
+    UnsupportedVerifierStrategyError,
+    Verifier,
     VerifierDocument,
     VerifierDocumentParseError,
+    is_executable_script_strategy,
+    resolve_default_strategy,
     verifier_document_issues,
+    verifier_strategy_type,
 )
 from benchflow.task.verifier_document import resolve_verifier_spec_path
 
@@ -178,3 +186,82 @@ def _dogfood_benchflow_verifier() -> dict[str, object]:
     verifier = benchflow.get("verifier")
     assert isinstance(verifier, dict)
     return verifier
+
+
+def test_resolve_default_strategy_uses_dogfood_fixture() -> None:
+    """Guards verifier-package-reward-contract default strategy resolution."""
+    document = VerifierDocument.from_path(DOGFOOD_VERIFIER_MD)
+
+    strategy_name, strategy = resolve_default_strategy(document)
+
+    assert strategy_name == "deterministic"
+    assert verifier_strategy_type(strategy) == "script"
+    assert is_executable_script_strategy(strategy)
+
+
+@pytest.mark.asyncio
+async def test_verify_logs_and_routes_deterministic_strategy_to_test_script(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Guards verifier document script strategy routing on dogfood task."""
+    task = Task(DOGFOOD_TASK_DIR)
+    rollout_paths = RolloutPaths(Path("/tmp/verifier-strategy-rollout"))
+    rollout_paths.mkdir()
+
+    sandbox = MagicMock()
+    sandbox.upload_dir = AsyncMock()
+    sandbox.is_mounted = True
+
+    async def exec_writes_reward(*_args: object, **_kwargs: object) -> MagicMock:
+        if sandbox.exec.await_count == 1:
+            return MagicMock(return_code=0, stdout="")
+        rollout_paths.reward_text_path.write_text("1.0")
+        return MagicMock(return_code=0, stdout="")
+
+    sandbox.exec = AsyncMock(side_effect=exec_writes_reward)
+
+    with caplog.at_level("INFO"):
+        result = await Verifier(task, rollout_paths, sandbox).verify()
+
+    assert result.rewards == {"reward": 1.0}
+    assert any(
+        "Selected verifier document strategy 'deterministic' (type='script')"
+        in record.getMessage()
+        for record in caplog.records
+    )
+    sandbox.upload_dir.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    ("default_strategy", "expected_type"),
+    [
+        ("rewardkit", "reward-kit"),
+        ("judge", "agent-judge"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_verify_rejects_unsupported_verifier_document_strategies(
+    default_strategy: str,
+    expected_type: str,
+) -> None:
+    """Guards fail-closed routing for non-script verifier document strategies."""
+    task = Task(DOGFOOD_TASK_DIR)
+    document = task.verifier_document
+    assert document is not None
+    task.verifier_document = replace(document, default_strategy=default_strategy)
+
+    rollout_paths = RolloutPaths(Path("/tmp/verifier-strategy-rollout"))
+    rollout_paths.mkdir()
+
+    sandbox = MagicMock()
+    sandbox.upload_dir = AsyncMock()
+    sandbox.exec = AsyncMock(side_effect=AssertionError("test.sh must not run"))
+
+    with pytest.raises(
+        UnsupportedVerifierStrategyError,
+        match=rf"type={expected_type!r}.*not executable",
+    ):
+        await Verifier(task, rollout_paths, sandbox).verify()
+
+    sandbox.upload_dir.assert_not_called()
+    sandbox.exec.assert_not_called()
