@@ -685,7 +685,7 @@ Current implementation status:
 | `reward.json` precedence | yes | yes | keep scalar agreement checks; multi-metric maps synthesize mean or honor JSON `aggregate_policy.field` |
 | `reward-details.json` preservation | yes | yes | copy through verifier rollout download; no parsing yet |
 | `TaskPackage` / `TaskRuntimeView` | yes | partial | entrypoint, dirs, scenes, alias collisions, `verifier_document`; prompt composition and sandbox gates still partial |
-| runtime capability gates (docker/daytona) | yes | partial | `validate_task_runtime_support` + `bench tasks check --sandbox`; more backends pending |
+| runtime capability gates (docker/daytona/modal) | yes | partial | `validate_task_runtime_support` + `bench tasks check --sandbox`; K8s/podman pending |
 | Harbor/Pier export | yes | partial | `bench tasks export` + `compatibility/export-report.json`; `bench tasks round-trip` / `import --native` parity checks |
 | native `/task.md` upload | yes | yes | keep `/instruction.md` compatibility contract |
 | alias dir collision checks | yes | partial | `bench tasks check` and `Task()` load fail closed; export parity pending |
@@ -710,7 +710,7 @@ This module should answer:
 - whether mixed native/legacy definitions and alias directories are equivalent
   or collisions
 
-P1: Fail-closed capability checks (partial on docker/daytona).
+P1: Fail-closed capability checks (partial on docker/daytona/modal).
 
 Rollout, verifier, hardening, and adapters should stop parsing fields they do
 not execute without surfacing a validation result.

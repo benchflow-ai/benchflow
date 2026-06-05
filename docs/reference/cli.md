@@ -185,7 +185,7 @@ bench tasks init my-legacy-task --format legacy
 
 Validate a task directory (`task.md` or legacy `task.toml` + `instruction.md`,
 Dockerfile, `verifier/` or legacy `tests/`). With `--sandbox`, also check that
-parsed task fields are supported on the chosen backend (`docker` or `daytona`).
+parsed task fields are supported on the chosen backend (`docker`, `daytona`, or `modal`).
 
 ```bash
 bench tasks check tasks/my-task
@@ -195,7 +195,7 @@ bench tasks check tasks/my-task --sandbox daytona
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--sandbox` | — | Also validate runtime support on `docker` or `daytona` |
+| `--sandbox` | — | Also validate runtime support on `docker`, `daytona`, or `modal` |
 
 ### bench tasks export
 

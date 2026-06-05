@@ -140,6 +140,17 @@ name = "scaffold"
         assert "valid" in result.output
         assert "runtime supported on daytona" in result.output
 
+    def test_check_with_modal_sandbox_passes_minimal_task(self, tmp_path: Path) -> None:
+        task = _write_minimal_legacy_task(tmp_path / "ok-task")
+        result = CliRunner().invoke(
+            app,
+            ["tasks", "check", str(task), "--sandbox", "modal"],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "valid" in result.output
+        assert "runtime supported on modal" in result.output
+
 
 class TestTasksRoundTripCli:
     def test_round_trip_exports_and_validates_compat_example(

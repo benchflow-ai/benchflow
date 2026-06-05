@@ -36,9 +36,9 @@ def _load_task(task_dir: Path) -> Task:
     return Task(task_dir)
 
 
-@pytest.mark.parametrize("sandbox_type", ["docker", "daytona"])
+@pytest.mark.parametrize("sandbox_type", ["docker", "daytona", "modal"])
 class TestGatedSandboxesRejectUnsupportedFields:
-    """Guards P1 fail-closed validation for docker and daytona."""
+    """Guards P1 fail-closed validation for docker, daytona, and modal."""
 
     def test_minimal_task_has_no_runtime_issues(self, tmp_path: Path, sandbox_type: str) -> None:
         task_dir = _write_minimal_task(
@@ -269,16 +269,16 @@ service = "target"
             "services:\n  main: {}\n  target: {}\n"
         )
         task = _load_task(task_dir)
-        for sandbox_type in ("docker", "daytona"):
+        for sandbox_type in ("docker", "daytona", "modal"):
             assert validate_task_runtime_support(task, sandbox_type, task_dir) == []
 
 
 class TestUngatedSandboxes:
-    """Modal and unknown backends skip capability gating for now."""
+    """Unknown backends skip capability gating."""
 
-    def test_modal_skips_validation(self, tmp_path: Path) -> None:
+    def test_unknown_backend_skips_validation(self, tmp_path: Path) -> None:
         task_dir = _write_minimal_task(
-            tmp_path / "modal-task",
+            tmp_path / "k8s-task",
             """\
 version = "1.0"
 
@@ -289,7 +289,7 @@ allowed_hosts = ["example.com"]
 """,
         )
         task = _load_task(task_dir)
-        assert validate_task_runtime_support(task, "modal", task_dir) == []
+        assert validate_task_runtime_support(task, "kubernetes", task_dir) == []
 
 
 class TestHarborParityFixture:
@@ -397,7 +397,7 @@ workdir = "/repo"
         asyncio.run(rollout.setup())
 
 
-@pytest.mark.parametrize("sandbox_type", ["docker", "daytona"])
+@pytest.mark.parametrize("sandbox_type", ["docker", "daytona", "modal"])
 class TestPromptUserSemanticsDogfood:
     """Guards fail-closed user/nudge validation for prompt-user-semantics dogfood."""
 

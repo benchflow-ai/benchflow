@@ -671,7 +671,7 @@ def tasks_init(
 def tasks_check(
     task_dir: Annotated[Path, typer.Argument(help="Path to task directory")],
     sandbox: Annotated[
-        Literal["docker", "daytona"] | None,
+        Literal["docker", "daytona", "modal"] | None,
         typer.Option(
             "--sandbox",
             help="Also validate parsed fields against this sandbox backend",

@@ -21,7 +21,7 @@ from benchflow.task.config import (
 if TYPE_CHECKING:
     from benchflow.task.task import Task
 
-_GATED_SANDBOX_TYPES = frozenset({"docker", "daytona"})
+_GATED_SANDBOX_TYPES = frozenset({"docker", "daytona", "modal"})
 _METADATA_ONLY_RUNTIME_VALUES = frozenset({"metadata-only", "metadata_only"})
 
 
