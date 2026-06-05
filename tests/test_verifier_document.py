@@ -94,6 +94,125 @@ def test_verifier_document_issues_validate_dogfood_task() -> None:
     assert issues == []
 
 
+def test_verifier_document_issues_require_agent_judge_role_field(
+    tmp_path: Path,
+) -> None:
+    """Guards agent-judge strategy role field presence on dogfood verifier.md."""
+    task_dir = tmp_path / "task"
+    verifier_dir = task_dir / "verifier"
+    verifier_dir.mkdir(parents=True)
+    (verifier_dir / "rubrics").mkdir()
+    (verifier_dir / "rubrics" / "verifier.toml").write_text(
+        "[criterion]\nname = \"contract\"\n"
+    )
+    (verifier_dir / "reward_kit").mkdir()
+    verifier_text = DOGFOOD_VERIFIER_MD.read_text(encoding="utf-8").replace(
+        "      role: verifier_judge\n",
+        "",
+    )
+    (verifier_dir / "verifier.md").write_text(verifier_text, encoding="utf-8")
+
+    issues = verifier_document_issues(
+        task_dir,
+        benchflow_verifier={"spec": "verifier/verifier.md"},
+    )
+
+    assert issues == [
+        "verifier/verifier.md agent-judge strategy 'judge' is missing role"
+    ]
+
+
+def test_verifier_document_issues_require_agent_judge_role_prompt(
+    tmp_path: Path,
+) -> None:
+    """Guards agent-judge inline role prompt validation on dogfood verifier.md."""
+    task_dir = tmp_path / "task"
+    verifier_dir = task_dir / "verifier"
+    verifier_dir.mkdir(parents=True)
+    (verifier_dir / "rubrics").mkdir()
+    (verifier_dir / "rubrics" / "verifier.toml").write_text(
+        "[criterion]\nname = \"contract\"\n"
+    )
+    (verifier_dir / "reward_kit").mkdir()
+    verifier_text = DOGFOOD_VERIFIER_MD.read_text(encoding="utf-8").replace(
+        "role: verifier_judge",
+        "role: missing_judge",
+    )
+    (verifier_dir / "verifier.md").write_text(verifier_text, encoding="utf-8")
+
+    issues = verifier_document_issues(
+        task_dir,
+        benchflow_verifier={"spec": "verifier/verifier.md"},
+    )
+
+    assert issues == [
+        "verifier/verifier.md agent-judge strategy 'judge' references "
+        "unknown role prompt ## role:missing_judge"
+    ]
+
+
+def test_verifier_document_issues_require_agent_judge_role_file(
+    tmp_path: Path,
+) -> None:
+    """Guards agent-judge judges/*.md role file validation on dogfood verifier.md."""
+    task_dir = tmp_path / "task"
+    verifier_dir = task_dir / "verifier"
+    verifier_dir.mkdir(parents=True)
+    (verifier_dir / "rubrics").mkdir()
+    (verifier_dir / "rubrics" / "verifier.toml").write_text(
+        "[criterion]\nname = \"contract\"\n"
+    )
+    (verifier_dir / "reward_kit").mkdir()
+    verifier_text = DOGFOOD_VERIFIER_MD.read_text(encoding="utf-8").replace(
+        "role: verifier_judge",
+        "role: judges/reviewer.md",
+    )
+    (verifier_dir / "verifier.md").write_text(verifier_text, encoding="utf-8")
+
+    issues = verifier_document_issues(
+        task_dir,
+        benchflow_verifier={"spec": "verifier/verifier.md"},
+    )
+
+    assert issues == [
+        "verifier/verifier.md agent-judge strategy 'judge' references "
+        "missing role file: judges/reviewer.md"
+    ]
+
+
+def test_verifier_document_issues_accepts_agent_judge_role_file(
+    tmp_path: Path,
+) -> None:
+    """Guards agent-judge role file path resolution relative to verifier/."""
+    task_dir = tmp_path / "task"
+    verifier_dir = task_dir / "verifier"
+    verifier_dir.mkdir(parents=True)
+    (verifier_dir / "rubrics").mkdir()
+    (verifier_dir / "rubrics" / "verifier.toml").write_text(
+        "[criterion]\nname = \"contract\"\n"
+    )
+    (verifier_dir / "reward_kit").mkdir()
+    (verifier_dir / "judges").mkdir()
+    (verifier_dir / "judges" / "reviewer.md").write_text(
+        "Grade only declared deliverables.\n",
+        encoding="utf-8",
+    )
+    verifier_text = DOGFOOD_VERIFIER_MD.read_text(encoding="utf-8")
+    verifier_text = verifier_text.replace("role: verifier_judge", "role: judges/reviewer.md")
+    verifier_text = verifier_text.replace(
+        "## role:verifier_judge\n\nEvaluate only declared deliverables",
+        "",
+    )
+    (verifier_dir / "verifier.md").write_text(verifier_text, encoding="utf-8")
+
+    issues = verifier_document_issues(
+        task_dir,
+        benchflow_verifier={"spec": "verifier/verifier.md"},
+    )
+
+    assert issues == []
+
+
 def test_verifier_document_issues_require_reward_kit_root_directory(
     tmp_path: Path,
 ) -> None:

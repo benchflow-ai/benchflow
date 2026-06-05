@@ -179,6 +179,16 @@ def verifier_document_issues(
         except VerifierDocumentParseError as exc:
             issues.append(f"{spec} strategy {strategy_name!r} error: {exc}")
             continue
+        if strategy_type == "agent-judge":
+            _append_agent_judge_role_issues(
+                issues,
+                spec=spec,
+                strategy_name=strategy_name,
+                strategy=strategy,
+                document=document,
+                verifier_dir=verifier_dir,
+            )
+            continue
         if strategy_type != "reward-kit":
             continue
         raw_root = strategy.get("root")
@@ -195,6 +205,43 @@ def verifier_document_issues(
             )
 
     return issues
+
+
+def _is_agent_judge_role_file_path(role: str) -> bool:
+    return "/" in role or role.endswith(".md")
+
+
+def _append_agent_judge_role_issues(
+    issues: list[str],
+    *,
+    spec: str,
+    strategy_name: str,
+    strategy: dict[str, Any],
+    document: VerifierDocument,
+    verifier_dir: Path,
+) -> None:
+    raw_role = strategy.get("role")
+    if not isinstance(raw_role, str) or not raw_role.strip():
+        issues.append(
+            f"{spec} agent-judge strategy {strategy_name!r} is missing role"
+        )
+        return
+
+    role = raw_role.strip()
+    if _is_agent_judge_role_file_path(role):
+        role_path = (verifier_dir / role).resolve()
+        if not role_path.is_file():
+            issues.append(
+                f"{spec} agent-judge strategy {strategy_name!r} references "
+                f"missing role file: {role}"
+            )
+        return
+
+    if role not in document.role_prompts:
+        issues.append(
+            f"{spec} agent-judge strategy {strategy_name!r} references "
+            f"unknown role prompt ## role:{role}"
+        )
 
 
 def _declared_rubric_file_paths(
