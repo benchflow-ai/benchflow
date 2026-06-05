@@ -173,6 +173,27 @@ def verifier_document_issues(
                 f"benchflow.verifier declares missing {label} rubric file: {path}"
             )
 
+    for strategy_name, strategy in document.strategies.items():
+        try:
+            strategy_type = verifier_strategy_type(strategy)
+        except VerifierDocumentParseError as exc:
+            issues.append(f"{spec} strategy {strategy_name!r} error: {exc}")
+            continue
+        if strategy_type != "reward-kit":
+            continue
+        raw_root = strategy.get("root")
+        if not isinstance(raw_root, str) or not raw_root.strip():
+            issues.append(
+                f"{spec} reward-kit strategy {strategy_name!r} is missing root"
+            )
+            continue
+        root_path = (verifier_dir / raw_root.strip()).resolve()
+        if not root_path.is_dir():
+            issues.append(
+                f"{spec} reward-kit strategy {strategy_name!r} references "
+                f"missing root directory: {raw_root.strip()}"
+            )
+
     return issues
 
 

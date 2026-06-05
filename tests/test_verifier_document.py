@@ -94,6 +94,33 @@ def test_verifier_document_issues_validate_dogfood_task() -> None:
     assert issues == []
 
 
+def test_verifier_document_issues_require_reward_kit_root_directory(
+    tmp_path: Path,
+) -> None:
+    """Guards reward-kit strategy root directory validation on dogfood verifier.md."""
+    task_dir = tmp_path / "task"
+    verifier_dir = task_dir / "verifier"
+    verifier_dir.mkdir(parents=True)
+    (verifier_dir / "rubrics").mkdir()
+    (verifier_dir / "rubrics" / "verifier.toml").write_text(
+        "[criterion]\nname = \"contract\"\n"
+    )
+    (verifier_dir / "verifier.md").write_text(
+        DOGFOOD_VERIFIER_MD.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+
+    issues = verifier_document_issues(
+        task_dir,
+        benchflow_verifier={"spec": "verifier/verifier.md"},
+    )
+
+    assert issues == [
+        "verifier/verifier.md reward-kit strategy 'rewardkit' references "
+        "missing root directory: reward_kit/"
+    ]
+
+
 def test_check_task_validates_verifier_spec_for_dogfood_task() -> None:
     """Guards task-standard benchflow.verifier.spec validation in check_task."""
     issues = check_task(DOGFOOD_TASK_DIR)
