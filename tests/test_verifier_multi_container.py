@@ -18,6 +18,8 @@ All tests are unit tests with mocked sandboxes — no Docker/Daytona infra.
 
 from __future__ import annotations
 
+import json
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -198,6 +200,47 @@ class TestTargetSideTestScriptVerification:
         details = rollout_paths.reward_details_path.read_text()
         assert '"criteria"' in details
         assert '"stale"' not in details
+
+    @pytest.mark.asyncio
+    async def test_reward_details_json_in_persisted_result_artifacts(
+        self, tmp_path: Path
+    ) -> None:
+        """Guards task-standard F8 reward-details.json metadata in result.json."""
+        from benchflow.rollout import _build_rollout_result
+
+        toml = 'version = "1.0"\n[verifier]\nservice = "target"\n'
+        task = _make_task(tmp_path, toml)
+        rollout_paths = RolloutPaths(rollout_dir=tmp_path / "rollout")
+        rollout_paths.mkdir()
+        sandbox = _RecordingSandbox(rollout_paths, reward="1.0")
+
+        await Verifier(task, rollout_paths, sandbox).verify()
+
+        _build_rollout_result(
+            rollout_paths.rollout_dir,
+            task_name="task",
+            rollout_name="run-1",
+            agent="oracle",
+            agent_name="oracle",
+            model=None,
+            n_tool_calls=0,
+            prompts=["solve"],
+            error=None,
+            verifier_error=None,
+            trajectory=[],
+            partial_trajectory=False,
+            rewards={"reward": 1.0},
+            started_at=datetime.now(),
+            timing={"verifier": 1.0},
+        )
+
+        result = json.loads(
+            (rollout_paths.rollout_dir / "result.json").read_text(encoding="utf-8")
+        )
+        assert rollout_paths.reward_details_path.is_file()
+        assert result["reward_details"]["path"] == "verifier/reward-details.json"
+        assert "criteria" in result["reward_details"]["content_preview"]
+        assert result["reward_details"]["top_level_keys"] == ["criteria"]
 
     @pytest.mark.asyncio
     async def test_target_service_logs_verifier_dir_created_before_test_sh(
