@@ -11,6 +11,28 @@ from typing import Any
 RewardValue = float | int
 RewardMap = dict[str, Any]
 
+# Top-level reward JSON keys that are not scalar metrics in [0, 1].
+RESERVED_REWARD_KEYS = frozenset(
+    {
+        "reward",
+        "rubric",
+        "items",
+        "evidence",
+        "artifacts",
+        "metadata",
+        "reason",
+        "reasons",
+        "errors",
+        "metrics",
+        "regressions",
+        "participants",
+        "winner",
+        "raw",
+        "debug",
+        "aggregate_policy",
+    }
+)
+
 
 def is_valid_reward_number(value: Any) -> bool:
     """Return True for finite scalar rewards in BenchFlow's [0, 1] range."""
@@ -89,16 +111,49 @@ def _parse_reward_json_file(path: Path, *, source: str) -> RewardMap:
             f"Reward JSON file {path} must contain an object with numeric rewards"
         )
 
-    canonical_reward = rewards.get("reward")
-    if not is_valid_reward_number(canonical_reward):
-        raise RewardFileParseError(
-            f"Reward JSON file {path} is missing numeric 'reward' between 0.0 and 1.0"
-        )
-
     try:
         return validate_reward_map(rewards, source=source)
     except ValueError as exc:
         raise RewardFileParseError(f"Reward JSON file {path} {exc}") from exc
+
+
+def _resolve_canonical_reward(
+    rewards: Mapping[str, Any],
+    metric_keys: list[str],
+    *,
+    source: str,
+) -> float:
+    """Resolve the scalar aggregate from explicit or multi-metric reward maps."""
+    if "reward" in rewards:
+        explicit = rewards.get("reward")
+        if not is_valid_reward_number(explicit):
+            raise ValueError(
+                f"{source} returned rewards with invalid reward value for 'reward'"
+            )
+        assert isinstance(explicit, int | float)
+        return float(explicit)
+
+    if not metric_keys:
+        raise ValueError(
+            f"{source} returned rewards missing numeric 'reward' between 0.0 and 1.0"
+        )
+
+    aggregate_policy = rewards.get("aggregate_policy")
+    if isinstance(aggregate_policy, Mapping):
+        field = aggregate_policy.get("field")
+        if field is not None:
+            field_name = str(field)
+            selected = rewards.get(field_name)
+            if not is_valid_reward_number(selected):
+                raise ValueError(
+                    f"{source} returned rewards with aggregate_policy.field "
+                    f"{field_name!r} that is not a numeric reward between 0.0 and 1.0"
+                )
+            assert isinstance(selected, int | float)
+            return float(selected)
+
+    values = [float(rewards[key]) for key in metric_keys]
+    return sum(values) / len(values)
 
 
 def validate_reward_map(
@@ -108,22 +163,28 @@ def validate_reward_map(
     if rewards is None:
         raise ValueError(f"{source} returned no rewards")
 
-    reward = rewards.get("reward")
-    if not is_valid_reward_number(reward):
-        raise ValueError(
-            f"{source} returned rewards without numeric 'reward' between 0.0 and 1.0"
-        )
-
     parsed: RewardMap = {}
+    metric_keys: list[str] = []
+
     for key, value in rewards.items():
-        if key == "rubric":
-            parsed[str(key)] = _validate_rubric(value, source=source)
+        key_str = str(key)
+        if key_str == "rubric":
+            parsed[key_str] = _validate_rubric(value, source=source)
+            continue
+        if key_str in RESERVED_REWARD_KEYS:
+            if key_str != "reward":
+                parsed[key_str] = value
             continue
         if not is_valid_reward_number(value):
             raise ValueError(
-                f"{source} returned rewards with invalid reward value for {str(key)!r}"
+                f"{source} returned rewards with invalid reward value for {key_str!r}"
             )
-        parsed[str(key)] = value
+        parsed[key_str] = value
+        metric_keys.append(key_str)
+
+    parsed["reward"] = _resolve_canonical_reward(
+        rewards, metric_keys, source=source
+    )
     return parsed
 
 

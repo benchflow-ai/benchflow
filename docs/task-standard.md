@@ -425,8 +425,12 @@ Target reward precedence:
 
 Current runtime still does not fully match that target: `reward.json` is now
 authoritative when present and scalar mismatches against `reward.txt` fail
-closed, but structured top-level JSON remains limited and multi-metric maps
-without a declared aggregate policy are not yet first-class.
+closed. Multi-metric Harbor Reward Kit maps are accepted when every non-reserved
+top-level key is a numeric reward in `[0, 1]`; the runtime synthesizes a
+canonical `reward` as the unweighted mean of those metrics unless
+`aggregate_policy.field` is set in the JSON. Verifier-document
+`outputs.aggregate_policy` remains metadata for authors and is not yet wired
+into runtime synthesis beyond the JSON field.
 
 Validation evidence should include parser checks, legacy-vs-native migration
 parity, live rollout artifacts, negative-contract failures, and explicit
@@ -676,7 +680,7 @@ Current implementation status:
 | separate verifier env | yes | no/partial | materializer plus verifier runner support |
 | Windows / TPU | yes | no | fail closed |
 | healthcheck / workdir | yes | no/partial | materializer support |
-| `reward.json` precedence | yes | yes | keep scalar agreement checks; add multi-metric aggregate policy |
+| `reward.json` precedence | yes | yes | keep scalar agreement checks; multi-metric maps synthesize mean or honor JSON `aggregate_policy.field` |
 | `reward-details.json` preservation | yes | yes | copy through verifier rollout download; no parsing yet |
 | `TaskPackage` / `TaskRuntimeView` | yes | partial | entrypoint, dirs, scenes, alias collisions, `verifier_document`; prompt composition and sandbox gates still partial |
 | runtime capability gates (docker/daytona) | yes | partial | `validate_task_runtime_support` wired before sandbox creation; more backends and `bench tasks check --sandbox` pending |

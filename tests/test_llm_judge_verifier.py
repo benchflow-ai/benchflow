@@ -635,10 +635,10 @@ class TestTestScriptStillDefault:
     # covered by TestVerifierNonzeroExitRewardAcceptance in test_oracle_chokepoint.py.
 
     @pytest.mark.asyncio
-    async def test_reward_json_requires_canonical_reward_key(
+    async def test_reward_json_requires_scalar_or_metric_map(
         self, tmp_path: Path
     ) -> None:
-        """Guards the reward-output regression on v0.5-integration@ffef85d."""
+        """Guards reward maps that contain only reserved non-metric keys."""
         task = _make_task(tmp_path, 'version = "1.0"\n[verifier]\n')
         task.paths.tests_dir = task.task_dir / "tests"
         task.paths.test_path = task.task_dir / "tests" / "test.sh"
@@ -653,13 +653,46 @@ class TestTestScriptStillDefault:
         async def exec_malformed_reward(*_args: object, **_kwargs: object) -> MagicMock:
             if sandbox.exec.await_count == 1:
                 return MagicMock(return_code=0, stdout="")
-            rollout_paths.reward_json_path.write_text(json.dumps({"score": 1.0}))
+            rollout_paths.reward_json_path.write_text(
+                json.dumps({"metadata": {"source": "rewardkit"}})
+            )
             return MagicMock(return_code=0, stdout="")
 
         sandbox.exec = AsyncMock(side_effect=exec_malformed_reward)
 
         with pytest.raises(VerifierOutputParseError, match="missing numeric 'reward'"):
             await Verifier(task, rollout_paths, sandbox).verify()
+
+    @pytest.mark.asyncio
+    async def test_reward_json_accepts_single_metric_map_without_reward_key(
+        self, tmp_path: Path
+    ) -> None:
+        """Guards Harbor Reward Kit maps that omit the canonical reward key."""
+        task = _make_task(tmp_path, 'version = "1.0"\n[verifier]\n')
+        task.paths.tests_dir = task.task_dir / "tests"
+        task.paths.test_path = task.task_dir / "tests" / "test.sh"
+
+        sandbox = MagicMock()
+        sandbox.upload_dir = AsyncMock()
+        sandbox.is_mounted = True
+
+        rollout_paths = RolloutPaths(tmp_path / "rollout")
+        rollout_paths.mkdir()
+
+        async def exec_single_metric_reward(
+            *_args: object, **_kwargs: object
+        ) -> MagicMock:
+            if sandbox.exec.await_count == 1:
+                return MagicMock(return_code=0, stdout="")
+            rollout_paths.reward_json_path.write_text(json.dumps({"score": 1.0}))
+            return MagicMock(return_code=0, stdout="")
+
+        sandbox.exec = AsyncMock(side_effect=exec_single_metric_reward)
+
+        result = await Verifier(task, rollout_paths, sandbox).verify()
+
+        assert result.rewards["reward"] == pytest.approx(1.0)
+        assert result.rewards["score"] == 1.0
 
     @pytest.mark.asyncio
     async def test_reward_json_preserves_rubric_process_rewards(
@@ -699,10 +732,10 @@ class TestTestScriptStillDefault:
     @pytest.mark.parametrize(
         ("payload", "match"),
         [
-            ({"reward": float("nan")}, "missing numeric 'reward'"),
-            ({"reward": float("inf")}, "missing numeric 'reward'"),
-            ({"reward": True}, "missing numeric 'reward'"),
-            ({"reward": 1.2}, "missing numeric 'reward'"),
+            ({"reward": float("nan")}, "invalid reward value for 'reward'"),
+            ({"reward": float("inf")}, "invalid reward value for 'reward'"),
+            ({"reward": True}, "invalid reward value for 'reward'"),
+            ({"reward": 1.2}, "invalid reward value for 'reward'"),
             ({"reward": 0.5, "extra": float("nan")}, "invalid reward value"),
         ],
     )
@@ -797,3 +830,42 @@ class TestTestScriptStillDefault:
         result = await Verifier(task, rollout_paths, sandbox).verify()
 
         assert result.rewards == payload
+
+    @pytest.mark.asyncio
+    async def test_multi_metric_reward_json_synthesizes_scalar_for_txt_agreement(
+        self, tmp_path: Path
+    ) -> None:
+        """Guards Harbor Reward Kit multi-metric maps in verifier reward parsing."""
+        task = _make_task(tmp_path, 'version = "1.0"\n[verifier]\n')
+        task.paths.tests_dir = task.task_dir / "tests"
+        task.paths.test_path = task.task_dir / "tests" / "test.sh"
+
+        sandbox = MagicMock()
+        sandbox.upload_dir = AsyncMock()
+        sandbox.is_mounted = True
+
+        rollout_paths = RolloutPaths(tmp_path / "rollout")
+        rollout_paths.mkdir()
+        payload = {
+            "correctness": 0.75,
+            "quality": 0.9,
+            "metadata": {"source": "rewardkit"},
+        }
+
+        async def exec_multi_metric_rewards(
+            *_args: object, **_kwargs: object
+        ) -> MagicMock:
+            if sandbox.exec.await_count == 1:
+                return MagicMock(return_code=0, stdout="")
+            rollout_paths.reward_text_path.write_text("0.825")
+            rollout_paths.reward_json_path.write_text(json.dumps(payload))
+            return MagicMock(return_code=0, stdout="")
+
+        sandbox.exec = AsyncMock(side_effect=exec_multi_metric_rewards)
+
+        result = await Verifier(task, rollout_paths, sandbox).verify()
+
+        assert result.rewards["reward"] == pytest.approx(0.825)
+        assert result.rewards["correctness"] == 0.75
+        assert result.rewards["quality"] == 0.9
+        assert result.rewards["metadata"] == payload["metadata"]

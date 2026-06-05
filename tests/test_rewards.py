@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,11 @@ from benchflow.rewards.builtins import (
 from benchflow.rewards.events import RewardEvent
 from benchflow.rewards.protocol import RewardFunc, VerifyResult
 from benchflow.rewards.rubric import Rubric
+from benchflow.rewards.validation import (
+    RewardFileParseError,
+    parse_verifier_reward_files,
+    validate_reward_map,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -179,6 +185,89 @@ class TestRubricEvents:
 # ---------------------------------------------------------------------------
 # TestRewardFunc (backward compat)
 # ---------------------------------------------------------------------------
+
+
+class TestRewardValidation:
+    def test_multi_metric_map_synthesizes_unweighted_mean(self) -> None:
+        """Guards Harbor Reward Kit multi-metric maps without top-level reward."""
+        payload = {"correctness": 0.75, "quality": 0.9}
+        parsed = validate_reward_map(payload, source="verifier")
+        assert parsed["reward"] == pytest.approx(0.825)
+        assert parsed["correctness"] == 0.75
+        assert parsed["quality"] == 0.9
+
+    def test_multi_metric_honors_aggregate_policy_field(self) -> None:
+        payload = {
+            "correctness": 0.75,
+            "quality": 0.9,
+            "aggregate_policy": {"field": "quality", "fallback": "weighted_mean"},
+        }
+        parsed = validate_reward_map(payload, source="verifier")
+        assert parsed["reward"] == pytest.approx(0.9)
+        assert parsed["aggregate_policy"] == payload["aggregate_policy"]
+
+    def test_reserved_keys_are_not_required_to_be_numeric(self) -> None:
+        payload = {
+            "correctness": 1.0,
+            "items": {"correctness": 1.0},
+            "metadata": {"aggregate_policy": "correctness"},
+            "evidence": ["artifact.txt"],
+        }
+        parsed = validate_reward_map(payload, source="verifier")
+        assert parsed["reward"] == pytest.approx(1.0)
+        assert parsed["items"] == payload["items"]
+        assert parsed["metadata"] == payload["metadata"]
+        assert parsed["evidence"] == payload["evidence"]
+
+    def test_explicit_reward_takes_precedence_over_metrics(self) -> None:
+        payload = {"reward": 0.5, "correctness": 1.0, "quality": 0.0}
+        parsed = validate_reward_map(payload, source="verifier")
+        assert parsed["reward"] == pytest.approx(0.5)
+
+    def test_multi_metric_only_rejects_non_numeric_metric_keys(self) -> None:
+        with pytest.raises(ValueError, match="invalid reward value for 'notes'"):
+            validate_reward_map(
+                {"correctness": 0.75, "notes": "partial credit"},
+                source="verifier",
+            )
+
+    def test_multi_metric_only_requires_at_least_one_metric(self) -> None:
+        with pytest.raises(ValueError, match="missing numeric 'reward'"):
+            validate_reward_map({"metadata": {"source": "rewardkit"}}, source="verifier")
+
+    def test_reward_files_agree_with_synthesized_scalar(self, tmp_path: Path) -> None:
+        payload = {"correctness": 0.75, "quality": 0.9}
+        (tmp_path / "reward.txt").write_text("0.825\n")
+        (tmp_path / "reward.json").write_text(json.dumps(payload))
+        parsed = parse_verifier_reward_files(
+            reward_text_path=tmp_path / "reward.txt",
+            reward_json_path=tmp_path / "reward.json",
+            source="verifier",
+        )
+        assert parsed["reward"] == pytest.approx(0.825)
+
+    def test_reward_files_reject_disagreement_with_synthesized_scalar(
+        self, tmp_path: Path
+    ) -> None:
+        payload = {"correctness": 0.75, "quality": 0.9}
+        (tmp_path / "reward.txt").write_text("0.25\n")
+        (tmp_path / "reward.json").write_text(json.dumps(payload))
+        with pytest.raises(RewardFileParseError, match=r"disagrees with reward\.txt"):
+            parse_verifier_reward_files(
+                reward_text_path=tmp_path / "reward.txt",
+                reward_json_path=tmp_path / "reward.json",
+                source="verifier",
+            )
+
+    async def test_test_reward_func_scores_synthesized_multi_metric(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "reward.json").write_text(
+            json.dumps({"correctness": 0.75, "quality": 0.9})
+        )
+        func = TestRewardFunc()
+        score = await func.score(tmp_path)
+        assert score == pytest.approx(0.825)
 
 
 class TestTestRewardFunc:
