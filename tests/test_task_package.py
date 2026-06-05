@@ -10,6 +10,11 @@ from benchflow.rollout import _read_task_instruction
 from benchflow.task import Task, TaskPackage, TaskRuntimeView
 from benchflow.task.paths import TaskPaths
 
+DOGFOOD_TASK_DIR = Path(
+    "docs/examples/task-standard/benchflow-wanted-features/"
+    "verifier-package-reward-contract"
+)
+
 
 def _write_legacy_task(
     task: Path,
@@ -205,6 +210,18 @@ def test_read_task_instruction_uses_runtime_view(tmp_path: Path) -> None:
     _write_task_md(task, prompt="Materialized for /instruction.md")
 
     assert _read_task_instruction(task) == "Materialized for /instruction.md"
+
+
+def test_runtime_view_includes_verifier_document() -> None:
+    """Guards P0 TaskRuntimeView exposure of parsed verifier/verifier.md."""
+    view = TaskRuntimeView.from_task_dir(DOGFOOD_TASK_DIR)
+
+    assert view.verifier_document is not None
+    assert view.verifier_document.name == "verifier-package-reward-contract"
+    assert view.verifier_document.default_strategy == "deterministic"
+
+    loaded = Task(DOGFOOD_TASK_DIR)
+    assert loaded.runtime_view.verifier_document == view.verifier_document
 
 
 def test_runtime_view_detects_legacy_files_alongside_task_md(tmp_path: Path) -> None:

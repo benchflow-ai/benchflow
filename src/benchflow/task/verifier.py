@@ -112,6 +112,7 @@ class Verifier:
         for path in (
             self._rollout_paths.reward_text_path,
             self._rollout_paths.reward_json_path,
+            self._rollout_paths.reward_details_path,
         ):
             path.unlink(missing_ok=True)
 

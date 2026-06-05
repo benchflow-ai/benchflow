@@ -189,6 +189,10 @@ class RolloutPaths:
         return self.verifier_dir / "reward.json"
 
     @property
+    def reward_details_path(self) -> Path:
+        return self.verifier_dir / "reward-details.json"
+
+    @property
     def result_path(self) -> Path:
         return self.rollout_dir / "result.json"
 
@@ -220,3 +224,4 @@ class SandboxPaths:
     task_document_path: PurePosixPath = PurePosixPath("/task.md")  # noqa: RUF009
     reward_text_path: PurePosixPath = verifier_dir / "reward.txt"
     reward_json_path: PurePosixPath = verifier_dir / "reward.json"
+    reward_details_path: PurePosixPath = verifier_dir / "reward-details.json"

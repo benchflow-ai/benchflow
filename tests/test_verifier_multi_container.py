@@ -113,10 +113,13 @@ class _RecordingSandbox:
         self.download_calls.append(
             {"source": source_dir, "target": target_dir, "service": service}
         )
-        # Mimic a target-side test.sh that wrote a reward file.
+        # Mimic a target-side test.sh that wrote reward artifacts.
         dest = Path(target_dir)
         dest.mkdir(parents=True, exist_ok=True)
         (dest / "reward.txt").write_text(self._reward)
+        (dest / "reward-details.json").write_text(
+            '{"criteria": {"correctness": {"score": 1.0}}}'
+        )
 
     async def exec(self, command, service: str = "main", **kwargs) -> ExecResult:
         self.exec_calls.append({"command": command, "service": service, **kwargs})
@@ -177,6 +180,24 @@ class TestTargetSideTestScriptVerification:
 
         assert sandbox.download_calls, "reward must be downloaded from the target"
         assert {c["service"] for c in sandbox.download_calls} == {"target"}
+
+    @pytest.mark.asyncio
+    async def test_reward_details_json_preserved_on_verifier_download(
+        self, tmp_path: Path
+    ) -> None:
+        """Guards task-standard F8 reward-details.json copy-through on download."""
+        toml = 'version = "1.0"\n[verifier]\nservice = "target"\n'
+        task = _make_task(tmp_path, toml)
+        rollout_paths = RolloutPaths(rollout_dir=tmp_path / "rollout")
+        rollout_paths.mkdir()
+        rollout_paths.reward_details_path.write_text('{"stale": true}')
+        sandbox = _RecordingSandbox(rollout_paths, reward="1.0")
+
+        await Verifier(task, rollout_paths, sandbox).verify()
+
+        details = rollout_paths.reward_details_path.read_text()
+        assert '"criteria"' in details
+        assert '"stale"' not in details
 
     @pytest.mark.asyncio
     async def test_target_service_logs_verifier_dir_created_before_test_sh(

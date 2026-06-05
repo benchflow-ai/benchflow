@@ -11,7 +11,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from benchflow.task.config import NetworkMode, TaskOS, VerifierEnvironmentMode
+from benchflow.task.config import (
+    NetworkMode,
+    TaskConfig,
+    TaskOS,
+    VerifierEnvironmentMode,
+)
 
 if TYPE_CHECKING:
     from benchflow.task.task import Task
@@ -95,8 +100,11 @@ def validate_task_runtime_support(
     if sandbox_type not in _GATED_SANDBOX_TYPES:
         return []
 
+    config = getattr(task, "config", None)
+    if not isinstance(config, TaskConfig):
+        return []
+
     root = Path(task_path).resolve()
-    config = task.config
     env = config.environment
     issues: list[UnsupportedTaskFeature] = []
 

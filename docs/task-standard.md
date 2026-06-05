@@ -13,7 +13,7 @@ The standard is intentionally split into three views:
 | View | Purpose | Owner |
 |---|---|---|
 | Authoring document | What humans and generators write: one `task.md` plus sidecar dirs | `TaskDocument` |
-| Runtime task view | What rollout, verifier, hardening, provenance, and trajectories consume | future `TaskPackage` / `TaskRuntimeView` |
+| Runtime task view | What rollout, verifier, hardening, provenance, and trajectories consume | `TaskPackage` / `TaskRuntimeView` |
 | Foreign adapter view | What Harbor, Pier, Terminal-Bench, SWE-bench, Inspect, and hosted envs import/export | adapters |
 
 Do not treat these as the same interface. A good authoring document can include
@@ -416,7 +416,8 @@ Target reward precedence:
   match `float(reward.txt)` or validation should fail closed
 - if `reward.json` is a multi-metric map, verifier metadata must declare the
   aggregate policy used for scalar exports and training records
-- `reward-details.json` should be preserved when present
+- `reward-details.json` is preserved when present (copied through verifier
+  rollout download without parsing)
 - reward artifacts should preserve structured reserved keys such as `rubric`,
   `items`, `evidence`, `artifacts`, `metadata`, `reason`, `reasons`, `errors`,
   and task-specific payloads such as `metrics`, `regressions`, `participants`,
@@ -676,6 +677,10 @@ Current implementation status:
 | Windows / TPU | yes | no | fail closed |
 | healthcheck / workdir | yes | no/partial | materializer support |
 | `reward.json` precedence | yes | yes | keep scalar agreement checks; add multi-metric aggregate policy |
+| `reward-details.json` preservation | yes | yes | copy through verifier rollout download; no parsing yet |
+| `TaskPackage` / `TaskRuntimeView` | yes | partial | entrypoint, dirs, scenes, alias collisions, `verifier_document`; prompt composition and sandbox gates still partial |
+| runtime capability gates (docker/daytona) | yes | partial | `validate_task_runtime_support` wired before sandbox creation; more backends and `bench tasks check --sandbox` pending |
+| Harbor/Pier export | yes | partial | native `task.md` export with loss reports; round-trip equivalence and alias parity pending |
 | native `/task.md` upload | yes | yes | keep `/instruction.md` compatibility contract |
 | alias dir collision checks | yes | partial | `bench tasks check` and `Task()` load fail closed; export parity pending |
 
@@ -686,7 +691,7 @@ error.
 
 ## Architecture Slices
 
-P0: Add `TaskPackage` / `TaskRuntimeView`.
+P0: `TaskPackage` / `TaskRuntimeView` (partial).
 
 This module should answer:
 
@@ -699,7 +704,7 @@ This module should answer:
 - whether mixed native/legacy definitions and alias directories are equivalent
   or collisions
 
-P1: Add fail-closed capability checks.
+P1: Fail-closed capability checks (partial on docker/daytona).
 
 Rollout, verifier, hardening, and adapters should stop parsing fields they do
 not execute without surfacing a validation result.

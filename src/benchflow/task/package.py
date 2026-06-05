@@ -15,6 +15,10 @@ from benchflow.task.aliases import alias_dir_collision_issues, normalized_tree_m
 from benchflow.task.config import TaskConfig
 from benchflow.task.document import TaskDocument
 from benchflow.task.paths import TaskPaths
+from benchflow.task.verifier_document import (
+    VerifierDocument,
+    load_verifier_document,
+)
 
 if TYPE_CHECKING:
     from benchflow.task.task import Task
@@ -63,6 +67,7 @@ class TaskRuntimeView:
     alias_collisions: AliasCollisionStatus
     has_legacy_split_files: bool
     benchflow: dict[str, Any]
+    verifier_document: VerifierDocument | None = None
 
     @property
     def task_dir(self) -> Path:
@@ -115,6 +120,7 @@ class TaskRuntimeView:
             config=task.config,
             instruction_text=task.instruction.strip(),
             scenes=tuple(task.scenes),
+            verifier_document=task.verifier_document,
         )
 
     @classmethod
@@ -127,6 +133,7 @@ class TaskRuntimeView:
         config: TaskConfig | None = None,
         instruction_text: str | None = None,
         scenes: tuple[Scene, ...] | None = None,
+        verifier_document: VerifierDocument | None = None,
     ) -> TaskRuntimeView:
         paths = package.paths
         has_task_md = paths.task_document_path.exists()
@@ -177,6 +184,9 @@ class TaskRuntimeView:
             "native" if paths.uses_native_oracle_dir else "legacy"
         )
 
+        if verifier_document is None and entrypoint == "task-md":
+            verifier_document = load_verifier_document(package.task_dir, benchflow)
+
         return cls(
             package=package,
             entrypoint=entrypoint,
@@ -189,6 +199,7 @@ class TaskRuntimeView:
             alias_collisions=AliasCollisionStatus(issues=tuple(alias_issues)),
             has_legacy_split_files=has_legacy_split,
             benchflow=benchflow,
+            verifier_document=verifier_document,
         )
 
     def materialize_instruction_md(self) -> str:

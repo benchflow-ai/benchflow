@@ -99,6 +99,32 @@ def resolve_verifier_spec_path(task_dir: Path, spec: str) -> Path:
     return (task_dir / spec_path).resolve()
 
 
+def load_verifier_document(
+    task_dir: Path | str,
+    benchflow: dict[str, Any],
+) -> VerifierDocument | None:
+    """Load the verifier document referenced by ``benchflow.verifier.spec``."""
+    if not isinstance(benchflow, dict):
+        return None
+    benchflow_verifier = benchflow.get("verifier")
+    if not isinstance(benchflow_verifier, dict):
+        return None
+    spec_issues = verifier_document_issues(
+        Path(task_dir).resolve(),
+        benchflow_verifier=benchflow_verifier,
+    )
+    if spec_issues:
+        raise ValueError("; ".join(spec_issues))
+    spec = benchflow_verifier.get("spec")
+    if not isinstance(spec, str) or not spec.strip():
+        return None
+    spec_path = resolve_verifier_spec_path(Path(task_dir).resolve(), spec.strip())
+    try:
+        return VerifierDocument.from_path(spec_path)
+    except VerifierDocumentParseError as exc:
+        raise ValueError(f"{spec} parse error: {exc}") from exc
+
+
 def verifier_document_issues(
     task_dir: Path,
     *,
@@ -310,6 +336,7 @@ __all__ = [
     "VerifierDocumentParseError",
     "VerifierOutputs",
     "VerifierRubricFiles",
+    "load_verifier_document",
     "resolve_verifier_spec_path",
     "verifier_document_issues",
 ]
