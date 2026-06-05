@@ -11,8 +11,25 @@ A 5-minute path from install to first eval.
 ## Install
 
 ```bash
-uv tool install benchflow
+pip install --upgrade benchflow
 ```
+
+For a `uv`-managed CLI install or upgrade of the current public release:
+
+```bash
+uv tool install --prerelease allow --upgrade 'benchflow==0.5.2'
+```
+
+Use the exact public version pin for stable CLI installs. To follow the newest
+internal preview from `main`, run:
+
+```bash
+uv tool install --prerelease allow --upgrade benchflow
+```
+
+If `uv` reports `Executables already exist: bench, benchflow`, rerun the same
+command with `--force` to replace older non-`uv` entrypoints. See
+[Release channels](./release.md) for the full command matrix.
 
 This gives you the `benchflow` (alias `bench`) CLI plus the Python SDK. To install for editable development:
 

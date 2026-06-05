@@ -2,6 +2,10 @@
 
 Date: 2026-05-19
 
+> **Historical note:** this dated gate predates the shipped public `0.5.2`
+> release and the public/internal preview publishing split. Current
+> release-channel mechanics live in [`docs/release.md`](./release.md).
+
 ## Verdict
 
 The focused trial-ready release gate is green for the current blocker set.
@@ -173,11 +177,16 @@ Detailed run artifacts are intentionally under ignored `dogfood/` paths:
 
 ## Versioning Call
 
-Call this release `1.0.0` once PRs #279, #280, #283, #290, #291, and #292 land
-on `main`. The evidence and product intent are trial-ready rather than another
-internal `0.4.0` refactor cut.
+This dated gate originally proposed `1.0.0` once PRs #279, #280, #283, #290,
+#291, and #292 landed on `main`. The shipped public release is `0.5.2`; this
+document is retained as historical evidence for the trial-ready gate and the
+internal v0.4 refactor cut.
 
 Release sequence after merge approval:
+
+> Historical note: this dated gate predates the public/internal preview
+> publishing split. Current release-channel mechanics live in
+> [`docs/release.md`](./release.md).
 
 1. Merge PRs #279, #280, #283, #290, #291, and #292.
 2. Bump `pyproject.toml` on `main` to `1.0.0`.

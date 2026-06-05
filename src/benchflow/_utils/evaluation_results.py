@@ -17,6 +17,7 @@ from benchflow.trajectories.metrics import (
     count_skill_invocations,
     result_skill_invocations,
 )
+from benchflow.usage_tracking import is_trusted_usage_source
 
 # Phase keys produced by Rollout (see rollout.py — environment_setup,
 # agent_setup, agent_execution, verifier, total). Kept here so summary
@@ -35,7 +36,7 @@ def agent_result_from_rollout(result: RolloutResult) -> dict[str, Any]:
     n_skill_invocations = result.n_skill_invocations or count_skill_invocations(
         result.trajectory
     )
-    return {
+    agent_result = {
         "n_tool_calls": result.n_tool_calls,
         "n_skill_invocations": n_skill_invocations,
         "n_prompts": result.n_prompts,
@@ -48,6 +49,9 @@ def agent_result_from_rollout(result: RolloutResult) -> dict[str, Any]:
         "usage_source": result.usage_source,
         "price_source": result.price_source,
     }
+    if getattr(result, "usage_details", None) is not None:
+        agent_result["usage_details"] = result.usage_details
+    return agent_result
 
 
 def rollout_result_payload(
@@ -105,7 +109,7 @@ def usage_summary(results: dict[str, dict]) -> dict[str, Any]:
     covered = [
         r
         for r in completed
-        if (r.get("agent_result") or {}).get("usage_source") == "provider_response"
+        if is_trusted_usage_source((r.get("agent_result") or {}).get("usage_source"))
     ]
 
     def total(field: str) -> int:

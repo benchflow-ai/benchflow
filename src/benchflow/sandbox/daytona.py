@@ -63,6 +63,7 @@ from benchflow.sandbox._compose import (
     compose_mkdir_p_command,
     compose_parent_mkdir_p_command,
 )
+from benchflow.sandbox.metadata import persist_sandbox_info
 from benchflow.sandbox.protocol import (
     SandboxImage,
     SandboxSnapshotNotSupported,
@@ -1183,6 +1184,10 @@ class DaytonaSandbox(BaseSandbox):
         return self._compose_mode
 
     @property
+    def sandbox_id(self) -> str | None:
+        return self._sandbox.id if self._sandbox else None
+
+    @property
     def is_mounted(self) -> bool:
         return False
 
@@ -1203,6 +1208,27 @@ class DaytonaSandbox(BaseSandbox):
             raise FileNotFoundError(f"{path} not found. Please ensure the file exists.")
 
     # ── Shared helpers used by both strategies ──────────────────────────
+
+    def _on_sandbox_created(self) -> None:
+        """Persist sandbox.json the instant the Daytona sandbox id is known.
+
+        Called from ``_create_sandbox`` the moment ``self._sandbox`` is assigned
+        — before ``start()`` does its remaining (and, for DinD, long) work:
+        launching dockerd, polling ``_wait_for_docker_daemon`` for tens of
+        seconds, mkdir/chmod, compose build/up. If the run is interrupted
+        (CancelledError/SIGINT/timeout) anywhere in that stretch, the Daytona
+        sandbox already exists server-side; persisting here means there is still
+        a ``sandbox.json`` to audit and clean up (#554/#563).
+
+        Best-effort and self-contained: a missing ``rollout_paths`` (e.g. a
+        snapshot/branch sandbox built outside a rollout dir) is a no-op, and the
+        underlying write swallows-and-logs its own failures. The rollout-layer
+        ``on_started`` callback still runs after ``start()`` returns as an
+        idempotent fallback.
+        """
+        if self.rollout_paths is None:
+            return
+        persist_sandbox_info(self, self.rollout_paths.rollout_dir)
 
     @retry(
         stop=stop_after_attempt(3),
@@ -1242,6 +1268,10 @@ class DaytonaSandbox(BaseSandbox):
             self._sandbox = await asyncio.wait_for(
                 asyncio.shield(create_task), timeout=hard_timeout
             )
+            # Persist the id the moment the sandbox exists — before start()'s
+            # remaining (DinD: long) work — so an interrupt mid-start() still
+            # leaves a sandbox.json to audit/clean up (#554/#563).
+            self._on_sandbox_created()
         except TimeoutError:
             self.logger.error(
                 f"Sandbox creation timed out after {hard_timeout}s "
@@ -1252,6 +1282,9 @@ class DaytonaSandbox(BaseSandbox):
         except asyncio.CancelledError:
             try:
                 self._sandbox = await asyncio.wait_for(create_task, timeout=30)
+                # Sandbox came back even though we were cancelled — persist its
+                # id before re-raising so it is not orphaned (#554/#563).
+                self._on_sandbox_created()
             except (TimeoutError, asyncio.CancelledError, Exception):
                 create_task.cancel()
             raise

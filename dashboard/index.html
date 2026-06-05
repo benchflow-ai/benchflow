@@ -546,9 +546,10 @@
 <main id="main"></main>
 
 <script>
-const TABS = ["Overview", "Concept map", "Architecture", "Tickets", "Tests", "Jobs", "Daytona", "Advisories", "Timeline"];
+const TABS = ["Overview", "Concept map", "Architecture", "Tickets", "Tests", "Jobs", "Daytona", "Experiments", "Advisories", "Timeline"];
 let DATA = null, CURRENT = null, SELECTED_TICKET_ID = null, DATA_SIGNATURE = null, SYNC_ERROR = null;
 let DAYTONA_TIMER = null, DAYTONA_AVAILABLE = false, DAYTONA_KEY = "";
+let EXP_TIMER = null, EXP_AVAILABLE = false;
 
 function el(t, c, h) { const e = document.createElement(t); if (c) e.className = c; if (h !== undefined) e.innerHTML = h; return e; }
 function esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;" }[c])); }
@@ -1678,7 +1679,7 @@ function renderDaytona() {
   keyRow.innerHTML =
     `<label>Daytona API key&nbsp;<input id="dy-key" type="password" placeholder="dtn_…" value="${esc(k)}" style="width:340px;padding:4px 8px"></label>` +
     `<button id="dy-save" style="padding:4px 12px;cursor:pointer">Save</button>` +
-    `<span id="dy-keyhint" class="muted">${k ? "key set for this session (in memory)" : "blank → uses server DAYTONA_API_KEY"}</span>`;
+    `<span id="dy-keyhint" class="muted">${k ? "key set for this session (in memory)" : "blank → uses the saved key or server DAYTONA_API_KEY"}</span>`;
   wrap.appendChild(keyRow);
   const status = el("div"); status.id = "dy-status"; status.textContent = "loading…";
   status.style.cssText = "margin:8px 0 12px";
@@ -1692,9 +1693,15 @@ function renderDaytona() {
     const btn = document.getElementById("dy-save");
     if (btn) btn.onclick = () => {
       const v = document.getElementById("dy-key").value.trim();
-      DAYTONA_KEY = v;  // memory only — cleared on reload, never persisted
-      document.getElementById("dy-keyhint").textContent =
-        v ? "key set (memory only, cleared on reload)" : "cleared";
+      DAYTONA_KEY = v;
+      const hint = document.getElementById("dy-keyhint");
+      // Persist server-side (gitignored dashboard/.daytona_key) so the key
+      // survives reloads + server restarts — no localStorage (avoids exfil via
+      // rendered job/artifact content). Blank clears the persisted key.
+      fetch("/daytona/key", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key: v }) })
+        .then(r => r.json())
+        .then(() => { hint.textContent = v ? "key saved — persisted on the server (survives reload)" : "cleared (server key removed)"; })
+        .catch(() => { hint.textContent = v ? "key set for this session" : "cleared"; });
       pollDaytona();
     };
     pollDaytona();
@@ -1703,10 +1710,121 @@ function renderDaytona() {
   return wrap;
 }
 
+// ---- Experiments (SkillsBench max-effort fill monitor) --------------------
+// Reads /experiments.json (the fill orchestrator's ledger). Four progressive,
+// non-overlapping panels: queue → running → completed (awaiting/failed review)
+// → reviewed & passed (with results). Live-server-only, like the Daytona tab.
+function expReward(r) {
+  if (r.reward == null) return "—";
+  const v = Number(r.reward);
+  return `<span class="${v >= 1 ? "good" : (v > 0 ? "warn" : "muted")}">${esc(r.reward)}</span>`;
+}
+function expFlag(v) {
+  if (v === true || v === 1) return true;
+  if (Array.isArray(v)) return v.length > 0;
+  const s = String(v == null ? "" : v).toLowerCase();
+  return ["1", "true", "yes", "ok", "pass", "passed"].includes(s);
+}
+function expSkills(r) {
+  const mode = String(r.skill_mode || "").toLowerCase();
+  if (["with", "with-skills", "skills", "skill"].includes(mode))
+    return expFlag(r.task_skills_loading) ? `<span class="good">✓ loaded</span>` : `<span class="bad">✗ missing</span>`;
+  // without-skills: 1 means leakage (bad); 0 is the healthy no-skill case
+  return expFlag(r.task_skills_loading) ? `<span class="bad">✗ leaked</span>` : `<span class="muted">n/a</span>`;
+}
+function expTokens(r) {
+  const t = r.tokens && (
+    r.tokens.total != null ? r.tokens.total :
+    (r.tokens.total_tokens != null ? r.tokens.total_tokens : r.tokens.input)
+  );
+  return t != null ? esc(Number(t).toLocaleString()) : "—";
+}
+function expTime(r) {
+  const t = r.timing_total_s == null ? r.duration_s : r.timing_total_s;
+  return t == null ? "—" : esc(t) + "s";
+}
+function expHF(r) {
+  if (!r.hf_path) return "—";
+  const u = "https://huggingface.co/datasets/benchflow/skillsbench-leaderboard/tree/refs%2Fpr%2F5/" + r.hf_path;
+  return `<a class="text-link" href="${esc(u)}" target="_blank" rel="noopener">view</a>`;
+}
+function expFill(id, rows, cells, ncols) {
+  const tb = document.getElementById(id), nEl = document.getElementById(id + "-n");
+  if (nEl) nEl.textContent = rows.length;
+  if (!tb) return;
+  const cap = 400, shown = rows.slice(0, cap);
+  tb.innerHTML = shown.map(r => `<tr>${cells(r).map(c => `<td>${c}</td>`).join("")}</tr>`).join("") +
+    (rows.length > cap ? `<tr><td colspan="${ncols}" class="muted">…and ${rows.length - cap} more</td></tr>` : "") +
+    (rows.length === 0 ? `<tr><td colspan="${ncols}" class="muted">none</td></tr>` : "");
+}
+async function pollExperiments() {
+  const statusEl = document.getElementById("exp-status");
+  if (!statusEl) { if (EXP_TIMER) { clearInterval(EXP_TIMER); EXP_TIMER = null; } return; }
+  try {
+    const resp = await fetch("/experiments.json");
+    const d = await resp.json();
+    if (d.error) { statusEl.innerHTML = `<span class="bad">${esc(d.error)}</span>`; return; }
+    const bs = (d.summary && d.summary.by_state) || {}, bb = (d.summary && d.summary.by_bucket) || {};
+    const done = bb.reviewed || 0, failed = (bs.run_failed || 0) + (bs.review_fail || 0) + (bs.quarantined || 0);
+    const missing = (d.summary && d.summary.missing) || 0;
+    const pct = d.target ? Math.round(100 * done / d.target) : 0;
+    statusEl.innerHTML =
+      `<b style="font-size:20px">${done}/${d.target}</b> reviewed-healthy (${pct}%) &nbsp;` +
+      `<span class="chip">queued ${bb.queue || 0}</span> <span class="chip">running ${bb.running || 0}</span> ` +
+      `<span class="chip">completed ${bb.completed || 0}</span> ` +
+      `<span class="chip good">passed ${done}</span> ` +
+      `<span class="chip ${failed ? "bad" : "muted"}">failed ${failed}</span> ` +
+      `<span class="chip ${missing ? "warn" : "muted"}">missing ${missing}</span>` +
+      ` <span class="muted">· as of ${esc(d.as_of)} · auto-refresh 15s</span>`;
+    const rows = d.rows || [], inBucket = b => rows.filter(x => x.dashboard_bucket === b);
+    const tslot = r => "t" + (r.trial_slot == null ? "" : r.trial_slot);
+    const notes = r => (r.review_health_notes && r.review_health_notes.length) ? r.review_health_notes.join("; ") : (r.note || "");
+    expFill("exp-queue", inBucket("queue"), r =>
+      [esc(r.model), esc(r.skill_mode), esc(r.task), esc(tslot(r)), esc(r.sandbox || "daytona")], 5);
+    expFill("exp-running", inBucket("running"), r =>
+      [esc(r.model), esc(r.skill_mode), esc(r.task), esc(tslot(r)), esc(r.sandbox || ""),
+       `<span class="mono">${esc(r.sandbox_id || "")}</span>`, esc(r.started_at || r.updated_at || "")], 7);
+    expFill("exp-completed", inBucket("completed"), r =>
+      [esc(r.model), esc(r.skill_mode), esc(r.task), esc(tslot(r)),
+       `<span class="${r.status === "completed" ? "warn" : "bad"}">${esc(r.status)}</span>`, expReward(r), esc(notes(r))], 7);
+    expFill("exp-reviewed", inBucket("reviewed"), r =>
+      [esc(r.task), esc(r.model), esc(r.skill_mode), expReward(r),
+       `<span class="${r.health === "healthy" ? "good" : "bad"}">${esc(r.health || "?")}</span>`,
+       expSkills(r), expTokens(r), expTime(r), expHF(r)], 9);
+  } catch (e) { statusEl.innerHTML = `<span class="bad">fetch error: ${esc(e)}</span>`; }
+}
+function renderExperiments() {
+  if (EXP_TIMER) { clearInterval(EXP_TIMER); EXP_TIMER = null; }
+  const wrap = el("div", "wrap");
+  wrap.appendChild(el("h1", "page", "Experiments"));
+  wrap.appendChild(el("div", "muted",
+    "SkillsBench max-effort fill · Opus 4.8 / Gemini 3.5 Flash / MiniMax M3 · openhands · with/without skills × 3 trials → HF PR #5"));
+  const status = el("div"); status.id = "exp-status"; status.textContent = "loading…";
+  status.style.cssText = "margin:10px 0 14px";
+  wrap.appendChild(status);
+  const panels = [
+    ["exp-queue", "Queue — waiting to run", ["model", "mode", "task", "trial", "sandbox"]],
+    ["exp-running", "Running", ["model", "mode", "task", "trial", "sandbox", "sandbox id", "started"]],
+    ["exp-completed", "Completed — awaiting / failed review", ["model", "mode", "task", "trial", "status", "reward", "note"]],
+    ["exp-reviewed", "Reviewed & passed — results", ["task", "model", "mode", "reward", "health", "skills", "tokens", "time", "HF"]],
+  ];
+  for (const [id, title, cols] of panels) {
+    const card = el("div", "card");
+    card.style.cssText = "margin-bottom:14px";
+    card.appendChild(el("h2", null, `${esc(title)} <span class="chip" id="${id}-n">0</span>`));
+    const tw = el("div", "fv-table-wrap");
+    tw.innerHTML = `<table class="fv-table"><thead><tr>${cols.map(c => `<th>${esc(c)}</th>`).join("")}</tr></thead><tbody id="${id}"></tbody></table>`;
+    card.appendChild(tw);
+    wrap.appendChild(card);
+  }
+  setTimeout(() => { pollExperiments(); EXP_TIMER = setInterval(pollExperiments, 15000); }, 20);
+  return wrap;
+}
+
 const RENDER = {
   "Overview": renderOverview, "Concept map": renderConcept, "Architecture": renderArchitecture,
   "Tickets": renderRoadmap,
-  "Tests": renderTests, "Jobs": renderJobs, "Daytona": renderDaytona,
+  "Tests": renderTests, "Jobs": renderJobs, "Daytona": renderDaytona, "Experiments": renderExperiments,
   "Advisories": renderAdvisories, "Timeline": renderTimeline,
 };
 
@@ -1714,6 +1832,7 @@ const RENDER = {
 function show(tab, arg, opts) {
   opts = opts || {};
   if (DAYTONA_TIMER && tab !== "Daytona") { clearInterval(DAYTONA_TIMER); DAYTONA_TIMER = null; }
+  if (EXP_TIMER && tab !== "Experiments") { clearInterval(EXP_TIMER); EXP_TIMER = null; }
   if (tab === "Roadmap") tab = "Tickets";
   CURRENT = tab;
   document.querySelectorAll("nav a").forEach(a =>
@@ -1734,6 +1853,7 @@ function buildNav() {
   nav.innerHTML = "";
   TABS.forEach(t => {
     if (t === "Daytona" && !DAYTONA_AVAILABLE) return;  // live-server-only feature
+    if (t === "Experiments" && !EXP_AVAILABLE) return;  // live-server-only feature
     const a = el("a", null, t);
     a.dataset.tab = t;
     a.onclick = () => show(t);
@@ -1831,6 +1951,10 @@ if (location.protocol === "http:" || location.protocol === "https:") {
   fetch("daytona/available")
     .then(r => { DAYTONA_AVAILABLE = r.ok; })
     .catch(() => { DAYTONA_AVAILABLE = false; })
+    .finally(() => { if (DATA) buildNav(); });
+  fetch("experiments/available")
+    .then(r => { EXP_AVAILABLE = r.ok; })
+    .catch(() => { EXP_AVAILABLE = false; })
     .finally(() => { if (DATA) buildNav(); });
 }
 if (window.addEventListener) {

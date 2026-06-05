@@ -25,6 +25,7 @@ import httpx
 import yaml
 
 from benchflow.agents.codex_config import apply_codex_provider_config
+from benchflow.agents.env import uses_native_subscription_auth
 from benchflow.agents.registry import AGENTS
 from benchflow.providers.litellm_config import (
     LITELLM_MASTER_KEY_ENV,
@@ -38,10 +39,9 @@ from benchflow.providers.litellm_logging import (
     callback_module_source,
     extract_usage_from_trajectory,
     trajectory_from_litellm_callback_log,
-    usage_unavailable,
 )
 from benchflow.trajectories.types import Trajectory
-from benchflow.usage_tracking import UsageTrackingConfig
+from benchflow.usage_tracking import UsageTrackingConfig, usage_unavailable
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +56,7 @@ _PATCH_MODULE = "benchflow_litellm_bedrock_patch"
 # GenerateContent format), so they talk to their provider directly and report
 # usage_source='unavailable'. ``oracle`` has no model at all.
 _NATIVE_PROTOCOL_AGENTS = frozenset({"oracle", "gemini"})
+_SANDBOX_LOCAL_ENVIRONMENTS = frozenset({"daytona", "modal"})
 
 
 @dataclass(frozen=True)
@@ -594,18 +595,36 @@ async def _upload_runtime_files_to_sandbox(
 
 
 async def _ensure_sandbox_litellm(sandbox: Any, *, venv_dir: str) -> str:
+    vq = shlex.quote(venv_dir)
+    # Prefer uv to bootstrap the venv: many sandbox base images ship a python3
+    # without ensurepip and marked externally-managed (PEP 668), where both
+    # `python -m venv` and `pip install` fail. uv needs neither (it is the same
+    # mechanism the openhands agent install already uses in-sandbox), with a
+    # stdlib-venv fallback for images that have a working venv and lack uv.
     command = f"""
 set -eu
-PY="$(command -v python3 || command -v python)"
-if [ ! -x {shlex.quote(venv_dir)}/bin/python ]; then
-  "$PY" -m venv {shlex.quote(venv_dir)} 2>/dev/null || (
-    "$PY" -m pip install --user -q virtualenv &&
-    "$PY" -m virtualenv {shlex.quote(venv_dir)}
-  )
+export PATH="$HOME/.local/bin:$PATH"
+UV="$(command -v uv || true)"
+if [ -z "$UV" ]; then
+  curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null 2>&1 || true
+  export PATH="$HOME/.local/bin:$PATH"
+  UV="$(command -v uv || true)"
 fi
-{shlex.quote(venv_dir)}/bin/python -m pip install -q --upgrade pip
-{shlex.quote(venv_dir)}/bin/python -m pip install -q '{LITELLM_VERSION_SPEC}' 'boto3>=1.40'
-{shlex.quote(venv_dir)}/bin/python - <<'PY'
+if [ -n "$UV" ]; then
+  [ -x {vq}/bin/python ] || "$UV" venv {vq} >/dev/null 2>&1
+  "$UV" pip install --python {vq}/bin/python -q '{LITELLM_VERSION_SPEC}' 'boto3>=1.40'
+else
+  PY="$(command -v python3 || command -v python)"
+  if [ ! -x {vq}/bin/python ]; then
+    "$PY" -m venv {vq} 2>/dev/null || (
+      "$PY" -m pip install --user -q virtualenv &&
+      "$PY" -m virtualenv {vq}
+    )
+  fi
+  {vq}/bin/python -m pip install -q --upgrade pip
+  {vq}/bin/python -m pip install -q '{LITELLM_VERSION_SPEC}' 'boto3>=1.40'
+fi
+{vq}/bin/python - <<'PY'
 import litellm
 print(litellm.__version__ if hasattr(litellm, "__version__") else "ok")
 PY
@@ -892,6 +911,36 @@ def _apply_litellm_agent_env(
     return updated
 
 
+async def _skip_litellm_runtime(
+    agent_env: dict[str, str],
+    runtime: Any | None,
+    *,
+    reason: str | None = None,
+) -> tuple[dict[str, str], Any | None]:
+    if runtime is not None:
+        await stop_litellm_runtime(runtime)
+    if reason:
+        logger.info("Skipping LiteLLM proxy: %s", reason)
+    return agent_env, None
+
+
+async def _fallback_or_raise_for_unavailable_litellm(
+    *,
+    usage_cfg: UsageTrackingConfig,
+    agent_env: dict[str, str],
+    runtime: Any | None,
+    required_error: str,
+    fallback_reason: str,
+) -> tuple[dict[str, str], Any | None]:
+    if usage_cfg.mode == "required":
+        raise RuntimeError(required_error)
+    return await _skip_litellm_runtime(
+        agent_env,
+        runtime,
+        reason=fallback_reason,
+    )
+
+
 async def ensure_litellm_runtime(
     *,
     agent: str,
@@ -904,28 +953,64 @@ async def ensure_litellm_runtime(
     sandbox: Any | None = None,
 ) -> tuple[dict[str, str], Any | None]:
     """Start/reuse LiteLLM and rewrite the agent env to talk to it."""
+    usage_cfg = UsageTrackingConfig.coerce(usage_tracking).with_env_defaults()
+    if usage_cfg.mode == "off":
+        return await _skip_litellm_runtime(
+            agent_env,
+            runtime,
+            reason="usage_tracking=off leaves provider traffic untouched",
+        )
+
+    if uses_native_subscription_auth(agent, model, agent_env):
+        return await _skip_litellm_runtime(
+            agent_env,
+            runtime,
+            reason="native subscription auth will use agent ACP usage telemetry",
+        )
+
     if not needs_litellm_runtime(agent, model):
-        if runtime is not None:
-            await stop_litellm_runtime(runtime)
-        return agent_env, None
+        if usage_cfg.mode == "required" and agent != "oracle":
+            raise RuntimeError(
+                "Token usage tracking is required, but agent "
+                f"{agent!r} cannot be routed through LiteLLM."
+            )
+        return await _skip_litellm_runtime(agent_env, runtime)
     assert model is not None
 
-    usage_cfg = UsageTrackingConfig.coerce(usage_tracking).with_env_defaults()
-    route = resolve_litellm_route(model, agent_env)
+    if environment in _SANDBOX_LOCAL_ENVIRONMENTS and sandbox is None:
+        raise RuntimeError("sandbox-local LiteLLM requires a sandbox handle")
+
+    try:
+        route = resolve_litellm_route(model, agent_env)
+    except ValueError as exc:
+        return await _fallback_or_raise_for_unavailable_litellm(
+            usage_cfg=usage_cfg,
+            agent_env=agent_env,
+            runtime=runtime,
+            required_error=(
+                "Token usage tracking is required, but LiteLLM cannot resolve "
+                f"model {model!r}: {exc}"
+            ),
+            fallback_reason=(
+                f"usage_tracking=auto could not resolve model {model!r}: {exc}"
+            ),
+        )
     missing = _missing_required_env(route, agent_env)
     if missing:
-        if (
-            agent_env.get("_BENCHFLOW_SUBSCRIPTION_AUTH")
-            and usage_cfg.mode != "required"
-        ):
-            logger.info(
-                "Skipping LiteLLM for subscription-auth-only run; missing provider keys: %s",
-                ", ".join(missing),
-            )
-            return agent_env, None
-        raise RuntimeError(
-            f"LiteLLM route for model {model!r} requires {', '.join(missing)}. "
+        missing_text = ", ".join(missing)
+        required_error = (
+            f"LiteLLM route for model {model!r} requires {missing_text}. "
             "Pass provider credentials via --agent-env/agent_env or define them in .env."
+        )
+        return await _fallback_or_raise_for_unavailable_litellm(
+            usage_cfg=usage_cfg,
+            agent_env=agent_env,
+            runtime=runtime,
+            required_error=required_error,
+            fallback_reason=(
+                f"usage_tracking=auto could not start LiteLLM for model {model!r}; "
+                f"missing provider credentials: {missing_text}"
+            ),
         )
 
     master_key = (
@@ -950,25 +1035,37 @@ async def ensure_litellm_runtime(
                 )
         await stop_litellm_runtime(runtime)
 
-    if environment in {"daytona", "modal"}:
-        if sandbox is None:
-            raise RuntimeError("sandbox-local LiteLLM requires a sandbox handle")
-        server = await _start_sandbox_litellm(
-            sandbox=sandbox,
-            route=route,
-            master_key=master_key,
+    try:
+        if environment in _SANDBOX_LOCAL_ENVIRONMENTS:
+            server = await _start_sandbox_litellm(
+                sandbox=sandbox,
+                route=route,
+                master_key=master_key,
+                agent_env=agent_env,
+                session_id=session_id,
+                agent_name=agent,
+            )
+        else:
+            server = await _start_host_litellm(
+                route=route,
+                master_key=master_key,
+                agent_env=agent_env,
+                environment=environment,
+                session_id=session_id,
+                agent_name=agent,
+            )
+    except Exception as exc:
+        return await _fallback_or_raise_for_unavailable_litellm(
+            usage_cfg=usage_cfg,
             agent_env=agent_env,
-            session_id=session_id,
-            agent_name=agent,
-        )
-    else:
-        server = await _start_host_litellm(
-            route=route,
-            master_key=master_key,
-            agent_env=agent_env,
-            environment=environment,
-            session_id=session_id,
-            agent_name=agent,
+            runtime=None,
+            required_error=(
+                "Token usage tracking is required, but LiteLLM failed to start "
+                f"for model {model!r}: {exc}"
+            ),
+            fallback_reason=(
+                f"usage_tracking=auto could not start LiteLLM for model {model!r}: {exc}"
+            ),
         )
 
     from benchflow.providers.runtime import ProviderRuntime

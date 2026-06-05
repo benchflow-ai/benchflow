@@ -32,17 +32,65 @@ import urllib.parse
 import webbrowser
 from functools import partial
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar
 
 try:
     from dashboard.daytona_status import snapshot as daytona_snapshot
+    from dashboard.experiments_status import snapshot as experiments_snapshot
     from dashboard.generate import resolve_dashboard_jobs_root
 except ModuleNotFoundError:  # pragma: no cover - used when run as dashboard/serve.py
     from daytona_status import snapshot as daytona_snapshot  # type: ignore[no-redef]
+    from experiments_status import (
+        snapshot as experiments_snapshot,  # type: ignore[no-redef]
+    )
     from generate import resolve_dashboard_jobs_root  # type: ignore[no-redef]
 
 DASH = Path(__file__).resolve().parent
 ROOT = DASH.parent
+
+# Optional persisted Daytona key: written by the panel's Save button (POST
+# /daytona/key) to a gitignored, local, mode-600 file and read back on every
+# /daytona.json request. Lets the key survive reloads and server restarts
+# without living in browser localStorage (where rendered job/artifact content
+# could exfiltrate it). A do_GET dotfile guard ensures it is never served.
+_DAYTONA_KEY_FILE = DASH / ".daytona_key"
+_MAX_DAYTONA_KEY_BYTES = 4096
+
+
+def _read_daytona_key() -> str | None:
+    try:
+        return _DAYTONA_KEY_FILE.read_text().strip() or None
+    except FileNotFoundError:
+        return None
+
+
+def _write_daytona_key(key: str) -> None:
+    if key:
+        _DAYTONA_KEY_FILE.write_text(key)
+        with contextlib.suppress(Exception):
+            _DAYTONA_KEY_FILE.chmod(0o600)
+    else:
+        with contextlib.suppress(Exception):
+            _DAYTONA_KEY_FILE.unlink()
+
+
+def _decoded_url_path(raw_path: str) -> str:
+    return urllib.parse.unquote(urllib.parse.urlparse(raw_path).path)
+
+
+def _has_dotfile_segment(path: str) -> bool:
+    return any(seg.startswith(".") for seg in path.split("/") if seg)
+
+
+def _request_is_same_origin(headers: Any) -> bool:
+    get = headers.get
+    origin = get("Origin")
+    if origin:
+        parsed = urllib.parse.urlparse(origin)
+        host = (get("Host") or "").lower()
+        return parsed.scheme in {"http", "https"} and parsed.netloc.lower() == host
+    fetch_site = (get("Sec-Fetch-Site") or "").lower()
+    return fetch_site in {"", "none", "same-origin"}
 
 
 def _git_bytes(args: list[str]) -> bytes:
@@ -109,20 +157,59 @@ class SyncingDashboardHandler(http.server.SimpleHTTPRequestHandler):
     sync_lock: ClassVar[threading.Lock] = threading.Lock()
 
     def do_GET(self) -> None:
-        path = urllib.parse.urlparse(self.path).path
+        path = _decoded_url_path(self.path)
+        # Never serve dotfiles (e.g. the persisted .daytona_key) as static content.
+        if _has_dotfile_segment(path):
+            self.send_error(404)
+            return
         # Capability probe: present only on the live server, so the static
         # (Vercel) build 404s here and the frontend hides the Daytona tab.
         if path == "/daytona/available":
             self._serve_json({"available": True})
             return
         if path == "/daytona.json":
-            self._serve_json(daytona_snapshot(self.headers.get("X-Daytona-Key")))
+            key = self.headers.get("X-Daytona-Key") or _read_daytona_key()
+            self._serve_json(daytona_snapshot(key))
+            return
+        # SkillsBench experiment-fill monitor (same live-only capability pattern).
+        if path == "/experiments/available":
+            self._serve_json({"available": True})
+            return
+        if path == "/experiments.json":
+            self._serve_json(experiments_snapshot())
             return
         if path == "/data.json" and not self._sync_data_json():
             return
         super().do_GET()
 
-    def log_message(self, *args: object) -> None:  # quiet; keeps any key out of logs
+    def do_POST(self) -> None:
+        path = _decoded_url_path(self.path)
+        # Persist (or clear) the Daytona key from the panel's Save button.
+        if path == "/daytona/key":
+            if not _request_is_same_origin(self.headers):
+                self.send_error(403)
+                return
+            try:
+                n = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                self.send_error(400, "invalid Content-Length")
+                return
+            if n > _MAX_DAYTONA_KEY_BYTES:
+                self.send_error(413, "Daytona key payload too large")
+                return
+            raw = self.rfile.read(n).decode("utf-8") if n else ""
+            try:
+                key = (json.loads(raw).get("key") or "").strip()
+            except Exception:
+                key = raw.strip()
+            _write_daytona_key(key)
+            self._serve_json({"ok": True, "persisted": bool(key)})
+            return
+        self.send_error(404)
+
+    def log_message(
+        self, format: str, *args: Any
+    ) -> None:  # quiet; keeps any key out of logs
         pass
 
     def _serve_json(self, payload: dict) -> None:
@@ -166,16 +253,12 @@ class SyncingDashboardHandler(http.server.SimpleHTTPRequestHandler):
             print(f"{reason}; refreshing data.json ...", flush=True)
             result = subprocess.run(type(self).gen_cmd, check=False)
             if result.returncode != 0:
+                message = "data.json refresh failed; serving last successful data.json"
                 type(self).last_failed_refresh_at = time.monotonic()
-                type(self).failed_refresh_error = (
-                    "data.json refresh failed; serving last successful data.json"
-                )
+                type(self).failed_refresh_error = message
                 if _data_json_exists():
-                    _mark_cached_data_refresh_error(type(self).failed_refresh_error)
-                    print(
-                        "data.json refresh failed; serving last successful data.json",
-                        flush=True,
-                    )
+                    _mark_cached_data_refresh_error(message)
+                    print(message, flush=True)
                     return True
                 self.send_error(
                     503,

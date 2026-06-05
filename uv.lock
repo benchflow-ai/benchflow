@@ -288,7 +288,7 @@ wheels = [
 
 [[package]]
 name = "benchflow"
-version = "0.5.0.dev0"
+version = "0.5.3.dev0"
 source = { editable = "." }
 dependencies = [
     { name = "agent-client-protocol" },
@@ -307,6 +307,7 @@ bedrock = [
     { name = "boto3" },
 ]
 dev = [
+    { name = "packaging" },
     { name = "pre-commit" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -339,6 +340,7 @@ requires-dist = [
     { name = "litellm", extras = ["proxy"], specifier = "==1.88.0rc1" },
     { name = "modal", marker = "extra == 'sandbox-modal'", specifier = ">=0.73" },
     { name = "openai", marker = "extra == 'judge'", specifier = ">=1.40" },
+    { name = "packaging", marker = "extra == 'dev'", specifier = ">=24" },
     { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=3.7" },
     { name = "pydantic", specifier = ">=2.7" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.0.3" },

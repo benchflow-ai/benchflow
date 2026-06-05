@@ -21,6 +21,7 @@ from benchflow._utils.scoring import (
     pass_rate_excl_errors,
 )
 from benchflow.trajectories.metrics import result_skill_invocations
+from benchflow.usage_tracking import is_trusted_usage_source
 
 logger = logging.getLogger(__name__)
 
@@ -199,7 +200,7 @@ class BenchmarkMetrics:
         return [
             t
             for t in self.tasks
-            if t.completed and t.usage_source == "provider_response"
+            if t.completed and is_trusted_usage_source(t.usage_source)
         ]
 
     @property

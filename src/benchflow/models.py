@@ -87,9 +87,10 @@ class RolloutResult:
         total_tokens: Sum of input, output, cache-read, and cache-creation tokens,
                       or None when provider telemetry was unavailable.
         cost_usd:     Provider cost estimate in USD, or None when unavailable.
-        usage_source: Provider telemetry source. One of "provider_response" or
-                      "unavailable".
+        usage_source: Token telemetry source. One of "provider_response",
+                      "agent_native_acp", or "unavailable".
         price_source: Pricing table version used for cost_usd, or None.
+        usage_details: Optional source-specific telemetry details.
         error:        Error description string, or None on success.
         error_category: Stable category for ``error``, or None on success.
         verifier_error: Verifier error description, or None if verifier succeeded
@@ -139,6 +140,7 @@ class RolloutResult:
         cost_usd: float | None = None,
         usage_source: str = "unavailable",
         price_source: str | None = None,
+        usage_details: dict[str, Any] | None = None,
         error: str | None = None,
         error_category: str | None = None,
         verifier_error: str | None = None,
@@ -170,6 +172,7 @@ class RolloutResult:
         self.cost_usd = cost_usd
         self.usage_source = usage_source
         self.price_source = price_source
+        self.usage_details = usage_details
         self.error = error
         self.error_category = error_category
         self.verifier_error = verifier_error

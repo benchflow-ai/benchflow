@@ -1,12 +1,12 @@
 # v0.5 End-to-End Testing Guide
 
-How to manually verify every feature shipped in v0.5-integration.
+How to manually verify every feature shipped in BenchFlow `0.5.2`.
 
 ## Prerequisites
 
 ```bash
-# install benchflow from the v0.5-integration branch
-git checkout v0.5-integration
+# verify the public v0.5.2 release tag
+git checkout v0.5.2
 # `sandbox-daytona` is required for the `--sandbox daytona` scenarios below.
 # (Add `--extra sandbox-modal` similarly if you plan to swap in `--sandbox modal`.)
 uv sync --extra dev --extra sandbox-daytona --locked
@@ -438,13 +438,19 @@ uv run python tests/integration/check_results.py "$JOB_DIR" \
 
 ## 14. Secret leak audit
 
-After any eval run, check that no API keys leaked into trajectories:
+After any eval run, check that no API key **values** leaked into trajectories
+or trainer JSONL artifacts. Redaction (`Trajectory.to_jsonl(redact_keys=True)`
+and Verifiers JSONL export, #537/#585) replaces secret *values* whole — prefix
+included — so grep for the live-key shapes, not the variable names (a bare
+`GEMINI_API_KEY=` with a redacted value is not a leak):
 
 ```bash
-grep -rn "AIzaSy\|dtn_\|GEMINI_API_KEY\|DAYTONA_API_KEY" /tmp/test-include/
+SECRET_SHAPES='AIzaSy[A-Za-z0-9_-]{20,}|dtn_[A-Za-z0-9_]{16,}|sk-ant-[A-Za-z0-9_-]{12,}|sk-proj-[A-Za-z0-9_-]{12,}|sk-[A-Za-z0-9]{12,}|(AKIA|ASIA)[A-Z0-9]{16}([^A-Z0-9]|$)|(authorization|x-api-key|x-goog-api-key|api-key|api_key)[[:space:]]*[:=][[:space:]]*"?[^"[:space:],}*]+'
+grep -rnE "$SECRET_SHAPES" /tmp/test-include/
 ```
 
-**Verify:** No matches.
+**Verify:** No matches. (Redacted placeholders read `***REDACTED***`; the
+variable names themselves are not secrets and may appear.)
 
 ---
 

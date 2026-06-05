@@ -3,6 +3,7 @@
 import logging
 from collections.abc import Callable
 from datetime import datetime
+from typing import Any
 
 from benchflow.trajectories.metrics import is_skill_invocation_event
 
@@ -14,6 +15,81 @@ from .types import (
 )
 
 logger = logging.getLogger(__name__)
+
+ACPUsageSnapshot = dict[str, int | None]
+
+_ACP_USAGE_FIELDS: tuple[str, ...] = (
+    "input_tokens",
+    "output_tokens",
+    "total_tokens",
+    "cached_read_tokens",
+    "cached_write_tokens",
+    "thought_tokens",
+)
+
+
+def _coerce_usage_int(value: object) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float | str | bytes | bytearray):
+        try:
+            return int(value)
+        except ValueError:
+            return None
+    try:
+        return int(str(value))
+    except ValueError:
+        return None
+
+
+def _usage_mapping(usage: object) -> dict[str, Any]:
+    if isinstance(usage, dict):
+        return {str(key): value for key, value in usage.items()}
+    dump = getattr(usage, "model_dump", None)
+    if callable(dump):
+        data = dump(by_alias=False, exclude_none=True)
+        if isinstance(data, dict):
+            alias_data = dump(by_alias=True, exclude_none=True)
+            if isinstance(alias_data, dict):
+                data = {**alias_data, **data}
+            return data
+    return {
+        field: getattr(usage, field)
+        for field in _ACP_USAGE_FIELDS
+        if hasattr(usage, field)
+    }
+
+
+def normalize_acp_usage(usage: object | None) -> ACPUsageSnapshot | None:
+    """Normalize SDK ACP usage into BenchFlow's snake_case token counters."""
+    if usage is None:
+        return None
+    raw = _usage_mapping(usage)
+    if not raw:
+        return None
+    aliases = {
+        "input_tokens": ("input_tokens", "inputTokens"),
+        "output_tokens": ("output_tokens", "outputTokens"),
+        "total_tokens": ("total_tokens", "totalTokens"),
+        "cached_read_tokens": ("cached_read_tokens", "cachedReadTokens"),
+        "cached_write_tokens": ("cached_write_tokens", "cachedWriteTokens"),
+        "thought_tokens": ("thought_tokens", "thoughtTokens"),
+    }
+    snapshot: ACPUsageSnapshot = {}
+    for field, names in aliases.items():
+        value = None
+        for name in names:
+            if name in raw:
+                value = raw[name]
+                break
+        snapshot[field] = _coerce_usage_int(value)
+    if all(value is None for value in snapshot.values()):
+        return None
+    return snapshot
 
 
 def _is_skill_tool_call(
@@ -93,6 +169,7 @@ class ACPSession:
         self.tool_calls: list[ToolCallRecord] = []
         self._tool_call_map: dict[str, ToolCallRecord] = {}
         self.stop_reason: StopReason | None = None
+        self.usage_snapshots: list[ACPUsageSnapshot] = []
         self.created_at = datetime.now()
         self.events: list[dict] = []
         self._pending_text: list[dict] = []
@@ -123,6 +200,20 @@ class ACPSession:
         """Flush pending agent text after a prompt completes."""
         self._flush_agent_text()
         self._notify_change()
+
+    def record_prompt_usage(self, usage: object | None) -> None:
+        """Record cumulative ACP token usage returned by session/prompt."""
+        snapshot = normalize_acp_usage(usage)
+        if snapshot is None:
+            return
+        self.usage_snapshots.append(snapshot)
+        self._notify_change()
+
+    def latest_usage_totals(self) -> ACPUsageSnapshot | None:
+        """Return the latest cumulative ACP usage snapshot, if any."""
+        if not self.usage_snapshots:
+            return None
+        return dict(self.usage_snapshots[-1])
 
     def _flush_agent_text(self) -> None:
         """Flush pending text events, merging consecutive same-type chunks."""

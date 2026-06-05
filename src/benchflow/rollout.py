@@ -45,6 +45,7 @@ import os
 import re
 import shlex
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
@@ -76,6 +77,7 @@ from benchflow.models import RolloutResult, TrajectorySource
 from benchflow.rewards.validation import validate_reward_map
 from benchflow.rollout_branch import ChildRunner
 from benchflow.rollout_branch import branch as _branch_engine
+from benchflow.sandbox.metadata import persist_sandbox_info
 from benchflow.scenes import (
     compile_scenes_to_steps,
     scene_step_prompt,
@@ -100,12 +102,106 @@ from benchflow.trajectories._capture import (
 )
 from benchflow.trajectories.metrics import count_skill_invocations
 from benchflow.trajectories.tree import RolloutNode, RolloutTree, Step
-from benchflow.usage_tracking import UsageTrackingConfig
+from benchflow.trajectories.types import redact_acp_trajectory_jsonl
+from benchflow.usage_tracking import (
+    USAGE_SOURCE_AGENT_NATIVE_ACP,
+    USAGE_SOURCE_PROVIDER_RESPONSE,
+    UsageTrackingConfig,
+    is_token_usage_available,
+    usage_unavailable,
+)
 
 logger = logging.getLogger(__name__)
 
 _DISALLOW_WEB_TOOLS_ENV = "BENCHFLOW_DISALLOW_WEB_TOOLS"
 GENERATED_SKILLS_ROOT = "/app/generated-skills"
+
+
+def _provider_auth_status_from_runtime(runtime: Any) -> int | None:
+    """Return a provider 401/403 status from a usage runtime's trajectory.
+
+    Scans the captured provider HTTP exchanges for an auth-failure status.
+    Only the integer status code is read — never response bodies or headers —
+    so no credential material can leak into ``result.error`` (#546/#564).
+    Returns ``None`` when there is no runtime, no trajectory, or no 401/403.
+    """
+    server = getattr(runtime, "server", None)
+    trajectory = getattr(server, "trajectory", None)
+    exchanges = getattr(trajectory, "exchanges", None) or []
+    for exchange in reversed(exchanges):
+        status = getattr(getattr(exchange, "response", None), "status_code", None)
+        if status in (401, 403):
+            return status
+    return None
+
+
+_NATIVE_ACP_USAGE_SNAPSHOT_TO_RESULT = {
+    "input_tokens": "n_input_tokens",
+    "output_tokens": "n_output_tokens",
+    "cached_read_tokens": "n_cache_read_tokens",
+    "cached_write_tokens": "n_cache_creation_tokens",
+    "total_tokens": "total_tokens",
+}
+
+
+def _zero_native_acp_usage_metrics() -> dict[str, Any]:
+    return {**usage_unavailable(), "usage_details": {"thought_tokens": 0}}
+
+
+def _as_nonnegative_int(value: object) -> int:
+    if value is None:
+        return 0
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return max(value, 0)
+    if isinstance(value, float | str | bytes | bytearray):
+        try:
+            return max(int(value), 0)
+        except ValueError:
+            return 0
+    try:
+        return max(int(str(value)), 0)
+    except ValueError:
+        return 0
+
+
+def _native_acp_usage_delta(
+    previous: dict[str, int | None] | None,
+    current: dict[str, int | None],
+) -> dict[str, int]:
+    delta: dict[str, int] = {}
+    for usage_field in (
+        "input_tokens",
+        "output_tokens",
+        "cached_read_tokens",
+        "cached_write_tokens",
+        "thought_tokens",
+    ):
+        current_value = _as_nonnegative_int(current.get(usage_field))
+        previous_value = (
+            _as_nonnegative_int(previous.get(usage_field)) if previous else 0
+        )
+        delta[usage_field] = max(current_value - previous_value, 0)
+
+    current_total = current.get("total_tokens")
+    if current_total is not None:
+        current_value = _as_nonnegative_int(current_total)
+        previous_value = (
+            _as_nonnegative_int(previous.get("total_tokens"))
+            if previous and previous.get("total_tokens") is not None
+            else 0
+        )
+        delta["total_tokens"] = max(current_value - previous_value, 0)
+    else:
+        delta["total_tokens"] = (
+            delta["input_tokens"]
+            + delta["output_tokens"]
+            + delta["cached_read_tokens"]
+            + delta["cached_write_tokens"]
+            + delta["thought_tokens"]
+        )
+    return delta
 
 
 def _task_disallows_internet(task: Any) -> bool:
@@ -516,11 +612,13 @@ def _build_rollout_result(
     cost_usd: float | None = None,
     usage_source: str = "unavailable",
     price_source: str | None = None,
+    usage_details: dict[str, Any] | None = None,
     usage_tracking: dict[str, Any] | None = None,
     evolved_skills: dict[str, str] | None = None,
     source_provenance: dict[str, Any] | None = None,
     diagnostics: RolloutDiagnostics | None = None,
     skill_policy: TaskSkillPolicy | None = None,
+    sandbox_id: str | None = None,
 ) -> RolloutResult:
     """Build RolloutResult and write result.json, timing.json, prompts.json, trajectory.
 
@@ -566,6 +664,7 @@ def _build_rollout_result(
         cost_usd=cost_usd,
         usage_source=usage_source,
         price_source=price_source,
+        usage_details=usage_details,
         error=error,
         error_category=error_category,
         verifier_error=verifier_error,
@@ -593,6 +692,8 @@ def _build_rollout_result(
         "usage_source": result.usage_source,
         "price_source": result.price_source,
     }
+    if result.usage_details is not None:
+        agent_result["usage_details"] = result.usage_details
     final_metrics = final_metrics_from_agent_result(agent_result)
     trajectory_summary = trajectory_summary_from_events(
         trajectory,
@@ -604,6 +705,8 @@ def _build_rollout_result(
     # Final write — overwrites whatever the live streaming writer left
     # in place. Identical content in the normal ACP path, but this is
     # the only writer for oracle / scraped-fallback / no-session paths.
+    # Redaction is applied inside TrajectoryWriter so every write path
+    # (streaming + final) is scrubbed (#537/#585).
     TrajectoryWriter(traj_dir / "acp_trajectory.jsonl").write_final(trajectory)
     rollout_dir.mkdir(parents=True, exist_ok=True)
     (rollout_dir / "result.json").write_text(
@@ -640,6 +743,7 @@ def _build_rollout_result(
                     if source_provenance is not None
                     else {}
                 ),
+                "sandbox_id": sandbox_id,
             },
             indent=2,
         )
@@ -762,7 +866,12 @@ def _resolve_prompts(
 
 
 async def _start_env_and_upload(
-    env: Any, task_path: Path, timing: dict, *, skip_start: bool = False
+    env: Any,
+    task_path: Path,
+    timing: dict,
+    *,
+    skip_start: bool = False,
+    on_started: Callable[[], None] | None = None,
 ) -> None:
     """Start environment and upload task files.
 
@@ -770,6 +879,12 @@ async def _start_env_and_upload(
     by the caller (Runtime with a live Environment, #388) — we still
     upload task files but must not re-run ``start()`` since most sandbox
     backends (e.g. daytona) are not idempotent.
+
+    ``on_started`` runs once the sandbox exists but *before* any upload
+    (#554/#563). Persisting the sandbox id here — not after upload —
+    closes the failure window where an upload error or interrupt after
+    Daytona creation would otherwise leave no ``sandbox.json`` to audit
+    or clean up.
     """
     if skip_start:
         logger.info(f"Reusing caller-owned environment: {task_path.name}")
@@ -779,6 +894,8 @@ async def _start_env_and_upload(
         t0 = datetime.now()
         await env.start(force_build=False)
         timing["environment_setup"] = (datetime.now() - t0).total_seconds()
+    if on_started is not None:
+        on_started()
     if (task_path / "instruction.md").exists():
         await env.upload_file(task_path / "instruction.md", "/instruction.md")
     if (task_path / "solution").is_dir():
@@ -834,7 +951,7 @@ async def _publish_trajectory_for_verifier(env, trajectory: list[dict]) -> None:
         return
     await env.exec("mkdir -p /logs/agent", user="root", timeout_sec=10)
     with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
-        f.write("\n".join(json.dumps(e, default=str) for e in trajectory))
+        f.write(redact_acp_trajectory_jsonl(trajectory))
         f.write("\n")
         tmp_path = f.name
     try:
@@ -1140,6 +1257,16 @@ class Rollout:
         self._task_skill_policy: TaskSkillPolicy | None = None
         self._usage_runtime: Any = None
         self._usage_metrics: dict[str, Any] = self._planes.extract_usage(None)
+        self._native_usage_metrics: dict[str, Any] = _zero_native_acp_usage_metrics()
+        self._native_usage_checkpoint: dict[str, int | None] | None = None
+        # Provider 401/403 status snapshotted during cleanup, after the usage
+        # proxy imports its captures (Daytona's SandboxUsageProxy only fills
+        # trajectory on stop()). Read by _provider_auth_status() so ACP-error
+        # classification can fail fast on auth failures (#546/#564).
+        self._provider_auth_status_cached: int | None = None
+
+        # Populated by start()
+        self._sandbox_id: str | None = None
 
         # Populated by install_agent()
         self._agent_cfg: Any = None
@@ -1421,11 +1548,22 @@ class Rollout:
 
     async def start(self) -> None:
         """Start the environment and upload task files."""
+
+        def _capture_and_persist_sandbox() -> None:
+            # Persist the sandbox id the moment the sandbox exists, before any
+            # upload that could fail or be interrupted (#554/#563). Otherwise a
+            # mid-upload failure leaves a live Daytona sandbox with no
+            # sandbox.json to audit or clean up.
+            sid = getattr(self._env, "sandbox_id", None)
+            self._sandbox_id = sid if isinstance(sid, str) else None
+            persist_sandbox_info(self._env, self._rollout_dir)
+
         await _start_env_and_upload(
             self._env,
             self._config.task_path,
             self._timing,
             skip_start=self._env_externally_owned,
+            on_started=_capture_and_persist_sandbox,
         )
 
         for hook in self._config.pre_agent_hooks or []:
@@ -1592,6 +1730,7 @@ class Rollout:
             agent_cwd=self._agent_cwd,
             reasoning_effort=cfg.primary_reasoning_effort,
         )
+        self._native_usage_checkpoint = None
         self._reapply_ask_user_handler()
         self._attach_trajectory_writer(rollout_dir)
 
@@ -1770,6 +1909,7 @@ class Rollout:
         self._n_tool_calls += new_tools
         self._executed_prompts.extend(effective_prompts)
         self._trajectory_source = "acp"
+        self._collect_native_acp_usage()
 
         # Grow the tree at Step-level granularity — one Step per ACP event
         # (tool_call, agent_message, agent_thought, user_message). A single
@@ -1801,6 +1941,46 @@ class Rollout:
 
         self._phase = "executed"
         return trajectory, n_tool_calls
+
+    def _collect_native_acp_usage(self) -> None:
+        """Accumulate ACP PromptResponse.usage deltas for native subscription runs."""
+        session = getattr(self, "_session", None)
+        latest_fn = getattr(session, "latest_usage_totals", None)
+        if not callable(latest_fn):
+            return
+        latest = latest_fn()
+        if not latest:
+            return
+        previous = getattr(self, "_native_usage_checkpoint", None)
+        delta = _native_acp_usage_delta(previous, latest)
+        self._native_usage_checkpoint = dict(latest)
+        if not any(delta.values()):
+            return
+
+        metrics = dict(
+            getattr(self, "_native_usage_metrics", _zero_native_acp_usage_metrics())
+        )
+        for (
+            snapshot_field,
+            result_field,
+        ) in _NATIVE_ACP_USAGE_SNAPSHOT_TO_RESULT.items():
+            if result_field == "total_tokens":
+                continue
+            metrics[result_field] = _as_nonnegative_int(metrics.get(result_field)) + (
+                delta.get(snapshot_field) or 0
+            )
+        metrics["total_tokens"] = _as_nonnegative_int(metrics.get("total_tokens")) + (
+            delta.get("total_tokens") or 0
+        )
+        details = dict(metrics.get("usage_details") or {})
+        details["thought_tokens"] = _as_nonnegative_int(
+            details.get("thought_tokens")
+        ) + (delta.get("thought_tokens") or 0)
+        metrics["usage_details"] = details
+        metrics["usage_source"] = USAGE_SOURCE_AGENT_NATIVE_ACP
+        metrics["cost_usd"] = None
+        metrics["price_source"] = None
+        self._native_usage_metrics = metrics
 
     def _build_step_batch(self, new_events: list[dict], new_tools: int) -> list[Step]:
         """Build one Step per ACP event from the events appended this execute.
@@ -2024,13 +2204,30 @@ class Rollout:
             except Exception as e:
                 logger.warning(f"Usage telemetry runtime stop failed: {e}")
                 self._usage_metrics = self._planes.extract_usage(None)
+            # Snapshot any provider 401/403 now that captures are imported
+            # (stop() populated the trajectory). This must happen before we drop
+            # the runtime reference below, and is read later by ACP-error
+            # classification — for Daytona the trajectory is empty until here
+            # (#546/#564).
+            #
+            # Coverage gap: only `self._usage_runtime` is scanned here. Bedrock
+            # auth failures flow through `self._provider_runtime`, whose server
+            # (BedrockProxyServer) exposes no `.trajectory`/`.exchanges`, so a
+            # fallback scan of it would always return None — useless, so it's
+            # not implemented. The direct-AWS-Bedrock case (remote sandbox,
+            # runtime=None) bypasses both proxies entirely and is out of scope.
+            self._provider_auth_status_cached = _provider_auth_status_from_runtime(
+                usage_runtime
+            )
             try:
                 self._write_llm_trajectory(usage_runtime)
             except Exception as e:
                 logger.warning(f"LLM trajectory write failed: {e}")
             finally:
                 self._usage_runtime = None
-            self._enforce_required_usage_tracking()
+
+        self._finalize_usage_metrics()
+        self._enforce_required_usage_tracking()
 
         if self._environment is not None:
             with contextlib.suppress(Exception):
@@ -2054,11 +2251,24 @@ class Rollout:
 
         self._phase = "cleaned"
 
+    def _finalize_usage_metrics(self) -> None:
+        """Prefer LiteLLM usage, otherwise use trusted native ACP usage."""
+        current_metrics = getattr(
+            self, "_usage_metrics", {"usage_source": "unavailable"}
+        )
+        if current_metrics.get("usage_source") == USAGE_SOURCE_PROVIDER_RESPONSE:
+            return
+        native_metrics = getattr(self, "_native_usage_metrics", None)
+        if isinstance(native_metrics, dict) and is_token_usage_available(
+            native_metrics
+        ):
+            self._usage_metrics = native_metrics
+
     def _enforce_required_usage_tracking(self) -> None:
         usage_cfg = self._config.usage_tracking.with_env_defaults()
         if usage_cfg.mode != "required" or self._config.primary_agent == "oracle":
             return
-        if self._usage_metrics.get("usage_source") == "provider_response":
+        if is_token_usage_available(getattr(self, "_usage_metrics", None)):
             return
         if self._error is not None:
             return
@@ -2078,6 +2288,7 @@ class Rollout:
         """
         cfg = self._config
         agent_timed_out = False
+        pending_acp_error: AgentProtocolError | None = None
         if cfg.skill_mode == SKILL_MODE_SELF_GEN:
             raise ValueError(
                 "self-gen requires the runtime orchestrator. Use bf.run(), "
@@ -2162,13 +2373,31 @@ class Rollout:
             self._diagnostics.set(e.diagnostic)
             logger.error(self._error)
         except AgentProtocolError as e:
-            self._error = self._classify_acp_error(e)
-            logger.error(self._error)
+            # Defer classification until after cleanup(): the provider 401/403
+            # that distinguishes provider_auth from a generic retryable ACP
+            # error lives in the usage-proxy trajectory, which Daytona's
+            # SandboxUsageProxy only imports on stop() (#546/#564).
+            pending_acp_error = e
+            # Set a provisional error so cleanup()'s
+            # _enforce_required_usage_tracking guard early-returns instead of
+            # logging a misleading "no provider token usage was captured"
+            # message — the agent failed with an ACP error, not a usage gap.
+            # The post-cleanup block below still unconditionally refines
+            # self._error to the provider_auth marker, so this is only a
+            # placeholder during cleanup.
+            self._error = str(e)
+            logger.error(str(e))
         except Exception as e:
             self._error = str(e)
             logger.error("Run failed", exc_info=True)
         finally:
             await self.cleanup()
+
+        # cleanup() has now imported usage-proxy captures and snapshotted any
+        # provider auth status, so classification can see the real 401/403.
+        if pending_acp_error is not None:
+            self._error = self._classify_acp_error(pending_acp_error)
+            logger.error(self._error)
 
         if self._rollout_dir is None:
             return RolloutResult(
@@ -2570,7 +2799,11 @@ class Rollout:
             diag.sandbox_probe_traceback = traceback.format_exc()[-2000:]
 
     def _classify_acp_error(self, e: AgentProtocolError) -> str:
-        if "Invalid API key" in e.message:
+        # The base AgentProtocolError only annotates `message: str` without
+        # assigning it, so a base instance has no `.message` (AttributeError
+        # risk); ACPError subclasses do set it. Fall back to str(e) defensively.
+        message = getattr(e, "message", str(e))
+        if "Invalid API key" in message:
             from benchflow.agents.env import check_subscription_auth
             from benchflow.agents.registry import infer_env_key_for_model
 
@@ -2585,7 +2818,28 @@ class Rollout:
                     f"Subscription auth credentials exist — unset the env var "
                     f"to use them: env -u {key} <command>"
                 )
+        # A real invalid-key failure often surfaces only as a generic
+        # "ACP error -32603: Internal error" at this layer — the provider's
+        # actual 401/403 is visible only in the proxy-captured trajectory
+        # (#546/#564). Surface a sanitized auth marker (status code only — never
+        # the response body or headers) so RetryConfig.should_retry classifies
+        # it as provider_auth and fails fast instead of burning retries.
+        auth_status = self._provider_auth_status()
+        if auth_status is not None:
+            return f"{e} | provider auth failed (HTTP {auth_status})"
         return str(e)
+
+    def _provider_auth_status(self) -> int | None:
+        """Return the provider 401/403 status snapshotted during cleanup.
+
+        The snapshot is taken in :meth:`cleanup` after the usage proxy imports
+        its captures, so this is valid for both the host proxy (trajectory
+        filled as requests complete) and Daytona's SandboxUsageProxy (filled
+        only on ``stop()``). Only the integer status code is ever read — never
+        response bodies or headers — so no credential material reaches
+        ``result.error`` (#546/#564).
+        """
+        return self._provider_auth_status_cached
 
     def _write_llm_trajectory(self, usage_runtime: Any) -> None:
         """Persist captured provider HTTP exchanges as JSONL."""
@@ -2605,7 +2859,7 @@ class Rollout:
         usage_source = str(self._usage_metrics.get("usage_source", "unavailable"))
         if usage_cfg.mode == "off":
             status = "off"
-        elif usage_source == "provider_response":
+        elif is_token_usage_available(self._usage_metrics):
             status = "enabled"
         else:
             status = "unavailable"
@@ -2614,6 +2868,13 @@ class Rollout:
             status=status,
             usage_source=usage_source,
         )
+
+    def _current_sandbox_id(self) -> str | None:
+        sandbox_id = getattr(self, "_sandbox_id", None)
+        if isinstance(sandbox_id, str):
+            return sandbox_id
+        env_sandbox_id = getattr(getattr(self, "_env", None), "sandbox_id", None)
+        return env_sandbox_id if isinstance(env_sandbox_id, str) else None
 
     def _build_result(self) -> RolloutResult:
         rollout_dir = self._require_rollout_dir()
@@ -2654,5 +2915,6 @@ class Rollout:
                 runtime_skills_dir=self._config.skills_dir,
                 declared_sandbox_skills_dir=None,
             ),
+            sandbox_id=self._current_sandbox_id(),
             **self._usage_metrics,
         )

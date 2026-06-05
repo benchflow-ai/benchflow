@@ -10,13 +10,41 @@ ACP_ERROR = "acp_error"
 IDLE_TIMEOUT = "idle_timeout"
 INFRA_ERROR = "infra_failure"
 SANDBOX_SETUP = "sandbox_setup"
+PROVIDER_AUTH = "provider_auth"
 TIMED_OUT = "timeout"
+
+# Matched case-insensitively against the error string. Covers the
+# human-authored markers plus the sanitized "provider auth failed (HTTP 401)"
+# marker injected at the rollout/provider boundary (#546/#564), where the real
+# 401/403 is visible only in the proxy trajectory, not the top-level ACP error.
+_PROVIDER_AUTH_MARKERS = (
+    "permission_denied",
+    "leaked",
+    "failed to authenticate",
+    "invalid bearer token",
+    "invalid api key",
+    "was rejected as invalid",
+    "unauthorized",
+    "provider auth failed",
+    "http 401",
+    "http 403",
+)
 
 # Verifier error category constants
 VERIFIER_FAILED = "verifier_failure"
 VERIFIER_INFRA = "verifier_infra"
 VERIFIER_TIMEOUT = "verifier_timeout"
 VERIFIER_DEP_INSTALL = "verifier_dep_install"
+
+# Canonical dependency-install markers shared by verifier stdout scanning and
+# verifier-error classification. Keep these lower-case; the helper below
+# performs case-insensitive matching.
+VERIFIER_DEP_INSTALL_MARKERS: tuple[str, ...] = (
+    "dependency install failed",
+    "no solution found",
+    "could not find a version",
+    "resolution impossible",
+)
 
 ScoreOutcome = Literal["passed", "failed", "errored", "verifier_errored"]
 ResultOutcome = Literal["passed", "failed", "errored", "verifier_errored", "unscored"]
@@ -41,7 +69,9 @@ def classify_error(error: str | None) -> str | None:
         return INSTALL_FAILED
     if "closed stdout" in lower:
         return PIPE_CLOSED
-    if "ACP error" in error:
+    if "ACP error" in error or "was rejected as invalid" in error:
+        if any(m in lower for m in _PROVIDER_AUTH_MARKERS):
+            return PROVIDER_AUTH
         return ACP_ERROR
     if "sandbox startup" in lower or "sandbox creation" in lower:
         return SANDBOX_SETUP
@@ -77,7 +107,7 @@ def classify_verifier_error(verifier_error: str | None) -> str | None:
         return None
     lower = verifier_error.lower()
     if "verifier crashed" in verifier_error:
-        if _looks_like_verifier_dep_install_error(lower):
+        if contains_verifier_dep_install_marker(lower):
             return VERIFIER_DEP_INSTALL
         if _looks_like_verifier_infra_error(lower):
             return VERIFIER_INFRA
@@ -87,15 +117,15 @@ def classify_verifier_error(verifier_error: str | None) -> str | None:
     return "verifier_other"
 
 
-def _looks_like_verifier_dep_install_error(error: str) -> bool:
+def contains_verifier_dep_install_marker(text: str) -> bool:
     """Detect verifier dependency installation failures (ENG-151)."""
-    markers = (
-        "dependency install failed",
-        "no solution found",
-        "could not find a version",
-        "resolution impossible",
-    )
-    return any(marker in error for marker in markers)
+    lower = text.lower()
+    return any(marker in lower for marker in VERIFIER_DEP_INSTALL_MARKERS)
+
+
+def _looks_like_verifier_dep_install_error(error: str) -> bool:
+    """Backward-compatible internal alias for dep-install marker matching."""
+    return contains_verifier_dep_install_marker(error)
 
 
 def _looks_like_verifier_infra_error(error: str) -> bool:
