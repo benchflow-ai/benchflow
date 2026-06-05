@@ -211,6 +211,36 @@ class TestTestRewardFunc:
         score = await func.score(tmp_path)
         assert score == pytest.approx(1.0)
 
+    async def test_prefers_reward_json_over_reward_txt(self, tmp_path: Path) -> None:
+        """Guards task-standard reward.json precedence in reward-node scoring."""
+        import json
+
+        (tmp_path / "reward.json").write_text(json.dumps({"reward": 0.75}))
+        func = TestRewardFunc()
+        score = await func.score(tmp_path)
+        assert score == pytest.approx(0.75)
+
+    async def test_mismatched_reward_files_score_zero(self, tmp_path: Path) -> None:
+        """Guards fail-closed scalar agreement for reward-node scoring."""
+        import json
+
+        (tmp_path / "reward.txt").write_text("0.25\n")
+        (tmp_path / "reward.json").write_text(json.dumps({"reward": 0.75}))
+        func = TestRewardFunc()
+        score = await func.score(tmp_path)
+        assert score == 0.0
+
+    async def test_reads_verifier_subdir_reward_json(self, tmp_path: Path) -> None:
+        """Guards reward-node scoring against rollout verifier artifacts."""
+        import json
+
+        verifier_dir = tmp_path / "verifier"
+        verifier_dir.mkdir()
+        (verifier_dir / "reward.json").write_text(json.dumps({"reward": 0.4}))
+        func = TestRewardFunc()
+        score = await func.score(tmp_path)
+        assert score == pytest.approx(0.4)
+
 
 # ---------------------------------------------------------------------------
 # StringMatchRewardFunc

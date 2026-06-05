@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from benchflow.task.aliases import alias_dir_collision_issues
 from benchflow.task.config import TaskConfig
 from benchflow.task.document import TaskDocument
 from benchflow.task.paths import TaskPaths
@@ -32,6 +33,9 @@ class Task:
     def __init__(self, task_dir: Path | str) -> None:
         self._task_dir = Path(task_dir).resolve()
         self.paths = TaskPaths(self._task_dir)
+        alias_issues = alias_dir_collision_issues(self.paths)
+        if alias_issues:
+            raise ValueError("; ".join(alias_issues))
         self.document: TaskDocument | None = None
         if self.paths.task_document_path.exists():
             self.document = TaskDocument.from_path(self.paths.task_document_path)

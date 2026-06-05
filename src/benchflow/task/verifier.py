@@ -20,7 +20,10 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from benchflow.rewards.validation import is_valid_reward_number, validate_reward_map
+from benchflow.rewards.validation import (
+    RewardFileParseError,
+    parse_verifier_reward_files,
+)
 from benchflow.sandbox.lockdown import _exec_return_code, clear_verifier_output_dir
 from benchflow.task.env import resolve_env_vars
 from benchflow.task.paths import RolloutPaths, SandboxPaths
@@ -85,88 +88,25 @@ class Verifier:
         self._sandbox = sandbox
         self._logger = (_logger or logger).getChild("verifier")
 
-    def _parse_reward_text(self) -> dict[str, float | int]:
-        if self._rollout_paths.reward_text_path.stat().st_size == 0:
-            raise RewardFileEmptyError(
-                f"Reward file is empty at {self._rollout_paths.reward_text_path}"
-            )
-        try:
-            reward = float(self._rollout_paths.reward_text_path.read_text())
-        except (ValueError, TypeError) as e:
-            raise VerifierOutputParseError(
-                f"Failed to parse rewards from text file {self._rollout_paths.reward_text_path}"
-            ) from e
-        if not is_valid_reward_number(reward):
-            raise VerifierOutputParseError(
-                f"Reward text file {self._rollout_paths.reward_text_path} "
-                "must contain a finite numeric reward between 0.0 and 1.0"
-            )
-        return {"reward": reward}
-
-    def _parse_reward_json(self) -> dict[str, Any]:
-        if self._rollout_paths.reward_json_path.stat().st_size == 0:
-            raise RewardFileEmptyError(
-                f"Reward file is empty at {self._rollout_paths.reward_json_path}"
-            )
-        try:
-            rewards = json.loads(self._rollout_paths.reward_json_path.read_text())
-        except (ValueError, TypeError) as e:
-            raise VerifierOutputParseError(
-                f"Failed to parse rewards from JSON file {self._rollout_paths.reward_json_path}"
-            ) from e
-
-        if not isinstance(rewards, dict):
-            raise VerifierOutputParseError(
-                f"Reward JSON file {self._rollout_paths.reward_json_path} "
-                "must contain an object with numeric rewards"
-            )
-
-        canonical_reward = rewards.get("reward")
-        if not is_valid_reward_number(canonical_reward):
-            raise VerifierOutputParseError(
-                f"Reward JSON file {self._rollout_paths.reward_json_path} "
-                "is missing numeric 'reward' between 0.0 and 1.0"
-            )
-
-        try:
-            return validate_reward_map(rewards, source="reward JSON")
-        except ValueError as e:
-            raise VerifierOutputParseError(
-                f"Reward JSON file {self._rollout_paths.reward_json_path} {e}"
-            ) from e
-
     def _parse_rewards(self, *, test_return_code: int) -> dict[str, Any]:
         """Parse verifier reward outputs with JSON-first precedence."""
-        has_json = self._rollout_paths.reward_json_path.exists()
-        has_text = self._rollout_paths.reward_text_path.exists()
-
-        if has_json and has_text:
-            json_rewards = self._parse_reward_json()
-            text_rewards = self._parse_reward_text()
-            json_scalar = float(json_rewards["reward"])
-            text_scalar = float(text_rewards["reward"])
-            if json_scalar != text_scalar:
-                raise VerifierOutputParseError(
-                    "reward.json aggregate "
-                    f"{json_scalar} disagrees with reward.txt scalar {text_scalar}"
-                )
-            return json_rewards
-
-        if has_json:
-            return self._parse_reward_json()
-        if has_text:
-            return self._parse_reward_text()
-
-        if test_return_code != 0:
-            raise RewardFileNotFoundError(
-                f"verifier exited with rc={test_return_code}; no reward file "
-                f"found at {self._rollout_paths.reward_text_path} or "
-                f"{self._rollout_paths.reward_json_path}"
+        try:
+            return parse_verifier_reward_files(
+                reward_text_path=self._rollout_paths.reward_text_path,
+                reward_json_path=self._rollout_paths.reward_json_path,
+                source="reward JSON",
             )
-        raise RewardFileNotFoundError(
-            f"No reward file found at {self._rollout_paths.reward_text_path} or "
-            f"{self._rollout_paths.reward_json_path}"
-        )
+        except RewardFileParseError as exc:
+            message = str(exc)
+            if "No reward file found" in message:
+                if test_return_code != 0:
+                    raise RewardFileNotFoundError(
+                        f"verifier exited with rc={test_return_code}; {message}"
+                    ) from exc
+                raise RewardFileNotFoundError(message) from exc
+            if "empty" in message:
+                raise RewardFileEmptyError(message) from exc
+            raise VerifierOutputParseError(message) from exc
 
     def _clear_reward_outputs(self) -> None:
         for path in (

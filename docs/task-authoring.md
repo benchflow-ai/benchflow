@@ -247,7 +247,7 @@ After the agent finishes, the BenchFlow runtime copies `verifier/` to
 copied to `/tests/` and run from there. The working directory is the
 Dockerfile's `WORKDIR` (typically `/app/` in the example Dockerfile below).
 
-**Your script must write a single float (0.0–1.0) to `/logs/verifier/reward.txt`.** The verifier should write a fresh `reward.txt` or `reward.json` and exit `0`. Current runtime treats a nonzero verifier exit with no fresh reward file as infrastructure failure; if a fresh reward file exists, BenchFlow accepts the reward.
+**Your script must write a reward artifact under `/logs/verifier/`.** Harbor-compatible tasks can write a single float (0.0–1.0) to `reward.txt`. When `reward.json` is present, BenchFlow treats it as authoritative and requires its scalar `reward` to agree with `reward.txt` if both files exist. The verifier should write fresh reward files and exit `0`. Current runtime treats a nonzero verifier exit with no fresh reward file as infrastructure failure; if a fresh reward file exists, BenchFlow accepts the reward.
 
 | Path | Contents |
 |---|---|

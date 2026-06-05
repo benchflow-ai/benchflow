@@ -12,7 +12,7 @@ from benchflow._utils.task_authoring import (
     migrate_task_to_task_md,
 )
 from benchflow.cli.main import app
-from benchflow.task import TaskConfig, TaskDocument
+from benchflow.task import Task, TaskConfig, TaskDocument
 from benchflow.task.paths import TaskPaths
 
 
@@ -193,6 +193,24 @@ class TestTaskPathAliases:
         issues = check_task(task)
 
         assert any("verifier/" in issue and "tests/" in issue for issue in issues)
+
+    def test_task_load_rejects_oracle_solution_alias_collision(self, tmp_path):
+        """Guards runtime fail-closed behavior for conflicting alias trees."""
+        task = tmp_path / "task"
+        task.mkdir()
+        (task / "task.toml").write_text('version = "1.0"\n[verifier]\n')
+        (task / "instruction.md").write_text("Do something\n")
+        (task / "environment").mkdir()
+        (task / "environment" / "Dockerfile").write_text("FROM ubuntu:24.04\n")
+        (task / "oracle").mkdir()
+        (task / "oracle" / "solve.sh").write_text("#!/bin/bash\necho native\n")
+        (task / "solution").mkdir()
+        (task / "solution" / "solve.sh").write_text("#!/bin/bash\necho legacy\n")
+        (task / "verifier").mkdir()
+        (task / "verifier" / "test.sh").write_text("#!/bin/bash\nexit 0\n")
+
+        with pytest.raises(ValueError, match="oracle/"):
+            Task(task)
 
     def test_check_task_accepts_byte_identical_alias_trees(self, tmp_path):
         """Equivalent native and legacy alias trees should still pass check."""

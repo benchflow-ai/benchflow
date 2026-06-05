@@ -422,8 +422,10 @@ Target reward precedence:
   and task-specific payloads such as `metrics`, `regressions`, `participants`,
   `winner`, `raw`, and `debug`
 
-Current runtime does not yet fully match that target: `reward.txt` can take
-precedence over `reward.json`, and structured top-level JSON is limited.
+Current runtime still does not fully match that target: `reward.json` is now
+authoritative when present and scalar mismatches against `reward.txt` fail
+closed, but structured top-level JSON remains limited and multi-metric maps
+without a declared aggregate policy are not yet first-class.
 
 Validation evidence should include parser checks, legacy-vs-native migration
 parity, live rollout artifacts, negative-contract failures, and explicit
@@ -673,7 +675,9 @@ Current implementation status:
 | separate verifier env | yes | no/partial | materializer plus verifier runner support |
 | Windows / TPU | yes | no | fail closed |
 | healthcheck / workdir | yes | no/partial | materializer support |
-| `reward.json` precedence | yes | partial | prefer JSON when present and reject both-present mismatches |
+| `reward.json` precedence | yes | yes | keep scalar agreement checks; add multi-metric aggregate policy |
+| native `/task.md` upload | yes | yes | keep `/instruction.md` compatibility contract |
+| alias dir collision checks | yes | partial | `bench tasks check` and `Task()` load fail closed; export parity pending |
 
 Today `bench tasks check` is structural. A future sandbox-aware check, for
 example `bench tasks check --sandbox <backend>`, should validate this matrix. A

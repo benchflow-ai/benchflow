@@ -19,7 +19,11 @@ from benchflow.rewards.rubric_config import (
     _coerce_space,
     load_rubric,
 )
-from benchflow.rewards.validation import is_valid_reward_number
+from benchflow.rewards.validation import (
+    RewardFileParseError,
+    is_valid_reward_number,
+    parse_verifier_reward_files,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -29,23 +33,37 @@ class JudgeScoringError(RuntimeError):
 
 
 class TestRewardFunc:
-    """Wraps existing test.sh -> reward.txt flow. Backward compatible.
+    """Wraps existing test.sh reward file flow. Backward compatible.
 
-    Reads ``reward.txt`` from *rollout_dir* and parses the first float.
-    Returns 0.0 when the file is missing or unparseable.
+    Prefers ``reward.json`` over ``reward.txt`` under *rollout_dir* or
+    ``verifier/`` and returns the canonical scalar ``reward``. Returns 0.0 when
+    reward files are missing or unparseable.
     """
 
     async def score(self, rollout_dir: Path) -> float:
-        reward_path = rollout_dir / "reward.txt"
-        if not reward_path.exists():
+        candidates = (
+            (rollout_dir / "reward.txt", rollout_dir / "reward.json"),
+            (
+                rollout_dir / "verifier" / "reward.txt",
+                rollout_dir / "verifier" / "reward.json",
+            ),
+        )
+        for reward_text_path, reward_json_path in candidates:
+            if not reward_text_path.exists() and not reward_json_path.exists():
+                continue
+            try:
+                rewards = parse_verifier_reward_files(
+                    reward_text_path=reward_text_path,
+                    reward_json_path=reward_json_path,
+                    source="reward files",
+                )
+            except RewardFileParseError:
+                return 0.0
+            reward = rewards.get("reward")
+            if is_valid_reward_number(reward):
+                return float(reward)
             return 0.0
-        text = reward_path.read_text().strip()
-        if not text:
-            return 0.0
-        try:
-            return float(text.splitlines()[0].strip())
-        except (ValueError, IndexError):
-            return 0.0
+        return 0.0
 
 
 # ---------------------------------------------------------------------------

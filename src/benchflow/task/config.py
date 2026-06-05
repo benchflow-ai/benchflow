@@ -232,8 +232,9 @@ class VerifierConfig(TaskConfigModel):
 
     ``type`` selects the verification method:
 
-    - ``"test-script"`` (default): run ``tests/test.sh`` in the sandbox and
-      parse ``reward.txt`` / ``reward.json``.
+    - ``"test-script"`` (default): run ``verifier/test.sh`` or legacy
+      ``tests/test.sh`` in the sandbox and parse ``reward.json`` /
+      ``reward.txt`` (JSON is authoritative when present).
     - ``"llm-judge"``: score the agent's deliverables against a human-authored
       rubric using an LLM judge (see :class:`JudgeVerifierConfig`).
     """
