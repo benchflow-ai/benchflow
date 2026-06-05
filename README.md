@@ -26,11 +26,28 @@ BenchFlow's current public release is `0.5.2`:
 pip install --upgrade benchflow
 ```
 
-For a `uv`-managed CLI install of the public release:
+For a `uv`-managed CLI install or upgrade of the public release:
 
 ```bash
-uv tool install --prerelease allow 'benchflow==0.5.2'
+uv tool install --prerelease allow --upgrade 'benchflow==0.5.2'
 ```
+
+Use the exact `benchflow==0.5.2` pin for the public CLI. The
+`--prerelease allow` flag is currently needed for BenchFlow's pinned LiteLLM
+release-candidate dependency; the exact BenchFlow pin keeps you off internal
+preview builds.
+
+Internal users who want the newest preview published from `main` should omit
+the exact public pin:
+
+```bash
+uv tool install --prerelease allow --upgrade benchflow
+```
+
+That installs the latest internal preview, such as `0.5.3.dev<N>`. If either
+command reports `Executables already exist: bench, benchflow`, the machine has
+old entrypoints from a previous install; rerun the same command with `--force`
+to let `uv` replace them.
 
 Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/). Set `DAYTONA_API_KEY` for Daytona runs or configure Modal auth for Modal runs; export the relevant agent API key (`GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, etc.) or run `claude login` / `codex --login` for subscription auth. Provider-prefixed models may use provider-specific credentials; Azure Foundry models use `AZURE_API_KEY` plus `AZURE_API_ENDPOINT`.
 
