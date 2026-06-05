@@ -66,6 +66,12 @@ from benchflow.task.runtime_capabilities import (
     ensure_task_runtime_support,
     validate_task_runtime_support,
 )
+from benchflow.task.user_loop import (
+    CompiledUserLoop,
+    DocumentSimulatedUser,
+    compile_document_user_loop,
+    parse_stop_rule_max_rounds,
+)
 from benchflow.task.task import Task
 from benchflow.task.verifier import (
     AddTestsDirError,
@@ -106,6 +112,10 @@ __all__ = [
     "UnsupportedTaskRuntimeError",
     "ensure_task_runtime_support",
     "validate_task_runtime_support",
+    "CompiledUserLoop",
+    "DocumentSimulatedUser",
+    "compile_document_user_loop",
+    "parse_stop_rule_max_rounds",
     "VERIFIER_DOCUMENT_FILENAME",
     "VerifierDocument",
     "VerifierDocumentParseError",

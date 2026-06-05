@@ -91,7 +91,18 @@ def _append_user_semantics_issues(
         return
 
     benchflow = document.benchflow
-    if document.user and not _is_metadata_only_runtime(benchflow, "user"):
+    from benchflow.task.user_loop import compile_document_user_loop
+
+    compiled_user_loop = compile_document_user_loop(task)
+    user_loop_executable = (
+        compiled_user_loop is not None and compiled_user_loop.executable
+    )
+
+    if (
+        document.user
+        and not _is_metadata_only_runtime(benchflow, "user")
+        and not user_loop_executable
+    ):
         issues.append(
             UnsupportedTaskFeature(
                 path="user",
@@ -121,6 +132,7 @@ def _append_user_semantics_issues(
     if (
         document.user_persona
         and not _is_metadata_only_runtime(benchflow, "user_persona")
+        and not user_loop_executable
     ):
         issues.append(
             UnsupportedTaskFeature(

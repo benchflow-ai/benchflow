@@ -401,16 +401,18 @@ workdir = "/repo"
 class TestPromptUserSemanticsDogfood:
     """Guards fail-closed user/nudge validation for prompt-user-semantics dogfood."""
 
-    def test_user_and_nudges_fail_closed(self, sandbox_type: str) -> None:
-        """Guards prompt-user-semantics dogfood user/nudge semantics on gated sandboxes."""
+    def test_nudges_still_fail_closed_after_user_loop_compilation(
+        self, sandbox_type: str
+    ) -> None:
+        """Guards prompt-user-semantics dogfood nudge semantics on gated sandboxes."""
         task = Task(PROMPT_USER_SEMANTICS_TASK)
         issues = validate_task_runtime_support(
             task, sandbox_type, PROMPT_USER_SEMANTICS_TASK
         )
         paths = {issue.path for issue in issues}
-        assert "user" in paths
+        assert "user" not in paths
         assert "benchflow.nudges" in paths
-        assert "prompt.user-persona" in paths
+        assert "prompt.user-persona" not in paths
         assert all(issue.sandbox_type == sandbox_type for issue in issues)
 
     def test_metadata_only_user_runtime_skips_user_semantics_issues(

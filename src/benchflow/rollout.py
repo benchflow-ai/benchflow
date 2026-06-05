@@ -1107,6 +1107,34 @@ class RolloutConfig:
                     role.reasoning_effort
                 )
 
+        if self.user is None:
+            self._apply_document_user_loop()
+
+    def _apply_document_user_loop(self) -> None:
+        """Auto-wire document-declared user loops when compilation succeeds."""
+        task_md = self.task_path / "task.md"
+        if not task_md.is_file():
+            return
+
+        from benchflow.task.task import Task
+        from benchflow.task.user_loop import (
+            compile_document_user_loop,
+            user_loop_rollout_compatible,
+        )
+
+        try:
+            compiled = compile_document_user_loop(Task(self.task_path))
+        except (FileNotFoundError, ValueError):
+            return
+
+        if (
+            compiled is not None
+            and compiled.executable
+            and user_loop_rollout_compatible(self.scenes)
+        ):
+            self.user = compiled.user
+            self.max_user_rounds = compiled.max_user_rounds
+
     @classmethod
     def from_legacy(
         cls,
