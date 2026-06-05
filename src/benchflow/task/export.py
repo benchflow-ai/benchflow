@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -290,6 +291,20 @@ def export_report_json(result: ExportResult) -> dict[str, object]:
 EXPORT_REPORT_REL_PATH = "compatibility/export-report.json"
 
 
+def write_export_report(
+    output_dir: str | Path,
+    result: ExportResult,
+) -> Path:
+    """Write ``compatibility/export-report.json`` for an export result."""
+    report_path = Path(output_dir) / EXPORT_REPORT_REL_PATH
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(
+        json.dumps(export_report_json(result), indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return report_path
+
+
 __all__ = [
     "EXPORT_REPORT_REL_PATH",
     "ExportLoss",
@@ -298,4 +313,5 @@ __all__ = [
     "ExportTarget",
     "export_report_json",
     "export_task_package",
+    "write_export_report",
 ]
