@@ -1,0 +1,21 @@
+# Structured rubric placeholder for verifier-package-reward-contract dogfood.
+
+[[criteria]]
+id = "verifier_document"
+weight = 0.30
+source = "deterministic"
+
+[[criteria]]
+id = "reward_contract"
+weight = 0.35
+source = "deterministic"
+
+[[criteria]]
+id = "judge_isolation"
+weight = 0.20
+source = "judge"
+
+[[criteria]]
+id = "compatibility"
+weight = 0.15
+source = "deterministic"

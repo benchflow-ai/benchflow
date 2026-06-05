@@ -112,6 +112,10 @@ class TaskPaths:
     def test_path(self) -> Path:
         return self.tests_dir / "test.sh"
 
+    @property
+    def verifier_document_path(self) -> Path:
+        return self.tests_dir / "verifier.md"
+
     def is_valid(self, disable_verification: bool = False) -> bool:
         has_legacy_definition = (
             self.config_path.exists() and self.instruction_path.exists()

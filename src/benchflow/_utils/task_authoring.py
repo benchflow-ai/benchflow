@@ -7,14 +7,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from benchflow.task.aliases import alias_dir_collision_issues
 from benchflow.task.config import TaskConfig
 from benchflow.task.document import (
     TaskDocument,
     TaskDocumentParseError,
     render_task_md_from_legacy,
 )
-from benchflow.task.aliases import alias_dir_collision_issues
 from benchflow.task.paths import TaskPaths
+from benchflow.task.verifier_document import verifier_document_issues
 
 logger = logging.getLogger(__name__)
 
@@ -46,8 +47,10 @@ def check_task(task_dir: Path) -> list[str]:
     task_md = task_dir / TASK_DOCUMENT_FILE
     has_task_md = task_md.exists()
 
+    task_document: TaskDocument | None = None
     if has_task_md:
-        issues.extend(_check_task_document(task_md))
+        task_document, doc_issues = _check_task_document(task_md)
+        issues.extend(doc_issues)
     else:
         for f in LEGACY_REQUIRED_FILES:
             if not (task_dir / f).exists():
@@ -122,6 +125,18 @@ def check_task(task_dir: Path) -> list[str]:
                 f"{label}/solve.sh contains unreplaced placeholder — "
                 "write a real oracle solution before running the task"
             )
+
+    if task_document is not None:
+        benchflow = task_document.benchflow
+        if isinstance(benchflow, dict):
+            benchflow_verifier = benchflow.get("verifier")
+            if isinstance(benchflow_verifier, dict):
+                issues.extend(
+                    verifier_document_issues(
+                        task_dir,
+                        benchflow_verifier=benchflow_verifier,
+                    )
+                )
 
     return issues
 
@@ -326,14 +341,14 @@ def migrate_task_to_task_md(
     )
 
 
-def _check_task_document(task_md: Path) -> list[str]:
+def _check_task_document(task_md: Path) -> tuple[TaskDocument | None, list[str]]:
     issues: list[str] = []
     try:
         document = TaskDocument.from_path(task_md)
     except TaskDocumentParseError as e:
-        return [f"task.md parse error: {e}"]
+        return None, [f"task.md parse error: {e}"]
     except Exception as e:
-        return [f"task.md parse error: {e}"]
+        return None, [f"task.md parse error: {e}"]
 
     text = task_md.read_text()
     if not document.instruction.strip():
@@ -343,7 +358,7 @@ def _check_task_document(task_md: Path) -> list[str]:
             "task.md contains unreplaced placeholder - replace "
             "task prompts, role prompts, and simulated-user notes"
         )
-    return issues
+    return document, issues
 
 
 def _write_legacy_task_files(task_dir: Path, name: str) -> None:
