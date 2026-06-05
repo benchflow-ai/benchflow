@@ -50,16 +50,16 @@ from benchflow.task.package import (
     TaskPackage,
     TaskRuntimeView,
 )
+from benchflow.task.paths import (
+    RolloutPaths,
+    SandboxPaths,
+    TaskPaths,
+)
 from benchflow.task.runtime_capabilities import (
     UnsupportedTaskFeature,
     UnsupportedTaskRuntimeError,
     ensure_task_runtime_support,
     validate_task_runtime_support,
-)
-from benchflow.task.paths import (
-    RolloutPaths,
-    SandboxPaths,
-    TaskPaths,
 )
 from benchflow.task.task import Task
 from benchflow.task.verifier import (

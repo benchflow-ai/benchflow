@@ -5,17 +5,18 @@ want to do next. They are intentionally outside `docs/examples/task-md/**`
 because they use proposed `benchflow:` and `verifier/verifier.md` fields that
 parse as metadata today but are not fully executable runtime features yet.
 
-Each package is a task for a future implementation agent:
+Each package dogfoods a wanted BenchFlow feature. Partial runtime backing now
+exists on the task-standard branch (see the dogfood report follow-up section):
 
-- `runtime-capability-gate`: build `TaskPackage` / `TaskRuntimeView` and
-  fail-closed runtime capability validation.
-- `verifier-package-reward-contract`: add `VerifierDocument`,
-  `verifier/verifier.md`, Reward Kit preservation, and `reward.json`
-  precedence.
-- `compat-export-loss-reports`: add native-to-Harbor/Pier export and degraded
-  export reports.
-- `prompt-user-semantics`: implement prompt composition and document-declared
-  user/nudge runtime semantics.
+- `runtime-capability-gate`: **partial** — `TaskPackage` / `TaskRuntimeView`,
+  docker/daytona capability gates, `bench tasks check --sandbox`.
+- `verifier-package-reward-contract`: **partial** — `VerifierDocument` parser,
+  `reward.json` precedence, `reward-details.json` copy-through; strategy
+  execution still open.
+- `compat-export-loss-reports`: **partial** — `bench tasks export` with typed
+  loss list; round-trip parity still open.
+- `prompt-user-semantics`: **authoring only** — prompt composition and
+  user/nudge runtime semantics not executable yet.
 
 See the dogfood report:
 [2026-06-05-task-standard-benchflow-dogfood.md](../../../reports/2026-06-05-task-standard-benchflow-dogfood.md).

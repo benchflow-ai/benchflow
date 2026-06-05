@@ -120,16 +120,28 @@ feature tasks read better when `oracle/` means reference behavior and
    prompt composition, user loops, and runtime support all need one selected
    view of the task package.
 
+## Implementation Follow-Up (2026-06-05, same branch)
+
+The wanted-feature dogfood packages now have partial runtime backing on
+`cursor/task-standard-runtime-gaps-e453`:
+
+| Wanted feature | Landed | Still open |
+|---|---|---|
+| `TaskPackage` / `TaskRuntimeView` | `src/benchflow/task/package.py`, rollout upload uses runtime view | Prompt composition, user/nudge compilation, source-hash provenance |
+| Runtime capability gates | `src/benchflow/task/runtime_capabilities.py`, wired in rollout + sandbox setup; `bench tasks check --sandbox docker\|daytona` | Modal/K8s matrices, GPU/private-mount gates, narrow gates as features land |
+| `VerifierDocument` | `src/benchflow/task/verifier_document.py`, `check_task` + `Task()` validation | Strategy execution, Reward Kit runtime, agent-judge orchestration |
+| Export + loss reports | `src/benchflow/task/export.py`, `bench tasks export` | Round-trip parity, on-disk `export-report.json`, Pier-specific losses |
+| Reward contract | JSON-first precedence, scalar agreement, `reward-details.json` copy-through | Multi-metric maps without top-level `reward`, aggregate policy |
+
+Regression guard: `tests/test_task_standard_dogfood.py` exercises all four
+wanted-feature packages through structural check, `Task()` load,
+`TaskRuntimeView`, export losses, and docker capability rejection for
+`runtime-capability-gate`.
+
 ## Decision
 
-The standard is useful for real BenchFlow work, but the dogfood pass also shows
-that `task.md` alone is not the product. The missing product surface is the
-runtime view plus verifier package parser:
-
-```text
-TaskPackage = task.md + verifier/verifier.md + oracle/ + environment/ + evidence
-TaskRuntimeView = selected executable interpretation for a specific backend
-```
-
-That should be the next implementation slice.
+The standard is useful for real BenchFlow work. The core missing product
+surface — runtime view plus verifier package parser — now exists in draft form.
+Remaining work is execution depth (strategies, prompt/user runtime, export
+round-trip), not another authoring-format spike.
 
