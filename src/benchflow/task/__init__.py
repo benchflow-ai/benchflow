@@ -43,7 +43,12 @@ from benchflow.task.export import (
     ExportMode,
     ExportResult,
     ExportTarget,
+    ImportResult,
+    NativeComparison,
     export_task_package,
+    import_split_task_package,
+    materialize_export_result,
+    validate_export_round_trip,
 )
 from benchflow.task.package import (
     AliasCollisionStatus,
@@ -147,10 +152,15 @@ __all__ = [
     # Utilities
     "resolve_env_vars",
     "render_task_md_from_legacy",
-    # Export
+    # Export / import
     "ExportLoss",
     "ExportMode",
     "ExportResult",
     "ExportTarget",
+    "ImportResult",
+    "NativeComparison",
     "export_task_package",
+    "import_split_task_package",
+    "materialize_export_result",
+    "validate_export_round_trip",
 ]

@@ -13,6 +13,9 @@ from benchflow.task.export import (
     ExportLoss,
     export_report_json,
     export_task_package,
+    import_split_task_package,
+    materialize_export_result,
+    validate_export_round_trip,
 )
 
 COMPAT_EXPORT_EXAMPLE = Path(
@@ -106,3 +109,48 @@ def test_export_report_json_serializes_losses_hashes_mode_and_target() -> None:
     assert parsed["input_hashes"]["task.md"]
     assert parsed["output_hashes"]["task.toml"]
     assert EXPORT_REPORT_REL_PATH == "compatibility/export-report.json"
+
+
+def test_export_round_trip_preserves_harbor_compatible_fields(tmp_path: Path) -> None:
+    """Guards F1 compat-export-loss-reports export→materialize→import round-trip parity."""
+    result = export_task_package(COMPAT_EXPORT_EXAMPLE)
+    exported_dir = materialize_export_result(result, tmp_path / "exported")
+
+    assert (exported_dir / "task.toml").is_file()
+    assert (exported_dir / "instruction.md").is_file()
+    assert (exported_dir / EXPORT_REPORT_REL_PATH).is_file()
+
+    issues = validate_export_round_trip(COMPAT_EXPORT_EXAMPLE, exported_dir)
+    assert issues == []
+
+    imported = import_split_task_package(exported_dir)
+    document = TaskDocument.from_path(COMPAT_EXPORT_EXAMPLE / "task.md")
+
+    assert imported.config.model_dump() == document.config.model_dump()
+    assert imported.instruction_normalized == document.instruction.strip() + "\n"
+    assert imported.oracle_hashes["solution/solve.md"] == result.output_hashes["solution/solve.md"]
+    assert imported.verifier_hashes["tests/test.sh"] == result.output_hashes["tests/test.sh"]
+    assert imported.environment_hashes["environment/Dockerfile"]
+    assert imported.native_comparison is None
+
+
+def test_import_split_task_package_requires_split_layout(tmp_path: Path) -> None:
+    """Guards split import against native-only packages."""
+    native_only = tmp_path / "native-only"
+    native_only.mkdir()
+    (native_only / "task.md").write_text("---\n---\n\n## prompt\n\nHi.\n")
+
+    with pytest.raises(FileNotFoundError, match=r"task\.toml"):
+        import_split_task_package(native_only)
+
+
+def test_validate_export_round_trip_reports_config_drift(tmp_path: Path) -> None:
+    """Guards round-trip validation surfaces semantic drift."""
+    result = export_task_package(COMPAT_EXPORT_EXAMPLE)
+    exported_dir = materialize_export_result(result, tmp_path / "exported")
+    (exported_dir / "task.toml").write_text(
+        (exported_dir / "task.toml").read_text().replace("7200", "3600")
+    )
+
+    issues = validate_export_round_trip(COMPAT_EXPORT_EXAMPLE, exported_dir)
+    assert issues == ["Config drift: canonical TaskConfig dumps differ"]

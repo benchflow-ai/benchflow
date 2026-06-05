@@ -736,13 +736,7 @@ def tasks_export(
     ] = None,
 ) -> None:
     """Export a native task.md package to Harbor/Pier split layout."""
-    import json
-
-    from benchflow.task.export import (
-        EXPORT_REPORT_REL_PATH,
-        export_report_json,
-        export_task_package,
-    )
+    from benchflow.task.export import export_task_package, materialize_export_result
 
     output_dir = output or (Path.cwd() / f"{task_dir.name}-export")
     try:
@@ -754,18 +748,7 @@ def tasks_export(
         console.print(f"[red]Export failed:[/red] {exc}")
         raise typer.Exit(1) from exc
 
-    output_dir.mkdir(parents=True, exist_ok=True)
-    for rel_path, content in result.files.items():
-        dest = output_dir / rel_path
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_text(content)
-
-    report_path = output_dir / EXPORT_REPORT_REL_PATH
-    report_path.parent.mkdir(parents=True, exist_ok=True)
-    report_path.write_text(
-        json.dumps(export_report_json(result), indent=2) + "\n",
-        encoding="utf-8",
-    )
+    materialize_export_result(result, output_dir)
 
     console.print(
         f"[bold]Export[/bold] {result.target} ({result.mode}) "
@@ -784,6 +767,56 @@ def tasks_export(
             console.print(f"  [yellow]→[/yellow] {loss.concept}: {loss.reason}")
     else:
         console.print("[green]No export losses[/green]")
+
+
+@tasks_app.command("import")
+def tasks_import(
+    task_dir: Annotated[
+        Path, typer.Argument(help="Path to Harbor/Pier split-layout directory")
+    ],
+    native_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--native",
+            help="Optional native task.md directory for round-trip validation",
+        ),
+    ] = None,
+) -> None:
+    """Import a Harbor/Pier split package and optionally validate round-trip parity."""
+    from benchflow.task.export import (
+        import_split_task_package,
+        validate_export_round_trip,
+    )
+
+    try:
+        imported = import_split_task_package(task_dir)
+    except FileNotFoundError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from None
+    except Exception as exc:
+        console.print(f"[red]Import failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    console.print(
+        f"[bold]Import[/bold] split package — "
+        f"{len(imported.oracle_hashes)} oracle file(s), "
+        f"{len(imported.verifier_hashes)} verifier file(s)"
+    )
+    if imported.native_comparison is not None:
+        comparison = imported.native_comparison
+        if comparison.config_equal and comparison.instruction_equal:
+            console.print("[green]Co-located native task.md matches split import[/green]")
+        else:
+            console.print("[yellow]Co-located native task.md differs from split import[/yellow]")
+
+    if native_dir is not None:
+        issues = validate_export_round_trip(native_dir, task_dir)
+        if issues:
+            console.print(f"[yellow]Round-trip issues ({len(issues)}):[/yellow]")
+            for issue in issues:
+                console.print(f"  [yellow]→[/yellow] {issue}")
+            raise typer.Exit(1)
+        console.print("[green]Round-trip parity OK[/green]")
 
 
 @tasks_app.command("migrate")
