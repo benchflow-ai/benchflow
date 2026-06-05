@@ -1058,6 +1058,7 @@ class RolloutConfig:
     # User-driven progressive-disclosure loop
     user: BaseUser | None = None
     max_user_rounds: int = 5
+    user_loop_plan: Any | None = None
     oracle_access: bool = False
 
     # Legacy compat fields — used by SDK.run() shim. Ignored when scenes is set.
@@ -1124,21 +1125,23 @@ class RolloutConfig:
         from benchflow.task.task import Task
         from benchflow.task.user_loop import (
             compile_document_user_loop,
-            user_loop_rollout_compatible,
+            infer_user_loop_scene_name,
+            resolve_user_loop_rollout_plan,
         )
 
         try:
-            compiled = compile_document_user_loop(Task(self.task_path))
+            task = Task(self.task_path)
+            compiled = compile_document_user_loop(task)
         except (FileNotFoundError, ValueError):
             return
 
-        if (
-            compiled is not None
-            and compiled.executable
-            and user_loop_rollout_compatible(self.scenes)
-        ):
+        document = task.document
+        scene_name = infer_user_loop_scene_name(document) if document else None
+        plan = resolve_user_loop_rollout_plan(self.scenes, user_loop_scene_name=scene_name)
+        if compiled is not None and compiled.executable and plan is not None:
             self.user = compiled.user
             self.max_user_rounds = compiled.max_user_rounds
+            self.user_loop_plan = plan
 
     @classmethod
     def from_legacy(
@@ -1443,6 +1446,22 @@ class Rollout:
         from benchflow.task.runtime_capabilities import ensure_task_runtime_support
 
         ensure_task_runtime_support(self._task, cfg.environment, cfg.task_path)
+
+        if (cfg.task_path / "task.md").is_file():
+            try:
+                from benchflow.task.package import TaskRuntimeView
+
+                summary = TaskRuntimeView.from_task_dir(
+                    cfg.task_path
+                ).document_runtime_summary()
+                logger.info(
+                    "Task runtime: entrypoint=%s scenes=%s verifier=%s",
+                    summary.get("entrypoint"),
+                    summary.get("scene_names"),
+                    summary.get("verifier_dir_kind"),
+                )
+            except (FileNotFoundError, ValueError):
+                pass
 
         self._disallow_web_tools = (
             _task_disallows_internet(self._task) or cfg.self_gen_no_internet
@@ -2250,7 +2269,7 @@ class Rollout:
                 try:
                     try:
                         if cfg.user is not None:
-                            await self._run_user_loop()
+                            await self._run_user_loop_scoped()
                         else:
                             await self._run_steps(
                                 compile_scenes_to_steps(
@@ -2443,7 +2462,38 @@ class Rollout:
             if current_role_key is not None:
                 await self.disconnect()
 
-    async def _run_user_loop(self) -> None:
+    async def _run_user_loop_scoped(self) -> None:
+        """Run optional pre-scenes, the user loop, then any post-scene turns."""
+        cfg = self._config
+        plan = cfg.user_loop_plan
+        default_prompt = (
+            self._resolved_prompts[0] if self._resolved_prompts else None
+        )
+
+        if plan is not None and plan.pre_scenes:
+            await self._run_steps(
+                compile_scenes_to_steps(
+                    list(plan.pre_scenes),
+                    default_prompt=default_prompt,
+                )
+            )
+
+        await self._run_user_loop(plan=plan, default_prompt=default_prompt)
+
+        if plan is not None and plan.post_scene is not None:
+            await self._run_steps(
+                compile_scenes_to_steps(
+                    [plan.post_scene],
+                    default_prompt=default_prompt,
+                )
+            )
+
+    async def _run_user_loop(
+        self,
+        *,
+        plan: Any | None = None,
+        default_prompt: str | None = None,
+    ) -> None:
         """Execute a user-driven progressive-disclosure loop.
 
         Each round: user.run() → connect → agent.execute() → disconnect →
@@ -2454,24 +2504,28 @@ class Rollout:
         user = cfg.user
         assert user is not None
 
-        if len(cfg.effective_scenes) > 1:
-            raise ValueError(
-                "User-driven loops operate on a single scene. "
-                f"Got {len(cfg.effective_scenes)} scenes."
+        plan = plan or cfg.user_loop_plan
+        if plan is not None:
+            role = plan.user_loop_role
+            instruction = plan.user_loop_prompt
+        else:
+            if len(cfg.effective_scenes) > 1:
+                raise ValueError(
+                    "User-driven loops operate on a single scene. "
+                    f"Got {len(cfg.effective_scenes)} scenes."
+                )
+            scene = cfg.effective_scenes[0]
+            if len(scene.roles) != 1:
+                raise ValueError(
+                    "User-driven loops require a single-role scene. "
+                    f"Got {len(scene.roles)} roles."
+                )
+            role = scene.roles[0]
+            instruction = default_prompt or (
+                self._resolved_prompts[0]
+                if self._resolved_prompts
+                else "Solve the task described in /app/instruction.md"
             )
-        scene = cfg.effective_scenes[0]
-        if len(scene.roles) != 1:
-            raise ValueError(
-                "User-driven loops require a single-role scene. "
-                f"Got {len(scene.roles)} roles."
-            )
-        role = scene.roles[0]
-
-        instruction = (
-            self._resolved_prompts[0]
-            if self._resolved_prompts
-            else ("Solve the task described in /app/instruction.md")
-        )
 
         # Oracle access: read /solution before the agent runs, then remove it
         solution: str | None = None

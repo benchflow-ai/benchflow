@@ -6,7 +6,9 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from benchflow._types import Role, Scene, Turn
 from benchflow.contracts.user import BaseUser, RoundResult
+from benchflow.scenes import DEFAULT_SCENE_PROMPT
 
 if TYPE_CHECKING:
     from benchflow.task.task import Task
@@ -33,6 +35,17 @@ class CompiledUserLoop:
     user: BaseUser
     max_user_rounds: int
     executable: bool
+
+
+@dataclass(frozen=True)
+class UserLoopRolloutPlan:
+    """Where a compiled user loop plugs into a multi-scene rollout."""
+
+    pre_scenes: tuple[Scene, ...]
+    user_loop_scene: Scene
+    user_loop_role: Role
+    user_loop_prompt: str
+    post_scene: Scene | None = None
 
 
 def parse_stop_rule_max_rounds(stop_rule: str) -> int | None:
@@ -220,19 +233,137 @@ def compile_document_user_loop(task: Task) -> CompiledUserLoop | None:
     )
 
 
-def user_loop_rollout_compatible(scenes: list[Any]) -> bool:
+def infer_user_loop_scene_name(document: Any) -> str | None:
+    """Return the scene that should host a document-declared user loop."""
+    scene_prompts = getattr(document, "scene_prompts", None)
+    if isinstance(scene_prompts, dict):
+        for scene_name in scene_prompts:
+            normalized = scene_name.lower().replace("_", "-")
+            if "user-loop" in normalized:
+                return scene_name
+
+    scenes = getattr(document, "scenes", None)
+    if isinstance(scenes, list):
+        for scene in scenes:
+            name = getattr(scene, "name", None)
+            if isinstance(name, str) and "user-loop" in name.lower().replace("_", "-"):
+                return name
+    return None
+
+
+def resolve_user_loop_rollout_plan(
+    scenes: list[Scene],
+    *,
+    user_loop_scene_name: str | None = None,
+    default_prompt: str | None = None,
+) -> UserLoopRolloutPlan | None:
+    """Return how a compiled user loop should execute across document scenes."""
+    if not scenes:
+        return None
+
+    fallback_prompt = default_prompt or DEFAULT_SCENE_PROMPT
+
+    if len(scenes) == 1:
+        scene = scenes[0]
+        if len(scene.roles) != 1 or not scene.turns:
+            return None
+        role = scene.roles[0]
+        if scene.turns[0].role != role.name:
+            return None
+        prompt = (
+            scene.turns[0].prompt
+            if scene.turns[0].prompt is not None
+            else fallback_prompt
+        )
+        return UserLoopRolloutPlan(
+            pre_scenes=(),
+            user_loop_scene=scene,
+            user_loop_role=role,
+            user_loop_prompt=prompt,
+        )
+
+    if user_loop_scene_name is None:
+        return None
+
+    anchor_index = next(
+        (
+            index
+            for index, scene in enumerate(scenes)
+            if scene.name == user_loop_scene_name
+        ),
+        None,
+    )
+    if anchor_index is None:
+        return None
+
+    anchor_scene = scenes[anchor_index]
+    if not anchor_scene.turns:
+        return None
+
+    role_map = {role.name: role for role in anchor_scene.roles}
+    first_turn = anchor_scene.turns[0]
+    anchor_role = role_map.get(first_turn.role)
+    if anchor_role is None:
+        return None
+
+    user_loop_prompt = (
+        first_turn.prompt if first_turn.prompt is not None else fallback_prompt
+    )
+    user_loop_scene = Scene(
+        name=anchor_scene.name,
+        roles=[anchor_role],
+        turns=[Turn(role=first_turn.role, prompt=first_turn.prompt)],
+        skills_dir=anchor_scene.skills_dir,
+    )
+
+    post_scene = None
+    if len(anchor_scene.turns) > 1:
+        post_turns = anchor_scene.turns[1:]
+        post_role_names = list(dict.fromkeys(turn.role for turn in post_turns))
+        post_roles = [role_map[name] for name in post_role_names if name in role_map]
+        post_scene = Scene(
+            name=anchor_scene.name,
+            roles=post_roles,
+            turns=post_turns,
+            skills_dir=anchor_scene.skills_dir,
+        )
+
+    return UserLoopRolloutPlan(
+        pre_scenes=tuple(scenes[:anchor_index]),
+        user_loop_scene=user_loop_scene,
+        user_loop_role=anchor_role,
+        user_loop_prompt=user_loop_prompt,
+        post_scene=post_scene,
+    )
+
+
+def user_loop_rollout_compatible(
+    scenes: list[Any],
+    *,
+    user_loop_scene_name: str | None = None,
+    default_prompt: str | None = None,
+) -> bool:
     """Return whether compiled user loops can drive rollout execution."""
-    if len(scenes) != 1:
+    typed_scenes = [scene for scene in scenes if isinstance(scene, Scene)]
+    if len(typed_scenes) != len(scenes):
         return False
-    scene = scenes[0]
-    roles = getattr(scene, "roles", None)
-    return isinstance(roles, list) and len(roles) == 1
+    return (
+        resolve_user_loop_rollout_plan(
+            typed_scenes,
+            user_loop_scene_name=user_loop_scene_name,
+            default_prompt=default_prompt,
+        )
+        is not None
+    )
 
 
 __all__ = [
     "CompiledUserLoop",
     "DocumentSimulatedUser",
+    "UserLoopRolloutPlan",
     "compile_document_user_loop",
+    "infer_user_loop_scene_name",
     "parse_stop_rule_max_rounds",
+    "resolve_user_loop_rollout_plan",
     "user_loop_rollout_compatible",
 ]

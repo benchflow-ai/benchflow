@@ -819,6 +819,54 @@ def tasks_import(
         console.print("[green]Round-trip parity OK[/green]")
 
 
+@tasks_app.command("round-trip")
+def tasks_round_trip(
+    task_dir: Annotated[Path, typer.Argument(help="Path to native task.md directory")],
+    target: Annotated[
+        Literal["harbor", "pier"],
+        typer.Option("--target", help="Export target layout"),
+    ] = "harbor",
+    output: Annotated[
+        Path | None,
+        typer.Option("--output", help="Directory to write exported files"),
+    ] = None,
+) -> None:
+    """Export a native package and validate Harbor/Pier round-trip parity."""
+    from benchflow.task.export import (
+        export_task_package,
+        materialize_export_result,
+        validate_export_round_trip,
+    )
+
+    output_dir = output or (Path.cwd() / f"{task_dir.name}-round-trip")
+    try:
+        result = export_task_package(task_dir, target=target)
+        materialize_export_result(result, output_dir)
+        issues = validate_export_round_trip(task_dir, output_dir)
+    except FileNotFoundError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from None
+    except Exception as exc:
+        console.print(f"[red]Round-trip failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    console.print(
+        f"[bold]Round-trip[/bold] {result.target} ({result.mode}) "
+        f"— {len(result.files)} file(s) → {output_dir}"
+    )
+    if result.losses:
+        console.print(
+            f"[dim]Export losses ({len(result.losses)}) recorded in "
+            f"compatibility/export-report.json[/dim]"
+        )
+    if issues:
+        console.print(f"[red]Round-trip issues ({len(issues)}):[/red]")
+        for issue in issues:
+            console.print(f"  [red]→[/red] {issue}")
+        raise typer.Exit(1)
+    console.print("[green]Round-trip parity OK[/green]")
+
+
 @tasks_app.command("migrate")
 def tasks_migrate(
     task_dir: Annotated[Path, typer.Argument(help="Legacy task directory")],

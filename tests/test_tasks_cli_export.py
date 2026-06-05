@@ -139,3 +139,24 @@ name = "scaffold"
         assert result.exit_code == 0, result.output
         assert "valid" in result.output
         assert "runtime supported on daytona" in result.output
+
+
+class TestTasksRoundTripCli:
+    def test_round_trip_exports_and_validates_compat_example(
+        self, tmp_path: Path
+    ) -> None:
+        output_dir = tmp_path / "round-trip"
+        result = CliRunner().invoke(
+            app,
+            [
+                "tasks",
+                "round-trip",
+                str(COMPAT_EXPORT_EXAMPLE),
+                "--output",
+                str(output_dir),
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "Round-trip parity OK" in result.output
+        assert (output_dir / "compatibility" / "export-report.json").is_file()

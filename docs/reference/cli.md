@@ -236,6 +236,23 @@ normalized instruction text, and content hashes for oracle (`solution/`),
 verifier (`tests/`), and `environment/` trees. Mismatches print as issues and
 exit with code 1.
 
+### bench tasks round-trip
+
+Export a native `task.md` package and validate Harbor/Pier round-trip parity in
+one step. Writes the split layout to `--output` (default
+`./<task-name>-round-trip`) plus `compatibility/export-report.json`, then checks
+config, instruction, and oracle/verifier/environment hashes against the source.
+
+```bash
+bench tasks round-trip tasks/my-task
+bench tasks round-trip tasks/my-task --target pier --output /tmp/my-task-rt
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--target` | `harbor` | Export target layout (`harbor` or `pier`) |
+| `--output` | `./<task-name>-round-trip` | Directory for exported split layout |
+
 ### bench tasks migrate
 
 Convert a legacy task directory into the unified `task.md` format.

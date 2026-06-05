@@ -9,7 +9,11 @@ import pytest
 from benchflow.rollout import RolloutConfig
 from benchflow.sandbox.user import RoundResult
 from benchflow.task import Task, compile_document_user_loop, parse_stop_rule_max_rounds
-from benchflow.task.user_loop import DocumentSimulatedUser
+from benchflow.task.user_loop import (
+    DocumentSimulatedUser,
+    infer_user_loop_scene_name,
+    resolve_user_loop_rollout_plan,
+)
 
 PROMPT_USER_SEMANTICS_TASK = Path(
     "docs/examples/task-standard/benchflow-wanted-features/prompt-user-semantics"
@@ -187,6 +191,27 @@ class TestDocumentSimulatedUser:
         assert "secret requirement" not in prompt
 
 
+class TestResolveUserLoopRolloutPlan:
+    def test_prompt_user_semantics_plans_pre_and_post_scenes(self) -> None:
+        """Guards multi-scene user-loop placement for prompt-user-semantics."""
+        task = Task(PROMPT_USER_SEMANTICS_TASK)
+        document = task.document
+        assert document is not None
+
+        scene_name = infer_user_loop_scene_name(document)
+        assert scene_name == "user-loop"
+
+        plan = resolve_user_loop_rollout_plan(
+            document.scenes,
+            user_loop_scene_name=scene_name,
+        )
+        assert plan is not None
+        assert [scene.name for scene in plan.pre_scenes] == ["prompt-composition"]
+        assert plan.user_loop_role.name == "scene_engineer"
+        assert plan.post_scene is not None
+        assert plan.post_scene.turns[0].role == "ux_reviewer"
+
+
 class TestRolloutConfigUserLoopWiring:
     def test_auto_wires_compatible_single_scene_task(self, tmp_path: Path) -> None:
         (tmp_path / "task.md").write_text(
@@ -219,15 +244,20 @@ Solve it.
         assert isinstance(config.user, DocumentSimulatedUser)
         assert config.max_user_rounds == 4
 
-    def test_skips_auto_wire_for_multi_scene_dogfood(self) -> None:
-        """Multi-scene prompt-user-semantics compiles but keeps scene rollout."""
+    def test_auto_wires_multi_scene_dogfood_user_loop_scene(self) -> None:
+        """Multi-scene prompt-user-semantics wires user loop on the user-loop scene."""
         config = RolloutConfig(task_path=PROMPT_USER_SEMANTICS_TASK)
 
-        assert config.user is None
-        assert len(config.effective_scenes) > 1
-        compiled = compile_document_user_loop(Task(PROMPT_USER_SEMANTICS_TASK))
-        assert compiled is not None
-        assert compiled.executable is True
+        assert config.user is not None
+        assert isinstance(config.user, DocumentSimulatedUser)
+        assert config.max_user_rounds == 5
+        assert config.user_loop_plan is not None
+        assert len(config.user_loop_plan.pre_scenes) == 1
+        assert config.user_loop_plan.pre_scenes[0].name == "prompt-composition"
+        assert config.user_loop_plan.user_loop_scene.name == "user-loop"
+        assert config.user_loop_plan.user_loop_role.name == "scene_engineer"
+        assert config.user_loop_plan.post_scene is not None
+        assert config.user_loop_plan.post_scene.turns[0].role == "ux_reviewer"
 
     def test_explicit_user_is_not_overridden(self, tmp_path: Path) -> None:
         from benchflow.sandbox.user import PassthroughUser
