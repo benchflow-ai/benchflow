@@ -1,4 +1,4 @@
-# SkillsBench #192 infra-fix validation on v0.5-integration
+# SkillsBench #192 infra-fix validation for BenchFlow 0.5.0
 
 Closes: [#505](https://github.com/benchflow-ai/benchflow/issues/505)
 References: [#192](https://github.com/benchflow-ai/benchflow/issues/192) (closed-as-superseded historical audit)
@@ -7,7 +7,8 @@ References: [#192](https://github.com/benchflow-ai/benchflow/issues/192) (closed
 
 [#192](https://github.com/benchflow-ai/benchflow/issues/192) enumerated **14 infrastructure bugs** found during the Opus 4.7 + SkillsBench Trial 1 audit (84 tasks, Daytona, concurrency=2). Most root causes were in the `benchflow-ai/skillsbench` task repo (per-task `Dockerfile` / `test.sh` / datagen), one was in `benchflow-ai/benchflow` (`VerifierConfig.pytest_plugins`), and one was upstream-only (Daytona SDK `SessionCommandLogsResponse`).
 
-This document captures **explicit validation** that the fixes referenced in #192's comments are now in place on:
+This document captures **explicit validation** that the fixes referenced in
+#192's comments were in place for the BenchFlow `0.5.0` release line on:
 
 - `benchflow-ai/benchflow @ v0.5-integration` — HEAD `61fa09e` ("fix: expose skill invocation counts in artifacts (#518)")
 - `benchflow-ai/skillsbench @ main` — HEAD `3f86918e` ("revert: remove agentbeats-task-env-images workflow")
@@ -185,7 +186,9 @@ No. The `_sdk_ops.apply()` patch is at `src/benchflow/sandbox/_sdk_ops.py`. Both
 
 ## Residual issues
 
-None for the 14-bug set. The verifier paths, sandbox permissions, datagen, and Daytona SDK retry all behave as designed on the current `v0.5-integration` and `skillsbench@main`.
+None for the 14-bug set. The verifier paths, sandbox permissions, datagen, and
+Daytona SDK retry all behaved as designed on the v0.5 integration branch that
+fed BenchFlow `0.5.0`, and on `skillsbench@main`.
 
 Tangential observations (not regressions of the 14 bugs, not filed as new issues):
 

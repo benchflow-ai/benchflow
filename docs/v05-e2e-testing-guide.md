@@ -1,12 +1,12 @@
 # v0.5 End-to-End Testing Guide
 
-How to manually verify every feature shipped in v0.5-integration.
+How to manually verify every feature shipped in BenchFlow `0.5.0`.
 
 ## Prerequisites
 
 ```bash
-# install benchflow from the v0.5-integration branch
-git checkout v0.5-integration
+# verify the public v0.5.0 release tag
+git checkout v0.5.0
 # `sandbox-daytona` is required for the `--sandbox daytona` scenarios below.
 # (Add `--extra sandbox-modal` similarly if you plan to swap in `--sandbox modal`.)
 uv sync --extra dev --extra sandbox-daytona --locked
