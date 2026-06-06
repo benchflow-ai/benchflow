@@ -60,7 +60,7 @@ class TestRewardFunc:
             except RewardFileParseError:
                 return 0.0
             reward = rewards.get("reward")
-            if is_valid_reward_number(reward):
+            if isinstance(reward, int | float) and is_valid_reward_number(reward):
                 return float(reward)
             return 0.0
         return 0.0

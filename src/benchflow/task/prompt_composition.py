@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 PromptPart = Literal["base", "role", "scene", "turn"]
 CompositionMode = Literal["append", "replace"]
@@ -50,7 +50,7 @@ def prompt_composition_settings(benchflow: dict[str, Any]) -> PromptCompositionS
                     f"benchflow.prompt.order[{index}] must be one of "
                     f"base, role, scene, turn"
                 )
-            order_parts.append(item)
+            order_parts.append(cast(PromptPart, item))
         order = tuple(order_parts)
 
     return PromptCompositionSettings(
@@ -123,7 +123,11 @@ def compose_task_prompt(
         return ""
 
     if composition == "append":
-        chunks = [parts[part_name] for part_name in resolved_order if parts[part_name]]
+        chunks: list[str] = [
+            value
+            for part_name in resolved_order
+            if (value := parts[part_name])
+        ]
         return "\n\n".join(chunks)
 
     if explicit_turn:

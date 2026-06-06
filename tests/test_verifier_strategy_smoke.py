@@ -178,17 +178,19 @@ async def test_judge_strategy_routes_to_mocked_llm_judge(tmp_path: Path) -> None
     document = task.verifier_document
     assert document is not None
 
-    with patch(
-        "benchflow.rewards.builtins.LLMJudgeRewardFunc.score",
-        new=AsyncMock(return_value=0.82),
-    ) as mock_score:
-        with patch(
+    with (
+        patch(
+            "benchflow.rewards.builtins.LLMJudgeRewardFunc.score",
+            new=AsyncMock(return_value=0.82),
+        ) as mock_score,
+        patch(
             "benchflow.rewards.builtins.LLMJudgeRewardFunc",
             wraps=__import__(
                 "benchflow.rewards.builtins", fromlist=["LLMJudgeRewardFunc"]
             ).LLMJudgeRewardFunc,
-        ) as mock_judge_cls:
-            result = await Verifier(task, rollout_paths, sandbox).verify()
+        ) as mock_judge_cls,
+    ):
+        result = await Verifier(task, rollout_paths, sandbox).verify()
 
     mock_judge_cls.assert_called_once()
     judge_kwargs = mock_judge_cls.call_args.kwargs

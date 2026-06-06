@@ -760,7 +760,8 @@ class DockerSandbox(BaseSandbox):
 
         exec_command: list[str] = ["exec"]
 
-        effective_cwd = cwd or self.task_env_config.workdir
+        task_env = getattr(self, "task_env_config", None)
+        effective_cwd = cwd or (task_env.workdir if task_env is not None else None)
         if effective_cwd:
             exec_command.extend(["-w", effective_cwd])
 
