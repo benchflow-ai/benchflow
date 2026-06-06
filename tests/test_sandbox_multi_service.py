@@ -681,6 +681,34 @@ class TestModalRejectsMultiService:
             await sandbox.exec("echo hi", service="target")
 
     @pytest.mark.asyncio
+    async def test_modal_exec_defaults_cwd_to_task_workdir(self) -> None:
+        """Guards environment.workdir becomes the default exec working directory."""
+        pytest.importorskip("modal")  # sandbox-modal optional dependency
+        from benchflow.sandbox.modal_impl import ModalSandbox
+
+        sandbox = ModalSandbox.__new__(ModalSandbox)
+        sandbox._persistent_env = {}
+        sandbox.default_user = None
+        sandbox.task_env_config = MagicMock(workdir="/repo")
+        sandbox._sandbox = MagicMock()
+        captured: dict[str, object] = {}
+
+        async def fake_exec(*args, **kwargs):
+            captured.update(kwargs)
+            process = MagicMock()
+            process.stdout = MagicMock()
+            process.stderr = MagicMock()
+            process.stdout.read.aio = AsyncMock(return_value="")
+            process.stderr.read.aio = AsyncMock(return_value="")
+            process.wait.aio = AsyncMock(return_value=0)
+            return process
+
+        sandbox._sandbox.exec.aio = fake_exec
+        await sandbox.exec("pwd")
+
+        assert captured.get("workdir") == "/repo"
+
+    @pytest.mark.asyncio
     async def test_modal_services_rejects_single_container(self) -> None:
         """#248: Modal has no compose topology — services() must error clearly."""
         pytest.importorskip("modal")  # sandbox-modal optional dependency

@@ -196,3 +196,15 @@ def test_runtime_capability_gate_fails_on_docker() -> None:
     assert "environment.healthcheck" in paths
     assert "environment.workdir" not in paths
     assert all(issue.sandbox_type == "docker" for issue in issues)
+
+
+def test_runtime_capability_gate_fails_on_modal() -> None:
+    """Guards runtime-capability-gate fail-closed validation on modal."""
+    task = Task(RUNTIME_GATE_TASK)
+    issues = validate_task_runtime_support(task, "modal", RUNTIME_GATE_TASK)
+
+    assert issues
+    paths = {issue.path for issue in issues}
+    assert "environment.healthcheck" in paths
+    assert "environment.workdir" not in paths
+    assert all(issue.sandbox_type == "modal" for issue in issues)

@@ -184,6 +184,12 @@ class ModalSandbox(BaseSandbox):
             f"chmod 777 {SandboxPaths.agent_dir} {SandboxPaths.verifier_dir}"
         )
 
+        if self.task_env_config.workdir:
+            await self.exec(
+                f"mkdir -p {shlex.quote(self.task_env_config.workdir)}",
+                user="root",
+            )
+
     @retry(
         stop=stop_after_attempt(2),
         wait=wait_exponential(multiplier=1, min=1, max=10),
@@ -379,11 +385,14 @@ class ModalSandbox(BaseSandbox):
                 user_arg = shlex.quote(str(user))
             command = f"su {user_arg} -s /bin/bash -c {shlex.quote(command)}"
 
+        task_env = getattr(self, "task_env_config", None)
+        effective_cwd = cwd or (task_env.workdir if task_env is not None else None)
+
         process = await self._sandbox.exec.aio(
             "bash",
             "-c",
             command,
-            workdir=cwd,
+            workdir=effective_cwd,
             secrets=[Secret.from_dict(env)] if env else [],
             timeout=timeout_sec,
         )

@@ -206,8 +206,10 @@ command = "python -m app.healthcheck"
         assert any(issue.path == "environment.healthcheck" for issue in issues)
 
     def test_workdir_fail_closed(self, tmp_path: Path, sandbox_type: str) -> None:
-        if sandbox_type == "docker":
-            pytest.skip("docker applies environment.workdir via compose working_dir")
+        if sandbox_type in ("docker", "modal"):
+            pytest.skip(
+                f"{sandbox_type} applies environment.workdir via sandbox materializer"
+            )
         task_dir = _write_minimal_task(
             tmp_path / "workdir-task",
             """\
@@ -240,8 +242,10 @@ service = "target"
     def test_ensure_raises_with_actionable_message(
         self, tmp_path: Path, sandbox_type: str
     ) -> None:
-        if sandbox_type == "docker":
-            pytest.skip("docker applies environment.workdir via compose working_dir")
+        if sandbox_type in ("docker", "modal"):
+            pytest.skip(
+                f"{sandbox_type} applies environment.workdir via sandbox materializer"
+            )
         task_dir = _write_minimal_task(
             tmp_path / "raise-task",
             """\
@@ -567,3 +571,52 @@ workdir = "/repo"
     task = _load_task(task_dir)
     issues = validate_task_runtime_support(task, "docker", task_dir)
     assert not any(issue.path == "environment.workdir" for issue in issues)
+
+
+def test_modal_workdir_supported(tmp_path: Path) -> None:
+    """Guards modal runtime validation accepts environment.workdir."""
+    task_dir = _write_minimal_task(
+        tmp_path / "modal-workdir-task",
+        """\
+version = "1.0"
+
+[environment]
+workdir = "/repo"
+""",
+    )
+    task = _load_task(task_dir)
+    issues = validate_task_runtime_support(task, "modal", task_dir)
+    assert not any(issue.path == "environment.workdir" for issue in issues)
+
+
+def test_create_sandbox_environment_workdir_supported_on_modal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Guards Modal sandbox creation accepts environment.workdir."""
+    from benchflow.sandbox.modal_impl import ModalSandbox
+    from benchflow.sandbox.setup import _create_sandbox_environment
+    from benchflow.task import RolloutPaths
+
+    monkeypatch.setattr(ModalSandbox, "preflight", classmethod(lambda cls: None))
+
+    task_dir = _write_minimal_task(
+        tmp_path / "setup-gate-modal-task",
+        """\
+version = "1.0"
+
+[environment]
+workdir = "/repo"
+""",
+    )
+    task = _load_task(task_dir)
+    rollout_paths = RolloutPaths(rollout_dir=tmp_path / "rollout")
+    rollout_paths.mkdir()
+
+    sandbox = _create_sandbox_environment(
+        "modal",
+        task,
+        task_dir,
+        "rollout-name",
+        rollout_paths,
+    )
+    assert sandbox.task_env_config.workdir == "/repo"
