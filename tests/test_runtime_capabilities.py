@@ -451,6 +451,65 @@ class TestPromptUserSemanticsDogfood:
         assert "benchflow.nudges" not in paths
         assert "prompt.user-persona" not in paths
 
+    def test_branchable_multi_turn_user_loop_fails_without_branchable_nudges(
+        self, tmp_path: Path, sandbox_type: str
+    ) -> None:
+        """Guards branchable multi-turn user-loop scenes fail closed without branchable."""
+        task_dir = tmp_path / "branchable-user-loop-task"
+        task_dir.mkdir()
+        (task_dir / "task.md").write_text(
+            """\
+---
+schema_version: "1.3"
+agent:
+  timeout_sec: 300
+verifier:
+  timeout_sec: 120
+agents:
+  roles:
+    engineer:
+      agent: codex
+    reviewer:
+      agent: claude-agent-acp
+scenes:
+  - name: setup
+    turns:
+      - role: engineer
+  - name: user-loop
+    turns:
+      - role: engineer
+      - role: reviewer
+user:
+  stop_rule: satisfied-or-4-rounds
+  private_facts:
+    hidden_need: "Keep private until asked."
+benchflow:
+  nudges:
+    mode: simulated-user
+    nudge_budget: 4
+---
+
+## prompt
+
+Do the thing.
+"""
+        )
+        (task_dir / "task.toml").write_text(
+            'version = "1.0"\n[agent]\ntimeout_sec = 300\n[verifier]\ntimeout_sec = 120\n'
+        )
+        (task_dir / "instruction.md").write_text("Do the thing.\n")
+        env = task_dir / "environment"
+        env.mkdir()
+        (env / "Dockerfile").write_text("FROM ubuntu:24.04\n")
+        tests = task_dir / "tests"
+        tests.mkdir()
+        (tests / "test.sh").write_text("#!/bin/bash\nexit 0\n")
+
+        task = _load_task(task_dir)
+        issues = validate_task_runtime_support(task, sandbox_type, task_dir)
+        paths = {issue.path for issue in issues}
+        assert "benchflow.nudges" in paths
+
     def test_nudges_fail_closed_without_executable_user_loop(
         self, tmp_path: Path, sandbox_type: str
     ) -> None:

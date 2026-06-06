@@ -45,6 +45,35 @@ class TestValidateBenchflowMetadata:
         issues = validate_benchflow_metadata({"nudges": {"nudge_budget": 0}})
         assert any("benchflow.nudges.nudge_budget" in issue for issue in issues)
 
+    def test_confirmation_policy_and_scripted_validate_as_metadata_only(self) -> None:
+        """Guards metadata-only nudge branch fields parse with typed validation."""
+        issues = validate_benchflow_metadata(
+            {
+                "nudges": {
+                    "mode": "simulated-user",
+                    "branchable": True,
+                    "confirmation_policy": {"destructive_actions": "human"},
+                    "scripted": [
+                        {
+                            "trigger": "asked_for_specific_sender",
+                            "reveal": "sender",
+                        }
+                    ],
+                }
+            }
+        )
+        assert issues == []
+
+    def test_invalid_scripted_nudge_reports_issue(self) -> None:
+        issues = validate_benchflow_metadata(
+            {
+                "nudges": {
+                    "scripted": [{"trigger": 1, "reveal": "sender"}],
+                }
+            }
+        )
+        assert any("benchflow.nudges.scripted[0].trigger" in issue for issue in issues)
+
     def test_parse_returns_metadata_when_valid(self) -> None:
         metadata = parse_benchflow_metadata(
             {

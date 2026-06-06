@@ -1137,7 +1137,12 @@ class RolloutConfig:
 
         document = task.document
         scene_name = infer_user_loop_scene_name(document) if document else None
-        plan = resolve_user_loop_rollout_plan(self.scenes, user_loop_scene_name=scene_name)
+        benchflow = document.benchflow if document and isinstance(document.benchflow, dict) else {}
+        plan = resolve_user_loop_rollout_plan(
+            self.scenes,
+            user_loop_scene_name=scene_name,
+            nudges=benchflow.get("nudges"),
+        )
         if compiled is not None and compiled.executable and plan is not None:
             self.user = compiled.user
             self.max_user_rounds = compiled.max_user_rounds

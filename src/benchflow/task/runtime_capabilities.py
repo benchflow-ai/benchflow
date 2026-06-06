@@ -91,11 +91,17 @@ def _append_user_semantics_issues(
         return
 
     benchflow = document.benchflow
-    from benchflow.task.user_loop import compile_document_user_loop
+    from benchflow.task.user_loop import (
+        compile_document_user_loop,
+        user_loop_rollout_compatible_for_task,
+    )
 
     compiled_user_loop = compile_document_user_loop(task)
     user_loop_executable = (
         compiled_user_loop is not None and compiled_user_loop.executable
+    )
+    user_loop_rollout_ready = user_loop_executable and user_loop_rollout_compatible_for_task(
+        task
     )
 
     if (
@@ -118,7 +124,7 @@ def _append_user_semantics_issues(
     nudges_supported = (
         isinstance(nudges, dict)
         and nudges.get("mode") == "simulated-user"
-        and user_loop_executable
+        and user_loop_rollout_ready
     )
     if (
         isinstance(nudges, dict)

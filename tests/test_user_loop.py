@@ -11,8 +11,11 @@ from benchflow.sandbox.user import RoundResult
 from benchflow.task import Task, compile_document_user_loop, parse_stop_rule_max_rounds
 from benchflow.task.user_loop import (
     DocumentSimulatedUser,
+    branchable_simulated_user_nudges,
     infer_user_loop_scene_name,
     resolve_user_loop_rollout_plan,
+    user_loop_rollout_compatible,
+    user_loop_rollout_compatible_for_task,
 )
 
 PROMPT_USER_SEMANTICS_TASK = Path(
@@ -201,15 +204,55 @@ class TestResolveUserLoopRolloutPlan:
         scene_name = infer_user_loop_scene_name(document)
         assert scene_name == "user-loop"
 
+        nudges = document.benchflow.get("nudges")
+        assert branchable_simulated_user_nudges(nudges) is True
+
         plan = resolve_user_loop_rollout_plan(
             document.scenes,
             user_loop_scene_name=scene_name,
+            nudges=nudges,
         )
         assert plan is not None
         assert [scene.name for scene in plan.pre_scenes] == ["prompt-composition"]
         assert plan.user_loop_role.name == "scene_engineer"
         assert plan.post_scene is not None
         assert plan.post_scene.turns[0].role == "ux_reviewer"
+
+    def test_multi_turn_user_loop_requires_branchable_simulated_user_nudges(
+        self,
+    ) -> None:
+        """Guards branchable nudges gate multi-turn user-loop scene splitting."""
+        task = Task(PROMPT_USER_SEMANTICS_TASK)
+        document = task.document
+        assert document is not None
+
+        scene_name = infer_user_loop_scene_name(document)
+        assert scene_name == "user-loop"
+
+        without_branchable = {"mode": "simulated-user", "nudge_budget": 5}
+        assert (
+            resolve_user_loop_rollout_plan(
+                document.scenes,
+                user_loop_scene_name=scene_name,
+                nudges=without_branchable,
+            )
+            is None
+        )
+        assert not user_loop_rollout_compatible(
+            document.scenes,
+            user_loop_scene_name=scene_name,
+            nudges=without_branchable,
+        )
+
+        with_branchable = {**without_branchable, "branchable": True}
+        plan = resolve_user_loop_rollout_plan(
+            document.scenes,
+            user_loop_scene_name=scene_name,
+            nudges=with_branchable,
+        )
+        assert plan is not None
+        assert plan.post_scene is not None
+        assert user_loop_rollout_compatible_for_task(task) is True
 
 
 class TestRolloutConfigUserLoopWiring:

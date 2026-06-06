@@ -128,6 +128,7 @@ def test_smoke_prompt_user_semantics_user_loop_compile() -> None:
     plan = resolve_user_loop_rollout_plan(
         config_scenes := RolloutConfig(task_path=PROMPT_USER_SEMANTICS_TASK).scenes,
         user_loop_scene_name=scene_name,
+        nudges=document.benchflow.get("nudges"),
     )
     assert plan is not None
     assert [scene.name for scene in plan.pre_scenes] == ["prompt-composition"]

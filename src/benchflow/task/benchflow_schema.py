@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -26,7 +26,13 @@ class BenchflowPromptSection(BaseModel):
 
 
 class BenchflowNudgesSection(BaseModel):
-    """``benchflow.nudges`` simulated-user policy."""
+    """``benchflow.nudges`` simulated-user policy.
+
+    ``branchable`` enables multi-turn user-loop scene splitting: the first turn
+    runs under the simulated user loop and later turns run as ``post_scene``.
+    ``confirmation_policy`` and ``scripted`` are metadata-only until the rollout
+    branch engine can execute agent permission branches.
+    """
 
     model_config = ConfigDict(extra="allow")
 
@@ -72,6 +78,50 @@ class BenchflowMetadata(BaseModel):
     user_runtime: MetadataOnlyRuntime | str | None = None
 
 
+def _validate_nudges_metadata(nudges: dict[str, Any]) -> list[str]:
+    """Validate metadata-only nudge fields that parse but do not execute yet."""
+    issues: list[str] = []
+
+    scripted = nudges.get("scripted")
+    if scripted is not None:
+        if not isinstance(scripted, list):
+            issues.append("benchflow.nudges.scripted: must be a list")
+        else:
+            for index, item in enumerate(scripted):
+                if not isinstance(item, dict):
+                    issues.append(
+                        f"benchflow.nudges.scripted[{index}]: must be a mapping"
+                    )
+                    continue
+                entry = cast(dict[str, Any], item)
+                if not isinstance(entry.get("trigger"), str):
+                    issues.append(
+                        f"benchflow.nudges.scripted[{index}].trigger: must be a string"
+                    )
+                if not isinstance(entry.get("reveal"), str):
+                    issues.append(
+                        f"benchflow.nudges.scripted[{index}].reveal: must be a string"
+                    )
+
+    confirmation_policy = nudges.get("confirmation_policy")
+    if confirmation_policy is not None:
+        if not isinstance(confirmation_policy, dict):
+            issues.append("benchflow.nudges.confirmation_policy: must be a mapping")
+        else:
+            for key, value in confirmation_policy.items():
+                if not isinstance(key, str):
+                    issues.append(
+                        "benchflow.nudges.confirmation_policy: keys must be strings"
+                    )
+                    break
+                if not isinstance(value, str):
+                    issues.append(
+                        f"benchflow.nudges.confirmation_policy.{key}: must be a string"
+                    )
+
+    return issues
+
+
 def validate_benchflow_metadata(raw: Any) -> list[str]:
     """Validate a ``benchflow`` block and return human-readable issues."""
     if raw is None:
@@ -92,6 +142,10 @@ def validate_benchflow_metadata(raw: Any) -> list[str]:
         prompt_composition_settings(raw)
     except ValueError as exc:
         issues.append(str(exc))
+
+    nudges = raw.get("nudges")
+    if isinstance(nudges, dict):
+        issues.extend(_validate_nudges_metadata(nudges))
 
     return issues
 

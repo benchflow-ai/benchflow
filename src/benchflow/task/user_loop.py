@@ -56,6 +56,13 @@ def parse_stop_rule_max_rounds(stop_rule: str) -> int | None:
     return int(match.group(1))
 
 
+def branchable_simulated_user_nudges(nudges: Any) -> bool:
+    """Return whether nudges declare branchable simulated-user rollout splitting."""
+    if not isinstance(nudges, dict):
+        return False
+    return nudges.get("mode") == "simulated-user" and nudges.get("branchable") is True
+
+
 def _nudge_budget_max_rounds(nudges: Any) -> int | None:
     if not isinstance(nudges, dict):
         return None
@@ -256,6 +263,7 @@ def resolve_user_loop_rollout_plan(
     *,
     user_loop_scene_name: str | None = None,
     default_prompt: str | None = None,
+    nudges: Any = None,
 ) -> UserLoopRolloutPlan | None:
     """Return how a compiled user loop should execute across document scenes."""
     if not scenes:
@@ -318,6 +326,8 @@ def resolve_user_loop_rollout_plan(
 
     post_scene = None
     if len(anchor_scene.turns) > 1:
+        if not branchable_simulated_user_nudges(nudges):
+            return None
         post_turns = anchor_scene.turns[1:]
         post_role_names = list(dict.fromkeys(turn.role for turn in post_turns))
         post_roles = [role_map[name] for name in post_role_names if name in role_map]
@@ -342,6 +352,7 @@ def user_loop_rollout_compatible(
     *,
     user_loop_scene_name: str | None = None,
     default_prompt: str | None = None,
+    nudges: Any = None,
 ) -> bool:
     """Return whether compiled user loops can drive rollout execution."""
     typed_scenes = [scene for scene in scenes if isinstance(scene, Scene)]
@@ -352,8 +363,23 @@ def user_loop_rollout_compatible(
             typed_scenes,
             user_loop_scene_name=user_loop_scene_name,
             default_prompt=default_prompt,
+            nudges=nudges,
         )
         is not None
+    )
+
+
+def user_loop_rollout_compatible_for_task(task: Task) -> bool:
+    """Return whether *task* scenes and nudges support a document user loop."""
+    document = task.document
+    if document is None:
+        return False
+    benchflow = document.benchflow if isinstance(document.benchflow, dict) else {}
+    scene_name = infer_user_loop_scene_name(document)
+    return user_loop_rollout_compatible(
+        document.scenes,
+        user_loop_scene_name=scene_name,
+        nudges=benchflow.get("nudges"),
     )
 
 
@@ -361,9 +387,11 @@ __all__ = [
     "CompiledUserLoop",
     "DocumentSimulatedUser",
     "UserLoopRolloutPlan",
+    "branchable_simulated_user_nudges",
     "compile_document_user_loop",
     "infer_user_loop_scene_name",
     "parse_stop_rule_max_rounds",
     "resolve_user_loop_rollout_plan",
     "user_loop_rollout_compatible",
+    "user_loop_rollout_compatible_for_task",
 ]
