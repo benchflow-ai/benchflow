@@ -24,6 +24,8 @@ environment:
   memory_mb: 8192
   storage_mb: 10240
   workdir: /repo
+  healthcheck:
+    command: "python -c 'print(1)'"
 agents:
   roles:
     architect:

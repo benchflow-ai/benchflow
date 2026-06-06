@@ -206,6 +206,8 @@ command = "python -m app.healthcheck"
         assert any(issue.path == "environment.healthcheck" for issue in issues)
 
     def test_workdir_fail_closed(self, tmp_path: Path, sandbox_type: str) -> None:
+        if sandbox_type == "docker":
+            pytest.skip("docker applies environment.workdir via compose working_dir")
         task_dir = _write_minimal_task(
             tmp_path / "workdir-task",
             """\
@@ -238,6 +240,8 @@ service = "target"
     def test_ensure_raises_with_actionable_message(
         self, tmp_path: Path, sandbox_type: str
     ) -> None:
+        if sandbox_type == "docker":
+            pytest.skip("docker applies environment.workdir via compose working_dir")
         task_dir = _write_minimal_task(
             tmp_path / "raise-task",
             """\
@@ -339,7 +343,6 @@ artifacts = ["/app/scaffold.txt"]
         assert "environment.network_mode" in paths
         assert "agent.network_mode" in paths
         assert "verifier.environment" in paths
-        assert "environment.workdir" in paths
         assert "environment.tpu" in paths
         assert "environment.healthcheck" in paths
 
@@ -364,9 +367,39 @@ workdir = "/repo"
     rollout_paths = RolloutPaths(rollout_dir=tmp_path / "rollout")
     rollout_paths.mkdir()
 
+    sandbox = _create_sandbox_environment(
+        "docker",
+        task,
+        task_dir,
+        "rollout-name",
+        rollout_paths,
+    )
+    assert sandbox.task_env_config.workdir == "/repo"
+
+
+def test_create_sandbox_environment_workdir_fail_closed_on_daytona(
+    tmp_path: Path,
+) -> None:
+    """Guards Daytona still rejects environment.workdir before sandbox creation."""
+    from benchflow.sandbox.setup import _create_sandbox_environment
+    from benchflow.task import RolloutPaths
+
+    task_dir = _write_minimal_task(
+        tmp_path / "setup-gate-daytona-task",
+        """\
+version = "1.0"
+
+[environment]
+workdir = "/repo"
+""",
+    )
+    task = _load_task(task_dir)
+    rollout_paths = RolloutPaths(rollout_dir=tmp_path / "rollout")
+    rollout_paths.mkdir()
+
     with pytest.raises(UnsupportedTaskRuntimeError, match=r"environment\.workdir"):
         _create_sandbox_environment(
-            "docker",
+            "daytona",
             task,
             task_dir,
             "rollout-name",
@@ -374,8 +407,8 @@ workdir = "/repo"
         )
 
 
-def test_rollout_setup_fails_before_environment_creation(tmp_path: Path) -> None:
-    """Guards rollout.setup() wiring before sandbox creation."""
+def test_rollout_setup_workdir_fail_closed_on_daytona(tmp_path: Path) -> None:
+    """Guards rollout.setup() rejects environment.workdir on Daytona."""
     import asyncio
 
     from benchflow.rollout import Rollout, RolloutConfig
@@ -390,7 +423,7 @@ workdir = "/repo"
 """,
     )
     rollout = Rollout(
-        RolloutConfig(task_path=task_dir, environment="docker", skip_verify=True)
+        RolloutConfig(task_path=task_dir, environment="daytona", skip_verify=True)
     )
 
     with pytest.raises(UnsupportedTaskRuntimeError, match=r"environment\.workdir"):
@@ -517,4 +550,20 @@ workdir = "/repo"
     task = MagicMock()
     task.config = config
     issues = validate_task_runtime_support(task, "docker", task_dir)
-    assert any(issue.path == "environment.workdir" for issue in issues)
+    assert not any(issue.path == "environment.workdir" for issue in issues)
+
+
+def test_docker_workdir_supported(tmp_path: Path) -> None:
+    """Guards docker runtime validation accepts environment.workdir."""
+    task_dir = _write_minimal_task(
+        tmp_path / "docker-workdir-task",
+        """\
+version = "1.0"
+
+[environment]
+workdir = "/repo"
+""",
+    )
+    task = _load_task(task_dir)
+    issues = validate_task_runtime_support(task, "docker", task_dir)
+    assert not any(issue.path == "environment.workdir" for issue in issues)

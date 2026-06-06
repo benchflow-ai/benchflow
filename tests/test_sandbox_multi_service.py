@@ -106,6 +106,24 @@ class TestDockerSandboxServiceExec:
             assert "K=v" not in arg
 
     @pytest.mark.asyncio
+    async def test_exec_defaults_cwd_to_task_workdir(self) -> None:
+        """Guards environment.workdir becomes the default exec working directory."""
+        sandbox = self._make_sandbox()
+        sandbox.task_env_config = MagicMock(workdir="/repo")
+        captured: list[list[str]] = []
+
+        async def fake_run(command, check=False, timeout_sec=None):
+            captured.append(command)
+            return ExecResult(stdout="", stderr="", return_code=0)
+
+        sandbox._run_docker_compose_command = fake_run  # type: ignore[method-assign]
+        await sandbox.exec("pwd")
+
+        cmd = captured[0]
+        assert "-w" in cmd
+        assert "/repo" in cmd
+
+    @pytest.mark.asyncio
     async def test_services_lists_compose_services(self) -> None:
         """#248: services() enumerates every container defined in the task."""
         sandbox = self._make_sandbox()

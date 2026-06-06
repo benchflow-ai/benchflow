@@ -319,7 +319,7 @@ def validate_task_runtime_support(
             )
         )
 
-    if env.workdir is not None:
+    if env.workdir is not None and sandbox_type != "docker":
         issues.append(
             UnsupportedTaskFeature(
                 path="environment.workdir",

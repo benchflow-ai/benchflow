@@ -193,5 +193,6 @@ def test_runtime_capability_gate_fails_on_docker() -> None:
 
     assert issues
     paths = {issue.path for issue in issues}
-    assert "environment.workdir" in paths
+    assert "environment.healthcheck" in paths
+    assert "environment.workdir" not in paths
     assert all(issue.sandbox_type == "docker" for issue in issues)

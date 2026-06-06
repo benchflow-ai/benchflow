@@ -160,6 +160,7 @@ class DockerSandbox(BaseSandbox):
         self._keep_containers = keep_containers
         self._mounts_json = mounts_json
         self._mounts_compose_path: Path | None = None
+        self._workdir_compose_path: Path | None = None
 
         verifier_dir = (
             str(rollout_paths.verifier_dir.resolve().absolute())
@@ -246,6 +247,9 @@ class DockerSandbox(BaseSandbox):
         if self._mounts_compose_path:
             paths.append(self._mounts_compose_path)
 
+        if self._workdir_compose_path:
+            paths.append(self._workdir_compose_path)
+
         if not self.task_env_config.allow_internet:
             paths.append(self._DOCKER_COMPOSE_NO_NETWORK_PATH)
 
@@ -255,6 +259,17 @@ class DockerSandbox(BaseSandbox):
         compose = {"services": {"main": {"volumes": self._mounts_json}}}
         assert self.rollout_paths is not None
         path = self.rollout_paths.rollout_dir / "docker-compose-mounts.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(compose, indent=2))
+        return path
+
+    def _write_workdir_compose_file(self) -> Path:
+        workdir = self.task_env_config.workdir
+        if workdir is None:
+            raise ValueError("workdir compose file requires environment.workdir")
+        compose = {"services": {"main": {"working_dir": workdir}}}
+        assert self.rollout_paths is not None
+        path = self.rollout_paths.rollout_dir / "docker-compose-workdir.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(compose, indent=2))
         return path
@@ -366,6 +381,9 @@ class DockerSandbox(BaseSandbox):
         if self._mounts_json:
             self._mounts_compose_path = self._write_mounts_compose_file()
 
+        if self.task_env_config.workdir:
+            self._workdir_compose_path = self._write_workdir_compose_file()
+
         self._use_prebuilt = not force_build and bool(self.task_env_config.docker_image)
 
         # Gate the entire startup phase (build + down + up) — not just build.
@@ -394,6 +412,12 @@ class DockerSandbox(BaseSandbox):
         await self.exec(
             f"chmod 777 {SandboxPaths.agent_dir} {SandboxPaths.verifier_dir}"
         )
+
+        if self.task_env_config.workdir:
+            await self.exec(
+                f"mkdir -p {shlex.quote(self.task_env_config.workdir)}",
+                user="root",
+            )
 
     async def stop(self, delete: bool) -> None:
         # Bounded chown: a hung agent container will make `docker exec` block
@@ -736,8 +760,9 @@ class DockerSandbox(BaseSandbox):
 
         exec_command: list[str] = ["exec"]
 
-        if cwd:
-            exec_command.extend(["-w", cwd])
+        effective_cwd = cwd or self.task_env_config.workdir
+        if effective_cwd:
+            exec_command.extend(["-w", effective_cwd])
 
         if user is not None:
             exec_command.extend(["-u", str(user)])
