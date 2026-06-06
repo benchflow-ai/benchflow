@@ -11,8 +11,8 @@ exists on the task-standard branch (see the dogfood report follow-up section):
 - `runtime-capability-gate`: **mostly landed** — `TaskPackage` / `TaskRuntimeView`,
   docker/daytona capability gates, `bench tasks check --sandbox`.
 - `verifier-package-reward-contract`: **mostly landed** — `VerifierDocument`,
-  JSON-first rewards, multi-metric maps, strategy routing (script only);
-  Reward Kit / agent-judge execution still open.
+  JSON-first rewards, multi-metric maps, strategy routing (script, reward-kit,
+  agent-judge); ORS/hybrid strategies still open.
 - `compat-export-loss-reports`: **mostly landed** — `bench tasks export` with
   `compatibility/export-report.json`; `bench tasks round-trip` validates
   Harbor-compatible field parity (native-only concepts still reported as losses).

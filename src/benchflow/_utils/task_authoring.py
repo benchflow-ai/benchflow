@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Literal
 
 from benchflow.task.aliases import alias_dir_collision_issues
+from benchflow.task.benchflow_schema import validate_benchflow_metadata
 from benchflow.task.config import TaskConfig
 from benchflow.task.document import (
     TaskDocument,
@@ -129,6 +130,7 @@ def check_task(task_dir: Path) -> list[str]:
     if task_document is not None:
         benchflow = task_document.benchflow
         if isinstance(benchflow, dict):
+            issues.extend(validate_benchflow_metadata(benchflow))
             benchflow_verifier = benchflow.get("verifier")
             if isinstance(benchflow_verifier, dict):
                 issues.extend(

@@ -29,8 +29,12 @@ from benchflow.task.env import resolve_env_vars
 from benchflow.task.paths import RolloutPaths, SandboxPaths
 from benchflow.task.verifier_document import (
     VerifierDocument,
+    is_executable_agent_judge_strategy,
+    is_executable_reward_kit_strategy,
     is_executable_script_strategy,
+    resolve_agent_judge_role_prompt,
     resolve_default_strategy,
+    resolve_structured_rubric_path,
 )
 
 logger = logging.getLogger(__name__)
@@ -143,11 +147,14 @@ class Verifier:
         ):
             path.unlink(missing_ok=True)
 
+    def _verifier_dir(self) -> Path:
+        return Path(self._task.paths.tests_dir)
+
     def _route_verifier_document_strategy(self) -> str | None:
         """Log and validate the selected ``verifier/verifier.md`` strategy.
 
-        Returns ``"test-script"`` when the document routes to ``test.sh``,
-        or ``None`` when no document strategy is selected.
+        Returns ``"test-script"``, ``"reward-kit"``, ``"agent-judge"``, or
+        ``None`` when no document strategy is selected.
         """
         document = getattr(self._task, "verifier_document", None)
         if not isinstance(document, VerifierDocument) or not document.default_strategy:
@@ -155,6 +162,7 @@ class Verifier:
 
         strategy_name, strategy = resolve_default_strategy(document)
         strategy_type = strategy.get("type")
+        verifier_dir = self._verifier_dir()
         self._logger.info(
             "Selected verifier document strategy %r (type=%r)",
             strategy_name,
@@ -162,6 +170,10 @@ class Verifier:
         )
         if is_executable_script_strategy(strategy):
             return "test-script"
+        if is_executable_reward_kit_strategy(strategy, verifier_dir):
+            return "reward-kit"
+        if is_executable_agent_judge_strategy(strategy, document, verifier_dir):
+            return "agent-judge"
 
         task_path = getattr(self._task, "task_dir", None)
         raise UnsupportedVerifierStrategyError(
@@ -174,8 +186,10 @@ class Verifier:
         """Run the configured verifier and return the reward result."""
         self._clear_reward_outputs()
         document_route = self._route_verifier_document_strategy()
-        if document_route == "test-script":
+        if document_route in {"test-script", "reward-kit"}:
             return await self._verify_test_script()
+        if document_route == "agent-judge":
+            return await self._verify_agent_judge_document()
         if self._task.config.verifier.type == "llm-judge":
             return await self._verify_llm_judge()
         return await self._verify_test_script()
@@ -367,6 +381,113 @@ class Verifier:
             raise DownloadVerifierDirError(
                 f"Failed to download llm-judge input from {judge.input_dir}"
             ) from e
+        return dest
+
+    async def _verify_agent_judge_document(self) -> VerifierResult:
+        """Score declared verifier inputs with a document agent-judge strategy."""
+        document = self._task.verifier_document
+        if not isinstance(document, VerifierDocument):
+            raise VerifierOutputParseError(
+                "agent-judge verifier requires a parsed verifier document"
+            )
+
+        strategy_name, strategy = resolve_default_strategy(document)
+        verifier_dir = self._verifier_dir()
+        role_prompt = resolve_agent_judge_role_prompt(strategy, document, verifier_dir)
+        rubric_path = resolve_structured_rubric_path(document, verifier_dir)
+        if role_prompt is None or rubric_path is None:
+            raise VerifierOutputParseError(
+                f"agent-judge strategy {strategy_name!r} is missing role prompt "
+                "or structured rubric"
+            )
+
+        deliverables_dir = await self._gather_agent_judge_inputs(strategy)
+        judge_env: dict[str, str] = {}
+        if self._task.config.verifier.env:
+            judge_env = resolve_env_vars(self._task.config.verifier.env)
+
+        from benchflow.rewards.builtins import LLMJudgeRewardFunc
+
+        reward_func = LLMJudgeRewardFunc(
+            prompt=role_prompt,
+            rubric_path=rubric_path,
+            judge_model=strategy.get("model")
+            if isinstance(strategy.get("model"), str)
+            else None,
+            judge_env=judge_env,
+            judge_errors_are_infra=True,
+        )
+        score = await reward_func.score(deliverables_dir)
+
+        self._logger.info(
+            "agent-judge verifier strategy %r: %d criteria → reward %.4f",
+            strategy_name,
+            len(reward_func.events),
+            score,
+        )
+
+        rewards = {"reward": score}
+        self._rollout_paths.reward_json_path.write_text(
+            json.dumps(rewards, indent=2, allow_nan=False)
+        )
+        if reward_func.events:
+            details = {
+                "strategy": strategy_name,
+                "criteria": [
+                    {
+                        "source": event.source,
+                        "score": event.reward,
+                    }
+                    for event in reward_func.events
+                ],
+            }
+            self._rollout_paths.reward_details_path.write_text(
+                json.dumps(details, indent=2, allow_nan=False)
+            )
+        return VerifierResult(rewards=rewards)
+
+    async def _gather_agent_judge_inputs(self, strategy: dict[str, Any]) -> Path:
+        """Collect verifier-scoped judge inputs into a local deliverables dir."""
+        dest = self._rollout_paths.verifier_dir / "agent_judge_inputs"
+        if dest.exists():
+            if dest.is_dir() and not dest.is_symlink():
+                shutil.rmtree(dest)
+            else:
+                dest.unlink()
+        dest.mkdir(parents=True, exist_ok=True)
+
+        raw_inputs = strategy.get("inputs")
+        inputs = (
+            [item for item in raw_inputs if isinstance(item, str) and item.strip()]
+            if isinstance(raw_inputs, list)
+            else []
+        )
+        if not inputs:
+            return dest
+
+        rollout_dir = self._rollout_paths.rollout_dir
+        for index, input_path in enumerate(inputs):
+            stripped = input_path.strip()
+            target_name = f"input-{index}-{Path(stripped).name}"
+            target = dest / target_name
+
+            if stripped.startswith("trajectory/"):
+                host_path = rollout_dir / stripped
+                if host_path.is_file():
+                    target.write_bytes(host_path.read_bytes())
+                continue
+
+            if stripped.startswith("/logs/"):
+                sandbox_source = stripped
+            else:
+                sandbox_source = stripped if stripped.startswith("/") else f"/{stripped}"
+
+            try:
+                await self._sandbox.download_file(sandbox_source, target)
+            except Exception as exc:
+                self._logger.warning(
+                    "agent-judge input %r unavailable: %s", stripped, exc
+                )
         return dest
 
     async def _verify_llm_judge(self) -> VerifierResult:

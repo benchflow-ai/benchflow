@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -378,36 +378,115 @@ async def test_verify_logs_and_routes_deterministic_strategy_to_test_script(
     sandbox.upload_dir.assert_called_once()
 
 
-@pytest.mark.parametrize(
-    ("default_strategy", "expected_type"),
-    [
-        ("rewardkit", "reward-kit"),
-        ("judge", "agent-judge"),
-    ],
-)
 @pytest.mark.asyncio
-async def test_verify_rejects_unsupported_verifier_document_strategies(
-    default_strategy: str,
-    expected_type: str,
+async def test_verify_routes_reward_kit_strategy_to_test_script(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Guards fail-closed routing for non-script verifier document strategies."""
+    """Guards reward-kit strategy execution via script verifier when criteria exist."""
     task = Task(DOGFOOD_TASK_DIR)
     document = task.verifier_document
     assert document is not None
-    task.verifier_document = replace(document, default_strategy=default_strategy)
+    task.verifier_document = replace(document, default_strategy="rewardkit")
 
-    rollout_paths = RolloutPaths(Path("/tmp/verifier-strategy-rollout"))
+    rollout_paths = RolloutPaths(tmp_path / "rewardkit-rollout")
     rollout_paths.mkdir()
 
     sandbox = MagicMock()
     sandbox.upload_dir = AsyncMock()
-    sandbox.exec = AsyncMock(side_effect=AssertionError("test.sh must not run"))
+    sandbox.is_mounted = True
+
+    async def exec_writes_reward(*_args: object, **_kwargs: object) -> MagicMock:
+        if sandbox.exec.await_count == 1:
+            return MagicMock(return_code=0, stdout="")
+        rollout_paths.reward_json_path.write_text('{"reward": 1.0, "reward_contract": 1.0}')
+        return MagicMock(return_code=0, stdout="")
+
+    sandbox.exec = AsyncMock(side_effect=exec_writes_reward)
+
+    with caplog.at_level("INFO"):
+        result = await Verifier(task, rollout_paths, sandbox).verify()
+
+    assert result.rewards is not None
+    assert result.rewards["reward"] == 1.0
+    assert any(
+        "Selected verifier document strategy 'rewardkit' (type='reward-kit')"
+        in record.getMessage()
+        for record in caplog.records
+    )
+    sandbox.upload_dir.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_verify_routes_agent_judge_strategy_to_llm_judge(
+    tmp_path: Path,
+) -> None:
+    """Guards agent-judge strategy execution via verifier-scoped LLM judge."""
+    task = Task(DOGFOOD_TASK_DIR)
+    document = task.verifier_document
+    assert document is not None
+    task.verifier_document = replace(document, default_strategy="judge")
+
+    rollout_paths = RolloutPaths(tmp_path / "agent-judge-rollout")
+    rollout_paths.mkdir()
+    (rollout_paths.rollout_dir / "trajectory").mkdir(parents=True)
+    (rollout_paths.rollout_dir / "trajectory" / "acp_trajectory.jsonl").write_text(
+        '{"type":"message","content":"agent output"}\n'
+    )
+
+    sandbox = MagicMock()
+    sandbox.upload_dir = AsyncMock()
+    sandbox.download_file = AsyncMock()
+
+    with patch(
+        "benchflow.rewards.builtins.LLMJudgeRewardFunc.score",
+        new=AsyncMock(return_value=0.75),
+    ) as mock_score:
+        result = await Verifier(task, rollout_paths, sandbox).verify()
+
+    mock_score.assert_awaited_once()
+    assert result.rewards == {"reward": 0.75}
+    assert rollout_paths.reward_json_path.is_file()
+    sandbox.upload_dir.assert_not_called()
+    sandbox.exec.assert_not_called()
+
+
+def test_reward_kit_not_executable_without_criteria_or_entrypoint(
+    tmp_path: Path,
+) -> None:
+    """Guards reward-kit executability requires criteria or root test.sh."""
+    from benchflow.task.verifier_document import is_executable_reward_kit_strategy
+
+    strategy = {"type": "reward-kit", "root": "reward_kit/"}
+    assert is_executable_reward_kit_strategy(strategy, tmp_path) is False
+
+
+@pytest.mark.asyncio
+async def test_verify_rejects_non_executable_reward_kit_strategy(
+    tmp_path: Path,
+) -> None:
+    """Guards fail-closed routing when reward-kit strategy cannot execute."""
+    task = Task(DOGFOOD_TASK_DIR)
+    document = task.verifier_document
+    assert document is not None
+    task.verifier_document = replace(
+        document,
+        default_strategy="rewardkit",
+        strategies={
+            "rewardkit": {
+                "type": "reward-kit",
+                "root": "missing_reward_kit/",
+            }
+        },
+    )
+
+    rollout_paths = RolloutPaths(tmp_path / "missing-rewardkit")
+    rollout_paths.mkdir()
+    sandbox = MagicMock()
+    sandbox.upload_dir = AsyncMock()
 
     with pytest.raises(
         UnsupportedVerifierStrategyError,
-        match=rf"type={expected_type!r}.*not executable",
+        match=r"type='reward-kit'.*not executable",
     ):
         await Verifier(task, rollout_paths, sandbox).verify()
-
-    sandbox.upload_dir.assert_not_called()
-    sandbox.exec.assert_not_called()

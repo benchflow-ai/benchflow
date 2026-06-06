@@ -120,8 +120,15 @@ class RubricConfig:
 
 
 def _parse_criterion(raw: dict) -> Criterion:
+    description = (
+        raw.get("description")
+        or raw.get("match_criteria")
+        or raw.get("title")
+        or raw.get("id")
+        or ""
+    )
     return Criterion(
-        description=raw.get("description", ""),
+        description=str(description),
         type=raw.get("type", "binary"),
         name=raw.get("name") or raw.get("id"),
         points=raw.get("points", 5),
@@ -157,7 +164,8 @@ def load_rubric_toml(path: Path) -> RubricConfig:
         data = tomllib.load(f)
 
     judge = _parse_judge(data.get("judge", {}))
-    criteria = [_parse_criterion(c) for c in data.get("criterion", [])]
+    raw_criteria = data.get("criteria", data.get("criterion", []))
+    criteria = [_parse_criterion(c) for c in raw_criteria]
     scoring = _parse_scoring(data.get("scoring", {}))
 
     return RubricConfig(judge=judge, criteria=criteria, scoring=scoring)

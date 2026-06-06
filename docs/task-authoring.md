@@ -86,7 +86,9 @@ Frontmatter accepts the same modeled task config fields as Harbor-style
 `multi_step_reward_strategy`.
 Unknown config keys fail validation; arbitrary labels belong under `metadata`.
 BenchFlow-only document keys are `agents`, `scenes`, `user`, and the reserved
-extension namespace `benchflow`. Fields under `benchflow:` are parsed as raw
+extension namespace `benchflow`. A typed P3 subset (`prompt`, `nudges`,
+`compatibility`, `verifier`, `document_version`) is validated by
+`bench tasks check`; additional fields under `benchflow:` are parsed as raw
 document metadata today; the current runtime does not execute every proposed
 extension yet.
 

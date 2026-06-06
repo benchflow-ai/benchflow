@@ -437,14 +437,102 @@ def is_executable_script_strategy(strategy: dict[str, Any]) -> bool:
     return verifier_strategy_type(strategy) in _SCRIPT_STRATEGY_TYPES
 
 
+def resolve_reward_kit_criteria_path(
+    strategy: dict[str, Any],
+    verifier_dir: Path,
+) -> Path | None:
+    """Return the reward-kit criteria path when declared and present."""
+
+    raw_criteria = strategy.get("criteria")
+    if not isinstance(raw_criteria, str) or not raw_criteria.strip():
+        return None
+    criteria_path = (verifier_dir / raw_criteria.strip()).resolve()
+    return criteria_path if criteria_path.is_file() else None
+
+
+def is_executable_reward_kit_strategy(
+    strategy: dict[str, Any],
+    verifier_dir: Path,
+) -> bool:
+    """Return whether a reward-kit strategy can run via the script verifier."""
+
+    if verifier_strategy_type(strategy) != "reward-kit":
+        return False
+    if resolve_reward_kit_criteria_path(strategy, verifier_dir) is not None:
+        return True
+    raw_root = strategy.get("root")
+    if isinstance(raw_root, str) and raw_root.strip():
+        root_path = (verifier_dir / raw_root.strip()).resolve()
+        return root_path.is_dir() and (root_path / "test.sh").is_file()
+    return False
+
+
+def resolve_agent_judge_role_prompt(
+    strategy: dict[str, Any],
+    document: VerifierDocument,
+    verifier_dir: Path,
+) -> str | None:
+    """Resolve the verifier-scoped judge role prompt for an agent-judge strategy."""
+
+    raw_role = strategy.get("role")
+    if not isinstance(raw_role, str) or not raw_role.strip():
+        return None
+    role = raw_role.strip()
+    if _is_agent_judge_role_file_path(role):
+        role_path = (verifier_dir / role).resolve()
+        if not role_path.is_file():
+            return None
+        return role_path.read_text(encoding="utf-8").strip() or None
+    prompt = document.role_prompts.get(role)
+    return prompt.strip() if isinstance(prompt, str) and prompt.strip() else None
+
+
+def resolve_structured_rubric_path(
+    document: VerifierDocument,
+    verifier_dir: Path,
+) -> Path | None:
+    """Return the structured rubric path declared by a verifier document."""
+
+    structured = document.rubric_files.structured
+    if isinstance(structured, str) and structured.strip():
+        path = (verifier_dir / structured.strip()).resolve()
+        if path.is_file():
+            return path
+    rewardkit = document.strategies.get("rewardkit")
+    if isinstance(rewardkit, dict):
+        criteria = resolve_reward_kit_criteria_path(rewardkit, verifier_dir)
+        if criteria is not None:
+            return criteria
+    return None
+
+
+def is_executable_agent_judge_strategy(
+    strategy: dict[str, Any],
+    document: VerifierDocument,
+    verifier_dir: Path,
+) -> bool:
+    """Return whether an agent-judge strategy has role + rubric inputs to run."""
+
+    if verifier_strategy_type(strategy) != "agent-judge":
+        return False
+    if resolve_agent_judge_role_prompt(strategy, document, verifier_dir) is None:
+        return False
+    return resolve_structured_rubric_path(document, verifier_dir) is not None
+
+
 __all__ = [
     "VERIFIER_DOCUMENT_FILENAME",
     "VerifierDocument",
     "VerifierDocumentParseError",
     "VerifierOutputs",
     "VerifierRubricFiles",
+    "is_executable_agent_judge_strategy",
+    "is_executable_reward_kit_strategy",
     "is_executable_script_strategy",
     "load_verifier_document",
+    "resolve_agent_judge_role_prompt",
+    "resolve_reward_kit_criteria_path",
+    "resolve_structured_rubric_path",
     "resolve_default_strategy",
     "resolve_verifier_spec_path",
     "verifier_document_issues",

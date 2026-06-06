@@ -675,7 +675,7 @@ Current implementation status:
 | `benchflow.prompt` composition | yes | partial | append/replace on scene turns; rollout default prompt still base-only |
 | `user` / `## user-persona` | yes | partial | `DocumentSimulatedUser` + `compile_document_user_loop`; multi-scene `user-loop` scenes auto-wire |
 | `benchflow.nudges` | yes | partial | simulated-user mode with `nudge_budget`; branchable policy still open |
-| `benchflow:` | raw | no | typed document schema after v0.3 stabilizes |
+| `benchflow:` | raw | partial | P3 typed subset (`prompt`, `nudges`, `compatibility`, `verifier`) via `validate_benchflow_metadata` |
 | Harbor `steps` | yes | no/partial | fail closed per sandbox until implemented |
 | root/step artifacts | yes | no/partial | implement collection or fail closed |
 | network allowlist | yes | no/partial | per-sandbox capability check |
@@ -683,7 +683,8 @@ Current implementation status:
 | Windows / TPU | yes | no | fail closed |
 | healthcheck / workdir | yes | no/partial | materializer support |
 | `reward.json` precedence | yes | yes | keep scalar agreement checks; multi-metric maps synthesize mean or honor JSON `aggregate_policy.field` |
-| `reward-details.json` preservation | yes | yes | copy through verifier rollout download; no parsing yet |
+| `reward-details.json` preservation | yes | yes | copy through verifier rollout download; agent-judge writes details on LLM runs |
+| `verifier/verifier.md` strategies | yes | partial | script + reward-kit (criteria → `test.sh`) + agent-judge (role + structured rubric → LLM judge); ORS/hybrid still open |
 | `TaskPackage` / `TaskRuntimeView` | yes | partial | entrypoint, dirs, scenes, alias collisions, `verifier_document`; prompt composition and sandbox gates still partial |
 | runtime capability gates (docker/daytona/modal) | yes | partial | `validate_task_runtime_support` + `bench tasks check --sandbox`; K8s/podman pending |
 | Harbor/Pier export | yes | partial | `bench tasks export` + `compatibility/export-report.json`; `bench tasks round-trip` / `import --native` parity checks |

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -110,6 +111,28 @@ def test_prompt_user_semantics_sandbox_check_supports_executable_nudges() -> Non
     assert "benchflow.nudges" not in paths
     assert "user" not in paths
     assert "prompt.user-persona" not in paths
+
+
+def test_verifier_reward_contract_reward_kit_strategy_is_executable() -> None:
+    """Guards verifier-package-reward-contract reward-kit criteria executability."""
+    from benchflow.task.verifier_document import (
+        is_executable_agent_judge_strategy,
+        is_executable_reward_kit_strategy,
+        resolve_default_strategy,
+    )
+
+    task = Task(VERIFIER_REWARD_CONTRACT_TASK)
+    document = task.verifier_document
+    assert document is not None
+    verifier_dir = VERIFIER_REWARD_CONTRACT_TASK / "verifier"
+
+    _, rewardkit = resolve_default_strategy(
+        replace(document, default_strategy="rewardkit")
+    )
+    assert is_executable_reward_kit_strategy(rewardkit, verifier_dir)
+
+    _, judge = resolve_default_strategy(replace(document, default_strategy="judge"))
+    assert is_executable_agent_judge_strategy(judge, document, verifier_dir)
 
 
 def test_verifier_reward_contract_loads_deterministic_default_strategy() -> None:
