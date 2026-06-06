@@ -681,7 +681,8 @@ Current implementation status:
 | network allowlist | yes | no/partial | per-sandbox capability check |
 | separate verifier env | yes | no/partial | materializer plus verifier runner support |
 | Windows / TPU | yes | no | fail closed |
-| healthcheck / workdir | yes | no/partial | materializer support |
+| healthcheck | yes | no/partial | fail closed until startup execution lands |
+| environment.workdir | yes | partial | docker + modal compose/exec defaults; daytona pending |
 | `reward.json` precedence | yes | yes | keep scalar agreement checks; multi-metric maps synthesize mean or honor JSON `aggregate_policy.field` |
 | `reward-details.json` preservation | yes | yes | copy through verifier rollout download; agent-judge writes details on LLM runs |
 | `verifier/verifier.md` strategies | yes | partial | script + reward-kit (criteria → `test.sh`) + agent-judge (role + structured rubric → LLM judge); ORS/hybrid still open |

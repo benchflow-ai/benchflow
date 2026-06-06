@@ -9,7 +9,8 @@ Each package dogfoods a wanted BenchFlow feature. Partial runtime backing now
 exists on the task-standard branch (see the dogfood report follow-up section):
 
 - `runtime-capability-gate`: **mostly landed** — `TaskPackage` / `TaskRuntimeView`,
-  docker/daytona capability gates, `bench tasks check --sandbox`.
+  docker/daytona/modal capability gates, `bench tasks check --sandbox`; still
+  fails closed on `environment.healthcheck` by design.
 - `verifier-package-reward-contract`: **mostly landed** — `VerifierDocument`,
   JSON-first rewards, multi-metric maps, strategy routing (script, reward-kit,
   agent-judge); ORS/hybrid strategies still open.

@@ -1,0 +1,31 @@
+{
+  "branch": "cursor/task-standard-runtime-gaps-e453",
+  "date": "2026-06-06",
+  "docker_available": true,
+  "docker_notes": [
+    "docker.io installed manually; daemon started with vfs storage driver",
+    "overlayfs default failed in nested host",
+    "compose with deploy.resources.limits fails cgroupv2 threaded-mode on this VM"
+  ],
+  "bench_tasks_check": {
+    "verifier-package-reward-contract": {"valid": true, "runtime_docker": true},
+    "prompt-user-semantics": {"valid": true, "runtime_docker": true},
+    "compat-export-loss-reports": {"valid": true, "runtime_docker": true}
+  },
+  "dockerfile_build": {
+    "verifier-package-reward-contract": {"build": "ok", "workdir_pwd": "/repo"},
+    "prompt-user-semantics": {"build": "ok", "workdir_pwd": "/repo"},
+    "compat-export-loss-reports": {"build": "ok", "workdir_pwd": "/repo"}
+  },
+  "test_sh": {
+    "verifier-package-reward-contract": {"pytest": "99 passed", "reward_artifacts": true},
+    "prompt-user-semantics": {"pytest": "39 passed", "reward_artifacts": true},
+    "compat-export-loss-reports": {"pytest": "82 passed", "reward_artifacts": true}
+  },
+  "compose_workdir_smoke": {"pwd": "/repo", "benchflow_source_at_repo": true},
+  "docker_sandbox_compose": {
+    "status": "failed_on_this_vm",
+    "reason": "cgroupv2 threaded mode vs deploy.resources.limits"
+  },
+  "fixes_committed": []
+}

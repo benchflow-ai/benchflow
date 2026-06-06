@@ -593,6 +593,8 @@ def test_create_sandbox_environment_workdir_supported_on_modal(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Guards Modal sandbox creation accepts environment.workdir."""
+    pytest.importorskip("modal")
+    pytest.importorskip("tenacity")
     from benchflow.sandbox.modal_impl import ModalSandbox
     from benchflow.sandbox.setup import _create_sandbox_environment
     from benchflow.task import RolloutPaths

@@ -128,7 +128,7 @@ The wanted-feature dogfood packages now have partial runtime backing on
 | Wanted feature | Landed | Still open |
 |---|---|---|
 | `TaskPackage` / `TaskRuntimeView` | `src/benchflow/task/package.py`, rollout upload + runtime summary logging | Source-hash provenance, full prompt composition on base `/instruction.md` |
-| Runtime capability gates | `src/benchflow/task/runtime_capabilities.py`, wired in rollout + sandbox setup; `bench tasks check --sandbox docker\|daytona\|modal` | K8s/podman matrices, GPU/private-mount gates, narrow gates as features land |
+| Runtime capability gates | `src/benchflow/task/runtime_capabilities.py`, docker/modal `environment.workdir`, healthcheck fail-closed; `bench tasks check --sandbox` | daytona workdir, K8s/podman matrices, GPU/private-mount gates |
 | `VerifierDocument` | `src/benchflow/task/verifier_document.py`, script/reward-kit/agent-judge routing in `Verifier` | ORS/hybrid strategies, full rubric-dimension orchestration |
 | Export + loss reports | `src/benchflow/task/export.py`, `bench tasks export/import/round-trip` | Pier-specific losses; full foreign import preservation |
 | Reward contract | JSON-first precedence, multi-metric maps, `reward-details.json` in `result.json` | Reward Kit execution, aggregate policy from verifier metadata |
