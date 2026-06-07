@@ -21,7 +21,13 @@ def test_run_cell_archives_stale_jobs_before_collecting_result(tmp_path: Path) -
     jobs_root = tmp_path / "jobs"
     state_dir = tmp_path / "state"
     cell = "gemini-3.5-flash__without__citation-check__t1"
-    old_result = jobs_root / cell / "2000-01-01__00-00-00" / "citation-check__old" / "result.json"
+    old_result = (
+        jobs_root
+        / cell
+        / "2000-01-01__00-00-00"
+        / "citation-check__old"
+        / "result.json"
+    )
     _write_json(
         old_result,
         {

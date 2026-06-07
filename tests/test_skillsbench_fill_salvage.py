@@ -52,7 +52,10 @@ def test_salvage_rejects_timeout_with_final_provider_error(tmp_path: Path) -> No
     )
     _write(root / "config.json", {"environment": "daytona"})
     _write(root / "timing.json", {"total": 901.0})
-    _write(root / "trajectory/acp_trajectory.jsonl", '{"type":"tool_call","status":"completed"}\n')
+    _write(
+        root / "trajectory/acp_trajectory.jsonl",
+        '{"type":"tool_call","status":"completed"}\n',
+    )
     _write(
         root / "trajectory/llm_trajectory.jsonl",
         json.dumps({"response": {"status_code": 200}})
