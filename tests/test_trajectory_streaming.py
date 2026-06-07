@@ -3,6 +3,7 @@ snapshot, multi-scene cumulative semantics, unknown-update guard, stale .tmp
 cleanup, and the late-scene partial-capture regression from PR #566 review."""
 
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -401,6 +402,59 @@ class TestMultiScenePartialCaptureFix:
         assert r._trajectory == prior
         assert r._partial_trajectory is False
         assert r._trajectory_source == "acp"
+
+    def test_clean_timeout_commit_does_not_mark_partial_acp(self) -> None:
+        """Guards PR #638 follow-up: clean wall-clock timeout snapshots are complete."""
+
+        class _Tree:
+            def __init__(self) -> None:
+                self.steps = []
+
+            def advance(self, _cursor, step):
+                self.steps.append(step)
+                return object()
+
+            def populate(self, _node, step):
+                self.steps.append(step)
+                return object()
+
+        r: Any = Rollout.__new__(Rollout)
+        r._trajectory = []
+        r._session_traj_count = 0
+        r._session_tool_count = 0
+        r._n_tool_calls = 0
+        r._executed_prompts = []
+        r._trajectory_source = None
+        r._partial_trajectory = False
+        r._timing = {}
+        r._session = None
+        r._native_usage_checkpoint = None
+        r._tree = _Tree()
+        r._cursor = object()
+
+        r._commit_acp_execution(
+            trajectory=[
+                {"type": "user_message", "text": "solve"},
+                {
+                    "type": "tool_call",
+                    "tool_call_id": "tc",
+                    "kind": "bash",
+                    "title": "run",
+                    "status": "completed",
+                    "content": [],
+                },
+            ],
+            n_tool_calls=1,
+            prev_session_tools=0,
+            effective_prompts=["solve"],
+            started_at=datetime.now(),
+            node=None,
+        )
+
+        assert r._trajectory_source == "acp"
+        assert r._partial_trajectory is False
+        assert r._n_tool_calls == 1
+        assert r._executed_prompts == ["solve"]
 
     def test_partial_capture_first_scene_still_works(self) -> None:
         """Single-scene crash path: prior empty, session has events.

@@ -670,7 +670,7 @@ class TestIdleTimeoutDiagnostics:
     @pytest.mark.asyncio
     async def test_wall_clock_timeout_has_no_idle_info(self) -> None:
         """Wall-clock timeouts (not idle) must NOT carry an idle diagnostic."""
-        from benchflow.acp.runtime import execute_prompts
+        from benchflow.acp.runtime import AgentPromptTimeoutError, execute_prompts
 
         class SlowClient:
             async def prompt(self, _prompt: str):
@@ -679,7 +679,7 @@ class TestIdleTimeoutDiagnostics:
         session = ACPSession("wall-clock-session")
         # Add continuous activity to prevent idle timeout
         session.tool_calls.append(MagicMock(status=ToolCallStatus.COMPLETED))
-        with pytest.raises(TimeoutError) as exc_info:
+        with pytest.raises(AgentPromptTimeoutError) as exc_info:
             await execute_prompts(
                 SlowClient(),  # type: ignore[arg-type]
                 session,
@@ -690,6 +690,10 @@ class TestIdleTimeoutDiagnostics:
         # Wall-clock TimeoutErrors don't carry a structured diagnostic;
         # only the idle watchdog raises IdleTimeoutError with one attached.
         assert not hasattr(exc_info.value, "diagnostic")
+        assert exc_info.value.n_tool_calls == 1
+        assert [event["type"] for event in exc_info.value.trajectory] == [
+            "user_message"
+        ]
 
 
 class TestConnectAcpModelSelection:

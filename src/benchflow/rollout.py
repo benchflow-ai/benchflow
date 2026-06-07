@@ -62,6 +62,7 @@ from benchflow._utils.result_metadata import (
     trajectory_summary_from_events,
 )
 from benchflow._utils.scoring import classify_error, classify_verifier_error
+from benchflow.acp.runtime import AgentPromptTimeoutError
 from benchflow.contracts import (
     AgentProtocolError,
     BaseUser,
@@ -1890,13 +1891,46 @@ class Rollout:
             else self._config.agent_idle_timeout
         )
 
-        trajectory, n_tool_calls = await self._planes.execute_prompts(
-            self._acp_client,
-            self._session,
-            effective_prompts,
-            timeout,
-            idle_timeout=idle_timeout,
+        try:
+            trajectory, n_tool_calls = await self._planes.execute_prompts(
+                self._acp_client,
+                self._session,
+                effective_prompts,
+                timeout,
+                idle_timeout=idle_timeout,
+            )
+        except AgentPromptTimeoutError as e:
+            self._commit_acp_execution(
+                trajectory=e.trajectory,
+                n_tool_calls=e.n_tool_calls,
+                prev_session_tools=prev_session_tools,
+                effective_prompts=e.executed_prompts or effective_prompts,
+                started_at=t0,
+                node=node,
+            )
+            raise
+
+        self._commit_acp_execution(
+            trajectory=trajectory,
+            n_tool_calls=n_tool_calls,
+            prev_session_tools=prev_session_tools,
+            effective_prompts=effective_prompts,
+            started_at=t0,
+            node=node,
         )
+        return trajectory, n_tool_calls
+
+    def _commit_acp_execution(
+        self,
+        *,
+        trajectory: list[dict],
+        n_tool_calls: int,
+        prev_session_tools: int,
+        effective_prompts: list[str],
+        started_at: datetime,
+        node: RolloutNode | None,
+    ) -> None:
+        """Commit a finalized ACP snapshot into rollout state."""
 
         # trajectory and n_tool_calls are cumulative for this session.
         # Compute the delta since last execute() on this session.
@@ -1934,13 +1968,12 @@ class Rollout:
         # Accumulate execution time across all execute() calls — Scene rollouts
         # invoke execute() once per turn, and the previous "set only on first
         # call" behaviour undercounted multi-turn agent time.
-        elapsed = (datetime.now() - t0).total_seconds()
+        elapsed = (datetime.now() - started_at).total_seconds()
         self._timing["agent_execution"] = (
             self._timing.get("agent_execution", 0.0) + elapsed
         )
 
         self._phase = "executed"
-        return trajectory, n_tool_calls
 
     def _collect_native_acp_usage(self) -> None:
         """Accumulate ACP PromptResponse.usage deltas for native subscription runs."""

@@ -36,7 +36,12 @@ from benchflow.trajectories._capture import _capture_session_trajectory
 # Re-exported for backwards compatibility — tests and downstream code
 # import ``IdleTimeoutError`` from this module. The canonical definition
 # lives in :mod:`benchflow.diagnostics` (issue #503).
-__all__ = ["IdleTimeoutError", "connect_acp", "execute_prompts"]
+__all__ = [
+    "AgentPromptTimeoutError",
+    "IdleTimeoutError",
+    "connect_acp",
+    "execute_prompts",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +49,28 @@ logger = logging.getLogger(__name__)
 _ACP_CONNECT_MAX_RETRIES = 3
 _ACP_CONNECT_BASE_DELAY = 2.0
 _PROMPT_CANCEL_DRAIN_TIMEOUT_SEC = 0.25
+
+
+class AgentPromptTimeoutError(TimeoutError):
+    """BenchFlow-owned prompt wall-clock timeout with finalized ACP state.
+
+    This is distinct from provider/client ``TimeoutError`` exceptions. It is
+    raised only when BenchFlow's prompt budget expires and the ACP prompt task
+    can be cancelled/drained cleanly enough to snapshot the session.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        trajectory: list[dict],
+        n_tool_calls: int,
+        executed_prompts: list[str] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.trajectory = trajectory
+        self.n_tool_calls = n_tool_calls
+        self.executed_prompts = executed_prompts or []
 
 # models.dev provider inference — used when acp_model_format="provider/model"
 # to reconstruct "provider/model" from a bare model name.
@@ -533,14 +560,21 @@ async def execute_prompts(
         )
         session.record_user_prompt(prompt)
         if idle_timeout is None:
-            prompt_result = await asyncio.wait_for(
-                acp_client.prompt(prompt),
-                timeout=timeout,
-            )
+            try:
+                prompt_result = await _prompt_with_wall_clock_budget(
+                    acp_client, session, prompt, timeout
+                )
+            except AgentPromptTimeoutError as e:
+                e.executed_prompts = prompts[: i + 1]
+                raise
         else:
-            prompt_result = await _prompt_with_idle_watchdog(
-                acp_client, session, prompt, timeout, idle_timeout
-            )
+            try:
+                prompt_result = await _prompt_with_idle_watchdog(
+                    acp_client, session, prompt, timeout, idle_timeout
+                )
+            except AgentPromptTimeoutError as e:
+                e.executed_prompts = prompts[: i + 1]
+                raise
         session.mark_prompt_end()
         # SDK ``PromptResponse.stop_reason`` is a plain string (e.g. "end_turn").
         logger.info(
@@ -549,6 +583,56 @@ async def execute_prompts(
         )
     trajectory = _capture_session_trajectory(session)
     return trajectory, len(session.tool_calls)
+
+
+async def _cancel_and_drain_prompt_task(prompt_task: asyncio.Task) -> bool:
+    if prompt_task.done():
+        return True
+    prompt_task.cancel()
+    done, _pending = await asyncio.wait(
+        {prompt_task}, timeout=_PROMPT_CANCEL_DRAIN_TIMEOUT_SEC
+    )
+    if done:
+        with contextlib.suppress(BaseException):
+            prompt_task.result()
+        return True
+
+    logger.warning(
+        "ACP prompt task did not finish within %.2fs after cancellation",
+        _PROMPT_CANCEL_DRAIN_TIMEOUT_SEC,
+    )
+
+    def _consume_prompt_result(task: asyncio.Task) -> None:
+        with contextlib.suppress(BaseException):
+            task.result()
+
+    prompt_task.add_done_callback(_consume_prompt_result)
+    return False
+
+
+async def _prompt_with_wall_clock_budget(
+    acp_client: ACPClient,
+    session,
+    prompt: str,
+    timeout: int,
+):
+    """Run a prompt until either it finishes or BenchFlow's budget expires."""
+    prompt_task = asyncio.create_task(acp_client.prompt(prompt))
+    try:
+        done, _pending = await asyncio.wait({prompt_task}, timeout=timeout)
+        if done:
+            return prompt_task.result()
+        if await _cancel_and_drain_prompt_task(prompt_task):
+            session.mark_prompt_end()
+            raise AgentPromptTimeoutError(
+                f"Agent prompt exceeded wall-clock budget {timeout}s",
+                trajectory=_capture_session_trajectory(session),
+                n_tool_calls=len(session.tool_calls),
+            )
+        raise TimeoutError(f"Agent prompt exceeded wall-clock budget {timeout}s")
+    finally:
+        if not prompt_task.done():
+            await _cancel_and_drain_prompt_task(prompt_task)
 
 
 async def _prompt_with_idle_watchdog(
@@ -615,6 +699,13 @@ async def _prompt_with_idle_watchdog(
                     diag,
                 )
             if now > deadline:
+                if await _cancel_and_drain_prompt_task(prompt_task):
+                    session.mark_prompt_end()
+                    raise AgentPromptTimeoutError(
+                        f"Agent prompt exceeded wall-clock budget {timeout}s",
+                        trajectory=_capture_session_trajectory(session),
+                        n_tool_calls=len(session.tool_calls),
+                    )
                 raise TimeoutError(
                     f"Agent prompt exceeded wall-clock budget {timeout}s"
                 )
@@ -626,21 +717,4 @@ async def _prompt_with_idle_watchdog(
         # drain so a non-cooperative Daytona/ACP read cannot hide the watchdog
         # timeout forever; cleanup will tear down the live process.
         if not prompt_task.done():
-            prompt_task.cancel()
-            done, _pending = await asyncio.wait(
-                {prompt_task}, timeout=_PROMPT_CANCEL_DRAIN_TIMEOUT_SEC
-            )
-            if done:
-                with contextlib.suppress(BaseException):
-                    prompt_task.result()
-            else:
-                logger.warning(
-                    "ACP prompt task did not finish within %.2fs after cancellation",
-                    _PROMPT_CANCEL_DRAIN_TIMEOUT_SEC,
-                )
-
-                def _consume_prompt_result(task: asyncio.Task) -> None:
-                    with contextlib.suppress(BaseException):
-                        task.result()
-
-                prompt_task.add_done_callback(_consume_prompt_result)
+            await _cancel_and_drain_prompt_task(prompt_task)
