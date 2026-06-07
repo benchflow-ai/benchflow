@@ -39,6 +39,8 @@ def _healthy_review(**overrides):
         },
         "skill_mode": "with",
         "task_skills_loading": 1,
+        "sandbox": "daytona",
+        "reward": 1.0,
         "tokens": {"total": 123},
         "timing_total_s": 45,
         "hf_path": "openhands/model/task/trial/trajectory.jsonl",
@@ -90,8 +92,8 @@ def test_snapshot_target_falls_back_to_skillsbench_matrix_size(tmp_path, monkeyp
     p = tmp_path / "experiments_ledger.json"
     p.write_text(json.dumps({"rows": [{"status": "queued"}, {"status": "running"}]}))
     r = experiments_status.snapshot(p)
-    assert r["target"] == 1638
-    assert r["summary"]["missing"] == 1636
+    assert r["target"] == 1584
+    assert r["summary"]["missing"] == 1582
     assert r["as_of"]  # filled with now() when absent from the ledger
 
 
@@ -127,6 +129,77 @@ def test_review_pass_requires_complete_health_gate(tmp_path):
     assert (
         "skill/no-skill detection missing or failed"
         in bad["missing_skill"]["review_health_notes"]
+    )
+
+
+def test_published_hf_seeded_rows_count_as_reviewed(tmp_path):
+    """Guards PR #622 against hiding healthy HF-seeded PR rows from progress."""
+    p = _write(
+        tmp_path,
+        [
+            _healthy_review(
+                cell_id="hf_seeded",
+                status="published",
+                review_checklist=None,
+                review_verdict=None,
+                tokens=319293,
+            ),
+            _healthy_review(
+                cell_id="redacted",
+                status="published",
+                review_checklist=None,
+                review_verdict=None,
+                tokens="[REDACTED]",
+            ),
+        ],
+        target=2,
+    )
+    r = experiments_status.snapshot(p)
+
+    assert r["summary"]["by_bucket"]["reviewed"] == 1
+    redacted = next(row for row in r["rows"] if row["cell_id"] == "redacted")
+    assert redacted["dashboard_bucket"] == "completed"
+    assert "token usage missing" in redacted["review_health_notes"]
+
+
+def test_partial_rows_require_explicit_timeout_overlay(tmp_path):
+    """Guards PR #638 follow-up against dashboard crediting raw partial timeouts."""
+    p = _write(
+        tmp_path,
+        [
+            _healthy_review(
+                cell_id="raw_partial",
+                status="published",
+                partial_trajectory=True,
+                error="Agent timed out after 900s",
+                timeout_complete_artifacts=True,
+            ),
+            _healthy_review(
+                cell_id="summary_partial",
+                status="published",
+                trajectory_summary={"partial_trajectory": True},
+                error="Agent timed out after 900s",
+                timeout_complete_artifacts=True,
+            ),
+            _healthy_review(
+                cell_id="accepted_timeout",
+                status="published",
+                partial_trajectory=True,
+                error="Agent timed out after 900s",
+                timeout_complete_artifacts=True,
+                accepted_normal_timeout=True,
+            ),
+        ],
+        target=3,
+    )
+    r = experiments_status.snapshot(p)
+
+    assert r["summary"]["by_bucket"]["reviewed"] == 1
+    raw = next(row for row in r["rows"] if row["cell_id"] == "raw_partial")
+    assert raw["dashboard_bucket"] == "completed"
+    assert (
+        "partial trajectory not accepted by strict timeout overlay"
+        in raw["review_health_notes"]
     )
 
 

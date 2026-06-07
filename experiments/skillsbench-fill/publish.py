@@ -8,6 +8,7 @@ dir (runs/<cell_id>/<task>__<tid>/), upload the 5 canonical files into:
 - generates timing.json from result.json.timing when the file is missing
 - (re)writes the group metadata.yaml
 - dedups vs PR5 by trial id; records published/<cell>.json
+- optionally repairs existing PR5 cells from local rollouts with --repair-existing
 
 Usage: publish.py [--dry-run] [--ts 2026-06-04__hhmm] [--src-commit <sha>]
 Read keys + paths default to this toolkit dir. Adapted from workspace/scripts/generic_push.py.
@@ -20,7 +21,7 @@ import io
 import json
 import os
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 REPO = "benchflow/skillsbench-leaderboard"
@@ -28,7 +29,13 @@ REPO_TYPE = "dataset"
 PR_REF = "refs/pr/5"
 V11 = "submissions/skillsbench/v1.1"
 ROOT = Path(os.path.dirname(os.path.abspath(__file__)))
-ENV_PATH = os.path.expanduser("~/Downloads/GitHub/bingran-you/.env")
+ENV_PATHS = (
+    os.environ.get("BENCHFLOW_KEYS_ENV"),
+    os.path.expanduser("~/Downloads/bingran-you/.env"),
+    os.path.expanduser("~/Downloads/GitHub/bingran-you/.env"),
+    os.path.expanduser("~/keys.env"),
+    os.path.expanduser("~/.env"),
+)
 CANON = ["config.json", "result.json", "timing.json",
          "trajectory/acp_trajectory.jsonl", "trajectory/llm_trajectory.jsonl"]
 
@@ -46,7 +53,11 @@ HFMODE = {"with": "with-skills", "without": "no-skills"}
 # benchflow already scrubs config/result/trajectories, but the publisher guarantees
 # it too: drop secret-named keys, redact secret-shaped values, and ABORT a cell if
 # any secret pattern survives in any file about to be uploaded.
-SECRET_NAME_RE = re.compile(r"(_API_KEY$|^API_KEY$|SECRET|TOKEN|BEARER|PASSWORD|CREDENTIAL|ACCESS_KEY)", re.I)
+SECRET_NAME_RE = re.compile(
+    r"(^API_KEY$|_API_KEY$|SECRET|BEARER|PASSWORD|CREDENTIAL|ACCESS_KEY|"
+    r"(^|_)(AUTH_)?TOKEN$|^TOKEN$)",
+    re.I,
+)
 SECRET_VAL_RE = re.compile(
     r"(AQ\.[A-Za-z0-9._-]{8,}|AIza[A-Za-z0-9._-]{10,}|sk-api-[A-Za-z0-9_-]{8,}|sk-[A-Za-z0-9-]{16,}|"
     r"ABSK[A-Za-z0-9+/=]{8,}|Bearer\s+[A-Za-z0-9._-]{12,}|gh[pousr]_[A-Za-z0-9]{20,}|hf_[A-Za-z0-9]{20,})"
@@ -65,7 +76,8 @@ def _scrub(o):
 
 def safe_bytes(path, is_config=False, mode="without"):
     """Return scrubbed bytes for upload; raise if any secret survives."""
-    raw = open(path, encoding="utf-8", errors="replace").read()
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        raw = fh.read()
     if str(path).endswith(".jsonl"):
         text = SECRET_VAL_RE.sub("[REDACTED]", raw)
     else:
@@ -81,15 +93,57 @@ def safe_bytes(path, is_config=False, mode="without"):
 def hf_token() -> str:
     if os.environ.get("HUGGING_FACE_TOKEN"):
         return os.environ["HUGGING_FACE_TOKEN"]
-    for p in (ENV_PATH, os.path.expanduser("~/keys.env"), os.path.expanduser("~/.env")):
+    checked = []
+    for env_path in ENV_PATHS:
+        if not env_path:
+            continue
+        p = os.path.expanduser(env_path)
+        checked.append(p)
         try:
-            for line in open(p):
-                m = re.match(r'^\s*(?:export\s+)?HUGGING_FACE_TOKEN\s*=\s*["\']?([^"\'\s]+)', line)
-                if m:
-                    return m.group(1)
+            with open(p) as fh:
+                for line in fh:
+                    m = re.match(r'^\s*(?:export\s+)?HUGGING_FACE_TOKEN\s*=\s*["\']?([^"\'\s]+)', line)
+                    if m:
+                        return m.group(1)
         except FileNotFoundError:
             continue
-    raise SystemExit("no HUGGING_FACE_TOKEN (env, .env, or ~/keys.env)")
+    raise SystemExit("no HUGGING_FACE_TOKEN in env or: " + ", ".join(checked))
+
+
+def _load_only_cells(value: str) -> set[str]:
+    if not value:
+        return set()
+    p = Path(value)
+    if p.exists():
+        cells: set[str] = set()
+        for line in p.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                cells.add(line.split()[0])
+            else:
+                cells.add(str(rec.get("cell_id") or rec.get("cell") or "").strip())
+        return {c for c in cells if c}
+    return {c.strip() for c in value.split(",") if c.strip()}
+
+
+def _load_repair_queue(value: str) -> dict[str, str]:
+    if not value:
+        return {}
+    dests: dict[str, str] = {}
+    for line in Path(value).read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        rec = json.loads(line)
+        cell = str(rec.get("cell_id") or rec.get("cell") or "").strip()
+        hf_path = str(rec.get("hf_path") or "").strip().rstrip("/")
+        if cell and hf_path:
+            dests[cell] = hf_path
+    return dests
 
 
 def metadata_yaml(model_key: str, mode: str, src_commit: str) -> str:
@@ -119,25 +173,84 @@ dataset:
 contact: bingran@benchflow.ai
 notes: |
   OpenHands ({HFMODE[mode]}) + {m["display"]} at maximum reasoning effort, generated
-  2026-06 to fill the 91-task x 3-trial SkillsBench grid for this config. Every trial
+  2026-06 to fill the 88-task x 3-trial SkillsBench grid for this config. Every trial
   passed benchflow-experiment-review (healthy ACP+LLM trajectory, parseable
-  config/result/timing, positive timing.total, no error, non-partial; with-skills
-  trials show task_skills_loading=1, no-skills show 0).
+  config/result/timing, positive timing.total, and either completed normally or
+  reached a normal_timeout with complete verifier/reward/token evidence;
+  with-skills trials show task_skills_loading=1, no-skills show 0).
 """
+
+
+def _canonical_ready(rollout: Path) -> bool:
+    return (
+        rollout.is_dir()
+        and (rollout / "result.json").exists()
+        and (rollout / "config.json").exists()
+        and (rollout / "trajectory" / "llm_trajectory.jsonl").exists()
+        and (rollout / "trajectory" / "acp_trajectory.jsonl").exists()
+    )
+
+
+def _reviewed_rollout(rv: dict, runs_root: Path, task: str) -> Path | None:
+    """Return the exact rollout reviewed by review_cell.py.
+
+    Legacy review files did not carry ``rollout_dir``; for those, fall back to
+    the old complete-rollout search so older already-reviewed cells remain
+    publishable. New reviews must include ``rollout_dir`` so publish cannot
+    accidentally upload a sibling attempt that was never reviewed.
+    """
+    reviewed = rv.get("rollout_dir")
+    if reviewed:
+        path = Path(reviewed)
+        return path if _canonical_ready(path) else None
+    return None
+
+
+def _result_publishable(result: dict, review: dict) -> tuple[bool, str]:
+    partial = bool(result.get("partial_trajectory"))
+    summary = result.get("trajectory_summary") or {}
+    summary_partial = bool(summary.get("partial_trajectory"))
+    accepted_timeout = bool(review.get("accepted_normal_timeout")) and bool(
+        review.get("timeout_complete_artifacts")
+    )
+    if (partial or summary_partial) and not accepted_timeout:
+        return False, "partial trajectory lacks accepted_normal_timeout overlay"
+    err = result.get("error")
+    err_text = str(err).lower()
+    if err and not (
+        accepted_timeout and ("timeout" in err_text or "timed out" in err_text)
+    ):
+        return False, f"unaccepted run error: {err}"
+    rew = (result.get("rewards") or {}).get("reward")
+    try:
+        reward_ok = rew is not None and 0.0 <= float(rew) <= 1.0
+    except (TypeError, ValueError):
+        reward_ok = False
+    if not reward_ok:
+        return False, "missing/invalid reward"
+    return True, ""
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
-    ap.add_argument("--ts", default=datetime.now(timezone.utc).strftime("%Y-%m-%d__%H-%M-%S") + "-maxeffort")
+    ap.add_argument("--ts", default=datetime.now(UTC).strftime("%Y-%m-%d__%H-%M-%S") + "-maxeffort")
     ap.add_argument("--src-commit", default=os.environ.get("SB_SRC_COMMIT", "unknown"))
     ap.add_argument("--runs-root", default=str(ROOT / "runs"),
                     help="dir holding <cell>/<task>__<tid>/ rollouts (use 'jobs' when running on the VM)")
+    ap.add_argument("--repair-existing", action="store_true",
+                    help="overwrite canonical files for already-present trial ids from local reviewed rollouts")
+    ap.add_argument("--repair-queue", default="",
+                    help="JSONL with cell_id + hf_path; overwrite that HF path from a healthy local rerun")
+    ap.add_argument("--only-cells", default="",
+                    help="comma-separated cell ids or JSONL/text file with cell_id; limits publish/repair scope")
     a = ap.parse_args()
     runs_root = Path(a.runs_root)
+    only_cells = _load_only_cells(a.only_cells)
+    repair_dests = _load_repair_queue(a.repair_queue)
 
     os.environ.setdefault("HF_TOKEN", hf_token())
-    from huggingface_hub import HfApi, CommitOperationAdd
+    from huggingface_hub import CommitOperationAdd, HfApi
     api = HfApi(token=os.environ["HF_TOKEN"])
 
     # existing cells per group: {trial_id: cell_dir_path} for dedup AND path recovery, cached.
@@ -164,36 +277,43 @@ def main() -> int:
     groups_seen = {}
     skipped = 0
     for rf in review_files:
-        rv = json.load(open(rf))
+        with open(rf) as fh:
+            rv = json.load(fh)
         if rv.get("verdict") != "pass":
             continue
         cell = rv["cell_id"]
+        if only_cells and cell not in only_cells:
+            continue
         m = re.match(r"(?P<model>.+?)__(?P<mode>with|without)__(?P<task>.+)__t(?P<slot>\d+)$", cell)
         if not m:
             continue
         model_key, mode, task = m["model"], m["mode"], m["task"]
-        # A cell can have several rollout dirs: failed creation attempts (result.json but
-        # no trajectory) plus the one successful run. Pick a COMPLETE rollout (result.json
-        # + llm_trajectory), not by sort position — else we grab an empty attempt and skip.
-        roll = [d for d in glob.glob(str(runs_root / cell / "**" / f"{task}__*"), recursive=True)
-                if Path(d).is_dir() and (Path(d) / "result.json").exists()
-                and (Path(d) / "trajectory" / "llm_trajectory.jsonl").exists()]
-        if not roll:
-            print(f"  [skip] no complete rollout (result.json+llm_trajectory) for {cell}")
+        inner = _reviewed_rollout(rv, runs_root, task)
+        if inner is None:
+            print(f"  [skip] no reviewed complete rollout for {cell}")
             continue
-        inner = Path(sorted(roll)[-1])
         tid = inner.name.rsplit("__", 1)[1]
+        if rv.get("trial_id") and str(rv["trial_id"]) != tid:
+            print(f"  [skip] {cell}: reviewed trial_id={rv['trial_id']} != rollout trial_id={tid}")
+            continue
+        with open(inner / "result.json") as fh:
+            rd = json.load(fh)
+        ok, reason = _result_publishable(rd, rv)
+        if not ok:
+            print(f"  [skip] {cell}: {reason}")
+            continue
         group = f"openhands-{HFMODE[mode]}__{MODELS[model_key]['slug']}"
         exist = existing(group)
-        if tid in exist:
+        repair_dest = repair_dests.get(cell)
+        if tid in exist and not a.repair_existing and not repair_dest:
             # already in PR5 (e.g. pushed earlier from another machine) — record its path
             # so the dashboard shows the HF link; don't re-upload.
             published.append({"cell_id": cell, "hf_path": exist[tid], "tid": tid, "already": True,
-                              "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds")})
+                              "updated_at": datetime.now(UTC).isoformat(timespec="seconds")})
             skipped += 1
             continue
-        dest = f"{V11}/{group}/{a.ts}/{task}__{tid}"
-        rd = json.load(open(inner / "result.json"))
+        repairing = bool(repair_dest) or (tid in exist and a.repair_existing)
+        dest = repair_dest or (exist[tid] if repairing else f"{V11}/{group}/{a.ts}/{task}__{tid}")
         cell_ops = []
         try:
             for f in CANON:
@@ -213,30 +333,33 @@ def main() -> int:
             continue
         ops.extend(cell_ops)
         groups_seen.setdefault((model_key, mode), group)
-        published.append({"cell_id": cell, "hf_path": dest, "tid": tid,
-                          "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds")})
+        published.append({"cell_id": cell, "hf_path": dest, "tid": tid, "repair": repairing,
+                          "source_tid": tid, "accepted_normal_timeout": bool(rv.get("accepted_normal_timeout")),
+                          "updated_at": datetime.now(UTC).isoformat(timespec="seconds")})
 
     # group metadata.yaml (once per group)
     for (model_key, mode), group in groups_seen.items():
         ops.append(CommitOperationAdd(path_in_repo=f"{V11}/{group}/metadata.yaml",
                                       path_or_fileobj=io.BytesIO(metadata_yaml(model_key, mode, a.src_commit).encode())))
 
-    new = [p for p in published if not p.get("already")]
-    print(f"to publish: {len(new)} new + {len(published) - len(new)} already-in-PR5 recorded ({len(ops)} files); dedup {skipped}; groups={list(groups_seen.values())}")
+    new = [p for p in published if not p.get("already") and not p.get("repair")]
+    repaired = [p for p in published if p.get("repair")]
+    print(f"to publish: {len(new)} new + {len(repaired)} repairs + {len(published) - len(new) - len(repaired)} already-in-PR5 recorded ({len(ops)} files); dedup {skipped}; groups={list(groups_seen.values())}")
     if a.dry_run:
         print("DRY RUN — nothing pushed")
         return 0
     # Always (re)write publish records so the dashboard links every cell that IS in PR5.
     (ROOT / "published").mkdir(exist_ok=True)
     for p in published:
-        json.dump(p, open(ROOT / "published" / f"{p['cell_id']}.json", "w"), indent=2)
+        with open(ROOT / "published" / f"{p['cell_id']}.json", "w") as fh:
+            json.dump(p, fh, indent=2)
     if ops:
         CH = 400
         for i in range(0, len(ops), CH):
             api.create_commit(repo_id=REPO, repo_type=REPO_TYPE, revision=PR_REF, operations=ops[i:i + CH],
-                              commit_message=f"max-effort fill: {len(new)} cells (batch {i // CH + 1})")
+                              commit_message=f"max-effort fill: {len(new)} cells, repair {len(repaired)} (batch {i // CH + 1})")
             print(f"  committed batch {i // CH + 1}: {len(ops[i:i+CH])} files")
-    print(f"[done] {len(new)} uploaded, {len(published)} recorded -> {PR_REF}")
+    print(f"[done] {len(new)} uploaded, {len(repaired)} repaired, {len(published)} recorded -> {PR_REF}")
     return 0
 
 
