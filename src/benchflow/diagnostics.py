@@ -30,6 +30,28 @@ from typing import Any, ClassVar
 # ── Diagnostic value objects ──────────────────────────────────────────────
 
 
+class AgentPromptTimeoutError(TimeoutError):
+    """BenchFlow-owned prompt wall-clock timeout with finalized ACP state.
+
+    This is distinct from provider/client ``TimeoutError`` exceptions. It is
+    raised only when BenchFlow's prompt budget expires and the ACP prompt task
+    can be cancelled/drained cleanly enough to snapshot the session.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        trajectory: list[dict],
+        n_tool_calls: int,
+        executed_prompts: list[str] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.trajectory = trajectory
+        self.n_tool_calls = n_tool_calls
+        self.executed_prompts = executed_prompts or []
+
+
 @dataclass
 class Diagnostic:
     """Base class for structured diagnostic events.

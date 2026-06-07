@@ -28,7 +28,11 @@ from benchflow.acp.container_transport import ContainerTransport
 from benchflow.agents.protocol import ACPSessionAdapter
 from benchflow.agents.providers import find_provider, strip_provider_prefix
 from benchflow.agents.registry import AGENTS
-from benchflow.diagnostics import IdleTimeoutDiagnostic, IdleTimeoutError
+from benchflow.diagnostics import (
+    AgentPromptTimeoutError,
+    IdleTimeoutDiagnostic,
+    IdleTimeoutError,
+)
 from benchflow.sandbox.lockdown import build_priv_drop_cmd
 from benchflow.sandbox.process import DaytonaProcess, DaytonaPtyProcess, DockerProcess
 from benchflow.trajectories._capture import _capture_session_trajectory
@@ -49,28 +53,6 @@ logger = logging.getLogger(__name__)
 _ACP_CONNECT_MAX_RETRIES = 3
 _ACP_CONNECT_BASE_DELAY = 2.0
 _PROMPT_CANCEL_DRAIN_TIMEOUT_SEC = 0.25
-
-
-class AgentPromptTimeoutError(TimeoutError):
-    """BenchFlow-owned prompt wall-clock timeout with finalized ACP state.
-
-    This is distinct from provider/client ``TimeoutError`` exceptions. It is
-    raised only when BenchFlow's prompt budget expires and the ACP prompt task
-    can be cancelled/drained cleanly enough to snapshot the session.
-    """
-
-    def __init__(
-        self,
-        message: str,
-        *,
-        trajectory: list[dict],
-        n_tool_calls: int,
-        executed_prompts: list[str] | None = None,
-    ) -> None:
-        super().__init__(message)
-        self.trajectory = trajectory
-        self.n_tool_calls = n_tool_calls
-        self.executed_prompts = executed_prompts or []
 
 
 # models.dev provider inference — used when acp_model_format="provider/model"

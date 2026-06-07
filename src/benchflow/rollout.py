@@ -62,7 +62,6 @@ from benchflow._utils.result_metadata import (
     trajectory_summary_from_events,
 )
 from benchflow._utils.scoring import classify_error, classify_verifier_error
-from benchflow.acp.runtime import AgentPromptTimeoutError
 from benchflow.contracts import (
     AgentProtocolError,
     BaseUser,
@@ -72,7 +71,11 @@ from benchflow.contracts import (
     SandboxStartupFailure,
     default_rollout_planes,
 )
-from benchflow.diagnostics import RolloutDiagnostics, VerifierTimeoutDiagnostic
+from benchflow.diagnostics import (
+    AgentPromptTimeoutError,
+    RolloutDiagnostics,
+    VerifierTimeoutDiagnostic,
+)
 from benchflow.environment.manifest import EnvironmentManifest
 from benchflow.models import RolloutResult, TrajectorySource
 from benchflow.rewards.validation import validate_reward_map
