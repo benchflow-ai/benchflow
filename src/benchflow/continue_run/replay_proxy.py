@@ -84,7 +84,9 @@ class ReplayRouter:
     def exhausted(self) -> bool:
         return self._cursor >= len(self._recorded)
 
-    def _check_divergence(self, incoming: dict[str, Any], recorded_req: dict[str, Any]) -> None:
+    def _check_divergence(
+        self, incoming: dict[str, Any], recorded_req: dict[str, Any]
+    ) -> None:
         """Soft-validate that replay is still on the original rails.
 
         The recorded request is a *normalized projection* (model/messages/tools),
@@ -186,9 +188,7 @@ def completion_to_sse(body: dict[str, Any]) -> list[str]:
                 "object": "chat.completion.chunk",
                 "created": created,
                 "model": model,
-                "choices": [
-                    {"index": 0, "delta": delta, "finish_reason": finish}
-                ],
+                "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
             }
         )
 
@@ -258,7 +258,9 @@ class _ProxyState:
 class _ReplayHTTPServer(ThreadingHTTPServer):
     """ThreadingHTTPServer that carries the proxy state for its handlers."""
 
-    def __init__(self, addr: tuple[str, int], handler: type, state: _ProxyState) -> None:
+    def __init__(
+        self, addr: tuple[str, int], handler: type, state: _ProxyState
+    ) -> None:
         super().__init__(addr, handler)
         self.state = state
 

@@ -149,11 +149,14 @@ def test_http_stream_emits_sse(proxy_with):
     recorded = [exchange(completion(content="streamed"))]
     proxy = proxy_with(ReplayRouter(recorded))
 
-    with httpx.Client(base_url=proxy.base_url, timeout=10) as client, client.stream(
-        "POST",
-        "/chat/completions",
-        json={"messages": [{"role": "user"}], "stream": True},
-    ) as resp:
+    with (
+        httpx.Client(base_url=proxy.base_url, timeout=10) as client,
+        client.stream(
+            "POST",
+            "/chat/completions",
+            json={"messages": [{"role": "user"}], "stream": True},
+        ) as resp,
+    ):
         assert resp.status_code == 200
         assert "text/event-stream" in resp.headers["content-type"]
         lines = [ln for ln in resp.iter_lines() if ln.startswith("data:")]
@@ -162,9 +165,7 @@ def test_http_stream_emits_sse(proxy_with):
     payloads = [
         json.loads(ln[len("data: ") :]) for ln in lines if not ln.endswith("[DONE]")
     ]
-    assert any(
-        p["choices"][0]["delta"].get("content") == "streamed" for p in payloads
-    )
+    assert any(p["choices"][0]["delta"].get("content") == "streamed" for p in payloads)
 
 
 def test_http_health_and_models(proxy_with):

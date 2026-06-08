@@ -110,7 +110,9 @@ def register_continue(app: typer.Typer) -> None:
             typer.secho(f"benchflow continue: {exc}", fg=typer.colors.RED, err=True)
             raise typer.Exit(1) from exc
 
-        typer.secho(f"\n✓ continued run written to {result.rollout_dir}", fg=typer.colors.GREEN)
+        typer.secho(
+            f"\n✓ continued run written to {result.rollout_dir}", fg=typer.colors.GREEN
+        )
         typer.echo(
             f"  replayed {result.n_recorded} recorded turn(s); "
             f"{result.n_live} live turn(s); {result.divergences} divergence(s)"

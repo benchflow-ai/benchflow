@@ -120,7 +120,9 @@ def _read_json(path: Path, *, required: bool) -> dict[str, Any]:
     except (OSError, json.JSONDecodeError) as exc:
         raise RunFolderError(f"could not parse {path}: {exc}") from exc
     if not isinstance(data, dict):
-        raise RunFolderError(f"expected a JSON object in {path}, got {type(data).__name__}")
+        raise RunFolderError(
+            f"expected a JSON object in {path}, got {type(data).__name__}"
+        )
     return data
 
 

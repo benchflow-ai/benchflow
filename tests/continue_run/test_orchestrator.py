@@ -20,7 +20,9 @@ from ._helpers import completion, exchange, write_run_folder
 
 
 def _load(tmp_path, **kw):
-    folder = write_run_folder(tmp_path / "run", exchanges=[exchange(completion(content="a"))], **kw)
+    folder = write_run_folder(
+        tmp_path / "run", exchanges=[exchange(completion(content="a"))], **kw
+    )
     return load_run_folder(folder)
 
 
@@ -127,6 +129,8 @@ def test_write_stitched_trajectory_creates_file(tmp_path):
     original = tmp_path / "orig.jsonl"
     original.write_text('{"a": 1}\n')
     rollout_dir = tmp_path / "rollout"
-    out = write_stitched_trajectory(rollout_dir, original, [exchange(completion(content="L"))])
+    out = write_stitched_trajectory(
+        rollout_dir, original, [exchange(completion(content="L"))]
+    )
     assert out == rollout_dir / "trajectory" / "llm_trajectory.jsonl"
     assert len(out.read_text().strip().splitlines()) == 2

@@ -14,7 +14,10 @@ from ._helpers import completion, exchange, write_run_folder
 def test_loads_valid_timeout_folder(tmp_path):
     folder = write_run_folder(
         tmp_path / "run",
-        exchanges=[exchange(completion(content="a")), exchange(completion(content="b"))],
+        exchanges=[
+            exchange(completion(content="a")),
+            exchange(completion(content="b")),
+        ],
         prompts=["Solve it."],
     )
     run = load_run_folder(folder)

@@ -92,7 +92,9 @@ def write_run_folder(
     traj = root / "trajectory"
     traj.mkdir(exist_ok=True)
     (traj / "llm_trajectory.jsonl").write_text(
-        "\n".join(json.dumps(ex.model_dump(mode="json"), default=str) for ex in exchanges)
+        "\n".join(
+            json.dumps(ex.model_dump(mode="json"), default=str) for ex in exchanges
+        )
         + "\n"
     )
     return root
