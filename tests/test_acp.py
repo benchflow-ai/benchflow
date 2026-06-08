@@ -668,9 +668,10 @@ class TestIdleTimeoutDiagnostics:
         assert info["n_tool_calls"] == 1
 
     @pytest.mark.asyncio
-    async def test_wall_clock_timeout_has_no_idle_info(self) -> None:
-        """Wall-clock timeouts (not idle) must NOT carry an idle diagnostic."""
+    async def test_wall_clock_timeout_records_terminal_diagnostic(self) -> None:
+        """Wall-clock timeouts record runner-owned terminal timeout evidence."""
         from benchflow.acp.runtime import AgentPromptTimeoutError, execute_prompts
+        from benchflow.diagnostics import AgentPromptTimeoutDiagnostic
 
         class SlowClient:
             async def prompt(self, _prompt: str):
@@ -687,13 +688,55 @@ class TestIdleTimeoutDiagnostics:
                 timeout=2,
                 idle_timeout=None,
             )
-        # Wall-clock TimeoutErrors don't carry a structured diagnostic;
-        # only the idle watchdog raises IdleTimeoutError with one attached.
-        assert not hasattr(exc_info.value, "diagnostic")
+        assert isinstance(exc_info.value.diagnostic, AgentPromptTimeoutDiagnostic)
+        assert exc_info.value.diagnostic.timeout_sec == 2
+        assert exc_info.value.diagnostic.pending_tool_call_ids == []
+        assert exc_info.value.terminal_trajectory_complete is True
         assert exc_info.value.n_tool_calls == 1
         assert [event["type"] for event in exc_info.value.trajectory] == [
-            "user_message"
+            "user_message",
+            "agent_timeout",
         ]
+        assert exc_info.value.trajectory[-1]["terminal_trajectory_complete"] is True
+
+    @pytest.mark.asyncio
+    async def test_wall_clock_timeout_with_pending_tool_stays_partial(self) -> None:
+        """Guards PR #640: pending tool calls cannot become healthy timeouts."""
+        from benchflow.acp.runtime import AgentPromptTimeoutError, execute_prompts
+
+        class PendingToolThenHang:
+            def __init__(self, session: ACPSession):
+                self._session = session
+
+            async def prompt(self, _prompt: str):
+                self._session.handle_update(
+                    {
+                        "sessionUpdate": "tool_call",
+                        "toolCallId": "tc_pending",
+                        "title": "long running command",
+                        "kind": "bash",
+                    }
+                )
+                await asyncio.Future()
+
+        session = ACPSession("pending-wall-clock-session")
+        with pytest.raises(AgentPromptTimeoutError) as exc_info:
+            await execute_prompts(
+                PendingToolThenHang(session),  # type: ignore[arg-type]
+                session,
+                ["solve"],
+                timeout=2,
+                idle_timeout=None,
+            )
+
+        assert exc_info.value.terminal_trajectory_complete is False
+        assert exc_info.value.diagnostic.pending_tool_call_ids == ["tc_pending"]
+        assert [event["type"] for event in exc_info.value.trajectory] == [
+            "user_message",
+            "tool_call",
+            "agent_timeout",
+        ]
+        assert exc_info.value.trajectory[1]["status"] == ToolCallStatus.PENDING.value
 
 
 class TestConnectAcpModelSelection:
@@ -1344,6 +1387,61 @@ class TestTransportErrorDiagnostics:
         rj = __import__("json").loads((tmp_path / "result.json").read_text())
         assert rj["transport_error_info"] is None
         assert result.rewards == {"reward": 1.0}
+
+    def test_agent_timeout_diagnostic_round_trips_through_result_json(
+        self, tmp_path
+    ) -> None:
+        """Guards PR #640: normal timeouts carry terminal trajectory evidence."""
+        from benchflow.diagnostics import (
+            AgentPromptTimeoutDiagnostic,
+            RolloutDiagnostics,
+        )
+        from benchflow.rollout import _build_rollout_result
+
+        diagnostics = RolloutDiagnostics()
+        diag = AgentPromptTimeoutDiagnostic(
+            timeout_sec=900.0,
+            n_tool_calls=2,
+            terminal_event_recorded=True,
+            terminal_trajectory_complete=True,
+        )
+        diagnostics.set(diag)
+
+        result = _build_rollout_result(
+            tmp_path,
+            task_name="hello-world",
+            rollout_name="hello__timeout",
+            agent="openhands",
+            agent_name="openhands",
+            model="test-model",
+            n_tool_calls=2,
+            prompts=["solve"],
+            error="Agent prompt exceeded wall-clock budget 900s",
+            verifier_error=None,
+            trajectory=[
+                {"type": "user_message", "text": "solve"},
+                {
+                    "type": "agent_timeout",
+                    "reason": "wall_clock_timeout",
+                    "timeout_sec": 900.0,
+                    "pending_tool_call_ids": [],
+                    "terminal_trajectory_complete": True,
+                },
+            ],
+            partial_trajectory=False,
+            trajectory_source="acp",
+            rewards={"reward": 0.0},
+            started_at=__import__("datetime").datetime.now(),
+            timing={"agent": 900.0},
+            diagnostics=diagnostics,
+        )
+
+        rj = __import__("json").loads((tmp_path / "result.json").read_text())
+        assert rj["agent_timeout_info"] == diag.to_dict()
+        assert rj["trajectory_summary"]["event_type_counts"]["agent_timeout"] == 1
+        assert rj["trajectory_summary"]["partial_trajectory"] is False
+        assert rj["error_category"] == "timeout"
+        assert result.error_category == "timeout"
 
 
 class TestDiagnosticRegistry:

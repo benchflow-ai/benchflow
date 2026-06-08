@@ -1903,6 +1903,7 @@ class Rollout:
                 idle_timeout=idle_timeout,
             )
         except AgentPromptTimeoutError as e:
+            self._diagnostics.set(e.diagnostic)
             self._commit_acp_execution(
                 trajectory=e.trajectory,
                 n_tool_calls=e.n_tool_calls,
@@ -1910,6 +1911,7 @@ class Rollout:
                 effective_prompts=e.executed_prompts or effective_prompts,
                 started_at=t0,
                 node=node,
+                partial_trajectory=not e.terminal_trajectory_complete,
             )
             raise
 
@@ -1932,6 +1934,7 @@ class Rollout:
         effective_prompts: list[str],
         started_at: datetime,
         node: RolloutNode | None,
+        partial_trajectory: bool = False,
     ) -> None:
         """Commit a finalized ACP snapshot into rollout state."""
 
@@ -1945,7 +1948,11 @@ class Rollout:
         self._trajectory.extend(new_events)
         self._n_tool_calls += new_tools
         self._executed_prompts.extend(effective_prompts)
-        self._trajectory_source = "acp"
+        if partial_trajectory:
+            self._partial_trajectory = True
+            self._trajectory_source = "partial_acp"
+        elif not self._partial_trajectory:
+            self._trajectory_source = "acp"
         self._collect_native_acp_usage()
 
         # Grow the tree at Step-level granularity — one Step per ACP event
@@ -2371,7 +2378,7 @@ class Rollout:
                         self._error = (
                             detail or f"Agent timed out after {self._timeout}s"
                         )
-                        self._diagnostics.capture_idle(e)
+                        self._diagnostics.capture_timeout(e)
                         logger.error(self._error)
                 finally:
                     if cfg.oracle_access:
@@ -2397,7 +2404,7 @@ class Rollout:
             # generic wall-clock message only when there's no detail.
             detail = str(e).strip()
             self._error = detail or f"Agent timed out after {self._timeout}s"
-            self._diagnostics.capture_idle(e)
+            self._diagnostics.capture_timeout(e)
             logger.error(self._error)
         except ConnectionError as e:
             self._error = str(e)

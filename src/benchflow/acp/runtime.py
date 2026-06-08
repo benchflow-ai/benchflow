@@ -29,6 +29,7 @@ from benchflow.agents.protocol import ACPSessionAdapter
 from benchflow.agents.providers import find_provider, strip_provider_prefix
 from benchflow.agents.registry import AGENTS
 from benchflow.diagnostics import (
+    AgentPromptTimeoutDiagnostic,
     AgentPromptTimeoutError,
     IdleTimeoutDiagnostic,
     IdleTimeoutError,
@@ -593,6 +594,29 @@ async def _cancel_and_drain_prompt_task(prompt_task: asyncio.Task) -> bool:
     return False
 
 
+def _agent_prompt_timeout_error(session, timeout: int) -> AgentPromptTimeoutError:
+    session.mark_prompt_end()
+    pending_tool_call_ids = session.pending_tool_call_ids()
+    terminal_complete = not pending_tool_call_ids
+    session.record_agent_timeout(
+        timeout_sec=float(timeout),
+        pending_tool_call_ids=pending_tool_call_ids,
+        terminal_trajectory_complete=terminal_complete,
+    )
+    diagnostic = AgentPromptTimeoutDiagnostic(
+        timeout_sec=float(timeout),
+        n_tool_calls=len(session.tool_calls),
+        pending_tool_call_ids=pending_tool_call_ids,
+        terminal_event_recorded=True,
+        terminal_trajectory_complete=terminal_complete,
+    )
+    return AgentPromptTimeoutError(
+        f"Agent prompt exceeded wall-clock budget {timeout}s",
+        trajectory=_capture_session_trajectory(session),
+        diagnostic=diagnostic,
+    )
+
+
 async def _prompt_with_wall_clock_budget(
     acp_client: ACPClient,
     session,
@@ -606,12 +630,7 @@ async def _prompt_with_wall_clock_budget(
         if done:
             return prompt_task.result()
         if await _cancel_and_drain_prompt_task(prompt_task):
-            session.mark_prompt_end()
-            raise AgentPromptTimeoutError(
-                f"Agent prompt exceeded wall-clock budget {timeout}s",
-                trajectory=_capture_session_trajectory(session),
-                n_tool_calls=len(session.tool_calls),
-            )
+            raise _agent_prompt_timeout_error(session, timeout)
         raise TimeoutError(f"Agent prompt exceeded wall-clock budget {timeout}s")
     finally:
         if not prompt_task.done():
@@ -683,12 +702,7 @@ async def _prompt_with_idle_watchdog(
                 )
             if now > deadline:
                 if await _cancel_and_drain_prompt_task(prompt_task):
-                    session.mark_prompt_end()
-                    raise AgentPromptTimeoutError(
-                        f"Agent prompt exceeded wall-clock budget {timeout}s",
-                        trajectory=_capture_session_trajectory(session),
-                        n_tool_calls=len(session.tool_calls),
-                    )
+                    raise _agent_prompt_timeout_error(session, timeout)
                 raise TimeoutError(
                     f"Agent prompt exceeded wall-clock budget {timeout}s"
                 )
