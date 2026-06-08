@@ -92,6 +92,12 @@ def hf_token() -> str:
     raise SystemExit("no HUGGING_FACE_TOKEN (env, .env, or ~/keys.env)")
 
 
+def configure_hf_token_env() -> str:
+    token = os.environ.get("HF_TOKEN") or hf_token()
+    os.environ["HF_TOKEN"] = token
+    return token
+
+
 def metadata_yaml(model_key: str, mode: str, src_commit: str) -> str:
     m = MODELS[model_key]
     skills = "true" if mode == "with" else "false"
@@ -136,9 +142,9 @@ def main() -> int:
     a = ap.parse_args()
     runs_root = Path(a.runs_root)
 
-    os.environ.setdefault("HF_TOKEN", hf_token())
+    token = configure_hf_token_env()
     from huggingface_hub import HfApi, CommitOperationAdd
-    api = HfApi(token=os.environ["HF_TOKEN"])
+    api = HfApi(token=token)
 
     # existing cells per group: {trial_id: cell_dir_path} for dedup AND path recovery, cached.
     _exist_cache: dict = {}
@@ -226,16 +232,18 @@ def main() -> int:
     if a.dry_run:
         print("DRY RUN — nothing pushed")
         return 0
-    # Always (re)write publish records so the dashboard links every cell that IS in PR5.
-    (ROOT / "published").mkdir(exist_ok=True)
-    for p in published:
-        json.dump(p, open(ROOT / "published" / f"{p['cell_id']}.json", "w"), indent=2)
     if ops:
         CH = 400
         for i in range(0, len(ops), CH):
             api.create_commit(repo_id=REPO, repo_type=REPO_TYPE, revision=PR_REF, operations=ops[i:i + CH],
                               commit_message=f"max-effort fill: {len(new)} cells (batch {i // CH + 1})")
             print(f"  committed batch {i // CH + 1}: {len(ops[i:i+CH])} files")
+    # Always (re)write publish records so the dashboard links every cell that IS in PR5.
+    # This must happen after create_commit, otherwise a failed HF upload creates
+    # local dashboard credit for a cell that is not actually present in PR5.
+    (ROOT / "published").mkdir(exist_ok=True)
+    for p in published:
+        json.dump(p, open(ROOT / "published" / f"{p['cell_id']}.json", "w"), indent=2)
     print(f"[done] {len(new)} uploaded, {len(published)} recorded -> {PR_REF}")
     return 0
 
