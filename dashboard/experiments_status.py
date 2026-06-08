@@ -27,6 +27,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+try:  # pragma: no cover - import mode depends on serve.py execution style
+    from . import hf_scores
+except Exception:  # pragma: no cover
+    import hf_scores  # type: ignore[no-redef]
+
 _DASH = Path(__file__).resolve().parent
 LEDGER_PATH = _DASH / "experiments_ledger.json"
 EXPECTED_TARGET = 3 * 91 * 2 * 3
@@ -180,6 +185,32 @@ def _dashboard_bucket(row: dict[str, Any]) -> str:
     return "completed"
 
 
+def _empty_hf_scores() -> dict[str, Any]:
+    return {
+        "as_of": datetime.now(UTC).isoformat(timespec="seconds"),
+        "source": "HuggingFace PR2/PR3/PR4/PR5",
+        "repo": "benchflow/skillsbench-leaderboard",
+        "refs": ["refs/pr/2", "refs/pr/3", "refs/pr/4", "refs/pr/5"],
+        "scored_trials": 0,
+        "groups": 0,
+        "by_mode": {"with-skills": [], "without-skills": [], "normalized-gain": []},
+        "warnings": [],
+        "warning_count": 0,
+    }
+
+
+def _hf_scores_snapshot(include: bool) -> dict[str, Any]:
+    if not include:
+        return _empty_hf_scores()
+    try:
+        return hf_scores.snapshot()
+    except Exception as exc:
+        return {
+            **_empty_hf_scores(),
+            "error": f"HF score snapshot failed: {exc}",
+        }
+
+
 def snapshot(ledger_path: str | Path | None = None) -> dict:
     """Summarize the experiment-fill ledger for the dashboard.
 
@@ -187,6 +218,7 @@ def snapshot(ledger_path: str | Path | None = None) -> dict:
     missing or unreadable ledger returns that same shape plus ``error`` (with
     empty containers) so the panel renders the message instead of 500.
     """
+    include_hf_scores = ledger_path is None
     empty = {
         "as_of": "",
         "target": 0,
@@ -196,6 +228,7 @@ def snapshot(ledger_path: str | Path | None = None) -> dict:
             "total": 0,
             "missing": 0,
         },
+        "hf_scores": _hf_scores_snapshot(include_hf_scores),
         "rows": [],
     }
     path = _resolve(ledger_path)
@@ -244,5 +277,6 @@ def snapshot(ledger_path: str | Path | None = None) -> dict:
             "total": len(rendered_rows),
             "missing": max(0, int(target) - len(rendered_rows)),
         },
+        "hf_scores": _hf_scores_snapshot(include_hf_scores),
         "rows": rendered_rows,
     }

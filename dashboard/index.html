@@ -127,6 +127,34 @@
   tr:hover td { background: #faf9f7; }
   .barwrap { background: var(--line); border-radius: 4px; height: 8px; overflow: hidden; width: 100%; }
   .bar { height: 100%; background: var(--good); }
+  .exp-score-head {
+    display: flex; gap: 10px; align-items: center; justify-content: space-between;
+    flex-wrap: wrap; margin-bottom: 10px;
+  }
+  .exp-score-tabs { display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .exp-score-tabs button {
+    border: 1px solid transparent; border-radius: 999px; padding: 5px 12px;
+    background: var(--chip); color: var(--muted); cursor: pointer; font: inherit;
+  }
+  .exp-score-tabs button.active { background: var(--ink); color: #fff; }
+  .exp-score-list { display: grid; gap: 8px; }
+  .exp-score-row {
+    display: grid; grid-template-columns: minmax(190px, 280px) minmax(160px, 1fr) 82px;
+    gap: 12px; align-items: center; border-top: 1px solid var(--line); padding: 8px 0 0;
+  }
+  .exp-score-row:first-child { border-top: 0; padding-top: 0; }
+  .exp-score-name { min-width: 0; }
+  .exp-score-name b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .exp-score-track {
+    height: 14px; background: #ecece9; border-radius: 4px; overflow: hidden; position: relative;
+  }
+  .exp-score-fill { height: 100%; background: var(--accent); border-radius: 4px; }
+  .exp-score-fill.gain-neg { background: var(--bad); }
+  .exp-score-value { text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; }
+  @media (max-width: 760px) {
+    .exp-score-row { grid-template-columns: 1fr; gap: 5px; }
+    .exp-score-value { text-align: left; }
+  }
   details { margin: 2px 0; }
   summary { cursor: pointer; }
   summary::-webkit-details-marker { color: var(--muted); }
@@ -549,7 +577,7 @@
 const TABS = ["Overview", "Concept map", "Architecture", "Tickets", "Tests", "Jobs", "Daytona", "Experiments", "Advisories", "Timeline"];
 let DATA = null, CURRENT = null, SELECTED_TICKET_ID = null, DATA_SIGNATURE = null, SYNC_ERROR = null;
 let DAYTONA_TIMER = null, DAYTONA_AVAILABLE = false, DAYTONA_KEY = "";
-let EXP_TIMER = null, EXP_AVAILABLE = false;
+let EXP_TIMER = null, EXP_AVAILABLE = false, EXP_SCORE_MODE = "with-skills", EXP_LAST_SCORES = null;
 
 function el(t, c, h) { const e = document.createElement(t); if (c) e.className = c; if (h !== undefined) e.innerHTML = h; return e; }
 function esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;" }[c])); }
@@ -1757,6 +1785,75 @@ function expFill(id, rows, cells, ncols) {
     (rows.length > cap ? `<tr><td colspan="${ncols}" class="muted">…and ${rows.length - cap} more</td></tr>` : "") +
     (rows.length === 0 ? `<tr><td colspan="${ncols}" class="muted">none</td></tr>` : "");
 }
+function expPct(v) {
+  if (v == null || Number.isNaN(Number(v))) return "—";
+  return `${Number(v).toFixed(1)}%`;
+}
+function expScoreRows(scores) {
+  if (!scores || !scores.by_mode) return [];
+  return scores.by_mode[EXP_SCORE_MODE] || [];
+}
+function expScoreMeta(scores) {
+  if (!scores) return "HF PR2/3/4/5 score loading…";
+  const bits = [
+    `${Number(scores.scored_trials || 0).toLocaleString()} scored trials`,
+    `${scores.groups || 0} harness/model/mode groups`,
+    "HF PR2/3/4/5",
+  ];
+  if (scores.cache_age_s != null) bits.push(`cache ${Math.round(scores.cache_age_s)}s`);
+  if (scores.warning_count) bits.push(`${scores.warning_count} warnings`);
+  if (scores.error) bits.push(`refresh warning: ${scores.error}`);
+  return bits.join(" · ");
+}
+function renderExpScores(scores) {
+  EXP_LAST_SCORES = scores || EXP_LAST_SCORES;
+  const host = document.getElementById("exp-scoreboard");
+  if (!host) return;
+  const activeScores = scores || EXP_LAST_SCORES || {};
+  const rows = expScoreRows(activeScores).slice(0, 12);
+  const isGain = EXP_SCORE_MODE === "normalized-gain";
+  const maxGain = Math.max(0.001, ...rows.map(r => Math.abs(Number(r.gain_pct || 0))));
+  host.innerHTML = `
+    <div class="exp-score-head">
+      <div>
+        <b>HF leaderboard pass rate</b>
+        <div class="muted">${esc(expScoreMeta(activeScores))}</div>
+      </div>
+      <div class="exp-score-tabs" aria-label="score sort">
+        ${[
+          ["with-skills", "With Skills"],
+          ["without-skills", "Without Skills"],
+          ["normalized-gain", "Normalized Gain (g)"],
+        ].map(([id, label]) => `<button type="button" data-exp-score="${id}" class="${EXP_SCORE_MODE === id ? "active" : ""}">${esc(label)}</button>`).join("")}
+      </div>
+    </div>
+    <div class="exp-score-list">
+      ${rows.length ? rows.map((r, i) => {
+        const pct = isGain ? Number(r.gain_pct || 0) : Number(r.pass_rate_pct || 0);
+        const width = isGain ? Math.min(100, Math.abs(pct) / maxGain * 100) : Math.max(0, Math.min(100, pct));
+        const value = isGain ? `${pct >= 0 ? "+" : ""}${expPct(pct)}` : expPct(pct);
+        const sub = isGain
+          ? `with ${expPct(Number(r.with_pass_rate || 0) * 100)} · without ${expPct(Number(r.without_pass_rate || 0) * 100)} · n=${r.with_total || 0}/${r.without_total || 0}`
+          : `${r.passed || 0}/${r.total || 0} pass · PR${(r.prs || []).join("/PR")}`;
+        return `<div class="exp-score-row">
+          <div class="exp-score-name">
+            <b><span class="dot ${i < 3 ? "active" : "muted"}"></span>${esc(r.label || "")}</b>
+            <span class="muted">${esc(sub)}</span>
+          </div>
+          <div class="exp-score-track" title="${esc(sub)}">
+            <div class="exp-score-fill ${isGain && pct < 0 ? "gain-neg" : ""}" style="width:${width}%"></div>
+          </div>
+          <div class="exp-score-value">${esc(value)}</div>
+        </div>`;
+      }).join("") : `<div class="muted">No HF score rows available yet.</div>`}
+    </div>`;
+  host.querySelectorAll("button[data-exp-score]").forEach(btn => {
+    btn.onclick = () => {
+      EXP_SCORE_MODE = btn.getAttribute("data-exp-score") || "with-skills";
+      renderExpScores(EXP_LAST_SCORES);
+    };
+  });
+}
 async function pollExperiments() {
   const statusEl = document.getElementById("exp-status");
   if (!statusEl) { if (EXP_TIMER) { clearInterval(EXP_TIMER); EXP_TIMER = null; } return; }
@@ -1776,6 +1873,7 @@ async function pollExperiments() {
       `<span class="chip ${failed ? "bad" : "muted"}">failed ${failed}</span> ` +
       `<span class="chip ${missing ? "warn" : "muted"}">missing ${missing}</span>` +
       ` <span class="muted">· as of ${esc(d.as_of)} · auto-refresh 15s</span>`;
+    renderExpScores(d.hf_scores);
     const rows = d.rows || [], inBucket = b => rows.filter(x => x.dashboard_bucket === b);
     const tslot = r => "t" + (r.trial_slot == null ? "" : r.trial_slot);
     const notes = r => (r.review_health_notes && r.review_health_notes.length) ? r.review_health_notes.join("; ") : (r.note || "");
@@ -1802,6 +1900,11 @@ function renderExperiments() {
   const status = el("div"); status.id = "exp-status"; status.textContent = "loading…";
   status.style.cssText = "margin:10px 0 14px";
   wrap.appendChild(status);
+  const scoreCard = el("div", "card");
+  scoreCard.id = "exp-scoreboard";
+  scoreCard.style.cssText = "margin-bottom:14px";
+  scoreCard.textContent = "loading HF PR2/3/4/5 score…";
+  wrap.appendChild(scoreCard);
   const panels = [
     ["exp-queue", "Queue — waiting to run", ["model", "mode", "task", "trial", "sandbox"]],
     ["exp-running", "Running", ["model", "mode", "task", "trial", "sandbox", "sandbox id", "started"]],
