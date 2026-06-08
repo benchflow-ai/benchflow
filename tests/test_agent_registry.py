@@ -99,18 +99,23 @@ class TestOpenHandsConfig:
         assert "$HOME/.agents/skills" in cfg.skill_paths
         assert "$WORKSPACE/.agents/skills" in cfg.skill_paths
 
-    def test_openhands_install_cmd_pins_stable_pypi_release(self):
+    def test_openhands_install_cmd_pins_cli_git_revision(self):
         cfg = AGENTS["openhands"]
         assert (
-            "apt-get -o Acquire::Retries=3 install -y -qq curl ca-certificates"
+            "apt-get -o Acquire::Retries=3 install -y -qq curl ca-certificates git"
             in cfg.install_cmd
         )
         assert (
             "uv tool install --force --refresh "
             "--overrides /tmp/oh-sdk-overrides.txt "
-            "openhands==1.16.0 --python 3.12" in cfg.install_cmd
+            "--from "
+            "'git+https://github.com/OpenHands/OpenHands-CLI.git@"
+            "3ca17446c5d9c1e35e054803478a3501ec251ecf' "
+            "openhands --python 3.12" in cfg.install_cmd
         )
         assert "OpenHands/OpenHands-CLI.git@main" not in cfg.install_cmd
+        assert "openhands==1.16.0" not in cfg.install_cmd
+        assert "command -v git" in cfg.install_cmd
         assert "install.openhands.dev/install.sh" not in cfg.install_cmd
 
     def test_openhands_install_cmd_overrides_buggy_sdk_pin(self):

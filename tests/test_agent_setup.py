@@ -638,7 +638,9 @@ async def test_install_agent_writes_command_stdout_and_stderr_on_failure(
     assert (
         "uv tool install --force --refresh "
         "--overrides /tmp/oh-sdk-overrides.txt "
-        "openhands==1.16.0 --python 3.12" in log_text
+        "--from 'git+https://github.com/OpenHands/OpenHands-CLI.git@"
+        "3ca17446c5d9c1e35e054803478a3501ec251ecf' "
+        "openhands --python 3.12" in log_text
     )
     assert "=== stderr ===" in log_text
     assert "uv: command not found" in log_text
