@@ -106,6 +106,9 @@ def _apt_install(*packages: str) -> str:
 _BENCHFLOW_NODE_PREFIX = "/opt/benchflow/node"
 _BENCHFLOW_JS_AGENT_PREFIX = "/opt/benchflow/js-agents"
 _BENCHFLOW_BIN_PREFIX = "/opt/benchflow/bin"
+_OPENHANDS_CLI_VERSION = "1.16.0"
+_OPENHANDS_SDK_VERSION = "1.22.1"
+_OPENHANDS_TOOLS_VERSION = "1.22.1"
 _JS_AGENT_PATH = (
     f"{_BENCHFLOW_BIN_PREFIX}:{_BENCHFLOW_JS_AGENT_PREFIX}/bin:"
     f"{_BENCHFLOW_NODE_PREFIX}/bin:$PATH"
@@ -543,15 +546,15 @@ AGENTS: dict[str, AgentConfig] = {
         install_cmd=(
             "export DEBIAN_FRONTEND=noninteractive && "
             'export PATH="$HOME/.local/bin:$PATH" && '
-            "( command -v curl >/dev/null 2>&1 && command -v git >/dev/null 2>&1 || "
+            "( command -v curl >/dev/null 2>&1 || "
             "  if command -v apt-get >/dev/null 2>&1; then "
-            f"    {_apt_install('curl', 'ca-certificates', 'git')}; "
+            f"    {_apt_install('curl', 'ca-certificates')}; "
             "  elif command -v dnf >/dev/null 2>&1; then "
-            "    dnf -y --allowerasing install curl ca-certificates git >/dev/null 2>&1; "
+            "    dnf -y --allowerasing install curl ca-certificates >/dev/null 2>&1; "
             "  elif command -v apk >/dev/null 2>&1; then "
-            "    apk add --no-cache curl ca-certificates git >/dev/null 2>&1; "
+            "    apk add --no-cache curl ca-certificates >/dev/null 2>&1; "
             "  else "
-            "    echo 'OpenHands GitHub install requires curl and git' >&2; "
+            "    echo 'OpenHands install requires curl' >&2; "
             "    exit 127; "
             "  fi ) && "
             "( UV_OK=0; "
@@ -566,22 +569,18 @@ AGENTS: dict[str, AgentConfig] = {
             "    curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null 2>&1 && "
             '    export PATH="$HOME/.local/bin:$PATH"; '
             "  fi && "
-            # Pin openhands-sdk/tools past 1.21.0. That single release makes
-            # OpenHands' synthetic `security_risk` tool field *required*: the ACP
-            # path always attaches an LLMSecurityAnalyzer (even under
-            # --always-approve, where its verdict is discarded), so any model that
-            # omits the field hits a fatal "Failed to provide security_risk field"
-            # error that is fed back and retried in a loop until the run times out.
-            # Claude Opus omits it reliably (esp. with thinking), so opus-4.8 runs
-            # time out where other models pass. Fixed in sdk 1.22.0 (#3126: field
-            # optional, defaults to UNKNOWN); OpenHands-CLI @main still pins
-            # 1.21.0, so override the transitive pin to the fixed line.
-            "printf 'openhands-sdk>=1.22.0\\nopenhands-tools>=1.22.0\\n' "
+            # OpenHands CLI 1.16.0 pins openhands-sdk/tools 1.21.0. That one
+            # SDK release makes the synthetic `security_risk` tool field
+            # required whenever LLMSecurityAnalyzer is attached; the ACP path
+            # attaches it even under --always-approve, so Claude Opus can loop
+            # on validation errors until timeout. 1.22.x restores the intended
+            # default-to-UNKNOWN behavior without the API drift seen in 1.26.x.
+            f"printf 'openhands-sdk=={_OPENHANDS_SDK_VERSION}\\n"
+            f"openhands-tools=={_OPENHANDS_TOOLS_VERSION}\\n' "
             "> /tmp/oh-sdk-overrides.txt && "
             "uv tool install --force --refresh "
             "--overrides /tmp/oh-sdk-overrides.txt "
-            "--from 'git+https://github.com/OpenHands/OpenHands-CLI.git@main' "
-            "openhands --python 3.12 && "
+            f"openhands=={_OPENHANDS_CLI_VERSION} --python 3.12 && "
             "  uv tool list | grep -q '^openhands\\b' ) && "
             # Let sandbox user traverse to uv-managed Python interpreter path.
             "chmod o+x /root /root/.local /root/.local/share "
