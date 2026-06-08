@@ -107,11 +107,25 @@ class TestOpenHandsConfig:
         )
         assert (
             "uv tool install --force --refresh "
+            "--overrides /tmp/oh-sdk-overrides.txt "
             "--from 'git+https://github.com/OpenHands/OpenHands-CLI.git@main' "
             "openhands --python 3.12" in cfg.install_cmd
         )
         assert "command -v git" in cfg.install_cmd
         assert "install.openhands.dev/install.sh" not in cfg.install_cmd
+
+    def test_openhands_install_cmd_overrides_buggy_sdk_pin(self):
+        """sdk 1.21.0 makes `security_risk` required → Opus times out; force >=1.22.0.
+
+        OpenHands-CLI @main pins openhands-sdk==1.21.0, the one release where the
+        synthetic `security_risk` tool field is required. Models that omit it (Claude
+        Opus) loop on "Failed to provide security_risk field" until timeout. The fix
+        (#3126) landed in 1.22.0, so the install overrides the transitive pin.
+        """
+        cfg = AGENTS["openhands"]
+        assert "openhands-sdk>=1.22.0" in cfg.install_cmd
+        assert "openhands-tools>=1.22.0" in cfg.install_cmd
+        assert "--overrides /tmp/oh-sdk-overrides.txt" in cfg.install_cmd
 
     def test_openhands_install_cmd_does_not_deploy_bedrock_shim(self):
         """Guards the LiteLLM runtime refactor: Bedrock patches live with LiteLLM."""
